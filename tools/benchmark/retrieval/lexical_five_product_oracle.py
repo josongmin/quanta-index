@@ -269,18 +269,39 @@ def evaluate(paths: dict[str, Path], repo: Path, evidence_path: Path, archive_pa
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", required=True, type=Path)
-    parser.add_argument("--native-evidence", required=True, type=Path)
-    parser.add_argument("--native-archive", required=True, type=Path)
+    parser.add_argument(
+        "--spec",
+        type=Path,
+        help="Canonical frozen input-role spec, including raw file pair records and source bundle",
+    )
+    parser.add_argument("--repo", type=Path)
+    parser.add_argument("--native-evidence", type=Path)
+    parser.add_argument("--native-archive", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     for role in external.ROLES:
-        parser.add_argument("--" + role.replace("_", "-"), required=True, type=Path)
+        parser.add_argument("--" + role.replace("_", "-"), type=Path)
     args = parser.parse_args()
     try:
         if not args.out.is_absolute() or args.out.exists() or args.out.is_symlink():
             raise ValueError("output must be a new absolute path")
-        paths = {role: getattr(args, role) for role in external.ROLES}
-        result = evaluate(paths, args.repo, args.native_evidence, args.native_archive)
+        if args.spec is not None:
+            if any(getattr(args, role) is not None for role in external.ROLES) or any(
+                item is not None for item in (args.repo, args.native_evidence, args.native_archive)
+            ):
+                raise ValueError(
+                    "canonical spec and historical archive inputs are mutually exclusive"
+                )
+            result = comparison.evaluate_capture(comparison.read_spec(args.spec))
+        else:
+            paths = {role: getattr(args, role) for role in external.ROLES}
+            if any(
+                item is None
+                for item in (*paths.values(), args.repo, args.native_evidence, args.native_archive)
+            ):
+                raise ValueError(
+                    "historical replay requires every external role and native archive/evidence/repo"
+                )
+            result = evaluate(paths, args.repo, args.native_evidence, args.native_archive)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         with args.out.open("x", encoding="utf-8") as stream:
             json.dump(result, stream, indent=2, sort_keys=True)

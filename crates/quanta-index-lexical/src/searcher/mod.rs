@@ -2,6 +2,7 @@
 
 pub(crate) mod authorities;
 pub(crate) mod candidates;
+pub(crate) mod code_search;
 pub(crate) mod compile;
 pub(crate) mod manual_scan;
 pub(crate) mod match_sets;

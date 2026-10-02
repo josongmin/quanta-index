@@ -38,6 +38,7 @@ SUPPORTED_POLICIES = (
     "literal_file",
     "keyword_file",
     "substring_file",
+    "code_search_file",
 )
 #: File-projection policies and how each orders its distinct files. A phrase or
 #: raw substring is a match-only restriction (constant score, path order); a
@@ -48,6 +49,7 @@ FILE_PROJECTION_ORDERING = {
     "literal_file": ORDERING_PATH_ORDER,
     "keyword_file": ORDERING_SCORE_DESC,
     "substring_file": ORDERING_PATH_ORDER,
+    "code_search_file": ORDERING_SCORE_DESC,
 }
 MAX_KEYWORD_FILE_BYTES = 256
 MIN_SUBSTRING_FILE_BYTES = 3
@@ -62,12 +64,18 @@ PROFILE_IDS = {
     "literal_file": "quanta-literal-file-v1",
     "keyword_file": "quanta-keyword-file-v1",
     "substring_file": "quanta-substring-file-v1",
+    "code_search_file": "quanta-code-search-file-v1",
 }
 _BARE_SYMBOL_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
+_BARE_CODE_SEARCH_ATOM = re.compile(r"[A-Za-z_0-9]+\Z")
+_ASCII_WHITESPACE = re.compile(r"[ \t\n\v\f\r]+")
 _NATIVE_NON_CONTENT_PROJECTION = re.compile(
     r"(?<![A-Za-z_0-9.])(?:select:(?:repo|file|file\.owners|path|symbol)|type:(?:repo|path))(?=$|[\s()])"
 )
 MAX_EXACT_SYMBOL_NAME_BYTES = 4096
+# Independently mirror the public product contract, not the Rust bench planner.
+MAX_CODE_SEARCH_TERMS = 32
+MAX_CODE_SEARCH_TERM_BYTES = 256
 
 _JOINING = "-_./"
 _ALPHANUMERIC = regex.compile(r"\A(?:\p{Alphabetic}|\p{Number})\Z")
@@ -104,6 +112,12 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
             f'"max_bytes":{MAX_SUBSTRING_FILE_BYTES},"min_bytes":{MIN_SUBSTRING_FILE_BYTES},'
             f'"ordering":"{ORDERING_PATH_ORDER}","policy":"substring_file",'
             '"projection":"file","scope":"content"}'
+        )
+    if policy == "code_search_file":
+        return (
+            '{"case":"folded","match":"code_search_v1",'
+            f'"ordering":"{ORDERING_SCORE_DESC}","policy":"code_search_file",'
+            '"projection":"file","scope":"content_and_path","syntax":"code_search"}'
         )
     if policy == "natural_language":
         resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
@@ -294,6 +308,27 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
         if any(unicodedata2.category(ch) == "Cc" for ch in raw):
             raise QueryPlanError("control characters are not searchable fragment text")
         return f"select:file case:yes '{raw}'"
+    if policy == "code_search_file":
+        # Match Rust str::split_ascii_whitespace. Python str.split also treats
+        # U+001C..U+001F as whitespace, which would admit a request the runner
+        # refuses before capture and break independent replay.
+        terms = [term for term in _ASCII_WHITESPACE.split(raw) if term]
+        if (
+            not raw
+            or not raw.isascii()
+            or len(raw.encode()) > MAX_INPUT_BYTES
+            or not terms
+            or len(terms) > MAX_CODE_SEARCH_TERMS
+            or any(
+                len(term.encode()) > MAX_CODE_SEARCH_TERM_BYTES
+                or _BARE_CODE_SEARCH_ATOM.fullmatch(term) is None
+                for term in terms
+            )
+        ):
+            raise QueryPlanError(
+                "code-search-file policy requires 1 to 32 bare ASCII alphanumeric atoms of at most 256 bytes each"
+            )
+        return raw
     if policy == "natural_language":
         resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
         distinct: list[str] = []
@@ -328,9 +363,20 @@ def derive_query_identity(
     if policy not in SUPPORTED_POLICIES:
         raise QueryPlanError(f"unsupported query input policy: {policy}")
     lexical_request = plan_lexical_request(policy, raw, config)
+    if policy == "code_search_file":
+        import json
+
+        effective_bytes = json.dumps(
+            {"query_text": lexical_request, "syntax": "code_search"},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    else:
+        effective_bytes = lexical_request.encode()
     return {
         "original_query_sha256": _sha256_hex(raw.encode()),
-        "effective_lexical_request_sha256": _sha256_hex(lexical_request.encode()),
+        "effective_lexical_request_sha256": _sha256_hex(effective_bytes),
         "semantic_text_sha256": _sha256_hex(raw.encode()),
     }
 

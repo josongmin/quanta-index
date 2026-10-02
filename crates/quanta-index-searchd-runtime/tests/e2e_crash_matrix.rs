@@ -131,7 +131,12 @@ fn batch(generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>> {
             .map(|prior_v1| format!("fixture:crash-matrix:{prior_v1}")),
         payload_sha256: [0; 32],
     })
-    .replace_scope(scope_v1.coverage, scope_v1.chunks, scope_v1.symbols);
+    .replace_scope(
+        scope_v1.coverage,
+        scope_v1.source_bytes,
+        scope_v1.chunks,
+        scope_v1.symbols,
+    );
     for scope in semantic_scopes {
         batch = batch.replace_semantic_scope(
             scope.scope,

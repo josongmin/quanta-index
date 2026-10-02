@@ -34,12 +34,13 @@ use quanta_index_retrieval_bench::query_plan::{
 };
 use quanta_index_retrieval_bench::record::{
     CaptureProvenance, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
-    load_query_pack, runner_record,
+    load_query_pack, result_value, runner_record,
 };
 use quanta_index_retrieval_bench::schedule::QueryProtocol;
 use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
-    RouteQuery, publish_and_activate, query_route, resolve_searchd_binary, verify_searchd_digest,
+    RouteQuery, publish_and_activate, query_route_with_policy, resolve_searchd_binary,
+    verify_searchd_digest,
 };
 use quanta_index_retrieval_bench::symbols::{
     SymbolCoveragePolicy, SymbolPreflightOptions, preflight_corpus_symbols,
@@ -71,7 +72,7 @@ fn print_help() -> BenchResult<()> {
          fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
-         [--query-protocol PATH] [--query-input-policy native|literal|literal_file|keyword_file|substring_file|natural_language|exact_symbol_name]\n\
+         [--query-protocol PATH] [--query-input-policy native|literal|literal_file|keyword_file|substring_file|code_search_file|natural_language|exact_symbol_name]\n\
          [--query-stage-observation enabled|disabled] (default enabled; server query stages only)\n\
          [--experimental-hybrid-fetch-floor 25|50|100] (default 100; explicit experimental startup policy)\n\
          --repo-id ID --revision-id ID --generation N\n\
@@ -313,7 +314,8 @@ fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
         QueryPlanError::UnsupportedPolicy(policy) => serde_json::json!({"policy": policy}),
         QueryPlanError::InvalidSymbolName
         | QueryPlanError::EmptyTokenPlan
-        | QueryPlanError::InvalidKeyword => serde_json::json!({}),
+        | QueryPlanError::InvalidKeyword
+        | QueryPlanError::InvalidCodeSearch => serde_json::json!({}),
         QueryPlanError::InvalidSubstring { reason } => serde_json::json!({"reason": reason}),
         QueryPlanError::TokenLimitExceeded { tokens, max_tokens } => {
             serde_json::json!({"tokens": tokens, "max_tokens": max_tokens})
@@ -417,6 +419,7 @@ fn validate_policy_routes(policy: QueryInputPolicy, routes: &BTreeSet<&str>) -> 
         QueryInputPolicy::LiteralFile
             | QueryInputPolicy::KeywordFile
             | QueryInputPolicy::SubstringFile
+            | QueryInputPolicy::CodeSearchFile
     ) && routes != &BTreeSet::from(["lexical"])
     {
         return Err(BenchError::Config(format!(
@@ -1090,6 +1093,77 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
     let mut warm_latencies_ms: BTreeMap<String, BTreeMap<String, Vec<f64>>> = BTreeMap::new();
     let mut cold_latencies_ms: BTreeMap<String, f64> = BTreeMap::new();
+    let mut query_observations = Vec::new();
+    let mut completed_results = BTreeMap::new();
+    let mut completed_query = |task_id: &str,
+                               route: &'static str,
+                               plan: &QueryPlan,
+                               phase: &str,
+                               iteration: usize|
+     -> BenchResult<QueryOutcome> {
+        let start = overall.elapsed();
+        let query = RouteQuery {
+            client: session.client(),
+            route,
+            lexical_request: &plan.lexical_request,
+            semantic_text: &plan.semantic_text,
+            repo_id: &identity.repo_id,
+            revision_id: &identity.revision_id,
+            generation: identity.generation,
+            top_k,
+        };
+        let mut outcome = query_route_with_policy(&query, plan.policy);
+        let mut row = result_value(
+            task_id,
+            query.route,
+            &outcome,
+            plan,
+            top_k,
+            &by_path,
+            &published_units,
+        )?;
+        let status = row["status"]
+            .as_str()
+            .ok_or_else(|| BenchError::Protocol("completed response lacks status".to_string()))?
+            .to_string();
+        let object = row.as_object_mut().ok_or_else(|| {
+            BenchError::Protocol("completed response is not an object".to_string())
+        })?;
+        let _timing = object.remove("timings");
+        let output = serde_json::to_vec(&row).map_err(|error| {
+            BenchError::Protocol(format!("completed response cannot serialize: {error}"))
+        })?;
+        let end = overall.elapsed();
+        let elapsed = end.saturating_sub(start);
+        match &mut outcome {
+            QueryOutcome::ReturnedWindow { latency, .. }
+            | QueryOutcome::RejectedResponse { latency, .. }
+            | QueryOutcome::SdkFailure { latency, .. } => *latency = elapsed,
+        }
+        let start_ns = u64::try_from(start.as_nanos()).map_err(|error| {
+            BenchError::Protocol(format!("query start clock overflow: {error}"))
+        })?;
+        let end_ns = u64::try_from(end.as_nanos())
+            .map_err(|error| BenchError::Protocol(format!("query end clock overflow: {error}")))?;
+        query_observations.push(serde_json::json!({
+            "task_id": task_id, "route": query.route, "phase": phase,
+            "iteration": iteration, "start_ns": start_ns, "end_ns": end_ns,
+            "status": status, "output_bytes": output.len(),
+        }));
+        if phase == "measured" && iteration == 0 {
+            row["timings"] =
+                serde_json::json!({"query_latency_ms": elapsed.as_secs_f64() * 1000.0});
+            if completed_results
+                .insert((task_id.to_string(), route.to_string()), row)
+                .is_some()
+            {
+                return Err(BenchError::Protocol(
+                    "duplicate completed response".to_string(),
+                ));
+            }
+        }
+        Ok(outcome)
+    };
     let mut warmup_elapsed = Duration::ZERO;
     let first_query_elapsed;
     let warm_query_elapsed = if let Some(protocol) = &query_protocol {
@@ -1098,16 +1172,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             .get(protocol.cold_probe_task_id.as_str())
             .ok_or_else(|| BenchError::Protocol("cold probe task disappeared".to_string()))?;
         for route in routes.iter().copied() {
-            let outcome = query_route(&RouteQuery {
-                client: session.client(),
-                route,
-                lexical_request: &cold_plan.lexical_request,
-                semantic_text: &cold_plan.semantic_text,
-                repo_id: &identity.repo_id,
-                revision_id: &identity.revision_id,
-                generation: identity.generation,
-                top_k,
-            });
+            let outcome =
+                completed_query(&protocol.cold_probe_task_id, route, cold_plan, "cold", 0)?;
             let latency = match &outcome {
                 QueryOutcome::ReturnedWindow { latency, .. } => *latency,
                 failed @ (QueryOutcome::RejectedResponse { .. }
@@ -1136,22 +1202,13 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         first_query_elapsed = cold_start.elapsed();
 
         let warmup_start = Instant::now();
-        for schedule in &protocol.warmup_schedules {
+        for (iteration, schedule) in protocol.warmup_schedules.iter().enumerate() {
             for task_id in schedule {
                 let plan = task_plans
                     .get(task_id.as_str())
                     .ok_or_else(|| BenchError::Protocol("warmup task disappeared".to_string()))?;
                 for route in routes.iter().copied() {
-                    let outcome = query_route(&RouteQuery {
-                        client: session.client(),
-                        route,
-                        lexical_request: &plan.lexical_request,
-                        semantic_text: &plan.semantic_text,
-                        repo_id: &identity.repo_id,
-                        revision_id: &identity.revision_id,
-                        generation: identity.generation,
-                        top_k,
-                    });
+                    let outcome = completed_query(task_id, route, plan, "warmup", iteration)?;
                     if !matches!(outcome, QueryOutcome::ReturnedWindow { .. }) {
                         let classification = outcome.classification().map_err(|message| {
                             BenchError::Protocol(format!("invalid warmup outcome: {message}"))
@@ -1177,16 +1234,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                     BenchError::Protocol("measurement task disappeared".to_string())
                 })?;
                 for route in routes.iter().copied() {
-                    let outcome = query_route(&RouteQuery {
-                        client: session.client(),
-                        route,
-                        lexical_request: &plan.lexical_request,
-                        semantic_text: &plan.semantic_text,
-                        repo_id: &identity.repo_id,
-                        revision_id: &identity.revision_id,
-                        generation: identity.generation,
-                        top_k,
-                    });
+                    let outcome = completed_query(task_id, route, plan, "measured", repetition)?;
                     let latency = match &outcome {
                         QueryOutcome::ReturnedWindow { latency, .. } => *latency,
                         failed @ (QueryOutcome::RejectedResponse { .. }
@@ -1234,16 +1282,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                 .ok_or_else(|| BenchError::Protocol("planned task disappeared".to_string()))?;
             for route in routes.iter().copied() {
                 let single_query_start = Instant::now();
-                let outcome = query_route(&RouteQuery {
-                    client: session.client(),
-                    route,
-                    lexical_request: &plan.lexical_request,
-                    semantic_text: &plan.semantic_text,
-                    repo_id: &identity.repo_id,
-                    revision_id: &identity.revision_id,
-                    generation: identity.generation,
-                    top_k,
-                });
+                let outcome = completed_query(&task.task_id, route, plan, "measured", 0)?;
                 if first.is_zero() {
                     first = single_query_start.elapsed();
                 }
@@ -1269,11 +1308,10 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         provenance: &provenance,
         captures: &captures,
         outcomes: &outcomes,
+        completed_results: &completed_results,
         plans: &task_plans,
         nl_config: &nl_plan_config,
         top_k,
-        files: &by_path,
-        units: &published_units,
     })?;
     let native_spans = if diagnostics_out.is_some() {
         quanta_index_retrieval_bench::record::native_span_proofs(
@@ -1356,6 +1394,11 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         "schema_version": 2,
         "system": "quanta",
         "timing_layer": "runner_monotonic_wall_v1",
+        "query_timing": {
+            "boundary": "request_construction_to_normalized_response",
+            "clock": "capture_relative_monotonic_ns",
+            "observations": query_observations,
+        },
         "strategy": selection.name,
         "record_sha256": record_digest,
         "runner_binary_sha256": runner_digest,
@@ -1731,6 +1774,7 @@ mod tests {
             QueryInputPolicy::LiteralFile,
             QueryInputPolicy::KeywordFile,
             QueryInputPolicy::SubstringFile,
+            QueryInputPolicy::CodeSearchFile,
         ] {
             assert!(validate_policy_routes(policy, &lexical).is_ok());
         }
@@ -1738,6 +1782,7 @@ mod tests {
             assert!(validate_policy_routes(QueryInputPolicy::LiteralFile, routes).is_err());
             assert!(validate_policy_routes(QueryInputPolicy::KeywordFile, routes).is_err());
             assert!(validate_policy_routes(QueryInputPolicy::SubstringFile, routes).is_err());
+            assert!(validate_policy_routes(QueryInputPolicy::CodeSearchFile, routes).is_err());
         }
     }
 }

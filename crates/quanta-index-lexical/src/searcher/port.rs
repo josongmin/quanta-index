@@ -5,8 +5,8 @@ use crate::searcher::planner_errors::{planner_preflight_expr, validate_exact_all
 use crate::searcher::query_rewrite::rewrite_symbol_name_predicate_query;
 use crate::{ManualPage, SYMBOL_DOC_KIND, TEXT_DOC_KIND, TantivySearcher};
 use quanta_index_contract::{
-    CandidatePresenceV1, FileOwnerProjectionRow, LexicalCandidate, LqQuery, QueryConstraintSetV1,
-    SymbolCandidate,
+    CandidatePresenceV1, FileOwnerProjectionRow, LexicalCandidate, LqPatternType, LqQuery,
+    QueryConstraintSetV1, SymbolCandidate,
 };
 use quanta_index_core::{
     CoreError, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1, LexicalEndpoint,
@@ -40,6 +40,11 @@ impl LexicalSearcher for TantivySearcher {
         page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
+        if query.options.pattern_type == LqPatternType::CodeSearch {
+            let _plan = LexicalPolicy::plan_query(query, constraints, LexicalEndpoint::Text)?;
+            let _fetch = validate_internal_fetch_size(page.fetch)?;
+            return self.search_code_files(query, constraints, page, budget);
+        }
         // This is the single text-query execution path. The unconstrained
         // port method delegates here so constraint support cannot drift into
         // a second planner/search implementation.

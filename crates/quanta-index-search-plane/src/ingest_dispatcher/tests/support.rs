@@ -1961,8 +1961,24 @@ pub(super) fn chunk_record_v(
 pub(super) fn scope_with_chunks(
     path: &str,
     _digest: &str,
-    chunks: Vec<ChunkRecord>,
+    mut chunks: Vec<ChunkRecord>,
 ) -> SearchCorpusReplaceScope {
+    use sha2::Digest as _;
+    // Place every chunk in one source file and bind its exact byte span.
+    let mut source_bytes = Vec::new();
+    for (index, chunk) in chunks.iter_mut().enumerate() {
+        if index != 0 {
+            source_bytes.push(b'\n');
+        }
+        chunk.start_byte = u32::try_from(source_bytes.len()).expect("fixture source fits u32");
+        chunk.start_line = u32::try_from(index)
+            .expect("fixture line fits u32")
+            .checked_add(1)
+            .expect("fixture line fits u32");
+        source_bytes.extend_from_slice(chunk.text.as_bytes());
+        chunk.end_byte = u32::try_from(source_bytes.len()).expect("fixture source fits u32");
+        chunk.end_line = chunk.start_line;
+    }
     let language = chunks.first().map_or_else(
         || quanta_index_contract::lex::LanguageCode::new("rust").expect("fixture language"),
         |chunk| chunk.language.clone(),
@@ -1980,7 +1996,7 @@ pub(super) fn scope_with_chunks(
                     repo_relative_path: RepoRelativePath::new(path),
                 },
                 revision_id: RevisionId::new("fixture-source-revision").expect("fixture revision"),
-                source_sha256: [1; 32],
+                source_sha256: sha2::Sha256::digest(&source_bytes).into(),
             },
             language,
             producer_policy_sha256: [2; 32],
@@ -1988,6 +2004,7 @@ pub(super) fn scope_with_chunks(
             text_admitted: true,
             symbols: quanta_index_contract::SymbolCoverage::NotRequested,
         },
+        source_bytes,
         chunks,
         symbols: Vec::new(),
     }

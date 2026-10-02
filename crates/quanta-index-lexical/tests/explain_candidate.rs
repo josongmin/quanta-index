@@ -139,7 +139,12 @@ fn every_ranked_candidate_explains_to_exactly_its_emitted_score_in_rank_order() 
             upsert("last-other", "nothing relevant at the end")?,
         ],
     )?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let constraints = QueryConstraintSetV1::unconstrained();
     let query = keyword_query(&["needle"]);
     let page = searcher.search_constrained(
@@ -248,7 +253,12 @@ fn a_boost_in_the_plan_is_the_weight_and_scales_the_emitted_score() -> TestResul
             upsert("b", "needle needle")?,
         ],
     )?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let constraints = QueryConstraintSetV1::unconstrained();
     let plain = keyword_query(&["needle"]);
     let mut boosted = plain.clone();
@@ -313,7 +323,12 @@ fn presence_is_an_exact_lookup_independent_of_the_corpus_around_the_candidate() 
     let filler = "word ".repeat(400);
     ops.push(upsert("buried", &format!("needle {filler}"))?);
     seal(&adapter, &ops)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let constraints = QueryConstraintSetV1::unconstrained();
     let query = keyword_query(&["needle"]);
     let page = searcher.search_constrained(
@@ -369,7 +384,12 @@ fn an_unindexed_scan_explains_through_the_same_per_document_matcher() -> TestRes
             upsert("miss", "haystack only")?,
         ],
     )?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let constraints = QueryConstraintSetV1::unconstrained();
     let mut query = keyword_query(&["needle"]);
     query.options.index_mode = Some(LqYesNoOnly::No);

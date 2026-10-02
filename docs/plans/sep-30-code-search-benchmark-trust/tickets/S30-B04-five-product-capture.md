@@ -171,3 +171,46 @@ gold path in the six missed tasks is present beyond rank ten (nearest ranks:
 their gold rank beyond the captured window is unknown. These observations
 locate the miss stage without promoting a bare-name gold to independent
 relevance judgment or inferring an engine defect.
+
+## 2026-10-02 current CodeSearch diagnostic capture
+
+The new default `code_search_file` route was captured with the all-features
+release daemon and runner built from the `main@53ca51e3` dirty implementation.
+The binaries are pinned by SHA256 (`157c29ce9ca5a82157437337e2b682b0763e7f69e87ba9fe2ef68970faa8d5cb`
+for searchd; `599b9bc936fc31e040d0e186776e2d4eb327fb0ae7ee51f61d8f7b11bb6bb780`
+for the runner). Seven separate Quanta/Semble pair roots are
+`/private/tmp/a0` through `/private/tmp/a6`; each has `PAIR_VALID=pass` and
+`diagnostic_unqualified` status. The live external collector recaptured and
+replayed seven corresponding Sourcegraph, OpenGrok and cs lanes under
+`/private/tmp/qi-p2-current-file-final15-juqw3g51`. Its current-file scorer
+binds the raw rows, pair records, run manifest, and both phase-metric byte
+digests; the [complete summary](/private/tmp/qi-p2-current-file-final15-juqw3g51/five-product-lanes-summary.json)
+has per-product status, timing boundary, unsupported IDs and commands.
+
+Common-eligible file Hit@10 counts, with unsupported Sourcegraph queries
+excluded from every product in that lane:
+
+| Lane | Common tasks | Quanta | Semble | Sourcegraph | OpenGrok | cs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Exact | 1,196 | 1,187 | 1,190 | 1,193 | 1,185 | 1,187 |
+| Prefix | 351 | 347 | 257 | 349 | 23 | 345 |
+| Infix | 339 | 335 | 164 | 338 | 11 | 336 |
+| Components | 271 | 270 | 269 | 267 | 146 | 264 |
+| Typo | 363 | 17 | 284 | 15 | 0 | 17 |
+
+Sourcegraph explicitly rejected one prefix and seven components queries; the
+other products' own-lane denominators remain 352 and 278 respectively. The
+99 content-absence probes returned zero files for Quanta, Sourcegraph,
+OpenGrok and cs, versus zero of 99 for Semble. The 342 typo-content-absence
+probes returned zero files for those same four products, versus 55 of 342 for
+Semble. `capped` is an executed search state, not an execution failure:
+Quanta's 87 capped exact responses include all nine exact top-10 misses.
+
+This capture does not qualify product ranking or performance. The 1,196 gold
+labels are declaration-derived without human relevance review, the binaries
+were built from a dirty checkout whose manifest has no source-closure digest,
+and Sourcegraph/OpenGrok posting-level indexed-universe identity remains
+unverified. Query timers differ for local SDK/worker, loopback HTTP and cs
+process spawn, and the host was contended. The raw metrics are diagnostic
+inputs for independent gold review, external index attestation and an admitted
+fresh-root performance run.

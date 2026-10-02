@@ -21,6 +21,9 @@ use crate::{BenchError, BenchResult, sha256_hex};
 pub enum PublishedUnitKind {
     Chunk,
     Symbol,
+    /// A whole source-file candidate proved from file authority, not this
+    /// published chunk/symbol registry.
+    File,
 }
 
 impl PublishedUnitKind {
@@ -29,6 +32,7 @@ impl PublishedUnitKind {
         match self {
             Self::Chunk => "chunk",
             Self::Symbol => "symbol",
+            Self::File => "file",
         }
     }
 }
@@ -184,6 +188,11 @@ impl PublishedUnitRegistry {
                 self.symbol_count = self.symbol_count.checked_add(1).ok_or_else(|| {
                     BenchError::Protocol("symbol unit count overflow".to_string())
                 })?;
+            }
+            PublishedUnitKind::File => {
+                return Err(BenchError::Protocol(
+                    "file identities are not published chunk/symbol units".to_string(),
+                ));
             }
         }
         let _previous = self.by_id.insert(unit.id.clone(), unit);

@@ -753,6 +753,7 @@ mod tests {
             _repo: &RepoId,
             _revision: &RevisionId,
             generation: ManifestGeneration,
+            _budget: &quanta_index_core::RequestBudgetV1,
         ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
             Ok(Box::new(StubLexicalSearcher {
                 results: Vec::new(),
@@ -771,6 +772,7 @@ mod tests {
                 &candidate.repo_id,
                 &candidate.revision_id,
                 candidate.manifest_generation,
+                &quanta_index_core::RequestBudgetV1::unbounded(),
             )
         }
     }
@@ -1231,6 +1233,7 @@ mod tests {
                         candidate.repo_id(),
                         candidate.revision_id(),
                         candidate.manifest_generation(),
+                        &quanta_index_core::RequestBudgetV1::unbounded(),
                     )?);
                     let _admitted = promotion.snapshots.lexical.begin_promotion(&key)?.promote(
                         &OpenedSnapshot {

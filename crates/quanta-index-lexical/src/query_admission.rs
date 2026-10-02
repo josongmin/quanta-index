@@ -34,6 +34,10 @@ impl LexicalPlanner {
         budget.checkpoint("lexical primitive admission")?;
         let rewritten = rewrite_symbol_name_predicate_query(plan.query())?;
         let query = rewritten.as_ref().unwrap_or_else(|| plan.query());
+        if query.options.pattern_type == LqPatternType::CodeSearch {
+            let _parsed = crate::searcher::code_search::CodeSearchPlan::parse(query, regex_policy)?;
+            return Ok(());
+        }
         // Pure filter conflicts only. Availability needs an actual read view.
         let _filters = crate::filters::plan_filters(&query.filters, &query.options)
             .map_err(|err| map_planner_error(&LexicalPlannerError::FilterPlan(err)))?;

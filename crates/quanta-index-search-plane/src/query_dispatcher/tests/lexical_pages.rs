@@ -12,12 +12,13 @@ use std::sync::{Arc, Mutex};
 use quanta_index_contract::{
     CandidateCountV1, ContinuationTokenV2, ERR_RESULT_TOO_LARGE, FileOwnerProjectionRow,
     LexicalCandidate, LexicalCursor, ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV2,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SymbolQueryResponse, TextQueryRequest,
-    TextQueryResponse, TextQuerySyntax,
+    RepoRelativePath, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SymbolQueryResponse,
+    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
-use quanta_index_core::RequestBudgetV1;
+use quanta_index_core::{QueryRouteV1, RequestBudgetV1};
 
 use crate::observability::NoopQueryObsSink;
+use crate::query_dispatcher::continuation::CursorRequestContextV2;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::response_budget::{
     RankedPage, ResponsePayloadBudget, fit_ranked_page,
@@ -136,6 +137,76 @@ fn a_page_continues_exactly_when_more_rows_exist() -> TestResult {
     ];
     if pages != expected {
         return Err(format!("pages drifted: {pages:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn code_search_pages_bind_the_overlap_ranking_order() -> TestResult {
+    let mut files = rows(3, 8);
+    for (index, file) in files.iter_mut().enumerate() {
+        file.repo_relative_path = RepoRelativePath::new(format!("src/{index:02}.rs"));
+    }
+    let dispatcher = stub_dispatcher(files)?;
+    let mut first_request = request(2, None);
+    let SearchPlaneQueryIpcRequest::Text(first_text) = &mut first_request else {
+        return Err("text fixture drifted".into());
+    };
+    first_text.syntax = TextQuerySyntax::CodeSearch;
+    let first = text(dispatcher.dispatch(first_request.clone(), &RequestBudgetV1::unbounded()))?;
+    let token = first.next_cursor.clone().ok_or("first page continues")?;
+    let opened = dispatcher.cursors()?.open::<LexicalCursor>(&token)?;
+    if opened.binding().order
+        != "code_search_file_overlap_score_v1_desc_source_repo_path_line_candidate"
+    {
+        return Err(format!(
+            "unexpected code search cursor order: {}",
+            opened.binding().order
+        )
+        .into());
+    }
+
+    if let SearchPlaneQueryIpcRequest::Text(request_text) = &mut first_request {
+        request_text.cursor = Some(token);
+    }
+    let second = text(dispatcher.dispatch(first_request.clone(), &RequestBudgetV1::unbounded()))?;
+    if ids(&first.results) != ["cand-00", "cand-01"]
+        || ids(&second.results) != ["cand-02"]
+        || second.next_cursor.is_some()
+    {
+        return Err(
+            format!("code search pages drifted: first={first:?}, second={second:?}").into(),
+        );
+    }
+
+    let SearchPlaneQueryIpcRequest::Text(request_text) = &mut first_request else {
+        return Err("text fixture drifted".into());
+    };
+    let planning_request = TextQueryRequest {
+        cursor: None,
+        ..request_text.clone()
+    };
+    let planned = dispatcher.plan_lexical_text_query(
+        &planning_request,
+        QueryRouteV1::Lexical,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let old_context = CursorRequestContextV2 {
+        route: quanta_index_contract::CursorRouteV2::Lexical,
+        pin: &planned.pin,
+        query: &planned.query,
+        constraints: &planned.constraints,
+        order: "code_search_file_score_v1_desc_source_repo_path_line_candidate",
+        cap: 2,
+    };
+    let old_token = dispatcher
+        .cursors()?
+        .mint(&opened.boundary, &old_context, Vec::new())?;
+    request_text.cursor = Some(old_token);
+    let (code, _) =
+        ipc_error_from(dispatcher.dispatch(first_request, &RequestBudgetV1::unbounded()))?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch {
+        return Err(format!("old scoring cursor answered {code}").into());
     }
     Ok(())
 }
@@ -297,6 +368,7 @@ fn a_large_later_owner_projection_cannot_refuse_a_fitting_paired_prefix() -> Tes
         })
         .collect();
     let page = TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: ready_pin(),
         results,
@@ -362,6 +434,7 @@ fn a_shorter_prefix_can_exceed_the_budget_when_its_cursor_is_larger() -> TestRes
     let results = rows(4, 8);
     let large_token = ContinuationTokenV2::new("L".repeat(3_000))?;
     let page = TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: ready_pin(),
         results,

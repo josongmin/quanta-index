@@ -115,6 +115,7 @@ pub use quanta_index_sdk::SymbolRelationship
 pub use quanta_index_sdk::SymbolSpan
 pub use quanta_index_sdk::TextQueryResponse
 pub use quanta_index_sdk::TextQuerySyntax
+pub use quanta_index_sdk::TextRankUnit
 pub use quanta_index_sdk::TrackReadinessRecord
 pub use quanta_index_sdk::canonical_batch_digest_v1
 pub use quanta_index_sdk::stamp_batch_digest_v1
@@ -293,6 +294,7 @@ pub quanta_index_sdk::ResponseBindingAxis::Order
 pub quanta_index_sdk::ResponseBindingAxis::ProjectionPairing
 pub quanta_index_sdk::ResponseBindingAxis::RankingOrder
 pub quanta_index_sdk::ResponseBindingAxis::ReadIdentity
+pub quanta_index_sdk::ResponseBindingAxis::ResultUnit
 pub quanta_index_sdk::ResponseBindingAxis::SelectorDomain
 pub quanta_index_sdk::ResponseBindingAxis::Sequence
 pub quanta_index_sdk::ResponseBindingAxis::TargetIdentity
@@ -665,11 +667,13 @@ pub fn quanta_index_sdk::LexicalQueryBuilder<'_, true, true, true>::execute(self
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::active(self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K>
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::after(self, cursor: quanta_index_contract_base::results::continuation_token::ContinuationTokenV2) -> Self
+pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::code_search(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::LexicalQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::exact_repo_relative_path(self, path: quanta_index_contract_base::query::constraints::ExactRepoRelativePathV1) -> Self
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::language_any_of(self, languages: impl core::iter::traits::collect::IntoIterator<Item = quanta_index_contract_base::query::constraints::LanguageCode>) -> Self
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::native(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::LexicalQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::pinned(self, pin: quanta_index_contract_base::query::pin::GenerationPin) -> quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K>
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::sourcegraph(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::LexicalQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K>
+pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::text(self, query_text: impl core::convert::Into<alloc::string::String>) -> quanta_index_sdk::LexicalQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::top_k(self, top_k: u32) -> quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, true>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Freeze for quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::Send for quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
@@ -1016,7 +1020,7 @@ pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::clear_surfaces(&self) -> &[q
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::manifest_digest(&self) -> &str
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::mode(&self) -> quanta_index_sdk::BatchMode
-pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_scope(self, coverage: quanta_index_contract::source_coverage::SourceFileCoverage, chunks: alloc::vec::Vec<quanta_index_contract::channel::records::ChunkRecord>, symbols: alloc::vec::Vec<quanta_index_contract::lex::symbol::SymbolRecord>) -> Self
+pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_scope(self, coverage: quanta_index_contract::source_coverage::SourceFileCoverage, source_bytes: alloc::vec::Vec<u8>, chunks: alloc::vec::Vec<quanta_index_contract::channel::records::ChunkRecord>, symbols: alloc::vec::Vec<quanta_index_contract::lex::symbol::SymbolRecord>) -> Self
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_scopes(&self) -> &[quanta_index_contract::ipc::ingest::SearchCorpusReplaceScope]
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_semantic_scope(self, scope: quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1, scope_digest: impl core::convert::Into<alloc::string::String>, sources: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::SemanticSourceRecordV1>, cluster_memberships: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::ClusterMembershipReplaceV1>) -> Self
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId

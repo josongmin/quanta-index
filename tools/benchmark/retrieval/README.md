@@ -106,6 +106,18 @@ golden, re-derived independently by `query_plan.py`:
   restriction (trigram candidates, byte verification) over content. It is
   match-only, so files return in path order (`ordering:
   path_order_constant_score`), like `literal_file`.
+- `code_search_file` (`quanta-code-search-file-v1`): submit 1–32 bare ASCII
+  identifier atoms of at most 256 bytes each through SDK `.code_search(raw)`
+  on the lexical route. The adapter and independent replay reject other ASCII
+  control separators rather than treating them as whitespace.
+  The product syntax supplies distinct-file projection, folded matching over
+  content and path, and scored ordering. The benchmark profile accepts only
+  this narrow bare-atom subset; unsupported query forms are admissions, not
+  empty retrievals. Its effective-request digest hashes canonical
+  `{"query_text":raw,"syntax":"code_search"}` so a Native execution cannot
+  masquerade as this profile. New rows require finite SDK scores and descending
+  score/path order. Report exact, prefix, infix, components, typo, and no-answer
+  suites separately; a file gold is not a declaration gold.
 
 Every file-projection result records `rank_unit: distinct_file` (the unit) and
 `ordering` (how the units are ordered, derived from the policy). The evaluator
@@ -139,7 +151,7 @@ policy and report contract.
 
 The benchmark runner refuses native `select:` and `type:path`/`type:repo`
 projections that change the ranked result unit. Use a file-projection policy (`literal_file`, `keyword_file` or
-`substring_file`) for a distinct-file benchmark. A quoted `"select:file"` remains ordinary content text
+`substring_file`) or the public `code_search_file` policy for a distinct-file benchmark. A quoted `"select:file"` remains ordinary content text
 under `native`.
 
 After freezing the reviewed suite and recording its single-route run, score
@@ -154,6 +166,15 @@ uv run --frozen --extra dev python tools/benchmark/retrieval/evaluator.py evalua
 This report exposes eligible task IDs, exclusions, coverage, operational and
 conditional means. It is `diagnostic_unqualified`; it does not enter the
 paired `QUALITY_DELTA` gate or alter the original 300-query scores.
+
+The canonical pair driver accepts `code_search_file` with exactly the
+`lexical` Quanta route and Semble `lexical-file` mode. This pair must use
+`scope: exploratory` and all claims false. It writes a paired independent
+file-judgment diagnostic report, and the verdict replays that report from the
+merged record. It does not compute context-span quality from the file identity
+span or pass the qualified quality gate. Run the exact-name and each
+identifier-robustness lane in separate fresh output roots; never aggregate
+their scores into one denominator.
 Use `judgment_policy: complete_ranked_pool_v1` for newly reviewed file or
 declaration diagnostics. Each returned top-10 file or published declaration
 must have an explicit source-bound grade, including grade 0 for irrelevant
@@ -201,12 +222,60 @@ python3 tools/benchmark/retrieval/identifier_robustness_suite.py \
 
 Its base names come from an exposed suite, so its output is a source-exposed
 diagnostic, never an unseen holdout.
+
+The same lanes exist for Rust, Python, TypeScript (`.ts`/`.tsx`) and
+JavaScript as `<language>_exact_local_name_v1` and
+`<language>_declaration_name_{prefix,infix,components,osa1}_v1` over the
+`<language>_declaration_census_v1` kinds in `source_oracle.py` (named items,
+functions, classes, methods, interfaces, aliases and enums; no variables,
+fields, namespaces or anonymous expressions; a name is the declared token as
+written). Pass `--language`; a non-Go language is admitted only when
+`declaration_census_audit.py` finds that an independent parser (CPython `ast`,
+`syn`, the TypeScript compiler or `go/ast`, built from the pinned sources in
+`census_checkers/` into a cache outside the checkout) reports the same
+(name start byte, name bytes) set for every file. Any refusal or disagreement
+keeps the language unsupported instead of producing empty gold:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.declaration_census_audit \
+  --release /absolute/release --repository NAME --language rust \
+  --output /absolute/new-external-root/census-audit.json
+```
+
+For a fresh repository-disjoint holdout, `holdout_sampling.py` freezes a
+seeded, label-free per-repository ledger (population, quota, admitted,
+underfill reason and inclusion probability per lane), one schema v2
+single-split `gold_oracle` recipe per holdout repository and the corpus-wide
+split manifest, from a holdout and a development corpus release. Labels then
+come from `corpus_binding.capture_gold(..., split=(manifest bytes, release
+paths))`, which validates both releases, the repository/family assignment and
+cross-split exact or near-duplicate code before deriving labels. Natural
+language lanes stay underfilled until reviewed qrels exist.
 The generated `no-answer-content-v2` suite uses
 `ascii_content_absent_casefold_v1` with `unit: distinct_file`. Replay admission
 checks every frozen source file for the query under the same UTF-8 replacement
 and casefold rule used by the builder. The separate `no-answer` lane continues
 to mean only that no matching declaration exists. Archived NOC suites retain
 their older declaration-only oracle and must be labeled as legacy diagnostics.
+
+The `typo-content-absence` lane reuses admitted one-edit typo queries whose
+bytes are absent from all frozen file contents **and paths** under casefold.
+It scores default content/path search as a hard-negative task, separately
+from the `typo` lane's declaration-recovery task. The report rechecks both
+admitted and excluded source IDs against the frozen files; a future fuzzy
+suggestion feature must be evaluated against the typo lane as a separate
+intent, without treating its suggestions as default content hits. These
+source-exposed diagnostics are not holdout or product ranking claims.
+The robustness report names the task's `evaluation_intent` and the negative
+`negative_reference_scope`. Its `no_answer.nonempty_results` counts returned
+files without assuming that a declaration-absent query is absent from file
+contents. A default CodeSearch abstention claim also needs path absence;
+the content-only lane requires a separate path audit. The
+declaration-recovery typo lane is a separate intent.
+The paired diagnostic reports the suite's `reference_contracts` and uses the
+same neutral `nonempty_results` key. A declaration-derived file label measures
+retrieval of that declaration's file; it does not independently establish
+whole-file content relevance for every returned file.
 
 For a validated Quanta or Semble distinct-file diagnostic, join the existing
 evaluator report to the frozen robustness census without rescoring candidates:

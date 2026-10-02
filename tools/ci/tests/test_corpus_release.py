@@ -359,3 +359,23 @@ def test_shallow_history_refuses_before_release_publication(source, tmp_path):
     with pytest.raises(EvidenceError, match="complete Git history"):
         corpus.create(recipe, shallow_root, target)
     assert not target.exists()
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("LICENSE", True),
+        ("LICENSE.md", True),
+        ("LICENSE-APACHE", True),
+        ("license_mit.txt", True),
+        ("COPYING", True),
+        ("UNLICENSE", True),
+        ("license_test.go", False),
+        ("licenses.rs", False),
+        ("LICENSE.py", False),
+        ("docs/LICENSE", False),
+        ("licensed.txt", False),
+    ],
+)
+def test_license_sources_are_root_text_not_code(path, expected):
+    assert corpus.is_license_source(path) is expected

@@ -705,6 +705,9 @@ fn prove_hit(
     files: &BTreeMap<String, SourceFile>,
     units: &PublishedUnitRegistry,
 ) -> BenchResult<ProvenHit> {
+    if hit.file_authority.is_some() {
+        return prove_file_hit(hit, rank, files);
+    }
     let file = files.get(&hit.path).ok_or_else(|| {
         BenchError::Protocol(format!("SDK hit outside admitted universe: {}", hit.path))
     })?;
@@ -745,6 +748,11 @@ fn prove_hit(
                     "SDK unanchored symbol hit has no proving authority: {}",
                     hit.candidate_id
                 )));
+            }
+            PublishedUnitKind::File => {
+                return Err(BenchError::Protocol(
+                    "file ID appeared in chunk/symbol registry".to_string(),
+                ));
             }
         }
     } else {
@@ -845,6 +853,158 @@ fn prove_hit(
     })
 }
 
+fn expected_file_candidate_id(source_repo_id: &str, path: &str) -> BenchResult<String> {
+    let repo = source_repo_id.as_bytes();
+    let path = path.as_bytes();
+    let repo_len = u64::try_from(repo.len())
+        .map_err(|err| BenchError::Protocol(format!("source repo ID length overflow: {err}")))?;
+    let path_len = u64::try_from(path.len())
+        .map_err(|err| BenchError::Protocol(format!("source path length overflow: {err}")))?;
+    let mut bytes = b"quanta-index:code-search-file:v1\0".to_vec();
+    bytes.extend_from_slice(&repo_len.to_le_bytes());
+    bytes.extend_from_slice(repo);
+    bytes.extend_from_slice(&path_len.to_le_bytes());
+    bytes.extend_from_slice(path);
+    Ok(format!("file:{}", sha256_hex(&bytes)))
+}
+
+/// Independently prove a product file candidate against the frozen source
+/// universe. This path never consults the chunk/symbol unit registry.
+fn prove_file_hit(
+    hit: &RankedHit,
+    rank: usize,
+    files: &BTreeMap<String, SourceFile>,
+) -> BenchResult<ProvenHit> {
+    use quanta_index_contract::PreviewKind;
+
+    let authority = hit.file_authority.as_ref().ok_or_else(|| {
+        BenchError::Protocol("code search file hit lacks source authority".to_string())
+    })?;
+    let file = files.get(&hit.path).ok_or_else(|| {
+        BenchError::Protocol(format!("file hit outside admitted universe: {}", hit.path))
+    })?;
+    let source = &authority.source;
+    if source.file.source_repo_id != authority.source_repo_id
+        || source.file.repo_relative_path.as_str() != hit.path
+        || authority.repo_id != authority.source_repo_id
+        || authority.revision_id != source.revision_id
+        || authority.preview.source.as_ref() != Some(source)
+    {
+        return Err(BenchError::Protocol(
+            "file candidate source identity differs from SDK row".to_string(),
+        ));
+    }
+    let source_digest = source
+        .source_sha256
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if source_digest != file.sha256 || sha256_hex(&file.bytes) != file.sha256 {
+        return Err(BenchError::Protocol(format!(
+            "file candidate source digest differs from frozen bytes: {}",
+            hit.path
+        )));
+    }
+    let expected_id = expected_file_candidate_id(authority.source_repo_id.as_str(), &hit.path)?;
+    if hit.candidate_id != expected_id {
+        return Err(BenchError::Protocol(format!(
+            "file candidate ID differs from source repo/path identity: {}",
+            hit.path
+        )));
+    }
+    authority
+        .preview
+        .validate_emission(&hit.snippet)
+        .map_err(|reason| BenchError::Protocol(format!("file preview is invalid: {reason}")))?;
+    let (preview_kind, preview_start_byte, preview_end_byte) = match authority.preview.kind {
+        PreviewKind::SourceFile => {
+            if let Some(context) = authority.preview.original_context {
+                let start = usize::try_from(context.start).map_err(|err| {
+                    BenchError::Protocol(format!("file preview start overflow: {err}"))
+                })?;
+                let end = usize::try_from(context.end).map_err(|err| {
+                    BenchError::Protocol(format!("file preview end overflow: {err}"))
+                })?;
+                if file.bytes.get(start..end) != Some(hit.snippet.as_bytes()) {
+                    return Err(BenchError::Protocol(format!(
+                        "file preview differs from frozen source bytes: {}",
+                        hit.path
+                    )));
+                }
+                ("source_file", Some(context.start), Some(context.end))
+            } else if authority.preview.unavailable_reason.is_none() {
+                return Err(BenchError::Protocol(
+                    "available file preview has no source context".to_string(),
+                ));
+            } else {
+                ("source_file_unavailable", None, None)
+            }
+        }
+        PreviewKind::Path => {
+            if (hit.start_line, hit.end_line) != (0, 0) {
+                return Err(BenchError::Protocol(
+                    "path-only file hit claims source line evidence".to_string(),
+                ));
+            }
+            if hit.snippet != hit.path {
+                return Err(BenchError::Protocol(
+                    "path-only file preview differs from the candidate path".to_string(),
+                ));
+            }
+            ("path", None, None)
+        }
+        PreviewKind::SourceChunk | PreviewKind::SyntheticSymbolLabel => {
+            return Err(BenchError::Protocol(
+                "file candidate has non-file preview kind".to_string(),
+            ));
+        }
+    };
+    let end = u64::try_from(file.bytes.len())
+        .map_err(|err| BenchError::Protocol(format!("file size overflow: {err}")))?;
+    let end_u32 = u32::try_from(file.bytes.len())
+        .map_err(|err| BenchError::Protocol(format!("file indexed span overflow: {err}")))?;
+    let rank = u64::try_from(rank)
+        .map_err(|err| BenchError::Protocol(format!("file rank overflow: {err}")))?;
+    let tokens = u64::try_from(count_tokens(&hit.snippet))
+        .map_err(|err| BenchError::Protocol(format!("file preview token count overflow: {err}")))?;
+    let end_line = u32::try_from(file.line_count())
+        .map_err(|err| BenchError::Protocol(format!("file line count overflow: {err}")))?;
+    let start_line = if end_line == 0 { 0 } else { 1 };
+    let candidate = serde_json::json!({
+        "path": hit.path,
+        "start_byte": 0,
+        "end_byte": end,
+        "start_line": start_line,
+        "end_line": end_line,
+        "file_sha256": file.sha256,
+        "block_sha256": file.sha256,
+        "tokens": tokens,
+        "rank": rank,
+        "span_accounting": {
+            "unit_kind": "file",
+            "unit_id": hit.candidate_id,
+            "producer_identity": "code-search-file-v1",
+            "indexed_start_byte": 0,
+            "indexed_end_byte": end,
+            "sdk_start_line": hit.start_line,
+            "sdk_end_line": hit.end_line,
+            "extra_context_bytes": 0,
+            "source_repo_id": authority.source_repo_id.as_str(),
+            "source_revision_id": source.revision_id.as_str(),
+            "preview_kind": preview_kind,
+            "preview_start_byte": preview_start_byte,
+            "preview_end_byte": preview_end_byte,
+            "snippet_sha256": sha256_hex(hit.snippet.as_bytes()),
+        },
+    });
+    Ok(ProvenHit {
+        candidate,
+        scored_span: (hit.path.clone(), 0, end),
+        indexed_span: (0, end_u32),
+        unit_kind: PublishedUnitKind::File,
+    })
+}
+
 fn error_value(code: &str, message: &str) -> Value {
     serde_json::json!({"code": code, "message": message})
 }
@@ -865,7 +1025,8 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
     let rank_unit = match policy {
         QueryInputPolicy::LiteralFile
         | QueryInputPolicy::KeywordFile
-        | QueryInputPolicy::SubstringFile => Some("distinct_file"),
+        | QueryInputPolicy::SubstringFile
+        | QueryInputPolicy::CodeSearchFile => Some("distinct_file"),
         QueryInputPolicy::ExactSymbolName => Some("symbol"),
         QueryInputPolicy::Native
         | QueryInputPolicy::Literal
@@ -880,22 +1041,16 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
     if let Some(ordering) = ordering_contract(policy) {
         let _previous = object.insert("ordering".to_string(), Value::from(ordering));
     }
-    if policy == QueryInputPolicy::KeywordFile {
+    if matches!(
+        policy,
+        QueryInputPolicy::KeywordFile | QueryInputPolicy::CodeSearchFile
+    ) {
         let _previous = object.insert(
             "score_evidence".to_string(),
             Value::from("native_sdk_score_v1"),
         );
     }
     Ok(result)
-}
-
-const fn is_file_projection(policy: QueryInputPolicy) -> bool {
-    matches!(
-        policy,
-        QueryInputPolicy::LiteralFile
-            | QueryInputPolicy::KeywordFile
-            | QueryInputPolicy::SubstringFile
-    )
 }
 
 /// Map one query outcome to a v3 result object. `top_k` is the declared cap;
@@ -909,7 +1064,7 @@ pub fn result_value(
     files: &BTreeMap<String, SourceFile>,
     units: &PublishedUnitRegistry,
 ) -> BenchResult<Value> {
-    if is_file_projection(plan.policy) && route != "lexical" {
+    if ordering_contract(plan.policy).is_some() && route != "lexical" {
         return Err(BenchError::Protocol(format!(
             "{} result requires lexical route, got {route}",
             plan.policy.as_str()
@@ -978,18 +1133,34 @@ pub fn result_value(
                 // Only the bound exact-symbol policy preserves independent
                 // symbol ranks when two definitions share a context line.
                 let mut proven = prove_hit(hit, candidates.len().saturating_add(1), files, units)?;
-                if plan.policy == QueryInputPolicy::KeywordFile {
+                if (plan.policy == QueryInputPolicy::CodeSearchFile)
+                    != (proven.unit_kind == PublishedUnitKind::File)
+                {
+                    return Err(BenchError::Protocol(format!(
+                        "{} result has incompatible file identity: {}",
+                        plan.policy.as_str(),
+                        hit.candidate_id
+                    )));
+                }
+                if matches!(
+                    plan.policy,
+                    QueryInputPolicy::KeywordFile | QueryInputPolicy::CodeSearchFile
+                ) {
                     let score = serde_json::Number::from_f64(hit.score).ok_or_else(|| {
-                        BenchError::Protocol("keyword_file SDK score is not finite".to_string())
+                        BenchError::Protocol(format!(
+                            "{} SDK score is not finite",
+                            plan.policy.as_str()
+                        ))
                     })?;
                     if let Some((previous_score, previous_path)) = &previous_scored_file {
                         if hit.score > *previous_score
                             || (hit.score == *previous_score
                                 && hit.path.as_bytes() < previous_path.as_bytes())
                         {
-                            return Err(BenchError::Protocol(
-                                "keyword_file SDK score/path order is invalid".to_string(),
-                            ));
+                            return Err(BenchError::Protocol(format!(
+                                "{} SDK score/path order is invalid",
+                                plan.policy.as_str()
+                            )));
                         }
                     }
                     previous_scored_file = Some((hit.score, hit.path.clone()));
@@ -1005,7 +1176,8 @@ pub fn result_value(
                         "symbol rank requires published symbol units".to_string(),
                     ));
                 }
-                if is_file_projection(plan.policy) && !seen_files.insert(hit.path.as_str()) {
+                if ordering_contract(plan.policy).is_some() && !seen_files.insert(hit.path.as_str())
+                {
                     return Err(BenchError::Protocol(format!(
                         "{} returned duplicate file path: {}",
                         plan.policy.as_str(),
@@ -1079,11 +1251,10 @@ pub struct RunnerRecordInput<'a> {
     pub provenance: &'a BTreeMap<String, RouteProvenance>,
     pub captures: &'a BTreeMap<String, CaptureProvenance>,
     pub outcomes: &'a BTreeMap<(String, String), QueryOutcome>,
+    pub completed_results: &'a BTreeMap<(String, String), Value>,
     pub plans: &'a BTreeMap<String, QueryPlan>,
     pub nl_config: &'a NlPlanConfig,
     pub top_k: u32,
-    pub files: &'a BTreeMap<String, SourceFile>,
-    pub units: &'a PublishedUnitRegistry,
 }
 
 pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
@@ -1093,11 +1264,10 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
         provenance,
         captures,
         outcomes,
+        completed_results,
         plans,
         nl_config,
         top_k,
-        files,
-        units,
     } = *input;
     if top_k != pack.contract_top_k {
         return Err(BenchError::Protocol(format!(
@@ -1216,16 +1386,39 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
                 .ok_or_else(|| {
                     BenchError::Protocol(format!("missing outcome for ({}, {route})", task.task_id))
                 })?;
-            results.push(result_value(
-                &task.task_id,
-                route,
-                outcome,
-                plan,
-                top_k,
-                files,
-                units,
-            )?);
+            let row = completed_results
+                .get(&(task.task_id.clone(), (*route).clone()))
+                .ok_or_else(|| {
+                    BenchError::Protocol(format!(
+                        "missing completed response for ({}, {route})",
+                        task.task_id
+                    ))
+                })?;
+            let classification = outcome
+                .classification()
+                .map_err(|message| BenchError::Protocol(message.to_string()))?;
+            if row["task_id"] != task.task_id
+                || row["route"] != **route
+                || row["status"] != classification.status
+                || row["timings"] != timings_value(outcome.latency())?
+                || row["query_identity"]
+                    != serde_json::json!({
+                        "original_query_sha256": plan.original_query_sha256,
+                        "effective_lexical_request_sha256": plan.effective_lexical_request_sha256,
+                        "semantic_text_sha256": plan.semantic_text_sha256,
+                    })
+            {
+                return Err(BenchError::Protocol(
+                    "completed response binding differs".to_string(),
+                ));
+            }
+            results.push(row.clone());
         }
+    }
+    if completed_results.len() != results.len() {
+        return Err(BenchError::Protocol(
+            "completed response inventory differs".to_string(),
+        ));
     }
     Ok(serde_json::json!({
         "schema_version": RUNNER_SCHEMA_VERSION,
@@ -1257,8 +1450,126 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
 mod tests {
     use super::*;
     use crate::chunking::Chunk;
-    use crate::sdk::RouteExplanation;
-    use quanta_index_contract::QueryResultWindowV2;
+    use crate::sdk::{FileHitAuthority, RouteExplanation};
+    use quanta_index_contract::{
+        ManifestGeneration, PreviewByteRange, PreviewKind, PreviewMetadata, QueryResultWindowV2,
+        RepoId, RepoRelativePath, RevisionId, SourceFileKey, SourceFileRevision,
+    };
+    use sha2::Digest as _;
+
+    fn file_hit_fixture(
+        path: &str,
+        text: &str,
+        path_only: bool,
+    ) -> (RankedHit, BTreeMap<String, SourceFile>) {
+        let repo = RepoId::new("bench-repo").expect("repo ID");
+        let revision = RevisionId::new("bench-revision").expect("revision ID");
+        let source = SourceFileRevision {
+            file: SourceFileKey {
+                source_repo_id: repo.clone(),
+                repo_relative_path: RepoRelativePath::new(path.to_string()),
+            },
+            revision_id: revision.clone(),
+            source_sha256: sha2::Sha256::digest(text.as_bytes()).into(),
+        };
+        let preview = if path_only {
+            PreviewMetadata {
+                kind: PreviewKind::Path,
+                source: Some(source.clone()),
+                chunk_start_byte: None,
+                original_focus: None,
+                original_context: None,
+                normalized_focus: None,
+                normalization_equivalent: false,
+                unavailable_reason: None,
+            }
+        } else {
+            let end = u64::try_from(text.len()).expect("fixture length");
+            PreviewMetadata {
+                kind: PreviewKind::SourceFile,
+                source: Some(source.clone()),
+                chunk_start_byte: None,
+                original_focus: Some(PreviewByteRange { start: 0, end }),
+                original_context: Some(PreviewByteRange { start: 0, end }),
+                normalized_focus: Some(PreviewByteRange { start: 0, end }),
+                normalization_equivalent: true,
+                unavailable_reason: None,
+            }
+        };
+        let (line_starts, exotic) = crate::corpus::split_line_starts(text);
+        assert!(!exotic);
+        let hit = RankedHit {
+            candidate_id: expected_file_candidate_id(repo.as_str(), path).expect("file ID"),
+            path: path.to_string(),
+            start_line: if path_only { 0 } else { 1 },
+            end_line: if path_only {
+                0
+            } else {
+                u32::try_from(line_starts.len()).expect("lines")
+            },
+            snippet: if path_only {
+                path.to_string()
+            } else {
+                text.to_string()
+            },
+            score: 2.0,
+            file_authority: Some(FileHitAuthority {
+                source_repo_id: repo.clone(),
+                source,
+                preview,
+                repo_id: repo,
+                revision_id: revision,
+                generation: ManifestGeneration::new(1),
+            }),
+            contributions: Vec::new(),
+        };
+        let file = SourceFile {
+            path: path.to_string(),
+            bytes: text.as_bytes().to_vec(),
+            text: text.to_string(),
+            line_starts,
+            sha256: sha256_hex(text.as_bytes()),
+        };
+        (hit, BTreeMap::from([(path.to_string(), file)]))
+    }
+
+    #[test]
+    fn file_hit_proof_accepts_content_and_empty_path_file() {
+        let (hit, files) = file_hit_fixture("src/main.go", "package main\n", false);
+        let proven = prove_file_hit(&hit, 1, &files).expect("source-bound file hit");
+        assert_eq!(proven.unit_kind, PublishedUnitKind::File);
+        assert_eq!(proven.candidate["start_byte"], 0);
+        assert_eq!(proven.candidate["end_byte"], 13);
+        assert_eq!(proven.candidate["span_accounting"]["unit_kind"], "file");
+
+        let (empty, files) = file_hit_fixture("empty.go", "", true);
+        let proven = prove_file_hit(&empty, 1, &files).expect("empty path-only file hit");
+        assert_eq!(proven.candidate["start_line"], 0);
+        assert_eq!(proven.candidate["end_byte"], 0);
+        assert_eq!(proven.candidate["tokens"], 3);
+    }
+
+    #[test]
+    fn file_hit_proof_rejects_identity_preview_and_source_drift() {
+        let (hit, files) = file_hit_fixture("src/main.go", "package main\n", false);
+        let mut forged = hit.clone();
+        forged.candidate_id = "file:invalid".to_string();
+        assert!(prove_file_hit(&forged, 1, &files).is_err());
+        let (mut empty, empty_files) = file_hit_fixture("empty.go", "", true);
+        empty.snippet = "forged.go".to_string();
+        assert!(prove_file_hit(&empty, 1, &empty_files).is_err());
+        let mut forged = hit.clone();
+        forged.snippet = "package fake\n".to_string();
+        assert!(prove_file_hit(&forged, 1, &files).is_err());
+        let mut forged = hit;
+        forged
+            .file_authority
+            .as_mut()
+            .expect("authority")
+            .source
+            .source_sha256 = [0; 32];
+        assert!(prove_file_hit(&forged, 1, &files).is_err());
+    }
 
     #[test]
     fn gold_bearing_pack_keys_are_rejected() {
@@ -1356,6 +1667,7 @@ mod tests {
             end_line: 0,
             snippet: chunk_text.to_string(),
             score: 1.0,
+            file_authority: None,
             contributions: Vec::new(),
         };
         let candidate = prove_hit(&hit, 1, &files, &units)
@@ -1433,6 +1745,7 @@ mod tests {
                 end_line: symbol.definition_span.line_end,
                 snippet: symbol.local_name.to_string(),
                 score: 1.0,
+                file_authority: None,
                 contributions: Vec::new(),
             })
             .collect();
@@ -1537,6 +1850,22 @@ mod tests {
         load_query_pack(&path)
     }
 
+    fn completed_results_fixture(
+        outcomes: &BTreeMap<(String, String), QueryOutcome>,
+        plans: &BTreeMap<String, QueryPlan>,
+        files: &BTreeMap<String, SourceFile>,
+        units: &PublishedUnitRegistry,
+    ) -> BTreeMap<(String, String), Value> {
+        outcomes
+            .iter()
+            .map(|((task, route), outcome)| {
+                let value = result_value(task, route, outcome, &plans[task], 10, files, units)
+                    .expect("fixture normalized response");
+                ((task.clone(), route.clone()), value)
+            })
+            .collect()
+    }
+
     fn native_plans_fixture(pack: &QueryPack) -> BTreeMap<String, QueryPlan> {
         pack.tasks
             .iter()
@@ -1621,6 +1950,7 @@ mod tests {
             end_line: 1,
             snippet: text.to_string(),
             score: 1.0,
+            file_authority: None,
             contributions: Vec::new(),
         };
         let files = BTreeMap::from([("a.txt".to_string(), file)]);
@@ -1943,6 +2273,7 @@ mod tests {
             end_line: 1,
             snippet: text.to_string(),
             score: 1.0,
+            file_authority: None,
             contributions: Vec::new(),
         };
         let outcome = QueryOutcome::ReturnedWindow {
@@ -1961,17 +2292,17 @@ mod tests {
         let captures = BTreeMap::from([("cap-1".to_string(), v3_capture_fixture())]);
         let plans = native_plans_fixture(&pack);
         let nl_config = NlPlanConfig::default();
+        let completed_results = completed_results_fixture(&outcomes, &plans, &files, &units);
         let record = runner_record(&RunnerRecordInput {
             pack: &pack,
             identity: &identity,
             provenance: &provenance,
             captures: &captures,
             outcomes: &outcomes,
+            completed_results: &completed_results,
             plans: &plans,
             nl_config: &nl_config,
             top_k: 10,
-            files: &files,
-            units: &units,
         })
         .expect("v3 record assembles");
         assert_eq!(
@@ -2028,11 +2359,10 @@ mod tests {
             provenance: &provenance,
             captures: &captures,
             outcomes: &outcomes,
+            completed_results: &completed_results,
             plans: &tampered_plans,
             nl_config: &nl_config,
             top_k: 10,
-            files: &files,
-            units: &units,
         });
         assert!(
             tampered.is_err_and(|error| error.to_string().contains("canonical request identity"))
@@ -2076,6 +2406,7 @@ mod tests {
             end_line: 1,
             snippet: "fn ok() {}".to_string(),
             score: 1.0,
+            file_authority: None,
             contributions: Vec::new(),
         };
         let candidate = prove_hit(&hit, 1, &files, &units)
@@ -2140,6 +2471,7 @@ mod tests {
                 end_line: line,
                 snippet: id.to_string(),
                 score: 1.0,
+                file_authority: None,
                 contributions: Vec::new(),
             })
             .collect();
@@ -2265,11 +2597,10 @@ mod tests {
                 provenance,
                 captures,
                 outcomes: &outcomes,
+                completed_results: &completed_results_fixture(&outcomes, &plans, &files, &units),
                 plans: &plans,
                 nl_config: &nl_config,
                 top_k,
-                files: &files,
-                units: &units,
             })
         };
         let good_provenance = BTreeMap::from([(

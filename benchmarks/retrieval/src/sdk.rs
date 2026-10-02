@@ -16,7 +16,7 @@ use quanta_index_contract::ipc::GenerationStatusReport;
 use quanta_index_contract::{
     GenerationPin, HybridCandidateV1, LexicalCandidate, ManifestGeneration, QueryResultWindowV2,
     RepoId, RevisionId, SearchCorpusActiveHeadV1, SearchCorpusIngestObservation, SearchExplanation,
-    SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck,
+    SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck, TextRankUnit,
 };
 use quanta_index_sdk::{BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
@@ -489,6 +489,23 @@ mod empty_status_tests {
     use super::*;
 
     #[test]
+    fn lexical_rank_unit_tracks_the_bound_request_policy() {
+        use crate::query_plan::QueryInputPolicy as Policy;
+
+        for policy in [
+            Policy::LiteralFile,
+            Policy::KeywordFile,
+            Policy::SubstringFile,
+            Policy::CodeSearchFile,
+        ] {
+            assert_eq!(expected_lexical_rank_unit(policy), TextRankUnit::File);
+        }
+        for policy in [Policy::Native, Policy::Literal, Policy::NaturalLanguage] {
+            assert_eq!(expected_lexical_rank_unit(policy), TextRankUnit::Chunk);
+        }
+    }
+
+    #[test]
     fn empty_status_requires_correct_identity_and_no_active_tracks() {
         let repo = RepoId::new("bench-repo").expect("repo ID");
         let revision = RevisionId::new("bench-revision").expect("revision ID");
@@ -925,9 +942,22 @@ pub struct RankedHit {
     pub end_line: u32,
     pub snippet: String,
     pub score: f64,
+    /// Product file candidate authority retained for source-byte proof. A
+    /// chunk/symbol hit has no file authority here.
+    pub file_authority: Option<FileHitAuthority>,
     /// Hybrid fusion provenance. Empty for non-hybrid routes; not part of the
     /// frozen v3 score record, but retained for the bound diagnostic artifact.
     pub contributions: Vec<RankedLaneContribution>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileHitAuthority {
+    pub source_repo_id: quanta_index_contract::RepoId,
+    pub source: quanta_index_contract::SourceFileRevision,
+    pub preview: quanta_index_contract::PreviewMetadata,
+    pub repo_id: quanta_index_contract::RepoId,
+    pub revision_id: quanta_index_contract::RevisionId,
+    pub generation: quanta_index_contract::ManifestGeneration,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1111,6 +1141,19 @@ impl QueryOutcome {
 }
 
 fn lexical_hit(candidate: &LexicalCandidate) -> RankedHit {
+    let file_authority = match (&candidate.source, &candidate.preview) {
+        (Some(source), Some(preview)) if candidate.candidate_id.starts_with("file:") => {
+            Some(FileHitAuthority {
+                source_repo_id: candidate.source_repo_id.clone(),
+                source: source.clone(),
+                preview: preview.clone(),
+                repo_id: candidate.repo_id.clone(),
+                revision_id: candidate.revision_id.clone(),
+                generation: candidate.manifest_generation,
+            })
+        }
+        _ => None,
+    };
     RankedHit {
         candidate_id: candidate.candidate_id.clone(),
         path: candidate.repo_relative_path.as_str().to_string(),
@@ -1118,6 +1161,7 @@ fn lexical_hit(candidate: &LexicalCandidate) -> RankedHit {
         end_line: candidate.end_line,
         snippet: candidate.snippet.clone(),
         score: f64::from(candidate.score),
+        file_authority,
         contributions: Vec::new(),
     }
 }
@@ -1130,6 +1174,7 @@ fn hybrid_hit(candidate: &HybridCandidateV1) -> RankedHit {
         end_line: candidate.candidate.end_line,
         snippet: candidate.candidate.snippet.clone(),
         score: candidate.fused_score,
+        file_authority: None,
         contributions: candidate
             .contributions
             .iter()
@@ -1153,6 +1198,7 @@ fn symbol_hit(candidate: &quanta_index_contract::SymbolCandidate) -> RankedHit {
         end_line: candidate.end_line,
         snippet: candidate.snippet.clone(),
         score: f64::from(candidate.score),
+        file_authority: None,
         contributions: Vec::new(),
     }
 }
@@ -1240,6 +1286,23 @@ pub struct RouteQuery<'a> {
 }
 
 pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
+    query_route_with_policy(query, crate::query_plan::QueryInputPolicy::Native)
+}
+
+fn expected_lexical_rank_unit(policy: crate::query_plan::QueryInputPolicy) -> TextRankUnit {
+    if crate::query_plan::ordering_contract(policy).is_some() {
+        TextRankUnit::File
+    } else {
+        TextRankUnit::Chunk
+    }
+}
+
+/// Execute a planned benchmark request through the exact product syntax.
+/// Existing direct route probes retain Native behavior through `query_route`.
+pub fn query_route_with_policy(
+    query: &RouteQuery<'_>,
+    policy: crate::query_plan::QueryInputPolicy,
+) -> QueryOutcome {
     let expected_pin = GenerationPin::new(
         query.repo_id.clone(),
         query.revision_id.clone(),
@@ -1248,16 +1311,48 @@ pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
     let start = Instant::now();
     match query.route {
         "lexical" => {
-            match query
-                .client
-                .lexical()
-                .query()
-                .native(query.lexical_request)
+            let builder = query.client.lexical().query();
+            let builder = if policy == crate::query_plan::QueryInputPolicy::CodeSearchFile {
+                builder.code_search(query.lexical_request)
+            } else {
+                builder.native(query.lexical_request)
+            };
+            match builder
                 .active(query.repo_id.clone(), query.revision_id.clone())
                 .top_k(query.top_k)
                 .execute()
             {
                 Ok(response) => {
+                    let expected_unit = expected_lexical_rank_unit(policy);
+                    if response.rank_unit != expected_unit {
+                        return QueryOutcome::SdkFailure {
+                            status: "error",
+                            code: "lexical_rank_unit_mismatch".to_string(),
+                            message: format!(
+                                "lexical response rank unit {} differs from requested {}",
+                                response.rank_unit.as_str(),
+                                expected_unit.as_str(),
+                            ),
+                            latency: start.elapsed(),
+                        };
+                    }
+                    if policy == crate::query_plan::QueryInputPolicy::CodeSearchFile
+                        && response.results.iter().any(|candidate| {
+                            candidate.repo_id != *query.repo_id
+                                || candidate.revision_id != *query.revision_id
+                                || candidate.manifest_generation != query.generation
+                                || candidate.source_repo_id != *query.repo_id
+                        })
+                    {
+                        return QueryOutcome::SdkFailure {
+                            status: "error",
+                            code: "file_candidate_generation_mismatch".to_string(),
+                            message:
+                                "code search file candidate differs from pinned source/generation"
+                                    .to_string(),
+                            latency: start.elapsed(),
+                        };
+                    }
                     let hits: Vec<RankedHit> = response.results.iter().map(lexical_hit).collect();
                     let explanation = route_explanation(&response.explanation);
                     observed_response(

@@ -21,7 +21,7 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
     SemanticQueryRequest, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
-    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax, TextRankUnit,
     ipc::{
         GenerationStatusReport, MetricHistogramV1, MetricsSnapshotV1, QuarantineDiscardAck,
         QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
@@ -513,9 +513,9 @@ impl KeysetPageQueryArgs {
     }
 }
 
-/// Parse `<command> --syntax --query-text --top-k [--cursor-json PATH|-]`
-/// with the pinned-generation flags: the shape of the lexical, symbol,
-/// runtime-metadata, history and structural routes.
+/// Parse `<command> [--syntax] --query-text --top-k [--cursor-json PATH|-]`
+/// with the pinned-generation flags. Only `lexical` defaults to code search;
+/// the other routes retain an explicit syntax requirement.
 fn parse_keyset_page_query(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,
@@ -563,7 +563,11 @@ fn parse_keyset_page_query_with(
         },
     )?;
     let generation = generation_args.into_generation_pin()?;
-    let syntax = syntax.ok_or_else(|| CliError::usage("missing --syntax".to_string()))?;
+    let syntax = match (command, syntax) {
+        ("lexical", None) => TextQuerySyntax::CodeSearch,
+        (_, Some(syntax)) => syntax,
+        (_, None) => return Err(CliError::usage("missing --syntax".to_string())),
+    };
     let query_text =
         query_text.ok_or_else(|| CliError::usage("missing --query-text".to_string()))?;
     let top_k = top_k.ok_or_else(|| CliError::usage("missing --top-k".to_string()))?;
@@ -1433,7 +1437,7 @@ fn parse_u64_flag(rest: &mut VecDeque<String>, flag: &str) -> CliResult<u64> {
 fn parse_syntax(value: &str) -> CliResult<TextQuerySyntax> {
     TextQuerySyntax::from_str_value(value).ok_or_else(|| {
         CliError::usage(format!(
-            "unsupported syntax `{value}`; expected `native` or `sourcegraph`"
+            "unsupported syntax `{value}`; expected `code_search`, `native` or `sourcegraph`"
         ))
     })
 }
@@ -2193,6 +2197,7 @@ fn render_pretty(
             &TextQueryResponse {
                 explanation: quanta_index_contract::SearchExplanation::empty(),
                 generation: payload.generation.clone(),
+                rank_unit: TextRankUnit::Chunk,
                 results: payload.results.clone(),
                 window: payload.window.clone(),
                 file_owner_rows: None,
@@ -2562,6 +2567,11 @@ fn render_lexical_payload(
 ) -> CliResult<()> {
     fmt_ok(writeln!(rendered, "kind: {kind}"))?;
     render_generation(&payload.generation, rendered)?;
+    fmt_ok(writeln!(
+        rendered,
+        "rank_unit: {}",
+        payload.rank_unit.as_str()
+    ))?;
     fmt_ok(writeln!(rendered, "results: {}", payload.results.len()))?;
     for (index, candidate) in payload.results.iter().enumerate() {
         let display_index = index
@@ -2897,7 +2907,7 @@ Global flags:
   --output pretty|json|prometheus   (prometheus: `metrics` only)
 
 Read-only subcommands:
-  lexical          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
+  lexical          --repo-id ID --revision-id REV --manifest-generation N [--syntax code_search|native|sourcegraph] --query-text TEXT --top-k N [--cursor-json PATH|-]
   symbol           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
   semantic         --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
   hybrid           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --semantic-query-text TEXT --top-k N
@@ -3283,6 +3293,44 @@ mod tests {
     }
 
     #[test]
+    fn lexical_defaults_to_code_search_without_changing_symbol_syntax() {
+        let parsed = ParsedCommand::parse([
+            "lexical",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--query-text",
+            "writeContentType",
+            "--top-k",
+            "10",
+        ]);
+        let parsed = parsed.expect("lexical default request");
+        let CliRequest::Lexical(request) = parsed.request else {
+            panic!("expected lexical request");
+        };
+        assert_eq!(request.syntax, TextQuerySyntax::CodeSearch);
+        assert_eq!(request.query_text, "writeContentType");
+
+        let refused = ParsedCommand::parse([
+            "symbol",
+            "--repo-id",
+            "repo",
+            "--revision-id",
+            "rev",
+            "--manifest-generation",
+            "7",
+            "--query-text",
+            "writeContentType",
+            "--top-k",
+            "10",
+        ]);
+        assert!(refused.is_err_and(|error| error.message.contains("missing --syntax")));
+    }
+
+    #[test]
     fn parses_lexical_sourcegraph_query_request() {
         let parsed = ParsedCommand::parse([
             "lexical",
@@ -3590,6 +3638,7 @@ mod tests {
             request_id: 1,
             payload: SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
                 explanation: quanta_index_contract::SearchExplanation::empty(),
+                rank_unit: TextRankUnit::Chunk,
                 generation: GenerationPin::new(
                     RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
                     RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
@@ -3637,6 +3686,7 @@ mod tests {
         assert!(text.is_ok());
         if let Ok(text) = text {
             assert!(text.contains("kind: lexical"));
+            assert!(text.contains("rank_unit: chunk"));
             assert!(text.contains("results: 1"));
             assert!(text.contains("file_owner_rows: 1"));
             assert!(text.contains("owners=@alice,@acme/platform"));

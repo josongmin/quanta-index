@@ -509,6 +509,148 @@ def safe_path(source: SourceSnapshot, raw: Any) -> Path:
     return absolute
 
 
+def _file_candidate_block(
+    source: SourceSnapshot,
+    value: Any,
+    where: str,
+    universe: set[str] | None,
+    allow_score: bool,
+) -> dict[str, Any]:
+    """Replay the file unit from frozen bytes, including an empty path hit."""
+    required = [
+        "path",
+        "start_line",
+        "end_line",
+        "start_byte",
+        "end_byte",
+        "file_sha256",
+        "block_sha256",
+        "tokens",
+        "rank",
+        "span_accounting",
+    ]
+    item = object_keys_optional(value, required, ["score"] if allow_score else [], where)
+    path = string(item["path"], where + ".path")
+    raw, lines, file_digest = source.file(path)
+    if universe is not None:
+        require(path in universe, where + f" file excluded from file universe: {path}")
+    require(
+        sha(item["file_sha256"], where + ".file_sha256") == file_digest,
+        where + " file hash mismatch",
+    )
+    require(
+        sha(item["block_sha256"], where + ".block_sha256") == file_digest,
+        where + " full-file block hash mismatch",
+    )
+    require(
+        nonnegative_int(item["start_byte"], where + ".start_byte") == 0,
+        where + " file unit must begin at byte zero",
+    )
+    require(
+        nonnegative_int(item["end_byte"], where + ".end_byte") == len(raw),
+        where + " file unit must cover entire source",
+    )
+    expected_lines = (0, 0) if not lines else (1, len(lines))
+    require(
+        (item["start_line"], item["end_line"]) == expected_lines,
+        where + " file line projection differs from source",
+    )
+    positive_int(item["rank"], where + ".rank")
+    if "score" in item:
+        require(is_finite_json_number(item["score"]), where + ".score must be finite")
+
+    accounting = object_keys(
+        item["span_accounting"],
+        [
+            "unit_kind",
+            "unit_id",
+            "producer_identity",
+            "indexed_start_byte",
+            "indexed_end_byte",
+            "sdk_start_line",
+            "sdk_end_line",
+            "extra_context_bytes",
+            "source_repo_id",
+            "source_revision_id",
+            "preview_kind",
+            "preview_start_byte",
+            "preview_end_byte",
+            "snippet_sha256",
+        ],
+        where + ".span_accounting",
+    )
+    require(accounting["unit_kind"] == "file", where + " has wrong file unit kind")
+    require(
+        accounting["producer_identity"] == "code-search-file-v1",
+        where + " has wrong file producer identity",
+    )
+    repo_id = string(accounting["source_repo_id"], where + ".source_repo_id")
+    string(accounting["source_revision_id"], where + ".source_revision_id")
+    repo = repo_id.encode("utf-8")
+    path_bytes = path.encode("utf-8")
+    framed = (
+        b"quanta-index:code-search-file:v1\x00"
+        + len(repo).to_bytes(8, "little")
+        + repo
+        + len(path_bytes).to_bytes(8, "little")
+        + path_bytes
+    )
+    require(
+        accounting["unit_id"] == "file:" + digest(framed), where + " file identity digest mismatch"
+    )
+    require(
+        nonnegative_int(accounting["indexed_start_byte"], where + ".indexed_start_byte") == 0
+        and nonnegative_int(accounting["indexed_end_byte"], where + ".indexed_end_byte")
+        == len(raw),
+        where + " indexed file span differs from source",
+    )
+    require(
+        nonnegative_int(accounting["extra_context_bytes"], where + ".extra_context_bytes") == 0,
+        where + " file context expansion must be zero",
+    )
+    kind = accounting["preview_kind"]
+    if kind == "source_file":
+        preview_start = nonnegative_int(
+            accounting["preview_start_byte"], where + ".preview_start_byte"
+        )
+        preview_end = nonnegative_int(accounting["preview_end_byte"], where + ".preview_end_byte")
+        require(preview_start < preview_end <= len(raw), where + " source preview span is invalid")
+        snippet = raw[preview_start:preview_end]
+    elif kind == "path":
+        require(
+            accounting["preview_start_byte"] is None and accounting["preview_end_byte"] is None,
+            where + " path preview cannot claim source bytes",
+        )
+        snippet = path_bytes
+    elif kind == "source_file_unavailable":
+        require(
+            accounting["preview_start_byte"] is None and accounting["preview_end_byte"] is None,
+            where + " unavailable preview cannot claim source bytes",
+        )
+        snippet = b""
+    else:
+        raise EvidenceError(where + " has unknown file preview kind")
+    require(
+        sha(accounting["snippet_sha256"], where + ".snippet_sha256") == digest(snippet),
+        where + " snippet differs from frozen source/path",
+    )
+    try:
+        preview_text = snippet.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise EvidenceError(where + " preview cuts a UTF-8 boundary") from exc
+    require(
+        nonnegative_int(item["tokens"], where + ".tokens") == len(TOKEN_RE.findall(preview_text)),
+        where + " preview token count mismatch",
+    )
+    sdk_start = nonnegative_int(accounting["sdk_start_line"], where + ".sdk_start_line")
+    sdk_end = nonnegative_int(accounting["sdk_end_line"], where + ".sdk_end_line")
+    require(
+        (sdk_start == sdk_end == 0) or (1 <= sdk_start <= sdk_end <= len(lines)),
+        where + " SDK file line span is outside source",
+    )
+    return item
+
+
 def block(
     source: SourceSnapshot,
     value: Any,
@@ -520,6 +662,14 @@ def block(
     allow_span_accounting: bool = False,
     allow_score: bool = False,
 ) -> dict[str, Any]:
+    if (
+        candidate
+        and allow_span_accounting
+        and isinstance(value, dict)
+        and isinstance(value.get("span_accounting"), dict)
+        and value["span_accounting"].get("unit_kind") == "file"
+    ):
+        return _file_candidate_block(source, value, where, universe, allow_score)
     required = [
         "path",
         "start_line",
@@ -888,6 +1038,26 @@ def validate_suite(
         for raw in tasks
         if isinstance(raw, dict) and "source_oracle" in raw and isinstance(raw.get("query"), str)
     }
+    declaration_exclusions: dict[tuple[str, str], set[str]] = {}
+    for raw in tasks:
+        if not isinstance(raw, dict) or not isinstance(raw.get("source_oracle"), dict):
+            continue
+        annotation = raw["source_oracle"]
+        if "declaration_exclusions" not in annotation:
+            continue
+        paths = annotation["declaration_exclusions"]
+        require(
+            annotation.get("contract") in source_oracle.DECLARATION_NAME_CONTRACTS
+            and isinstance(raw.get("query"), str)
+            and isinstance(paths, list)
+            and bool(paths)
+            and all(isinstance(path, str) and path in universe for path in paths)
+            and paths == sorted(set(paths)),
+            "invalid declaration exclusions",
+        )
+        key = (annotation["contract"], raw["query"])
+        require(key not in declaration_exclusions, "duplicate declaration exclusion query")
+        declaration_exclusions[key] = set(paths)
     seen_ids = set()
     seen_queries = set()
     eval_count = 0
@@ -947,7 +1117,12 @@ def validate_suite(
                 "invalid query_intent for " + task_id,
             )
         if "source_oracle" in task:
-            oracle = object_keys(task["source_oracle"], ["contract", "unit"], "source_oracle")
+            oracle = object_keys_optional(
+                task["source_oracle"],
+                ["contract", "unit"],
+                ["declaration_exclusions"],
+                "source_oracle",
+            )
             require(
                 task.get("query_intent") == "bare_symbol",
                 f"source oracle requires bare_symbol intent: {task_id}",
@@ -999,6 +1174,7 @@ def validate_suite(
                     oracle_index = source_oracle.SourceOracleIndex(
                         {path: (source.file(path)[0], entries[path]) for path in sorted(universe)},
                         oracle_names,
+                        declaration_exclusions,
                     )
                 expected = oracle_index.expected_rows(
                     task["source_oracle"]["contract"], query, task["source_oracle"]["unit"]
@@ -1035,8 +1211,8 @@ def validate_suite(
                 f"gold path contradicts source oracle: {task_id}",
             )
             oracle_spans = (
-                oracle_index.go_name_spans(query, task["source_oracle"]["contract"])
-                if task["source_oracle"]["contract"] in source_oracle.GO_NAME_CONTRACTS
+                oracle_index.declaration_name_spans(task["source_oracle"]["contract"], query)
+                if task["source_oracle"]["contract"] in source_oracle.DECLARATION_NAME_CONTRACTS
                 else []
             )
         seen_labels = set()
@@ -1390,7 +1566,12 @@ def _validate_run(
     file_depth_by_capture: dict[str, int] = {}
     for raw in results:
         result = (
-            object_keys_optional(raw, result_keys, ["rank_unit", "ordering", "score_evidence", "file_collection"], "result")
+            object_keys_optional(
+                raw,
+                result_keys,
+                ["rank_unit", "ordering", "score_evidence", "file_collection"],
+                "result",
+            )
             if version == RUNNER_SCHEMA_VERSION
             else object_keys(raw, result_keys, "result")
         )
@@ -1416,18 +1597,30 @@ def _validate_run(
             )
         ordering = result.get("ordering")
         score_evidence = result.get("score_evidence")
+        if profile_policy == "code_search_file":
+            require(
+                span_protocol == 1,
+                f"code_search_file requires source-bound file span evidence: {key}",
+            )
+            require(
+                score_evidence == "native_sdk_score_v1",
+                f"code_search_file requires native SDK score evidence: {key}",
+            )
         if score_evidence is not None:
             require(
-                (profile_policy == "keyword_file" and score_evidence == "native_sdk_score_v1")
+                (
+                    profile_policy in ("keyword_file", "code_search_file")
+                    and score_evidence == "native_sdk_score_v1"
+                )
                 or (semble_file and score_evidence == "semble_bm25_score_v1"),
-                f"score evidence requires keyword_file native SDK scores or Semble lexical-file BM25 scores: {key}",
+                f"score evidence requires a scored Quanta file policy with native SDK scores or Semble lexical-file BM25 scores: {key}",
             )
-        if profile_policy == "keyword_file" or semble_file:
+        if profile_policy in ("keyword_file", "code_search_file") or semble_file:
             if key[1] in score_evidence_by_route:
                 require(
                     score_evidence_by_route[key[1]] == score_evidence,
-                    f"keyword_file route mixes score evidence states: {key[1]}"
-                    if profile_policy == "keyword_file"
+                    f"{profile_policy} route mixes score evidence states: {key[1]}"
+                    if profile_policy in ("keyword_file", "code_search_file")
                     else f"Semble lexical-file route mixes score evidence states: {key[1]}",
                 )
             else:
@@ -1458,7 +1651,8 @@ def _validate_run(
                 )
         elif semble_file:
             require(
-                rank_unit == "distinct_file" and ordering == "score_desc_native_tiebreak"
+                rank_unit == "distinct_file"
+                and ordering == "score_desc_native_tiebreak"
                 and score_evidence == "semble_bm25_score_v1",
                 f"Semble lexical-file requires a scored distinct-file result: {key}",
             )
@@ -1472,7 +1666,10 @@ def _validate_run(
         if profile_policy not in query_plan_contract.FILE_PROJECTION_ORDERING and not semble_file:
             require(ordering is None, f"ordering applies only to file projections: {key}")
         if not semble_file:
-            require("file_collection" not in result, f"file collection requires Semble lexical-file: {key}")
+            require(
+                "file_collection" not in result,
+                f"file collection requires Semble lexical-file: {key}",
+            )
         if version in (4, 5):
             pack_task = pack_queries.get(key[0])
             require(
@@ -1580,9 +1777,12 @@ def _validate_run(
                 matched = collection["matched_chunks"]
                 matching_files = collection["matching_files"]
                 require(
-                    type(indexed) is int and indexed > 0
-                    and type(matched) is int and 0 <= matched <= indexed
-                    and type(matching_files) is int and 0 <= matching_files <= matched,
+                    type(indexed) is int
+                    and indexed > 0
+                    and type(matched) is int
+                    and 0 <= matched <= indexed
+                    and type(matching_files) is int
+                    and 0 <= matching_files <= matched,
                     f"Semble file collection counts are invalid: {key}",
                 )
                 require(
@@ -1638,15 +1838,22 @@ def _validate_run(
                     previous_score, previous_path = previous_scored_file
                     require(
                         score < previous_score
-                        or (score == previous_score and (semble_file or path.encode() >= previous_path.encode())),
-                        f"keyword_file native SDK score/path order is invalid: {key}"
-                        if profile_policy == "keyword_file"
+                        or (
+                            score == previous_score
+                            and (semble_file or path.encode() >= previous_path.encode())
+                        ),
+                        f"{profile_policy} native SDK score/path order is invalid: {key}"
+                        if profile_policy in ("keyword_file", "code_search_file")
                         else f"Semble lexical-file native score order is invalid: {key}",
                     )
                 previous_scored_file = (score, path)
             if "span_accounting" in candidate:
                 require(span_protocol == 1, f"span evidence lacks record protocol: {key}")
                 accounting = candidate["span_accounting"]
+                require(
+                    (profile_policy == "code_search_file") == (accounting["unit_kind"] == "file"),
+                    f"code_search_file requires file identity and other profiles cannot claim it: {key}",
+                )
                 if rank_unit == "symbol":
                     require(
                         accounting["unit_kind"] == "symbol",
@@ -1655,6 +1862,8 @@ def _validate_run(
                 expected_producer = (
                     "source-bound-symbols-v2"
                     if accounting["unit_kind"] == "symbol"
+                    else "code-search-file-v1"
+                    if accounting["unit_kind"] == "file"
                     else capture["chunk_strategy"]
                 )
                 require(
@@ -1859,6 +2068,12 @@ def indexed_span_diagnostics(
         if run["captures"][capture_id]["system"] != "quanta":
             routes[route] = {"status": "not_applicable", "reason": "no_published_unit_authority"}
             continue
+        if (
+            run["captures"][capture_id].get("execution_profile", {}).get("policy")
+            == "code_search_file"
+        ):
+            routes[route] = {"status": "not_applicable", "reason": "file_unit_is_not_context_span"}
+            continue
         for (task_id, result_route), result in results.items():
             if result_route == route:
                 require(
@@ -2059,7 +2274,10 @@ def _route_ordering(run: dict[str, Any], route: str, results: dict, task_ids: li
     capture = run["captures"][run["route_provenance"][route]["capture_id"]]
     policy = capture.get("execution_profile", {}).get("policy")
     derived = query_plan_contract.FILE_PROJECTION_ORDERING.get(policy)
-    if capture.get("system") == "semble" and capture.get("execution_profile", {}).get("mode") == "lexical-file":
+    if (
+        capture.get("system") == "semble"
+        and capture.get("execution_profile", {}).get("mode") == "lexical-file"
+    ):
         derived = "score_desc_native_tiebreak"
     if derived is None:
         return "not_a_file_projection"
@@ -2253,9 +2471,8 @@ def judgment_diagnostics(
                 "ordering": ordering,
                 "score_evidence": (
                     _route_score_evidence(results, route, answerable_ids)
-                    if kind == "file_judgments" and ordering in (
-                        "score_desc_path_tiebreak", "score_desc_native_tiebreak"
-                    )
+                    if kind == "file_judgments"
+                    and ordering in ("score_desc_path_tiebreak", "score_desc_native_tiebreak")
                     else "not_applicable"
                 ),
                 "rank_metric_interpretation": RANK_METRIC_INTERPRETATION.get(
@@ -2627,6 +2844,15 @@ def evaluate(
     *,
     strict_k: bool = False,
 ) -> dict[str, Any]:
+    # This legacy metric treats candidate spans as retrieved content. A file
+    # candidate's full-file proof span is an identity, not returned context.
+    require(
+        all(
+            capture.get("execution_profile", {}).get("policy") != "code_search_file"
+            for capture in run.get("captures", {}).values()
+        ),
+        "code_search_file requires file-judgment diagnostics; context metrics are undefined",
+    )
     # Historical v3 reports used capped @k values even when top_k < k. The
     # protocol-locked new report policy refuses that interpretation, while
     # legacy mode exists solely to reproduce immutable prior captures.
@@ -3010,6 +3236,53 @@ def evaluate(
     return output
 
 
+def no_answer_diagnostics(
+    eval_tasks: dict[str, dict[str, Any]],
+    results: dict[tuple[str, str], dict[str, Any]],
+    route: str,
+) -> dict[str, Any]:
+    """Count nonempty results without assuming an absent label forbids content hits."""
+    task_ids = sorted(task_id for task_id, task in eval_tasks.items() if not task["answerable"])
+    status_counts: dict[str, int] = {}
+    nonempty_results = 0
+    for task_id in task_ids:
+        result = results[(task_id, route)]
+        status = _result_status(result)
+        status_counts[status] = status_counts.get(status, 0) + 1
+        nonempty_results += bool(_ordered_candidates(result))
+    abstained = status_counts.get("abstained", 0)
+    return {
+        "task_ids": task_ids,
+        "sample_count": len(task_ids),
+        "reference_contracts": diagnostic_reference_contracts(
+            {task_id: eval_tasks[task_id] for task_id in task_ids}
+        ),
+        "abstained": abstained,
+        "abstention_rate": abstained / len(task_ids) if task_ids else NOT_APPLICABLE,
+        "nonempty_results": nonempty_results,
+        "nonempty_result_rate": nonempty_results / len(task_ids) if task_ids else NOT_APPLICABLE,
+        "status_counts": status_counts,
+    }
+
+
+def diagnostic_reference_contracts(eval_tasks: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    """Expose the labels' source and intent without equating them to search semantics."""
+    contracts = set()
+    for task in eval_tasks.values():
+        oracle = task.get("source_oracle") or {}
+        contracts.add(
+            (
+                oracle.get("contract", "not_declared"),
+                oracle.get("unit", "not_declared"),
+                task.get("query_intent", "not_declared"),
+            )
+        )
+    return [
+        {"source_oracle_contract": contract, "gold_unit": unit, "query_intent": intent}
+        for contract, unit, intent in sorted(contracts)
+    ]
+
+
 def evaluate_diagnostic(
     suite: dict[str, Any], pack: dict[str, Any], run: dict[str, Any]
 ) -> dict[str, Any]:
@@ -3027,14 +3300,6 @@ def evaluate_diagnostic(
     results = {(row["task_id"], row["route"]): row for row in run["results"]}
     independent = judgment_diagnostics(suite, run, results, eval_tasks, routes[0], None)
     require(independent is not None, "independent judgment diagnostics unavailable")
-    no_answer_ids = sorted(
-        task_id for task_id, task in eval_tasks.items() if not task["answerable"]
-    )
-    no_answer_statuses: dict[str, int] = {}
-    for task_id in no_answer_ids:
-        status = _result_status(results[(task_id, routes[0])])
-        no_answer_statuses[status] = no_answer_statuses.get(status, 0) + 1
-    abstained = no_answer_statuses.get("abstained", 0)
     return {
         "schema_version": SCHEMA_VERSION,
         "report_scope": "single_route_independent_judgment_diagnostic_v1",
@@ -3051,18 +3316,69 @@ def evaluate_diagnostic(
         "captures": run["captures"],
         "runner": run["runner"],
         "selected_eval_tasks": len(eval_tasks),
-        "no_answer": {
-            "task_ids": no_answer_ids,
-            "sample_count": len(no_answer_ids),
-            "abstained": abstained,
-            "abstention_rate": (
-                abstained / len(no_answer_ids) if no_answer_ids else NOT_APPLICABLE
-            ),
-            "status_counts": no_answer_statuses,
-        },
+        "reference_contracts": diagnostic_reference_contracts(eval_tasks),
+        "no_answer": no_answer_diagnostics(eval_tasks, results, routes[0]),
         "paired_comparison": NOT_APPLICABLE,
         "quality_delta_gate": NOT_APPLICABLE,
         "judgment_metrics": independent,
+    }
+
+
+def evaluate_paired_file_diagnostic(
+    suite: dict[str, Any],
+    pack: dict[str, Any],
+    run: dict[str, Any],
+    baseline: str,
+    candidate: str,
+) -> dict[str, Any]:
+    """Compare two source-bound distinct-file routes without context-span metrics."""
+    require(
+        set(suite["routes"]) == {baseline, candidate} and baseline != candidate,
+        "paired file diagnostic requires exactly the two declared routes",
+    )
+    eval_tasks = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
+    require(
+        bool(eval_tasks) and all("file_judgments" in task for task in eval_tasks.values()),
+        "paired file diagnostic requires independent file judgments on every eval task",
+    )
+    results = {(row["task_id"], row["route"]): row for row in run["results"]}
+    for route in (baseline, candidate):
+        require(
+            all(
+                results[(task_id, route)].get("rank_unit") == "distinct_file"
+                for task_id in eval_tasks
+            ),
+            f"paired file diagnostic requires distinct-file results: {route}",
+        )
+    independent = judgment_diagnostics(suite, run, results, eval_tasks, baseline, candidate)
+    require(
+        independent is not None and "file_judgments" in independent,
+        "paired file judgments are unavailable",
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "report_scope": "paired_independent_file_judgment_diagnostic_v1",
+        "status": "diagnostic_unqualified",
+        "qualification": NOT_APPLICABLE,
+        "suite_id": suite["suite_id"],
+        "suite_commitment_sha256": digest(canonical(suite)),
+        "query_pack_sha256": digest(canonical(pack)),
+        "runner_record_sha256": digest(canonical(run)),
+        "repository_commit": suite["repository_commit"],
+        "reference_contracts": diagnostic_reference_contracts(eval_tasks),
+        "comparison_contract": run["comparison_contract"],
+        "baseline_route": baseline,
+        "candidate_route": candidate,
+        "route_provenance": run["route_provenance"],
+        "captures": run["captures"],
+        "judgment_metrics": {"file_judgments": independent["file_judgments"]},
+        "no_answer": {
+            "routes": {
+                route: no_answer_diagnostics(eval_tasks, results, route)
+                for route in (baseline, candidate)
+            }
+        },
+        "quality_delta_gate": NOT_APPLICABLE,
     }
 
 

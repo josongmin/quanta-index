@@ -24,6 +24,73 @@ use crate::query_dispatcher::tests::support::semantic::RejectSemanticOpener;
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
 
 #[test]
+fn code_search_syntax_cannot_enter_symbol_route() -> TestResult {
+    let dispatcher = SearchPlaneDispatcher::new(
+        Arc::new(RejectLexicalOpener),
+        Arc::new(RejectSemanticOpener),
+        Arc::new(StubRepoMapSnapshotPort::default()),
+        Arc::new(FailClosedStructuralProducer),
+        ready_ledger(),
+        test_activation_catalog()?,
+    );
+    let result = dispatcher.symbol_with_execution(
+        SymbolQueryRequest {
+            syntax: TextQuerySyntax::CodeSearch,
+            query_text: "needle".to_string(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k: 10,
+            cursor: None,
+        },
+        &RequestBudgetV1::unbounded(),
+    );
+    match result {
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest,
+            message,
+        }) if message.contains("code_search") => Ok(()),
+        other => Err(format!("symbol route must refuse file search syntax: {other:?}").into()),
+    }
+}
+
+#[test]
+fn code_search_text_route_reports_file_rank_unit_for_empty_and_nonempty_pages() -> TestResult {
+    for results in [Vec::new(), vec![candidate("needle", 1.0)]] {
+        let dispatcher = SearchPlaneDispatcher::new(
+            Arc::new(RecordingLexicalOpener {
+                state: Arc::new(Mutex::new(RecordingLexicalState::default())),
+                results,
+            }),
+            Arc::new(RejectSemanticOpener),
+            Arc::new(StubRepoMapSnapshotPort::default()),
+            Arc::new(FailClosedStructuralProducer),
+            ready_ledger(),
+            test_activation_catalog()?,
+        );
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::CodeSearch,
+                query_text: "needle".to_string(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+                cursor: None,
+            }),
+            &RequestBudgetV1::unbounded(),
+        );
+        let SearchPlaneQueryIpcResponse::Text(page) = response else {
+            return Err("code search must return a text page".into());
+        };
+        if page.rank_unit != quanta_index_contract::TextRankUnit::File {
+            return Err(format!("code search rank unit drifted: {:?}", page.rank_unit).into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn lexical_dispatch_fail_closed_when_generation_is_not_ready() -> TestResult {
     let dispatcher = SearchPlaneDispatcher::new(
         Arc::new(RejectLexicalOpener),

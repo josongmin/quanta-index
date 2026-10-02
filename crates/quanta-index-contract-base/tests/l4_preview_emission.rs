@@ -180,3 +180,37 @@ fn l4_wire_path_labels_cannot_claim_other_text_or_chunk_coordinates() {
         );
     }
 }
+
+#[test]
+fn l4_wire_path_highlight_is_bound_to_emitted_path_bytes() {
+    let mut row = candidate();
+    let preview = row.preview.as_mut().expect("preview");
+    preview.kind = PreviewKind::Path;
+    preview.chunk_start_byte = None;
+    preview.original_context = None;
+    preview.original_focus = None;
+    preview.normalized_focus = None;
+    row.snippet = "src/a.rs".into();
+    row.snippet_hit_offset = Some(4);
+    row.highlights = vec![HighlightSpan { start: 4, len: 1 }];
+    let valid = serde_json::to_value(&row).expect("path hit span");
+    assert_eq!(
+        serde_json::from_value::<LexicalCandidate>(valid.clone()).expect("roundtrip"),
+        row
+    );
+    for (pointer, forged) in [
+        ("/snippet_hit_offset", serde_json::json!(3)),
+        ("/highlights", serde_json::json!([{"start": 8, "len": 1}])),
+        (
+            "/preview/original_focus",
+            serde_json::json!({"start": 4, "end": 5}),
+        ),
+    ] {
+        let mut wire = valid.clone();
+        *wire.pointer_mut(pointer).expect("fixture field") = forged;
+        assert!(
+            serde_json::from_value::<LexicalCandidate>(wire).is_err(),
+            "accepted path mutation {pointer}"
+        );
+    }
+}

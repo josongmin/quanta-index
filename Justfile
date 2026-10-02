@@ -1,6 +1,7 @@
 set shell := ["/bin/zsh", "-lc"]
 
 cargo := "./scripts/cargow"
+retrieval_python := "uv run --frozen --extra dev python"
 
 default:
     @just --list
@@ -423,22 +424,22 @@ retrieval-contract-proof $out:
 # The spec names repo/manifest/suite/pack, strategies, binaries and output
 # root; captures stay outside the checkout. See RB-05 for the spec schema.
 retrieval-quanta $spec:
-    python3 tools/benchmark/retrieval/run.py quanta --spec "$spec"
+    {{retrieval_python}} tools/benchmark/retrieval/run.py quanta --spec "$spec"
 
 # Retrieval benchmark: sequential Quanta + Semble paired capture, merge and
 # scoring from a pinned spec. Fails closed when the pinned Semble python is
 # absent; installs and model caches stay outside the checkout.
 retrieval-pair $spec:
-    python3 tools/benchmark/retrieval/run.py pair --spec "$spec"
+    {{retrieval_python}} tools/benchmark/retrieval/run.py pair --spec "$spec"
 
 # Retrieval benchmark: re-score immutable records into the TEST-PLAN §8
 # verdict artifact (deterministic re-score path, T13).
 retrieval-verdict repo suite run_manifest out:
-    python3 tools/benchmark/retrieval/run.py verdict --repo {{repo}} --suite {{suite}} --run-manifest {{run_manifest}} --out {{out}}
+    {{retrieval_python}} tools/benchmark/retrieval/run.py verdict --repo {{repo}} --suite {{suite}} --run-manifest {{run_manifest}} --out {{out}}
 
 # Retrieval benchmark: host check-record (identity, load, thermal/frequency).
 retrieval-host-probe out="":
-    python3 tools/benchmark/retrieval/run.py host-probe {{if out != "" { "--out " + out } else { "" } }}
+    {{retrieval_python}} tools/benchmark/retrieval/run.py host-probe {{if out != "" { "--out " + out } else { "" } }}
 
 # Layer-3 DSL query-latency matrix. Architecture:
 # docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md.

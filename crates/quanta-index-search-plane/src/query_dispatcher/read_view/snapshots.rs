@@ -30,7 +30,10 @@ impl SearchPlaneDispatcher {
         let key = SnapshotKey::new(repo_id, revision_id, generation);
         let acquired = self.snapshots.lexical.acquire(&key, budget, || {
             let handle: Arc<dyn LexicalSearcher> =
-                Arc::from(self.lex_opener.open(repo_id, revision_id, generation)?);
+                Arc::from(
+                    self.lex_opener
+                        .open(repo_id, revision_id, generation, budget)?,
+                );
             let resident_bytes = handle.resident_bytes_estimate();
             Ok(crate::OpenedSnapshot {
                 handle,

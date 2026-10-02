@@ -662,6 +662,7 @@ mod tests {
             _repo: &RepoId,
             _revision: &RevisionId,
             generation: ManifestGeneration,
+            _budget: &quanta_index_core::RequestBudgetV1,
         ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
             Ok(Box::new(StubLexicalSearcher {
                 results: Vec::new(),
@@ -678,6 +679,7 @@ mod tests {
                 &candidate.repo_id,
                 &candidate.revision_id,
                 candidate.manifest_generation,
+                &quanta_index_core::RequestBudgetV1::unbounded(),
             )
         }
     }
@@ -2070,8 +2072,9 @@ mod tests {
             repo: &RepoId,
             revision: &RevisionId,
             generation: ManifestGeneration,
+            budget: &quanta_index_core::RequestBudgetV1,
         ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
-            self.inner.open(repo, revision, generation)
+            self.inner.open(repo, revision, generation, budget)
         }
 
         fn open_proven(
@@ -2230,6 +2233,7 @@ mod tests {
                 _repo: &RepoId,
                 _revision: &RevisionId,
                 _generation: ManifestGeneration,
+                _budget: &quanta_index_core::RequestBudgetV1,
             ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
                 Ok(Box::new(StubLexicalSearcher {
                     results: Vec::new(),

@@ -137,7 +137,12 @@ fn assert_ids(
 }
 
 fn open(adapter: &LexicalAdapter) -> Result<Box<dyn LexicalSearcher>, Box<dyn Error>> {
-    Ok(adapter.open(&repo(), &revision(), ManifestGeneration::new(1))?)
+    Ok(adapter.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(1),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?)
 }
 
 /// A literal regex must find what the keyword route finds.

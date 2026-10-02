@@ -47,6 +47,7 @@ impl LexicalIndexOpenPort for RejectLexicalOpener {
         _repo: &RepoId,
         _revision: &RevisionId,
         _generation: ManifestGeneration,
+        _budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
         Err(CoreError::NotImplemented(
             "repo-map dispatch should not open lexical index".to_string(),
@@ -61,6 +62,7 @@ impl LexicalIndexOpenPort for RejectLexicalOpener {
             &candidate.repo_id,
             &candidate.revision_id,
             candidate.manifest_generation,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
         )
     }
 }
@@ -229,6 +231,7 @@ impl LexicalIndexOpenPort for StubLexicalOpener {
         _repo: &RepoId,
         _revision: &RevisionId,
         _generation: ManifestGeneration,
+        _budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
         Ok(Box::new(StubLexicalSearcher {
             results: self.results.clone(),
@@ -244,6 +247,7 @@ impl LexicalIndexOpenPort for StubLexicalOpener {
             &candidate.repo_id,
             &candidate.revision_id,
             candidate.manifest_generation,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
         )
     }
 }
@@ -515,6 +519,7 @@ impl LexicalIndexOpenPort for RecordingLexicalOpener {
         repo: &RepoId,
         revision: &RevisionId,
         generation: ManifestGeneration,
+        _budget: &quanta_index_core::RequestBudgetV1,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
         self.state
             .lock()
@@ -535,6 +540,7 @@ impl LexicalIndexOpenPort for RecordingLexicalOpener {
             &candidate.repo_id,
             &candidate.revision_id,
             candidate.manifest_generation,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
         )
     }
 }

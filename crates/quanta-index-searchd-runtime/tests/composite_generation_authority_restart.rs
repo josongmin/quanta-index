@@ -156,7 +156,12 @@ fn batch(
         digest,
     )
     .source_event(fixture_event_v1(REPO, raw_generation, source_parent_v1))
-    .replace_scope(scope_v1.coverage, scope_v1.chunks, scope_v1.symbols))
+    .replace_scope(
+        scope_v1.coverage,
+        scope_v1.source_bytes,
+        scope_v1.chunks,
+        scope_v1.symbols,
+    ))
 }
 
 fn batch_for(
@@ -199,7 +204,12 @@ fn batch_for(
         digest,
     )
     .source_event(fixture_event_v1(repo_id, raw_generation, source_parent_v1))
-    .replace_scope(scope_v1.coverage, scope_v1.chunks, scope_v1.symbols))
+    .replace_scope(
+        scope_v1.coverage,
+        scope_v1.source_bytes,
+        scope_v1.chunks,
+        scope_v1.symbols,
+    ))
 }
 
 /// The identities the daemon activated, roots included (QI-BB-028).

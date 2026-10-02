@@ -60,6 +60,7 @@ pub struct TrigramIndexBuilder {
     generation: u64,
     by_trigram: BTreeMap<Trigram, BTreeSet<DocId>>,
     by_doc: BTreeMap<DocId, BTreeSet<Trigram>>,
+    posting_memberships: usize,
 }
 
 impl TrigramIndexBuilder {
@@ -78,6 +79,7 @@ impl TrigramIndexBuilder {
             generation,
             by_trigram: BTreeMap::new(),
             by_doc: BTreeMap::new(),
+            posting_memberships: 0,
         })
     }
 
@@ -106,11 +108,14 @@ impl TrigramIndexBuilder {
         }
         let mut by_trigram: BTreeMap<Trigram, BTreeSet<DocId>> = BTreeMap::new();
         let mut by_doc: BTreeMap<DocId, BTreeSet<Trigram>> = BTreeMap::new();
+        let mut posting_memberships = 0_usize;
         for (tri, postings) in prior.iter() {
             let mut set: BTreeSet<DocId> = BTreeSet::new();
             for d in postings {
                 let _newly_inserted: bool = set.insert(*d);
-                let _newly_inserted_rev: bool = by_doc.entry(*d).or_default().insert(tri);
+                if by_doc.entry(*d).or_default().insert(tri) {
+                    posting_memberships = posting_memberships.saturating_add(1);
+                }
             }
             if !set.is_empty() {
                 let prior_entry = by_trigram.insert(tri, set);
@@ -121,6 +126,7 @@ impl TrigramIndexBuilder {
             generation: new_generation,
             by_trigram,
             by_doc,
+            posting_memberships,
         })
     }
 
@@ -128,6 +134,14 @@ impl TrigramIndexBuilder {
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Number of distinct `(trigram, doc_id)` memberships currently held.
+    /// A caller can enforce a build-time memory admission before adding the
+    /// next bounded source slice.
+    #[must_use]
+    pub const fn posting_memberships(&self) -> usize {
+        self.posting_memberships
     }
 
     /// Append a document's byte stream to the builder.
@@ -148,7 +162,9 @@ impl TrigramIndexBuilder {
         let entry = self.by_doc.entry(doc_id).or_default();
         for tri in trigrams_of(content) {
             let _newly_inserted: bool = self.by_trigram.entry(tri).or_default().insert(doc_id);
-            let _newly_inserted_rev: bool = entry.insert(tri);
+            if entry.insert(tri) {
+                self.posting_memberships = self.posting_memberships.saturating_add(1);
+            }
         }
     }
 
@@ -178,7 +194,9 @@ impl TrigramIndexBuilder {
         let entry = self.by_doc.entry(doc_id).or_default();
         for tri in trigrams_of(content) {
             let _newly_inserted: bool = self.by_trigram.entry(tri).or_default().insert(doc_id);
-            let _newly_inserted_rev: bool = entry.insert(tri);
+            if entry.insert(tri) {
+                self.posting_memberships = self.posting_memberships.saturating_add(1);
+            }
         }
         Ok(())
     }
@@ -206,6 +224,7 @@ impl TrigramIndexBuilder {
         let Some(tris) = self.by_doc.remove(&doc_id) else {
             return false;
         };
+        self.posting_memberships = self.posting_memberships.saturating_sub(tris.len());
         for tri in &tris {
             let empty_now = self.by_trigram.get_mut(tri).is_some_and(|postings| {
                 let _was_present: bool = postings.remove(&doc_id);
@@ -584,7 +603,24 @@ mod tests {
         };
         a.add_doc(DocId(1), b"abc");
         a.add_doc(DocId(1), b"abc");
+        assert_eq!(a.posting_memberships(), 1);
         let idx = a.finish();
         assert_eq!(idx.lookup(*b"abc"), &[DocId(1)]);
+    }
+
+    #[test]
+    fn posting_memberships_follow_upsert_and_delete() {
+        let mut builder = TrigramIndexBuilder::new(1).expect("builder");
+        builder.add_doc(DocId(1), b"abcd");
+        assert_eq!(builder.posting_memberships(), 2);
+        builder.add_doc(DocId(2), b"abc");
+        assert_eq!(builder.posting_memberships(), 3);
+        builder.upsert_doc(DocId(1), b"xyz").expect("upsert");
+        assert_eq!(builder.posting_memberships(), 2);
+        assert!(builder.remove_doc(DocId(2)).expect("remove"));
+        assert_eq!(builder.posting_memberships(), 1);
+        let prior = builder.finish();
+        let next = TrigramIndexBuilder::from_prior(&prior, 2).expect("next");
+        assert_eq!(next.posting_memberships(), 1);
     }
 }

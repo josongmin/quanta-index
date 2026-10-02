@@ -83,6 +83,7 @@ pub trait LexicalIndexOpenPort: Send + Sync {
         repo: &RepoId,
         revision: &RevisionId,
         generation: ManifestGeneration,
+        budget: &RequestBudgetV1,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError>;
     /// Prove `candidate` and return the handle the proof opened.
     ///

@@ -305,8 +305,11 @@ mod tests {
                     repo_relative_path: path,
                 },
                 revision_id: revision.clone(),
-                // Opaque producer attestation for this transport-only fixture.
-                source_sha256: [1; 32],
+                // SHA-256 of the literal source bytes below.
+                source_sha256: [
+                    239, 50, 99, 124, 185, 195, 236, 46, 57, 104, 201, 203, 223, 38, 165, 233, 193,
+                    114, 190, 148, 248, 138, 245, 51, 225, 75, 212, 63, 137, 45, 82, 151,
+                ],
             },
             language,
             producer_policy_sha256: [2; 32],
@@ -327,7 +330,7 @@ mod tests {
             expected_base_event_id: None,
             payload_sha256: [0; 32],
         })
-        .replace_scope(coverage, chunks, Vec::new()))
+        .replace_scope(coverage, b"fn main() {}".to_vec(), chunks, Vec::new()))
     }
 
     fn only_ingest_request(

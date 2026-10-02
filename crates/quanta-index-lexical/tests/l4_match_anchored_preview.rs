@@ -23,6 +23,7 @@ use std::error::Error;
 type TestResult = Result<(), Box<dyn Error>>;
 fn file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let mut scope = SearchCorpusReplaceScope {
+        source_bytes: marker.as_bytes().to_vec(),
         coverage: SourceFileCoverage {
             source: SourceFileRevision {
                 file: SourceFileKey {
@@ -146,7 +147,12 @@ fn indexed_and_manual_preserve_fixed_original_focus_after_checkout_drift() -> Te
         let adapter = LexicalAdapter::with_state_root(dir.path().join("state"));
         let batch = batch(1, None, vec![file_scope("source.rs", &raw)?])?;
         adapter.build_batch(&batch)?;
-        let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+        let view = adapter.open(
+            &batch.repo_id,
+            &batch.revision_id,
+            batch.generation,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
+        )?;
         std::fs::write(
             &source_file,
             "changed checkout has no admitted source bytes",
@@ -208,7 +214,12 @@ fn indexed_and_manual_preserve_overlapping_raw_witnesses() -> TestResult {
         ],
     )?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for index_mode in [None, Some(LqYesNoOnly::No)] {
         let mut q = query("unused");
         q.expr = LqExpr::Leaf(LqLeaf::RawString("aba".into()));
@@ -257,7 +268,12 @@ fn oversized_focus_and_path_only_keep_admitted_hit() -> TestResult {
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("needle.rs", &raw)?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for index_mode in [None, Some(LqYesNoOnly::No)] {
         let mut q = query("needle");
         q.options.index_mode = index_mode;
@@ -288,7 +304,12 @@ fn synthetic_symbol_label_carries_no_source_excerpt_coordinates() -> TestResult 
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let request = RequestBudgetV1::unbounded();
     let hits = view.search_symbols(&query("needle"), 1, &request)?;
     let hit = hits.first().ok_or("symbol hit missing")?;
@@ -307,7 +328,12 @@ fn request_output_slot_exhaustion_preserves_hits_and_retained_memory_lifetime() 
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let request = RequestBudgetV1::unbounded();
     let ledger = request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
     for index in 0..257 {
@@ -341,7 +367,12 @@ fn l4_preview_admission_skips_empty_regex_pages() -> TestResult {
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for index_mode in [None, Some(LqYesNoOnly::No)] {
         let request = RequestBudgetV1::unbounded();
         let ledger = request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
@@ -366,7 +397,12 @@ fn l4_preview_admission_empty_pages_do_not_exhaust_output_slots() -> TestResult 
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for index_mode in [None, Some(LqYesNoOnly::No)] {
         let request = RequestBudgetV1::unbounded();
         let mut absent = query("absent");
@@ -396,7 +432,12 @@ fn l4_preview_admission_unavailable_pages_do_not_exhaust_output_slots() -> TestR
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for index_mode in [None, Some(LqYesNoOnly::No)] {
         let request = RequestBudgetV1::unbounded();
         let mut absence = query("unused");
@@ -443,7 +484,12 @@ fn optional_preview_refusal_preserves_selected_identity_score_and_order() -> Tes
         ],
     )?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let multiple_regex_leaves = || {
         LqExpr::All(vec![
             LqExpr::Leaf(LqLeaf::Regex("needle".into())),
@@ -550,7 +596,12 @@ fn configured_regex_state_policy_cannot_be_bypassed_by_search_route_or_leaf_kind
             RegexMatchCachePolicy::DEFAULT,
             LexicalWriterPolicy::DEFAULT,
         );
-        let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+        let view = adapter.open(
+            &batch.repo_id,
+            &batch.revision_id,
+            batch.generation,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
+        )?;
         for index_mode in [None, Some(LqYesNoOnly::No)] {
             for shape in 0..4 {
                 let mut present = query("needle");
@@ -587,7 +638,12 @@ fn verify_only_regex_matches_through_both_search_routes() -> TestResult {
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle42")?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for index_mode in [None, Some(LqYesNoOnly::No)] {
         for (pattern, matches) in [
             (r"[a-z]+[0-9]+", true),
@@ -661,7 +717,12 @@ fn strict_literal_policy_refuses_empty_alternatives_before_search() -> TestResul
     );
     let batch = batch(1, None, vec![file_scope("source.rs", "needle42")?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for index_mode in [None, Some(LqYesNoOnly::No)] {
         for pattern in ["needle", "", "^$", r"\b", "(?:needle)?", "needle|"] {
             let mut present = query("unused");
@@ -692,7 +753,12 @@ fn compiled_regex_byte_refusal_is_consistent_across_search_routes() -> TestResul
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for index_mode in [None, Some(LqYesNoOnly::No)] {
         let mut present = query("unused");
         present.expr = LqExpr::Leaf(LqLeaf::Regex(r"[\x{80}-\x{10FFFF}]{20000}".into()));
@@ -736,7 +802,12 @@ fn l4_preview_admission_skips_oversized_source_before_regex_compile() -> TestRes
     let raw = format!("needle{}", " ".repeat(65_536));
     let batch = batch(1, None, vec![file_scope("source.rs", &raw)?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for index_mode in [None, Some(LqYesNoOnly::No)] {
         let request = RequestBudgetV1::unbounded();
         let ledger = request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
@@ -774,7 +845,12 @@ fn l4_preview_admission_oversized_row_does_not_refuse_other_selected_rows() -> T
         ],
     )?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for index_mode in [None, Some(LqYesNoOnly::No)] {
         let mut present = query("unused");
         present.expr = LqExpr::Leaf(LqLeaf::Regex("needle".into()));
@@ -811,7 +887,12 @@ fn l4_unicode_regex_compilation_is_charged_before_selected_preview() -> TestResu
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", &raw)?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let mut present = query("unused");
     present.expr = LqExpr::Leaf(LqLeaf::Regex(r"needle\w{120}".into()));
@@ -843,7 +924,12 @@ fn l4_distinct_complex_regex_leaves_refuse_only_optional_preview() -> TestResult
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", &raw)?])?;
     adapter.build_batch(&batch)?;
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let first = LqLeaf::Regex(r"needle\w{120}".into());
     let second = LqLeaf::Regex(r"needle\p{L}{120}".into());

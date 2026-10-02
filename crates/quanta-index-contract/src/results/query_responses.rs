@@ -1,4 +1,5 @@
 use core::fmt;
+use std::collections::BTreeSet;
 
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -16,6 +17,71 @@ use crate::{
 use super::{CandidatePresenceV1, SearchExplanation};
 use crate::{PreviewMetadata, SourceFileRevision};
 
+/// Unit in which a text result is ranked and counted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextRankUnit {
+    Chunk,
+    File,
+    Repository,
+    Symbol,
+}
+
+impl TextRankUnit {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Chunk => "chunk",
+            Self::File => "file",
+            Self::Repository => "repository",
+            Self::Symbol => "symbol",
+        }
+    }
+}
+
+impl Serialize for TextRankUnit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+struct TextRankUnitVisitor;
+
+impl Visitor<'_> for TextRankUnitVisitor {
+    type Value = TextRankUnit;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("one of chunk, file, repository, symbol")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        match value {
+            "chunk" => Ok(TextRankUnit::Chunk),
+            "file" => Ok(TextRankUnit::File),
+            "repository" => Ok(TextRankUnit::Repository),
+            "symbol" => Ok(TextRankUnit::Symbol),
+            _ => Err(de::Error::unknown_variant(
+                value,
+                &["chunk", "file", "repository", "symbol"],
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TextRankUnit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(TextRankUnitVisitor)
+    }
+}
+
 /// One ranked page of text rows.
 ///
 /// The rows are in the ranked lexical order ([`LexicalRowOrderKey`]);
@@ -27,6 +93,7 @@ use crate::{PreviewMetadata, SourceFileRevision};
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextQueryResponse {
     pub generation: GenerationPin,
+    pub rank_unit: TextRankUnit,
     pub results: Vec<LexicalCandidate>,
     pub window: QueryResultWindowV2,
     pub explanation: SearchExplanation,
@@ -318,12 +385,39 @@ const SYMBOL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window
 
 const TEXT_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "generation",
+    "rank_unit",
     "results",
     "window",
     "explanation",
     "file_owner_rows",
     "next_cursor",
 ];
+
+fn validate_text_rank_unit(
+    rank_unit: TextRankUnit,
+    results: &[LexicalCandidate],
+) -> Result<(), &'static str> {
+    match rank_unit {
+        TextRankUnit::File => {
+            let mut files = BTreeSet::new();
+            for row in results {
+                if !files.insert((row.source_repo_id.as_str(), row.repo_relative_path.as_str())) {
+                    return Err("file-ranked text response repeats a source repository and path");
+                }
+            }
+        }
+        TextRankUnit::Repository => {
+            let mut repositories = BTreeSet::new();
+            for row in results {
+                if !repositories.insert(row.source_repo_id.as_str()) {
+                    return Err("repository-ranked text response repeats a source repository");
+                }
+            }
+        }
+        TextRankUnit::Chunk | TextRankUnit::Symbol => {}
+    }
+    Ok(())
+}
 const FILE_OWNER_PROJECTION_ROW_FIELDS: &[&str] = &[
     "source_repo_id",
     "candidate_id",
@@ -1632,9 +1726,11 @@ impl Serialize for TextQueryResponse {
     where
         S: Serializer,
     {
+        validate_text_rank_unit(self.rank_unit, &self.results)
+            .map_err(serde::ser::Error::custom)?;
         validate_file_owner_projection_v1(&self.results, self.file_owner_rows.as_deref())
             .map_err(serde::ser::Error::custom)?;
-        let mut field_count = 4usize;
+        let mut field_count = 5usize;
         if self.file_owner_rows.is_some() {
             field_count = field_count.saturating_add(1);
         }
@@ -1643,6 +1739,7 @@ impl Serialize for TextQueryResponse {
         }
         let mut state = serializer.serialize_struct("TextQueryResponse", field_count)?;
         state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("rank_unit", &self.rank_unit)?;
         state.serialize_field("results", &self.results)?;
         state.serialize_field("window", &self.window)?;
         state.serialize_field("explanation", &self.explanation)?;
@@ -1670,6 +1767,7 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
         A: MapAccess<'de>,
     {
         let mut generation: Option<GenerationPin> = None;
+        let mut rank_unit: Option<TextRankUnit> = None;
         let mut results: Option<Vec<LexicalCandidate>> = None;
         let mut window: Option<QueryResultWindowV2> = None;
         let mut explanation: Option<SearchExplanation> = None;
@@ -1684,6 +1782,12 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
                         return Err(de::Error::duplicate_field("generation"));
                     }
                     generation = Some(map.next_value()?);
+                }
+                "rank_unit" => {
+                    if rank_unit.is_some() {
+                        return Err(de::Error::duplicate_field("rank_unit"));
+                    }
+                    rank_unit = Some(map.next_value()?);
                 }
                 "results" => {
                     if results.is_some() {
@@ -1723,9 +1827,11 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
             }
         }
         let generation = generation.ok_or_else(|| de::Error::missing_field("generation"))?;
+        let rank_unit = rank_unit.ok_or_else(|| de::Error::missing_field("rank_unit"))?;
         let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
         let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
         let explanation = explanation.ok_or_else(|| de::Error::missing_field("explanation"))?;
+        validate_text_rank_unit(rank_unit, &results).map_err(de::Error::custom)?;
         check_ranked_page_v2(
             &window,
             results.len(),
@@ -1737,6 +1843,7 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
             .map_err(de::Error::custom)?;
         Ok(TextQueryResponse {
             generation,
+            rank_unit,
             results,
             window,
             explanation,
@@ -2903,6 +3010,7 @@ mod tests {
             projection_fixture_row("cand-2", 1.0),
         ];
         let valid = TextQueryResponse {
+            rank_unit: TextRankUnit::Chunk,
             explanation: SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: results.clone(),
@@ -2936,5 +3044,76 @@ mod tests {
             serde_json::to_value(&mistyped).is_err(),
             "a swapped projection must fail encode"
         );
+    }
+
+    #[test]
+    fn text_rank_unit_is_required_and_closed_even_for_an_empty_page() {
+        let page = TextQueryResponse {
+            generation: sample_generation_pin(),
+            rank_unit: TextRankUnit::File,
+            results: Vec::new(),
+            window: QueryResultWindowV2::exact_probe(0),
+            explanation: SearchExplanation::empty(),
+            file_owner_rows: None,
+            next_cursor: None,
+        };
+        let value = serde_json::to_value(&page).expect("empty file page must encode");
+        assert_eq!(
+            value.get("rank_unit").and_then(serde_json::Value::as_str),
+            Some("file")
+        );
+        assert_eq!(
+            serde_json::from_value::<TextQueryResponse>(value.clone())
+                .expect("typed page")
+                .rank_unit,
+            TextRankUnit::File
+        );
+        for replacement in [None, Some("future")] {
+            let mut invalid = value.clone();
+            match replacement {
+                None => {
+                    let _removed = invalid.as_object_mut().expect("object").remove("rank_unit");
+                }
+                Some(unit) => invalid["rank_unit"] = serde_json::Value::String(unit.to_string()),
+            }
+            assert!(serde_json::from_value::<TextQueryResponse>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn text_file_and_repository_units_reject_duplicate_ranked_identities() {
+        let results = vec![
+            projection_fixture_row("first", 2.0),
+            projection_fixture_row("second", 1.0),
+        ];
+        assert!(validate_text_rank_unit(TextRankUnit::Chunk, &results).is_ok());
+        assert!(validate_text_rank_unit(TextRankUnit::File, &results).is_err());
+        assert!(validate_text_rank_unit(TextRankUnit::Repository, &results).is_err());
+        let mut another_source = results.last().expect("two rows").clone();
+        another_source.source_repo_id = RepoId::new("other-source").expect("fixture repo ID");
+        assert!(
+            validate_text_rank_unit(
+                TextRankUnit::File,
+                &[results.first().expect("two rows").clone(), another_source]
+            )
+            .is_ok()
+        );
+        let chunk_page = TextQueryResponse {
+            generation: sample_generation_pin(),
+            rank_unit: TextRankUnit::Chunk,
+            results,
+            window: QueryResultWindowV2::exact_probe(2),
+            explanation: SearchExplanation::empty(),
+            file_owner_rows: None,
+            next_cursor: None,
+        };
+        let mut file_value = serde_json::to_value(&chunk_page).expect("chunk page must encode");
+        file_value["rank_unit"] = serde_json::Value::String("file".to_string());
+        assert!(serde_json::from_value::<TextQueryResponse>(file_value).is_err());
+        let file_page = TextQueryResponse {
+            rank_unit: TextRankUnit::File,
+            ..chunk_page
+        };
+        assert!(serde_json::to_value(&file_page).is_err());
     }
 }

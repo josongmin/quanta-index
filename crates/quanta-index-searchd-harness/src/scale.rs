@@ -499,7 +499,12 @@ fn measure_adapter_phases(rt: &E2eRuntime) -> AnyResult<AdapterPhaseTimingV1> {
     let adapter = LexicalAdapter::with_state_root(rt.state_root().join("indexes/lexical"));
     let sealed = ManifestGeneration::new(rt.current_generation().get().saturating_sub(1));
     let open_started = Instant::now();
-    let searcher = adapter.open(&rt.repo(), &rt.revision(), sealed)?;
+    let searcher = adapter.open(
+        &rt.repo(),
+        &rt.revision(),
+        sealed,
+        &RequestBudgetV1::unbounded(),
+    )?;
     let open_ms = elapsed_ms(open_started);
     let request = scale_query();
     let mut plan_samples = Vec::with_capacity(WARM_QUERY_SAMPLES);

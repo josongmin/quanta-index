@@ -191,7 +191,8 @@ qualification belong in the [active code-search ledger](../plans/sep-27-code-sea
 - Preserve complete focus when it fits the 240-byte window; reduce surrounding
   context first. Oversized/zero-width/no-positive/source-not-provided and optional
   budget refusal have explicit metadata. Paths and synthetic symbol labels do
-  not claim source spans. Retain overlapping substring witnesses.
+  not claim source spans; a path match may highlight byte ranges in the emitted,
+  source-bound path string. Retain overlapping substring witnesses.
 - Integrity failures refuse typed. Optional preview exhaustion preserves selected
   IDs, scores, order and truthful window metadata. Charge witness/map/output
   lifetimes and normalization buffers before work; incomplete witnesses never
@@ -243,6 +244,36 @@ the current guards are not proof of a physical heap ceiling.
   preserving source spans. Never emit guessed symbols or charge skipped anonymous
   signatures as successful extracted facts.
 
+### Product default file search (2026-10-02 amendment)
+
+- The default lexical SDK `.text(...)` and explicit `.code_search(...)` use
+  `TextQuerySyntax::CodeSearch`. The lowerer creates the existing `LqQuery` with
+  `LqPatternType::CodeSearch` and `select:file`. `CodeSearchPlan` is an internal
+  validated execution plan, not a second public or wire IR. Native LQ and
+  Sourcegraph syntax remain explicit, distinct parsers.
+- CodeSearch evaluates positive terms within one verified complete source file
+  (or its path), then ranks distinct files with deterministic score and cursor
+  order. A generation-sealed source-byte sidecar supplies the file authority;
+  chunks neither define the match universe nor multiply file ranks. Admission
+  caps source bytes at 8 MiB per file and 128 MiB per generation. Seal and
+  cold open also enforce a 2,000,000 membership cap across the four file
+  trigram indexes. The existing file-authority manifest stores each file's
+  posting count. Changed files are counted with a fixed 2 MiB bitmap before
+  publication; a delta sums inherited counts without rereading every source.
+  Cold open recomputes and checks each count from committed bytes. Generations
+  with the old manifest shape require an explicit rebuild.
+  Unsupported
+  query forms or resource limits refuse explicitly rather than returning a
+  falsely complete result.
+- The request budget reaches cold generation open and file-index construction.
+  Trigram construction checks between 64 KiB overlapping slices. One source
+  read or normalization call can still process an admitted 8 MiB file before
+  its next checkpoint. This is cancellation cooperation, not hard preemption.
+- Declaration-name benchmark gold measures recovery of the declaration's file.
+  It does not independently judge every file returned by content/path search.
+  Diagnostic reports expose their oracle contract and do not turn a
+  declaration-absent query's nonempty result into a false-positive claim.
+
 ## Consequences and verification boundary
 
 Retain owner/public regressions for legal/empty plans, windows/cursors, mutation/
@@ -254,8 +285,9 @@ Ranked storage and collection import all five column names from the existing
 schema owner; schema construction uses those same constants. This removes the
 collector/storage module cycle without changing names or field layout.
 Outstanding selected work is total coverage pipeline cost/heap, final
-combined-source/platform/external-producer qualification and separately
-admitted benchmark/default policy. Exact regex allocation admission is deferred
-under the decision above. This ADR does not qualify any physical heap claim.
+combined-source/platform/external-producer qualification and independently
+admitted relevance and performance benchmarks. Exact regex allocation
+admission is deferred under the decision above. This ADR does not qualify any
+physical heap claim.
 Historical bodies are recoverable from `1419f3087f4f09a6ecab4ef39c30a2bf32544d5d`;
 see [the plan archive](../plans/ARCHIVE-INDEX.md).

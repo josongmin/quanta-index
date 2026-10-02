@@ -39,6 +39,7 @@ pub(crate) fn text_scope(
     }
     let unit_set_sha256 = source_file_unit_set_sha256(&chunks, &[])?;
     Ok(SearchCorpusReplaceScope {
+        source_bytes: body.as_bytes().to_vec(),
         coverage: SourceFileCoverage {
             source: SourceFileRevision {
                 file: SourceFileKey {

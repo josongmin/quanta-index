@@ -462,7 +462,12 @@ fn replace_fixture_file(
         scope.coverage.symbols =
             quanta_index_contract::SymbolCoverage::Complete { symbol_count: 0 };
     }
-    Ok(batch.replace_scope(scope.coverage, scope.chunks, scope.symbols))
+    Ok(batch.replace_scope(
+        scope.coverage,
+        scope.source_bytes,
+        scope.chunks,
+        scope.symbols,
+    ))
 }
 
 fn with_semantic_sources_from_chunks(mut batch: SearchCorpusBatch) -> SearchCorpusBatch {
@@ -1519,6 +1524,129 @@ fn sdk_repomap_active_head_tracks_only_catalog_activation() -> TestResult {
         return Err(format!("RepoMap catalog head diverges from receipts: {head:?}").into());
     }
 
+    fixture.stop()
+}
+
+#[test]
+fn sdk_default_code_search_matches_terms_across_chunks_as_one_file() -> TestResult {
+    let fixture = SdkFrontdoorRuntime::start()?;
+    let client = &fixture.client;
+    let corpus_batch = lexical_batch()?;
+    let _active = publish_and_activate_sdk_search_corpus(client, &corpus_batch)?;
+
+    let response = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .text("todo main")
+                .active(repo(), revision())
+                .top_k(10)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 1,
+    )?;
+    let file = response.results.first().ok_or("missing file result")?;
+    if file.repo_relative_path.as_str() != "src/lib.rs"
+        || !file.candidate_id.starts_with("file:")
+        || file.source.as_ref().map(|source| source.source_sha256)
+            != Some(
+                corpus_batch.replace_scopes()[0]
+                    .coverage
+                    .source
+                    .source_sha256,
+            )
+    {
+        return Err(format!("default CodeSearch file identity drift: {file:?}").into());
+    }
+
+    let two_files = wait_for_sdk_observation(
+        SOCKET_TIMEOUT,
+        || {
+            client
+                .lexical()
+                .query()
+                .text("sphinx")
+                .active(repo(), revision())
+                .top_k(10)
+                .execute()
+        },
+        |response| response.generation == pin() && response.results.len() == 2,
+    )?;
+    let paths = two_files
+        .results
+        .iter()
+        .map(|candidate| candidate.repo_relative_path.as_str())
+        .collect::<BTreeSet<_>>();
+    if paths != BTreeSet::from(["src/alpha.rs", "src/beta.rs"]) {
+        return Err(format!("CodeSearch file ranking returned {paths:?}").into());
+    }
+
+    let first_page = client
+        .lexical()
+        .query()
+        .text("sphinx")
+        .active(repo(), revision())
+        .top_k(1)
+        .execute()?;
+    if first_page.rank_unit != quanta_index_contract::TextRankUnit::File
+        || first_page.results.len() != 1
+    {
+        return Err(format!("CodeSearch first file page drift: {first_page:?}").into());
+    }
+    let cursor = first_page
+        .next_cursor
+        .ok_or("CodeSearch first file page lacks continuation")?;
+    let second_page = client
+        .lexical()
+        .query()
+        .text("sphinx")
+        .pinned(first_page.generation.clone())
+        .top_k(1)
+        .after(cursor)
+        .execute()?;
+    if second_page.rank_unit != quanta_index_contract::TextRankUnit::File
+        || second_page.results.len() != 1
+        || second_page.next_cursor.is_some()
+        || first_page.results[0].repo_relative_path == second_page.results[0].repo_relative_path
+    {
+        return Err(format!("CodeSearch second file page drift: {second_page:?}").into());
+    }
+
+    for (query, expected_path) in [
+        ("regex:/sphinx.*quartz/", "src/alpha.rs"),
+        ("content:regex:/sphinx.*riddles/", "src/beta.rs"),
+        ("path:regex:/beta[.]rs/", "src/beta.rs"),
+        ("sphinx regex:/quartz/", "src/alpha.rs"),
+    ] {
+        let response = client
+            .lexical()
+            .query()
+            .text(query)
+            .active(repo(), revision())
+            .top_k(10)
+            .execute()?;
+        let actual = response
+            .results
+            .iter()
+            .map(|candidate| candidate.repo_relative_path.as_str())
+            .collect::<Vec<_>>();
+        if actual != [expected_path] {
+            return Err(format!("CodeSearch regex {query:?} returned {actual:?}").into());
+        }
+        if query == "path:regex:/beta[.]rs/" {
+            let hit = response.results.first().ok_or("missing path hit")?;
+            if hit.preview.as_ref().map(|preview| preview.kind)
+                != Some(quanta_index_contract::PreviewKind::Path)
+                || hit.snippet != "src/beta.rs"
+                || hit.snippet_hit_offset != Some(4)
+                || hit.highlights != [quanta_index_contract::HighlightSpan { start: 4, len: 7 }]
+            {
+                return Err(format!("CodeSearch path match position drift: {hit:?}").into());
+            }
+        }
+    }
     fixture.stop()
 }
 
@@ -2704,6 +2832,9 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .pinned(pin())
                                 .top_k(10)
                                 .execute(),
+                            TextQuerySyntax::CodeSearch => {
+                                unreachable!("CodeSearch is exercised by its own lexical fixture")
+                            }
                             TextQuerySyntax::Sourcegraph => client
                                 .lexical()
                                 .query()
@@ -2741,6 +2872,9 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .active(repo(), revision())
                                 .top_k(10)
                                 .execute(),
+                            TextQuerySyntax::CodeSearch => {
+                                unreachable!("CodeSearch is exercised by its own lexical fixture")
+                            }
                             TextQuerySyntax::Sourcegraph => client
                                 .symbol()
                                 .query()
@@ -2777,6 +2911,9 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .pinned(pin())
                                 .top_k(10)
                                 .execute(),
+                            TextQuerySyntax::CodeSearch => {
+                                unreachable!("CodeSearch is exercised by its own lexical fixture")
+                            }
                             TextQuerySyntax::Sourcegraph => client
                                 .structural()
                                 .query()
@@ -2815,6 +2952,9 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .pinned(pin())
                                 .top_k(10)
                                 .execute(),
+                            TextQuerySyntax::CodeSearch => {
+                                unreachable!("CodeSearch is exercised by its own lexical fixture")
+                            }
                             TextQuerySyntax::Sourcegraph => client
                                 .runtime()
                                 .query()
@@ -2869,6 +3009,9 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                             .top_k(10)
                             .order(HistoryOrderV1::Recency)
                             .execute(),
+                        TextQuerySyntax::CodeSearch => {
+                            unreachable!("CodeSearch is exercised by its own lexical fixture")
+                        }
                         TextQuerySyntax::Sourcegraph => client
                             .history()
                             .query()
@@ -2908,6 +3051,9 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .active(repo(), revision())
                                 .top_k(10)
                                 .execute(),
+                            TextQuerySyntax::CodeSearch => {
+                                unreachable!("CodeSearch is exercised by its own lexical fixture")
+                            }
                             TextQuerySyntax::Sourcegraph => client
                                 .lexical()
                                 .query()
@@ -2929,6 +3075,9 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                     .top_k(10)
                                     .order(HistoryOrderV1::Recency)
                                     .execute(),
+                                TextQuerySyntax::CodeSearch => unreachable!(
+                                    "CodeSearch is exercised by its own lexical fixture"
+                                ),
                                 TextQuerySyntax::Sourcegraph => client
                                     .history()
                                     .query()
@@ -2949,6 +3098,9 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .pinned(pin())
                                 .top_k(10)
                                 .execute(),
+                            TextQuerySyntax::CodeSearch => {
+                                unreachable!("CodeSearch is exercised by its own lexical fixture")
+                            }
                             TextQuerySyntax::Sourcegraph => client
                                 .structural()
                                 .query()

@@ -31,7 +31,7 @@ from producer_execution import execute
 ROOT = Path(__file__).resolve().parents[2]
 VIEWS = ("code_only", "developer_search")
 POLICY = {
-    "id": "git-text-views-v2",
+    "id": "git-text-views-v3",
     "max_file_bytes": 1024 * 1024,
     "code_extensions": sorted({".rs", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}),
     "excluded_components": sorted(
@@ -45,6 +45,7 @@ POLICY = {
     "case_collisions": "refuse_nfc_casefold_aliases_including_parent_components",
     "generated_vendor": "exclude_declared_components_no_content_heuristic",
     "path_scope": "complete_repository_not_candidate_benchmark_root",
+    "license_sources": "root_license_copying_names_excluding_code_extensions",
 }
 EXOTIC = frozenset("\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 
@@ -311,6 +312,20 @@ def exclusion(row: dict, content: bytes | None) -> str | None:
     return None
 
 
+def is_license_source(path: str) -> bool:
+    """Root license text, never source code that merely starts with `license_`."""
+    name = path.lower()
+    return (
+        "/" not in name
+        and Path(name).suffix not in POLICY["code_extensions"]
+        and any(
+            name == stem or name.startswith(stem + separator)
+            for stem in ("license", "licence", "copying", "unlicense")
+            for separator in (".", "-", "_")
+        )
+    )
+
+
 def write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as handle:
@@ -344,12 +359,7 @@ def freeze_repo(entry: dict, checkouts: Path, stage: Path) -> dict:
                     else "non_code_extension"
                 ),
             }
-            license_name = row["path"].lower()
-            if "/" not in license_name and any(
-                license_name == name or license_name.startswith(name + separator)
-                for name in ("license", "licence", "copying", "unlicense")
-                for separator in (".", "-", "_")
-            ):
+            if is_license_source(row["path"]):
                 if reason:
                     raise EvidenceError("corpus license source is not admitted regular text")
                 licenses.append(

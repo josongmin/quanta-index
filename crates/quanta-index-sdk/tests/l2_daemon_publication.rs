@@ -217,6 +217,7 @@ fn corpus(
                 text_admitted: true,
                 symbols: SymbolCoverage::NotRequested,
             },
+            text.as_bytes().to_vec(),
             chunks,
             symbols,
         );

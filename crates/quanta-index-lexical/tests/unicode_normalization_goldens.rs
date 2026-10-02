@@ -834,7 +834,12 @@ fn open_corpus(corpus: &[(&str, &str)]) -> Result<Fixture, Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     adapter.build_batch(&sealed_batch(corpus)?)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     Ok(Fixture {
         _dir: dir,
         _adapter: adapter,
@@ -1178,7 +1183,12 @@ fn knock(
         Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         Ok(()) | Err(_) => None,
     };
-    let open = match adapter.open(&repo(), &revision(), generation) {
+    let open = match adapter.open(
+        &repo(),
+        &revision(),
+        generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    ) {
         Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         Ok(_) | Err(_) => None,
     };
@@ -1270,7 +1280,14 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
 
     std::fs::write(&manifest, &original)?;
     let restored = candidate_ids(
-        adapter.open(&repo(), &revision(), generation())?.as_ref(),
+        adapter
+            .open(
+                &repo(),
+                &revision(),
+                generation(),
+                &quanta_index_core::RequestBudgetV1::unbounded(),
+            )?
+            .as_ref(),
         &query(Leaf::Keyword, Case::Insensitive, "café", None),
     )?;
     if restored != expected_set(ALL_CAFE) {

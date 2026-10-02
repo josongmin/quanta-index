@@ -166,22 +166,31 @@ to obtain more timing samples from the same queries: choose the warm-query
 repetition count before capture. A later query pack cannot be sent to those
 terminated native workers without a separate persistent-session feature.
 
-After capture, write an external matrix spec with `schema_version: 1`, the
+After capture, write an external matrix spec with `schema_version: 2`, the
 absolute `release_path`, its validated `release_digest`, a nonempty unique
 `query_families` list, and one `cells` entry per repository/family. Each cell
-contains `repository`, `view`, absolute `suite` and `query_pack` paths, and a
+contains `repository`, `view`, `query_policy` (`native`, `natural_language`, or
+`code_search_file`), absolute `suite` and `query_pack` paths, and a
 `captures` object with `lexical-only`, `semantic-only` and `hybrid` keys. Each
-mode contains an absolute `root` and `kind` (`workflow` for a supported
-bare-symbol lexical cell, otherwise `pair`). Roots cannot be reused. The
-verifier checks exact source, native input bytes, corpus/query binding,
-exploratory claims, route and Semble execution mode, then replays each capture.
+captured mode contains an absolute `root` and `kind` (`workflow` only for a
+native bare-symbol lexical cell, otherwise `pair`). Declare an applicable
+missing capture as `{"kind":"not_run","reason":"capture_missing"}`. For
+`code_search_file`, only lexical-only Quanta/Semble file ranking has a pair
+adapter; declare semantic-only and hybrid as
+`{"kind":"unsupported","reason":"query_policy_not_supported_for_mode"}`.
+Do not use the five-product workflow for `code_search_file`. Roots cannot be
+reused. The verifier checks query-plan admission, source, native input bytes,
+corpus/query binding, exploratory claims, route and Semble execution mode,
+then replays each captured cell. Schema v1 is refused.
 
 ```sh
 uv run --frozen --extra dev python tools/benchmark/benchctl.py code-search matrix-verify \
   --spec /absolute/external/code-search-matrix.json
 ```
 
-The result is `diagnostic_unqualified`. It cannot qualify independent labels,
+The result is `diagnostic_unqualified` when all applicable captures exist or
+`diagnostic_incomplete` when any applicable capture is `not_run`. It reports
+verified, unsupported and missing cell counts separately. It cannot qualify independent labels,
 whole-product indexed scope, latency, or a default-policy change.
 
 Within each repository/query family and mode, compare products only when commit,

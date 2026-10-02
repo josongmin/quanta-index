@@ -380,11 +380,23 @@ class SearchHandler(BaseHTTPRequestHandler):
         pass
 
 
-@pytest.mark.parametrize("index_changes_during_queries", [False, True])
+@pytest.mark.parametrize(
+    ("index_changes_during_queries", "unsupported_query"),
+    [(False, False), (True, False), (False, True)],
+)
 def test_live_capture_makes_three_product_requests_and_retains_raw(
-    tmp_path, lexical_release_seed, index_changes_during_queries, monkeypatch
+    tmp_path, lexical_release_seed, index_changes_during_queries, unsupported_query, monkeypatch
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
+    if unsupported_query:
+        suite = json.loads(paths["suite"].read_bytes())
+        pack = json.loads(paths["query_pack"].read_bytes())
+        for value in (suite, pack):
+            value["tasks"][-1]["query"] = "not"
+            value["tasks"][-1]["query_sha256"] = hashlib.sha256(b"not").hexdigest()
+        pack["suite_commitment_sha256"] = live._sha(live.lexical.canonical(suite))
+        paths["suite"].write_bytes(live.lexical.canonical(suite))
+        paths["query_pack"].write_bytes(live.lexical.canonical(pack))
     corpus = json.loads(lexical_spec.read_text())["corpus"]
     SearchHandler.commit = json.loads(paths["suite"].read_text())["repository_commit"]
     SearchHandler.view = (
@@ -458,8 +470,8 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         == "exact_indexed_inventory_and_served_bytes_bracketing_queries"
     )
     assert result["opengrok_indexed_view_files"] == file_count
-    assert len(SearchHandler.calls) == 44 + 2 * file_count
-    assert SearchHandler.calls.count("/.api/search/stream") == 20
+    assert len(SearchHandler.calls) == 44 + 2 * file_count - int(unsupported_query)
+    assert SearchHandler.calls.count("/.api/search/stream") == 20 - int(unsupported_query)
     assert SearchHandler.calls.count("/api/v1/search") == 20
     assert SearchHandler.calls.count("/api/v1/file/content") == 2 * file_count
     assert SearchHandler.calls.count("/api/v1/projects/fixture/files") == 4
@@ -467,7 +479,21 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     for name in ("sourcegraph", "opengrok", "cs"):
         rows = (root / f"{name}_rows.jsonl").read_text().splitlines()
         assert len(rows) == 20
-        assert sum(json.loads(row)["file_hit_at_10"] for row in rows) == 1
+        assert sum(json.loads(row).get("file_hit_at_10", False) for row in rows) == 1
+    if unsupported_query:
+        rows = [
+            json.loads(row) for row in (root / "sourcegraph_rows.jsonl").read_text().splitlines()
+        ]
+        assert rows[-1]["status"] == "unsupported"
+        assert rows[-1]["submitted_query"] == "not"
+        scored = live.lexical.product_result(
+            "sourcegraph",
+            root / "sourcegraph_rows.jsonl",
+            live.lexical._tasks(suite, pack),
+            {row["path"] for row in suite["file_universe"]},
+        )
+        assert scored["capability_coverage"]["supported"] == 19
+        assert scored["latency_ms"]["count"] == 19
     original_read = live._read_control_file
 
     def control_only(path):

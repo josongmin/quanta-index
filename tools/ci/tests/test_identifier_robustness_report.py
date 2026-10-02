@@ -19,7 +19,7 @@ from tools.benchmark.retrieval.identifier_robustness_report import (
 )
 
 
-def fixture():
+def fixture(policy="keyword_file"):
     contract = "go_declaration_name_prefix_v1"
     specs = (
         ("U1", "unique", "success", True, 1.0),
@@ -69,7 +69,7 @@ def fixture():
     }
     capture = {
         "system": "quanta",
-        "execution_profile": {"policy": "keyword_file"},
+        "execution_profile": {"policy": policy},
     }
     record = {
         "comparison_contract": suite["comparison_contract"],
@@ -133,6 +133,8 @@ def fixture():
             "sample_count": 0,
             "abstained": 0,
             "abstention_rate": evaluator.NOT_APPLICABLE,
+            "nonempty_results": 0,
+            "nonempty_result_rate": evaluator.NOT_APPLICABLE,
             "status_counts": {},
         },
     }
@@ -164,6 +166,56 @@ def test_fixed_golden_preserves_admission_eligibility_and_capped_hit():
         "distinct_file",
         "score_desc_path_tiebreak",
     )
+
+
+def test_code_search_file_reports_scored_family_separately():
+    output = compose(*fixture("code_search_file"), "prefix")
+    assert output["policy"] == "code_search_file"
+    assert output["case"] == "folded"
+    assert output["scope"] == "content_and_path"
+    assert output["ordering"] == "score_desc_path_tiebreak"
+    assert output["lane"] == "prefix"
+    assert output["status"] == "diagnostic_unqualified"
+
+
+def test_code_search_file_pair_report_selects_one_bound_route(monkeypatch):
+    suite, census, record, diagnostic = fixture("code_search_file")
+    baseline = "semble-lexical-file"
+    suite["routes"].append(baseline)
+    record["captures"]["s"] = {"system": "semble", "execution_profile": {"mode": "lexical-file"}}
+    record["route_provenance"][baseline] = {"capture_id": "s"}
+    for row in list(record["results"]):
+        other = copy.deepcopy(row)
+        other["route"] = baseline
+        other["ordering"] = "score_desc_native_tiebreak"
+        record["results"].append(other)
+    file_judgments = diagnostic["judgment_metrics"]["file_judgments"]
+    file_judgments["routes"][baseline] = copy.deepcopy(file_judgments["routes"]["lexical"])
+    for row in list(file_judgments["per_query"]):
+        other = copy.deepcopy(row)
+        other["route"] = baseline
+        file_judgments["per_query"].append(other)
+    diagnostic["report_scope"] = "paired_independent_file_judgment_diagnostic_v1"
+    diagnostic["baseline_route"] = baseline
+    diagnostic["candidate_route"] = "lexical"
+    diagnostic.pop("route")
+    no_answer = diagnostic.pop("no_answer")
+    diagnostic["no_answer"] = {"routes": {"lexical": no_answer, baseline: copy.deepcopy(no_answer)}}
+    diagnostic.pop("selected_eval_tasks")
+    diagnostic["suite_commitment_sha256"] = evaluator.digest(evaluator.canonical(suite))
+    diagnostic["runner_record_sha256"] = evaluator.digest(evaluator.canonical(record))
+    diagnostic["route_provenance"] = copy.deepcopy(record["route_provenance"])
+    diagnostic["captures"] = copy.deepcopy(record["captures"])
+    monkeypatch.setattr(
+        evaluator, "evaluate_paired_file_diagnostic", lambda *_: copy.deepcopy(diagnostic)
+    )
+    output = compose_validated(suite, {}, record, diagnostic, census, "prefix", route="lexical")
+    assert output["route"] == "lexical"
+    assert output["eligible"] == 3
+    with pytest.raises(ValueError, match="explicit declared route"):
+        compose(suite, census, record, diagnostic, "prefix")
+    with pytest.raises(ValueError, match="explicit declared route"):
+        compose(suite, census, record, diagnostic, "prefix", route="missing")
 
 
 @pytest.mark.parametrize(
@@ -330,15 +382,20 @@ def test_no_answer_success_with_candidates_is_visible():
         "sample_count": 1,
         "abstained": 0,
         "abstention_rate": 0.0,
+        "nonempty_results": 1,
+        "nonempty_result_rate": 1.0,
         "status_counts": {"success": 1},
     }
     output = compose(suite, census, record, diagnostic, "prefix")
     assert output["strata"]["no_answer"]["admitted"] == 1
+    assert output["evaluation_intent"] == "declaration_name_file_retrieval_diagnostic"
     assert output["no_answer"] == {
+        "negative_reference_scope": "declaration_local_name_absent",
         "sample_count": 1,
         "abstained": 0,
         "abstention_rate": 0.0,
         "nonempty_results": 1,
+        "nonempty_result_rate": 1.0,
         "status_counts": {"success": 1},
     }
     diagnostic["no_answer"]["task_ids"] = []
@@ -361,9 +418,12 @@ def test_new_content_absence_contract_is_separate_from_legacy():
         }
     ]
     census["lanes"] = {
-        "no-answer": {"records": [{"task_id": "NOA1", "query": "absentName"}]},
+        "no-answer": {
+            "records": [{"task_id": "NOA1", "query": "absentName", "status": "admitted"}]
+        },
         "no-answer-content": {
             "contract": contract,
+            "derived_from": "no-answer",
             "source_admitted": 1,
             "admitted": 1,
             "excluded": 0,
@@ -398,23 +458,20 @@ def test_new_content_absence_contract_is_separate_from_legacy():
         "sample_count": 1,
         "abstained": 1,
         "abstention_rate": 1.0,
+        "nonempty_results": 0,
+        "nonempty_result_rate": 0.0,
         "status_counts": {"abstained": 1},
     }
-    assert (
-        compose(suite, census, record, diagnostic, "no-answer-content")[
-            "content_absence_replay_verified"
-        ]
-        is False
-    )
+    output = compose(suite, census, record, diagnostic, "no-answer-content")
+    assert output["content_absence_replay_verified"] is False
+    assert output["evaluation_intent"] == "content_absence_negative_control"
+    assert output["no_answer"]["negative_reference_scope"] == "folded_content_absent"
     suite["tasks"][0]["source_oracle"]["contract"] = "go_exact_local_name_v3"
     census["lanes"]["no-answer-content"]["contract"] = "go_exact_local_name_v3"
     diagnostic["suite_commitment_sha256"] = evaluator.digest(evaluator.canonical(suite))
-    assert (
-        compose(suite, census, record, diagnostic, "no-answer-content")[
-            "content_absence_replay_verified"
-        ]
-        is False
-    )
+    changed = compose(suite, census, record, diagnostic, "no-answer-content")
+    assert changed["content_absence_replay_verified"] is False
+    assert changed["no_answer"]["negative_reference_scope"] == "declaration_local_name_absent"
 
 
 def test_ambiguity_census_must_match_independent_source_oracle(monkeypatch, tmp_path):
@@ -487,6 +544,49 @@ def test_generation_manifest_binds_admission_census_and_submitted_suite(tmp_path
         verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
     census_path.write_text(json.dumps(fixture()[1]))
     suite_path.write_text(json.dumps({**suite, "suite_id": "swapped"}))
+    with pytest.raises(ValueError, match="generation artifact mismatch: prefix-suite.json"):
+        verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
+
+
+def test_generation_manifest_accepts_only_exact_pair_route_projection(tmp_path):
+    from tools.benchmark.retrieval.source_oracle_suite import _json_bytes
+
+    suite, census, _, _ = fixture()
+    suite_path = tmp_path / "prefix-suite.json"
+    census_path = tmp_path / "census.json"
+    manifest_path = tmp_path / "manifest.json"
+    census_path.write_bytes(_json_bytes(census))
+    source_suite = copy.deepcopy(suite)
+    suite_path.write_bytes(_json_bytes(source_suite))
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "qualification": "diagnostic_unqualified_source_exposed",
+                "repository_commit": suite["repository_commit"],
+                "artifacts": [
+                    {
+                        "path": "census.json",
+                        "sha256": hashlib.sha256(census_path.read_bytes()).hexdigest(),
+                    },
+                    {
+                        "path": "prefix-suite.json",
+                        "sha256": hashlib.sha256(suite_path.read_bytes()).hexdigest(),
+                    },
+                ],
+            }
+        )
+    )
+    suite["routes"] = ["lexical", "semble-lexical-file"]
+    suite_path.write_bytes(_json_bytes(suite))
+    verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
+    suite["routes"] = ["lexical", "external-unverified"]
+    suite_path.write_bytes(_json_bytes(suite))
+    with pytest.raises(ValueError, match="unsupported robustness pair route projection"):
+        verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
+    suite["routes"] = ["lexical", "semble-lexical-file"]
+    suite["suite_id"] = "tampered"
+    suite_path.write_bytes(_json_bytes(suite))
     with pytest.raises(ValueError, match="generation artifact mismatch: prefix-suite.json"):
         verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
 

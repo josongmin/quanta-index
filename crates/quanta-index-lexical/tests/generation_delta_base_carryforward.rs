@@ -221,7 +221,12 @@ fn hit_ids(
     generation: ManifestGeneration,
     term: &str,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let searcher = adapter.open(&repo(), &revision(), generation)?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let mut ids: Vec<String> = searcher
         .search(&keyword_query(term), 16, &RequestBudgetV1::unbounded())?
         .iter()
@@ -722,7 +727,12 @@ fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult
         }
     }
     let start = Instant::now();
-    let opened = adapter.open(&repo(), &revision(), g2)?;
+    let opened = adapter.open(
+        &repo(),
+        &revision(),
+        g2,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let open_ms = start.elapsed().as_millis();
     let after_open = adapter.coverage_read_stats()?;
     let open_read = coverage_read_delta(after_build, after_open)?;
@@ -850,7 +860,12 @@ fn cold_open_only_child() -> TestResult {
     let before = usage()?;
     let adapter = LexicalAdapter::with_state_root(root.into());
     let started = Instant::now();
-    let opened = adapter.open(&repo(), &revision(), ManifestGeneration::new(2))?;
+    let opened = adapter.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(2),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let elapsed = started.elapsed().as_millis();
     let after = usage()?;
     emit_evidence(&[
@@ -988,7 +1003,12 @@ fn leaf_hit_ids(
     generation: ManifestGeneration,
     leaf: LqLeaf,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let searcher = adapter.open(&repo(), &revision(), generation)?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let mut ids: Vec<String> = searcher
         .search(&leaf_query(leaf), 64, &RequestBudgetV1::unbounded())?
         .iter()

@@ -331,7 +331,12 @@ fn sdk_batch(
     )?;
     let mut batch = batch
         .source_event(rt.text_search_corpus_batch(path, text)?.source_event)
-        .replace_scope(scope.coverage, scope.chunks, scope.symbols);
+        .replace_scope(
+            scope.coverage,
+            scope.source_bytes,
+            scope.chunks,
+            scope.symbols,
+        );
 
     for scope in semantic_scopes {
         batch = batch.replace_semantic_scope(
@@ -421,6 +426,7 @@ fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> Tes
     let mut oversized = sdk_batch(&rt, 1, None, "src/sdk_big.rs", "fn sdk_big() {}")?
         .replace_scope(
             extra_scope.coverage,
+            extra_scope.source_bytes,
             extra_scope.chunks,
             extra_scope.symbols,
         );

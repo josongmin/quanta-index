@@ -1,7 +1,7 @@
 //! Preview provenance, independent of ranked-hit identity and completeness.
 //!
-//! Ranges are chunk-relative byte intervals; a file offset exists only when a
-//! verified chunk base and immutable source identity are supplied together.
+//! Ranges are chunk-relative for source chunks and file-relative for source
+//! files. The source identity binds either span to immutable bytes.
 
 use crate::{HighlightSpan, SourceFileRevision};
 use core::fmt;
@@ -14,6 +14,7 @@ use serde::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PreviewKind {
     SourceChunk,
+    SourceFile,
     Path,
     SyntheticSymbolLabel,
 }
@@ -48,7 +49,7 @@ macro_rules! preview_string_enum {
     };
 }
 preview_string_enum!(PreviewKind, PreviewKindVisitor, {
-    SourceChunk => "source_chunk", Path => "path", SyntheticSymbolLabel => "synthetic_symbol_label",
+    SourceChunk => "source_chunk", SourceFile => "source_file", Path => "path", SyntheticSymbolLabel => "synthetic_symbol_label",
 });
 preview_string_enum!(PreviewUnavailableReason, PreviewUnavailableVisitor, {
     NoPositiveWitness => "no_positive_witness", SourceNotProvided => "source_not_provided",
@@ -95,7 +96,12 @@ impl PreviewMetadata {
         if self.kind != PreviewKind::SourceChunk && self.chunk_start_byte.is_some() {
             return Err("path/synthetic previews cannot claim a chunk base");
         }
-        if self.unavailable_reason.is_some() || self.kind != PreviewKind::SourceChunk {
+        if self.unavailable_reason.is_some()
+            || !matches!(
+                self.kind,
+                PreviewKind::SourceChunk | PreviewKind::SourceFile
+            )
+        {
             if self.original_focus.is_some()
                 || self.original_context.is_some()
                 || self.normalized_focus.is_some()
@@ -153,7 +159,10 @@ impl PreviewMetadata {
             }
             return Ok(());
         }
-        if self.kind == PreviewKind::SourceChunk {
+        if matches!(
+            self.kind,
+            PreviewKind::SourceChunk | PreviewKind::SourceFile
+        ) {
             let context = self.original_context.ok_or("source context missing")?;
             let focus = self.original_focus.ok_or("source focus missing")?;
             let size =
@@ -211,13 +220,22 @@ impl PreviewMetadata {
         highlights: &[HighlightSpan],
     ) -> Result<(), &'static str> {
         self.validate_emission(snippet)?;
-        if self.unavailable_reason.is_some() || self.kind == PreviewKind::Path {
+        if self.unavailable_reason.is_some() {
             if snippet_hit_offset.is_some() || !highlights.is_empty() {
-                return Err("unavailable/path previews cannot emit highlights");
+                return Err("unavailable previews cannot emit highlights");
             }
             return Ok(());
         }
-        if self.kind == PreviewKind::SourceChunk {
+        // A path preview emits the source-bound path verbatim. Its highlights
+        // are byte ranges in that emitted path, checked by
+        // validate_highlight_ranges; they do not claim source-file byte spans.
+        if self.kind == PreviewKind::Path {
+            return Ok(());
+        }
+        if matches!(
+            self.kind,
+            PreviewKind::SourceChunk | PreviewKind::SourceFile
+        ) {
             let context = self.original_context.ok_or("source context missing")?;
             let focus = self.original_focus.ok_or("source focus missing")?;
             let start = focus
@@ -334,6 +352,15 @@ mod tests {
             serde_json::from_str::<PreviewMetadata>(&raw).expect("decode"),
             value
         );
+    }
+    #[test]
+    fn full_file_preview_uses_file_relative_spans_without_chunk_base() {
+        let mut value = preview();
+        value.kind = PreviewKind::SourceFile;
+        value.chunk_start_byte = None;
+        assert!(value.validate_emission("abcdef").is_ok());
+        value.chunk_start_byte = Some(100);
+        assert!(value.validate().is_err());
     }
     #[test]
     fn no_false_source_spans_or_unbound_source() {

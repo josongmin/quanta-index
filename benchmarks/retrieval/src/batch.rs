@@ -204,7 +204,7 @@ pub fn assemble_batch(
                 )));
             }
         }
-        batch = batch.replace_scope(coverage, records, file_symbols.clone());
+        batch = batch.replace_scope(coverage, file.bytes.clone(), records, file_symbols.clone());
         report.scopes = report
             .scopes
             .checked_add(1)

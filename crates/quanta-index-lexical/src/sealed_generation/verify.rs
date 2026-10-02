@@ -21,7 +21,7 @@
 //! a searcher, the validator keeps nothing. Both decode, so a door that
 //! admits a generation has run every step a query's open runs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
@@ -30,11 +30,12 @@ use std::sync::Arc;
 
 use ciborium::Value as CborValue;
 use quanta_index_contract::{GenerationSnapshot, SourcePublicationEvent};
-use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
+use quanta_index_core::{CoreError, RequestBudgetV1};
 use sha2::{Digest as _, Sha256};
 use tantivy::{Index, IndexReader, ReloadPolicy};
 
+use crate::file_authority::{self, SourceFile};
 use crate::overlay_codec::OverlayFamily;
 use crate::ranked_keys::{self, MAX_RANKED_KEYS_BYTES, RankedKeyTables, SegmentKeys};
 use crate::sealed_generation::coverage::{
@@ -56,6 +57,14 @@ pub(crate) trait SealedGenerationVisitor {
     /// order.
     fn text_authority_shard(&mut self, index: u64, body: ShardBody) -> Result<(), CoreError>;
 
+    /// Verified full-file sources. Only a query-open visitor builds the
+    /// in-memory search index; validation visitors discard these bytes.
+    fn file_authority(
+        &mut self,
+        files: Vec<SourceFile>,
+        budget: Option<&RequestBudgetV1>,
+    ) -> Result<(), CoreError>;
+
     /// One overlay family's snapshot, proved and decoded, in family order.
     fn overlay(&mut self, snapshot: OverlaySnapshot) -> Result<(), CoreError>;
 }
@@ -65,6 +74,14 @@ pub(crate) struct DiscardingVisitor;
 
 impl SealedGenerationVisitor for DiscardingVisitor {
     fn text_authority_shard(&mut self, _index: u64, _body: ShardBody) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    fn file_authority(
+        &mut self,
+        _files: Vec<SourceFile>,
+        _budget: Option<&RequestBudgetV1>,
+    ) -> Result<(), CoreError> {
         Ok(())
     }
 
@@ -91,8 +108,9 @@ pub(crate) fn walk_sealed_generation<V: SealedGenerationVisitor>(
     generation_dir: &Path,
     identity: &GenerationSnapshot,
     visitor: &mut V,
+    budget: Option<&RequestBudgetV1>,
 ) -> Result<VerifiedGeneration, CoreError> {
-    walk_sealed_generation_reusing_coverage(generation_dir, identity, visitor, None)
+    walk_sealed_generation_reusing_coverage(generation_dir, identity, visitor, None, budget)
 }
 
 pub(crate) fn walk_sealed_generation_reusing_coverage<V: SealedGenerationVisitor>(
@@ -100,14 +118,16 @@ pub(crate) fn walk_sealed_generation_reusing_coverage<V: SealedGenerationVisitor
     identity: &GenerationSnapshot,
     visitor: &mut V,
     cache: Option<&mut CoverageDecodeCache>,
+    budget: Option<&RequestBudgetV1>,
 ) -> Result<VerifiedGeneration, CoreError> {
+    checkpoint(budget, "lexical:cold-open:walk")?;
     let root = super::open_generation_dir_nofollow(generation_dir).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: open sealed generation {}: {error}",
             generation_dir.display()
         ))
     })?;
-    walk_sealed_generation_at(&root, generation_dir, identity, visitor, cache)
+    walk_sealed_generation_at(&root, generation_dir, identity, visitor, cache, budget)
 }
 
 pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
@@ -116,8 +136,11 @@ pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
     identity: &GenerationSnapshot,
     visitor: &mut V,
     cache: Option<&mut CoverageDecodeCache>,
+    budget: Option<&RequestBudgetV1>,
 ) -> Result<VerifiedGeneration, CoreError> {
+    checkpoint(budget, "lexical:cold-open:identity")?;
     let observed = crate::index_store::read_lexical_sealed_identity_at(generation_dir, root)?;
+    checkpoint(budget, "lexical:cold-open:identity")?;
     crate::index_store::validate_lexical_sealed_identity(&observed, identity)?;
     // A generation the scrub proved corrupt is refused at every door.
     crate::sealed_generation::refuse_if_quarantined_at(root, generation_dir)?;
@@ -130,18 +153,22 @@ pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
             "index commit exceeds the control-file byte limit",
         ));
     }
-    let meta_bytes = read_committed(root, generation_dir, &manifest.index_meta)?;
+    checkpoint(budget, "lexical:cold-open:manifest")?;
+    let meta_bytes = read_committed(root, generation_dir, &manifest.index_meta, budget)?;
     let index = crate::index_store::open_sealed_index_at(generation_dir, root, meta_bytes)?;
+    checkpoint(budget, "lexical:cold-open:index")?;
     verify_index_segments(root, generation_dir, &index, &manifest.index_segments)?;
     let (ranked_keys, reader) =
-        verify_ranked_keys(root, generation_dir, &index, &manifest.ranked_keys)?;
-    verify_overlays(root, generation_dir, &manifest, visitor)?;
+        verify_ranked_keys(root, generation_dir, &index, &manifest.ranked_keys, budget)?;
+    verify_overlays(root, generation_dir, &manifest, visitor, budget)?;
     verify_text_authority(
         root,
         generation_dir,
         manifest.text_authority.as_deref(),
         visitor,
+        budget,
     )?;
+    checkpoint(budget, "lexical:cold-open:coverage")?;
     let coverage = match cache {
         Some(cache) => verify_source_coverage_reusing(
             root,
@@ -158,6 +185,7 @@ pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
             None,
         ),
     }?;
+    checkpoint(budget, "lexical:cold-open:coverage")?;
     let (coverage, source_publication, coverage_read_stats) = coverage.map_or(
         (None, None, LexicalCoverageReadStats::default()),
         |artifact| {
@@ -168,6 +196,15 @@ pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
             )
         },
     );
+    verify_file_authority(
+        root,
+        generation_dir,
+        &manifest.file_authority,
+        coverage.as_ref(),
+        visitor,
+        budget,
+    )?;
+    checkpoint(budget, "lexical:cold-open:walk")?;
     Ok(VerifiedGeneration {
         manifest,
         reader,
@@ -178,12 +215,183 @@ pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
     })
 }
 
+fn verify_file_authority<V: SealedGenerationVisitor>(
+    root: &File,
+    generation_dir: &Path,
+    committed: &[SealedArtifactCommitmentV1],
+    coverage: Option<&quanta_index_contract::FileCoverageSnapshot>,
+    visitor: &mut V,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<(), CoreError> {
+    checkpoint(budget, "lexical:cold-open:file-authority")?;
+    let manifest_name = format!("{}/{}", file_authority::DIR, file_authority::MANIFEST);
+    let by_name: BTreeMap<&str, &SealedArtifactCommitmentV1> = committed
+        .iter()
+        .map(|artifact| (artifact.name.as_str(), artifact))
+        .collect();
+    let manifest_commitment = by_name
+        .get(manifest_name.as_str())
+        .copied()
+        .ok_or_else(|| {
+            crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &manifest_name,
+                "missing commitment",
+            )
+        })?;
+    if !matches!(
+        usize::try_from(manifest_commitment.bytes),
+        Ok(bytes) if bytes <= file_authority::max_manifest_bytes()
+    ) {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &manifest_name,
+            "manifest exceeds byte limit",
+        ));
+    }
+    let manifest_bytes = read_committed(root, generation_dir, manifest_commitment, budget)?;
+    let rows = file_authority::decode_verified_manifest(&manifest_bytes, generation_dir)?;
+    checkpoint(budget, "lexical:cold-open:file-manifest-decode")?;
+    let sources: Vec<_> = rows.iter().map(|(source, _)| source.clone()).collect();
+    let expected = file_authority::expected_names(&sources);
+    if by_name.len() != committed.len()
+        || !by_name
+            .keys()
+            .copied()
+            .eq(expected.iter().map(String::as_str))
+    {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            file_authority::DIR,
+            "commitments differ from manifest",
+        ));
+    }
+    let actual: BTreeSet<String> = std::fs::read_dir(generation_dir.join(file_authority::DIR))
+        .map_err(|error| {
+            CoreError::Storage(format!("lexical: list sealed file authority: {error}"))
+        })?
+        .map(|entry| {
+            entry
+                .map(|entry| {
+                    format!(
+                        "{}/{}",
+                        file_authority::DIR,
+                        entry.file_name().to_string_lossy()
+                    )
+                })
+                .map_err(|error| {
+                    CoreError::Storage(format!("lexical: sealed file authority entry: {error}"))
+                })
+        })
+        .collect::<Result<_, _>>()?;
+    if actual != expected {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            file_authority::DIR,
+            "directory differs from manifest",
+        ));
+    }
+    let coverage = coverage.ok_or_else(|| {
+        crate::index_store::sidecar_corrupt(
+            generation_dir,
+            file_authority::DIR,
+            "source coverage missing",
+        )
+    })?;
+    if coverage.len() != sources.len() {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            file_authority::DIR,
+            "source coverage and file authority counts differ",
+        ));
+    }
+    let mut files = Vec::with_capacity(sources.len());
+    let mut logical_source_bytes = 0_u64;
+    for (source, expected_postings) in rows {
+        checkpoint(budget, "lexical:cold-open:file")?;
+        let Some(coverage_row) = coverage.get(&source.file) else {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                file_authority::DIR,
+                "source missing from coverage",
+            ));
+        };
+        if coverage_row.source != source {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                file_authority::DIR,
+                "source identity differs from coverage",
+            ));
+        }
+        let name = file_authority::artifact_name(&source);
+        let artifact = by_name.get(name.as_str()).copied().ok_or_else(|| {
+            crate::index_store::sidecar_corrupt(generation_dir, &name, "source bytes not committed")
+        })?;
+        if artifact.bytes
+            > u64::try_from(file_authority::MAX_FILE_BYTES)
+                .map_err(|error| CoreError::Storage(format!("lexical: file byte cap: {error}")))?
+        {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &name,
+                "source bytes exceed admission limit",
+            ));
+        }
+        logical_source_bytes = logical_source_bytes
+            .checked_add(artifact.bytes)
+            .ok_or_else(|| {
+                CoreError::Storage("lexical: file authority source byte sum overflow".into())
+            })?;
+        if logical_source_bytes
+            > u64::try_from(file_authority::MAX_TOTAL_SOURCE_BYTES).map_err(|error| {
+                CoreError::Storage(format!("lexical: file authority cap: {error}"))
+            })?
+        {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                file_authority::DIR,
+                "source byte admission exceeded",
+            ));
+        }
+        let bytes = read_committed(root, generation_dir, artifact, budget)?;
+        if artifact.sha256 != source.source_sha256 {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &name,
+                "source bytes digest differs from source revision",
+            ));
+        }
+        let file = SourceFile {
+            source,
+            bytes,
+            text_admitted: coverage_row.text_admitted,
+            language: coverage_row.language.clone(),
+            indexed_text: None,
+            folded_text: None,
+            indexed_path: String::new(),
+            folded_path: String::new(),
+            expected_postings,
+        };
+        let _admitted_text = file.admitted_text()?;
+        checkpoint(budget, "lexical:cold-open:file-decode")?;
+        files.push(file);
+    }
+    visitor.file_authority(files, budget)?;
+    checkpoint(budget, "lexical:cold-open:file-authority")
+}
+
+fn checkpoint(budget: Option<&RequestBudgetV1>, stage: &'static str) -> Result<(), CoreError> {
+    budget.map_or(Ok(()), |budget| budget.checkpoint(stage))
+}
+
 fn verify_ranked_keys(
     root: &File,
     generation_dir: &Path,
     index: &Index,
     commitments: &[SealedArtifactCommitmentV1],
+    budget: Option<&RequestBudgetV1>,
 ) -> Result<(Arc<RankedKeyTables>, IndexReader), CoreError> {
+    checkpoint(budget, "lexical:cold-open:ranked-keys")?;
     let reader: IndexReader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
@@ -209,6 +417,7 @@ fn verify_ranked_keys(
     })?;
     let mut tables = Vec::new();
     for segment in searcher.segment_readers() {
+        checkpoint(budget, "lexical:cold-open:ranked-keys")?;
         let name = ranked_keys::file_name(segment);
         let commitment = by_name.get(name.as_str()).copied().ok_or_else(|| {
             crate::index_store::sidecar_corrupt(generation_dir, &name, "missing commitment")
@@ -223,8 +432,9 @@ fn verify_ranked_keys(
                 "resident table exceeds limit",
             ));
         }
-        let bytes = read_committed(root, generation_dir, commitment)?;
+        let bytes = read_committed(root, generation_dir, commitment, budget)?;
         tables.push(Arc::new(SegmentKeys::decode(bytes, segment)?));
+        checkpoint(budget, "lexical:cold-open:ranked-keys-decode")?;
     }
     let tables = RankedKeyTables::bind(tables, searcher.segment_readers())?;
     // A stale or uncommitted table is never silently ignored.
@@ -316,7 +526,9 @@ fn read_committed(
     root: &File,
     generation_dir: &Path,
     artifact: &SealedArtifactCommitmentV1,
+    budget: Option<&RequestBudgetV1>,
 ) -> Result<Vec<u8>, CoreError> {
+    checkpoint(budget, "lexical:cold-open:file-read")?;
     let path = generation_dir.join(&artifact.name);
     let mut opened =
         super::open_regular_below(root, Path::new(&artifact.name)).map_err(|error| {
@@ -352,6 +564,7 @@ fn read_committed(
         CoreError::Storage(format!("lexical: committed read length overflow: {error}"))
     })?;
     let bytes = super::coverage::read_admitted_bytes(&mut opened, admitted_len, &path)?;
+    checkpoint(budget, "lexical:cold-open:file-read")?;
     let length = crate::channel_payloads::count_from_len(bytes.len())?;
     if length != artifact.bytes {
         return Err(crate::index_store::sidecar_corrupt(
@@ -360,7 +573,17 @@ fn read_committed(
             &format!("{length} bytes on disk, {} committed", artifact.bytes),
         ));
     }
-    if sha256_of_bytes(&bytes) != artifact.sha256 {
+    let digest = if budget.is_some() {
+        let mut hasher = Sha256::new();
+        for chunk in bytes.chunks(64 * 1024) {
+            checkpoint(budget, "lexical:cold-open:file-hash")?;
+            hasher.update(chunk);
+        }
+        <[u8; 32]>::from(hasher.finalize())
+    } else {
+        sha256_of_bytes(&bytes)
+    };
+    if digest != artifact.sha256 {
         let reason = if artifact.name == TANTIVY_INDEX_META_FILE_NAME {
             "index commit differs from the sealed commit"
         } else {
@@ -372,6 +595,7 @@ fn read_committed(
             reason,
         ));
     }
+    checkpoint(budget, "lexical:cold-open:file-hash")?;
     Ok(bytes)
 }
 
@@ -485,7 +709,9 @@ fn read_committed_overlay_value(
     root: &File,
     generation_dir: &Path,
     artifact: &SealedArtifactCommitmentV1,
+    budget: Option<&RequestBudgetV1>,
 ) -> Result<CborValue, CoreError> {
+    checkpoint(budget, "lexical:cold-open:overlay")?;
     let path = generation_dir.join(&artifact.name);
     let mut file = super::open_regular_below(root, Path::new(&artifact.name)).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound || super::is_unsafe_artifact_path(&error) {
@@ -511,6 +737,7 @@ fn read_committed_overlay_value(
     let mut buffer = [0_u8; 16 * 1024];
     let mut admitted = (&mut file).take(artifact.bytes);
     loop {
+        checkpoint(budget, "lexical:cold-open:overlay-hash")?;
         let count = admitted.read(&mut buffer).map_err(|error| {
             CoreError::Storage(format!("lexical: hash overlay {}: {error}", path.display()))
         })?;
@@ -562,6 +789,7 @@ fn read_committed_overlay_value(
         bytes: 0,
         expected: artifact.bytes,
     };
+    checkpoint(budget, "lexical:cold-open:overlay-decode")?;
     let value =
         ciborium::from_reader::<CborValue, _>(&mut reader).map_err(|error| match error {
             ciborium::de::Error::Io(io_error)
@@ -622,6 +850,7 @@ fn read_committed_overlay_value(
             "content digest differs from the committed digest",
         ));
     }
+    checkpoint(budget, "lexical:cold-open:overlay-decode")?;
     Ok(value)
 }
 
@@ -630,12 +859,15 @@ fn verify_overlays<V: SealedGenerationVisitor>(
     generation_dir: &Path,
     manifest: &LexicalSealedManifest,
     visitor: &mut V,
+    budget: Option<&RequestBudgetV1>,
 ) -> Result<(), CoreError> {
     for family in OverlayFamily::ALL {
+        checkpoint(budget, "lexical:cold-open:overlay")?;
         if let Some(artifact) = manifest.overlay(family) {
-            let value = read_committed_overlay_value(root, generation_dir, artifact)?;
+            let value = read_committed_overlay_value(root, generation_dir, artifact, budget)?;
             let snapshot =
                 crate::overlay_codec::decode_overlay_value(family, value, generation_dir)?;
+            checkpoint(budget, "lexical:cold-open:overlay-decode")?;
             visitor.overlay(snapshot)?;
         } else {
             let path = family.path(generation_dir);
@@ -667,7 +899,9 @@ fn verify_text_authority<V: SealedGenerationVisitor>(
     generation_dir: &Path,
     committed: Option<&[SealedArtifactCommitmentV1]>,
     visitor: &mut V,
+    budget: Option<&RequestBudgetV1>,
 ) -> Result<(), CoreError> {
+    checkpoint(budget, "lexical:cold-open:text-authority")?;
     let dir = text_authority_dir(generation_dir);
     let observed =
         super::optional_entry_at(root, Path::new(TEXT_AUTHORITY_DIR_NAME)).map_err(|error| {
@@ -709,12 +943,15 @@ fn verify_text_authority<V: SealedGenerationVisitor>(
             "text-authority manifest exceeds its format byte limit",
         ));
     }
-    let manifest_bytes = read_committed(root, generation_dir, manifest_commitment)?;
+    let manifest_bytes = read_committed(root, generation_dir, manifest_commitment, budget)?;
     let manifest = TextAuthorityManifest::decode(&manifest_bytes, generation_dir)?;
+    checkpoint(budget, "lexical:cold-open:text-manifest-decode")?;
     ensure_text_authority_listing(generation_dir, &manifest, &manifest_name, files)?;
     ensure_text_authority_directory(root, generation_dir, &dir, files)?;
     for entry in &manifest.shards {
+        checkpoint(budget, "lexical:cold-open:text-shard")?;
         let body = crate::text_authority::load_shard_at(root, generation_dir, entry)?;
+        checkpoint(budget, "lexical:cold-open:text-shard")?;
         visitor.text_authority_shard(entry.index, body)?;
     }
     Ok(())

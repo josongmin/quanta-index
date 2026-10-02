@@ -1,0 +1,9 @@
+{
+  "rust.rs": [[3, "target"], [4, "target_async"], [5, "ffi_target"], [6, "Point"], [7, "Shape"], [8, "Bits"], [9, "Draw"], [9, "Out"], [9, "K"], [9, "draw"], [9, "ready"], [10, "Out"], [10, "K"], [10, "draw"], [11, "Alias"], [12, "COUNTER"], [14, "inner"], [14, "target"], [14, "nested"], [15, "make"], [16, "ext_fn"], [16, "EXT_VAL"], [16, "Opaque"], [17, "r#match"], [18, "caf\u00e9"], [19, "Target"], [22, "STR"]],
+  "python.py": [[6, "target"], [7, "nested_target"], [12, "target_async"], [17, "decorated"], [21, "Widget"], [22, "method"], [26, "prop"], [29, "Inner"], [34, "target"], [36, "caf\u00e9"], [39, "continued"], [42, "conditional"], [44, "_"]],
+  "typescript.ts": [[3, "target"], [4, "overloaded"], [5, "overloaded"], [6, "ambient"], [8, "generate"], [9, "target2"], [10, "Base"], [11, "run"], [12, "constructor"], [13, "value"], [14, "value"], [15, "#secret"], [18, "helper"], [19, "helper"], [20, "create"], [23, "Shape"], [23, "area"], [24, "Fn"], [24, "call"], [25, "Color"], [26, "nsFn"], [27, "method"], [27, "agen"], [28, "inside"], [31, "modFn"], [32, "Caf\u00e9"]],
+  "component.tsx": [[1, "Component"], [2, "View"], [2, "render"]],
+  "javascript.js": [[2, "target"], [3, "gen"], [4, "target2"], [5, "Klass"], [6, "constructor"], [7, "make"], [8, "#hidden"], [9, "prop"], [11, "method"], [12, "inner"], [15, "exported"], [16, "_"]],
+  "app.jsx": [[1, "App"]],
+  "go.go": [[4, "Target"], [5, "Method"], [6, "Recv"], [7, "Alias"], [8, "Iface"], [9, "Run"], [13, "Grouped"], [14, "Generic"], [16, "_"], [18, "outer"], [18, "Local"], [19, "Anon"]]
+}

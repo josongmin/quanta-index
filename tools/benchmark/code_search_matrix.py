@@ -1,9 +1,10 @@
-"""Verify the declared complete code-search diagnostic matrix from native captures.
+"""Verify a declared code-search diagnostic matrix from native captures.
 
 The release supplies the repository inventory. The matrix spec supplies the
-query-family inventory; every repository/family must have all three modes.
-Each cell is replayed through its existing native capture owner. This is a
-completeness check, not independent gold or performance qualification.
+query-family inventory; every repository/family declares all three modes.
+Unsupported modes and missing captures are explicit, never scored as zero.
+Captured cells are replayed through their native owner. This does not qualify
+independent gold or performance.
 """
 
 from __future__ import annotations
@@ -30,6 +31,20 @@ PAIR_MODES = {
     "semantic-only": ("semantic", "semantic-only"),
     "hybrid": ("hybrid", "hybrid-no-rerank"),
 }
+QUERY_POLICIES = frozenset({"native", "natural_language", "code_search_file"})
+UNSUPPORTED_REASON = "query_policy_not_supported_for_mode"
+MISSING_REASON = "capture_missing"
+LABEL_FIELDS = frozenset(
+    {
+        "gold",
+        "answerable",
+        "file_judgments",
+        "declaration_judgments",
+        "label_review",
+        "judgment_policy",
+        "source_oracle",
+    }
+)
 SHA = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
@@ -52,11 +67,11 @@ def _spec(value: dict, repositories: set[str]) -> dict:
         set(value)
         != {"schema_version", "release_path", "release_digest", "query_families", "cells"}
         or type(value["schema_version"]) is not int
-        or value["schema_version"] != 1
+        or value["schema_version"] != 2
         or not isinstance(value["release_digest"], str)
         or SHA.fullmatch(value["release_digest"]) is None
     ):
-        raise ValueError("matrix requires a closed schema v1 and release digest")
+        raise ValueError("matrix requires a closed schema v2 and release digest")
     _path(value["release_path"], "release_path")
     families = value["query_families"]
     if (
@@ -80,6 +95,7 @@ def _spec(value: dict, repositories: set[str]) -> dict:
             "repository",
             "view",
             "query_family",
+            "query_policy",
             "suite",
             "query_pack",
             "captures",
@@ -87,6 +103,8 @@ def _spec(value: dict, repositories: set[str]) -> dict:
             raise ValueError("matrix cell fields differ from the closed contract")
         if not isinstance(cell["repository"], str) or not isinstance(cell["query_family"], str):
             raise ValueError("matrix cell repository/query-family must be strings")
+        if not isinstance(cell["query_policy"], str) or cell["query_policy"] not in QUERY_POLICIES:
+            raise ValueError("matrix cell query policy is unsupported")
         key = (cell["repository"], cell["query_family"])
         if key[0] not in repositories or key[1] not in families or key in observed:
             raise ValueError("matrix has an unknown or duplicate repository/query-family cell")
@@ -106,14 +124,33 @@ def _spec(value: dict, repositories: set[str]) -> dict:
             raise ValueError("matrix cell lacks a required mode")
         for mode in MODES:
             capture = captures[mode]
-            if not isinstance(capture, dict) or set(capture) != {"kind", "root"}:
-                raise ValueError("matrix capture fields differ from the closed contract")
-            if not isinstance(capture["kind"], str) or capture["kind"] not in {"workflow", "pair"}:
+            if (
+                not isinstance(capture, dict)
+                or not isinstance(capture.get("kind"), str)
+                or capture["kind"] not in {"workflow", "pair", "unsupported", "not_run"}
+            ):
                 raise ValueError("matrix capture kind is unsupported")
-            root = _path(capture["root"], "capture root")
-            if root in roots:
-                raise ValueError("matrix reuses a capture root for multiple modes")
-            roots.add(root)
+            if capture["kind"] in {"unsupported", "not_run"}:
+                reason = UNSUPPORTED_REASON if capture["kind"] == "unsupported" else MISSING_REASON
+                if set(capture) != {"kind", "reason"} or capture["reason"] != reason:
+                    raise ValueError("matrix non-capture reason differs from the closed contract")
+                if capture["kind"] == "unsupported" and not (
+                    cell["query_policy"] == "code_search_file" and mode != "lexical-only"
+                ):
+                    raise ValueError("matrix marks a supported query policy/mode unsupported")
+                if capture["kind"] == "not_run" and (
+                    cell["query_policy"] == "code_search_file" and mode != "lexical-only"
+                ):
+                    raise ValueError("matrix must mark unsupported query policy/mode explicitly")
+            else:
+                if set(capture) != {"kind", "root"}:
+                    raise ValueError("matrix capture fields differ from the closed contract")
+                if cell["query_policy"] == "code_search_file" and mode != "lexical-only":
+                    raise ValueError("matrix captures an unsupported query policy/mode")
+                root = _path(capture["root"], "capture root")
+                if root in roots:
+                    raise ValueError("matrix reuses a capture root for multiple modes")
+                roots.add(root)
     if observed != {(repo, family) for repo in repositories for family in families}:
         raise ValueError("matrix omits a repository/query-family cell")
     return value
@@ -148,8 +185,12 @@ def _pair(repo: Path, root: Path, registry: dict) -> tuple[dict, dict, dict]:
     return document["source"], first_spec, first_inputs
 
 
-def _mode(spec: dict, mode: str) -> None:
-    route, semble = PAIR_MODES[mode]
+def _mode(spec: dict, mode: str, policy: str = "native") -> None:
+    route, semble = (
+        ("lexical", "lexical-file")
+        if policy == "code_search_file" and mode == "lexical-only"
+        else PAIR_MODES[mode]
+    )
     baseline = pair_run.SEMBLE_ROUTE_BY_MODE[semble]
     if (
         spec.get("scope") != "exploratory"
@@ -160,7 +201,7 @@ def _mode(spec: dict, mode: str) -> None:
         or spec.get("baseline_route") != baseline
         or spec.get("semble_route") != baseline
         or not isinstance(spec.get("execution_profiles"), dict)
-        or spec["execution_profiles"].get("quanta") != query_plan.execution_profile("native")
+        or spec["execution_profiles"].get("quanta") != query_plan.execution_profile(policy)
         or not isinstance(spec["execution_profiles"].get("semble"), dict)
         or spec["execution_profiles"]["semble"].get("mode") != semble
         or type(spec.get("top_k")) is not int
@@ -186,6 +227,24 @@ def _supports_lexical_workflow(suite: dict, pack: dict) -> bool:
     )
 
 
+def _admit_queries(pack: dict, policy: str) -> None:
+    """Reject label leakage and reuse the frozen query planner."""
+    tasks = pack.get("tasks")
+    if not isinstance(tasks, list) or not tasks or LABEL_FIELDS.intersection(pack):
+        raise ValueError("matrix query pack has no tasks or leaks labels")
+    for task in tasks:
+        if (
+            not isinstance(task, dict)
+            or not isinstance(task.get("query"), str)
+            or LABEL_FIELDS.intersection(task)
+        ):
+            raise ValueError("matrix blind query pack task is malformed or leaks labels")
+        try:
+            query_plan.plan_lexical_request(policy, task["query"])
+        except query_plan.QueryPlanError as error:
+            raise ValueError("matrix query pack violates its declared policy") from error
+
+
 def verify(repo: Path, spec_path: Path) -> dict:
     """Fail on any omitted, mismatched or unverified applicable matrix cell."""
     source = code_search_workflow._source(repo)
@@ -203,7 +262,7 @@ def verify(repo: Path, spec_path: Path) -> dict:
     if spec["release_digest"] != document["digest"]:
         raise ValueError("matrix release digest differs from the validated release")
     registry = load_registry(repo / "tools/benchmark/registry.toml")
-    workflows = pairs = 0
+    workflows = pairs = unsupported = not_run = 0
     bindings = []
     family_input_digests: set[tuple[str, str, str]] = set()
     for cell in spec["cells"]:
@@ -229,14 +288,24 @@ def verify(repo: Path, spec_path: Path) -> dict:
         family_input_digests.add(input_digests)
         binding = corpus_binding._bind(document, manifest, selection, suite, pack)
         suite_data, pack_data = live._json(suite), live._json(pack)
+        policy = cell["query_policy"]
+        _admit_queries(pack_data, policy)
         bare = _supports_lexical_workflow(suite_data, pack_data)
-        if bare:
+        if bare and policy == "native":
             lexical._file_universe(suite_data, pack_data)
             lexical._tasks(suite_data, pack_data)
         for mode in MODES:
             capture = cell["captures"][mode]
+            if capture["kind"] == "unsupported":
+                unsupported += 1
+                continue
+            if capture["kind"] == "not_run":
+                not_run += 1
+                continue
             root = _path(capture["root"], "capture root")
-            expected_kind = "workflow" if mode == "lexical-only" and bare else "pair"
+            expected_kind = (
+                "workflow" if mode == "lexical-only" and bare and policy == "native" else "pair"
+            )
             if capture["kind"] != expected_kind:
                 raise ValueError(f"matrix {mode} capture kind differs from query support")
             if expected_kind == "workflow":
@@ -266,25 +335,28 @@ def verify(repo: Path, spec_path: Path) -> dict:
                 pairs += 1
             if not source_matches or canonical_json(observed_binding) != canonical_json(binding):
                 raise ValueError("matrix capture source or corpus/query binding differs")
-            _mode(pair_spec, mode)
+            _mode(pair_spec, mode, policy)
         bindings.append(
             {
                 "repository": cell["repository"],
                 "query_family": cell["query_family"],
+                "query_policy": policy,
                 "binding": binding,
             }
         )
     if code_search_workflow._source(repo) != source:
         raise ValueError("matrix source changed during verification")
     return {
-        "schema_version": 1,
-        "status": "diagnostic_unqualified",
+        "schema_version": 2,
+        "status": "diagnostic_incomplete" if not_run else "diagnostic_unqualified",
         "source": source,
         "release_digest": document["digest"],
         "expected_cells": len(repositories) * len(spec["query_families"]) * len(MODES),
         "verified_cells": workflows + pairs,
         "workflows": workflows,
         "pairs": pairs,
+        "unsupported_cells": unsupported,
+        "not_run_cells": not_run,
         "bindings": bindings,
         "exclusions": [
             "independent_gold",

@@ -2413,6 +2413,7 @@ mod tests {
             (
                 "Text",
                 SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+                    rank_unit: crate::TextRankUnit::Chunk,
                     explanation: crate::SearchExplanation::empty(),
                     generation: pin(),
                     results: Vec::new(),

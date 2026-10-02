@@ -18,29 +18,75 @@ from typing import Any
 
 try:
     from tools.benchmark.evidence import read_control
-    from tools.benchmark.retrieval import evaluator, source_oracle, source_oracle_suite
+    from tools.benchmark.retrieval import (
+        declaration_census_audit,
+        evaluator,
+        source_oracle,
+        source_oracle_suite,
+    )
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.benchmark.evidence import read_control
-    from tools.benchmark.retrieval import evaluator, source_oracle, source_oracle_suite
+    from tools.benchmark.retrieval import (
+        declaration_census_audit,
+        evaluator,
+        source_oracle,
+        source_oracle_suite,
+    )
 
-LANES = {
-    "prefix": ("PFX", source_oracle.GO_NAME_PREFIX),
-    "infix": ("IFX", source_oracle.GO_NAME_INFIX),
-    "components": ("CMP", source_oracle.GO_NAME_COMPONENTS),
-    "typo": ("TYP", source_oracle.GO_NAME_OSA1),
-    "no-answer": ("NOA", source_oracle.GO_EXACT_LOCAL_NAME),
+LANE_VARIANTS = {
+    "prefix": ("PFX", "prefix"),
+    "infix": ("IFX", "infix"),
+    "components": ("CMP", "components"),
+    "typo": ("TYP", "osa1"),
+    "no-answer": ("NOA", "exact"),
 }
+LANGUAGES = tuple(source_oracle.DECLARATION_CENSUS)
+
+
+def contract_for(language: str, variant: str) -> str:
+    matches = [
+        contract
+        for contract, key in source_oracle.NAME_CONTRACTS.items()
+        if key == (language, variant)
+    ]
+    evaluator.require(len(matches) == 1, f"no unique {language} {variant} name contract")
+    return matches[0]
+
+
+def lanes(language: str) -> dict[str, tuple[str, str]]:
+    return {
+        lane: (code, contract_for(language, variant))
+        for lane, (code, variant) in LANE_VARIANTS.items()
+    }
+
+
+LANES = lanes("go")
 # Derived from the declaration-intent no-answer lane: only probes absent from
 # every universe file even under case folding. The evaluator independently
 # rechecks that content-absence oracle against the frozen source on replay.
 CONTENT_NO_ANSWER = ("no-answer-content", "NOC")
+TYPO_CONTENT_ABSENCE = ("typo-content-absence", "TNA")
 TYPO_OPERATIONS = ("insertion", "deletion", "substitution", "transposition")
 LETTERS = "abcdefghijklmnopqrstuvwxyz"
 MAX_ATTEMPTS = 8
 SHORT_NAME_MAX = 6
 TOOL_FILES = source_oracle_suite.TOOL_FILES + (
     "tools/benchmark/retrieval/identifier_robustness_suite.py",
+    "tools/benchmark/retrieval/declaration_census_audit.py",
+    *(
+        f"tools/benchmark/retrieval/census_checkers/{name}"
+        for name in (
+            "go_checker.go",
+            "go_checker.go.mod",
+            "rust_checker.rs",
+            "rust_checker.Cargo.toml",
+            "rust_checker.Cargo.lock",
+            "ts_checker.mjs",
+            "ts_checker.package.json",
+            "ts_checker.package-lock.json",
+        )
+    ),
 )
 
 
@@ -143,13 +189,37 @@ class _Pool:
 
 
 GENERATED_HEADER = re.compile(rb"^// Code generated .* DO NOT EDIT\.$", re.MULTILINE)
+# Non-Go generated files are recognized only by an explicit marker comment near
+# the top of the file; there is no content heuristic.
+GENERATED_MARKER = re.compile(rb"(?m)^\s*(?://|#|/\*|\*).{0,120}(?:@generated|DO NOT EDIT)")
+TEST_PATHS = {
+    "go": re.compile(r"_test\.go\Z"),
+    "rust": re.compile(r"(?:\A|/)(?:tests|benches)/|_tests?\.rs\Z|(?:\A|/)tests?\.rs\Z"),
+    "python": re.compile(r"(?:\A|/)(?:tests?/|test_[^/]*\.py\Z|[^/]*_test\.py\Z|conftest\.py\Z)"),
+    "typescript": re.compile(r"(?:\A|/)(?:__tests__|tests?)/|\.(?:test|spec)\.tsx?\Z"),
+    "javascript": re.compile(r"(?:\A|/)(?:__tests__|tests?)/|\.(?:test|spec)\.[cm]?jsx?\Z"),
+}
 
 
-def _strata(task: dict, file_gold: list[dict], generated: set[str]) -> dict[str, Any]:
+def generated_files(files: dict[str, tuple[bytes, str]], language: str) -> set[str]:
+    if language == "go":
+        return {path for path, (raw, _digest) in files.items() if GENERATED_HEADER.search(raw)}
+    return {
+        path
+        for path, (raw, _digest) in files.items()
+        if source_oracle.declaration_language(path) == language
+        and GENERATED_MARKER.search(raw[:2048])
+    }
+
+
+def _strata(
+    task: dict, file_gold: list[dict], generated: set[str], language: str = "go"
+) -> dict[str, Any]:
     name = task["query"]
     paths = [row["path"] for row in file_gold]
+    test_path = TEST_PATHS[language]
     return {
-        "test_only_gold": bool(paths) and all(path.endswith("_test.go") for path in paths),
+        "test_only_gold": bool(paths) and all(test_path.search(path) for path in paths),
         "generated_only_gold": bool(paths) and all(path in generated for path in paths),
         "multi_file_gold": len(paths) > 1,
         "length": "short" if len(name) <= SHORT_NAME_MAX else "long",
@@ -162,7 +232,11 @@ def _strata(task: dict, file_gold: list[dict], generated: set[str]) -> dict[str,
 
 
 def _no_answer_probes(
-    oracle: source_oracle.SourceOracleIndex, names: list[str], seed: int, count: int
+    oracle: source_oracle.SourceOracleIndex,
+    names: list[str],
+    seed: int,
+    count: int,
+    language: str = "go",
 ) -> list[tuple[str, dict]]:
     """Recombine existing components into identifiers that no indexed declaration uses."""
     vocabulary = sorted(
@@ -190,7 +264,7 @@ def _no_answer_probes(
             or pool.conflict(probe) is not None
         ):
             continue
-        if oracle.expected_rows(source_oracle.GO_EXACT_LOCAL_NAME, probe, "distinct_file"):
+        if oracle.expected_rows(contract_for(language, "exact"), probe, "distinct_file"):
             continue
         pool.add(probe, probe)
         probes.append((probe, {"components": [first, second], "attempt": attempt - 1}))
@@ -198,8 +272,16 @@ def _no_answer_probes(
 
 
 def derive(
-    repo: Path, baseline: dict[str, Any], seed: int, sample_size: int, no_answer: int
+    repo: Path,
+    baseline: dict[str, Any],
+    seed: int,
+    sample_size: int,
+    no_answer: int,
+    language: str = "go",
 ) -> tuple[dict[str, tuple[dict, dict]], dict]:
+    evaluator.require(language in LANGUAGES, "unsupported robustness language: " + language)
+    language_lanes = lanes(language)
+    exact = language_lanes["no-answer"][1]
     _checked, _pack, source = evaluator.validate_suite(repo, baseline, source_oracle_admission=True)
     tasks = baseline["tasks"]
     for task in tasks:
@@ -212,20 +294,38 @@ def derive(
     }
     all_names = {task["query"] for task in tasks}
     oracle = source_oracle.SourceOracleIndex(files, all_names)
-    declared = sorted({token.decode("utf-8") for token in oracle._index_go_declarations()})
-    declared_set = set(declared)
-    generated = {path for path, (raw, _digest) in files.items() if GENERATED_HEADER.search(raw)}
-    base_gold = {
-        t["task_id"]: oracle.expected_rows(
-            source_oracle.GO_EXACT_LOCAL_NAME, t["query"], "distinct_file"
+    census_audit = None
+    if language != "go":
+        # The Go v3 census keeps its separately audited contract. Other languages
+        # are admitted only when an independent parser agrees on every file.
+        census_audit = declaration_census_audit.audit_files(language, repo, sorted(files))
+        evaluator.require(
+            census_audit["status"] == "admitted"
+            and census_audit["file_set_sha256"]
+            == declaration_census_audit.file_set_sha256(
+                language, {path: raw for path, (raw, _digest) in files.items()}
+            ),
+            f"{language} declaration census is not independently admitted for this universe",
         )
-        for t in tasks
+    declared = oracle.declared_names(language)
+    declared_set = set(declared)
+    generated = generated_files(files, language)
+    base_gold = {
+        t["task_id"]: oracle.expected_rows(exact, t["query"], "distinct_file") for t in tasks
     }
-    strata = {t["task_id"]: _strata(t, base_gold[t["task_id"]], generated) for t in tasks}
+    strata = {t["task_id"]: _strata(t, base_gold[t["task_id"]], generated, language) for t in tasks}
     random_sample = set(sample_families(tasks, seed, sample_size))
     multi_file = {t["query_family_id"] for t in tasks if strata[t["task_id"]]["multi_file_gold"]}
     selected = [t for t in tasks if t["query_family_id"] in random_sample | multi_file]
     census: dict[str, Any] = {
+        "language": language,
+        "declaration_census": source_oracle.DECLARATION_CENSUS[language],
+        "census_audit": None
+        if census_audit is None
+        else {
+            key: census_audit[key]
+            for key in ("checker", "files", "file_set_sha256", "agreeing_declarations", "status")
+        },
         "seed": seed,
         "population_tasks": len(tasks),
         "population_families": len({t["query_family_id"] for t in tasks}),
@@ -241,18 +341,20 @@ def derive(
         "lanes": {},
     }
     outputs: dict[str, tuple[dict, dict]] = {}
-    for lane, (code, contract) in LANES.items():
+    family_prefix = "gin" if language == "go" else language
+    for lane, (code, contract) in language_lanes.items():
         suite = copy.deepcopy(baseline)
         suite["suite_id"] = f"{baseline['suite_id']}-robustness-{lane}-seed{seed}"
         suite["routes"] = ["lexical"]
         suite["diagnostic_policy"] = evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
         pool, rows, records = _Pool(), [], []
         if lane == "no-answer":
-            probes = _no_answer_probes(oracle, declared, seed, no_answer)
+            probes = _no_answer_probes(oracle, declared, seed, no_answer, language)
             # The word index only covers constructor query names; give probes their own.
             probe_words = source_oracle.SourceOracleIndex(files, {probe for probe, _ in probes})
             items = [
-                (f"{code}-{index:03d}", f"gin-no-answer-{probe}", probe, meta, None)
+                # Go keeps the historical gin family identity of its frozen suites.
+                (f"{code}-{index:03d}", f"{family_prefix}-no-answer-{probe}", probe, meta, None)
                 for index, (probe, meta) in enumerate(probes, 1)
             ]
         else:
@@ -303,7 +405,7 @@ def derive(
             if (
                 lane == "typo"
                 and source_oracle.IDENTIFIER.fullmatch(query)
-                and oracle.expected_rows(source_oracle.GO_EXACT_LOCAL_NAME, query, "distinct_file")
+                and oracle.expected_rows(exact, query, "distinct_file")
             ):
                 record["status"] = "excluded_exact_name_collision"
                 records.append(record)
@@ -335,7 +437,7 @@ def derive(
                     query.encode("ascii") in raw for raw, _digest in files.values()
                 )
                 record["declaration_infix_names"] = len(
-                    oracle.matched_names(source_oracle.GO_NAME_INFIX, query)
+                    oracle.matched_names(language_lanes["infix"][1], query)
                 )
                 # Case-insensitive or subword systems can legitimately find a
                 # case variant (`ReadJson` -> `ReadJSON`), so the content lane
@@ -385,6 +487,10 @@ def derive(
     lane, code = CONTENT_NO_ANSWER
     outputs[lane], census["lanes"][lane] = _content_no_answer(
         repo, outputs["no-answer"][0], census["lanes"]["no-answer"]["records"], code, seed
+    )
+    lane, code = TYPO_CONTENT_ABSENCE
+    outputs[lane], census["lanes"][lane] = _typo_content_absence(
+        repo, outputs["typo"][0], files, code, seed
     )
     return outputs, census
 
@@ -460,6 +566,75 @@ def _content_no_answer(
     }
 
 
+def _typo_content_absence(
+    repo: Path,
+    source_suite: dict,
+    files: dict[str, tuple[bytes, str]],
+    code: str,
+    seed: int,
+) -> tuple[tuple[dict, dict], dict]:
+    """Reuse typo queries as hard negative default-search cases, with separate labels."""
+    source_code = LANES["typo"][0]
+    queries = {task["query"] for task in source_suite["tasks"]}
+    oracle = source_oracle.SourceOracleIndex(files, queries)
+    suite = copy.deepcopy(source_suite)
+    suite["suite_id"] = source_suite["suite_id"].replace(
+        f"-robustness-typo-seed{seed}",
+        f"-robustness-{TYPO_CONTENT_ABSENCE[0]}-seed{seed}",
+    )
+    evaluator.require(suite["suite_id"] != source_suite["suite_id"], "suite ID was not derived")
+    rows, mapping, excluded = [], [], []
+    for task in suite["tasks"]:
+        evaluator.require(
+            task["task_id"].startswith(source_code + "-") and task["answerable"],
+            "typo absence lane requires admitted typo tasks",
+        )
+        try:
+            evaluator.require(
+                not oracle.expected_rows(
+                    source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+                    task["query"],
+                    "distinct_file",
+                ),
+                "absent oracle returned a file",
+            )
+        except source_oracle.SourceOracleError as exc:
+            excluded.append(
+                {"source_task_id": task["task_id"], "query": task["query"], "reason": str(exc)}
+            )
+            continue
+        source_task_id = task["task_id"]
+        task_id = code + source_task_id[len(source_code) :]
+        mapping.append({"task_id": task_id, "source_task_id": source_task_id})
+        rows.append(
+            {
+                **task,
+                "task_id": task_id,
+                "source_oracle": {
+                    "contract": source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+                    "unit": "distinct_file",
+                },
+                "file_judgments": [],
+                "gold": [],
+                "answerable": False,
+            }
+        )
+    evaluator.require(bool(rows), "no typo near-miss absent probes were admitted")
+    suite["tasks"] = rows
+    _checked, pack, _source = evaluator.validate_suite(repo, suite)
+    return (suite, pack), {
+        "contract": source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+        "derived_from": "typo",
+        "criteria": {"content_substring_files_casefold": 0, "path_substring_files_casefold": 0},
+        "source_admitted": len(source_suite["tasks"]),
+        "admitted": len(rows),
+        "excluded": len(excluded),
+        "excluded_reasons": _tally(excluded, "reason"),
+        "excluded_probes": excluded,
+        "records": mapping,
+    }
+
+
 def _tally(rows: list[dict], key: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
@@ -475,7 +650,13 @@ def _count(rows: list[dict]) -> dict[str, dict[str, int]]:
 
 
 def write(
-    repo: Path, baseline_path: Path, output_root: Path, seed: int, sample_size: int, no_answer: int
+    repo: Path,
+    baseline_path: Path,
+    output_root: Path,
+    seed: int,
+    sample_size: int,
+    no_answer: int,
+    language: str = "go",
 ) -> dict:
     tool_root = Path(__file__).resolve().parents[3]
     tool_files = [
@@ -483,7 +664,7 @@ def write(
     ]
     baseline_bytes = read_control(baseline_path)
     baseline = source_oracle_suite._baseline_from_bytes(baseline_bytes)
-    suites, census = derive(repo, baseline, seed, sample_size, no_answer)
+    suites, census = derive(repo, baseline, seed, sample_size, no_answer, language)
     contents: dict[str, bytes] = {"census.json": source_oracle_suite._json_bytes(census)}
     for lane, (suite, pack) in suites.items():
         contents[f"{lane}-suite.json"] = source_oracle_suite._json_bytes(suite)
@@ -500,6 +681,7 @@ def write(
         "repository_commit": baseline["repository_commit"],
         "input_suite_sha256": evaluator.digest(baseline_bytes),
         "parameters": {
+            "language": language,
             "seed": seed,
             "sample_size": sample_size,
             "no_answer": no_answer,
@@ -542,6 +724,7 @@ def main() -> int:
     parser.add_argument("--seed", required=True, type=int)
     parser.add_argument("--sample-size", type=int, default=300)
     parser.add_argument("--no-answer", type=int, default=100)
+    parser.add_argument("--language", choices=LANGUAGES, default="go")
     args = parser.parse_args()
     try:
         manifest = write(
@@ -551,6 +734,7 @@ def main() -> int:
             args.seed,
             args.sample_size,
             args.no_answer,
+            args.language,
         )
     except (OSError, ValueError, source_oracle.SourceOracleError) as exc:
         parser.exit(2, f"ERROR: {exc}\n")

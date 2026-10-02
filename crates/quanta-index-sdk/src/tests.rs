@@ -346,6 +346,7 @@ fn active_resolution_rejects_wrong_same_domain_query_generation() {
     let query = Arc::new(StubQueryTransport::sequence([
         SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(active_resolution(resolved)),
         SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: wrong,
             results: Vec::new(),
@@ -411,6 +412,7 @@ fn lexical_time_resolution_binds_the_final_ancestor_pin() {
         let query = Arc::new(StubQueryTransport::sequence([
             SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(ancestor.clone()),
             SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+                rank_unit: quanta_index_contract::TextRankUnit::Chunk,
                 explanation: quanta_index_contract::SearchExplanation::empty(),
                 generation: final_pin.clone(),
                 results: vec![],
@@ -755,8 +757,11 @@ fn sample_source_coverage() -> quanta_index_contract::SourceFileCoverage {
                 repo_relative_path: RepoRelativePath::new("src/lib.rs"),
             },
             revision_id: revision_id(),
-            // Opaque producer attestations for transport-only fixtures.
-            source_sha256: [1; 32],
+            // SHA-256 of `fn sample() {}`.
+            source_sha256: [
+                141, 215, 14, 38, 175, 38, 187, 96, 1, 20, 112, 58, 208, 57, 50, 151, 166, 138,
+                186, 20, 225, 218, 254, 223, 192, 214, 250, 146, 215, 249, 111, 164,
+            ],
         },
         language: ok_or_fail!(LanguageCode::new("rust")),
         producer_policy_sha256: [2; 32],
@@ -980,6 +985,7 @@ fn sample_parse_tree_record() -> ParseTreeRecord {
 fn unused_query() -> Arc<StubQueryTransport> {
     Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: vec![],
@@ -1693,6 +1699,7 @@ fn semantic_scope_sourcegraph_query_preserves_scope_wire_fields() {
 fn lexical_query_builder_carries_top_k_to_wire_contract() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
@@ -1730,9 +1737,45 @@ fn lexical_query_builder_carries_top_k_to_wire_contract() {
 }
 
 #[test]
+fn code_search_builder_sends_explicit_product_syntax() {
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
+        TextQueryResponse {
+            rank_unit: quanta_index_contract::TextRankUnit::File,
+            explanation: quanta_index_contract::SearchExplanation::empty(),
+            generation: sample_generation_pin(),
+            results: Vec::new(),
+            window: QueryResultWindowV2::exact_probe(0),
+            file_owner_rows: None,
+            next_cursor: None,
+        },
+    )));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let _response = ok_or_fail!(
+        client
+            .lexical()
+            .query()
+            .text("writeContent Type")
+            .active(repo_id(), revision_id())
+            .top_k(10)
+            .execute()
+    );
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(req) = &captured.payload else {
+        panic!("expected text request, got {:?}", captured.payload);
+    };
+    assert_eq!(
+        req.syntax,
+        quanta_index_contract::TextQuerySyntax::CodeSearch
+    );
+    assert_eq!(req.query_text, "writeContent Type");
+    assert_eq!(req.top_k, 10);
+}
+
+#[test]
 fn lexical_constraint_setters_preserve_path_and_language_axes_v1() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: Vec::new(),
@@ -1919,6 +1962,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
 fn lexical_query_request_resolves_active_before_forwarding() {
     let query = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
@@ -2160,6 +2204,7 @@ fn hybrid_seed_request_resolves_active_before_forwarding() {
 fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
@@ -2228,6 +2273,7 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
     .source_event(sample_source_event())
     .replace_scope(
         sample_source_coverage(),
+        b"fn sample() {}".to_vec(),
         vec![chunk.clone()],
         vec![symbol.clone()],
     );
@@ -2581,6 +2627,7 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
 fn reader_client_routes_lexical_query_surface() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
@@ -3116,6 +3163,7 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
     .source_event(sample_source_event())
     .replace_scope(
         sample_source_coverage(),
+        b"fn sample() {}".to_vec(),
         vec![sample_chunk()],
         vec![sample_symbol()],
     )
@@ -5290,6 +5338,7 @@ fn text_query_builder_refuses_out_of_range_top_k_before_any_round_trip() {
 fn text_query_builder_accepts_the_public_maximum_top_k() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: quanta_index_contract::GenerationPin::new(
                 RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
@@ -5651,6 +5700,62 @@ fn binding_hit(candidate_id: &str, score: f32) -> quanta_index_contract::Lexical
     }
 }
 
+#[test]
+fn typed_code_search_response_rejects_mismatched_source_path() {
+    use quanta_index_contract::{
+        PreviewKind, PreviewMetadata, QueryConstraintSetV1, SourceFileKey, SourceFileRevision,
+        TextQueryRequest, TextQuerySyntax, TextRankUnit,
+    };
+
+    let request = quanta_index_contract::SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+        syntax: TextQuerySyntax::CodeSearch,
+        query_text: "needle".to_string(),
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: Some(sample_generation_pin()),
+        generation_selector: None,
+        top_k: 10,
+        cursor: None,
+    });
+    let binding = crate::binding::QueryCallBinding::from_request(&request);
+    let mut row = binding_hit("file:fixture", 1.0);
+    let source = SourceFileRevision {
+        file: SourceFileKey {
+            source_repo_id: row.source_repo_id.clone(),
+            repo_relative_path: RepoRelativePath::new("src/other.rs"),
+        },
+        revision_id: revision_id(),
+        source_sha256: [7; 32],
+    };
+    row.source = Some(source.clone());
+    row.preview = Some(PreviewMetadata {
+        kind: PreviewKind::Path,
+        source: Some(source),
+        chunk_start_byte: None,
+        original_focus: None,
+        original_context: None,
+        normalized_focus: None,
+        normalization_equivalent: false,
+        unavailable_reason: None,
+    });
+    row.snippet = "src/other.rs".to_string();
+    let response = SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        generation: sample_generation_pin(),
+        rank_unit: TextRankUnit::File,
+        results: vec![row],
+        window: QueryResultWindowV2::exact_probe(1),
+        explanation: SearchExplanation::empty(),
+        file_owner_rows: None,
+        next_cursor: None,
+    });
+    assert!(matches!(
+        crate::binding::bind_query_response(&binding, &response),
+        Err(crate::SdkError::Binding {
+            axis: crate::ResponseBindingAxis::CandidateIdentity,
+            ..
+        })
+    ));
+}
+
 fn binding_owner_row(
     candidate: &quanta_index_contract::LexicalCandidate,
 ) -> quanta_index_contract::FileOwnerProjectionRow {
@@ -5701,6 +5806,7 @@ fn text_swapped_owner_projection_is_refused_on_the_projection_axis() {
     let first = binding_hit("cand-1", 2.0);
     let second = binding_hit("cand-2", 1.0);
     let response = SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: sample_generation_pin(),
         results: vec![first.clone(), second.clone()],
@@ -5727,6 +5833,7 @@ fn text_exact_owner_projection_passes_binding() {
     let first = binding_hit("cand-1", 2.0);
     let second = binding_hit("cand-2", 1.0);
     let response = SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: sample_generation_pin(),
         results: vec![first.clone(), second.clone()],

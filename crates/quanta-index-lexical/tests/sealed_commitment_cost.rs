@@ -4,7 +4,7 @@
 //! The seal commits every file a query opens with its length and SHA-256.
 //! A fresh generation is measured whole; a delta inherits the base's
 //! commitment for every file that *is* the base's inode (the segment
-//! files, text-authority shards and overlays the delta hard-linked) and
+//! files, text-authority shards, file-authority sources and overlays the delta hard-linked) and
 //! measures only what it wrote. These tests pin that with an inode oracle:
 //! the files of the delta are partitioned on disk by whether their inode
 //! is the base's, and the seal's own measurement — bytes it read through
@@ -39,6 +39,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 /// shards and the base segment are the bulk of what a delta inherits.
 const DOCS: usize = 3 * 2048 + 50;
 const TEXT_AUTHORITY_DIR: &str = "text-authority";
+const FILE_AUTHORITY_DIR: &str = "file-authority";
 const SOURCE_FILE_COVERAGE: &str = "source-file-coverage.cbor";
 const TANTIVY_META: &str = "meta.json";
 const OVERLAY_FILES: [&str; 7] = [
@@ -189,7 +190,7 @@ struct CommittedFile {
 /// sees it.
 ///
 /// The Tantivy commit, every segment component and ranked-key file, every
-/// file under `text-authority/` and every overlay present. Tantivy's managed list and
+/// file under `text-authority/` or `file-authority/` and every overlay present. Tantivy's managed list and
 /// lock files, the seal's own manifest and identity and the delta marker
 /// are not query content and are not committed.
 fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn Error>> {
@@ -199,17 +200,14 @@ fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn 
         let metadata = entry.metadata()?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if metadata.is_dir() {
-            if name != TEXT_AUTHORITY_DIR {
+            if name != TEXT_AUTHORITY_DIR && name != FILE_AUTHORITY_DIR {
                 return Err(format!("unexpected directory {name}").into());
             }
             for shard in std::fs::read_dir(entry.path())? {
                 let shard = shard?;
                 let shard_metadata = shard.metadata()?;
                 files.push(CommittedFile {
-                    name: format!(
-                        "{TEXT_AUTHORITY_DIR}/{}",
-                        shard.file_name().to_string_lossy()
-                    ),
+                    name: format!("{name}/{}", shard.file_name().to_string_lossy()),
                     bytes: shard_metadata.len(),
                     inode: shard_metadata.ino(),
                 });
@@ -263,7 +261,12 @@ fn hit_ids(
     generation: ManifestGeneration,
     pattern: &str,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let searcher = adapter.open(&repo(), &revision(), generation)?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let query = LqQuery {
         lq_version: LQ_VERSION_TAG,
         expr: LqExpr::Leaf(LqLeaf::Regex(pattern.to_string())),
@@ -444,9 +447,17 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     {
         return Err("an unchanged segment did not inherit its ranked-key table".into());
     }
-    // The delta's read is a fraction of the base: the budget the ticket
-    // names, on this fixture, is well under half.
-    let budget = base_bytes.saturating_div(2);
+    // The file-authority manifest is a full source roster rewritten by a
+    // delta. Account for that known O(file-count) control artifact explicitly;
+    // all other newly hashed bytes still stay below half the base fixture.
+    let file_manifest_bytes = written
+        .iter()
+        .find(|file| file.name == "file-authority/manifest.cbor")
+        .ok_or("delta did not publish its file-authority manifest")?
+        .bytes;
+    let budget = base_bytes
+        .saturating_div(2)
+        .saturating_add(file_manifest_bytes);
     if delta_seal.bytes_hashed > budget {
         return Err(format!(
             "the delta seal read {} bytes against a {base_bytes}-byte base (budget {budget})",

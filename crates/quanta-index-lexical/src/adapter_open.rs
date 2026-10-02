@@ -25,7 +25,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, LexicalArtifactIdentityV1, LexicalIndexOpenPort, LexicalSearcher,
-    RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1, TextNormalizerVersionV1,
+    RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1, RequestBudgetV1, TextNormalizerVersionV1,
     unique_inode_tree_bytes_below_track,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,6 +48,7 @@ impl LexicalAdapter {
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
         let generation_dir = self.index_path(key);
+        let file_plan = crate::file_authority::plan_ops(&generation_dir, ops)?;
         // Planned before any op runs: the retired documents are only
         // nameable while the pre-mutation index still holds them, and the
         // doc ids the ops store come from the plan's watermark.
@@ -70,6 +71,7 @@ impl LexicalAdapter {
         // the committed index); the accounting is folded in after the lock
         // is released so the stats lock is never nested inside the writer's.
         let written = self.write_text_authority(&generation_dir, key, &guarded.index, plan)?;
+        crate::file_authority::apply_plan(&generation_dir, file_plan)?;
         drop(guarded);
         if let Some((rebuilt, receipt)) = written {
             self.record_text_authority_write(rebuilt, receipt)?;
@@ -132,6 +134,15 @@ impl LexicalAdapter {
 impl SealedGenerationVisitor for LoadedGeneration {
     fn text_authority_shard(&mut self, index: u64, body: ShardBody) -> Result<(), CoreError> {
         self.shards.push((index, body));
+        Ok(())
+    }
+
+    fn file_authority(
+        &mut self,
+        files: Vec<crate::file_authority::SourceFile>,
+        budget: Option<&RequestBudgetV1>,
+    ) -> Result<(), CoreError> {
+        self.file_authority = Some(crate::file_authority::from_verified_files(files, budget)?);
         Ok(())
     }
 
@@ -292,7 +303,9 @@ impl LexicalIndexOpenPort for LexicalAdapter {
         repo: &RepoId,
         revision: &RevisionId,
         generation: ManifestGeneration,
+        budget: &RequestBudgetV1,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
+        budget.checkpoint("lexical:cold-open")?;
         let key = GenKey {
             repo_id: repo.clone(),
             revision_id: revision.clone(),
@@ -320,7 +333,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
                 ),
             });
         }
-        self.open_sealed(&path, &identity)
+        self.open_sealed(&path, &identity, Some(budget))
     }
 
     fn open_proven(
@@ -329,7 +342,7 @@ impl LexicalIndexOpenPort for LexicalAdapter {
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
         let (generation_dir, observed) =
             self.sealed_generation_dir_for(candidate, "proven open")?;
-        let searcher = self.open_sealed(&generation_dir, &observed)?;
+        let searcher = self.open_sealed(&generation_dir, &observed, None)?;
         sync_generation_directory(&generation_dir)?;
         Ok(searcher)
     }
@@ -346,9 +359,10 @@ impl LexicalAdapter {
         &self,
         path: &Path,
         identity: &GenerationSnapshot,
+        budget: Option<&RequestBudgetV1>,
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
         let mut loaded = LoadedGeneration::default();
-        let verified = walk_sealed_generation(path, identity, &mut loaded)?;
+        let verified = walk_sealed_generation(path, identity, &mut loaded, budget)?;
         self.record_coverage_read(
             crate::sealed_generation::coverage::CoverageReadPhase::Open,
             verified.coverage_read_stats,
@@ -378,6 +392,14 @@ impl LexicalAdapter {
             &ranked_keys,
         )?
         .checked_add(coverage_bytes)
+        .and_then(|bytes| {
+            bytes.checked_add(
+                loaded
+                    .file_authority
+                    .as_ref()
+                    .map_or(0, crate::file_authority::FileAuthority::heap_bytes_estimate),
+            )
+        })
         .and_then(|bytes| bytes.checked_add(overlay_bytes))
         .ok_or_else(|| CoreError::Storage("lexical resident byte estimate overflow".into()))?;
         let artifact_identity = LexicalArtifactIdentityV1 {
@@ -388,6 +410,9 @@ impl LexicalAdapter {
             },
             repo_metadata: materialized_authorities(&overlays),
         };
+        if let Some(budget) = budget {
+            budget.checkpoint("lexical:cold-open:publish")?;
+        }
         Ok(Box::new(TantivySearcher {
             source_coverage: verified.coverage,
             source_publication_event: verified.source_publication,
@@ -402,6 +427,7 @@ impl LexicalAdapter {
             regex_policy: self.regex_policy,
             execution_budget: self.execution_budget,
             text_authority,
+            file_authority: loaded.file_authority,
             repo_commit_recency: loaded.repo_commit_recency,
             repo_meta: loaded.repo_meta,
             repo_topic: loaded.repo_topic,
@@ -418,8 +444,8 @@ impl LexicalAdapter {
 ///
 /// Every mapped file under the generation directory except decoded sidecars
 /// (each inode counted once), plus the text-authority and ranked-key heap.
-/// The caller adds decoded coverage and overlay heap before reporting to the
-/// registry; their encoded files must not be counted a second time here.
+/// The caller adds decoded file authority, coverage, and overlay heap before
+/// reporting to the registry; their encoded files must not be counted again.
 pub(crate) fn resident_bytes_estimate(
     track_root: &Path,
     generation_dir: &Path,
@@ -429,6 +455,7 @@ pub(crate) fn resident_bytes_estimate(
     let skip = |name: &str| {
         is_writer_lock_entry(name)
             || name == TEXT_AUTHORITY_DIR_NAME
+            || name == crate::file_authority::DIR
             || crate::ranked_keys::is_ranked_key_entry(name)
             || OverlayFamily::from_file_name(name).is_some()
             || name == crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME
@@ -471,6 +498,10 @@ mod tests {
                 .join("source-file-coverage-page-00-test.cbor"),
             vec![0_u8; 4096],
         )?;
+        let file_authority_dir = directory.path().join(crate::file_authority::DIR);
+        std::fs::create_dir_all(&file_authority_dir)?;
+        std::fs::write(file_authority_dir.join("manifest.cbor"), vec![0_u8; 4096])?;
+        std::fs::write(file_authority_dir.join("source.bin"), vec![0_u8; 4096])?;
         let ranked_keys = crate::ranked_keys::RankedKeyTables::bind(Vec::new(), &[])?;
         let estimate =
             resident_bytes_estimate(directory.track_path(), directory.path(), None, &ranked_keys)?;

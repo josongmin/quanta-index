@@ -175,7 +175,12 @@ fn expect_interrupted(
 #[test]
 fn a_cancelled_or_expired_budget_is_refused_before_native_collection() -> TestResult {
     let (_dir, adapter) = seeded()?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let unconstrained = QueryConstraintSetV1::unconstrained();
 
     let served = searcher.search_constrained(
@@ -217,12 +222,39 @@ fn a_cancelled_or_expired_budget_is_refused_before_native_collection() -> TestRe
     )
 }
 
+#[test]
+fn cold_open_rejects_cancelled_and_expired_budgets() -> TestResult {
+    let (_dir, adapter) = seeded()?;
+    for (budget, expected) in [
+        (cancelled_budget(), REQUEST_CANCELLED_CODE),
+        (passed_deadline_budget()?, REQUEST_DEADLINE_EXCEEDED_CODE),
+    ] {
+        match adapter.open(&repo(), &revision(), generation(), &budget) {
+            Err(CoreError::Typed { code, .. }) if code == expected => {}
+            Err(other) => return Err(format!("cold open returned {other}").into()),
+            Ok(_) => return Err("cold open succeeded under interrupted budget".into()),
+        }
+    }
+    let _live = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    Ok(())
+}
+
 /// Both cold and warm regex queries reject an already cancelled request at
 /// admission. The successful middle query remains the execution control.
 #[test]
 fn a_cancelled_budget_is_refused_before_cold_or_warm_regex_execution() -> TestResult {
     let (_dir, adapter) = seeded()?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let unconstrained = QueryConstraintSetV1::unconstrained();
 
     expect_interrupted(
@@ -269,7 +301,12 @@ fn a_cancelled_budget_is_refused_before_cold_or_warm_regex_execution() -> TestRe
 #[test]
 fn a_cancelled_budget_is_refused_before_the_unindexed_scan() -> TestResult {
     let (_dir, adapter) = seeded()?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let unconstrained = QueryConstraintSetV1::unconstrained();
 
     let served = searcher.search_constrained(

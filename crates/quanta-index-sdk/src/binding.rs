@@ -32,7 +32,7 @@ use quanta_index_contract::{
     SearchPlaneControlIpcResponse, SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SemanticQueryRequest,
-    StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
+    StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax, TextRankUnit,
     validate_file_owner_projection_v1, validate_hybrid_results_v1,
 };
 
@@ -207,6 +207,7 @@ pub(crate) struct QueryCallBinding {
     pin: Option<GenerationPin>,
     active_domain: Option<ActiveDomain>,
     top_k: Option<u32>,
+    expected_text_rank_unit: Option<TextRankUnit>,
     history_order: Option<quanta_index_contract::HistoryOrderV1>,
     /// The request's text query carries `rev:at.time(...)`: the plane's
     /// timeref authority may rebind the read to an ancestor revision.
@@ -226,6 +227,7 @@ impl QueryCallBinding {
                 pin: None,
                 active_domain: None,
                 top_k: None,
+                expected_text_rank_unit: None,
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
@@ -248,18 +250,23 @@ impl QueryCallBinding {
                 generation_selector,
                 top_k,
                 query_text,
+                syntax,
                 ..
             }) => {
                 let (pin, active_domain) =
                     identity_from(generation.clone(), generation_selector.clone());
                 let rev_at_time = is_rev_at_time_query(query_text);
-                Self::ranked(
+                let mut binding = Self::ranked(
                     ExpectedQueryResponseV1::Text,
                     pin,
                     active_domain,
                     *top_k,
                     rev_at_time,
-                )
+                );
+                if *syntax == TextQuerySyntax::CodeSearch {
+                    binding.expected_text_rank_unit = Some(TextRankUnit::File);
+                }
+                binding
             }
             SearchPlaneQueryIpcRequest::Symbol(SymbolQueryRequest {
                 generation,
@@ -353,6 +360,7 @@ impl QueryCallBinding {
                     pin,
                     active_domain,
                     top_k: Some(text_query.top_k),
+                    expected_text_rank_unit: None,
                     history_order: Some(*order),
                     rev_at_time: false,
                     max_work_units: None,
@@ -404,6 +412,7 @@ impl QueryCallBinding {
                 )),
                 active_domain: None,
                 top_k: None,
+                expected_text_rank_unit: None,
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
@@ -417,6 +426,7 @@ impl QueryCallBinding {
                 pin: Some(generation.clone()),
                 active_domain: None,
                 top_k: None,
+                expected_text_rank_unit: None,
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
@@ -429,6 +439,7 @@ impl QueryCallBinding {
                 pin: Some(generation.clone()),
                 active_domain: None,
                 top_k: None,
+                expected_text_rank_unit: None,
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
@@ -456,6 +467,7 @@ impl QueryCallBinding {
             pin,
             active_domain,
             top_k: Some(top_k),
+            expected_text_rank_unit: None,
             history_order: None,
             rev_at_time,
             max_work_units: None,
@@ -556,6 +568,31 @@ where
                 ResponseBindingAxis::CandidateIdentity,
                 "candidates from the page's generation",
                 "a candidate from another generation",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_code_search_file_rows(results: &[LexicalCandidate]) -> Result<(), SdkError> {
+    let mut files = std::collections::BTreeSet::new();
+    for row in results {
+        let valid_source =
+            row.source.is_some() && row.preview.is_some() && row.validate_source_metadata().is_ok();
+        if !valid_source {
+            return Err(binding_error(
+                "text",
+                ResponseBindingAxis::CandidateIdentity,
+                "a source-bound file row with a valid preview",
+                "a missing or mismatched file source or preview",
+            ));
+        }
+        if !files.insert((row.source_repo_id.as_str(), row.repo_relative_path.as_str())) {
+            return Err(binding_error(
+                "text",
+                ResponseBindingAxis::ResultUnit,
+                "one row per source repository and path",
+                "duplicate file rows",
             ));
         }
     }
@@ -727,12 +764,25 @@ pub(crate) fn bind_query_response(
         }
         SearchPlaneQueryIpcResponse::Text(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::Text)?;
+            if let Some(expected_unit) = binding.expected_text_rank_unit
+                && payload.rank_unit != expected_unit
+            {
+                return Err(binding_error(
+                    "text",
+                    ResponseBindingAxis::ResultUnit,
+                    expected_unit.as_str(),
+                    payload.rank_unit.as_str(),
+                ));
+            }
             check_pin(binding, &payload.generation)?;
             check_candidates(
                 binding,
                 &payload.generation,
                 payload.results.iter().map(CandidateIdentityRef::from),
             )?;
+            if binding.expected_text_rank_unit == Some(TextRankUnit::File) {
+                check_code_search_file_rows(&payload.results)?;
+            }
             check_window("text", payload.window.returned(), payload.results.len())?;
             check_cap(
                 "text",

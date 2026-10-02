@@ -23,6 +23,9 @@
 //! * `substring_file` — one raw fragment (at least three bytes) becomes a
 //!   case-sensitive raw-substring restriction (trigram candidates, byte
 //!   verification), projected to distinct files in path order.
+//! * `code_search_file` — the raw text is submitted through the public
+//!   `code_search` syntax. File projection and scored ordering are part of
+//!   that product contract, not an injected Native LQ operator.
 //!
 //! [`ordering_contract`] names how each file-projection policy orders its
 //! files; the record binds it next to the result unit.
@@ -35,6 +38,7 @@
 //! measurement phases.
 
 use crate::sha256_hex;
+use quanta_index_contract::{MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS};
 use quanta_index_lq_norm::ast::{
     LqCase, LqExpr, LqFilter, LqLeaf, LqNormalizedQuery, LqOptions, LqSelect, LqType,
 };
@@ -62,13 +66,17 @@ pub const MAX_SUBSTRING_FILE_BYTES: usize = 256;
 pub const ORDERING_SCORE_DESC: &str = "score_desc_path_tiebreak";
 /// Match-only (constant-score) restriction: files come back in path order.
 pub const ORDERING_PATH_ORDER: &str = "path_order_constant_score";
+const CODE_SEARCH_SYNTAX: &str = "code_search";
+const MAX_CODE_SEARCH_INPUT_BYTES: usize = 16 * 1024;
 
 /// How a file-projection policy orders its distinct files. `None` for
 /// policies whose results are not file projections.
 #[must_use]
 pub const fn ordering_contract(policy: QueryInputPolicy) -> Option<&'static str> {
     match policy {
-        QueryInputPolicy::KeywordFile => Some(ORDERING_SCORE_DESC),
+        QueryInputPolicy::KeywordFile | QueryInputPolicy::CodeSearchFile => {
+            Some(ORDERING_SCORE_DESC)
+        }
         QueryInputPolicy::LiteralFile | QueryInputPolicy::SubstringFile => {
             Some(ORDERING_PATH_ORDER)
         }
@@ -87,6 +95,7 @@ pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
         QueryInputPolicy::LiteralFile => "quanta-literal-file-v1",
         QueryInputPolicy::KeywordFile => "quanta-keyword-file-v1",
         QueryInputPolicy::SubstringFile => "quanta-substring-file-v1",
+        QueryInputPolicy::CodeSearchFile => "quanta-code-search-file-v1",
         QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v2",
         QueryInputPolicy::ExactSymbolName => "quanta-exact-symbol-name-v1",
     }
@@ -105,6 +114,8 @@ pub enum QueryInputPolicy {
     KeywordFile,
     /// One raw fragment as a raw-substring restriction with file projection.
     SubstringFile,
+    /// Public product code-search syntax, with scored distinct-file results.
+    CodeSearchFile,
     /// Keep the raw query for the semantic lane and derive a deterministic
     /// token-OR lexical plan from it.
     NaturalLanguage,
@@ -126,6 +137,7 @@ impl QueryInputPolicy {
             "literal_file" => Ok(Self::LiteralFile),
             "keyword_file" => Ok(Self::KeywordFile),
             "substring_file" => Ok(Self::SubstringFile),
+            "code_search_file" => Ok(Self::CodeSearchFile),
             "natural_language" => Ok(Self::NaturalLanguage),
             "exact_symbol_name" => Ok(Self::ExactSymbolName),
             other => Err(QueryPlanError::UnsupportedPolicy(other.to_string())),
@@ -141,6 +153,7 @@ impl QueryInputPolicy {
             Self::LiteralFile => "literal_file",
             Self::KeywordFile => "keyword_file",
             Self::SubstringFile => "substring_file",
+            Self::CodeSearchFile => "code_search_file",
             Self::NaturalLanguage => "natural_language",
             Self::ExactSymbolName => "exact_symbol_name",
         }
@@ -232,6 +245,8 @@ pub enum QueryPlanError {
     /// bytes, without a single quote or control character, that parses
     /// back as exactly one raw-string leaf.
     InvalidSubstring { reason: &'static str },
+    /// Code-search input is empty or exceeds the public query byte cap.
+    InvalidCodeSearch,
 }
 
 impl QueryPlanError {
@@ -249,6 +264,7 @@ impl QueryPlanError {
             Self::NativeProjectionRequiresPolicy { .. } => "RBR_QUERY_PROJECTION_REQUIRES_POLICY",
             Self::InvalidKeyword => "RBR_QUERY_KEYWORD_INVALID",
             Self::InvalidSubstring { .. } => "RBR_QUERY_SUBSTRING_INVALID",
+            Self::InvalidCodeSearch => "RBR_QUERY_CODE_SEARCH_INVALID",
         }
     }
 }
@@ -301,6 +317,7 @@ impl std::fmt::Display for QueryPlanError {
             Self::InvalidSubstring { reason } => {
                 write!(f, "substring-file policy refused the fragment: {reason}")
             }
+            Self::InvalidCodeSearch => write!(f, "code-search-file policy refused the query"),
         }
     }
 }
@@ -358,6 +375,11 @@ pub fn policy_config_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) 
              \"min_bytes\":{MIN_SUBSTRING_FILE_BYTES},\"ordering\":\"{ORDERING_PATH_ORDER}\",\
              \"policy\":\"substring_file\",\"projection\":\"file\",\"scope\":\"content\"}}"
         ),
+        QueryInputPolicy::CodeSearchFile => format!(
+            "{{\"case\":\"folded\",\"match\":\"code_search_v1\",\"ordering\":\"{ORDERING_SCORE_DESC}\",\
+             \"policy\":\"code_search_file\",\"projection\":\"file\",\"scope\":\"content_and_path\",\
+             \"syntax\":\"{CODE_SEARCH_SYNTAX}\"}}"
+        ),
         QueryInputPolicy::NaturalLanguage => format!(
             "{{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"natural_language\",{}}}",
             config.canonical_fields()
@@ -385,6 +407,7 @@ pub fn execution_profile_canonical(policy: QueryInputPolicy, config: &NlPlanConf
         | QueryInputPolicy::LiteralFile
         | QueryInputPolicy::KeywordFile
         | QueryInputPolicy::SubstringFile
+        | QueryInputPolicy::CodeSearchFile
         | QueryInputPolicy::ExactSymbolName => format!(
             "{{\"config\":{{}},\"planning_cost_in_latency\":false,\"policy\":\"{}\",\
              \"profile_id\":\"{}\"}}",
@@ -410,6 +433,7 @@ pub fn execution_profile_value(
         | QueryInputPolicy::LiteralFile
         | QueryInputPolicy::KeywordFile
         | QueryInputPolicy::SubstringFile
+        | QueryInputPolicy::CodeSearchFile
         | QueryInputPolicy::ExactSymbolName => serde_json::json!({}),
     };
     serde_json::json!({
@@ -446,6 +470,41 @@ pub fn literalize(raw: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Bind both request syntax and text. Native profiles retain their historical
+/// text-only digest; a code-search record cannot be relabeled as Native.
+#[must_use]
+pub fn effective_request_sha256(policy: QueryInputPolicy, lexical_request: &str) -> String {
+    if policy == QueryInputPolicy::CodeSearchFile {
+        let wire = serde_json::json!({
+            "query_text": lexical_request,
+            "syntax": CODE_SEARCH_SYNTAX,
+        });
+        sha256_hex(wire.to_string().as_bytes())
+    } else {
+        sha256_hex(lexical_request.as_bytes())
+    }
+}
+
+fn validate_code_search_benchmark_input(raw: &str) -> Result<(), QueryPlanError> {
+    if raw.is_empty() || raw.len() > MAX_CODE_SEARCH_INPUT_BYTES {
+        return Err(QueryPlanError::InvalidCodeSearch);
+    }
+    let terms: Vec<&str> = raw.split_ascii_whitespace().collect();
+    if terms.is_empty() || terms.len() > MAX_CODE_SEARCH_TERMS {
+        return Err(QueryPlanError::InvalidCodeSearch);
+    }
+    if terms.iter().any(|term| {
+        term.is_empty()
+            || term.len() > MAX_CODE_SEARCH_TERM_BYTES
+            || !term
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    }) {
+        return Err(QueryPlanError::InvalidCodeSearch);
+    }
+    Ok(())
 }
 
 /// Deterministic natural-language tokenization.
@@ -543,6 +602,10 @@ pub fn plan_query(
             }
             format!("select:file case:yes '{raw}'")
         }
+        QueryInputPolicy::CodeSearchFile => {
+            validate_code_search_benchmark_input(raw)?;
+            raw.to_string()
+        }
         QueryInputPolicy::NaturalLanguage => {
             let mut distinct: Vec<String> = Vec::new();
             for token in tokenize_nl(raw) {
@@ -586,19 +649,25 @@ pub fn plan_query(
                 .join(" OR ")
         }
     };
-    let parsed = validate_lexical_request(&lexical_request)?;
+    // CodeSearch is a distinct public syntax. Parsing it as Native LQ would
+    // misread literal operator words and never prove the product request.
+    let parsed = if policy == QueryInputPolicy::CodeSearchFile {
+        None
+    } else {
+        Some(validate_lexical_request(&lexical_request)?)
+    };
     // The request must parse back to exactly the one leaf the policy built:
     // no operator, filter or option can be smuggled in through the raw text.
     match policy {
         QueryInputPolicy::KeywordFile
-            if !matches!(&parsed.expr, LqExpr::Leaf(LqLeaf::Keyword(text)) if text == raw)
-                || !is_case_sensitive_file_projection(&parsed) =>
+            if !matches!(&parsed.as_ref().expect("native parsed").expr, LqExpr::Leaf(LqLeaf::Keyword(text)) if text == raw)
+                || !is_case_sensitive_file_projection(parsed.as_ref().expect("native parsed")) =>
         {
             return Err(QueryPlanError::InvalidKeyword);
         }
         QueryInputPolicy::SubstringFile
-            if !matches!(&parsed.expr, LqExpr::Leaf(LqLeaf::RawString(text)) if text == raw)
-                || !is_case_sensitive_file_projection(&parsed) =>
+            if !matches!(&parsed.as_ref().expect("native parsed").expr, LqExpr::Leaf(LqLeaf::RawString(text)) if text == raw)
+                || !is_case_sensitive_file_projection(parsed.as_ref().expect("native parsed")) =>
         {
             return Err(QueryPlanError::InvalidSubstring {
                 reason: "fragment does not parse back as one raw string",
@@ -609,11 +678,12 @@ pub fn plan_query(
         | QueryInputPolicy::LiteralFile
         | QueryInputPolicy::KeywordFile
         | QueryInputPolicy::SubstringFile
+        | QueryInputPolicy::CodeSearchFile
         | QueryInputPolicy::NaturalLanguage
         | QueryInputPolicy::ExactSymbolName => {}
     }
     if policy == QueryInputPolicy::Native {
-        for filter in &parsed.filters {
+        for filter in &parsed.as_ref().expect("native parsed").filters {
             if let LqFilter::Select { dim } = filter
                 && !matches!(dim, LqSelect::Content | LqSelect::ContentMatch)
             {
@@ -630,7 +700,7 @@ pub fn plan_query(
             }
         }
     }
-    let effective_lexical_request_sha256 = sha256_hex(lexical_request.as_bytes());
+    let effective_lexical_request_sha256 = effective_request_sha256(policy, &lexical_request);
     Ok(QueryPlan {
         policy,
         original: raw.to_string(),
@@ -979,6 +1049,57 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn code_search_file_binds_public_syntax_and_keeps_short_atoms() {
+        let config = NlPlanConfig::default();
+        let plan = plan_query(
+            QueryInputPolicy::CodeSearchFile,
+            "writeContentType",
+            &config,
+        )
+        .expect("bare identifier is valid");
+        assert_eq!(plan.lexical_request, "writeContentType");
+        assert_eq!(
+            plan.effective_lexical_request_sha256,
+            "828e78026cd79b527cc0956b3be52fdf0ebd8b110071f5c309963af3bf719480"
+        );
+        assert_ne!(
+            plan.effective_lexical_request_sha256,
+            sha256_hex(plan.lexical_request.as_bytes())
+        );
+        assert_eq!(ordering_contract(plan.policy), Some(ORDERING_SCORE_DESC));
+        assert_eq!(
+            plan_query(QueryInputPolicy::CodeSearchFile, "Go To", &config)
+                .expect("short atoms are admitted by the adapter")
+                .lexical_request,
+            "Go To"
+        );
+        assert!(plan_query(QueryInputPolicy::CodeSearchFile, "a", &config).is_ok());
+        assert!(plan_query(QueryInputPolicy::CodeSearchFile, "64Sl", &config).is_ok());
+        assert!(plan_query(QueryInputPolicy::CodeSearchFile, "foo\tbar\nqux", &config).is_ok());
+        let max_terms = ["a"; 32].join(" ");
+        let too_many_terms = ["a"; 33].join(" ");
+        let max_term = "a".repeat(256);
+        let too_long_term = "a".repeat(257);
+        assert!(plan_query(QueryInputPolicy::CodeSearchFile, &max_terms, &config).is_ok());
+        assert!(plan_query(QueryInputPolicy::CodeSearchFile, &max_term, &config).is_ok());
+        for raw in [
+            "",
+            "select:file",
+            "a-b",
+            "Café",
+            "foo\u{1c}bar",
+            "foo\u{1f}bar",
+            &too_many_terms,
+            &too_long_term,
+        ] {
+            assert!(matches!(
+                plan_query(QueryInputPolicy::CodeSearchFile, raw, &config),
+                Err(QueryPlanError::InvalidCodeSearch)
+            ));
+        }
     }
 
     #[test]

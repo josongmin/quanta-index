@@ -88,6 +88,7 @@ fn scope(
         }
     }
     Ok(SearchCorpusReplaceScope {
+        source_bytes: name.as_bytes().to_vec(),
         coverage: SourceFileCoverage {
             source: SourceFileRevision {
                 file: SourceFileKey {
@@ -163,7 +164,12 @@ fn fixture_with_scopes(
     };
     batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
     adapter.build_batch(&batch)?;
-    let searcher = adapter.open(&repo, &revision, generation())?;
+    let searcher = adapter.open(
+        &repo,
+        &revision,
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     Ok((dir, searcher))
 }
 
@@ -762,6 +768,62 @@ fn l1_primitive_admission_uses_adapter_regex_policy_and_literal_limits() -> Test
 }
 
 #[test]
+fn code_search_preflight_honors_adapter_regex_policy_before_open() -> TestResult {
+    use quanta_index_contract::LqPatternType;
+    use quanta_index_core::{LexicalEndpoint, LexicalPolicy};
+    use quanta_index_lexical::regex::RegexPolicy;
+
+    let dir = tempfile::tempdir()?;
+    let absent_root = dir.path().join("not-opened");
+    for (policy, pattern, expected) in [
+        (
+            RegexPolicy {
+                max_nfa_states: 6,
+                ..RegexPolicy::defaults()
+            },
+            "needle",
+            SearchPlaneErrorCodeV2::LexRegexBudgetExceeded,
+        ),
+        (
+            RegexPolicy {
+                require_literal: true,
+                ..RegexPolicy::defaults()
+            },
+            ".+",
+            SearchPlaneErrorCodeV2::LexRegexDialectUnsupported,
+        ),
+    ] {
+        let adapter = LexicalAdapter::with_state_root_and_policies(
+            absent_root.clone(),
+            policy,
+            quanta_index_core::LexicalExecutionBudgetV1::DEFAULT,
+            quanta_index_core::RegexMatchCachePolicy::DEFAULT,
+            quanta_index_core::LexicalWriterPolicy::DEFAULT,
+        );
+        let mut request = query("needle", false, true);
+        request.options.pattern_type = LqPatternType::CodeSearch;
+        request.expr = LqExpr::Leaf(LqLeaf::Regex(pattern.into()));
+        request.filters = vec![LqFilter::Select {
+            dim: LqSelect::File,
+        }];
+        let plan = LexicalPolicy::plan_query(
+            &request,
+            &QueryConstraintSetV1::unconstrained(),
+            LexicalEndpoint::Text,
+        )?;
+        require_code(
+            adapter.preflight_query_primitives(&plan, &RequestBudgetV1::unbounded()),
+            expected,
+            "code search regex adapter policy",
+        )?;
+    }
+    if absent_root.exists() {
+        return Err("code search policy preflight created adapter state".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn symbol_as_text_explanation_keeps_domain_when_a_predicate_is_empty() -> TestResult {
     let (_dir, searcher) = fixture()?;
     let budget = RequestBudgetV1::unbounded();
@@ -1057,6 +1119,7 @@ fn file_content_predicates_keep_source_identity_for_colliding_paths() -> TestRes
             repo_relative_path: path.clone(),
         };
         replacement.coverage.source.source_sha256 = Sha256::digest(text.as_bytes()).into();
+        replacement.source_bytes = text.as_bytes().to_vec();
         replacement.coverage.language = LanguageCode::new(language).map_err(str::to_string)?;
         for chunk in &mut replacement.chunks {
             chunk.source_repo_id = Some(source.clone());

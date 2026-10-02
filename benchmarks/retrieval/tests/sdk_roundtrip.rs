@@ -1714,17 +1714,32 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         .expect("native plan"),
     )]);
     let nl_config = NlPlanConfig::default();
+    let completed_results = outcomes
+        .iter()
+        .map(|((task, route), outcome)| {
+            let row = quanta_index_retrieval_bench::record::result_value(
+                task,
+                route,
+                outcome,
+                &plans[task],
+                10,
+                &files_by_path,
+                &published_units,
+            )
+            .expect("live completed response");
+            ((task.clone(), route.clone()), row)
+        })
+        .collect();
     let record = runner_record(&RunnerRecordInput {
         pack: &pack,
         identity: &runner_identity,
         provenance: &provenance,
         captures: &captures,
         outcomes: &outcomes,
+        completed_results: &completed_results,
         plans: &plans,
         nl_config: &nl_config,
         top_k: 10,
-        files: &files_by_path,
-        units: &published_units,
     })
     .expect("live v3 record assembles");
     // Pilot-debugging hook: dump the exact record bytes for out-of-band

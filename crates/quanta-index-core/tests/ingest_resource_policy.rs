@@ -1,5 +1,6 @@
 //! QI-BB-021 — the ingest resource envelope measures a batch as the
-//! derivation will embed it, and refuses typed before anything is held.
+//! derivation will embed it and the source files it will retain, and refuses
+//! typed before anything is held.
 //!
 //! The oracle is arithmetic the test does itself: records and text bytes
 //! counted from the typed semantic sources it built, vector bytes as `sources × dimension ×
@@ -120,6 +121,7 @@ fn batch(
                 text_admitted: true,
                 symbols: SymbolCoverage::NotRequested,
             },
+            source_bytes: raw_source.into_bytes(),
             chunks,
             symbols: Vec::new(),
         }]
@@ -184,6 +186,7 @@ fn chunk_only_batches_do_not_request_embedding() -> TestResult {
     let footprint = IngestResourcePolicy::DEFAULT.admit_search_corpus_batch(&batch, DIMENSION)?;
     if footprint.carried_records != 3
         || footprint.embedded_records != 0
+        || footprint.source_bytes != 18
         || footprint.text_bytes != 0
         || footprint.vector_bytes != 0
     {
@@ -199,12 +202,28 @@ fn typed_sources_are_the_embedded_set_when_present() -> TestResult {
     let footprint = IngestResourcePolicy::DEFAULT.admit_search_corpus_batch(&batch, DIMENSION)?;
     if footprint.carried_records != 3
         || footprint.embedded_records != 2
+        || footprint.source_bytes != 23
         || footprint.text_bytes != 4
         || footprint.vector_bytes != 2 * u64::try_from(DIMENSION)? * 4
     {
         return Err(format!("source footprint drifted: {footprint:?}").into());
     }
     Ok(())
+}
+
+/// File authority is budgeted even when the batch embeds no semantic text.
+#[test]
+fn source_file_bytes_have_a_typed_ceiling() -> TestResult {
+    let batch = batch(&["abcdef"], &[])?;
+    let at_source = IngestResourcePolicy::new(usize::MAX, 6, u64::MAX)?;
+    let admitted = at_source.admit_search_corpus_batch(&batch, DIMENSION)?;
+    assert_eq!(admitted.source_bytes, 6);
+    assert_eq!(admitted.text_bytes, 0);
+    let over_source = IngestResourcePolicy::new(usize::MAX, 5, u64::MAX)?;
+    expect_refusal(
+        over_source.admit_search_corpus_batch(&batch, DIMENSION),
+        "source bytes",
+    )
 }
 
 /// Each ceiling admits at the bound and refuses one past it, typed.
@@ -273,7 +292,11 @@ fn an_empty_batch_fits_the_smallest_policy() -> TestResult {
     let batch = batch(&[], &[])?;
     let footprint =
         IngestResourcePolicy::new(1, 1, 1)?.admit_search_corpus_batch(&batch, DIMENSION)?;
-    if footprint.carried_records != 0 || footprint.text_bytes != 0 || footprint.vector_bytes != 0 {
+    if footprint.carried_records != 0
+        || footprint.source_bytes != 0
+        || footprint.text_bytes != 0
+        || footprint.vector_bytes != 0
+    {
         return Err(format!("empty footprint drifted: {footprint:?}").into());
     }
     Ok(())

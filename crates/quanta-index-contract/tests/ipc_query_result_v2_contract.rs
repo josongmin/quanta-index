@@ -866,6 +866,7 @@ fn search_plane_ipc_response_v2_symbol_roundtrips_kind_truth() -> TestRes {
 #[test]
 fn search_plane_ipc_response_v2_sourcegraph_roundtrips_text_candidates() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
         results: vec![lexical_candidate()],
@@ -1239,6 +1240,7 @@ fn search_plane_ipc_v2_history_refuses_order_and_score_disagreements() -> TestRe
 #[test]
 fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
         results: vec![lexical_candidate()],
@@ -1310,6 +1312,7 @@ fn text_response_rejects_missing_or_contradictory_window() -> TestRes {
 #[test]
 fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
         results: vec![lexical_candidate()],
@@ -1440,6 +1443,7 @@ fn search_plane_ipc_response_v2_hybrid_rejects_duplicate_explanation() -> TestRe
 
 fn text_response_with_lexical_candidate() -> SearchPlaneQueryIpcResponse {
     SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
         results: vec![lexical_candidate()],

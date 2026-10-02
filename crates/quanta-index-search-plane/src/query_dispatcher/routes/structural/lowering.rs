@@ -19,6 +19,11 @@ pub(super) fn lower_structural_query_request(
     request: &StructuralQueryRequest,
 ) -> Result<(GenerationPin, LqQuery), CoreError> {
     let lowered = match request.text_query.syntax {
+        TextQuerySyntax::CodeSearch => {
+            return Err(structural_invalid_request(
+                "structural: code_search returns files; use native or sourcegraph syntax on this route",
+            ));
+        }
         TextQuerySyntax::Native => lower_lexical_text_query(&request.text_query)?,
         TextQuerySyntax::Sourcegraph => {
             lower_sourcegraph_structural_query_text(&request.text_query.query_text)?

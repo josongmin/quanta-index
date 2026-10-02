@@ -76,7 +76,7 @@ pub mod types;
 
 pub use builder::TrigramIndexBuilder;
 pub use errors::{LimitDimension, TrigramError, TrigramErrorCode};
-pub use index::TrigramIndex;
+pub use index::{TrigramIndex, TrigramIntersectionError};
 pub use query::{DocResolver, query_raw_substring};
 pub use regex_prefilter::regex_prefilter_any_of;
 pub use source::{ShardedTrigramIndex, TrigramPostingSource};

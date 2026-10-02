@@ -12,6 +12,7 @@ use quanta_index_core::{
 };
 
 use crate::lower_lexical_text_query;
+use crate::lowering::reject_code_search_on_nonlexical_route;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::execution_trace::LaneExecutionRecorderV1;
 use crate::query_dispatcher::planning::PreparedLanguageQueryV1;
@@ -326,6 +327,7 @@ fn plan_semantic_scope(
             "semantic: lexical scope constraints must equal outer semantic constraints".to_string(),
         ));
     }
+    reject_code_search_on_nonlexical_route(scope.syntax, "semantic lexical scope")?;
     let lowered_scope = lower_lexical_text_query(scope)?;
     let prepared =
         dispatcher.prepare_lexical_language_query(lowered_scope, &request.constraints, budget)?;

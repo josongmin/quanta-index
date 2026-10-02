@@ -251,6 +251,13 @@ def _sourcegraph(
     admitted: dict[str, str],
     target: Path,
 ) -> dict:
+    capability = lexical.sourcegraph_capability(task["query"])
+    if capability["status"] == "unsupported":
+        row = _unsupported_sourcegraph(task, gold)
+        _write(
+            target.with_suffix(".capability.json"), json.dumps(row, sort_keys=True).encode() + b"\n"
+        )
+        return row
     extensions = sourcegraph.file_extensions([row["path"] for row in manifest["files"]])
     query = sourcegraph.query_expression(
         task["query"],
@@ -277,6 +284,20 @@ def _sourcegraph(
     return _sourcegraph_response(
         config, task, gold, manifest, view, admitted, status, content_type, raw, elapsed
     )
+
+
+def _unsupported_sourcegraph(task: dict, gold: list[str]) -> dict:
+    capability = lexical.sourcegraph_capability(task["query"])
+    if capability["status"] != "unsupported":
+        raise ValueError("supported Sourcegraph query cannot be relabeled unsupported")
+    return {
+        "lane": "symbol_only",
+        "task_id": task["task_id"],
+        "submitted_query": task["query"],
+        "gold_paths": gold,
+        "status": "unsupported",
+        "capability_reason": capability["reason"],
+    }
 
 
 def _sourcegraph_response(
@@ -343,6 +364,8 @@ def _preflight_sourcegraph_request_targets(
     extensions = sourcegraph.file_extensions([row["path"] for row in manifest["files"]])
     max_target_bytes = 0
     for task in tasks:
+        if lexical.sourcegraph_capability(task["query"])["status"] == "unsupported":
+            continue
         query = sourcegraph.query_expression(
             task["query"],
             config["repository"],
@@ -964,6 +987,11 @@ def verify(root: Path) -> dict:
                 f"cs/{task_id}.process.json",
             }
         )
+        if lexical.sourcegraph_capability(task["query"])["status"] == "unsupported":
+            expected_raw.difference_update(
+                {f"sourcegraph/{task_id}.stream", f"sourcegraph/{task_id}.transport.json"}
+            )
+            expected_raw.add(f"sourcegraph/{task_id}.capability.json")
     if probe_indexed_view:
         for probe in ("opengrok-view", "opengrok-view-post"):
             for phase in ("before", "after"):
@@ -1042,6 +1070,17 @@ def verify(root: Path) -> dict:
 
         def replay_row(task, row, name=name):
             task_id, gold = task["task_id"], tasks[task["task_id"]][1]
+            if (
+                name == "sourcegraph"
+                and lexical.sourcegraph_capability(task["query"])["status"] == "unsupported"
+            ):
+                derived = _unsupported_sourcegraph(task, gold)
+                if (
+                    _json(_read_control_file(root / name / f"{task_id}.capability.json")) != derived
+                    or row != derived
+                ):
+                    raise ValueError("Sourcegraph capability row differs from frozen query support")
+                return
             if name == "cs":
                 terminal = _json(_read_control_file(root / name / f"{task_id}.process.json"))
                 if (

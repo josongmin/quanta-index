@@ -172,6 +172,7 @@ fn corpus(pin: &GenerationPin) -> Result<SearchCorpusBatch, Box<dyn Error>> {
                 text_admitted: true,
                 symbols: SymbolCoverage::Complete { symbol_count: 1 },
             },
+            b"fn needle() {}".to_vec(),
             chunks,
             symbols,
         );

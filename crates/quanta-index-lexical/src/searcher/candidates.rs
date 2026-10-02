@@ -673,6 +673,7 @@ mod l4_source_decode_regressions {
             regex_policy: RegexPolicy::defaults(),
             execution_budget: LexicalExecutionBudgetV1::DEFAULT,
             text_authority: Some(text_authority),
+            file_authority: None,
             repo_commit_recency: None,
             repo_meta: None,
             repo_topic: None,

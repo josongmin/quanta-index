@@ -41,7 +41,8 @@ impl GenerationIdentityValidatePort for LexicalAdapter {
         // decodable file read once, proved and decoded; the index opened
         // from the proved commit; the segment files proved present at their
         // committed length. What is admitted here is what a query can open.
-        let _verified = walk_sealed_generation(&generation_dir, &observed, &mut DiscardingVisitor)?;
+        let _verified =
+            walk_sealed_generation(&generation_dir, &observed, &mut DiscardingVisitor, None)?;
         sync_generation_directory(&generation_dir)
     }
 }
@@ -199,6 +200,7 @@ impl DoorFindingQuarantinePort for LexicalAdapter {
             &generation_dir,
             &observed,
             &mut DiscardingVisitor,
+            None,
             None,
         ) {
             Ok(_verified) => Ok(DoorFindingOutcome::NotReproduced),

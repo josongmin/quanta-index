@@ -304,6 +304,7 @@ fn replace_scope(
             text_admitted: !file.chunks.is_empty(),
             symbols: SymbolCoverage::NotRequested,
         },
+        source_bytes: file.body.as_bytes().to_vec(),
         chunks: file.chunks.clone(),
         symbols: Vec::new(),
     })
@@ -501,7 +502,12 @@ fn run() -> Result<BenchArtifactV1> {
     let build_ms = elapsed_ms(build_started);
     let index_bytes = directory_bytes(&args.index_dir)?;
 
-    let searcher = adapter.open(&repo, &revision, generation)?;
+    let searcher = adapter.open(
+        &repo,
+        &revision,
+        generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let measurement = measure_query(searcher.as_ref(), args.samples)?;
 
     let artifact = artifact(
@@ -577,7 +583,12 @@ mod tests {
         let root = tempfile::tempdir()?;
         let adapter = LexicalAdapter::with_state_root(root.path().join("index"));
         adapter.build_batch(&batch)?;
-        let searcher = adapter.open(&batch.repo_id, &batch.revision_id, generation)?;
+        let searcher = adapter.open(
+            &batch.repo_id,
+            &batch.revision_id,
+            generation,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
+        )?;
         anyhow::ensure!(
             measure_query(searcher.as_ref(), 1)?.hits == 1,
             "indexed hit count differs"

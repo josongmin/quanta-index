@@ -180,7 +180,12 @@ fn the_estimate_counts_the_decoded_authority_not_its_cbor() -> TestResult {
     if authority_cbor == 0 {
         return Err("the fixture writes a text authority".into());
     }
-    let handle = adapter.open(&repo(), &revision(), ManifestGeneration::new(1))?;
+    let handle = adapter.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(1),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let estimate = handle.resident_bytes_estimate();
     if estimate <= mapped + authority_cbor {
         return Err(format!(
@@ -217,7 +222,12 @@ fn a_hard_linked_delta_counts_shared_inodes_once() -> TestResult {
     // it is linked; the inode set counts it once. The estimate for the
     // delta is at most its inode-set bytes plus a decoded authority that is
     // itself bounded above by a generous multiple of the sidecar bytes.
-    let handle = adapter.open(&repo(), &revision(), ManifestGeneration::new(2))?;
+    let handle = adapter.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(2),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let estimate = handle.resident_bytes_estimate();
     let authority_cbor = text_authority_disk_bytes(&delta)?;
     let decoded_ceiling = authority_cbor.saturating_mul(8);

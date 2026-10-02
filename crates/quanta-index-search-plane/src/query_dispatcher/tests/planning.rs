@@ -1,5 +1,30 @@
-use crate::query_dispatcher::planning::prepare_language_query_v1;
+use crate::query_dispatcher::planning::{prepare_language_query_v1, text_rank_unit};
 use crate::query_dispatcher::tests::support::common::build_probe_query;
+
+#[test]
+fn text_rank_unit_follows_the_normalized_projection() {
+    use quanta_index_contract::{LqFilter, LqPatternType, LqSelect, LqType, TextRankUnit};
+
+    let mut query = build_probe_query("needle");
+    assert_eq!(text_rank_unit(&query), TextRankUnit::Chunk);
+    query.filters.push(LqFilter::Select {
+        dim: LqSelect::File,
+    });
+    assert_eq!(text_rank_unit(&query), TextRankUnit::File);
+    query.filters = vec![LqFilter::Type { kind: LqType::Path }];
+    assert_eq!(text_rank_unit(&query), TextRankUnit::File);
+    query.filters = vec![LqFilter::Select {
+        dim: LqSelect::Repo,
+    }];
+    assert_eq!(text_rank_unit(&query), TextRankUnit::Repository);
+    query.filters = vec![LqFilter::Select {
+        dim: LqSelect::Symbol,
+    }];
+    assert_eq!(text_rank_unit(&query), TextRankUnit::Symbol);
+    query.filters.clear();
+    query.options.pattern_type = LqPatternType::CodeSearch;
+    assert_eq!(text_rank_unit(&query), TextRankUnit::File);
+}
 
 #[test]
 fn typed_and_dsl_language_constraints_intersect_before_every_retrieval_lane_v1() {

@@ -26,8 +26,11 @@ import argparse
 import hashlib
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 try:
@@ -55,6 +58,8 @@ except ImportError:  # direct script invocation: import the sibling module
     )
 
 SEMBLE_PINNED_VERSION = "0.6.0"
+QUERY_TIMING_BOUNDARY = "request_construction_to_normalized_response"
+QUERY_TIMING_CLOCK = "capture_relative_monotonic_ns"
 
 
 def execution_profile(mode: str, alpha: float | None) -> dict:
@@ -88,6 +93,9 @@ import inspect
 import os
 import sys
 import time
+import contextlib
+
+protocol_output = sys.stdout
 
 def peak_resident_bytes() -> int:
     if sys.platform == "win32":
@@ -285,6 +293,14 @@ def main() -> int:
             "lane_candidate_depths": {"bm25": [], "semantic": []},
         }
         active = event
+        protocol_output.write(json.dumps({
+            "kind": "request_ready", "task_id": task_id, "phase": phase,
+            "iteration": phase_iteration, "indexed_chunks": len(index.chunks),
+        }) + "\\n")
+        protocol_output.flush()
+        request = json.loads(sys.stdin.readline())
+        if request != {"task_id": task_id, "query": query, "top_k": top_k}:
+            raise SystemExit("parent request differs from the frozen worker schedule")
         # Single dispatch shared by cold, warmup, and measured phases
         # (RBR-03): no phase can run a different profile.
         try:
@@ -310,7 +326,19 @@ def main() -> int:
         finally:
             events.append(event)
             active = None
-        return result
+        native_result = [
+            {"file_path": hit.chunk.file_path, "start_line": int(hit.chunk.start_line),
+             "end_line": int(hit.chunk.end_line), "score": float(hit.score)}
+            for hit in result
+        ]
+        protocol_output.write(json.dumps({"kind": "response", "task_id": task_id,
+                                          "results": native_result}) + "\\n")
+        protocol_output.flush()
+        observation = json.loads(sys.stdin.readline())
+        if observation.get("task_id") != task_id or observation.get("phase") != phase:
+            raise SystemExit("parent completed-response observation differs from the request")
+        completed_calls.append(observation)
+        return native_result
 
     observed = sorted({chunk.file_path for chunk in index.chunks})
     stats = {
@@ -329,6 +357,7 @@ def main() -> int:
     repetitions = int(spec.get("repetitions", 1))
     protocol = spec.get("query_protocol")
     query_by_id = dict(queries)
+    completed_calls = []
     cold_latency_ms = None
     cold_query_start_ns = index_end_ns
     cold_query_end_ns = index_end_ns
@@ -337,7 +366,7 @@ def main() -> int:
         task_id = protocol["cold_probe_task_id"]
         dispatch(query_by_id[task_id], top_k, rep=0, phase="cold", phase_iteration=0, task_id=task_id)
         cold_query_end_ns = time.monotonic_ns()
-        cold_latency_ms = (cold_query_end_ns - cold_query_start_ns) / 1_000_000.0
+        cold_latency_ms = (completed_calls[-1]["end_ns"] - completed_calls[-1]["start_ns"]) / 1_000_000.0
         warmup_schedules = protocol["warmup_schedules"]
         measurement_schedules = protocol["measurement_schedules"]
     else:
@@ -360,7 +389,7 @@ def main() -> int:
             t0 = time.monotonic_ns()
             results = dispatch(query, top_k, rep=rep, phase="measured", phase_iteration=rep, task_id=task_id)
             ended_ns = time.monotonic_ns()
-            elapsed_ms = (ended_ns - t0) / 1_000_000.0
+            elapsed_ms = (completed_calls[-1]["end_ns"] - completed_calls[-1]["start_ns"]) / 1_000_000.0
             if first_query_ms is None:
                 first_query_ms = elapsed_ms
                 first_query_start_ns = t0
@@ -370,15 +399,7 @@ def main() -> int:
                 native.append(
                     {
                         "task_id": task_id,
-                        "results": [
-                            {
-                                "file_path": r.chunk.file_path,
-                                "start_line": int(r.chunk.start_line),
-                                "end_line": int(r.chunk.end_line),
-                                "score": float(r.score),
-                            }
-                            for r in results
-                        ],
+                        "results": results,
                     }
                 )
                 if profile in ("native-default", "hybrid-no-rerank"):
@@ -473,9 +494,9 @@ def main() -> int:
         "warmup_ms": (
             warmup_end_ns - (cold_query_end_ns if protocol is not None else index_end_ns)
         ) / 1_000_000.0,
-        "first_query_ms": first_query_ms,
-        "warm_query_ms": max(query_ms - first_query_ms, 0.0),
-        "cold_query_ms": cold_latency_ms,
+        "first_query_ms": (first_query_end_ns - first_query_start_ns) / 1_000_000.0,
+        "warm_query_ms": max(query_ms - (first_query_end_ns - first_query_start_ns) / 1_000_000.0, 0.0),
+        "cold_query_ms": (cold_query_end_ns - cold_query_start_ns) / 1_000_000.0,
         "protocol_warm_query_ms": query_ms if protocol is not None else None,
         "worker_total_ms": (worker_end_ns - worker_started_ns) / 1_000_000.0,
         "phase_boundaries_ns": phase_boundaries_ns,
@@ -487,7 +508,11 @@ def main() -> int:
         "cold_latency_ms": cold_latency_ms,
         "native": native,
         "latencies_ms": latencies,
-        "timing_layer": "worker_wall_per_query_ms",
+        "query_timing": {
+            "boundary": "request_construction_to_normalized_response",
+            "clock": "capture_relative_monotonic_ns",
+            "observations": completed_calls,
+        },
         "worker_pid": os.getpid(),
         "repetitions": repetitions,
         "warmup_passes": warmup,
@@ -496,11 +521,14 @@ def main() -> int:
     with open(out_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\\n")
+    protocol_output.write(json.dumps({"kind": "finished"}) + "\\n")
+    protocol_output.flush()
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    with contextlib.redirect_stdout(sys.stderr):
+        raise SystemExit(main())
 '''
 
 
@@ -1219,48 +1247,15 @@ def count_tokens(text: str) -> int:
     return len(TOKEN_RE.findall(text))
 
 
-def normalize_record(
-    pack: dict,
-    pack_sha256: str,
-    native: list[dict],
-    latencies: dict[str, list[float]],
-    repo: Path,
-    file_shas: dict[str, str],
-    file_lines: dict[str, list[bytes]],
-    contract: dict,
-    run_id: str,
-    blinding: str,
-    isolation_method: str,
-    access_block_log: str,
-    model: str,
-    model_revision: str,
-    route: str,
-    profile: dict,
-    capture_id: str,
-    receipt_digest: str,
-    worker_digest: str,
-    *,
-    indexed_chunks: int | None = None,
-) -> dict:
-    """Native Semble hits -> v5 runner record. Order preserved, spans proven.
-
-    Unknown latency is null, never 0. The capture binds the Semble-owned
-    chunker, the exact worker bytes, and the mapping-proof anchor.
-    """
+def normalize_results(
+    pack, native, latencies, file_shas, file_lines, contract, route, profile, *, indexed_chunks=None
+):
+    """One canonical per-query normalization owner; capture envelopes are separate."""
     if not isinstance(contract, dict) or pack.get("comparison_contract") != contract:
         raise AdapterError("pack comparison contract differs from the capture contract")
     top_k = contract.get("top_k")
     if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
         raise AdapterError("capture contract top_k must be a positive integer")
-    if not isinstance(capture_id, str) or not capture_id.strip():
-        raise AdapterError("capture_id must be a nonempty string")
-    for label, value in (("receipt_digest", receipt_digest), ("worker_digest", worker_digest)):
-        if (
-            not isinstance(value, str)
-            or len(value) != 64
-            or any(c not in "0123456789abcdef" for c in value)
-        ):
-            raise AdapterError(f"{label} must be a lowercase sha256")
     if not isinstance(native, list):
         raise AdapterError("Semble native rows must be a list")
     file_mode = profile.get("mode") == "lexical-file"
@@ -1274,7 +1269,9 @@ def normalize_record(
         line_offsets[path] = offsets
     results = []
 
-    def append_result(row: dict, *, matched_chunks: int | None = None, matched_files: int | None = None):
+    def append_result(
+        row: dict, *, matched_chunks: int | None = None, matched_files: int | None = None
+    ):
         if file_mode:
             row.update(
                 rank_unit="distinct_file",
@@ -1368,7 +1365,9 @@ def normalize_record(
                 if not is_finite_json_number(score) or score <= 0:
                     raise AdapterError(f"Semble file collection has invalid BM25 score: {task_id}")
                 if previous_score is not None and score > previous_score:
-                    raise AdapterError(f"Semble file collection is not in native score order: {task_id}")
+                    raise AdapterError(
+                        f"Semble file collection is not in native score order: {task_id}"
+                    )
                 previous_score = score
             if not isinstance(path, str) or path not in file_shas:
                 hit_error = {
@@ -1427,16 +1426,16 @@ def normalize_record(
                     continue
                 seen_spans.add(span)
             candidate = {
-                    "path": path,
-                    "start_byte": start_byte,
-                    "end_byte": start_byte + len(block),
-                    "start_line": start,
-                    "end_line": end,
-                    "file_sha256": file_shas[path],
-                    "block_sha256": hashlib.sha256(block).hexdigest(),
-                    "tokens": tokens,
-                    "rank": len(candidates) + 1,
-                }
+                "path": path,
+                "start_byte": start_byte,
+                "end_byte": start_byte + len(block),
+                "start_line": start,
+                "end_line": end,
+                "file_sha256": file_shas[path],
+                "block_sha256": hashlib.sha256(block).hexdigest(),
+                "tokens": tokens,
+                "rank": len(candidates) + 1,
+            }
             if file_mode:
                 candidate["score"] = score
             candidates.append(candidate)
@@ -1466,6 +1465,37 @@ def normalize_record(
             matched_chunks=len(hits),
             matched_files=len(seen_files) if file_mode else None,
         )
+    return results
+
+
+def assemble_record(
+    pack,
+    pack_sha256,
+    results,
+    native,
+    run_id,
+    blinding,
+    isolation_method,
+    access_block_log,
+    model,
+    model_revision,
+    route,
+    profile,
+    capture_id,
+    receipt_digest,
+    worker_digest,
+):
+    """Assemble provenance once around already completed normalized responses."""
+    contract = pack["comparison_contract"]
+    if not isinstance(capture_id, str) or not capture_id.strip():
+        raise AdapterError("capture_id must be a nonempty string")
+    for label, value in (("receipt_digest", receipt_digest), ("worker_digest", worker_digest)):
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(c not in "0123456789abcdef" for c in value)
+        ):
+            raise AdapterError(f"{label} must be a lowercase sha256")
     ordered_native = sorted(native, key=lambda row: str(row.get("task_id")))
     return {
         "schema_version": 5,
@@ -1501,6 +1531,60 @@ def normalize_record(
         "route_provenance": {route: {"capture_id": capture_id}},
         "results": results,
     }
+
+
+def normalize_record(
+    pack: dict,
+    pack_sha256: str,
+    native: list[dict],
+    latencies: dict[str, list[float]],
+    repo: Path,
+    file_shas: dict[str, str],
+    file_lines: dict[str, list[bytes]],
+    contract: dict,
+    run_id: str,
+    blinding: str,
+    isolation_method: str,
+    access_block_log: str,
+    model: str,
+    model_revision: str,
+    route: str,
+    profile: dict,
+    capture_id: str,
+    receipt_digest: str,
+    worker_digest: str,
+    *,
+    indexed_chunks: int | None = None,
+) -> dict:
+    """Replay native captures through the same row and envelope owners."""
+    results = normalize_results(
+        pack,
+        native,
+        latencies,
+        file_shas,
+        file_lines,
+        contract,
+        route,
+        profile,
+        indexed_chunks=indexed_chunks,
+    )
+    return assemble_record(
+        pack,
+        pack_sha256,
+        results,
+        native,
+        run_id,
+        blinding,
+        isolation_method,
+        access_block_log,
+        model,
+        model_revision,
+        route,
+        profile,
+        capture_id,
+        receipt_digest,
+        worker_digest,
+    )
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -1549,6 +1633,129 @@ def validate_worker_phase_timings(
         raise AdapterError("Semble worker total timing is inconsistent with phases")
     phases["unattributed"] = total - phase_sum
     return phases, total
+
+
+def run_completed_worker(
+    command, *, env, timeout_secs, tasks, top_k, route, normalize_response, stderr_path
+):
+    """One resident worker; one parent clock covers request through normalized status.
+
+    Query execution, native JSON materialization, pipe transfer, decoding and
+    parent normalization all occur before end_ns. Worker phase timestamps are
+    never subtracted from the parent's clock. Startup/indexing precede requests.
+    """
+    origin_ns = time.monotonic_ns()
+    deadline = time.monotonic() + timeout_secs
+    completed_rows = {}
+    with open(stderr_path, "w", encoding="utf-8") as stderr:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+            env=env,
+            text=True,
+            bufsize=1,
+        )
+        messages = queue.Queue(maxsize=2)
+        stopped = threading.Event()
+
+        def read_messages():
+            while not stopped.is_set():
+                try:
+                    raw = process.stdout.readline(64 * 1024 * 1024 + 1)
+                except (OSError, ValueError) as exc:
+                    raw = exc
+                while not stopped.is_set():
+                    try:
+                        messages.put(raw, timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
+                if not raw or isinstance(raw, Exception):
+                    break
+
+        reader = threading.Thread(target=read_messages, daemon=True)
+        reader.start()
+        try:
+
+            def receive():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AdapterError("Semble completed-response worker timed out")
+                try:
+                    raw = messages.get(timeout=remaining)
+                except queue.Empty as exc:
+                    raise AdapterError("Semble completed-response worker timed out") from exc
+                if isinstance(raw, Exception):
+                    raise AdapterError("Semble completed-response protocol read failed") from raw
+                if not raw or len(raw) > 64 * 1024 * 1024 or not raw.endswith("\n"):
+                    raise AdapterError("Semble worker omitted a bounded complete protocol message")
+                try:
+                    message = json.loads(raw)
+                except ValueError as exc:
+                    raise AdapterError("Semble worker emitted invalid protocol JSON") from exc
+                if not isinstance(message, dict):
+                    raise AdapterError("Semble worker protocol message must be an object")
+                return message
+
+            while True:
+                ready = receive()
+                if ready.get("kind") == "finished":
+                    break
+                if ready.get("kind") != "request_ready" or ready.get("task_id") not in tasks:
+                    raise AdapterError("Semble worker emitted an unexpected request")
+                task_id = ready["task_id"]
+                start_ns = time.monotonic_ns() - origin_ns
+                request = {"task_id": task_id, "query": tasks[task_id], "top_k": top_k}
+                process.stdin.write(json.dumps(request) + "\n")
+                process.stdin.flush()
+                response = receive()
+                if response.get("kind") != "response" or response.get("task_id") != task_id:
+                    raise AdapterError("Semble worker response differs from the pending request")
+                row = normalize_response(task_id, response.get("results"), ready["indexed_chunks"])
+                required_output = dict(row)
+                required_output.pop("timings")
+                output_bytes = len(canonical(required_output))
+                end_ns = time.monotonic_ns() - origin_ns
+                observation = {
+                    "task_id": task_id,
+                    "route": route,
+                    "phase": ready["phase"],
+                    "iteration": ready["iteration"],
+                    "start_ns": start_ns,
+                    "end_ns": end_ns,
+                    "status": row["status"],
+                    "output_bytes": output_bytes,
+                }
+                row["timings"]["query_latency_ms"] = (end_ns - start_ns) / 1e6
+                if ready["phase"] == "measured" and ready["iteration"] == 0:
+                    if task_id in completed_rows:
+                        raise AdapterError("Semble worker repeated a first completed response")
+                    completed_rows[task_id] = row
+                process.stdin.write(json.dumps(observation) + "\n")
+                process.stdin.flush()
+            process.stdin.close()
+            process.wait(timeout=max(deadline - time.monotonic(), 0.01))
+            if process.returncode != 0:
+                raise AdapterError(f"Semble completed-response worker exited {process.returncode}")
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+        finally:
+            stopped.set()
+            reader.join(timeout=1)
+            if not reader.is_alive():
+                process.stdout.close()
+            if not process.stdin.closed:
+                process.stdin.close()
+    if set(completed_rows) != set(tasks):
+        raise AdapterError("Semble worker did not complete the full task inventory")
+    completed = subprocess.CompletedProcess(
+        command, process.returncode, "", Path(stderr_path).read_text()
+    )
+    return completed, [completed_rows[task_id] for task_id in tasks]
 
 
 def run_adapter(args: argparse.Namespace) -> int:
@@ -1662,14 +1869,42 @@ def run_adapter(args: argparse.Namespace) -> int:
     env["TRANSFORMERS_OFFLINE"] = "1"
     env["SEMBLE_MODEL_NAME"] = model_id
     env["SEMBLE_MAX_FILE_BYTES"] = str(max_file_bytes)
+    file_shas: dict[str, str] = {}
+    file_lines: dict[str, list[bytes]] = {}
+    for name, sha in admitted_rows:
+        data = (repo / name).read_bytes()
+        if hashlib.sha256(data).hexdigest() != sha:
+            raise AdapterError(f"pinned source drifted during the run: {name}")
+        file_shas[name] = sha
+        file_lines[name] = data.splitlines(keepends=True)
+
+    tasks_by_id = {task["task_id"]: task for task in pack["tasks"]}
+
+    def normalize_response(task_id, hits, indexed_chunks):
+        single_pack = dict(pack, tasks=[tasks_by_id[task_id]])
+        normalized = normalize_results(
+            single_pack,
+            [{"task_id": task_id, "results": hits}],
+            {},
+            file_shas,
+            file_lines,
+            pack["comparison_contract"],
+            args.route,
+            profile,
+            indexed_chunks=indexed_chunks,
+        )
+        return normalized[0]
+
     try:
-        completed = subprocess.run(
+        completed, completed_rows = run_completed_worker(
             [str(Path(args.python)), str(worker_path)],
-            check=True,
-            timeout=_int(args.timeout_secs, "timeout_secs"),
+            timeout_secs=_int(args.timeout_secs, "timeout_secs"),
             env=env,
-            capture_output=True,
-            text=True,
+            tasks={task_id: task["query"] for task_id, task in tasks_by_id.items()},
+            top_k=top_k,
+            route=args.route,
+            normalize_response=normalize_response,
+            stderr_path=out_root / "worker.stderr.log",
         )
     except subprocess.TimeoutExpired as exc:
         raise AdapterError(f"Semble worker timed out: {exc}") from exc
@@ -1706,15 +1941,11 @@ def run_adapter(args: argparse.Namespace) -> int:
             f"(see {out_root / 'mapping-proof.json'})"
         )
 
-    # Source bytes for span proofs (pinned checkout, not the copied corpus).
-    file_shas: dict[str, str] = {}
-    file_lines: dict[str, list[bytes]] = {}
+    # Reverify the source after every measured response used the pinned bytes.
     for name, sha in admitted_rows:
         data = (repo / name).read_bytes()
         if hashlib.sha256(data).hexdigest() != sha:
             raise AdapterError(f"pinned source drifted during the run: {name}")
-        file_shas[name] = sha
-        file_lines[name] = data.splitlines(keepends=True)
 
     pack_canonical = json.dumps(
         json.loads(Path(args.query_pack).read_text(encoding="utf-8")),
@@ -1726,16 +1957,11 @@ def run_adapter(args: argparse.Namespace) -> int:
     model_asset = model_asset_digest(materialized_hf, model_id, model_revision)
     if model_asset != source_model_asset:
         raise AdapterError("model snapshot changed while the worker was running")
-    native_stats = native_payload.get("stats")
-    record = normalize_record(
+    record = assemble_record(
         pack,
         pack_sha256,
+        completed_rows,
         native_payload.get("native", []),
-        native_payload.get("latencies_ms", {}),
-        repo,
-        file_shas,
-        file_lines,
-        pack["comparison_contract"],
         args.run_id,
         args.blinding,
         args.isolation_method,
@@ -1747,7 +1973,6 @@ def run_adapter(args: argparse.Namespace) -> int:
         args.run_id,
         diff_digest,
         worker_digest,
-        indexed_chunks=(native_stats.get("total_chunks") if isinstance(native_stats, dict) else None),
     )
     phase_values, worker_total_ms = validate_worker_phase_timings(
         native_payload, protocol=query_protocol is not None
@@ -1768,6 +1993,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         "function_identity": native_payload.get("function_identity"),
         "observed_wrapped_call_ns": native_payload.get("observed_wrapped_call_ns"),
         "timing_layer": "worker_monotonic_wall_v1",
+        "query_timing": native_payload["query_timing"],
         "strategy": "native",
         "record_sha256": sha_file(record_path),
         "worker_sha256": worker_digest,

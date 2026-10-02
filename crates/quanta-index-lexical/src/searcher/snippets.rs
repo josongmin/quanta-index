@@ -21,6 +21,15 @@ use sha2::{Digest, Sha256};
 const OUTPUT_LEASE_OVERHEAD_BYTES: usize =
     core::mem::size_of::<LexicalMemoryReservation>().saturating_mul(4);
 
+pub(crate) fn normalization_changed_for_focus(
+    raw: &str,
+    indexed: &str,
+    original: Range<usize>,
+    normalized: Range<usize>,
+) -> bool {
+    raw.get(original) != indexed.get(normalized)
+}
+
 pub(crate) use super::preview_types::{
     PreviewResult, PreviewStop, RenderedPreview, SelectedSnippetSource, SnippetContext,
     SnippetLimits, integrity, token_allocation_bound,
@@ -283,7 +292,12 @@ fn render_selected_inner<'a>(
             None
         },
         normalization_equivalent: is_source
-            && raw.get(focus.original.clone()) != indexed.get(focus.normalized.clone()),
+            && normalization_changed_for_focus(
+                raw,
+                indexed,
+                focus.original.clone(),
+                focus.normalized.clone(),
+            ),
         unavailable_reason: None,
     };
     preview

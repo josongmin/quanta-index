@@ -57,6 +57,8 @@ mod budgeted_search;
 
 mod dense_admission;
 
+mod file_authority;
+
 pub mod filters;
 
 pub mod history_text_index;
@@ -514,6 +516,7 @@ const fn op_writes_generation(op: &LexicalChannelOp) -> bool {
 #[derive(Default)]
 struct LoadedGeneration {
     shards: Vec<(u64, ShardBody)>,
+    file_authority: Option<file_authority::FileAuthority>,
     repo_metadata: Option<LexicalRepoMetadataPayload>,
     repo_commit_recency: Option<RepoCommitRecencyShard>,
     repo_meta: Option<RepoMetaShard>,
@@ -543,6 +546,7 @@ struct TantivySearcher {
     /// Examined-candidate budget every exact-set execution runs under.
     execution_budget: LexicalExecutionBudgetV1,
     text_authority: Option<ShardedTextAuthority>,
+    file_authority: Option<file_authority::FileAuthority>,
     repo_commit_recency: Option<RepoCommitRecencyShard>,
     repo_meta: Option<RepoMetaShard>,
     repo_topic: Option<RepoTopicShard>,

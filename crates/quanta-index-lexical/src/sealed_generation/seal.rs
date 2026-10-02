@@ -26,7 +26,7 @@ use std::io::Read;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
-use quanta_index_contract::GenerationSnapshot;
+use quanta_index_contract::{GenerationSnapshot, SourceFileRevision};
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 use sha2::{Digest, Sha256};
@@ -35,6 +35,7 @@ use tantivy::query::TermQuery;
 use tantivy::schema::IndexRecordOption;
 use tantivy::{Index, IndexReader, ReloadPolicy, Term};
 
+use crate::file_authority;
 use crate::normalize::TEXT_NORMALIZER_VERSION;
 use crate::overlay_codec::OverlayFamily;
 use crate::ranked_keys::{self, MAX_RANKED_KEYS_BYTES};
@@ -286,6 +287,54 @@ pub(crate) fn seal_generation(
         .as_ref()
         .map(|manifest| commit_text_authority(&mut measurer, manifest))
         .transpose()?;
+    file_authority::ensure_empty_manifest(generation_dir)?;
+    let file_rows = file_authority::read_manifest(generation_dir)?.ok_or_else(|| {
+        crate::index_store::sidecar_corrupt(generation_dir, file_authority::MANIFEST, "missing")
+    })?;
+    let file_sources: Vec<_> = file_rows.iter().map(|(source, _)| source.clone()).collect();
+    let expected_files = file_authority::expected_names(&file_sources);
+    let actual_files: std::collections::BTreeSet<String> =
+        std::fs::read_dir(generation_dir.join(file_authority::DIR))
+            .map_err(|error| {
+                CoreError::Storage(format!("lexical: list file authority at seal: {error}"))
+            })?
+            .map(|entry| {
+                entry
+                    .map(|entry| {
+                        format!(
+                            "{}/{}",
+                            file_authority::DIR,
+                            entry.file_name().to_string_lossy()
+                        )
+                    })
+                    .map_err(|error| {
+                        CoreError::Storage(format!(
+                            "lexical: file authority entry at seal: {error}"
+                        ))
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+    if actual_files != expected_files {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            file_authority::DIR,
+            "directory differs from listed source files",
+        ));
+    }
+    let mut file_authority = Vec::with_capacity(expected_files.len());
+    for name in expected_files {
+        file_authority.push(measurer.commit(&name)?);
+    }
+    let logical_source_bytes =
+        logical_source_bytes(generation_dir, &file_sources, &file_authority)?;
+    if logical_source_bytes
+        > u64::try_from(file_authority::MAX_TOTAL_SOURCE_BYTES)
+            .map_err(|error| CoreError::Storage(format!("lexical: file authority cap: {error}")))?
+    {
+        return Err(CoreError::InvalidContract(
+            "lexical: file authority exceeds 128 MiB source byte admission".into(),
+        ));
+    }
     let mut overlays = Vec::new();
     for family in OverlayFamily::ALL {
         let path = family.path(generation_dir);
@@ -366,11 +415,40 @@ pub(crate) fn seal_generation(
         index_segments,
         ranked_keys,
         text_authority,
+        file_authority,
         overlays,
         source_coverage,
     };
     write_manifest(generation_dir, &manifest)?;
     Ok(measurer.stats)
+}
+
+/// Count bytes per source path, even when paths share one physical artifact.
+fn logical_source_bytes(
+    generation_dir: &Path,
+    sources: &[SourceFileRevision],
+    commitments: &[SealedArtifactCommitmentV1],
+) -> Result<u64, CoreError> {
+    let by_name: BTreeMap<&str, &SealedArtifactCommitmentV1> = commitments
+        .iter()
+        .map(|artifact| (artifact.name.as_str(), artifact))
+        .collect();
+    sources.iter().try_fold(0_u64, |total, source| {
+        let name = file_authority::artifact_name(source);
+        let artifact = by_name.get(name.as_str()).ok_or_else(|| {
+            crate::index_store::sidecar_corrupt(generation_dir, &name, "source bytes not committed")
+        })?;
+        if artifact.sha256 != source.source_sha256 {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &name,
+                "source bytes differ from declared source digest",
+            ));
+        }
+        total.checked_add(artifact.bytes).ok_or_else(|| {
+            CoreError::Storage("lexical: file authority source byte sum overflow".into())
+        })
+    })
 }
 
 /// Build only new segment tables.
@@ -596,4 +674,43 @@ fn ensure_text_authority_covers_index(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod file_authority_lookup_tests {
+    use super::*;
+    use quanta_index_contract::{RepoId, RepoRelativePath, RevisionId, SourceFileKey};
+
+    #[test]
+    fn shared_digest_counts_each_source_and_refuses_missing_or_wrong_commitment() {
+        let digest = [7_u8; 32];
+        let sources: Vec<SourceFileRevision> = ["a.rs", "b.rs"]
+            .into_iter()
+            .map(|path| SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: RepoId::new("repo").expect("repo id"),
+                    repo_relative_path: RepoRelativePath::new(path),
+                },
+                revision_id: RevisionId::new("revision").expect("revision id"),
+                source_sha256: digest,
+            })
+            .collect();
+        let commitment = SealedArtifactCommitmentV1 {
+            name: file_authority::artifact_name(sources.first().expect("first source")),
+            bytes: 4,
+            sha256: digest,
+        };
+        let dir = Path::new("/test-generation");
+        assert_eq!(
+            logical_source_bytes(dir, &sources, std::slice::from_ref(&commitment))
+                .expect("shared digest source bytes"),
+            8
+        );
+        assert!(logical_source_bytes(dir, &sources, &[]).is_err());
+        let wrong_digest = SealedArtifactCommitmentV1 {
+            sha256: [9_u8; 32],
+            ..commitment
+        };
+        assert!(logical_source_bytes(dir, &sources, &[wrong_digest]).is_err());
+    }
 }

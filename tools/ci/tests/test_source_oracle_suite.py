@@ -627,6 +627,27 @@ def test_go_no_answer_requires_a_complete_parse(tmp_path):
         broken.expected_rows(so.GO_NAME_PREFIX, "Bin", "distinct_file")
 
 
+def test_code_search_absence_rejects_content_and_path_matches(tmp_path):
+    so = ev.source_oracle
+    files = {
+        "present.go": (
+            b"package sample\n// nearMiss\n",
+            ev.digest(b"package sample\n// nearMiss\n"),
+        ),
+        "nearMiss/file.go": (b"package sample\n", ev.digest(b"package sample\n")),
+    }
+    oracle = so.SourceOracleIndex(files, {"nearMiss", "absentName"})
+    with pytest.raises(so.SourceOracleError, match="content absent contract found a match"):
+        oracle.expected_rows(so.ASCII_CODE_SEARCH_ABSENT_CASEFOLD, "NEARMISS", "distinct_file")
+    path_only = so.SourceOracleIndex({"nearMiss/file.go": files["nearMiss/file.go"]}, {"nearMiss"})
+    with pytest.raises(so.SourceOracleError, match="path match"):
+        path_only.expected_rows(so.ASCII_CODE_SEARCH_ABSENT_CASEFOLD, "NEARMISS", "distinct_file")
+    assert (
+        oracle.expected_rows(so.ASCII_CODE_SEARCH_ABSENT_CASEFOLD, "absentName", "distinct_file")
+        == []
+    )
+
+
 def _robustness_baseline(tmp_path):
     repo = tmp_path / "robust"
     repo.mkdir()
@@ -708,8 +729,9 @@ def test_identifier_robustness_builder_is_deterministic_and_evaluator_bound(tmp_
         "typo",
         "no-answer",
         "no-answer-content",
+        "typo-content-absence",
     ]
-    no_answer_lanes = {"no-answer", "no-answer-content"}
+    no_answer_lanes = {"no-answer", "no-answer-content", "typo-content-absence"}
     for lane, (suite, pack) in first.items():
         assert suite["routes"] == ["lexical"]
         assert all(set(task) == {"task_id", "query", "query_sha256"} for task in pack["tasks"])
@@ -719,6 +741,26 @@ def test_identifier_robustness_builder_is_deterministic_and_evaluator_bound(tmp_
             if lane not in no_answer_lanes and record["status"] == "admitted":
                 assert record["base_name_in_gold"] is True
     assert set(census["lanes"]["components"]["ineligible"]) <= {"single_component"}
+    near_miss = census["lanes"]["typo-content-absence"]
+    assert near_miss["derived_from"] == "typo"
+    assert near_miss["source_admitted"] == census["lanes"]["typo"]["admitted"]
+    assert near_miss["admitted"] + near_miss["excluded"] == near_miss["source_admitted"]
+    assert {row["source_task_id"] for row in near_miss["records"]}.isdisjoint(
+        {row["source_task_id"] for row in near_miss["excluded_probes"]}
+    )
+    from tools.benchmark.retrieval.identifier_robustness_report import (
+        verify_census_against_source,
+    )
+
+    verify_census_against_source(
+        repo, first["typo-content-absence"][0], census, "typo-content-absence"
+    )
+    altered_census = copy.deepcopy(census)
+    altered_census["lanes"]["typo-content-absence"]["records"][0]["source_task_id"] = "TYP-unknown"
+    with pytest.raises(ValueError, match="typo absence admitted source mismatch"):
+        verify_census_against_source(
+            repo, first["typo-content-absence"][0], altered_census, "typo-content-absence"
+        )
     suite, _pack = first["prefix"]
     tampered = copy.deepcopy(suite)
     tampered["tasks"][0]["file_judgments"] = []
@@ -822,7 +864,7 @@ def test_identifier_robustness_content_no_answer_lane_excludes_present_bytes(tmp
     )
     assert ev.canonical(census) == ev.canonical(again)
     assert ev.canonical(suites) == ev.canonical(again_suites)
-    assert list(suites)[-2:] == ["no-answer", "no-answer-content"]
+    assert list(suites)[-3:] == ["no-answer", "no-answer-content", "typo-content-absence"]
     declaration, _pack = suites["no-answer"]
     # The declaration-intent lane keeps every probe, including those present as content.
     assert [t["task_id"] for t in declaration["tasks"]] == [

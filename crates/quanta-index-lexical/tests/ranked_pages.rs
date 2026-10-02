@@ -143,7 +143,12 @@ fn searcher() -> Result<(tempfile::TempDir, Box<dyn LexicalSearcher>), Box<dyn E
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     adapter.build_batch(&sealed_batch()?)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     Ok((dir, searcher))
 }
 

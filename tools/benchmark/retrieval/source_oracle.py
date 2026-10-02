@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from functools import lru_cache
 from typing import Any
 
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -26,6 +27,7 @@ GO_DECLARATIONS = frozenset(
 GO_EXACT_LOCAL_NAME = "go_exact_local_name_v3"
 ASCII_IDENTIFIER_WORD = "ascii_identifier_word_v1"
 ASCII_CONTENT_ABSENT_CASEFOLD = "ascii_content_absent_casefold_v1"
+ASCII_CODE_SEARCH_ABSENT_CASEFOLD = "ascii_code_search_absent_casefold_v1"
 # Variants over the same indexed Go declaration set as v3. Prefix, infix and
 # osa1 compare exact (case-sensitive) name text; components compare lowercased
 # camel-snake-v1 components on both sides.
@@ -33,8 +35,91 @@ GO_NAME_PREFIX = "go_declaration_name_prefix_v1"
 GO_NAME_INFIX = "go_declaration_name_infix_v1"
 GO_NAME_COMPONENTS = "go_declaration_name_components_v1"
 GO_NAME_OSA1 = "go_declaration_name_osa1_v1"
-GO_NAME_VARIANTS = frozenset({GO_NAME_PREFIX, GO_NAME_INFIX, GO_NAME_COMPONENTS, GO_NAME_OSA1})
-GO_NAME_CONTRACTS = GO_NAME_VARIANTS | {GO_EXACT_LOCAL_NAME}
+# Declaration-name contracts by language. Go keeps its v3 producer-mirroring
+# census; the other languages use declaration_census_v1 kinds below. A name is
+# the declared token as written (`r#match`, `#private`), never a normalized form.
+NAME_VARIANTS = ("exact", "prefix", "infix", "components", "osa1")
+NAME_CONTRACTS: dict[str, tuple[str, str]] = {
+    GO_EXACT_LOCAL_NAME: ("go", "exact"),
+    GO_NAME_PREFIX: ("go", "prefix"),
+    GO_NAME_INFIX: ("go", "infix"),
+    GO_NAME_COMPONENTS: ("go", "components"),
+    GO_NAME_OSA1: ("go", "osa1"),
+}
+for _language in ("rust", "python", "typescript", "javascript"):
+    NAME_CONTRACTS[f"{_language}_exact_local_name_v1"] = (_language, "exact")
+    for _variant in NAME_VARIANTS[1:]:
+        NAME_CONTRACTS[f"{_language}_declaration_name_{_variant}_v1"] = (_language, _variant)
+DECLARATION_NAME_CONTRACTS = frozenset(NAME_CONTRACTS)
+# Suffix -> Tree-sitter grammar. TSX needs its own grammar; JSX parses as JavaScript.
+DECLARATION_GRAMMARS = {
+    "go": {".go": "go"},
+    "rust": {".rs": "rust"},
+    "python": {".py": "python"},
+    "typescript": {".ts": "typescript", ".tsx": "tsx"},
+    "javascript": {
+        ".js": "javascript",
+        ".jsx": "javascript",
+        ".mjs": "javascript",
+        ".cjs": "javascript",
+    },
+}
+DECLARATION_CENSUS = {
+    "go": "go_indexed_definition_v3",
+    "rust": "rust_declaration_census_v1",
+    "python": "python_declaration_census_v1",
+    "typescript": "typescript_declaration_census_v1",
+    "javascript": "javascript_declaration_census_v1",
+}
+# Named item/declaration nodes only: no variables, fields, parameters, enum
+# variants, namespaces, closures or anonymous class/function expressions. Rust
+# `const _` is anonymous by language rule; `_` is an ordinary name elsewhere.
+DECLARATION_KINDS = {
+    "rust": frozenset(
+        {
+            "function_item",
+            "function_signature_item",
+            "struct_item",
+            "enum_item",
+            "union_item",
+            "trait_item",
+            "type_item",
+            "associated_type",
+            "const_item",
+            "static_item",
+            "mod_item",
+            "macro_definition",
+        }
+    ),
+    "python": frozenset({"function_definition", "class_definition"}),
+    "typescript": frozenset(
+        {
+            "function_declaration",
+            "generator_function_declaration",
+            "function_signature",
+            "class_declaration",
+            "abstract_class_declaration",
+            "method_definition",
+            "method_signature",
+            "abstract_method_signature",
+            "interface_declaration",
+            "type_alias_declaration",
+            "enum_declaration",
+        }
+    ),
+    "javascript": frozenset(
+        {
+            "function_declaration",
+            "generator_function_declaration",
+            "class_declaration",
+            "method_definition",
+        }
+    ),
+}
+# String, numeric and computed member names are not identifier declarations.
+NAME_NODE_TYPES = frozenset(
+    {"identifier", "type_identifier", "property_identifier", "private_property_identifier"}
+)
 MAX_FILES = 4096
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
 MAX_QUERIES = 2000
@@ -42,6 +127,10 @@ MAX_QUERIES = 2000
 
 class SourceOracleError(ValueError):
     """The declared oracle cannot be derived exhaustively."""
+
+
+def _excludable_census_refusal(error: SourceOracleError) -> bool:
+    return "parse error:" in str(error) or "declaration lacks name:" in str(error)
 
 
 def name_components(name: str) -> tuple[str, ...]:
@@ -84,39 +173,129 @@ def osa_distance_at_most_one(first: str, second: str) -> bool:
     return shorter[index:] == longer[index + 1 :]
 
 
-def _variant_matches(contract: str, query: str, name: str) -> bool:
-    if contract == GO_NAME_PREFIX:
+def _variant_matches(variant: str, query: str, name: str) -> bool:
+    if variant == "prefix":
         return name.startswith(query)
-    if contract == GO_NAME_INFIX:
+    if variant == "infix":
         return query in name
-    if contract == GO_NAME_COMPONENTS:
+    if variant == "components":
         wanted, have = tuple(query.split(" ")), name_components(name)
         return any(have[i : i + len(wanted)] == wanted for i in range(len(have) - len(wanted) + 1))
-    if contract == GO_NAME_OSA1:
+    if variant == "osa1":
         return name != query and osa_distance_at_most_one(query, name)
-    raise SourceOracleError("unsupported Go declaration-name variant contract")
+    raise SourceOracleError("unsupported declaration-name variant contract")
+
+
+@lru_cache(maxsize=128)
+def _osa1_text_pattern(query: str) -> re.Pattern[str]:
+    """Overapproximate every one-edit name as an unanchored source substring."""
+    alternatives = set()
+    for index in range(len(query)):
+        left, right = re.escape(query[:index]), re.escape(query[index + 1 :])
+        alternatives.add(left + right)
+        alternatives.add(left + r"[^\n]" + right)
+        if index + 1 < len(query):
+            swapped = query[:index] + query[index + 1] + query[index] + query[index + 2 :]
+            alternatives.add(re.escape(swapped))
+    for index in range(len(query) + 1):
+        alternatives.add(re.escape(query[:index]) + r"[^\n]" + re.escape(query[index:]))
+    return re.compile("(?:" + "|".join(sorted(alternatives)) + ")")
+
+
+def declaration_query_textually_excluded(raw: bytes, query: str, variant: str) -> bool:
+    """Conservatively prove that an uncensused file cannot contain a matching name.
+
+    A text hit leaves the file ineligible even when the hit is a comment or a
+    non-declaration. This never turns a parser refusal into an empty census.
+    """
+    if variant in ("exact", "prefix", "infix"):
+        return query.encode("utf-8") not in raw
+    folded = raw.decode("utf-8", "replace").casefold()
+    if variant == "components":
+        return any(part not in folded for part in query.split(" "))
+    if variant == "osa1":
+        if not 1 < len(query) <= 64:
+            return False
+        return _osa1_text_pattern(query).search(raw.decode("utf-8", "replace")) is None
+    raise SourceOracleError("unsupported declaration-name variant contract")
 
 
 def _name_text(token: bytes) -> str:
-    """Go source is UTF-8; an undecodable declaration name refuses the oracle."""
+    """Source is UTF-8; an undecodable declaration name refuses the oracle."""
     try:
         return token.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise SourceOracleError("Go declaration name is not valid UTF-8") from exc
+        raise SourceOracleError("declaration name is not valid UTF-8") from exc
 
 
 def _require_query(contract: str, query: Any) -> None:
+    variant = NAME_CONTRACTS.get(contract, (None, None))[1]
     pattern = (
         COMPONENT_QUERY
-        if contract == GO_NAME_COMPONENTS
+        if variant == "components"
         else FRAGMENT
-        if contract in GO_NAME_VARIANTS
+        if variant in ("prefix", "infix", "osa1")
         else IDENTIFIER
     )
     if not isinstance(query, str) or pattern.fullmatch(query) is None:
         raise SourceOracleError("source oracle query does not fit its contract's query form")
-    if contract in (GO_NAME_PREFIX, GO_NAME_INFIX) and len(query) < 3:
+    if variant in ("prefix", "infix") and len(query) < 3:
         raise SourceOracleError("prefix/infix oracle requires at least three characters")
+
+
+def declaration_language(path: str) -> str | None:
+    suffix = "." + path.rsplit(".", 1)[-1] if "." in path.rsplit("/", 1)[-1] else ""
+    return next(
+        (language for language, grammars in DECLARATION_GRAMMARS.items() if suffix in grammars),
+        None,
+    )
+
+
+def declaration_census(
+    language: str, path: str, raw: bytes
+) -> list[tuple[int, int, int, int, str]]:
+    """All declared names in one file as (name start/end, definition start/end, kind).
+
+    A parse error or a declaration whose name cannot be located refuses the
+    file: an incomplete census is never an empty answer set.
+    """
+    if language not in DECLARATION_GRAMMARS:
+        raise SourceOracleError("unsupported declaration census language")
+    suffix = "." + path.rsplit(".", 1)[-1]
+    grammar = DECLARATION_GRAMMARS[language].get(suffix)
+    if grammar is None:
+        raise SourceOracleError(f"{language} census does not admit file suffix: {path}")
+    try:
+        from tree_sitter_language_pack import get_parser
+
+        parser = get_parser(grammar)
+    except (ImportError, LookupError, ValueError) as exc:
+        raise SourceOracleError(f"{language} source oracle parser unavailable") from exc
+    root = parser.parse(raw).root_node
+    if root.has_error:
+        prefix = "Go" if language == "go" else language
+        raise SourceOracleError(f"{prefix} source oracle parse error: {path}")
+    rows = []
+    nodes = [root]
+    while nodes:
+        node = nodes.pop()
+        if (
+            _go_indexed_definition(node)
+            if language == "go"
+            else node.type in DECLARATION_KINDS[language]
+        ):
+            name = node.child_by_field_name("name")
+            if name is None:
+                raise SourceOracleError(f"{language} declaration lacks name: {path}")
+            token = raw[name.start_byte : name.end_byte]
+            if language == "go" or (
+                name.type in NAME_NODE_TYPES and (language != "rust" or token != b"_")
+            ):
+                rows.append(
+                    (name.start_byte, name.end_byte, node.start_byte, node.end_byte, node.type)
+                )
+        nodes.extend(reversed(node.children))
+    return rows
 
 
 def _go_indexed_definition(node: Any) -> bool:
@@ -150,7 +329,12 @@ def has_identifier_word_in_span(raw: bytes, token: bytes, start: int, end: int) 
 
 
 class SourceOracleIndex:
-    def __init__(self, files: dict[str, tuple[bytes, str]], query_names: set[str]) -> None:
+    def __init__(
+        self,
+        files: dict[str, tuple[bytes, str]],
+        query_names: set[str],
+        declaration_exclusions: dict[tuple[str, str], set[str]] | None = None,
+    ) -> None:
         if not 0 < len(files) <= MAX_FILES:
             raise SourceOracleError("source oracle file limit exceeded")
         if sum(len(raw) for raw, _digest in files.values()) > MAX_SOURCE_BYTES:
@@ -165,7 +349,30 @@ class SourceOracleIndex:
         self._words: dict[bytes, set[str]] | None = None
         self._first_words: dict[bytes, tuple[str, int, int]] = {}
         # Name bytes identify the match; definition bytes identify the indexed symbol unit.
-        self._go_declarations: dict[bytes, list[tuple[str, int, int, int, int]]] | None = None
+        self._declarations: dict[
+            tuple[str, frozenset[str]], dict[bytes, list[tuple[str, int, int, int, int]]]
+        ] = {}
+        # Explicit per-contract/query qrel eligibility for files whose census refuses.
+        # Files stay in self.files and in the caller's full source universe.
+        self.declaration_exclusions: dict[tuple[str, str], frozenset[str]] = {}
+        self._excluded_declaration_paths: dict[str, set[str]] = defaultdict(set)
+        for key, paths in (declaration_exclusions or {}).items():
+            if (
+                not isinstance(key, tuple)
+                or len(key) != 2
+                or key[0] not in DECLARATION_NAME_CONTRACTS
+                or key[1] not in query_names
+                or not isinstance(paths, set)
+                or not paths
+            ):
+                raise SourceOracleError("invalid declaration exclusion contract/query")
+            contract, query = key
+            _require_query(contract, query)
+            language, _variant = NAME_CONTRACTS[contract]
+            if any(path not in files or declaration_language(path) != language for path in paths):
+                raise SourceOracleError("declaration exclusion path is outside its source language")
+            self.declaration_exclusions[key] = frozenset(paths)
+            self._excluded_declaration_paths[language].update(paths)
 
     def _index_words(self) -> dict[bytes, set[str]]:
         if self._words is None:
@@ -187,52 +394,92 @@ class SourceOracleIndex:
             if folded in raw.decode("utf-8", "replace").casefold():
                 raise SourceOracleError(f"content absent contract found a match: {path}")
 
-    def _index_go_declarations(self) -> dict[bytes, list[tuple[str, int, int, int, int]]]:
-        if self._go_declarations is None:
-            try:
-                from tree_sitter_language_pack import get_parser
+    def _require_code_search_absent_casefold(self, query: str) -> None:
+        """A default file search may match either content or repository path."""
+        _require_query(ASCII_CODE_SEARCH_ABSENT_CASEFOLD, query)
+        self._require_content_absent_casefold(query)
+        folded = query.casefold()
+        for path in self.files:
+            if folded in path.casefold():
+                raise SourceOracleError(f"code search absent contract found a path match: {path}")
 
-                parser = get_parser("go")
-            except (ImportError, LookupError, ValueError) as exc:
-                raise SourceOracleError("Go source oracle parser unavailable") from exc
+    def _index_declarations(
+        self, language: str, excluded: frozenset[str] = frozenset()
+    ) -> dict[bytes, list[tuple[str, int, int, int, int]]]:
+        key = (language, excluded)
+        if key not in self._declarations:
             declarations: dict[bytes, list[tuple[str, int, int, int, int]]] = defaultdict(list)
             for path, (raw, _digest) in self.files.items():
-                if not path.endswith(".go"):
+                if declaration_language(path) != language:
                     continue
-                root = parser.parse(raw).root_node
-                if root.has_error:
-                    raise SourceOracleError(f"Go source oracle parse error: {path}")
-                nodes = [root]
-                while nodes:
-                    node = nodes.pop()
-                    if _go_indexed_definition(node):
-                        name = node.child_by_field_name("name")
-                        if name is None:
-                            raise SourceOracleError(f"Go declaration lacks name: {path}")
-                        # Every declaration is kept: variant contracts match names that
-                        # differ from the submitted query bytes.
-                        declarations[raw[name.start_byte : name.end_byte]].append(
-                            (path, name.start_byte, name.end_byte, node.start_byte, node.end_byte)
+                if path in excluded:
+                    try:
+                        declaration_census(language, path, raw)
+                    except SourceOracleError as exc:
+                        if not _excludable_census_refusal(exc):
+                            raise
+                    else:
+                        raise SourceOracleError(
+                            f"excluded declaration file has a complete census: {path}"
                         )
-                    nodes.extend(reversed(node.children))
-            self._go_declarations = declarations
-        return self._go_declarations
+                    continue
+                # Every declaration is kept: variant contracts match names that
+                # differ from the submitted query bytes.
+                try:
+                    census = declaration_census(language, path, raw)
+                except SourceOracleError as exc:
+                    if path in self._excluded_declaration_paths[
+                        language
+                    ] and _excludable_census_refusal(exc):
+                        raise SourceOracleError(
+                            f"declaration exclusion lacks explicit query eligibility: {path}"
+                        ) from exc
+                    raise
+                for start, end, definition_start, definition_end, _kind in census:
+                    declarations[raw[start:end]].append(
+                        (path, start, end, definition_start, definition_end)
+                    )
+            self._declarations[key] = declarations
+        return self._declarations[key]
 
-    def _go_matches(self, contract: str, query: str) -> list[tuple[str, int, int, int, int]]:
+    def declared_names(self, language: str) -> list[str]:
+        if self._excluded_declaration_paths[language]:
+            raise SourceOracleError("declared names require a complete declaration census")
+        return sorted(_name_text(token) for token in self._index_declarations(language))
+
+    def census_failures(self, language: str) -> list[dict[str, str]]:
+        """Files whose declaration census refuses, for visible unsupported strata."""
+        failures = []
+        for path, (raw, _digest) in sorted(self.files.items()):
+            if declaration_language(path) == language:
+                try:
+                    declaration_census(language, path, raw)
+                except SourceOracleError as exc:
+                    failures.append({"path": path, "reason": str(exc)})
+        return failures
+
+    def _name_matches(self, contract: str, query: str) -> list[tuple[str, int, int, int, int]]:
         _require_query(contract, query)
-        declarations = self._index_go_declarations()
-        if contract == GO_EXACT_LOCAL_NAME:
+        language, variant = NAME_CONTRACTS[contract]
+        excluded = self.declaration_exclusions.get((contract, query), frozenset())
+        for path in sorted(excluded):
+            if not declaration_query_textually_excluded(self.files[path][0], query, variant):
+                raise SourceOracleError(
+                    f"excluded declaration file may contain a query match: {path}"
+                )
+        declarations = self._index_declarations(language, excluded)
+        if variant == "exact":
             return list(declarations.get(query.encode("ascii"), []))
         return [
             match
             for token, rows in declarations.items()
-            if _variant_matches(contract, query, _name_text(token))
+            if _variant_matches(variant, query, _name_text(token))
             for match in rows
         ]
 
     def expected_rows(self, contract: str, query: str, unit: str) -> list[dict[str, Any]]:
-        if contract in GO_NAME_CONTRACTS and unit in ("symbol", "distinct_file"):
-            matches = self._go_matches(contract, query)
+        if contract in DECLARATION_NAME_CONTRACTS and unit in ("symbol", "distinct_file"):
+            matches = self._name_matches(contract, query)
             if unit == "symbol":
                 return [
                     {
@@ -251,6 +498,9 @@ class SourceOracleIndex:
         elif contract == ASCII_CONTENT_ABSENT_CASEFOLD and unit == "distinct_file":
             self._require_content_absent_casefold(query)
             paths = set()
+        elif contract == ASCII_CODE_SEARCH_ABSENT_CASEFOLD and unit == "distinct_file":
+            self._require_code_search_absent_casefold(query)
+            paths = set()
         else:
             raise SourceOracleError("unsupported source oracle contract/unit combination")
         return [
@@ -258,38 +508,39 @@ class SourceOracleIndex:
         ]
 
     def matched_names(self, contract: str, query: str) -> list[str]:
-        """Distinct declaration names satisfying a Go name contract, for ambiguity strata."""
-        if contract not in GO_NAME_CONTRACTS:
+        """Distinct declaration names satisfying a name contract, for ambiguity strata."""
+        if contract not in DECLARATION_NAME_CONTRACTS:
             raise SourceOracleError("unsupported source oracle contract")
         return sorted(
             {
                 _name_text(self.files[path][0][start:end])
-                for path, start, end, *_definition in self._go_matches(contract, query)
+                for path, start, end, *_definition in self._name_matches(contract, query)
             }
         )
 
-    def go_name_spans(
-        self, query: str, contract: str = GO_EXACT_LOCAL_NAME
-    ) -> list[tuple[str, int, int]]:
+    def declaration_name_spans(self, contract: str, query: str) -> list[tuple[str, int, int]]:
         """Return local-name bytes for validating the separate gold line projection."""
-        if contract not in GO_NAME_CONTRACTS:
+        if contract not in DECLARATION_NAME_CONTRACTS:
             raise SourceOracleError("unsupported source oracle contract")
         return [
             (path, name_start, name_end)
-            for path, name_start, name_end, *_definition in self._go_matches(contract, query)
+            for path, name_start, name_end, *_definition in self._name_matches(contract, query)
         ]
 
     def first_match(self, contract: str, query: str) -> tuple[str, int, int] | None:
         """Choose the first source match by path and byte offset for a diagnostic gold line."""
-        if contract == ASCII_CONTENT_ABSENT_CASEFOLD:
-            self._require_content_absent_casefold(query)
+        if contract in (ASCII_CONTENT_ABSENT_CASEFOLD, ASCII_CODE_SEARCH_ABSENT_CASEFOLD):
+            if contract == ASCII_CODE_SEARCH_ABSENT_CASEFOLD:
+                self._require_code_search_absent_casefold(query)
+            else:
+                self._require_content_absent_casefold(query)
             return None
         if contract == ASCII_IDENTIFIER_WORD:
             _require_query(contract, query)
             self._index_words()
             return self._first_words.get(query.encode("ascii"))
-        if contract in GO_NAME_CONTRACTS:
-            matches = self._go_matches(contract, query)
+        if contract in DECLARATION_NAME_CONTRACTS:
+            matches = self._name_matches(contract, query)
             if not matches:
                 return None
             path, start, end, _definition_start, _definition_end = min(matches)

@@ -114,7 +114,12 @@ fn marker_query() -> LqQuery {
 }
 
 fn hits(adapter: &LexicalAdapter, generation: u64) -> Result<usize, Box<dyn Error>> {
-    let searcher = adapter.open(&repo(), &revision(), ManifestGeneration::new(generation))?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(generation),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     Ok(searcher
         .search(&marker_query(), 10, &RequestBudgetV1::unbounded())?
         .len())

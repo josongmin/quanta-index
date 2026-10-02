@@ -116,11 +116,13 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
     pub fn replace_scope(
         mut self,
         coverage: SourceFileCoverage,
+        source_bytes: Vec<u8>,
         chunks: Vec<ChunkRecord>,
         symbols: Vec<SymbolRecord>,
     ) -> Self {
         self.replace_scopes.push(SearchCorpusReplaceScope {
             coverage,
+            source_bytes,
             chunks,
             symbols,
         });
@@ -761,6 +763,30 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
             client: self.client,
             state: self.state,
         }
+    }
+
+    /// Default code search over ranked distinct source files. Use `native`
+    /// to opt into the lower-level LQ DSL and its explicit result projection.
+    #[must_use]
+    pub fn text(
+        self,
+        query_text: impl Into<String>,
+    ) -> LexicalQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K> {
+        self.code_search(query_text)
+    }
+
+    /// Search source files using the product code-search syntax. Bare terms
+    /// are case-folded literal substrings, ANDed within one file; the result
+    /// unit is a distinct file. Use `native` for the LQ DSL.
+    #[must_use]
+    pub fn code_search(
+        self,
+        query_text: impl Into<String>,
+    ) -> LexicalQueryBuilder<'a, true, HAS_SELECTION, HAS_TOP_K> {
+        self.transition(|state| {
+            state.syntax = TextQuerySyntax::CodeSearch;
+            state.query_text = Some(query_text.into());
+        })
     }
 
     #[must_use]

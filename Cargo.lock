@@ -4461,6 +4461,7 @@ name = "quanta-index-lexical"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "memchr",
  "nix",
  "quanta-index-contract",
  "quanta-index-core",

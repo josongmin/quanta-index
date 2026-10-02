@@ -229,7 +229,12 @@ fn leaf_hit_ids(
     generation: ManifestGeneration,
     leaf: LqLeaf,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let searcher = adapter.open(&repo(), &revision(), generation)?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let mut ids: Vec<String> = searcher
         .search(&leaf_query(leaf), 64, &RequestBudgetV1::unbounded())?
         .iter()
@@ -578,7 +583,12 @@ fn typed_code(result: Result<(), CoreError>) -> Result<String, Box<dyn Error>> {
 }
 
 fn open_code(adapter: &LexicalAdapter, generation: ManifestGeneration) -> Option<String> {
-    match adapter.open(&repo(), &revision(), generation) {
+    match adapter.open(
+        &repo(),
+        &revision(),
+        generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    ) {
         Err(CoreError::Typed { code, .. }) => Some(code.to_string()),
         _ => None,
     }
@@ -773,7 +783,12 @@ fn a_delta_refuses_to_build_on_a_shard_whose_digest_changed() -> TestResult {
     if generation_dir(&root, g2).exists() {
         return Err("a refused delta created a generation directory".into());
     }
-    let opened = adapter.open(&repo(), &revision(), g2);
+    let opened = adapter.open(
+        &repo(),
+        &revision(),
+        g2,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    );
     if !matches!(opened, Err(CoreError::NotFound(_))) {
         return Err(format!(
             "a refused delta left unexpected open result: {:?}",

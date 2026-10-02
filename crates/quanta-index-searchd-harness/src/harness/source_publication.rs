@@ -452,6 +452,7 @@ pub(super) fn source_scope(
     };
     Ok(SearchCorpusReplaceScope {
         coverage,
+        source_bytes,
         chunks,
         symbols,
     })

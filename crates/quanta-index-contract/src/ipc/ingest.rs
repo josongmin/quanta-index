@@ -29,9 +29,11 @@
 use core::fmt;
 use std::collections::BTreeSet;
 
+use sha2::Digest as _;
+
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, MapAccess, VariantAccess, Visitor},
+    de::{self, MapAccess, SeqAccess, VariantAccess, Visitor},
     ser::SerializeStruct,
 };
 
@@ -238,6 +240,8 @@ pub enum SearchCorpusSurfaceMutationConflictV1 {
     RecordSourceMismatch,
     RecordLanguageMismatch,
     InvalidRecordRange,
+    SourceBytesDigestMismatch,
+    ChunkSourceMismatch,
 }
 
 impl fmt::Display for SearchCorpusSurfaceMutationConflictV1 {
@@ -257,6 +261,12 @@ impl fmt::Display for SearchCorpusSurfaceMutationConflictV1 {
             }
             Self::InvalidRecordRange => {
                 formatter.write_str("record byte or line span is inconsistent with supplied text")
+            }
+            Self::SourceBytesDigestMismatch => {
+                formatter.write_str("source bytes SHA-256 disagrees with source-file coverage")
+            }
+            Self::ChunkSourceMismatch => {
+                formatter.write_str("chunk text disagrees with its source-file byte span")
             }
             Self::DuplicateClear(surface) => {
                 write!(formatter, "duplicate clear for search surface {surface:?}")
@@ -377,19 +387,70 @@ impl<'de> Deserialize<'de> for SearchScopeKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchCorpusReplaceScope {
     pub coverage: SourceFileCoverage,
+    /// Complete source bytes bound by `coverage.source.source_sha256`.
+    /// File-oriented search must verify against this authority, not the
+    /// potentially partial and overlapping chunk set.
+    pub source_bytes: Vec<u8>,
     pub chunks: Vec<ChunkRecord>,
     pub symbols: Vec<SymbolRecord>,
 }
 
-const SEARCH_CORPUS_REPLACE_SCOPE_FIELDS: &[&str] = &["coverage", "chunks", "symbols"];
+const SEARCH_CORPUS_REPLACE_SCOPE_FIELDS: &[&str] =
+    &["coverage", "source_bytes", "chunks", "symbols"];
+
+// CBOR must carry a source file as one byte string. The default Vec<u8>
+// serializer emits an array of integers, inflating ingest frames and forcing
+// the decoder to allocate an element sequence for every file byte.
+struct SourceBytesWire<'a>(&'a [u8]);
+
+impl Serialize for SourceBytesWire<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(self.0)
+    }
+}
+
+struct SourceBytesBuf(Vec<u8>);
+
+struct SourceBytesVisitor;
+
+impl<'de> Visitor<'de> for SourceBytesVisitor {
+    type Value = SourceBytesBuf;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("source file bytes")
+    }
+
+    fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+        Ok(SourceBytesBuf(value.to_vec()))
+    }
+
+    fn visit_byte_buf<E: de::Error>(self, value: Vec<u8>) -> Result<Self::Value, E> {
+        Ok(SourceBytesBuf(value))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut bytes = Vec::new();
+        while let Some(byte) = seq.next_element::<u8>()? {
+            bytes.push(byte);
+        }
+        Ok(SourceBytesBuf(bytes))
+    }
+}
+
+impl<'de> Deserialize<'de> for SourceBytesBuf {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_byte_buf(SourceBytesVisitor)
+    }
+}
 
 impl Serialize for SearchCorpusReplaceScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SearchCorpusReplaceScope", 3)?;
+        let mut state = serializer.serialize_struct("SearchCorpusReplaceScope", 4)?;
         state.serialize_field("coverage", &self.coverage)?;
+        state.serialize_field("source_bytes", &SourceBytesWire(&self.source_bytes))?;
         state.serialize_field("chunks", &self.chunks)?;
         state.serialize_field("symbols", &self.symbols)?;
         state.end()
@@ -410,6 +471,7 @@ impl<'de> Visitor<'de> for SearchCorpusReplaceScopeVisitor {
         A: MapAccess<'de>,
     {
         let mut coverage: Option<SourceFileCoverage> = None;
+        let mut source_bytes: Option<Vec<u8>> = None;
         let mut chunks: Option<Vec<ChunkRecord>> = None;
         let mut symbols: Option<Vec<SymbolRecord>> = None;
         while let Some(key) = map.next_key::<String>()? {
@@ -419,6 +481,12 @@ impl<'de> Visitor<'de> for SearchCorpusReplaceScopeVisitor {
                         return Err(de::Error::duplicate_field("coverage"));
                     }
                     coverage = Some(map.next_value()?);
+                }
+                "source_bytes" => {
+                    if source_bytes.is_some() {
+                        return Err(de::Error::duplicate_field("source_bytes"));
+                    }
+                    source_bytes = Some(map.next_value::<SourceBytesBuf>()?.0);
                 }
                 "chunks" => {
                     if chunks.is_some() {
@@ -442,6 +510,7 @@ impl<'de> Visitor<'de> for SearchCorpusReplaceScopeVisitor {
         }
         Ok(SearchCorpusReplaceScope {
             coverage: coverage.ok_or_else(|| de::Error::missing_field("coverage"))?,
+            source_bytes: source_bytes.ok_or_else(|| de::Error::missing_field("source_bytes"))?,
             chunks: chunks.ok_or_else(|| de::Error::missing_field("chunks"))?,
             symbols: symbols.ok_or_else(|| de::Error::missing_field("symbols"))?,
         })
@@ -942,6 +1011,11 @@ pub fn validate_lexical_file_mutations_v1(
             .coverage
             .validate()
             .map_err(|_invalid| SearchCorpusSurfaceMutationConflictV1::InvalidCoverage)?;
+        if <[u8; 32]>::from(sha2::Sha256::digest(&scope.source_bytes))
+            != scope.coverage.source.source_sha256
+        {
+            return Err(SearchCorpusSurfaceMutationConflictV1::SourceBytesDigestMismatch);
+        }
         let key = &scope.coverage.source.file;
         if !replace_scope_keys.insert(key) {
             return Err(
@@ -973,6 +1047,13 @@ pub fn validate_lexical_file_mutations_v1(
             {
                 return Err(SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange);
             }
+            let start = usize::try_from(chunk.start_byte)
+                .map_err(|_overflow| SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange)?;
+            let end = usize::try_from(chunk.end_byte)
+                .map_err(|_overflow| SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange)?;
+            if scope.source_bytes.get(start..end) != Some(chunk.text.as_bytes()) {
+                return Err(SearchCorpusSurfaceMutationConflictV1::ChunkSourceMismatch);
+            }
             if !candidate_ids.insert(chunk.chunk_id.as_str()) {
                 return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateCandidateId);
             }
@@ -989,6 +1070,8 @@ pub fn validate_lexical_file_mutations_v1(
                 return Err(SearchCorpusSurfaceMutationConflictV1::RecordLanguageMismatch);
             }
             if symbol.definition_span.byte_end < symbol.definition_span.byte_start
+                || usize::try_from(symbol.definition_span.byte_end)
+                    .map_or(true, |end| end > scope.source_bytes.len())
                 || symbol.definition_span.line_end < symbol.definition_span.line_start
             {
                 return Err(SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange);
@@ -4916,7 +4999,6 @@ mod tests {
         CapabilityStatusV1, ChunkRecord, EmbeddingId, EmbeddingRecord, RepoRelativePath,
         SourceRoleV1,
     };
-    use sha2::Digest as _;
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
 
@@ -5148,6 +5230,7 @@ mod tests {
             clear_surfaces: Vec::new(),
             replace_scopes: vec![SearchCorpusReplaceScope {
                 coverage,
+                source_bytes: b"fn main() {}".to_vec(),
                 chunks,
                 symbols: vec![],
             }],
@@ -5706,6 +5789,70 @@ mod tests {
         let mut batch = fixture_search_corpus_batch();
         batch.tombstone_scopes[0].file.repo_relative_path = RepoRelativePath::new("src/old.rs");
         assert!(batch.validate_surface_mutations_v1().is_ok());
+    }
+
+    #[test]
+    fn source_bytes_are_required_and_bound_to_file_revision_digest() {
+        let good = fixture_search_corpus_batch();
+        assert!(good.validate_surface_mutations_v1().is_ok());
+
+        let mut cbor = Vec::new();
+        ciborium::into_writer(&good.replace_scopes[0], &mut cbor).expect("encode scope CBOR");
+        let wire: ciborium::value::Value =
+            ciborium::from_reader(cbor.as_slice()).expect("decode scope CBOR value");
+        let ciborium::value::Value::Map(fields) = wire else {
+            panic!("scope must be a CBOR map");
+        };
+        assert!(fields.iter().any(|(key, value)| {
+            matches!(key, ciborium::value::Value::Text(name) if name == "source_bytes")
+                && matches!(value, ciborium::value::Value::Bytes(bytes) if bytes == &good.replace_scopes[0].source_bytes)
+        }));
+        let decoded: SearchCorpusReplaceScope =
+            ciborium::from_reader(cbor.as_slice()).expect("decode scope CBOR");
+        assert_eq!(decoded, good.replace_scopes[0]);
+
+        let mut changed_bytes = good.clone();
+        changed_bytes.replace_scopes[0].source_bytes[0] ^= 1;
+        assert_eq!(
+            changed_bytes.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::SourceBytesDigestMismatch)
+        );
+
+        let mut changed_digest = good.clone();
+        changed_digest.replace_scopes[0]
+            .coverage
+            .source
+            .source_sha256 = [7; 32];
+        assert_eq!(
+            changed_digest.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::SourceBytesDigestMismatch)
+        );
+
+        let mut encoded = serde_json::to_value(&good.replace_scopes[0]).expect("encode scope");
+        let json_decoded: SearchCorpusReplaceScope =
+            serde_json::from_value(encoded.clone()).expect("decode scope JSON");
+        assert_eq!(json_decoded, good.replace_scopes[0]);
+        drop(
+            encoded
+                .as_object_mut()
+                .expect("object")
+                .remove("source_bytes"),
+        );
+        assert!(serde_json::from_value::<SearchCorpusReplaceScope>(encoded).is_err());
+    }
+
+    #[test]
+    fn chunk_bytes_must_match_the_immutable_source() {
+        let mut batch = fixture_search_corpus_batch();
+        batch.replace_scopes[0].chunks[0].text = "fn Main() {}".into();
+        let scope = &mut batch.replace_scopes[0];
+        scope.coverage.unit_set_sha256 =
+            crate::source_file_unit_set_sha256(&scope.chunks, &scope.symbols)
+                .expect("fixture units encode");
+        assert_eq!(
+            batch.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::ChunkSourceMismatch)
+        );
     }
 
     #[test]

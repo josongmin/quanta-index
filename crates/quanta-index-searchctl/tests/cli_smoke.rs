@@ -1301,6 +1301,7 @@ fn dispatch_lexical_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQ
         );
     };
     SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation.clone(),
         results: vec![stub_candidate(generation)],

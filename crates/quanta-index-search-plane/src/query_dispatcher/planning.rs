@@ -4,8 +4,9 @@
 use std::collections::BTreeSet;
 
 use quanta_index_contract::{
-    GenerationPin, LqFilter, LqQuery, QueryConstraintIntersectionV1, QueryConstraintSetV1,
-    SearchPlaneTrackKind, TextQueryRequest,
+    GenerationPin, LqFilter, LqPatternType, LqQuery, LqSelect, LqType,
+    QueryConstraintIntersectionV1, QueryConstraintSetV1, SearchPlaneTrackKind, TextQueryRequest,
+    TextRankUnit,
 };
 use quanta_index_core::{
     CoreError, HybridFilterPlanV1, LexicalEndpoint, LexicalPolicy, QueryRouteV1, ReadDomainV1,
@@ -13,6 +14,7 @@ use quanta_index_core::{
 };
 
 use crate::lower_lexical_text_query;
+use crate::lowering::reject_code_search_on_nonlexical_route;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::read_view::ReadViewRequestV1;
 use crate::query_dispatcher::rev_at_time::{
@@ -40,6 +42,7 @@ impl SearchPlaneDispatcher {
         request: &TextQueryRequest,
         budget: &RequestBudgetV1,
     ) -> Result<(HybridFilterPlanV1, PreparedLanguageQueryV1), CoreError> {
+        reject_code_search_on_nonlexical_route(request.syntax, "hybrid")?;
         let query = lower_lexical_text_query(request)?;
         let filters = HybridFilterPlanV1::plan(&query)?;
         let prepared = self.prepare_lexical_language_query(query, &request.constraints, budget)?;
@@ -68,6 +71,9 @@ impl SearchPlaneDispatcher {
         route: QueryRouteV1,
         budget: &RequestBudgetV1,
     ) -> Result<PlannedLexicalTextQuery, CoreError> {
+        if route != QueryRouteV1::Lexical {
+            reject_code_search_on_nonlexical_route(request.syntax, "lexical explain")?;
+        }
         let lowered = lower_lexical_text_query(request)?;
         // rev:at.time is resolved below through a pinned history view. Validate
         // every other pure request rule before acquiring that authority view.
@@ -183,6 +189,46 @@ pub(super) fn query_selects_file_owner_projection(query: &LqQuery) -> bool {
             }
         )
     })
+}
+
+/// The normalized plan's ranked row unit, including logically empty pages.
+pub(super) fn text_rank_unit(query: &LqQuery) -> TextRankUnit {
+    if query.options.pattern_type == LqPatternType::CodeSearch {
+        return TextRankUnit::File;
+    }
+    if query.filters.iter().any(|filter| {
+        matches!(
+            filter,
+            LqFilter::Select {
+                dim: LqSelect::Repo
+            } | LqFilter::Type { kind: LqType::Repo }
+        )
+    }) {
+        return TextRankUnit::Repository;
+    }
+    if query.filters.iter().any(|filter| {
+        matches!(
+            filter,
+            LqFilter::Select {
+                dim: LqSelect::File | LqSelect::FileOwners | LqSelect::Path
+            } | LqFilter::Type { kind: LqType::Path }
+        )
+    }) {
+        return TextRankUnit::File;
+    }
+    if query.filters.iter().any(|filter| {
+        matches!(
+            filter,
+            LqFilter::Select {
+                dim: LqSelect::Symbol
+            } | LqFilter::Type {
+                kind: LqType::Symbol
+            }
+        )
+    }) {
+        return TextRankUnit::Symbol;
+    }
+    TextRankUnit::Chunk
 }
 
 /// The one executable lexical plan for a text request.

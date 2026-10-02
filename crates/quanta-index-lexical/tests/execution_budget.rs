@@ -156,7 +156,12 @@ fn predicate_scope_refuses_materialization_past_the_examined_budget() -> TestRes
         Vec::new(),
     );
     let (_dir, adapter) = seeded(BUDGET)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let refused = searcher.search_constrained(
         &scoped,
         &QueryConstraintSetV1::unconstrained(),
@@ -169,7 +174,12 @@ fn predicate_scope_refuses_materialization_past_the_examined_budget() -> TestRes
     );
 
     let (_dir, adapter) = seeded(usize::try_from(DOCS)?)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let page = searcher.search_constrained(
         &scoped,
         &QueryConstraintSetV1::unconstrained(),
@@ -189,7 +199,12 @@ fn predicate_scope_refuses_materialization_past_the_examined_budget() -> TestRes
 #[test]
 fn exact_set_executions_over_the_budget_are_refused_but_pages_serve() -> TestResult {
     let (_dir, adapter) = seeded(BUDGET)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let unconstrained = QueryConstraintSetV1::unconstrained();
 
     // A page over five matches: two rows, no materialization beyond the probe.
@@ -277,7 +292,12 @@ fn exact_set_executions_over_the_budget_are_refused_but_pages_serve() -> TestRes
 #[test]
 fn exact_set_executions_within_the_budget_serve_with_exact_totals() -> TestResult {
     let (_dir, adapter) = seeded(usize::try_from(DOCS)?)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let unconstrained = QueryConstraintSetV1::unconstrained();
 
     let projected = query(
@@ -325,7 +345,12 @@ fn exact_set_executions_within_the_budget_serve_with_exact_totals() -> TestResul
 #[test]
 fn unindexed_scans_over_the_budget_are_refused_before_scanning() -> TestResult {
     let (_dir, adapter) = seeded(BUDGET)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let mut scan = query(needle(), Vec::new());
     scan.options.index_mode = Some(LqYesNoOnly::No);
     match searcher.search_constrained(
@@ -384,7 +409,12 @@ fn unindexed_scan_obeys_native_collection_byte_limit() -> TestResult {
         LexicalWriterPolicy::DEFAULT,
     );
     adapter.build_batch(&sealed_batch()?)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let mut scan = query(needle(), Vec::new());
     scan.options.index_mode = Some(LqYesNoOnly::No);
     let refused = searcher.search_constrained(
@@ -413,7 +443,12 @@ fn unindexed_scan_obeys_native_collection_byte_limit() -> TestResult {
 )]
 fn unindexed_repo_gates_refuse_excess_distinct_materializations() -> TestResult {
     let (_dir, adapter) = seeded(usize::try_from(DOCS)?)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let absent_gates = |count| {
         LqExpr::Any(
             (0..count)
@@ -464,7 +499,12 @@ fn unindexed_repo_gates_refuse_excess_distinct_materializations() -> TestResult 
 )]
 fn dense_admission_refuses_candidate_set_over_examined_limit() -> TestResult {
     let (_dir, adapter) = seeded(BUDGET)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let candidate_ids = (1..=DOCS)
         .map(|id| format!("candidate-{id}"))
         .collect::<std::collections::BTreeSet<_>>();
@@ -484,7 +524,12 @@ fn dense_admission_refuses_candidate_set_over_examined_limit() -> TestResult {
 #[test]
 fn dense_manual_regex_admission_matches_the_independent_path_oracle() -> TestResult {
     let (_dir, adapter) = seeded(usize::try_from(DOCS)?)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let candidate_ids = (1..=DOCS)
         .map(|id| format!("chunk-{id}"))
         .collect::<std::collections::BTreeSet<_>>();

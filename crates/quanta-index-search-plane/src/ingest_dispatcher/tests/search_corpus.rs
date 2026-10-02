@@ -356,6 +356,11 @@ fn a_batch_outside_the_resource_envelope_changes_zero_bytes() -> TestRes {
         .flat_map(|scope| scope.sources.iter().map(|source| source.text.len()))
         .map(u64::try_from)
         .sum::<Result<u64, _>>()?;
+    let source_bytes: u64 = batch
+        .replace_scopes
+        .iter()
+        .map(|scope| u64::try_from(scope.source_bytes.len()))
+        .sum::<Result<u64, _>>()?;
     let vector_bytes = u64::try_from(embedded_records * SEARCH_OWNED_SEMANTIC_DIMENSION * 4)?;
 
     let tight = ZeroMutationProbe::with_resource_policy(
@@ -390,7 +395,7 @@ fn a_batch_outside_the_resource_envelope_changes_zero_bytes() -> TestRes {
 
     let fits = ZeroMutationProbe::with_resource_policy(
         always_valid_generation(),
-        IngestResourcePolicy::new(carried_records, text_bytes, vector_bytes)?,
+        IngestResourcePolicy::new(carried_records, text_bytes.max(source_bytes), vector_bytes)?,
     );
     fits.materializer.preflight_batch(&batch)?;
     let _receipt = fits

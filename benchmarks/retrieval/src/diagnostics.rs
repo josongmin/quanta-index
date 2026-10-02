@@ -672,6 +672,7 @@ mod tests {
                     end_line: 8,
                     snippet: "symbol".to_string(),
                     score: 0.02,
+                    file_authority: None,
                     contributions: vec![
                         RankedLaneContribution {
                             lane: "lexical",
@@ -745,6 +746,7 @@ mod tests {
                 end_line: 1,
                 snippet: "same-line symbol".to_string(),
                 score: 1.0,
+                file_authority: None,
                 contributions: Vec::new(),
             })
             .collect();

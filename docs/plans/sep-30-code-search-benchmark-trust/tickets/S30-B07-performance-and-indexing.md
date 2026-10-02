@@ -81,3 +81,61 @@ BM25 dispatch timers exclude different work. A same-boundary claim requires
 an admitted host, current-head release binaries, complete-output timer
 instrumentation and the full 1,196-task repeated protocol. The new 99-query
 NOC run is a correctness diagnostic, not B07 performance evidence.
+
+2026-10-02 current-source audit at `53ca51e3` with the existing shared dirty
+overlay: `NOT_RUN` for B07 timing/index/update qualification. Read-only
+`python3 tools/benchmark/retrieval/run.py host-probe` observed 16 cores,
+concurrent Cargo/Rust compiler processes and CPU frequency `unavailable`;
+`uptime` observed load averages 10.21/14.04/15.18. Free disk was 97 GiB.
+
+The audit confirmed that the original SDK response timer and Semble library
+dispatch timer measured different work. The current producers now implement one
+query boundary: `request_construction_to_normalized_response`, with
+`capture_relative_monotonic_ns` observations. Quanta constructs its route
+request inside the clock, performs SDK/IPC execution and decode, proves the
+normalized row and status, and serializes the required response. Semble uses
+one resident worker: its parent starts before constructing the request,
+receives and decodes the worker's native response, runs the same canonical row
+normalizer, resolves status and serializes the required response before ending
+the parent clock. Neither producer includes timing telemetry in required
+response bytes. Per-query duration keeps the existing `query_latency_ms` field;
+no library-duration/completed-duration twin is emitted.
+
+Both producers cache the completed first measured row for final record
+assembly. Source/span normalization is performed once per actual request;
+the batch provenance envelope is assembled after the per-query clocks end.
+Startup, model preparation and index construction precede the resident query
+boundary and retain separate phase accounting. This is a resident benchmark
+workflow, not a CLI startup or cold OS-cache claim. Worker phase timestamps and
+parent query timestamps are never subtracted across process clock domains.
+
+`PERF_QUALIFIED` now requires matching canonical boundaries and output units,
+complete cold/warmup/measured schedules, serial monotonic observations,
+nonempty required output, completed statuses and exact own-clock sample
+durations. Semble observations and samples must agree between its native and
+phase artifacts. Missing, dispatched-only, partial or mismatched evidence
+cannot qualify; there is no unconditional performance-disable branch.
+
+Every pair run manifest now requires `artifacts.phase_metrics_digests`, an
+exact map from its manifest-relative `phase_metrics` paths to captured-byte
+SHA256 digests. Replay checks the byte binding before phase validation for
+both exploratory and qualified scopes. Missing, extra, duplicate or malformed
+bindings are rejected; even a whitespace-only phase-file mutation invalidates
+the pair. This closes the Semble phase hash gap without a second manifest
+schema or a weaker performance gate.
+
+Focused verification: `./scripts/cargow test -p quanta-index-retrieval-bench --lib record::tests`
+passed 17 tests; `./scripts/cargow check -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench`
+passed. `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_completed_response_timing.py tools/ci/tests/test_retrieval_benchmark.py -k 'completed or worker_template or normalize_record or verdict_perf_frontier_and_gates or qualified_speed_replay_rejects_unalternated_system_order or darwin_thermal_limits_and_frequency_fail_closed'`
+passed 17 tests (408 deselected), including paired positive/negative replay,
+real worker normalization under the parent clock and partial-line deadline
+handling. Ruff passed. These focused checks establish instrumentation and gate
+behavior. The full admitted repeated workload, fresh index construction and
+incremental-update costs remain `NOT_RUN` on this contended host.
+
+Phase-byte binding verification: `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_completed_response_timing.py tools/ci/tests/test_retrieval_benchmark.py -k 'completed or phase_digest or manifest or qualified_speed or verdict_perf'`
+passed 36 tests (398 deselected). It covers canonical map inventory, paired
+positive replay, both products' byte-only tampering in exploratory/qualified
+scopes and the existing manifest/performance gates. Ruff and
+`git diff --check` passed. No additional Rust source changes were needed for
+this manifest binding.

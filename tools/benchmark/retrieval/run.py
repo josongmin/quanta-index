@@ -50,6 +50,7 @@ try:
         canonical,
         digest,
         evaluate,
+        evaluate_paired_file_diagnostic,
         load_evidence,
         qualified_query_family_ci,
         validate_comparison_contract,
@@ -79,6 +80,7 @@ except ImportError:  # direct script invocation: import the sibling module
         canonical,
         digest,
         evaluate,
+        evaluate_paired_file_diagnostic,
         load_evidence,
         qualified_query_family_ci,
         validate_comparison_contract,
@@ -119,7 +121,8 @@ SEMBLE_ROUTE_BY_MODE = {
 }
 QUANTA_SYMBOL_PRODUCER_IDENTITY = "source-bound-symbols-v2"
 QUANTA_SYMBOL_GRAMMARS = symbol_coverage.grammar_identity()
-PAIR_QUANTA_POLICIES = frozenset(qp.V4_SUPPORTED_POLICIES)
+PAIR_QUANTA_POLICIES = frozenset((*qp.V4_SUPPORTED_POLICIES, "code_search_file"))
+PAIR_CONTEXT_QUALITY_POLICIES = frozenset(qp.V4_SUPPORTED_POLICIES)
 
 
 def _validate_semble_profile(value: object, where: str) -> dict:
@@ -2873,6 +2876,15 @@ def load_spec(path: Path) -> dict:
         )
     if "semble" in profiles:
         _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
+    if quanta_profile["policy"] == "code_search_file":
+        if spec.get("scope", "exploratory") != "exploratory" or any(
+            spec.get("claims", {}).values()
+        ):
+            raise RunError("code_search_file pair is exploratory diagnostic only")
+        if spec.get("routes", ["lexical", "semantic", "hybrid"]) != ["lexical"]:
+            raise RunError("code_search_file pair requires lexical-only Quanta route")
+        if "semble" in profiles and profiles["semble"].get("mode") != "lexical-file":
+            raise RunError("code_search_file pair requires Semble lexical-file rank unit")
     _spec_int(spec, "top_k", 1)
     server_observation_configuration(spec.get("query_stage_observation", "enabled"))
     hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100"))
@@ -4740,6 +4752,7 @@ def _validate_manifest_shape(payload: object) -> dict:
         "semble_native",
         "semble_model_cache_manifests",
         "phase_metrics",
+        "phase_metrics_digests",
         "symbol_preflights",
         "resource_metrics",
         "protocol_lock",
@@ -4768,7 +4781,18 @@ def _validate_manifest_shape(payload: object) -> dict:
         if key not in artifacts:
             continue
         value = artifacts[key]
-        if key in (
+        if key == "phase_metrics_digests":
+            phases = artifacts["phase_metrics"]
+            if (
+                not isinstance(value, dict)
+                or not isinstance(phases, list)
+                or any(not isinstance(ref, str) for ref in phases)
+                or set(value) != set(phases)
+                or len(value) != len(phases)
+                or any(not _is_hex(sha, 64) for sha in value.values())
+            ):
+                raise RunError("manifest phase_metrics_digests must bind exactly every phase path")
+        elif key in (
             "records",
             "reports",
             "quanta_manifests",
@@ -5172,6 +5196,111 @@ def _qualified_cluster_uncertainty(comparison: object) -> bool:
     )
 
 
+def validate_completed_query_timing(metrics: dict, record: dict | None = None) -> None:
+    """Bind one continuous client clock to every scheduled completed response."""
+    timing = metrics.get("query_timing")
+    if not isinstance(timing, dict) or set(timing) != {"boundary", "clock", "observations"}:
+        raise RunError("completed-response timing contract is missing or malformed")
+    if timing["boundary"] != semble_adapter.QUERY_TIMING_BOUNDARY:
+        raise RunError("completed-response timing boundary differs from the canonical contract")
+    if timing["clock"] != semble_adapter.QUERY_TIMING_CLOCK:
+        raise RunError("completed-response timing clock differs from the canonical contract")
+    observations = timing["observations"]
+    if not isinstance(observations, list) or not observations:
+        raise RunError("completed-response timing observations are missing")
+    protocol = metrics.get("query_protocol")
+    routes = (
+        list(metrics["warm_latencies_ms"])
+        if protocol
+        else list({entry.get("route") for entry in observations if isinstance(entry, dict)})
+    )
+    if len(routes) != metrics["route_count"] or any(not isinstance(route, str) for route in routes):
+        raise RunError("completed-response timing route inventory differs")
+    routes.sort()
+    expected = []
+    if protocol:
+        expected.extend(("cold", 0, protocol["cold_probe_task_id"], route) for route in routes)
+        warmups = protocol["warmup_schedules"]
+        measured = protocol["measurement_schedules"]
+    else:
+        warmups = [metrics["query_schedule"]] * metrics["warmup_passes"]
+        measured = [metrics["query_schedule"]] * metrics["measurement_repetitions"]
+    for phase, schedules in (("warmup", warmups), ("measured", measured)):
+        expected.extend(
+            (phase, iteration, task, route)
+            for iteration, schedule in enumerate(schedules)
+            for task in schedule
+            for route in routes
+        )
+    observed_keys = []
+    previous_end = 0
+    record_rows = (
+        {(row["task_id"], row["route"]): row for row in record["results"]} if record else {}
+    )
+    for index, entry in enumerate(observations):
+        if not isinstance(entry, dict) or set(entry) != {
+            "task_id",
+            "route",
+            "phase",
+            "iteration",
+            "start_ns",
+            "end_ns",
+            "status",
+            "output_bytes",
+        }:
+            raise RunError("completed-response timing observation is malformed")
+        start, end = entry["start_ns"], entry["end_ns"]
+        if type(start) is not int or type(end) is not int or start < previous_end or end < start:
+            raise RunError("completed-response timing clock is not monotonic and serial")
+        previous_end = end
+        if type(entry["iteration"]) is not int or entry["iteration"] < 0:
+            raise RunError("completed-response timing iteration is invalid")
+        if type(entry["output_bytes"]) is not int or entry["output_bytes"] <= 0:
+            raise RunError("completed-response timing required output is absent")
+        if entry["status"] not in {
+            "success",
+            "abstained",
+            "capped",
+            "error",
+            "timeout",
+            "unavailable",
+        }:
+            raise RunError("completed-response timing status is invalid")
+        key = (entry["phase"], entry["iteration"], entry["task_id"], entry["route"])
+        if index >= len(expected) or key != expected[index]:
+            raise RunError(
+                "completed-response timing observations differ from the complete schedule"
+            )
+        observed_keys.append(key)
+        elapsed_ms = (end - start) / 1e6
+        if protocol and entry["phase"] in {"cold", "measured"}:
+            if entry["phase"] == "cold":
+                sample = metrics["cold_latencies_ms"][entry["route"]]
+            else:
+                sample = metrics["warm_latencies_ms"][entry["route"]][entry["task_id"]][
+                    entry["iteration"]
+                ]
+            if not math.isclose(sample, elapsed_ms, rel_tol=1e-9, abs_tol=1e-9):
+                raise RunError(
+                    "completed-response timing sample differs from its own clock interval"
+                )
+        if record:
+            if entry["status"] not in {"success", "abstained"}:
+                raise RunError("completed-response timing includes incomplete or failed requests")
+        if record and entry["phase"] == "measured":
+            row = record_rows.get((entry["task_id"], entry["route"]))
+            if row is None or row["status"] != entry["status"]:
+                raise RunError(
+                    "completed-response timing status differs from the normalized response"
+                )
+            if entry["iteration"] == 0 and not math.isclose(
+                row["timings"]["query_latency_ms"], elapsed_ms, rel_tol=1e-9, abs_tol=1e-9
+            ):
+                raise RunError("completed-response timing differs from normalized row latency")
+    if observed_keys != expected:
+        raise RunError("completed-response timing observations differ from the complete schedule")
+
+
 def _validate_phase_metrics(payload: object, where: str) -> dict:
     if not isinstance(payload, dict):
         raise RunError(f"{where} must be an object")
@@ -5220,6 +5349,8 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         "phases_ms",
         "total_ms",
     }
+    if "query_timing" in payload:
+        metric_keys.add("query_timing")
     if system == "semble":
         metric_keys.add("phase_boundaries_ns")
         if schema_version == 2:
@@ -5509,7 +5640,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         for key, value in derived.items():
             if value < 0 or not math.isclose(value, phases[key], rel_tol=1e-9, abs_tol=0.01):
                 raise RunError(f"{where} phase {key} is not derived from boundaries")
-        if protocol_mode:
+        if protocol_mode and "query_timing" not in metrics:
             first_task = protocol["measurement_schedules"][0][0]
             first_duration = (boundaries["first_query_end"] - boundaries["first_query_start"]) / 1e6
             for route, by_task in warm.items():
@@ -5519,6 +5650,8 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
                     raise RunError(
                         f"{where} first warm sample differs from first query boundaries: {route}"
                     )
+    if "query_timing" in metrics:
+        validate_completed_query_timing(metrics)
     return metrics
 
 
@@ -6216,6 +6349,37 @@ def _quanta_semantic_capture_identity_matches(
     }
 
 
+def replay_paired_file_diagnostic_report(
+    suite: dict,
+    pack: dict,
+    merged: dict,
+    report: dict,
+    strategy: str,
+    report_digest: str,
+) -> dict:
+    """Re-derive one file-only paired report before it enters a verdict."""
+    if report.get("report_scope") != "paired_independent_file_judgment_diagnostic_v1":
+        raise RunError("wrong paired file diagnostic report scope")
+    baseline = report["baseline_route"]
+    candidate = report["candidate_route"]
+    rescored = evaluate_paired_file_diagnostic(suite, pack, merged, baseline, candidate)
+    if digest(canonical(rescored)) != digest(canonical(report)):
+        raise RunError("paired file diagnostic differs from independent replay")
+    comparison = rescored["judgment_metrics"]["file_judgments"]["comparison"]
+    diagnostic_delta = comparison["delta"]["ndcg_at_10"]
+    return {
+        "strategy": strategy,
+        "baseline_route": baseline,
+        "candidate_route": candidate,
+        "primary_metric": "diagnostic_file_ndcg_at_10",
+        "primary_delta": diagnostic_delta if isinstance(diagnostic_delta, float) else None,
+        "record_digest": digest(canonical(merged)),
+        "report_digest": report_digest,
+        "report_sha": digest(canonical(report)),
+        "graded": False,
+    }
+
+
 def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     """Re-derive every digest from frozen bytes and emit the TEST-PLAN §8 verdict.
 
@@ -6649,6 +6813,20 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             continue
         strategy = hits[0]
         merged, merged_digest = combos[strategy]
+        if (
+            protocol_payload.get("execution_profiles", {}).get("quanta", {}).get("policy")
+            == "code_search_file"
+        ):
+            try:
+                report_digest = sha_note(path, "report_bytes", ("T13",))
+                matched.append(
+                    replay_paired_file_diagnostic_report(
+                        suite, pack, merged, content, strategy, report_digest
+                    )
+                )
+            except (KeyError, TypeError, ValueError, RunError):
+                pair_note("diagnostic_file_report_rescore_failed", ("T04", "T13"))
+            continue
         comparison = (
             content.get("rank_metrics", {}).get("comparison", {})
             if isinstance(content.get("rank_metrics"), dict)
@@ -6743,8 +6921,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     phase_by_record: dict[str, dict] = {}
     phase_ok = len(resolved["phase_metrics"]) == len(resolved["records"])
     expected_query_schedule = [task["task_id"] for task in pack["tasks"]]
-    for path in resolved["phase_metrics"]:
+    for ref, path in zip(artifacts["phase_metrics"], resolved["phase_metrics"], strict=True):
         try:
+            if sha_file(Path(path)) != artifacts["phase_metrics_digests"][ref]:
+                raise RunError("phase metrics digest differs from the capture manifest")
             metrics = _validate_phase_metrics(read_json(Path(path)), f"phase metrics {path}")
             if metrics["schema_version"] != 2:
                 raise RunError("current pair replay requires phase metrics schema_version 2")
@@ -6904,6 +7084,15 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("Semble native actual-call evidence differs from phase metrics")
             if native.get("query_protocol") != phase.get("query_protocol"):
                 raise RunError("Semble native query protocol differs from phase metrics")
+            if native.get("query_timing") != phase.get("query_timing"):
+                raise RunError("Semble completed-response timing differs from phase metrics")
+            if "query_timing" in phase and "warm_latencies_ms" in phase:
+                route = next(iter(phase["warm_latencies_ms"]))
+                if (
+                    native.get("latencies_ms") != phase["warm_latencies_ms"][route]
+                    or native.get("cold_latency_ms") != phase["cold_latencies_ms"][route]
+                ):
+                    raise RunError("Semble completed-response samples differ from phase metrics")
             validated_semble_native[rep] = native
         except (KeyError, RunError, ValueError, OSError) as exc:
             phase_ok = False
@@ -7700,10 +7889,23 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 "provenance",
             )
         if perf_fail is None:
+            try:
+                output_units = set()
+                for path, entry in validated.items():
+                    phase = phase_by_record[sha_file(Path(path))]
+                    validate_completed_query_timing(phase, entry["run"])
+                    output_units.update(
+                        row.get("rank_unit", "source_span") for row in entry["run"]["results"]
+                    )
+                if len(output_units) != 1:
+                    raise RunError("completed-response output units differ across paired products")
+            except (RunError, KeyError, TypeError, ValueError) as exc:
+                perf_fail = (f"completed_response_timing_unverified: {exc}", "provenance")
+        if perf_fail is None:
             set_state(
                 "PERF_QUALIFIED",
                 "pass",
-                "phase_and_process_tree_resources_verified",
+                "completed_response_and_resources_verified",
                 digest(
                     canonical(
                         {
@@ -7785,7 +7987,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         set_state("QUALITY_DELTA", "not_applicable", "no_quality_claim", None)
     elif (
         protocol_payload.get("execution_profiles", {}).get("quanta", {}).get("policy")
-        not in PAIR_QUANTA_POLICIES
+        not in PAIR_CONTEXT_QUALITY_POLICIES
     ):
         set_state("QUALITY_DELTA", "fail", "diagnostic_rank_profile", None)
         classes.append("scoring")
@@ -8029,6 +8231,22 @@ def run_pair(spec: dict) -> int:
     root. Partial output is never resumed: rerun from a fresh root.
     """
     scope = spec.get("scope", "exploratory")
+    profiles = spec.get("execution_profiles")
+    quanta_profile = profiles.get("quanta") if isinstance(profiles, dict) else None
+    semble_profile = profiles.get("semble") if isinstance(profiles, dict) else None
+    code_search_file = (
+        isinstance(quanta_profile, dict) and quanta_profile.get("policy") == "code_search_file"
+    )
+    if code_search_file and (
+        scope != "exploratory"
+        or any(spec.get("claims", {}).values())
+        or spec.get("routes") != ["lexical"]
+        or not isinstance(semble_profile, dict)
+        or semble_profile.get("mode") != "lexical-file"
+    ):
+        raise RunError(
+            "code_search_file pair requires exploratory lexical/file profiles without claims"
+        )
     if spec.get("embedder") == "potion-code-full-v2" and (
         scope != "exploratory" or any(spec.get("claims", {}).values())
     ):
@@ -8110,6 +8328,7 @@ def run_pair(spec: dict) -> int:
 def _run_pair_staged(spec: dict, stage: Path) -> dict:
     if "semble" not in spec["execution_profiles"]:
         raise RunError("pair requires spec.execution_profiles.semble")
+    code_search_file = spec["execution_profiles"]["quanta"]["policy"] == "code_search_file"
     order = spec.get("order", ["quanta", "semble"])
     if sorted(order) != ["quanta", "semble"]:
         raise RunError("spec.order must list quanta and semble exactly once")
@@ -8251,7 +8470,11 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         )
         candidate_routes = sorted({row["route"] for row in payload["results"]})
         for candidate in candidate_routes:
-            report = evaluate(suite, pack, combined, baseline, candidate, strict_k=True)
+            report = (
+                evaluate_paired_file_diagnostic(suite, pack, combined, baseline, candidate)
+                if code_search_file
+                else evaluate(suite, pack, combined, baseline, candidate, strict_k=True)
+            )
             name = f"report-{baseline}-vs-{candidate}-{strategy}.json"
             (stage / name).write_text(
                 json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -9759,6 +9982,7 @@ def build_run_manifest(
         "semble_native": sorted(natives),
         "semble_model_cache_manifests": sorted(model_cache_manifests),
         "phase_metrics": sorted(phase_metrics),
+        "phase_metrics_digests": {ref: sha_file(out_root / ref) for ref in sorted(phase_metrics)},
         "symbol_preflights": sorted(symbol_preflights),
         "resource_metrics": sorted(resource_metrics),
         "protocol_lock": "protocol-lock.json",

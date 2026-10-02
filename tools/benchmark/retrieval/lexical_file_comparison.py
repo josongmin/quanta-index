@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate one bare-symbol diagnostic across code-search products.
+"""Validate a frozen lexical diagnostic across code-search products.
 
 Latency is descriptive only: endpoints have different timing layers, so this
 tool does not calculate a cross-product speed ratio or ranking. Mechanical
@@ -14,6 +14,8 @@ import json
 import math
 import re
 import statistics
+import subprocess
+import tempfile
 from pathlib import Path
 
 from tools.benchmark.evidence import (
@@ -41,13 +43,51 @@ INPUT_ROLES = (
     "opengrok_rows",
     "cs_rows",
 )
+FILE_INPUT_ROLES = (
+    *INPUT_ROLES,
+    "quanta_record",
+    "semble_record",
+    "source_bundle",
+    "pair_manifest",
+    "quanta_phase_metrics",
+    "semble_phase_metrics",
+)
+FILE_ROUTES = [QUANTA_LEXICAL_ROUTE, "semble-lexical-file"]
+MAX_NATIVE_TRACE_BYTES = 128 * 1024 * 1024
 TIMING_LAYERS = {
     "sourcegraph": "loopback_stream_http_request_wall",
     "opengrok": "loopback_rest_http_request_wall",
     "cs": "process_spawn_and_search_wall",
     "quanta_lexical": "runner_sdk_query_call",
     "semble_lexical_only": "worker_search_dispatch_call",
+    "semble_lexical_file": "worker_search_dispatch_call",
 }
+
+
+def input_roles(value: dict) -> tuple[str, ...]:
+    """Closed input inventories; current file results require retained raw records."""
+    inputs = value.get("inputs", value)
+    keys = set(inputs) - {"schema_version"}
+    if keys == set(FILE_INPUT_ROLES):
+        return FILE_INPUT_ROLES
+    if keys == set(INPUT_ROLES):
+        return INPUT_ROLES
+    raise ValueError("lexical input role inventory differs; current file pair requires raw roles")
+
+
+def sourcegraph_capability(query: str) -> dict:
+    from tools.benchmark.retrieval import sourcegraph
+
+    if sourcegraph.SAFE_QUERY.fullmatch(query) is None:
+        reason = "sourcegraph_conservative_keyword_shape"
+    elif any(
+        term.casefold() in sourcegraph.BOOLEAN_OPERATORS or term.startswith("-")
+        for term in query.split()
+    ):
+        reason = "sourcegraph_reserved_keyword_token"
+    else:
+        return {"status": "supported", "reason": None}
+    return {"status": "unsupported", "reason": reason}
 
 
 def latency_summary(values: list[object], expected_count: int, layer: str) -> dict:
@@ -162,8 +202,11 @@ def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
     contract = validate_comparison_contract(suite.get("comparison_contract"), "lexical contract")
     if contract["top_k"] != 10:
         raise ValueError("lexical diagnostic requires top_k 10 in suite and pack")
-    routes = [QUANTA_LEXICAL_ROUTE, SEMBLE_LEXICAL_ROUTE]
-    if suite.get("routes") != routes or pack.get("routes") != routes:
+    routes = suite.get("routes")
+    if (
+        routes not in ([QUANTA_LEXICAL_ROUTE, SEMBLE_LEXICAL_ROUTE], FILE_ROUTES)
+        or pack.get("routes") != routes
+    ):
         raise ValueError("suite and pack route inventory is not the lexical pair")
     if (
         pack.get("tokenizer") != contract["tokenizer"]
@@ -190,10 +233,14 @@ def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
             or not task_id
             or not isinstance(query, str)
             or not query
-            or BARE_SYMBOL.fullmatch(query) is None
+            or (routes != FILE_ROUTES and BARE_SYMBOL.fullmatch(query) is None)
             or task_id in blinded
         ):
             raise ValueError("duplicate or malformed blinded query")
+        if routes == FILE_ROUTES:
+            from tools.benchmark.retrieval.query_plan import derive_query_identity
+
+            derive_query_identity("code_search_file", query)
         if task["query_sha256"] != hashlib.sha256(query.encode()).hexdigest():
             raise ValueError(f"{task_id} query digest differs")
         blinded[task_id] = query, task["query_sha256"]
@@ -231,7 +278,15 @@ def product_result(
     universe: set[str],
     *,
     scoring_gold: dict[str, list[str]] | None = None,
+    file_judgments: dict[str, list[dict]] | None = None,
 ) -> dict:
+    if file_judgments is not None:
+        if set(file_judgments) != set(expected):
+            raise ValueError(f"{product}: independent file judgment inventory differs")
+        scoring_gold = {
+            task: [row["path"] for row in rows if row["grade"] > 0]
+            for task, rows in file_judgments.items()
+        }
     if product not in PRODUCTS:
         raise ValueError(f"unknown lexical product: {product}")
 
@@ -257,6 +312,7 @@ def product_result(
     def consume(lines):
         seen: set[str] = set()
         hits = empty_no_gold = metadata_bytes = 0
+        unsupported = []
         elapsed: list[object] = []
         per_query = []
         for line in lines:
@@ -270,6 +326,40 @@ def product_result(
             query, gold = expected[task_id]
             if row.get("submitted_query") != query or row.get("gold_paths") != gold:
                 raise ValueError(f"{product}: {task_id} query or gold differs")
+            if row.get("status") == "unsupported":
+                capability = (
+                    sourcegraph_capability(query)
+                    if product == "sourcegraph"
+                    else {"status": "supported", "reason": None}
+                )
+                if capability["status"] != "unsupported" or row != {
+                    "lane": "symbol_only",
+                    "task_id": task_id,
+                    "submitted_query": query,
+                    "gold_paths": gold,
+                    "status": "unsupported",
+                    "capability_reason": capability["reason"],
+                }:
+                    raise ValueError(f"{product}: {task_id} forged unsupported capability")
+                unsupported.append(task_id)
+                per_query.append(
+                    {
+                        "task_id": task_id,
+                        "status": "unsupported",
+                        "capability_reason": capability["reason"],
+                        "file_hit_at_10": "not_applicable",
+                        "file_recall_at_10": "not_applicable",
+                        "no_gold_empty_at_10": "not_applicable",
+                        "query_latency_ms": None,
+                    }
+                )
+                continue
+            if row.get("status", "success") != "success" or (
+                product == "sourcegraph" and sourcegraph_capability(query)["status"] != "supported"
+            ):
+                raise ValueError(
+                    f"{product}: {task_id} malformed status or unsupported query execution"
+                )
             if product == "cs":
                 if type(row.get("exit_code")) is not int or row["exit_code"] != 0:
                     raise ValueError(f"{product}: {task_id} failed process")
@@ -326,50 +416,77 @@ def product_result(
                 per_query[-1]["file_ndcg_at_10"] = (
                     observed / ideal if judged_gold else "not_applicable"
                 )
+            if file_judgments is not None and judged_gold:
+                from tools.benchmark.retrieval.evaluator import file_ndcg_at_k
+
+                per_query[-1]["file_ndcg_at_10"] = file_ndcg_at_k(
+                    [{"path": value} for value in paths], file_judgments[task_id], 10
+                )
             metadata_bytes += len(canonical(per_query[-1]))
             if metadata_bytes > CONTROL_DOCUMENT_BYTES:
                 raise ValueError("lexical result metadata exceeds explicit control byte limit")
         if len(seen) != len(expected):
             raise ValueError(f"{product}: incomplete symbol-only lane")
-        return hits, empty_no_gold, elapsed, per_query
+        return hits, empty_no_gold, elapsed, per_query, unsupported
 
-    hits, empty_no_gold, elapsed, per_query = raw.consume_lines(consume)
+    hits, empty_no_gold, elapsed, per_query, unsupported = raw.consume_lines(consume)
     answerable = sum(
         bool(scoring_gold[task_id] if scoring_gold is not None else gold)
         for task_id, (_, gold) in expected.items()
     )
     no_gold = len(expected) - answerable
+    supported_answerable = answerable - sum(
+        bool(scoring_gold[task_id] if scoring_gold is not None else expected[task_id][1])
+        for task_id in unsupported
+    )
+    supported_no_gold = no_gold - (len(unsupported) - (answerable - supported_answerable))
     result = {
         "hits": hits,
         "tasks": len(expected),
         "rank_unit": "distinct_file",
         "answerable_tasks": answerable,
         "no_gold_tasks": no_gold,
-        "file_hit_rate_at_10": hits / answerable if answerable else "not_applicable",
+        "file_hit_rate_at_10": hits / supported_answerable
+        if supported_answerable
+        else "not_applicable",
         "file_recall_at_10": (
             math.fsum(
                 row["file_recall_at_10"]
                 for row in per_query
                 if row["file_recall_at_10"] != "not_applicable"
             )
-            / answerable
-            if answerable
+            / supported_answerable
+            if supported_answerable
             else "not_applicable"
         ),
-        "no_gold_empty_rate_at_10": empty_no_gold / no_gold if no_gold else "not_applicable",
+        "no_gold_empty_rate_at_10": empty_no_gold / supported_no_gold
+        if supported_no_gold
+        else "not_applicable",
         "per_query": sorted(per_query, key=lambda row: row["task_id"]),
-        "latency_ms": latency_summary(elapsed, len(expected), TIMING_LAYERS[product]),
+        "latency_ms": latency_summary(elapsed, len(elapsed), TIMING_LAYERS[product])
+        if elapsed
+        else {"count": 0, "timing_layer": TIMING_LAYERS[product], "status": "not_run"},
         "raw_sha256": raw.sha256.removeprefix("sha256:"),
     }
+    if unsupported:
+        result["capability_coverage"] = {
+            "requested": len(expected),
+            "supported": len(expected) - len(unsupported),
+            "unsupported": len(unsupported),
+            "unsupported_task_ids": sorted(unsupported),
+            "supported_answerable_tasks": supported_answerable,
+            "supported_no_gold_tasks": supported_no_gold,
+            "metric_denominator": "supported_judged_tasks_only",
+        }
     if scoring_gold is not None:
         result["file_ndcg_at_10"] = (
             math.fsum(
                 row["file_ndcg_at_10"]
                 for row in per_query
-                if row["file_ndcg_at_10"] != "not_applicable"
+                if row.get("file_ndcg_at_10", "not_applicable") != "not_applicable"
             )
-            / answerable
-            if answerable
+            / supported_answerable
+            if supported_answerable
             else "not_applicable"
         )
     return result
@@ -595,10 +712,337 @@ def pair_result_raw(raw: list[bytes], pack: dict, suite: dict, task_count: int) 
     }
 
 
+def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) -> dict:
+    """Revalidate the current file pair from its retained Git bundle and raw records."""
+    from tools.benchmark.retrieval import evaluator, run
+
+    missing = set(FILE_INPUT_ROLES) - set(paths)
+    if missing:
+        raise ValueError(f"current file pair is missing raw roles: {sorted(missing)}")
+    suite, pack = _json(suite_raw), _json(pack_raw)
+    expected = _tasks(suite, pack)
+    if suite["routes"] != FILE_ROUTES:
+        raise ValueError("current file pair requires the frozen file route inventory")
+    roles = (
+        "pair_report",
+        "pair_lock",
+        "semble_native",
+        "pair_verdict",
+        "pair_manifest",
+        "quanta_record",
+        "semble_record",
+        "quanta_phase_metrics",
+        "semble_phase_metrics",
+    )
+
+    def read_native(stream):
+        data = stream.read(MAX_NATIVE_TRACE_BYTES + 1)
+        if len(data) > MAX_NATIVE_TRACE_BYTES:
+            raise ValueError("native Semble trace exceeds its explicit custody limit")
+        return data
+
+    raw = {
+        role: RawFile.capture(paths[role]).consume_seekable(read_native)
+        if role == "semble_native"
+        else _bytes(paths[role])
+        for role in roles
+    }
+    values = {role: _json(data) for role, data in raw.items()}
+    lock, verdict, native = (
+        values[role] for role in ("pair_lock", "pair_verdict", "semble_native")
+    )
+    profiles = {
+        "quanta": execution_profile("code_search_file"),
+        "semble": {
+            "profile_id": "semble-lexical-file-v1",
+            "mode": "lexical-file",
+            "alpha": None,
+            "rerank": "not_applicable",
+        },
+    }
+    if (
+        lock.get("execution_profiles") != profiles
+        or lock.get("execution_profiles_sha256") != digest(canonical(profiles))
+        or lock.get("quanta_routes") != ["lexical"]
+        or lock.get("semble_route") != "semble-lexical-file"
+        or lock.get("top_k") != 10
+        or lock.get("suite_digest") != hashlib.sha256(suite_raw).hexdigest()
+        or lock.get("query_pack_digest") != hashlib.sha256(pack_raw).hexdigest()
+    ):
+        raise ValueError(
+            "current file pair lock profile, route, or frozen source/query binding differs"
+        )
+    bundle = RawFile.capture(paths["source_bundle"])
+    if not 0 < bundle.size <= 256 * 1024 * 1024:
+        raise ValueError("source bundle exceeds its custody limit")
+    with tempfile.TemporaryDirectory(prefix="quanta-lexical-file-pair-") as temporary:
+        root = Path(temporary).resolve()
+        held = root / "source.bundle"
+        bundle.copy_to(held)
+        repo = root / "repo"
+        for argv in (
+            ["git", "clone", "--quiet", "--", str(held), str(repo)],
+            ["git", "-C", str(repo), "checkout", "--quiet", "--detach", suite["repository_commit"]],
+        ):
+            completed = subprocess.run(argv, capture_output=True, timeout=60)
+            if completed.returncode:
+                raise ValueError(
+                    "retained source bundle cannot restore the selected corpus revision"
+                )
+        suite_path = root / "suite.json"
+        suite_path.write_bytes(suite_raw)
+        record_paths = []
+        for role in ("quanta_record", "semble_record"):
+            path = root / (role + ".json")
+            path.write_bytes(raw[role])
+            record_paths.append(path)
+        checked_suite, checked_pack, merged = run.merge_records(repo, suite_path, record_paths)
+        if checked_suite != suite or checked_pack != pack:
+            raise ValueError("raw pair record source, suite, or pack identity differs")
+        rebuilt = evaluator.evaluate_paired_file_diagnostic(
+            suite, pack, merged, "semble-lexical-file", "lexical"
+        )
+    if values["pair_report"] != rebuilt:
+        raise ValueError("current file pair report differs from raw record replay")
+    manifest = values["pair_manifest"]
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("current file pair manifest lacks phase metrics custody")
+    phase_refs = artifacts.get("phase_metrics")
+    phase_digests = artifacts.get("phase_metrics_digests")
+    if (
+        not isinstance(phase_refs, list)
+        or len(phase_refs) != 2
+        or any(not _canonical_result_path(ref) for ref in phase_refs)
+        or len(set(phase_refs)) != 2
+        or not isinstance(phase_digests, dict)
+        or set(phase_digests) != set(phase_refs)
+    ):
+        raise ValueError("current file pair manifest phase path/digest inventory differs")
+    phases = {}
+    for system, route in (("quanta", "lexical"), ("semble", "semble-lexical-file")):
+        phase_role = system + "_phase_metrics"
+        record_role = system + "_record"
+        phase_sha = hashlib.sha256(raw[phase_role]).hexdigest()
+        matching = [ref for ref in phase_refs if phase_digests[ref] == phase_sha]
+        if len(matching) != 1 or system not in Path(matching[0]).parts:
+            raise ValueError(f"{system}: phase metrics hash does not bind its manifest role")
+        phase = run._validate_phase_metrics(values[phase_role], phase_role)
+        if (
+            phase["system"] != system
+            or phase["record_sha256"] != hashlib.sha256(raw[record_role]).hexdigest()
+            or phase["query_schedule"] != list(expected)
+            or phase["task_count"] != len(expected)
+            or phase["route_count"] != 1
+        ):
+            raise ValueError(f"{system}: phase metrics source/record/query inventory differs")
+        run.validate_completed_query_timing(phase)
+        record_rows = {row["task_id"]: row for row in values[record_role]["results"]}
+        for entry in phase["query_timing"]["observations"]:
+            if entry["route"] != route:
+                raise ValueError(f"{system}: completed-response route differs")
+            if entry["phase"] == "measured":
+                row = record_rows.get(entry["task_id"])
+                if row is None or row["status"] != entry["status"]:
+                    raise ValueError(f"{system}: completed-response status differs from raw record")
+                if entry["iteration"] == 0 and (
+                    not is_finite_json_number(row["timings"]["query_latency_ms"])
+                    or not math.isclose(
+                        row["timings"]["query_latency_ms"],
+                        (entry["end_ns"] - entry["start_ns"]) / 1e6,
+                        rel_tol=1e-9,
+                        abs_tol=1e-9,
+                    )
+                ):
+                    raise ValueError(
+                        f"{system}: completed-response latency differs from raw record"
+                    )
+        phases[system] = phase
+    if (
+        native.get("query_timing") != phases["semble"]["query_timing"]
+        or native.get("query_protocol") != phases["semble"].get("query_protocol")
+        or native.get("latencies_ms")
+        != phases["semble"].get("warm_latencies_ms", {}).get("semble-lexical-file")
+        or native.get("cold_latency_ms")
+        != phases["semble"].get("cold_latencies_ms", {}).get("semble-lexical-file")
+    ):
+        raise ValueError("Semble native completed-response timing differs from raw phase metrics")
+    if bundle.sha256 != RawFile.capture(paths["source_bundle"]).sha256:
+        raise ValueError("source bundle changed during raw pair replay")
+    if set(merged["route_provenance"]) != set(FILE_ROUTES):
+        raise ValueError("raw file pair route inventory differs")
+    captures = {}
+    for route, system in (("lexical", "quanta"), ("semble-lexical-file", "semble")):
+        capture = merged["captures"][merged["route_provenance"][route]["capture_id"]]
+        if capture["system"] != system or capture["execution_profile"] != profiles[system]:
+            raise ValueError("raw file pair execution profile differs from the locked profile")
+        captures[system] = capture
+    qbinary = captures["quanta"]["runner_binary"]["digest"]
+    if (
+        phases["quanta"]["runner_binary_sha256"] != qbinary
+        or phases["semble"]["worker_sha256"] != captures["semble"]["runner_binary"]["digest"]
+        or (
+            phases["semble"]["schema_version"] == 2
+            and phases["semble"].get("profile") != "lexical-file"
+        )
+    ):
+        raise ValueError("completed-response phase binary/profile differs from the raw capture")
+    provenance = values["pair_manifest"].get("provenance")
+    if (
+        not isinstance(provenance, dict)
+        or any(not isinstance(provenance.get(key), dict) for key in ("quanta", "suite", "semble"))
+        or not isinstance(verdict.get("provenance"), dict)
+        or any(
+            not isinstance(values, dict)
+            or not isinstance(provenance.get(section), dict)
+            or any(provenance[section].get(key) != value for key, value in values.items())
+            for section, values in verdict.get("provenance", {}).items()
+        )
+        or provenance.get("quanta", {}).get("binary_digest") != qbinary
+        or re.fullmatch(r"[0-9a-f]{40}", provenance.get("quanta", {}).get("source_sha", "")) is None
+        or provenance.get("suite", {}).get("suite_digest") != lock["suite_digest"]
+        or provenance.get("suite", {}).get("query_pack_digest") != lock["query_pack_digest"]
+        or lock.get("searchd_expected_sha256")
+        != captures["quanta"]["searchd_binary"]["binary_digest"]
+        or provenance.get("semble", {}).get("lockfile_digest") != lock.get("semble_lockfile_sha256")
+    ):
+        raise ValueError("file pair source/binary provenance differs from the frozen manifest")
+    comparisons = verdict.get("comparisons")
+    if (
+        not isinstance(comparisons, list)
+        or len(comparisons) != 1
+        or not isinstance(comparisons[0], dict)
+        or comparisons[0].get("candidate_route") != "lexical"
+        or comparisons[0].get("baseline_route") != "semble-lexical-file"
+        or lock.get("strategies") != [comparisons[0].get("strategy")]
+        or comparisons[0].get("report_digest") != hashlib.sha256(raw["pair_report"]).hexdigest()
+        or comparisons[0].get("record_digest") != digest(canonical(merged))
+    ):
+        raise ValueError("file pair verdict does not bind the replayed records and report")
+    passed = sum(row["status"] in {"success", "capped"} for row in merged["results"])
+    failed = sum(
+        row["status"] not in {"success", "capped", "abstained"} for row in merged["results"]
+    )
+    total = 2 * len(expected)
+    if (
+        not isinstance(verdict.get("counts"), dict)
+        or any(type(value) is not int for value in verdict["counts"].values())
+        or verdict.get("counts")
+        != {
+            "selected": total,
+            "executed": total,
+            "passed": passed,
+            "failed": failed,
+        }
+        or not isinstance(verdict.get("states"), dict)
+        or verdict["states"].get("PAIR_VALID") != ("pass" if failed == 0 else "fail")
+    ):
+        raise ValueError("file pair verdict terminal counts differ from the raw execution statuses")
+    events = native.get("execution_events")
+    measured = (
+        [event for event in events if event.get("phase") == "measured"]
+        if isinstance(events, list) and all(isinstance(event, dict) for event in events)
+        else []
+    )
+    if (
+        native.get("semble_profile") != "lexical-file"
+        or native.get("rerank_applied") is not False
+        or not isinstance(events, list)
+        or any(not isinstance(event.get("task_id"), str) for event in events)
+        or not isinstance(native.get("lane_call_counts"), dict)
+        or any(type(value) is not int for value in native["lane_call_counts"].values())
+        or native.get("lane_call_counts") != {"bm25": len(events), "semantic": 0, "encode": 0}
+        or len(measured) != len(expected)
+        or {event.get("task_id") for event in measured} != set(expected)
+        or any(
+            event.get("lane_entry_counts") != {"bm25": 1, "semantic": 0}
+            or any(type(value) is not int for value in event["lane_entry_counts"].values())
+            or event.get("profile_sha256") != digest(canonical(profiles["semble"]))
+            or event.get("submitted_query_sha256")
+            != hashlib.sha256(expected.get(event.get("task_id"), ("", []))[0].encode()).hexdigest()
+            for event in events
+        )
+    ):
+        raise ValueError(
+            "Semble native file execution events differ from the frozen lexical profile/query inventory"
+        )
+    metrics = rebuilt["judgment_metrics"]["file_judgments"]
+    scored = {(row["task_id"], row["route"]): row for row in metrics["per_query"]}
+    result = {}
+    for route, label in (
+        ("lexical", "quanta_lexical"),
+        ("semble-lexical-file", "semble_lexical_file"),
+    ):
+        timing_layer = phases["quanta" if route == "lexical" else "semble"]["query_timing"][
+            "boundary"
+        ]
+        rows = []
+        for observation in merged["results"]:
+            if observation["route"] != route:
+                continue
+            task_id = observation["task_id"]
+            gold = bool(expected[task_id][1])
+            judgments = scored.get((task_id, route))
+            if judgments is None:
+                if gold:
+                    raise ValueError("answerable raw record lacks its replayed file judgments")
+                judgments = {"eligible": False}
+            scores = judgments.get("scores", {})
+            rows.append(
+                {
+                    "task_id": task_id,
+                    "route": route,
+                    "status": observation["status"],
+                    "answerable": gold,
+                    "candidates": len(observation["candidates"]),
+                    "paths": [row["path"] for row in observation["candidates"]],
+                    "eligible": judgments["eligible"],
+                    "file_hit_at_10": bool(scores["hit_at_10"])
+                    if judgments["eligible"] and gold
+                    else "not_applicable",
+                    "file_recall_at_10": scores["recall_at_10"]
+                    if judgments["eligible"] and gold
+                    else "not_applicable",
+                    "file_ndcg_at_10": scores["ndcg_at_10"]
+                    if judgments["eligible"] and gold
+                    else "not_applicable",
+                    "query_latency_ms": observation["timings"]["query_latency_ms"],
+                }
+            )
+        result[label] = {
+            "tasks": len(expected),
+            "rank_unit": "distinct_file",
+            "execution_profile": profiles["quanta" if route == "lexical" else "semble"],
+            "coverage": metrics["routes"][route]["coverage"],
+            "judgment_metrics": metrics["routes"][route],
+            "per_query": sorted(rows, key=lambda row: row["task_id"]),
+            "latency_ms": latency_summary(
+                [row["query_latency_ms"] for row in rows if row["query_latency_ms"] is not None],
+                sum(row["query_latency_ms"] is not None for row in rows),
+                timing_layer,
+            )
+            if any(row["query_latency_ms"] is not None for row in rows)
+            else {"count": 0, "timing_layer": timing_layer, "state": "not_recorded"},
+            "missing_latency_task_ids": sorted(
+                row["task_id"] for row in rows if row["query_latency_ms"] is None
+            ),
+        }
+    return {
+        "routes": result,
+        "raw_sha256": {role: hashlib.sha256(data).hexdigest() for role, data in raw.items()},
+        "source_bundle_sha256": bundle.sha256,
+        "runner_record_sha256": digest(canonical(merged)),
+        "source_provenance": provenance,
+        "qualification": "not_applicable",
+        "source_scope": "retained_corpus_bundle_and_declared_original_binary_source_provenance",
+    }
+
+
 def read_spec(path: Path) -> dict[str, Path]:
     spec = _read(path)
+    roles = input_roles(spec)
     if (
-        set(spec) != {"schema_version", *INPUT_ROLES}
+        set(spec) != {"schema_version", *roles}
         or type(spec["schema_version"]) is not int
         or spec["schema_version"] != 1
     ):
@@ -607,15 +1051,16 @@ def read_spec(path: Path) -> dict[str, Path]:
         not isinstance(spec[role], str)
         or not Path(spec[role]).is_absolute()
         or ".." in Path(spec[role]).parts
-        for role in INPUT_ROLES
+        for role in roles
     ):
         raise ValueError("lexical spec inputs must be explicit absolute canonical paths")
-    return {role: Path(spec[role]) for role in INPUT_ROLES}
+    return {role: Path(spec[role]) for role in roles}
 
 
 def evaluate_capture(paths: dict[str, Path]) -> dict:
     """One scorer authority for the owner CLI and common capture/replay."""
-    if set(paths) != set(INPUT_ROLES) or any(not isinstance(path, Path) for path in paths.values()):
+    roles = input_roles(paths)
+    if set(paths) != set(roles) or any(not isinstance(path, Path) for path in paths.values()):
         raise ValueError("lexical capture requires the exact input role inventory")
     suite_raw, pack_raw = _bytes(paths["suite"]), _bytes(paths["query_pack"])
     suite, pack = _json(suite_raw), _json(pack_raw)
@@ -625,7 +1070,9 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
         raise ValueError("gold path is outside the frozen file universe")
     result = {
         "status": "diagnostic_unqualified",
-        "query_form": "bare_symbol_v1",
+        "query_form": "code_search_atoms_v1"
+        if suite["routes"] == FILE_ROUTES
+        else "bare_symbol_v1",
         "metric": "gold_file_recall_in_native_top_10",
         "rank_unit_equivalence": "non_equivalent",
         "latency_interpretation": "descriptive_only_not_cross_product_comparable",
@@ -634,7 +1081,9 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
         "suite_sha256": hashlib.sha256(suite_raw).hexdigest(),
         "query_pack_sha256": hashlib.sha256(pack_raw).hexdigest(),
         "validator_sha256": _sha(Path(__file__)),
-        "pair": pair_result(
+        "pair": file_pair_result(paths, suite_raw, pack_raw)
+        if suite["routes"] == FILE_ROUTES
+        else pair_result(
             paths["pair_report"],
             paths["pair_lock"],
             paths["semble_native"],
@@ -644,7 +1093,17 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
             len(expected),
         ),
         "products": {
-            name: product_result(name, paths[f"{name}_rows"], expected, universe)
+            name: product_result(
+                name,
+                paths[f"{name}_rows"],
+                expected,
+                universe,
+                file_judgments={
+                    task["task_id"]: task.get("file_judgments", []) for task in suite["tasks"]
+                }
+                if suite["routes"] == FILE_ROUTES
+                else None,
+            )
             for name in PRODUCTS
         },
         "exclusions": [
@@ -664,24 +1123,63 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
         groups.setdefault(row["rank_unit"], []).append("pair:" + route)
     result["comparison_groups"] = {unit: sorted(names) for unit, names in sorted(groups.items())}
     result["cross_unit_comparison"] = "not_permitted"
+    products = {**result["products"], **result["pair"]["routes"]}
+    requested = set(expected)
+    eligible = requested.copy()
+    coverage = {}
+    for name, product in products.items():
+        observed = {
+            row["task_id"]
+            for row in product["per_query"]
+            if row.get("status") != "unsupported" and row.get("eligible", True)
+        }
+        eligible &= observed
+        coverage[name] = {
+            "requested": len(requested),
+            "eligible": len(observed),
+            "ineligible_task_ids": sorted(requested - observed),
+        }
+    result["capability_coverage"] = coverage
+    result["common_eligible_task_ids"] = sorted(eligible)
+    result["common_eligible_tasks"] = len(eligible)
+    result["common_denominator_policy"] = (
+        "intersection_of_explicit_product_capability_and_judgment_eligibility"
+    )
+    result["common_eligible_products"] = {}
+    for name, product in products.items():
+        rows = [row for row in product["per_query"] if row["task_id"] in eligible]
+        scored_rows = [row for row in rows if row["file_recall_at_10"] != "not_applicable"]
+        metrics = {}
+        for field in ("file_hit_at_10", "file_recall_at_10", "file_ndcg_at_10"):
+            values = [
+                row[field] for row in scored_rows if field in row and row[field] != "not_applicable"
+            ]
+            metrics[field] = math.fsum(values) / len(values) if values else "not_applicable"
+        result["common_eligible_products"][name] = {
+            "tasks": len(rows),
+            "answerable_tasks": len(scored_rows),
+            **metrics,
+        }
     return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spec", type=Path)
-    for role in INPUT_ROLES:
+    for role in FILE_INPUT_ROLES:
         parser.add_argument("--" + role.replace("_", "-"), type=Path)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    explicit = {role: getattr(args, role) for role in INPUT_ROLES}
+    explicit = {role: getattr(args, role) for role in FILE_INPUT_ROLES}
     try:
         if args.spec is not None:
             if any(path is not None for path in explicit.values()):
                 parser.error("--spec refuses mixed explicit input controls")
             paths = read_spec(args.spec)
         else:
-            if any(path is None for path in explicit.values()):
+            explicit = {role: path for role, path in explicit.items() if path is not None}
+            roles = input_roles(explicit)
+            if any(explicit.get(role) is None for role in roles):
                 parser.error("provide --spec or every explicit input role")
             paths = explicit
         if args.out.exists() or args.out.is_symlink():

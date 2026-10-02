@@ -12,6 +12,7 @@
 //! D18 — every wire shape is hand-rolled serde; no proc-macro derives.
 
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::io::{Read, Write};
 
 use crate::errors::{LimitDimension, TrigramError, TrigramErrorCode};
@@ -22,6 +23,15 @@ use crate::types::{DocId, MAX_CANDIDATE_PRE_VERIFY, TRIGRAM_LEN, Trigram};
 pub struct TrigramIndex {
     generation: u64,
     by_trigram: BTreeMap<Trigram, Vec<DocId>>,
+}
+
+/// The posting walk failed its index contract or a request checkpoint.
+///
+/// Caller errors retain their type instead of becoming trigram plan limits.
+#[derive(Debug)]
+pub enum TrigramIntersectionError<E> {
+    Index(TrigramError),
+    Checkpoint(E),
 }
 
 impl TrigramIndex {
@@ -73,7 +83,44 @@ impl TrigramIndex {
         &self,
         query_trigrams: &[Trigram],
     ) -> Result<Vec<DocId>, TrigramError> {
-        ensure_query_trigram_count(query_trigrams)?;
+        match self.intersect_trigrams_with_checkpoint(query_trigrams, || Ok::<(), Infallible>(())) {
+            Ok(rows) => Ok(rows),
+            Err(TrigramIntersectionError::Index(error)) => Err(error),
+            Err(TrigramIntersectionError::Checkpoint(never)) => match never {},
+        }
+    }
+
+    /// The same intersection with a caller-owned checkpoint before work,
+    /// every 256 examined seed rows, and after the walk. The seed is borrowed;
+    /// no posting is materialized solely to support cancellation.
+    pub fn intersect_trigrams_with_checkpoint<F, E>(
+        &self,
+        query_trigrams: &[Trigram],
+        checkpoint: F,
+    ) -> Result<Vec<DocId>, TrigramIntersectionError<E>>
+    where
+        F: FnMut() -> Result<(), E>,
+    {
+        self.intersect_trigrams_filtered_with_checkpoint(query_trigrams, |_| Ok(true), checkpoint)
+    }
+
+    /// Intersect postings and retain only ids admitted by `eligible` before
+    /// charging the candidate cap. The predicate runs only for ids present in
+    /// every posting, in ascending id order. Its errors retain the caller's
+    /// typed error, as do checkpoint interruptions. This lets a query apply
+    /// generation-bound constraints before a broad posting reaches the cap.
+    pub fn intersect_trigrams_filtered_with_checkpoint<F, G, E>(
+        &self,
+        query_trigrams: &[Trigram],
+        mut eligible: G,
+        mut checkpoint: F,
+    ) -> Result<Vec<DocId>, TrigramIntersectionError<E>>
+    where
+        F: FnMut() -> Result<(), E>,
+        G: FnMut(DocId) -> Result<bool, E>,
+    {
+        checkpoint().map_err(TrigramIntersectionError::Checkpoint)?;
+        ensure_query_trigram_count(query_trigrams).map_err(TrigramIntersectionError::Index)?;
         if query_trigrams.is_empty() {
             return Ok(Vec::new());
         }
@@ -100,35 +147,31 @@ impl TrigramIndex {
         let Some((seed, rest)) = lists.split_first() else {
             return Ok(Vec::new());
         };
-        let mut acc: Vec<DocId> = seed.to_vec();
-        if acc.len() > MAX_CANDIDATE_PRE_VERIFY {
-            return Err(TrigramError::plan_limit(
-                LimitDimension::CandidateSet,
-                format!(
-                    "seed candidate set {} exceeds cap {}",
-                    acc.len(),
-                    MAX_CANDIDATE_PRE_VERIFY
-                ),
-            ));
-        }
-
-        for list in rest {
-            acc = intersect_sorted(&acc, list);
-            if acc.is_empty() {
-                return Ok(acc);
+        // Bound the final candidate set, not an intermediate posting. A
+        // common trigram can have far more than the cap's worth of documents
+        // even when the conjunction has just one candidate. Walking the
+        // shortest posting in place also avoids allocating that posting.
+        let mut result = Vec::new();
+        for (position, doc_id) in seed.iter().enumerate() {
+            if position != 0 && position % 256 == 0 {
+                checkpoint().map_err(TrigramIntersectionError::Checkpoint)?;
             }
-            if acc.len() > MAX_CANDIDATE_PRE_VERIFY {
-                return Err(TrigramError::plan_limit(
+            if !rest.iter().all(|list| list.binary_search(doc_id).is_ok()) {
+                continue;
+            }
+            if !eligible(*doc_id).map_err(TrigramIntersectionError::Checkpoint)? {
+                continue;
+            }
+            if result.len() >= MAX_CANDIDATE_PRE_VERIFY {
+                return Err(TrigramIntersectionError::Index(TrigramError::plan_limit(
                     LimitDimension::CandidateSet,
-                    format!(
-                        "candidate set {} exceeds cap {}",
-                        acc.len(),
-                        MAX_CANDIDATE_PRE_VERIFY
-                    ),
-                ));
+                    format!("candidate set exceeds cap {MAX_CANDIDATE_PRE_VERIFY}"),
+                )));
             }
+            result.push(*doc_id);
         }
-        Ok(acc)
+        checkpoint().map_err(TrigramIntersectionError::Checkpoint)?;
+        Ok(result)
     }
 
     /// Iterate over the trigram dictionary in canonical (sorted) order.
@@ -190,30 +233,6 @@ pub(crate) fn ensure_query_trigram_count(query_trigrams: &[Trigram]) -> Result<(
         ));
     }
     Ok(())
-}
-
-/// Linear two-pointer intersect on already-sorted, dedup'd posting lists.
-fn intersect_sorted(a: &[DocId], b: &[DocId]) -> Vec<DocId> {
-    use core::cmp::Ordering;
-    let mut out: Vec<DocId> = Vec::new();
-    let mut i: usize = 0;
-    let mut j: usize = 0;
-    while let (Some(x), Some(y)) = (a.get(i), b.get(j)) {
-        match x.cmp(y) {
-            Ordering::Equal => {
-                out.push(*x);
-                i = i.saturating_add(1);
-                j = j.saturating_add(1);
-            }
-            Ordering::Less => {
-                i = i.saturating_add(1);
-            }
-            Ordering::Greater => {
-                j = j.saturating_add(1);
-            }
-        }
-    }
-    out
 }
 
 impl serde::Serialize for TrigramIndex {
@@ -462,7 +481,7 @@ mod tests {
     use super::TrigramIndex;
     use crate::builder::TrigramIndexBuilder;
     use crate::errors::{LimitDimension, TrigramErrorCode};
-    use crate::types::{DocId, MAX_TRIGRAMS_PER_QUERY, Trigram};
+    use crate::types::{DocId, MAX_CANDIDATE_PRE_VERIFY, MAX_TRIGRAMS_PER_QUERY, Trigram};
 
     fn fatal(msg: &str) -> ! {
         assert!(false, "{msg}");
@@ -538,6 +557,104 @@ mod tests {
             Err(e) => fatal(&format!("{e}")),
         };
         assert_eq!(out, vec![DocId(1)]);
+    }
+
+    #[test]
+    fn large_common_posting_does_not_refuse_small_final_intersection() {
+        let common: Vec<DocId> = (1..=u64::try_from(MAX_CANDIDATE_PRE_VERIFY).expect("cap fits")
+            + 1)
+            .map(DocId)
+            .collect();
+        let rare = vec![DocId(42)];
+        let index = TrigramIndex::from_parts(
+            1,
+            [(*b"abc", common), (*b"bcd", rare)].into_iter().collect(),
+        );
+        assert_eq!(
+            index
+                .intersect_trigrams(&[*b"abc", *b"bcd"])
+                .expect("final result is below cap"),
+            vec![DocId(42)]
+        );
+    }
+
+    #[test]
+    fn filtered_intersection_charges_only_eligible_final_candidates() {
+        let posting: Vec<DocId> = (1..=u64::try_from(MAX_CANDIDATE_PRE_VERIFY).expect("cap fits")
+            + 1)
+            .map(DocId)
+            .collect();
+        let index = TrigramIndex::from_parts(1, [(*b"abc", posting)].into());
+        let rejected = index
+            .intersect_trigrams(&[*b"abc"])
+            .expect_err("unfiltered candidates exceed the cap");
+        assert_eq!(rejected.code, TrigramErrorCode::PlanLimitExceeded);
+        assert_eq!(rejected.dimension, Some(LimitDimension::CandidateSet));
+
+        let mut examined = 0;
+        let admitted = index
+            .intersect_trigrams_filtered_with_checkpoint(
+                &[*b"abc"],
+                |id| {
+                    examined += 1;
+                    Ok::<bool, ()>(id == DocId(42))
+                },
+                || Ok::<(), ()>(()),
+            )
+            .expect("one eligible candidate is below the cap");
+        assert_eq!(admitted, vec![DocId(42)]);
+        assert_eq!(examined, MAX_CANDIDATE_PRE_VERIFY + 1);
+    }
+
+    #[test]
+    fn filtered_intersection_preserves_caller_error() {
+        let index = fixture();
+        let error = index.intersect_trigrams_filtered_with_checkpoint(
+            &[*b"abc"],
+            |id| {
+                if id == DocId(2) {
+                    Err("eligibility failed")
+                } else {
+                    Ok(true)
+                }
+            },
+            || Ok::<(), &str>(()),
+        );
+        assert!(matches!(
+            error,
+            Err(super::TrigramIntersectionError::Checkpoint(
+                "eligibility failed"
+            ))
+        ));
+    }
+
+    #[test]
+    fn posting_walk_observes_cancellation_and_deadline_inside_large_seed() {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum Stop {
+            Cancelled,
+            Deadline,
+        }
+        let posting: Vec<DocId> = (1..=10_000).map(DocId).collect();
+        let index = TrigramIndex::from_parts(1, [(*b"abc", posting)].into());
+        for reason in [Stop::Cancelled, Stop::Deadline] {
+            let mut checkpoints = 0;
+            let result = index.intersect_trigrams_with_checkpoint(&[*b"abc"], || {
+                checkpoints += 1;
+                if checkpoints == 3 {
+                    Err(reason)
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(
+                matches!(result, Err(super::TrigramIntersectionError::Checkpoint(observed)) if observed == reason)
+            );
+            assert_eq!(
+                checkpoints, 3,
+                "third checkpoint occurs after 512 examined rows"
+            );
+        }
     }
 
     #[test]

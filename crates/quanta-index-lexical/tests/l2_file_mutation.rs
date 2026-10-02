@@ -7,6 +7,7 @@
     reason = "assertions report regression failures"
 )]
 
+use sha2::{Digest as _, Sha256};
 use std::error::Error;
 
 use quanta_index_contract::channel::{LexicalChannelOp, ReplaceLexicalScope};
@@ -14,16 +15,17 @@ use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
-    LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchCorpusSurfaceMutationConflictV1 as MutationConflict,
-    SearchCorpusTombstoneScope, SearchScopeSurface, SourceFileCoverage, SourceFileKey,
-    SourceFileRevision, SourcePublicationEvent, SymbolCoverage, SymbolId,
-    source_event_payload_sha256, source_file_unit_set_sha256,
+    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqFilter, LqLeaf, LqOptions,
+    LqPatternType, LqQuery, LqSelect, LqSpan, ManifestGeneration, QueryConstraintSetV1, RepoId,
+    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    SearchCorpusSurfaceMutationConflictV1 as MutationConflict, SearchCorpusTombstoneScope,
+    SearchScopeSurface, SourceFileCoverage, SourceFileKey, SourceFileRevision,
+    SourcePublicationEvent, SymbolCoverage, SymbolId, source_event_payload_sha256,
+    source_file_unit_set_sha256,
 };
 use quanta_index_core::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, RequestBudgetV1, SearchCorpusBatchBuildPort,
-    SearchCorpusPreflightPhaseV1,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec, RequestBudgetV1,
+    SearchCorpusBatchBuildPort, SearchCorpusPreflightPhaseV1,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -31,6 +33,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let mut scope = SearchCorpusReplaceScope {
+        source_bytes: marker.as_bytes().to_vec(),
         coverage: SourceFileCoverage {
             source: SourceFileRevision {
                 file: SourceFileKey {
@@ -38,7 +41,7 @@ fn file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScope, Box<
                     repo_relative_path: RepoRelativePath::new(path),
                 },
                 revision_id: RevisionId::new(format!("source-{marker}"))?,
-                source_sha256: [7; 32],
+                source_sha256: Sha256::digest(marker.as_bytes()).into(),
             },
             language: LanguageCode::new("rust")?,
             producer_policy_sha256: [8; 32],
@@ -131,6 +134,42 @@ fn query(marker: &str) -> LqQuery {
     }
 }
 
+fn code_search_source_owners(
+    adapter: &LexicalAdapter,
+    batch: &SearchCorpusIngestBatch,
+    marker: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
+    let mut options = LqOptions::defaults();
+    options.pattern_type = LqPatternType::CodeSearch;
+    let request = LqQuery {
+        lq_version: LQ_VERSION_TAG,
+        expr: LqExpr::Leaf(LqLeaf::RawString(marker.into())),
+        filters: vec![LqFilter::Select {
+            dim: LqSelect::File,
+        }],
+        options,
+        directives: Vec::new(),
+        source_span: LqSpan::eof(0),
+    };
+    Ok(view
+        .search_constrained(
+            &request,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates
+        .into_iter()
+        .map(|row| row.source_repo_id.as_str().to_string())
+        .collect())
+}
+
 #[test]
 fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -220,7 +259,12 @@ fn assert_units(
     expected_text: &[&str],
     expected_symbols: &[&str],
 ) -> TestResult {
-    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    let view = adapter.open(
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let budget = RequestBudgetV1::unbounded();
     let mut text: Vec<_> = view
         .search(&query(marker), 20, &budget)?
@@ -426,6 +470,105 @@ fn raw_channel_aliases_are_refused_before_generation_preparation() -> TestResult
 }
 
 #[test]
+fn oversized_raw_source_is_refused_before_index_commit() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let request = batch(1, None, vec![file_scope("a.rs", "needle")?])?;
+    let mut oversized = request
+        .replace_scopes
+        .first()
+        .ok_or("missing replacement scope")?
+        .clone();
+    oversized.source_bytes.resize(8 * 1024 * 1024 + 1, b'x');
+    oversized.coverage.source.source_sha256 = Sha256::digest(&oversized.source_bytes).into();
+    let raw_op = |scope: &SearchCorpusReplaceScope| -> Result<LexicalChannelOp, Box<dyn Error>> {
+        let mut payload = Vec::new();
+        ciborium::into_writer(
+            &(request.mode, request.base_generation, scope),
+            &mut payload,
+        )?;
+        Ok(LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
+            repo_id: request.repo_id.clone(),
+            revision_id: request.revision_id.clone(),
+            generation: request.generation,
+            payload,
+        }))
+    };
+    let result = adapter.build(
+        &request.repo_id,
+        &request.revision_id,
+        request.generation,
+        &[raw_op(&oversized)?],
+    );
+    assert!(
+        matches!(result, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message.contains("8 MiB")),
+        "{result:?}"
+    );
+    let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+        &request.repo_id,
+        &request.revision_id,
+    )
+    .generation_dir(dir.path(), request.generation);
+    let index = tantivy::Index::open_in_dir(&target)?;
+    let reader = index.reader()?;
+    assert_eq!(
+        reader
+            .searcher()
+            .search(&tantivy::query::AllQuery, &tantivy::collector::Count)?,
+        0,
+        "an invalid source must not leave committed candidates"
+    );
+    adapter.build(
+        &request.repo_id,
+        &request.revision_id,
+        request.generation,
+        &[raw_op(
+            request
+                .replace_scopes
+                .first()
+                .ok_or("missing replacement scope")?,
+        )?],
+    )?;
+    Ok(())
+}
+
+#[test]
+fn oversized_published_source_is_refused_before_target_creation() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let mut scope = file_scope("a.rs", "needle")?;
+    scope.source_bytes.resize(8 * 1024 * 1024 + 1, b'x');
+    scope.coverage.source.source_sha256 = Sha256::digest(&scope.source_bytes).into();
+    let request = batch(1, None, vec![scope])?;
+    for result in [
+        adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent),
+        adapter.build_batch(&request),
+    ] {
+        assert!(
+            matches!(result, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message.contains("8 MiB")),
+            "{result:?}"
+        );
+    }
+    let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+        &request.repo_id,
+        &request.revision_id,
+    )
+    .generation_dir(dir.path(), request.generation);
+    assert!(!target.exists());
+    let mut allowed = file_scope("a.rs", "needle")?;
+    allowed.source_bytes.resize(8 * 1024 * 1024, b'x');
+    allowed.coverage.source.source_sha256 = Sha256::digest(&allowed.source_bytes).into();
+    let admitted = batch(1, None, vec![allowed])?;
+    adapter.preflight_batch(&admitted, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
+    adapter.build_batch(&admitted)?;
+    assert_eq!(
+        code_search_source_owners(&adapter, &admitted, "needle")?,
+        ["l2-mutation-repo"]
+    );
+    Ok(())
+}
+
+#[test]
 fn malformed_bundle_is_refused_before_source_publication_or_generation_preparation() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
@@ -500,7 +643,12 @@ fn combined_replacement_retires_old_symbols_and_preserves_pinned_view() -> TestR
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
     adapter.build_batch(&base)?;
-    let pinned = adapter.open(&base.repo_id, &base.revision_id, base.generation)?;
+    let pinned = adapter.open(
+        &base.repo_id,
+        &base.revision_id,
+        base.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
     adapter.build_batch(&delta)?;
     assert_units(&adapter, &delta, "oldmarker", &[], &[])?;
@@ -567,6 +715,18 @@ fn same_path_sources_replace_and_tombstone_independently() -> TestResult {
     adapter.build_batch(&base)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
     adapter.build_batch(&delta)?;
+    assert_eq!(
+        code_search_source_owners(&adapter, &delta, "firstmarker")?,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        code_search_source_owners(&adapter, &delta, "freshmarker")?,
+        vec!["l2-mutation-repo"]
+    );
+    assert_eq!(
+        code_search_source_owners(&adapter, &delta, "othermarker")?,
+        vec!["other-source"]
+    );
     assert_units(
         &adapter,
         &delta,
@@ -584,6 +744,14 @@ fn same_path_sources_replace_and_tombstone_independently() -> TestResult {
     });
     removed.source_event.payload_sha256 = source_event_payload_sha256(&removed)?;
     adapter.build_batch(&removed)?;
+    assert_eq!(
+        code_search_source_owners(&adapter, &removed, "freshmarker")?,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        code_search_source_owners(&adapter, &removed, "othermarker")?,
+        vec!["other-source"]
+    );
     assert_units(
         &adapter,
         &removed,
@@ -607,7 +775,12 @@ fn admitted_empty_failed_file_gates_broad_symbol_query_and_survives_delta() -> T
     adapter.build_batch(&base)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
     adapter.build_batch(&delta)?;
-    let view = adapter.open(&delta.repo_id, &delta.revision_id, delta.generation)?;
+    let view = adapter.open(
+        &delta.repo_id,
+        &delta.revision_id,
+        delta.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     assert_eq!(
         view.source_file_coverage()
             .ok_or("missing admitted universe")?
@@ -647,7 +820,12 @@ fn empty_full_generation_and_empty_delta_retain_admission() -> TestResult {
     adapter.build_batch(&empty)?;
     let delta = batch(2, Some(1), Vec::new())?;
     adapter.build_batch(&delta)?;
-    let view = adapter.open(&delta.repo_id, &delta.revision_id, delta.generation)?;
+    let view = adapter.open(
+        &delta.repo_id,
+        &delta.revision_id,
+        delta.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     assert!(
         view.source_file_coverage()
             .ok_or("missing admitted empty universe")?
@@ -742,7 +920,12 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
     assert!(adapter.build_batch(&request).is_err());
     assert!(
         adapter
-            .open(&request.repo_id, &request.revision_id, request.generation)
+            .open(
+                &request.repo_id,
+                &request.revision_id,
+                request.generation,
+                &quanta_index_core::RequestBudgetV1::unbounded()
+            )
             .is_err()
     );
 
@@ -805,13 +988,23 @@ fn actual_generation_open_refuses_missing_or_tampered_coverage() -> TestResult {
     std::fs::write(&path, corrupted)?;
     assert!(
         adapter
-            .open(&base.repo_id, &base.revision_id, base.generation)
+            .open(
+                &base.repo_id,
+                &base.revision_id,
+                base.generation,
+                &quanta_index_core::RequestBudgetV1::unbounded()
+            )
             .is_err()
     );
     std::fs::remove_file(&path)?;
     assert!(
         adapter
-            .open(&base.repo_id, &base.revision_id, base.generation)
+            .open(
+                &base.repo_id,
+                &base.revision_id,
+                base.generation,
+                &quanta_index_core::RequestBudgetV1::unbounded()
+            )
             .is_err()
     );
     std::fs::write(path, original)?;
@@ -853,7 +1046,12 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
         .ok_or("missing base coverage page")?
         .path();
     let original = std::fs::read(&page)?;
-    let pinned_old_reader = adapter.open(&base.repo_id, &base.revision_id, base.generation)?;
+    let pinned_old_reader = adapter.open(
+        &base.repo_id,
+        &base.revision_id,
+        base.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     // Both stages use the same verifier; the phase records where work occurred.
     adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
@@ -1049,10 +1247,20 @@ fn reclaiming_base_preserves_delta_coverage_and_refuses_old_open() -> TestResult
     ));
     assert!(
         adapter
-            .open(&base.repo_id, &base.revision_id, base.generation)
+            .open(
+                &base.repo_id,
+                &base.revision_id,
+                base.generation,
+                &quanta_index_core::RequestBudgetV1::unbounded()
+            )
             .is_err()
     );
-    let reopened = adapter.open(&delta.repo_id, &delta.revision_id, delta.generation)?;
+    let reopened = adapter.open(
+        &delta.repo_id,
+        &delta.revision_id,
+        delta.generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     assert_eq!(
         reopened
             .source_file_coverage()

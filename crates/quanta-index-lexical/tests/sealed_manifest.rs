@@ -474,7 +474,12 @@ struct Doors {
 fn knock(adapter: &LexicalAdapter, generation: ManifestGeneration) -> Doors {
     let validate = adapter.validate_generation_identity(&identity(generation));
     let open = adapter
-        .open(&repo(), &revision(), generation)
+        .open(
+            &repo(),
+            &revision(),
+            generation,
+            &quanta_index_core::RequestBudgetV1::unbounded(),
+        )
         .and_then(|searcher| {
             searcher.search(&query("sealed_needle"), 5, &RequestBudgetV1::unbounded())
         })

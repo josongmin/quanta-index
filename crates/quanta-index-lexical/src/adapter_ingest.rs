@@ -253,15 +253,16 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             // and neither build nor open accepts an unproved generation.
             let (_directory, _observed) =
                 self.sealed_generation_dir_for(&identity, "batch preflight")?;
-            let proved = match walk_sealed_generation(&directory, &identity, &mut DiscardingVisitor)
-            {
-                Ok(proved) => proved,
-                Err(CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
-                    ..
-                }) if batch.mode == BatchIngestMode::ReplaceGeneration => return Ok(()),
-                Err(error) => return Err(error),
-            };
+            let proved =
+                match walk_sealed_generation(&directory, &identity, &mut DiscardingVisitor, None) {
+                    Ok(proved) => proved,
+                    Err(CoreError::Typed {
+                        code:
+                            quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                        ..
+                    }) if batch.mode == BatchIngestMode::ReplaceGeneration => return Ok(()),
+                    Err(error) => return Err(error),
+                };
             self.record_coverage_read(read_phase, proved.coverage_read_stats)?;
             if proved.source_publication.as_ref() != Some(&batch.source_event) {
                 return Err(CoreError::InvalidContract(
@@ -271,6 +272,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             return Ok(());
         }
         let _planned = self.plan_batch_coverage(batch, &identity, &directory, read_phase)?;
+        self.preflight_file_authority_batch(batch)?;
         Ok(())
     }
 
@@ -313,7 +315,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             }
             self.validate_generation_identity(&candidate)?;
             let verified =
-                walk_sealed_generation(&generation_dir, &candidate, &mut DiscardingVisitor)?;
+                walk_sealed_generation(&generation_dir, &candidate, &mut DiscardingVisitor, None)?;
             self.record_coverage_read(CoverageReadPhase::Build, verified.coverage_read_stats)?;
             if verified.source_publication.as_ref() != Some(&batch.source_event) {
                 return Err(CoreError::InvalidContract(
@@ -323,6 +325,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             return Ok(());
         }
         let ops = legacy_ops_for_batch(batch, batch.seal)?;
+        self.preflight_file_authority_batch(batch)?;
         let coverage =
             self.plan_batch_coverage(batch, &candidate, &generation_dir, CoverageReadPhase::Build)?;
         // The prepared coverage marks this target as bound before any index
@@ -560,6 +563,7 @@ impl LexicalAdapter {
                     &identity,
                     &mut DiscardingVisitor,
                     Some(&mut decoded),
+                    None,
                 )?;
                 *self.coverage_decode_cache.lock().map_err(|error| {
                     CoreError::Storage(format!("lexical: coverage decode cache poisoned: {error}"))
@@ -673,6 +677,21 @@ impl LexicalAdapter {
 }
 
 impl LexicalAdapter {
+    fn preflight_file_authority_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<(), CoreError> {
+        let source_generation = batch.base_generation.unwrap_or(batch.generation);
+        let source_dir = self.index_path(&GenKey {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: source_generation,
+        });
+        let ops = legacy_ops_for_batch(batch, false)?;
+        let _planned = crate::file_authority::plan_ops(&source_dir, &ops)?;
+        Ok(())
+    }
+
     fn build_ops(
         &self,
         repo: &RepoId,

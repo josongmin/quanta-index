@@ -14,7 +14,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from tools.benchmark.retrieval import evaluator, query_plan, source_oracle
+from tools.benchmark.retrieval import evaluator, query_plan, source_oracle, source_oracle_suite
 
 
 def _require(condition: bool, message: str) -> None:
@@ -65,18 +65,36 @@ def verify_generation_manifest(
         paths[path] = evaluator.sha(item["sha256"], "generation artifact sha256")
     for name, path in (("census.json", census_path), (f"{lane}-suite.json", suite_path)):
         _require(name in paths, "missing generation artifact: " + name)
+        observed = evaluator.digest(path.read_bytes())
+        if name == f"{lane}-suite.json" and observed != paths[name]:
+            # The pair runner adds exactly one external route. Bind all other
+            # bytes back to the generator's single-route suite.
+            if suite.get("routes") == ["lexical", "semble-lexical-file"]:
+                source_suite = {**suite, "routes": ["lexical"]}
+                observed = evaluator.digest(source_oracle_suite._json_bytes(source_suite))
+            elif suite.get("routes") != ["lexical"]:
+                raise ValueError("unsupported robustness pair route projection")
         _require(
-            evaluator.digest(path.read_bytes()) == paths[name],
+            observed == paths[name],
             "generation artifact mismatch: " + name,
         )
-    if lane == "no-answer-content":
+    if lane in ("no-answer-content", "typo-content-absence"):
         params = manifest.get("parameters")
         _require(isinstance(params, dict), "missing generation parameters")
-        count = params.get("no_answer")
-        _require(
-            type(count) is int and count == len(census["lanes"]["no-answer"]["records"]),
-            "content no-answer source population mismatch",
-        )
+        if lane == "no-answer-content":
+            count = params.get("no_answer")
+            _require(
+                type(count) is int and count == len(census["lanes"]["no-answer"]["records"]),
+                "content no-answer source population mismatch",
+            )
+        else:
+            source = census["lanes"]["typo"]
+            _require(
+                census["lanes"][lane]["source_admitted"]
+                == source["admitted"]
+                == sum(row["status"] == "admitted" for row in source["records"]),
+                "typo absence source population mismatch",
+            )
     return evaluator.digest(raw)
 
 
@@ -88,10 +106,16 @@ def _policy(capture: dict) -> dict[str, str | None]:
         _require(name in query_plan.FILE_PROJECTION_ORDERING, "unsupported Quanta file policy")
         return {
             "policy": name,
-            "case": "sensitive" if name != "literal_file" else "normalizer_defined",
+            "case": (
+                "folded"
+                if name == "code_search_file"
+                else "normalizer_defined"
+                if name == "literal_file"
+                else "sensitive"
+            ),
             "scope": (
                 "content_and_path"
-                if name == "keyword_file"
+                if name in ("keyword_file", "code_search_file")
                 else "content"
                 if name == "substring_file"
                 else "policy_unspecified"
@@ -115,10 +139,13 @@ def compose(
     record: dict[str, Any],
     diagnostic: dict[str, Any],
     lane: str,
+    route: str | None = None,
 ) -> dict[str, Any]:
     """Return a source-bound breakdown using evaluator-supplied hit values only."""
+    paired = diagnostic.get("report_scope") == "paired_independent_file_judgment_diagnostic_v1"
     _require(
-        diagnostic.get("report_scope") == "single_route_independent_judgment_diagnostic_v1",
+        paired
+        or diagnostic.get("report_scope") == "single_route_independent_judgment_diagnostic_v1",
         "wrong diagnostic scope",
     )
     _require(diagnostic.get("status") == "diagnostic_unqualified", "unexpected qualification")
@@ -140,8 +167,18 @@ def compose(
         == record.get("comparison_contract"),
         "comparison contract mismatch",
     )
-    route = diagnostic["route"]
-    _require(suite.get("routes") == [route], "expected one matching route")
+    if paired:
+        _require(
+            route is not None
+            and set(suite.get("routes", []))
+            == {diagnostic.get("baseline_route"), diagnostic.get("candidate_route")}
+            and route in suite["routes"],
+            "paired diagnostic requires an explicit declared route",
+        )
+    else:
+        _require(route is None or route == diagnostic["route"], "diagnostic route mismatch")
+        route = diagnostic["route"]
+        _require(suite.get("routes") == [route], "expected one matching route")
     _require(
         diagnostic.get("route_provenance") == record.get("route_provenance"),
         "route provenance mismatch",
@@ -153,8 +190,11 @@ def compose(
     lane_data = census["lanes"][lane]
     tasks = _unique([t for t in suite["tasks"] if t["split"] == "eval"], "suite")
     _require(len(tasks) == len(suite["tasks"]), "non-eval task in diagnostic suite")
-    _require(diagnostic.get("selected_eval_tasks") == len(tasks), "selected task count mismatch")
-    results = _unique(record["results"], "record")
+    if not paired:
+        _require(
+            diagnostic.get("selected_eval_tasks") == len(tasks), "selected task count mismatch"
+        )
+    results = _unique([row for row in record["results"] if row["route"] == route], "record")
     _require(set(results) == set(tasks), "missing or extra record task")
     _require(all(row["route"] == route for row in results.values()), "record route mismatch")
     _require(
@@ -167,10 +207,16 @@ def compose(
     )
 
     records = _unique(lane_data["records"], "census")
-    if lane == "no-answer-content":
+    if lane in ("no-answer-content", "typo-content-absence"):
         _require(len(records) == lane_data["admitted"], "content no-answer admission mismatch")
         _require(set(records) == set(tasks), "content no-answer census/suite mismatch")
-        source_records = _unique(census["lanes"]["no-answer"]["records"], "source census")
+        source_records = {
+            task_id: row
+            for task_id, row in _unique(
+                census["lanes"][lane_data["derived_from"]]["records"], "source census"
+            ).items()
+            if row["status"] == "admitted"
+        }
         source_ids = [row["source_task_id"] for row in records.values()]
         _require(len(source_ids) == len(set(source_ids)), "duplicate content no-answer source ID")
         _require(set(source_ids) <= set(source_records), "unknown content no-answer source ID")
@@ -250,7 +296,10 @@ def compose(
     _require(route_summary["rank_unit"] == "distinct_file", "diagnostic rank unit mismatch")
     _require(route_summary["ordering"] == policy["ordering"], "diagnostic ordering mismatch")
     answerable = {task_id for task_id, task in tasks.items() if task["answerable"]}
-    scored_rows = _unique(judgments["per_query"], "diagnostic per-query")
+    scored_rows = _unique(
+        [row for row in judgments["per_query"] if row["route"] == route],
+        "diagnostic per-query",
+    )
     _require(set(scored_rows) == answerable, "missing or extra diagnostic task")
     _require(
         all(row["route"] == route for row in scored_rows.values()), "diagnostic route mismatch"
@@ -273,20 +322,22 @@ def compose(
         == route_summary["status_counts"],
         "diagnostic status counts mismatch",
     )
+    no_answer_ids = set(tasks) - answerable
+    abstained = sum(results[task_id]["status"] == "abstained" for task_id in no_answer_ids)
+    no_answer_report = (
+        diagnostic["no_answer"]["routes"][route] if paired else diagnostic["no_answer"]
+    )
     _require(
-        sum(diagnostic["no_answer"]["status_counts"].values()) == len(tasks) - len(answerable),
+        sum(no_answer_report["status_counts"].values()) == len(tasks) - len(answerable),
         "no-answer status count mismatch",
     )
     _require(
         dict(Counter(results[task_id]["status"] for task_id in tasks if task_id not in answerable))
-        == diagnostic["no_answer"]["status_counts"],
+        == no_answer_report["status_counts"],
         "no-answer status mismatch",
     )
-    no_answer_ids = set(tasks) - answerable
-    no_answer_report = diagnostic["no_answer"]
     _require(set(no_answer_report["task_ids"]) == no_answer_ids, "no-answer task ID mismatch")
     _require(no_answer_report["sample_count"] == len(no_answer_ids), "no-answer count mismatch")
-    abstained = sum(results[task_id]["status"] == "abstained" for task_id in no_answer_ids)
     _require(no_answer_report["abstained"] == abstained, "no-answer abstained count mismatch")
     _require(
         no_answer_report["abstention_rate"]
@@ -294,6 +345,15 @@ def compose(
         "no-answer abstention rate mismatch",
     )
     nonempty_no_answer = sum(bool(results[task_id]["candidates"]) for task_id in no_answer_ids)
+    _require(
+        no_answer_report["nonempty_results"] == nonempty_no_answer,
+        "no-answer nonempty result count mismatch",
+    )
+    _require(
+        no_answer_report["nonempty_result_rate"]
+        == (nonempty_no_answer / len(no_answer_ids) if no_answer_ids else evaluator.NOT_APPLICABLE),
+        "no-answer nonempty result rate mismatch",
+    )
 
     breakdown: dict[str, dict[str, int | None]] = {}
     for label in ("unique", "ambiguous", "no_answer"):
@@ -317,8 +377,18 @@ def compose(
         sum(int(row["eligible"]) for row in breakdown.values()) == len(eligible),
         "eligible stratum sum mismatch",
     )
+    if contract == source_oracle.ASCII_CONTENT_ABSENT_CASEFOLD:
+        evaluation_intent = "content_absence_negative_control"
+        negative_reference_scope = "folded_content_absent"
+    elif contract == source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD:
+        evaluation_intent = "code_search_absence_negative_control"
+        negative_reference_scope = "folded_content_and_path_absent"
+    else:
+        evaluation_intent = "declaration_name_file_retrieval_diagnostic"
+        negative_reference_scope = "declaration_local_name_absent"
     return {
         "status": "diagnostic_unqualified",
+        "evaluation_intent": evaluation_intent,
         "lane": lane,
         "suite_id": suite["suite_id"],
         "suite_commitment_sha256": diagnostic["suite_commitment_sha256"],
@@ -334,15 +404,19 @@ def compose(
         **policy,
         "requested": requested,
         "not_admitted": not_admitted,
-        "unsupported_query_form": len(unsupported) if lane != "no-answer-content" else 0,
+        "unsupported_query_form": len(unsupported)
+        if lane not in ("no-answer-content", "typo-content-absence")
+        else 0,
         "submitted": len(tasks),
         "eligible": len(eligible),
         "status_counts": dict(sorted(statuses.items())),
         "no_answer": {
+            "negative_reference_scope": negative_reference_scope,
             "sample_count": no_answer_report["sample_count"],
             "abstained": no_answer_report["abstained"],
             "abstention_rate": no_answer_report["abstention_rate"],
-            "nonempty_results": nonempty_no_answer,
+            "nonempty_results": no_answer_report["nonempty_results"],
+            "nonempty_result_rate": no_answer_report["nonempty_result_rate"],
             "status_counts": no_answer_report["status_counts"],
         },
         "strata": breakdown,
@@ -356,6 +430,7 @@ def compose_validated(
     diagnostic: dict[str, Any],
     census: dict[str, Any],
     lane: str,
+    route: str | None = None,
 ) -> dict[str, Any]:
     """Verify the hit/status subset against evaluator replay before joining.
 
@@ -363,6 +438,19 @@ def compose_validated(
     floating-point NDCG digits. This report consumes only hit, eligibility,
     exclusion, and status, so require exact equality for those fields.
     """
+    if diagnostic.get("report_scope") == "paired_independent_file_judgment_diagnostic_v1":
+        expected = evaluator.evaluate_paired_file_diagnostic(
+            suite,
+            pack,
+            record,
+            diagnostic["baseline_route"],
+            diagnostic["candidate_route"],
+        )
+        _require(
+            evaluator.canonical(expected) == evaluator.canonical(diagnostic),
+            "paired diagnostic differs from evaluator replay",
+        )
+        return compose(suite, census, record, diagnostic, lane, route)
     expected = evaluator.evaluate_diagnostic(suite, pack, record)
     old = diagnostic["judgment_metrics"]["file_judgments"]
     new = expected["judgment_metrics"]["file_judgments"]
@@ -385,7 +473,7 @@ def compose_validated(
         and diagnostic["no_answer"]["status_counts"] == expected["no_answer"]["status_counts"],
         "diagnostic differs from evaluator replay",
     )
-    return compose(suite, census, record, diagnostic, lane)
+    return compose(suite, census, record, diagnostic, lane, route)
 
 
 def verify_census_against_source(
@@ -393,19 +481,58 @@ def verify_census_against_source(
 ) -> None:
     """Independently rederive the ambiguity strata from the frozen Go files."""
     if lane == "no-answer-content":
-        # New NOC tasks are checked for content absence by validate_suite;
-        # legacy NOC is explicitly marked unverified in compose's output.
+        # NOC task labels are replayed by validate_suite. Archived NOC used a
+        # declaration-only oracle and remains explicitly unverified.
         return
     source = evaluator.SourceSnapshot(repo, suite["repository_commit"])
     files = {
         item["path"]: (source.file(item["path"])[0], item["file_sha256"])
         for item in suite["file_universe"]
     }
+    if lane == "typo-content-absence":
+        lane_data = census["lanes"][lane]
+        source_rows = {
+            row["task_id"]: row
+            for row in census["lanes"]["typo"]["records"]
+            if row["status"] == "admitted"
+        }
+        oracle = source_oracle.SourceOracleIndex(
+            files, {row["query"] for row in source_rows.values()}
+        )
+        expected_admitted: set[str] = set()
+        expected_excluded: dict[str, str] = {}
+        for task_id, row in source_rows.items():
+            try:
+                oracle.expected_rows(
+                    source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+                    row["query"],
+                    "distinct_file",
+                )
+            except source_oracle.SourceOracleError as exc:
+                expected_excluded[task_id] = str(exc)
+            else:
+                expected_admitted.add(task_id)
+        mapped = [row["source_task_id"] for row in lane_data["records"]]
+        excluded = lane_data["excluded_probes"]
+        _require(
+            len(mapped) == len(set(mapped)) and set(mapped) == expected_admitted,
+            "typo absence admitted source mismatch",
+        )
+        _require(
+            len(excluded) == len(expected_excluded)
+            and {row["source_task_id"]: (row["query"], row["reason"]) for row in excluded}
+            == {
+                task_id: (source_rows[task_id]["query"], reason)
+                for task_id, reason in expected_excluded.items()
+            },
+            "typo absence excluded source mismatch",
+        )
+        return
     lane_data = census["lanes"][lane]
     contract = lane_data["contract"]
     _require(
-        contract in source_oracle.GO_NAME_CONTRACTS,
-        "census contract is not a Go declaration name contract",
+        contract in source_oracle.DECLARATION_NAME_CONTRACTS,
+        "census contract is not a declaration name contract",
     )
     names = {row["query"] for row in lane_data["records"] if row["status"] == "admitted"}
     oracle = source_oracle.SourceOracleIndex(files, names)
@@ -445,6 +572,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     for name in ("repo", "suite", "record", "diagnostic", "census", "lane", "generation-manifest"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--route")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     try:
@@ -462,11 +590,14 @@ def main() -> int:
             args.lane,
         )
         verify_census_against_source(Path(args.repo).resolve(), suite, census, args.lane)
-        output = compose_validated(suite, pack, record, diagnostic, census, args.lane)
+        output = compose_validated(suite, pack, record, diagnostic, census, args.lane, args.route)
         output["generation_manifest_sha256"] = manifest_sha256
         output["content_absence_replay_verified"] = (
             args.lane == "no-answer-content"
             and output["source_oracle_contract"] == source_oracle.ASCII_CONTENT_ABSENT_CASEFOLD
+        ) or (
+            args.lane == "typo-content-absence"
+            and output["source_oracle_contract"] == source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD
         )
         rendered = json.dumps(output, indent=2, sort_keys=True, allow_nan=False) + "\n"
         if args.output:

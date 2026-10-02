@@ -13,8 +13,7 @@ pub use quanta_index_lq_norm::{
 /// enforces it within its single block. This is not a physical heap ceiling.
 pub const MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1: usize = 8;
 
-pub type TextQueryAst = quanta_index_lq_norm::LqNormalizedQuery;
-pub type LqQuery = TextQueryAst;
+pub type LqQuery = quanta_index_lq_norm::LqNormalizedQuery;
 
 #[cfg(test)]
 mod tests {

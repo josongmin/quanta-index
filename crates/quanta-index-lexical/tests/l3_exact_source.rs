@@ -1,20 +1,29 @@
 //! Explicit name/source contracts through the real sealed adapter. Fixed IDs
 //! and cardinalities come from the fixture, never a full-search baseline.
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::panic_in_result_fn,
+    clippy::string_slice,
+    clippy::unchecked_time_subtraction,
+    reason = "fixed source fixtures assert exact ranks, scores, spans, and expired deadlines"
+)]
 
 use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalCursor, LqCase, LqCountBound,
-    LqExpr, LqFilter, LqLeaf, LqOptions, LqPredicateArg, LqQuery, LqSelect, LqSpan, LqYesNoOnly,
-    ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
+    LqExpr, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqSpan,
+    LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
     SearchCorpusIngestBatch, SearchCorpusReplaceScope, SourceFileCoverage, SourceFileKey,
     SourceFileRevision, SourcePublicationEvent, SymbolCoverage, SymbolId,
     source_event_payload_sha256, source_file_unit_set_sha256,
 };
 use quanta_index_core::{
-    LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
+    CoreError, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
     SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
@@ -72,6 +81,7 @@ fn scope(
         })
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
     Ok(SearchCorpusReplaceScope {
+        source_bytes: text.as_bytes().to_vec(),
         coverage: SourceFileCoverage {
             source: SourceFileRevision {
                 file: SourceFileKey {
@@ -173,7 +183,12 @@ fn fixture_with_scopes(
     };
     batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
     adapter.build_batch(&batch)?;
-    let searcher = adapter.open(&repo, &revision, ManifestGeneration::new(1))?;
+    let searcher = adapter.open(
+        &repo,
+        &revision,
+        ManifestGeneration::new(1),
+        &RequestBudgetV1::unbounded(),
+    )?;
     Ok((dir, searcher))
 }
 
@@ -196,6 +211,676 @@ fn query(name: &str, value: &str, manual: bool, sensitive: bool) -> LqQuery {
         directives: Vec::new(),
         source_span: LqSpan::eof(0),
     }
+}
+
+fn code_query(terms: &[&str], sensitive: bool) -> LqQuery {
+    let mut options = LqOptions::defaults();
+    options.pattern_type = LqPatternType::CodeSearch;
+    if sensitive {
+        options.case = Some(LqCase::Sensitive);
+    }
+    let leaves: Vec<_> = terms
+        .iter()
+        .map(|term| LqExpr::Leaf(LqLeaf::RawString((*term).into())))
+        .collect();
+    let expr = if leaves.len() == 1 {
+        leaves.into_iter().next().expect("one leaf")
+    } else {
+        LqExpr::All(leaves)
+    };
+    LqQuery {
+        lq_version: LQ_VERSION_TAG,
+        expr,
+        filters: vec![LqFilter::Select {
+            dim: LqSelect::File,
+        }],
+        options,
+        directives: Vec::new(),
+        source_span: LqSpan::eof(0),
+    }
+}
+
+fn code_scope(
+    file: &str,
+    body: &str,
+    split: usize,
+) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
+    let mut scope = scope("source-a", file, &[])?;
+    let body_bytes = body.as_bytes();
+    let parts = [
+        (&body[..split], 0_u32),
+        (&body[split..], u32::try_from(split)?),
+    ];
+    scope.chunks = parts
+        .into_iter()
+        .enumerate()
+        .map(|(index, (text, start))| {
+            Ok(ChunkRecord {
+                chunk_id: ChunkId::new(format!("chunk-{file}-{index}")),
+                repo_relative_path: RepoRelativePath::new(file),
+                language: LanguageCode::new("rust")?,
+                start_byte: start,
+                end_byte: start
+                    .checked_add(u32::try_from(text.len())?)
+                    .ok_or("chunk end overflow")?,
+                start_line: 1,
+                end_line: 1,
+                text: text.into(),
+                structural: None,
+                parent_chunk_id: None,
+                source_repo_id: Some(RepoId::new("source-a")?),
+            })
+        })
+        .collect::<Result<_, Box<dyn Error>>>()?;
+    scope.source_bytes = body_bytes.to_vec();
+    scope.coverage.source.source_sha256 = Sha256::digest(body_bytes).into();
+    scope.coverage.unit_set_sha256 = source_file_unit_set_sha256(&scope.chunks, &[])?;
+    Ok(scope)
+}
+
+fn repartition_code_scope(
+    scope: &mut SearchCorpusReplaceScope,
+    spans: &[(usize, usize)],
+) -> Result<(), Box<dyn Error>> {
+    let path = scope.coverage.source.file.repo_relative_path.clone();
+    let owner = scope.coverage.source.file.source_repo_id.clone();
+    scope.chunks = spans
+        .iter()
+        .enumerate()
+        .map(|(index, &(start, end))| {
+            let text = std::str::from_utf8(
+                scope
+                    .source_bytes
+                    .get(start..end)
+                    .ok_or("span outside source")?,
+            )?;
+            Ok(ChunkRecord {
+                chunk_id: ChunkId::new(format!("{}-{index}", path.as_str())),
+                repo_relative_path: path.clone(),
+                language: scope.coverage.language.clone(),
+                start_byte: u32::try_from(start)?,
+                end_byte: u32::try_from(end)?,
+                start_line: 1,
+                end_line: 1,
+                text: text.into(),
+                structural: None,
+                parent_chunk_id: None,
+                source_repo_id: Some(owner.clone()),
+            })
+        })
+        .collect::<Result<_, Box<dyn Error>>>()?;
+    scope.coverage.text_admitted = !spans.is_empty();
+    scope.coverage.unit_set_sha256 = source_file_unit_set_sha256(&scope.chunks, &[])?;
+    Ok(())
+}
+
+#[test]
+fn code_search_matches_file_across_chunk_boundaries_and_maps_unicode_source_span() -> TestResult {
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("cross.rs", "alphaBeta İ", 5)?,
+        code_scope("first.rs", "alpha only", 5)?,
+        code_scope("second.rs", "Beta only", 4)?,
+    ])?;
+    let request = code_query(&["alpha", "Beta"], true);
+    let rows = searcher
+        .search_constrained(
+            &request,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cross.rs"]
+    );
+    assert!(rows[0].candidate_id.starts_with("file:"));
+
+    let boundary = code_query(&["haBe"], true);
+    let rows = searcher
+        .search_constrained(
+            &boundary,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cross.rs"]
+    );
+    assert_eq!(
+        rows[0]
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.original_focus)
+            .map(|span| (span.start, span.end)),
+        Some((3, 7))
+    );
+
+    let folded = code_query(&["i\u{307}"], false);
+    let rows = searcher
+        .search_constrained(
+            &folded,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cross.rs"]
+    );
+    assert_eq!(
+        rows[0]
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.original_focus)
+            .map(|span| (span.start, span.end)),
+        Some((10, 12))
+    );
+    let mut unsupported = code_query(&["alpha"], true);
+    unsupported.options.count = Some(LqCountBound::All);
+    assert!(matches!(
+        searcher.search_constrained(
+            &unsupported,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        ),
+        Err(CoreError::Typed { .. })
+    ));
+    let expired =
+        RequestBudgetV1::until(std::time::Instant::now() - std::time::Duration::from_millis(1));
+    assert!(matches!(
+        searcher.search_constrained(
+            &request,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &expired,
+        ),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::RequestDeadlineExceeded,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn code_search_preview_flags_only_actual_nfc_source_difference() -> TestResult {
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("identity.rs", "needle", 6)?,
+        code_scope("decomposed.rs", "e\u{301}", 3)?,
+    ])?;
+    for (term, expected_path, expected_difference) in [
+        ("needle", "identity.rs", false),
+        ("é", "decomposed.rs", true),
+    ] {
+        let rows = searcher
+            .search_constrained(
+                &code_query(&[term], true),
+                &QueryConstraintSetV1::unconstrained(),
+                &LexicalPageSpec::first(10),
+                &RequestBudgetV1::unbounded(),
+            )?
+            .candidates;
+        let row = rows.first().ok_or("source match missing")?;
+        if rows.len() != 1 || row.repo_relative_path.as_str() != expected_path {
+            return Err(format!("unexpected source match for {term}: {rows:?}").into());
+        }
+        let preview = row.preview.as_ref().ok_or("source preview missing")?;
+        if preview.normalization_equivalent != expected_difference {
+            return Err(format!("wrong NFC preview flag for {term}: {preview:?}").into());
+        }
+        row.validate_source_metadata().map_err(str::to_owned)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn code_search_regex_uses_full_file_authority_and_bounded_source_focus() -> TestResult {
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("src/target.rs", "sphinx middle quartz", 7)?,
+        code_scope("src/other.rs", "sphinx alone", 7)?,
+        code_scope("misc/target.rs", "nothing relevant", 7)?,
+        code_scope("unicode.rs", "Cafe\u{301} needle", 4)?,
+    ])?;
+    let run = |query: &LqQuery| {
+        searcher.search_constrained(
+            query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )
+    };
+    let mut content = code_query(&["unused"], false);
+    content.expr = LqExpr::Leaf(LqLeaf::Regex("sphinx.*quartz".into()));
+    let hits = run(&content)?.candidates;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].repo_relative_path.as_str(), "src/target.rs");
+    let focus = hits[0]
+        .preview
+        .as_ref()
+        .and_then(|preview| preview.original_focus)
+        .ok_or("missing regex focus")?;
+    assert_eq!((focus.start, focus.end), (0, 20));
+    let mut scoped = code_query(&["unused"], false);
+    scoped.expr = LqExpr::All(vec![
+        LqExpr::Leaf(LqLeaf::RawString("sphinx".into())),
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "code_search.path_regex".into(),
+            args: vec![LqPredicateArg::RawString(r"src/target\.rs".into())],
+        }),
+    ]);
+    let hits = run(&scoped)?.candidates;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].repo_relative_path.as_str(), "src/target.rs");
+    let mut content_scoped = code_query(&["unused"], false);
+    content_scoped.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.content_regex".into(),
+        args: vec![LqPredicateArg::RawString("SPHINX.*QUARTZ".into())],
+    });
+    assert_eq!(run(&content_scoped)?.candidates.len(), 1);
+    content_scoped.options.case = Some(LqCase::Sensitive);
+    assert!(run(&content_scoped)?.candidates.is_empty());
+    let mut unicode = code_query(&["unused"], false);
+    unicode.expr = LqExpr::Leaf(LqLeaf::Regex("caf.".into()));
+    let unicode_rows = run(&unicode)?.candidates;
+    assert_eq!(unicode_rows.len(), 1);
+    assert_eq!(unicode_rows[0].repo_relative_path.as_str(), "unicode.rs");
+    assert_eq!(
+        unicode_rows[0]
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.original_focus)
+            .map(|range| (range.start, range.end)),
+        Some((0, 6))
+    );
+    let mut zero_width = code_query(&["unused"], false);
+    zero_width.expr = LqExpr::Leaf(LqLeaf::Regex(".*".into()));
+    assert!(matches!(run(&zero_width), Err(CoreError::Typed { .. })));
+    let mut forbidden = code_query(&["unused"], false);
+    forbidden.expr = LqExpr::Leaf(LqLeaf::Regex("(?<=sphinx)quartz".into()));
+    assert!(matches!(run(&forbidden), Err(CoreError::Typed { .. })));
+    let expired =
+        RequestBudgetV1::until(std::time::Instant::now() - std::time::Duration::from_millis(1));
+    assert!(matches!(
+        searcher.search_constrained(
+            &content,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &expired,
+        ),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::RequestDeadlineExceeded,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn code_search_applies_language_before_short_and_regex_candidates() -> TestResult {
+    let mut go = code_scope("src/go.rs", "xa", 1)?;
+    go.coverage.language = LanguageCode::new("go")?;
+    for chunk in &mut go.chunks {
+        chunk.language = go.coverage.language.clone();
+    }
+    go.coverage.unit_set_sha256 = source_file_unit_set_sha256(&go.chunks, &[])?;
+    let rust = code_scope("src/rust.rs", "xa", 1)?;
+    let (_dir, searcher) = fixture_with_scopes(vec![go, rust])?;
+    let mut constraints = QueryConstraintSetV1::unconstrained();
+    let _inserted = constraints.language_any_of.insert(LanguageCode::new("go")?);
+    for regex in [false, true] {
+        let mut request = code_query(&["x"], true);
+        if regex {
+            request.expr = LqExpr::Leaf(LqLeaf::Regex("x".into()));
+        }
+        let rows = searcher
+            .search_constrained(
+                &request,
+                &constraints,
+                &LexicalPageSpec::first(10),
+                &RequestBudgetV1::unbounded(),
+            )?
+            .candidates;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].repo_relative_path.as_str(), "src/go.rs");
+    }
+    Ok(())
+}
+
+#[test]
+fn code_search_ranks_unicode_exact_identifier_above_combining_mark_prefix() -> TestResult {
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("a-prefix.rs", "म\u{094d} ", "म".len())?,
+        code_scope("z-exact.rs", "म ", "म".len())?,
+    ])?;
+    let rows = searcher
+        .search_constrained(
+            &code_query(&["म"], true),
+            &QueryConstraintSetV1::unconstrained(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["z-exact.rs", "a-prefix.rs"]
+    );
+    assert!(rows[0].score > rows[1].score);
+    Ok(())
+}
+
+#[test]
+fn code_search_regex_match_cap_is_a_typed_refusal() -> TestResult {
+    let source = "a".repeat(4_100);
+    let (_dir, searcher) = fixture_with_scopes(vec![code_scope("dense.rs", &source, 2_050)?])?;
+    let mut query = code_query(&["unused"], true);
+    query.expr = LqExpr::Leaf(LqLeaf::Regex("a".into()));
+    assert!(matches!(
+        searcher.search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        ),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+            ..
+        })
+    ));
+    query.expr = LqExpr::All(
+        (0..5)
+            .map(|_| LqExpr::Leaf(LqLeaf::Regex("a".into())))
+            .collect(),
+    );
+    assert!(matches!(
+        searcher.search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        ),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn code_search_file_ranking_is_distinct_and_cursor_stable_with_fifteen_chunks() -> TestResult {
+    let repeated = "alpha".repeat(15);
+    let mut packed = code_scope("packed.rs", &repeated, 5)?;
+    packed.chunks = (0..15)
+        .map(|index| {
+            let start = u32::try_from(index * 5)?;
+            Ok(ChunkRecord {
+                chunk_id: ChunkId::new(format!("packed-{index}")),
+                repo_relative_path: RepoRelativePath::new("packed.rs"),
+                language: LanguageCode::new("rust")?,
+                start_byte: start,
+                end_byte: start + 5,
+                start_line: 1,
+                end_line: 1,
+                text: "alpha".into(),
+                structural: None,
+                parent_chunk_id: None,
+                source_repo_id: Some(RepoId::new("source-a")?),
+            })
+        })
+        .collect::<Result<_, Box<dyn Error>>>()?;
+    packed.coverage.unit_set_sha256 = source_file_unit_set_sha256(&packed.chunks, &[])?;
+    let mut scopes = vec![packed];
+    for index in 0..9 {
+        scopes.push(code_scope(&format!("f{index}.rs"), "alpha stable", 5)?);
+    }
+    let mut path_only = scope("source-a", "alpha-path.rs", &[])?;
+    path_only.source_bytes.clear();
+    path_only.chunks.clear();
+    path_only.coverage.text_admitted = false;
+    path_only.coverage.source.source_sha256 = Sha256::digest(b"").into();
+    path_only.coverage.unit_set_sha256 = source_file_unit_set_sha256(&[], &[])?;
+    scopes.push(path_only);
+    let (_dir, searcher) = fixture_with_scopes(scopes)?;
+    let mut request = code_query(&["alpha"], true);
+    request.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.content".into(),
+        args: vec![LqPredicateArg::RawString("alpha".into())],
+    });
+    let budget = RequestBudgetV1::unbounded();
+    let first = searcher.search_constrained(
+        &request,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
+        &budget,
+    )?;
+    assert_eq!(first.exact_total, Some(10));
+    assert_eq!(first.candidates.len(), 10);
+    let expected: BTreeSet<String> = std::iter::once("packed.rs".to_string())
+        .chain((0..9).map(|index| format!("f{index}.rs")))
+        .collect();
+    let observed: BTreeSet<String> = first
+        .candidates
+        .iter()
+        .map(|row| row.repo_relative_path.as_str().to_string())
+        .collect();
+    assert_eq!(observed, expected);
+    let mut after = None;
+    let mut paged = Vec::new();
+    loop {
+        let page = searcher.search_constrained(
+            &request,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec { fetch: 3, after },
+            &budget,
+        )?;
+        let Some(last) = page.candidates.last() else {
+            break;
+        };
+        after = Some(LexicalCursor::at(
+            ManifestGeneration::new(1),
+            last.order_key(),
+        ));
+        paged.extend(page.candidates.into_iter().map(|row| row.candidate_id));
+    }
+    assert_eq!(
+        paged,
+        first
+            .candidates
+            .iter()
+            .map(|row| row.candidate_id.clone())
+            .collect::<Vec<_>>()
+    );
+    let mut path_request = code_query(&["alpha-path.rs"], true);
+    path_request.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.path".into(),
+        args: vec![LqPredicateArg::RawString("alpha-path.rs".into())],
+    });
+    let path = searcher.search_constrained(
+        &path_request,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
+        &budget,
+    )?;
+    assert_eq!(path.candidates.len(), 1);
+    assert_eq!(
+        path.candidates[0].repo_relative_path.as_str(),
+        "alpha-path.rs"
+    );
+    assert_eq!(
+        path.candidates[0]
+            .preview
+            .as_ref()
+            .map(|preview| preview.kind),
+        Some(quanta_index_contract::PreviewKind::Path)
+    );
+    Ok(())
+}
+
+#[test]
+fn code_search_fixed_scores_and_chunk_overlap_invariance() -> TestResult {
+    let mut plain = code_scope("plain.rs", "alpha beta alpha", 5)?;
+    repartition_code_scope(&mut plain, &[(0, 16)])?;
+    let mut overlap = code_scope("overlap.rs", "alpha beta alpha", 5)?;
+    repartition_code_scope(&mut overlap, &[(0, 10), (6, 16)])?;
+    let mut path_only = scope("source-a", "alpha.rs", &[])?;
+    path_only.source_bytes.clear();
+    path_only.coverage.source.source_sha256 = Sha256::digest(b"").into();
+    repartition_code_scope(&mut path_only, &[])?;
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("single.rs", "alpha", 1)?,
+        code_scope("many.rs", "alpha alpha alpha alpha alpha", 1)?,
+        code_scope("adjacent.rs", "alpha beta", 5)?,
+        code_scope("distant.rs", &format!("alpha {} beta", "x".repeat(40)), 5)?,
+        code_scope("case_upper.rs", "Alpha", 1)?,
+        code_scope("case_lower.rs", "alpha", 1)?,
+        plain,
+        overlap,
+        path_only,
+    ])?;
+    let scores =
+        |query: LqQuery| -> Result<std::collections::BTreeMap<String, f32>, Box<dyn Error>> {
+            Ok(searcher
+                .search_constrained(
+                    &query,
+                    &QueryConstraintSetV1::default(),
+                    &LexicalPageSpec::first(20),
+                    &RequestBudgetV1::unbounded(),
+                )?
+                .candidates
+                .into_iter()
+                .map(|row| (row.repo_relative_path.as_str().to_string(), row.score))
+                .collect())
+        };
+    let one = scores(code_query(&["alpha"], true))?;
+    assert_eq!(one["single.rs"], 100.0);
+    assert_eq!(one["many.rs"], 106.0); // Five occurrences, three extra count.
+    let two = scores(code_query(&["alpha", "beta"], true))?;
+    assert_eq!(two["adjacent.rs"], 231.0); // 100 + 100 + (32 - 1 byte gap).
+    assert_eq!(two["distant.rs"], 200.0); // Gap beyond 32 bytes.
+    assert_eq!(two["plain.rs"], 233.0); // Two alpha occurrences add 2.
+    assert_eq!(two["overlap.rs"], two["plain.rs"]);
+    let folded = scores(code_query(&["Alpha"], false))?;
+    assert_eq!(folded["case_upper.rs"], 105.0);
+    assert_eq!(folded["case_lower.rs"], 100.0);
+    let mut path_query = code_query(&["alpha"], true);
+    path_query.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.path".into(),
+        args: vec![LqPredicateArg::RawString("alpha".into())],
+    });
+    assert_eq!(scores(path_query)?["alpha.rs"], 135.0);
+    Ok(())
+}
+
+#[test]
+fn code_search_matches_independent_source_byte_scan_oracle() -> TestResult {
+    let bodies = [
+        ("oracle-a.rs", "preNEEDLEpost", 6),
+        ("oracle-b.rs", "not here", 3),
+        ("oracle-c.rs", "NEEDLE", 3),
+        ("oracle-d.rs", "left---right", 7),
+        ("unicode.rs", "İNEEDLE", 2),
+    ];
+    let scopes = bodies
+        .iter()
+        .map(|(path, body, split)| code_scope(path, body, *split))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (_dir, searcher) = fixture_with_scopes(scopes)?;
+    let run = |query: &LqQuery| {
+        searcher.search_constrained(
+            query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )
+    };
+    let hits = run(&code_query(&["NEEDLE"], true))?.candidates;
+    let expected: BTreeSet<_> = bodies
+        .iter()
+        .filter(|(_, body, _)| {
+            body.as_bytes()
+                .windows(b"NEEDLE".len())
+                .any(|part| part == b"NEEDLE")
+        })
+        .map(|(path, _, _)| *path)
+        .collect();
+    let actual: BTreeSet<_> = hits
+        .iter()
+        .map(|row| row.repo_relative_path.as_str())
+        .collect();
+    assert_eq!(actual, expected);
+    for hit in &hits {
+        let (_, raw, _) = bodies
+            .iter()
+            .find(|(path, _, _)| *path == hit.repo_relative_path.as_str())
+            .ok_or("unknown oracle file")?;
+        let focus = hit
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.original_focus)
+            .ok_or("missing source focus")?;
+        let expected_start = raw
+            .as_bytes()
+            .windows(b"NEEDLE".len())
+            .position(|part| part == b"NEEDLE")
+            .ok_or("oracle lost literal")?;
+        assert_eq!(
+            (focus.start, focus.end),
+            (
+                u64::try_from(expected_start)?,
+                u64::try_from(expected_start + 6)?
+            )
+        );
+        assert_eq!(
+            raw.as_bytes()
+                .get(usize::try_from(focus.start)?..usize::try_from(focus.end)?),
+            Some(b"NEEDLE".as_slice())
+        );
+    }
+    let multi = run(&code_query(&["left", "right"], true))?.candidates;
+    assert_eq!(
+        multi
+            .iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["oracle-d.rs"]
+    );
+    let mut path_query = code_query(&["oracle-a"], true);
+    path_query.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.path".into(),
+        args: vec![LqPredicateArg::RawString("oracle-a".into())],
+    });
+    let path = run(&path_query)?.candidates;
+    assert_eq!(
+        path.iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["oracle-a.rs"]
+    );
+    let unicode = run(&code_query(&["i\u{307}needle"], false))?.candidates;
+    assert_eq!(unicode.len(), 1);
+    assert_eq!(unicode[0].repo_relative_path.as_str(), "unicode.rs");
+    assert_eq!(
+        unicode[0]
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.original_focus)
+            .map(|span| (span.start, span.end)),
+        Some((0, 8))
+    );
+    Ok(())
 }
 
 #[expect(

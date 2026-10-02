@@ -25,7 +25,10 @@ pub(crate) struct TextQueryBuilderState {
 impl TextQueryBuilderState {
     pub(crate) fn new() -> Self {
         Self {
-            syntax: TextQuerySyntax::Native,
+            // No request can execute until a text setter supplies query_text.
+            // The lexical `.text(...)` setter uses this product default;
+            // other namespaces select Native or Sourcegraph explicitly.
+            syntax: TextQuerySyntax::CodeSearch,
             query_text: None,
             constraints: QueryConstraintSetV1::unconstrained(),
             selection: None,

@@ -72,7 +72,10 @@ pub(super) fn compile(
 ) -> Result<Box<dyn Query>, CoreError> {
     match query.options.pattern_type {
         LqPatternType::Standard | LqPatternType::Keyword => {}
-        LqPatternType::Literal | LqPatternType::Regexp | LqPatternType::Structural => {
+        LqPatternType::Literal
+        | LqPatternType::Regexp
+        | LqPatternType::Structural
+        | LqPatternType::CodeSearch => {
             return Err(unscorable(format!(
                 "pattern type `{}` has no BM25 score; use `order: recency` for it",
                 query.options.pattern_type.as_str()

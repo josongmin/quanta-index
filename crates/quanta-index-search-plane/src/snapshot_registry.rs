@@ -1163,6 +1163,57 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_cancelled_first_opener_fails_its_flight_and_allows_retry() -> TestResult {
+        let registry = Arc::new(SnapshotRegistry::new(policy(4, 1_000)));
+        let first_budget = RequestBudgetV1::unbounded();
+        let cancel = first_budget.cancel_handle();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let opener = {
+            let registry = Arc::clone(&registry);
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            thread::spawn(move || {
+                registry.acquire(&key(31), &first_budget, || {
+                    let _arrived = entered.wait();
+                    let _released = release.wait();
+                    first_budget.checkpoint("lexical:cold-open:publish")?;
+                    Ok(opened(&key(31), 1))
+                })
+            })
+        };
+        let _arrived = entered.wait();
+        let waiter = {
+            let registry = Arc::clone(&registry);
+            thread::spawn(move || get(&registry, &key(31), || Ok(opened(&key(31), 1))))
+        };
+        if !wait_until(Duration::from_secs(5), || {
+            registry.stats().is_ok_and(|stats| stats.coalesced == 1)
+        }) {
+            return Err("the waiter did not coalesce on the first opener".into());
+        }
+        cancel.cancel();
+        let _released = release.wait();
+        let first = opener.join().map_err(|_panic| "opener panicked")?;
+        let second = waiter.join().map_err(|_panic| "waiter panicked")?;
+        for outcome in [first.map(|_| ()), second.map(|_| ())] {
+            match outcome {
+                Err(CoreError::Typed { code, .. }) if code == REQUEST_CANCELLED_CODE => {}
+                other => return Err(format!("cancelled flight returned {other:?}").into()),
+            }
+        }
+        let stats = registry.stats()?;
+        if stats.entries != 0 || stats.open_failures != 1 || stats.coalesced != 1 {
+            return Err(format!("cancelled flight was retained or duplicated: {stats:?}").into());
+        }
+        let retried = get(&registry, &key(31), || Ok(opened(&key(31), 1)))?;
+        if retried.key != key(31) {
+            return Err("retry after cancelled opener did not open".into());
+        }
+        Ok(())
+    }
+
     /// A coalesced waiter waits under its own budget: a deadline that
     /// passes, or a peer that leaves, ends the wait with the typed
     /// interruption while the flight still lands and is retained.

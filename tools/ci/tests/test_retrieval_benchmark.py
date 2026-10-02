@@ -2816,6 +2816,51 @@ def _write_stub_semble(root: Path) -> None:
     )
 
 
+def _run_protocol_worker_fixture(worker, spec, *, normalization_hook=None):
+    """Exercise the production parent/worker path with real span normalization."""
+    tasks = {task["task_id"]: task for task in spec["tasks"]}
+    source = b"def fixture(): pass\n"
+    file_shas = {"a.txt": ev.digest(source)}
+    file_lines = {"a.txt": source.splitlines(keepends=True)}
+    profile = semble_adapter.execution_profile(
+        spec.get("semble_profile", "native-default"), spec.get("alpha")
+    )
+    contract = _v3_contract(spec["top_k"])
+
+    def normalize(task_id, hits, indexed_chunks):
+        if normalization_hook:
+            normalization_hook()
+        pack = {"tasks": [tasks[task_id]], "comparison_contract": contract}
+        return semble_adapter.normalize_results(
+            pack,
+            [{"task_id": task_id, "results": hits}],
+            {},
+            file_shas,
+            file_lines,
+            contract,
+            "hybrid",
+            profile,
+            indexed_chunks=indexed_chunks,
+        )[0]
+
+    stderr_path = worker.parent / "protocol.stderr"
+    command = [sys.executable, str(worker)]
+    try:
+        completed, _completed_rows = semble_adapter.run_completed_worker(
+            command,
+            env=dict(os.environ),
+            timeout_secs=60,
+            tasks={key: value["query"] for key, value in tasks.items()},
+            top_k=spec["top_k"],
+            route="hybrid",
+            normalize_response=normalize,
+            stderr_path=stderr_path,
+        )
+        return completed
+    except semble_adapter.AdapterError:
+        return subprocess.CompletedProcess(command, 1, "", stderr_path.read_text())
+
+
 def test_worker_template_runs_against_stub_semble(tmp_path, monkeypatch):
     _write_stub_semble(tmp_path)
     worker = tmp_path / "worker.py"
@@ -2841,17 +2886,15 @@ def test_worker_template_runs_against_stub_semble(tmp_path, monkeypatch):
     monkeypatch.setenv("PYTHONPATH", str(tmp_path))
 
     def run_worker():
-        return subprocess.run(
-            [sys.executable, str(worker)],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        return _run_protocol_worker_fixture(worker, spec)
 
     completed = run_worker()
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(native_path.read_text(encoding="utf-8"))
-    assert payload["timing_layer"] == "worker_wall_per_query_ms"
+    assert payload["query_timing"]["boundary"] == semble_adapter.QUERY_TIMING_BOUNDARY
+    assert payload["query_timing"]["clock"] == semble_adapter.QUERY_TIMING_CLOCK
+    assert len(payload["query_timing"]["observations"]) == 4
+    assert all(row["status"] == "success" for row in payload["query_timing"]["observations"])
     assert payload["worker_pid"] > 0
     assert [row["task_id"] for row in payload["native"]] == ["T1"]
     assert len(payload["latencies_ms"]["T1"]) == 2
@@ -2914,12 +2957,13 @@ def test_worker_template_dispatches_profiles_with_lane_isolation(tmp_path, monke
         spec_path.write_text(json.dumps(spec), encoding="utf-8")
         for stale in (native_path,):
             stale.unlink(missing_ok=True)
-        completed = subprocess.run(
-            [sys.executable, str(worker)],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        try:
+            completed = _run_protocol_worker_fixture(worker, spec)
+        except semble_adapter.AdapterError:
+            # Invalid profile arguments must still be rejected by the worker.
+            completed = subprocess.run(
+                [sys.executable, str(worker)], capture_output=True, text=True, timeout=60
+            )
         return completed, (
             json.loads(native_path.read_text(encoding="utf-8")) if native_path.exists() else None
         )
@@ -4173,9 +4217,7 @@ def test_normalize_record_proves_spans_and_order(tmp_path):
 
 
 def test_semble_file_collection_preserves_native_rank_and_exhaustion(tmp_path):
-    repo, suite, _run, suite_path, runner_path, files = fixture_v3(
-        tmp_path, answerable_only=True
-    )
+    repo, suite, _run, suite_path, runner_path, files = fixture_v3(tmp_path, answerable_only=True)
     suite["routes"] = ["semble-lexical-file"]
     suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
     for task in suite["tasks"]:
@@ -4238,12 +4280,10 @@ def test_semble_file_collection_preserves_native_rank_and_exhaustion(tmp_path):
     assert second["status"] == "abstained"
     assert second["file_collection"]["matched_chunks"] == 0
     jsonschema.validate(run, _load_schema("runner.schema.json"))
-    loaded_suite, loaded_pack, loaded_run = record_v3(
-        repo, suite, run, suite_path, runner_path
-    )
-    route = ev.evaluate_diagnostic(loaded_suite, loaded_pack, loaded_run)[
-        "judgment_metrics"
-    ]["file_judgments"]["routes"]["semble-lexical-file"]
+    loaded_suite, loaded_pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    route = ev.evaluate_diagnostic(loaded_suite, loaded_pack, loaded_run)["judgment_metrics"][
+        "file_judgments"
+    ]["routes"]["semble-lexical-file"]
     assert route["eligible_count"] == 2
     assert route["ordering"] == "score_desc_native_tiebreak"
     assert route["score_evidence"] == "semble_bm25_score_v1"
@@ -4272,9 +4312,7 @@ def test_semble_file_collection_preserves_native_rank_and_exhaustion(tmp_path):
         {"file_path": "a.txt", "start_line": 2, "end_line": 2, "score": 2.0},
     ]
     tied = normalized(tied_raw)
-    assert [item["path"] for item in tied["results"][0]["candidates"]] == [
-        "b.txt", "a.txt"
-    ]
+    assert [item["path"] for item in tied["results"][0]["candidates"]] == ["b.txt", "a.txt"]
     record_v3(repo, suite, tied, suite_path, runner_path)
 
     profile = semble_adapter.execution_profile("lexical-file", None)
@@ -6019,6 +6057,15 @@ def _rewrite_manifest(st, mutator):
     st["manifest_path"].write_text(json.dumps(manifest), encoding="utf-8")
 
 
+def _rebind_phase_metrics_digests(st, *paths):
+    """Keep the capture-byte binding valid when testing a later verdict gate."""
+    updates = {path.relative_to(st["stage"]).as_posix(): pairrun.sha_file(path) for path in paths}
+    _rewrite_manifest(
+        st,
+        lambda manifest: manifest["artifacts"]["phase_metrics_digests"].update(updates),
+    )
+
+
 def _rebind_semble_native_to_protocol(layout, protocol, pack):
     """Rebuild the synthetic Semble actual-call trace for a mutated protocol."""
     native_path = Path(layout["semble"]).parent / "native.json"
@@ -6155,6 +6202,7 @@ def test_verdict_replays_semble_event_order_and_query_identity(tmp_path):
     phase = json.loads(phase_path.read_text(encoding="utf-8"))
     phase["execution_events_sha256"] = native["execution_events_sha256"]
     phase_path.write_text(json.dumps(phase), encoding="utf-8")
+    _rebind_phase_metrics_digests(st, phase_path)
     verdict = _stage_verdict(st)
     assert verdict["states"]["PAIR_VALID"] == "fail"
     assert (
@@ -6361,6 +6409,7 @@ def test_verdict_incomplete_observation_fails_pair(tmp_path):
     phase = json.loads(phase_path.read_text(encoding="utf-8"))
     phase["record_sha256"] = ev.digest(spath.read_bytes())
     phase_path.write_text(json.dumps(phase), encoding="utf-8")
+    _rebind_phase_metrics_digests(st, phase_path)
     resource_path = Path(layout["semble_resource_metrics"])
     resource = json.loads(resource_path.read_text(encoding="utf-8"))
     resource["subject_sha256"] = ev.digest(spath.read_bytes())
@@ -7058,14 +7107,21 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
         resource_metrics_digest=ev.digest(resource_path.read_bytes()),
     )
     quanta_manifest_path.write_text(json.dumps(quanta_manifest), encoding="utf-8")
-    _rewrite_manifest(
-        st,
-        lambda m: m["evidence"]["perf"].update(
+
+    def rebind_null_timing_fixture(manifest):
+        manifest["artifacts"]["phase_metrics_digests"][
+            phase_path.relative_to(st["stage"]).as_posix()
+        ] = pairrun.sha_file(phase_path)
+        manifest["evidence"]["perf"].update(
             {
                 "observations_floor": matrix["observations_floor"],
                 "fresh_roots": matrix["fresh_roots"],
             }
-        ),
+        )
+
+    _rewrite_manifest(
+        st,
+        rebind_null_timing_fixture,
     )
     # Nulling a sample drops the floor to 1; hold floors there to isolate
     # the null-timing gate.
@@ -7097,7 +7153,7 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     assert verdict["failure_class"] == "host"
 
 
-def test_qualified_speed_verdict_accepts_full_observation_protocol(tmp_path):
+def test_qualified_speed_verdict_rejects_incomplete_response_timer_boundary(tmp_path):
     st = _pair_stage(
         tmp_path,
         repetitions=5,
@@ -7109,15 +7165,15 @@ def test_qualified_speed_verdict_accepts_full_observation_protocol(tmp_path):
     assert matrix["fresh_roots"] == 5
     assert matrix["observations_floor"] == 1_000
     verdict = _stage_verdict(st)
-    # Contract receipts bind to committed source; this fixture isolates the
-    # independent performance state even in a dirty edit loop.
+    # Even a complete observation protocol cannot turn SDK/IPC latency and
+    # library dispatch latency into equivalent completed-response samples.
     assert verdict["states"]["PAIR_VALID"] == "pass"
-    assert verdict["states"]["PERF_QUALIFIED"] == "pass"
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["states"]["QUALITY_DELTA"] == "not_applicable"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
-        "phase_and_process_tree_resources_verified"
+        "completed_response_timing_unverified: completed-response timing contract is missing or malformed"
     )
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["proof_digest"] is not None
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["proof_digest"] is None
 
 
 def test_qualified_speed_replay_rejects_unalternated_system_order(tmp_path):
@@ -7408,6 +7464,10 @@ def test_qualified_claims_require_pair_contract_and_sdk_states(tmp_path, monkeyp
         else {"repetitions": 5, "qualified_speed_sample": True}
     )
     st = _pair_stage(tmp_path, scope="qualified", claims={claim: True}, **kwargs)
+    if claim == "speed":
+        from tools.ci.tests.test_completed_response_timing import _add_timing
+
+        _add_timing(st)
     target = "QUALITY_DELTA" if claim == "quality" else "PERF_QUALIFIED"
     baseline = _stage_verdict(st)
     assert baseline["states"]["PAIR_VALID"] == "pass"
@@ -8025,6 +8085,17 @@ def test_qualified_replay_rejects_two_task_protocol_even_with_1000_samples(tmp_p
         st,
         lambda manifest: manifest["evidence"]["perf"].update(
             observations_floor=matrix["observations_floor"], fresh_roots=matrix["fresh_roots"]
+        ),
+    )
+    _rebind_phase_metrics_digests(
+        st,
+        *(
+            path
+            for layout in st["rep_layouts"]
+            for path in (
+                Path(layout["quanta_phase_metrics"]["whole_file"]),
+                Path(layout["semble_phase_metrics"]),
+            )
         ),
     )
     verdict = _stage_verdict(st)
@@ -10093,8 +10164,16 @@ def test_retrieval_verdict_recipe_matches_cli_parser():
     )
     rendered = completed.stderr.strip() or completed.stdout.strip()
     command = shlex.split(rendered)
-    assert command[:2] == ["python3", "tools/benchmark/retrieval/run.py"]
-    parsed = pairrun.build_parser().parse_args(command[2:])
+    assert command[:7] == [
+        "uv",
+        "run",
+        "--frozen",
+        "--extra",
+        "dev",
+        "python",
+        "tools/benchmark/retrieval/run.py",
+    ]
+    parsed = pairrun.build_parser().parse_args(command[7:])
     assert (parsed.command, parsed.repo, parsed.suite, parsed.run_manifest, parsed.out) == (
         "verdict",
         *values,
@@ -10141,6 +10220,7 @@ def _g0_manifest() -> dict:
             "semble_native": ["native.json"],
             "semble_model_cache_manifests": ["model-cache-manifest.json"],
             "phase_metrics": ["phase.json"],
+            "phase_metrics_digests": {"phase.json": _fake_sha("phase")},
             "symbol_preflights": ["symbol-preflight.json"],
             "resource_metrics": ["resource.json"],
             "protocol_lock": "protocol-lock.json",
@@ -10623,9 +10703,39 @@ def test_pair_spec_refuses_diagnostic_rank_profiles_before_quality_gate(tmp_path
             pairrun.load_spec(spec_path)
 
 
+def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path):
+    spec_path = tmp_path / "pair-spec.json"
+    spec = _g0_spec()
+    spec["execution_profiles"]["quanta"] = qp.execution_profile("code_search_file")
+    spec["execution_profiles"]["semble"] = semble_adapter.execution_profile("lexical-file", None)
+    spec["routes"] = ["lexical"]
+    jsonschema.validate(spec, _load_schema("pair-spec.schema.json"))
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    assert (
+        pairrun.load_spec(spec_path)["execution_profiles"]["quanta"]["policy"] == "code_search_file"
+    )
+
+    for change, match in (
+        (
+            lambda row: row["execution_profiles"].update(
+                semble=semble_adapter.execution_profile("lexical-only", None)
+            ),
+            "Semble lexical-file",
+        ),
+        (lambda row: row.update(routes=["lexical", "hybrid"]), "lexical-only Quanta"),
+        (lambda row: row["claims"].update(quality=True), "exploratory diagnostic only"),
+        (lambda row: row.update(scope="qualified"), "exploratory diagnostic only"),
+    ):
+        forged = copy.deepcopy(spec)
+        change(forged)
+        spec_path.write_text(json.dumps(forged), encoding="utf-8")
+        with pytest.raises(pairrun.RunError, match=match):
+            pairrun.load_spec(spec_path)
+
+
 def test_verdict_quality_refuses_diagnostic_rank_profile(tmp_path, monkeypatch):
     st = _pair_stage(tmp_path, claims={"quality": True})
-    monkeypatch.setattr(pairrun, "PAIR_QUANTA_POLICIES", frozenset())
+    monkeypatch.setattr(pairrun, "PAIR_CONTEXT_QUALITY_POLICIES", frozenset())
     verdict = _stage_verdict(st)
     assert verdict["states"]["QUALITY_DELTA"] == "fail"
     assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == "diagnostic_rank_profile"
@@ -10722,6 +10832,107 @@ def test_independent_judgments_are_source_bound_reviewed_and_blinded(tmp_path):
         mutate(bad)
         with pytest.raises(ev.EvidenceError, match=error):
             ev.validate_suite(repo, bad)
+
+
+def test_declaration_exclusions_require_refusal_and_raw_name_absence(tmp_path):
+    files = {
+        "good.py": b"def Target():\n    pass\n",
+        "refused.py": b"def broken(\n",
+    }
+    repo, commit = _write_repo(tmp_path, files)
+    universe = [
+        {"path": path, "file_sha256": ev.digest(raw)} for path, raw in sorted(files.items())
+    ]
+    suite = {
+        "schema_version": 3,
+        "suite_id": "partial-census",
+        "repository_commit": commit,
+        "comparison_contract": _v3_contract(),
+        "routes": ["lexical"],
+        "file_universe": universe,
+        "file_universe_digest": ev.universe_digest(universe),
+        "diagnostic_policy": ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
+        "tasks": [
+            {
+                "task_id": "T1",
+                "split": "eval",
+                "query": "Target",
+                "query_sha256": ev.digest(b"Target"),
+                "query_family_id": "target-family",
+                "query_intent": "bare_symbol",
+                "answerable": True,
+                "gold": [_v3_block(files, "good.py", 1, 1, grade=3)],
+                "judgment_policy": ev.SOURCE_ORACLE_JUDGMENT_POLICY,
+                "source_oracle": {
+                    "contract": "python_exact_local_name_v1",
+                    "unit": "distinct_file",
+                    "declaration_exclusions": ["refused.py"],
+                },
+                "file_judgments": [
+                    {
+                        "path": "good.py",
+                        "file_sha256": ev.digest(files["good.py"]),
+                        "grade": 3,
+                    }
+                ],
+            }
+        ],
+    }
+    jsonschema.validate(suite, _load_schema("suite.schema.json"))
+    _loaded, pack, _source = ev.validate_suite(repo, suite)
+    assert len(_loaded["file_universe"]) == 2
+    assert "declaration_exclusions" not in ev.canonical(pack).decode()
+
+    def rejected(change, match):
+        bad = copy.deepcopy(suite)
+        change(bad["tasks"][0])
+        with pytest.raises(ev.EvidenceError, match=match):
+            ev.validate_suite(repo, bad)
+
+    rejected(lambda row: row["source_oracle"].pop("declaration_exclusions"), "parse error")
+    rejected(
+        lambda row: row["source_oracle"].update(declaration_exclusions=["good.py"]),
+        "may contain a query match",
+    )
+    rejected(
+        lambda row: row["source_oracle"].update(declaration_exclusions=["missing.py"]),
+        "invalid declaration exclusions",
+    )
+    rejected(
+        lambda row: row["source_oracle"].update(
+            declaration_exclusions=["refused.py", "refused.py"]
+        ),
+        "invalid declaration exclusions",
+    )
+    rejected(
+        lambda row: row["source_oracle"].update(contract="ascii_identifier_word_v1"),
+        "invalid declaration exclusions",
+    )
+    rejected(
+        lambda row: row["file_judgments"].clear(),
+        "lacks a positive judgment",
+    )
+    refused_with_name = copy.deepcopy(suite)
+    refused_with_name["tasks"][0]["query"] = "broken"
+    refused_with_name["tasks"][0]["query_sha256"] = ev.digest(b"broken")
+    with pytest.raises(ev.EvidenceError, match="may contain a query match"):
+        ev.validate_suite(repo, refused_with_name)
+    for contract, query, error in (
+        ("ascii_content_absent_casefold_v1", "broken", "content absent contract found a match"),
+        ("ascii_code_search_absent_casefold_v1", "refused", "path match"),
+    ):
+        absent = copy.deepcopy(suite)
+        row = absent["tasks"][0]
+        row.update(
+            query=query,
+            query_sha256=ev.digest(query.encode()),
+            answerable=False,
+            gold=[],
+            file_judgments=[],
+        )
+        row["source_oracle"] = {"contract": contract, "unit": "distinct_file"}
+        with pytest.raises(ev.EvidenceError, match=error):
+            ev.validate_suite(repo, absent)
 
 
 def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_path):
@@ -11300,15 +11511,74 @@ def test_single_route_diagnostic_keeps_no_answer_status_distinct():
         ],
     }
     diagnostic = ev.evaluate_diagnostic(suite, {}, run)
+    assert diagnostic["reference_contracts"] == [
+        {
+            "source_oracle_contract": "not_declared",
+            "gold_unit": "not_declared",
+            "query_intent": "not_declared",
+        }
+    ]
     assert diagnostic["no_answer"] == {
         "task_ids": ["N"],
         "sample_count": 1,
+        "reference_contracts": [
+            {
+                "source_oracle_contract": "not_declared",
+                "gold_unit": "not_declared",
+                "query_intent": "not_declared",
+            }
+        ],
         "abstained": 0,
         "abstention_rate": 0.0,
+        "nonempty_results": 0,
+        "nonempty_result_rate": 0.0,
         "status_counts": {"timeout": 1},
     }
     run["results"][1]["status"] = "abstained"
     assert ev.evaluate_diagnostic(suite, {}, run)["no_answer"]["abstention_rate"] == 1.0
+
+
+def test_no_answer_diagnostic_separates_nonempty_results_from_failures():
+    tasks = {task_id: {"answerable": False} for task_id in ("A", "B", "C")}
+    results = {
+        ("A", "lexical"): {"status": "success", "candidates": [{"path": "wrong.go", "rank": 1}]},
+        ("B", "lexical"): {"status": "abstained", "candidates": []},
+        ("C", "lexical"): {"status": "timeout", "candidates": []},
+    }
+    summary = ev.no_answer_diagnostics(tasks, results, "lexical")
+    assert summary == {
+        "task_ids": ["A", "B", "C"],
+        "sample_count": 3,
+        "reference_contracts": [
+            {
+                "source_oracle_contract": "not_declared",
+                "gold_unit": "not_declared",
+                "query_intent": "not_declared",
+            }
+        ],
+        "abstained": 1,
+        "abstention_rate": 1 / 3,
+        "nonempty_results": 1,
+        "nonempty_result_rate": 1 / 3,
+        "status_counts": {"success": 1, "abstained": 1, "timeout": 1},
+    }
+    tasks["A"]["source_oracle"] = {
+        "contract": "ascii_content_absent_casefold_v1",
+        "unit": "distinct_file",
+    }
+    scoped = ev.no_answer_diagnostics(tasks, results, "lexical")
+    assert scoped["reference_contracts"] == [
+        {
+            "source_oracle_contract": "ascii_content_absent_casefold_v1",
+            "gold_unit": "distinct_file",
+            "query_intent": "not_declared",
+        },
+        {
+            "source_oracle_contract": "not_declared",
+            "gold_unit": "not_declared",
+            "query_intent": "not_declared",
+        },
+    ]
 
 
 def test_v3_universe_binding(tmp_path):
@@ -13183,6 +13453,8 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
     run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
     run["route_provenance"] = {"lexical": {"capture_id": "q0"}}
     run["results"] = [row for row in run["results"] if row["route"] == "lexical"]
+    if policy == "code_search_file":
+        run["span_accounting_version"] = 1
     for task, row in zip(suite["tasks"], run["results"], strict=True):
         row["rank_unit"] = "distinct_file"
         if ordering == "derive":
@@ -13193,6 +13465,44 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
         by_file = {}
         for item in row["candidates"]:
             by_file.setdefault(item["path"], item)
+        if policy == "code_search_file":
+            repo_bytes = b"bench-repo"
+            for path, item in by_file.items():
+                path_bytes = path.encode("utf-8")
+                source = files[path]
+                file_hash = ev.digest(source)
+                identity = (
+                    b"quanta-index:code-search-file:v1\x00"
+                    + len(repo_bytes).to_bytes(8, "little")
+                    + repo_bytes
+                    + len(path_bytes).to_bytes(8, "little")
+                    + path_bytes
+                )
+                item.update(
+                    start_byte=0,
+                    end_byte=len(source),
+                    start_line=1,
+                    end_line=len(source.splitlines()),
+                    file_sha256=file_hash,
+                    block_sha256=file_hash,
+                    tokens=len(ev.TOKEN_RE.findall(path)),
+                    span_accounting={
+                        "unit_kind": "file",
+                        "unit_id": "file:" + ev.digest(identity),
+                        "producer_identity": "code-search-file-v1",
+                        "indexed_start_byte": 0,
+                        "indexed_end_byte": len(source),
+                        "sdk_start_line": 0,
+                        "sdk_end_line": 0,
+                        "extra_context_bytes": 0,
+                        "source_repo_id": repo_bytes.decode(),
+                        "source_revision_id": "bench-revision",
+                        "preview_kind": "path",
+                        "preview_start_byte": None,
+                        "preview_end_byte": None,
+                        "snippet_sha256": ev.digest(path_bytes),
+                    },
+                )
         chosen = [by_file[path] for path in sorted(by_file, reverse=reverse)]
         for rank, item in enumerate(chosen, 1):
             item["rank"] = rank
@@ -13396,3 +13706,224 @@ def test_keyword_file_native_score_evidence_is_complete_and_ordered(tmp_path):
         candidate.pop("score")
     with pytest.raises(ev.EvidenceError, match="mixes score evidence states"):
         record_v3(repo, suite, mixed, suite_path, runner_path)
+
+
+def test_code_search_file_policy_binds_syntax_scores_and_file_unit(tmp_path):
+    assert qp.plan_lexical_request("code_search_file", "writeContentType") == "writeContentType"
+    assert qp.plan_lexical_request("code_search_file", "Go To") == "Go To"
+    assert qp.plan_lexical_request("code_search_file", "64Sl") == "64Sl"
+    assert qp.plan_lexical_request("code_search_file", " ".join(["a"] * 32)) == " ".join(["a"] * 32)
+    assert qp.plan_lexical_request("code_search_file", "a" * 256) == "a" * 256
+    assert (
+        qp.derive_query_identity("code_search_file", "writeContentType")[
+            "effective_lexical_request_sha256"
+        ]
+        == "828e78026cd79b527cc0956b3be52fdf0ebd8b110071f5c309963af3bf719480"
+    )
+    assert qp.derive_query_identity(
+        "code_search_file", "writeContentType"
+    ) != qp.derive_query_identity("native", "writeContentType")
+    for raw in (
+        "",
+        "select:file",
+        "a-b",
+        "Café",
+        "x" * 16385,
+        "foo\x1cbar",
+        "foo\x1fbar",
+        " ".join(["a"] * 33),
+        "a" * 257,
+    ):
+        with pytest.raises(qp.QueryPlanError):
+            qp.plan_lexical_request("code_search_file", raw)
+    assert qp.plan_lexical_request("code_search_file", "foo\tbar\nqux") == "foo\tbar\nqux"
+
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path, "code_search_file", queries=["alphaTwo", "alphaThree"]
+    )
+    for row in run["results"]:
+        row["score_evidence"] = "native_sdk_score_v1"
+        for index, candidate in enumerate(row["candidates"]):
+            candidate["score"] = float(len(row["candidates"]) - index)
+    _pack, run = _repack(repo, suite, run)
+    jsonschema.validate(run, _load_schema("runner.schema.json"))
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    route = ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)["judgment_metrics"][
+        "file_judgments"
+    ]["routes"]["lexical"]
+    assert (route["rank_unit"], route["ordering"], route["score_evidence"]) == (
+        "distinct_file",
+        "score_desc_path_tiebreak",
+        "native_sdk_score_v1",
+    )
+
+    forged = copy.deepcopy(run)
+    forged["results"][0]["query_identity"] = qp.derive_query_identity(
+        "native", suite["tasks"][0]["query"]
+    )
+    with pytest.raises(ev.EvidenceError, match="independently re-derived plan"):
+        record_v3(repo, suite, forged, suite_path, runner_path)
+    missing = copy.deepcopy(run)
+    missing["results"][0].pop("score_evidence")
+    for candidate in missing["results"][0]["candidates"]:
+        candidate.pop("score")
+    with pytest.raises(ev.EvidenceError, match="requires native SDK score evidence"):
+        record_v3(repo, suite, missing, suite_path, runner_path)
+    duplicate = copy.deepcopy(run)
+    extra = copy.deepcopy(duplicate["results"][0]["candidates"][0])
+    extra["rank"] = len(duplicate["results"][0]["candidates"]) + 1
+    extra["score"] = 0.0
+    duplicate["results"][0]["candidates"].append(extra)
+    with pytest.raises(ev.EvidenceError, match="duplicate published unit ID"):
+        record_v3(repo, suite, duplicate, suite_path, runner_path)
+    no_proof = copy.deepcopy(run)
+    no_proof.pop("span_accounting_version")
+    with pytest.raises(ev.EvidenceError, match="requires source-bound file span evidence"):
+        record_v3(repo, suite, no_proof, suite_path, runner_path)
+    forged_unit = copy.deepcopy(run)
+    forged_unit["results"][0]["candidates"][0]["span_accounting"]["unit_kind"] = "chunk"
+    with pytest.raises(ev.EvidenceError):
+        record_v3(repo, suite, forged_unit, suite_path, runner_path)
+
+
+def test_empty_file_candidate_is_source_bound_and_replayable():
+    repo_id = b"bench-repo"
+    path = b"empty.go"
+    framed = (
+        b"quanta-index:code-search-file:v1\x00"
+        + len(repo_id).to_bytes(8, "little")
+        + repo_id
+        + len(path).to_bytes(8, "little")
+        + path
+    )
+    empty_sha = hashlib.sha256(b"").hexdigest()
+    row = {
+        "path": path.decode(),
+        "start_byte": 0,
+        "end_byte": 0,
+        "start_line": 0,
+        "end_line": 0,
+        "file_sha256": empty_sha,
+        "block_sha256": empty_sha,
+        "tokens": 3,
+        "rank": 1,
+        "score": 2.0,
+        "span_accounting": {
+            "unit_kind": "file",
+            "unit_id": "file:" + hashlib.sha256(framed).hexdigest(),
+            "producer_identity": "code-search-file-v1",
+            "indexed_start_byte": 0,
+            "indexed_end_byte": 0,
+            "sdk_start_line": 0,
+            "sdk_end_line": 0,
+            "extra_context_bytes": 0,
+            "source_repo_id": repo_id.decode(),
+            "source_revision_id": "bench-revision",
+            "preview_kind": "path",
+            "preview_start_byte": None,
+            "preview_end_byte": None,
+            "snippet_sha256": hashlib.sha256(path).hexdigest(),
+        },
+    }
+
+    class FrozenSource:
+        def file(self, requested):
+            assert requested == path.decode()
+            return b"", [], empty_sha
+
+    schema = _load_schema("runner.schema.json")
+    jsonschema.Draft202012Validator(schema["$defs"]["candidate"]).validate(row)
+    assert (
+        ev.block(
+            FrozenSource(),
+            row,
+            "empty file",
+            candidate=True,
+            universe={path.decode()},
+            allow_span_accounting=True,
+            allow_score=True,
+        )
+        == row
+    )
+    for change in (
+        {"end_byte": 1},
+        {"tokens": 0},
+        {"start_line": 1},
+        {"span_accounting": {**row["span_accounting"], "snippet_sha256": empty_sha}},
+        {"span_accounting": {**row["span_accounting"], "preview_start_byte": 0}},
+        {"span_accounting": {**row["span_accounting"], "unit_id": "file:" + "0" * 64}},
+    ):
+        forged = {**row, **change}
+        with pytest.raises(ev.EvidenceError):
+            ev.block(
+                FrozenSource(),
+                forged,
+                "empty file",
+                candidate=True,
+                universe={path.decode()},
+                allow_span_accounting=True,
+                allow_score=True,
+            )
+
+
+def test_code_search_file_refuses_context_metric_from_full_file_identity():
+    run = {"captures": {"q0": {"execution_profile": qp.execution_profile("code_search_file")}}}
+    with pytest.raises(ev.EvidenceError, match="context metrics are undefined"):
+        ev.evaluate({}, {}, run, "lexical", "semantic")
+
+
+def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path):
+    repo, suite, run, _suite_path, _runner_path = _file_projection_run(
+        tmp_path, "code_search_file", queries=["alphaTwo", "alphaThree"]
+    )
+    del repo
+    suite["routes"] = ["lexical", "semble-lexical-file"]
+    run["captures"]["s0"] = {
+        "system": "semble",
+        "execution_profile": semble_adapter.execution_profile("lexical-file", None),
+    }
+    run["route_provenance"]["semble-lexical-file"] = {"capture_id": "s0"}
+    for row in list(run["results"]):
+        row["score_evidence"] = "native_sdk_score_v1"
+        for rank, candidate in enumerate(row["candidates"]):
+            candidate["score"] = float(len(row["candidates"]) - rank)
+        baseline_row = copy.deepcopy(row)
+        baseline_row["route"] = "semble-lexical-file"
+        baseline_row["score_evidence"] = "semble_bm25_score_v1"
+        baseline_row["ordering"] = "score_desc_native_tiebreak"
+        baseline_row["file_collection"] = {"observed": True}
+        run["results"].append(baseline_row)
+    report = ev.evaluate_paired_file_diagnostic(suite, {}, run, "semble-lexical-file", "lexical")
+    assert report["status"] == "diagnostic_unqualified"
+    assert report["report_scope"] == "paired_independent_file_judgment_diagnostic_v1"
+    assert report["reference_contracts"] == [
+        {
+            "source_oracle_contract": "not_declared",
+            "gold_unit": "not_declared",
+            "query_intent": "not_declared",
+        }
+    ]
+    assert report["judgment_metrics"]["file_judgments"]["comparison"]["sample_count"] == 2
+    assert report["no_answer"]["routes"]["lexical"]["sample_count"] == 0
+    replayed = pairrun.replay_paired_file_diagnostic_report(
+        suite, {}, run, report, "whole_file", "a" * 64
+    )
+    assert replayed["primary_metric"] == "diagnostic_file_ndcg_at_10"
+    assert replayed["record_digest"] == ev.digest(ev.canonical(run))
+    forged_report = copy.deepcopy(report)
+    forged_report["judgment_metrics"]["file_judgments"]["comparison"]["sample_count"] = 3
+    with pytest.raises(pairrun.RunError, match="differs from independent replay"):
+        pairrun.replay_paired_file_diagnostic_report(
+            suite, {}, run, forged_report, "whole_file", "a" * 64
+        )
+    forged_report = copy.deepcopy(report)
+    forged_report["no_answer"]["routes"]["lexical"]["nonempty_results"] = 1
+    with pytest.raises(pairrun.RunError, match="differs from independent replay"):
+        pairrun.replay_paired_file_diagnostic_report(
+            suite, {}, run, forged_report, "whole_file", "a" * 64
+        )
+    with pytest.raises(ev.EvidenceError, match="context metrics are undefined"):
+        ev.evaluate(suite, {}, run, "semble-lexical-file", "lexical")
+    run["results"][0]["rank_unit"] = "symbol"
+    with pytest.raises(ev.EvidenceError, match="distinct-file results"):
+        ev.evaluate_paired_file_diagnostic(suite, {}, run, "semble-lexical-file", "lexical")

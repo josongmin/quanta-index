@@ -52,6 +52,7 @@ use ciborium::Value as CborValue;
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 
+use crate::file_authority;
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 use crate::overlay_codec::OverlayFamily;
 use crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME;
@@ -64,7 +65,7 @@ pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-genera
 const MAX_SEALED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 9;
+pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 10;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -112,6 +113,8 @@ pub(crate) struct LexicalSealedManifest {
     /// The `text-authority/` tree by `/`-joined path, ascending by name, or
     /// `None` for a generation built without a text authority.
     pub(crate) text_authority: Option<Vec<SealedArtifactCommitmentV1>>,
+    /// Immutable source-file bytes and their exact source identities.
+    pub(crate) file_authority: Vec<SealedArtifactCommitmentV1>,
     /// Every overlay family present, in [`OverlayFamily::ALL`] order.
     pub(crate) overlays: Vec<SealedArtifactCommitmentV1>,
     /// None is unavailable coverage, never a complete empty universe.
@@ -133,6 +136,7 @@ type SealedManifestRow = (
     Vec<CommitmentRow>,
     Vec<CommitmentRow>,
     Option<Vec<CommitmentRow>>,
+    Vec<CommitmentRow>,
     Vec<CommitmentRow>,
     Option<CommitmentRow>,
 );
@@ -211,6 +215,7 @@ impl LexicalSealedManifest {
             self.text_authority
                 .as_ref()
                 .map(|files| files.iter().map(to_commitment_row).collect()),
+            self.file_authority.iter().map(to_commitment_row).collect(),
             self.overlays.iter().map(to_commitment_row).collect(),
             self.source_coverage.as_ref().map(to_commitment_row),
         );
@@ -252,6 +257,7 @@ impl LexicalSealedManifest {
             index_segments,
             ranked_keys,
             text_authority,
+            file_authority,
             overlays,
             source_coverage,
         ): SealedManifestRow = value
@@ -284,6 +290,10 @@ impl LexicalSealedManifest {
             ranked_keys: ranked_keys.into_iter().map(from_commitment_row).collect(),
             text_authority: text_authority
                 .map(|files| files.into_iter().map(from_commitment_row).collect()),
+            file_authority: file_authority
+                .into_iter()
+                .map(from_commitment_row)
+                .collect(),
             overlays: overlays.into_iter().map(from_commitment_row).collect(),
             source_coverage: source_coverage.map(from_commitment_row),
         };
@@ -331,6 +341,19 @@ impl LexicalSealedManifest {
                     "text authority is committed without its manifest",
                 ));
             }
+        }
+        let file_prefix = format!("{}/", file_authority::DIR);
+        ensure_names(path, "file authority", &self.file_authority, |name| {
+            name.strip_prefix(file_prefix.as_str())
+                .is_some_and(&top_level)
+        })?;
+        if !self.file_authority.iter().any(|file| {
+            file.name == format!("{}/{}", file_authority::DIR, file_authority::MANIFEST)
+        }) {
+            return Err(manifest_corrupt(
+                path,
+                "file authority is committed without its manifest",
+            ));
         }
         if let Some(coverage) = &self.source_coverage
             && coverage.name != SOURCE_FILE_COVERAGE_FILE_NAME
@@ -389,6 +412,7 @@ impl LexicalSealedManifest {
             .chain(self.index_segments.iter())
             .chain(self.ranked_keys.iter())
             .chain(self.text_authority.iter().flatten())
+            .chain(self.file_authority.iter())
             .chain(self.overlays.iter())
             .chain(self.source_coverage.iter())
     }
@@ -555,6 +579,7 @@ mod tests {
                 artifact("text-authority/manifest.cbor"),
                 artifact("text-authority/shard-00000000-0000000000000000.cbor"),
             ]),
+            file_authority: vec![artifact("file-authority/manifest.cbor")],
             overlays: vec![artifact("repo-metadata.cbor"), artifact("repo-meta.cbor")],
             source_coverage: None,
         }
@@ -575,7 +600,7 @@ mod tests {
         let bytes = manifest.encode().expect("encode");
         let decoded = LexicalSealedManifest::decode(&bytes, Path::new("/g1/m")).expect("decode");
         assert_eq!(decoded, manifest);
-        assert_eq!(decoded.all_commitments().count(), 8);
+        assert_eq!(decoded.all_commitments().count(), 9);
     }
 
     #[test]
@@ -744,6 +769,7 @@ mod tests {
                 Vec::new(),
                 None,
                 Vec::new(),
+                Vec::new(),
                 None,
             );
             let bytes =
@@ -763,6 +789,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
+            Vec::new(),
             Vec::new(),
             None,
         );

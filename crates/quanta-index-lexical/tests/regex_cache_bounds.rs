@@ -176,7 +176,12 @@ fn a_broad_regex_is_served_but_not_cached_and_a_narrow_one_is_a_shared_hit() -> 
     let temp = tempfile::tempdir()?;
     let policy = RegexMatchCachePolicy::new(8, 1 << 20, 2)?;
     let adapter = adapter(temp.path().to_path_buf(), policy)?;
-    let searcher = adapter.open(&repo(), &revision(), ManifestGeneration::new(1))?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(1),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let broad = ids(searcher.as_ref(), "broad_tok.n")?;
     if broad != oracle(DOCS, "broad_tok.n")? {
@@ -233,7 +238,12 @@ fn a_regex_restricts_to_exactly_what_an_independent_engine_matches() -> TestResu
         RegexMatchCachePolicy::DEFAULT,
         CORPUS,
     )?;
-    let searcher = adapter.open(&repo(), &revision(), ManifestGeneration::new(1))?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(1),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for source in [
         "narrow_7_tok.n",
         "narrow_(1|2|3)_tok.n",
@@ -262,7 +272,12 @@ fn eviction_and_generation_reclaim_do_not_break_a_held_searcher() -> TestResult 
     let temp = tempfile::tempdir()?;
     let policy = RegexMatchCachePolicy::new(1, 1 << 20, 64)?;
     let adapter = adapter(temp.path().to_path_buf(), policy)?;
-    let searcher = adapter.open(&repo(), &revision(), ManifestGeneration::new(1))?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(1),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let first = ids(searcher.as_ref(), "narrow_2_tok.n")?;
     if first != oracle(DOCS, "narrow_2_tok.n")? {
         return Err(format!("the first answer is the oracle's: {first:?}").into());
@@ -302,7 +317,12 @@ fn eviction_and_generation_reclaim_do_not_break_a_held_searcher() -> TestResult 
 fn resident_bytes_never_exceed_the_policy_under_many_distinct_regexes() -> TestResult {
     let temp = tempfile::tempdir()?;
     let probe = adapter(temp.path().join("probe"), RegexMatchCachePolicy::DEFAULT)?;
-    let probe_searcher = probe.open(&repo(), &revision(), ManifestGeneration::new(1))?;
+    let probe_searcher = probe.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(1),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let _one = ids(probe_searcher.as_ref(), "narrow_1_tok.n")?;
     let one_entry = stats(&probe)?.resident_bytes;
     if one_entry == 0 {
@@ -312,7 +332,12 @@ fn resident_bytes_never_exceed_the_policy_under_many_distinct_regexes() -> TestR
     // Room for two entries and no more.
     let policy = RegexMatchCachePolicy::new(64, one_entry.saturating_mul(2), 8)?;
     let adapter = adapter(temp.path().join("bounded"), policy)?;
-    let searcher = adapter.open(&repo(), &revision(), ManifestGeneration::new(1))?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        ManifestGeneration::new(1),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for index in 1..=DOCS {
         let expected = vec![format!("chunk-{index}")];
         if ids(searcher.as_ref(), &format!("narrow_{index}_tok.n"))? != expected {

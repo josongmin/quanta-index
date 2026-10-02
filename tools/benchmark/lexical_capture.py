@@ -49,6 +49,7 @@ from tools.benchmark.retrieval import lexical_file_comparison as owner  # noqa: 
 PROFILE = "lexical-diagnostic"
 FAMILY = "lexical-file-comparison"
 PRODUCTS = (*owner.PRODUCTS, "quanta_lexical", "semble_lexical_only")
+FILE_PRODUCTS = (*owner.PRODUCTS, "quanta_lexical", "semble_lexical_file")
 MODULE = "tools.benchmark.retrieval.lexical_file_comparison"
 RANK_UNITS = {
     **dict.fromkeys(owner.PRODUCTS, "distinct_file"),
@@ -100,12 +101,14 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
         raise EvidenceError("lexical query inventory is empty or duplicate")
     judged = owner._tasks(suite, pack)
     products = {**summary["products"], **summary["pair"]["routes"]}
-    if set(products) != set(PRODUCTS):
+    current_file = suite.get("routes") == owner.FILE_ROUTES
+    inventory = FILE_PRODUCTS if current_file else PRODUCTS
+    if set(products) != set(inventory):
         raise EvidenceError("lexical scorer product inventory is incomplete")
     result = {}
-    for product in PRODUCTS:
+    for product in inventory:
         rank_unit = products[product].get("rank_unit")
-        if rank_unit != RANK_UNITS[product]:
+        if rank_unit != ("distinct_file" if current_file else RANK_UNITS[product]):
             raise EvidenceError(f"{product}: lexical rank unit differs from native result unit")
         rows = products[product]["per_query"]
         by_id = {row["task_id"]: row for row in rows}
@@ -114,12 +117,36 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
         typed_rows = []
         for task in tasks:
             row = by_id[task]
+            if row.get("status") == "unsupported" or (
+                current_file and row.get("status") in {"error", "timeout", "unavailable"}
+            ):
+                typed_rows.append(
+                    {
+                        "query_id": task,
+                        "metric": METRICS[rank_unit],
+                        "unit": "ratio",
+                        "value": None,
+                        "state": "timeout" if row["status"] == "timeout" else "unsupported",
+                    }
+                )
+                continue
+            if current_file and row.get("eligible") is False and judged[task][1]:
+                typed_rows.append(
+                    {
+                        "query_id": task,
+                        "metric": METRICS[rank_unit],
+                        "unit": "ratio",
+                        "value": None,
+                        "state": "unsupported",
+                    }
+                )
+                continue
             value = row.get("file_recall_at_10")
             no_gold = not judged[task][1]
             if no_gold:
                 if value != "not_applicable":
                     raise EvidenceError("no-gold lexical row must not carry recall")
-                if product in {"quanta_lexical", "semble_lexical_only"}:
+                if product in {"quanta_lexical", "semble_lexical_only", "semble_lexical_file"}:
                     if (
                         row.get("answerable") is not False
                         or row.get("status") not in {"success", "capped", "abstained"}
@@ -142,7 +169,11 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
                 ):
                     raise EvidenceError("lexical row has malformed file recall")
                 metric, state = "file_recall_at_10", "judged"
-            if not no_gold and product in {"quanta_lexical", "semble_lexical_only"}:
+            if not no_gold and product in {
+                "quanta_lexical",
+                "semble_lexical_only",
+                "semble_lexical_file",
+            }:
                 status = row.get("status")
                 if status in {"timeout", "unavailable"}:
                     state = "timeout" if status == "timeout" else "unsupported"
@@ -177,14 +208,20 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
 
 
 def frozen_inputs(raw: Path) -> dict[str, Path]:
-    return {role: raw / f"input-{role}" for role in owner.INPUT_ROLES}
+    spec = raw / "frozen-spec.json"
+    roles = (
+        owner.input_roles(parse_json(_read_control_file(spec).decode()))
+        if spec.exists()
+        else owner.INPUT_ROLES
+    )
+    return {role: raw / f"input-{role}" for role in roles}
 
 
 def replay_run(store: RunStore, evidence: dict) -> None:
     if (
         evidence["profile"] != PROFILE
         or evidence["family"] != FAMILY
-        or evidence["case_id"] not in PRODUCTS
+        or evidence["case_id"] not in {*PRODUCTS, *FILE_PRODUCTS}
         or evidence["verdict"]["scope"] != "diagnostic"
     ):
         raise EvidenceError("lexical replay has wrong family/profile/product/scope")
@@ -226,13 +263,14 @@ def replay_run(store: RunStore, evidence: dict) -> None:
             "lexical scorer source changed; historical report needs its original owner"
         )
     spec = parse_json(_read_control_file(raw / "frozen-spec.json").decode())
+    roles = owner.input_roles(spec)
     if spec != {
         "schema_version": 1,
-        **{role: str(native / f"input-{role}") for role in owner.INPUT_ROLES},
+        **{role: str(native / f"input-{role}") for role in roles},
     }:
         raise EvidenceError("lexical frozen spec differs from captured role paths")
     selection, _original_paths = corpus_binding.read_spec(
-        _read_control_file(raw / "original-spec.json"), owner.INPUT_ROLES
+        _read_control_file(raw / "original-spec.json"), roles
     )
     paths = frozen_inputs(raw)
     capsule = RawFile.capture(raw / "corpus-release.zip")
@@ -292,7 +330,9 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     if root.resolve().is_relative_to(repo.resolve()):
         raise EvidenceError("lexical evidence must stay outside the checkout")
     original = _read_control_file(spec_path)
-    selection, paths = corpus_binding.read_spec(original, owner.INPUT_ROLES)
+    envelope = parse_json(original.decode())
+    roles = owner.input_roles(envelope) if "inputs" in envelope else owner.INPUT_ROLES
+    selection, paths = corpus_binding.read_spec(original, roles)
     release = Path(selection["release_path"])
     if root.resolve().is_relative_to(release.resolve()) or release.resolve().is_relative_to(
         root.resolve()
@@ -339,7 +379,7 @@ def _capture_admitted(
         canonical_json(
             {
                 "schema_version": 1,
-                **{role: str(path) for role, path in frozen_inputs(native).items()},
+                **{role: str(content.path) for role, content in frozen.items()},
             }
         ),
         encoding="utf-8",
@@ -413,7 +453,7 @@ def _capture_admitted(
         lease_samples=0,
     )
     runs = []
-    for product in PRODUCTS:
+    for product in typed:
         result = dict(
             run_id=f"{capture_id}-{product}",
             family=FAMILY,
@@ -470,7 +510,7 @@ def _capture_admitted(
         capture_id=capture_id,
         profile=PROFILE,
         registry_digest=registry_digest(registry),
-        expected_cases={FAMILY: list(PRODUCTS)},
+        expected_cases={FAMILY: list(typed)},
         runs=runs,
         replay=replay_run,
         verify_source=lambda: require_frozen_source(repo, head),
@@ -485,7 +525,7 @@ def validate(repo: Path, root: Path, registry: dict) -> dict:
     document = load_capture(root, profile=PROFILE, registry_digest=registry_digest(registry))
     if document["source"] != source_identity(repo, "benchmark-retrieval") or document[
         "expected_cases"
-    ] != {FAMILY: list(PRODUCTS)}:
+    ] not in ({FAMILY: list(PRODUCTS)}, {FAMILY: list(FILE_PRODUCTS)}):
         raise EvidenceError("lexical capture source or complete product inventory differs")
     store = RunStore(root)
     for record in document["runs"]:

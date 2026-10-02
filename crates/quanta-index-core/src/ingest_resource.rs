@@ -29,8 +29,8 @@ pub const MAX_EMBEDDING_DIMENSION: usize = 8_192;
 /// Bytes of one `f32` vector component.
 const VECTOR_COMPONENT_BYTES: u64 = 4;
 
-/// Ceilings for one search-corpus batch: records it carries, bytes of text
-/// it asks to embed, and bytes of vectors those embeddings occupy.
+/// Ceilings for one search-corpus batch: records it carries, source-file bytes,
+/// bytes of text it asks to embed, and bytes of vectors those embeddings occupy.
 ///
 /// Every bound is a strict maximum; zero is refused at construction because
 /// a zero ceiling admits nothing and is a configuration defect, not a
@@ -77,7 +77,8 @@ impl IngestResourcePolicy {
         self.records
     }
 
-    /// Most bytes of text one batch may ask to embed.
+    /// Most bytes of source files or text one batch may ask the plane to hold.
+    /// The two footprints are checked independently against this ceiling.
     #[must_use]
     pub const fn max_text_bytes(&self) -> u64 {
         self.text_bytes
@@ -120,6 +121,12 @@ impl IngestResourcePolicy {
                 footprint.text_bytes, self.text_bytes
             )));
         }
+        if footprint.source_bytes > self.text_bytes {
+            return Err(refusal(&format!(
+                "batch carries {} bytes of source files, the ceiling is {}",
+                footprint.source_bytes, self.text_bytes
+            )));
+        }
         if footprint.vector_bytes > self.vector_bytes {
             return Err(refusal(&format!(
                 "batch expands to {} bytes of vectors ({} records × {dimension} components), the ceiling is {}",
@@ -145,6 +152,8 @@ pub struct IngestBatchFootprint {
     pub carried_records: usize,
     /// Records whose text the derivation embeds.
     pub embedded_records: usize,
+    /// Bytes of immutable source-file authority carried by lexical replacements.
+    pub source_bytes: u64,
     /// Bytes of text the derivation embeds.
     pub text_bytes: u64,
     /// Bytes the embedded records' vectors occupy at the given dimension.
@@ -170,6 +179,12 @@ impl IngestBatchFootprint {
             .checked_add(source_records)
             .ok_or_else(|| refusal("batch record count overflows"))?;
         let embedded_records = source_records;
+        let source_bytes = sum_text_bytes(
+            batch
+                .replace_scopes
+                .iter()
+                .map(|scope| scope.source_bytes.len()),
+        )?;
         let text_bytes = sum_text_bytes(
             batch
                 .semantic_replace_scopes
@@ -188,6 +203,7 @@ impl IngestBatchFootprint {
         Ok(Self {
             carried_records,
             embedded_records,
+            source_bytes,
             text_bytes,
             vector_bytes,
         })

@@ -384,7 +384,12 @@ fn tantivy_index_round_trip() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     // 1) "fox" -> expects c1 and c3 (both contain "fox").
     let fox_hits = searcher.search(
@@ -542,7 +547,12 @@ fn language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1() -> Test
         upsert_with_metadata("rust-target", "src/lib.rs", "rust", 1, 1, "needle")?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
 
@@ -603,7 +613,12 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
         upsert_symbol("requested-symbol", "src/lib.rs", "rust", "needle", 1, 1)?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
         ExactRepoRelativePathV1::new("src/lib.rs").map_err(str::to_string)?,
     );
@@ -705,7 +720,12 @@ fn exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1() ->
         upsert_symbol("other-symbol", "src/other.rs", "rust", "TargetSymbol", 1, 1)?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
         ExactRepoRelativePathV1::new(literal_path).map_err(str::to_string)?,
     );
@@ -780,7 +800,12 @@ fn tantivy_executes_repo_file_path_and_lang_filters() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let exact_path_hits = searcher.search(
         &make_query_with_filters(
@@ -898,7 +923,12 @@ fn tantivy_executes_phrase_adjacency_without_unordered_match() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let exact_phrase_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Phrase(
@@ -966,7 +996,12 @@ fn tantivy_phrase_sidecar_uses_text_authority_and_case_rules() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let exact_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Phrase(
@@ -1031,7 +1066,12 @@ fn tantivy_executes_whole_document_regex_and_rejects_false_positive() -> TestRes
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let regex_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Regex(
@@ -1124,7 +1164,12 @@ fn tantivy_regex_sidecar_verifies_authoritative_text() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let regex_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Regex(
@@ -1179,7 +1224,12 @@ fn symbol_content_authority_shapes_fail_closed_on_initial_and_replayed_batches()
             adapter.build_batch(&batch)?;
         }
         adapter.build_batch(&batch)?;
-        let searcher = adapter.open(&repo(), &revision(), generation())?;
+        let searcher = adapter.open(
+            &repo(),
+            &revision(),
+            generation(),
+            &quanta_index_core::RequestBudgetV1::unbounded(),
+        )?;
         let budget = RequestBudgetV1::unbounded();
         let keyword = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle_symbol".to_string())));
         let mut content_keyword = keyword.clone();
@@ -1371,7 +1421,12 @@ fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let type_symbol_hits = searcher.search(
         &make_query_with_filters(
@@ -1508,7 +1563,12 @@ fn tantivy_select_repo_uses_canonical_representative_when_scores_tie() -> TestRe
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let hits = searcher.search(
         &make_query_with_filters(
             LqExpr::Leaf(LqLeaf::Keyword("repo_tie_needle".to_string())),
@@ -1558,7 +1618,12 @@ fn tantivy_executes_simple_path_term_surface_without_boolean_path_leakage() -> T
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let path_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Keyword(
@@ -1625,7 +1690,12 @@ fn tantivy_honors_case_sensitive_keyword_queries() -> TestResult {
     )?];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let default_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Keyword(
@@ -1734,7 +1804,12 @@ fn tantivy_top_k_stabilizes_keyword_path_surface_without_losing_content_hits() -
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let mut query = make_query(LqExpr::Leaf(LqLeaf::Keyword(
         "path_only_needle".to_string(),
     )));
@@ -1767,7 +1842,12 @@ fn tantivy_count_all_keeps_the_page_and_reports_the_exact_total() -> TestResult 
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let mut query = make_query(LqExpr::Leaf(LqLeaf::Keyword(
         "count_all_needle".to_string(),
     )));
@@ -1864,7 +1944,12 @@ fn tantivy_select_file_collapses_multiple_chunks_per_path() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let hits = searcher.search(
         &make_query_with_filters(
             LqExpr::Leaf(LqLeaf::Keyword("file_projection_needle".to_string())),
@@ -1949,7 +2034,12 @@ fn tantivy_select_file_top_ten_covers_ten_files_despite_fifteen_duplicate_chunks
     }
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let query = make_query_with_filters(
         LqExpr::Leaf(LqLeaf::Keyword("file_projection_needle".to_string())),
         vec![LqFilter::Select {
@@ -2011,7 +2101,12 @@ fn tantivy_select_file_fills_page_after_more_than_ten_duplicate_chunks() -> Test
     )?);
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let expr = LqExpr::Leaf(LqLeaf::Keyword("declaration_needle".to_string()));
     let chunk_page =
         searcher.search(&make_query(expr.clone()), 10, &RequestBudgetV1::unbounded())?;
@@ -2073,7 +2168,12 @@ fn tantivy_select_path_collapses_multiple_chunks_per_path() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let hits = searcher.search(
         &make_query_with_filters(
             LqExpr::Leaf(LqLeaf::Keyword("path_projection_needle".to_string())),
@@ -2128,7 +2228,12 @@ fn tantivy_type_path_collapses_multiple_chunks_per_path() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let hits = searcher.search(
         &make_query_with_filters(
             LqExpr::Leaf(LqLeaf::Keyword("type_path_projection_needle".to_string())),
@@ -2159,7 +2264,12 @@ fn tantivy_type_repo_collapses_to_repo_representative() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let hits = searcher.search(
         &make_query_with_filters(
             LqExpr::Leaf(LqLeaf::Keyword("type_repo_needle".to_string())),
@@ -2211,7 +2321,12 @@ fn tantivy_executes_repo_metadata_filters_when_bundle_payload_is_typed() -> Test
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let matching_hits = searcher.search(
         &make_query_with_filters(
             LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
@@ -2242,7 +2357,12 @@ fn tantivy_executes_repo_metadata_filters_when_bundle_payload_is_typed() -> Test
     }
 
     let reopened_adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let reopened_searcher = reopened_adapter.open(&repo(), &revision(), generation())?;
+    let reopened_searcher = reopened_adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let reopened_hits = reopened_searcher.search(
         &make_query_with_filters(
             LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
@@ -2338,7 +2458,12 @@ fn tantivy_executes_repo_allow_list_across_indexed_source_repo_ids() -> TestResu
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let corp_a_hits = searcher.search(
         &make_query_with_filters(
@@ -2440,7 +2565,12 @@ fn tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id() -> TestRe
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let gate_query = make_query(LqExpr::All(vec![
         LqExpr::Leaf(LqLeaf::Predicate {
             name: "repo.has.file".to_string(),
@@ -2737,7 +2867,12 @@ fn tantivy_repo_has_content_true_gate_narrows_by_indexed_source_repo_id() -> Tes
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let gate_query = make_query(LqExpr::All(vec![
         LqExpr::Leaf(LqLeaf::Predicate {
             name: "repo.has.content".to_string(),
@@ -2812,7 +2947,12 @@ fn tantivy_repo_has_content_phrase_and_raw_string_true_gate_narrows_by_indexed_s
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     for args in [
         vec![LqPredicateArg::Phrase("gate-a only".to_string())],
@@ -2885,7 +3025,12 @@ fn tantivy_executes_native_predicate_aliases() -> TestResult {
         )?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let repo_path_alias = make_query(LqExpr::All(vec![
         LqExpr::Leaf(LqLeaf::Predicate {
@@ -2989,7 +3134,12 @@ fn tantivy_executes_numeric_content_predicates() -> TestResult {
         )?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     for name in ["file.contains", "file.has.content"] {
         let query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
@@ -3054,7 +3204,12 @@ fn tantivy_executes_repo_has_file_predicate_as_repo_gate() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let gate_query = make_query(LqExpr::All(vec![
         LqExpr::Leaf(LqLeaf::Predicate {
             name: "repo.has.file".to_string(),
@@ -3124,7 +3279,12 @@ fn tantivy_executes_repo_has_content_predicate_under_or_and_not() -> TestResult 
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let or_query = make_query(LqExpr::Any(vec![
         LqExpr::Leaf(LqLeaf::Predicate {
@@ -3232,7 +3392,12 @@ fn tantivy_executes_repo_has_file_predicate_with_lang_matcher() -> TestResult {
         upsert_with_metadata("gamma", "docs/readme.md", "markdown", 1, 2, "no match")?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     // The repo contains a python file -> gate opens, both `needle` docs return.
     let hit_query = make_query(LqExpr::All(vec![
@@ -3308,7 +3473,12 @@ fn tantivy_executes_repo_has_file_predicate_under_or_and_not() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let or_query = make_query(LqExpr::Any(vec![
         LqExpr::Leaf(LqLeaf::Predicate {
@@ -3457,7 +3627,12 @@ fn tantivy_executes_file_has_content_predicate_phrase_and_regex() -> TestResult 
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let phrase_hit_query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
         name: "file.has.content".to_string(),
@@ -3598,7 +3773,12 @@ fn tantivy_executes_scoped_file_content_predicates_across_boolean_contexts() -> 
         )?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     for (args, expected) in [
         (
@@ -3869,7 +4049,12 @@ fn tantivy_search_all_materializes_full_scope() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let hits = searcher.search_all(
         &make_query(LqExpr::Leaf(LqLeaf::Keyword("scope".to_string()))),
         &RequestBudgetV1::unbounded(),
@@ -3923,7 +4108,12 @@ fn independent_chunk_clear_refuses_and_file_tombstone_preserves_symbols_v1() -> 
     delta.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&delta)?;
     adapter.build_batch(&delta)?;
 
-    let searcher = adapter.open(&repo(), &revision(), target_generation)?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        target_generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let chunk_hits = searcher.search(
         &make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string()))),
         10,
@@ -3934,7 +4124,12 @@ fn independent_chunk_clear_refuses_and_file_tombstone_preserves_symbols_v1() -> 
         10,
         &RequestBudgetV1::unbounded(),
     )?;
-    let base = adapter.open(&repo(), &revision(), base_generation)?;
+    let base = adapter.open(
+        &repo(),
+        &revision(),
+        base_generation,
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let original = base.search(
         &make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".into()))),
         10,
@@ -3962,7 +4157,12 @@ fn tantivy_executes_index_no_full_scan_with_scoped_content_predicate() -> TestRe
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     for name_pattern in [r"lib\.rs", r"\blib\.rs\b"] {
         let scoped = LqExpr::Leaf(LqLeaf::Predicate {
             name: "file.contains".to_string(),
@@ -4041,7 +4241,12 @@ fn tantivy_index_no_language_refuses_without_stored_authority() -> TestResult {
         upsert_with_metadata("rust-source", "src/explicit.py", "rust", 1, 2, "needle")?,
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
 
     let all_ids: Vec<String> = searcher
         .search(
@@ -4170,7 +4375,12 @@ fn tantivy_applies_query_boost_to_scores() -> TestResult {
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     let baseline_query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
     let baseline_hits = searcher.search(&baseline_query, 10, &RequestBudgetV1::unbounded())?;
     let baseline_first = baseline_hits

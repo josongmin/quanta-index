@@ -93,7 +93,7 @@ pub use quanta_index_contract::{
     SeedLane, SemanticQueryResponse, SourceFileCoverage, SourceFileKey, SourceFileRevision,
     SourcePublicationEvent, StructuralCursorV1, StructuralReplaceScope, StructuralTombstoneScope,
     StructuralTreeRecord, SymbolCandidate, SymbolCoverage, SymbolId, SymbolQueryResponse,
-    TextQueryResponse, TextQuerySyntax, TrackReadinessRecord,
+    TextQueryResponse, TextQuerySyntax, TextRankUnit, TrackReadinessRecord,
 };
 
 pub type CodeHit = LexicalCandidate;

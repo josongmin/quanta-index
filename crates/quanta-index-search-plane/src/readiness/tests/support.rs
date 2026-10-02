@@ -208,12 +208,16 @@ pub(super) fn file_replacement(
     file: quanta_index_contract::SourceFileKey,
     chunks: Vec<ChunkRecord>,
 ) -> Result<SearchCorpusReplaceScope, Box<dyn std::error::Error>> {
+    use sha2::Digest as _;
+    let source_bytes = chunks
+        .first()
+        .map_or_else(Vec::new, |chunk| chunk.text.as_bytes().to_vec());
     Ok(SearchCorpusReplaceScope {
         coverage: quanta_index_contract::SourceFileCoverage {
             source: quanta_index_contract::SourceFileRevision {
                 file,
                 revision_id: revision_id(),
-                source_sha256: [1; 32],
+                source_sha256: sha2::Sha256::digest(&source_bytes).into(),
             },
             language: rust_language()?,
             producer_policy_sha256: [2; 32],
@@ -221,6 +225,7 @@ pub(super) fn file_replacement(
             text_admitted: true,
             symbols: quanta_index_contract::SymbolCoverage::NotRequested,
         },
+        source_bytes,
         chunks,
         symbols: Vec::new(),
     })

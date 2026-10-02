@@ -145,7 +145,12 @@ fn fresh_searcher_with_corpus(
         ops.push(upsert(id, text)?);
     }
     adapter.build(&repo(), &revision(), generation(), &ops)?;
-    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &quanta_index_core::RequestBudgetV1::unbounded(),
+    )?;
     // The tempdir backing must outlive the searcher; intentionally leak it
     // for the duration of the test by detaching `into_path`.
     let _kept = dir.keep();

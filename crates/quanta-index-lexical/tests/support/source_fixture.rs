@@ -61,6 +61,7 @@ pub(super) fn complete_file(
     };
     Ok(SearchCorpusReplaceScope {
         coverage,
+        source_bytes: raw_source.to_vec(),
         chunks,
         symbols,
     })

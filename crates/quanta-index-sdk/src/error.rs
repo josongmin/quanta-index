@@ -82,6 +82,8 @@ pub enum ResponseBindingAxis {
     Window,
     /// The response order differs from the requested order.
     Order,
+    /// A text response ranks a different unit than the request requires.
+    ResultUnit,
     /// The returned row count exceeds the request cap.
     Cardinality,
     /// The response reports invalid work or exceeds the admitted allowance.
@@ -113,6 +115,7 @@ impl ResponseBindingAxis {
             Self::CandidateIdentity => "candidate_identity",
             Self::Window => "window",
             Self::Order => "order",
+            Self::ResultUnit => "result_unit",
             Self::Cardinality => "cardinality",
             Self::WorkSettlement => "work_settlement",
             Self::BatchCommitment => "batch_commitment",

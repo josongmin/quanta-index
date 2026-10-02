@@ -83,6 +83,7 @@ fn symbol_request() -> SymbolQueryRequest {
 
 fn text_response(generation: GenerationPin) -> SearchPlaneQueryIpcResponse {
     SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation,
         results: vec![],
@@ -141,6 +142,33 @@ fn lexical_candidate(repo: RepoId) -> quanta_index_contract::LexicalCandidate {
         snippet_hit_offset: None,
         highlights: vec![],
     }
+}
+
+fn code_search_file_candidate() -> quanta_index_contract::LexicalCandidate {
+    use quanta_index_contract::{PreviewKind, PreviewMetadata, SourceFileKey, SourceFileRevision};
+
+    let mut row = lexical_candidate(repo_id());
+    let source = SourceFileRevision {
+        file: SourceFileKey {
+            source_repo_id: row.source_repo_id.clone(),
+            repo_relative_path: row.repo_relative_path.clone(),
+        },
+        revision_id: revision_id(),
+        source_sha256: [7; 32],
+    };
+    row.snippet = row.repo_relative_path.as_str().to_string();
+    row.source = Some(source.clone());
+    row.preview = Some(PreviewMetadata {
+        kind: PreviewKind::Path,
+        source: Some(source),
+        chunk_start_byte: None,
+        original_focus: None,
+        original_context: None,
+        normalized_focus: None,
+        normalization_equivalent: false,
+        unavailable_reason: None,
+    });
+    row
 }
 
 // ------------------------------------------------------------ scripted UDS
@@ -402,6 +430,7 @@ fn active_selector_rejects_wrong_same_domain_generation_over_uds() {
 fn foreign_candidate_fails_closed() {
     let dir = temp_dir("candidate");
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
         results: vec![lexical_candidate(other_repo_id())],
@@ -425,9 +454,71 @@ fn foreign_candidate_fails_closed() {
 }
 
 #[test]
+fn code_search_requires_file_rank_unit_even_for_an_empty_page() {
+    let dir = temp_dir("code-search-rank-unit");
+    let mut request = text_request(Some(pin(repo_id())), None);
+    request.syntax = TextQuerySyntax::CodeSearch;
+    let error = run_scripted(dir.path(), request, text_response(pin(repo_id())))
+        .expect_err("a chunk-ranked response must not satisfy code search");
+    assert!(matches!(
+        error,
+        Binding {
+            axis: ResponseBindingAxis::ResultUnit,
+            ..
+        }
+    ));
+
+    let dir = temp_dir("code-search-file-rank-unit");
+    let mut request = text_request(Some(pin(repo_id())), None);
+    request.syntax = TextQuerySyntax::CodeSearch;
+    let mut response = text_response(pin(repo_id()));
+    if let SearchPlaneQueryIpcResponse::Text(page) = &mut response {
+        page.rank_unit = quanta_index_contract::TextRankUnit::File;
+    }
+    assert!(run_scripted(dir.path(), request, response).is_ok());
+
+    let dir = temp_dir("code-search-missing-source");
+    let mut request = text_request(Some(pin(repo_id())), None);
+    request.syntax = TextQuerySyntax::CodeSearch;
+    let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::File,
+        explanation: quanta_index_contract::SearchExplanation::empty(),
+        generation: pin(repo_id()),
+        results: vec![lexical_candidate(repo_id())],
+        window: quanta_index_contract::QueryResultWindowV2::exact_probe(1),
+        file_owner_rows: None,
+        next_cursor: None,
+    });
+    let error = run_scripted(dir.path(), request, response)
+        .expect_err("a file-ranked row without source identity must be refused");
+    assert!(matches!(
+        error,
+        Binding {
+            axis: ResponseBindingAxis::CandidateIdentity,
+            ..
+        }
+    ));
+
+    let dir = temp_dir("code-search-source-bound-file");
+    let mut request = text_request(Some(pin(repo_id())), None);
+    request.syntax = TextQuerySyntax::CodeSearch;
+    let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::File,
+        explanation: quanta_index_contract::SearchExplanation::empty(),
+        generation: pin(repo_id()),
+        results: vec![code_search_file_candidate()],
+        window: quanta_index_contract::QueryResultWindowV2::exact_probe(1),
+        file_owner_rows: None,
+        next_cursor: None,
+    });
+    assert!(run_scripted(dir.path(), request, response).is_ok());
+}
+
+#[test]
 fn window_disagreeing_with_rows_fails_closed() {
     let dir = temp_dir("window");
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
         results: vec![],
@@ -453,6 +544,7 @@ fn window_disagreeing_with_rows_fails_closed() {
 fn rows_over_request_cap_fails_closed() {
     let dir = temp_dir("cap");
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
         results: vec![lexical_candidate(repo_id()), lexical_candidate(repo_id())],
@@ -534,6 +626,7 @@ fn swapped_owner_projection_fails_closed() {
     let first = owner_hit("cand-1", 2.0);
     let second = owner_hit("cand-2", 1.0);
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
         results: vec![first.clone(), second.clone()],

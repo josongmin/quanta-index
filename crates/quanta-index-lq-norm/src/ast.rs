@@ -1,11 +1,8 @@
 // Internal canonical AST.
 //
-// PRE-NORM owns this shape until PRE-CONTRACT-EXT lands the public `LqQuery`
-// carrier in the contract crate; at that point the integration ticket rewires
-// `IntoLqQuery for LqNormalizedQuery`. The shape here covers the subset of
-// dsl.md §2 that PRE-NORM actually executes: boolean layer, pattern leaves,
-// filters, directives, structural-block leaf, and the `LqOptions` knobs
-// touched by normalization (case, patterntype, count, timeout).
+// `LqNormalizedQuery` is the canonical query IR, exported by the contract as
+// `LqQuery`. Product syntaxes lower into this shape; execution-specific plans
+// are derived from it after admission.
 //
 // D18: every serde impl on this module is hand-rolled.
 
@@ -21,9 +18,13 @@ use crate::errors::LqSpan;
 pub const LQ_VERSION_TAG: &str = "1.0-pre";
 const ACCEPTED_LQ_VERSION_TAGS: &[&str] = &["1.0-pre", "1.0"];
 
-/// Pattern-type mode from dsl.md §4.
+/// Canonical pattern-type mode. `CodeSearch` is produced by the product
+/// request lowerer; the Native LQ parser retains its existing DSL values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LqPatternType {
+    /// File-oriented product search. The lexical executor evaluates `All`
+    /// across one source file, not within an individual indexed chunk.
+    CodeSearch,
     Literal,
     Keyword,
     Standard,
@@ -35,6 +36,7 @@ impl LqPatternType {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::CodeSearch => "code_search",
             Self::Literal => "literal",
             Self::Keyword => "keyword",
             Self::Standard => "standard",
@@ -475,6 +477,7 @@ impl<'de> serde::Deserialize<'de> for LqPatternType {
             }
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<LqPatternType, E> {
                 match v {
+                    "code_search" => Ok(LqPatternType::CodeSearch),
                     "literal" => Ok(LqPatternType::Literal),
                     "keyword" => Ok(LqPatternType::Keyword),
                     "standard" => Ok(LqPatternType::Standard),
@@ -482,7 +485,14 @@ impl<'de> serde::Deserialize<'de> for LqPatternType {
                     "structural" => Ok(LqPatternType::Structural),
                     other => Err(E::unknown_variant(
                         other,
-                        &["literal", "keyword", "standard", "regexp", "structural"],
+                        &[
+                            "code_search",
+                            "literal",
+                            "keyword",
+                            "standard",
+                            "regexp",
+                            "structural",
+                        ],
                     )),
                 }
             }
@@ -2382,5 +2392,19 @@ impl<'de> serde::Deserialize<'de> for LqNormalizedQuery {
             }
         }
         de.deserialize_map(V)
+    }
+}
+
+#[cfg(test)]
+mod code_search_wire_tests {
+    use super::LqPatternType;
+
+    #[test]
+    fn code_search_pattern_type_cbor_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&LqPatternType::CodeSearch, &mut bytes)?;
+        let decoded: LqPatternType = ciborium::de::from_reader(bytes.as_slice())?;
+        assert_eq!(decoded, LqPatternType::CodeSearch);
+        Ok(())
     }
 }

@@ -28,8 +28,9 @@ pub struct LexicalCandidate {
     /// Byte offset of the primary matched hit within [`Self::snippet`], for UI
     /// highlight anchoring. `Some(off)` lets a consumer place a highlight without
     /// re-deriving the match from the raw snippet text (J7Q-07); `None` when the
-    /// producing route carries no single lexical hit anchor (e.g. a symbol or
-    /// projected candidate). Equals the first [`Self::highlights`] span's `start`.
+    /// producing route carries no single lexical hit anchor (e.g. a symbol).
+    /// For a path preview the offset is relative to the emitted path bytes.
+    /// Equals the first [`Self::highlights`] span's `start`.
     pub snippet_hit_offset: Option<u32>,
     /// Every matched-hit byte range within [`Self::snippet`], in ascending start
     /// order, for multi-hit UI highlighting (J7Q-07). Empty when the producing

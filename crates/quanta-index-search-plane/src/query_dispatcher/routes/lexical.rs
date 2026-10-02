@@ -1,7 +1,7 @@
 //! Lexical text and symbol query routes.
 
 use quanta_index_contract::{
-    CursorRouteV2, EngineTouched, GenerationPin, LexicalCursor, LexicalRowOrderKey,
+    CursorRouteV2, EngineTouched, GenerationPin, LexicalCursor, LexicalRowOrderKey, LqPatternType,
     QueryResultWindowV1, QueryResultWindowV2, QueryStageKindV1, QueryStageTimingV1,
     SearchExplanation, SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse,
     TextQueryRequest, TextQueryResponse, validate_lexical_page_v1,
@@ -12,13 +12,14 @@ use quanta_index_core::{
 };
 
 use crate::lower_lexical_text_query;
+use crate::lowering::reject_code_search_on_nonlexical_route;
 use crate::query_dispatcher::continuation::{
     CursorRequestContextV2, require_cursor_on_nonempty_plan, require_token_pin,
 };
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::execution_trace::{LaneExecutionRecorderV1, LaneExecutionSummaryV1};
 use crate::query_dispatcher::planning::{
-    prepare_language_query_v1, query_selects_file_owner_projection,
+    prepare_language_query_v1, query_selects_file_owner_projection, text_rank_unit,
 };
 use crate::query_dispatcher::read_view::ReadViewRequestV1;
 use crate::query_dispatcher::response_budget::fit_ranked_page;
@@ -29,6 +30,10 @@ use crate::query_dispatcher::window::{
 };
 
 const LEXICAL_CURSOR_ORDER_V2: &str = "score_desc_source_repo_path_line_candidate_v2";
+// The signed cursor context must change when CodeSearch scoring changes,
+// even if the sealed generation and query text remain identical.
+const CODE_SEARCH_CURSOR_ORDER: &str =
+    "code_search_file_overlap_score_v1_desc_source_repo_path_line_candidate";
 
 fn lexical_explanation(
     budget: &RequestBudgetV1,
@@ -95,7 +100,11 @@ impl SearchPlaneDispatcher {
             pin: &planned.pin,
             query: &planned.query,
             constraints: &planned.constraints,
-            order: LEXICAL_CURSOR_ORDER_V2,
+            order: if planned.query.options.pattern_type == LqPatternType::CodeSearch {
+                CODE_SEARCH_CURSOR_ORDER
+            } else {
+                LEXICAL_CURSOR_ORDER_V2
+            },
             cap: request.top_k,
         };
         if let Some(opened) = &opened {
@@ -105,6 +114,7 @@ impl SearchPlaneDispatcher {
         let mut stage_timings = StageTimings::new(self.query_stage_observation, 4);
         stage_timings.record_elapsed(QueryStageKindV1::LexicalPrepare, prepare_started, 1, None);
         let wants_file_owner_projection = query_selects_file_owner_projection(&planned.query);
+        let rank_unit = text_rank_unit(&planned.query);
         require_cursor_on_nonempty_plan(opened.is_some(), planned.force_empty)?;
         if planned.force_empty {
             let project_started = self.query_stage_observation.start();
@@ -119,6 +129,7 @@ impl SearchPlaneDispatcher {
             return Ok((
                 TextQueryResponse {
                     generation: planned.pin.clone(),
+                    rank_unit,
                     results: Vec::new(),
                     window,
                     explanation: lexical_explanation(budget, &summary, stage_timings.finish()),
@@ -191,6 +202,7 @@ impl SearchPlaneDispatcher {
         let mut response = fit_ranked_page(
             TextQueryResponse {
                 generation: planned.pin.clone(),
+                rank_unit,
                 results,
                 window: public_window,
                 explanation,
@@ -229,6 +241,7 @@ impl SearchPlaneDispatcher {
             cursor: None,
             ..TextQueryRequest::from(request.clone())
         };
+        reject_code_search_on_nonlexical_route(pageless.syntax, "symbol")?;
         let lowered = lower_lexical_text_query(&pageless)?;
         let validated =
             LexicalPolicy::plan_query(&lowered, &request.constraints, LexicalEndpoint::Symbol)?;

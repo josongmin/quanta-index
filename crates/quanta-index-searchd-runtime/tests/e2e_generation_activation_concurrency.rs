@@ -192,7 +192,12 @@ fn corpus_batch(raw_generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>
             }],
             Vec::new(),
         )?;
-        batch = batch.replace_scope(scope_v1.coverage, scope_v1.chunks, scope_v1.symbols);
+        batch = batch.replace_scope(
+            scope_v1.coverage,
+            scope_v1.source_bytes,
+            scope_v1.chunks,
+            scope_v1.symbols,
+        );
     }
     Ok(batch)
 }

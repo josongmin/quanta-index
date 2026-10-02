@@ -30,6 +30,7 @@ use quanta_index_contract::{
 use quanta_index_core::{CoreError, QueryRouteV1, RequestBudgetV1, validate_query_top_k};
 
 use crate::lower_lexical_text_query;
+use crate::lowering::reject_code_search_on_nonlexical_route;
 use crate::query_dispatcher::continuation::{CursorRequestContextV2, require_token_pin};
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::{history_cursor_order_mismatch, history_shard_unavailable};
@@ -56,6 +57,7 @@ impl SearchPlaneDispatcher {
     ) -> Result<SearchPlaneHistoryQueryResponse, CoreError> {
         budget.checkpoint("history:entry")?;
         let _accepted_top_k = validate_query_top_k(request.text_query.top_k)?;
+        reject_code_search_on_nonlexical_route(request.text_query.syntax, "history")?;
         let lowered = lower_lexical_text_query(&request.text_query)?;
         validate_history_query(&lowered)?;
         let opened = request
