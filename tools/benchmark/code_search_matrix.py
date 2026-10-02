@@ -24,6 +24,7 @@ from registry import load_registry, registry_digest
 from tools.benchmark.retrieval import lexical_file_comparison as lexical
 from tools.benchmark.retrieval import live_lexical_external as live
 from tools.benchmark.retrieval import holdout_c4
+from tools.benchmark.retrieval import evaluator
 from tools.benchmark.retrieval import query_plan
 from tools.benchmark.retrieval import run as pair_run
 
@@ -266,6 +267,62 @@ def _admit_queries(pack: dict, policy: str) -> None:
             raise ValueError("matrix query pack violates its declared policy") from error
 
 
+def _replay_c4(
+    spec: dict, release: Path, repositories: set[str]
+) -> tuple[dict[tuple[str, str], dict], dict[Path, bytes]]:
+    """Re-derive a v3 C4 admission before permitting absent suite/pack cells."""
+    if spec["schema_version"] != 3:
+        return {}, {}
+    if spec["query_families"] != list(holdout_c4.MATRIX_INTENTS):
+        raise ValueError("matrix C4 intent inventory differs")
+    root = _path(spec["c4_admission_root"], "c4_admission_root")
+    matrix_path = root / "admission-matrix.json"
+    matrix_raw = _read_control_file(matrix_path)
+    payloads: dict[tuple[str, str], tuple[dict, dict, dict]] = {}
+    derived = holdout_c4.derive_matrix(
+        release,
+        _path(spec["c4_capsules"], "c4_capsules"),
+        _path(spec["c4_checkouts"], "c4_checkouts"),
+        expected_repositories=len(repositories),
+        _payloads=payloads,
+    )
+    if live._json(matrix_raw) != derived or derived["release_digest"] != spec["release_digest"]:
+        raise ValueError("matrix C4 admission differs from current source and capsules")
+    by_key = {(row["repository"], row["intent"]): row for row in derived["cells"]}
+    if len(by_key) != len(derived["cells"]) or set(by_key) != {
+        (repository, intent) for repository in repositories for intent in spec["query_families"]
+    }:
+        raise ValueError("matrix C4 cell inventory differs")
+    bound_files = {matrix_path: matrix_raw}
+    for key, row in by_key.items():
+        if row["status"] == "no_admission_diagnostic":
+            if key in payloads or any(
+                row[field] is not None
+                for field in ("suite_sha256", "blind_pack_sha256", "admission_sha256")
+            ):
+                raise ValueError("matrix C4 no-admission cell has emitted inputs")
+            continue
+        if row["status"] != "diagnostic_unqualified" or key not in payloads:
+            raise ValueError("matrix C4 cell status or inputs differ")
+        repository, intent = key
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", repository):
+            raise ValueError("matrix C4 repository path is invalid")
+        suite, pack, report = payloads[key]
+        for name, value, digest_field in (
+            ("suite.json", suite, "suite_sha256"),
+            ("blind-pack.json", pack, "blind_pack_sha256"),
+            ("admission.json", report, "admission_sha256"),
+        ):
+            path = root / repository / intent / name
+            raw = _read_control_file(path)
+            if raw != evaluator.canonical(value) or hashlib.sha256(raw).hexdigest() != row[
+                digest_field
+            ]:
+                raise ValueError("matrix C4 emitted input differs from source-bound admission")
+            bound_files[path] = raw
+    return by_key, bound_files
+
+
 def verify(repo: Path, spec_path: Path) -> dict:
     """Fail on any omitted, mismatched or unverified applicable matrix cell."""
     source = code_search_workflow._source(repo)
@@ -282,11 +339,32 @@ def verify(repo: Path, spec_path: Path) -> dict:
     spec = _spec(raw, repositories)
     if spec["release_digest"] != document["digest"]:
         raise ValueError("matrix release digest differs from the validated release")
+    c4_cells, c4_files = _replay_c4(spec, release, repositories)
     registry = load_registry(repo / "tools/benchmark/registry.toml")
-    workflows = pairs = unsupported = not_run = 0
+    workflows = pairs = unsupported = not_run = no_admission = 0
     bindings = []
     family_input_digests: set[tuple[str, str, str]] = set()
     for cell in spec["cells"]:
+        if c4_cells:
+            c4 = c4_cells[cell["repository"], cell["query_family"]]
+            if (
+                cell["view"] != "code_only"
+                or cell["query_policy"] != holdout_c4._execution_policy(cell["query_family"])
+            ):
+                raise ValueError("matrix C4 view or request policy differs")
+            if c4["status"] == "no_admission_diagnostic":
+                if cell["suite"] is not None or cell["query_pack"] is not None:
+                    raise ValueError("matrix C4 no-admission cell invents inputs")
+                no_admission += 1
+                continue
+            cell_root = _path(spec["c4_admission_root"], "c4_admission_root") / cell[
+                "repository"
+            ] / cell["query_family"]
+            if (
+                cell["suite"] != str(cell_root / "suite.json")
+                or cell["query_pack"] != str(cell_root / "blind-pack.json")
+            ):
+                raise ValueError("matrix C4 cell inputs differ from emitted admission")
         selection = {
             "release_path": str(release),
             "release_digest": document["digest"],
@@ -367,8 +445,10 @@ def verify(repo: Path, spec_path: Path) -> dict:
         )
     if code_search_workflow._source(repo) != source:
         raise ValueError("matrix source changed during verification")
-    return {
-        "schema_version": 2,
+    if any(_read_control_file(path) != before for path, before in c4_files.items()):
+        raise ValueError("matrix C4 admission changed during verification")
+    result = {
+        "schema_version": spec["schema_version"],
         "status": "diagnostic_incomplete" if not_run else "diagnostic_unqualified",
         "source": source,
         "release_digest": document["digest"],
@@ -385,3 +465,9 @@ def verify(repo: Path, spec_path: Path) -> dict:
             "backend_indexed_universe_attestation",
         ],
     }
+    if spec["schema_version"] == 3:
+        result["no_admission_cells"] = no_admission
+        result["c4_admission_matrix_sha256"] = hashlib.sha256(
+            c4_files[_path(spec["c4_admission_root"], "c4_admission_root") / "admission-matrix.json"]
+        ).hexdigest()
+    return result

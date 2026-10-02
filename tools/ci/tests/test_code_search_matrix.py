@@ -1,6 +1,7 @@
 """A declared code-search matrix cannot silently omit or substitute native cells."""
 
 import copy
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "benchmark"))
 
 import code_search_matrix as matrix  # noqa: E402
+from tools.benchmark.retrieval import evaluator  # noqa: E402
 
 
 def _cell(tmp_path, repository="repo-a", family="symbols"):
@@ -72,6 +74,122 @@ def test_matrix_inventory_accepts_only_complete_cartesian_product(tmp_path):
     value["schema_version"] = 1
     with pytest.raises(ValueError, match="closed schema v2"):
         matrix._spec(value, {"repo-a", "repo-b"})
+
+
+def _c4_matrix_fixture(tmp_path, monkeypatch):
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / "manifest.json").write_bytes(b"manifest")
+    admission_root = tmp_path / "c4-admission"
+    admission_root.mkdir()
+    intent = "declaration_name_exact"
+    cell_root = admission_root / "repo-a" / intent
+    cell_root.mkdir(parents=True)
+    suite = {"tasks": [{"task_id": "q", "query": "Alpha", "split": "eval"}]}
+    pack = {"tasks": [{"task_id": "q", "query": "Alpha"}]}
+    report = {"status": "diagnostic_unqualified", "selected": 1}
+    payloads = (suite, pack, report)
+    digests = {}
+    for name, payload, field in (
+        ("suite.json", suite, "suite_sha256"),
+        ("blind-pack.json", pack, "blind_pack_sha256"),
+        ("admission.json", report, "admission_sha256"),
+    ):
+        raw = evaluator.canonical(payload)
+        (cell_root / name).write_bytes(raw)
+        digests[field] = hashlib.sha256(raw).hexdigest()
+    c4_cells = [
+        {
+            "repository": "repo-a",
+            "intent": family,
+            "status": "diagnostic_unqualified"
+            if family == intent
+            else "no_admission_diagnostic",
+            "suite_sha256": digests["suite_sha256"] if family == intent else None,
+            "blind_pack_sha256": digests["blind_pack_sha256"] if family == intent else None,
+            "admission_sha256": digests["admission_sha256"] if family == intent else None,
+        }
+        for family in matrix.holdout_c4.MATRIX_INTENTS
+    ]
+    c4 = {"release_digest": "sha256:" + "a" * 64, "cells": c4_cells}
+    (admission_root / "admission-matrix.json").write_text(json.dumps(c4))
+
+    def derive(_release, _capsules, _checkouts, *, expected_repositories, _payloads):
+        assert _release == release and expected_repositories == 1
+        _payloads[("repo-a", intent)] = payloads
+        return c4
+
+    monkeypatch.setattr(matrix.holdout_c4, "derive_matrix", derive)
+    monkeypatch.setattr(matrix.code_search_workflow, "_source", lambda _repo: {"revision": "a" * 40, "dirty": False})
+    monkeypatch.setattr(matrix.corpus_release, "validate", lambda _root: {
+        "digest": c4["release_digest"],
+        "repositories": [{
+            "recipe": {"name": "repo-a"},
+            "views": {"code_only": {"manifest": "manifest.json"}},
+        }],
+    })
+    monkeypatch.setattr(matrix.corpus_binding, "_bind", lambda *_args: {"binding": "fixed"})
+    monkeypatch.setattr(matrix, "load_registry", lambda _path: {})
+    cells = []
+    for family in matrix.holdout_c4.MATRIX_INTENTS:
+        admitted = family == intent
+        captures = (
+            {
+                "lexical-only": {"kind": "not_run", "reason": matrix.MISSING_REASON},
+                "semantic-only": {"kind": "unsupported", "reason": matrix.UNSUPPORTED_REASON},
+                "hybrid": {"kind": "unsupported", "reason": matrix.UNSUPPORTED_REASON},
+            }
+            if admitted
+            else {
+                mode: {"kind": "not_applicable", "reason": matrix.NO_ADMISSION_REASON}
+                for mode in matrix.MODES
+            }
+        )
+        cells.append({
+            "repository": "repo-a",
+            "view": "code_only",
+            "query_family": family,
+            "query_policy": matrix.holdout_c4._execution_policy(family),
+            "suite": str(cell_root / "suite.json") if admitted else None,
+            "query_pack": str(cell_root / "blind-pack.json") if admitted else None,
+            "captures": captures,
+        })
+    spec = {
+        "schema_version": 3,
+        "release_path": str(release),
+        "release_digest": c4["release_digest"],
+        "query_families": list(matrix.holdout_c4.MATRIX_INTENTS),
+        "c4_admission_root": str(admission_root),
+        "c4_capsules": str(tmp_path / "capsules"),
+        "c4_checkouts": str(tmp_path / "checkouts"),
+        "cells": cells,
+    }
+    spec_path = tmp_path / "matrix-v3.json"
+    spec_path.write_text(json.dumps(spec))
+    return spec, spec_path, admission_root
+
+
+def test_matrix_v3_replays_c4_no_admission_without_inventing_inputs(tmp_path, monkeypatch):
+    spec, spec_path, admission_root = _c4_matrix_fixture(tmp_path, monkeypatch)
+    result = matrix.verify(tmp_path, spec_path)
+    assert result["schema_version"] == 3
+    assert result["no_admission_cells"] == len(matrix.holdout_c4.MATRIX_INTENTS) - 1
+    assert (result["verified_cells"], result["not_run_cells"], result["unsupported_cells"]) == (
+        0, 1, 2
+    )
+    assert result["status"] == "diagnostic_incomplete"
+    changed = copy.deepcopy(spec)
+    changed["cells"][1]["captures"]["lexical-only"] = {
+        "kind": "not_run",
+        "reason": matrix.MISSING_REASON,
+    }
+    with pytest.raises(ValueError, match="no-admission cell"):
+        matrix._spec(changed, {"repo-a"})
+    forged = json.loads((admission_root / "admission-matrix.json").read_text())
+    forged["cells"][0]["status"] = "no_admission_diagnostic"
+    (admission_root / "admission-matrix.json").write_text(json.dumps(forged))
+    with pytest.raises(ValueError, match="C4 admission differs"):
+        matrix.verify(tmp_path, spec_path)
 
 
 @pytest.mark.parametrize("policy", sorted(matrix.LEXICAL_ONLY_FILE_POLICIES))
