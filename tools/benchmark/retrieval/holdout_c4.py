@@ -14,7 +14,6 @@ import hashlib
 import json
 import shutil
 import sys
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,22 +54,6 @@ def _read(path: Path) -> dict:
 
 def _raw(value: dict) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
-
-
-def _default_search_absent(query: str, files: dict[str, bytes]) -> bool:
-    """Prove a single term is absent from both default-search surfaces.
-
-    The default route folds Unicode and searches content plus path. A phrase or
-    component query has different execution semantics and is not a hard negative.
-    """
-    if not query.isascii() or any(char.isspace() for char in query):
-        return False
-    needle = unicodedata.normalize("NFC", query).casefold()
-    return all(
-        needle not in unicodedata.normalize("NFC", path).casefold()
-        and needle not in unicodedata.normalize("NFC", raw.decode("utf-8", "replace")).casefold()
-        for path, raw in files.items()
-    )
 
 
 def _prepare(
@@ -224,6 +207,23 @@ def _derive_prepared(
     selected, excluded = [], []
     declaration_exclusions: dict[tuple[str, str], set[str]] = {}
     proved_exclusion_tasks = 0
+    negative_queries = {
+        task["query"]
+        for task in gold_tasks
+        if isinstance(task, dict)
+        and task.get("intent") == intent
+        and task.get("answerable") is False
+        and isinstance(task.get("query"), str)
+        and source_oracle.IDENTIFIER.fullmatch(task["query"])
+    }
+    absence_oracle = (
+        source_oracle.SourceOracleIndex(
+            {path: (raw, source.file(path)[2]) for path, raw in files.items()},
+            negative_queries,
+        )
+        if negative_queries
+        else None
+    )
     for task, public in zip(gold_tasks, blind_tasks, strict=True):
         if not isinstance(task, dict) or not isinstance(public, dict):
             raise ValueError("C4 task row is malformed")
@@ -260,11 +260,20 @@ def _derive_prepared(
         refused_selected_paths = [
             path for path, reason in excluded_rows if reason == "census_refused"
         ]
-        if not task["answerable"] and not _default_search_absent(task["query"], files):
-            excluded.append(
-                {"task_id": task["task_id"], "reason": "negative_not_default_search_absent"}
-            )
-            continue
+        if not task["answerable"]:
+            try:
+                if absence_oracle is None:
+                    raise source_oracle.SourceOracleError("negative query is not an identifier")
+                absence_oracle.expected_rows(
+                    source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+                    task["query"],
+                    "distinct_file",
+                )
+            except source_oracle.SourceOracleError:
+                excluded.append(
+                    {"task_id": task["task_id"], "reason": "negative_not_default_search_absent"}
+                )
+                continue
         try:
             query_plan.plan_lexical_request("code_search_file", task["query"])
         except query_plan.QueryPlanError:
@@ -320,10 +329,13 @@ def _derive_prepared(
         for label in task["labels"]:
             if label["file_sha256"] != source.file(label["path"])[2]:
                 raise ValueError(f"C4 label file hash differs: {task['task_id']}")
-        judgments = oracle.expected_rows(contract, task["query"], "distinct_file")
-        source_contract = {"contract": contract, "unit": "distinct_file"}
+        score_contract = (
+            contract if task["answerable"] else source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD
+        )
+        judgments = oracle.expected_rows(score_contract, task["query"], "distinct_file")
+        source_contract = {"contract": score_contract, "unit": "distinct_file"}
         paths = sorted(declaration_exclusions.get((contract, task["query"]), set()))
-        if paths:
+        if paths and task["answerable"]:
             source_contract["declaration_exclusions"] = paths
         rows.append(
             {
@@ -337,7 +349,7 @@ def _derive_prepared(
                 "source_oracle": source_contract,
                 "judgment_policy": evaluator.SOURCE_ORACLE_JUDGMENT_POLICY,
                 "file_judgments": judgments,
-                "gold": evaluator.source_oracle_gold(source, oracle, contract, task["query"]),
+                "gold": evaluator.source_oracle_gold(source, oracle, score_contract, task["query"]),
                 "answerable": bool(judgments),
             }
         )

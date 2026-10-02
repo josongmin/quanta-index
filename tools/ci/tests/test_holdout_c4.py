@@ -279,10 +279,24 @@ def test_c4_excludes_negative_with_default_content_or_path_match(tmp_path, monke
         "toy.def.001",
         "toy.negative.absent",
     ]
+    assert suite["tasks"][1]["source_oracle"] == {
+        "contract": source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+        "unit": "distinct_file",
+    }
+    assert suite["tasks"][1]["file_judgments"] == []
+    assert suite["tasks"][1]["gold"] == []
     assert report["excluded"] == [
         {"task_id": "toy.negative.content", "reason": "negative_not_default_search_absent"},
         {"task_id": "toy.negative.path", "reason": "negative_not_default_search_absent"},
     ]
+
+    for query, reason in (("package", "content absent"), ("main", "path match")):
+        tampered = {**suite, "tasks": [dict(task) for task in suite["tasks"]]}
+        negative = tampered["tasks"][1]
+        negative["query"] = query
+        negative["query_sha256"] = evaluator.digest(query.encode())
+        with pytest.raises(evaluator.EvidenceError, match=reason):
+            evaluator.validate_suite(checkout, tampered)
 
 
 def test_c4_refuses_unattested_census_and_capsule(tmp_path, monkeypatch):
