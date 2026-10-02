@@ -287,7 +287,9 @@ the query unanswerable for the explicit `typo:` content search. The older
 content-absence and content/path-absence oracles are insufficient for this
 mode. Generate it from a frozen `no-answer-content-v2` suite with
 `identifier_osa1_absence_suite.py`, then bind the resulting suite, blind pack,
-census, and manifest to the paired capture. It does not prove path absence,
+census, and manifest to the capture. The derived suite has only the `lexical`
+route even when its source suite also named external routes, so a direct Quanta
+capture and its diagnostic use the same suite commitment. It does not prove path absence,
 which the content-only `typo:` mode does not require.
 
 ```sh

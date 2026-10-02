@@ -104,6 +104,8 @@ def verify_generation_manifest(
             suite["suite_id"]
             == source_suite["suite_id"] + identifier_osa1_absence_suite.SUITE_SUFFIX
             and source_suite["repository_commit"] == suite["repository_commit"]
+            and "lexical" in source_suite["routes"]
+            and suite["routes"] == ["lexical"]
             and len(source_suite["tasks"]) == len(suite["tasks"])
             and all(
                 {**source_task, "source_oracle": target_task["source_oracle"]} == target_task

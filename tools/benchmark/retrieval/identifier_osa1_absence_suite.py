@@ -40,6 +40,11 @@ def derive(repo: Path, source_suite: dict) -> tuple[dict, dict, dict]:
     evaluator.require(bool(source_suite.get("tasks")), "source suite has no tasks")
     evaluator.require(isinstance(source_suite["tasks"], list), "source suite tasks must be a list")
     evaluator.require(
+        isinstance(source_suite.get("routes"), list)
+        and "lexical" in source_suite["routes"],
+        "source suite must contain the lexical route",
+    )
+    evaluator.require(
         all(
             task["split"] == "eval"
             and not task["answerable"]
@@ -53,6 +58,7 @@ def derive(repo: Path, source_suite: dict) -> tuple[dict, dict, dict]:
     evaluator.validate_suite(repo, source_suite)
     suite = copy.deepcopy(source_suite)
     suite["suite_id"] += SUITE_SUFFIX
+    suite["routes"] = ["lexical"]
     for task in suite["tasks"]:
         task["source_oracle"]["contract"] = TARGET_CONTRACT
     _checked, pack, _source = evaluator.validate_suite(repo, suite)

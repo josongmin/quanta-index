@@ -675,6 +675,7 @@ def test_identifier_osa1_generation_binds_frozen_source_and_target_bytes(monkeyp
     source = {
         "suite_id": "frozen-no-answer-content-v2-seed7",
         "repository_commit": "a" * 40,
+        "routes": ["lexical", "semble-lexical-file"],
         "tasks": [
             {
                 "task_id": "NOC-001",
@@ -702,6 +703,7 @@ def test_identifier_osa1_generation_binds_frozen_source_and_target_bytes(monkeyp
     source_path.write_text(json.dumps(source))
     target = copy.deepcopy(source)
     target["suite_id"] += "-identifier-osa1-absence-v1"
+    target["routes"] = ["lexical"]
     target["tasks"][0]["source_oracle"]["contract"] = "ascii_identifier_osa1_absent_casefold_v1"
     target_pack = {"suite_commitment_sha256": evaluator.digest(evaluator.canonical(target))}
     target_path = tmp_path / "target.json"
@@ -721,6 +723,12 @@ def test_identifier_osa1_generation_binds_frozen_source_and_target_bytes(monkeyp
     verify_generation_manifest(
         manifest_path, census_path, suite_path, target, census, "typo-osa1-absence"
     )
+    wrong_route = copy.deepcopy(target)
+    wrong_route["routes"].append("semble-lexical-file")
+    with pytest.raises(ValueError, match="target suite is not the frozen source population"):
+        verify_generation_manifest(
+            manifest_path, census_path, suite_path, wrong_route, census, "typo-osa1-absence"
+        )
     (root / "source-no-answer-content-suite.json").write_text("{}")
     with pytest.raises(ValueError, match="generation source suite mismatch"):
         verify_generation_manifest(
