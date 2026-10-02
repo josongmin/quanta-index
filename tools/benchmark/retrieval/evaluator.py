@@ -3125,30 +3125,89 @@ def repository_cluster_ci(
     }
 
 
-def qualified_query_family_ci(
+def paired_query_family_rows(
     suite: dict[str, Any], report: dict[str, Any], baseline: str, candidate: str
-) -> dict[str, Any]:
-    """Derive independent-family uncertainty from the re-scored report rows."""
-    primary = report["rank_metrics"]["comparison"]["primary_metric"]
-    field = "ndcg_at_10" if primary == "ndcg_at_10" else "chunk_recall_at_10"
-    require(primary in {"ndcg_at_10", "recall_at_10"}, "unsupported cluster primary metric")
-    by_key = {(row["task_id"], row["route"]): row for row in report["per_query"]}
-    tasks = sorted(
-        (task for task in suite["tasks"] if task["split"] == "eval" and task["gold"]),
-        key=lambda task: task["task_id"],
+) -> list[tuple[str, str, str, float]]:
+    """Re-derive paired graded deltas from a suite-bound report.
+
+    The caller must first replay the capture and validate the suite against its
+    source. A matching suite digest alone does not establish that authority.
+    """
+    require(isinstance(suite, dict) and isinstance(report, dict), "cluster inputs are malformed")
+    rank_metrics = report.get("rank_metrics")
+    comparison = rank_metrics.get("comparison") if isinstance(rank_metrics, dict) else None
+    require(isinstance(comparison, dict), "cluster comparison is missing")
+    primary = comparison.get("primary_metric")
+    require(
+        isinstance(primary, str) and primary in {"ndcg_at_10", "recall_at_10"},
+        "unsupported cluster primary metric",
     )
+    require(
+        isinstance(baseline, str)
+        and bool(baseline)
+        and isinstance(candidate, str)
+        and bool(candidate)
+        and baseline != candidate
+        and comparison.get("baseline") == baseline
+        and comparison.get("candidate") == candidate,
+        "cluster comparison routes differ",
+    )
+    require(report.get("graded") is True, "cluster report is not graded")
+    require(
+        report.get("repository_commit") == suite.get("repository_commit")
+        and report.get("suite_id") == suite.get("suite_id")
+        and report.get("suite_commitment_sha256") == digest(canonical(suite)),
+        "cluster report suite binding differs",
+    )
+    tasks = suite.get("tasks")
+    per_query = report.get("per_query")
+    require(isinstance(tasks, list) and isinstance(per_query, list), "cluster tasks are malformed")
+    require(
+        all(
+            isinstance(task, dict)
+            and isinstance(task.get("task_id"), str)
+            and bool(task["task_id"])
+            and isinstance(task.get("split"), str)
+            and isinstance(task.get("gold"), list)
+            and isinstance(task.get("query_family_id"), str)
+            and bool(task["query_family_id"])
+            for task in tasks
+        ),
+        "cluster suite tasks are malformed",
+    )
+    eval_tasks = {task["task_id"]: task for task in tasks if task["split"] == "eval"}
+    require(
+        len(eval_tasks) == sum(task["split"] == "eval" for task in tasks),
+        "cluster eval task identities are duplicate",
+    )
+    by_key = {}
+    for row in per_query:
+        require(
+            isinstance(row, dict)
+            and isinstance(row.get("task_id"), str)
+            and isinstance(row.get("route"), str),
+            "cluster query row is malformed",
+        )
+        key = (row.get("task_id"), row.get("route"))
+        require(key not in by_key, "cluster query rows are duplicate")
+        by_key[key] = row
+    field = "ndcg_at_10" if primary == "ndcg_at_10" else "chunk_recall_at_10"
     rows = []
-    for task in tasks:
-        task_id = task["task_id"]
+    for task_id, task in sorted(eval_tasks.items()):
         require(
             (task_id, baseline) in by_key and (task_id, candidate) in by_key,
             "cluster report is missing a paired task row",
         )
-        before = by_key[(task_id, baseline)][field]
-        after = by_key[(task_id, candidate)][field]
+        if not task["gold"]:
+            continue
+        before = by_key[(task_id, baseline)].get(field)
+        after = by_key[(task_id, candidate)].get(field)
         require(
-            type(before) in (float, int) and type(after) in (float, int),
-            "cluster primary metric is not numeric",
+            is_finite_json_number(before)
+            and is_finite_json_number(after)
+            and 0 <= before <= 1
+            and 0 <= after <= 1,
+            "cluster primary metric is not a bounded finite number",
         )
         rows.append(
             (
@@ -3158,7 +3217,61 @@ def qualified_query_family_ci(
                 float(after - before),
             )
         )
+    delta = comparison.get("primary_delta")
+    require(
+        bool(rows)
+        and type(comparison.get("sample_count")) is int
+        and comparison["sample_count"] == len(rows)
+        and is_finite_json_number(delta)
+        and math.isclose(math.fsum(row[3] for row in rows) / len(rows), delta, abs_tol=1e-12),
+        "cluster comparison differs from paired query rows",
+    )
+    return rows
+
+
+def qualified_query_family_ci(
+    suite: dict[str, Any], report: dict[str, Any], baseline: str, candidate: str
+) -> dict[str, Any]:
+    """Derive independent-family uncertainty from the re-scored report rows."""
+    rows = paired_query_family_rows(suite, report, baseline, candidate)
     return query_family_cluster_ci(rows, suite["repository_commit"])
+
+
+def repository_cluster_ci_from_reports(
+    suites: dict[str, dict[str, Any]],
+    reports: dict[str, dict[str, Any]],
+    release_digest: str,
+    repositories: dict[str, str],
+    repository_strata: dict[str, str],
+    baseline: str,
+    candidate: str,
+) -> dict[str, Any]:
+    """Compute repository uncertainty after each native report was replayed.
+
+    This input boundary checks paired rows and repository coverage; it does not
+    replace capture, reviewed-label, indexed-universe or custody validation.
+    """
+    require(
+        isinstance(suites, dict)
+        and isinstance(reports, dict)
+        and set(suites) == set(repositories)
+        and set(reports) == set(repositories),
+        "cluster repository report inventory differs",
+    )
+    rows = []
+    for name in sorted(repositories):
+        suite = suites[name]
+        require(
+            isinstance(suite, dict) and suite.get("repository_commit") == repositories[name],
+            "cluster repository suite commit differs",
+        )
+        rows.extend(
+            (name, task_id, family_id, delta)
+            for task_id, family_id, _category, delta in paired_query_family_rows(
+                suite, reports[name], baseline, candidate
+            )
+        )
+    return repository_cluster_ci(rows, release_digest, repositories, repository_strata)
 
 
 def _task_language(task: dict[str, Any]) -> str:

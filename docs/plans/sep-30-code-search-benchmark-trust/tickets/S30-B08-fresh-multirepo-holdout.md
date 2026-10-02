@@ -700,5 +700,23 @@ lexical cell, and derives `no_admission_diagnostic` cells without invented
 suites or packs. `verify()` replays the C4 source/capsules, emitted inputs and
 native captures, then reports missing captures separately from source-proven
 no-admission cells. The matrix/workflow unit set passed 62 tests, including a
-two-repository source-bound C4 fixture. No current 12-repository v3 spec or
-product capture has been executed; these code tests do not advance C5.
+two-repository source-bound C4 fixture. The 12-repository v3 diagnostic replay
+subsequently passed from frozen `bd2b8c25` at
+`/private/tmp/qi-b08-v3-e2e.kSTE4v`: 12 gold capsules, 72 C4 admission cells
+(60 admitted, 12 no-admission), and 216 matrix mode cells. Matrix verification
+returned `diagnostic_incomplete` with 0 captured, 60 not-run, 120 unsupported,
+and 36 no-admission mode cells. The admission-matrix SHA-256 is
+`26fae8295edb9831ab653ad05d12db204fa3a78406f3f4aa74877b0767e48309`.
+This result binds `bd2b8c25`, not later `main` commits, and no product capture
+or C5 qualification was executed. The public `benchctl code-search
+matrix-build-c4` command now writes a fresh external v3 spec from an explicit
+capture-root inventory; the matrix/workflow and benchctl focused sets passed
+62 and 75 tests respectively.
+
+The C5 report adapter now derives repository-cluster rows from suite-bound
+per-query records instead of accepting caller-supplied deltas alone. It refuses
+missing or duplicate paired rows, wrong routes, suite/report mismatch, invalid
+numbers, missing repositories and an inconsistent reported effect. This is an
+input integrity helper. Per-repository qualified capture replay, global
+admission binding, human relevance adjudication, and product decision remain
+`NOT_RUN`.

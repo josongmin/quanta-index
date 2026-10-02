@@ -2188,9 +2188,7 @@ def test_repository_cluster_interval_does_not_count_extra_tasks_as_repositories(
         for i, repository in enumerate(repositories)
     ]
     base = ev.repository_cluster_ci(rows, "b" * 64, repositories, strata)
-    extra = [
-        ("repo-00", f"replica-{i:03d}", "family-00", 1.0) for i in range(100)
-    ]
+    extra = [("repo-00", f"replica-{i:03d}", "family-00", 1.0) for i in range(100)]
     expanded = ev.repository_cluster_ci([*rows, *extra], "b" * 64, repositories, strata)
     assert base["mean"] == expanded["mean"] == 0.0
     assert (base["lower_95"], base["upper_95"]) == (
@@ -2199,6 +2197,77 @@ def test_repository_cluster_interval_does_not_count_extra_tasks_as_repositories(
     )
     assert base["lower_95"] < 0 < base["upper_95"]
     assert expanded["repository_count"] == 12 and expanded["sample_count"] == 112
+
+
+def test_repository_cluster_report_rows_bind_every_paired_eval_task():
+    repositories = {f"repo-{index:02d}": f"{index + 1:040x}" for index in range(12)}
+    strata = {name: f"language-{index // 3}" for index, name in enumerate(repositories)}
+    suites, reports = {}, {}
+    for name, commit in repositories.items():
+        family = name + ".family"
+        suite = {
+            "suite_id": name + ".suite",
+            "repository_commit": commit,
+            "tasks": [
+                {"task_id": "A", "split": "eval", "gold": [1], "query_family_id": family},
+                {"task_id": "B", "split": "eval", "gold": [1], "query_family_id": family},
+                {"task_id": "N", "split": "eval", "gold": [], "query_family_id": name + ".no"},
+            ],
+        }
+        rows = [
+            {"task_id": task, "route": route, "ndcg_at_10": value}
+            for task, left, right in (("A", 0.25, 0.75), ("B", 0.5, 0.5))
+            for route, value in (("lexical", left), ("hybrid", right))
+        ]
+        rows.extend({"task_id": "N", "route": route} for route in ("lexical", "hybrid"))
+        suites[name] = suite
+        reports[name] = {
+            "suite_id": suite["suite_id"],
+            "suite_commitment_sha256": ev.digest(ev.canonical(suite)),
+            "repository_commit": commit,
+            "graded": True,
+            "rank_metrics": {
+                "comparison": {
+                    "baseline": "lexical",
+                    "candidate": "hybrid",
+                    "primary_metric": "ndcg_at_10",
+                    "sample_count": 2,
+                    "primary_delta": 0.25,
+                }
+            },
+            "per_query": rows,
+        }
+
+    def interval(changed_suites=suites, changed_reports=reports):
+        return ev.repository_cluster_ci_from_reports(
+            changed_suites, changed_reports, "a" * 64, repositories, strata, "lexical", "hybrid"
+        )
+
+    result = interval()
+    assert result["status"] == "available"
+    assert (result["repository_count"], result["sample_count"]) == (12, 24)
+    assert (result["mean"], result["lower_95"], result["upper_95"]) == (0.25, 0.25, 0.25)
+    assert interval(dict(reversed(list(suites.items()))), reports) == result
+
+    for mutation, message in (
+        (lambda r: r["per_query"].pop(), "missing a paired task row"),
+        (lambda r: r["per_query"].append(r["per_query"][0]), "query rows are duplicate"),
+        (lambda r: r["rank_metrics"]["comparison"].update(primary_delta=0.5), "differs"),
+        (lambda r: r["rank_metrics"]["comparison"].update(sample_count=True), "differs"),
+        (lambda r: r["per_query"][0].update(ndcg_at_10=10**400), "bounded finite"),
+        (lambda r: r.update(rank_metrics=[]), "comparison is missing"),
+        (lambda r: r.update(graded=False), "not graded"),
+    ):
+        changed = copy.deepcopy(reports)
+        mutation(changed["repo-00"])
+        with pytest.raises(ev.EvidenceError, match=message):
+            interval(suites, changed)
+    changed_suites = copy.deepcopy(suites)
+    changed_suites["repo-00"]["tasks"][0]["query_family_id"] = "forged"
+    with pytest.raises(ev.EvidenceError, match="suite binding differs"):
+        interval(changed_suites, reports)
+    with pytest.raises(ev.EvidenceError, match="report inventory differs"):
+        interval(suites, {name: report for name, report in reports.items() if name != "repo-11"})
 
 
 def test_stratified_delta_summary_binds_category_language_and_repository(monkeypatch):
