@@ -1123,8 +1123,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             &by_path,
             &published_units,
         )?;
-        let status = row["status"]
-            .as_str()
+        let status = row
+            .get("status")
+            .and_then(serde_json::Value::as_str)
             .ok_or_else(|| BenchError::Protocol("completed response lacks status".to_string()))?
             .to_string();
         let object = row.as_object_mut().ok_or_else(|| {
@@ -1152,8 +1153,15 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "status": status, "output_bytes": output.len(),
         }));
         if phase == "measured" && iteration == 0 {
-            row["timings"] =
-                serde_json::json!({"query_latency_ms": elapsed.as_secs_f64() * 1000.0});
+            let _previous_timing = row
+                .as_object_mut()
+                .ok_or_else(|| {
+                    BenchError::Protocol("completed response is not an object".to_string())
+                })?
+                .insert(
+                    "timings".to_string(),
+                    serde_json::json!({"query_latency_ms": elapsed.as_secs_f64() * 1000.0}),
+                );
             if completed_results
                 .insert((task_id.to_string(), route.to_string()), row)
                 .is_some()

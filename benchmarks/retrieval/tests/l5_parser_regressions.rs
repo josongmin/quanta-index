@@ -559,6 +559,28 @@ fn preflight_reports_every_admitted_file_even_after_the_first_failure() {
 }
 
 #[test]
+fn python_recovered_root_error_has_a_nonempty_diagnostic_census() {
+    let path = "tests/test_runner_apps/tagged/tests_syntax_error.py";
+    let source = "from unittest import TestCase\n\nfrom django.test import tag\n\n\n@tag('syntax_error')\nclass SyntaxErrorTestCase(TestCase):\n    pass\n\n\n1syntax_error  # NOQA\n";
+    let files = BTreeMap::from([(path.to_string(), source_file(path, source))]);
+    let preflight = preflight_corpus_symbols(&files, &SymbolPreflightOptions::default())
+        .expect("bounded parser census");
+    let report = preflight.report().files.first().expect("one admitted file");
+    assert_eq!(report.coverage, SymbolCoverage::ParseFailed);
+    assert_eq!(report.failure, Some("syntax_error"));
+    assert_eq!(report.diagnostics_total, 1);
+    assert_eq!(
+        report.failure_detail.as_deref(),
+        Some("parser root reports an unlocated syntax error")
+    );
+    let diagnostic = report.diagnostics.first().expect("root diagnostic");
+    assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(diagnostic.byte_start, Some(0));
+    assert_eq!(diagnostic.byte_end, Some(source.len()));
+    assert!(report.diagnostics_complete);
+}
+
+#[test]
 fn bounded_diagnostics_retain_all_failed_file_counts() {
     let files = BTreeMap::from([
         ("a.ts".to_string(), source_file("a.ts", MALFORMED)),

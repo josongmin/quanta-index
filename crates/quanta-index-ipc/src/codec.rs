@@ -22,11 +22,28 @@ pub const MAX_FRAME_BODY_BYTES: usize = quanta_index_contract::MAX_IPC_FRAME_BOD
 /// Maximum decoded body after bounded IPC request compression.
 const MAX_DECOMPRESSED_FRAME_BODY_BYTES: usize = 64 * 1024 * 1024;
 
+/// Maximum complete CBOR request admitted across multiple bounded frames.
+///
+/// The ingest resource policy still independently bounds semantic text,
+/// source bytes, records, and vector residency before publication.
+const MAX_MULTIFRAME_REQUEST_BODY_BYTES: usize = 128 * 1024 * 1024;
+
 /// Private transport marker; the following bytes are decoded length, SHA-256,
 /// then one zstd frame containing the original CBOR request body.
 const COMPRESSED_REQUEST_MAGIC: &[u8; 8] = b"QIPCZST1";
 const COMPRESSED_REQUEST_HEADER_BYTES: usize = 8 + 8 + 32;
 const COMPRESSED_REQUEST_METADATA_BYTES: usize = 8 + 32;
+
+/// A large request is one logical CBOR body split across adjacent frames on
+/// the same connection.
+///
+/// The complete body and digest are checked before dispatch. Sequence numbers
+/// make reordered or duplicated fragments fail closed. A disconnect discards
+/// the in-memory assembly.
+const MULTIFRAME_REQUEST_MAGIC: &[u8; 8] = b"QIPCMF01";
+const MULTIFRAME_FIRST_METADATA_BYTES: usize = 8 + 8 + 32;
+const MULTIFRAME_FIRST_MIN_BODY_BYTES: usize = 41;
+const MULTIFRAME_NEXT_METADATA_BYTES: usize = 8 + 4;
 
 /// Width of the length-prefix header in bytes.
 const FRAME_HEADER_BYTES: usize = 4;
@@ -183,9 +200,9 @@ pub fn encode_request<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcE
     if logical_len <= MAX_FRAME_BODY_BYTES {
         return encode_frame(envelope);
     }
-    if logical_len > MAX_DECOMPRESSED_FRAME_BODY_BYTES {
+    if logical_len > MAX_MULTIFRAME_REQUEST_BODY_BYTES {
         return Err(IpcError::Encode(format!(
-            "request body is {logical_len} bytes, exceeding the {MAX_DECOMPRESSED_FRAME_BODY_BYTES} byte decoded-frame cap"
+            "request body is {logical_len} bytes, exceeding the {MAX_MULTIFRAME_REQUEST_BODY_BYTES} byte decoded-request cap"
         )));
     }
 
@@ -195,31 +212,87 @@ pub fn encode_request<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcE
             "request body length changed between count and encode".into(),
         ));
     }
-    let digest = sha2::Sha256::digest(&body);
-    let compressed = zstd::bulk::compress(&body, 1)
-        .map_err(|err| IpcError::Encode(format!("request compression failed: {err}")))?;
-    let wire_len = COMPRESSED_REQUEST_HEADER_BYTES
-        .checked_add(compressed.len())
-        .ok_or_else(|| IpcError::Encode("compressed request length overflowed usize".into()))?;
-    if wire_len > MAX_FRAME_BODY_BYTES {
-        return Err(oversized_for(logical_len));
+    if logical_len <= MAX_DECOMPRESSED_FRAME_BODY_BYTES {
+        let compressed = zstd::bulk::compress(&body, 1)
+            .map_err(|err| IpcError::Encode(format!("request compression failed: {err}")))?;
+        let wire_len = COMPRESSED_REQUEST_HEADER_BYTES
+            .checked_add(compressed.len())
+            .ok_or_else(|| IpcError::Encode("compressed request length overflowed usize".into()))?;
+        if wire_len <= MAX_FRAME_BODY_BYTES {
+            let digest = sha2::Sha256::digest(&body);
+            let wire_len_u32 = u32::try_from(wire_len).map_err(|_overflow| {
+                IpcError::Encode("compressed body length overflowed u32".into())
+            })?;
+            let frame_len = wire_len.checked_add(FRAME_HEADER_BYTES).ok_or_else(|| {
+                IpcError::Encode("compressed frame length overflowed usize".into())
+            })?;
+            let mut frame = Vec::with_capacity(frame_len);
+            frame.extend_from_slice(&wire_len_u32.to_le_bytes());
+            frame.extend_from_slice(COMPRESSED_REQUEST_MAGIC);
+            frame.extend_from_slice(
+                &u64::try_from(logical_len)
+                    .map_err(|_overflow| {
+                        IpcError::Encode("request body length overflowed u64".into())
+                    })?
+                    .to_le_bytes(),
+            );
+            frame.extend_from_slice(&digest);
+            frame.extend_from_slice(&compressed);
+            return Ok(frame);
+        }
     }
-    let wire_len_u32 = u32::try_from(wire_len)
-        .map_err(|_overflow| IpcError::Encode("compressed body length overflowed u32".into()))?;
-    let frame_len = wire_len
-        .checked_add(FRAME_HEADER_BYTES)
-        .ok_or_else(|| IpcError::Encode("compressed frame length overflowed usize".into()))?;
-    let mut frame = Vec::with_capacity(frame_len);
-    frame.extend_from_slice(&wire_len_u32.to_le_bytes());
-    frame.extend_from_slice(COMPRESSED_REQUEST_MAGIC);
-    frame.extend_from_slice(
-        &u64::try_from(logical_len)
+    encode_multiframe_request(&body)
+}
+
+fn encode_multiframe_request(body: &[u8]) -> Result<Vec<u8>, IpcError> {
+    let digest = sha2::Sha256::digest(body);
+    let mut output = Vec::with_capacity(body.len().saturating_add(256));
+    let first_capacity = MAX_FRAME_BODY_BYTES - MULTIFRAME_FIRST_METADATA_BYTES;
+    let first_len = first_capacity.min(body.len());
+    let first_frame_len = MULTIFRAME_FIRST_METADATA_BYTES
+        .checked_add(first_len)
+        .ok_or_else(|| IpcError::Encode("first fragment length overflowed usize".into()))?;
+    output.extend_from_slice(
+        &u32::try_from(first_frame_len)
+            .map_err(|_overflow| IpcError::Encode("first fragment length overflowed u32".into()))?
+            .to_le_bytes(),
+    );
+    output.extend_from_slice(MULTIFRAME_REQUEST_MAGIC);
+    output.extend_from_slice(
+        &u64::try_from(body.len())
             .map_err(|_overflow| IpcError::Encode("request body length overflowed u64".into()))?
             .to_le_bytes(),
     );
-    frame.extend_from_slice(&digest);
-    frame.extend_from_slice(&compressed);
-    Ok(frame)
+    output.extend_from_slice(&digest);
+    output.extend_from_slice(
+        body.get(..first_len)
+            .ok_or_else(|| IpcError::Encode("first fragment exceeds body".into()))?,
+    );
+    let mut offset = first_len;
+    let mut sequence = 1_u32;
+    let next_capacity = MAX_FRAME_BODY_BYTES - MULTIFRAME_NEXT_METADATA_BYTES;
+    while offset < body.len() {
+        let end = body.len().min(offset.saturating_add(next_capacity));
+        let fragment_len = MULTIFRAME_NEXT_METADATA_BYTES
+            .checked_add(end.saturating_sub(offset))
+            .ok_or_else(|| IpcError::Encode("fragment length overflowed usize".into()))?;
+        output.extend_from_slice(
+            &u32::try_from(fragment_len)
+                .map_err(|_overflow| IpcError::Encode("fragment length overflowed u32".into()))?
+                .to_le_bytes(),
+        );
+        output.extend_from_slice(MULTIFRAME_REQUEST_MAGIC);
+        output.extend_from_slice(&sequence.to_le_bytes());
+        output.extend_from_slice(
+            body.get(offset..end)
+                .ok_or_else(|| IpcError::Encode("fragment exceeds body".into()))?,
+        );
+        offset = end;
+        sequence = sequence
+            .checked_add(1)
+            .ok_or_else(|| IpcError::Encode("fragment sequence overflow".into()))?;
+    }
+    Ok(output)
 }
 
 pub fn encode_response<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcError> {
@@ -335,6 +408,14 @@ where
 
     let mut body = vec![0u8; body_len];
     read_exact_or_truncated(reader, &mut body)?;
+    if body.starts_with(MULTIFRAME_REQUEST_MAGIC) {
+        if !allow_compressed_request {
+            return Err(IpcError::Decode(
+                "multiframe request framing is invalid for an IPC response".into(),
+            ));
+        }
+        return decode_multiframe_request(reader, &body);
+    }
     let Some(compressed) = body.strip_prefix(COMPRESSED_REQUEST_MAGIC) else {
         return decode_cbor_payload(body.as_slice());
     };
@@ -385,6 +466,95 @@ where
     decode_cbor_payload(decoded.as_slice())
 }
 
+fn decode_multiframe_request<T, R>(reader: &mut R, first: &[u8]) -> Result<T, IpcError>
+where
+    T: serde::de::DeserializeOwned,
+    R: Read,
+{
+    let metadata = first
+        .strip_prefix(MULTIFRAME_REQUEST_MAGIC)
+        .ok_or_else(|| IpcError::Decode("multiframe marker is missing".into()))?;
+    if metadata.len() < MULTIFRAME_FIRST_MIN_BODY_BYTES {
+        return Err(IpcError::Decode(
+            "multiframe request header is truncated".into(),
+        ));
+    }
+    let (length_bytes, rest) = metadata.split_at(8);
+    let declared_len =
+        usize::try_from(u64::from_le_bytes(length_bytes.try_into().map_err(
+            |_error| IpcError::Decode("multiframe length is malformed".into()),
+        )?))
+        .map_err(|_overflow| IpcError::Decode("multiframe length does not fit usize".into()))?;
+    if declared_len <= MAX_FRAME_BODY_BYTES || declared_len > MAX_MULTIFRAME_REQUEST_BODY_BYTES {
+        return Err(IpcError::Decode(format!(
+            "multiframe request length {declared_len} is outside ({MAX_FRAME_BODY_BYTES}, {MAX_MULTIFRAME_REQUEST_BODY_BYTES}]"
+        )));
+    }
+    let (expected_digest, fragment) = rest.split_at(32);
+    let expected_first_len =
+        declared_len.min(MAX_FRAME_BODY_BYTES.saturating_sub(MULTIFRAME_FIRST_METADATA_BYTES));
+    if fragment.len() != expected_first_len {
+        return Err(IpcError::Decode(
+            "multiframe first fragment has noncanonical length".into(),
+        ));
+    }
+    // Do not reserve the untrusted declaration before receiving its bytes.
+    let mut decoded = Vec::with_capacity(expected_first_len);
+    decoded.extend_from_slice(fragment);
+    let mut expected_sequence = 1_u32;
+    while decoded.len() < declared_len {
+        let mut header = [0u8; FRAME_HEADER_BYTES];
+        read_exact_or_truncated(reader, &mut header)?;
+        let frame_len = usize::try_from(u32::from_le_bytes(header))
+            .map_err(|_overflow| IpcError::Decode("fragment length does not fit usize".into()))?;
+        let remaining = declared_len.saturating_sub(decoded.len());
+        let expected_len = MULTIFRAME_NEXT_METADATA_BYTES
+            .checked_add(
+                remaining.min(MAX_FRAME_BODY_BYTES.saturating_sub(MULTIFRAME_NEXT_METADATA_BYTES)),
+            )
+            .ok_or_else(|| IpcError::Decode("fragment length overflow".into()))?;
+        if frame_len != expected_len {
+            return Err(IpcError::Decode(format!(
+                "multiframe fragment length {frame_len} != expected {expected_len}"
+            )));
+        }
+        let mut frame = vec![0u8; frame_len];
+        read_exact_or_truncated(reader, &mut frame)?;
+        let Some(next) = frame.strip_prefix(MULTIFRAME_REQUEST_MAGIC) else {
+            return Err(IpcError::Decode(
+                "multiframe fragment marker mismatch".into(),
+            ));
+        };
+        let (sequence_bytes, fragment) = next.split_at(4);
+        let sequence = u32::from_le_bytes(
+            sequence_bytes
+                .try_into()
+                .map_err(|_error| IpcError::Decode("fragment sequence is malformed".into()))?,
+        );
+        if sequence != expected_sequence {
+            return Err(IpcError::Decode(format!(
+                "multiframe fragment sequence {sequence} != expected {expected_sequence}"
+            )));
+        }
+        if fragment.len() > remaining {
+            return Err(IpcError::Decode(
+                "multiframe fragment exceeds declared length".into(),
+            ));
+        }
+        decoded.extend_from_slice(fragment);
+        expected_sequence = expected_sequence
+            .checked_add(1)
+            .ok_or_else(|| IpcError::Decode("fragment sequence overflow".into()))?;
+    }
+    let actual_digest = sha2::Sha256::digest(&decoded);
+    if actual_digest.as_slice() != expected_digest {
+        return Err(IpcError::Decode(
+            "multiframe request SHA-256 does not match decoded body".into(),
+        ));
+    }
+    decode_cbor_payload(decoded.as_slice())
+}
+
 /// Fill `buf` from `reader`, returning [`IpcError::Truncated`] on EOF and
 /// retrying on `Interrupted`.
 fn read_exact_or_truncated<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<(), IpcError> {
@@ -415,8 +585,9 @@ mod tests {
 
     use super::{
         COMPRESSED_REQUEST_HEADER_BYTES, COMPRESSED_REQUEST_MAGIC, IpcError,
-        MAX_DECOMPRESSED_FRAME_BODY_BYTES, MAX_FRAME_BODY_BYTES, decode_cbor_payload,
-        decode_request, decode_response, encode_cbor_payload, encode_request,
+        MAX_DECOMPRESSED_FRAME_BODY_BYTES, MAX_FRAME_BODY_BYTES, MAX_MULTIFRAME_REQUEST_BODY_BYTES,
+        MULTIFRAME_REQUEST_MAGIC, decode_cbor_payload, decode_request, decode_response,
+        encode_cbor_payload, encode_request,
     };
 
     #[test]
@@ -488,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn incompressible_request_larger_than_wire_cap_is_refused() {
+    fn incompressible_request_larger_than_wire_cap_uses_bounded_fragments() {
         let mut state = 0x9e37_79b9_u32;
         let expected: Vec<u8> = (0..MAX_FRAME_BODY_BYTES + 1024)
             .map(|_| {
@@ -498,10 +669,73 @@ mod tests {
                 u8::try_from(state & 0xff).expect("masked value fits u8")
             })
             .collect();
-        let result = encode_request(&expected);
+        let frame = encode_request(&expected).expect("multiframe request");
         assert!(
-            matches!(result, Err(IpcError::Oversized(length)) if length > u64::try_from(MAX_FRAME_BODY_BYTES).expect("frame cap fits u64"))
+            frame
+                .get(4..)
+                .expect("first body")
+                .starts_with(MULTIFRAME_REQUEST_MAGIC)
         );
+        let actual: Vec<u8> =
+            decode_request(&mut Cursor::new(frame.as_slice())).expect("decoded request");
+        assert_eq!(actual, expected);
+
+        let mut truncated = frame.clone();
+        let _last = truncated.pop();
+        let result: Result<Vec<u8>, IpcError> = decode_request(&mut Cursor::new(truncated));
+        assert!(matches!(result, Err(IpcError::Truncated)));
+
+        let first_frame_len = usize::try_from(u32::from_le_bytes(
+            frame
+                .get(..4)
+                .expect("first header")
+                .try_into()
+                .expect("header width"),
+        ))
+        .expect("first length fits");
+        let sequence_offset = 4_usize
+            .checked_add(first_frame_len)
+            .and_then(|value| value.checked_add(4 + MULTIFRAME_REQUEST_MAGIC.len()))
+            .expect("second frame sequence offset fits");
+        let mut reordered = frame;
+        *reordered.get_mut(sequence_offset).expect("sequence byte") = 2;
+        let result: Result<Vec<u8>, IpcError> = decode_request(&mut Cursor::new(reordered));
+        assert!(matches!(result, Err(IpcError::Decode(message)) if message.contains("sequence")));
+    }
+
+    #[test]
+    fn multiframe_request_above_64_mib_round_trips_and_detects_corruption() {
+        let expected = "x".repeat(MAX_DECOMPRESSED_FRAME_BODY_BYTES + 1);
+        let mut frame = encode_request(&expected).expect("bounded multiframe request");
+        assert!(
+            frame
+                .get(4..)
+                .expect("first body")
+                .starts_with(MULTIFRAME_REQUEST_MAGIC)
+        );
+        let actual: String =
+            decode_request(&mut Cursor::new(frame.as_slice())).expect("decoded request");
+        assert_eq!(actual, expected);
+        let last = frame.last_mut().expect("nonempty frame");
+        *last ^= 1;
+        let result: Result<String, IpcError> = decode_request(&mut Cursor::new(frame));
+        assert!(matches!(result, Err(IpcError::Decode(message)) if message.contains("SHA-256")));
+    }
+
+    #[test]
+    fn multiframe_request_rejects_oversized_declaration_before_allocating() {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&u32::try_from(49).expect("header fits").to_le_bytes());
+        frame.extend_from_slice(MULTIFRAME_REQUEST_MAGIC);
+        frame.extend_from_slice(
+            &u64::try_from(MAX_MULTIFRAME_REQUEST_BODY_BYTES + 1)
+                .expect("limit fits")
+                .to_le_bytes(),
+        );
+        frame.extend_from_slice(&[0; 32]);
+        frame.push(0);
+        let result: Result<Vec<u8>, IpcError> = decode_request(&mut Cursor::new(frame));
+        assert!(matches!(result, Err(IpcError::Decode(message)) if message.contains("outside")));
     }
 
     #[test]

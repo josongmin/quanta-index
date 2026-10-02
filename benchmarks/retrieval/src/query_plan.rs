@@ -651,53 +651,50 @@ pub fn plan_query(
     };
     // CodeSearch is a distinct public syntax. Parsing it as Native LQ would
     // misread literal operator words and never prove the product request.
-    let parsed = if policy == QueryInputPolicy::CodeSearchFile {
-        None
-    } else {
-        Some(validate_lexical_request(&lexical_request)?)
-    };
-    // The request must parse back to exactly the one leaf the policy built:
-    // no operator, filter or option can be smuggled in through the raw text.
-    match policy {
-        QueryInputPolicy::KeywordFile
-            if !matches!(&parsed.as_ref().expect("native parsed").expr, LqExpr::Leaf(LqLeaf::Keyword(text)) if text == raw)
-                || !is_case_sensitive_file_projection(parsed.as_ref().expect("native parsed")) =>
-        {
-            return Err(QueryPlanError::InvalidKeyword);
-        }
-        QueryInputPolicy::SubstringFile
-            if !matches!(&parsed.as_ref().expect("native parsed").expr, LqExpr::Leaf(LqLeaf::RawString(text)) if text == raw)
-                || !is_case_sensitive_file_projection(parsed.as_ref().expect("native parsed")) =>
-        {
-            return Err(QueryPlanError::InvalidSubstring {
-                reason: "fragment does not parse back as one raw string",
-            });
-        }
-        QueryInputPolicy::Native
-        | QueryInputPolicy::Literal
-        | QueryInputPolicy::LiteralFile
-        | QueryInputPolicy::KeywordFile
-        | QueryInputPolicy::SubstringFile
-        | QueryInputPolicy::CodeSearchFile
-        | QueryInputPolicy::NaturalLanguage
-        | QueryInputPolicy::ExactSymbolName => {}
-    }
-    if policy == QueryInputPolicy::Native {
-        for filter in &parsed.as_ref().expect("native parsed").filters {
-            if let LqFilter::Select { dim } = filter
-                && !matches!(dim, LqSelect::Content | LqSelect::ContentMatch)
+    if policy != QueryInputPolicy::CodeSearchFile {
+        let parsed = validate_lexical_request(&lexical_request)?;
+        // The request must parse back to exactly the one leaf the policy built:
+        // no operator, filter or option can be smuggled in through the raw text.
+        match policy {
+            QueryInputPolicy::KeywordFile
+                if !matches!(&parsed.expr, LqExpr::Leaf(LqLeaf::Keyword(text)) if text == raw)
+                    || !is_case_sensitive_file_projection(&parsed) =>
             {
-                return Err(QueryPlanError::NativeProjectionRequiresPolicy {
-                    projection: format!("select:{}", dim.as_str()),
+                return Err(QueryPlanError::InvalidKeyword);
+            }
+            QueryInputPolicy::SubstringFile
+                if !matches!(&parsed.expr, LqExpr::Leaf(LqLeaf::RawString(text)) if text == raw)
+                    || !is_case_sensitive_file_projection(&parsed) =>
+            {
+                return Err(QueryPlanError::InvalidSubstring {
+                    reason: "fragment does not parse back as one raw string",
                 });
             }
-            if let LqFilter::Type { kind } = filter
-                && matches!(kind, LqType::Repo | LqType::Path)
-            {
-                return Err(QueryPlanError::NativeProjectionRequiresPolicy {
-                    projection: format!("type:{}", kind.as_str()),
-                });
+            QueryInputPolicy::Native => {
+                for filter in &parsed.filters {
+                    if let LqFilter::Select { dim } = filter
+                        && !matches!(dim, LqSelect::Content | LqSelect::ContentMatch)
+                    {
+                        return Err(QueryPlanError::NativeProjectionRequiresPolicy {
+                            projection: format!("select:{}", dim.as_str()),
+                        });
+                    }
+                    if let LqFilter::Type { kind } = filter
+                        && matches!(kind, LqType::Repo | LqType::Path)
+                    {
+                        return Err(QueryPlanError::NativeProjectionRequiresPolicy {
+                            projection: format!("type:{}", kind.as_str()),
+                        });
+                    }
+                }
             }
+            QueryInputPolicy::Literal
+            | QueryInputPolicy::LiteralFile
+            | QueryInputPolicy::KeywordFile
+            | QueryInputPolicy::SubstringFile
+            | QueryInputPolicy::CodeSearchFile
+            | QueryInputPolicy::NaturalLanguage
+            | QueryInputPolicy::ExactSymbolName => {}
         }
     }
     let effective_lexical_request_sha256 = effective_request_sha256(policy, &lexical_request);

@@ -1285,6 +1285,7 @@ pub struct RouteQuery<'a> {
     pub top_k: u32,
 }
 
+#[must_use]
 pub fn query_route(query: &RouteQuery<'_>) -> QueryOutcome {
     query_route_with_policy(query, crate::query_plan::QueryInputPolicy::Native)
 }
@@ -1338,10 +1339,12 @@ pub fn query_route_with_policy(
                     }
                     if policy == crate::query_plan::QueryInputPolicy::CodeSearchFile
                         && response.results.iter().any(|candidate| {
-                            candidate.repo_id != *query.repo_id
-                                || candidate.revision_id != *query.revision_id
-                                || candidate.manifest_generation != query.generation
-                                || candidate.source_repo_id != *query.repo_id
+                            let pin_matches = candidate.repo_id == expected_pin.repo_id
+                                && candidate.revision_id == expected_pin.revision_id
+                                && candidate.manifest_generation
+                                    == expected_pin.manifest_generation;
+                            let source_matches = candidate.source_repo_id == candidate.repo_id;
+                            !pin_matches || !source_matches
                         })
                     {
                         return QueryOutcome::SdkFailure {

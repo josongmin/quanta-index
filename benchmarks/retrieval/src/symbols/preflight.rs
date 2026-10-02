@@ -555,6 +555,22 @@ fn inspect_file(
             if !cursor.goto_parent() {
                 if tree.root_node().has_error() || report.diagnostics_total != 0 {
                     report.failure = Some("syntax_error");
+                    // Tree-sitter can report a missing token in the root S-expression
+                    // without exposing it as a TreeCursor child. Keep one explicitly
+                    // unlocated, source-bounded diagnostic instead of reporting an
+                    // impossible parse_failed state with a zero diagnostic census.
+                    if report.diagnostics_total == 0 {
+                        report.diagnostics_total = 1;
+                        report.failure_detail =
+                            Some("parser root reports an unlocated syntax error".to_string());
+                        if options.max_diagnostics_per_file > 0 {
+                            report.diagnostics.push(SymbolFileDiagnostic {
+                                kind: "syntax_error",
+                                byte_start: Some(tree.root_node().start_byte()),
+                                byte_end: Some(tree.root_node().end_byte()),
+                            });
+                        }
+                    }
                     report.diagnostics_truncated =
                         report.diagnostics_total > report.diagnostics.len();
                     return Ok((report, Vec::new()));

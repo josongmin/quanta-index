@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -313,6 +314,127 @@ def test_v2_single_split_gold_capsule_binds_split_manifest(split_releases, tmp_p
     (target / "split-manifest.json").write_text(canonical_json(forged))
     with pytest.raises(EvidenceError):
         binding.validate_gold(target)
+
+
+def batch_inputs(release_fixtures):
+    manifest, releases = split_manifest(disjoint_assignments(release_fixtures))
+    manifest_raw = canonical_json(manifest).encode()
+    root, _document = release_fixtures["disjoint"]
+    recipes = {
+        "alpha": v2_recipe(
+            "development",
+            manifest_raw,
+            task("dev-alpha-1", "development", "handler_1", ""),
+            task("dev-alpha-2", "development", "handler_2", ""),
+        ),
+        "beta": v2_recipe(
+            "holdout",
+            manifest_raw,
+            task("hold-beta-1", "holdout", "worker_3", ""),
+        ),
+        "epsilon": v2_recipe(
+            "holdout",
+            manifest_raw,
+            task("hold-epsilon-1", "holdout", "runner_3", ""),
+        ),
+    }
+    return (
+        root,
+        {name: canonical_json(value).encode() for name, value in recipes.items()},
+        (
+            manifest_raw,
+            releases,
+        ),
+    )
+
+
+def test_gold_batch_replays_global_split_twice_and_publishes_independent_capsules(
+    split_releases,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+):
+    root, recipes, split = batch_inputs(split_releases)
+    calls = 0
+    original = binding._validated_split_manifest
+
+    def counted(*args):
+        nonlocal calls
+        calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(binding, "_validated_split_manifest", counted)
+    target = tmp_path / "batch"
+    identities = binding.capture_gold_batch(root, recipes, target, split)
+    assert calls == 2
+    assert set(identities) == set(recipes)
+    for name, identity in identities.items():
+        assert binding.validate_gold(target / name) == identity
+        selection = json.loads((target / name / "selection.json").read_bytes())
+        assert selection["repository"] == name
+
+
+def test_gold_batch_refuses_source_drift_before_atomic_publication(
+    split_releases,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+):
+    root, recipes, split = batch_inputs(split_releases)
+    copied = tmp_path / "copied-release"
+    shutil.copytree(root, copied, symlinks=True)
+    split = (split[0], {digest: copied for digest in split[1]})
+    root = copied
+    original = binding._gold_material
+    changed = False
+
+    def mutate_after_material(*args, **kwargs):
+        nonlocal changed
+        material = original(*args, **kwargs)
+        if not changed and args[1]["repository"] == "epsilon":
+            changed = True
+            source = root / "views/beta/code_only/app/core.py"
+            source.chmod(0o644)
+            source.write_bytes(b"def forged(): pass\n")
+        return material
+
+    monkeypatch.setattr(binding, "_gold_material", mutate_after_material)
+    target = tmp_path / "batch"
+    with pytest.raises(EvidenceError):
+        binding.capture_gold_batch(root, recipes, target, split)
+    assert not target.exists() and not target.with_name("batch.staging").exists()
+
+
+def test_gold_batch_refuses_partial_or_wrong_recipe_inventory(split_releases, tmp_path):  # noqa: F811
+    root, recipes, split = batch_inputs(split_releases)
+    with pytest.raises(EvidenceError, match="recipe inventory"):
+        binding.capture_gold_batch(root, {"beta": recipes["beta"]}, tmp_path / "partial", split)
+    mismatched = dict(recipes)
+    mismatched["beta"] = recipes["epsilon"]
+    with pytest.raises(EvidenceError, match="query families differ"):
+        binding.capture_gold_batch(root, mismatched, tmp_path / "mismatched", split)
+    assert not (tmp_path / "mismatched").exists()
+
+
+def test_gold_batch_cli_reads_sampler_inventory(split_releases, tmp_path):  # noqa: F811
+    from tools.benchmark.retrieval import gold_capture_batch
+
+    root, recipes, split = batch_inputs(split_releases)
+    sampling = tmp_path / "sampling"
+    (sampling / "recipes").mkdir(parents=True)
+    for name, raw in recipes.items():
+        (sampling / "recipes" / f"{name}.json").write_bytes(raw)
+    (sampling / "split-manifest.json").write_bytes(split[0])
+    target = tmp_path / "captured"
+    identities = gold_capture_batch.capture(root, root, sampling, target)
+    assert set(identities) == {"alpha", "beta", "epsilon"}
+    for name in identities:
+        assert binding.validate_gold(target / name) == identities[name]
+
+
+def test_gold_batch_script_imports_from_direct_entrypoint():
+    script = Path(__file__).resolve().parents[2] / "benchmark/retrieval/gold_capture_batch.py"
+    result = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "--sampling" in result.stdout
 
 
 @pytest.mark.parametrize(

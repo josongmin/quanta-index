@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import tempfile
 from collections import defaultdict
 from importlib.metadata import version
@@ -339,6 +340,12 @@ def _split_entry(entry: object) -> dict:
 
 
 def validate_split_manifest(raw: bytes, releases: dict[str, Path]) -> dict:
+    return _validated_split_manifest(raw, releases)[0]
+
+
+def _validated_split_manifest(
+    raw: bytes, releases: dict[str, Path]
+) -> tuple[dict, dict[str, dict]]:
     """Prove a corpus-wide repository-disjoint split against validated releases.
 
     Every repository of every bound release is assigned exactly once. Query
@@ -377,10 +384,12 @@ def validate_split_manifest(raw: bytes, releases: dict[str, Path]) -> dict:
     sources: dict[str, list[tuple[str, str, bytes | None, set[int]]]] = {
         side: [] for side in SPLIT_LEAKAGE_POLICY["split_sides"]
     }
+    documents: dict[str, dict] = {}
     for digest, root in sorted(releases.items()):
         document = corpus.validate(root)
         if document["digest"] != digest:
             raise EvidenceError("split manifest binds a stale or different release digest")
+        documents[digest] = document
         assigned = {e["repository"]: e for e in entries if e["release_digest"] == digest}
         if set(assigned) != {row["recipe"]["name"] for row in document["repositories"]}:
             raise EvidenceError("split manifest omits or invents a release repository")
@@ -416,7 +425,7 @@ def validate_split_manifest(raw: bytes, releases: dict[str, Path]) -> dict:
                     (entry["repository"], row["path"], exact, _fingerprints(raw))
                 )
     _refuse_cross_split_source(sources)
-    return manifest
+    return manifest, documents
 
 
 def _refuse_cross_split_source(
@@ -477,7 +486,10 @@ def _split_releases(value: object) -> dict[str, Path]:
 
 
 def _split_binding(
-    recipe: dict, selection: dict, split: tuple[bytes, dict[str, Path]] | None
+    recipe: dict,
+    selection: dict,
+    split: tuple[bytes, dict[str, Path]] | None,
+    validated_manifest: dict | None = None,
 ) -> tuple[dict | None, dict[str, bytes]]:
     """v2 recipes are admitted only through a verified corpus-wide split manifest."""
     if recipe["schema_version"] == 1:
@@ -491,7 +503,11 @@ def _split_binding(
         raise EvidenceError("gold recipe split-manifest SHA-256 differs")
     if releases.get(selection["release_digest"]) != Path(selection["release_path"]):
         raise EvidenceError("split manifest does not bind the selected release path")
-    manifest = validate_split_manifest(manifest_raw, releases)
+    manifest = (
+        validated_manifest
+        if validated_manifest is not None
+        else validate_split_manifest(manifest_raw, releases)
+    )
     entry = next(
         (
             row
@@ -526,6 +542,9 @@ def _gold_material(
     selection: dict,
     recipe_raw: bytes,
     split: tuple[bytes, dict[str, Path]] | None = None,
+    *,
+    validated_manifest: dict | None = None,
+    validated_document: dict | None = None,
 ) -> dict[str, bytes]:
     """Re-derive labels from a validated release, never captured product rows."""
     from tools.benchmark.retrieval import gold_oracle
@@ -535,8 +554,8 @@ def _gold_material(
         raise EvidenceError("gold release path differs from selected corpus")
     recipe = _json(recipe_raw)
     gold_oracle.validate_recipe(recipe)
-    split_binding, split_material = _split_binding(recipe, selection, split)
-    document = corpus.validate(root)
+    split_binding, split_material = _split_binding(recipe, selection, split, validated_manifest)
+    document = validated_document if validated_document is not None else corpus.validate(root)
     if document["digest"] != selection["release_digest"]:
         raise EvidenceError("gold recipe selected a different corpus release")
     repositories = [
@@ -631,6 +650,105 @@ def capture_gold(
         raise EvidenceError("gold output appeared before publication")
     stage.rename(target)
     return identity
+
+
+def capture_gold_batch(
+    root: Path,
+    recipes: dict[str, bytes],
+    target: Path,
+    split: tuple[bytes, dict[str, Path]],
+) -> dict[str, dict]:
+    """Publish one capsule per repository with one corpus-wide split replay.
+
+    The target is a fresh external directory. All release repositories must
+    have one recipe; publication is one directory rename after a second split
+    replay, so source changes during derivation cannot escape validation.
+    """
+    if not isinstance(split, tuple) or len(split) != 2:
+        raise EvidenceError("gold batch requires its corpus-wide split manifest")
+    manifest_raw, releases = split
+    if (
+        not isinstance(root, Path)
+        or not root.is_absolute()
+        or not isinstance(recipes, dict)
+        or not recipes
+        or not isinstance(target, Path)
+        or not target.is_absolute()
+        or ".." in target.parts
+        or target.exists()
+        or target.is_symlink()
+        or target.resolve().is_relative_to(corpus.ROOT)
+        or not isinstance(releases, dict)
+        or any(
+            not isinstance(path, Path)
+            or target.resolve().is_relative_to(path.resolve())
+            or path.resolve().is_relative_to(target.resolve())
+            for path in releases.values()
+        )
+    ):
+        raise EvidenceError("gold batch target must be fresh, external and disjoint from corpus")
+    stage = target.with_name(target.name + ".staging")
+    if stage.exists() or stage.is_symlink():
+        raise EvidenceError("gold staging target already exists")
+    manifest, documents = _validated_split_manifest(manifest_raw, releases)
+    matches = [digest for digest, path in releases.items() if path == root]
+    if len(matches) != 1:
+        raise EvidenceError("gold batch release differs from split inventory")
+    digest = matches[0]
+    document = documents[digest]
+    names = {row["recipe"]["name"] for row in document["repositories"]}
+    if set(recipes) != names or any(
+        not isinstance(name, str)
+        or re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", name) is None
+        or not isinstance(raw, bytes)
+        for name, raw in recipes.items()
+    ):
+        raise EvidenceError("gold batch recipe inventory differs from release repositories")
+    identities: dict[str, dict] = {}
+    stage.mkdir(parents=True)
+    try:
+        for name in sorted(names):
+            selection = {
+                "release_path": str(root),
+                "release_digest": digest,
+                "repository": name,
+                "view": SPLIT_LEAKAGE_POLICY["view"],
+            }
+            material = _gold_material(
+                root,
+                selection,
+                recipes[name],
+                split,
+                validated_manifest=manifest,
+                validated_document=document,
+            )
+            capsule = stage / name
+            capsule.mkdir()
+            for filename, raw in material.items():
+                with (capsule / filename).open("xb") as output:
+                    output.write(raw)
+            identities[name] = _verify_gold_material(capsule, material)
+        # The first replay establishes leakage and release identity; this
+        # replay rejects changes to either split before atomic publication.
+        if validate_split_manifest(manifest_raw, releases) != manifest:
+            raise EvidenceError("gold batch split manifest changed before publication")
+        from tools.benchmark.retrieval import gold_oracle
+
+        oracle_digest = digest_bytes(_read_regular_file(Path(gold_oracle.__file__)))
+        binding_digest = digest_bytes(_read_regular_file(Path(__file__)))
+        if any(
+            identity["oracle_source_digest"] != oracle_digest
+            or identity["binding_source_digest"] != binding_digest
+            for identity in identities.values()
+        ):
+            raise EvidenceError("gold capture source changed before publication")
+        if target.exists() or target.is_symlink():
+            raise EvidenceError("gold output appeared before publication")
+        stage.rename(target)
+    except BaseException:
+        shutil.rmtree(stage)
+        raise
+    return identities
 
 
 def _verify_gold_material(

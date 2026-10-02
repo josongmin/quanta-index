@@ -894,11 +894,13 @@ fn prove_file_hit(
             "file candidate source identity differs from SDK row".to_string(),
         ));
     }
-    let source_digest = source
-        .source_sha256
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let mut source_digest = String::with_capacity(64);
+    for byte in source.source_sha256 {
+        use std::fmt::Write;
+        write!(source_digest, "{byte:02x}").map_err(|err| {
+            BenchError::Protocol(format!("file source digest formatting failed: {err}"))
+        })?;
+    }
     if source_digest != file.sha256 || sha256_hex(&file.bytes) != file.sha256 {
         return Err(BenchError::Protocol(format!(
             "file candidate source digest differs from frozen bytes: {}",
@@ -969,7 +971,7 @@ fn prove_file_hit(
         .map_err(|err| BenchError::Protocol(format!("file preview token count overflow: {err}")))?;
     let end_line = u32::try_from(file.line_count())
         .map_err(|err| BenchError::Protocol(format!("file line count overflow: {err}")))?;
-    let start_line = if end_line == 0 { 0 } else { 1 };
+    let start_line = u32::from(end_line != 0);
     let candidate = serde_json::json!({
         "path": hit.path,
         "start_byte": 0,
@@ -1152,16 +1154,20 @@ pub fn result_value(
                             plan.policy.as_str()
                         ))
                     })?;
-                    if let Some((previous_score, previous_path)) = &previous_scored_file {
-                        if hit.score > *previous_score
-                            || (hit.score == *previous_score
-                                && hit.path.as_bytes() < previous_path.as_bytes())
+                    if previous_scored_file.as_ref().is_some_and(
+                        |(previous_score, previous_path)| match hit.score.total_cmp(previous_score)
                         {
-                            return Err(BenchError::Protocol(format!(
-                                "{} SDK score/path order is invalid",
-                                plan.policy.as_str()
-                            )));
-                        }
+                            std::cmp::Ordering::Greater => true,
+                            std::cmp::Ordering::Equal => {
+                                hit.path.as_bytes() < previous_path.as_bytes()
+                            }
+                            std::cmp::Ordering::Less => false,
+                        },
+                    ) {
+                        return Err(BenchError::Protocol(format!(
+                            "{} SDK score/path order is invalid",
+                            plan.policy.as_str()
+                        )));
                     }
                     previous_scored_file = Some((hit.score, hit.path.clone()));
                     let object = proven.candidate.as_object_mut().ok_or_else(|| {
