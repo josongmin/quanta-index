@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools/benchmark"))
 import corpus_binding as binding
-from evidence import EvidenceError, canonical_json
+from tools.benchmark.evidence import EvidenceError, canonical_json
 
 from tools.benchmark.retrieval import gold_oracle, source_oracle
 from tools.ci.tests.test_corpus_binding import (  # noqa: F401
