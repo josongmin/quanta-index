@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from tools.benchmark.retrieval import evaluator, holdout_c4, source_oracle
+from tools.ci.tests.test_corpus_binding import split_releases  # noqa: F401
 
 
 def _fixture(
@@ -398,3 +400,249 @@ def test_c4_removes_partial_root_after_write_failure(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="injected write failure"):
         holdout_c4.write(release, capsule, checkout, "declaration_name_exact", output)
     assert not output.exists()
+
+
+def _matrix_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    release = tmp_path / "matrix-release"
+    capsules = tmp_path / "matrix-capsules"
+    checkouts = tmp_path / "matrix-checkouts"
+    capsules.mkdir()
+    checkouts.mkdir()
+    rows = []
+    for index, name in enumerate(("repo_a", "repo_b")):
+        fixture_root = tmp_path / f"fixture-{index}"
+        fixture_root.mkdir()
+        original_release, original_capsule, checkout = _fixture(fixture_root, monkeypatch)
+        shutil.copytree(checkout, checkouts / name)
+        shutil.copytree(original_capsule, capsules / name)
+        original_row = holdout_c4._read(original_release / "release.json")["repositories"][0]
+        row = dict(original_row)
+        row["recipe"] = {**original_row["recipe"], "name": name}
+        row["views"] = {
+            "code_only": {
+                **original_row["views"]["code_only"],
+                "manifest": f"manifests/{name}/code_only.json",
+            }
+        }
+        rows.append(row)
+        manifest = release / "manifests" / name / "code_only.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_bytes(
+            (original_release / "manifests" / "toy" / "code_only.json").read_bytes()
+        )
+        selection = holdout_c4._read(capsules / name / "selection.json")
+        selection.update(repository=name, release_path=str(release))
+        _resign(capsules / name, "selection.json", selection)
+        for file_name in ("gold.json", "blind.json"):
+            payload = holdout_c4._read(capsules / name / file_name)
+            payload["repository"] = name
+            payload["tasks"][0]["task_id"] = f"{name}.exact.001"
+            if index == 1 and file_name == "gold.json":
+                payload["tasks"][0].update(
+                    answerable=None,
+                    label_state="unjudged",
+                    labels=[],
+                    unsupported=["census_refused"],
+                )
+            _resign(capsules / name, file_name, payload)
+    (release / "release.json").write_bytes(
+        holdout_c4._raw({"digest": "sha256:" + "a" * 64, "repositories": rows})
+    )
+    split_raw = holdout_c4._raw({"fixture": "split"})
+    releases_raw = holdout_c4._raw({"sha256:" + "a" * 64: str(release)})
+    for name in ("repo_a", "repo_b"):
+        for file_name, raw in (
+            ("split-manifest.json", split_raw),
+            ("split-releases.json", releases_raw),
+        ):
+            (capsules / name / file_name).write_bytes(raw)
+            identity = holdout_c4._read(capsules / name / "identity.json")
+            identity["files"][file_name] = "sha256:" + hashlib.sha256(raw).hexdigest()
+            (capsules / name / "identity.json").write_bytes(holdout_c4._raw(identity))
+    manifest = {"fixture": "validated"}
+
+    def validated(_raw, _releases):
+        document = holdout_c4._read(release / "release.json")
+        return manifest, {document["digest"]: document}
+
+    def gold_material(_release, selection, _recipe, _split, **_kwargs):
+        capsule = capsules / selection["repository"]
+        return {path.name: path.read_bytes() for path in capsule.iterdir()}
+
+    monkeypatch.setattr(holdout_c4.corpus_binding, "_validated_split_manifest", validated)
+    monkeypatch.setattr(holdout_c4.corpus_binding, "validate_split_manifest", lambda *_: manifest)
+    monkeypatch.setattr(holdout_c4.corpus_binding, "_gold_material", gold_material)
+    return release, capsules, checkouts
+
+
+def test_c4_matrix_has_independent_cell_inventory_and_validates_once(tmp_path, monkeypatch):
+    release, capsules, checkouts = _matrix_fixture(tmp_path, monkeypatch)
+    calls = []
+    original = holdout_c4.corpus_binding._gold_material
+
+    def derive_one(root, selection, recipe, split, **kwargs):
+        calls.append(selection["repository"])
+        return original(root, selection, recipe, split, **kwargs)
+
+    monkeypatch.setattr(holdout_c4.corpus_binding, "_gold_material", derive_one)
+    matrix = holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
+    assert calls == ["repo_a", "repo_b"]
+    assert [(cell["repository"], cell["intent"]) for cell in matrix["cells"]] == [
+        (name, intent)
+        for name in ("repo_a", "repo_b")
+        for intent in (
+            "declaration_name_components",
+            "declaration_name_exact",
+            "declaration_name_infix",
+            "declaration_name_osa1",
+            "declaration_name_prefix",
+        )
+    ]
+    by_key = {(cell["repository"], cell["intent"]): cell for cell in matrix["cells"]}
+    admitted = by_key["repo_a", "declaration_name_exact"]
+    assert admitted["status"] == "diagnostic_unqualified"
+    assert admitted["selected_task_ids"] == ["repo_a.exact.001"]
+    assert admitted["suite_sha256"] and admitted["blind_pack_sha256"]
+    refused = by_key["repo_b", "declaration_name_exact"]
+    assert refused["status"] == "no_admission_diagnostic"
+    assert refused["reason"] == "all_tasks_excluded"
+    assert refused["excluded"] == [
+        {"task_id": "repo_b.exact.001", "reason": "unjudged_or_unsupported"}
+    ]
+    assert by_key["repo_a", "declaration_name_prefix"]["reason"] == "no_tasks_for_intent"
+    assert matrix["product_capture"] is False
+    assert matrix["qualified_default_search_conformance"] is False
+    assert matrix["release_document_sha256"] == holdout_c4.digest_bytes(
+        (release / "release.json").read_bytes()
+    )
+    assert matrix["tool_source_sha256"]["holdout_c4"] == holdout_c4.digest_bytes(
+        Path(holdout_c4.__file__).read_bytes()
+    )
+    assert admitted["manifest_sha256"] == holdout_c4.digest_bytes(
+        (release / "manifests" / "repo_a" / "code_only.json").read_bytes()
+    )
+    output = tmp_path / "external-matrix"
+    holdout_c4.write_matrix(release, capsules, checkouts, output, expected_repositories=2)
+    assert {path.name for path in output.iterdir()} == {"admission-matrix.json"}
+
+
+def test_c4_matrix_refuses_missing_or_changed_inputs(tmp_path, monkeypatch):
+    release, capsules, checkouts = _matrix_fixture(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="roster differs from expected count"):
+        holdout_c4.derive_matrix(release, capsules, checkouts)
+    shutil.rmtree(capsules / "repo_b")
+    with pytest.raises(ValueError, match="capsule roster differs"):
+        holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
+
+
+def test_c4_matrix_refuses_source_change_during_admission(tmp_path, monkeypatch):
+    release, capsules, checkouts = _matrix_fixture(tmp_path, monkeypatch)
+    original = holdout_c4._derive_prepared
+    changed = False
+
+    def mutate(prepared, intent, *, allow_empty=False, filter_query_duplicates=False):
+        nonlocal changed
+        result = original(
+            prepared,
+            intent,
+            allow_empty=allow_empty,
+            filter_query_duplicates=filter_query_duplicates,
+        )
+        if not changed:
+            (checkouts / "repo_a" / "main.go").write_text("package demo\nfunc Beta() {}\n")
+            changed = True
+        return result
+
+    monkeypatch.setattr(holdout_c4, "_derive_prepared", mutate)
+    with pytest.raises((ValueError, evaluator.EvidenceError)):
+        holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
+
+
+def test_c4_matrix_records_unsupported_language_cells(tmp_path, monkeypatch):
+    release, capsules, checkouts = _matrix_fixture(tmp_path, monkeypatch)
+    document = holdout_c4._read(release / "release.json")
+    document["repositories"][1]["recipe"]["language"] = "unsupported-language"
+    (release / "release.json").write_bytes(holdout_c4._raw(document))
+    matrix = holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
+    rows = [cell for cell in matrix["cells"] if cell["repository"] == "repo_b"]
+    assert len(rows) == 5
+    assert {cell["reason"] for cell in rows} == {"unsupported_language_intent"}
+    assert all(cell["status"] == "no_admission_diagnostic" for cell in rows)
+    (capsules / "repo_b" / "blind.json").write_bytes(b"{}\n")
+    with pytest.raises(ValueError, match="capsule identity differs"):
+        holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
+
+
+def test_c4_matrix_refuses_tool_source_drift(tmp_path, monkeypatch):
+    release, capsules, checkouts = _matrix_fixture(tmp_path, monkeypatch)
+    original = Path.read_bytes
+    tool = Path(holdout_c4.__file__)
+    reads = 0
+
+    def changed(path):
+        nonlocal reads
+        if path == tool:
+            reads += 1
+            if reads == 2:
+                return b"changed tool source"
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", changed)
+    with pytest.raises(ValueError, match="tool source changed"):
+        holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
+
+
+def test_c4_matrix_optimized_replay_matches_canonical_validator(
+    split_releases,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+):
+    from tools.benchmark.retrieval import holdout_sampling
+
+    release, document = split_releases["hold_only"]
+    other_release, other_document = split_releases["dev_only"]
+    _ledger, recipes, split_raw, _manifest = holdout_sampling.build(release, other_release, 11)
+    releases = {document["digest"]: release, other_document["digest"]: other_release}
+    selection = {
+        "release_path": str(release),
+        "release_digest": document["digest"],
+        "repository": "beta",
+        "view": "code_only",
+    }
+    capsules = tmp_path / "capsules"
+    capsules.mkdir()
+    capsule = capsules / "beta"
+    holdout_c4.corpus_binding.capture_gold(
+        release,
+        selection,
+        holdout_c4.corpus_binding.canonical_json(recipes["beta"]).encode() + b"\n",
+        capsule,
+        (split_raw, releases),
+    )
+    expected_identity = holdout_c4.corpus_binding.validate_gold(capsule)
+    validated_manifest, documents = holdout_c4.corpus_binding._validated_split_manifest(
+        split_raw, releases
+    )
+    checkout_root = release.parents[1] / "checkouts"
+    prepared = holdout_c4._prepare(
+        release,
+        capsule,
+        checkout_root / "beta",
+        verified_split=(split_raw, releases, validated_manifest, documents),
+    )
+    assert prepared.identity == expected_identity
+    assert prepared.gold == holdout_c4._read(capsule / "gold.json")
+    original = holdout_c4.corpus_binding._validated_split_manifest
+    calls = []
+
+    def counted(raw, paths):
+        calls.append(True)
+        return original(raw, paths)
+
+    monkeypatch.setattr(holdout_c4.corpus_binding, "_validated_split_manifest", counted)
+    matrix = holdout_c4.derive_matrix(release, capsules, checkout_root, expected_repositories=1)
+    assert len(calls) == 2  # Initial validation and final drift check.
+    assert len(matrix["cells"]) == 5
+    assert {cell["repository"] for cell in matrix["cells"]} == {"beta"}
+    exact = next(cell for cell in matrix["cells"] if cell["intent"] == "declaration_name_exact")
+    assert {row["reason"] for row in exact["excluded"]} >= {"query_near_duplicate"}
