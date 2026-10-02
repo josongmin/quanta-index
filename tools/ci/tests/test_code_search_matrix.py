@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "benchmark"))
 
 import code_search_matrix as matrix  # noqa: E402
+
 from tools.benchmark.retrieval import evaluator  # noqa: E402
 
 
@@ -102,12 +103,13 @@ def _c4_matrix_fixture(tmp_path, monkeypatch):
         {
             "repository": "repo-a",
             "intent": family,
-            "status": "diagnostic_unqualified"
-            if family == intent
-            else "no_admission_diagnostic",
+            "status": "diagnostic_unqualified" if family == intent else "no_admission_diagnostic",
             "suite_sha256": digests["suite_sha256"] if family == intent else None,
             "blind_pack_sha256": digests["blind_pack_sha256"] if family == intent else None,
             "admission_sha256": digests["admission_sha256"] if family == intent else None,
+            "reason": None if family == intent else "no_tasks_for_intent",
+            "candidate_task_ids": ["q"] if family == intent else [],
+            "excluded": [],
         }
         for family in matrix.holdout_c4.MATRIX_INTENTS
     ]
@@ -120,14 +122,22 @@ def _c4_matrix_fixture(tmp_path, monkeypatch):
         return c4
 
     monkeypatch.setattr(matrix.holdout_c4, "derive_matrix", derive)
-    monkeypatch.setattr(matrix.code_search_workflow, "_source", lambda _repo: {"revision": "a" * 40, "dirty": False})
-    monkeypatch.setattr(matrix.corpus_release, "validate", lambda _root: {
-        "digest": c4["release_digest"],
-        "repositories": [{
-            "recipe": {"name": "repo-a"},
-            "views": {"code_only": {"manifest": "manifest.json"}},
-        }],
-    })
+    monkeypatch.setattr(
+        matrix.code_search_workflow, "_source", lambda _repo: {"revision": "a" * 40, "dirty": False}
+    )
+    monkeypatch.setattr(
+        matrix.corpus_release,
+        "validate",
+        lambda _root: {
+            "digest": c4["release_digest"],
+            "repositories": [
+                {
+                    "recipe": {"name": "repo-a"},
+                    "views": {"code_only": {"manifest": "manifest.json"}},
+                }
+            ],
+        },
+    )
     monkeypatch.setattr(matrix.corpus_binding, "_bind", lambda *_args: {"binding": "fixed"})
     monkeypatch.setattr(matrix, "load_registry", lambda _path: {})
     cells = []
@@ -145,15 +155,17 @@ def _c4_matrix_fixture(tmp_path, monkeypatch):
                 for mode in matrix.MODES
             }
         )
-        cells.append({
-            "repository": "repo-a",
-            "view": "code_only",
-            "query_family": family,
-            "query_policy": matrix.holdout_c4._execution_policy(family),
-            "suite": str(cell_root / "suite.json") if admitted else None,
-            "query_pack": str(cell_root / "blind-pack.json") if admitted else None,
-            "captures": captures,
-        })
+        cells.append(
+            {
+                "repository": "repo-a",
+                "view": "code_only",
+                "query_family": family,
+                "query_policy": matrix.holdout_c4._execution_policy(family),
+                "suite": str(cell_root / "suite.json") if admitted else None,
+                "query_pack": str(cell_root / "blind-pack.json") if admitted else None,
+                "captures": captures,
+            }
+        )
     spec = {
         "schema_version": 3,
         "release_path": str(release),
@@ -174,19 +186,23 @@ def test_matrix_v3_replays_c4_no_admission_without_inventing_inputs(tmp_path, mo
     result = matrix.verify(tmp_path, spec_path)
     assert result["schema_version"] == 3
     assert result["no_admission_cells"] == len(matrix.holdout_c4.MATRIX_INTENTS) - 1
+    assert result["no_admission_mode_cells"] == 3 * result["no_admission_cells"]
+    assert all(row["reason"] == "no_tasks_for_intent" for row in result["no_admission"])
     assert (result["verified_cells"], result["not_run_cells"], result["unsupported_cells"]) == (
-        0, 1, 2
+        0,
+        1,
+        2,
     )
     assert result["status"] == "diagnostic_incomplete"
     changed = copy.deepcopy(spec)
-    changed["cells"][1]["captures"]["lexical-only"] = {
+    changed["cells"][0]["captures"]["lexical-only"] = {
         "kind": "not_run",
         "reason": matrix.MISSING_REASON,
     }
     with pytest.raises(ValueError, match="no-admission cell"):
         matrix._spec(changed, {"repo-a"})
     forged = json.loads((admission_root / "admission-matrix.json").read_text())
-    forged["cells"][0]["status"] = "no_admission_diagnostic"
+    forged["cells"][1]["status"] = "no_admission_diagnostic"
     (admission_root / "admission-matrix.json").write_text(json.dumps(forged))
     with pytest.raises(ValueError, match="C4 admission differs"):
         matrix.verify(tmp_path, spec_path)

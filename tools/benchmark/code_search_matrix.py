@@ -21,11 +21,9 @@ from evidence import RunStore, _read_control_file, canonical_json, digest_bytes
 from profile_capture import load_capture
 from registry import load_registry, registry_digest
 
+from tools.benchmark.retrieval import evaluator, holdout_c4, query_plan
 from tools.benchmark.retrieval import lexical_file_comparison as lexical
 from tools.benchmark.retrieval import live_lexical_external as live
-from tools.benchmark.retrieval import holdout_c4
-from tools.benchmark.retrieval import evaluator
-from tools.benchmark.retrieval import query_plan
 from tools.benchmark.retrieval import run as pair_run
 
 MODES = ("lexical-only", "semantic-only", "hybrid")
@@ -315,9 +313,10 @@ def _replay_c4(
         ):
             path = root / repository / intent / name
             raw = _read_control_file(path)
-            if raw != evaluator.canonical(value) or hashlib.sha256(raw).hexdigest() != row[
-                digest_field
-            ]:
+            if (
+                raw != evaluator.canonical(value)
+                or hashlib.sha256(raw).hexdigest() != row[digest_field]
+            ):
                 raise ValueError("matrix C4 emitted input differs from source-bound admission")
             bound_files[path] = raw
     return by_key, bound_files
@@ -342,27 +341,37 @@ def verify(repo: Path, spec_path: Path) -> dict:
     c4_cells, c4_files = _replay_c4(spec, release, repositories)
     registry = load_registry(repo / "tools/benchmark/registry.toml")
     workflows = pairs = unsupported = not_run = no_admission = 0
+    no_admission_rows = []
     bindings = []
     family_input_digests: set[tuple[str, str, str]] = set()
     for cell in spec["cells"]:
         if c4_cells:
             c4 = c4_cells[cell["repository"], cell["query_family"]]
-            if (
-                cell["view"] != "code_only"
-                or cell["query_policy"] != holdout_c4._execution_policy(cell["query_family"])
+            if cell["view"] != "code_only" or cell["query_policy"] != holdout_c4._execution_policy(
+                cell["query_family"]
             ):
                 raise ValueError("matrix C4 view or request policy differs")
             if c4["status"] == "no_admission_diagnostic":
                 if cell["suite"] is not None or cell["query_pack"] is not None:
                     raise ValueError("matrix C4 no-admission cell invents inputs")
                 no_admission += 1
+                no_admission_rows.append(
+                    {
+                        "repository": cell["repository"],
+                        "query_family": cell["query_family"],
+                        "reason": c4["reason"],
+                        "candidate_task_ids": c4["candidate_task_ids"],
+                        "excluded": c4["excluded"],
+                    }
+                )
                 continue
-            cell_root = _path(spec["c4_admission_root"], "c4_admission_root") / cell[
-                "repository"
-            ] / cell["query_family"]
-            if (
-                cell["suite"] != str(cell_root / "suite.json")
-                or cell["query_pack"] != str(cell_root / "blind-pack.json")
+            cell_root = (
+                _path(spec["c4_admission_root"], "c4_admission_root")
+                / cell["repository"]
+                / cell["query_family"]
+            )
+            if cell["suite"] != str(cell_root / "suite.json") or cell["query_pack"] != str(
+                cell_root / "blind-pack.json"
             ):
                 raise ValueError("matrix C4 cell inputs differ from emitted admission")
         selection = {
@@ -449,7 +458,13 @@ def verify(repo: Path, spec_path: Path) -> dict:
         raise ValueError("matrix C4 admission changed during verification")
     result = {
         "schema_version": spec["schema_version"],
-        "status": "diagnostic_incomplete" if not_run else "diagnostic_unqualified",
+        "status": (
+            "diagnostic_no_admission"
+            if no_admission == len(spec["cells"])
+            else "diagnostic_incomplete"
+            if not_run
+            else "diagnostic_unqualified"
+        ),
         "source": source,
         "release_digest": document["digest"],
         "expected_cells": len(repositories) * len(spec["query_families"]) * len(MODES),
@@ -467,7 +482,11 @@ def verify(repo: Path, spec_path: Path) -> dict:
     }
     if spec["schema_version"] == 3:
         result["no_admission_cells"] = no_admission
+        result["no_admission_mode_cells"] = no_admission * len(MODES)
+        result["no_admission"] = no_admission_rows
         result["c4_admission_matrix_sha256"] = hashlib.sha256(
-            c4_files[_path(spec["c4_admission_root"], "c4_admission_root") / "admission-matrix.json"]
+            c4_files[
+                _path(spec["c4_admission_root"], "c4_admission_root") / "admission-matrix.json"
+            ]
         ).hexdigest()
     return result
