@@ -540,6 +540,7 @@ struct StreamScopeAuthorityV1 {
     tombstone_semantic_keys: BTreeSet<String>,
     replace_semantic_keys: BTreeSet<String>,
     record_ids: BTreeSet<String>,
+    embedding_ids: BTreeSet<String>,
 }
 
 impl StreamScopeAuthorityV1 {
@@ -591,6 +592,7 @@ impl StreamScopeAuthorityV1 {
             tombstone_semantic_keys,
             replace_semantic_keys: BTreeSet::new(),
             record_ids: BTreeSet::new(),
+            embedding_ids: BTreeSet::new(),
         })
     }
 
@@ -604,6 +606,15 @@ impl StreamScopeAuthorityV1 {
         }
         let mut scope_semantic_keys = BTreeSet::new();
         for embedding in &scope.embeddings {
+            if !self
+                .embedding_ids
+                .insert(embedding.embedding_id.as_str().to_owned())
+            {
+                return Err(CoreError::InvalidContract(format!(
+                    "semantic: duplicate embedding_id {:?} in generation batch",
+                    embedding.embedding_id
+                )));
+            }
             let surface = SearchScopeSurface::for_semantic_owner_v1(
                 embedding.owner_kind,
                 embedding.corpus_kind,

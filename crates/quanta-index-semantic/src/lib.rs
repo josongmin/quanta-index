@@ -1642,6 +1642,37 @@ mod incomplete_generation_discard_tests {
     }
 
     #[test]
+    fn inventory_quarantines_pre_uniqueness_semantic_manifest() {
+        let temp = tempfile::tempdir().expect("fixture state root");
+        let sealed = candidate(61, "digest-pre-uniqueness");
+        let generation_dir = layout::generation_dir(
+            temp.path(),
+            &sealed.repo_id,
+            &sealed.revision_id,
+            sealed.manifest_generation,
+        );
+        std::fs::create_dir_all(&generation_dir).expect("generation directory");
+        std::fs::write(
+            layout::sealed_marker_path(&generation_dir),
+            sealed.manifest_digest.as_bytes(),
+        )
+        .expect("sealed marker");
+        let mut old = manifest_for(&sealed);
+        old.format_version = 11;
+        std::fs::write(
+            layout::manifest_path(&generation_dir),
+            old.encode().expect("old manifest bytes"),
+        )
+        .expect("old manifest");
+        assert!(matches!(
+            inventory_generation_dir(temp.path(), &generation_dir),
+            Err(InventoryGenerationError::Quarantined(entry))
+                if entry.reason == GenerationQuarantineReasonV1::FormatUnsupported
+                    && entry.detail.contains("rebuild")
+        ));
+    }
+
+    #[test]
     fn discard_is_contained_and_idempotent_for_incomplete_generation() {
         let temp = tempfile::tempdir().expect("tempdir");
         let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf()).expect("adapter");

@@ -345,6 +345,135 @@ fn admit_scope_authority(batch: &SemanticIngestBatch) -> Result<(), CoreError> {
     Ok(())
 }
 
+#[test]
+fn generation_batch_refuses_embedding_id_reuse_across_distinct_records() -> TestResult {
+    let mut input = batch(
+        ManifestGeneration::new(91),
+        "src/ids.rs",
+        "first",
+        vec![1.0, 0.0, 0.0],
+        true,
+    )?;
+    let mut second = input.replace_scopes[0].embeddings[0].clone();
+    second.record_id = "record-second".into();
+    input.replace_scopes[0].embeddings.push(second);
+    assert!(matches!(
+        admit_scope_authority(&input),
+        Err(CoreError::InvalidContract(message)) if message.contains("duplicate embedding_id")
+    ));
+    Ok(())
+}
+
+#[test]
+fn sealed_row_commitment_refuses_duplicate_candidate_and_record_ids() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let temp = tempdir()?;
+    let tables = crate::run_blocking(&runtime, super::open_working_tables(temp.path(), 3))?;
+    let first = embedding(
+        "first",
+        "src/ids.rs",
+        OwnerDocKind::Chunk,
+        "owner-first",
+        SemanticCorpusKindV1::RawCodeFallback,
+        vec![1.0, 0.0, 0.0],
+    )?;
+    let second = embedding(
+        "second",
+        "src/ids.rs",
+        OwnerDocKind::Chunk,
+        "owner-second",
+        SemanticCorpusKindV1::RawCodeFallback,
+        vec![0.0, 1.0, 0.0],
+    )?;
+    crate::run_blocking(&runtime, async {
+        let rows = [&first, &second];
+        let _added = tables
+            .table
+            .add(super::build_record_batch(&rows, 3)?)
+            .execute()
+            .await
+            .map_err(|error| CoreError::Storage(format!("seed semantic rows: {error}")))?;
+        crate::semantic_row_integrity_v1::semantic_row_commitment_v1(&tables.table).await?;
+        let mut duplicate = second.clone();
+        duplicate.record_id = "record-third".into();
+        duplicate.embedding_id = first.embedding_id.clone();
+        let _added = tables
+            .table
+            .add(super::build_record_batch(&[&duplicate], 3)?)
+            .execute()
+            .await
+            .map_err(|error| {
+                CoreError::Storage(format!("append duplicate semantic ID: {error}"))
+            })?;
+        assert!(matches!(
+            crate::semantic_row_integrity_v1::semantic_row_commitment_v1(&tables.table).await,
+            Err(CoreError::Storage(message)) if message.contains("duplicate embedding_id")
+        ));
+        Ok::<(), CoreError>(())
+    })?;
+    let record_temp = tempdir()?;
+    let record_tables =
+        crate::run_blocking(&runtime, super::open_working_tables(record_temp.path(), 3))?;
+    let mut duplicate_record = second.clone();
+    duplicate_record.record_id = first.record_id.clone();
+    crate::run_blocking(&runtime, async {
+        let _added = record_tables
+            .table
+            .add(super::build_record_batch(&[&first, &duplicate_record], 3)?)
+            .execute()
+            .await
+            .map_err(|error| CoreError::Storage(format!("seed duplicate record ID: {error}")))?;
+        assert!(matches!(
+            crate::semantic_row_integrity_v1::semantic_row_commitment_v1(&record_tables.table)
+                .await,
+            Err(CoreError::Storage(message)) if message.contains("duplicate record_id")
+        ));
+        Ok::<(), CoreError>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn cold_open_refuses_format_11_even_with_a_self_consistent_seal() -> TestResult {
+    let temp = tempdir()?;
+    let adapter = crate::SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let input = batch(
+        ManifestGeneration::new(93),
+        "src/old.rs",
+        "old",
+        vec![1.0, 0.0, 0.0],
+        true,
+    )?;
+    build_with(&adapter, &input)?;
+    let generation_dir = layout::generation_dir(
+        temp.path(),
+        &input.repo_id,
+        &input.revision_id,
+        input.generation,
+    );
+    let manifest_path = layout::manifest_path(&generation_dir);
+    let mut old = crate::manifest::SemanticManifest::decode(&std::fs::read(&manifest_path)?)?;
+    old.format_version = 11;
+    std::fs::write(&manifest_path, old.encode()?)?;
+    let (sealed_bytes, _measurement) = crate::sealed_manifest::build_sealed_manifest_bytes(
+        &generation_dir,
+        input.manifest_digest.as_str(),
+        None,
+    )?;
+    std::fs::write(
+        crate::sealed_manifest::sealed_manifest_path(&generation_dir),
+        sealed_bytes,
+    )?;
+    assert!(matches!(
+        adapter.open(&input.repo_id, &input.revision_id, input.generation),
+        Err(CoreError::Typed { code, message })
+            if code == crate::codec::FORMAT_UNSUPPORTED_CODE && message.contains("rebuild")
+    ));
+    Ok(())
+}
+
 fn assert_recovered_promotion_state(
     root: &Path,
     boundary: &str,

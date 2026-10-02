@@ -52,7 +52,9 @@ fn is_canonical_sha256_v1(value: &str) -> bool {
 /// trained recipe.
 /// `11` = typed-source-only semantic derivation. Format 10 may contain
 /// chunk-text fallback rows and is not admitted as a new-generation base.
-pub(crate) const FORMAT_VERSION: u32 = 11;
+// Format 12 requires generation-wide record_id and embedding_id uniqueness at
+// seal. Older artifacts cannot prove those identities and must be rebuilt.
+pub(crate) const FORMAT_VERSION: u32 = 12;
 
 /// The dense lane's index contract, sealed with the generation (QI-BB-027).
 ///
@@ -939,7 +941,17 @@ mod tests {
             Err(CoreError::Typed { code, message }) => Some((code, message)),
             _ => None,
         };
-        for foreign in [1_u32, 2, 3, 7, 8, 9, 10, FORMAT_VERSION.saturating_add(1)] {
+        for foreign in [
+            1_u32,
+            2,
+            3,
+            7,
+            8,
+            9,
+            10,
+            11,
+            FORMAT_VERSION.saturating_add(1),
+        ] {
             // A map that only names the format: what an older or newer
             // writer's shape has in common with this one.
             let mut bytes = Vec::new();
@@ -980,10 +992,16 @@ mod tests {
             SemanticManifest::decode(&bytes),
             Err(CoreError::Storage(_))
         ));
-        // A decoded manifest whose field disagrees with the format it
-        // decoded under is refused by validation as well.
+        // A full pre-uniqueness manifest must be rebuilt, even if its old
+        // shape is otherwise identical to the current one.
         let mut stale = manifest(300, ann_seal(300));
-        stale.format_version = 9;
+        stale.format_version = 11;
+        let stale_bytes = stale.encode().expect("encode old shape");
+        assert!(matches!(
+            SemanticManifest::decode(&stale_bytes),
+            Err(CoreError::Typed { code, message })
+                if code == FORMAT_UNSUPPORTED_CODE && message.contains("rebuild")
+        ));
         assert!(matches!(
             validate(&stale),
             Err(CoreError::Typed { code, .. }) if code == FORMAT_UNSUPPORTED_CODE

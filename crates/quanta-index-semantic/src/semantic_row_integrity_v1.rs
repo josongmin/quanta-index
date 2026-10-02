@@ -244,17 +244,31 @@ pub(crate) async fn semantic_row_commitment_v1(
             rows.len()
         )));
     }
+    // Candidate lookup and exact scoring use embedding_id alone inside one
+    // generation. Check uniqueness before the canonical root ordering; this
+    // also catches a collision carried forward from a delta base.
+    rows.sort_unstable_by(|left, right| left.embedding_id.cmp(&right.embedding_id));
+    if rows
+        .iter()
+        .zip(rows.iter().skip(1))
+        .any(|(left, right)| left.embedding_id == right.embedding_id)
+    {
+        return Err(CoreError::Storage(
+            "semantic row root: duplicate embedding_id in generation".to_string(),
+        ));
+    }
     rows.sort_unstable_by(|left, right| {
         left.record_id
             .cmp(&right.record_id)
             .then_with(|| left.embedding_id.cmp(&right.embedding_id))
     });
-    let duplicated = rows.iter().zip(rows.iter().skip(1)).any(|(left, right)| {
-        left.record_id == right.record_id && left.embedding_id == right.embedding_id
-    });
-    if duplicated {
+    if rows
+        .iter()
+        .zip(rows.iter().skip(1))
+        .any(|(left, right)| left.record_id == right.record_id)
+    {
         return Err(CoreError::Storage(
-            "semantic row root: duplicate (record_id, embedding_id)".to_string(),
+            "semantic row root: duplicate record_id in generation".to_string(),
         ));
     }
     let mut root = Sha256::new();
