@@ -368,6 +368,11 @@ def test_gold_batch_replays_global_split_twice_and_publishes_independent_capsule
     assert calls == 2
     assert set(identities) == set(recipes)
     for name, identity in identities.items():
+        assert identity["schema_version"] == 2
+        assert identity["producer_source_digests"] == binding._gold_producer_source_digests()
+        assert {"python", "unicode", "tree_sitter", "tree_sitter_language_pack"} == set(
+            identity["parser_runtime"]
+        )
         assert binding.validate_gold(target / name) == identity
         selection = json.loads((target / name / "selection.json").read_bytes())
         assert selection["repository"] == name

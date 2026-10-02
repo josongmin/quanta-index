@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+import sys
 import tempfile
+import unicodedata
 from collections import defaultdict
 from importlib.metadata import version
 from pathlib import Path
@@ -537,6 +539,19 @@ def _split_binding(
     )
 
 
+def _gold_producer_source_digests() -> dict[str, str]:
+    """Bind the direct Python owners of mechanical gold and census admission."""
+    from tools.benchmark.retrieval import declaration_census_audit, gold_oracle, source_oracle
+
+    owners = {
+        "corpus_binding": Path(__file__),
+        "declaration_census_audit": Path(declaration_census_audit.__file__),
+        "gold_oracle": Path(gold_oracle.__file__),
+        "source_oracle": Path(source_oracle.__file__),
+    }
+    return {name: digest_bytes(_read_regular_file(path)) for name, path in sorted(owners.items())}
+
+
 def _gold_material(
     root: Path,
     selection: dict,
@@ -549,6 +564,7 @@ def _gold_material(
     """Re-derive labels from a validated release, never captured product rows."""
     from tools.benchmark.retrieval import gold_oracle
 
+    producer_sources = _gold_producer_source_digests()
     _selection(selection)
     if root.absolute() != Path(selection["release_path"]):
         raise EvidenceError("gold release path differs from selected corpus")
@@ -569,6 +585,8 @@ def _gold_material(
         raise EvidenceError("gold manifest differs from selected release")
     view = root / "views" / selection["repository"] / selection["view"]
     gold, blind = gold_oracle.derive(recipe, _json(manifest_raw), view)
+    if _gold_producer_source_digests() != producer_sources:
+        raise EvidenceError("gold producer source changed during derivation")
     context = {
         "release_digest": document["digest"],
         "manifest_digest": metadata["manifest_digest"],
@@ -588,16 +606,17 @@ def _gold_material(
     if any(len(raw) > 16 * 1024 * 1024 for raw in material.values()):
         raise EvidenceError("gold control document exceeds 16 MiB")
     identity = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "source_derived_gold_capsule",
         "qualification": "mechanical_unreviewed_diagnostic",
         "holdout_custody": "unsealed_external_custody_required",
         "release_digest": document["digest"],
         "manifest_digest": metadata["manifest_digest"],
-        "oracle_source_digest": digest_bytes(_read_regular_file(Path(gold_oracle.__file__))),
-        "binding_source_digest": digest_bytes(_read_regular_file(Path(__file__))),
+        "producer_source_digests": producer_sources,
         "split_binding": split_binding,
         "parser_runtime": {
+            "python": sys.version.split()[0],
+            "unicode": unicodedata.unidata_version,
             "tree_sitter": version("tree-sitter"),
             "tree_sitter_language_pack": version("tree-sitter-language-pack"),
         },
@@ -638,13 +657,7 @@ def capture_gold(
         with (stage / name).open("xb") as output:
             output.write(raw)
     identity = _verify_gold_material(stage, material)
-    from tools.benchmark.retrieval import gold_oracle
-
-    if (
-        digest_bytes(_read_regular_file(Path(gold_oracle.__file__)))
-        != identity["oracle_source_digest"]
-        or digest_bytes(_read_regular_file(Path(__file__))) != identity["binding_source_digest"]
-    ):
+    if _gold_producer_source_digests() != identity["producer_source_digests"]:
         raise EvidenceError("gold capture source changed before publication")
     if target.exists() or target.is_symlink():
         raise EvidenceError("gold output appeared before publication")
@@ -705,6 +718,7 @@ def capture_gold_batch(
     ):
         raise EvidenceError("gold batch recipe inventory differs from release repositories")
     identities: dict[str, dict] = {}
+    producer_sources = _gold_producer_source_digests()
     stage.mkdir(parents=True)
     try:
         for name in sorted(names):
@@ -732,13 +746,8 @@ def capture_gold_batch(
         # replay rejects changes to either split before atomic publication.
         if validate_split_manifest(manifest_raw, releases) != manifest:
             raise EvidenceError("gold batch split manifest changed before publication")
-        from tools.benchmark.retrieval import gold_oracle
-
-        oracle_digest = digest_bytes(_read_regular_file(Path(gold_oracle.__file__)))
-        binding_digest = digest_bytes(_read_regular_file(Path(__file__)))
-        if any(
-            identity["oracle_source_digest"] != oracle_digest
-            or identity["binding_source_digest"] != binding_digest
+        if _gold_producer_source_digests() != producer_sources or any(
+            identity["producer_source_digests"] != producer_sources
             for identity in identities.values()
         ):
             raise EvidenceError("gold capture source changed before publication")

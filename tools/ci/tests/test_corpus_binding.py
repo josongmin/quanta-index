@@ -244,11 +244,8 @@ def test_common_spec_rejects_invalid_json_bytes(raw):
 
 
 def test_gold_capture_checks_staged_bytes_without_rederiving_source(tmp_path, monkeypatch):
-    from tools.benchmark.retrieval import gold_oracle
-
     identity = {
-        "oracle_source_digest": binding.digest_bytes(Path(gold_oracle.__file__).read_bytes()),
-        "binding_source_digest": binding.digest_bytes(Path(binding.__file__).read_bytes()),
+        "producer_source_digests": binding._gold_producer_source_digests(),
     }
     material = {
         "selection.json": b"{}\n",
@@ -282,10 +279,7 @@ def test_gold_capture_refuses_source_drift_before_publication(tmp_path, monkeypa
         "recipe.json": b"{}\n",
         "gold.json": b"{}\n",
         "blind.json": b"{}\n",
-        "identity.json": canonical(
-            {"oracle_source_digest": "stale", "binding_source_digest": "stale"}
-        )
-        + b"\n",
+        "identity.json": canonical({"producer_source_digests": {"source_oracle": "stale"}}) + b"\n",
     }
     monkeypatch.setattr(binding, "_gold_material", lambda *_args: material)
     root = tmp_path / "release"
