@@ -791,9 +791,18 @@ def test_paired_typo_builder_emits_operation_and_stress_suites(tmp_path):
     assert len(first["clean"][0]["tasks"]) == 6
     assert first["clean"][0]["routes"] == ["lexical", "semble-lexical-file"]
     assert len(census["lanes"]["clean"]["records"]) == 6
+    two_edit = census["two_substitution_stress"]
+    assert two_edit["product_request_mode"] == "unsupported"
+    assert two_edit["admitted_candidates"] > 0
+    assert len(two_edit["records"]) == 6
+    assert all(row["user_intent_state"] == "unjudged" for row in two_edit["records"])
     assert all(
-        "near_name_collision" not in row["strata"]
-        for row in census["lanes"]["clean"]["records"]
+        sum(a != b for a, b in zip(row["base_query"].casefold(), row["query"].casefold())) == 2
+        for row in two_edit["records"]
+        if row["query"] is not None
+    )
+    assert all(
+        "near_name_collision" not in row["strata"] for row in census["lanes"]["clean"]["records"]
     )
     assert all(
         row["strata"]["length"] in {"short_1_6", "medium_7_16", "long_17_plus"}
@@ -838,6 +847,21 @@ def test_stress_typo_generators_are_deterministic_one_edit_and_boundary_scoped()
             "snake_boundary_deletion",
         }
     assert irs.propose_stress_typo("boundary", "plain", 7, "family", 0)[0] is None
+
+
+def test_two_substitution_probe_is_two_edits_and_not_a_product_osa1_request():
+    from tools.benchmark.retrieval import identifier_robustness_suite as irs
+    from tools.benchmark.retrieval import source_oracle as so
+
+    original = "readContext"
+    query, metadata = irs.propose_two_substitutions(original, 7, "family", 0)
+    assert (query, metadata) == irs.propose_two_substitutions(original, 7, "family", 0)
+    assert so.IDENTIFIER.fullmatch(query)
+    assert len(query) == len(original)
+    assert sum(a != b for a, b in zip(original.casefold(), query.casefold())) == 2
+    assert not so.osa_distance_at_most_one(original.casefold(), query.casefold())
+    assert metadata["operation"] == "two_substitutions"
+    assert irs.propose_two_substitutions("Go", 7, "family", 0)[0] is None
 
 
 def test_identifier_robustness_builder_is_deterministic_and_evaluator_bound(tmp_path):

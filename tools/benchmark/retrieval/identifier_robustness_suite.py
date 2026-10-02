@@ -202,6 +202,27 @@ def propose_typo_operation(
     }
 
 
+def propose_two_substitutions(
+    name: str, seed: int, family: str, attempt: int
+) -> tuple[str | None, dict]:
+    """Draw two distinct casefolded substitutions for an unscored stress probe."""
+    if len(name) < 3:
+        return None, {"ineligible": "name_shorter_than_3"}
+    draw = _draw(seed, "two-substitutions", family, attempt)
+    first = draw % len(name)
+    second = (first + 1 + (draw >> 16) % (len(name) - 1)) % len(name)
+    changed = list(name)
+    for offset, index in enumerate((first, second)):
+        letter = LETTERS[(draw >> (24 + 8 * offset)) % len(LETTERS)]
+        if name[index].casefold() == letter:
+            letter = LETTERS[(LETTERS.index(letter) + 1) % len(LETTERS)]
+        changed[index] = letter.upper() if name[index].isupper() else letter
+    return "".join(changed), {
+        "operation": "two_substitutions",
+        "indices": sorted((first, second)),
+    }
+
+
 _KEYBOARD_ROWS = (("qwertyuiop", 0.0), ("asdfghjkl", 0.5), ("zxcvbnm", 1.5))
 _KEYBOARD_POSITIONS = {
     letter: (float(row), column + offset)
@@ -213,8 +234,7 @@ _KEYBOARD_NEIGHBORS = {
         sorted(
             other
             for other, (other_row, other_col) in _KEYBOARD_POSITIONS.items()
-            if other != letter
-            and (other_row - row) ** 2 + (other_col - col) ** 2 <= 2.25
+            if other != letter and (other_row - row) ** 2 + (other_col - col) ** 2 <= 2.25
         )
     )
     for letter, (row, col) in _KEYBOARD_POSITIONS.items()
@@ -228,7 +248,9 @@ def propose_stress_typo(
     evaluator.require(lane in STRESS_TYPO_LANES, "unsupported stress typo lane")
     draw = _draw(seed, "stress", lane, family, attempt)
     if lane == "keyboard":
-        positions = [index for index, char in enumerate(name) if char.lower() in _KEYBOARD_NEIGHBORS]
+        positions = [
+            index for index, char in enumerate(name) if char.lower() in _KEYBOARD_NEIGHBORS
+        ]
         if not positions:
             return None, {"ineligible": "no_ascii_keyboard_letter"}
         index = positions[draw % len(positions)]
@@ -697,6 +719,65 @@ def derive_paired_full(
             ),
         }
         for task in tasks
+    }
+
+    # This is a source-bound candidate census, not an OSA1 product suite. A
+    # two-edit request needs its own product contract before it can be scored.
+    two_edit_records: list[dict[str, Any]] = []
+    two_edit_pool = _Pool()
+    declared_folded = {name.casefold() for name in oracle.declared_names(language)}
+    folded_file_contents = tuple(
+        raw.decode("utf-8", "replace").casefold() for raw, _digest in files.values()
+    )
+    for base in tasks:
+        rejected: list[str] = []
+        candidate = None
+        metadata: dict[str, Any] = {}
+        for attempt in range(MAX_ATTEMPTS):
+            proposal, metadata = propose_two_substitutions(
+                base["query"], seed, base["query_family_id"], attempt
+            )
+            if proposal is None:
+                rejected.append(metadata["ineligible"])
+                break
+            if source_oracle.IDENTIFIER.fullmatch(proposal) is None or not 3 <= len(proposal) <= 64:
+                rejected.append("outside_identifier_request")
+                continue
+            if proposal.casefold() in declared_folded:
+                rejected.append("exact_declaration_collision")
+                continue
+            if any(proposal.casefold() in text for text in folded_file_contents):
+                rejected.append("exact_content_collision")
+                continue
+            reason = two_edit_pool.conflict(proposal)
+            if reason:
+                rejected.append(reason)
+                continue
+            candidate = proposal
+            metadata["attempt"] = attempt
+            two_edit_pool.add(base["task_id"], proposal)
+            break
+        two_edit_records.append(
+            {
+                "base_task_id": base["task_id"],
+                "query_family_id": base["query_family_id"],
+                "base_query": base["query"],
+                "query": candidate,
+                "generation": metadata,
+                "rejected_attempts": rejected,
+                "status": "unjudged_unscored" if candidate is not None else "ineligible",
+                "near_declaration_names": (
+                    oracle.matched_names(near, candidate) if candidate is not None else []
+                ),
+                "user_intent_state": "unjudged",
+            }
+        )
+    census["two_substitution_stress"] = {
+        "contract": "unscored_two_substitutions_casefold",
+        "product_request_mode": "unsupported",
+        "admitted_candidates": sum(row["query"] is not None for row in two_edit_records),
+        "status": _tally(two_edit_records, "status"),
+        "records": two_edit_records,
     }
 
     clean = copy.deepcopy(baseline)
