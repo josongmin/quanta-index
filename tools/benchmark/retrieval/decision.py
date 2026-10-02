@@ -329,7 +329,8 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
         if (
             initial[suite_path] != row["suite_sha256"]
             or suite.get("repository_commit") != row["repository_commit"]
-            or suite.get("file_universe_digest") != source["code_only_universe_digest"]
+            or not run._is_hex(suite.get("file_universe_digest"), 64)
+            or "sha256:" + suite["file_universe_digest"] != source["code_only_universe_digest"]
             or not isinstance(tasks, list)
             or not tasks
         ):

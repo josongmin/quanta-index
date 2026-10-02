@@ -89,7 +89,7 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
         suite = {
             "suite_id": name,
             "repository_commit": row["repository_commit"],
-            "file_universe_digest": "sha256:" + "d" * 64,
+            "file_universe_digest": "d" * 64,
             "tasks": [
                 {
                     "task_id": "T1",
