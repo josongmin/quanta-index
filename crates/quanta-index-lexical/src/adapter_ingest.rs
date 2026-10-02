@@ -74,6 +74,14 @@ impl MetricSourcePort for LexicalAdapter {
             MetricPointV1::counter("lexical_seal_bytes_hashed_total", seals.bytes_hashed),
             MetricPointV1::counter("lexical_seal_files_inherited_total", seals.files_inherited),
             MetricPointV1::counter("lexical_seal_bytes_inherited_total", seals.bytes_inherited),
+            MetricPointV1::counter(
+                "lexical_seal_file_admission_files_read_total",
+                seals.file_admission_files_read,
+            ),
+            MetricPointV1::counter(
+                "lexical_seal_file_admission_bytes_read_total",
+                seals.file_admission_bytes_read,
+            ),
             MetricPointV1::counter("lexical_coverage_decodes_total", coverage.decodes),
             MetricPointV1::counter(
                 "lexical_coverage_root_bytes_read_total",

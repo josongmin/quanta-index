@@ -2,6 +2,18 @@
 
 Status: `ACTIVE — implementation and qualification remain separate`.
 
+## Implementation constraint
+
+Evolve the existing `LqQuery` and sealed-generation contracts in place. Do not
+introduce a parallel CodeSearch IR, another full-file source authority, or
+compatibility fallbacks for old generation formats. `CodeSearchPlan` is an
+internal compiled executor derived from `LqQuery`, not another public query
+model. Breaking wire or storage changes require a producer rebuild and refusal
+of stale cursors. Keep historical benchmark captures immutable for audit under
+their pinned producers; old schemas do not become live execution paths. Reuse the
+existing admission, budget, source-verification, result-window and evaluator
+owners. Remove superseded branches when their replacement is verified.
+
 Completed L1–L5 contracts are consolidated in
 [SEP-27-003](../../adr/SEP-27-003-code-search-source-and-preview-contract.md).
 Completed capture/process/I/O decisions are consolidated in

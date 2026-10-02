@@ -27,12 +27,16 @@
 //!   universe and producer event, both decoded from the same proved bytes.
 //!   Absence means unavailable capability, not complete coverage.
 //!
+//! Format 11 binds file-authority posting counts to the folded content and path
+//! surfaces only. Format 10 counted four sensitive/folded surfaces; even though
+//! its row shape is unchanged, those counts require rebuilding the generation.
+//! Format 10 introduced the full-file authority and immutable source bytes.
 //! Format 9 binds bounded immutable coverage pages through a generation root.
 //! A format-9 manifest written before the encoded-size limit was introduced
 //! may exceed the current admission ceiling; it requires an explicit rebuild
 //! rather than being classified as corrupt.
 //! Format 8 added ranked-key tables; format 7 added flat source-file coverage.
-//! Formats 8 and earlier require an explicit rebuild for the current layout.
+//! Formats 10 and earlier require an explicit rebuild for the current layout.
 //! The index's text documents carry their
 //! text-authority doc id indexed and as a fast column, so a derived match
 //! set restricts a query as one bitmap (QI-BB-024), and whose documents
@@ -65,7 +69,7 @@ pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-genera
 const MAX_SEALED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 10;
+pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 11;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -243,7 +247,7 @@ impl LexicalSealedManifest {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
-                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: ranked keys and bounded committed coverage pages); the generation must be rebuilt",
+                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: folded-only file posting counts, ranked keys and bounded committed coverage pages); the generation must be rebuilt",
                     path.display()
                 ),
             });
@@ -758,7 +762,18 @@ mod tests {
     /// one alike are never read under this build's layout.
     #[test]
     fn another_format_or_policy_is_refused_by_name() {
-        for format in [1, 3, 4, 5, 6, 7, LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1] {
+        for format in [
+            1,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1,
+        ] {
             let other_format: SealedManifestRow = (
                 format,
                 "digest".to_string(),
@@ -800,5 +815,24 @@ mod tests {
                 quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
             )
         );
+    }
+
+    #[test]
+    fn format_ten_file_posting_counts_require_rebuild_before_body_decode() {
+        // Independent legacy version oracle; no current-format row body is
+        // needed to identify incompatible file posting-count semantics.
+        let bytes = crate::channel_payloads::encode_cbor(&vec![10_u32], "test")
+            .expect("legacy version encodes");
+        let error = LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"))
+            .expect_err("format ten requires rebuild");
+        assert!(matches!(
+            error,
+            quanta_index_core::CoreError::Typed { code, message }
+                if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
+                    && message.contains("format 10")
+                    && message.contains("serves 11")
+                    && message.contains("folded-only file posting counts")
+                    && message.contains("must be rebuilt")
+        ));
     }
 }

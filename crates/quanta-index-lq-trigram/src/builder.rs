@@ -61,6 +61,7 @@ pub struct TrigramIndexBuilder {
     by_trigram: BTreeMap<Trigram, BTreeSet<DocId>>,
     by_doc: BTreeMap<DocId, BTreeSet<Trigram>>,
     posting_memberships: usize,
+    track_reverse: bool,
 }
 
 impl TrigramIndexBuilder {
@@ -80,7 +81,36 @@ impl TrigramIndexBuilder {
             by_trigram: BTreeMap::new(),
             by_doc: BTreeMap::new(),
             posting_memberships: 0,
+            track_reverse: true,
         })
+    }
+
+    /// Immutable scratch build without retaining a reverse document map.
+    /// The final index and append semantics are identical to `new`. Upserts
+    /// and removes remain correct, but locate the old footprint by scanning
+    /// the forward dictionary; incremental callers should use `new`.
+    pub fn new_forward_only(generation: u64) -> Result<Self, TrigramError> {
+        let mut builder = Self::new(generation)?;
+        builder.track_reverse = false;
+        Ok(builder)
+    }
+
+    /// Conservative forward scratch heap estimate. The per-key allowance
+    /// covers the dictionary entry and a minimally occupied posting tree;
+    /// the per-membership allowance covers additional posting tree nodes.
+    #[must_use]
+    pub fn forward_heap_bytes_estimate(&self) -> usize {
+        Self::forward_heap_bytes_for(self.posting_memberships, self.by_trigram.len())
+    }
+
+    /// The same admission charge without materializing posting trees.
+    /// A producer can count keys/memberships from authenticated source bytes
+    /// and prove the immutable builder's bound before a generation seals.
+    #[must_use]
+    pub fn forward_heap_bytes_for(posting_memberships: usize, dictionary_keys: usize) -> usize {
+        dictionary_keys
+            .saturating_mul(192)
+            .saturating_add(posting_memberships.saturating_mul(32))
     }
 
     /// Construct a builder seeded from a prior generation's index.
@@ -127,6 +157,7 @@ impl TrigramIndexBuilder {
             by_trigram,
             by_doc,
             posting_memberships,
+            track_reverse: true,
         })
     }
 
@@ -159,11 +190,15 @@ impl TrigramIndexBuilder {
         if content.len() < TRIGRAM_LEN {
             return;
         }
-        let entry = self.by_doc.entry(doc_id).or_default();
+        let mut reverse = self
+            .track_reverse
+            .then(|| self.by_doc.entry(doc_id).or_default());
         for tri in trigrams_of(content) {
-            let _newly_inserted: bool = self.by_trigram.entry(tri).or_default().insert(doc_id);
-            if entry.insert(tri) {
+            if self.by_trigram.entry(tri).or_default().insert(doc_id) {
                 self.posting_memberships = self.posting_memberships.saturating_add(1);
+            }
+            if let Some(reverse) = reverse.as_mut() {
+                let _inserted = reverse.insert(tri);
             }
         }
     }
@@ -188,16 +223,7 @@ impl TrigramIndexBuilder {
     )]
     pub fn upsert_doc(&mut self, doc_id: DocId, content: &[u8]) -> Result<(), TrigramError> {
         let _existed: bool = self.remove_doc_internal(doc_id);
-        if content.len() < TRIGRAM_LEN {
-            return Ok(());
-        }
-        let entry = self.by_doc.entry(doc_id).or_default();
-        for tri in trigrams_of(content) {
-            let _newly_inserted: bool = self.by_trigram.entry(tri).or_default().insert(doc_id);
-            if entry.insert(tri) {
-                self.posting_memberships = self.posting_memberships.saturating_add(1);
-            }
-        }
+        self.add_doc(doc_id, content);
         Ok(())
     }
 
@@ -221,9 +247,17 @@ impl TrigramIndexBuilder {
     /// Internal helper shared by [`Self::upsert_doc`] and
     /// [`Self::remove_doc`]. Returns `true` if the doc existed.
     fn remove_doc_internal(&mut self, doc_id: DocId) -> bool {
-        let Some(tris) = self.by_doc.remove(&doc_id) else {
-            return false;
+        let tris = if self.track_reverse {
+            self.by_doc.remove(&doc_id).unwrap_or_default()
+        } else {
+            self.by_trigram
+                .iter()
+                .filter_map(|(tri, postings)| postings.contains(&doc_id).then_some(*tri))
+                .collect()
         };
+        if tris.is_empty() {
+            return false;
+        }
         self.posting_memberships = self.posting_memberships.saturating_sub(tris.len());
         for tri in &tris {
             let empty_now = self.by_trigram.get_mut(tri).is_some_and(|postings| {
@@ -267,6 +301,38 @@ mod tests {
     fn fatal(msg: &str) -> ! {
         assert!(false, "{msg}");
         std::process::abort();
+    }
+
+    #[test]
+    fn forward_only_builder_keeps_one_index_and_no_reverse_footprint() {
+        let mut builder = TrigramIndexBuilder::new_forward_only(7).expect("builder");
+        builder.add_doc(DocId(9), b"abcabc");
+        builder.add_doc(DocId(2), b"abc");
+        builder.add_doc(DocId(9), b"abcd");
+        assert!(builder.by_doc.is_empty());
+        assert_eq!(builder.posting_memberships(), 5);
+        let index = builder.finish();
+        assert_eq!(index.lookup(*b"abc"), &[DocId(2), DocId(9)]);
+        assert_eq!(index.lookup(*b"bcd"), &[DocId(9)]);
+        assert!(index.lookup(*b"xyz").is_empty());
+        assert_eq!(index.generation(), 7);
+        assert!(TrigramIndexBuilder::new_forward_only(0).is_err());
+    }
+
+    #[test]
+    fn forward_only_upsert_and_delete_preserve_replay_semantics() {
+        let mut builder = TrigramIndexBuilder::new_forward_only(1).expect("builder");
+        builder.add_doc(DocId(1), b"abc");
+        builder.add_doc(DocId(2), b"abc");
+        builder.upsert_doc(DocId(1), b"xyz").expect("upsert");
+        builder.upsert_doc(DocId(1), b"xyz").expect("replay");
+        assert_eq!(builder.posting_memberships(), 2);
+        assert!(builder.remove_doc(DocId(2)).expect("remove"));
+        assert!(!builder.remove_doc(DocId(2)).expect("replay delete"));
+        assert!(builder.by_doc.is_empty());
+        let index = builder.finish();
+        assert!(index.lookup(*b"abc").is_empty());
+        assert_eq!(index.lookup(*b"xyz"), &[DocId(1)]);
     }
 
     #[test]

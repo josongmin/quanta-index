@@ -538,7 +538,12 @@ fn candidate_ids(
     eligible: Option<&BTreeSet<u64>>,
     budget: &RequestBudgetV1,
 ) -> Result<BTreeSet<u64>, CoreError> {
-    let needle = &term.needle;
+    // Per-character fold preserves every sensitive substring. Verify against
+    // the original NFC surface after this shared conservative prefilter.
+    let needle = match case {
+        CaseMode::Sensitive => normalize::fold(&term.needle),
+        CaseMode::Folded => term.needle.clone(),
+    };
     if needle.len() < 3 {
         let source_bytes = source_bytes_checked(authority, term.scope, case, eligible, budget)?;
         if eligible.map_or(authority.ordered_keys.len(), BTreeSet::len) > MAX_SHORT_SCAN_FILES
@@ -571,15 +576,10 @@ fn candidate_ids(
     trigrams.sort_unstable();
     trigrams.dedup();
     let mut hits = BTreeSet::new();
-    let sources: &[&TrigramIndex] = match (term.scope, case) {
-        (Scope::Both, CaseMode::Sensitive) => {
-            &[&authority.content_sensitive, &authority.path_sensitive]
-        }
-        (Scope::Both, CaseMode::Folded) => &[&authority.content_folded, &authority.path_folded],
-        (Scope::Content, CaseMode::Sensitive) => &[&authority.content_sensitive],
-        (Scope::Content, CaseMode::Folded) => &[&authority.content_folded],
-        (Scope::Path, CaseMode::Sensitive) => &[&authority.path_sensitive],
-        (Scope::Path, CaseMode::Folded) => &[&authority.path_folded],
+    let sources: &[&TrigramIndex] = match term.scope {
+        Scope::Both => &[&authority.content_folded, &authority.path_folded],
+        Scope::Content => &[&authority.content_folded],
+        Scope::Path => &[&authority.path_folded],
     };
     for index in sources {
         budget.checkpoint("lexical:code-search-trigram")?;
@@ -1273,12 +1273,7 @@ mod tests {
         let path_folded = normalize::fold(&path);
         let content = content.map(|value| normalize::nfc(value).into_owned());
         let content_folded = content.as_deref().map(normalize::fold);
-        let surfaces = [
-            Some(path.as_str()),
-            Some(path_folded.as_str()),
-            content.as_deref(),
-            content_folded.as_deref(),
-        ];
+        let surfaces = [Some(path_folded.as_str()), content_folded.as_deref()];
         let count: usize = surfaces
             .into_iter()
             .flatten()
@@ -1292,6 +1287,52 @@ mod tests {
             })
             .sum();
         u32::try_from(count).expect("fixture count")
+    }
+
+    #[test]
+    fn shared_folded_prefilter_keeps_sensitive_unicode_hits_and_rejects_case_collisions() {
+        let text = "ABC İΣß ẞ";
+        let path = "src/ABC.rs";
+        let source = SourceFileRevision {
+            file: SourceFileKey {
+                source_repo_id: RepoId::new("repo").expect("repo"),
+                repo_relative_path: RepoRelativePath::new(path),
+            },
+            revision_id: RevisionId::new("revision").expect("revision"),
+            source_sha256: <sha2::Sha256 as sha2::Digest>::digest(text.as_bytes()).into(),
+        };
+        let file = SourceFile {
+            source,
+            bytes: text.as_bytes().to_vec(),
+            text_admitted: true,
+            language: LanguageCode::new("rust").expect("language"),
+            indexed_text: None,
+            folded_text: None,
+            indexed_path: String::new(),
+            folded_path: String::new(),
+            expected_postings: fixture_postings(path, Some(text)),
+        };
+        let authority = from_verified_files(vec![file], None).expect("authority");
+        let budget = RequestBudgetV1::unbounded();
+        for (needle, scope, expected) in [
+            ("ABC", Scope::Content, true),
+            ("abc", Scope::Content, false),
+            ("İΣß", Scope::Content, true),
+            ("i\u{307}σß", Scope::Content, false),
+            ("ẞ", Scope::Content, true),
+            ("ABC", Scope::Path, true),
+            ("abc", Scope::Path, false),
+        ] {
+            let term = CodeSearchTerm {
+                text: needle.to_owned(),
+                needle: needle.to_owned(),
+                scope,
+                regex: None,
+            };
+            let hits = candidate_ids(&authority, &term, CaseMode::Sensitive, None, &budget)
+                .expect("sensitive search");
+            assert_eq!(!hits.is_empty(), expected, "{needle}");
+        }
     }
 
     #[test]

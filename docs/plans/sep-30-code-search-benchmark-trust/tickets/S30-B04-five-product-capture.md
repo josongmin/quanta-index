@@ -214,3 +214,21 @@ unverified. Query timers differ for local SDK/worker, loopback HTTP and cs
 process spawn, and the host was contended. The raw metrics are diagnostic
 inputs for independent gold review, external index attestation and an admitted
 fresh-root performance run.
+
+## Offline external-index audit (2026-10-02)
+
+A read-only inspection of copied service data found exactly the 99 manifest Go
+files in Sourcegraph's Zoekt shard, with all 99 shard-served source hashes
+matching. The shard contains 31 additional non-Go files. OpenGrok's copied
+Lucene index has exactly 99 live file documents; a fresh isolated reindex from
+the same verified source produced matching `full`, `defs` and `refs` posting
+digests for all 297 file/field pairs
+([attestation](/private/tmp/qi-index-attest-Z11o05Kx/attestation.json)).
+
+Neither original seven-lane capture recorded the served shard or segment
+digest together with a service process/mount identity at request time. The
+offline audit therefore does not retroactively qualify those scores. The
+current collector now records `opengrok_indexed_universe_attested=false` even
+when its API path/served-byte probe passes, and replay refuses a forged `true`.
+Future qualification requires before/after backend artifact and service mount
+binding in the existing collector, followed by a fresh capture.

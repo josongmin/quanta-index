@@ -463,7 +463,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         )
         return
     assert result["indexed_universe_attested"] is False
-    assert result["opengrok_indexed_universe_attested"] is True
+    assert result["opengrok_indexed_universe_attested"] is False
     file_count = len(json.loads(paths["suite"].read_text())["file_universe"])
     assert (
         result["opengrok_indexed_view_probe"]
@@ -556,6 +556,8 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         {"cs_binary_sha256": "0" * 64},
         {"cs_version": "wrong-version"},
         {"server_image_digests_operator_supplied": {}},
+        {"opengrok_indexed_universe_attested": True},
+        {"indexed_universe_attested": True},
         {"rows_sha256": {**result["rows_sha256"], "forged-product": "0" * 64}},
     ]
     for mutation in mutations:

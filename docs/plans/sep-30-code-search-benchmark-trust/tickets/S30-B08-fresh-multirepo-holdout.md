@@ -400,3 +400,26 @@ must make source-backed decisions, inspect missing alternatives, and enter the
 existing evaluator judgments and annotation/adjudication receipt contract before
 the reviewed lane can qualify. B08 remains `NOT_RUN` for product approval and
 the 12-repository decision.
+
+## Twelve-repository source and admission audit (2026-10-02)
+
+The frozen 12-repository `code_only` views contain 13,347 files and
+112,244,125 source bytes. An independent SHA-checked byte scan reproduced all
+240 literal tasks and 619 labeled spans with zero mismatch
+([receipt](/private/tmp/qi-b08-literal-audit-ZSdDEx/summary.json)). A blank,
+blinded two-reviewer packet covers 106 stratified mechanical tasks; no person
+has entered a relevance decision or adjudication
+([packet](/private/tmp/qi-b08-mechanical-review-26Fb6M/README.md)). The frozen
+oracle-v1 capsules still require current-source recapture; this audit cannot
+upgrade their status.
+
+Six repositories exceeded the previous 2,000,000-membership file-index cap.
+Their verified frozen bytes yield 1,362,878–3,379,823 memberships when the
+same case-folded content/path candidate index is used for both case modes
+([exact census](/private/tmp/qi-file-admission-census/final-policy-census.json)).
+The current source changes use that single candidate index per surface, retain
+exact original-text verification, admit at most 4,000,000 memberships and
+check a 128 MiB builder estimate at seal and cold open. This is a source-level
+admission calculation conditional on producer text coverage. Full ingest,
+activation, physical RSS, all 12 repository captures and B08 product
+qualification remain `NOT_RUN`.

@@ -823,7 +823,9 @@ def capture(spec_path: Path) -> dict:
         "binding": binding,
         "tasks": len(tasks),
         "indexed_universe_attested": False,
-        "opengrok_indexed_universe_attested": probe_indexed_view,
+        # The API inventory and served bytes do not attest Lucene postings.
+        # Backend artifact/process binding is required for that stronger claim.
+        "opengrok_indexed_universe_attested": False,
         "opengrok_indexed_view_probe": (
             "exact_indexed_inventory_and_served_bytes_bracketing_queries"
             if probe_indexed_view
@@ -906,8 +908,7 @@ def verify(root: Path) -> dict:
         or summary["schema_version"] != 1
         or summary.get("status") != "diagnostic_unqualified"
         or summary.get("indexed_universe_attested") is not False
-        or summary.get("opengrok_indexed_universe_attested")
-        is not (spec["opengrok"].get("indexed_view_probe") == "full")
+        or summary.get("opengrok_indexed_universe_attested") is not False
         or summary.get("opengrok_indexed_view_probe")
         != (
             "exact_indexed_inventory_and_served_bytes_bracketing_queries"

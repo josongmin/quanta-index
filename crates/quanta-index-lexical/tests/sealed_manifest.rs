@@ -2214,28 +2214,31 @@ fn scrub_quarantines_a_tampered_coverage_root_before_page_expansion() -> TestRes
 }
 
 #[test]
-fn format_eight_requires_explicit_rebuild() -> TestResult {
-    let temp = tempfile::tempdir()?;
-    let root = temp.path().to_path_buf();
-    let adapter = LexicalAdapter::with_state_root(root.clone());
-    let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
-    let manifest = generation_dir(&root, generation).join(MANIFEST);
-    let raw = std::fs::read(&manifest)?;
-    let mut value: ciborium::Value = ciborium::from_reader(raw.as_slice())?;
-    let ciborium::Value::Array(fields) = &mut value else {
-        return Err("manifest is not an array".into());
-    };
-    let version = fields.first_mut().ok_or("missing manifest version")?;
-    *version = ciborium::Value::Integer(8.into());
-    let mut legacy = Vec::new();
-    ciborium::into_writer(&value, &mut legacy)?;
-    std::fs::write(manifest, legacy)?;
-    expect_refused(
-        &knock(&adapter, generation),
-        "format eight requires rebuild",
-        "GENERATION_MANIFEST_FORMAT_UNSUPPORTED",
-    )?;
+fn older_formats_require_explicit_rebuild() -> TestResult {
+    for format in [8, 9, 10] {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().to_path_buf();
+        let adapter = LexicalAdapter::with_state_root(root.clone());
+        let generation = ManifestGeneration::new(1);
+        adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        expect_admitted(&knock(&adapter, generation), "current format eleven")?;
+        let manifest = generation_dir(&root, generation).join(MANIFEST);
+        let raw = std::fs::read(&manifest)?;
+        let mut value: ciborium::Value = ciborium::from_reader(raw.as_slice())?;
+        let ciborium::Value::Array(fields) = &mut value else {
+            return Err("manifest is not an array".into());
+        };
+        let version = fields.first_mut().ok_or("missing manifest version")?;
+        *version = ciborium::Value::Integer(format.into());
+        let mut legacy = Vec::new();
+        ciborium::into_writer(&value, &mut legacy)?;
+        std::fs::write(manifest, legacy)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("format {format} requires rebuild"),
+            "GENERATION_MANIFEST_FORMAT_UNSUPPORTED",
+        )?;
+    }
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-//! QI-BB-006 보완 #4 — a seal reads bytes proportional to what the
+//! QI-BB-006 보완 #4 — commitment hashing reads bytes proportional to what the
 //! generation changed, not to its size.
 //!
 //! The seal commits every file a query opens with its length and SHA-256.
@@ -10,6 +10,8 @@
 //! is the base's, and the seal's own measurement — bytes it read through
 //! its hasher, bytes it inherited — must equal the sizes of exactly those
 //! partitions. Nothing here reads a clock.
+//! File-index admission reads every source path separately, including inherited
+//! source bytes; its counters must not be mixed with commitment inheritance.
 
 #![forbid(unsafe_code)]
 
@@ -25,8 +27,8 @@ use quanta_index_contract::{
     RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
 };
 use quanta_index_core::{
-    GenerationStorageKeyV1, LexicalIndexOpenPort, RepoMetaIngestPort, RequestBudgetV1,
-    SearchCorpusBatchBuildPort,
+    GenerationStorageKeyV1, LexicalIndexOpenPort, MetricSourcePort, MetricValueV1,
+    RepoMetaIngestPort, RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::{LexicalAdapter, LexicalSealCommitmentStats};
 
@@ -253,7 +255,80 @@ fn delta_stats(
         bytes_hashed: after.bytes_hashed.saturating_sub(before.bytes_hashed),
         files_inherited: after.files_inherited.saturating_sub(before.files_inherited),
         bytes_inherited: after.bytes_inherited.saturating_sub(before.bytes_inherited),
+        file_admission_files_read: after
+            .file_admission_files_read
+            .saturating_sub(before.file_admission_files_read),
+        file_admission_bytes_read: after
+            .file_admission_bytes_read
+            .saturating_sub(before.file_admission_bytes_read),
     }
+}
+
+#[test]
+fn file_admission_counts_inherited_source_reads_separately() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    let adapter = LexicalAdapter::with_state_root(root.to_path_buf());
+    let g1 = ManifestGeneration::new(1);
+    let g2 = ManifestGeneration::new(2);
+    let original = "fn original() { firstsentinel }";
+    let inherited = "fn unchanged() { secondsentinel }";
+    let replacement = "fn replacement() { thirdsentinel }";
+    adapter.build_batch(&batch(
+        g1,
+        None,
+        vec![scope(0, original)?, scope(1, inherited)?],
+    )?)?;
+    let base_stats = adapter.seal_commitment_stats()?;
+    assert_eq!(base_stats.file_admission_files_read, 2);
+    assert_eq!(
+        base_stats.file_admission_bytes_read,
+        u64::try_from(original.len() + inherited.len())?
+    );
+    let base_files = committed_files(&generation_dir(root, g1))?;
+    adapter.build_batch(&batch(g2, Some(g1), vec![scope(0, replacement)?])?)?;
+    let after = adapter.seal_commitment_stats()?;
+    let delta = delta_stats(base_stats, after);
+    let delta_files = committed_files(&generation_dir(root, g2))?;
+    let source_files: Vec<_> = delta_files
+        .iter()
+        .filter(|file| file.name.starts_with("file-authority/") && file.name.ends_with(".bin"))
+        .collect();
+    assert_eq!(source_files.len(), 2);
+    assert_eq!(
+        source_files
+            .iter()
+            .filter(|file| base_files.iter().any(|base| base.inode == file.inode))
+            .count(),
+        1
+    );
+    assert_eq!(delta.file_admission_files_read, 2);
+    assert_eq!(
+        delta.file_admission_bytes_read,
+        total_bytes(source_files.iter().copied())
+    );
+    assert_eq!(
+        delta.file_admission_bytes_read,
+        u64::try_from(replacement.len() + inherited.len())?
+    );
+    assert!(delta.files_inherited > 0);
+    assert!(delta.bytes_inherited >= u64::try_from(inherited.len())?);
+    let metrics = adapter.scrape()?;
+    for (name, count) in [
+        (
+            "lexical_seal_file_admission_files_read_total",
+            after.file_admission_files_read,
+        ),
+        (
+            "lexical_seal_file_admission_bytes_read_total",
+            after.file_admission_bytes_read,
+        ),
+    ] {
+        assert!(metrics.iter().any(|metric| {
+            metric.name == name && metric.value == MetricValueV1::Counter(count)
+        }));
+    }
+    Ok(())
 }
 
 fn hit_ids(

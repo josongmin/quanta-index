@@ -29,10 +29,13 @@ const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 // A cold open can index an admitted 8 MiB source. Check the request between
 // bounded slices instead of waiting for an entire file's trigram build.
 const TRIGRAM_BUILD_SLICE_BYTES: usize = 64 * 1024;
-// Four scratch builders retain both forward and reverse posting maps while a
-// generation opens. A source-byte cap alone cannot bound that heap: one 8 MiB
-// high-entropy file can contain millions of distinct byte trigrams.
-const MAX_FILE_INDEX_POSTING_MEMBERSHIPS: usize = 2_000_000;
+// Only folded content/path postings are retained. Sensitive matches are
+// verified against the original NFC surfaces, so this candidate superset
+// shares one index per surface. Forward-only scratch omits reverse postings.
+// Bound both total memberships and each dictionary's estimated scratch heap;
+// a high-entropy source can have many singleton dictionary entries.
+const MAX_FILE_INDEX_POSTING_MEMBERSHIPS: usize = 4_000_000;
+const MAX_FILE_INDEX_BUILD_HEAP_BYTES: usize = 128 * 1024 * 1024;
 const TRIGRAM_BITMAP_BYTES: usize = 2 * 1024 * 1024;
 
 // This sealed artifact evolves the existing manifest. Counts are per source
@@ -69,9 +72,7 @@ impl SourceFile {
 pub(crate) struct FileAuthority {
     pub(crate) files: BTreeMap<SourceFileKey, SourceFile>,
     pub(crate) ordered_keys: Vec<SourceFileKey>,
-    pub(crate) content_sensitive: TrigramIndex,
     pub(crate) content_folded: TrigramIndex,
-    pub(crate) path_sensitive: TrigramIndex,
     pub(crate) path_folded: TrigramIndex,
 }
 
@@ -101,20 +102,15 @@ impl FileAuthority {
                         .saturating_add(file.folded_path.len()),
                 ))
         });
-        [
-            &self.content_sensitive,
-            &self.content_folded,
-            &self.path_sensitive,
-            &self.path_folded,
-        ]
-        .iter()
-        .fold(bytes, |total, index| {
-            index.iter().fold(total, |total, (_tri, postings)| {
-                total
-                    .saturating_add(64)
-                    .saturating_add(saturating_usize_to_u64(postings.len()).saturating_mul(8))
+        [&self.content_folded, &self.path_folded]
+            .iter()
+            .fold(bytes, |total, index| {
+                index.iter().fold(total, |total, (_tri, postings)| {
+                    total
+                        .saturating_add(64)
+                        .saturating_add(saturating_usize_to_u64(postings.len()).saturating_mul(8))
+                })
             })
-        })
     }
 }
 
@@ -419,6 +415,173 @@ fn doc_id_for_index(index: usize) -> Result<DocId, CoreError> {
         .map_err(|error| CoreError::Storage(format!("lexical: file id overflow: {error}")))
 }
 
+// Admission bookkeeping, discarded after proof; the only serving index is
+// the canonical TrigramIndex. The bitmaps charge dictionary keys once per
+// surface and memberships once per file, including repeated source digests.
+struct FileIndexAdmission {
+    dictionaries: [Vec<u8>; 2],
+    local: Vec<u8>,
+    dictionary_keys: [usize; 2],
+    memberships: [usize; 2],
+    total: usize,
+}
+
+impl FileIndexAdmission {
+    fn new() -> Self {
+        Self {
+            dictionaries: std::array::from_fn(|_| vec![0; TRIGRAM_BITMAP_BYTES]),
+            local: vec![0; TRIGRAM_BITMAP_BYTES],
+            dictionary_keys: [0; 2],
+            memberships: [0; 2],
+            total: 0,
+        }
+    }
+
+    fn add(
+        &mut self,
+        path: &str,
+        content: Option<&str>,
+        expected: u32,
+        max_heap_bytes: usize,
+        budget: Option<&RequestBudgetV1>,
+    ) -> Result<(), CoreError> {
+        let prior = self.total;
+        for (surface, bytes) in [Some(path.as_bytes()), content.map(str::as_bytes)]
+            .into_iter()
+            .enumerate()
+        {
+            let Some(bytes) = bytes else {
+                continue;
+            };
+            self.local.fill(0);
+            for (offset, [first, second, third]) in trigrams_of(bytes).enumerate() {
+                if offset % TRIGRAM_BUILD_SLICE_BYTES == 0 {
+                    checkpoint(budget)?;
+                }
+                let key =
+                    (usize::from(first) << 16) | (usize::from(second) << 8) | usize::from(third);
+                let mask = 1_u8 << (key & 7);
+                let local = self
+                    .local
+                    .get_mut(key >> 3)
+                    .ok_or_else(|| invalid("trigram bitmap index overflow"))?;
+                if *local & mask != 0 {
+                    continue;
+                }
+                *local |= mask;
+                self.total = self.total.saturating_add(1);
+                let memberships = self
+                    .memberships
+                    .get_mut(surface)
+                    .ok_or_else(|| invalid("trigram surface outside admission"))?;
+                *memberships = memberships.saturating_add(1);
+                let dictionary = self
+                    .dictionaries
+                    .get_mut(surface)
+                    .and_then(|bitmap| bitmap.get_mut(key >> 3))
+                    .ok_or_else(|| invalid("dictionary bitmap index overflow"))?;
+                let keys = self
+                    .dictionary_keys
+                    .get_mut(surface)
+                    .ok_or_else(|| invalid("dictionary surface outside admission"))?;
+                if *dictionary & mask == 0 {
+                    *dictionary |= mask;
+                    *keys = keys.saturating_add(1);
+                }
+                if self.total > MAX_FILE_INDEX_POSTING_MEMBERSHIPS {
+                    return Err(invalid(
+                        "file trigram posting membership admission exceeded",
+                    ));
+                }
+                if TrigramIndexBuilder::forward_heap_bytes_for(*memberships, *keys) > max_heap_bytes
+                {
+                    return Err(invalid("file trigram scratch heap admission exceeded"));
+                }
+            }
+        }
+        if self.total.saturating_sub(prior)
+            != usize::try_from(expected)
+                .map_err(|error| invalid(&format!("manifest posting count: {error}")))?
+        {
+            return Err(invalid("file posting count differs from sealed manifest"));
+        }
+        checkpoint(budget)
+    }
+}
+
+/// Prove the dictionary/membership bound before writing the sealed manifest.
+///
+/// Read each complete source once, using explicit staged
+/// coverage for text admission; no query index or live worktree is consulted.
+/// Return actual source-path reads and bytes, separately from commitment hashing.
+pub(crate) fn validate_index_build_budget(
+    generation_dir: &Path,
+    identity: &quanta_index_contract::GenerationSnapshot,
+    rows: &[FileManifestRow],
+) -> Result<(u64, u64), CoreError> {
+    if rows.is_empty() {
+        return Ok((0, 0));
+    }
+    let coverage =
+        crate::sealed_generation::coverage::read_staged_coverage(generation_dir, identity)?
+            .ok_or_else(|| invalid("source coverage missing at seal"))?;
+    if coverage.coverage.len() != rows.len() {
+        return Err(invalid("source coverage universe differs at seal"));
+    }
+    let mut admission = FileIndexAdmission::new();
+    let mut source_bytes = 0_usize;
+    for (source, expected) in rows {
+        let coverage_row = coverage
+            .coverage
+            .get(&source.file)
+            .ok_or_else(|| invalid("source missing from coverage at seal"))?;
+        if coverage_row.source != *source {
+            return Err(invalid("source identity differs from coverage at seal"));
+        }
+        let name = artifact_name(source);
+        let mut file =
+            crate::sealed_generation::open_regular_nofollow(generation_dir, Path::new(&name))
+                .map_err(|error| {
+                    CoreError::Storage(format!("lexical: open source at seal {name}: {error}"))
+                })?;
+        let bytes = crate::sealed_generation::read_opened_bounded(&mut file, MAX_FILE_BYTES)
+            .map_err(|error| corrupt(generation_dir, &name, &format!("source read: {error}")))?;
+        source_bytes = source_bytes.saturating_add(bytes.len());
+        if source_bytes > MAX_TOTAL_SOURCE_BYTES {
+            return Err(invalid(
+                "file authority exceeds 128 MiB source byte admission",
+            ));
+        }
+        let observed: [u8; 32] = Sha256::digest(&bytes).into();
+        if observed != source.source_sha256 {
+            return Err(invalid(
+                "source bytes digest differs from source revision at seal",
+            ));
+        }
+        let raw =
+            if coverage_row.text_admitted {
+                Some(std::str::from_utf8(&bytes).map_err(|error| {
+                    invalid(&format!("text-admitted source is not UTF-8: {error}"))
+                })?)
+            } else {
+                None
+            };
+        let (_, folded_path, _, folded_content) =
+            normalized_surfaces(source.file.repo_relative_path.as_str(), raw);
+        admission.add(
+            &folded_path,
+            folded_content.as_deref(),
+            *expected,
+            MAX_FILE_INDEX_BUILD_HEAP_BYTES,
+            None,
+        )?;
+    }
+    Ok((
+        saturating_usize_to_u64(rows.len()),
+        saturating_usize_to_u64(source_bytes),
+    ))
+}
+
 pub(crate) fn from_verified_files(
     files: Vec<SourceFile>,
     budget: Option<&RequestBudgetV1>,
@@ -432,14 +595,10 @@ pub(crate) fn from_verified_files(
         }
         checkpoint(budget)?;
     }
-    let mut content_sensitive = TrigramIndexBuilder::new(1)
-        .map_err(|error| CoreError::Storage(format!("lexical: file content index: {error}")))?;
-    let mut content_folded = TrigramIndexBuilder::new(1).map_err(|error| {
+    let mut content_folded = TrigramIndexBuilder::new_forward_only(1).map_err(|error| {
         CoreError::Storage(format!("lexical: folded file content index: {error}"))
     })?;
-    let mut path_sensitive = TrigramIndexBuilder::new(1)
-        .map_err(|error| CoreError::Storage(format!("lexical: file path index: {error}")))?;
-    let mut path_folded = TrigramIndexBuilder::new(1)
+    let mut path_folded = TrigramIndexBuilder::new_forward_only(1)
         .map_err(|error| CoreError::Storage(format!("lexical: folded file path index: {error}")))?;
     let mut ordered_keys = Vec::with_capacity(by_key.len());
     let mut posting_memberships = 0_usize;
@@ -448,14 +607,6 @@ pub(crate) fn from_verified_files(
         let id = doc_id_for_index(index)?;
         let prior_memberships = posting_memberships;
         add_doc_with_checkpoints(
-            &mut path_sensitive,
-            id,
-            file.indexed_path.as_bytes(),
-            &mut posting_memberships,
-            MAX_FILE_INDEX_POSTING_MEMBERSHIPS,
-            || checkpoint(budget),
-        )?;
-        add_doc_with_checkpoints(
             &mut path_folded,
             id,
             file.folded_path.as_bytes(),
@@ -463,15 +614,7 @@ pub(crate) fn from_verified_files(
             MAX_FILE_INDEX_POSTING_MEMBERSHIPS,
             || checkpoint(budget),
         )?;
-        if let (Some(indexed), Some(folded)) = (&file.indexed_text, &file.folded_text) {
-            add_doc_with_checkpoints(
-                &mut content_sensitive,
-                id,
-                indexed.as_bytes(),
-                &mut posting_memberships,
-                MAX_FILE_INDEX_POSTING_MEMBERSHIPS,
-                || checkpoint(budget),
-            )?;
+        if let Some(folded) = &file.folded_text {
             add_doc_with_checkpoints(
                 &mut content_folded,
                 id,
@@ -491,20 +634,14 @@ pub(crate) fn from_verified_files(
         ordered_keys.push(key.clone());
     }
     checkpoint(budget)?;
-    let content_sensitive = content_sensitive.finish();
-    checkpoint(budget)?;
     let content_folded = content_folded.finish();
-    checkpoint(budget)?;
-    let path_sensitive = path_sensitive.finish();
     checkpoint(budget)?;
     let path_folded = path_folded.finish();
     checkpoint(budget)?;
     Ok(FileAuthority {
         files: by_key,
         ordered_keys,
-        content_sensitive,
         content_folded,
-        path_sensitive,
         path_folded,
     })
 }
@@ -545,13 +682,11 @@ fn source_posting_memberships(
     } else {
         None
     };
-    let (path, folded_path, content, folded_content) =
+    let (_, folded_path, _, folded_content) =
         normalized_surfaces(source.file.repo_relative_path.as_str(), raw);
     let mut total = 0_usize;
     for surface in [
-        Some(path.as_bytes()),
         Some(folded_path.as_bytes()),
-        content.as_deref().map(str::as_bytes),
         folded_content.as_deref().map(str::as_bytes),
     ]
     .into_iter()
@@ -619,6 +754,7 @@ where
             CoreError::Storage("lexical: trigram build slice outside source".into())
         })?;
         builder.add_doc(id, slice);
+        ensure_trigram_build_heap(builder, MAX_FILE_INDEX_BUILD_HEAP_BYTES)?;
         let current = total_memberships
             .saturating_sub(prior)
             .saturating_add(builder.posting_memberships());
@@ -637,6 +773,17 @@ where
         .saturating_sub(prior)
         .saturating_add(builder.posting_memberships());
     checkpoint()
+}
+
+fn ensure_trigram_build_heap(
+    builder: &TrigramIndexBuilder,
+    max_heap_bytes: usize,
+) -> Result<(), CoreError> {
+    if builder.forward_heap_bytes_estimate() > max_heap_bytes {
+        Err(invalid("file trigram scratch heap admission exceeded"))
+    } else {
+        Ok(())
+    }
 }
 
 fn checkpoint(budget: Option<&RequestBudgetV1>) -> Result<(), CoreError> {
@@ -660,6 +807,75 @@ mod tests {
     };
     use quanta_index_lq_trigram::{DocId, TrigramIndexBuilder};
     use sha2::Digest as _;
+
+    #[test]
+    fn shared_source_admission_refuses_high_entropy_dictionary_before_build() {
+        let mut diverse = super::FileIndexAdmission::new();
+        let error = diverse
+            .add("x", Some("abcdefghijk"), 9, 1_000, None)
+            .expect_err("nine distinct keys exceed dictionary byte admission");
+        assert!(
+            matches!(error, quanta_index_core::CoreError::InvalidContract(message)
+            if message.contains("scratch heap"))
+        );
+        let repeated_source = "abc".repeat(1_000);
+        let mut repeated = super::FileIndexAdmission::new();
+        repeated
+            .add("x", Some(&repeated_source), 3, 1_000, None)
+            .expect("three distinct trigrams fit regardless of source repetitions");
+        repeated
+            .add("x", Some(&repeated_source), 3, 1_000, None)
+            .expect("dictionary is shared, memberships remain per file");
+        assert_eq!(repeated.total, 6);
+        assert_eq!(repeated.dictionary_keys, [0, 3]);
+    }
+
+    #[test]
+    fn shared_source_admission_binds_counts_even_without_constructing_postings() {
+        let mut admission = super::FileIndexAdmission::new();
+        let error = admission
+            .add("abc", Some("def"), 1, usize::MAX, None)
+            .expect_err("two surface memberships cannot claim one");
+        assert!(
+            matches!(error, quanta_index_core::CoreError::InvalidContract(message)
+            if message.contains("posting count differs"))
+        );
+    }
+
+    #[test]
+    fn scratch_heap_admission_counts_distinct_postings_not_source_repetitions() {
+        let mut dense = TrigramIndexBuilder::new_forward_only(1).expect("builder");
+        for id in 1..=1_000 {
+            dense.add_doc(DocId(id), b"abc");
+        }
+        assert!(super::ensure_trigram_build_heap(&dense, 16_384).is_err());
+        let mut repeated = TrigramIndexBuilder::new_forward_only(1).expect("builder");
+        for _ in 0..1_000 {
+            repeated.add_doc(DocId(1), b"abc");
+        }
+        assert!(super::ensure_trigram_build_heap(&repeated, 16_384).is_ok());
+    }
+
+    #[test]
+    fn folded_manifest_admits_more_than_old_duplicate_membership_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = SourceFileRevision {
+            file: SourceFileKey {
+                source_repo_id: RepoId::new("repo").expect("repo"),
+                repo_relative_path: RepoRelativePath::new("src/a.rs"),
+            },
+            revision_id: RevisionId::new("revision").expect("revision"),
+            source_sha256: [7; 32],
+        };
+        let mut admitted = Vec::new();
+        ciborium::into_writer(&vec![(source, 3_379_823_u32)], &mut admitted).expect("encode");
+        assert_eq!(
+            decode_verified_manifest(&admitted, dir.path())
+                .expect("admitted")
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn sliced_trigram_build_preserves_boundary_windows() {
@@ -805,7 +1021,7 @@ mod tests {
         ciborium::into_writer(&vec![source.clone()], &mut old).expect("old encode");
         assert!(decode_verified_manifest(&old, dir.path()).is_err());
         let mut over = Vec::new();
-        ciborium::into_writer(&vec![(source, 2_000_001_u32)], &mut over).expect("over encode");
+        ciborium::into_writer(&vec![(source, 4_000_001_u32)], &mut over).expect("over encode");
         assert!(decode_verified_manifest(&over, dir.path()).is_err());
     }
 
@@ -829,12 +1045,12 @@ mod tests {
             indexed_path: String::new(),
             folded_path: String::new(),
             // "a.rs" has two distinct trigrams and "abc" has one; each
-            // appears once in the sensitive and folded index.
-            expected_postings: 6,
+            // appears once in the shared folded index.
+            expected_postings: 3,
         };
         assert!(from_verified_files(vec![file.clone()], None).is_ok());
         let mut forged = file;
-        forged.expected_postings = 5;
+        forged.expected_postings = 2;
         assert!(matches!(
             from_verified_files(vec![forged], None),
             Err(quanta_index_core::CoreError::InvalidContract(message))

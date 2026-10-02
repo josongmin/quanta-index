@@ -6,7 +6,7 @@
 //! crash in between leaves an unsealed generation, never a sealed one
 //! without a manifest.
 //!
-//! The seal reads bytes proportional to what the generation changed, not
+//! Commitment hashing reads bytes proportional to what the generation changed, not
 //! to its size (QI-BB-006 보완 #4): a file whose inode is the base
 //! generation's — an index segment, a text-authority shard or an overlay
 //! the delta inherited by hard link — carries the base manifest's
@@ -17,7 +17,10 @@
 //! are hashed at seal because in-place changes must not bypass the prepared
 //! coverage root. A fresh generation is therefore proved whole at its seal.
 //!
-//! The measurement is reported per seal so a test can hold the seal to
+//! File-index admission separately reads every source path, including inherited
+//! source artifacts, to prove the normalized dictionary and membership bounds.
+//!
+//! The measurements are reported per seal so a test can hold the seal to
 //! that shape with an inode oracle instead of a clock.
 
 use std::collections::BTreeMap;
@@ -54,8 +57,9 @@ use crate::{SchemaFields, TANTIVY_INDEX_META_FILE_NAME, TEXT_DOC_KIND};
 /// (QI-BB-006 보완 #4).
 ///
 /// Every committed file is counted under exactly one of two sources.
-/// `bytes_hashed` is what the seals actually read through their hasher;
-/// `bytes_inherited` is what they did not have to read.
+/// `bytes_hashed` is what the commitment hasher reads; `bytes_inherited`
+/// bypasses that hasher. File-index admission may read inherited source bytes
+/// again and reports its reads separately.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LexicalSealCommitmentStats {
     /// Generations sealed.
@@ -67,8 +71,12 @@ pub struct LexicalSealCommitmentStats {
     /// Files whose commitment was carried from the base generation's
     /// manifest because the file is the base's inode.
     pub files_inherited: u64,
-    /// Their length, not read.
+    /// Their length, not read by the commitment hasher.
     pub bytes_inherited: u64,
+    /// Source paths read by file-index admission, including inherited artifacts.
+    pub file_admission_files_read: u64,
+    /// Source bytes read by file-index admission, counted per source path.
+    pub file_admission_bytes_read: u64,
 }
 
 impl LexicalSealCommitmentStats {
@@ -79,6 +87,12 @@ impl LexicalSealCommitmentStats {
         self.bytes_hashed = self.bytes_hashed.saturating_add(seal.bytes_hashed);
         self.files_inherited = self.files_inherited.saturating_add(seal.files_inherited);
         self.bytes_inherited = self.bytes_inherited.saturating_add(seal.bytes_inherited);
+        self.file_admission_files_read = self
+            .file_admission_files_read
+            .saturating_add(seal.file_admission_files_read);
+        self.file_admission_bytes_read = self
+            .file_admission_bytes_read
+            .saturating_add(seal.file_admission_bytes_read);
     }
 
     fn hashed(&mut self, bytes: u64) {
@@ -419,6 +433,10 @@ pub(crate) fn seal_generation(
         overlays,
         source_coverage,
     };
+    let (files_read, bytes_read) =
+        file_authority::validate_index_build_budget(generation_dir, identity, &file_rows)?;
+    measurer.stats.file_admission_files_read = files_read;
+    measurer.stats.file_admission_bytes_read = bytes_read;
     write_manifest(generation_dir, &manifest)?;
     Ok(measurer.stats)
 }
