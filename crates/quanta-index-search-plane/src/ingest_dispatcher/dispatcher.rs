@@ -13,7 +13,7 @@ use quanta_index_core::{
     FileOwnershipIngestPort, IdempotencyCatalogPort, IdempotencyKeyV1, IngestBatchBodyV1,
     OperationInspectV1, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
     RepoMapBundleIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1,
-    SearchCorpusIngestPort,
+    SearchCorpusIngestPort, now_unix_ms,
 };
 use quanta_index_ipc::{BatchDigestVerdictV1, verify_batch_digest_v1};
 
@@ -27,8 +27,14 @@ use crate::ingest_dispatcher::ports::{
 // =============================================================================
 
 /// How long one ingest claim holds its journal lease before recovery can
-/// abort it.
+/// abort it. The catalog takes an absolute Unix-millisecond deadline.
 const INGEST_CLAIM_LEASE_MS: u64 = 30_000;
+
+fn ingest_claim_deadline_ms() -> Result<u64, CoreError> {
+    now_unix_ms()
+        .checked_add(INGEST_CLAIM_LEASE_MS)
+        .ok_or_else(|| CoreError::Storage("ingest claim deadline overflow".to_string()))
+}
 
 /// The owner identity every ingest claim of this process carries.
 fn claim_owner() -> String {
@@ -146,7 +152,19 @@ impl SearchPlaneIngestDispatcher {
     ) -> Result<BatchPublishReceipt, CoreError> {
         // Stage 1 — intrinsic validation: canonical decode and digest.
         let body_sha256 = verified_batch_digest_v1(body)?;
-        let body: &B = body;
+        self.publish_idempotent_verified(body, body_sha256, preflight, apply)
+    }
+
+    /// Continue after this exact body was verified. The source-event path
+    /// verifies before its replay lookup and can pass the same digest here;
+    /// no caller may mutate the batch between that verification and apply.
+    fn publish_idempotent_verified<B: IngestBatchBodyV1>(
+        &self,
+        body: &B,
+        body_sha256: [u8; 32],
+        preflight: impl FnOnce(&B) -> Result<(), CoreError>,
+        apply: impl FnOnce(&B) -> Result<BatchPublishReceipt, CoreError>,
+    ) -> Result<BatchPublishReceipt, CoreError> {
         let key = IdempotencyKeyV1 {
             kind: B::OPERATION,
             repo_id: body.repo_id().clone(),
@@ -172,12 +190,15 @@ impl SearchPlaneIngestDispatcher {
             | OperationInspectV1::InFlight { .. }
             | OperationInspectV1::Uncertain { .. } => {}
         }
-        // Stage 3 — immutable prepare.
+        // Stage 3 — immutable prepare. The catalog compares this value to
+        // Unix time; passing the lease duration here expires immediately.
+        let owner = claim_owner();
+        let prepare_deadline_ms = ingest_claim_deadline_ms()?;
         let prepared = self.idempotency.prepare(
             &key,
             &body_sha256,
-            &claim_owner(),
-            INGEST_CLAIM_LEASE_MS,
+            &owner,
+            prepare_deadline_ms,
             &body_sha256,
         )?;
         // Stage 4 — source preflight remains retryable. A prior attempt can
@@ -189,16 +210,19 @@ impl SearchPlaneIngestDispatcher {
             if B::OPERATION != IngestOperationKindV1::SearchCorpus
                 && is_frozen_policy_refusal(&error)
             {
-                let _refused = self.idempotency.record_refused(&prepared, &error);
+                let _refused = self.idempotency.record_refused(&prepared, &error)?;
             }
             return Err(error);
         }
         // Stage 5 — fenced claim.
+        // Preflight can take time. Start the applying claim's lease when it
+        // is actually taken, rather than spending it during preflight.
+        let claim_deadline_ms = ingest_claim_deadline_ms()?;
         let claim = match self.idempotency.claim_prepared(
             &key,
             &body_sha256,
-            &claim_owner(),
-            INGEST_CLAIM_LEASE_MS,
+            &owner,
+            claim_deadline_ms,
             &body_sha256,
         )? {
             ClaimOutcomeV1::Replay {
@@ -215,7 +239,7 @@ impl SearchPlaneIngestDispatcher {
             Ok(receipt) => match self.idempotency.commit(&claim, &receipt) {
                 Ok(durable_sequence) => Ok(receipt.recorded_at(durable_sequence)),
                 Err(error) => {
-                    let _uncertain = self.idempotency.mark_uncertain(&claim);
+                    self.idempotency.mark_uncertain(&claim)?;
                     Err(error)
                 }
             },
@@ -227,9 +251,9 @@ impl SearchPlaneIngestDispatcher {
                 if B::OPERATION != IngestOperationKindV1::SearchCorpus
                     && is_frozen_policy_refusal(&error)
                 {
-                    let _refused = self.idempotency.record_refused(&claim, &error);
+                    let _refused = self.idempotency.record_refused(&claim, &error)?;
                 } else {
-                    let _uncertain = self.idempotency.mark_uncertain(&claim);
+                    self.idempotency.mark_uncertain(&claim)?;
                 }
                 Err(error)
             }
@@ -253,7 +277,7 @@ impl SearchPlaneIngestDispatcher {
         ),
         CoreError,
     > {
-        let _body_digest = verified_batch_digest_v1(batch)?;
+        let body_digest = verified_batch_digest_v1(batch)?;
         batch
             .validate_v1()
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
@@ -339,8 +363,12 @@ impl SearchPlaneIngestDispatcher {
         // here would consume the stream even when apply refuses a damaged
         // target before doing any work. Replay and reconciliation still use
         // this same catalog and the original operation journal.
-        let receipt =
-            self.publish_idempotent(batch, |batch| self.lexical.preflight_batch(batch), apply)?;
+        let receipt = self.publish_idempotent_verified(
+            batch,
+            body_digest,
+            |batch| self.lexical.preflight_batch(batch),
+            apply,
+        )?;
         let reconciled = self.source_publication.reconcile_source_event(
             &batch.repo_id,
             &batch.source_event,
@@ -397,19 +425,22 @@ impl SearchPlaneIngestDispatcher {
         // dispatcher-level mutable preflight beyond the intrinsic
         // digest, so the prepared mutation passes straight to the
         // fenced claim.
+        let owner = claim_owner();
+        let prepare_deadline_ms = ingest_claim_deadline_ms()?;
         let _prepared = self.idempotency.prepare(
             &key,
             &body_sha256,
-            &claim_owner(),
-            INGEST_CLAIM_LEASE_MS,
+            &owner,
+            prepare_deadline_ms,
             &body_sha256,
         )?;
         // Stage 5 — fenced claim.
+        let claim_deadline_ms = ingest_claim_deadline_ms()?;
         let claim = match self.idempotency.claim_prepared(
             &key,
             &body_sha256,
-            &claim_owner(),
-            INGEST_CLAIM_LEASE_MS,
+            &owner,
+            claim_deadline_ms,
             &body_sha256,
         )? {
             ClaimOutcomeV1::ReplayRepoMap { receipt, .. } => {
@@ -425,15 +456,15 @@ impl SearchPlaneIngestDispatcher {
             Ok(receipt) => match self.idempotency.commit_repomap(&claim, &receipt) {
                 Ok(_durable_sequence) => Ok(receipt),
                 Err(error) => {
-                    let _uncertain = self.idempotency.mark_uncertain(&claim);
+                    self.idempotency.mark_uncertain(&claim)?;
                     Err(error)
                 }
             },
             Err(error) => {
                 if is_frozen_policy_refusal(&error) {
-                    let _refused = self.idempotency.record_refused(&claim, &error);
+                    let _refused = self.idempotency.record_refused(&claim, &error)?;
                 } else {
-                    let _uncertain = self.idempotency.mark_uncertain(&claim);
+                    self.idempotency.mark_uncertain(&claim)?;
                 }
                 Err(error)
             }
@@ -612,17 +643,15 @@ fn no_storage_free_preflight<B: IngestBatchBodyV1>(_body: &B) -> Result<(), Core
     Ok(())
 }
 
-/// A typed refusal is frozen policy.
+/// Only a typed refusal is frozen policy. The catalog's terminal refusal
+/// transition requires `CoreError::Typed`; an internal contract error must
+/// stay retryable rather than being reported as durably refused.
 ///
 /// Recording it lets a retry replay the refusal exactly with no
-/// in-progress residue. Anything else (storage, ambiguity — including
-/// future [`CoreError`] shapes, which fail to compile here until they
-/// are classified) marks the record uncertain for recovery.
+/// in-progress residue. Other apply failures mark the record uncertain;
+/// preflight failures leave a prepared row for a later attempt.
 fn is_frozen_policy_refusal(error: &CoreError) -> bool {
-    matches!(
-        error,
-        CoreError::Typed { .. } | CoreError::InvalidContract(_)
-    )
+    matches!(error, CoreError::Typed { .. })
 }
 
 /// A batch key holding a repo-map terminal payload (or the reverse).

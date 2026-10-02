@@ -81,6 +81,10 @@ pub(crate) struct MemoryIdempotencyCatalog {
     fail_next_listing: AtomicBool,
     /// The next `forget_generation` fails before forgetting anything.
     fail_next_forget: AtomicBool,
+    /// Inject a failed terminal refusal write after a route has refused.
+    fail_next_refusal: AtomicBool,
+    /// Inject a failed uncertain-state write after an apply error.
+    fail_next_uncertain: AtomicBool,
 }
 
 impl MemoryIdempotencyCatalog {
@@ -90,6 +94,14 @@ impl MemoryIdempotencyCatalog {
 
     pub(crate) fn fail_next_forget(&self) {
         self.fail_next_forget.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn fail_next_refusal(&self) {
+        self.fail_next_refusal.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn fail_next_uncertain(&self) {
+        self.fail_next_uncertain.store(true, Ordering::SeqCst);
     }
 
     /// The generations that still hold a record, across pairs and routes.
@@ -109,6 +121,15 @@ impl MemoryIdempotencyCatalog {
 
     pub(crate) fn records(&self) -> usize {
         self.records.lock().map_or(0, |records| records.len())
+    }
+
+    pub(crate) fn lease_deadline_ms(&self, key: &IdempotencyKeyV1) -> Result<u64, CoreError> {
+        self.records
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("memory catalog poisoned: {error}")))?
+            .get(key)
+            .and_then(|(_, claim, _)| claim.as_ref().map(|(_, _, deadline, _)| *deadline))
+            .ok_or_else(|| CoreError::NotFound("memory catalog claim missing".to_string()))
     }
 
     /// Records for one generation of any pair, across routes.
@@ -515,6 +536,11 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         claim: &PreparedMutationV1,
         refusal: &CoreError,
     ) -> Result<u64, CoreError> {
+        if self.fail_next_refusal.swap(false, Ordering::SeqCst) {
+            return Err(CoreError::Storage(
+                "injected terminal refusal write failure".to_string(),
+            ));
+        }
         // Exactly the durable journal's rule: only a typed refusal
         // freezes; anything else is a caller-side rejection.
         let (code, message) = match refusal {
@@ -651,6 +677,11 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
         reason = "test fake: the mutex guard must span the whole fenced mutation"
     )]
     fn mark_uncertain(&self, claim: &PreparedMutationV1) -> Result<(), CoreError> {
+        if self.fail_next_uncertain.swap(false, Ordering::SeqCst) {
+            return Err(CoreError::Storage(
+                "injected uncertain-state write failure".to_string(),
+            ));
+        }
         let mut records = self
             .records
             .lock()

@@ -176,8 +176,8 @@ impl RuntimeMetadataIngestPort for CountingRuntime {
     }
 }
 
-fn dispatcher(
-    runtime: Arc<CountingRuntime>,
+fn dispatcher<R: RuntimeMetadataIngestPort + Send + Sync + 'static>(
+    runtime: Arc<R>,
     catalog: Arc<MemoryIdempotencyCatalog>,
 ) -> SearchPlaneIngestDispatcher {
     let unreachable = Arc::new(Unreachable);
@@ -201,6 +201,23 @@ fn dispatcher(
             ..Default::default()
         }),
     )
+}
+
+struct RefusingRuntime {
+    error: CoreError,
+}
+
+impl RuntimeMetadataIngestPort for RefusingRuntime {
+    fn publish_batch(&self, _batch: &DirtyIngestBatch) -> Result<BatchPublishReceipt, CoreError> {
+        Err(self.error.clone())
+    }
+
+    fn publish_catalog_batch(
+        &self,
+        _batch: &RuntimeCatalogIngestBatch,
+    ) -> Result<BatchPublishReceipt, CoreError> {
+        Err(unreachable_route("runtime catalog"))
+    }
 }
 
 /// A dispatcher whose only reachable route is a real search-corpus
@@ -386,6 +403,165 @@ fn dirty_batch(doc: &str) -> Result<DirtyIngestBatch, Box<dyn std::error::Error>
     };
     stamp_batch_digest_v1(&mut batch)?;
     Ok(batch)
+}
+
+#[test]
+fn ingest_claims_use_absolute_deadlines_on_batch_and_repomap_paths() -> TestRes {
+    let catalog = memory_catalog();
+    let runtime = Arc::new(CountingRuntime {
+        applies: AtomicUsize::new(0),
+    });
+    let batch = dirty_batch("src/lease.rs")?;
+    let batch_key = IdempotencyKeyV1 {
+        kind: IngestOperationKindV1::Dirty,
+        repo_id: batch.repo_id.clone(),
+        revision_id: batch.revision_id.clone(),
+        generation: batch.generation,
+        batch_digest: batch.batch_digest.clone(),
+    };
+    let before = quanta_index_core::now_unix_ms();
+    let _receipt = receipt_of(dispatcher(runtime, Arc::clone(&catalog)).dispatch(
+        SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch),
+        &RequestBudgetV1::unbounded(),
+    ))?;
+    let after = quanta_index_core::now_unix_ms();
+    assert_claim_deadline(&catalog, &batch_key, before, after)?;
+
+    let repomap = Arc::new(CountingRepoMap {
+        calls: AtomicUsize::new(0),
+    });
+    let request = RepoMapPublishBundleRequestV2::new(repomap_bundle_fixture())?;
+    let repomap_key = IdempotencyKeyV1 {
+        kind: IngestOperationKindV1::RepoMapBundle,
+        repo_id: request.bundle.repo_id.clone(),
+        revision_id: request.bundle.revision_id.clone(),
+        generation: request.bundle.manifest_generation,
+        batch_digest: request.source_bundle_digest.clone(),
+    };
+    let before = quanta_index_core::now_unix_ms();
+    let _receipt = repomap_receipt_of(repomap_dispatcher(repomap, Arc::clone(&catalog)).dispatch(
+        SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request),
+        &RequestBudgetV1::unbounded(),
+    ))?;
+    let after = quanta_index_core::now_unix_ms();
+    assert_claim_deadline(&catalog, &repomap_key, before, after)
+}
+
+fn assert_claim_deadline(
+    catalog: &MemoryIdempotencyCatalog,
+    key: &IdempotencyKeyV1,
+    before: u64,
+    after: u64,
+) -> TestRes {
+    let observed = catalog.lease_deadline_ms(key)?;
+    if observed < before.saturating_add(30_000) || observed > after.saturating_add(30_000) {
+        return Err(format!(
+            "claim deadline must be 30 seconds after the publish instant, got {observed} for wall-clock range {before}..={after}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn failed_terminal_refusal_write_is_reported() -> TestRes {
+    use quanta_index_core::{IdempotencyCatalogPort as _, OperationInspectV1};
+
+    let catalog = memory_catalog();
+    catalog.fail_next_refusal();
+    let dispatcher = dispatcher(
+        Arc::new(RefusingRuntime {
+            error: CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest,
+                message: "injected frozen policy refusal".to_string(),
+            },
+        }),
+        Arc::clone(&catalog),
+    );
+    let batch = dirty_batch("src/refusal.rs")?;
+    let key = IdempotencyKeyV1 {
+        kind: IngestOperationKindV1::Dirty,
+        repo_id: batch.repo_id.clone(),
+        revision_id: batch.revision_id.clone(),
+        generation: batch.generation,
+        batch_digest: batch.batch_digest.clone(),
+    };
+    let first = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch),
+        &RequestBudgetV1::unbounded(),
+    );
+    if typed_code_of(&first) != Some(quanta_index_contract::SearchPlaneErrorCodeV2::Internal)
+        || !matches!(catalog.inspect(&key)?, OperationInspectV1::InFlight { .. })
+    {
+        return Err(format!("failed refusal write was hidden: {first:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn failed_uncertain_state_write_is_reported() -> TestRes {
+    use quanta_index_core::{IdempotencyCatalogPort as _, OperationInspectV1};
+
+    let catalog = memory_catalog();
+    catalog.fail_next_uncertain();
+    let dispatcher = dispatcher(
+        Arc::new(RefusingRuntime {
+            error: CoreError::InvalidContract("injected apply error".to_string()),
+        }),
+        Arc::clone(&catalog),
+    );
+    let batch = dirty_batch("src/uncertain.rs")?;
+    let key = IdempotencyKeyV1 {
+        kind: IngestOperationKindV1::Dirty,
+        repo_id: batch.repo_id.clone(),
+        revision_id: batch.revision_id.clone(),
+        generation: batch.generation,
+        batch_digest: batch.batch_digest.clone(),
+    };
+    let response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch),
+        &RequestBudgetV1::unbounded(),
+    );
+    if !matches!(&response, SearchPlaneIngestIpcResponse::Error(error)
+        if error.code == quanta_index_contract::SearchPlaneErrorCodeV2::Internal
+            && error.message.contains("injected uncertain-state write failure"))
+        || !matches!(catalog.inspect(&key)?, OperationInspectV1::InFlight { .. })
+    {
+        return Err(format!("failed uncertain-state write was hidden: {response:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn internal_contract_error_does_not_become_a_frozen_refusal() -> TestRes {
+    use quanta_index_core::{IdempotencyCatalogPort as _, OperationInspectV1};
+
+    let catalog = memory_catalog();
+    let dispatcher = dispatcher(
+        Arc::new(RefusingRuntime {
+            error: CoreError::InvalidContract("injected route contract error".to_string()),
+        }),
+        Arc::clone(&catalog),
+    );
+    let batch = dirty_batch("src/contract.rs")?;
+    let key = IdempotencyKeyV1 {
+        kind: IngestOperationKindV1::Dirty,
+        repo_id: batch.repo_id.clone(),
+        revision_id: batch.revision_id.clone(),
+        generation: batch.generation,
+        batch_digest: batch.batch_digest.clone(),
+    };
+    let response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch),
+        &RequestBudgetV1::unbounded(),
+    );
+    if typed_code_of(&response)
+        != Some(quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest)
+        || !matches!(catalog.inspect(&key)?, OperationInspectV1::Uncertain { .. })
+    {
+        return Err(format!("internal contract error was frozen: {response:?}").into());
+    }
+    Ok(())
 }
 
 fn typed_code_of(
