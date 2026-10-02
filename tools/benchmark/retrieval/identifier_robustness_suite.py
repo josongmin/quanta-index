@@ -743,11 +743,19 @@ def derive_paired_full(
             if source_oracle.IDENTIFIER.fullmatch(proposal) is None or not 3 <= len(proposal) <= 64:
                 rejected.append("outside_identifier_request")
                 continue
+            if source_oracle.osa_distance_at_most_one(
+                base["query"].casefold(), proposal.casefold()
+            ):
+                rejected.append("within_osa1")
+                continue
             if proposal.casefold() in declared_folded:
                 rejected.append("exact_declaration_collision")
                 continue
             if any(proposal.casefold() in text for text in folded_file_contents):
                 rejected.append("exact_content_collision")
+                continue
+            if any(proposal.casefold() in path.casefold() for path in files):
+                rejected.append("exact_path_collision")
                 continue
             reason = two_edit_pool.conflict(proposal)
             if reason:

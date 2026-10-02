@@ -802,6 +802,13 @@ def test_paired_typo_builder_emits_operation_and_stress_suites(tmp_path):
         if row["query"] is not None
     )
     assert all(
+        not ev.source_oracle.osa_distance_at_most_one(
+            row["base_query"].casefold(), row["query"].casefold()
+        )
+        for row in two_edit["records"]
+        if row["query"] is not None
+    )
+    assert all(
         "near_name_collision" not in row["strata"] for row in census["lanes"]["clean"]["records"]
     )
     assert all(
