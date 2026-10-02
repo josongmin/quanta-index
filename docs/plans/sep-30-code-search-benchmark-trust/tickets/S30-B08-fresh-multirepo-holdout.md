@@ -560,3 +560,46 @@ preregistered repository-cluster decision, and no quiet-host performance
 measurement. C4's case-sensitive declaration-target labels do not prove the
 default folded content/path search contract. The existing 240 literal tasks
 and absent workflow lane cannot be merged into the declaration score.
+
+## Negative custody and exact-content admission (2026-10-02)
+
+**VERIFIED, diagnostic only:** `main@26e6bbae` binds C4 no-answer rows to
+`ascii_code_search_absent_casefold_v1`. The adapter uses that existing source
+oracle when selecting a negative and when emitting its suite row; replay
+rejects a query with no declaration but a content or path occurrence. The
+120 negative queries across all 12 frozen source views passed a source-hash
+and content/path absence check. A complete `lo` capsule replay selected 30
+exact-declaration tasks, including ten rows with the stronger contract.
+
+The refreshed C4 matrix is
+[`/private/tmp/qi-b08-matrix-26e6-tNX9i5/matrix/admission-matrix.json`](/private/tmp/qi-b08-matrix-26e6-tNX9i5/matrix/admission-matrix.json)
+(SHA-256 `8da046847bb2f7ab7cae62a6b70c028a17c5026f6d012fcf4ee27bea492fe5cf`,
+wall 710.43 s). It has the same 60 cells, 640 selected IDs and 80 exclusion
+rows as the prior matrix. The 12 exact-declaration suite and blind-pack hashes
+changed; no selected ID or exclusion changed. The prior matrix remains a
+separate, older-source receipt. Both are `diagnostic_unqualified` with
+`product_capture=false`.
+
+**VERIFIED, admission only:** the exact-content adapter reuses the frozen
+capsule binder and constructs a Quanta CodeSearch `content:"..." case:yes`
+request using the existing `LqQuery` lowering. A direct source preflight
+accepted all 240 literal inputs and found zero label or NFC-induced file-set
+differences. A complete source-bound `lo` replay admitted 20/20 literals with
+zero exclusions in 307.83 s. This adapter does not produce a scored suite or
+product capture. Its label replay currently calls the gold producer's literal
+scanner, so an independently implemented exact-content oracle remains required
+before a qualified score.
+
+**VERIFIED, focused rails:** 83 combined C4/literal/source-oracle/decision tests,
+12 request-identity tests, the Rust CodeSearch scoped-quote lowering test and
+the existing typo language-eligibility budget test passed. Ruff, Rust formatting
+and `git diff --check` passed. The single-repository decision policy now binds
+the repository commit and requires graded paired/no-answer coverage; it
+explicitly refuses multi-repository requests through its query-family CI.
+
+**NOT_RUN:** product capture for the 12-repository matrix or 240 literals,
+independent literal oracle, reviewed/workflow relevance, external indexed-file
+attestation, repository-cluster decision, and qualified quiet-host timing. The
+current pair quality gate treats CodeSearch file policies as diagnostic; a
+future file-quality gate must use an independent file relevance contract rather
+than relaxing that refusal on this evidence.
