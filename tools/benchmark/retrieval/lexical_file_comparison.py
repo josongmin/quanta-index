@@ -26,7 +26,7 @@ from tools.benchmark.evidence import (
 )
 from tools.benchmark.retrieval.evaluator import canonical, digest, validate_comparison_contract
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
-from tools.benchmark.retrieval.query_plan import execution_profile
+from tools.benchmark.retrieval.query_plan import CODE_SEARCH_FILE_POLICIES, execution_profile
 
 PRODUCTS = ("sourcegraph", "opengrok", "cs")
 QUANTA_LEXICAL_ROUTE = "lexical"
@@ -53,7 +53,6 @@ FILE_INPUT_ROLES = (
     "semble_phase_metrics",
 )
 FILE_ROUTES = [QUANTA_LEXICAL_ROUTE, "semble-lexical-file"]
-CODE_SEARCH_FILE_POLICIES = frozenset(("code_search_file", "code_search_typo_file"))
 MAX_NATIVE_TRACE_BYTES = 128 * 1024 * 1024
 TIMING_LAYERS = {
     "sourcegraph": "loopback_stream_http_request_wall",

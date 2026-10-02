@@ -53,6 +53,8 @@ FILE_PROJECTION_ORDERING = {
     "code_search_file": ORDERING_SCORE_DESC,
     "code_search_typo_file": ORDERING_SCORE_DESC,
 }
+CODE_SEARCH_FILE_POLICIES = frozenset(("code_search_file", "code_search_typo_file"))
+SCORED_QUANTA_FILE_POLICIES = frozenset((*CODE_SEARCH_FILE_POLICIES, "keyword_file"))
 MAX_KEYWORD_FILE_BYTES = 256
 MIN_SUBSTRING_FILE_BYTES = 3
 MAX_SUBSTRING_FILE_BYTES = 256
@@ -384,7 +386,7 @@ def derive_query_identity(
     if policy not in SUPPORTED_POLICIES:
         raise QueryPlanError(f"unsupported query input policy: {policy}")
     lexical_request = plan_lexical_request(policy, raw, config)
-    if policy in ("code_search_file", "code_search_typo_file"):
+    if policy in CODE_SEARCH_FILE_POLICIES:
         import json
 
         effective_bytes = json.dumps(

@@ -158,7 +158,7 @@ def _policy(capture: dict) -> dict[str, str | None]:
             "policy": name,
             "case": (
                 "folded"
-                if name in ("code_search_file", "code_search_typo_file")
+                if name in query_plan.CODE_SEARCH_FILE_POLICIES
                 else "normalizer_defined"
                 if name == "literal_file"
                 else "sensitive"

@@ -6239,7 +6239,9 @@ def _pair_stage(
         "repo": repo,
         "suite": suite,
         "stage": stage,
-        "spec": spec,
+        # The driver-only closure path belongs to the staged capture, not to
+        # the public spec that callers submit to load_spec/benchctl.
+        "spec": {key: value for key, value in spec.items() if key != "_driver_source_closure"},
         "manifest": manifest,
         "manifest_path": manifest_path,
         "suite_path": suite_path,
