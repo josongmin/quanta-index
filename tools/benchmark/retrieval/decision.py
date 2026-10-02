@@ -268,9 +268,7 @@ def _repository_disjoint_metric_gate(
     no_answer = {}
     for name in names:
         suite, report = suites[name], reports[name]
-        task_by_id = {
-            task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"
-        }
+        task_by_id = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
         for task_id, family_id, category, delta in evaluator.paired_query_family_rows(
             suite,
             report,
@@ -286,20 +284,14 @@ def _repository_disjoint_metric_gate(
             task["split"] == "eval" and not task["gold"] for task in suite["tasks"]
         )
         negative = comparison.get("no_answer_abstention_delta")
-        query_rows = {
-            (item["task_id"], item["route"]): item for item in report["per_query"]
-        }
+        query_rows = {(item["task_id"], item["route"]): item for item in report["per_query"]}
         observed_negative = math.fsum(
             float(
-                query_rows[(task["task_id"], policy["comparison"]["candidate_route"])][
-                    "status"
-                ]
+                query_rows[(task["task_id"], policy["comparison"]["candidate_route"])]["status"]
                 == "abstained"
             )
             - float(
-                query_rows[(task["task_id"], policy["comparison"]["baseline_route"])][
-                    "status"
-                ]
+                query_rows[(task["task_id"], policy["comparison"]["baseline_route"])]["status"]
                 == "abstained"
             )
             for task in suite["tasks"]
@@ -313,9 +305,7 @@ def _repository_disjoint_metric_gate(
         ):
             raise DecisionError("repository-disjoint no-answer coverage is incomplete")
         no_answer[name] = _number(negative.get("mean_delta"), "no-answer delta")
-        if not math.isclose(
-            no_answer[name], observed_negative / negative_count, abs_tol=1e-12
-        ):
+        if not math.isclose(no_answer[name], observed_negative / negative_count, abs_tol=1e-12):
             raise DecisionError("repository-disjoint no-answer mean differs from report rows")
     if ci.get("sample_count") != len(family_rows):
         raise DecisionError("repository-disjoint interval task coverage differs")
@@ -333,9 +323,7 @@ def _repository_disjoint_metric_gate(
         if not groups:
             raise DecisionError(f"repository-disjoint critical stratum {axis}:{value} is empty")
         means = [
-            math.fsum(
-                math.fsum(group) / len(group) for _family, group in sorted(families.items())
-            )
+            math.fsum(math.fsum(group) / len(group) for _family, group in sorted(families.items()))
             / len(families)
             for _repository, families in sorted(groups.items())
         ]

@@ -294,7 +294,9 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
         policy, suites, reports, result["repository_cluster_ci"], result["captures"]
     )["reasons"] == ["query_p95_budget_exceeded"]
     policy["resource_limits"]["max_query_p95_ms"] = 100.0
-    reports["repo-00"]["rank_metrics"]["comparison"]["no_answer_abstention_delta"]["mean_delta"] = 1.0
+    reports["repo-00"]["rank_metrics"]["comparison"]["no_answer_abstention_delta"]["mean_delta"] = (
+        1.0
+    )
     with pytest.raises(decision.DecisionError, match="no-answer mean differs"):
         decision._repository_disjoint_metric_gate(
             policy, suites, reports, result["repository_cluster_ci"], result["captures"]
