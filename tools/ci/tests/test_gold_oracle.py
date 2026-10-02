@@ -14,7 +14,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools/benchmark"))
 import corpus_binding as binding
-from tools.benchmark.evidence import EvidenceError, canonical_json
+from evidence import canonical_json
+from tools.benchmark.evidence import EvidenceError as OracleEvidenceError
 
 from tools.benchmark.retrieval import gold_oracle, source_oracle
 from tools.ci.tests.test_corpus_binding import (  # noqa: F401
@@ -23,6 +24,10 @@ from tools.ci.tests.test_corpus_binding import (  # noqa: F401
     split_releases,
 )
 from tools.ci.tests.test_corpus_release import release_seed, source_seed  # noqa: F401
+
+# Direct benchmark scripts import ``evidence``; packaged retrieval code imports
+# ``tools.benchmark.evidence``. Assert the public refusal from either entrypoint.
+EvidenceError = (OracleEvidenceError, binding.EvidenceError)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "gold_oracle"
 
