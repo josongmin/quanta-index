@@ -747,6 +747,22 @@ def test_osa1_textual_exclusion_keeps_every_one_edit_name_unjudged():
                 assert not gold_oracle._textually_excluded(raw, query, "osa1"), (query, name)
 
 
+@pytest.mark.parametrize("query", ["abcde", "abcdef", "abcdefg", "abcdefgh"])
+@pytest.mark.parametrize("variant", ["osa1", "osa1_casefold"])
+def test_osa1_textual_anchor_keeps_all_one_edit_names(query, variant):
+    names = set()
+    for index in range(len(query)):
+        names.add(query[:index] + query[index + 1 :])
+        names.add(query[:index] + "x" + query[index + 1 :])
+        if index + 1 < len(query):
+            names.add(query[:index] + query[index + 1] + query[index] + query[index + 2 :])
+    for index in range(len(query) + 1):
+        names.add(query[:index] + "x" + query[index:])
+    for name in names:
+        raw = b"\xff" + name.encode("ascii") + b"\xfe"
+        assert not gold_oracle._textually_excluded(raw, query, variant), (query, name)
+
+
 def test_osa1_textual_exclusion_has_bounded_ambiguous_fallback():
     assert not gold_oracle._textually_excluded(b"other", "a" * 65, "osa1")
     assert gold_oracle._textually_excluded(b"invalid source", "parseEror", "osa1")

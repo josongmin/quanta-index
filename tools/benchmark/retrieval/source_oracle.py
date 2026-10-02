@@ -231,6 +231,12 @@ def declaration_query_textually_excluded(raw: bytes, query: str, variant: str) -
         text = raw.decode("utf-8", "replace")
         if variant == "osa1_casefold":
             text, query = text.casefold(), query.casefold()
+        # Any one edit of a name this long preserves either its leading or
+        # trailing anchor. Check those substrings before searching the full
+        # one-edit regex over a potentially large parser-refused source file.
+        anchor = 3 if len(query) >= 7 else 2 if len(query) >= 5 else 0
+        if anchor and query[:anchor] not in text and query[-anchor:] not in text:
+            return True
         return _osa1_text_pattern(query).search(text) is None
     raise SourceOracleError("unsupported declaration-name variant contract")
 
