@@ -21,6 +21,7 @@ def _fixture(
     parser_refusal: bool = False,
     checker_disagreement: bool = False,
     disputed_name: str = "Other",
+    near_alternative: bool = False,
 ):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -32,6 +33,9 @@ def _fixture(
         "javascript": ("main.js", "function Alpha() {}\nfunction AlphaBeta() {}\n"),
     }
     file_name, body = syntax[language]
+    if near_alternative:
+        assert language == "go"
+        body += "func Alphi() {}\n"
     (checkout / file_name).write_text(body, encoding="utf-8")
     if parser_refusal:
         assert language == "go"
@@ -318,6 +322,38 @@ def test_c4_casefold_typo_rejects_false_near_name_metadata(tmp_path, monkeypatch
     _resign(capsule, "blind.json", blind)
     with pytest.raises(ValueError, match="ambiguity metadata differs from source oracle"):
         holdout_c4.derive(release, capsule, checkout, "declaration_name_osa1_casefold")
+
+
+def test_c4_excludes_true_alternative_near_name(tmp_path, monkeypatch):
+    release, capsule, checkout = _fixture(tmp_path, monkeypatch, near_alternative=True)
+    gold = holdout_c4._read(capsule / "gold.json")
+    blind = holdout_c4._read(capsule / "blind.json")
+    for payload in (gold, blind):
+        payload["tasks"][0].update(
+            intent="declaration_name_osa1_casefold",
+            query="Alphb",
+            case_semantics="casefold",
+        )
+    gold["tasks"][0].update(
+        intended_name="Alpha",
+        near_declaration_state="complete",
+        near_declaration_names=["Alpha", "Alphi"],
+        near_declaration_files=["main.go"],
+        exact_collision_names=[],
+        exact_collision_files=[],
+    )
+    _resign(capsule, "gold.json", gold)
+    _resign(capsule, "blind.json", blind)
+    suite, pack, report = holdout_c4._derive_prepared(
+        holdout_c4._prepare(release, capsule, checkout),
+        "declaration_name_osa1_casefold",
+        allow_empty=True,
+    )
+    assert suite is pack is None
+    assert report["selected"] == 0
+    assert report["excluded"] == [
+        {"task_id": "toy.def.001", "reason": "ambiguous_typo_target"}
+    ]
 
 
 def test_c4_partial_typo_excludes_before_parsing_refused_file(tmp_path, monkeypatch):
