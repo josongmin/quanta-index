@@ -2399,14 +2399,24 @@ RECEIPT_KEYS = (
     "model_parity_results",
     "incremental_results",
 )
-ADMISSION_KEYS = (
+ADMISSION_COMMON_KEYS = (
     "manifest",
-    "experiment_custody",
-    "development_suite",
     "license_receipt",
     "annotation_receipts",
     "adjudication_receipt",
 )
+ADMISSION_LOCAL_KEYS = ADMISSION_COMMON_KEYS + ("experiment_custody", "development_suite")
+ADMISSION_DISJOINT_KEYS = ADMISSION_COMMON_KEYS + ("split_manifest", "split_releases")
+
+
+def _admission_keys(value: object) -> tuple[str, ...]:
+    if not isinstance(value, dict):
+        raise RunError("qualification admission path inventory is malformed")
+    if set(value) == set(ADMISSION_LOCAL_KEYS):
+        return ADMISSION_LOCAL_KEYS
+    if set(value) == set(ADMISSION_DISJOINT_KEYS):
+        return ADMISSION_DISJOINT_KEYS
+    raise RunError("qualification admission path inventory is incomplete or mixed")
 CONTRACT_EVIDENCE_KEYS = (
     "contract_execution_context",
     "contract_execution_logs",
