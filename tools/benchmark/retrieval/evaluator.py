@@ -2992,8 +2992,9 @@ def repository_cluster_ci(
     rows: list[tuple[str, str, str, float]],
     release_digest: str,
     repositories: dict[str, str],
+    repository_strata: dict[str, str],
 ) -> dict[str, Any]:
-    """Bootstrap repository means after equal-weight query-family aggregation.
+    """Bootstrap repository means within frozen sampling strata.
 
     The caller must separately prove paired, judged task coverage and bind this
     release to its captures. This interval alone never qualifies a decision.
@@ -3014,6 +3015,14 @@ def repository_cluster_ci(
             and bool(COMMIT_RE.fullmatch(commit)),
             "cluster repository is invalid",
         )
+    require(
+        isinstance(repository_strata, dict) and set(repository_strata) == set(repositories),
+        "cluster repository strata inventory differs",
+    )
+    require(
+        all(isinstance(value, str) and value for value in repository_strata.values()),
+        "cluster repository stratum is invalid",
+    )
     families: dict[str, dict[str, list[float]]] = {name: {} for name in repositories}
     seen_tasks: set[tuple[str, str]] = set()
     family_owner: dict[str, str] = {}
@@ -3047,28 +3056,49 @@ def repository_cluster_ci(
         / len(families[name])
         for name in sorted(repositories)
     ]
+    groups: dict[str, list[float]] = {}
+    for name, mean in zip(sorted(repositories), means, strict=True):
+        groups.setdefault(repository_strata[name], []).append(mean)
+    reason = (
+        "insufficient_independent_repositories"
+        if len(means) < 12
+        else "insufficient_repositories_in_stratum"
+        if any(len(group) < 2 for group in groups.values())
+        else None
+    )
     summary: dict[str, Any] = {
-        "method": "paired_repository_cluster_bootstrap_percentile_v1",
-        "status": NOT_APPLICABLE if len(means) < 12 else "available",
+        "method": "paired_stratified_repository_cluster_bootstrap_percentile_v1",
+        "status": NOT_APPLICABLE if reason else "available",
         "repository_count": len(means),
         "family_count": sum(map(len, families.values())),
         "sample_count": len(rows),
         "aggregation": "equal_family_within_repository_equal_repository",
+        "strata": {name: len(group) for name, group in sorted(groups.items())},
     }
-    if len(means) < 12:
-        return {**summary, "reason": "insufficient_independent_repositories"}
+    if reason:
+        return {**summary, "reason": reason}
     seed = canonical(
         {
             "release_digest": release_digest,
             "repositories": [
-                {"name": name, "commit": repositories[name], "mean": mean}
+                {
+                    "name": name,
+                    "commit": repositories[name],
+                    "stratum": repository_strata[name],
+                    "mean": mean,
+                }
                 for name, mean in zip(sorted(repositories), means, strict=True)
             ],
         }
     )
     rng = random.Random(int(digest(seed)[:16], 16))
     sampled = sorted(
-        math.fsum(means[rng.randrange(len(means))] for _ in means) / len(means)
+        math.fsum(
+            groups[stratum][rng.randrange(len(groups[stratum]))]
+            for stratum in sorted(groups)
+            for _ in groups[stratum]
+        )
+        / len(means)
         for _ in range(10_000)
     )
 

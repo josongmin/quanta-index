@@ -2122,6 +2122,7 @@ def test_qualified_cluster_interval_refuses_correlated_task_pseudoreplication():
 
 def test_repository_cluster_interval_uses_equal_family_and_repository_weights():
     repositories = {f"repo-{i:02d}": f"{i + 1:040x}" for i in range(12)}
+    strata = {name: f"language-{i // 3}" for i, name in enumerate(repositories)}
     rows = (
         [
             (repository, f"{repository}-a1", f"{repository}-family-a", 1.0)
@@ -2136,48 +2137,57 @@ def test_repository_cluster_interval_uses_equal_family_and_repository_weights():
             for repository in repositories
         ]
     )
-    ci = ev.repository_cluster_ci(rows, "a" * 64, repositories)
+    ci = ev.repository_cluster_ci(rows, "a" * 64, repositories, strata)
     assert ci["status"] == "available"
+    assert ci["strata"] == {f"language-{i}": 3 for i in range(4)}
     assert (ci["repository_count"], ci["family_count"], ci["sample_count"]) == (12, 24, 36)
     assert (ci["mean"], ci["lower_95"], ci["upper_95"]) == (0.5, 0.5, 0.5)
-    assert ev.repository_cluster_ci(list(reversed(rows)), "a" * 64, repositories) == ci
+    assert ev.repository_cluster_ci(list(reversed(rows)), "a" * 64, repositories, strata) == ci
 
 
 def test_repository_cluster_interval_refuses_incomplete_or_cross_repo_evidence():
     repositories = {f"repo-{i:02d}": f"{i + 1:040x}" for i in range(12)}
+    strata = {name: f"language-{i // 3}" for i, name in enumerate(repositories)}
     rows = [
         (repository, f"task-{i:02d}", f"family-{i:02d}", 0.5)
         for i, repository in enumerate(repositories)
     ]
     with pytest.raises(ev.EvidenceError, match="lacks paired rows"):
-        ev.repository_cluster_ci(rows[:-1], "a" * 64, repositories)
+        ev.repository_cluster_ci(rows[:-1], "a" * 64, repositories, strata)
     with pytest.raises(ev.EvidenceError, match="crosses repositories"):
         ev.repository_cluster_ci(
-            [*rows, ("repo-01", "extra", "family-00", 0.5)], "a" * 64, repositories
+            [*rows, ("repo-01", "extra", "family-00", 0.5)], "a" * 64, repositories, strata
         )
     with pytest.raises(ev.EvidenceError, match="duplicated"):
-        ev.repository_cluster_ci([*rows, rows[0]], "a" * 64, repositories)
+        ev.repository_cluster_ci([*rows, rows[0]], "a" * 64, repositories, strata)
     with pytest.raises(ev.EvidenceError, match="not finite"):
         ev.repository_cluster_ci(
-            [*rows[:-1], (*rows[-1][:3], float("nan"))], "a" * 64, repositories
+            [*rows[:-1], (*rows[-1][:3], float("nan"))], "a" * 64, repositories, strata
         )
     small = {name: commit for name, commit in repositories.items() if name != "repo-11"}
-    result = ev.repository_cluster_ci(rows[:-1], "a" * 64, small)
+    result = ev.repository_cluster_ci(rows[:-1], "a" * 64, small, {k: strata[k] for k in small})
     assert result["status"] == ev.NOT_APPLICABLE
     assert result["reason"] == "insufficient_independent_repositories"
+    with pytest.raises(ev.EvidenceError, match="strata inventory differs"):
+        ev.repository_cluster_ci(rows, "a" * 64, repositories, {"repo-00": "language-0"})
+    sparse_strata = dict(strata)
+    sparse_strata["repo-11"] = "language-4"
+    result = ev.repository_cluster_ci(rows, "a" * 64, repositories, sparse_strata)
+    assert result["reason"] == "insufficient_repositories_in_stratum"
 
 
 def test_repository_cluster_interval_does_not_count_extra_tasks_as_repositories():
     repositories = {f"repo-{i:02d}": f"{i + 1:040x}" for i in range(12)}
+    strata = {name: f"language-{i // 3}" for i, name in enumerate(repositories)}
     rows = [
-        (repository, f"task-{i:02d}", f"family-{i:02d}", 1.0 if i < 6 else -1.0)
+        (repository, f"task-{i:02d}", f"family-{i:02d}", 1.0 if i % 2 == 0 else -1.0)
         for i, repository in enumerate(repositories)
     ]
-    base = ev.repository_cluster_ci(rows, "b" * 64, repositories)
+    base = ev.repository_cluster_ci(rows, "b" * 64, repositories, strata)
     extra = [
         ("repo-00", f"replica-{i:03d}", "family-00", 1.0) for i in range(100)
     ]
-    expanded = ev.repository_cluster_ci([*rows, *extra], "b" * 64, repositories)
+    expanded = ev.repository_cluster_ci([*rows, *extra], "b" * 64, repositories, strata)
     assert base["mean"] == expanded["mean"] == 0.0
     assert (base["lower_95"], base["upper_95"]) == (
         expanded["lower_95"],
