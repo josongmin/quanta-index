@@ -118,6 +118,14 @@ golden, re-derived independently by `query_plan.py`:
   masquerade as this profile. New rows require finite SDK scores and descending
   score/path order. Report exact, prefix, infix, components, typo, and no-answer
   suites separately; a file gold is not a declaration gold.
+- `code_search_typo_file` (`quanta-code-search-typo-file-v1`): submit one ASCII
+  identifier of 3–64 bytes as `typo:<identifier>` through SDK
+  `.code_search(...)`. This is the product's explicit content-identifier
+  OSA-distance-at-most-one search, with scored distinct files; it does not
+  change the literal meaning of a bare CodeSearch query. The recorded raw
+  query and effective request have separate digests. This profile is a
+  diagnostic intent, and its declaration-derived positive gold is not an
+  exhaustive judgment of every returned file.
 
 Every file-projection result records `rank_unit: distinct_file` (the unit) and
 `ordering` (how the units are ordered, derived from the policy). The evaluator
@@ -262,10 +270,27 @@ The `typo-content-absence` lane reuses admitted one-edit typo queries whose
 bytes are absent from all frozen file contents **and paths** under casefold.
 It scores default content/path search as a hard-negative task, separately
 from the `typo` lane's declaration-recovery task. The report rechecks both
-admitted and excluded source IDs against the frozen files; a future fuzzy
-suggestion feature must be evaluated against the typo lane as a separate
-intent, without treating its suggestions as default content hits. These
-source-exposed diagnostics are not holdout or product ranking claims.
+admitted and excluded source IDs against the frozen files. The explicit
+`typo:` product mode has its own `code_search_typo_file` profile; its results
+must be evaluated as a separate intent, without treating them as default
+content hits. These source-exposed diagnostics are not holdout or product
+ranking claims.
+The `typo-osa1-absence` lane uses the separate
+`ascii_identifier_osa1_absent_casefold_v1` oracle. It rechecks every frozen
+source file for an exact or one-edit ASCII identifier token before labeling
+the query unanswerable for the explicit `typo:` content search. The older
+content-absence and content/path-absence oracles are insufficient for this
+mode. Generate it from a frozen `no-answer-content-v2` suite with
+`identifier_osa1_absence_suite.py`, then bind the resulting suite, blind pack,
+census, and manifest to the paired capture. It does not prove path absence,
+which the content-only `typo:` mode does not require.
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.identifier_osa1_absence_suite \
+  --repo /absolute/corpus --source-suite /absolute/no-answer-content-suite.json \
+  --output-root /absolute/new-external-root
+```
+
 The robustness report names the task's `evaluation_intent` and the negative
 `negative_reference_scope`. Its `no_answer.nonempty_results` counts returned
 files without assuming that a declaration-absent query is absent from file
