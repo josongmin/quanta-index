@@ -309,6 +309,14 @@ def _repository_disjoint_metric_gate(
             raise DecisionError("repository-disjoint no-answer mean differs from report rows")
     if ci.get("sample_count") != len(family_rows):
         raise DecisionError("repository-disjoint interval task coverage differs")
+    critical = {(row["axis"], row["name"]) for row in policy["critical_strata"]}
+    observed_strata = {
+        (axis, value)
+        for _repository, _family, category, language, _delta in family_rows
+        for axis, value in (("category", category), ("language", language))
+    }
+    if not observed_strata <= critical:
+        raise DecisionError("repository-disjoint policy omits an observed critical stratum")
 
     def mean_for(axis: str, value: str) -> tuple[float, int]:
         groups = {}

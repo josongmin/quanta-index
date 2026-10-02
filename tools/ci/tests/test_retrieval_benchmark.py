@@ -8008,6 +8008,50 @@ def test_repository_disjoint_source_custody_refuses_wrong_holdout(monkeypatch, t
         )
 
 
+def test_repository_disjoint_admission_freeze_routes_global_custody(monkeypatch, tmp_path):
+    st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
+    spec = copy.deepcopy(st["spec"])
+    admission_path = Path(spec["admission"]["manifest"])
+    admission = json.loads(admission_path.read_text())
+    admission["schema_version"] = 3
+    admission.pop("development_suite_sha256")
+    admission.pop("experiment_custody_sha256")
+    admission["decision_policy_sha256"] = _fake_sha("policy")
+    split_path = tmp_path / "split.json"
+    split_path.write_text("{}")
+    releases_path = tmp_path / "releases.json"
+    releases_path.write_text("{}")
+    admission["repository_disjoint"] = {
+        "repository": "holdout",
+        "release_digest": "sha256:" + _fake_sha("release"),
+        "split_manifest_sha256": pairrun.sha_file(split_path),
+        "split_releases_sha256": pairrun.sha_file(releases_path),
+    }
+    admission_path.write_text(json.dumps(admission))
+    spec["admission"].pop("experiment_custody")
+    spec["admission"].pop("development_suite")
+    spec["admission"].update(
+        split_manifest=str(split_path), split_releases=str(releases_path)
+    )
+    receipt_paths = {
+        key: st["stage"] / st["manifest"]["artifacts"][key]
+        for key in ("contract_python_receipt", "contract_rust_receipt", "sdk_receipt")
+    }
+    observed = []
+    monkeypatch.setattr(
+        pairrun,
+        "_validate_disjoint_admission_source",
+        lambda claim, suite, repo, split, releases: observed.append((split, releases)),
+    )
+    target = tmp_path / "new-stage"
+    target.mkdir()
+    frozen = pairrun.freeze_admission(spec, target, {k: str(v) for k, v in receipt_paths.items()})
+    assert set(frozen) == set(pairrun.ADMISSION_DISJOINT_KEYS)
+    assert observed == [
+        (Path(frozen["split_manifest"]), Path(frozen["split_releases"]))
+    ]
+
+
 def test_qualified_license_receipt_requires_approved_corpus_bound_decision(tmp_path):
     st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
     evidence = st["stage"] / "admission"
