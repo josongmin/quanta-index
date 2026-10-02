@@ -33,7 +33,9 @@ use quanta_index_core::{
     RequestBudgetV1, RequestCorrelationV1, RequestProviderStageV1, RequestStageDiagnosticPortV1,
 };
 
-use crate::admission::{DispatchSlots, IngressBudget, ServerAdmissionPolicy, SlotRefusal};
+use crate::admission::{
+    DecodePermit, DispatchSlots, IngressBudget, ServerAdmissionPolicy, SlotRefusal,
+};
 use crate::peer_credentials::{KernelPeerCredentials, PeerCredentialsSource};
 use crate::socket_access::{PeerRefusal, SocketAccessPolicy, admit_peer};
 
@@ -1369,7 +1371,7 @@ where
         let (request, _decode_permit) = match decode_request_guarded::<RequestEnvelopeT, _, _>(
             &mut ingress_reader,
             |body_bytes| slots.try_acquire_decode(body_bytes, plane),
-            |permit, additional_bytes| permit.reserve(additional_bytes),
+            DecodePermit::reserve,
         ) {
             Ok(request) => request,
             Err(IpcError::Truncated) => return ConnectionCloseReason::PeerClosed,
@@ -1561,6 +1563,7 @@ where
 }
 
 /// Server ingress deadline across the whole request, including all fragments.
+///
 /// The socket timeout is refreshed to the remaining total deadline before
 /// every read so a trickle of bytes cannot renew admission indefinitely.
 struct IngressDeadlineReader<'a> {
@@ -2202,7 +2205,9 @@ mod tests {
         peer.write_all(&[7]).expect("available input");
         let mut reader = super::IngressDeadlineReader {
             stream: &mut stream,
-            deadline: Instant::now() - Duration::from_millis(1),
+            deadline: Instant::now()
+                .checked_sub(Duration::from_millis(1))
+                .expect("current instant has a preceding millisecond"),
         };
         let error = reader.read(&mut [0]).expect_err("deadline precedes input");
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
@@ -3566,7 +3571,12 @@ mod tests {
         let query_permits: Vec<_> = (0..64)
             .map(|_| {
                 query_slots
-                    .try_acquire_decode(MAX_FRAME_BODY_BYTES / 4, IpcPlane::Query)
+                    .try_acquire_decode(
+                        MAX_FRAME_BODY_BYTES
+                            .checked_div(4)
+                            .expect("nonzero divisor"),
+                        IpcPlane::Query,
+                    )
                     .expect("query permit")
             })
             .collect();

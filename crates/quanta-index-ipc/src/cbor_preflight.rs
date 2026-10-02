@@ -12,7 +12,7 @@ const TEXT_VALUE_STORAGE_BYTES: usize = 3 * std::mem::size_of::<String>();
 pub(crate) fn retained_text_budget(bytes: &[u8]) -> Result<usize, IpcError> {
     let mut decoder = Decoder::from(bytes);
     let mut storage_bytes = 0_usize;
-    let header = decoder.pull().map_err(decode_error)?;
+    let header = decoder.pull().map_err(|error| decode_error(&error))?;
     scan(
         header,
         &mut decoder,
@@ -29,12 +29,12 @@ pub(crate) fn retained_text_budget(bytes: &[u8]) -> Result<usize, IpcError> {
     Ok(storage_bytes)
 }
 
-fn decode_error(error: ciborium_ll::Error<std::io::Error>) -> IpcError {
+fn decode_error(error: &ciborium_ll::Error<std::io::Error>) -> IpcError {
     IpcError::Decode(format!("CBOR preflight failed: {error:?}"))
 }
 
 fn next(decoder: &mut Decoder<&[u8]>) -> Result<Header, IpcError> {
-    decoder.pull().map_err(decode_error)
+    decoder.pull().map_err(|error| decode_error(&error))
 }
 
 fn scan(
@@ -50,6 +50,7 @@ fn scan(
             "CBOR request exceeds nesting limit".into(),
         ));
     }
+    let child_depth = depth.saturating_add(1);
     match header {
         Header::Positive(_) | Header::Negative(_) | Header::Float(_) | Header::Simple(_) => {}
         Header::Break => return Err(IpcError::Decode("CBOR break outside container".into())),
@@ -57,15 +58,19 @@ fn scan(
             next(decoder)?,
             decoder,
             input_len,
-            depth + 1,
+            child_depth,
             map_key,
             storage_bytes,
         )?,
         Header::Bytes(len) => {
             let mut segments = decoder.bytes(len);
             let mut scratch = [0_u8; 4096];
-            while let Some(mut segment) = segments.pull().map_err(decode_error)? {
-                while segment.pull(&mut scratch).map_err(decode_error)?.is_some() {}
+            while let Some(mut segment) = segments.pull().map_err(|error| decode_error(&error))? {
+                while segment
+                    .pull(&mut scratch)
+                    .map_err(|error| decode_error(&error))?
+                    .is_some()
+                {}
             }
         }
         Header::Text(len) => {
@@ -76,8 +81,12 @@ fn scan(
             }
             let mut segments = decoder.text(len);
             let mut scratch = [0_u8; 4096];
-            while let Some(mut segment) = segments.pull().map_err(decode_error)? {
-                while segment.pull(&mut scratch).map_err(decode_error)?.is_some() {}
+            while let Some(mut segment) = segments.pull().map_err(|error| decode_error(&error))? {
+                while segment
+                    .pull(&mut scratch)
+                    .map_err(|error| decode_error(&error))?
+                    .is_some()
+                {}
             }
         }
         Header::Array(Some(len)) => {
@@ -91,7 +100,7 @@ fn scan(
                     next(decoder)?,
                     decoder,
                     input_len,
-                    depth + 1,
+                    child_depth,
                     false,
                     storage_bytes,
                 )?;
@@ -102,10 +111,10 @@ fn scan(
             if child == Header::Break {
                 break;
             }
-            scan(child, decoder, input_len, depth + 1, false, storage_bytes)?;
+            scan(child, decoder, input_len, child_depth, false, storage_bytes)?;
         },
         Header::Map(Some(len)) => {
-            if len > input_len / 2 {
+            if len > input_len >> 1 {
                 return Err(IpcError::Decode(
                     "CBOR map length exceeds request bytes".into(),
                 ));
@@ -115,7 +124,7 @@ fn scan(
                     next(decoder)?,
                     decoder,
                     input_len,
-                    depth + 1,
+                    child_depth,
                     true,
                     storage_bytes,
                 )?;
@@ -123,7 +132,7 @@ fn scan(
                     next(decoder)?,
                     decoder,
                     input_len,
-                    depth + 1,
+                    child_depth,
                     false,
                     storage_bytes,
                 )?;
@@ -134,12 +143,12 @@ fn scan(
             if key == Header::Break {
                 break;
             }
-            scan(key, decoder, input_len, depth + 1, true, storage_bytes)?;
+            scan(key, decoder, input_len, child_depth, true, storage_bytes)?;
             scan(
                 next(decoder)?,
                 decoder,
                 input_len,
-                depth + 1,
+                child_depth,
                 false,
                 storage_bytes,
             )?;

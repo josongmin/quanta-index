@@ -169,9 +169,10 @@ pub struct DispatchSlots {
 const DECODE_BYTE_CAPACITY: usize = 256 * 1024 * 1024;
 
 /// Request-body admission shared by the query, control and ingest sockets of
-/// one daemon. The process budget reserves 32 MiB and two requests for the
-/// control socket under data-plane saturation. Standalone servers use the
-/// same total and data-plane limits, without a control reserve.
+/// one daemon.
+///
+/// The process budget reserves 32 MiB and two requests for the control socket
+/// under data-plane saturation. Standalone servers have no control reserve.
 #[derive(Debug)]
 pub struct IngressBudget {
     decode_bytes_in_flight: AtomicUsize,

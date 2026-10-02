@@ -344,13 +344,14 @@ where
     T: serde::de::DeserializeOwned,
     R: Read,
 {
-    decode_frame(reader, true, false, |_| Ok(()), |_, _| Ok(())).map(|(value, ())| value)
+    decode_frame(reader, true, false, |_| Ok(()), |(), _| Ok(())).map(|(value, ())| value)
 }
 
 /// Reserve server ingress bytes after validating the first frame header,
-/// before allocating its body. The returned guard must cover the decoded
-/// request through dispatch and response; otherwise queued envelopes can
-/// exceed the ingress bound after parsing.
+/// before allocating its body.
+///
+/// The returned guard must cover the decoded request through dispatch and
+/// response; otherwise queued envelopes can exceed the ingress bound.
 pub(crate) fn decode_request_guarded<T, R, G>(
     reader: &mut R,
     admit: impl FnOnce(usize) -> Result<G, IpcError>,
@@ -368,7 +369,7 @@ where
     T: serde::de::DeserializeOwned,
     R: Read,
 {
-    decode_frame(reader, false, false, |_| Ok(()), |_, _| Ok(())).map(|(value, ())| value)
+    decode_frame(reader, false, false, |_| Ok(()), |(), _| Ok(())).map(|(value, ())| value)
 }
 
 pub fn decode_cbor_payload<T>(bytes: &[u8]) -> Result<T, IpcError>
@@ -726,7 +727,7 @@ mod tests {
                     requests: 4,
                 })
             },
-            |_, _| Ok(()),
+            |(), _| Ok(()),
         );
         assert!(matches!(
             result,
