@@ -305,7 +305,7 @@ fn add_witness_score(
     term_index: usize,
     witness: Witness,
 ) {
-    let case_exact = if term.regex.is_some() {
+    let case_exact = if term.regex.is_some() || !matches!(case, CaseMode::Folded) {
         false
     } else {
         match witness.surface {
@@ -319,11 +319,7 @@ fn add_witness_score(
     let increment = witness
         .score
         .saturating_add(u32::from(witness.occurrences.saturating_sub(1)).saturating_mul(2))
-        .saturating_add(if matches!(case, CaseMode::Folded) && case_exact {
-            5
-        } else {
-            0
-        });
+        .saturating_add(if case_exact { 5 } else { 0 });
     match scored {
         Some(prior) => {
             prior.score = prior.score.saturating_add(increment);
@@ -910,34 +906,27 @@ fn posting_sources(authority: &FileAuthority, scope: Scope) -> [Option<&TrigramI
     }
 }
 
-struct LiteralPrefilter<'a> {
-    term: &'a CodeSearchTerm,
+struct LiteralPrefilter<'term, 'index> {
+    term: &'term CodeSearchTerm,
     trigrams: Vec<Trigram>,
+    // Query-owned posting references avoid a BTreeMap lookup for every gram
+    // of every term at each file in the seed posting walk.
+    postings: [Option<Vec<&'index [DocId]>>; 2],
 }
 
-impl LiteralPrefilter<'_> {
-    fn possible_in(&self, authority: &FileAuthority, id: DocId) -> bool {
-        posting_sources(authority, self.term.scope)
-            .into_iter()
+impl LiteralPrefilter<'_, '_> {
+    fn possible_in(&self, id: DocId) -> bool {
+        self.postings
+            .iter()
             .flatten()
-            .any(|index| {
-                self.trigrams
-                    .iter()
-                    .all(|trigram| index.lookup(*trigram).binary_search(&id).is_ok())
-            })
+            .any(|lists| lists.iter().all(|list| list.binary_search(&id).is_ok()))
     }
 
-    fn seed_size(&self, authority: &FileAuthority) -> usize {
-        posting_sources(authority, self.term.scope)
-            .into_iter()
+    fn seed_size(&self) -> usize {
+        self.postings
+            .iter()
             .flatten()
-            .map(|index| {
-                self.trigrams
-                    .iter()
-                    .map(|trigram| index.lookup(*trigram).len())
-                    .min()
-                    .unwrap_or(0)
-            })
+            .map(|lists| lists.first().map_or(0, |list| list.len()))
             .sum()
     }
 }
@@ -977,14 +966,28 @@ fn candidate_ids(
             let mut trigrams: Vec<_> = trigrams_of(needle.as_bytes()).collect();
             trigrams.sort_unstable();
             trigrams.dedup();
-            indexed.push(LiteralPrefilter { term, trigrams });
+            let postings = posting_sources(authority, term.scope).map(|source| {
+                source.map(|index| {
+                    let mut lists: Vec<_> = trigrams
+                        .iter()
+                        .map(|trigram| index.lookup(*trigram))
+                        .collect();
+                    lists.sort_by_key(|list| list.len());
+                    lists
+                })
+            });
+            indexed.push(LiteralPrefilter {
+                term,
+                trigrams,
+                postings,
+            });
         }
     }
     let mut hits = BTreeMap::new();
     if let Some((seed_position, seed)) = indexed
         .iter()
         .enumerate()
-        .min_by_key(|(_, term)| term.seed_size(authority))
+        .min_by_key(|(_, term)| term.seed_size())
     {
         for index in posting_sources(authority, seed.term.scope)
             .into_iter()
@@ -1004,7 +1007,7 @@ fn candidate_ids(
                         for (position, term) in indexed.iter().enumerate() {
                             if position != seed_position {
                                 budget.checkpoint("lexical:code-search-term-postings")?;
-                                if !term.possible_in(authority, id) {
+                                if !term.possible_in(id) {
                                     return Ok(false);
                                 }
                             }
