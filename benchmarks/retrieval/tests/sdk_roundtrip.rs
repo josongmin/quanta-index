@@ -901,6 +901,9 @@ fn keyword_and_substring_file_public_routes_group_order_scope_and_case() {
     // Scope: a bare keyword also searches path tokens; a raw substring is content only.
     let (_plan, keyword_wide) = run(QueryInputPolicy::KeywordFile, "needle", 20);
     let (_plan, substring_wide) = run(QueryInputPolicy::SubstringFile, "eedl", 20);
+    let (exact_plan, exact_content) =
+        run(QueryInputPolicy::CodeSearchExactContentFile, "needle", 10);
+    let (_plan, exact_upper) = run(QueryInputPolicy::CodeSearchExactContentFile, "NEEDLE", 10);
     session.stop().expect("shutdown");
     let QueryOutcome::ReturnedWindow {
         hits: keyword_hits, ..
@@ -924,6 +927,34 @@ fn keyword_and_substring_file_public_routes_group_order_scope_and_case() {
     assert!(!keyword_paths.contains("src/upper.go"));
     assert!(!substring_paths.contains("src/upper.go"));
     assert_eq!(substring_paths, content_files);
+    let QueryOutcome::ReturnedWindow {
+        hits: exact_hits, ..
+    } = &exact_content
+    else {
+        panic!("exact-content query failed: {exact_content:?}");
+    };
+    let exact_paths: BTreeSet<&str> = exact_hits.iter().map(|hit| hit.path.as_str()).collect();
+    assert_eq!(exact_paths, content_files);
+    let QueryOutcome::ReturnedWindow {
+        hits: upper_hits, ..
+    } = &exact_upper
+    else {
+        panic!("exact-content upper-case query failed: {exact_upper:?}");
+    };
+    assert_eq!(upper_hits.len(), 1);
+    assert_eq!(upper_hits[0].path, "src/upper.go");
+    let exact_record = result_value(
+        "T1",
+        "lexical",
+        &exact_content,
+        &exact_plan,
+        10,
+        &files_by_path,
+        &registry,
+    )
+    .expect("exact-content source-proven result");
+    assert_eq!(exact_record["rank_unit"], "distinct_file");
+    assert_eq!(exact_record["score_evidence"], "native_sdk_score_v1");
 }
 
 #[test]
