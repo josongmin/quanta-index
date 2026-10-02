@@ -3126,9 +3126,14 @@ def repository_cluster_ci(
 
 
 def paired_query_family_rows(
-    suite: dict[str, Any], report: dict[str, Any], baseline: str, candidate: str
+    suite: dict[str, Any],
+    report: dict[str, Any],
+    baseline: str,
+    candidate: str,
+    *,
+    require_graded: bool = False,
 ) -> list[tuple[str, str, str, float]]:
-    """Re-derive paired graded deltas from a suite-bound report.
+    """Re-derive paired deltas from a suite-bound report.
 
     The caller must first replay the capture and validate the suite against its
     source. A matching suite digest alone does not establish that authority.
@@ -3152,7 +3157,8 @@ def paired_query_family_rows(
         and comparison.get("candidate") == candidate,
         "cluster comparison routes differ",
     )
-    require(report.get("graded") is True, "cluster report is not graded")
+    if require_graded:
+        require(report.get("graded") is True, "cluster report is not graded")
     require(
         report.get("repository_commit") == suite.get("repository_commit")
         and report.get("suite_id") == suite.get("suite_id")
@@ -3268,7 +3274,7 @@ def repository_cluster_ci_from_reports(
         rows.extend(
             (name, task_id, family_id, delta)
             for task_id, family_id, _category, delta in paired_query_family_rows(
-                suite, reports[name], baseline, candidate
+                suite, reports[name], baseline, candidate, require_graded=True
             )
         )
     return repository_cluster_ci(rows, release_digest, repositories, repository_strata)
