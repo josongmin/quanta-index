@@ -699,6 +699,29 @@ def test_c4_matrix_has_independent_cell_inventory_and_validates_once(tmp_path, m
     output = tmp_path / "external-matrix"
     holdout_c4.write_matrix(release, capsules, checkouts, output, expected_repositories=2)
     assert {path.name for path in output.iterdir()} == {"admission-matrix.json"}
+    bundle = tmp_path / "external-bundle"
+    bound = holdout_c4.write_matrix(
+        release, capsules, checkouts, bundle, expected_repositories=2, emit_suites=True
+    )
+    cell = bundle / "repo_a" / "declaration_name_exact"
+    assert {path.name for path in cell.iterdir()} == {
+        "suite.json",
+        "blind-pack.json",
+        "admission.json",
+    }
+    selected = next(
+        row
+        for row in bound["cells"]
+        if row["repository"] == "repo_a" and row["intent"] == "declaration_name_exact"
+    )
+    assert (
+        hashlib.sha256((cell / "suite.json").read_bytes()).hexdigest() == selected["suite_sha256"]
+    )
+    assert (
+        hashlib.sha256((cell / "blind-pack.json").read_bytes()).hexdigest()
+        == selected["blind_pack_sha256"]
+    )
+    assert not (bundle / "repo_b").exists()
 
 
 def test_c4_matrix_refuses_missing_or_changed_inputs(tmp_path, monkeypatch):

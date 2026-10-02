@@ -683,7 +683,12 @@ def _batch_tool_sources() -> dict[str, Path]:
 
 
 def derive_matrix(
-    release: Path, capsule_root: Path, checkout_root: Path, *, expected_repositories: int = 12
+    release: Path,
+    capsule_root: Path,
+    checkout_root: Path,
+    *,
+    expected_repositories: int = 12,
+    _payloads: dict[tuple[str, str], tuple[dict, dict, dict]] | None = None,
 ) -> dict:
     """Admit all declaration intents without publishing suites or product scores."""
     tool_sources = _batch_tool_sources()
@@ -724,6 +729,8 @@ def derive_matrix(
                     hashlib.sha256(evaluator.canonical(suite)).hexdigest() if suite else None
                 )
                 pack_sha = hashlib.sha256(evaluator.canonical(pack)).hexdigest() if pack else None
+                if suite is not None and pack is not None and _payloads is not None:
+                    _payloads[(name, intent)] = (suite, pack, report)
             if sorted(candidate_ids) != sorted(selected_ids + [row["task_id"] for row in excluded]):
                 raise ValueError("C4 matrix cell task accounting differs")
             cells.append(
@@ -766,8 +773,9 @@ def write_matrix(
     output: Path,
     *,
     expected_repositories: int = 12,
+    emit_suites: bool = False,
 ) -> dict:
-    """Write one admission-only matrix to a fresh external directory."""
+    """Write a matrix and optionally its admitted suites from one validation pass."""
     if not output.is_absolute() or output.exists() or output.is_symlink():
         raise ValueError("C4 matrix output root must be fresh and absolute")
     target = output.resolve()
@@ -777,12 +785,27 @@ def write_matrix(
         for root in protected
     ):
         raise ValueError("C4 matrix output root must be external and disjoint")
+    payloads: dict[tuple[str, str], tuple[dict, dict, dict]] | None = {} if emit_suites else None
     matrix = derive_matrix(
-        release, capsule_root, checkout_root, expected_repositories=expected_repositories
+        release,
+        capsule_root,
+        checkout_root,
+        expected_repositories=expected_repositories,
+        _payloads=payloads,
     )
     output.mkdir(parents=True)
     try:
         (output / "admission-matrix.json").write_bytes(_raw(matrix))
+        if payloads is not None:
+            for (name, intent), (suite, pack, report) in sorted(payloads.items()):
+                cell_root = output / name / intent
+                cell_root.mkdir(parents=True)
+                for file_name, value in (
+                    ("suite.json", suite),
+                    ("blind-pack.json", pack),
+                    ("admission.json", report),
+                ):
+                    (cell_root / file_name).write_bytes(evaluator.canonical(value))
     except BaseException:
         shutil.rmtree(output)
         raise
@@ -828,6 +851,7 @@ def main() -> int:
     parser.add_argument("--checkouts", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--expected-repositories", type=int, default=12)
+    parser.add_argument("--emit-suites", action="store_true")
     args = parser.parse_args()
     matrix = write_matrix(
         args.release,
@@ -835,6 +859,7 @@ def main() -> int:
         args.checkouts,
         args.output,
         expected_repositories=args.expected_repositories,
+        emit_suites=args.emit_suites,
     )
     print(f"admitted {len(matrix['cells'])} diagnostic C4 cells at {args.output}")
     return 0
