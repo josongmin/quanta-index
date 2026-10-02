@@ -286,6 +286,25 @@ def _repository_disjoint_metric_gate(
             task["split"] == "eval" and not task["gold"] for task in suite["tasks"]
         )
         negative = comparison.get("no_answer_abstention_delta")
+        query_rows = {
+            (item["task_id"], item["route"]): item for item in report["per_query"]
+        }
+        observed_negative = math.fsum(
+            float(
+                query_rows[(task["task_id"], policy["comparison"]["candidate_route"])][
+                    "status"
+                ]
+                == "abstained"
+            )
+            - float(
+                query_rows[(task["task_id"], policy["comparison"]["baseline_route"])][
+                    "status"
+                ]
+                == "abstained"
+            )
+            for task in suite["tasks"]
+            if task["split"] == "eval" and not task["gold"]
+        )
         if (
             negative_count == 0
             or not isinstance(negative, dict)
@@ -294,6 +313,10 @@ def _repository_disjoint_metric_gate(
         ):
             raise DecisionError("repository-disjoint no-answer coverage is incomplete")
         no_answer[name] = _number(negative.get("mean_delta"), "no-answer delta")
+        if not math.isclose(
+            no_answer[name], observed_negative / negative_count, abs_tol=1e-12
+        ):
+            raise DecisionError("repository-disjoint no-answer mean differs from report rows")
     if ci.get("sample_count") != len(family_rows):
         raise DecisionError("repository-disjoint interval task coverage differs")
 

@@ -94,10 +94,17 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
                 {
                     "task_id": "T1",
                     "split": "eval",
-                    "gold": [1],
+                    "gold": [{"path": "file.go"}],
                     "query_family_id": row["query_family_ids"][0],
                     "category": "objective",
-                }
+                },
+                {
+                    "task_id": "T2",
+                    "split": "eval",
+                    "gold": [],
+                    "query_family_id": row["query_family_ids"][0],
+                    "category": "objective",
+                },
             ],
         }
         suite_path = root / "suite.json"
@@ -115,11 +122,14 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
                     "primary_metric": "ndcg_at_10",
                     "sample_count": 1,
                     "primary_delta": 0.5,
+                    "no_answer_abstention_delta": {"sample_count": 1, "mean_delta": 0.0},
                 }
             },
             "per_query": [
                 {"task_id": "T1", "route": "semble-hybrid", "ndcg_at_10": 0.25},
                 {"task_id": "T1", "route": "hybrid", "ndcg_at_10": 0.75},
+                {"task_id": "T2", "route": "semble-hybrid", "status": "ok"},
+                {"task_id": "T2", "route": "hybrid", "status": "ok"},
             ],
         }
         (root / "report.json").write_bytes(ev.canonical(report))
@@ -256,6 +266,39 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
     assert result["product_default_decision"] is False
     assert (result["repository_count"], result["paired_sample_count"]) == (12, 12)
     assert result["repository_cluster_ci"]["mean"] == 0.5
+    assert result["metric_gate"] == {
+        "status": "eligible_for_human_review",
+        "reasons": [],
+        "primary_delta": 0.5,
+        "repository_lower_95": 0.5,
+        "measurements": {
+            "query_p95_ms": 5.0,
+            "peak_rss_bytes": 1_000,
+            "index_bytes": 2_000,
+        },
+    }
+    names = [row["repository"] for row in policy["repository_scope"]["holdout"]]
+    suites = {name: json.loads((tmp_path / name / "suite.json").read_text()) for name in names}
+    reports = {name: json.loads((tmp_path / name / "report.json").read_text()) for name in names}
+    policy["min_useful_delta"] = 0.6
+    assert decision._repository_disjoint_metric_gate(
+        policy,
+        suites,
+        reports,
+        result["repository_cluster_ci"],
+        result["captures"],
+    )["reasons"] == ["primary_effect_below_minimum"]
+    policy["min_useful_delta"] = 0.05
+    policy["resource_limits"]["max_query_p95_ms"] = 4.0
+    assert decision._repository_disjoint_metric_gate(
+        policy, suites, reports, result["repository_cluster_ci"], result["captures"]
+    )["reasons"] == ["query_p95_budget_exceeded"]
+    policy["resource_limits"]["max_query_p95_ms"] = 100.0
+    reports["repo-00"]["rank_metrics"]["comparison"]["no_answer_abstention_delta"]["mean_delta"] = 1.0
+    with pytest.raises(decision.DecisionError, match="no-answer mean differs"):
+        decision._repository_disjoint_metric_gate(
+            policy, suites, reports, result["repository_cluster_ci"], result["captures"]
+        )
     original_bundle = bundle_path.read_bytes()
     missing = json.loads(original_bundle)
     missing["captures"].pop()
