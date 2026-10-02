@@ -401,10 +401,15 @@ def _derive_prepared(
             continue
         if filter_query_duplicates:
             try:
-                evaluator.check_query_near_duplicates(
-                    [(prior["task_id"], prior["query"]) for prior in selected]
-                    + [(task["task_id"], task["query"])]
-                )
+                # Selected queries have already passed pairwise admission.
+                # Rechecking every old pair for each new task is cubic.
+                for prior in selected:
+                    evaluator.check_query_near_duplicates(
+                        [
+                            (prior["task_id"], prior["query"]),
+                            (task["task_id"], task["query"]),
+                        ]
+                    )
             except evaluator.EvidenceError:
                 excluded.append({"task_id": task["task_id"], "reason": "query_near_duplicate"})
                 continue

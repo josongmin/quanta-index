@@ -387,6 +387,7 @@ def test_c4_reuses_one_intended_name_exclusion_for_distinct_typos(tmp_path, monk
         )
         second = {**task, "task_id": "toy.osa.002", "query": "Alphx"}
         payload["tasks"].append(second)
+        payload["tasks"].append({**task, "task_id": "toy.osa.003", "query": "Alhpa"})
     gold["tasks"][0].update(
         intended_name="Alpha",
         near_declaration_state="complete",
@@ -399,15 +400,30 @@ def test_c4_reuses_one_intended_name_exclusion_for_distinct_typos(tmp_path, monk
     gold["tasks"][1].update(gold["tasks"][0])
     gold["tasks"][1]["task_id"] = "toy.osa.002"
     gold["tasks"][1]["query"] = "Alphx"
+    gold["tasks"][2].update(gold["tasks"][0])
+    gold["tasks"][2]["task_id"] = "toy.osa.003"
+    gold["tasks"][2]["query"] = "Alhpa"
     _resign(capsule, "gold.json", gold)
     _resign(capsule, "blind.json", blind)
 
-    suite, pack, report = holdout_c4.derive(
-        release, capsule, checkout, "declaration_name_osa1_casefold"
+    original = holdout_c4.evaluator.check_query_near_duplicates
+    checked_sizes = []
+
+    def checked(rows):
+        checked_sizes.append(len(rows))
+        return original(rows)
+
+    monkeypatch.setattr(holdout_c4.evaluator, "check_query_near_duplicates", checked)
+    suite, pack, report = holdout_c4._derive_prepared(
+        holdout_c4._prepare(release, capsule, checkout),
+        "declaration_name_osa1_casefold",
+        filter_query_duplicates=True,
     )
-    assert report["selected"] == 2
-    assert [task["query"] for task in pack["tasks"]] == ["Alphb", "Alphx"]
-    assert [task["intended_name"] for task in suite["tasks"]] == ["Alpha", "Alpha"]
+    assert report["selected"] == 3
+    assert [task["query"] for task in pack["tasks"]] == ["Alphb", "Alphx", "Alhpa"]
+    assert [task["intended_name"] for task in suite["tasks"]] == ["Alpha"] * 3
+    # C4 checks only the new pairs; final suite validation checks all tasks once.
+    assert checked_sizes == [2, 2, 2, 3]
 
 
 def test_c4_admits_typo_with_query_proven_checker_disagreement(tmp_path, monkeypatch):
