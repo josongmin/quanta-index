@@ -65,7 +65,7 @@ const fn frame_payload_bytes() -> u64 {
 
 /// A ranked page the budget can cut: its rows, and the page it becomes
 /// when only the first `returned` rows stay.
-pub(super) trait RankedPage: Serialize + Clone {
+pub(super) trait RankedPage: Serialize + Sized {
     type Row: Serialize;
 
     fn rows(&self) -> &[Self::Row];
@@ -87,8 +87,7 @@ pub(super) trait RankedPage: Serialize + Clone {
     }
 
     /// Keep the first `returned` rows under `window`, continued by `cursor`.
-    fn cut(self, returned: usize, window: QueryResultWindowV2, cursor: ContinuationTokenV2)
-    -> Self;
+    fn cut(&mut self, returned: usize, window: QueryResultWindowV2, cursor: ContinuationTokenV2);
 }
 
 fn encoded_len<T: Serialize>(value: &T, what: &str) -> Result<u64, CoreError> {
@@ -128,7 +127,7 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
     }
     let window = page.window().clone();
     let generation = page.generation();
-    let mut cut = page.clone();
+    let mut page = page;
     loop {
         let Some(last) = returned.checked_sub(1) else {
             return Err(too_large(whole, limit));
@@ -140,13 +139,13 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
         };
         let cursor = LexicalCursor::at(generation, key);
         let token = mint(&cursor)?;
-        cut = cut.cut(
+        page.cut(
             returned,
             crate::query_dispatcher::window::cut_pageable_window_v2(&window, returned)?,
             token,
         );
-        if cut.budget_encoded_len()? <= limit {
-            return Ok(cut);
+        if page.budget_encoded_len()? <= limit {
+            return Ok(page);
         }
         returned = last;
     }
@@ -212,19 +211,13 @@ impl RankedPage for TextQueryResponse {
             .ok_or_else(|| CoreError::InvalidContract("lexical stage reserve overflow".to_string()))
     }
 
-    fn cut(
-        mut self,
-        returned: usize,
-        window: QueryResultWindowV2,
-        cursor: ContinuationTokenV2,
-    ) -> Self {
+    fn cut(&mut self, returned: usize, window: QueryResultWindowV2, cursor: ContinuationTokenV2) {
         self.results.truncate(returned);
         if let Some(rows) = self.file_owner_rows.as_mut() {
             rows.truncate(returned);
         }
         self.window = window;
         self.next_cursor = Some(cursor);
-        self
     }
 }
 
@@ -254,15 +247,9 @@ impl RankedPage for SymbolQueryResponse {
         self.generation.manifest_generation
     }
 
-    fn cut(
-        mut self,
-        returned: usize,
-        window: QueryResultWindowV2,
-        cursor: ContinuationTokenV2,
-    ) -> Self {
+    fn cut(&mut self, returned: usize, window: QueryResultWindowV2, cursor: ContinuationTokenV2) {
         self.results.truncate(returned);
         self.window = window;
         self.next_cursor = Some(cursor);
-        self
     }
 }

@@ -476,7 +476,8 @@ fn a_shorter_prefix_can_exceed_the_budget_when_its_cursor_is_larger() -> TestRes
         next_cursor: Some(large_token.clone()),
     };
     let budget = ResponsePayloadBudget::new(2_500)?;
-    let two = page.clone().cut(
+    let mut two = page.clone();
+    two.cut(
         2,
         crate::query_dispatcher::window::cut_pageable_window_v2(&page.window, 2)?,
         large_token,
@@ -524,12 +525,14 @@ fn symbol_page_budget_cut_keeps_ranked_prefix_window_and_cursor() -> TestResult 
         next_cursor: None,
     };
     let token = ContinuationTokenV2::new("opaque")?;
-    let two = page.clone().cut(
+    let mut two = page.clone();
+    two.cut(
         2,
         crate::query_dispatcher::window::cut_pageable_window_v2(&page.window, 2)?,
         token.clone(),
     );
-    let three = page.clone().cut(
+    let mut three = page.clone();
+    three.cut(
         3,
         crate::query_dispatcher::window::cut_pageable_window_v2(&page.window, 3)?,
         token.clone(),
