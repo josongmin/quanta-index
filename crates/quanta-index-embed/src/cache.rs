@@ -41,7 +41,7 @@ use std::time::{Duration, SystemTime};
 
 use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_core::{
-    CoreError, MetricPointV1, MetricSourcePort, RequestBudgetV1, SemanticPolicy,
+    CoreError, EMBED_CHECKPOINT, MetricPointV1, MetricSourcePort, RequestBudgetV1, SemanticPolicy,
     TextEmbeddingProvider,
 };
 use sha2::{Digest, Sha256};
@@ -482,6 +482,9 @@ impl TextEmbeddingProvider for CachingEmbeddingProvider {
         texts: &[&str],
         budget: &RequestBudgetV1,
     ) -> Result<Vec<Vec<f32>>, CoreError> {
+        // A fully cached batch never reaches the inner provider, but it still
+        // owes the same budget checkpoint as every other embedding path.
+        budget.checkpoint(EMBED_CHECKPOINT)?;
         let mut slots: Vec<Option<Vec<f32>>> = Vec::with_capacity(texts.len());
         let mut cache_hit_count = 0_usize;
         // Misses deduped BY CONTENT: each distinct uncached text is embedded once
@@ -1766,6 +1769,26 @@ mod tests {
         assert_eq!(embedded.load(Ordering::SeqCst), 2);
         let stats = provider.cache_stats();
         assert_eq!((stats.hits, stats.misses, stats.puts), (2, 2, 2));
+    }
+
+    #[test]
+    fn cached_batch_still_observes_a_cancelled_budget() {
+        let embedded = Arc::new(AtomicUsize::new(0));
+        let provider = CachingEmbeddingProvider::new(
+            Box::new(counting("m-cancel", Arc::clone(&embedded))),
+            Box::new(InMemoryEmbeddingCache::default()),
+        );
+        let _warm = provider.embed_batch(&["cached"]).expect("warm cache");
+        let budget = RequestBudgetV1::unbounded();
+        budget.cancel_handle().cancel();
+        match provider.embed_batch_within(&["cached"], &budget) {
+            Err(CoreError::Typed { code, message }) => {
+                assert_eq!(code, quanta_index_core::REQUEST_CANCELLED_CODE);
+                assert!(message.contains(EMBED_CHECKPOINT));
+            }
+            other => panic!("expected cancelled embedding, got {other:?}"),
+        }
+        assert_eq!(embedded.load(Ordering::SeqCst), 1);
     }
 
     #[test]
