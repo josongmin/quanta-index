@@ -21,24 +21,28 @@ from tools.benchmark.retrieval.identifier_robustness_report import (
 )
 
 
-def test_paired_capture_requires_same_binary_and_index_identity():
-    def record(digest):
+def test_paired_capture_requires_same_binary_and_valid_separate_activations():
+    def record(digest, *, binary="b"):
         return {
             "route_provenance": {"lexical": {"capture_id": "q"}},
             "captures": {
                 "q": {
                     "system": "quanta",
                     "runner_binary": {"digest": "a"},
-                    "searchd_binary": {"binary_digest": "b"},
+                    "searchd_binary": {"binary_digest": binary},
                     "activation_digest": digest,
                     "generation": 1,
                 }
             },
         }
 
-    _verify_paired_capture_identity(record("index-1"), record("index-1"), "lexical", "lexical")
-    with pytest.raises(ValueError, match="paired capture differs in activation_digest"):
-        _verify_paired_capture_identity(record("index-1"), record("index-2"), "lexical", "lexical")
+    _verify_paired_capture_identity(record("a" * 64), record("b" * 64), "lexical", "lexical")
+    with pytest.raises(ValueError, match="paired capture differs in searchd_binary"):
+        _verify_paired_capture_identity(
+            record("a" * 64), record("b" * 64, binary="changed"), "lexical", "lexical"
+        )
+    with pytest.raises(ValueError, match="invalid activation digest"):
+        _verify_paired_capture_identity(record("a" * 64), record("not-a-digest"), "lexical", "lexical")
 
 
 def test_paired_clean_to_typo_uses_intended_gold_and_common_eligible_families():

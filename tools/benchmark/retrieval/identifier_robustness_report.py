@@ -861,10 +861,20 @@ def _verify_paired_capture_identity(
         "model_revision",
         "chunk_strategy",
         "chunk_config",
-        "activation_digest",
         "generation",
     ):
         _require(clean.get(field) == typo.get(field), "paired capture differs in " + field)
+    # Activation receipts name separate state roots. Their digests must be
+    # present and well formed, but equality would reject independent rebuilds
+    # of the same source universe. Source bytes and file universe are checked
+    # by both evaluator replays and compare_paired_clean_typo.
+    for value in (clean.get("activation_digest"), typo.get("activation_digest")):
+        _require(
+            isinstance(value, str)
+            and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value),
+            "paired capture has invalid activation digest",
+        )
 
 
 def verify_census_against_source(
