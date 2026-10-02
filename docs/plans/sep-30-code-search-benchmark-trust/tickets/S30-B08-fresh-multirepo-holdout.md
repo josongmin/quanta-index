@@ -669,3 +669,20 @@ indexed-universe attestation, a preregistered repository-cluster decision,
 and quiet-host performance qualification. The new exact-content tasks are
 mechanical diagnostic labels and must remain separate from the declaration
 matrix and the older gin query sets.
+
+## C5 code boundary audit (2026-10-03)
+
+`main@8f8e6c9f` has a deterministic, language-stratified
+`evaluator.repository_cluster_ci()` helper. It gives equal weight to query
+families within a repository and to repositories in the release, resamples
+repositories within declared strata, and refuses missing repositories,
+cross-repository families, fewer than twelve repositories, singleton strata,
+and out-of-range metric deltas. Three focused unit tests and Ruff passed.
+
+This helper is not connected to `run.py` qualified admission or `decision.py`.
+Those contracts still bind one repository and explicitly reject a
+multi-repository product decision. C5 therefore remains `NOT_RUN`. The next
+code boundary is a versioned, repository-disjoint qualified input that replays
+every declared cell and its source/index/review custody before deriving paired
+rows for this helper. No current C4 or exact-content diagnostic capture can be
+promoted by calling the helper directly.
