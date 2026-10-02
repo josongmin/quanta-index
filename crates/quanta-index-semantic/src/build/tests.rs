@@ -153,6 +153,43 @@ fn embedding(
     })
 }
 
+#[test]
+fn cluster_membership_scope_validation_matches_each_record_and_authority() -> TestResult {
+    let mut replace = SemanticReplaceScope {
+        scope: scope("src/clusters.rs"),
+        scope_digest: "scope:clusters".to_string(),
+        embeddings: ["a", "b"]
+            .into_iter()
+            .map(|id| {
+                embedding(
+                    id,
+                    "src/clusters.rs",
+                    OwnerDocKind::Module,
+                    "owner",
+                    SemanticCorpusKindV1::ClusterCard,
+                    vec![1.0, 0.0, 0.0],
+                )
+            })
+            .collect::<Result<_, _>>()?,
+        cluster_memberships: ["a", "b"]
+            .into_iter()
+            .map(|id| ClusterMembershipReplaceV1 {
+                cluster_record_id: format!("record-{id}"),
+                authority_digest: format!("auth:{id}"),
+                members: vec![SymbolId::new(format!("symbol:{id}"))],
+            })
+            .collect(),
+    };
+    super::validate_replace_scope(&replace, 3, EmbeddingNormalization::L2Unit)?;
+
+    replace.cluster_memberships[1].authority_digest = "auth:wrong".to_string();
+    assert!(super::validate_replace_scope(&replace, 3, EmbeddingNormalization::L2Unit).is_err());
+    replace.cluster_memberships[1].authority_digest = "auth:b".to_string();
+    replace.cluster_memberships[1].cluster_record_id = "record:missing".to_string();
+    assert!(super::validate_replace_scope(&replace, 3, EmbeddingNormalization::L2Unit).is_err());
+    Ok(())
+}
+
 fn batch(
     generation: ManifestGeneration,
     path: &str,

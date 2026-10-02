@@ -1,5 +1,6 @@
 //! Canonical content commitment for the serve-time semantic table.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use arrow_array::{
@@ -24,6 +25,14 @@ use crate::layout::{
 pub(crate) struct SemanticRowCommitmentV1 {
     pub(crate) root_digest: String,
     pub(crate) row_count: u64,
+    pub(crate) coverage: SemanticRowCoverageV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SemanticRowCoverageV1 {
+    pub(crate) present_corpora: Vec<String>,
+    pub(crate) card_schema_versions: Vec<u32>,
+    pub(crate) render_policy_digests: Vec<String>,
 }
 
 #[derive(Eq, PartialEq)]
@@ -115,6 +124,7 @@ const OPTIONAL_NAMES: [&str; 4] = [
     COLUMN_VISIBILITY,
 ];
 
+/// Commit the rows and derive manifest coverage in the same table scan.
 pub(crate) async fn semantic_row_commitment_v1(
     table: &lancedb::Table,
 ) -> Result<SemanticRowCommitmentV1, CoreError> {
@@ -124,6 +134,9 @@ pub(crate) async fn semantic_row_commitment_v1(
         .map_err(|error| lancedb_err("count semantic rows for root", error))?;
     let capacity = counted;
     let mut rows = Vec::with_capacity(capacity);
+    let mut present_corpora = BTreeSet::new();
+    let mut card_schema_versions = BTreeSet::new();
+    let mut render_policy_digests = BTreeSet::new();
     let mut stream = table
         .query()
         .execute()
@@ -155,6 +168,9 @@ pub(crate) async fn semantic_row_commitment_v1(
             .collect::<Result<Vec<_>, _>>()?;
         let generated = column_as::<BooleanArray>(&batch, COLUMN_GENERATED, "Boolean")?;
         let card_schema = column_as::<UInt32Array>(&batch, COLUMN_CARD_SCHEMA_VERSION, "UInt32")?;
+        let corpus_kinds = column_as::<StringArray>(&batch, COLUMN_CORPUS_KIND, "Utf8")?;
+        let render_policies =
+            column_as::<StringArray>(&batch, COLUMN_RENDER_POLICY_DIGEST, "Utf8")?;
         let starts = column_as::<UInt32Array>(&batch, COLUMN_START_LINE, "UInt32")?;
         let ends = column_as::<UInt32Array>(&batch, COLUMN_END_LINE, "UInt32")?;
         let vectors = column_as::<FixedSizeListArray>(&batch, COLUMN_VECTOR, "FixedSizeList")?;
@@ -178,6 +194,12 @@ pub(crate) async fn semantic_row_commitment_v1(
                 })?;
             let embedding_id = required_str(embedding_ids, row, COLUMN_EMBEDDING_ID)?;
             let record_id = required_str(record_ids, row, COLUMN_RECORD_ID)?;
+            let _corpus = present_corpora
+                .insert(required_str(corpus_kinds, row, COLUMN_CORPUS_KIND)?.to_owned());
+            let _schema = card_schema_versions.insert(card_schema.value(row));
+            let _render = render_policy_digests.insert(
+                required_str(render_policies, row, COLUMN_RENDER_POLICY_DIGEST)?.to_owned(),
+            );
             let mut leaf = Sha256::new();
             leaf.update(b"quanta-index-semantic-row-leaf-v1\0");
             hash_bytes_v1(&mut leaf, record_id.as_bytes())?;
@@ -252,5 +274,10 @@ pub(crate) async fn semantic_row_commitment_v1(
         row_count: u64::try_from(capacity).map_err(|error| {
             CoreError::Storage(format!("semantic row root: row count overflow: {error}"))
         })?,
+        coverage: SemanticRowCoverageV1 {
+            present_corpora: present_corpora.into_iter().collect(),
+            card_schema_versions: card_schema_versions.into_iter().collect(),
+            render_policy_digests: render_policy_digests.into_iter().collect(),
+        },
     })
 }

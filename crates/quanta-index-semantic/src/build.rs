@@ -52,12 +52,12 @@ use crate::errors::{arrow_err, fs_err, lancedb_err};
 use crate::generation_contract::GenerationContract;
 use crate::integrity::SealTalliesV1;
 use crate::layout::{
-    self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CARD_SCHEMA_VERSION,
-    COLUMN_CORPUS_KIND, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID,
+    self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CORPUS_KIND,
+    COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID,
     COLUMN_MEMBERSHIP_CONTENT_DIGEST, COLUMN_MEMBERSHIP_MEMBER_COUNT,
     COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, COLUMN_MEMBERSHIP_ORDINAL, COLUMN_MEMBERSHIP_OWNER_ID,
-    COLUMN_MEMBERSHIP_OWNER_KIND, COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_RENDER_POLICY_DIGEST,
-    COLUMN_VECTOR, TABLE_NAME, cluster_membership_schema, dimension_to_i32, semantic_schema,
+    COLUMN_MEMBERSHIP_OWNER_KIND, COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_VECTOR, TABLE_NAME,
+    cluster_membership_schema, dimension_to_i32, semantic_schema,
 };
 use crate::manifest::{
     ClusterMembershipSealV1, SemanticCorpusCoverageV1, SemanticManifest, SemanticRowSealV1,
@@ -426,6 +426,14 @@ fn validate_replace_scope(
             | CoreError::Storage(_)) => other,
         })?;
     }
+    let mut embeddings_by_record_id = BTreeMap::new();
+    if !scope.cluster_memberships.is_empty() {
+        for embedding in &scope.embeddings {
+            embeddings_by_record_id
+                .entry(embedding.record_id.as_ref())
+                .or_insert(embedding);
+        }
+    }
     let mut cluster_record_ids = BTreeSet::new();
     for membership in &scope.cluster_memberships {
         membership.validate_v1().map_err(|message| {
@@ -440,10 +448,8 @@ fn validate_replace_scope(
                 membership.cluster_record_id
             )));
         }
-        let embedding = scope
-            .embeddings
-            .iter()
-            .find(|embedding| embedding.record_id.as_ref() == membership.cluster_record_id)
+        let embedding = embeddings_by_record_id
+            .get(membership.cluster_record_id.as_str())
             .ok_or_else(|| {
                 CoreError::InvalidContract(format!(
                     "semantic: cluster membership {:?} has no embedding in the same replace scope",
@@ -653,49 +659,6 @@ fn column_as<'a, T: Array + 'static>(
     })
 }
 
-struct ManifestCoverageSummary {
-    present_corpora: Vec<String>,
-    card_schema_versions: Vec<u32>,
-    render_policy_digests: Vec<String>,
-}
-
-async fn collect_manifest_coverage(
-    table: &lancedb::Table,
-) -> Result<ManifestCoverageSummary, CoreError> {
-    let stream = table
-        .query()
-        .execute()
-        .await
-        .map_err(|err| lancedb_err("table.query execute", err))?;
-    let batches: Vec<RecordBatch> = stream
-        .try_collect()
-        .await
-        .map_err(|err| lancedb_err("table.query stream", err))?;
-
-    let mut present_corpora = BTreeSet::new();
-    let mut card_schema_versions = BTreeSet::new();
-    let mut render_policy_digests = BTreeSet::new();
-    for batch in batches {
-        let corpus_col = column_as::<StringArray>(&batch, COLUMN_CORPUS_KIND, "Utf8")?;
-        let card_schema_col =
-            column_as::<UInt32Array>(&batch, COLUMN_CARD_SCHEMA_VERSION, "UInt32")?;
-        let render_policy_col =
-            column_as::<StringArray>(&batch, COLUMN_RENDER_POLICY_DIGEST, "Utf8")?;
-        for row in 0..batch.num_rows() {
-            let _inserted_corpus = present_corpora.insert(corpus_col.value(row).to_owned());
-            let _inserted_schema = card_schema_versions.insert(card_schema_col.value(row));
-            let _inserted_render =
-                render_policy_digests.insert(render_policy_col.value(row).to_owned());
-        }
-    }
-
-    Ok(ManifestCoverageSummary {
-        present_corpora: present_corpora.into_iter().collect(),
-        card_schema_versions: card_schema_versions.into_iter().collect(),
-        render_policy_digests: render_policy_digests.into_iter().collect(),
-    })
-}
-
 async fn validate_cluster_membership_coverage_v1(
     semantic_table: &lancedb::Table,
     membership_table: &lancedb::Table,
@@ -704,17 +667,18 @@ async fn validate_cluster_membership_coverage_v1(
         "{COLUMN_CORPUS_KIND} = {}",
         crate::sql::quote_sql_string(SemanticCorpusKindV1::ClusterCard.as_code_str())
     );
-    let semantic_batches: Vec<RecordBatch> = semantic_table
+    let mut semantic_stream = semantic_table
         .query()
         .only_if(cluster_predicate)
         .execute()
         .await
-        .map_err(|err| lancedb_err("query ClusterCard coverage", err))?
-        .try_collect()
-        .await
-        .map_err(|err| lancedb_err("collect ClusterCard coverage", err))?;
+        .map_err(|err| lancedb_err("query ClusterCard coverage", err))?;
     let mut expected = BTreeSet::new();
-    for batch in semantic_batches {
+    while let Some(batch) = semantic_stream
+        .try_next()
+        .await
+        .map_err(|err| lancedb_err("stream ClusterCard coverage", err))?
+    {
         let record_ids = column_as::<StringArray>(&batch, crate::layout::COLUMN_RECORD_ID, "Utf8")?;
         let authority_digests = column_as::<StringArray>(&batch, COLUMN_AUTHORITY_DIGEST, "Utf8")?;
         for row in 0..batch.num_rows() {
@@ -729,16 +693,17 @@ async fn validate_cluster_membership_coverage_v1(
             }
         }
     }
-    let membership_batches: Vec<RecordBatch> = membership_table
+    let mut membership_stream = membership_table
         .query()
         .execute()
         .await
-        .map_err(|err| lancedb_err("query cluster membership coverage", err))?
-        .try_collect()
-        .await
-        .map_err(|err| lancedb_err("collect cluster membership coverage", err))?;
+        .map_err(|err| lancedb_err("query cluster membership coverage", err))?;
     let mut observed = BTreeSet::new();
-    for batch in membership_batches {
+    while let Some(batch) = membership_stream
+        .try_next()
+        .await
+        .map_err(|err| lancedb_err("stream cluster membership coverage", err))?
+    {
         let record_ids =
             column_as::<StringArray>(&batch, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID, "Utf8")?;
         let authority_digests =
@@ -1617,20 +1582,8 @@ async fn build_manifest_bytes(
     header: &SemanticIngestHeaderV1,
     generation_contract: &GenerationContract,
 ) -> Result<Vec<u8>, CoreError> {
-    let row_count = table
-        .count_rows(None)
-        .await
-        .map_err(|err| lancedb_err("count_rows", err))?;
-    let row_count_u64 = u64::try_from(row_count)
-        .map_err(|err| CoreError::Storage(format!("semantic: row count overflow: {err}")))?;
-    let coverage = collect_manifest_coverage(table).await?;
     let semantic_rows = semantic_row_commitment_v1(table).await?;
-    if semantic_rows.row_count != row_count_u64 {
-        return Err(CoreError::Storage(format!(
-            "semantic: row commitment count {} != table row count {row_count_u64}",
-            semantic_rows.row_count
-        )));
-    }
+    let row_count_u64 = semantic_rows.row_count;
     let membership_commitment = collect_cluster_membership_commitment_v1(membership_table).await?;
 
     // The dense lane's index contract (QI-BB-027): built with every
@@ -1662,10 +1615,10 @@ async fn build_manifest_bytes(
             built_at_unix_nanos: built_at,
         },
         SemanticCorpusCoverageV1 {
-            present: coverage.present_corpora,
+            present: semantic_rows.coverage.present_corpora,
             required: generation_contract.required_corpora.clone(),
-            card_schema_versions: coverage.card_schema_versions,
-            render_policy_digests: coverage.render_policy_digests,
+            card_schema_versions: semantic_rows.coverage.card_schema_versions,
+            render_policy_digests: semantic_rows.coverage.render_policy_digests,
             policy_digest: generation_contract.corpus_policy_digest.clone(),
         },
         ClusterMembershipSealV1 {
