@@ -52,8 +52,8 @@ fn is_canonical_sha256_v1(value: &str) -> bool {
 /// trained recipe.
 /// `11` = typed-source-only semantic derivation. Format 10 may contain
 /// chunk-text fallback rows and is not admitted as a new-generation base.
-// Format 12 requires generation-wide record_id and embedding_id uniqueness at
-// seal. Older artifacts cannot prove those identities and must be rebuilt.
+/// `12` = generation-wide record_id and embedding_id uniqueness at seal.
+/// Older artifacts cannot prove those identities and must be rebuilt.
 pub(crate) const FORMAT_VERSION: u32 = 12;
 
 /// The dense lane's index contract, sealed with the generation (QI-BB-027).
