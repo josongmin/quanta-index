@@ -294,6 +294,11 @@ def _derive_prepared(
             if not task["answerable"]:
                 excluded.append({"task_id": task["task_id"], "reason": "typo_no_answer_unjudged"})
                 continue
+            if task.get("near_declaration_state") != "complete":
+                excluded.append(
+                    {"task_id": task["task_id"], "reason": "incomplete_near_declaration_census"}
+                )
+                continue
             try:
                 partition = typo_oracle.typo_gold_partition(
                     language, task["query"], task["intended_name"]

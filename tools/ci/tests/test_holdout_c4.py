@@ -315,6 +315,36 @@ def test_c4_casefold_typo_rejects_false_near_name_metadata(tmp_path, monkeypatch
         holdout_c4.derive(release, capsule, checkout, "declaration_name_osa1_casefold")
 
 
+def test_c4_partial_typo_excludes_before_parsing_refused_file(tmp_path, monkeypatch):
+    release, capsule, checkout = _fixture(tmp_path, monkeypatch, parser_refusal=True)
+    gold = holdout_c4._read(capsule / "gold.json")
+    blind = holdout_c4._read(capsule / "blind.json")
+    for payload in (gold, blind):
+        payload["tasks"][0].update(
+            intent="declaration_name_osa1_casefold",
+            query="Alphb",
+            case_semantics="casefold",
+        )
+    gold["tasks"][0].update(
+        intended_name="Alpha",
+        near_declaration_state="partial",
+        near_declaration_names=["Alpha"],
+        near_declaration_files=["main.go"],
+        exact_collision_names=[],
+        exact_collision_files=[],
+    )
+    _resign(capsule, "gold.json", gold)
+    _resign(capsule, "blind.json", blind)
+    prepared = holdout_c4._prepare(release, capsule, checkout)
+    suite, pack, report = holdout_c4._derive_prepared(
+        prepared, "declaration_name_osa1_casefold", allow_empty=True
+    )
+    assert suite is None and pack is None
+    assert report["excluded"] == [
+        {"task_id": "toy.def.001", "reason": "incomplete_near_declaration_census"}
+    ]
+
+
 def test_c4_excludes_negative_with_default_content_or_path_match(tmp_path, monkeypatch):
     release, capsule, checkout = _fixture(tmp_path, monkeypatch)
     gold = holdout_c4._read(capsule / "gold.json")

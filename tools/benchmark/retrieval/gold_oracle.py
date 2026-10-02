@@ -33,7 +33,10 @@ except ModuleNotFoundError:  # benchmark script path without the repository root
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.benchmark.retrieval import declaration_census_audit, source_oracle
 
-from tools.benchmark.evidence import IO_CHUNK_BYTES, EvidenceError, _consume_regular_file
+try:
+    from evidence import IO_CHUNK_BYTES, EvidenceError, _consume_regular_file
+except ModuleNotFoundError:  # package import outside the benchmark script path
+    from tools.benchmark.evidence import IO_CHUNK_BYTES, EvidenceError, _consume_regular_file
 
 ORACLE_VERSION = 2
 MAX_TASKS = 2000
