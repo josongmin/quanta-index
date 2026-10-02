@@ -10915,6 +10915,9 @@ def test_independent_file_ndcg_uses_file_grades_once_per_file():
         (1 + 7 / math.log2(3)) / ideal
     )
     assert ev.file_ndcg_at_k([{"path": "c.go"}, {"path": "a.go"}], judgments, 10) < 1.0
+    rounded = [{"path": str(index), "grade": grade} for index, grade in enumerate((1, 1, 1, 3))]
+    ideal_order = [{"path": str(index)} for index in (3, 0, 1, 2)]
+    assert ev.file_ndcg_at_k(ideal_order, rounded, 10) == 1.0
 
 
 def test_declaration_judgment_requires_published_symbol_span_not_returned_context():

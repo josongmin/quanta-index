@@ -2472,7 +2472,9 @@ def file_ndcg_at_k(
             continue
         seen.add(path)
         dcg += (2 ** grades.get(path, 0) - 1) / math.log2(rank + 1)
-    return dcg / idcg
+    score = dcg / idcg
+    require(-1e-12 <= score <= 1 + 1e-12, "file NDCG exceeds its ideal bound")
+    return min(1.0, max(0.0, score))
 
 
 def file_hit_at_k_judged(
