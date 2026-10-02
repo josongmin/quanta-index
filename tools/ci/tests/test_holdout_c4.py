@@ -749,6 +749,10 @@ def test_c4_matrix_has_independent_cell_inventory_and_validates_once(tmp_path, m
         hashlib.sha256((cell / "blind-pack.json").read_bytes()).hexdigest()
         == selected["blind_pack_sha256"]
     )
+    assert (
+        hashlib.sha256((cell / "admission.json").read_bytes()).hexdigest()
+        == selected["admission_sha256"]
+    )
     assert not (bundle / "repo_b").exists()
 
 

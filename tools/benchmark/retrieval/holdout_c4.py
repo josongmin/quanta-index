@@ -720,7 +720,7 @@ def derive_matrix(
                 selected_ids = []
                 reason = "unsupported_language_intent"
                 excluded = [{"task_id": task_id, "reason": reason} for task_id in candidate_ids]
-                suite_sha = pack_sha = None
+                suite_sha = pack_sha = admission_sha = None
             else:
                 suite, pack, report = _derive_prepared(
                     prepared, intent, allow_empty=True, filter_query_duplicates=True
@@ -735,6 +735,9 @@ def derive_matrix(
                     hashlib.sha256(evaluator.canonical(suite)).hexdigest() if suite else None
                 )
                 pack_sha = hashlib.sha256(evaluator.canonical(pack)).hexdigest() if pack else None
+                admission_sha = (
+                    hashlib.sha256(evaluator.canonical(report)).hexdigest() if suite else None
+                )
                 if suite is not None and pack is not None and _payloads is not None:
                     _payloads[(name, intent)] = (suite, pack, report)
             if sorted(candidate_ids) != sorted(selected_ids + [row["task_id"] for row in excluded]):
@@ -754,6 +757,7 @@ def derive_matrix(
                     "gold_capsule_identity_sha256": prepared.identity_sha256,
                     "suite_sha256": suite_sha,
                     "blind_pack_sha256": pack_sha,
+                    "admission_sha256": admission_sha,
                 }
             )
     _batch_recheck(batch, prepared_rows, tool_sources, source_digests)
