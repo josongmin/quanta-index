@@ -5209,14 +5209,19 @@ def validate_completed_query_timing(metrics: dict, record: dict | None = None) -
     if not isinstance(observations, list) or not observations:
         raise RunError("completed-response timing observations are missing")
     protocol = metrics.get("query_protocol")
-    routes = (
-        list(metrics["warm_latencies_ms"])
-        if protocol
-        else list({entry.get("route") for entry in observations if isinstance(entry, dict)})
-    )
-    if len(routes) != metrics["route_count"] or any(not isinstance(route, str) for route in routes):
+    # The runner follows the suite's route order. Fix that order from the
+    # first complete query and require every later query to repeat it.
+    routes = [
+        entry.get("route") if isinstance(entry, dict) else None
+        for entry in observations[: metrics["route_count"]]
+    ]
+    if (
+        len(routes) != metrics["route_count"]
+        or any(not isinstance(route, str) or not route for route in routes)
+        or len(set(routes)) != len(routes)
+        or (protocol and set(routes) != set(metrics["warm_latencies_ms"]))
+    ):
         raise RunError("completed-response timing route inventory differs")
-    routes.sort()
     expected = []
     if protocol:
         expected.extend(("cold", 0, protocol["cold_probe_task_id"], route) for route in routes)
@@ -5285,7 +5290,7 @@ def validate_completed_query_timing(metrics: dict, record: dict | None = None) -
                     "completed-response timing sample differs from its own clock interval"
                 )
         if record:
-            if entry["status"] not in {"success", "abstained"}:
+            if entry["status"] not in {"success", "abstained", "capped"}:
                 raise RunError("completed-response timing includes incomplete or failed requests")
         if record and entry["phase"] == "measured":
             row = record_rows.get((entry["task_id"], entry["route"]))

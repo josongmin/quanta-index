@@ -458,3 +458,56 @@ same 80 task IDs/queries/intents and 174 labels, but changed six unsupported
 states and five answerability states versus the frozen capsule. The remaining
 eleven capsules and independent human relevance review are `NOT_RUN`; the
 frozen counts cannot be silently promoted to current-source qualification.
+
+## Current-source batch gold and large ingest follow-up (2026-10-02)
+
+**VERIFIED, diagnostic preparation:** `gold_capture_batch.py` captured all 12
+repositories into a new external root at
+[`gold-v5-batch-current-source`](/Users/songmin/Documents/code-new/qi-s30-b08-holdout-20261002/c2/gold-v5-batch-current-source).
+It validates the global split before derivation, uses the existing gold oracle
+for each repository, revalidates the split and source digests, then publishes
+the directory atomically. A separate current-source replay verified all 12
+capsules and their file/identity hashes. Capture took 863.60 s; independent
+replay took 419.53 s. The capsules contain 960 tasks and 11,884 labels. Every
+task's label list matches `gold-v4`, but the current oracle changes unjudged
+tasks from 105 to 132 and unsupported rows from 574 to 366. These capsules are
+`mechanical_unreviewed_diagnostic`; the source policy change and absence of
+human review prevent a quality decision.
+
+**VERIFIED, ingest and harness only:** `quanta-index@056b6ac5` all-features
+release binaries, SHA-256
+`cba8c012ace1c26c27968d95ba00ce3ab246cee1caba442667df0fd5bef5993e`
+(searchd) and
+`baf196393e16fe2dd672f3e8092f47572556d5cd903778ac81e9434aeeaf995a`
+(runner), completed the native lexical, semantic and hybrid Tailscale capture
+under a fresh external root
+[`qm-emy4i_54/q`](/private/tmp/qm-emy4i_54/q). The producer's single batch
+accepted 2,532 lexical file scopes and 6,257 semantic chunk scopes, sealed and
+activated generation 1, and returned 10 candidates on each route. Each query
+was `capped`, which means the result limit was reached, not that the request
+failed. The previous >64 MiB request refusal is resolved by bounded IPC
+fragments with sequence and whole-body SHA-256 checks. Driver elapsed 89.82 s;
+sampled process-tree peak RSS was 1,368,309,760 bytes. This is one contended
+host run and does not qualify B07 performance or memory ceilings.
+
+The same binaries completed a fresh Django lexical capture at
+[`qd-4wfc68of/q`](/private/tmp/qd-4wfc68of/q): 2,368 files, 6,537 chunks,
+publish, seal, activation and a 10-result `capped` query. The previously
+rejected parser row for `tests/test_runner_apps/tagged/tests_syntax_error.py`
+now records one source-bounded, explicitly unlocated `syntax_error` diagnostic
+instead of `parse_failed` with zero diagnostics. Driver elapsed 92.90 s;
+sampled process-tree peak RSS was 1,333,788,672 bytes.
+
+Both runs initially exposed a separate Python timing validator defect: it
+alphabetized routes even though the runner executes the suite's route order,
+and treated `capped` as an incomplete response. The validator now derives the
+first complete route cycle, requires every later cycle to match and accepts
+`capped` as a completed response. The first rejected Tailscale output remains
+separate at `/private/tmp/qm-_ojl37du/q`; its data were not promoted. Focused
+timing tests and the fresh completed run verify this repair.
+
+**NOT_RUN for B08 qualification:** current-source capsules remain mechanical
+and unreviewed; complete per-repository product matrices, external service
+index bindings, preregistered statistics and the multi-repository decision
+gate are absent. Neither diagnostic run supports a product ranking or default
+change.

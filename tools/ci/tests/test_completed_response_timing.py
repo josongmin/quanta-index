@@ -197,6 +197,50 @@ def test_completed_clock_refuses_partial_or_mismatched_proof(mutate, match):
         pairrun.validate_completed_query_timing(bad, record)
 
 
+def test_completed_clock_accepts_suite_route_order_and_capped_responses():
+    routes = ("lexical", "semantic", "hybrid")
+    observations = [
+        {
+            "task_id": "T1",
+            "route": route,
+            "phase": "measured",
+            "iteration": 0,
+            "start_ns": index * 1_000_000,
+            "end_ns": (index + 1) * 1_000_000,
+            "status": "capped" if route == "lexical" else "success",
+            "output_bytes": 1,
+        }
+        for index, route in enumerate(routes)
+    ]
+    phase = {
+        "route_count": 3,
+        "query_schedule": ["T1"],
+        "warmup_passes": 0,
+        "measurement_repetitions": 1,
+        "query_timing": {
+            "boundary": semble.QUERY_TIMING_BOUNDARY,
+            "clock": semble.QUERY_TIMING_CLOCK,
+            "observations": observations,
+        },
+    }
+    record = {
+        "results": [
+            {
+                "task_id": "T1",
+                "route": row["route"],
+                "status": row["status"],
+                "timings": {"query_latency_ms": 1.0},
+            }
+            for row in observations
+        ]
+    }
+    pairrun.validate_completed_query_timing(phase, record)
+    reordered = copy.deepcopy(phase)
+    reordered["query_timing"]["observations"][1]["route"] = "lexical"
+    with pytest.raises(pairrun.RunError, match="route inventory"):
+        pairrun.validate_completed_query_timing(reordered, record)
+
+
 def test_semble_parent_clock_ends_after_real_normalization(tmp_path, monkeypatch):
     fixtures._write_stub_semble(tmp_path)
     worker = tmp_path / "worker.py"
