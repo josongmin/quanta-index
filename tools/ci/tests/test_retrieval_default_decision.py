@@ -183,9 +183,15 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
         (root / "admission.json").write_text(
             json.dumps(
                 {
+                    "schema_version": 3,
                     "decision_policy_sha256": policy_sha,
                     "repository_commit": row["repository_commit"],
                     "suite_sha256": row["suite_sha256"],
+                    "repository_disjoint": {
+                        "repository": row["repository"],
+                        "release_digest": row["release_digest"],
+                        "split_manifest_sha256": split_sha,
+                    },
                 }
             )
         )
@@ -332,9 +338,15 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
     (tmp_path / "repo-00" / "admission.json").write_text(
         json.dumps(
             {
+                "schema_version": 3,
                 "decision_policy_sha256": "0" * 64,
                 "repository_commit": "1".zfill(40),
                 "suite_sha256": policy["repository_scope"]["holdout"][0]["suite_sha256"],
+                "repository_disjoint": {
+                    "repository": "repo-00",
+                    "release_digest": "sha256:" + "a" * 64,
+                    "split_manifest_sha256": split_sha,
+                },
             }
         )
     )

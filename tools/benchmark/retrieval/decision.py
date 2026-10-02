@@ -491,8 +491,14 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
             root, manifest["artifacts"]["admission_manifest"], "admission"
         )
         admission = run.validate_admission_manifest(bound_json(admission_path))
+        disjoint = admission.get("repository_disjoint")
         if (
-            admission.get("decision_policy_sha256") != policy_sha
+            admission.get("schema_version") != 3
+            or not isinstance(disjoint, dict)
+            or disjoint.get("repository") != name
+            or disjoint.get("release_digest") != row["release_digest"]
+            or disjoint.get("split_manifest_sha256") != scope["split_manifest_sha256"]
+            or admission.get("decision_policy_sha256") != policy_sha
             or admission["repository_commit"] != row["repository_commit"]
             or admission["suite_sha256"] != initial[suite_path]
         ):

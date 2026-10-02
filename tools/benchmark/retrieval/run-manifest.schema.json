@@ -103,6 +103,8 @@
         "admission_manifest": {"type": "string", "minLength": 1},
         "experiment_custody": {"type": "string", "minLength": 1},
         "development_suite": {"type": "string", "minLength": 1},
+        "split_manifest": {"type": "string", "minLength": 1},
+        "split_releases": {"type": "string", "minLength": 1},
         "license_receipt": {"type": "string", "minLength": 1},
         "annotation_receipts": {
           "type": "array", "minItems": 2, "maxItems": 2,
@@ -263,7 +265,11 @@
       "then": {
         "properties": {
           "artifacts": {
-            "required": ["admission_manifest", "experiment_custody", "development_suite", "license_receipt", "annotation_receipts", "adjudication_receipt"]
+            "required": ["admission_manifest", "license_receipt", "annotation_receipts", "adjudication_receipt"],
+            "oneOf": [
+              {"required": ["experiment_custody", "development_suite"], "not": {"anyOf": [{"required": ["split_manifest"]}, {"required": ["split_releases"]}]}},
+              {"required": ["split_manifest", "split_releases"], "not": {"anyOf": [{"required": ["experiment_custody"]}, {"required": ["development_suite"]}]}}
+            ]
           },
           "provenance": {
             "properties": {
