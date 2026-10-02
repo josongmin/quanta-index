@@ -2476,10 +2476,20 @@ def _is_hex(value: object, length: int) -> bool:
 
 def validate_admission_manifest(payload: object) -> dict:
     """Validate the closed W0-B qualification authority packet."""
+    version = payload.get("schema_version") if isinstance(payload, dict) else None
+    if type(version) is not int or version not in (2, 3):
+        raise RunError("qualification admission schema version mismatch")
     policy_keys = (
         {"decision_policy_sha256"}
         if isinstance(payload, dict) and "decision_policy_sha256" in payload
         else set()
+    )
+    if version == 3 and not policy_keys:
+        raise RunError("repository-disjoint admission requires a frozen decision policy")
+    custody_keys = (
+        {"development_suite_sha256", "experiment_custody_sha256"}
+        if version == 2
+        else {"repository_disjoint"}
     )
     admission = _exact_keys(
         payload,
@@ -2491,8 +2501,6 @@ def validate_admission_manifest(payload: object) -> dict:
             "repository_commit",
             "corpus_manifest_sha256",
             "suite_sha256",
-            "development_suite_sha256",
-            "experiment_custody_sha256",
             "query_pack_sha256",
             "license",
             "gold",
@@ -2502,11 +2510,10 @@ def validate_admission_manifest(payload: object) -> dict:
             "cache_regime",
             "verification",
         }
-        | policy_keys,
+        | policy_keys
+        | custody_keys,
         "qualification admission",
     )
-    if admission["schema_version"] != 2:
-        raise RunError("qualification admission schema version mismatch")
     for key in ("admission_id", "issued_at"):
         if not isinstance(admission[key], str) or not admission[key]:
             raise RunError(f"qualification admission {key} must be nonempty")
@@ -2516,14 +2523,38 @@ def validate_admission_manifest(payload: object) -> dict:
     for key in (
         "corpus_manifest_sha256",
         "suite_sha256",
-        "development_suite_sha256",
-        "experiment_custody_sha256",
         "query_pack_sha256",
         "semble_lockfile_sha256",
         "host_profile_sha256",
     ):
         if not _is_hex(admission[key], 64):
             raise RunError(f"qualification admission {key} must be a sha256")
+    if version == 2:
+        for key in ("development_suite_sha256", "experiment_custody_sha256"):
+            if not _is_hex(admission[key], 64):
+                raise RunError(f"qualification admission {key} must be a sha256")
+    else:
+        disjoint = _exact_keys(
+            admission["repository_disjoint"],
+            {
+                "repository",
+                "release_digest",
+                "split_manifest_sha256",
+                "split_releases_sha256",
+            },
+            "qualification repository-disjoint custody",
+        )
+        if not isinstance(disjoint["repository"], str) or not disjoint["repository"]:
+            raise RunError("qualification repository-disjoint name is invalid")
+        if (
+            not isinstance(disjoint["release_digest"], str)
+            or not disjoint["release_digest"].startswith("sha256:")
+            or not _is_hex(disjoint["release_digest"][7:], 64)
+            or any(not _is_hex(disjoint[key], 64) for key in (
+                "split_manifest_sha256", "split_releases_sha256"
+            ))
+        ):
+            raise RunError("qualification repository-disjoint digests are invalid")
     if policy_keys and not _is_hex(admission["decision_policy_sha256"], 64):
         raise RunError("qualification admission decision_policy_sha256 must be a sha256")
     if admission["cache_regime"] not in ("true_process_cold", "warm_cache"):
@@ -2707,6 +2738,54 @@ def _validate_gold_review_receipt(
         raise RunError(f"qualification {role} receipt source validation failed: {exc}") from exc
 
 
+def _validate_disjoint_admission_source(
+    admission: dict,
+    suite: dict,
+    repo: Path,
+    split_manifest_path: Path,
+    split_releases_path: Path,
+) -> None:
+    """Prove a holdout suite against the complete release and split authority."""
+    benchmark_dir = str(Path(__file__).resolve().parents[1])
+    if benchmark_dir not in sys.path:
+        sys.path.insert(0, benchmark_dir)
+    from tools.benchmark import corpus_binding
+
+    claim = admission["repository_disjoint"]
+    if (
+        claim["split_manifest_sha256"] != sha_file(split_manifest_path)
+        or claim["split_releases_sha256"] != sha_file(split_releases_path)
+    ):
+        raise RunError("qualification repository-disjoint split bytes differ")
+    release_paths = read_json(split_releases_path)
+    try:
+        releases = corpus_binding._split_releases(release_paths)
+        split = corpus_binding.validate_split_manifest(split_manifest_path.read_bytes(), releases)
+    except (ValueError, OSError) as exc:
+        raise RunError(f"qualification repository-disjoint split is invalid: {exc}") from exc
+    selected = [
+        row
+        for row in split["repositories"]
+        if row["repository"] == claim["repository"]
+        and row["release_digest"] == claim["release_digest"]
+    ]
+    if len(selected) != 1 or selected[0]["split"] != "holdout":
+        raise RunError("qualification repository-disjoint holdout assignment differs")
+    source = selected[0]
+    if (
+        source["repository_commit"] != admission["repository_commit"]
+        or source["code_only_universe_digest"] != "sha256:" + suite["file_universe_digest"]
+        or any(task.get("split") != "eval" for task in suite["tasks"])
+        or sorted({task["query_family_id"] for task in suite["tasks"]})
+        != source["query_family_ids"]
+    ):
+        raise RunError("qualification repository-disjoint suite differs from split source")
+    try:
+        validate_suite(repo, suite)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise RunError(f"qualification repository-disjoint suite source is invalid: {exc}") from exc
+
+
 def verify_admission_bundle(
     manifest_path: Path,
     license_path: Path,
@@ -2716,8 +2795,8 @@ def verify_admission_bundle(
     source_revision: str,
     corpus_manifest_path: Path,
     suite_path: Path,
-    development_suite_path: Path,
-    experiment_custody_path: Path,
+    development_suite_path: Path | None,
+    experiment_custody_path: Path | None,
     repo: Path,
     query_pack_path: Path,
     lockfile_path: Path,
@@ -2727,6 +2806,8 @@ def verify_admission_bundle(
     quanta_model_revision: str | None = None,
     semble_model_revision: str | None = None,
     semble_model_asset_sha256: str | None = None,
+    split_manifest_path: Path | None = None,
+    split_releases_path: Path | None = None,
 ) -> dict:
     """Re-derive every authority digest in a qualified admission bundle."""
     admission = validate_admission_manifest(read_json(manifest_path))
@@ -2753,22 +2834,45 @@ def verify_admission_bundle(
     for key, path in (
         ("corpus_manifest_sha256", corpus_manifest_path),
         ("suite_sha256", suite_path),
-        ("development_suite_sha256", development_suite_path),
-        ("experiment_custody_sha256", experiment_custody_path),
         ("query_pack_sha256", query_pack_path),
         ("semble_lockfile_sha256", lockfile_path),
         ("host_profile_sha256", host_profile_path),
     ):
         if admission[key] != sha_file(path):
             raise RunError(f"qualification admission {key} mismatch")
-    custody = validate_experiment_custody(
-        repo,
-        read_json(experiment_custody_path),
-        read_json(development_suite_path),
-        suite_payload,
-    )
-    if custody["source_revision"] != source_revision:
-        raise RunError("qualification experiment source revision mismatch")
+    if admission["schema_version"] == 2:
+        if (
+            development_suite_path is None
+            or experiment_custody_path is None
+            or split_manifest_path is not None
+            or split_releases_path is not None
+        ):
+            raise RunError("qualification local custody paths are incomplete or mixed")
+        for key, path in (
+            ("development_suite_sha256", development_suite_path),
+            ("experiment_custody_sha256", experiment_custody_path),
+        ):
+            if admission[key] != sha_file(path):
+                raise RunError(f"qualification admission {key} mismatch")
+        custody = validate_experiment_custody(
+            repo,
+            read_json(experiment_custody_path),
+            read_json(development_suite_path),
+            suite_payload,
+        )
+        if custody["source_revision"] != source_revision:
+            raise RunError("qualification experiment source revision mismatch")
+    else:
+        if (
+            split_manifest_path is None
+            or split_releases_path is None
+            or development_suite_path is not None
+            or experiment_custody_path is not None
+        ):
+            raise RunError("qualification repository-disjoint custody paths are incomplete or mixed")
+        _validate_disjoint_admission_source(
+            admission, suite_payload, repo, split_manifest_path, split_releases_path
+        )
     if admission["cache_regime"] != cache_regime:
         raise RunError("qualification admission cache regime mismatch")
     if admission["license"]["receipt_sha256"] != sha_file(license_path):
@@ -3012,14 +3116,9 @@ def load_spec(path: Path) -> dict:
             if not isinstance(value, str) or not value:
                 raise RunError(f"spec.receipts.{key} must be a nonempty path")
     if "admission" in spec:
-        admission = _exact_keys(spec["admission"], set(ADMISSION_KEYS), "spec.admission")
-        for key in (
-            "manifest",
-            "experiment_custody",
-            "development_suite",
-            "license_receipt",
-            "adjudication_receipt",
-        ):
+        keys = _admission_keys(spec["admission"])
+        admission = _exact_keys(spec["admission"], set(keys), "spec.admission")
+        for key in set(keys) - {"annotation_receipts"}:
             if not isinstance(admission[key], str) or not admission[key]:
                 raise RunError(f"spec.admission.{key} must be a nonempty path")
         annotation_receipts = admission["annotation_receipts"]
@@ -4768,21 +4867,25 @@ def _validate_manifest_shape(payload: object) -> dict:
         "protocol_lock",
         "driver_source_closure",
     }
-    admission_artifacts = {
+    admission_common = {
         "admission_manifest",
-        "experiment_custody",
-        "development_suite",
         "license_receipt",
         "annotation_receipts",
         "adjudication_receipt",
     }
+    local_admission = admission_common | {"experiment_custody", "development_suite"}
+    disjoint_admission = admission_common | {"split_manifest", "split_releases"}
+    admission_artifacts = local_admission | disjoint_admission
     optional_artifacts = set(RECEIPT_KEYS) | {"isolation_proof"} | admission_artifacts
     if "driver_source_closure" not in artifacts:
         raise RunError("run manifest lacks the driver source closure")
     if not required_artifacts <= set(artifacts) <= required_artifacts | optional_artifacts:
         raise RunError("run manifest artifacts hold missing/unknown keys")
     present_admission = set(artifacts).intersection(admission_artifacts)
-    if manifest["scope"] == "qualified" and present_admission != admission_artifacts:
+    if manifest["scope"] == "qualified" and present_admission not in (
+        local_admission,
+        disjoint_admission,
+    ):
         raise RunError("qualified run manifest lacks the complete admission bundle")
     if manifest["scope"] != "qualified" and present_admission:
         raise RunError("exploratory run manifest carries qualification admission artifacts")
@@ -9567,18 +9670,34 @@ def freeze_admission(spec: dict, stage: Path, frozen_receipts: dict[str, str]) -
         return {}
     if not isinstance(raw, dict):
         raise RunError("qualified capture requires the W0-B admission bundle")
-    admission = _exact_keys(raw, set(ADMISSION_KEYS), "spec.admission")
+    keys = _admission_keys(raw)
+    admission = _exact_keys(raw, set(keys), "spec.admission")
+    manifest = validate_admission_manifest(read_json(Path(admission["manifest"])))
+    expected_keys = (
+        ADMISSION_LOCAL_KEYS if manifest["schema_version"] == 2 else ADMISSION_DISJOINT_KEYS
+    )
+    if set(keys) != set(expected_keys):
+        raise RunError("qualification admission schema and custody paths differ")
     target_dir = stage / "admission"
     target_dir.mkdir(parents=True, exist_ok=True)
 
     frozen: dict[str, object] = {}
     scalar_names = {
         "manifest": "admission.json",
-        "experiment_custody": "experiment-custody.json",
-        "development_suite": "development-suite.json",
         "license_receipt": "license-receipt.json",
         "adjudication_receipt": "adjudication-receipt.json",
     }
+    if manifest["schema_version"] == 2:
+        scalar_names.update(
+            {
+                "experiment_custody": "experiment-custody.json",
+                "development_suite": "development-suite.json",
+            }
+        )
+    else:
+        scalar_names.update(
+            {"split_manifest": "split-manifest.json", "split_releases": "split-releases.json"}
+        )
     for key, name in scalar_names.items():
         source = Path(admission[key])
         target = target_dir / name
@@ -9625,8 +9744,18 @@ def freeze_admission(spec: dict, stage: Path, frozen_receipts: dict[str, str]) -
         source_revision=git_head_sha(Path(__file__).resolve().parents[3]),
         corpus_manifest_path=Path(spec["manifest"]),
         suite_path=Path(spec["suite"]),
-        development_suite_path=Path(str(frozen["development_suite"])),
-        experiment_custody_path=Path(str(frozen["experiment_custody"])),
+        development_suite_path=(
+            Path(str(frozen["development_suite"])) if manifest["schema_version"] == 2 else None
+        ),
+        experiment_custody_path=(
+            Path(str(frozen["experiment_custody"])) if manifest["schema_version"] == 2 else None
+        ),
+        split_manifest_path=(
+            Path(str(frozen["split_manifest"])) if manifest["schema_version"] == 3 else None
+        ),
+        split_releases_path=(
+            Path(str(frozen["split_releases"])) if manifest["schema_version"] == 3 else None
+        ),
         repo=Path(spec["repo"]),
         query_pack_path=Path(spec["query_pack"]),
         lockfile_path=Path(spec["semble_lockfile"]),
@@ -9935,7 +10064,10 @@ def build_run_manifest(
     if scope not in ("exploratory", "qualified"):
         raise RunError("spec.scope must be exploratory or qualified")
     admission_files = frozen_admission or {}
-    if scope == "qualified" and set(admission_files) != set(ADMISSION_KEYS):
+    if scope == "qualified" and set(admission_files) not in (
+        set(ADMISSION_LOCAL_KEYS),
+        set(ADMISSION_DISJOINT_KEYS),
+    ):
         raise RunError("qualified run lacks the complete frozen admission bundle")
     if scope != "qualified" and admission_files:
         raise RunError("exploratory run cannot carry qualification admission authority")
@@ -9943,6 +10075,7 @@ def build_run_manifest(
     validate_host_profile(read_json(profile_path))
     admission_digest = None
     if admission_files:
+        disjoint = "split_manifest" in admission_files
         annotation_refs = admission_files["annotation_receipts"]
         if not isinstance(annotation_refs, list):
             raise RunError("frozen admission annotation receipts are malformed")
@@ -9967,8 +10100,18 @@ def build_run_manifest(
             source_revision=source_sha,
             corpus_manifest_path=Path(spec["manifest"]),
             suite_path=Path(spec["suite"]),
-            development_suite_path=Path(str(admission_files["development_suite"])),
-            experiment_custody_path=Path(str(admission_files["experiment_custody"])),
+            development_suite_path=(
+                None if disjoint else Path(str(admission_files["development_suite"]))
+            ),
+            experiment_custody_path=(
+                None if disjoint else Path(str(admission_files["experiment_custody"]))
+            ),
+            split_manifest_path=(
+                Path(str(admission_files["split_manifest"])) if disjoint else None
+            ),
+            split_releases_path=(
+                Path(str(admission_files["split_releases"])) if disjoint else None
+            ),
             repo=Path(spec["repo"]),
             query_pack_path=Path(spec["query_pack"]),
             lockfile_path=Path(spec["semble_lockfile"]),
@@ -10029,8 +10172,6 @@ def build_run_manifest(
         artifacts.update(
             {
                 "admission_manifest": relative(Path(str(admission_files["manifest"]))),
-                "experiment_custody": relative(Path(str(admission_files["experiment_custody"]))),
-                "development_suite": relative(Path(str(admission_files["development_suite"]))),
                 "license_receipt": relative(Path(str(admission_files["license_receipt"]))),
                 "annotation_receipts": [
                     relative(Path(str(path))) for path in admission_files["annotation_receipts"]
@@ -10040,6 +10181,12 @@ def build_run_manifest(
                 ),
             }
         )
+        for key in (
+            ("split_manifest", "split_releases")
+            if "split_manifest" in admission_files
+            else ("experiment_custody", "development_suite")
+        ):
+            artifacts[key] = relative(Path(str(admission_files[key])))
     if not (out_root / "protocol-lock.json").is_file():
         raise RunError("protocol-lock.json must exist before the run manifest")
     return {
