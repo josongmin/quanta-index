@@ -425,7 +425,7 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
         if (
             row["repository_commit"] != source["repository_commit"]
             or row["release_digest"] != source["release_digest"]
-            or not set(row["query_family_ids"]).issubset(source["query_family_ids"])
+            or row["query_family_ids"] != source["query_family_ids"]
         ):
             raise DecisionError("repository-disjoint policy differs from source split")
     captures = bundle["captures"]

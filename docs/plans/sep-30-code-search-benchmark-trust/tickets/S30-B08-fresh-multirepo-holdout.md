@@ -730,3 +730,28 @@ one setup error from a noncanonical `PYTHONPATH`. The two affected tests and
 the new repository-row test passed 3/3 with `PYTHONPATH` unset after the fix
 (`main@e4787852`). The full 439-test file after that fix is `NOT_RUN`; the
 pre-fix run was 437 passed, 1 failed, 1 setup error.
+
+## C5 replay and metric-gate status (2026-10-03)
+
+The public `benchctl code-search repository-replay --bundle` path now binds a
+predeclared 12-repository policy to the global split, source-bound suites,
+qualified per-repository verdicts, selected report digests, and candidate
+latency/resource observations. It derives repository-cluster uncertainty from
+paired query rows. The metric gate checks the preregistered effect, lower
+bound, named critical strata, no-answer abstention, and resource ceilings;
+passing returns `eligible_for_human_review` and never sets a product default.
+It independently checks the no-answer report mean against per-query statuses.
+
+**VERIFIED, code rails:**
+`env -u PYTHONPATH .venv/bin/python -m pytest -q
+tools/ci/tests/test_retrieval_default_decision.py tools/ci/tests/test_benchctl.py`
+passed 86 tests. The wider `tools/ci/tests/test_retrieval_benchmark.py` run
+passed 439 tests in 461.95 seconds. Ruff format/check and `git diff --check`
+passed for the changed Python files.
+
+**NOT_RUN, qualification:** the synthetic replay test mocks the native
+split/verdict validators. No 12-repository qualified capture bundle, human
+adjudication, live external indexed-universe attestation, or product-default
+review has run. The current policy can name a subset of split families and
+does not independently prove that every intended reviewed/scale lane was
+declared. C5 cannot be marked complete from these unit tests.
