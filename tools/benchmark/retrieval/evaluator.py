@@ -3041,6 +3041,7 @@ def repository_cluster_ci(
         )
         require((repository, task_id) not in seen_tasks, "cluster task is duplicated")
         require(type(delta) in (int, float) and math.isfinite(delta), "cluster delta is not finite")
+        require(-1.0 <= delta <= 1.0, "cluster bounded metric delta is out of range")
         require(
             family_owner.setdefault(family_id, repository) == repository,
             "cluster family crosses repositories",

@@ -2164,6 +2164,10 @@ def test_repository_cluster_interval_refuses_incomplete_or_cross_repo_evidence()
         ev.repository_cluster_ci(
             [*rows[:-1], (*rows[-1][:3], float("nan"))], "a" * 64, repositories, strata
         )
+    with pytest.raises(ev.EvidenceError, match="out of range"):
+        ev.repository_cluster_ci(
+            [*rows[:-1], (*rows[-1][:3], 1.01)], "a" * 64, repositories, strata
+        )
     small = {name: commit for name, commit in repositories.items() if name != "repo-11"}
     result = ev.repository_cluster_ci(rows[:-1], "a" * 64, small, {k: strata[k] for k in small})
     assert result["status"] == ev.NOT_APPLICABLE
