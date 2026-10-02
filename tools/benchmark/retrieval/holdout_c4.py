@@ -296,14 +296,16 @@ def _derive_prepared(
                 or any(path not in files for path, _reason in observed)
             ):
                 raise ValueError("C4 typo near-census exclusion differs")
-            for path, _reason in observed:
+            for path, reason in observed:
                 if not source_oracle.declaration_query_textually_excluded(
                     files[path], task["query"], "osa1_casefold"
                 ):
                     raise ValueError("C4 typo near-census exclusion is not query-proven")
-                typo_exclusions.setdefault((near_contract, task["query"]), set()).add(path)
-            for path, _reason in expected:
-                typo_exclusions.setdefault((contract, task["intended_name"]), set()).add(path)
+                if reason == "census_refused":
+                    typo_exclusions.setdefault((near_contract, task["query"]), set()).add(path)
+            for path, reason in expected:
+                if reason == "census_refused":
+                    typo_exclusions.setdefault((contract, task["intended_name"]), set()).add(path)
     typo_oracle = (
         source_oracle.SourceOracleIndex(
             {path: (raw, source.file(path)[2]) for path, raw in files.items()},
@@ -465,7 +467,11 @@ def _derive_prepared(
         if paths and task["answerable"]:
             source_contract["declaration_exclusions"] = paths
         if intended_typo:
-            near_paths = sorted(row["path"] for row in task.get("near_census_text_excluded", []))
+            near_paths = sorted(
+                row["path"]
+                for row in task.get("near_census_text_excluded", [])
+                if row["reason"] == "census_refused"
+            )
             if near_paths:
                 source_contract["near_declaration_exclusions"] = near_paths
         row = {
