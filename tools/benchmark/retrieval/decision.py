@@ -573,6 +573,62 @@ def evaluate_decision(
     }
 
 
+def _candidate_measurements(
+    manifest: dict, paths: dict, comparison: dict, bound_json
+) -> dict:
+    """Read replay-bound latency and resource observations for one candidate."""
+    matrix = bound_json(paths["matrix"])
+    key = f"quanta:{comparison['strategy']}:{comparison['candidate_route']}"
+    samples = matrix.get("samples") if isinstance(matrix, dict) else None
+    floors = matrix.get("floors") if isinstance(matrix, dict) else None
+    if not isinstance(samples, dict) or not isinstance(floors, dict):
+        raise DecisionError("selected candidate latency observations are missing")
+    candidate_samples = []
+    for task_key, values in samples.items():
+        if not isinstance(task_key, str) or not task_key.startswith(key + ":"):
+            continue
+        if not isinstance(values, list) or not values:
+            raise DecisionError("candidate task has no latency observations")
+        candidate_samples.extend(
+            _number(value, f"candidate latency {task_key}") for value in values
+        )
+    if (
+        not candidate_samples
+        or type(floors.get(key)) is not int
+        or floors[key] != len(candidate_samples)
+        or any(value < 0 for value in candidate_samples)
+    ):
+        raise DecisionError("selected candidate latency floor or samples are invalid")
+    by_subject = {}
+    for path in paths["resources"]:
+        value = bound_json(path)
+        if (
+            not isinstance(value, dict)
+            or not run._is_hex(value.get("subject_sha256"), 64)
+            or value["subject_sha256"] in by_subject
+        ):
+            raise DecisionError("resource subject is missing or duplicated")
+        by_subject[value["subject_sha256"]] = value
+    selected_resources = []
+    for path in paths["records"]:
+        record = bound_json(path)
+        if run._record_identity(record, str(path)) != ("quanta", comparison["strategy"]):
+            continue
+        metric = by_subject.get(run.sha_file(path))
+        if metric is None:
+            raise DecisionError("selected record lacks bound resource metrics")
+        selected_resources.append(metric)
+    if len(selected_resources) != manifest["repetitions"]:
+        raise DecisionError("selected resource roots do not match qualified repetitions")
+    return {
+        "query_p95_ms": run.latency_summary(candidate_samples)["p95_ms"],
+        "peak_rss_bytes": max(item.get("peak_rss_bytes", 0) for item in selected_resources),
+        "index_bytes": max(
+            item.get("storage", {}).get("index_bytes", 0) for item in selected_resources
+        ),
+    }
+
+
 def build_decision(repo: Path, suite: Path, manifest_path: Path, policy_path: Path) -> dict:
     """Replay capture authority before inspecting selected effect and resources."""
     initial: dict[Path, str] = {}
@@ -641,56 +697,7 @@ def build_decision(repo: Path, suite: Path, manifest_path: Path, policy_path: Pa
     cluster_ci = qualified_query_family_ci(
         suite_payload, report, comparison["baseline_route"], comparison["candidate_route"]
     )
-    matrix = bound_json(paths["matrix"])
-    key = f"quanta:{comparison['strategy']}:{comparison['candidate_route']}"
-    samples = matrix.get("samples") if isinstance(matrix, dict) else None
-    floors = matrix.get("floors") if isinstance(matrix, dict) else None
-    if not isinstance(samples, dict) or not isinstance(floors, dict):
-        raise DecisionError("selected candidate latency observations are missing")
-    candidate_samples = []
-    for task_key, values in samples.items():
-        if not isinstance(task_key, str) or not task_key.startswith(key + ":"):
-            continue
-        if not isinstance(values, list) or not values:
-            raise DecisionError("candidate task has no latency observations")
-        candidate_samples.extend(
-            _number(value, f"candidate latency {task_key}") for value in values
-        )
-    if (
-        not candidate_samples
-        or type(floors.get(key)) is not int
-        or floors[key] != len(candidate_samples)
-        or any(value < 0 for value in candidate_samples)
-    ):
-        raise DecisionError("selected candidate latency floor or samples are invalid")
-    by_subject = {}
-    for path in paths["resources"]:
-        value = bound_json(path)
-        if (
-            not isinstance(value, dict)
-            or not run._is_hex(value.get("subject_sha256"), 64)
-            or value["subject_sha256"] in by_subject
-        ):
-            raise DecisionError("resource subject is missing or duplicated")
-        by_subject[value["subject_sha256"]] = value
-    selected_resources = []
-    for path in paths["records"]:
-        record = bound_json(path)
-        if run._record_identity(record, str(path)) != ("quanta", comparison["strategy"]):
-            continue
-        metric = by_subject.get(run.sha_file(path))
-        if metric is None:
-            raise DecisionError("selected record lacks bound resource metrics")
-        selected_resources.append(metric)
-    if len(selected_resources) != manifest["repetitions"]:
-        raise DecisionError("selected resource roots do not match qualified repetitions")
-    measurements = {
-        "query_p95_ms": run.latency_summary(candidate_samples)["p95_ms"],
-        "peak_rss_bytes": max(item.get("peak_rss_bytes", 0) for item in selected_resources),
-        "index_bytes": max(
-            item.get("storage", {}).get("index_bytes", 0) for item in selected_resources
-        ),
-    }
+    measurements = _candidate_measurements(manifest, paths, comparison, bound_json)
     decision = evaluate_decision(policy, verdict, report, cluster_ci, measurements)
     if any(run.sha_file(path) != before for path, before in initial.items()):
         raise DecisionError("decision inputs changed during replay")
