@@ -86,11 +86,9 @@ where
         access: SocketAccessPolicy,
         directory_access: &SocketAccessPolicy,
         counters: Arc<IpcServerCounters>,
-        ingress: Arc<IngressBudget>,
     ) -> Result<Self, IpcError> {
         let server =
-            UdsServer::bind_observed_in(socket_path, policy, access, directory_access, counters)?
-                .with_ingress_budget(ingress);
+            UdsServer::bind_observed_in(socket_path, policy, access, directory_access, counters)?;
         Ok(Self {
             server,
             dispatcher,
@@ -98,6 +96,13 @@ where
             thread_name: thread_name.into(),
             marker: PhantomData,
         })
+    }
+
+    /// Share one ingress budget across daemon sockets before spawning them.
+    #[must_use]
+    pub fn with_ingress_budget(mut self, ingress: Arc<IngressBudget>) -> Self {
+        self.server = self.server.with_ingress_budget(ingress);
+        self
     }
 
     /// Path the listener is bound to.

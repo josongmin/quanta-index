@@ -1758,9 +1758,9 @@ impl SearchdRuntime {
             socket_access.for_role(SocketRole::Query).clone(),
             &directory_access,
             query_counters,
-            Arc::clone(&ingress),
         )
-        .map_err(anyhow::Error::from)?;
+        .map_err(anyhow::Error::from)?
+        .with_ingress_budget(Arc::clone(&ingress));
         let control_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>,
         > = Arc::new(SearchPlaneControlIpcAdapter::new(control_dispatcher));
@@ -1775,9 +1775,9 @@ impl SearchdRuntime {
             socket_access.for_role(SocketRole::Control).clone(),
             &directory_access,
             control_counters,
-            Arc::clone(&ingress),
         )
-        .map_err(anyhow::Error::from)?;
+        .map_err(anyhow::Error::from)?
+        .with_ingress_budget(Arc::clone(&ingress));
         let ingest_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>,
         > = Arc::new(SearchPlaneIngestIpcAdapter::new(ingest_dispatcher));
@@ -1790,9 +1790,9 @@ impl SearchdRuntime {
             socket_access.for_role(SocketRole::Ingest).clone(),
             &directory_access,
             ingest_counters,
-            ingress,
         )
-        .map_err(anyhow::Error::from)?;
+        .map_err(anyhow::Error::from)?
+        .with_ingress_budget(ingress);
         socket_probes
             .set([
                 query_server.bound_socket_path_probe(),
