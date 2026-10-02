@@ -31,7 +31,10 @@ PAIR_MODES = {
     "semantic-only": ("semantic", "semantic-only"),
     "hybrid": ("hybrid", "hybrid-no-rerank"),
 }
-QUERY_POLICIES = frozenset({"native", "natural_language", "code_search_file"})
+LEXICAL_ONLY_FILE_POLICIES = frozenset(
+    {"code_search_file", "code_search_exact_content_file", "code_search_typo_file"}
+)
+QUERY_POLICIES = frozenset({"native", "natural_language", *LEXICAL_ONLY_FILE_POLICIES})
 UNSUPPORTED_REASON = "query_policy_not_supported_for_mode"
 MISSING_REASON = "capture_missing"
 LABEL_FIELDS = frozenset(
@@ -135,17 +138,17 @@ def _spec(value: dict, repositories: set[str]) -> dict:
                 if set(capture) != {"kind", "reason"} or capture["reason"] != reason:
                     raise ValueError("matrix non-capture reason differs from the closed contract")
                 if capture["kind"] == "unsupported" and not (
-                    cell["query_policy"] == "code_search_file" and mode != "lexical-only"
+                    cell["query_policy"] in LEXICAL_ONLY_FILE_POLICIES and mode != "lexical-only"
                 ):
                     raise ValueError("matrix marks a supported query policy/mode unsupported")
                 if capture["kind"] == "not_run" and (
-                    cell["query_policy"] == "code_search_file" and mode != "lexical-only"
+                    cell["query_policy"] in LEXICAL_ONLY_FILE_POLICIES and mode != "lexical-only"
                 ):
                     raise ValueError("matrix must mark unsupported query policy/mode explicitly")
             else:
                 if set(capture) != {"kind", "root"}:
                     raise ValueError("matrix capture fields differ from the closed contract")
-                if cell["query_policy"] == "code_search_file" and mode != "lexical-only":
+                if cell["query_policy"] in LEXICAL_ONLY_FILE_POLICIES and mode != "lexical-only":
                     raise ValueError("matrix captures an unsupported query policy/mode")
                 root = _path(capture["root"], "capture root")
                 if root in roots:
@@ -186,9 +189,11 @@ def _pair(repo: Path, root: Path, registry: dict) -> tuple[dict, dict, dict]:
 
 
 def _mode(spec: dict, mode: str, policy: str = "native") -> None:
+    if policy in LEXICAL_ONLY_FILE_POLICIES and mode != "lexical-only":
+        raise ValueError(f"matrix {mode} is unsupported for {policy}")
     route, semble = (
         ("lexical", "lexical-file")
-        if policy == "code_search_file" and mode == "lexical-only"
+        if policy in LEXICAL_ONLY_FILE_POLICIES and mode == "lexical-only"
         else PAIR_MODES[mode]
     )
     baseline = pair_run.SEMBLE_ROUTE_BY_MODE[semble]

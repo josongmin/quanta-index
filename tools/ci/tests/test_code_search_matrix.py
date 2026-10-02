@@ -74,12 +74,13 @@ def test_matrix_inventory_accepts_only_complete_cartesian_product(tmp_path):
         matrix._spec(value, {"repo-a", "repo-b"})
 
 
-def test_matrix_file_policy_requires_pair_and_explicit_unsupported_modes(tmp_path):
+@pytest.mark.parametrize("policy", sorted(matrix.LEXICAL_ONLY_FILE_POLICIES))
+def test_matrix_file_policy_requires_pair_and_explicit_unsupported_modes(tmp_path, policy):
     value = _spec(tmp_path)
     value["cells"] = [_cell(tmp_path, "repo-a", "symbols")]
     value["query_families"] = ["symbols"]
     cell = value["cells"][0]
-    cell["query_policy"] = "code_search_file"
+    cell["query_policy"] = policy
     for mode in ("semantic-only", "hybrid"):
         cell["captures"][mode] = {
             "kind": "unsupported",
@@ -98,6 +99,13 @@ def test_matrix_file_policy_requires_pair_and_explicit_unsupported_modes(tmp_pat
     changed = copy.deepcopy(value)
     changed["cells"][0]["query_policy"] = "native"
     with pytest.raises(ValueError, match="matrix"):
+        matrix._spec(changed, {"repo-a"})
+    changed = copy.deepcopy(value)
+    changed["cells"][0]["captures"]["lexical-only"] = {
+        "kind": "unsupported",
+        "reason": matrix.UNSUPPORTED_REASON,
+    }
+    with pytest.raises(ValueError, match="supported query policy/mode"):
         matrix._spec(changed, {"repo-a"})
 
 
@@ -249,10 +257,16 @@ def test_matrix_routes_judged_no_answer_bare_symbols_to_five_product_workflow():
 def test_matrix_admits_frozen_queries_and_rejects_label_leakage():
     matrix._admit_queries({"tasks": [{"query": "read request body"}]}, "natural_language")
     matrix._admit_queries({"tasks": [{"query": "Handler123"}]}, "code_search_file")
+    matrix._admit_queries({"tasks": [{"query": "Handler123"}]}, "code_search_typo_file")
+    matrix._admit_queries(
+        {"tasks": [{"query": "read request body"}]}, "code_search_exact_content_file"
+    )
     for pack, policy in (
         ({"tasks": [{"query": " ".join(f"word{i}" for i in range(33))}]}, "natural_language"),
         ({"tasks": [{"query": "x" * 97}]}, "natural_language"),
         ({"tasks": [{"query": "word!"}]}, "code_search_file"),
+        ({"tasks": [{"query": "ab"}]}, "code_search_typo_file"),
+        ({"tasks": [{"query": "x" * 257}]}, "code_search_exact_content_file"),
         ({"tasks": [{"query": "word", "gold": []}]}, "native"),
         ({"tasks": [{"query": "word"}], "gold": []}, "native"),
     ):
@@ -260,15 +274,16 @@ def test_matrix_admits_frozen_queries_and_rejects_label_leakage():
             matrix._admit_queries(pack, policy)
 
 
+@pytest.mark.parametrize("policy", sorted(matrix.LEXICAL_ONLY_FILE_POLICIES))
 @pytest.mark.parametrize("failure", [None, "profile", "semble", "missing"])
 def test_matrix_code_search_file_pair_is_file_only_and_no_external_workflow(
-    tmp_path, monkeypatch, failure
+    tmp_path, monkeypatch, failure, policy
 ):
     value = _spec(tmp_path)
     value["query_families"] = ["code-search"]
     value["cells"] = [_cell(tmp_path, family="code-search")]
     cell = value["cells"][0]
-    cell["query_policy"] = "code_search_file"
+    cell["query_policy"] = policy
     for mode in ("semantic-only", "hybrid"):
         cell["captures"][mode] = {
             "kind": "unsupported",
@@ -284,8 +299,9 @@ def test_matrix_code_search_file_pair_is_file_only_and_no_external_workflow(
     release = tmp_path / "release"
     release.mkdir()
     (release / "manifest.json").write_bytes(b"manifest")
-    suite = b'{"tasks":[{"task_id":"q","query":"read request","split":"eval"}]}'
-    pack = b'{"tasks":[{"task_id":"q","query":"read request"}]}'
+    query = "Handler123" if policy == "code_search_typo_file" else "read request"
+    suite = json.dumps({"tasks": [{"task_id": "q", "query": query, "split": "eval"}]}).encode()
+    pack = json.dumps({"tasks": [{"task_id": "q", "query": query}]}).encode()
     Path(cell["suite"]).write_bytes(suite)
     Path(cell["query_pack"]).write_bytes(pack)
     source = {"revision": "a" * 40, "dirty": False}
@@ -325,7 +341,7 @@ def test_matrix_code_search_file_pair_is_file_only_and_no_external_workflow(
                 "semble_route": matrix.pair_run.SEMBLE_ROUTE_BY_MODE[semble_mode],
                 "execution_profiles": {
                     "quanta": matrix.query_plan.execution_profile(
-                        "native" if failure == "profile" else "code_search_file"
+                        "native" if failure == "profile" else policy
                     ),
                     "semble": {"mode": semble_mode},
                 },
@@ -338,7 +354,7 @@ def test_matrix_code_search_file_pair_is_file_only_and_no_external_workflow(
     monkeypatch.setattr(
         matrix.code_search_workflow,
         "verify",
-        lambda *_: pytest.fail("code_search_file must not use the five-product workflow"),
+        lambda *_: pytest.fail("file policies must not use the five-product workflow"),
     )
     if failure in {"profile", "semble"}:
         with pytest.raises(ValueError, match="route, mode or claim"):
