@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -243,6 +244,126 @@ def validate_repository_disjoint_policy(value: object) -> dict:
     return policy
 
 
+def _repository_disjoint_metric_gate(
+    policy: dict,
+    suites: dict[str, dict],
+    reports: dict[str, dict],
+    ci: dict,
+    receipts: list[dict],
+) -> dict:
+    """Apply preregistered thresholds after the input replay has succeeded."""
+    scope = policy["repository_scope"]
+    names = [row["repository"] for row in scope["holdout"]]
+    if (
+        ci.get("status") != "available"
+        or ci.get("method") != policy["confidence_method"]
+        or ci.get("repository_count") != len(names)
+        or ci.get("aggregation") != "equal_family_within_repository_equal_repository"
+        or [row.get("repository") for row in receipts] != names
+    ):
+        raise DecisionError("repository-disjoint interval or resource coverage differs")
+    primary = _number(ci.get("mean"), "repository-disjoint primary effect")
+    lower = _number(ci.get("lower_95"), "repository-disjoint lower bound")
+    family_rows = []
+    no_answer = {}
+    for name in names:
+        suite, report = suites[name], reports[name]
+        task_by_id = {
+            task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"
+        }
+        for task_id, family_id, category, delta in evaluator.paired_query_family_rows(
+            suite,
+            report,
+            policy["comparison"]["baseline_route"],
+            policy["comparison"]["candidate_route"],
+            require_graded=True,
+        ):
+            family_rows.append(
+                (name, family_id, category, evaluator._task_language(task_by_id[task_id]), delta)
+            )
+        comparison = report["rank_metrics"]["comparison"]
+        negative_count = sum(
+            task["split"] == "eval" and not task["gold"] for task in suite["tasks"]
+        )
+        negative = comparison.get("no_answer_abstention_delta")
+        if (
+            negative_count == 0
+            or not isinstance(negative, dict)
+            or type(negative.get("sample_count")) is not int
+            or negative["sample_count"] != negative_count
+        ):
+            raise DecisionError("repository-disjoint no-answer coverage is incomplete")
+        no_answer[name] = _number(negative.get("mean_delta"), "no-answer delta")
+    if ci.get("sample_count") != len(family_rows):
+        raise DecisionError("repository-disjoint interval task coverage differs")
+
+    def mean_for(axis: str, value: str) -> tuple[float, int]:
+        groups = {}
+        for repository, family, category, language, delta in family_rows:
+            if axis == "repository" and repository != value:
+                continue
+            if axis == "category" and category != value:
+                continue
+            if axis == "language" and language != value:
+                continue
+            groups.setdefault(repository, {}).setdefault(family, []).append(delta)
+        if not groups:
+            raise DecisionError(f"repository-disjoint critical stratum {axis}:{value} is empty")
+        means = [
+            math.fsum(
+                math.fsum(group) / len(group) for _family, group in sorted(families.items())
+            )
+            / len(families)
+            for _repository, families in sorted(groups.items())
+        ]
+        return math.fsum(means) / len(means), len(means)
+
+    overall, observed_repositories = mean_for("all", "all")
+    if observed_repositories != len(names) or not math.isclose(overall, primary, abs_tol=1e-12):
+        raise DecisionError("repository-disjoint interval mean differs from report rows")
+    reasons = []
+    if primary < policy["min_useful_delta"]:
+        reasons.append("primary_effect_below_minimum")
+    if lower < policy["min_cluster_lower_95"]:
+        reasons.append("repository_lower_bound_below_minimum")
+    for row in policy["critical_strata"]:
+        axis, name = row["axis"], row["name"]
+        if axis == "no_answer":
+            observed, coverage = math.fsum(no_answer.values()) / len(no_answer), len(no_answer)
+        else:
+            observed, coverage = mean_for(axis, name)
+        if coverage < (1 if axis == "repository" else 2):
+            raise DecisionError(f"repository-disjoint critical stratum {axis}:{name} is sparse")
+        if observed < row["min_delta"]:
+            reasons.append(f"critical_stratum_regression:{axis}:{name}")
+    measurements = {}
+    for key in ("query_p95_ms", "peak_rss_bytes", "index_bytes"):
+        values = [receipt["measurements"].get(key) for receipt in receipts]
+        if any(
+            not is_finite_json_number(value)
+            or value < 0
+            or (key != "query_p95_ms" and (type(value) is not int or value == 0))
+            for value in values
+        ):
+            raise DecisionError(f"repository-disjoint {key} observation is invalid")
+        measurements[key] = max(values)
+    limits = policy["resource_limits"]
+    for key, reason in (
+        ("query_p95_ms", "query_p95_budget_exceeded"),
+        ("peak_rss_bytes", "peak_rss_budget_exceeded"),
+        ("index_bytes", "index_budget_exceeded"),
+    ):
+        if measurements[key] > limits["max_" + key]:
+            reasons.append(reason)
+    return {
+        "status": "refuse" if reasons else "eligible_for_human_review",
+        "reasons": reasons,
+        "primary_delta": primary,
+        "repository_lower_95": lower,
+        "measurements": measurements,
+    }
+
+
 def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
     """Replay every predeclared holdout capture before computing uncertainty.
 
@@ -449,6 +570,7 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
     )
     if ci.get("status") != "available":
         raise DecisionError("repository-disjoint uncertainty is not estimable")
+    metric_gate = _repository_disjoint_metric_gate(policy, suites, reports, ci, receipts)
     if any(
         hashlib.sha256(read_control(path)).hexdigest() != before for path, before in initial.items()
     ):
@@ -462,6 +584,7 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
         "repository_count": len(expected),
         "paired_sample_count": ci["sample_count"],
         "repository_cluster_ci": ci,
+        "metric_gate": metric_gate,
         "captures": receipts,
     }
 
