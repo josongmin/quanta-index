@@ -648,6 +648,35 @@ def test_code_search_absence_rejects_content_and_path_matches(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "source_token",
+    ["load_json", "load_jsom", "load_jsonx", "load_jso", "load_jsno", "LOAD_JSON"],
+)
+def test_identifier_osa1_absence_rejects_all_single_edits(source_token):
+    so = ev.source_oracle
+    raw = f"// {source_token}\n".encode()
+    oracle = so.SourceOracleIndex({"source.go": (raw, ev.digest(raw))}, {"load_json"})
+    with pytest.raises(so.SourceOracleError, match="found a source token"):
+        oracle.expected_rows(
+            so.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, "load_json", "distinct_file"
+        )
+
+
+def test_identifier_osa1_absence_is_content_only_and_rejects_invalid_unit():
+    so = ev.source_oracle
+    raw = b"// load_jzzn cafe\n"
+    oracle = so.SourceOracleIndex({"load_json/source.go": (raw, ev.digest(raw))}, {"load_json"})
+    assert oracle.expected_rows(
+        so.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, "load_json", "distinct_file"
+    ) == []
+    assert oracle.first_match(so.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, "load_json") is None
+    with pytest.raises(so.SourceOracleError, match="unsupported"):
+        oracle.expected_rows(so.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, "load_json", "symbol")
+    for invalid in ("ab", "a" * 65, "load-json"):
+        with pytest.raises(so.SourceOracleError):
+            oracle.expected_rows(so.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, invalid, "distinct_file")
+
+
 def _robustness_baseline(tmp_path):
     repo = tmp_path / "robust"
     repo.mkdir()

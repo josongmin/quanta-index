@@ -17,6 +17,9 @@ IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 FRAGMENT = re.compile(r"[A-Za-z0-9_]+\Z")
 COMPONENT_QUERY = re.compile(r"[a-z0-9]+( [a-z0-9]+)+\Z")
 WORDS = re.compile(rb"(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*")
+# Conservative byte-token superset for proving fuzzy content absence. Splitting
+# around non-ASCII bytes can only reject an otherwise valid negative label.
+ASCII_TOKEN_SUPERSET = re.compile(rb"[A-Za-z0-9_]+")
 # camel-snake-v1: split on "_", then on lower->upper, acronym->Word and letter/digit edges.
 COMPONENT_TOKENIZER = "camel-snake-v1"
 _COMPONENTS = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+")
@@ -28,6 +31,7 @@ GO_EXACT_LOCAL_NAME = "go_exact_local_name_v3"
 ASCII_IDENTIFIER_WORD = "ascii_identifier_word_v1"
 ASCII_CONTENT_ABSENT_CASEFOLD = "ascii_content_absent_casefold_v1"
 ASCII_CODE_SEARCH_ABSENT_CASEFOLD = "ascii_code_search_absent_casefold_v1"
+ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD = "ascii_identifier_osa1_absent_casefold_v1"
 # Variants over the same indexed Go declaration set as v3. Prefix, infix and
 # osa1 compare exact (case-sensitive) name text; components compare lowercased
 # camel-snake-v1 components on both sides.
@@ -403,6 +407,22 @@ class SourceOracleIndex:
             if folded in path.casefold():
                 raise SourceOracleError(f"code search absent contract found a path match: {path}")
 
+    def _require_identifier_osa1_absent_casefold(self, query: str) -> None:
+        """Prove no ASCII source token is within one OSA edit of the query."""
+        _require_query(ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, query)
+        if not 3 <= len(query) <= 64:
+            raise SourceOracleError("identifier osa1 absent contract requires 3..=64 bytes")
+        folded = query.lower()
+        for path, (raw, _digest) in sorted(self.files.items()):
+            for match in ASCII_TOKEN_SUPERSET.finditer(raw):
+                token = match.group().decode("ascii").lower()
+                if abs(len(token) - len(folded)) <= 1 and osa_distance_at_most_one(
+                    folded, token
+                ):
+                    raise SourceOracleError(
+                        f"identifier osa1 absent contract found a source token: {path}"
+                    )
+
     def _index_declarations(
         self, language: str, excluded: frozenset[str] = frozenset()
     ) -> dict[bytes, list[tuple[str, int, int, int, int]]]:
@@ -501,6 +521,9 @@ class SourceOracleIndex:
         elif contract == ASCII_CODE_SEARCH_ABSENT_CASEFOLD and unit == "distinct_file":
             self._require_code_search_absent_casefold(query)
             paths = set()
+        elif contract == ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD and unit == "distinct_file":
+            self._require_identifier_osa1_absent_casefold(query)
+            paths = set()
         else:
             raise SourceOracleError("unsupported source oracle contract/unit combination")
         return [
@@ -529,9 +552,15 @@ class SourceOracleIndex:
 
     def first_match(self, contract: str, query: str) -> tuple[str, int, int] | None:
         """Choose the first source match by path and byte offset for a diagnostic gold line."""
-        if contract in (ASCII_CONTENT_ABSENT_CASEFOLD, ASCII_CODE_SEARCH_ABSENT_CASEFOLD):
+        if contract in (
+            ASCII_CONTENT_ABSENT_CASEFOLD,
+            ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+            ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD,
+        ):
             if contract == ASCII_CODE_SEARCH_ABSENT_CASEFOLD:
                 self._require_code_search_absent_casefold(query)
+            elif contract == ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD:
+                self._require_identifier_osa1_absent_casefold(query)
             else:
                 self._require_content_absent_casefold(query)
             return None
