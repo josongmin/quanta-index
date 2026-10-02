@@ -757,3 +757,23 @@ review has run. The split does not independently declare every intended
 reviewed/scale category, so matching family inventories alone cannot prove
 that those lanes were prepared. C5 cannot be marked complete from these unit
 tests.
+
+## Repository-disjoint qualified admission code (2026-10-03)
+
+The qualified runner now accepts a distinct admission schema v3 that binds a
+holdout repository, release digest, global split bytes and release-path map.
+The split validator rechecks every release and the development/holdout source
+leakage policy; the selected suite must use the holdout commit, complete
+`code_only` file universe, eval-only tasks and exactly the split's query
+families. Pair spec freezing, run-manifest artifacts and verdict replay select
+this v3 custody path. Existing same-repository schema v2 custody remains
+separate. C5 replay requires v3 and rejects a v2 qualified receipt. The C5
+metric gate requires critical category and language strata for every observed
+answerable group, alongside every repository and no-answer.
+
+The focused schema/source/freeze tests include negative holdout-side,
+file-universe, family and split-digest cases. They mock the full release
+validator in the runner seam; the release validator itself has independent
+real-Git fixture tests. A complete v3 pair capture followed by unmocked
+`run.build_verdict()` and C5 replay is still `NOT_RUN`. These changes do not
+establish human reviewer identity or an externally indexed file universe.
