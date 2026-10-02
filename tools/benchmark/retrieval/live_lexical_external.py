@@ -16,6 +16,7 @@ import os
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -38,8 +39,8 @@ from tools.benchmark.retrieval import sourcegraph  # noqa: E402
 
 MAX_HTTP_BYTES = 16 * 1024 * 1024
 MAX_PROCESS_BYTES = 16 * 1024 * 1024
-MAX_INDEXED_VIEW_FILES = 4096
-MAX_INDEXED_VIEW_BYTES = 512 * 1024 * 1024
+MAX_INDEX_FILES = 4096
+MAX_INDEX_BYTES = 512 * 1024 * 1024
 MAX_INDEXED_VIEW_SECONDS = 900
 HTTP_TIMEOUT = 50
 MAX_SOURCEGRAPH_REQUEST_TARGET_BYTES = 8 * 1024
@@ -140,6 +141,39 @@ def _service(value: object, keys: set[str], optional: set[str] = frozenset()) ->
         token = Path(value["token_file"])
         if not token.is_absolute() or ".." in token.parts:
             raise ValueError("token file path must be canonical absolute")
+    if "backend_snapshot" in value:
+        snapshot = value["backend_snapshot"]
+        if not isinstance(snapshot, dict) or set(snapshot) != {
+            "root",
+            "container_id",
+            "mount_destination",
+            "container_port",
+        }:
+            raise ValueError("backend snapshot spec keys differ")
+        root = snapshot["root"]
+        mount = snapshot["mount_destination"]
+        container_id = snapshot["container_id"]
+        port = snapshot["container_port"]
+        if (
+            not isinstance(root, str)
+            or not Path(root).is_absolute()
+            or ".." in Path(root).parts
+            or not isinstance(mount, str)
+            or not Path(mount).is_absolute()
+            or ".." in Path(mount).parts
+            or not isinstance(container_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", container_id) is None
+            or not isinstance(port, str)
+            or re.fullmatch(r"[1-9][0-9]{0,4}/tcp", port) is None
+            or int(port.split("/")[0]) > 65535
+        ):
+            raise ValueError("backend snapshot requires canonical paths, container ID and TCP port")
+        if urllib.parse.urlsplit(result["base_url"]).hostname not in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }:
+            raise ValueError("backend snapshot requires a loopback service URL")
     return result
 
 
@@ -163,12 +197,14 @@ def _spec(path: Path) -> dict:
         raise ValueError("live external spec requires the closed schema version 1")
     corpus_binding._selection(value["corpus"])
     value["sourcegraph"] = _service(
-        value["sourcegraph"], {"base_url", "repository", "server_image_digest"}
+        value["sourcegraph"],
+        {"base_url", "repository", "server_image_digest"},
+        {"backend_snapshot"},
     )
     value["opengrok"] = _service(
         value["opengrok"],
         {"base_url", "project", "server_image_digest"},
-        {"indexed_view_probe"},
+        {"indexed_view_probe", "backend_snapshot"},
     )
     if value["opengrok"].get("indexed_view_probe") not in (None, "full"):
         raise ValueError("OpenGrok indexed view probe must be full or absent")
@@ -494,7 +530,7 @@ def _opengrok_indexed_inventory_response(
     native = json.loads(
         raw.decode("utf-8"), object_pairs_hook=_object, parse_constant=_reject_constant
     )
-    if not isinstance(native, list) or len(native) > MAX_INDEXED_VIEW_FILES:
+    if not isinstance(native, list) or len(native) > MAX_INDEX_FILES:
         raise ValueError("OpenGrok indexed file inventory is not a bounded path list")
     prefix = "/" + config["project"] + "/"
     paths = []
@@ -535,8 +571,8 @@ def _opengrok_indexed_inventory(config: dict, manifest: dict, target: Path, phas
 def _opengrok_indexed_view(config: dict, manifest: dict, view: Path, target: Path) -> None:
     files = manifest["files"]
     if (
-        len(files) > MAX_INDEXED_VIEW_FILES
-        or sum((view / row["path"]).stat().st_size for row in files) > MAX_INDEXED_VIEW_BYTES
+        len(files) > MAX_INDEX_FILES
+        or sum((view / row["path"]).stat().st_size for row in files) > MAX_INDEX_BYTES
     ):
         raise ValueError("OpenGrok full indexed view probe exceeds file or byte limit")
     deadline = time.monotonic() + MAX_INDEXED_VIEW_SECONDS
@@ -695,6 +731,186 @@ def _cs_response(
     )
 
 
+def _backend_runtime(config: dict) -> dict:
+    """Bind a loopback endpoint to one running container and its read-only index mount."""
+    backend = config["backend_snapshot"]
+    code, stdout, stderr, _ = _process(
+        [
+            "docker",
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            "{{json .}}",
+            backend["container_id"],
+        ],
+        10,
+    )
+    if code != 0 or stderr:
+        raise ValueError("backend container inspect failed")
+    native = _json(stdout)
+    state = native.get("State")
+    network = native.get("NetworkSettings")
+    mounts = native.get("Mounts")
+    root = Path(backend["root"])
+    if not root.is_dir() or root.resolve(strict=True) != root:
+        raise ValueError("backend index root must be an existing canonical directory")
+    if (
+        native.get("Id") != backend["container_id"]
+        or native.get("Image") != "sha256:" + config["server_image_digest"]
+        or not isinstance(state, dict)
+        or state.get("Running") is not True
+        or type(state.get("Pid")) is not int
+        or state["Pid"] <= 0
+        or not isinstance(state.get("StartedAt"), str)
+        or not state["StartedAt"]
+        or type(native.get("RestartCount")) is not int
+        or not isinstance(mounts, list)
+        or not isinstance(network, dict)
+        or not isinstance(network.get("Ports"), dict)
+    ):
+        raise ValueError("backend container identity or running process differs")
+    selected_mounts = [
+        mount
+        for mount in mounts
+        if isinstance(mount, dict) and mount.get("Destination") == backend["mount_destination"]
+    ]
+    if (
+        len(selected_mounts) != 1
+        or selected_mounts[0].get("Type") != "bind"
+        or selected_mounts[0].get("Source") != backend["root"]
+        or selected_mounts[0].get("RW") is not False
+    ):
+        raise ValueError("backend index mount differs or is writable")
+    parsed = urllib.parse.urlsplit(config["base_url"])
+    service_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    bindings = network["Ports"].get(backend["container_port"])
+    allowed_host_ips = {
+        "127.0.0.1": {"127.0.0.1", "0.0.0.0"},
+        "::1": {"::1", "::"},
+        "localhost": {"127.0.0.1", "0.0.0.0", "::1", "::"},
+    }[parsed.hostname]
+    if not isinstance(bindings, list) or not any(
+        isinstance(binding, dict)
+        and binding.get("HostPort") == str(service_port)
+        and binding.get("HostIp") in allowed_host_ips
+        for binding in bindings
+    ):
+        raise ValueError("backend container port does not bind the service URL")
+    return {
+        "container_id": backend["container_id"],
+        "image_sha256": config["server_image_digest"],
+        "pid": state["Pid"],
+        "started_at": state["StartedAt"],
+        "restart_count": native["RestartCount"],
+        "mount_source": backend["root"],
+        "mount_destination": backend["mount_destination"],
+        "container_port": backend["container_port"],
+        "service_port": service_port,
+    }
+
+
+def _backend_tree(root: Path) -> tuple[list[dict], str]:
+    paths = corpus_release.regular_tree(root)
+    if not paths or len(paths) > MAX_INDEX_FILES:
+        raise ValueError("backend index file inventory is empty or exceeds 4096 files")
+    rows = []
+    total = 0
+    for name in sorted(paths):
+        if not lexical._canonical_result_path(name):
+            raise ValueError("backend index contains a noncanonical path")
+        path = root / name
+        before = path.stat()
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("backend index contains a nonregular file")
+        total += before.st_size
+        if total > MAX_INDEX_BYTES:
+            raise ValueError("backend index exceeds 512 MiB")
+        digest, size = file_digest(path)
+        after = path.stat()
+        if size != before.st_size or (
+            before.st_dev,
+            before.st_ino,
+            before.st_mtime_ns,
+            before.st_size,
+        ) != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size):
+            raise ValueError("backend index file changed during hashing")
+        rows.append({"path": name, "sha256": digest.removeprefix("sha256:"), "bytes": size})
+    if corpus_release.regular_tree(root) != paths:
+        raise ValueError("backend index inventory changed during hashing")
+    return rows, _sha(canonical_json(rows).encode())
+
+
+def _backend_snapshot(config: dict) -> dict:
+    first = _backend_runtime(config)
+    rows, digest = _backend_tree(Path(config["backend_snapshot"]["root"]))
+    if _backend_runtime(config) != first:
+        raise ValueError("backend process or mount changed during index hashing")
+    return {"runtime": first, "files": rows, "tree_sha256": digest}
+
+
+def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
+    backend = config["backend_snapshot"]
+    if not isinstance(snapshot, dict) or set(snapshot) != {"runtime", "files", "tree_sha256"}:
+        raise ValueError("backend snapshot shape differs")
+    runtime = snapshot["runtime"]
+    if (
+        not isinstance(runtime, dict)
+        or set(runtime)
+        != {
+            "container_id",
+            "image_sha256",
+            "pid",
+            "started_at",
+            "restart_count",
+            "mount_source",
+            "mount_destination",
+            "container_port",
+            "service_port",
+        }
+        or runtime["container_id"] != backend["container_id"]
+        or runtime["image_sha256"] != config["server_image_digest"]
+        or runtime["mount_source"] != backend["root"]
+        or runtime["mount_destination"] != backend["mount_destination"]
+        or runtime["container_port"] != backend["container_port"]
+        or type(runtime["pid"]) is not int
+        or runtime["pid"] <= 0
+        or type(runtime["restart_count"]) is not int
+        or runtime["restart_count"] < 0
+        or not isinstance(runtime["started_at"], str)
+        or not runtime["started_at"]
+        or type(runtime["service_port"]) is not int
+        or runtime["service_port"]
+        != (
+            urllib.parse.urlsplit(config["base_url"]).port
+            or (443 if config["base_url"].startswith("https:") else 80)
+        )
+    ):
+        raise ValueError("backend snapshot runtime identity differs")
+    rows = snapshot["files"]
+    if not isinstance(rows, list) or not 0 < len(rows) <= MAX_INDEX_FILES:
+        raise ValueError("backend snapshot file inventory differs")
+    total = 0
+    previous = ""
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"path", "sha256", "bytes"}
+            or not isinstance(row["path"], str)
+            or not lexical._canonical_result_path(row["path"])
+            or row["path"] <= previous
+            or not isinstance(row["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None
+            or type(row["bytes"]) is not int
+            or row["bytes"] < 0
+        ):
+            raise ValueError("backend snapshot file entry differs")
+        previous = row["path"]
+        total += row["bytes"]
+    if total > MAX_INDEX_BYTES or snapshot["tree_sha256"] != _sha(canonical_json(rows).encode()):
+        raise ValueError("backend snapshot tree digest differs")
+
+
 def capture(spec_path: Path) -> dict:
     spec = _spec(spec_path)
     root = Path(spec["output_root"])
@@ -708,9 +924,24 @@ def capture(spec_path: Path) -> dict:
         Path(spec["suite"]),
         Path(spec["query_pack"]),
         Path(spec["cs"]["binary"]),
+        *(
+            Path(spec[name]["backend_snapshot"]["root"])
+            for name in ("sourcegraph", "opengrok")
+            if "backend_snapshot" in spec[name]
+        ),
     )
     if any(path.resolve().is_relative_to(checkout) for path in input_paths):
         raise ValueError("live capture inputs and output must stay outside the source checkout")
+    for name in ("sourcegraph", "opengrok"):
+        if "backend_snapshot" in spec[name]:
+            backend_root = Path(spec[name]["backend_snapshot"]["root"]).resolve(strict=True)
+            if (
+                backend_root.is_relative_to(release.resolve())
+                or backend_root.is_relative_to(root.resolve())
+                or release.resolve().is_relative_to(backend_root)
+                or root.resolve().is_relative_to(backend_root)
+            ):
+                raise ValueError("backend index root must be disjoint from release and output")
     if (
         root.exists()
         or root.is_symlink()
@@ -765,6 +996,15 @@ def capture(spec_path: Path) -> dict:
     _write(stage / "suite.json", suite_raw)
     _write(stage / "query-pack.json", pack_raw)
     _write(stage / "manifest.json", manifest_raw)
+    backend_names = tuple(
+        name for name in ("sourcegraph", "opengrok") if "backend_snapshot" in spec[name]
+    )
+    backend_before = {}
+    for name in backend_names:
+        snapshot = _backend_snapshot(spec[name])
+        _validate_backend_snapshot(spec[name], snapshot)
+        backend_before[name] = snapshot
+        _write(stage / "backend" / f"{name}-before.json", canonical_json(snapshot).encode() + b"\n")
     probe_indexed_view = spec["opengrok"].get("indexed_view_probe") == "full"
     if probe_indexed_view:
         _opengrok_indexed_view(spec["opengrok"], manifest, view, stage / "opengrok-view")
@@ -802,6 +1042,12 @@ def capture(spec_path: Path) -> dict:
     if probe_indexed_view:
         # Two fixed, independently bounded full probes bracket every search.
         _opengrok_indexed_view(spec["opengrok"], manifest, view, stage / "opengrok-view-post")
+    for name in backend_names:
+        snapshot = _backend_snapshot(spec[name])
+        _validate_backend_snapshot(spec[name], snapshot)
+        _write(stage / "backend" / f"{name}-after.json", canonical_json(snapshot).encode() + b"\n")
+        if canonical_json(snapshot) != canonical_json(backend_before[name]):
+            raise ValueError(f"{name} backend process, mount or index changed during capture")
     for name in products:
         destination = stage / f"{name}_rows.jsonl"
         lexical.product_result(name, destination, tasks, admitted)
@@ -832,6 +1078,9 @@ def capture(spec_path: Path) -> dict:
             else "not_requested"
         ),
         "opengrok_indexed_view_files": len(manifest["files"]) if probe_indexed_view else 0,
+        "backend_snapshot_sha256": {
+            name: _sha_file(stage / "backend" / f"{name}-before.json") for name in backend_names
+        },
         "producer_sources_sha256": source_hashes,
         "python_executable_sha256": _sha_file(Path(sys.executable).resolve()),
         "python_version": sys.version.split()[0],
@@ -847,6 +1096,7 @@ def capture(spec_path: Path) -> dict:
             for name in (
                 *products,
                 *(("opengrok-view", "opengrok-view-post") if probe_indexed_view else ()),
+                *(("backend",) if backend_names else ()),
             )
             for path in sorted((stage / name).iterdir())
         },
@@ -891,6 +1141,7 @@ def verify(root: Path) -> dict:
         "opengrok_indexed_universe_attested",
         "opengrok_indexed_view_probe",
         "opengrok_indexed_view_files",
+        "backend_snapshot_sha256",
         "producer_sources_sha256",
         "python_executable_sha256",
         "python_version",
@@ -909,6 +1160,9 @@ def verify(root: Path) -> dict:
         or summary.get("status") != "diagnostic_unqualified"
         or summary.get("indexed_universe_attested") is not False
         or summary.get("opengrok_indexed_universe_attested") is not False
+        or not isinstance(summary.get("backend_snapshot_sha256"), dict)
+        or set(summary["backend_snapshot_sha256"])
+        != {name for name in ("sourcegraph", "opengrok") if "backend_snapshot" in spec[name]}
         or summary.get("opengrok_indexed_view_probe")
         != (
             "exact_indexed_inventory_and_served_bytes_bracketing_queries"
@@ -1001,6 +1255,8 @@ def verify(root: Path) -> dict:
             for index in range(len(manifest["files"])):
                 name = f"{probe}/{index:06d}"
                 expected_raw.update({f"{name}.content", f"{name}.transport.json"})
+    for name in summary["backend_snapshot_sha256"]:
+        expected_raw.update({f"backend/{name}-before.json", f"backend/{name}-after.json"})
     fixed = {
         "spec.json",
         "capture.json",
@@ -1018,6 +1274,15 @@ def verify(root: Path) -> dict:
     for name in expected_raw:
         if _sha_file(root / name) != summary["raw_capture_sha256"][name]:
             raise ValueError("external native bytes differ from capture")
+    for name, digest in summary["backend_snapshot_sha256"].items():
+        before_path = root / "backend" / f"{name}-before.json"
+        after_path = root / "backend" / f"{name}-after.json"
+        before = _json(_read_control_file(before_path))
+        after = _json(_read_control_file(after_path))
+        _validate_backend_snapshot(spec[name], before)
+        _validate_backend_snapshot(spec[name], after)
+        if digest != _sha_file(before_path) or canonical_json(before) != canonical_json(after):
+            raise ValueError("backend snapshot changed during capture or replay")
     if probe_indexed_view:
         endpoint = (
             "/api/v1/projects/"

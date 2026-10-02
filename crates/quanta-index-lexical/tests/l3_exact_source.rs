@@ -445,6 +445,55 @@ fn code_search_preview_flags_only_actual_nfc_source_difference() -> TestResult {
 }
 
 #[test]
+fn code_search_regex_case_flag_text_inside_class_is_literal() -> TestResult {
+    let (_dir, searcher) = fixture_with_scopes(vec![code_scope(
+        "src/class.rs",
+        "the ( token is present",
+        7,
+    )?])?;
+    let mut query = code_query(&["unused"], false);
+    query.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.content_regex".into(),
+        args: vec![LqPredicateArg::RawString("[(?i]".into())],
+    });
+    for sensitive in [false, true] {
+        query.options.case = sensitive.then_some(LqCase::Sensitive);
+        let rows = searcher
+            .search_constrained(
+                &query,
+                &QueryConstraintSetV1::default(),
+                &LexicalPageSpec::first(10),
+                &RequestBudgetV1::unbounded(),
+            )?
+            .candidates;
+        assert_eq!(rows.len(), 1, "case_sensitive={sensitive}");
+        assert_eq!(rows[0].repo_relative_path.as_str(), "src/class.rs");
+    }
+    // The case flag remains forbidden even when another flag comes first.
+    for (pattern, sensitive) in [("(?m-i:FOO)", false), ("(?i:foo)", true)] {
+        query.options.case = sensitive.then_some(LqCase::Sensitive);
+        query.expr = LqExpr::Leaf(LqLeaf::Predicate {
+            name: "code_search.content_regex".into(),
+            args: vec![LqPredicateArg::RawString(pattern.into())],
+        });
+        assert!(matches!(
+            searcher.search_constrained(
+                &query,
+                &QueryConstraintSetV1::default(),
+                &LexicalPageSpec::first(10),
+                &RequestBudgetV1::unbounded(),
+            ),
+            Err(CoreError::Typed {
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::LexPlannerUnsupportedFilterCombo,
+                ..
+            })
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn code_search_regex_uses_full_file_authority_and_bounded_source_focus() -> TestResult {
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("src/target.rs", "sphinx middle quartz", 7)?,

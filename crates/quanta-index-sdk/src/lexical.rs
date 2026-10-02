@@ -776,7 +776,7 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
     }
 
     /// Search source files using the product code-search syntax. Bare terms
-    /// are case-folded literal substrings, ANDed within one file; the result
+    /// are case-folded literal substrings, `ANDed` within one file; the result
     /// unit is a distinct file. Use `native` for the LQ DSL.
     #[must_use]
     pub fn code_search(

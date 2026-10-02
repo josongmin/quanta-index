@@ -255,13 +255,18 @@ the current guards are not proof of a physical heap ceiling.
   (or its path), then ranks distinct files with deterministic score and cursor
   order. A generation-sealed source-byte sidecar supplies the file authority;
   chunks neither define the match universe nor multiply file ranks. Admission
-  caps source bytes at 8 MiB per file and 128 MiB per generation. Seal and
-  cold open also enforce a 2,000,000 membership cap across the four file
-  trigram indexes. The existing file-authority manifest stores each file's
-  posting count. Changed files are counted with a fixed 2 MiB bitmap before
-  publication; a delta sums inherited counts without rereading every source.
-  Cold open recomputes and checks each count from committed bytes. Generations
-  with the old manifest shape require an explicit rebuild.
+  caps source bytes at 8 MiB per file and 128 MiB per generation. One folded
+  trigram candidate index per content/path surface serves both case modes;
+  case-sensitive matches are verified against the original NFC source. Seal
+  and cold open enforce 4,000,000 total posting memberships and a 128 MiB
+  estimated builder-scratch limit **per surface**. The limits do not bound
+  their simultaneous aggregate or physical process RSS. The file-authority
+  manifest stores each file's posting count. Changed files are counted with a
+  fixed 2 MiB bitmap before publication; a delta sums inherited counts for
+  its manifest. Seal also rereads every effective source file to check the
+  dictionary/scratch budget, including inherited files. Cold open recomputes
+  each posting count from committed bytes. Sealed manifest format 11 rejects
+  older generations, which require an explicit rebuild.
   Unsupported
   query forms or resource limits refuse explicitly rather than returning a
   falsely complete result.

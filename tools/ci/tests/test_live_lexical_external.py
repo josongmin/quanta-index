@@ -253,6 +253,118 @@ def test_opengrok_indexed_inventory_requires_successful_json_response():
             )
 
 
+def test_local_backend_snapshot_binds_container_image_mount_port_and_index(tmp_path, monkeypatch):
+    root = tmp_path / "index"
+    root.mkdir()
+    (root / "shard.zoekt").write_bytes(b"original index")
+    backend = {
+        "root": str(root),
+        "container_id": "a" * 64,
+        "mount_destination": "/index",
+        "container_port": "7080/tcp",
+    }
+    config = {
+        "base_url": "http://127.0.0.1:8765",
+        "server_image_digest": "b" * 64,
+        "backend_snapshot": backend,
+    }
+    inspect = {
+        "Id": backend["container_id"],
+        "Image": "sha256:" + config["server_image_digest"],
+        "State": {"Running": True, "Pid": 123, "StartedAt": "2026-10-02T00:00:00Z"},
+        "RestartCount": 0,
+        "Mounts": [{"Type": "bind", "Source": str(root), "Destination": "/index", "RW": False}],
+        "NetworkSettings": {"Ports": {"7080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8765"}]}},
+    }
+
+    def fake_process(argv, timeout):
+        assert argv[-1] == backend["container_id"] and timeout == 10
+        return 0, json.dumps(inspect).encode(), b"", 1.0
+
+    monkeypatch.setattr(live, "_process", fake_process)
+    original = live._backend_snapshot(config)
+    live._validate_backend_snapshot(config, original)
+    assert original["files"] == [
+        {"path": "shard.zoekt", "sha256": live._sha(b"original index"), "bytes": 14}
+    ]
+    baseline = json.loads(json.dumps(inspect))
+    for mutate in (
+        lambda value: value.update(Image="sha256:" + "c" * 64),
+        lambda value: value["State"].update(Pid=0),
+        lambda value: value["Mounts"][0].update(Source=str(tmp_path / "other")),
+        lambda value: value["Mounts"][0].update(RW=True),
+        lambda value: value["NetworkSettings"]["Ports"]["7080/tcp"][0].update(HostPort="8766"),
+    ):
+        changed = json.loads(json.dumps(baseline))
+        mutate(changed)
+        inspect.clear()
+        inspect.update(changed)
+        with pytest.raises(ValueError, match="backend container|backend index mount"):
+            live._backend_snapshot(config)
+        inspect.clear()
+        inspect.update(json.loads(json.dumps(baseline)))
+    (root / "shard.zoekt").write_bytes(b"changed index")
+    assert live._backend_snapshot(config)["tree_sha256"] != original["tree_sha256"]
+    (root / "linked").symlink_to(root / "shard.zoekt")
+    with pytest.raises(ValueError, match="link or special file"):
+        live._backend_snapshot(config)
+    (root / "linked").unlink()
+    (root / "shard.zoekt").unlink()
+    root.rmdir()
+    with pytest.raises(ValueError, match="existing canonical directory"):
+        live._backend_snapshot(config)
+
+
+def test_backend_snapshot_refuses_process_restart_and_unbounded_index(tmp_path, monkeypatch):
+    root = tmp_path / "index"
+    root.mkdir()
+    (root / "segment-a").write_bytes(b"abc")
+    (root / "segment-b").write_bytes(b"def")
+    backend = {"root": str(root)}
+    config = {"backend_snapshot": backend}
+    calls = 0
+
+    def runtime(_config):
+        nonlocal calls
+        calls += 1
+        return {"pid": calls}
+
+    monkeypatch.setattr(live, "_backend_runtime", runtime)
+    with pytest.raises(ValueError, match="changed during index hashing"):
+        live._backend_snapshot(config)
+    monkeypatch.setattr(live, "MAX_INDEX_FILES", 1)
+    with pytest.raises(ValueError, match="exceeds 4096 files"):
+        live._backend_tree(root)
+    monkeypatch.setattr(live, "MAX_INDEX_FILES", 4096)
+    monkeypatch.setattr(live, "MAX_INDEX_BYTES", 5)
+    with pytest.raises(ValueError, match="exceeds 512 MiB"):
+        live._backend_tree(root)
+
+
+def test_backend_snapshot_spec_refuses_nonlocal_or_malformed_binding(tmp_path):
+    valid = {
+        "base_url": "http://127.0.0.1:8765",
+        "repository": "benchmark/fixture",
+        "server_image_digest": "a" * 64,
+        "backend_snapshot": {
+            "root": str(tmp_path),
+            "container_id": "b" * 64,
+            "mount_destination": "/index",
+            "container_port": "7080/tcp",
+        },
+    }
+    keys = {"base_url", "repository", "server_image_digest"}
+    assert live._service(valid, keys, {"backend_snapshot"}) == valid
+    for mutation in (
+        {"base_url": "https://example.com"},
+        {"backend_snapshot": {**valid["backend_snapshot"], "root": "relative"}},
+        {"backend_snapshot": {**valid["backend_snapshot"], "container_id": "short"}},
+        {"backend_snapshot": {**valid["backend_snapshot"], "container_port": "99999/tcp"}},
+    ):
+        with pytest.raises(ValueError, match="backend snapshot"):
+            live._service({**valid, **mutation}, keys, {"backend_snapshot"})
+
+
 def test_opengrok_full_view_probe_rejects_inventory_change_during_capture(tmp_path, monkeypatch):
     view = tmp_path / "view"
     view.mkdir()
@@ -308,6 +420,7 @@ class SearchHandler(BaseHTTPRequestHandler):
     view = None
     query_seen = False
     inventory_extra_after_query = False
+    backend_mutation_path = None
 
     def do_GET(self):
         parsed = urlsplit(self.path)
@@ -342,6 +455,9 @@ class SearchHandler(BaseHTTPRequestHandler):
             content_type = "text/event-stream"
         elif parsed.path == "/api/v1/search":
             type(self).query_seen = True
+            if self.backend_mutation_path is not None:
+                self.backend_mutation_path.write_bytes(b"changed during search")
+                type(self).backend_mutation_path = None
             body = json.dumps(
                 {
                     "time": 1,
@@ -381,11 +497,16 @@ class SearchHandler(BaseHTTPRequestHandler):
 
 
 @pytest.mark.parametrize(
-    ("index_changes_during_queries", "unsupported_query"),
-    [(False, False), (True, False), (False, True)],
+    ("index_changes_during_queries", "unsupported_query", "backend_changes_during_queries"),
+    [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
 )
 def test_live_capture_makes_three_product_requests_and_retains_raw(
-    tmp_path, lexical_release_seed, index_changes_during_queries, unsupported_query, monkeypatch
+    tmp_path,
+    lexical_release_seed,
+    index_changes_during_queries,
+    unsupported_query,
+    backend_changes_during_queries,
+    monkeypatch,
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
     if unsupported_query:
@@ -416,6 +537,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     SearchHandler.calls = []
     SearchHandler.query_seen = False
     SearchHandler.inventory_extra_after_query = index_changes_during_queries
+    SearchHandler.backend_mutation_path = None
     server = ThreadingHTTPServer(("127.0.0.1", 0), SearchHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -440,12 +562,63 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             "cs": {"binary": str(binary)},
             "output_root": str(tmp_path / "live"),
         }
+        if not index_changes_during_queries and not unsupported_query:
+            for name, container_port in (("sourcegraph", "7080/tcp"), ("opengrok", "8080/tcp")):
+                backend_root = tmp_path / f"{name}-index"
+                backend_root.mkdir()
+                (backend_root / "segment.bin").write_bytes(name.encode())
+                spec[name]["backend_snapshot"] = {
+                    "root": str(backend_root),
+                    "container_id": ("c" if name == "sourcegraph" else "d") * 64,
+                    "mount_destination": "/index",
+                    "container_port": container_port,
+                }
+            if backend_changes_during_queries:
+                SearchHandler.backend_mutation_path = tmp_path / "sourcegraph-index/segment.bin"
+            original_process = live._process
+
+            def local_backend_process(argv, timeout):
+                if argv[0] != "docker":
+                    return original_process(argv, timeout)
+                config = next(
+                    value
+                    for name in ("sourcegraph", "opengrok")
+                    if (value := spec[name])["backend_snapshot"]["container_id"] == argv[-1]
+                )
+                backend = config["backend_snapshot"]
+                inspect = {
+                    "Id": backend["container_id"],
+                    "Image": "sha256:" + config["server_image_digest"],
+                    "State": {"Running": True, "Pid": 123, "StartedAt": "2026-10-02T00:00:00Z"},
+                    "RestartCount": 0,
+                    "Mounts": [
+                        {
+                            "Type": "bind",
+                            "Source": backend["root"],
+                            "Destination": "/index",
+                            "RW": False,
+                        }
+                    ],
+                    "NetworkSettings": {
+                        "Ports": {
+                            backend["container_port"]: [
+                                {"HostIp": "127.0.0.1", "HostPort": str(server.server_address[1])}
+                            ]
+                        }
+                    },
+                }
+                return 0, json.dumps(inspect).encode(), b"", 1.0
+
+            monkeypatch.setattr(live, "_process", local_backend_process)
         spec_path = tmp_path / "live-spec.json"
         spec_path.write_text(json.dumps(spec))
         if index_changes_during_queries:
             with pytest.raises(
                 ValueError, match="indexed file inventory differs from release manifest"
             ):
+                live.capture(spec_path)
+        elif backend_changes_during_queries:
+            with pytest.raises(ValueError, match="backend process, mount or index changed"):
                 live.capture(spec_path)
         else:
             result = live.capture(spec_path)
@@ -462,8 +635,19 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             == "/fixture/extra.go"
         )
         return
+    if backend_changes_during_queries:
+        assert not Path(spec["output_root"]).exists()
+        stage = Path(spec["output_root"] + ".staging")
+        before = json.loads((stage / "backend/sourcegraph-before.json").read_bytes())
+        after = json.loads((stage / "backend/sourcegraph-after.json").read_bytes())
+        assert before["tree_sha256"] != after["tree_sha256"]
+        return
     assert result["indexed_universe_attested"] is False
     assert result["opengrok_indexed_universe_attested"] is False
+    if not unsupported_query:
+        assert set(result["backend_snapshot_sha256"]) == {"sourcegraph", "opengrok"}
+    else:
+        assert result["backend_snapshot_sha256"] == {}
     file_count = len(json.loads(paths["suite"].read_text())["file_universe"])
     assert (
         result["opengrok_indexed_view_probe"]
@@ -508,6 +692,27 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     assert (root / "opengrok" / "S00.json").exists()
     assert (root / "cs" / "S00.json").exists()
     summary_path = root / "capture.json"
+    if not unsupported_query:
+        backend_path = root / "backend" / "sourcegraph-after.json"
+        original_backend = backend_path.read_bytes()
+        tampered = json.loads(original_backend)
+        tampered["runtime"]["pid"] += 1
+        backend_path.write_text(json.dumps(tampered))
+        summary_path.write_text(
+            json.dumps(
+                {
+                    **result,
+                    "raw_capture_sha256": {
+                        **result["raw_capture_sha256"],
+                        "backend/sourcegraph-after.json": live._sha(backend_path.read_bytes()),
+                    },
+                }
+            )
+        )
+        with pytest.raises(ValueError, match="backend snapshot changed during capture"):
+            live.verify(root)
+        backend_path.write_bytes(original_backend)
+        summary_path.write_text(json.dumps(result))
     # A recomputed normalized digest cannot authorize paths absent from the
     # fixed native response. Exercise all live decoder owners, not only status.
     expected = live.lexical._tasks(
@@ -560,6 +765,8 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         {"indexed_universe_attested": True},
         {"rows_sha256": {**result["rows_sha256"], "forged-product": "0" * 64}},
     ]
+    if not unsupported_query:
+        mutations.append({"backend_snapshot_sha256": {}})
     for mutation in mutations:
         summary_path.write_text(json.dumps({**result, **mutation}))
         with pytest.raises(ValueError, match="unsupported capture metadata"):

@@ -943,6 +943,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         &symbol_preflight,
         symbol_policy,
         source_event,
+        selected.contains("semantic") || selected.contains("hybrid"),
     )?;
     let published_units = PublishedUnitRegistry::from_chunks_and_symbols(
         &selection.chunks,

@@ -3,7 +3,8 @@
 //! One `replace_generation` batch: a lexical `File` scope per file carrying
 //! **both** the file's chunk records and its source-bound symbol records in
 //! a single combined replacement (RBR-04: no second replacement for the
-//! same path), plus one `RawCodeFallback` semantic scope per chunk. The
+//! same path). Semantic routes also publish one `RawCodeFallback` scope per
+//! chunk; lexical-only routes leave the paired semantic generation empty. The
 //! shared coverage commits the source bytes, symbol payload and producer
 //! policy. Empty files are admitted with explicit zero-unit coverage.
 
@@ -148,6 +149,7 @@ pub fn assemble_batch(
     preflight: &SymbolPreflight,
     policy: SymbolCoveragePolicy,
     source_event: SourcePublicationEvent,
+    include_semantic_sources: bool,
 ) -> BenchResult<(SearchCorpusBatch, BatchAssemblyReport)> {
     preflight.admit(policy)?;
     source_event
@@ -224,18 +226,20 @@ pub fn assemble_batch(
                 report.symbol_only_scopes.push(path.clone());
             }
         }
-        for chunk in file_chunks {
-            let scope = semantic_scope(chunk)?;
-            batch = batch.replace_semantic_scope(
-                scope.scope,
-                scope.scope_digest,
-                scope.sources,
-                Vec::new(),
-            );
-            report.semantic_scopes = report
-                .semantic_scopes
-                .checked_add(1)
-                .ok_or_else(|| BenchError::Protocol("semantic scope count overflow".to_string()))?;
+        if include_semantic_sources {
+            for chunk in file_chunks {
+                let scope = semantic_scope(chunk)?;
+                batch = batch.replace_semantic_scope(
+                    scope.scope,
+                    scope.scope_digest,
+                    scope.sources,
+                    Vec::new(),
+                );
+                report.semantic_scopes =
+                    report.semantic_scopes.checked_add(1).ok_or_else(|| {
+                        BenchError::Protocol("semantic scope count overflow".to_string())
+                    })?;
+            }
         }
     }
     Ok((batch, report))
@@ -330,10 +334,61 @@ mod tests {
         chunks: &BTreeMap<String, Vec<Chunk>>,
         policy: SymbolCoveragePolicy,
     ) -> BenchResult<(SearchCorpusBatch, BatchAssemblyReport)> {
+        build_with_semantic_sources(files, chunks, policy, true)
+    }
+
+    fn build_with_semantic_sources(
+        files: &BTreeMap<String, SourceFile>,
+        chunks: &BTreeMap<String, Vec<Chunk>>,
+        policy: SymbolCoveragePolicy,
+        include_semantic_sources: bool,
+    ) -> BenchResult<(SearchCorpusBatch, BatchAssemblyReport)> {
         let preflight = preflight_corpus_symbols(files, &SymbolPreflightOptions::default())?;
-        assemble_batch(&identity(), chunks, files, &preflight, policy, event())
+        assemble_batch(
+            &identity(),
+            chunks,
+            files,
+            &preflight,
+            policy,
+            event(),
+            include_semantic_sources,
+        )
     }
     const RUST_SOURCE: &str = "pub fn first() {}\npub fn second() {}\n";
+
+    #[test]
+    fn lexical_only_batch_keeps_source_and_chunks_without_duplicate_semantic_text() {
+        let files = files(&[("src/lib.rs", RUST_SOURCE)]);
+        let chunks = BTreeMap::from([(
+            "src/lib.rs".to_string(),
+            vec![chunk("src/lib.rs", RUST_SOURCE)],
+        )]);
+        let (lexical, lexical_report) = build_with_semantic_sources(
+            &files,
+            &chunks,
+            SymbolCoveragePolicy::RequireComplete,
+            false,
+        )
+        .expect("lexical-only batch");
+        let (paired, paired_report) = build_with_semantic_sources(
+            &files,
+            &chunks,
+            SymbolCoveragePolicy::RequireComplete,
+            true,
+        )
+        .expect("paired batch");
+        assert_eq!(lexical.replace_scopes(), paired.replace_scopes());
+        assert_eq!(lexical_report.scopes, paired_report.scopes);
+        assert_eq!(lexical_report.chunks, paired_report.chunks);
+        assert_eq!(lexical_report.symbols, paired_report.symbols);
+        assert_eq!(lexical_report.semantic_scopes, 0);
+        assert_eq!(paired_report.semantic_scopes, 1);
+        assert!(lexical.semantic_replace_scopes().is_empty());
+        assert_ne!(
+            lexical.batch_digest().expect("lexical digest"),
+            paired.batch_digest().expect("paired digest")
+        );
+    }
 
     #[test]
     fn incomplete_profile_preserves_plain_and_unclassified_text() {
@@ -528,6 +583,7 @@ mod tests {
             &preflight,
             SymbolCoveragePolicy::RequireComplete,
             event(),
+            true,
         )
         .expect_err("duplicate unit identity");
         assert!(error.to_string().contains("duplicate source-file unit ID"));
@@ -594,6 +650,7 @@ mod tests {
                 &preflight,
                 SymbolCoveragePolicy::RequireComplete,
                 event(),
+                true,
             )
             .expect_err("global collision refuses");
             assert!(

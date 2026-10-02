@@ -74,6 +74,39 @@ fn byte_offset(value: usize) -> Result<u64, CoreError> {
         .map_err(|error| CoreError::Storage(format!("lexical: byte offset overflow: {error}")))
 }
 
+/// Detect case flags as regex syntax, not bytes inside a literal character class.
+/// A malformed pattern keeps its normal typed parse error in the regex planner.
+fn regex_has_case_override(pattern: &str) -> bool {
+    use regex_syntax::ast::{Ast, Flag};
+
+    fn contains_case_flag(ast: &Ast) -> bool {
+        match ast {
+            Ast::Flags(flags) => flags.flags.flag_state(Flag::CaseInsensitive).is_some(),
+            Ast::Group(group) => {
+                group
+                    .flags()
+                    .is_some_and(|flags| flags.flag_state(Flag::CaseInsensitive).is_some())
+                    || contains_case_flag(&group.ast)
+            }
+            Ast::Repetition(repetition) => contains_case_flag(&repetition.ast),
+            Ast::Concat(concat) => concat.asts.iter().any(contains_case_flag),
+            Ast::Alternation(alternation) => alternation.asts.iter().any(contains_case_flag),
+            Ast::Empty(_)
+            | Ast::Literal(_)
+            | Ast::Dot(_)
+            | Ast::Assertion(_)
+            | Ast::ClassUnicode(_)
+            | Ast::ClassPerl(_)
+            | Ast::ClassBracketed(_) => false,
+        }
+    }
+
+    pattern.contains("(?")
+        && regex_syntax::ast::parse::Parser::new()
+            .parse(pattern)
+            .is_ok_and(|ast| contains_case_flag(&ast))
+}
+
 impl CodeSearchPlan {
     pub(crate) fn parse(query: &LqQuery, regex_policy: &RegexPolicy) -> Result<Self, CoreError> {
         if query.options.pattern_type != LqPatternType::CodeSearch {
@@ -182,7 +215,7 @@ impl CodeSearchPlan {
                 } else {
                     source.as_str()
                 };
-                if body.contains("(?i") || body.contains("(?-i") {
+                if regex_has_case_override(body) {
                     return Err(unsupported("regex inline case overrides are unsupported"));
                 }
                 let effective = TantivySearcher::regex_source_for_options(body, &query.options);
