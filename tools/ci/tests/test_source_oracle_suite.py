@@ -611,6 +611,19 @@ def test_go_name_osa1_separates_unique_ambiguous_and_exact_collision(tmp_path):
     assert "BindXML" not in ambiguous.matched_names(so.GO_NAME_OSA1, "BindXML")
     assert ambiguous.expected_rows(so.GO_EXACT_LOCAL_NAME, "BindXMM", "distinct_file")
 
+    # The product typo request folds ASCII case. Preserve the historical
+    # case-sensitive oracle for old captures and bind new labels separately.
+    folded = _variant_oracle(
+        tmp_path / "folded",
+        {"case.go": b"package sample\nfunc DELETE() {}\nfunc deleteX() {}\n"},
+    )
+    assert folded.matched_names(so.GO_NAME_OSA1, "dlete") == []
+    assert folded.matched_names(so.GO_NAME_OSA1_CASEFOLD, "dlete") == ["DELETE"]
+    assert folded.matched_names(so.GO_NAME_OSA1_CASEFOLD, "delete") == ["deleteX"]
+    for invalid in ("ab", "2lete", "d" * 65):
+        with pytest.raises(so.SourceOracleError, match="product-admissible"):
+            folded.expected_rows(so.GO_NAME_OSA1_CASEFOLD, invalid, "distinct_file")
+
 
 def test_go_no_answer_requires_a_complete_parse(tmp_path):
     so = ev.source_oracle
@@ -842,7 +855,7 @@ def test_identifier_robustness_builder_guards_typo_infix_and_no_answer(tmp_path,
         if lane == "typo" and name == "BindJSON":
             return "ReadJSON", {"operation": "forced"}  # another declaration: collision
         if lane == "typo" and name == "BindXML":
-            return "2indXML", {"operation": "forced"}  # digit-leading fragment
+            return "2indXML", {"operation": "forced"}  # product request rejects digit-leading
         return original(lane, name, seed, family, attempt)
 
     monkeypatch.setattr(irs, "propose", forced)
@@ -852,7 +865,8 @@ def test_identifier_robustness_builder_guards_typo_infix_and_no_answer(tmp_path,
     _suites, census = irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=6, no_answer=2)
     typo = {r["base_query"]: r for r in census["lanes"]["typo"]["records"]}
     assert typo["BindJSON"]["status"] == "excluded_exact_name_collision"
-    assert typo["BindXML"]["status"] == "admitted"
+    assert typo["BindXML"]["status"] == "ineligible"
+    assert typo["BindXML"]["generation"]["ineligible"] == "outside_folded_typo_request"
     probe = census["lanes"]["no-answer"]["records"][0]
     # "BindYAML" appears only in a comment: no declaration, one content file.
     assert probe["answer_class"] == "no_answer"

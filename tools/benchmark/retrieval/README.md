@@ -213,12 +213,17 @@ reject them. Reports remain `diagnostic_unqualified`.
 Identifier-robustness variants use four more contracts over the same indexed Go
 declaration set: `go_declaration_name_prefix_v1` and
 `go_declaration_name_infix_v1` (case-sensitive name text, at least three
-characters), `go_declaration_name_osa1_v1` (every other name at optimal
-string alignment distance one; an edited query that is itself a declaration
-name is an exact-name collision, not a typo), and
+characters), `go_declaration_name_osa1_v1` (historical case-sensitive labels),
+`go_declaration_name_osa1_casefold_v1` (ASCII declaration names at folded
+optimal string alignment distance one, excluding folded exact-name collisions),
+and
 `go_declaration_name_components_v1` (space-separated lowercase components
 matched as a contiguous run of `camel-snake-v1` components; non-ASCII names
-have no components). `identifier_robustness_suite.py` builds one suite per
+have no components). The generated `typo` lane uses the folded contract to
+match the product's folded `typo:` request; historical suites retain their
+case-sensitive contract. Its distinct-file judgment measures whether the
+declaration's file was returned, not whether the returned preview localized
+that declaration. `identifier_robustness_suite.py` builds one suite per
 lane from an unannotated frozen suite and a seed, with a census of strata,
 ambiguity classes, shortfalls and no-answer content presence:
 

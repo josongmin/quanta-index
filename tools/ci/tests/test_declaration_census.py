@@ -436,7 +436,7 @@ def test_python_robustness_suite_is_audited_and_evaluator_bound(tmp_path):
         "prefix": "python_declaration_name_prefix_v1",
         "infix": "python_declaration_name_infix_v1",
         "components": "python_declaration_name_components_v1",
-        "typo": "python_declaration_name_osa1_v1",
+        "typo": "python_declaration_name_osa1_casefold_v1",
         "no-answer": "python_exact_local_name_v1",
     }
     for lane, (suite, _pack) in first.items():

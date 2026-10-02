@@ -38,7 +38,7 @@ LANE_VARIANTS = {
     "prefix": ("PFX", "prefix"),
     "infix": ("IFX", "infix"),
     "components": ("CMP", "components"),
-    "typo": ("TYP", "osa1"),
+    "typo": ("TYP", "osa1_casefold"),
     "no-answer": ("NOA", "exact"),
 }
 LANGUAGES = tuple(source_oracle.DECLARATION_CENSUS)
@@ -309,6 +309,7 @@ def derive(
         )
     declared = oracle.declared_names(language)
     declared_set = set(declared)
+    declared_folded = {name.casefold() for name in declared}
     generated = generated_files(files, language)
     base_gold = {
         t["task_id"]: oracle.expected_rows(exact, t["query"], "distinct_file") for t in tasks
@@ -344,7 +345,8 @@ def derive(
     family_prefix = "gin" if language == "go" else language
     for lane, (code, contract) in language_lanes.items():
         suite = copy.deepcopy(baseline)
-        suite["suite_id"] = f"{baseline['suite_id']}-robustness-{lane}-seed{seed}"
+        suffix = "typo-casefold-v1" if lane == "typo" else lane
+        suite["suite_id"] = f"{baseline['suite_id']}-robustness-{suffix}-seed{seed}"
         suite["routes"] = ["lexical"]
         suite["diagnostic_policy"] = evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
         pool, rows, records = _Pool(), [], []
@@ -370,6 +372,14 @@ def derive(
                         continue
                     if query is None:
                         break
+                    if lane == "typo" and (
+                        source_oracle.IDENTIFIER.fullmatch(query) is None
+                        or not 3 <= len(query) <= 64
+                        or query.casefold() == task["query"].casefold()
+                    ):
+                        rejected.append("outside_folded_typo_request")
+                        query = None
+                        continue
                     meta["attempt"] = attempt
                     reason = pool.conflict(query)
                     if reason is None:
@@ -405,13 +415,17 @@ def derive(
             if (
                 lane == "typo"
                 and source_oracle.IDENTIFIER.fullmatch(query)
-                and oracle.expected_rows(exact, query, "distinct_file")
+                and query.casefold() in declared_folded
             ):
                 record["status"] = "excluded_exact_name_collision"
                 records.append(record)
                 continue
             judgments = oracle.expected_rows(contract, query, "distinct_file")
             names = oracle.matched_names(contract, query)
+            if lane == "typo" and base is not None and base["query"] not in names:
+                record["status"] = "excluded_base_name_not_gold"
+                records.append(record)
+                continue
             record.update(
                 status="admitted",
                 answer_class="no_answer"
@@ -422,7 +436,9 @@ def derive(
                 matched_names=len(names),
                 gold_files=len(judgments),
                 # A variant that is itself another declaration's exact name.
-                query_is_declaration_name=query in declared_set,
+                query_is_declaration_name=(
+                    query.casefold() in declared_folded if lane == "typo" else query in declared_set
+                ),
                 base_name_in_gold=None if base is None else base["query"] in names,
             )
             if lane == "no-answer":
@@ -579,8 +595,8 @@ def _typo_content_absence(
     oracle = source_oracle.SourceOracleIndex(files, queries)
     suite = copy.deepcopy(source_suite)
     suite["suite_id"] = source_suite["suite_id"].replace(
-        f"-robustness-typo-seed{seed}",
-        f"-robustness-{TYPO_CONTENT_ABSENCE[0]}-seed{seed}",
+        f"-robustness-typo-casefold-v1-seed{seed}",
+        f"-robustness-{TYPO_CONTENT_ABSENCE[0]}-casefold-source-v1-seed{seed}",
     )
     evaluator.require(suite["suite_id"] != source_suite["suite_id"], "suite ID was not derived")
     rows, mapping, excluded = [], [], []
@@ -686,7 +702,7 @@ def write(
             "sample_size": sample_size,
             "no_answer": no_answer,
             "max_attempts": MAX_ATTEMPTS,
-            "case_policy": "case_sensitive_except_components_lowercased",
+            "case_policy": "typo_casefold_other_name_variants_case_sensitive_except_components",
             "component_tokenizer": source_oracle.COMPONENT_TOKENIZER,
         },
         "tool_files": tool_files,

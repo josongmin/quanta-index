@@ -39,16 +39,18 @@ GO_NAME_PREFIX = "go_declaration_name_prefix_v1"
 GO_NAME_INFIX = "go_declaration_name_infix_v1"
 GO_NAME_COMPONENTS = "go_declaration_name_components_v1"
 GO_NAME_OSA1 = "go_declaration_name_osa1_v1"
+GO_NAME_OSA1_CASEFOLD = "go_declaration_name_osa1_casefold_v1"
 # Declaration-name contracts by language. Go keeps its v3 producer-mirroring
 # census; the other languages use declaration_census_v1 kinds below. A name is
 # the declared token as written (`r#match`, `#private`), never a normalized form.
-NAME_VARIANTS = ("exact", "prefix", "infix", "components", "osa1")
+NAME_VARIANTS = ("exact", "prefix", "infix", "components", "osa1", "osa1_casefold")
 NAME_CONTRACTS: dict[str, tuple[str, str]] = {
     GO_EXACT_LOCAL_NAME: ("go", "exact"),
     GO_NAME_PREFIX: ("go", "prefix"),
     GO_NAME_INFIX: ("go", "infix"),
     GO_NAME_COMPONENTS: ("go", "components"),
     GO_NAME_OSA1: ("go", "osa1"),
+    GO_NAME_OSA1_CASEFOLD: ("go", "osa1_casefold"),
 }
 for _language in ("rust", "python", "typescript", "javascript"):
     NAME_CONTRACTS[f"{_language}_exact_local_name_v1"] = (_language, "exact")
@@ -187,6 +189,12 @@ def _variant_matches(variant: str, query: str, name: str) -> bool:
         return any(have[i : i + len(wanted)] == wanted for i in range(len(have) - len(wanted) + 1))
     if variant == "osa1":
         return name != query and osa_distance_at_most_one(query, name)
+    if variant == "osa1_casefold":
+        return (
+            IDENTIFIER.fullmatch(name) is not None
+            and name.casefold() != query.casefold()
+            and osa_distance_at_most_one(query.casefold(), name.casefold())
+        )
     raise SourceOracleError("unsupported declaration-name variant contract")
 
 
@@ -217,10 +225,13 @@ def declaration_query_textually_excluded(raw: bytes, query: str, variant: str) -
     folded = raw.decode("utf-8", "replace").casefold()
     if variant == "components":
         return any(part not in folded for part in query.split(" "))
-    if variant == "osa1":
+    if variant in ("osa1", "osa1_casefold"):
         if not 1 < len(query) <= 64:
             return False
-        return _osa1_text_pattern(query).search(raw.decode("utf-8", "replace")) is None
+        text = raw.decode("utf-8", "replace")
+        if variant == "osa1_casefold":
+            text, query = text.casefold(), query.casefold()
+        return _osa1_text_pattern(query).search(text) is None
     raise SourceOracleError("unsupported declaration-name variant contract")
 
 
@@ -238,11 +249,15 @@ def _require_query(contract: str, query: Any) -> None:
         COMPONENT_QUERY
         if variant == "components"
         else FRAGMENT
-        if variant in ("prefix", "infix", "osa1")
+        if variant in ("prefix", "infix", "osa1", "osa1_casefold")
         else IDENTIFIER
     )
     if not isinstance(query, str) or pattern.fullmatch(query) is None:
         raise SourceOracleError("source oracle query does not fit its contract's query form")
+    if variant == "osa1_casefold" and (
+        IDENTIFIER.fullmatch(query) is None or not 3 <= len(query) <= 64
+    ):
+        raise SourceOracleError("folded typo oracle requires a product-admissible identifier")
     if variant in ("prefix", "infix") and len(query) < 3:
         raise SourceOracleError("prefix/infix oracle requires at least three characters")
 
