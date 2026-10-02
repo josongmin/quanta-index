@@ -670,18 +670,17 @@ def test_identifier_osa1_absence_rejects_all_single_edits(source_token):
     raw = f"// {source_token}\n".encode()
     oracle = so.SourceOracleIndex({"source.go": (raw, ev.digest(raw))}, {"load_json"})
     with pytest.raises(so.SourceOracleError, match="found a source token"):
-        oracle.expected_rows(
-            so.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, "load_json", "distinct_file"
-        )
+        oracle.expected_rows(so.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, "load_json", "distinct_file")
 
 
 def test_identifier_osa1_absence_is_content_only_and_rejects_invalid_unit():
     so = ev.source_oracle
     raw = b"// load_jzzn cafe\n"
     oracle = so.SourceOracleIndex({"load_json/source.go": (raw, ev.digest(raw))}, {"load_json"})
-    assert oracle.expected_rows(
-        so.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, "load_json", "distinct_file"
-    ) == []
+    assert (
+        oracle.expected_rows(so.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, "load_json", "distinct_file")
+        == []
+    )
     assert oracle.first_match(so.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, "load_json") is None
     with pytest.raises(so.SourceOracleError, match="unsupported"):
         oracle.expected_rows(so.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD, "load_json", "symbol")
@@ -752,6 +751,93 @@ def _robustness_baseline(tmp_path):
             }
         )
     return repo, baseline
+
+
+def test_typo_gold_partition_separates_intent_from_near_names_and_content():
+    from tools.benchmark.retrieval import source_oracle as so
+
+    files = {
+        "original.go": b"package p\nfunc render() {}\n",
+        "neighbor.go": b"package p\nfunc rendor() {}\n",
+        "mention.go": b"package p\n// render, rendor and rendar are mentioned\n",
+    }
+    oracle = so.SourceOracleIndex(
+        {path: (raw, ev.digest(raw)) for path, raw in files.items()}, {"render"}
+    )
+    partition = oracle.typo_gold_partition("go", "rendar", "render")
+    assert partition["intended_base_files"] == ["original.go"]
+    assert partition["near_declaration_names"] == ["render", "rendor"]
+    assert partition["near_declaration_files"] == ["neighbor.go", "original.go"]
+    assert partition["exact_content_collision_paths"] == ["mention.go"]
+    assert partition["user_intent_state"] == "unjudged"
+    with pytest.raises(so.SourceOracleError, match="not within one edit"):
+        oracle.typo_gold_partition("go", "rendar", "unrelated")
+
+
+def test_paired_typo_builder_emits_operation_and_stress_suites(tmp_path):
+    from tools.benchmark.retrieval import identifier_robustness_suite as irs
+
+    repo, baseline = _robustness_baseline(tmp_path)
+    first, census = irs.derive_paired_full(repo, baseline, seed=7)
+    again, other = irs.derive_paired_full(repo, baseline, seed=7)
+    assert ev.canonical(census) == ev.canonical(other)
+    assert {lane: ev.canonical(pair) for lane, pair in first.items()} == {
+        lane: ev.canonical(pair) for lane, pair in again.items()
+    }
+    assert set(first) == {
+        "clean",
+        *(f"typo-{op}" for op in (*irs.TYPO_OPERATIONS, *irs.STRESS_TYPO_LANES)),
+    }
+    assert len(first["clean"][0]["tasks"]) == 6
+    assert first["clean"][0]["routes"] == ["lexical", "semble-lexical-file"]
+    assert len(census["lanes"]["clean"]["records"]) == 6
+    assert all(
+        "near_name_collision" not in row["strata"]
+        for row in census["lanes"]["clean"]["records"]
+    )
+    assert all(
+        row["strata"]["length"] in {"short_1_6", "medium_7_16", "long_17_plus"}
+        for row in census["lanes"]["clean"]["records"]
+    )
+    clean_families = {row["query_family_id"] for row in first["clean"][0]["tasks"]}
+    for operation in (*irs.TYPO_OPERATIONS, *irs.STRESS_TYPO_LANES):
+        lane = f"typo-{operation}"
+        suite = first[lane][0]
+        assert suite["routes"] == ["lexical"]
+        assert suite["suite_id"].endswith(f"{lane}-casefold-v2-seed7")
+        assert {row["query_family_id"] for row in suite["tasks"]} <= clean_families
+        assert all(
+            row["evaluation_contract"]["request_mode"] == "explicit_osa1_typo"
+            for row in suite["tasks"]
+        )
+        assert all(
+            row["source_partition"]["user_intent_state"] == "unjudged"
+            for row in census["lanes"][lane]["records"]
+            if row["status"] == "admitted"
+        )
+
+
+def test_stress_typo_generators_are_deterministic_one_edit_and_boundary_scoped():
+    from tools.benchmark.retrieval import identifier_robustness_suite as irs
+    from tools.benchmark.retrieval import source_oracle as so
+
+    for lane, source in (
+        ("keyboard", "readContext"),
+        ("boundary", "readContext"),
+        ("boundary", "read_context"),
+    ):
+        first = irs.propose_stress_typo(lane, source, 7, "family", 0)
+        assert first == irs.propose_stress_typo(lane, source, 7, "family", 0)
+        candidate, metadata = first
+        assert candidate != source
+        assert so.IDENTIFIER.fullmatch(candidate)
+        assert so.osa_distance_at_most_one(source.casefold(), candidate.casefold())
+        assert metadata["operation"] in {
+            "keyboard_substitution",
+            "camel_boundary_transposition",
+            "snake_boundary_deletion",
+        }
+    assert irs.propose_stress_typo("boundary", "plain", 7, "family", 0)[0] is None
 
 
 def test_identifier_robustness_builder_is_deterministic_and_evaluator_bound(tmp_path):

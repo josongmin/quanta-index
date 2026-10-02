@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.benchmark.retrieval import evaluator, holdout_c4, source_oracle
+from tools.benchmark.retrieval import evaluator, gold_oracle, holdout_c4, query_plan, source_oracle
 from tools.ci.tests.test_corpus_binding import split_releases  # noqa: F401
 
 
@@ -253,6 +253,66 @@ def test_c4_independent_name_variants(tmp_path, monkeypatch, intent, query, name
     assert report["selected"] == 1
     assert source_oracle.NAME_CONTRACTS[report["relevance_contract"]] == ("go", variant)
     assert suite["tasks"][0]["query"] == pack["tasks"][0]["query"] == query
+    expected_policy = "code_search_file"
+    assert report["execution_policy"] == expected_policy
+    assert suite["suite_id"].endswith(expected_policy.replace("_", "-"))
+    assert query_plan.plan_lexical_request(expected_policy, query) == query
+
+
+def test_c4_casefold_typo_binds_intended_name_and_request_mode(tmp_path, monkeypatch):
+    release, capsule, checkout = _fixture(tmp_path, monkeypatch)
+    gold = holdout_c4._read(capsule / "gold.json")
+    blind = holdout_c4._read(capsule / "blind.json")
+    for payload in (gold, blind):
+        payload["tasks"][0].update(
+            intent="declaration_name_osa1_casefold",
+            query="Alphb",
+            case_semantics="casefold",
+        )
+    gold["tasks"][0].update(
+        intended_name="Alpha",
+        near_declaration_state="complete",
+        near_declaration_names=["Alpha"],
+        near_declaration_files=["main.go"],
+        exact_collision_names=[],
+        exact_collision_files=[],
+    )
+    _resign(capsule, "gold.json", gold)
+    _resign(capsule, "blind.json", blind)
+    suite, pack, report = holdout_c4.derive(
+        release, capsule, checkout, "declaration_name_osa1_casefold"
+    )
+    task = suite["tasks"][0]
+    assert task["query"] == pack["tasks"][0]["query"] == "Alphb"
+    assert task["intended_name"] == "Alpha"
+    assert task["source_oracle"]["contract"] == "go_exact_local_name_v3"
+    assert task["evaluation_contract"]["request_mode"] == "explicit_osa1_typo"
+    assert report["execution_policy"] == "code_search_typo_file"
+    assert (
+        query_plan.plan_lexical_request(report["execution_policy"], task["query"]) == "typo:Alphb"
+    )
+
+
+def test_c4_casefold_typo_rejects_false_near_name_metadata(tmp_path, monkeypatch):
+    release, capsule, checkout = _fixture(tmp_path, monkeypatch)
+    gold = holdout_c4._read(capsule / "gold.json")
+    blind = holdout_c4._read(capsule / "blind.json")
+    for payload in (gold, blind):
+        payload["tasks"][0].update(
+            intent="declaration_name_osa1_casefold",
+            query="Alphb",
+            case_semantics="casefold",
+        )
+    gold["tasks"][0].update(
+        intended_name="Alpha",
+        near_declaration_state="complete",
+        near_declaration_names=["Alpha", "Alphi"],
+        exact_collision_names=[],
+    )
+    _resign(capsule, "gold.json", gold)
+    _resign(capsule, "blind.json", blind)
+    with pytest.raises(ValueError, match="ambiguity metadata differs from source oracle"):
+        holdout_c4.derive(release, capsule, checkout, "declaration_name_osa1_casefold")
 
 
 def test_c4_excludes_negative_with_default_content_or_path_match(tmp_path, monkeypatch):
@@ -551,13 +611,7 @@ def test_c4_matrix_has_independent_cell_inventory_and_validates_once(tmp_path, m
     assert [(cell["repository"], cell["intent"]) for cell in matrix["cells"]] == [
         (name, intent)
         for name in ("repo_a", "repo_b")
-        for intent in (
-            "declaration_name_components",
-            "declaration_name_exact",
-            "declaration_name_infix",
-            "declaration_name_osa1",
-            "declaration_name_prefix",
-        )
+        for intent in sorted(gold_oracle.DECLARATION_INTENTS)
     ]
     by_key = {(cell["repository"], cell["intent"]): cell for cell in matrix["cells"]}
     admitted = by_key["repo_a", "declaration_name_exact"]
@@ -571,6 +625,7 @@ def test_c4_matrix_has_independent_cell_inventory_and_validates_once(tmp_path, m
         {"task_id": "repo_b.exact.001", "reason": "unjudged_or_unsupported"}
     ]
     assert by_key["repo_a", "declaration_name_prefix"]["reason"] == "no_tasks_for_intent"
+    assert by_key["repo_a", "declaration_name_osa1_casefold"]["status"] == "no_admission_diagnostic"
     assert matrix["product_capture"] is False
     assert matrix["qualified_default_search_conformance"] is False
     assert matrix["release_document_sha256"] == holdout_c4.digest_bytes(
@@ -651,7 +706,7 @@ def test_c4_matrix_records_unsupported_language_cells(tmp_path, monkeypatch):
     (release / "release.json").write_bytes(holdout_c4._raw(document))
     matrix = holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
     rows = [cell for cell in matrix["cells"] if cell["repository"] == "repo_b"]
-    assert len(rows) == 5
+    assert len(rows) == len(gold_oracle.DECLARATION_INTENTS)
     assert {cell["reason"] for cell in rows} == {"unsupported_language_intent"}
     assert all(cell["status"] == "no_admission_diagnostic" for cell in rows)
     (capsules / "repo_b" / "blind.json").write_bytes(b"{}\n")
@@ -729,7 +784,7 @@ def test_c4_matrix_optimized_replay_matches_canonical_validator(
     monkeypatch.setattr(holdout_c4.corpus_binding, "_validated_split_manifest", counted)
     matrix = holdout_c4.derive_matrix(release, capsules, checkout_root, expected_repositories=1)
     assert len(calls) == 2  # Initial validation and final drift check.
-    assert len(matrix["cells"]) == 5
+    assert len(matrix["cells"]) == len(gold_oracle.DECLARATION_INTENTS)
     assert {cell["repository"] for cell in matrix["cells"]} == {"beta"}
     exact = next(cell for cell in matrix["cells"] if cell["intent"] == "declaration_name_exact")
     assert {row["reason"] for row in exact["excluded"]} >= {"query_near_duplicate"}

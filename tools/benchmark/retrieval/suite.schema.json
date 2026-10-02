@@ -41,9 +41,14 @@
       "if": {"properties": {"tasks": {"contains": {"anyOf": [
         {"required": ["query_intent"]}, {"required": ["label_review"]},
         {"required": ["file_judgments"]}, {"required": ["declaration_judgments"]},
-        {"required": ["judgment_policy"]}, {"required": ["source_oracle"]}
+        {"required": ["judgment_policy"]}, {"required": ["source_oracle"]},
+        {"required": ["evaluation_contract"]}
       ]}}}},
       "then": {"required": ["diagnostic_policy"]}
+    },
+    {
+      "if": {"properties": {"tasks": {"contains": {"required": ["evaluation_contract"]}}}},
+      "then": {"properties": {"tasks": {"items": {"required": ["evaluation_contract"]}}}}
     }
   ],
   "$defs": {
@@ -138,6 +143,11 @@
           "enum": ["bare_symbol", "semantic_intent", "exact_content"],
           "description": "Suite-author declaration. This is omitted from the blinded runner pack."
         },
+        "intended_name": {
+          "type": "string", "pattern": "^[A-Za-z_][A-Za-z_0-9]*$",
+          "description": "Generator base declaration name for a noisy submitted query; exact-name source oracle is independently checked. This is blinded from the runner."
+        },
+        "evaluation_contract": {"$ref": "#/$defs/evaluation_contract"},
         "label_review": {"$ref": "#/$defs/label_review"},
         "judgment_policy": {"enum": ["unjudged_zero_v1", "complete_ranked_pool_v1", "source_oracle_complete_v1"]},
         "source_oracle": {"$ref": "#/$defs/source_oracle"},
@@ -168,9 +178,52 @@
               "then": {"required": ["file_judgments"], "not": {"required": ["declaration_judgments"]}}}
            ]
          }},
+        {"if": {"required": ["evaluation_contract"]},
+         "then": {
+           "required": ["query_intent", "judgment_policy"],
+           "allOf": [
+             {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "declaration_navigation"}}}}},
+              "then": {"required": ["declaration_judgments"], "not": {"required": ["file_judgments"]},
+                        "properties": {"query_intent": {"const": "bare_symbol"}, "source_oracle": {"properties": {"unit": {"const": "symbol"}, "contract": {"enum": [
+                          "go_exact_local_name_v3", "rust_exact_local_name_v1", "python_exact_local_name_v1",
+                          "typescript_exact_local_name_v1", "javascript_exact_local_name_v1"
+                        ]}}}}},
+              "else": {"required": ["file_judgments"], "not": {"required": ["declaration_judgments"]},
+                       "properties": {"source_oracle": {"properties": {"unit": {"const": "distinct_file"}}}}}},
+             {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "explicit_osa1_typo"}}}}},
+              "then": {"properties": {"query_intent": {"const": "bare_symbol"}}}}
+           ]
+         }},
+        {"if": {"required": ["intended_name"]},
+         "then": {
+           "required": ["evaluation_contract", "source_oracle"],
+           "properties": {
+             "query_intent": {"const": "bare_symbol"},
+             "evaluation_contract": {"properties": {"request_mode": {"enum": ["default_file_search", "explicit_osa1_typo"]}}},
+             "source_oracle": {"properties": {"contract": {"enum": [
+               "go_exact_local_name_v3", "rust_exact_local_name_v1", "python_exact_local_name_v1",
+               "typescript_exact_local_name_v1", "javascript_exact_local_name_v1"
+             ]}, "unit": {"const": "distinct_file"}}}
+           }
+         }},
         {"if": {"required": ["judgment_policy"], "properties": {"judgment_policy": {"const": "source_oracle_complete_v1"}}},
          "then": {"required": ["source_oracle"]}}
       ]
+    },
+    "evaluation_contract": {
+      "type": "object", "additionalProperties": false,
+      "required": ["request_mode", "gold_unit", "result_unit"],
+      "properties": {
+        "request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "declaration_navigation"]},
+        "gold_unit": {"enum": ["distinct_file", "symbol"]},
+        "result_unit": {"enum": ["distinct_file", "symbol"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"request_mode": {"const": "declaration_navigation"}}},
+         "then": {"properties": {"gold_unit": {"const": "symbol"}, "result_unit": {"const": "symbol"}}},
+         "else": {"properties": {"gold_unit": {"const": "distinct_file"}, "result_unit": {"const": "distinct_file"}}}}
+      ],
+      "description": "Declares request semantics and ranking units independently of source-oracle and execution-profile labels. One suite has one request mode; evaluator verifies the bound runner policy."
     },
     "source_oracle": {
       "type": "object", "additionalProperties": false,

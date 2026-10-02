@@ -14124,6 +14124,252 @@ def test_code_search_file_policy_binds_syntax_scores_and_file_unit(tmp_path):
         record_v3(repo, suite, forged_unit, suite_path, runner_path)
 
 
+@pytest.mark.parametrize(
+    ("policy", "mode"),
+    [
+        ("code_search_file", "default_file_search"),
+        ("code_search_typo_file", "explicit_osa1_typo"),
+    ],
+)
+def test_evaluation_contract_binds_file_request_gold_result_and_mrr(tmp_path, policy, mode):
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path, policy, reverse=True, queries=["alphaTwo", "alphaThree"]
+    )
+    for task in suite["tasks"]:
+        task["query_intent"] = "bare_symbol"
+        task["evaluation_contract"] = {
+            "request_mode": mode,
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+        task["file_judgments"][1]["grade"] = 0
+    for row in run["results"]:
+        row["score_evidence"] = "native_sdk_score_v1"
+        for index, candidate in enumerate(row["candidates"]):
+            candidate["score"] = float(len(row["candidates"]) - index)
+    _pack, run = _repack(repo, suite, run)
+    jsonschema.validate(suite, _load_schema("suite.schema.json"))
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    diagnostic = ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)
+    assert diagnostic["evaluation_contract"] == suite["tasks"][0]["evaluation_contract"]
+    scores = diagnostic["judgment_metrics"]["file_judgments"]["per_query"]
+    assert scores[0]["scores"]["mrr_at_10"] == 0.5
+    assert scores[0]["scores"]["hit_at_10"] == 1.0
+    assert scores[0]["scores"]["ndcg_at_10"] == pytest.approx(1 / math.log2(3))
+    with pytest.raises(ev.EvidenceError, match="context metrics are undefined"):
+        ev.evaluate(loaded_suite, pack, loaded_run, "lexical", "hybrid")
+
+    wrong_policy = copy.deepcopy(suite)
+    alternate = "explicit_osa1_typo" if mode == "default_file_search" else "default_file_search"
+    for task in wrong_policy["tasks"]:
+        task["evaluation_contract"]["request_mode"] = alternate
+    _pack, wrong_run = _repack(repo, wrong_policy, run)
+    with pytest.raises(ev.EvidenceError, match="request mode differs from bound product policy"):
+        record_v3(repo, wrong_policy, wrong_run, suite_path, runner_path)
+
+
+def test_default_file_contract_accepts_bound_semble_pair(tmp_path):
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path, "code_search_file", queries=["alphaTwo", "alphaThree"]
+    )
+    suite["routes"] = ["lexical", "semble-lexical-file"]
+    for task in suite["tasks"]:
+        task["query_intent"] = "bare_symbol"
+        task["evaluation_contract"] = {
+            "request_mode": "default_file_search",
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+    semble_capture = _v3_capture("semble", current=True)
+    semble_profile = semble_adapter.execution_profile("lexical-file", None)
+    semble_capture["execution_profile"] = semble_profile
+    semble_capture["execution_profile_sha256"] = ev.digest(ev.canonical(semble_profile))
+    run["captures"]["s0"] = semble_capture
+    run["route_provenance"]["semble-lexical-file"] = {"capture_id": "s0"}
+    for row in list(run["results"]):
+        row["score_evidence"] = "native_sdk_score_v1"
+        for rank, candidate in enumerate(row["candidates"]):
+            candidate["score"] = float(len(row["candidates"]) - rank)
+        baseline = copy.deepcopy(row)
+        baseline["route"] = "semble-lexical-file"
+        query_sha = next(
+            task["query_sha256"] for task in suite["tasks"] if task["task_id"] == row["task_id"]
+        )
+        baseline["query_identity"] = {
+            "original_query_sha256": query_sha,
+            "submitted_query_sha256": query_sha,
+        }
+        baseline["ordering"] = "score_desc_native_tiebreak"
+        baseline["score_evidence"] = "semble_bm25_score_v1"
+        baseline["file_collection"] = {
+            "indexed_chunks": 10,
+            "matched_chunks": len(baseline["candidates"]),
+            "matching_files": len(baseline["candidates"]),
+        }
+        for rank, candidate in enumerate(baseline["candidates"]):
+            candidate.pop("span_accounting", None)
+            candidate["tokens"] = len(ev.TOKEN_RE.findall((repo / candidate["path"]).read_text()))
+            candidate["score"] = float(len(baseline["candidates"]) - rank)
+        run["results"].append(baseline)
+    _pack, run = _repack(repo, suite, run)
+    record_v3(repo, suite, run, suite_path, runner_path)
+
+
+def test_evaluation_contract_rejects_partial_mixed_and_wrong_units(tmp_path):
+    repo, suite, _run, _suite_path, _runner_path = _file_projection_run(
+        tmp_path, "code_search_file", queries=["alphaTwo", "alphaThree"]
+    )
+    contract = {
+        "request_mode": "default_file_search",
+        "gold_unit": "distinct_file",
+        "result_unit": "distinct_file",
+    }
+    for task in suite["tasks"]:
+        task["query_intent"] = "bare_symbol"
+        task["evaluation_contract"] = copy.deepcopy(contract)
+    schema = _load_schema("suite.schema.json")
+    jsonschema.validate(suite, schema)
+    ev.validate_suite(repo, suite)
+    for field, value, match in (
+        ("gold_unit", "symbol", "unit mismatch"),
+        ("result_unit", "symbol", "unit mismatch"),
+        ("request_mode", "declaration_navigation", "unit mismatch"),
+    ):
+        changed = copy.deepcopy(suite)
+        changed["tasks"][0]["evaluation_contract"][field] = value
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(changed, schema)
+        with pytest.raises(ev.EvidenceError, match=match):
+            ev.validate_suite(repo, changed)
+    partial = copy.deepcopy(suite)
+    partial["tasks"][1].pop("evaluation_contract")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(partial, schema)
+    with pytest.raises(ev.EvidenceError, match="partial evaluation_contract coverage"):
+        ev.validate_suite(repo, partial)
+    mixed = copy.deepcopy(suite)
+    mixed["tasks"][1]["evaluation_contract"]["request_mode"] = "explicit_osa1_typo"
+    jsonschema.validate(mixed, schema)
+    with pytest.raises(ev.EvidenceError, match="mixed request modes"):
+        ev.validate_suite(repo, mixed)
+
+
+def test_intended_name_source_oracle_uses_base_declaration_not_noisy_query(tmp_path):
+    files = {
+        "a.go": b"package demo\ntype Param struct{}\n",
+        "b.go": b"package demo\nfunc Next() {}\n",
+    }
+    repo, commit = _write_repo(tmp_path, files)
+    universe = [
+        {"path": path, "file_sha256": ev.digest(raw)} for path, raw in sorted(files.items())
+    ]
+    task = {
+        "task_id": "T1",
+        "split": "eval",
+        "query": "Pram",
+        "query_sha256": ev.digest(b"Pram"),
+        "query_family_id": "Param",
+        "query_intent": "bare_symbol",
+        "intended_name": "Param",
+        "evaluation_contract": {
+            "request_mode": "explicit_osa1_typo",
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        },
+        "answerable": True,
+        "gold": [_v3_block(files, "a.go", 2, 2, grade=3)],
+        "judgment_policy": ev.SOURCE_ORACLE_JUDGMENT_POLICY,
+        "source_oracle": {"contract": "go_exact_local_name_v3", "unit": "distinct_file"},
+        "file_judgments": [{"path": "a.go", "file_sha256": ev.digest(files["a.go"]), "grade": 3}],
+    }
+    suite = {
+        "schema_version": 3,
+        "suite_id": "intended-name-fixture",
+        "repository_commit": commit,
+        "comparison_contract": _v3_contract(),
+        "routes": ["lexical"],
+        "file_universe": universe,
+        "file_universe_digest": ev.universe_digest(universe),
+        "diagnostic_policy": ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
+        "tasks": [task],
+    }
+    schema = _load_schema("suite.schema.json")
+    jsonschema.validate(suite, schema)
+    _, pack, _ = ev.validate_suite(repo, suite)
+    assert "Pram" in str(pack) and "Param" not in str(pack)
+    for field, value, error in (
+        ("intended_name", "Next", "one casefold OSA edit"),
+        ("query", "Param", "one casefold OSA edit"),
+    ):
+        bad = copy.deepcopy(suite)
+        bad["tasks"][0][field] = value
+        if field == "query":
+            bad["tasks"][0]["query_sha256"] = ev.digest(value.encode())
+        with pytest.raises(ev.EvidenceError, match=error):
+            ev.validate_suite(repo, bad)
+    bad_gold = copy.deepcopy(suite)
+    bad_gold["tasks"][0]["file_judgments"][0]["path"] = "b.go"
+    bad_gold["tasks"][0]["file_judgments"][0]["file_sha256"] = ev.digest(files["b.go"])
+    with pytest.raises(ev.EvidenceError, match="source oracle judgments differ"):
+        ev.validate_suite(repo, bad_gold)
+    collision = copy.deepcopy(suite)
+    collision["tasks"][0]["query"] = "Next"
+    collision["tasks"][0]["query_sha256"] = ev.digest(b"Next")
+    with pytest.raises(ev.EvidenceError, match="one casefold OSA edit"):
+        ev.validate_suite(repo, collision)
+    collision_files = {**files, "c.go": b"package demo\n// Pram typo in content.\n"}
+    collision_repo, collision_commit = _write_repo(tmp_path / "collision", collision_files)
+    collision_suite = copy.deepcopy(suite)
+    collision_suite["repository_commit"] = collision_commit
+    collision_suite["file_universe"] = [
+        {"path": path, "file_sha256": ev.digest(raw)}
+        for path, raw in sorted(collision_files.items())
+    ]
+    collision_suite["file_universe_digest"] = ev.universe_digest(collision_suite["file_universe"])
+    with pytest.raises(ev.EvidenceError, match="collides with a source identifier"):
+        ev.validate_suite(collision_repo, collision_suite)
+
+
+def test_declaration_navigation_contract_requires_symbol_policy(tmp_path):
+    repo, suite, run, suite_path, runner_path, _files = _exact_symbol_record_fixture(tmp_path)
+    suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    for task, row in zip(suite["tasks"], run["results"], strict=True):
+        task["query_intent"] = "bare_symbol"
+        task["evaluation_contract"] = {
+            "request_mode": "declaration_navigation",
+            "gold_unit": "symbol",
+            "result_unit": "symbol",
+        }
+        task["judgment_policy"] = ev.UNJUDGED_POLICY
+        task["label_review"] = {
+            "assessment": "reviewed_unambiguous",
+            "reviewer_id": "fixture-reviewer",
+            "evidence_sha256": ev.digest(b"declaration fixture"),
+        }
+        task["declaration_judgments"] = [
+            {
+                "path": item["path"],
+                "file_sha256": item["file_sha256"],
+                "start_byte": item["start_byte"],
+                "end_byte": item["end_byte"],
+                "grade": 3,
+            }
+            for item in row["candidates"]
+        ]
+        row["rank_unit"] = "symbol"
+    _pack, run = _repack(repo, suite, run)
+    jsonschema.validate(suite, _load_schema("suite.schema.json"))
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    assert (
+        ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)["evaluation_contract"]["result_unit"]
+        == "symbol"
+    )
+    wrong = copy.deepcopy(run)
+    wrong["results"][0]["rank_unit"] = "distinct_file"
+    with pytest.raises(ev.EvidenceError, match="result_unit mismatch"):
+        record_v3(repo, suite, wrong, suite_path, runner_path)
+
+
 def test_exact_content_file_policy_binds_request_unit_score_and_source(tmp_path):
     policy = "code_search_exact_content_file"
     raw = 'say("can\'t\\skip")'

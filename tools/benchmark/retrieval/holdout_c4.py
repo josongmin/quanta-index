@@ -27,6 +27,15 @@ from tools.benchmark.retrieval import evaluator, gold_oracle, query_plan, source
 MATRIX_INTENTS = tuple(sorted(gold_oracle.DECLARATION_INTENTS))
 
 
+def _execution_policy(intent: str) -> str:
+    """Only intended-name typo gold is eligible for the explicit typo mode."""
+    return (
+        "code_search_typo_file"
+        if intent == "declaration_name_osa1_casefold"
+        else "code_search_file"
+    )
+
+
 @dataclass(frozen=True)
 class _Prepared:
     release: Path
@@ -200,8 +209,12 @@ def _derive_prepared(
     universe = manifest["files"]
     name = selection["repository"]
     language = row["recipe"]["language"]
+    execution_policy = _execution_policy(intent)
+    intended_typo = intent == "declaration_name_osa1_casefold"
     try:
-        contract = gold_oracle._name_contract(language, intent)
+        contract = gold_oracle._name_contract(
+            language, "declaration_name_exact" if intended_typo else intent
+        )
     except source_oracle.SourceOracleError as exc:
         raise ValueError("C4 has no declaration oracle for selected language") from exc
     audit = gold.get("census_audits", {}).get(language, {})
@@ -243,6 +256,20 @@ def _derive_prepared(
         if negative_queries
         else None
     )
+    typo_names = {
+        name
+        for task in gold_tasks
+        if intended_typo and isinstance(task, dict) and task.get("intent") == intent
+        for name in (task.get("query"), task.get("intended_name"))
+        if isinstance(name, str)
+    }
+    typo_oracle = (
+        source_oracle.SourceOracleIndex(
+            {path: (raw, source.file(path)[2]) for path, raw in files.items()}, typo_names
+        )
+        if typo_names
+        else None
+    )
     for task, public in zip(gold_tasks, blind_tasks, strict=True):
         if not isinstance(task, dict) or not isinstance(public, dict):
             raise ValueError("C4 task row is malformed")
@@ -257,12 +284,36 @@ def _derive_prepared(
             or task.get("unsupported") != []
             or type(task.get("answerable")) is not bool
             or task.get("language") != language
-            or task.get("case_semantics") != "sensitive"
+            or task.get("case_semantics") != ("casefold" if intended_typo else "sensitive")
             or task.get("normalization") != "none_raw_utf8"
             or task.get("scope_prefix") != ""
         ):
             excluded.append({"task_id": task["task_id"], "reason": "unjudged_or_unsupported"})
             continue
+        if intended_typo:
+            if not task["answerable"]:
+                excluded.append({"task_id": task["task_id"], "reason": "typo_no_answer_unjudged"})
+                continue
+            try:
+                partition = typo_oracle.typo_gold_partition(
+                    language, task["query"], task["intended_name"]
+                )
+            except source_oracle.SourceOracleError as exc:
+                raise ValueError("C4 typo target differs from source oracle") from exc
+            if (
+                task.get("near_declaration_names") != partition["near_declaration_names"]
+                or task.get("near_declaration_files") != partition["near_declaration_files"]
+            ):
+                raise ValueError("C4 typo ambiguity metadata differs from source oracle")
+            if (
+                task.get("near_declaration_state") != "complete"
+                or partition["other_near_declaration_names"]
+                or partition["exact_content_collision_paths"]
+                or partition["query_is_declaration_name"]
+                or task.get("exact_collision_names") != []
+            ):
+                excluded.append({"task_id": task["task_id"], "reason": "ambiguous_typo_target"})
+                continue
         census_rows = task.get("census_text_excluded")
         if not isinstance(census_rows, list) or any(
             not isinstance(row, dict)
@@ -294,7 +345,7 @@ def _derive_prepared(
                 )
                 continue
         try:
-            query_plan.plan_lexical_request("code_search_file", task["query"])
+            query_plan.plan_lexical_request(execution_policy, task["query"])
         except query_plan.QueryPlanError:
             excluded.append({"task_id": task["task_id"], "reason": "query_not_admitted"})
             continue
@@ -311,7 +362,9 @@ def _derive_prepared(
         if excluded_rows:
             proved_exclusion_tasks += 1
         if refused_selected_paths:
-            declaration_exclusions[(contract, task["query"])] = set(refused_selected_paths)
+            declaration_exclusions[
+                (contract, task["intended_name"] if intended_typo else task["query"])
+            ] = set(refused_selected_paths)
     if not selected and not allow_empty:
         raise ValueError("C4 has no admitted declaration task")
     if not selected:
@@ -334,15 +387,22 @@ def _derive_prepared(
         )
     oracle = source_oracle.SourceOracleIndex(
         {path: (raw, source.file(path)[2]) for path, raw in files.items()},
-        {task["query"] for task in selected},
+        {
+            name
+            for task in selected
+            for name in (
+                (task["query"], task["intended_name"]) if intended_typo else (task["query"],)
+            )
+        },
         declaration_exclusions=declaration_exclusions,
     )
     rows = []
     for task in selected:
+        oracle_query = task["intended_name"] if intended_typo else task["query"]
         observed = {
             (label["path"], label["start_byte"], label["end_byte"]) for label in task["labels"]
         }
-        expected = set(oracle.declaration_name_spans(contract, task["query"]))
+        expected = set(oracle.declaration_name_spans(contract, oracle_query))
         if observed != expected or task["answerable"] != bool(expected):
             raise ValueError(f"C4 declaration labels differ from source oracle: {task['task_id']}")
         for label in task["labels"]:
@@ -351,30 +411,37 @@ def _derive_prepared(
         score_contract = (
             contract if task["answerable"] else source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD
         )
-        judgments = oracle.expected_rows(score_contract, task["query"], "distinct_file")
+        judgments = oracle.expected_rows(score_contract, oracle_query, "distinct_file")
         source_contract = {"contract": score_contract, "unit": "distinct_file"}
-        paths = sorted(declaration_exclusions.get((contract, task["query"]), set()))
+        paths = sorted(declaration_exclusions.get((contract, oracle_query), set()))
         if paths and task["answerable"]:
             source_contract["declaration_exclusions"] = paths
-        rows.append(
-            {
-                "task_id": task["task_id"],
-                "query": task["query"],
-                "query_sha256": evaluator.digest(task["query"].encode()),
-                "query_family_id": task["query_family_id"],
-                "split": "eval",
-                "category": task["intent"],
-                "query_intent": "bare_symbol",
-                "source_oracle": source_contract,
-                "judgment_policy": evaluator.SOURCE_ORACLE_JUDGMENT_POLICY,
-                "file_judgments": judgments,
-                "gold": evaluator.source_oracle_gold(source, oracle, score_contract, task["query"]),
-                "answerable": bool(judgments),
+        row = {
+            "task_id": task["task_id"],
+            "query": task["query"],
+            "query_sha256": evaluator.digest(task["query"].encode()),
+            "query_family_id": task["query_family_id"],
+            "split": "eval",
+            "category": task["intent"],
+            "query_intent": "bare_symbol",
+            "source_oracle": source_contract,
+            "judgment_policy": evaluator.SOURCE_ORACLE_JUDGMENT_POLICY,
+            "file_judgments": judgments,
+            "gold": evaluator.source_oracle_gold(source, oracle, score_contract, oracle_query),
+            "answerable": bool(judgments),
+        }
+        if intended_typo and task["answerable"]:
+            row["intended_name"] = oracle_query
+        if intended_typo:
+            row["evaluation_contract"] = {
+                "request_mode": query_plan.EXPLICIT_OSA1_TYPO,
+                "gold_unit": "distinct_file",
+                "result_unit": "distinct_file",
             }
-        )
+        rows.append(row)
     suite = {
         "schema_version": evaluator.SCHEMA_VERSION,
-        "suite_id": f"{name}-{manifest['repository_commit'][:8]}-{intent}-code-search-file",
+        "suite_id": f"{name}-{manifest['repository_commit'][:8]}-{intent}-{execution_policy.replace('_', '-')}",
         "repository_commit": manifest["repository_commit"],
         "comparison_contract": {
             "top_k": 10,
@@ -417,10 +484,14 @@ def _derive_prepared(
             ],
             "selected_tasks_with_proved_exclusions": proved_exclusion_tasks,
             "relevance_contract": contract,
-            "execution_policy": "code_search_file",
+            "execution_policy": execution_policy,
             "semantic_relation": "declaration_target_file_diagnostic_only",
             "case_semantics_equivalent": False,
-            "negative_control": "single_term_absent_from_folded_content_and_path",
+            "negative_control": (
+                "excluded_unjudged"
+                if intended_typo
+                else "single_term_absent_from_folded_content_and_path"
+            ),
             "qualified_default_search_conformance": False,
             "gold_capsule_identity_sha256": prepared.identity_sha256,
             "binding": binding,

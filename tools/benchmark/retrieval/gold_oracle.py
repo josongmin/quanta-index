@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from collections import defaultdict
 from pathlib import Path
 
 from tree_sitter_language_pack import get_parser
@@ -64,6 +65,7 @@ DECLARATION_INTENTS = {
     "declaration_name_infix": "infix",
     "declaration_name_components": "components",
     "declaration_name_osa1": "osa1",
+    "declaration_name_osa1_casefold": "osa1_casefold",
 }
 INTENTS = frozenset({"literal_utf8_exact", "named_function_declaration", *DECLARATION_INTENTS})
 ID = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\Z")
@@ -128,11 +130,18 @@ def validate_recipe(recipe: object) -> dict:
     if (
         type(version) is not int
         or version not in RECIPE_FIELDS
-        or set(recipe) != RECIPE_FIELDS[version]
+        or set(recipe)
+        not in (
+            (RECIPE_FIELDS[version], RECIPE_FIELDS[version] | {"checker_identity"})
+            if version == 2
+            else (RECIPE_FIELDS[version],)
+        )
         or not isinstance(recipe["tasks"], list)
         or not (2 if version == 1 else 1) <= len(recipe["tasks"]) <= MAX_TASKS
     ):
         raise EvidenceError("gold recipe must have bounded schema v1 or v2 tasks")
+    if "checker_identity" in recipe and not isinstance(recipe["checker_identity"], dict):
+        raise EvidenceError("gold recipe checker identity must be a language mapping")
     if version == 2 and (
         recipe["split"] not in SPLITS
         or not isinstance(recipe["split_manifest_sha256"], str)
@@ -146,7 +155,11 @@ def validate_recipe(recipe: object) -> dict:
     families: dict[str, str] = {}
     splits: set[str] = set()
     for task in recipe["tasks"]:
-        if not isinstance(task, dict) or set(task) != task_fields:
+        intended_typo = (
+            isinstance(task, dict) and task.get("intent") == "declaration_name_osa1_casefold"
+        )
+        expected_fields = task_fields | ({"intended_name"} if intended_typo else set())
+        if not isinstance(task, dict) or set(task) != expected_fields:
             raise EvidenceError("gold recipe task has missing or unknown fields")
         task_id, family = task["task_id"], task["query_family_id"]
         split = task["split"] if version == 1 else recipe["split"]
@@ -178,6 +191,23 @@ def validate_recipe(recipe: object) -> dict:
                 raise EvidenceError(
                     "gold task has unsupported or ambiguous query semantics"
                 ) from error
+        if intended_typo:
+            intended_name = task["intended_name"]
+            try:
+                source_oracle._require_query(
+                    _name_contract(language, "declaration_name_exact"), intended_name
+                )
+            except (source_oracle.SourceOracleError, TypeError) as error:
+                raise EvidenceError(
+                    "typo intended name is not a valid exact declaration name"
+                ) from error
+            if (
+                query.casefold() == intended_name.casefold()
+                or not source_oracle.osa_distance_at_most_one(
+                    query.casefold(), intended_name.casefold()
+                )
+            ):
+                raise EvidenceError("typo query is not one casefolded edit from intended name")
         if (
             intent not in INTENTS
             or not isinstance(query, str)
@@ -192,7 +222,8 @@ def validate_recipe(recipe: object) -> dict:
             or (intent == "literal_utf8_exact" and language is not None)
             or (intent in DECLARATION_INTENTS and language not in source_oracle.DECLARATION_CENSUS)
             or not _path(task["scope_prefix"], allow_empty=True)
-            or task["case_semantics"] != "sensitive"
+            or task["case_semantics"]
+            != ("casefold" if intent == "declaration_name_osa1_casefold" else "sensitive")
             or task["normalization"] != "none_raw_utf8"
         ):
             raise EvidenceError("gold task has unsupported or ambiguous query semantics")
@@ -354,6 +385,10 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
     if list(sources) != sorted(sources):
         raise EvidenceError("gold release manifest files are not sorted")
     audits = _census_audits(recipe, sources, view)
+    if "checker_identity" in recipe and recipe["checker_identity"] != {
+        language: audit["checker"] for language, audit in audits.items()
+    }:
+        raise EvidenceError("gold checker identity differs from frozen recipe")
     censuses: dict[str, dict] = {language: {} for language in audits}
     source_refusals: dict[tuple[str, str], bool] = {}
     gold_tasks, blind_tasks = [], []
@@ -362,7 +397,10 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
     recipe_split = recipe.get("split")
     for task in recipe["tasks"]:
         split = task.get("split", recipe_split)
-        query = task["query"].encode("utf-8")
+        intended_typo = task["intent"] == "declaration_name_osa1_casefold"
+        scoring_query = task["intended_name"] if intended_typo else task["query"]
+        scoring_intent = "declaration_name_exact" if intended_typo else task["intent"]
+        query = scoring_query.encode("utf-8")
         prefix = task["scope_prefix"]
         labels, unsupported, text_excluded = [], [], []
         selected = 0
@@ -398,7 +436,7 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
                 if (
                     reason in ("census_refused", "census_disagreement")
                     and (reason == "census_disagreement" or source_refusals[refusal_key])
-                    and _textually_excluded(raw, task["query"], DECLARATION_INTENTS[task["intent"]])
+                    and _textually_excluded(raw, scoring_query, DECLARATION_INTENTS[scoring_intent])
                 ):
                     # The query cannot match any name written in this file.
                     text_excluded.append({"path": path, "reason": reason})
@@ -409,9 +447,9 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
                     else _declaration_spans(
                         raw,
                         path,
-                        task["query"],
+                        scoring_query,
                         task["language"],
-                        task["intent"],
+                        scoring_intent,
                         censuses[task["language"]],
                     )
                 )
@@ -437,16 +475,42 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
                         if task["intent"] == "literal_utf8_exact"
                         else raw[start:end].decode("utf-8")
                         if task["intent"] in DECLARATION_INTENTS
-                        else task["query"],
+                        else scoring_query,
                     }
                 )
         if selected == 0:
             unsupported.append({"path": None, "reason": "empty_declared_scope"})
         labels.sort(key=lambda row: (row["path"], row["start_byte"], row["end_byte"]))
         paths_by_split[split].update(row["path"] for row in labels)
+        near_metadata = {}
+        if intended_typo:
+            near: dict[str, set[str]] = defaultdict(set)
+            exact_collision: dict[str, set[str]] = defaultdict(set)
+            for path, declarations in censuses[task["language"]].items():
+                if prefix and not (path == prefix or path.startswith(prefix + "/")):
+                    continue
+                raw = sources[path][0]
+                for start, end, *_rest in declarations:
+                    name = source_oracle._name_text(raw[start:end])
+                    if name.casefold() == task["query"].casefold():
+                        exact_collision[name].add(path)
+                    elif source_oracle._variant_matches("osa1_casefold", task["query"], name):
+                        near[name].add(path)
+            near_metadata = {
+                "near_declaration_state": "partial" if unsupported or text_excluded else "complete",
+                "near_declaration_names": sorted(near),
+                "near_declaration_files": sorted(
+                    {path for paths in near.values() for path in paths}
+                ),
+                "exact_collision_names": sorted(exact_collision),
+                "exact_collision_files": sorted(
+                    {path for paths in exact_collision.values() for path in paths}
+                ),
+            }
         gold_tasks.append(
             {
                 **task,
+                **near_metadata,
                 "split": split,
                 "labels": labels,
                 "unsupported": unsupported,

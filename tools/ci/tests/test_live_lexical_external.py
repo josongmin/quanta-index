@@ -75,6 +75,70 @@ def test_cs_process_refuses_excessive_output_and_timeout():
         live._process([sys.executable, "-c", "import time; time.sleep(5)"], 1)
 
 
+@pytest.mark.parametrize("query", ["ab", "two words", "word!", "A" * 65, "éclair"])
+def test_cs_fuzzy_query_refuses_unsupported_shapes(query):
+    with pytest.raises(ValueError, match="bare ASCII identifier"):
+        live._cs_fuzzy_query(query)
+
+
+def test_cs_fuzzy_native_request_and_separate_replay(tmp_path, lexical_release_seed):
+    lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
+    suite = json.loads(paths["suite"].read_bytes())
+    pack = json.loads(paths["query_pack"].read_bytes())
+    suite["routes"] = ["lexical"]
+    pack["routes"] = ["lexical"]
+    for task in suite["tasks"]:
+        task["evaluation_contract"] = {
+            "request_mode": "explicit_osa1_typo",
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+    pack["suite_commitment_sha256"] = live._sha(live.lexical.canonical(suite))
+    paths["suite"].write_bytes(live.lexical.canonical(suite))
+    paths["query_pack"].write_bytes(live.lexical.canonical(pack))
+    binary = tmp_path / "cs-fuzzy"
+    binary.write_text(
+        f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+        "if '--version' in sys.argv:\n"
+        "    print('cs version 3.2.0')\n"
+        "else:\n"
+        "    assert sys.argv[-1].endswith('~1')\n"
+        "    root = Path(sys.argv[sys.argv.index('--dir') + 1])\n"
+        "    hits = [{'location': str(root / 'src/0.go')}] if sys.argv[-1] == 'symbol_0~1' else []\n"
+        "    print(json.dumps(hits) if hits else 'null')\n"
+    )
+    binary.chmod(0o755)
+    original = json.loads(lexical_spec.read_text())
+    root = tmp_path / "cs-fuzzy-capture"
+    spec = {
+        "schema_version": 1,
+        "capability": live.CS_FUZZY_CAPABILITY,
+        "corpus": original["corpus"],
+        "suite": str(paths["suite"]),
+        "query_pack": str(paths["query_pack"]),
+        "cs": {"binary": str(binary)},
+        "output_root": str(root),
+    }
+    spec_path = tmp_path / "cs-fuzzy-spec.json"
+    spec_path.write_text(json.dumps(spec))
+    summary = live.capture_cs_fuzzy(spec_path)
+    assert summary["tasks"] == 20
+    assert summary["scoring_status"] == "not_scored"
+    assert live.verify_cs_fuzzy(root) == summary
+    rows = [json.loads(line) for line in (root / "cs_fuzzy_rows.jsonl").read_bytes().splitlines()]
+    assert rows[0]["native_query"] == "symbol_0~1"
+    assert rows[0]["paths"] == ["src/0.go"]
+    assert "file_hit_at_10" not in rows[0]
+    process = root / "cs/S00.process.json"
+    terminal = json.loads(process.read_text())
+    terminal["argv"][-1] = "symbol_0"
+    process.write_text(json.dumps(terminal))
+    summary["raw_capture_sha256"]["cs/S00.process.json"] = live._sha_file(process)
+    (root / "capture.json").write_text(json.dumps(summary))
+    with pytest.raises(ValueError, match="native argv"):
+        live.verify_cs_fuzzy(root)
+
+
 @pytest.mark.parametrize("failure", [KeyboardInterrupt, OSError])
 def test_cs_process_interrupt_reaps_child(monkeypatch, failure):
     original_selector = selectors.DefaultSelector

@@ -341,6 +341,7 @@ targets = [
 [python_scopes.benchmark-control-capture]
 targets = [
   "benchmark-live-external-python-owner",
+  "benchmark-cs-fuzzy-report-python-owner",
   "benchmark-code-search-workflow-python-owner",
   "benchmark-code-search-matrix-python-owner",
   "benchmark-gold-oracle-python-owner",
@@ -374,6 +375,12 @@ targets = [
 id = "benchmark-live-external-python-owner"
 path = "tools/ci/tests/test_live_lexical_external.py"
 owner = "tools/benchmark/retrieval/live_lexical_external.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-cs-fuzzy-report-python-owner"
+path = "tools/ci/tests/test_cs_fuzzy_report.py"
+owner = "tools/benchmark/retrieval/cs_fuzzy_report.py"
 rail = "pr-benchmark-control-python"
 
 [[python_targets]]

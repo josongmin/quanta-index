@@ -38,6 +38,87 @@ def _unique(rows: list[dict], where: str) -> dict[str, dict]:
     return dict(zip(keys, rows))
 
 
+def _category_breakdown(
+    admitted: dict[str, dict],
+    scored: dict[str, dict],
+    results: dict[str, dict],
+    field: str,
+) -> dict[str, dict[str, int]]:
+    """Count one frozen census stratum without turning capped rows into failures."""
+    if not admitted or not all(field in row for row in admitted.values()):
+        return {}
+    output: dict[str, dict[str, int]] = {}
+    for task_id, row in admitted.items():
+        value = row[field]
+        _require(isinstance(value, str) and bool(value), f"invalid {field} stratum")
+        bucket = output.setdefault(
+            value, {"admitted": 0, "eligible": 0, "hit_at_10_count": 0, "capped": 0}
+        )
+        bucket["admitted"] += 1
+        if task_id not in scored or not scored[task_id]["eligible"]:
+            continue
+        score = scored[task_id]["scores"]["hit_at_10"]
+        _require(score in (0.0, 1.0), "invalid evaluator hit value")
+        bucket["eligible"] += 1
+        bucket["hit_at_10_count"] += int(score)
+        bucket["capped"] += results[task_id]["status"] == "capped"
+    return dict(sorted(output.items()))
+
+
+def _sampling_breakdown(
+    census: dict[str, Any],
+    records: dict[str, dict],
+    admitted: dict[str, dict],
+    scored: dict[str, dict],
+    results: dict[str, dict],
+) -> dict[str, dict[str, int]]:
+    """Keep the seeded sample separate from the deliberately added stress stratum."""
+    if "random_sample_family_ids" not in census:
+        return {}
+    random_ids = census["random_sample_family_ids"]
+    full_population = census.get("generation") in {
+        "paired_full_osa1_casefold_v2",
+        "paired_full_osa1_casefold_v3",
+    }
+    multi_ids = census.get(
+        "multi_file_family_ids" if full_population else "multi_file_stratum_family_ids"
+    )
+    _require(
+        isinstance(random_ids, list)
+        and isinstance(multi_ids, list)
+        and all(isinstance(value, str) and value for value in random_ids + multi_ids)
+        and len(random_ids) == len(set(random_ids))
+        and len(multi_ids) == len(set(multi_ids)),
+        "invalid sampling family IDs",
+    )
+    random, multi = set(random_ids), set(multi_ids)
+    all_families = {row["query_family_id"] for row in records.values()}
+    if full_population:
+        _require(
+            random | multi <= all_families and census["population_families"] == len(all_families),
+            "sampling family census mismatch",
+        )
+    else:
+        _require(
+            all_families == random | multi
+            and census["random_sample_families"] == len(random)
+            and census["multi_file_stratum_families"] == len(multi)
+            and census["overlap_random_and_multi_file"] == len(random & multi),
+            "sampling family census mismatch",
+        )
+    annotated = {
+        task_id: {
+            "sampling": "seeded_random"
+            if row["query_family_id"] in random
+            else "additional_multi_file"
+            if row["query_family_id"] in multi
+            else "remaining_population"
+        }
+        for task_id, row in admitted.items()
+    }
+    return _category_breakdown(annotated, scored, results, "sampling")
+
+
 def verify_generation_manifest(
     manifest_path: Path,
     census_path: Path,
@@ -73,6 +154,40 @@ def verify_generation_manifest(
         path = item["path"]
         _require(isinstance(path, str) and path not in paths, "duplicate generation artifact")
         paths[path] = evaluator.sha(item["sha256"], "generation artifact sha256")
+    if census.get("generation") in {
+        "paired_full_osa1_casefold_v2",
+        "paired_full_osa1_casefold_v3",
+    }:
+        _require(
+            manifest.get("parameters", {}).get("paired_full") is True
+            and manifest.get("parameters", {}).get("seed") == census.get("seed"),
+            "paired generation parameters mismatch",
+        )
+        for name, expected in paths.items():
+            artifact = (manifest_path.parent / name).resolve()
+            _require(
+                artifact.is_relative_to(manifest_path.parent.resolve())
+                and artifact.is_file()
+                and evaluator.digest(artifact.read_bytes()) == expected,
+                "generation artifact mismatch: " + name,
+            )
+        tool_files = manifest.get("tool_files", [])
+        _require(
+            isinstance(tool_files, list)
+            and all(
+                isinstance(item, dict)
+                and set(item) == {"path", "sha256"}
+                and paths.get("tool-sources/" + item["path"]) == item["sha256"]
+                for item in tool_files
+            )
+            and {item["path"] for item in tool_files}
+            == {
+                name.removeprefix("tool-sources/")
+                for name in paths
+                if name.startswith("tool-sources/")
+            },
+            "generation tool snapshot mismatch",
+        )
     for name, path in (("census.json", census_path), (f"{lane}-suite.json", suite_path)):
         _require(name in paths, "missing generation artifact: " + name)
         observed = evaluator.digest(path.read_bytes())
@@ -244,6 +359,14 @@ def compose(
     lane_data = census["lanes"][lane]
     tasks = _unique([t for t in suite["tasks"] if t["split"] == "eval"], "suite")
     _require(len(tasks) == len(suite["tasks"]), "non-eval task in diagnostic suite")
+    declared_contracts = [task.get("evaluation_contract") for task in tasks.values()]
+    if any(value is not None for value in declared_contracts):
+        _require(
+            all(value is not None for value in declared_contracts)
+            and all(value == declared_contracts[0] for value in declared_contracts),
+            "mixed or missing evaluation contract",
+        )
+    declared_contract = declared_contracts[0] if declared_contracts else None
     if policy["policy"] == "code_search_typo_file" and any(
         not task["answerable"] for task in tasks.values()
     ):
@@ -330,25 +453,46 @@ def compose(
                 row["query"] == task["query"] and row["query_family_id"] == task["query_family_id"],
                 "census query/family mismatch",
             )
-            expected_class = (
-                "no_answer"
-                if row["matched_names"] == 0
-                else "unique"
-                if row["matched_names"] == 1
-                else "ambiguous"
-            )
-            _require(row["answer_class"] == expected_class, "answer class mismatch")
+            if lane_data.get("gold_kind") == "intended_original_name":
+                near_names = row["source_partition"]["near_declaration_names"]
+                expected_class = "unique" if len(near_names) == 1 else "ambiguous"
+                _require(
+                    row["intended_name"] == task["intended_name"]
+                    and row["source_partition"]["intended_base_name"] == task["intended_name"],
+                    "intended name mismatch",
+                )
+            else:
+                expected_class = (
+                    "no_answer"
+                    if row["matched_names"] == 0
+                    else "unique"
+                    if row["matched_names"] == 1
+                    else "ambiguous"
+                )
             _require(
-                (row["answer_class"] == "no_answer") == (not task["answerable"]),
+                row.get("answer_class", expected_class) == expected_class,
+                "answer class mismatch",
+            )
+            _require(
+                (row.get("answer_class", expected_class) == "no_answer")
+                == (not task["answerable"]),
                 "answer class mismatch",
             )
             _require(row["gold_files"] == len(task["file_judgments"]), "census gold count mismatch")
         requested = len(records)
         not_admitted = requested - len(admitted)
         strata = {
-            task_id: row["answer_class"] for task_id, row in admitted.items() if task_id in tasks
+            task_id: (
+                "unique"
+                if len(row["source_partition"]["near_declaration_names"]) == 1
+                else "ambiguous"
+            )
+            if lane_data.get("gold_kind") == "intended_original_name"
+            else row["answer_class"]
+            for task_id, row in admitted.items()
+            if task_id in tasks
         }
-        contract = lane_data["contract"]
+        contract = lane_data.get("contract", lane_data.get("scoring_contract"))
     _require(not_admitted >= 0, "negative admission gap")
     _require(
         all(
@@ -444,6 +588,37 @@ def compose(
         sum(int(row["eligible"]) for row in breakdown.values()) == len(eligible),
         "eligible stratum sum mismatch",
     )
+    admitted_records = {
+        task_id: row
+        for task_id, row in records.items()
+        if row.get("status") == "admitted" and task_id in tasks
+    }
+    operation_records = {
+        task_id: {"operation": row["generation"]["operation"]}
+        for task_id, row in admitted_records.items()
+        if isinstance(row.get("generation"), dict) and "operation" in row["generation"]
+    }
+    detailed_strata = {
+        "operation": _category_breakdown(operation_records, scored_rows, results, "operation")
+    }
+    for field in ("length", "short_common", "overcorrection_candidate", "near_name_collision"):
+        subset = {
+            task_id: {field: row["strata"][field]}
+            for task_id, row in admitted_records.items()
+            if isinstance(row.get("strata"), dict) and field in row["strata"]
+        }
+        detailed_strata[field] = _category_breakdown(subset, scored_rows, results, field)
+        if subset:
+            _require(set(subset) == set(admitted_records), f"incomplete {field} census metadata")
+    sampling = (
+        _sampling_breakdown(census, records, admitted_records, scored_rows, results)
+        if lane != "no-answer" and lane not in NEGATIVE_LANES
+        else {}
+    )
+    if operation_records:
+        _require(
+            set(operation_records) == set(admitted_records), "incomplete operation census metadata"
+        )
     if contract == source_oracle.ASCII_CONTENT_ABSENT_CASEFOLD:
         evaluation_intent = "content_absence_negative_control"
         negative_reference_scope = "folded_content_absent"
@@ -453,12 +628,16 @@ def compose(
     elif contract == source_oracle.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD:
         evaluation_intent = "identifier_osa1_absence_negative_control"
         negative_reference_scope = "folded_ascii_identifier_osa1_absent"
+    elif lane_data.get("gold_kind") == "intended_original_name":
+        evaluation_intent = "intended_name_file_retrieval_diagnostic"
+        negative_reference_scope = "not_applicable"
     else:
         evaluation_intent = "declaration_name_file_retrieval_diagnostic"
         negative_reference_scope = "declaration_local_name_absent"
     return {
         "status": "diagnostic_unqualified",
         "evaluation_intent": evaluation_intent,
+        "evaluation_contract": declared_contract,
         "lane": lane,
         "suite_id": suite["suite_id"],
         "suite_commitment_sha256": diagnostic["suite_commitment_sha256"],
@@ -489,6 +668,8 @@ def compose(
             "status_counts": no_answer_report["status_counts"],
         },
         "strata": breakdown,
+        "detailed_strata": detailed_strata,
+        "sampling": sampling,
     }
 
 
@@ -521,6 +702,12 @@ def compose_validated(
         )
         return compose(suite, census, record, diagnostic, lane, route)
     expected = evaluator.evaluate_diagnostic(suite, pack, record)
+    if any("evaluation_contract" in task for task in suite["tasks"]):
+        _require(
+            evaluator.canonical(expected) == evaluator.canonical(diagnostic),
+            "diagnostic differs from evaluator replay",
+        )
+        return compose(suite, census, record, diagnostic, lane, route)
     old = diagnostic["judgment_metrics"]["file_judgments"]
     new = expected["judgment_metrics"]["file_judgments"]
     route = diagnostic["route"]
@@ -543,6 +730,141 @@ def compose_validated(
         "diagnostic differs from evaluator replay",
     )
     return compose(suite, census, record, diagnostic, lane, route)
+
+
+def compare_paired_clean_typo(
+    clean_suite: dict[str, Any],
+    clean_diagnostic: dict[str, Any],
+    typo_suite: dict[str, Any],
+    typo_diagnostic: dict[str, Any],
+    census: dict[str, Any],
+    lane: str,
+    *,
+    clean_route: str,
+    typo_route: str,
+) -> dict[str, Any]:
+    """Compare source-paired intended-file judgments; callers replay both diagnostics first."""
+    lane_data = census["lanes"][lane]
+    _require(
+        lane_data.get("gold_kind") == "intended_original_name",
+        "paired robustness requires intended original-name gold",
+    )
+    _require(
+        clean_suite["repository_commit"] == typo_suite["repository_commit"]
+        and clean_suite["file_universe"] == typo_suite["file_universe"]
+        and clean_suite["comparison_contract"] == typo_suite["comparison_contract"],
+        "paired robustness source or comparison contract mismatch",
+    )
+    clean_tasks = _unique(clean_suite["tasks"], "clean suite")
+    typo_tasks = _unique(typo_suite["tasks"], "typo suite")
+    census_rows = _unique(lane_data["records"], "paired census")
+    admitted = {key: row for key, row in census_rows.items() if row["status"] == "admitted"}
+    _require(set(admitted) == set(typo_tasks), "paired census/typo suite mismatch")
+
+    def diagnostic_rows(diagnostic: dict, route: str, tasks: dict[str, dict]) -> dict[str, dict]:
+        _require(
+            diagnostic.get("status") == "diagnostic_unqualified"
+            and diagnostic.get("repository_commit") == clean_suite["repository_commit"]
+            and diagnostic.get("comparison_contract") == clean_suite["comparison_contract"],
+            "paired diagnostic source or status mismatch",
+        )
+        judgments = diagnostic["judgment_metrics"]["file_judgments"]
+        _require(route in judgments["routes"], "paired diagnostic route missing")
+        rows = _unique(
+            [row for row in judgments["per_query"] if row["route"] == route],
+            "paired diagnostic rows",
+        )
+        _require(set(rows) == set(tasks), "paired diagnostic task coverage mismatch")
+        return rows
+
+    clean_rows = diagnostic_rows(clean_diagnostic, clean_route, clean_tasks)
+    typo_rows = diagnostic_rows(typo_diagnostic, typo_route, typo_tasks)
+    metrics = ("hit_at_10", "mrr_at_10", "ndcg_at_10")
+    sums = {metric: {"clean": 0.0, "typo": 0.0} for metric in metrics}
+    excluded: list[dict[str, str]] = []
+    paired_families: set[str] = set()
+    for task_id, row in admitted.items():
+        clean_id = "CLN-" + row["base_task_id"]
+        _require(clean_id in clean_tasks, "paired base task missing")
+        clean_task, typo_task = clean_tasks[clean_id], typo_tasks[task_id]
+        family = typo_task["query_family_id"]
+        _require(
+            family == clean_task["query_family_id"] == row["query_family_id"]
+            and family not in paired_families
+            and clean_task["query"] == row["base_query"] == typo_task["intended_name"]
+            and typo_task["query"] == row["query"]
+            and clean_task["file_judgments"] == typo_task["file_judgments"],
+            "paired family or intended gold mismatch",
+        )
+        paired_families.add(family)
+        clean_score, typo_score = clean_rows[clean_id], typo_rows[task_id]
+        if not clean_score["eligible"] or not typo_score["eligible"]:
+            excluded.append(
+                {
+                    "query_family_id": family,
+                    "reason": "clean_" + clean_score.get("reason", "eligible")
+                    if not clean_score["eligible"]
+                    else "typo_" + typo_score.get("reason", "eligible"),
+                }
+            )
+            continue
+        for metric in metrics:
+            clean_value = clean_score["scores"].get(metric)
+            typo_value = typo_score["scores"].get(metric)
+            _require(
+                type(clean_value) in (int, float)
+                and type(typo_value) in (int, float)
+                and 0 <= clean_value <= 1
+                and 0 <= typo_value <= 1,
+                "paired metric missing or invalid: " + metric,
+            )
+            sums[metric]["clean"] += clean_value
+            sums[metric]["typo"] += typo_value
+    count = len(admitted) - len(excluded)
+    return {
+        "status": "diagnostic_unqualified",
+        "lane": lane,
+        "gold_kind": "intended_original_name",
+        "admitted_families": len(admitted),
+        "paired_eligible_families": count,
+        "excluded": sorted(excluded, key=lambda row: row["query_family_id"]),
+        "metrics": {
+            metric: {
+                "clean_mean": values["clean"] / count if count else evaluator.NOT_APPLICABLE,
+                "typo_mean": values["typo"] / count if count else evaluator.NOT_APPLICABLE,
+                "delta_typo_minus_clean": (
+                    (values["typo"] - values["clean"]) / count
+                    if count
+                    else evaluator.NOT_APPLICABLE
+                ),
+            }
+            for metric, values in sums.items()
+        },
+    }
+
+
+def _verify_paired_capture_identity(
+    clean_record: dict[str, Any],
+    typo_record: dict[str, Any],
+    clean_route: str,
+    typo_route: str,
+) -> None:
+    def capture(record: dict, route: str) -> dict:
+        return record["captures"][record["route_provenance"][route]["capture_id"]]
+
+    clean, typo = capture(clean_record, clean_route), capture(typo_record, typo_route)
+    for field in (
+        "system",
+        "runner_binary",
+        "searchd_binary",
+        "model",
+        "model_revision",
+        "chunk_strategy",
+        "chunk_config",
+        "activation_digest",
+        "generation",
+    ):
+        _require(clean.get(field) == typo.get(field), "paired capture differs in " + field)
 
 
 def verify_census_against_source(
@@ -598,11 +920,35 @@ def verify_census_against_source(
         )
         return
     lane_data = census["lanes"][lane]
-    contract = lane_data["contract"]
+    contract = lane_data.get("contract", lane_data.get("scoring_contract"))
     _require(
         contract in source_oracle.DECLARATION_NAME_CONTRACTS,
         "census contract is not a declaration name contract",
     )
+    if lane_data.get("gold_kind") == "intended_original_name":
+        language, variant = source_oracle.NAME_CONTRACTS[contract]
+        _require(variant == "exact", "intended-name scoring contract must be exact")
+        near = lane_data.get("near_declaration_metadata_contract")
+        _require(
+            source_oracle.NAME_CONTRACTS.get(near) == (language, "osa1_casefold"),
+            "intended-name near contract mismatch",
+        )
+        admitted_rows = [row for row in lane_data["records"] if row["status"] == "admitted"]
+        # The oracle bounds query names per instance. Replay the full census in
+        # bounded batches without dropping any admitted task from verification.
+        for start in range(0, len(admitted_rows), 500):
+            batch = admitted_rows[start : start + 500]
+            names = {name for row in batch for name in (row["query"], row["intended_name"])}
+            oracle = source_oracle.SourceOracleIndex(files, names)
+            for row in batch:
+                partition = oracle.typo_gold_partition(language, row["query"], row["intended_name"])
+                _require(
+                    row["source_partition"] == partition
+                    and row["gold_files"] == len(partition["intended_base_files"])
+                    and row["matched_names"] == 1,
+                    "census/source intended-name partition mismatch",
+                )
+        return
     names = {row["query"] for row in lane_data["records"] if row["status"] == "admitted"}
     oracle = source_oracle.SourceOracleIndex(files, names)
     for row in lane_data["records"]:
@@ -642,6 +988,10 @@ def main() -> int:
     for name in ("repo", "suite", "record", "diagnostic", "census", "lane", "generation-manifest"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--route")
+    parser.add_argument("--clean-suite", type=Path)
+    parser.add_argument("--clean-record", type=Path)
+    parser.add_argument("--clean-diagnostic", type=Path)
+    parser.add_argument("--clean-route")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     try:
@@ -660,6 +1010,37 @@ def main() -> int:
         )
         verify_census_against_source(Path(args.repo).resolve(), suite, census, args.lane)
         output = compose_validated(suite, pack, record, diagnostic, census, args.lane, args.route)
+        clean_inputs = (args.clean_suite, args.clean_record, args.clean_diagnostic)
+        if any(value is not None for value in clean_inputs):
+            _require(
+                all(value is not None for value in clean_inputs), "incomplete clean pair inputs"
+            )
+            clean_suite, clean_pack, clean_record = evaluator.load_evidence(
+                Path(args.repo).resolve(), args.clean_suite, args.clean_record
+            )
+            clean_diagnostic = evaluator.read_json(args.clean_diagnostic)
+            clean_route = args.clean_route or clean_diagnostic.get("route")
+            typo_route = args.route or diagnostic.get("route")
+            _require(
+                isinstance(clean_route, str) and isinstance(typo_route, str),
+                "paired routes must be explicit",
+            )
+            expected_clean = evaluator.evaluate_diagnostic(clean_suite, clean_pack, clean_record)
+            _require(
+                evaluator.canonical(expected_clean) == evaluator.canonical(clean_diagnostic),
+                "clean diagnostic differs from evaluator replay",
+            )
+            _verify_paired_capture_identity(clean_record, record, clean_route, typo_route)
+            output["paired_clean_typo"] = compare_paired_clean_typo(
+                clean_suite,
+                clean_diagnostic,
+                suite,
+                diagnostic,
+                census,
+                args.lane,
+                clean_route=clean_route,
+                typo_route=typo_route,
+            )
         output["generation_manifest_sha256"] = manifest_sha256
         output["content_absence_replay_verified"] = (
             args.lane == "no-answer-content"

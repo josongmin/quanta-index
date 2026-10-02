@@ -59,6 +59,20 @@ FILE_PROJECTION_ORDERING = {
 CODE_SEARCH_FILE_POLICIES = frozenset(
     ("code_search_file", "code_search_exact_content_file", "code_search_typo_file")
 )
+# Evaluation meaning is separate from the product's execution profile. These
+# names describe the request submitted, not the relevance labels it may score.
+DEFAULT_FILE_SEARCH = "default_file_search"
+EXPLICIT_OSA1_TYPO = "explicit_osa1_typo"
+DECLARATION_NAVIGATION = "declaration_navigation"
+EVALUATION_REQUEST_MODES = frozenset(
+    (DEFAULT_FILE_SEARCH, EXPLICIT_OSA1_TYPO, DECLARATION_NAVIGATION)
+)
+EVALUATION_UNITS = frozenset(("distinct_file", "symbol"))
+QUANTA_EVALUATION_POLICIES = {
+    DEFAULT_FILE_SEARCH: frozenset(("code_search_file",)),
+    EXPLICIT_OSA1_TYPO: frozenset(("code_search_typo_file",)),
+    DECLARATION_NAVIGATION: frozenset(("exact_symbol_name",)),
+}
 SCORED_QUANTA_FILE_POLICIES = frozenset((*CODE_SEARCH_FILE_POLICIES, "keyword_file"))
 MAX_KEYWORD_FILE_BYTES = 256
 MIN_SUBSTRING_FILE_BYTES = 3

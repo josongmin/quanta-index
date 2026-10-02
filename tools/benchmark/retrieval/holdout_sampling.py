@@ -38,15 +38,15 @@ except ModuleNotFoundError:  # direct script invocation
         source_oracle,
     )
 
-SAMPLING_VERSION = 2
+SAMPLING_VERSION = 3
 # Provisional per-repository engineering design (S30-B08); not a population rule.
 QUOTAS = {
     "exact_content": 20,
-    "exact_definition": 20,
+    "exact_definition": 100,
     "variant_prefix": 8,
     "variant_infix": 8,
     "variant_components": 7,
-    "variant_osa1": 7,
+    "variant_osa1": 400,
     "no_answer_synthetic": 5,
     "no_answer_wrong_repository": 5,
     "natural_language_workflow": 20,
@@ -55,7 +55,7 @@ VARIANT_LANES = {
     "variant_prefix": ("prefix", "declaration_name_prefix"),
     "variant_infix": ("infix", "declaration_name_infix"),
     "variant_components": ("components", "declaration_name_components"),
-    "variant_osa1": ("typo", "declaration_name_osa1"),
+    "variant_osa1": ("typo", "declaration_name_osa1_casefold"),
 }
 # Only exact-definition draws take the first K of a fixed eligible-name set.
 # Other lanes filter or retry after ranking, or do not enumerate a finite
@@ -145,17 +145,33 @@ class Repository:
         )
 
 
-def _task(repository: Repository, lane: str, index: int, family: str, intent: str, query: str):
-    return {
+def _task(
+    repository: Repository,
+    lane: str,
+    index: int,
+    family: str,
+    intent: str,
+    query: str,
+    *,
+    intended_name: str | None = None,
+):
+    task = {
         "task_id": f"{repository.name}.{lane}.{index:03d}",
         "query_family_id": family,
         "intent": intent,
         "query": query,
         "scope_prefix": "",
         "language": None if intent == "literal_utf8_exact" else repository.language,
-        "case_semantics": "sensitive",
+        "case_semantics": (
+            "casefold" if intent == "declaration_name_osa1_casefold" else "sensitive"
+        ),
         "normalization": "none_raw_utf8",
     }
+    if intended_name is not None:
+        if intent != "declaration_name_osa1_casefold":
+            raise ValueError("intended name is valid only for casefold OSA1 tasks")
+        task["intended_name"] = intended_name
+    return task
 
 
 def _literals(repository: Repository, seed: int, ledger: dict) -> list[dict]:
@@ -216,7 +232,8 @@ def _declarations(repository: Repository, seed: int, ledger: dict) -> list[dict]
     ranked = _ranked(eligible, seed, repository.name, "base_name")
     tasks: list[dict] = []
     ledger["exact_definition"] = {"population": len(eligible)}
-    for index, name in enumerate(ranked[: QUOTAS["exact_definition"]], 1):
+    paired_bases = ranked[: QUOTAS["exact_definition"]]
+    for index, name in enumerate(paired_bases, 1):
         tasks.append(
             _task(
                 repository,
@@ -231,7 +248,7 @@ def _declarations(repository: Repository, seed: int, ledger: dict) -> list[dict]
     filled = {lane: [] for lane in VARIANT_LANES}
     records: list[dict] = []
     cursor = 0
-    lanes = list(VARIANT_LANES)
+    lanes = [lane for lane in VARIANT_LANES if lane != "variant_osa1"]
     for name in ranked:
         open_lanes = [lane for lane in lanes if len(filled[lane]) < QUOTAS[lane]]
         if not open_lanes:
@@ -262,7 +279,9 @@ def _declarations(repository: Repository, seed: int, ledger: dict) -> list[dict]
                 record["ineligible"] = "duplicate_query"
                 query = None
                 break
-            if variant == "osa1" and query in repository.names:
+            if variant in ("osa1", "osa1_casefold") and query.casefold() in {
+                declared.casefold() for declared in repository.names
+            }:
                 record["ineligible"] = "typo_collides_with_declared_name"
                 query = None
                 break
@@ -281,6 +300,76 @@ def _declarations(repository: Repository, seed: int, ledger: dict) -> list[dict]
                     repository, lane.split("_")[1][:3], len(filled[lane]) + 1, family, intent, query
                 )
             )
+    # All typo draws come from an exact-definition family, so clean and noisy
+    # queries can be compared without inferring a missing base task. One draw
+    # per operation keeps the edit classes balanced before source admissions.
+    typo_intent = VARIANT_LANES["variant_osa1"][1]
+    typo_variant = gold_oracle.DECLARATION_INTENTS[typo_intent]
+    folded_declared = {name.casefold() for name in repository.names}
+    for name in paired_bases:
+        family = f"{repository.name}.name.{name}"
+        for operation in identifier_robustness_suite.TYPO_OPERATIONS:
+            record = {"lane": "variant_osa1", "base_name": name, "operation": operation}
+            query = None
+            for attempt in range(MAX_ATTEMPTS):
+                candidate, meta = identifier_robustness_suite.propose_typo_operation(
+                    operation, name, seed, family, attempt
+                )
+                if candidate is None:
+                    record["ineligible"] = meta.get("ineligible", "no_variant")
+                    break
+                try:
+                    source_oracle._require_query(
+                        gold_oracle._name_contract(repository.language, typo_intent), candidate
+                    )
+                except source_oracle.SourceOracleError:
+                    record["ineligible"] = "outside_query_contract"
+                    continue
+                if candidate.casefold() in folded_declared:
+                    record["ineligible"] = "typo_collides_with_declared_name"
+                    continue
+                if candidate.casefold() in repository.folded_words:
+                    record["ineligible"] = "typo_collides_with_content_token"
+                    continue
+                if (typo_intent, candidate) in used:
+                    record["ineligible"] = "duplicate_query"
+                    continue
+                rows = repository.variant_rows(typo_variant, candidate)
+                if not 0 < rows <= MAX_TASK_LABELS:
+                    record["ineligible"] = "base_not_gold_or_too_many_labels"
+                    continue
+                query = candidate
+                near_names = sorted(
+                    declared
+                    for declared in repository.names
+                    if source_oracle._variant_matches("osa1_casefold", query, declared)
+                )
+                record.update(
+                    query=query,
+                    intended_name=name,
+                    attempt=attempt,
+                    matched_rows=rows,
+                    near_declaration_names=near_names,
+                    other_near_declaration_names=[
+                        declared for declared in near_names if declared != name
+                    ],
+                    user_intent_state="unjudged",
+                )
+                used.add((typo_intent, query))
+                break
+            records.append(record)
+            if query is not None:
+                filled["variant_osa1"].append(
+                    _task(
+                        repository,
+                        "osa",
+                        len(filled["variant_osa1"]) + 1,
+                        family,
+                        typo_intent,
+                        query,
+                        intended_name=name,
+                    )
+                )
     for lane in VARIANT_LANES:
         ledger[lane] = {
             "population": len(eligible),
@@ -500,6 +589,7 @@ def build(
     manifest_raw = corpus_binding.canonical_json(manifest).encode() + b"\n"
     manifest_sha = hashlib.sha256(manifest_raw).hexdigest()
     recipes = {}
+    repositories_by_name = {repository.name: repository for repository in repositories}
     for name, tasks in task_sets.items():
         recipe = {
             "schema_version": 2,
@@ -507,6 +597,9 @@ def build(
             "split_manifest_sha256": manifest_sha,
             "tasks": tasks,
         }
+        repository = repositories_by_name[name]
+        if repository.audit is not None:
+            recipe["checker_identity"] = {repository.language: repository.audit["checker"]}
         gold_oracle.validate_recipe(recipe)
         recipes[name] = recipe
     summary = {

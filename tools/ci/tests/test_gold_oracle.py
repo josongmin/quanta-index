@@ -27,6 +27,89 @@ from tools.ci.tests.test_corpus_release import release_seed, source_seed  # noqa
 FIXTURES = Path(__file__).parent / "fixtures" / "gold_oracle"
 
 
+def test_casefold_osa1_recipe_requires_explicit_case_semantics():
+    row = {
+        "task_id": "typo-1",
+        "query_family_id": "family-1",
+        "intent": "declaration_name_osa1_casefold",
+        "query": "pram",
+        "intended_name": "Param",
+        "scope_prefix": "",
+        "language": "go",
+        "case_semantics": "casefold",
+        "normalization": "none_raw_utf8",
+    }
+    recipe = {
+        "schema_version": 2,
+        "split": "holdout",
+        "split_manifest_sha256": "a" * 64,
+        "tasks": [row],
+    }
+    assert gold_oracle.validate_recipe(recipe) == recipe
+    raw = b"package p\nfunc Param() {}\n"
+    assert len(gold_oracle._declaration_spans(raw, "p.go", "pram", "go", row["intent"], {})) == 1
+    bad = copy.deepcopy(recipe)
+    bad["tasks"][0]["case_semantics"] = "sensitive"
+    with pytest.raises(EvidenceError, match="query semantics"):
+        gold_oracle.validate_recipe(bad)
+    bad = copy.deepcopy(recipe)
+    bad["tasks"][0]["intended_name"] = "Unrelated"
+    with pytest.raises(EvidenceError, match="one casefolded edit"):
+        gold_oracle.validate_recipe(bad)
+
+
+def test_casefold_typo_gold_keeps_intended_and_near_declarations_separate(tmp_path):
+    view = tmp_path / "view"
+    view.mkdir()
+    originals = {
+        "intended.go": b"package p\nfunc Param() {}\n",
+        "neighbor.go": b"package p\nfunc Pram() {}\n",
+    }
+    for path, raw in originals.items():
+        (view / path).write_bytes(raw)
+    manifest = {
+        "repository_commit": "a" * 40,
+        "files": [
+            {"path": path, "file_sha256": gold_oracle._sha(raw)}
+            for path, raw in sorted(originals.items())
+        ],
+    }
+    recipe = {
+        "schema_version": 2,
+        "split": "holdout",
+        "split_manifest_sha256": "a" * 64,
+        "tasks": [
+            {
+                "task_id": "typo-1",
+                "query_family_id": "family-1",
+                "intent": "declaration_name_osa1_casefold",
+                "query": "pram",
+                "intended_name": "Param",
+                "scope_prefix": "",
+                "language": "go",
+                "case_semantics": "casefold",
+                "normalization": "none_raw_utf8",
+            }
+        ],
+    }
+    gold, blind = gold_oracle.derive(recipe, manifest, view)
+    task = gold["tasks"][0]
+    assert [(label["path"], label["local_name"]) for label in task["labels"]] == [
+        ("intended.go", "Param")
+    ]
+    assert task["near_declaration_names"] == ["Param"]
+    assert task["near_declaration_files"] == ["intended.go"]
+    assert task["exact_collision_names"] == ["Pram"]
+    assert task["exact_collision_files"] == ["neighbor.go"]
+    assert "intended_name" not in blind["tasks"][0]
+    bound = copy.deepcopy(recipe)
+    bound["checker_identity"] = {"go": gold["census_audits"]["go"]["checker"]}
+    assert gold_oracle.derive(bound, manifest, view)[0]["tasks"] == gold["tasks"]
+    bound["checker_identity"]["go"]["version"] = "wrong-toolchain"
+    with pytest.raises(EvidenceError, match="checker identity differs"):
+        gold_oracle.derive(bound, manifest, view)
+
+
 @pytest.mark.parametrize(
     "name,language,expected",
     [
@@ -716,11 +799,27 @@ def test_holdout_sampling_freezes_seeded_ledger_recipes_and_split(split_releases
     assert recipe["split"] == "holdout"
     assert recipe["split_manifest_sha256"] == hashlib.sha256(manifest_raw).hexdigest()
     beta = ledger["repositories"]["beta"]
-    assert ledger["sampling_version"] == 2
+    assert recipe["checker_identity"] == {
+        beta["language"]: beta["census_audit"]["checker"]
+    }
+    assert ledger["sampling_version"] == 3
     assert beta["census_audit"]["status"] == "admitted"
     lanes = {task["task_id"].split(".")[1] for task in recipe["tasks"]}
     assert lanes == {"lit", "def", "pre", "inf", "com", "osa"}
     assert beta["exact_definition"]["admitted"] == 12  # worker_0 .. worker_11
+    exact_families = {
+        row["query_family_id"]
+        for row in recipe["tasks"]
+        if row["intent"] == "declaration_name_exact"
+    }
+    typo_tasks = [
+        row for row in recipe["tasks"] if row["intent"] == "declaration_name_osa1_casefold"
+    ]
+    assert typo_tasks and {row["query_family_id"] for row in typo_tasks} <= exact_families
+    assert all(row["case_semantics"] == "casefold" for row in typo_tasks)
+    assert {
+        row["operation"] for row in beta["variant_records"] if row["lane"] == "variant_osa1"
+    } == {"insertion", "deletion", "substitution", "transposition"}
     assert beta["natural_language_workflow"]["underfilled"] == 20
     assert beta["no_answer_wrong_repository"]["admitted"] == 0
     assert beta["exact_definition"]["inclusion_probability"] == (

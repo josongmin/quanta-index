@@ -203,6 +203,67 @@ def validate_comparison_contract(value: Any, where: str) -> dict[str, Any]:
         raise EvidenceError(str(exc)) from exc
 
 
+def validate_evaluation_contract(task: dict[str, Any], task_id: str) -> dict[str, str]:
+    """Bind a task's requested search behavior to its judged and returned unit."""
+    contract = object_keys(
+        task["evaluation_contract"],
+        ["request_mode", "gold_unit", "result_unit"],
+        f"evaluation_contract for {task_id}",
+    )
+    mode = contract["request_mode"]
+    require(
+        mode in query_plan_contract.EVALUATION_REQUEST_MODES,
+        f"unknown request_mode for {task_id}",
+    )
+    unit = "symbol" if mode == query_plan_contract.DECLARATION_NAVIGATION else "distinct_file"
+    require(
+        contract["gold_unit"] == unit and contract["result_unit"] == unit,
+        f"evaluation_contract unit mismatch for {task_id}",
+    )
+    kind = "declaration_judgments" if unit == "symbol" else "file_judgments"
+    opposite = "file_judgments" if unit == "symbol" else "declaration_judgments"
+    require(
+        kind in task and opposite not in task,
+        f"evaluation_contract requires {kind} only for {task_id}",
+    )
+    if "source_oracle" in task:
+        require(
+            task["source_oracle"].get("unit") == unit,
+            f"evaluation_contract/source_oracle unit mismatch for {task_id}",
+        )
+        if mode == query_plan_contract.DECLARATION_NAVIGATION:
+            require(
+                source_oracle.NAME_CONTRACTS.get(
+                    task["source_oracle"].get("contract"), (None, None)
+                )[1]
+                == "exact",
+                f"declaration_navigation requires exact-name source oracle for {task_id}",
+            )
+    if mode in (
+        query_plan_contract.EXPLICIT_OSA1_TYPO,
+        query_plan_contract.DECLARATION_NAVIGATION,
+    ):
+        require(
+            task.get("query_intent") == "bare_symbol",
+            f"evaluation_contract requires bare_symbol intent for {task_id}",
+        )
+    return contract
+
+
+def declared_evaluation_contract(tasks: Sequence[dict[str, Any]]) -> dict[str, str] | None:
+    """One report/route scores one request mode; missing metadata means legacy replay."""
+    present = [task for task in tasks if "evaluation_contract" in task]
+    if not present:
+        return None
+    require(len(present) == len(tasks), "partial evaluation_contract coverage")
+    contracts = [validate_evaluation_contract(task, task["task_id"]) for task in tasks]
+    require(
+        all(contract == contracts[0] for contract in contracts),
+        "mixed request modes or ranking units in one suite",
+    )
+    return contracts[0]
+
+
 def normalize_query(text: str) -> str:
     """Deterministic ASCII query normalization for near-duplicate detection."""
     lowered = text.lower()
@@ -1047,7 +1108,7 @@ def validate_suite(
         allowlist = validate_leakage_allowlist(source, suite["leakage_allowlist"])
     require(isinstance(tasks, list) and bool(tasks), "suite requires tasks")
     oracle_names = {
-        raw["query"]
+        raw.get("intended_name", raw["query"])
         for raw in tasks
         if isinstance(raw, dict)
         and isinstance(raw.get("source_oracle"), dict)
@@ -1079,7 +1140,7 @@ def validate_suite(
             and paths == sorted(set(paths)),
             "invalid declaration exclusions",
         )
-        key = (annotation["contract"], raw["query"])
+        key = (annotation["contract"], raw.get("intended_name", raw["query"]))
         require(key not in declaration_exclusions, "duplicate declaration exclusion query")
         declaration_exclusions[key] = set(paths)
     seen_ids = set()
@@ -1111,6 +1172,8 @@ def validate_suite(
                 "file_judgments",
                 "declaration_judgments",
                 "source_oracle",
+                "evaluation_contract",
+                "intended_name",
             ],
             "task",
         )
@@ -1127,6 +1190,8 @@ def validate_suite(
                     "file_judgments",
                     "declaration_judgments",
                     "source_oracle",
+                    "evaluation_contract",
+                    "intended_name",
                 )
             )
             or suite.get("diagnostic_policy") == OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
@@ -1140,6 +1205,12 @@ def validate_suite(
                 task["query_intent"] in QUERY_INTENTS,
                 "invalid query_intent for " + task_id,
             )
+        if "evaluation_contract" in task:
+            require(
+                "query_intent" in task and "judgment_policy" in task,
+                f"evaluation_contract requires query intent and judgment policy: {task_id}",
+            )
+            validate_evaluation_contract(task, task_id)
         if "source_oracle" in task:
             oracle = object_keys_optional(
                 task["source_oracle"],
@@ -1190,6 +1261,26 @@ def validate_suite(
                 string(review["reviewer_id"], "label_review.reviewer_id for " + task_id)
                 sha(review["evidence_sha256"], "label_review.evidence_sha256 for " + task_id)
         query = string(task["query"], "query")
+        oracle_query = query
+        if "intended_name" in task:
+            intended = string(task["intended_name"], f"intended_name for {task_id}")
+            oracle = task.get("source_oracle") or {}
+            name_contract = source_oracle.NAME_CONTRACTS.get(oracle.get("contract"))
+            require(
+                task.get("evaluation_contract", {}).get("request_mode")
+                in (query_plan_contract.DEFAULT_FILE_SEARCH, query_plan_contract.EXPLICIT_OSA1_TYPO)
+                and task.get("query_intent") == "bare_symbol"
+                and name_contract is not None
+                and name_contract[1] == "exact"
+                and oracle.get("unit") == "distinct_file",
+                f"intended_name requires a file-mode exact-name source oracle: {task_id}",
+            )
+            require(
+                query.casefold() != intended.casefold()
+                and source_oracle.osa_distance_at_most_one(query.casefold(), intended.casefold()),
+                f"intended_name must be one casefold OSA edit from submitted query: {task_id}",
+            )
+            oracle_query = intended
         query_hash = sha(task["query_sha256"], "query_sha256")
         require(digest(query.encode("utf-8")) == query_hash, "query hash mismatch: " + task_id)
         require(
@@ -1227,8 +1318,17 @@ def validate_suite(
                             declaration_exclusions,
                         )
                     active_oracle = oracle_index
+                    if "intended_name" in task:
+                        partition = oracle_index.typo_gold_partition(
+                            name_contract[0], query, oracle_query
+                        )
+                        require(
+                            not partition["exact_content_collision_paths"]
+                            and not partition["query_is_declaration_name"],
+                            f"intended_name query collides with a source identifier: {task_id}",
+                        )
                 expected = active_oracle.expected_rows(
-                    task["source_oracle"]["contract"], query, task["source_oracle"]["unit"]
+                    task["source_oracle"]["contract"], oracle_query, task["source_oracle"]["unit"]
                 )
             except (
                 source_oracle.SourceOracleError,
@@ -1265,7 +1365,7 @@ def validate_suite(
                 f"gold path contradicts source oracle: {task_id}",
             )
             oracle_spans = (
-                oracle_index.declaration_name_spans(task["source_oracle"]["contract"], query)
+                oracle_index.declaration_name_spans(task["source_oracle"]["contract"], oracle_query)
                 if task["source_oracle"]["contract"] in source_oracle.DECLARATION_NAME_CONTRACTS
                 else []
             )
@@ -1321,13 +1421,14 @@ def validate_suite(
             require(
                 labels
                 == source_oracle_gold(
-                    source, active_oracle, task["source_oracle"]["contract"], query
+                    source, active_oracle, task["source_oracle"]["contract"], oracle_query
                 ),
                 f"source oracle gold differs from canonical first match: {task_id}",
             )
         if task["split"] == "eval":
             eval_count += 1
     require(eval_count > 0, "eval split requires at least one task")
+    declared_evaluation_contract(tasks)
     eval_tasks = [task for task in tasks if task["split"] == "eval"]
     for kind in ("file_judgments", "declaration_judgments"):
         if any(kind in task for task in eval_tasks):
@@ -1629,6 +1730,38 @@ def _validate_run(
             capture_id in captures,
             f"route_provenance.{route} references unknown capture_id: {capture_id}",
         )
+    evaluation_contract = declared_evaluation_contract(suite["tasks"])
+    if evaluation_contract is not None:
+        require(version == RUNNER_SCHEMA_VERSION, "evaluation_contract requires runner v5")
+        mode = evaluation_contract["request_mode"]
+        expected_policies = query_plan_contract.QUANTA_EVALUATION_POLICIES[mode]
+        allowed_routes = (
+            {"lexical", "semble-lexical-file"}
+            if mode == query_plan_contract.DEFAULT_FILE_SEARCH
+            else {"symbol"}
+            if mode == query_plan_contract.DECLARATION_NAVIGATION
+            else {"lexical"}
+        )
+        require(
+            bool(provenance) and set(provenance) <= allowed_routes,
+            f"{mode} has an unsupported route",
+        )
+        for route, entry in provenance.items():
+            capture = captures[entry["capture_id"]]
+            require(
+                (
+                    route in ("lexical", "symbol")
+                    and capture["system"] == "quanta"
+                    and capture["execution_profile"]["policy"] in expected_policies
+                )
+                or (
+                    mode == query_plan_contract.DEFAULT_FILE_SEARCH
+                    and route == "semble-lexical-file"
+                    and capture["system"] == "semble"
+                    and capture["execution_profile"].get("mode") == "lexical-file"
+                ),
+                f"{mode} request mode differs from bound product policy: {route}",
+            )
     if any(task.get("query_intent") == "exact_content" for task in suite["tasks"]):
         require(
             suite["routes"] == ["lexical"]
@@ -1676,6 +1809,11 @@ def _validate_run(
             and capture["execution_profile"]["mode"] == "lexical-file"
         )
         rank_unit = result.get("rank_unit")
+        if evaluation_contract is not None:
+            require(
+                rank_unit == evaluation_contract["result_unit"],
+                f"evaluation_contract result_unit mismatch for {key}",
+            )
         if rank_unit is not None:
             require(
                 rank_unit in ("distinct_file", "symbol"),
@@ -2345,6 +2483,17 @@ def file_hit_at_k_judged(
     return float(any(item["path"] in positive for item in candidates[:k]))
 
 
+def file_mrr_at_k_judged(
+    candidates: list[dict[str, Any]], judgments: list[dict[str, Any]], k: int
+) -> float:
+    """Reciprocal rank of the first positively judged distinct file."""
+    positive = {row["path"] for row in judgments if row["grade"] > 0}
+    for rank, item in enumerate(candidates[:k], 1):
+        if item["path"] in positive:
+            return 1.0 / rank
+    return 0.0
+
+
 def file_recall_at_k_judged(
     candidates: list[dict[str, Any]], judgments: list[dict[str, Any]], k: int
 ) -> float:
@@ -2456,6 +2605,7 @@ def judgment_diagnostics(
     output: dict[str, Any] = {
         "unjudged_policy": policy,
     }
+    evaluation_contract = declared_evaluation_contract(list(tasks.values()))
     for kind in kinds:
         if kind == "file_judgments":
             expected_unit = "distinct_file"
@@ -2466,6 +2616,8 @@ def judgment_diagnostics(
                 "hit_at_10": file_hit_at_k_judged,
                 "recall_at_10": file_recall_at_k_judged,
             }
+            if evaluation_contract is not None:
+                metrics["mrr_at_10"] = file_mrr_at_k_judged
         else:
             expected_unit = "symbol"
             metrics = {
@@ -2948,6 +3100,10 @@ def evaluate(
         ),
         "code_search_file requires file-judgment diagnostics; context metrics are undefined",
     )
+    require(
+        declared_evaluation_contract(suite.get("tasks", [])) is None,
+        "evaluation_contract requires file/symbol judgment diagnostics, not context scoring",
+    )
     # Historical v3 reports used capped @k values even when top_k < k. The
     # protocol-locked new report policy refuses that interpretation, while
     # legacy mode exists solely to reproduce immutable prior captures.
@@ -3365,10 +3521,11 @@ def diagnostic_reference_contracts(eval_tasks: dict[str, dict[str, Any]]) -> lis
     contracts = set()
     for task in eval_tasks.values():
         oracle = task.get("source_oracle") or {}
+        evaluation = task.get("evaluation_contract") or {}
         contracts.add(
             (
                 oracle.get("contract", "not_declared"),
-                oracle.get("unit", "not_declared"),
+                oracle.get("unit", evaluation.get("gold_unit", "not_declared")),
                 task.get("query_intent", "not_declared"),
             )
         )
@@ -3395,7 +3552,7 @@ def evaluate_diagnostic(
     results = {(row["task_id"], row["route"]): row for row in run["results"]}
     independent = judgment_diagnostics(suite, run, results, eval_tasks, routes[0], None)
     require(independent is not None, "independent judgment diagnostics unavailable")
-    return {
+    output = {
         "schema_version": SCHEMA_VERSION,
         "report_scope": "single_route_independent_judgment_diagnostic_v1",
         "status": "diagnostic_unqualified",
@@ -3417,6 +3574,10 @@ def evaluate_diagnostic(
         "quality_delta_gate": NOT_APPLICABLE,
         "judgment_metrics": independent,
     }
+    evaluation_contract = declared_evaluation_contract(suite["tasks"])
+    if evaluation_contract is not None:
+        output["evaluation_contract"] = evaluation_contract
+    return output
 
 
 def evaluate_paired_file_diagnostic(
@@ -3450,7 +3611,7 @@ def evaluate_paired_file_diagnostic(
         independent is not None and "file_judgments" in independent,
         "paired file judgments are unavailable",
     )
-    return {
+    output = {
         "schema_version": SCHEMA_VERSION,
         "report_scope": "paired_independent_file_judgment_diagnostic_v1",
         "status": "diagnostic_unqualified",
@@ -3475,6 +3636,10 @@ def evaluate_paired_file_diagnostic(
         },
         "quality_delta_gate": NOT_APPLICABLE,
     }
+    evaluation_contract = declared_evaluation_contract(suite["tasks"])
+    if evaluation_contract is not None:
+        output["evaluation_contract"] = evaluation_contract
+    return output
 
 
 def main(argv: Sequence[str] | None = None) -> int:

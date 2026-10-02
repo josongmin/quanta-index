@@ -9,14 +9,192 @@ from pathlib import Path
 
 import pytest
 
-from tools.benchmark.retrieval import evaluator, identifier_osa1_absence_suite
+from tools.benchmark.retrieval import evaluator, identifier_osa1_absence_suite, source_oracle
 from tools.benchmark.retrieval.identifier_robustness_report import (
+    _verify_paired_capture_identity,
     _write_output,
+    compare_paired_clean_typo,
     compose,
     compose_validated,
     verify_census_against_source,
     verify_generation_manifest,
 )
+
+
+def test_paired_capture_requires_same_binary_and_index_identity():
+    def record(digest):
+        return {
+            "route_provenance": {"lexical": {"capture_id": "q"}},
+            "captures": {
+                "q": {
+                    "system": "quanta",
+                    "runner_binary": {"digest": "a"},
+                    "searchd_binary": {"binary_digest": "b"},
+                    "activation_digest": digest,
+                    "generation": 1,
+                }
+            },
+        }
+
+    _verify_paired_capture_identity(record("index-1"), record("index-1"), "lexical", "lexical")
+    with pytest.raises(ValueError, match="paired capture differs in activation_digest"):
+        _verify_paired_capture_identity(record("index-1"), record("index-2"), "lexical", "lexical")
+
+
+def test_paired_clean_to_typo_uses_intended_gold_and_common_eligible_families():
+    source = {
+        "repository_commit": "a" * 40,
+        "file_universe": [{"path": "x.go"}],
+        "comparison_contract": {"top_k": 10},
+    }
+    clean = {
+        **source,
+        "tasks": [
+            {
+                "task_id": "CLN-L1",
+                "query_family_id": "f1",
+                "query": "Write",
+                "file_judgments": [{"path": "x.go", "grade": 3}],
+            },
+            {
+                "task_id": "CLN-L2",
+                "query_family_id": "f2",
+                "query": "Read",
+                "file_judgments": [{"path": "y.go", "grade": 3}],
+            },
+            {
+                "task_id": "CLN-L3",
+                "query_family_id": "f3",
+                "query": "Load",
+                "file_judgments": [{"path": "z.go", "grade": 3}],
+            },
+        ],
+    }
+    noisy = {
+        **source,
+        "tasks": [
+            {
+                "task_id": "T1",
+                "query_family_id": "f1",
+                "query": "Wrtie",
+                "intended_name": "Write",
+                "file_judgments": [{"path": "x.go", "grade": 3}],
+            },
+            {
+                "task_id": "T2",
+                "query_family_id": "f2",
+                "query": "Raed",
+                "intended_name": "Read",
+                "file_judgments": [{"path": "y.go", "grade": 3}],
+            },
+            {
+                "task_id": "T3",
+                "query_family_id": "f3",
+                "query": "Laod",
+                "intended_name": "Load",
+                "file_judgments": [{"path": "z.go", "grade": 3}],
+            },
+        ],
+    }
+    census = {
+        "lanes": {
+            "typo-transposition": {
+                "gold_kind": "intended_original_name",
+                "records": [
+                    {
+                        "task_id": "T1",
+                        "status": "admitted",
+                        "base_task_id": "L1",
+                        "base_query": "Write",
+                        "query": "Wrtie",
+                        "query_family_id": "f1",
+                    },
+                    {
+                        "task_id": "T2",
+                        "status": "admitted",
+                        "base_task_id": "L2",
+                        "base_query": "Read",
+                        "query": "Raed",
+                        "query_family_id": "f2",
+                    },
+                    {
+                        "task_id": "T3",
+                        "status": "admitted",
+                        "base_task_id": "L3",
+                        "base_query": "Load",
+                        "query": "Laod",
+                        "query_family_id": "f3",
+                    },
+                ],
+            }
+        }
+    }
+
+    def diagnostic(rows):
+        return {
+            "status": "diagnostic_unqualified",
+            "repository_commit": source["repository_commit"],
+            "comparison_contract": source["comparison_contract"],
+            "judgment_metrics": {"file_judgments": {"routes": {"lexical": {}}, "per_query": rows}},
+        }
+
+    def scored(task_id, hit, mrr, ndcg):
+        return {
+            "task_id": task_id,
+            "route": "lexical",
+            "eligible": True,
+            "scores": {"hit_at_10": hit, "mrr_at_10": mrr, "ndcg_at_10": ndcg},
+        }
+
+    clean_report = diagnostic(
+        [
+            scored("CLN-L1", 1, 1, 1),
+            scored("CLN-L2", 1, 0.5, 0.63),
+            {
+                "task_id": "CLN-L3",
+                "route": "lexical",
+                "eligible": False,
+                "reason": "execution_status_unavailable",
+            },
+        ]
+    )
+    noisy_report = diagnostic([scored("T1", 0, 0, 0), scored("T2", 1, 1, 1), scored("T3", 1, 1, 1)])
+    result = compare_paired_clean_typo(
+        clean,
+        clean_report,
+        noisy,
+        noisy_report,
+        census,
+        "typo-transposition",
+        clean_route="lexical",
+        typo_route="lexical",
+    )
+    assert result["paired_eligible_families"] == 2
+    assert result["excluded"] == [
+        {"query_family_id": "f3", "reason": "clean_execution_status_unavailable"}
+    ]
+    assert result["metrics"]["hit_at_10"] == {
+        "clean_mean": 1.0,
+        "typo_mean": 0.5,
+        "delta_typo_minus_clean": -0.5,
+    }
+    assert result["metrics"]["mrr_at_10"] == {
+        "clean_mean": 0.75,
+        "typo_mean": 0.5,
+        "delta_typo_minus_clean": -0.25,
+    }
+    noisy["tasks"][0]["file_judgments"] = [{"path": "wrong.go", "grade": 3}]
+    with pytest.raises(ValueError, match="paired family or intended gold mismatch"):
+        compare_paired_clean_typo(
+            clean,
+            clean_report,
+            noisy,
+            noisy_report,
+            census,
+            "typo-transposition",
+            clean_route="lexical",
+            typo_route="lexical",
+        )
 
 
 def fixture(policy="keyword_file"):
@@ -153,6 +331,14 @@ def test_fixed_golden_preserves_admission_eligibility_and_capped_hit():
     assert output["strata"]["unique"] == {"admitted": 2, "eligible": 1, "hit_at_10_count": 1}
     assert output["strata"]["ambiguous"] == {"admitted": 2, "eligible": 2, "hit_at_10_count": 1}
     assert output["status_counts"] == {"success": 2, "capped": 1, "unavailable": 1}
+    assert output["detailed_strata"] == {
+        "operation": {},
+        "length": {},
+        "short_common": {},
+        "overcorrection_candidate": {},
+        "near_name_collision": {},
+    }
+    assert output["sampling"] == {}
     assert (
         output["policy"],
         output["case"],
@@ -168,6 +354,94 @@ def test_fixed_golden_preserves_admission_eligibility_and_capped_hit():
     )
 
 
+def test_operation_and_length_breakdown_count_capped_as_eligible():
+    suite, census, record, diagnostic = fixture()
+    for row, operation, length in zip(
+        census["lanes"]["prefix"]["records"][:4],
+        ("insertion", "insertion", "transposition", "transposition"),
+        ("long", "short", "long", "short"),
+        strict=True,
+    ):
+        row["generation"] = {"operation": operation}
+        row["strata"] = {
+            "length": length,
+            "short_common": "yes" if length == "short" else "no",
+            "overcorrection_candidate": "no",
+            "near_name_collision": "no",
+        }
+    output = compose(suite, census, record, diagnostic, "prefix")
+    assert output["detailed_strata"]["operation"] == {
+        "insertion": {"admitted": 2, "eligible": 1, "hit_at_10_count": 1, "capped": 0},
+        "transposition": {"admitted": 2, "eligible": 2, "hit_at_10_count": 1, "capped": 1},
+    }
+    assert output["detailed_strata"]["length"] == {
+        "long": {"admitted": 2, "eligible": 2, "hit_at_10_count": 2, "capped": 0},
+        "short": {"admitted": 2, "eligible": 1, "hit_at_10_count": 0, "capped": 1},
+    }
+    assert output["detailed_strata"]["short_common"]["yes"] == {
+        "admitted": 2,
+        "eligible": 1,
+        "hit_at_10_count": 0,
+        "capped": 1,
+    }
+    del census["lanes"]["prefix"]["records"][0]["generation"]
+    with pytest.raises(ValueError, match="incomplete operation census metadata"):
+        compose(suite, census, record, diagnostic, "prefix")
+
+
+def test_seeded_sample_and_extra_multifile_are_separate():
+    suite, census, record, diagnostic = fixture()
+    census["lanes"]["prefix"]["records"][-1]["query_family_id"] = "familyX1"
+    census.update(
+        random_sample_family_ids=["familyU1", "familyU2"],
+        multi_file_stratum_family_ids=["familyA1", "familyA2", "familyX1"],
+        random_sample_families=2,
+        multi_file_stratum_families=3,
+        overlap_random_and_multi_file=0,
+    )
+    output = compose(suite, census, record, diagnostic, "prefix")
+    assert output["sampling"] == {
+        "additional_multi_file": {
+            "admitted": 2,
+            "eligible": 2,
+            "hit_at_10_count": 1,
+            "capped": 1,
+        },
+        "seeded_random": {
+            "admitted": 2,
+            "eligible": 1,
+            "hit_at_10_count": 1,
+            "capped": 0,
+        },
+    }
+    census["random_sample_family_ids"].append("familyX1")
+    with pytest.raises(ValueError, match="sampling family census mismatch"):
+        compose(suite, census, record, diagnostic, "prefix")
+
+
+@pytest.mark.parametrize(
+    "generation", ["paired_full_osa1_casefold_v2", "paired_full_osa1_casefold_v3"]
+)
+def test_full_population_keeps_unselected_families_visible(generation):
+    suite, census, record, diagnostic = fixture()
+    census["lanes"]["prefix"]["records"][-1]["query_family_id"] = "familyX1"
+    census.update(
+        generation=generation,
+        population_families=5,
+        random_sample_family_ids=["familyU1"],
+        multi_file_family_ids=["familyA1"],
+    )
+    output = compose(suite, census, record, diagnostic, "prefix")
+    assert output["sampling"]["seeded_random"]["hit_at_10_count"] == 1
+    assert output["sampling"]["additional_multi_file"]["hit_at_10_count"] == 1
+    assert output["sampling"]["remaining_population"] == {
+        "admitted": 2,
+        "eligible": 1,
+        "hit_at_10_count": 0,
+        "capped": 1,
+    }
+
+
 def test_code_search_file_reports_scored_family_separately():
     output = compose(*fixture("code_search_file"), "prefix")
     assert output["policy"] == "code_search_file"
@@ -176,6 +450,18 @@ def test_code_search_file_reports_scored_family_separately():
     assert output["ordering"] == "score_desc_path_tiebreak"
     assert output["lane"] == "prefix"
     assert output["status"] == "diagnostic_unqualified"
+
+
+def test_report_refuses_partially_declared_request_contract():
+    suite, census, record, diagnostic = fixture("code_search_file")
+    suite["tasks"][0]["evaluation_contract"] = {
+        "request_mode": "default_file_search",
+        "gold_unit": "distinct_file",
+        "result_unit": "distinct_file",
+    }
+    diagnostic["suite_commitment_sha256"] = evaluator.digest(evaluator.canonical(suite))
+    with pytest.raises(ValueError, match="mixed or missing evaluation contract"):
+        compose(suite, census, record, diagnostic, "prefix")
 
 
 def test_code_search_typo_file_keeps_answerable_scores():
@@ -325,6 +611,24 @@ def test_replay_rejects_score_tampering_without_rescoring_here(monkeypatch):
     monkeypatch.setattr(evaluator, "evaluate_diagnostic", lambda *_: expected)
     assert compose_validated(suite, {}, record, diagnostic, census, "prefix")["eligible"] == 3
     diagnostic["judgment_metrics"]["file_judgments"]["per_query"][0]["scores"]["hit_at_10"] = 0.0
+    with pytest.raises(ValueError, match="diagnostic differs from evaluator replay"):
+        compose_validated(suite, {}, record, diagnostic, census, "prefix")
+
+
+def test_new_contract_replay_rejects_mrr_tampering(monkeypatch):
+    suite, census, record, diagnostic = fixture("code_search_file")
+    for task in suite["tasks"]:
+        task["evaluation_contract"] = {
+            "request_mode": "default_file_search",
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+    diagnostic["suite_commitment_sha256"] = evaluator.digest(evaluator.canonical(suite))
+    diagnostic["judgment_metrics"]["file_judgments"]["per_query"][0]["scores"]["mrr_at_10"] = 1.0
+    expected = copy.deepcopy(diagnostic)
+    monkeypatch.setattr(evaluator, "evaluate_diagnostic", lambda *_: copy.deepcopy(expected))
+    assert compose_validated(suite, {}, record, diagnostic, census, "prefix")["eligible"] == 3
+    diagnostic["judgment_metrics"]["file_judgments"]["per_query"][0]["scores"]["mrr_at_10"] = 0.5
     with pytest.raises(ValueError, match="diagnostic differs from evaluator replay"):
         compose_validated(suite, {}, record, diagnostic, census, "prefix")
 
@@ -554,6 +858,61 @@ def test_ambiguity_census_must_match_independent_source_oracle(monkeypatch, tmp_
     row.update(matched_names=2, answer_class="ambiguous")
     with pytest.raises(ValueError, match="census/source declaration mismatch"):
         verify_census_against_source(tmp_path, suite, census, "prefix")
+
+
+def test_intended_typo_partition_is_rederived_from_source(monkeypatch, tmp_path):
+    suite = {
+        "repository_commit": "a" * 40,
+        "file_universe": [{"path": "a.go", "file_sha256": "0" * 64}],
+    }
+    partition = {
+        "intended_base_name": "Write",
+        "intended_base_files": ["a.go"],
+        "near_declaration_names": ["Write"],
+        "near_declaration_files": ["a.go"],
+        "other_near_declaration_names": [],
+        "exact_content_collision_paths": [],
+        "query_is_declaration_name": False,
+        "user_intent_state": "unjudged",
+    }
+    row = {
+        "task_id": "TYT-1",
+        "status": "admitted",
+        "query": "Wrtie",
+        "intended_name": "Write",
+        "matched_names": 1,
+        "gold_files": 1,
+        "source_partition": partition,
+    }
+    census = {
+        "lanes": {
+            "typo-transposition": {
+                "gold_kind": "intended_original_name",
+                "scoring_contract": source_oracle.GO_EXACT_LOCAL_NAME,
+                "near_declaration_metadata_contract": source_oracle.GO_NAME_OSA1_CASEFOLD,
+                "records": [row],
+            }
+        }
+    }
+
+    class Snapshot:
+        def file(self, _path):
+            return b"package p\nfunc Write() {}\n", [], "0" * 64
+
+    class Oracle:
+        def typo_gold_partition(self, language, query, intended_name):
+            assert (language, query, intended_name) == ("go", "Wrtie", "Write")
+            return partition
+
+    monkeypatch.setattr(evaluator, "SourceSnapshot", lambda *_: Snapshot())
+    monkeypatch.setattr(
+        "tools.benchmark.retrieval.identifier_robustness_report.source_oracle.SourceOracleIndex",
+        lambda *_: Oracle(),
+    )
+    verify_census_against_source(tmp_path, suite, census, "typo-transposition")
+    row["source_partition"] = {**partition, "intended_base_files": ["wrong.go"]}
+    with pytest.raises(ValueError, match="census/source intended-name partition mismatch"):
+        verify_census_against_source(tmp_path, suite, census, "typo-transposition")
 
 
 def test_generation_manifest_binds_admission_census_and_submitted_suite(tmp_path):

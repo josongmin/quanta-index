@@ -68,6 +68,7 @@ LANES = lanes("go")
 CONTENT_NO_ANSWER = ("no-answer-content", "NOC")
 TYPO_CONTENT_ABSENCE = ("typo-content-absence", "TNA")
 TYPO_OPERATIONS = ("insertion", "deletion", "substitution", "transposition")
+STRESS_TYPO_LANES = ("keyboard", "boundary")
 LETTERS = "abcdefghijklmnopqrstuvwxyz"
 MAX_ATTEMPTS = 8
 SHORT_NAME_MAX = 6
@@ -102,6 +103,12 @@ def sample_families(tasks: list[dict], seed: int, size: int) -> list[str]:
     )
     evaluator.require(len(ranked) >= size, "population is smaller than the requested sample")
     return ranked[:size]
+
+
+def _name_length_stratum(name: str) -> str:
+    if len(name) <= SHORT_NAME_MAX:
+        return "short_1_6"
+    return "medium_7_16" if len(name) <= 16 else "long_17_plus"
 
 
 def propose(lane: str, name: str, seed: int, family: str, attempt: int) -> tuple[str | None, dict]:
@@ -159,6 +166,100 @@ def propose(lane: str, name: str, seed: int, family: str, attempt: int) -> tuple
         swapped = name[:index] + name[index + 1] + name[index] + name[index + 2 :]
         return swapped, {"operation": operation, "index": index}
     raise evaluator.EvidenceError("unknown robustness lane: " + lane)
+
+
+def propose_typo_operation(
+    operation: str, name: str, seed: int, family: str, attempt: int
+) -> tuple[str | None, dict]:
+    """Draw a reproducible variant for one specified OSA1 edit operation."""
+    evaluator.require(operation in TYPO_OPERATIONS, "unsupported typo operation")
+    draw = _draw(seed, "typo", operation, family, attempt)
+    letter = LETTERS[(draw >> 8) % len(LETTERS)]
+    if operation == "insertion":
+        index = (draw >> 16) % (len(name) + 1)
+        return name[:index] + letter + name[index:], {"operation": operation, "index": index}
+    if operation == "deletion":
+        if len(name) < 4:
+            return None, {"ineligible": "deletion_below_3_characters", "operation": operation}
+        index = (draw >> 16) % len(name)
+        return name[:index] + name[index + 1 :], {"operation": operation, "index": index}
+    if operation == "substitution":
+        index = (draw >> 16) % len(name)
+        if name[index].lower() == letter:
+            letter = LETTERS[(LETTERS.index(letter) + 1) % len(LETTERS)]
+        replacement = letter.upper() if name[index].isupper() else letter
+        return name[:index] + replacement + name[index + 1 :], {
+            "operation": operation,
+            "index": index,
+        }
+    swaps = [index for index in range(len(name) - 1) if name[index] != name[index + 1]]
+    if not swaps:
+        return None, {"ineligible": "no_distinct_adjacent_pair", "operation": operation}
+    index = swaps[(draw >> 16) % len(swaps)]
+    return name[:index] + name[index + 1] + name[index] + name[index + 2 :], {
+        "operation": operation,
+        "index": index,
+    }
+
+
+_KEYBOARD_ROWS = (("qwertyuiop", 0.0), ("asdfghjkl", 0.5), ("zxcvbnm", 1.5))
+_KEYBOARD_POSITIONS = {
+    letter: (float(row), column + offset)
+    for row, (letters, offset) in enumerate(_KEYBOARD_ROWS)
+    for column, letter in enumerate(letters)
+}
+_KEYBOARD_NEIGHBORS = {
+    letter: tuple(
+        sorted(
+            other
+            for other, (other_row, other_col) in _KEYBOARD_POSITIONS.items()
+            if other != letter
+            and (other_row - row) ** 2 + (other_col - col) ** 2 <= 2.25
+        )
+    )
+    for letter, (row, col) in _KEYBOARD_POSITIONS.items()
+}
+
+
+def propose_stress_typo(
+    lane: str, name: str, seed: int, family: str, attempt: int
+) -> tuple[str | None, dict]:
+    """Draw one explicit OSA1 typo at a keyboard or code-token boundary."""
+    evaluator.require(lane in STRESS_TYPO_LANES, "unsupported stress typo lane")
+    draw = _draw(seed, "stress", lane, family, attempt)
+    if lane == "keyboard":
+        positions = [index for index, char in enumerate(name) if char.lower() in _KEYBOARD_NEIGHBORS]
+        if not positions:
+            return None, {"ineligible": "no_ascii_keyboard_letter"}
+        index = positions[draw % len(positions)]
+        char = name[index]
+        neighbors = _KEYBOARD_NEIGHBORS[char.lower()]
+        replacement = neighbors[(draw >> 16) % len(neighbors)]
+        if char.isupper():
+            replacement = replacement.upper()
+        return name[:index] + replacement + name[index + 1 :], {
+            "operation": "keyboard_substitution",
+            "index": index,
+            "from": char,
+            "to": replacement,
+        }
+    boundaries = [
+        index
+        for index in range(1, len(name))
+        if name[index] == "_" or (name[index].isupper() and name[index - 1].islower())
+    ]
+    if not boundaries:
+        return None, {"ineligible": "no_camel_or_snake_boundary"}
+    index = boundaries[draw % len(boundaries)]
+    if name[index] == "_":
+        return name[:index] + name[index + 1 :], {
+            "operation": "snake_boundary_deletion",
+            "index": index,
+        }
+    return name[: index - 1] + name[index] + name[index - 1] + name[index + 1 :], {
+        "operation": "camel_boundary_transposition",
+        "index": index - 1,
+    }
 
 
 class _Pool:
@@ -511,6 +612,288 @@ def derive(
     return outputs, census
 
 
+def derive_paired_full(
+    repo: Path, baseline: dict[str, Any], seed: int, language: str = "go"
+) -> tuple[dict[str, tuple[dict, dict]], dict]:
+    """Build OSA1 operation and stress suites paired to exact-name families.
+
+    Each result is a separate, source-bound diagnostic. The clean lane keeps
+    the same families for paired deltas. The source-derived near-name labels
+    do not claim to know which declaration a human intended.
+    """
+    evaluator.require(language in LANGUAGES, "unsupported robustness language")
+    _checked, _pack, source = evaluator.validate_suite(repo, baseline, source_oracle_admission=True)
+    files = {
+        entry["path"]: (source.file(entry["path"])[0], entry["file_sha256"])
+        for entry in baseline["file_universe"]
+    }
+    oracle = source_oracle.SourceOracleIndex(files, {task["query"] for task in baseline["tasks"]})
+    exact = contract_for(language, "exact")
+    near = contract_for(language, "osa1_casefold")
+    tasks = baseline["tasks"]
+    evaluator.require(
+        len({task["query_family_id"] for task in tasks}) == len(tasks),
+        "paired robustness requires one exact task per family",
+    )
+    for task in tasks:
+        evaluator.require(
+            source_oracle.IDENTIFIER.fullmatch(task["query"]) is not None,
+            "paired robustness requires ASCII bare names",
+        )
+        evaluator.require(
+            bool(oracle.expected_rows(exact, task["query"], "distinct_file")),
+            "paired robustness base is not a declared name",
+        )
+    outputs: dict[str, tuple[dict, dict]] = {}
+    census: dict[str, Any] = {
+        "generation": "paired_full_osa1_casefold_v3",
+        "seed": seed,
+        "population_families": len(tasks),
+        "random_sample_family_ids": sorted(sample_families(tasks, seed, min(300, len(tasks)))),
+        "multi_file_family_ids": sorted(
+            task["query_family_id"]
+            for task in tasks
+            if len(oracle.expected_rows(exact, task["query"], "distinct_file")) > 1
+        ),
+        "lanes": {},
+    }
+    random_sample = set(census["random_sample_family_ids"])
+    multi_file = set(census["multi_file_family_ids"])
+    # An exact, valid name that is also near another declared name is a
+    # source-verified overcorrection probe in the clean lane. Its user intent
+    # still needs review before any navigation relevance claim.
+    census["overcorrection_candidates"] = [
+        {
+            "base_task_id": task["task_id"],
+            "query_family_id": task["query_family_id"],
+            "query": task["query"],
+            "exact_files": [
+                row["path"] for row in oracle.expected_rows(exact, task["query"], "distinct_file")
+            ],
+            "other_near_declaration_names": [
+                name for name in oracle.matched_names(near, task["query"]) if name != task["query"]
+            ],
+            "user_intent_state": "unjudged",
+        }
+        for task in tasks
+        if 3 <= len(task["query"]) <= 64
+        and any(name != task["query"] for name in oracle.matched_names(near, task["query"]))
+    ]
+    overcorrection_families = {
+        row["query_family_id"] for row in census["overcorrection_candidates"]
+    }
+    token_paths = oracle._index_folded_tokens()
+    base_strata = {
+        task["query_family_id"]: {
+            "length": _name_length_stratum(task["query"]),
+            "short_common": (
+                "yes"
+                if len(task["query"]) <= SHORT_NAME_MAX
+                and len(token_paths.get(task["query"].casefold(), ())) >= 3
+                else "no"
+            ),
+            "overcorrection_candidate": (
+                "yes" if task["query_family_id"] in overcorrection_families else "no"
+            ),
+        }
+        for task in tasks
+    }
+
+    clean = copy.deepcopy(baseline)
+    clean["suite_id"] = baseline["suite_id"] + f"-robustness-clean-paired-v2-seed{seed}"
+    # The clean input is the common default-file-search pair. Explicit typo
+    # requests remain single-route because Semble's native lexical-file mode
+    # has no matching OSA1 request contract.
+    clean["routes"] = ["lexical", "semble-lexical-file"]
+    clean["diagnostic_policy"] = evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    clean["tasks"] = []
+    for base in tasks:
+        row = {
+            "task_id": "CLN-" + base["task_id"],
+            "query": base["query"],
+            "query_sha256": evaluator.digest(base["query"].encode("utf-8")),
+            "query_family_id": base["query_family_id"],
+            "split": "eval",
+            "query_intent": "bare_symbol",
+            "evaluation_contract": {
+                "request_mode": "default_file_search",
+                "gold_unit": "distinct_file",
+                "result_unit": "distinct_file",
+            },
+            "source_oracle": {"contract": exact, "unit": "distinct_file"},
+            "judgment_policy": evaluator.SOURCE_ORACLE_JUDGMENT_POLICY,
+            "file_judgments": oracle.expected_rows(exact, base["query"], "distinct_file"),
+            "gold": evaluator.source_oracle_gold(source, oracle, exact, base["query"]),
+            "answerable": True,
+        }
+        clean["tasks"].append(row)
+    _checked, pack, _source = evaluator.validate_suite(repo, clean)
+    outputs["clean"] = clean, pack
+    census["lanes"]["clean"] = {
+        "contract": exact,
+        "admitted": len(clean["tasks"]),
+        "records": [
+            {
+                "task_id": "CLN-" + base["task_id"],
+                "query_family_id": base["query_family_id"],
+                "query": base["query"],
+                "status": "admitted",
+                "answer_class": "unique",
+                "matched_names": 1,
+                "gold_files": len(oracle.expected_rows(exact, base["query"], "distinct_file")),
+                "strata": dict(base_strata[base["query_family_id"]]),
+            }
+            for base in tasks
+        ],
+    }
+
+    for operation in (*TYPO_OPERATIONS, *STRESS_TYPO_LANES):
+        lane = "typo-" + operation
+        code = {
+            "insertion": "TYI",
+            "deletion": "TYD",
+            "substitution": "TYS",
+            "transposition": "TYT",
+            "keyboard": "TYK",
+            "boundary": "TYB",
+        }[operation]
+        suite = copy.deepcopy(clean)
+        suite["suite_id"] = baseline["suite_id"] + f"-robustness-{lane}-casefold-v2-seed{seed}"
+        suite["routes"] = ["lexical"]
+        rows, records, pool = [], [], _Pool()
+        for base in tasks:
+            query = None
+            rejected: list[str] = []
+            rejected_candidates: list[dict[str, Any]] = []
+            partition = None
+            meta: dict[str, Any] = {}
+            for attempt in range(MAX_ATTEMPTS):
+                candidate, meta = (
+                    propose_typo_operation(
+                        operation, base["query"], seed, base["query_family_id"], attempt
+                    )
+                    if operation in TYPO_OPERATIONS
+                    else propose_stress_typo(
+                        operation, base["query"], seed, base["query_family_id"], attempt
+                    )
+                )
+                if candidate is None:
+                    rejected.append(meta.get("ineligible", "no_variant"))
+                    break
+                if (
+                    source_oracle.IDENTIFIER.fullmatch(candidate) is None
+                    or not 3 <= len(candidate) <= 64
+                    or candidate.casefold() == base["query"].casefold()
+                ):
+                    rejected.append("outside_folded_typo_request")
+                    rejected_candidates.append({"query": candidate, "reason": rejected[-1]})
+                    continue
+                partition = oracle.typo_gold_partition(language, candidate, base["query"])
+                if partition["query_is_declaration_name"]:
+                    rejected.append("exact_declaration_collision")
+                    rejected_candidates.append(
+                        {
+                            "query": candidate,
+                            "reason": rejected[-1],
+                            "source_partition": partition,
+                        }
+                    )
+                    continue
+                if partition["exact_content_collision_paths"]:
+                    rejected.append("exact_content_collision")
+                    rejected_candidates.append(
+                        {
+                            "query": candidate,
+                            "reason": rejected[-1],
+                            "source_partition": partition,
+                        }
+                    )
+                    continue
+                reason = pool.conflict(candidate)
+                if reason:
+                    rejected.append(reason)
+                    rejected_candidates.append({"query": candidate, "reason": reason})
+                    continue
+                query = candidate
+                meta["attempt"] = attempt
+                pool.add(base["task_id"], query)
+                break
+            membership = (
+                "random_and_multifile"
+                if base["query_family_id"] in random_sample & multi_file
+                else "random"
+                if base["query_family_id"] in random_sample
+                else "multifile_extra"
+                if base["query_family_id"] in multi_file
+                else "population_other"
+            )
+            record = {
+                "task_id": code + "-" + base["task_id"],
+                "query_family_id": base["query_family_id"],
+                "base_task_id": base["task_id"],
+                "base_query": base["query"],
+                "query": query,
+                "operation": operation,
+                "sample_membership": membership,
+                "generation": meta,
+                "rejected_attempts": rejected,
+                "rejected_candidates": rejected_candidates,
+                "status": "admitted" if query is not None else "ineligible",
+                "strata": dict(base_strata[base["query_family_id"]]),
+            }
+            if query is None:
+                records.append(record)
+                continue
+            evaluator.require(partition is not None, "admitted typo has no source partition")
+            record["source_partition"] = partition
+            record["strata"]["near_name_collision"] = (
+                "yes" if partition["other_near_declaration_names"] else "no"
+            )
+            record["intended_name"] = base["query"]
+            record["matched_names"] = 1
+            record["gold_files"] = len(partition["intended_base_files"])
+            records.append(record)
+            judgments = oracle.expected_rows(exact, base["query"], "distinct_file")
+            rows.append(
+                {
+                    "task_id": record["task_id"],
+                    "query": query,
+                    "query_sha256": evaluator.digest(query.encode("utf-8")),
+                    "query_family_id": base["query_family_id"],
+                    "split": "eval",
+                    "query_intent": "bare_symbol",
+                    "intended_name": base["query"],
+                    "evaluation_contract": {
+                        "request_mode": "explicit_osa1_typo",
+                        "gold_unit": "distinct_file",
+                        "result_unit": "distinct_file",
+                    },
+                    "source_oracle": {"contract": exact, "unit": "distinct_file"},
+                    "judgment_policy": evaluator.SOURCE_ORACLE_JUDGMENT_POLICY,
+                    "file_judgments": judgments,
+                    "gold": evaluator.source_oracle_gold(source, oracle, exact, base["query"]),
+                    "answerable": bool(judgments),
+                }
+            )
+        suite["tasks"] = rows
+        evaluator.require(bool(rows), f"{lane} has no eligible tasks")
+        _checked, pack, _source = evaluator.validate_suite(repo, suite)
+        outputs[lane] = suite, pack
+        census["lanes"][lane] = {
+            "scoring_contract": exact,
+            "near_declaration_metadata_contract": near,
+            "gold_kind": "intended_original_name",
+            "admitted": len(rows),
+            "status": _tally(records, "status"),
+            "rejected_attempts": _tally(
+                [{"reason": reason} for row in records for reason in row["rejected_attempts"]],
+                "reason",
+            ),
+            "records": records,
+        }
+    return outputs, census
+
+
 def _content_no_answer(
     repo: Path, source_suite: dict, source_records: list[dict], code: str, seed: int
 ) -> tuple[tuple[dict, dict], dict]:
@@ -673,6 +1056,7 @@ def write(
     sample_size: int,
     no_answer: int,
     language: str = "go",
+    paired_full: bool = False,
 ) -> dict:
     tool_root = Path(__file__).resolve().parents[3]
     tool_files = [
@@ -680,7 +1064,11 @@ def write(
     ]
     baseline_bytes = read_control(baseline_path)
     baseline = source_oracle_suite._baseline_from_bytes(baseline_bytes)
-    suites, census = derive(repo, baseline, seed, sample_size, no_answer, language)
+    suites, census = (
+        derive_paired_full(repo, baseline, seed, language)
+        if paired_full
+        else derive(repo, baseline, seed, sample_size, no_answer, language)
+    )
     contents: dict[str, bytes] = {"census.json": source_oracle_suite._json_bytes(census)}
     for lane, (suite, pack) in suites.items():
         contents[f"{lane}-suite.json"] = source_oracle_suite._json_bytes(suite)
@@ -702,6 +1090,7 @@ def write(
             "sample_size": sample_size,
             "no_answer": no_answer,
             "max_attempts": MAX_ATTEMPTS,
+            "paired_full": paired_full,
             "case_policy": "typo_casefold_other_name_variants_case_sensitive_except_components",
             "component_tokenizer": source_oracle.COMPONENT_TOKENIZER,
         },
@@ -741,6 +1130,7 @@ def main() -> int:
     parser.add_argument("--sample-size", type=int, default=300)
     parser.add_argument("--no-answer", type=int, default=100)
     parser.add_argument("--language", choices=LANGUAGES, default="go")
+    parser.add_argument("--paired-full", action="store_true")
     args = parser.parse_args()
     try:
         manifest = write(
@@ -751,6 +1141,7 @@ def main() -> int:
             args.sample_size,
             args.no_answer,
             args.language,
+            args.paired_full,
         )
     except (OSError, ValueError, source_oracle.SourceOracleError) as exc:
         parser.exit(2, f"ERROR: {exc}\n")

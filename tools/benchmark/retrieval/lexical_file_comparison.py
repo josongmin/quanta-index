@@ -192,7 +192,11 @@ def _canonical_result_path(path: object) -> bool:
 
 
 def _tasks(
-    suite: dict, pack: dict, *, file_policy: str = "code_search_file"
+    suite: dict,
+    pack: dict,
+    *,
+    file_policy: str = "code_search_file",
+    allow_single_lexical: bool = False,
 ) -> dict[str, tuple[str, list[str]]]:
     if pack.get("suite_commitment_sha256") != digest(canonical(suite)):
         raise ValueError("pack and suite commitment differ")
@@ -214,10 +218,11 @@ def _tasks(
     if contract["top_k"] != 10:
         raise ValueError("lexical diagnostic requires top_k 10 in suite and pack")
     routes = suite.get("routes")
+    single_file_route = allow_single_lexical and routes == [QUANTA_LEXICAL_ROUTE]
     if (
         routes not in ([QUANTA_LEXICAL_ROUTE, SEMBLE_LEXICAL_ROUTE], FILE_ROUTES)
-        or pack.get("routes") != routes
-    ):
+        and not single_file_route
+    ) or pack.get("routes") != routes:
         raise ValueError("suite and pack route inventory is not the lexical pair")
     if (
         pack.get("tokenizer") != contract["tokenizer"]
@@ -244,11 +249,15 @@ def _tasks(
             or not task_id
             or not isinstance(query, str)
             or not query
-            or (routes != FILE_ROUTES and BARE_SYMBOL.fullmatch(query) is None)
+            or (
+                routes != FILE_ROUTES
+                and not single_file_route
+                and BARE_SYMBOL.fullmatch(query) is None
+            )
             or task_id in blinded
         ):
             raise ValueError("duplicate or malformed blinded query")
-        if routes == FILE_ROUTES:
+        if routes == FILE_ROUTES or single_file_route:
             from tools.benchmark.retrieval.query_plan import derive_query_identity
 
             derive_query_identity(file_policy, query)

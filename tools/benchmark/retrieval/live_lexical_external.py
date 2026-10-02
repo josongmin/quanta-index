@@ -35,7 +35,7 @@ import corpus_release  # noqa: E402
 from evidence import RawFile, _read_control_file, canonical_json, file_digest  # noqa: E402
 
 from tools.benchmark.retrieval import lexical_file_comparison as lexical  # noqa: E402
-from tools.benchmark.retrieval import sourcegraph  # noqa: E402
+from tools.benchmark.retrieval import query_plan, sourcegraph  # noqa: E402
 
 MAX_HTTP_BYTES = 16 * 1024 * 1024
 MAX_PROCESS_BYTES = 16 * 1024 * 1024
@@ -44,6 +44,8 @@ MAX_INDEX_BYTES = 512 * 1024 * 1024
 MAX_INDEXED_VIEW_SECONDS = 900
 HTTP_TIMEOUT = 50
 MAX_SOURCEGRAPH_REQUEST_TARGET_BYTES = 8 * 1024
+CS_FUZZY_CAPABILITY = "cs_fuzzy_osa1_file"
+CS_FUZZY_VERIFIED_VERSION = "cs version 3.2.0"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -88,6 +90,7 @@ def _source_hashes() -> dict[str, str]:
         "lexical_scorer": Path(lexical.__file__),
         "corpus_binding": Path(corpus_binding.__file__),
         "corpus_release": Path(corpus_release.__file__),
+        "query_planner": Path(query_plan.__file__),
     }
     return {name: _sha_file(path) for name, path in sources.items()}
 
@@ -705,6 +708,355 @@ def _cs(
         + b"\n",
     )
     return _cs_response(task, gold, view, admitted, code, stdout, stderr, elapsed)
+
+
+def _cs_fuzzy_query(query: str) -> str:
+    """cs 3.2.0's explicit one-edit term syntax, separate from bare search."""
+    if not isinstance(query, str):
+        raise ValueError("cs fuzzy query must be a bare ASCII identifier")
+    try:
+        query_plan.plan_lexical_request("code_search_typo_file", query)
+    except query_plan.QueryPlanError as error:
+        raise ValueError("cs fuzzy query must be a bare ASCII identifier") from error
+    return query + "~1"
+
+
+def _cs_fuzzy_argv(binary: Path, query: str, view: Path) -> list[str]:
+    return [
+        str(binary),
+        "--format",
+        "json",
+        "--result-limit",
+        "10",
+        "--dir",
+        str(view),
+        "--hidden",
+        "--no-gitignore",
+        "--no-ignore",
+        "--min",
+        "--max-read-size-bytes",
+        "10000000",
+        _cs_fuzzy_query(query),
+    ]
+
+
+def _cs_fuzzy_response(
+    task: dict,
+    gold: list[str],
+    view: Path,
+    admitted: dict[str, str],
+    argv: list[str],
+    code: int,
+    stdout: bytes,
+    stderr: bytes,
+    elapsed: float,
+) -> dict:
+    if not argv or argv != _cs_fuzzy_argv(Path(argv[0]), task["query"], view):
+        raise ValueError("cs fuzzy native argv differs from the declared request")
+    decoded = _cs_response(task, gold, view, admitted, code, stdout, stderr, elapsed)
+    return {
+        "capability": CS_FUZZY_CAPABILITY,
+        "request_mode": "explicit_osa1_typo",
+        "task_id": task["task_id"],
+        "submitted_query": task["query"],
+        "native_query": argv[-1],
+        "status": "success",
+        "paths": decoded["paths"],
+        "elapsed_ms": elapsed,
+        "exit_code": code,
+        "stdout_sha256": _sha(stdout),
+        "stderr_sha256": _sha(stderr),
+    }
+
+
+def _cs_fuzzy(
+    binary: Path, task: dict, gold: list[str], view: Path, admitted: dict[str, str], target: Path
+) -> dict:
+    argv = _cs_fuzzy_argv(binary, task["query"], view)
+    code, stdout, stderr, elapsed = _process(argv, 60)
+    _write(target, stdout)
+    _write(target.with_suffix(".stderr"), stderr)
+    _write(
+        target.with_suffix(".process.json"),
+        json.dumps(
+            {"argv": argv, "exit_code": code, "elapsed_ms": elapsed}, sort_keys=True
+        ).encode()
+        + b"\n",
+    )
+    return _cs_fuzzy_response(task, gold, view, admitted, argv, code, stdout, stderr, elapsed)
+
+
+def _cs_fuzzy_spec(path: Path) -> dict:
+    spec = _json(_read_control_file(path))
+    if (
+        set(spec)
+        != {"schema_version", "capability", "corpus", "suite", "query_pack", "cs", "output_root"}
+        or type(spec["schema_version"]) is not int
+        or spec["schema_version"] != 1
+        or spec["capability"] != CS_FUZZY_CAPABILITY
+        or not isinstance(spec["cs"], dict)
+        or set(spec["cs"]) != {"binary"}
+    ):
+        raise ValueError("cs fuzzy capability requires a closed schema v1 spec")
+    corpus_binding._selection(spec["corpus"])
+    for key in ("suite", "query_pack", "output_root"):
+        value = spec[key]
+        if (
+            not isinstance(value, str)
+            or not Path(value).is_absolute()
+            or ".." in Path(value).parts
+            or Path(value).as_posix() != value
+        ):
+            raise ValueError(f"cs fuzzy {key} must be a canonical absolute path")
+    binary = spec["cs"]["binary"]
+    if (
+        not isinstance(binary, str)
+        or not Path(binary).is_absolute()
+        or ".." in Path(binary).parts
+        or Path(binary).as_posix() != binary
+    ):
+        raise ValueError("cs fuzzy binary must be a canonical absolute path")
+    return spec
+
+
+def _cs_fuzzy_inputs(spec: dict) -> tuple[dict, bytes, bytes, bytes, dict, dict, dict, Path]:
+    release = Path(spec["corpus"]["release_path"])
+    document = corpus_release.validate(release)
+    repository = next(
+        (
+            row
+            for row in document["repositories"]
+            if row["recipe"]["name"] == spec["corpus"]["repository"]
+        ),
+        None,
+    )
+    if repository is None:
+        raise ValueError("cs fuzzy selected repository is absent from release")
+    view_name = spec["corpus"]["view"]
+    manifest_raw = _read_control_file(release / repository["views"][view_name]["manifest"])
+    suite_raw = _read_control_file(Path(spec["suite"]))
+    pack_raw = _read_control_file(Path(spec["query_pack"]))
+    binding = corpus_binding._bind(document, manifest_raw, spec["corpus"], suite_raw, pack_raw)
+    suite, pack, manifest = _json(suite_raw), _json(pack_raw), _json(manifest_raw)
+    admitted = lexical._file_universe(suite, pack)
+    tasks = lexical._tasks(
+        suite, pack, file_policy="code_search_typo_file", allow_single_lexical=True
+    )
+    if any(
+        not isinstance(task.get("evaluation_contract"), dict)
+        or task["evaluation_contract"].get("request_mode") != "explicit_osa1_typo"
+        or task["evaluation_contract"].get("result_unit") != "distinct_file"
+        for task in suite["tasks"]
+    ):
+        raise ValueError("cs fuzzy suite requires explicit OSA1 file-search contract")
+    if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id) is None for task_id in tasks):
+        raise ValueError("cs fuzzy task IDs must be safe filename components")
+    if {row["path"] for row in manifest["files"]} != admitted:
+        raise ValueError("cs fuzzy file universe differs from selected release")
+    for task in pack["tasks"]:
+        _cs_fuzzy_query(task["query"])
+    view = release / "views" / spec["corpus"]["repository"] / view_name
+    return (
+        binding,
+        suite_raw,
+        pack_raw,
+        manifest_raw,
+        pack,
+        tasks,
+        {row["path"]: row["file_sha256"] for row in manifest["files"]},
+        view,
+    )
+
+
+def capture_cs_fuzzy(spec_path: Path) -> dict:
+    """Capture cs ~1 separately; never submit these rows to default product_result."""
+    spec = _cs_fuzzy_spec(spec_path)
+    root = Path(spec["output_root"])
+    stage = root.with_name(root.name + ".staging")
+    checkout = Path(__file__).resolve().parents[3]
+    release = Path(spec["corpus"]["release_path"])
+    input_paths = (
+        spec_path,
+        root,
+        release,
+        Path(spec["suite"]),
+        Path(spec["query_pack"]),
+        Path(spec["cs"]["binary"]),
+    )
+    if any(path.resolve().is_relative_to(checkout) for path in input_paths):
+        raise ValueError("cs fuzzy inputs and output must stay outside the source checkout")
+    if (
+        root.exists()
+        or root.is_symlink()
+        or stage.exists()
+        or stage.is_symlink()
+        or root.resolve().is_relative_to(release.resolve())
+        or release.resolve().is_relative_to(root.resolve())
+    ):
+        raise ValueError("cs fuzzy output must be fresh and disjoint from release")
+    binding, suite_raw, pack_raw, manifest_raw, pack, tasks, admitted, view = _cs_fuzzy_inputs(spec)
+    binary = Path(spec["cs"]["binary"]).resolve(strict=True)
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise ValueError("cs fuzzy binary must be executable")
+    code, version_raw, stderr, _ = _process([str(binary), "--version"], 10)
+    version = version_raw.decode().strip()
+    if code != 0 or stderr or version != CS_FUZZY_VERIFIED_VERSION:
+        raise ValueError("cs fuzzy capability is verified only for cs 3.2.0")
+    binary_sha = _sha_file(binary)
+    sources = _source_hashes()
+    stage.mkdir(parents=True)
+    for name, raw in (
+        ("spec.json", _read_control_file(spec_path)),
+        ("suite.json", suite_raw),
+        ("query-pack.json", pack_raw),
+        ("manifest.json", manifest_raw),
+        ("binding.json", canonical_json(binding).encode() + b"\n"),
+    ):
+        _write(stage / name, raw)
+    with (stage / "cs_fuzzy_rows.jsonl").open("xb") as stream:
+        for task in pack["tasks"]:
+            task_id = task["task_id"]
+            row = _cs_fuzzy(
+                binary, task, tasks[task_id][1], view, admitted, stage / "cs" / f"{task_id}.json"
+            )
+            stream.write(canonical_json(row).encode() + b"\n")
+    if (
+        _read_control_file(Path(spec["suite"])) != suite_raw
+        or _read_control_file(Path(spec["query_pack"])) != pack_raw
+        or _sha_file(binary) != binary_sha
+        or _source_hashes() != sources
+        or corpus_release.validate(release)["digest"] != binding["release_digest"]
+    ):
+        raise ValueError("cs fuzzy input, binary or source changed during capture")
+    summary = {
+        "schema_version": 1,
+        "capability": CS_FUZZY_CAPABILITY,
+        "request_mode": "explicit_osa1_typo",
+        "status": "diagnostic_unqualified",
+        "scoring_status": "not_scored",
+        "tasks": len(tasks),
+        "binding": binding,
+        "cs_version": version,
+        "cs_binary_sha256": binary_sha,
+        "producer_sources_sha256": sources,
+        "rows_sha256": _sha_file(stage / "cs_fuzzy_rows.jsonl"),
+        "raw_capture_sha256": {
+            path.relative_to(stage).as_posix(): _sha_file(path)
+            for path in sorted((stage / "cs").iterdir())
+        },
+        "indexed_universe_attested": False,
+        "exclusions": [
+            "independent_gold",
+            "qualified_speed",
+            "backend_indexed_universe_attestation",
+        ],
+    }
+    _write(stage / "capture.json", canonical_json(summary).encode() + b"\n")
+    if root.exists():
+        raise ValueError("cs fuzzy output appeared during capture")
+    stage.rename(root)
+    return summary
+
+
+def verify_cs_fuzzy(root: Path) -> dict:
+    """Re-derive the explicit native argv and every row from captured process bytes."""
+    inventory = corpus_release.regular_tree(root)
+    spec = _cs_fuzzy_spec(root / "spec.json")
+    if Path(spec["output_root"]) != root:
+        raise ValueError("cs fuzzy output root differs from frozen spec")
+    summary = _json(_read_control_file(root / "capture.json"))
+    binding, suite_raw, pack_raw, manifest_raw, pack, tasks, admitted, view = _cs_fuzzy_inputs(spec)
+    binary = Path(spec["cs"]["binary"]).resolve(strict=True)
+    code, version_raw, stderr, _ = _process([str(binary), "--version"], 10)
+    version = version_raw.decode().strip()
+    if code != 0 or stderr or version != CS_FUZZY_VERIFIED_VERSION:
+        raise ValueError("cs fuzzy capability/version changed")
+    fixed = {
+        "spec.json",
+        "suite.json",
+        "query-pack.json",
+        "manifest.json",
+        "binding.json",
+        "capture.json",
+        "cs_fuzzy_rows.jsonl",
+    }
+    raw_paths = {
+        f"cs/{task['task_id']}.{suffix}"
+        for task in pack["tasks"]
+        for suffix in ("json", "stderr", "process.json")
+    }
+    if set(inventory) != fixed | raw_paths:
+        raise ValueError("cs fuzzy capture file inventory differs")
+    if (
+        set(summary)
+        != {
+            "schema_version",
+            "capability",
+            "request_mode",
+            "status",
+            "scoring_status",
+            "tasks",
+            "binding",
+            "cs_version",
+            "cs_binary_sha256",
+            "producer_sources_sha256",
+            "rows_sha256",
+            "raw_capture_sha256",
+            "indexed_universe_attested",
+            "exclusions",
+        }
+        or summary["schema_version"] != 1
+        or summary["capability"] != CS_FUZZY_CAPABILITY
+        or summary["request_mode"] != "explicit_osa1_typo"
+        or summary["status"] != "diagnostic_unqualified"
+        or summary["scoring_status"] != "not_scored"
+        or summary["indexed_universe_attested"] is not False
+        or summary["tasks"] != len(tasks)
+        or summary["binding"] != binding
+        or summary["cs_version"] != version
+        or summary["cs_binary_sha256"] != _sha_file(binary)
+        or summary["producer_sources_sha256"] != _source_hashes()
+        or summary["rows_sha256"] != _sha_file(root / "cs_fuzzy_rows.jsonl")
+        or summary["raw_capture_sha256"]
+        != {name: _sha_file(root / name) for name in sorted(raw_paths)}
+        or summary["exclusions"]
+        != ["independent_gold", "qualified_speed", "backend_indexed_universe_attestation"]
+        or _read_control_file(root / "suite.json") != suite_raw
+        or _read_control_file(root / "query-pack.json") != pack_raw
+        or _read_control_file(root / "manifest.json") != manifest_raw
+        or _json(_read_control_file(root / "binding.json")) != binding
+    ):
+        raise ValueError("cs fuzzy capture binding or native bytes differ")
+
+    def replay(task: dict, row: dict) -> None:
+        task_id = task["task_id"]
+        terminal = _json(_read_control_file(root / "cs" / f"{task_id}.process.json"))
+        argv = _cs_fuzzy_argv(binary, task["query"], view)
+        if (
+            set(terminal) != {"argv", "exit_code", "elapsed_ms"}
+            or terminal["argv"] != argv
+            or type(terminal["exit_code"]) is not int
+            or type(terminal["elapsed_ms"]) not in (int, float)
+            or not math.isfinite(terminal["elapsed_ms"])
+            or terminal["elapsed_ms"] < 0
+        ):
+            raise ValueError("cs fuzzy native argv or process metadata differs")
+        derived = _cs_fuzzy_response(
+            task,
+            tasks[task_id][1],
+            view,
+            admitted,
+            argv,
+            terminal["exit_code"],
+            _read_control_file(root / "cs" / f"{task_id}.json"),
+            _read_control_file(root / "cs" / f"{task_id}.stderr"),
+            terminal["elapsed_ms"],
+        )
+        if row != derived:
+            raise ValueError("cs fuzzy row differs from native response")
+
+    _replay_rows(root / "cs_fuzzy_rows.jsonl", pack["tasks"], replay)
+    return summary
 
 
 def _cs_response(
@@ -1425,13 +1777,19 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--spec", type=Path)
     mode.add_argument("--verify", type=Path)
+    mode.add_argument("--cs-fuzzy-spec", type=Path)
+    mode.add_argument("--verify-cs-fuzzy", type=Path)
     args = parser.parse_args()
     try:
-        print(
-            json.dumps(
-                verify(args.verify) if args.verify else capture(args.spec), sort_keys=True, indent=2
-            )
-        )
+        if args.cs_fuzzy_spec:
+            result = capture_cs_fuzzy(args.cs_fuzzy_spec)
+        elif args.verify_cs_fuzzy:
+            result = verify_cs_fuzzy(args.verify_cs_fuzzy)
+        elif args.verify:
+            result = verify(args.verify)
+        else:
+            result = capture(args.spec)
+        print(json.dumps(result, sort_keys=True, indent=2))
     except (ValueError, OSError, subprocess.SubprocessError, corpus_release.EvidenceError) as error:
         parser.error(str(error))
     return 0

@@ -367,6 +367,8 @@ class SourceOracleIndex:
         self.query_tokens = {name.encode("ascii") for name in query_names}
         self._words: dict[bytes, set[str]] | None = None
         self._first_words: dict[bytes, tuple[str, int, int]] = {}
+        self._folded_token_paths: dict[str, set[str]] | None = None
+        self._folded_declared_names: dict[str, set[str]] = {}
         # Name bytes identify the match; definition bytes identify the indexed symbol unit.
         self._declarations: dict[
             tuple[str, frozenset[str]], dict[bytes, list[tuple[str, int, int, int, int]]]
@@ -405,6 +407,16 @@ class SourceOracleIndex:
             self._words = words
         return self._words
 
+    def _index_folded_tokens(self) -> dict[str, set[str]]:
+        """Build the exact ASCII token collision index once per frozen universe."""
+        if self._folded_token_paths is None:
+            token_paths: dict[str, set[str]] = defaultdict(set)
+            for path, (raw, _digest) in sorted(self.files.items()):
+                for match in ASCII_TOKEN_SUPERSET.finditer(raw):
+                    token_paths[match.group().decode("ascii").casefold()].add(path)
+            self._folded_token_paths = token_paths
+        return self._folded_token_paths
+
     def _require_content_absent_casefold(self, query: str) -> None:
         """Reject a negative content label if any frozen file contains the query."""
         _require_query(ASCII_CONTENT_ABSENT_CASEFOLD, query)
@@ -431,9 +443,7 @@ class SourceOracleIndex:
         for path, (raw, _digest) in sorted(self.files.items()):
             for match in ASCII_TOKEN_SUPERSET.finditer(raw):
                 token = match.group().decode("ascii").lower()
-                if abs(len(token) - len(folded)) <= 1 and osa_distance_at_most_one(
-                    folded, token
-                ):
+                if abs(len(token) - len(folded)) <= 1 and osa_distance_at_most_one(folded, token):
                     raise SourceOracleError(
                         f"identifier osa1 absent contract found a source token: {path}"
                     )
@@ -555,6 +565,47 @@ class SourceOracleIndex:
                 for path, start, end, *_definition in self._name_matches(contract, query)
             }
         )
+
+    def typo_gold_partition(self, language: str, query: str, intended_name: str) -> dict[str, Any]:
+        """Separate source facts from the unreviewed intent of a noisy query.
+
+        The near-name file set is exhaustive for the declared OSA1 contract;
+        intended-name files are the exact declarations of the generator's base
+        name. Neither set is a human relevance judgment.
+        """
+        contract = next(
+            (key for key, value in NAME_CONTRACTS.items() if value == (language, "osa1_casefold")),
+            None,
+        )
+        exact = next(
+            (key for key, value in NAME_CONTRACTS.items() if value == (language, "exact")),
+            None,
+        )
+        if contract is None or exact is None:
+            raise SourceOracleError("unsupported typo gold language")
+        _require_query(contract, query)
+        _require_query(exact, intended_name)
+        names = self.matched_names(contract, query)
+        if intended_name not in names:
+            raise SourceOracleError("intended declaration is not within one edit")
+        intended = self.expected_rows(exact, intended_name, "distinct_file")
+        near = self.expected_rows(contract, query, "distinct_file")
+        folded = query.casefold()
+        collisions = sorted(self._index_folded_tokens().get(folded, ()))
+        if language not in self._folded_declared_names:
+            self._folded_declared_names[language] = {
+                name.casefold() for name in self.declared_names(language)
+            }
+        return {
+            "intended_base_name": intended_name,
+            "intended_base_files": [row["path"] for row in intended],
+            "near_declaration_names": names,
+            "near_declaration_files": [row["path"] for row in near],
+            "other_near_declaration_names": [name for name in names if name != intended_name],
+            "exact_content_collision_paths": collisions,
+            "query_is_declaration_name": query.casefold() in self._folded_declared_names[language],
+            "user_intent_state": "unjudged",
+        }
 
     def declaration_name_spans(self, contract: str, query: str) -> list[tuple[str, int, int]]:
         """Return local-name bytes for validating the separate gold line projection."""

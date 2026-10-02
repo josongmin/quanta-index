@@ -234,3 +234,104 @@ def write(
         shutil.rmtree(output)
         raise
     return custody
+
+
+def validate_completed_forms(
+    checkout: Path,
+    pack: dict,
+    contexts: dict,
+    pools: list[dict],
+    completed: list[dict],
+    *,
+    seed: int,
+) -> dict:
+    """Check two completed forms against frozen inputs; expose disagreements.
+
+    Reviewer identities are self-reported. This check cannot establish human
+    provenance, complete relevance outside the pool, or adjudicated qrels.
+    """
+    expected, custody = prepare(checkout, pack, contexts, pools, seed=seed)
+    require = evaluator.require
+    require(isinstance(completed, list) and len(completed) == 2, "two review forms required")
+    reviewer_ids = []
+    for form, template in zip(completed, expected, strict=True):
+        require(isinstance(form, dict), "review form malformed")
+        require(set(form) == set(template), "review form fields changed")
+        reviewer_ids.append(evaluator.string(form["reviewer_id"], "reviewer identity"))
+        for key in set(template) - {"reviewer_id", "reviews"}:
+            require(form[key] == template[key], "review form source binding changed: " + key)
+        require(
+            isinstance(form["reviews"], list) and len(form["reviews"]) == len(template["reviews"]),
+            "review task coverage changed",
+        )
+        for row, frozen in zip(form["reviews"], template["reviews"], strict=True):
+            require(isinstance(row, dict) and set(row) == set(frozen), "review task fields changed")
+            for key in set(frozen) - {"answerable", "rationale", "files"}:
+                require(row[key] == frozen[key], "review query/context changed: " + key)
+            require(type(row["answerable"]) is bool, "review answerability missing")
+            evaluator.string(row["rationale"], "review task rationale")
+            require(
+                isinstance(row["files"], list) and len(row["files"]) == len(frozen["files"]),
+                "review candidate coverage changed",
+            )
+            has_positive = False
+            for file_row, source_row in zip(row["files"], frozen["files"], strict=True):
+                require(
+                    isinstance(file_row, dict) and set(file_row) == set(source_row),
+                    "review candidate fields changed",
+                )
+                for key in set(source_row) - {"grade", "rationale"}:
+                    require(
+                        file_row[key] == source_row[key], "review source/candidate changed: " + key
+                    )
+                grade = file_row["grade"]
+                require(type(grade) is int and 0 <= grade <= 3, "review grade must be 0..3")
+                evaluator.string(file_row["rationale"], "review file rationale")
+                has_positive |= grade > 0
+            require(
+                row["answerable"] or not has_positive,
+                "review cannot deny answerability while grading a file relevant",
+            )
+    require(len(set(reviewer_ids)) == 2, "two distinct reviewer identities required")
+
+    by_slot = [{row["task_id"]: row for row in form["reviews"]} for form in completed]
+    disagreements = []
+    for task in pack["tasks"]:
+        task_id = task["task_id"]
+        left, right = (rows[task_id] for rows in by_slot)
+        grade_by_slot = [
+            {row["path"]: row["grade"] for row in review["files"]} for review in (left, right)
+        ]
+        file_disagreements = [
+            {
+                "path": path,
+                "file_sha256": file_hash,
+                "grades": [grade_by_slot[0][path], grade_by_slot[1][path]],
+            }
+            for path, file_hash in sorted(
+                (row["path"], row["file_sha256"]) for row in left["files"]
+            )
+            if grade_by_slot[0][path] != grade_by_slot[1][path]
+        ]
+        if left["answerable"] != right["answerable"] or file_disagreements:
+            disagreements.append(
+                {
+                    "task_id": task_id,
+                    "query_sha256": task["query_sha256"],
+                    "answerable": [left["answerable"], right["answerable"]],
+                    "files": file_disagreements,
+                }
+            )
+    return {
+        "schema_version": 1,
+        "status": "completed_forms_validated_unqualified",
+        "qualified": False,
+        "human_provenance_attested": False,
+        "pool_execution_attested": False,
+        "query_pack_sha256": custody["query_pack_sha256"],
+        "template_sha256": custody["form_sha256"],
+        "completed_form_sha256": [_digest(form) for form in completed],
+        "reviewer_ids": reviewer_ids,
+        "task_count": len(pack["tasks"]),
+        "disagreements": disagreements,
+    }

@@ -244,3 +244,135 @@ def test_preparation_forms_cannot_be_qualification_receipts(tmp_path):
             suite={"tasks": []},
             repo=checkout,
         )
+
+
+def _completed_forms(forms):
+    completed = copy.deepcopy(forms)
+    for slot, form in enumerate(completed, 1):
+        form["reviewer_id"] = f"person-{slot}"
+        for task in form["reviews"]:
+            task["answerable"] = True
+            task["rationale"] = "Reviewed the complete source checkout."
+            for file_row in task["files"]:
+                file_row["grade"] = 1 if file_row["path"] == "answer.py" else 0
+                file_row["rationale"] = "Source-backed file assessment."
+    return completed
+
+
+def test_completed_forms_validate_without_claiming_adjudication(tmp_path):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+    completed = _completed_forms(forms)
+    result = holdout_review.validate_completed_forms(
+        checkout, pack, contexts, pools, completed, seed=42
+    )
+    assert result["task_count"] == 1
+    assert result["disagreements"] == []
+    assert result["status"] == "completed_forms_validated_unqualified"
+    assert result["qualified"] is result["human_provenance_attested"] is False
+    assert result["pool_execution_attested"] is False
+    assert result["completed_form_sha256"] == [
+        evaluator.digest(evaluator.canonical(form)) for form in completed
+    ]
+    for form in completed:
+        assert form["status"] == "unjudged_preparation"
+
+
+def test_completed_forms_report_disagreements_without_resolving_them(tmp_path):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+    completed = _completed_forms(forms)
+    completed[1]["reviews"][0]["answerable"] = False
+    for file_row in completed[1]["reviews"][0]["files"]:
+        file_row["grade"] = 0
+    result = holdout_review.validate_completed_forms(
+        checkout, pack, contexts, pools, completed, seed=42
+    )
+    assert result["disagreements"] == [
+        {
+            "task_id": "toy.001",
+            "query_sha256": pack["tasks"][0]["query_sha256"],
+            "answerable": [True, False],
+            "files": [
+                {
+                    "path": "answer.py",
+                    "file_sha256": next(
+                        row["file_sha256"]
+                        for row in pack["file_universe"]
+                        if row["path"] == "answer.py"
+                    ),
+                    "grades": [1, 0],
+                }
+            ],
+        }
+    ]
+
+
+def test_answerable_may_be_outside_the_pooled_candidates(tmp_path):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+    completed = _completed_forms(forms)
+    for form in completed:
+        for file_row in form["reviews"][0]["files"]:
+            file_row["grade"] = 0
+    result = holdout_review.validate_completed_forms(
+        checkout, pack, contexts, pools, completed, seed=42
+    )
+    assert result["disagreements"] == []
+    assert result["qualified"] is False
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "same_reviewer",
+        "missing_reviewer",
+        "missing_task_rationale",
+        "missing_file_rationale",
+        "missing_grade",
+        "boolean_grade",
+        "invalid_grade",
+        "denied_answer_with_positive_grade",
+        "changed_source",
+        "changed_context",
+        "changed_candidate_order",
+        "changed_query",
+        "changed_slot",
+        "partial_candidates",
+    ],
+)
+def test_completed_forms_refuse_missing_decisions_or_source_drift(tmp_path, fault):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+    completed = _completed_forms(forms)
+    task = completed[0]["reviews"][0]
+    if fault == "same_reviewer":
+        completed[1]["reviewer_id"] = completed[0]["reviewer_id"]
+    elif fault == "missing_reviewer":
+        completed[0]["reviewer_id"] = None
+    elif fault == "missing_task_rationale":
+        task["rationale"] = ""
+    elif fault == "missing_file_rationale":
+        task["files"][0]["rationale"] = ""
+    elif fault == "missing_grade":
+        task["files"][0]["grade"] = None
+    elif fault == "boolean_grade":
+        task["files"][0]["grade"] = True
+    elif fault == "invalid_grade":
+        task["files"][0]["grade"] = 4
+    elif fault == "denied_answer_with_positive_grade":
+        task["answerable"] = False
+    elif fault == "changed_source":
+        task["files"][0]["source_text"] = "fabricated"
+    elif fault == "changed_context":
+        task["rubric"] = "different rubric"
+    elif fault == "changed_candidate_order":
+        task["files"].reverse()
+    elif fault == "changed_query":
+        task["query"] = "different query"
+    elif fault == "changed_slot":
+        completed[0]["form_slot"] = 2
+    else:
+        task["files"].pop()
+    with pytest.raises(evaluator.EvidenceError):
+        holdout_review.validate_completed_forms(checkout, pack, contexts, pools, completed, seed=42)
