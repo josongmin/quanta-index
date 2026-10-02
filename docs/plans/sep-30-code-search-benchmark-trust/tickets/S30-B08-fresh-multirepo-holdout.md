@@ -740,7 +740,8 @@ latency/resource observations. It derives repository-cluster uncertainty from
 paired query rows. The metric gate checks the preregistered effect, lower
 bound, named critical strata, no-answer abstention, and resource ceilings;
 passing returns `eligible_for_human_review` and never sets a product default.
-It independently checks the no-answer report mean against per-query statuses.
+It independently checks the no-answer report mean against per-query statuses
+and requires each policy query-family inventory to equal its split inventory.
 
 **VERIFIED, code rails:**
 `env -u PYTHONPATH .venv/bin/python -m pytest -q
@@ -752,6 +753,7 @@ passed for the changed Python files.
 **NOT_RUN, qualification:** the synthetic replay test mocks the native
 split/verdict validators. No 12-repository qualified capture bundle, human
 adjudication, live external indexed-universe attestation, or product-default
-review has run. The current policy can name a subset of split families and
-does not independently prove that every intended reviewed/scale lane was
-declared. C5 cannot be marked complete from these unit tests.
+review has run. The split does not independently declare every intended
+reviewed/scale category, so matching family inventories alone cannot prove
+that those lanes were prepared. C5 cannot be marked complete from these unit
+tests.

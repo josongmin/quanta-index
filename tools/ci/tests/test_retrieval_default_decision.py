@@ -201,22 +201,19 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
             }
         )
     )
+    split_rows = [
+        {
+            "split": "holdout",
+            "repository": row["repository"],
+            "repository_commit": row["repository_commit"],
+            "release_digest": row["release_digest"],
+            "query_family_ids": row["query_family_ids"].copy(),
+            "code_only_universe_digest": "sha256:" + "d" * 64,
+        }
+        for row in policy["repository_scope"]["holdout"]
+    ]
     monkeypatch.setattr(
-        decision,
-        "_validate_split_manifest",
-        lambda _raw, _releases: {
-            "repositories": [
-                {
-                    "split": "holdout",
-                    "repository": row["repository"],
-                    "repository_commit": row["repository_commit"],
-                    "release_digest": row["release_digest"],
-                    "query_family_ids": row["query_family_ids"],
-                    "code_only_universe_digest": "sha256:" + "d" * 64,
-                }
-                for row in policy["repository_scope"]["holdout"]
-            ]
-        },
+        decision, "_validate_split_manifest", lambda _raw, _releases: {"repositories": split_rows}
     )
     monkeypatch.setattr(decision.run, "_validate_manifest_shape", lambda value: value)
     monkeypatch.setattr(decision.run, "_resolve_artifact", lambda root, ref, _role: root / ref)
@@ -301,6 +298,10 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
         decision._repository_disjoint_metric_gate(
             policy, suites, reports, result["repository_cluster_ci"], result["captures"]
         )
+    split_rows[0]["query_family_ids"].append("repo-00.omitted")
+    with pytest.raises(decision.DecisionError, match="differs from source split"):
+        decision.replay_repository_disjoint_bundle(bundle_path)
+    split_rows[0]["query_family_ids"].pop()
     original_bundle = bundle_path.read_bytes()
     missing = json.loads(original_bundle)
     missing["captures"].pop()
