@@ -659,10 +659,11 @@ def test_c4_matrix_records_unsupported_language_cells(tmp_path, monkeypatch):
         holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
 
 
-def test_c4_matrix_refuses_tool_source_drift(tmp_path, monkeypatch):
+@pytest.mark.parametrize("owner", ["holdout_c4", "corpus_release"])
+def test_c4_matrix_refuses_tool_source_drift(tmp_path, monkeypatch, owner):
     release, capsules, checkouts = _matrix_fixture(tmp_path, monkeypatch)
     original = Path.read_bytes
-    tool = Path(holdout_c4.__file__)
+    tool = holdout_c4._batch_tool_sources()[owner]
     reads = 0
 
     def changed(path):

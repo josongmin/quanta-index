@@ -194,7 +194,9 @@ def test_literal_adapter_rejects_producer_span_drift(tmp_path, monkeypatch):
         holdout_literal.derive(release, capsule, checkout)
 
 
-@pytest.mark.parametrize("mutation", ["source", "split_manifest", "split_releases"])
+@pytest.mark.parametrize(
+    "mutation", ["source", "split_manifest", "split_releases", "oracle_source"]
+)
 def test_literal_batch_rechecks_inputs_after_suite_derivation(tmp_path, monkeypatch, mutation):
     release, capsule, checkout = _literal_fixture(tmp_path, monkeypatch)
     capsule_root = tmp_path / "capsules"
@@ -234,14 +236,26 @@ def test_literal_batch_rechecks_inputs_after_suite_derivation(tmp_path, monkeypa
             (checkout_root / "toy" / "main.go").write_bytes(b"changed after suite derivation\n")
         elif mutation == "split_manifest":
             (capsule_root / "toy" / "split-manifest.json").write_text('{"changed":true}')
-        else:
+        elif mutation == "split_releases":
             (capsule_root / "toy" / "split-releases.json").write_text('{"changed":true}')
+        else:
+            original = Path.read_bytes
+            oracle_path = Path(literal_source_oracle.source_oracle.__file__)
+
+            def changed(path):
+                if path == oracle_path:
+                    return b"changed source oracle"
+                return original(path)
+
+            monkeypatch.setattr(Path, "read_bytes", changed)
         return result
 
     monkeypatch.setattr(holdout_literal, "_derive_prepared", derive_then_mutate)
     failure = (
         "tracked or untracked changes|file hash"
         if mutation == "source"
+        else "tool source changed during admission"
+        if mutation == "oracle_source"
         else "split.*changed during admission|input changed during admission"
     )
     with pytest.raises((evaluator.EvidenceError, ValueError), match=failure):

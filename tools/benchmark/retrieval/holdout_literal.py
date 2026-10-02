@@ -162,13 +162,9 @@ def derive_batch(
 ) -> tuple[dict, dict[str, tuple[dict, dict, dict]]]:
     """Replay the global split once, then admit every repository's literal lane."""
     tool_sources = {
+        **holdout_c4._batch_tool_sources(),
         "holdout_literal": Path(__file__),
         "literal_source_oracle": Path(literal_source_oracle.__file__),
-        "holdout_c4": Path(holdout_c4.__file__),
-        "gold_oracle": Path(gold_oracle.__file__),
-        "query_plan": Path(query_plan.__file__),
-        "evaluator": Path(evaluator.__file__),
-        "corpus_binding": Path(corpus_binding.__file__),
     }
     source_digests = {name: digest_bytes(path.read_bytes()) for name, path in tool_sources.items()}
     batch = holdout_c4._batch_preflight(release, capsule_root, checkout_root, expected_repositories)

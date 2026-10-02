@@ -545,18 +545,25 @@ def _batch_recheck(
         raise ValueError("C4 matrix split or tool source changed during admission")
 
 
+def _batch_tool_sources() -> dict[str, Path]:
+    """Bind the batch adapter, source oracles, and release validator together."""
+    return {
+        "holdout_c4": Path(__file__),
+        "gold_oracle": Path(gold_oracle.__file__),
+        "source_oracle": Path(source_oracle.__file__),
+        "declaration_census_audit": Path(gold_oracle.declaration_census_audit.__file__),
+        "query_plan": Path(query_plan.__file__),
+        "evaluator": Path(evaluator.__file__),
+        "corpus_binding": Path(corpus_binding.__file__),
+        "corpus_release": Path(corpus_binding.corpus.__file__),
+    }
+
+
 def derive_matrix(
     release: Path, capsule_root: Path, checkout_root: Path, *, expected_repositories: int = 12
 ) -> dict:
     """Admit all declaration intents without publishing suites or product scores."""
-    tool_sources = {
-        "holdout_c4": Path(__file__),
-        "gold_oracle": Path(gold_oracle.__file__),
-        "source_oracle": Path(source_oracle.__file__),
-        "query_plan": Path(query_plan.__file__),
-        "evaluator": Path(evaluator.__file__),
-        "corpus_binding": Path(corpus_binding.__file__),
-    }
+    tool_sources = _batch_tool_sources()
     source_digests = {name: digest_bytes(path.read_bytes()) for name, path in tool_sources.items()}
     batch = _batch_preflight(release, capsule_root, checkout_root, expected_repositories)
     cells = []
