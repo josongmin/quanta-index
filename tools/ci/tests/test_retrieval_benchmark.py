@@ -7908,6 +7908,106 @@ def test_qualified_admission_is_reverified_after_capture(tmp_path):
     assert verdict["failure_class"] == "admission"
 
 
+def test_repository_disjoint_admission_contract_uses_split_paths(tmp_path):
+    st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
+    local = json.loads((st["stage"] / "admission" / "admission.json").read_text())
+    disjoint = copy.deepcopy(local)
+    disjoint["schema_version"] = 3
+    disjoint.pop("development_suite_sha256")
+    disjoint.pop("experiment_custody_sha256")
+    disjoint["decision_policy_sha256"] = _fake_sha("decision-policy")
+    disjoint["repository_disjoint"] = {
+        "repository": "holdout",
+        "release_digest": "sha256:" + _fake_sha("release"),
+        "split_manifest_sha256": _fake_sha("split"),
+        "split_releases_sha256": _fake_sha("releases"),
+    }
+    jsonschema.validate(disjoint, _load_schema("admission.schema.json"))
+    assert pairrun.validate_admission_manifest(disjoint) == disjoint
+    missing_policy = copy.deepcopy(disjoint)
+    missing_policy.pop("decision_policy_sha256")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_policy, _load_schema("admission.schema.json"))
+    with pytest.raises(pairrun.RunError, match="frozen decision policy"):
+        pairrun.validate_admission_manifest(missing_policy)
+
+    spec = copy.deepcopy(st["spec"])
+    spec["admission"].pop("experiment_custody")
+    spec["admission"].pop("development_suite")
+    spec["admission"].update(split_manifest="split.json", split_releases="releases.json")
+    jsonschema.validate(spec["admission"], _load_schema("pair-spec.schema.json")["properties"]["admission"])
+    assert pairrun._admission_keys(spec["admission"]) == pairrun.ADMISSION_DISJOINT_KEYS
+
+    manifest = copy.deepcopy(st["manifest"])
+    manifest["artifacts"].pop("experiment_custody")
+    manifest["artifacts"].pop("development_suite")
+    manifest["artifacts"].update(split_manifest="split.json", split_releases="releases.json")
+    jsonschema.validate(manifest, _load_schema("run-manifest.schema.json"))
+    pairrun._validate_manifest_shape(manifest)
+    manifest["artifacts"]["development_suite"] = "wrong.json"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(manifest, _load_schema("run-manifest.schema.json"))
+    with pytest.raises(pairrun.RunError, match="complete admission bundle"):
+        pairrun._validate_manifest_shape(manifest)
+
+
+def test_repository_disjoint_source_custody_refuses_wrong_holdout(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(Path(pairrun.__file__).resolve().parents[1]))
+    from tools.benchmark import corpus_binding
+
+    split_path = tmp_path / "split.json"
+    split_path.write_text("{}")
+    release_digest = "sha256:" + _fake_sha("release")
+    releases_path = tmp_path / "releases.json"
+    releases_path.write_text(json.dumps({release_digest: str(tmp_path / "release")}))
+    admission = {
+        "repository_commit": "a" * 40,
+        "repository_disjoint": {
+            "repository": "holdout",
+            "release_digest": release_digest,
+            "split_manifest_sha256": pairrun.sha_file(split_path),
+            "split_releases_sha256": pairrun.sha_file(releases_path),
+        },
+    }
+    suite = {
+        "repository_commit": "a" * 40,
+        "file_universe_digest": "b" * 64,
+        "tasks": [{"split": "eval", "query_family_id": "holdout.family"}],
+    }
+    entry = {
+        "repository": "holdout",
+        "release_digest": release_digest,
+        "split": "holdout",
+        "repository_commit": "a" * 40,
+        "code_only_universe_digest": "sha256:" + "b" * 64,
+        "query_family_ids": ["holdout.family"],
+    }
+    monkeypatch.setattr(corpus_binding, "validate_split_manifest", lambda _raw, _paths: {"repositories": [entry]})
+    calls = []
+    monkeypatch.setattr(pairrun, "validate_suite", lambda repo, payload: calls.append((repo, payload)))
+    pairrun._validate_disjoint_admission_source(
+        admission, suite, tmp_path, split_path, releases_path
+    )
+    assert calls == [(tmp_path, suite)]
+    for key, value, reason in (
+        ("split", "development", "holdout assignment"),
+        ("code_only_universe_digest", "sha256:" + "c" * 64, "suite differs"),
+        ("query_family_ids", ["missing.family"], "suite differs"),
+    ):
+        original = entry[key]
+        entry[key] = value
+        with pytest.raises(pairrun.RunError, match=reason):
+            pairrun._validate_disjoint_admission_source(
+                admission, suite, tmp_path, split_path, releases_path
+            )
+        entry[key] = original
+    admission["repository_disjoint"]["split_manifest_sha256"] = "0" * 64
+    with pytest.raises(pairrun.RunError, match="split bytes differ"):
+        pairrun._validate_disjoint_admission_source(
+            admission, suite, tmp_path, split_path, releases_path
+        )
+
+
 def test_qualified_license_receipt_requires_approved_corpus_bound_decision(tmp_path):
     st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
     evidence = st["stage"] / "admission"
