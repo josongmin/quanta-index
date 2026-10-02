@@ -58,6 +58,7 @@ except ImportError:  # direct script invocation: import the sibling module
     )
 
 SEMBLE_PINNED_VERSION = "0.6.0"
+DEFAULT_MODEL_ID = "minishlab/potion-code-16M-v2"
 QUERY_TIMING_BOUNDARY = "request_construction_to_normalized_response"
 QUERY_TIMING_CLOCK = "capture_relative_monotonic_ns"
 
@@ -1774,6 +1775,8 @@ def run_adapter(args: argparse.Namespace) -> int:
     cache_root = Path(args.cache_root)
     if repo in cache_root.resolve().parents or cache_root.resolve() == repo:
         raise AdapterError("cache root must be outside the frozen repository")
+    if not cache_root.is_dir():
+        raise AdapterError("cache root must be an existing directory")
     if out_root.exists():
         raise AdapterError(f"output root already exists (refusing reuse): {out_root}")
     out_root.mkdir(parents=True)
@@ -1844,7 +1847,6 @@ def run_adapter(args: argparse.Namespace) -> int:
     spec_path = out_root / "spec.json"
     spec_path.write_text(json.dumps(spec, indent=2, sort_keys=True), encoding="utf-8")
     native_path = out_root / "native.json"
-    cache_root.mkdir(parents=True, exist_ok=True)
     model_id = args.model_id
     model_revision, source_model_asset = resolve_model_revision(
         cache_root / "hf", model_id, args.model_revision
@@ -1863,7 +1865,9 @@ def run_adapter(args: argparse.Namespace) -> int:
     env = dict(os.environ)
     env["SPEC_JSON"] = str(spec_path)
     env["NATIVE_JSON"] = str(native_path)
-    env["SEMBLE_CACHE_LOCATION"] = str(cache_root / "semble")
+    runtime_cache = out_root / "semble-runtime-cache"
+    runtime_cache.mkdir()
+    env["SEMBLE_CACHE_LOCATION"] = str(runtime_cache)
     env["HF_HOME"] = str(materialized_hf)
     env["HF_HUB_OFFLINE"] = "1"
     env["TRANSFORMERS_OFFLINE"] = "1"
@@ -2203,7 +2207,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--lockfile-sha256", required=True)
     run.add_argument("--cache-root", required=True)
     run.add_argument("--output-root", required=True)
-    run.add_argument("--model-id", default="minishlab/potion-code-16M-v2")
+    run.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     run.add_argument("--model-revision", default=None)
     run.add_argument("--route", default="semble-hybrid")
     run.add_argument("--run-id", required=True)

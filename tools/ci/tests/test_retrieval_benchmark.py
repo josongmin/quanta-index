@@ -2517,7 +2517,81 @@ def test_pair_capture_preflight_requires_external_root_and_clean_pin(tmp_path):
         pairrun.preflight_capture(spec)
 
 
+def _pinned_semble_cache(tmp_path):
+    cache = tmp_path / "semble-cache"
+    revision = "a" * 40
+    slug = "models--minishlab--potion-code-16M-v2"
+    ref = cache / "hf" / "hub" / slug / "refs" / "main"
+    ref.parent.mkdir(parents=True)
+    ref.write_text(revision + "\n", encoding="utf-8")
+    snapshot = cache / "hf" / "hub" / slug / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_bytes(b"{}")
+    return cache, revision
+
+
+def _pair_model_preflight_spec(tmp_path, cache=None, revision=None):
+    spec = {
+        "semble_lockfile_sha256": _fake_sha("lock"),
+        "semble_python": "/pinned/python",
+        "semble_lockfile": "/pinned/lock",
+        "host_profile": "/pinned/host",
+        "output_root": str(tmp_path / "pair"),
+    }
+    if cache is not None:
+        spec["semble_cache_root"] = str(cache)
+    if revision is not None:
+        spec["semble_model_revision"] = revision
+    return spec
+
+
+def test_pair_model_preflight_rejects_unpinned_or_missing_cache_before_stage(tmp_path, monkeypatch):
+    cache, revision = _pinned_semble_cache(tmp_path)
+    monkeypatch.setattr(
+        pairrun, "preflight_capture", lambda _spec: pytest.fail("runner preflight was reached")
+    )
+    with pytest.raises(pairrun.RunError, match="requires spec.semble_cache_root"):
+        pairrun.run_pair(_pair_model_preflight_spec(tmp_path, revision=revision))
+    with pytest.raises(pairrun.RunError, match="existing absolute directory"):
+        pairrun.run_pair(
+            _pair_model_preflight_spec(tmp_path, cache=tmp_path / "absent", revision=revision)
+        )
+    with pytest.raises(pairrun.RunError, match="requires spec.semble_model_revision"):
+        pairrun.run_pair(_pair_model_preflight_spec(tmp_path, cache=cache))
+    assert not (tmp_path / "pair.staging").exists()
+
+
+def test_pair_model_preflight_rejects_stale_cache_before_stage(tmp_path, monkeypatch):
+    cache, revision = _pinned_semble_cache(tmp_path)
+    monkeypatch.setattr(
+        pairrun, "preflight_capture", lambda _spec: pytest.fail("runner preflight was reached")
+    )
+    with pytest.raises(pairrun.RunError, match="model revision drift"):
+        pairrun.run_pair(_pair_model_preflight_spec(tmp_path, cache=cache, revision="b" * 40))
+    assert not (tmp_path / "pair.staging").exists()
+
+
+def test_pair_model_preflight_accepts_pinned_cache_before_capture(tmp_path, monkeypatch):
+    cache, revision = _pinned_semble_cache(tmp_path)
+    output_root = tmp_path / "pair"
+    calls = []
+    monkeypatch.setattr(pairrun, "preflight_capture", lambda _spec: output_root)
+    monkeypatch.setattr(pairrun, "_source_closure", lambda *_args: None)
+
+    def stop_before_runner(_spec, _stage):
+        calls.append("capture")
+        raise pairrun.RunError("capture sentinel")
+
+    monkeypatch.setattr(pairrun, "_run_pair_staged", stop_before_runner)
+    with pytest.raises(pairrun.RunError, match="capture sentinel"):
+        pairrun.run_pair(_pair_model_preflight_spec(tmp_path, cache=cache, revision=revision))
+    assert calls == ["capture"]
+    assert (tmp_path / "pair.staging").is_dir()
+    assert not output_root.exists()
+
+
 def test_pair_preflights_searchd_socket_length_before_creating_stage(tmp_path, monkeypatch):
+    cache, revision = _pinned_semble_cache(tmp_path)
     monkeypatch.setattr(pairrun, "_unix_socket_path_limit", lambda: 103)
     strategies = [{"name": "fixed_window_strict"}]
     pairrun.preflight_daemon_socket_paths(
@@ -2533,6 +2607,8 @@ def test_pair_preflights_searchd_socket_length_before_creating_stage(tmp_path, m
                 "semble_lockfile_sha256": "a" * 64,
                 "semble_python": "python3",
                 "semble_lockfile": "lockfile",
+                "semble_cache_root": str(cache),
+                "semble_model_revision": revision,
                 "host_profile": "host-profile",
                 "strategies": strategies,
             }
@@ -3419,6 +3495,8 @@ def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
         "semble_python": "/venv/bin/python",
         "semble_lockfile": "/frozen/semble-lockfile.txt",
         "semble_lockfile_sha256": "c" * 64,
+        "semble_cache_root": str(tmp_path),
+        "semble_model_revision": "a" * 40,
         "execution_profiles": {
             "quanta": qp.execution_profile("native"),
             "semble": semble_adapter.execution_profile("native-default", None),
@@ -3428,6 +3506,7 @@ def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
     command = seen["command"]
     assert command[command.index("--lockfile") + 1] == "/frozen/semble-lockfile.txt"
     assert command[command.index("--lockfile-sha256") + 1] == "c" * 64
+    assert command[command.index("--model-revision") + 1] == "a" * 40
     assert command[command.index("--repetitions") + 1] == "1"
     assert command[command.index("--warmup-passes") + 1] == "1"
 
@@ -3889,6 +3968,8 @@ def test_isolation_boundary_denies_suite_and_allows_blind_pack(tmp_path):
         path = tmp_path / name
         path.write_text(name, encoding="utf-8")
         inputs[name] = str(path)
+    cache_root = tmp_path / "semble-cache"
+    cache_root.mkdir()
     spec = {
         **inputs,
         "repo": str(repo),
@@ -3900,11 +3981,15 @@ def test_isolation_boundary_denies_suite_and_allows_blind_pack(tmp_path):
         "output_root": str(tmp_path / "final"),
         "blinding": "isolated",
         "suite_secret_root": str(secret_root),
+        "semble_cache_root": str(cache_root),
     }
     prepared = pairrun.prepare_isolation(spec, stage, original_suite)
     assert prepared["isolation_method"] == pairrun.MACOS_ISOLATION_BACKEND
     proof_path = stage / "isolation-proof.json"
     assert prepared["access_block_log"] == f"sha256:{pairrun.sha_file(proof_path)}"
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    assert str(cache_root.resolve()) in proof["allowed_read_roots"]
+    assert str(cache_root.resolve()) not in proof["allowed_write_roots"]
     denied_command, evidence = pairrun.sandbox_command(prepared, ["/bin/cat", str(original_suite)])
     denied = subprocess.run(denied_command, capture_output=True, text=True, timeout=15)
     assert denied.returncode != 0
@@ -3918,6 +4003,39 @@ def test_isolation_boundary_denies_suite_and_allows_blind_pack(tmp_path):
     assert admitted_attempt.returncode == 0
     assert admitted_attempt.stdout == "admitted"
     assert evidence["proof_sha256"] == pairrun.sha_file(proof_path)
+
+
+def test_linux_isolation_reads_pinned_model_cache_without_write_grant(tmp_path):
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "runner-tools.pyz").write_bytes(b"bundle")
+    cache, _revision = _pinned_semble_cache(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    inputs = {}
+    for name in ("manifest", "query_pack", "runner_binary", "searchd_binary", "semble_lockfile"):
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        inputs[name] = str(path)
+    interpreter = tmp_path / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"python")
+    policy = pairrun._linux_policy(
+        {
+            **inputs,
+            "repo": str(repo),
+            "semble_python": str(interpreter),
+            "semble_cache_root": str(cache),
+            "repetitions": 1,
+        },
+        stage,
+        [str(secret)],
+    )
+    assert str(cache.resolve()) in policy["readonly"]
+    assert str(cache.resolve()) not in policy["writable"]
+    assert str((stage / "rep-00").resolve()) in policy["writable"]
 
 
 def test_runner_bundle_is_deterministic_closed_and_isolated(tmp_path):
@@ -4005,6 +4123,92 @@ def test_model_cache_materialization_binds_ref_and_safe_links(tmp_path):
     ref.write_text("b" * 40 + "\n", encoding="utf-8")
     with pytest.raises(semble_adapter.AdapterError, match="ref drift"):
         semble_adapter.materialize_model_cache(source, tmp_path / "drifted", model_id, revision)
+
+
+def test_semble_worker_uses_stage_owned_runtime_cache_and_readonly_model_source(
+    tmp_path, monkeypatch
+):
+    repo, suite, _run, _sp, _rp, files = fixture_v3(tmp_path / "src")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "repository_commit": suite["repository_commit"],
+                "files": [
+                    {"path": name, "file_sha256": ev.digest(data)}
+                    for name, data in sorted(files.items())
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _suite, pack, _source = ev.validate_suite(repo, suite)
+    pack_path = tmp_path / "pack.json"
+    pack_path.write_text(json.dumps(pack), encoding="utf-8")
+    lock_path = tmp_path / "lock.txt"
+    lock_path.write_text("semble==0.6.0\n", encoding="utf-8")
+    cache, revision = _pinned_semble_cache(tmp_path)
+    ref = cache / "hf/hub/models--minishlab--potion-code-16M-v2/refs/main"
+    output = tmp_path / "adapter-output"
+    original_mkdir = Path.mkdir
+
+    def refuse_source_cache_write(path, *args, **kwargs):
+        if path == cache:
+            pytest.fail("adapter attempted to create the read-only source cache")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", refuse_source_cache_write)
+    monkeypatch.setattr(
+        semble_adapter,
+        "check_semble_env",
+        lambda _python: {"observed_freeze": "semble==0.6.0\n", "semble_version": "0.6.0"},
+    )
+
+    def capture_worker(_command, **kwargs):
+        env = kwargs["env"]
+        assert env["SEMBLE_CACHE_LOCATION"] == str(output / "semble-runtime-cache")
+        assert Path(env["SEMBLE_CACHE_LOCATION"]).is_dir()
+        assert env["HF_HOME"] == str(output / "model-cache/hf")
+        assert ref.read_text(encoding="utf-8").strip() == revision
+        assert not (cache / "semble").exists()
+        raise RuntimeError("worker environment captured")
+
+    monkeypatch.setattr(semble_adapter, "run_completed_worker", capture_worker)
+    args = semble_adapter.build_parser().parse_args(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--manifest",
+            str(manifest_path),
+            "--query-pack",
+            str(pack_path),
+            "--top-k",
+            "10",
+            "--python",
+            sys.executable,
+            "--lockfile",
+            str(lock_path),
+            "--lockfile-sha256",
+            pairrun.sha_file(lock_path),
+            "--cache-root",
+            str(cache),
+            "--output-root",
+            str(output),
+            "--model-revision",
+            revision,
+            "--run-id",
+            "cache-bound",
+            "--blinding",
+            "attested",
+            "--isolation-method",
+            "attested",
+            "--access-block-log",
+            "attested",
+        ]
+    )
+    with pytest.raises(RuntimeError, match="worker environment captured"):
+        semble_adapter.run_adapter(args)
 
 
 def test_spec_evidence_content_is_removed_receipts_are_frozen(tmp_path):
@@ -8305,6 +8509,7 @@ def test_exploratory_pair_refuses_unbound_or_tampered_source_closure(tmp_path):
 
 
 def test_exploratory_pair_requires_source_closure_capture_and_final_verify(tmp_path, monkeypatch):
+    cache, revision = _pinned_semble_cache(tmp_path)
     spec = {
         "execution_profiles": {
             "quanta": qp.execution_profile("native"),
@@ -8313,6 +8518,8 @@ def test_exploratory_pair_requires_source_closure_capture_and_final_verify(tmp_p
         "semble_lockfile_sha256": _fake_sha("lock"),
         "semble_python": "/pinned/python",
         "semble_lockfile": "/pinned/lock",
+        "semble_cache_root": str(cache),
+        "semble_model_revision": revision,
         "host_profile": "/pinned/host",
         "output_root": str(tmp_path / "pair"),
         "strategies": [{"name": "whole_file"}],
@@ -8514,6 +8721,7 @@ def test_successful_promotion_replays_identically_in_new_process(tmp_path):
 
 
 def test_run_pair_promotes_complete_stage_and_public_verdict_replays(tmp_path, monkeypatch, capsys):
+    cache, revision = _pinned_semble_cache(tmp_path)
     st = _pair_stage(tmp_path / "fixture")
     original = _stage_verdict(st)
     output_root = tmp_path / "published"
@@ -8533,6 +8741,8 @@ def test_run_pair_promotes_complete_stage_and_public_verdict_replays(tmp_path, m
                 "semble_lockfile_sha256": _fake_sha("lock"),
                 "semble_python": "python3",
                 "semble_lockfile": "lockfile",
+                "semble_cache_root": str(cache),
+                "semble_model_revision": revision,
                 "host_profile": "host-profile",
             }
         )
@@ -8565,6 +8775,7 @@ def test_run_pair_promotes_complete_stage_and_public_verdict_replays(tmp_path, m
 
 
 def test_pair_staging_atomicity(tmp_path, monkeypatch):
+    cache, revision = _pinned_semble_cache(tmp_path)
     repo, suite, _run, _sp, _rp, _files = fixture_v3(tmp_path / "src")
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
@@ -8617,6 +8828,8 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
         "semble_python": "/unused/python",
         "semble_lockfile": str(lockfile),
         "semble_lockfile_sha256": _fake_sha("lock"),
+        "semble_cache_root": str(cache),
+        "semble_model_revision": revision,
         "host_profile": str(host_profile),
     }
 

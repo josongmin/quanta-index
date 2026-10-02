@@ -1247,8 +1247,7 @@ def _linux_policy(spec: dict, stage: Path, denied_roots: list[str]) -> dict:
     """Grant only runner inputs and per-repetition output trees, never stage."""
     runner_input = stage / "runner-input"
     runner_input.mkdir()
-    cache = Path(spec.get("semble_cache_root", stage / "semble-cache")).resolve()
-    cache.mkdir(parents=True, exist_ok=True)
+    cache = Path(spec["semble_cache_root"]).resolve()
     reps = [
         stage / f"rep-{rep:02d}"
         for rep in range(_int(spec.get("repetitions", 1), "spec.repetitions"))
@@ -1281,10 +1280,11 @@ def _linux_policy(spec: dict, stage: Path, denied_roots: list[str]) -> dict:
     ]
     if "quanta_model_dir" in spec:
         read.append(Path(spec["quanta_model_dir"]))
+    read.append(cache)
     read.extend(Path(path) for path in runtime if Path(path).exists())
     policy = {
         "readonly": sorted({str(path.resolve()) for path in read}),
-        "writable": sorted({str(path.resolve()) for path in [*reps, cache, Path("/dev/null")]}),
+        "writable": sorted({str(path.resolve()) for path in [*reps, Path("/dev/null")]}),
         "denied": denied_roots,
     }
     try:
@@ -1443,7 +1443,7 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
         str(semble_env_root),
         str(semble_interpreter_root),
         str(Path(sys.executable).resolve().parent.parent),
-        str(Path(spec.get("semble_cache_root", stage / "semble-cache")).resolve()),
+        str(Path(spec["semble_cache_root"]).resolve()),
         str(stage.resolve()),
         str(Path(spec["output_root"]).resolve()),
     ]
@@ -8280,6 +8280,21 @@ def run_pair(spec: dict) -> int:
         )
     if not spec.get("host_profile"):
         raise RunError("pair requires spec.host_profile naming the canonical host profile")
+    cache_root = spec.get("semble_cache_root")
+    if not isinstance(cache_root, str) or not cache_root:
+        raise RunError("pair requires spec.semble_cache_root naming an existing model cache")
+    cache_path = Path(cache_root)
+    if not cache_path.is_absolute() or not cache_path.is_dir():
+        raise RunError("spec.semble_cache_root must be an existing absolute directory")
+    model_revision = spec.get("semble_model_revision")
+    if not _is_hex(model_revision, 40):
+        raise RunError("pair requires spec.semble_model_revision as a pinned 40-hex revision")
+    try:
+        semble_adapter.resolve_model_revision(
+            cache_path / "hf", semble_adapter.DEFAULT_MODEL_ID, model_revision
+        )
+    except semble_adapter.AdapterError as exc:
+        raise RunError(f"Semble model cache preflight refused: {exc}") from exc
     if (
         spec.get("claims", {}).get("speed") is True
         and spec.get("embedder", "potion-code") in ("potion-code", "potion-code-full-v2")
@@ -8367,9 +8382,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     )
     rep_layouts: list[dict] = []
     semble_spec = dict(spec)
-    # One shared model/Semble cache across reps: the model downloads once,
-    # while each rep still rebuilds its index on a fresh corpus.
-    semble_spec.setdefault("semble_cache_root", str(stage / "semble-cache"))
+    # One pinned model cache across reps; each rep still rebuilds its index.
     for rep in range(repetitions):
         rep_order = order if (rep % 2 == 0 or not alternate) else list(reversed(order))
         rep_dir = stage / f"rep-{rep:02d}"
@@ -10092,7 +10105,7 @@ def run_semble_capture(
         "--lockfile-sha256",
         spec["semble_lockfile_sha256"],
         "--cache-root",
-        spec.get("semble_cache_root", str(out_dir.parent / "semble-cache")),
+        spec["semble_cache_root"],
         "--output-root",
         str(out_dir),
         "--route",
@@ -10120,8 +10133,7 @@ def run_semble_capture(
         command += ["--query-protocol", spec["_query_protocol"]]
     if "_materialized_corpus" in spec:
         command += ["--materialized-corpus"]
-    if "semble_model_revision" in spec:
-        command += ["--model-revision", spec["semble_model_revision"]]
+    command += ["--model-revision", spec["semble_model_revision"]]
     command, isolation = sandbox_command(spec, command)
     evidence_root = out_dir.parent
     resource_path = evidence_root / "semble-resource-metrics.json"
@@ -10181,7 +10193,7 @@ def run_semble_capture(
     stats = native.get("stats", {}) if isinstance(native, dict) else {}
     if not isinstance(stats, dict):
         raise RunError("Semble native output lacks index statistics")
-    cache_root = Path(spec.get("semble_cache_root", str(out_dir.parent / "semble-cache")))
+    cache_root = Path(spec["semble_cache_root"])
     bind_storage_metrics(
         resource_path,
         {
