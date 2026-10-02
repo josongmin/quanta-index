@@ -524,6 +524,45 @@ fn tantivy_index_round_trip() -> TestResult {
 }
 
 #[test]
+fn index_no_reuses_content_tokens_within_document_without_cross_document_leak() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    adapter.build(
+        &repo(),
+        &revision(),
+        generation(),
+        &[
+            upsert("alpha-beta", "alpha beta")?,
+            upsert("beta-gamma", "beta gamma")?,
+        ],
+    )?;
+    let searcher = adapter.open(
+        &repo(),
+        &revision(),
+        generation(),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let mut query = make_query_with_filters(
+        LqExpr::All(vec![
+            LqExpr::Leaf(LqLeaf::Keyword("beta".into())),
+            LqExpr::Leaf(LqLeaf::Phrase("alpha beta".into())),
+        ]),
+        vec![LqFilter::Content {
+            leaf: LqLeaf::Keyword("beta".into()),
+        }],
+    );
+    query.options.index_mode = Some(LqYesNoOnly::No);
+    let hits = searcher.search(&query, 10, &RequestBudgetV1::unbounded())?;
+    assert_eq!(
+        hits.iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha-beta"]
+    );
+    Ok(())
+}
+
+#[test]
 fn language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());

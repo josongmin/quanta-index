@@ -83,8 +83,13 @@ pub(crate) struct ManualScanCache {
     compiled: BTreeMap<String, RegexExecutor>,
     repo_gates: Vec<ManualRepoGate>,
     repo_gate_budget: LexicalCollectionBudget,
+    // The body is immutable for one matcher invocation. Multiple token leaves
+    // and content filters must not tokenize that same body independently.
+    content_tokens: Option<(CaseMode, Vec<normalize::Token>)>,
     #[cfg(test)]
     compiled_builds: usize,
+    #[cfg(test)]
+    content_tokenizations: usize,
 }
 
 impl ManualScanCache {
@@ -93,9 +98,46 @@ impl ManualScanCache {
             compiled: BTreeMap::new(),
             repo_gates: Vec::new(),
             repo_gate_budget: LexicalCollectionBudget::new(u64::MAX, max_collection_bytes)?,
+            content_tokens: None,
             #[cfg(test)]
             compiled_builds: 0,
+            #[cfg(test)]
+            content_tokenizations: 0,
         })
+    }
+
+    fn begin_document(&mut self) {
+        self.content_tokens = None;
+    }
+
+    fn content_token_sequence_matches(
+        &mut self,
+        text: &str,
+        content: &str,
+        case: CaseMode,
+    ) -> Result<bool, CoreError> {
+        let wanted = text_query_tokens(text, case)?;
+        if self
+            .content_tokens
+            .as_ref()
+            .is_none_or(|(mode, _)| *mode != case)
+        {
+            self.content_tokens = Some((
+                case,
+                normalize::tokenize(content, case)
+                    .indexable()
+                    .cloned()
+                    .collect(),
+            ));
+            #[cfg(test)]
+            {
+                self.content_tokenizations = self.content_tokenizations.saturating_add(1);
+            }
+        }
+        let (_, present) = self.content_tokens.as_ref().ok_or_else(|| {
+            CoreError::Storage("lexical: manual content token cache lost its entry".into())
+        })?;
+        Ok(normalize::contains_phrase(present, &wanted))
     }
 
     fn repo_gate_ids(
@@ -655,11 +697,17 @@ impl TantivySearcher {
                 if options.pattern_type == LqPatternType::Regexp {
                     return self.manual_regex_matches(text, options, content, regex_cache);
                 }
-                Ok(Self::manual_token_sequence_matches(text, content, case)?
-                    || (include_path_terms
-                        && Self::manual_token_sequence_matches(text, repo_relative_path, case)?))
+                Ok(
+                    regex_cache.content_token_sequence_matches(text, content, case)?
+                        || (include_path_terms
+                            && Self::manual_token_sequence_matches(
+                                text,
+                                repo_relative_path,
+                                case,
+                            )?),
+                )
             }
-            LqLeaf::Phrase(text) => Self::manual_token_sequence_matches(text, content, case),
+            LqLeaf::Phrase(text) => regex_cache.content_token_sequence_matches(text, content, case),
             LqLeaf::RawString(text) => {
                 if options.pattern_type == LqPatternType::Regexp {
                     return self.manual_regex_matches(text, options, content, regex_cache);
@@ -933,6 +981,9 @@ impl TantivySearcher {
                 address: doc_address,
             });
         }
+        // Release the last document's token vector and the scan's cached
+        // executors before ranking and rendering the selected preview page.
+        drop(regex_cache);
         let out = match page.group {
             Some(group) => group_in_memory(out, group),
             None => out,
@@ -1003,6 +1054,7 @@ impl TantivySearcher {
         budget: &RequestBudgetV1,
         regex_cache: &mut ManualScanCache,
     ) -> Result<bool, CoreError> {
+        regex_cache.begin_document();
         if stored_doc_kind(doc, self.fields.doc_kind)? != prepared.doc_kind.as_str() {
             return Ok(false);
         }
@@ -1196,6 +1248,27 @@ mod stored_authority_tests {
     use quanta_index_contract::LqCase;
     use std::cell::Cell;
     use tantivy::schema::{STORED, Schema};
+
+    #[test]
+    fn manual_content_tokens_are_shared_within_one_document_and_reset_for_next()
+    -> Result<(), CoreError> {
+        let mut cache = ManualScanCache::new(u64::MAX)?;
+        cache.begin_document();
+        assert!(cache.content_token_sequence_matches("alpha", "alpha beta", CaseMode::Folded)?);
+        assert!(cache.content_token_sequence_matches("beta", "alpha beta", CaseMode::Folded)?);
+        assert_eq!(cache.content_tokenizations, 1);
+
+        cache.begin_document();
+        assert!(!cache.content_token_sequence_matches("alpha", "gamma", CaseMode::Folded)?);
+        assert!(cache.content_token_sequence_matches("gamma", "gamma", CaseMode::Folded)?);
+        assert_eq!(cache.content_tokenizations, 2);
+
+        // A future caller changing case policy within one document cannot
+        // reuse tokens produced under a different normalizer.
+        assert!(!cache.content_token_sequence_matches("GAMMA", "gamma", CaseMode::Sensitive)?);
+        assert_eq!(cache.content_tokenizations, 3);
+        Ok(())
+    }
 
     #[test]
     fn manual_matcher_reuses_compilation_across_documents_and_separates_case_modes()
