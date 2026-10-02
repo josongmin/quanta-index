@@ -205,20 +205,25 @@ def _derive_prepared(
     audit = gold.get("census_audits", {}).get(language, {})
     refused_paths = audit.get("refused_paths")
     disagreement_paths = audit.get("disagreement_paths")
-    if disagreement_paths:
-        raise ValueError("C4 independent census has checker disagreement")
     if (
         audit.get("status") not in ("admitted", "unsupported")
         or not isinstance(refused_paths, list)
         or not isinstance(disagreement_paths, list)
         or refused_paths != sorted(set(refused_paths))
-        or (audit["status"] == "admitted" and refused_paths)
-        or (audit["status"] == "unsupported" and not refused_paths)
+        or disagreement_paths != sorted(set(disagreement_paths))
+        or set(refused_paths) & set(disagreement_paths)
+        or (audit["status"] == "admitted" and (refused_paths or disagreement_paths))
+        or (audit["status"] == "unsupported" and not (refused_paths or disagreement_paths))
     ):
         raise ValueError("C4 independent census is not admitted or query-provable")
+    required_rows = sorted(
+        [(path, "census_refused") for path in refused_paths]
+        + [(path, "census_disagreement") for path in disagreement_paths]
+    )
     gold_tasks, blind_tasks = gold["tasks"], blind["tasks"]
     selected, excluded = [], []
     declaration_exclusions: dict[tuple[str, str], set[str]] = {}
+    proved_exclusion_tasks = 0
     for task, public in zip(gold_tasks, blind_tasks, strict=True):
         if not isinstance(task, dict) or not isinstance(public, dict):
             raise ValueError("C4 task row is malformed")
@@ -243,15 +248,18 @@ def _derive_prepared(
         if not isinstance(census_rows, list) or any(
             not isinstance(row, dict)
             or set(row) != {"path", "reason"}
-            or row["reason"] != "census_refused"
+            or row["reason"] not in ("census_refused", "census_disagreement")
             for row in census_rows
         ):
             excluded.append({"task_id": task["task_id"], "reason": "unproved_census_exclusion"})
             continue
-        excluded_paths = sorted(row["path"] for row in census_rows)
-        if excluded_paths != refused_paths:
+        excluded_rows = sorted((row["path"], row["reason"]) for row in census_rows)
+        if excluded_rows != required_rows:
             excluded.append({"task_id": task["task_id"], "reason": "incomplete_census_exclusion"})
             continue
+        refused_selected_paths = [
+            path for path, reason in excluded_rows if reason == "census_refused"
+        ]
         if not task["answerable"] and not _default_search_absent(task["query"], files):
             excluded.append(
                 {"task_id": task["task_id"], "reason": "negative_not_default_search_absent"}
@@ -272,8 +280,10 @@ def _derive_prepared(
                 excluded.append({"task_id": task["task_id"], "reason": "query_near_duplicate"})
                 continue
         selected.append(task)
-        if excluded_paths:
-            declaration_exclusions[(contract, task["query"])] = set(excluded_paths)
+        if excluded_rows:
+            proved_exclusion_tasks += 1
+        if refused_selected_paths:
+            declaration_exclusions[(contract, task["query"])] = set(refused_selected_paths)
     if not selected and not allow_empty:
         raise ValueError("C4 has no admitted declaration task")
     if not selected:
@@ -371,8 +381,10 @@ def _derive_prepared(
             "repository": name,
             "selected": len(selected),
             "excluded": excluded,
-            "parser_refused_source_paths": refused_paths,
-            "selected_tasks_with_proved_exclusions": len(declaration_exclusions),
+            "census_excluded_source_paths": [
+                {"path": path, "reason": reason} for path, reason in required_rows
+            ],
+            "selected_tasks_with_proved_exclusions": proved_exclusion_tasks,
             "relevance_contract": contract,
             "execution_policy": "code_search_file",
             "semantic_relation": "declaration_target_file_diagnostic_only",
@@ -437,7 +449,6 @@ def derive_matrix(
         if prepared.selection["repository"] != name:
             raise ValueError("C4 matrix capsule/repository mismatch")
         language = prepared.row["recipe"]["language"]
-        audit = prepared.gold.get("census_audits", {}).get(language, {})
         for intent in MATRIX_INTENTS:
             candidate_ids = [
                 task["task_id"] for task in prepared.gold["tasks"] if task["intent"] == intent
@@ -447,10 +458,10 @@ def derive_matrix(
                 supported = True
             except source_oracle.SourceOracleError:
                 supported = False
-            if not supported or audit.get("disagreement_paths"):
+            if not supported:
                 status = "no_admission_diagnostic"
                 selected_ids = []
-                reason = "unsupported_language_intent" if not supported else "checker_disagreement"
+                reason = "unsupported_language_intent"
                 excluded = [{"task_id": task_id, "reason": reason} for task_id in candidate_ids]
                 suite_sha = pack_sha = None
             else:

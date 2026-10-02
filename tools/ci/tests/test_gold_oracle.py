@@ -642,7 +642,7 @@ def test_refused_file_without_query_text_keeps_the_task_judged(tmp_path):
     assert typo["census_text_excluded"] == [{"path": "legacy.py", "reason": "census_refused"}]
 
 
-def test_census_disagreement_cannot_be_text_excluded(tmp_path, monkeypatch):
+def test_census_disagreement_requires_query_specific_text_absence(tmp_path, monkeypatch):
     view = tmp_path / "view"
     view.mkdir()
     files = {
@@ -669,13 +669,19 @@ def test_census_disagreement_cannot_be_text_excluded(tmp_path, monkeypatch):
         "holdout",
         b"{}",
         declaration_task("target", "declaration_name_exact", "target", "python"),
+        declaration_task("other", "declaration_name_exact", "other", "python"),
     )
     gold, _blind = gold_oracle.derive(value, manifest, view)
-    row = gold["tasks"][0]
-    assert row["labels"][0]["path"] == "core.py"
-    assert row["unsupported"] == [{"path": "disputed.py", "reason": "census_disagreement"}]
-    assert row["census_text_excluded"] == []
-    assert row["answerable"] is None
+    target, other = gold["tasks"]
+    assert target["labels"][0]["path"] == "core.py"
+    assert target["unsupported"] == []
+    assert target["census_text_excluded"] == [
+        {"path": "disputed.py", "reason": "census_disagreement"}
+    ]
+    assert target["answerable"] is True
+    assert other["unsupported"] == [{"path": "disputed.py", "reason": "census_disagreement"}]
+    assert other["census_text_excluded"] == []
+    assert other["answerable"] is None
     monkeypatch.setattr(
         gold_oracle,
         "_census_audits",
@@ -684,10 +690,10 @@ def test_census_disagreement_cannot_be_text_excluded(tmp_path, monkeypatch):
         },
     )
     gold, _blind = gold_oracle.derive(value, manifest, view)
-    row = gold["tasks"][0]
-    assert row["unsupported"] == [{"path": "disputed.py", "reason": "census_refused"}]
-    assert row["census_text_excluded"] == []
-    assert row["answerable"] is None
+    target = gold["tasks"][0]
+    assert target["unsupported"] == [{"path": "disputed.py", "reason": "census_refused"}]
+    assert target["census_text_excluded"] == []
+    assert target["answerable"] is None
 
 
 def test_holdout_sampling_freezes_seeded_ledger_recipes_and_split(split_releases, tmp_path):  # noqa: F811

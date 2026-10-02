@@ -19,6 +19,8 @@ def _fixture(
     language: str = "go",
     *,
     parser_refusal: bool = False,
+    checker_disagreement: bool = False,
+    disputed_name: str = "Other",
 ):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -34,6 +36,11 @@ def _fixture(
     if parser_refusal:
         assert language == "go"
         (checkout / "broken.go").write_text("package demo\nfunc Broken(", encoding="utf-8")
+    if checker_disagreement:
+        assert language == "go"
+        (checkout / "disputed.go").write_text(
+            f"package demo\nfunc {disputed_name}() {{}}\n", encoding="utf-8"
+        )
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
     subprocess.run(
@@ -62,6 +69,13 @@ def _fixture(
             {
                 "path": "broken.go",
                 "file_sha256": hashlib.sha256((checkout / "broken.go").read_bytes()).hexdigest(),
+            }
+        )
+    if checker_disagreement:
+        universe.append(
+            {
+                "path": "disputed.go",
+                "file_sha256": hashlib.sha256((checkout / "disputed.go").read_bytes()).hexdigest(),
             }
         )
     universe.sort(key=lambda row: row["path"])
@@ -113,6 +127,11 @@ def _fixture(
         "answerable": True,
         "census_text_excluded": (
             [{"path": "broken.go", "reason": "census_refused"}] if parser_refusal else []
+        )
+        + (
+            [{"path": "disputed.go", "reason": "census_disagreement"}]
+            if checker_disagreement
+            else []
         ),
         "label_state": "mechanical_unreviewed",
         "labels": [label],
@@ -139,9 +158,11 @@ def _fixture(
             "schema_version": 2,
             "census_audits": {
                 language: {
-                    "status": "unsupported" if parser_refusal else "admitted",
+                    "status": "unsupported"
+                    if parser_refusal or checker_disagreement
+                    else "admitted",
                     "refused_paths": ["broken.go"] if parser_refusal else [],
-                    "disagreement_paths": [],
+                    "disagreement_paths": ["disputed.go"] if checker_disagreement else [],
                 }
             },
             "tasks": [gold_task],
@@ -284,9 +305,35 @@ def test_c4_admits_query_specific_parser_refusal(tmp_path, monkeypatch):
     release, capsule, checkout = _fixture(tmp_path, monkeypatch, parser_refusal=True)
     suite, _pack, report = holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
     assert report["selected"] == 1
-    assert report["parser_refused_source_paths"] == ["broken.go"]
+    assert report["census_excluded_source_paths"] == [
+        {"path": "broken.go", "reason": "census_refused"}
+    ]
     assert report["selected_tasks_with_proved_exclusions"] == 1
     assert suite["tasks"][0]["source_oracle"]["declaration_exclusions"] == ["broken.go"]
+
+
+def test_c4_admits_query_specific_checker_disagreement(tmp_path, monkeypatch):
+    release, capsule, checkout = _fixture(tmp_path, monkeypatch, checker_disagreement=True)
+    suite, _pack, report = holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
+    assert report["selected"] == 1
+    assert report["census_excluded_source_paths"] == [
+        {"path": "disputed.go", "reason": "census_disagreement"}
+    ]
+    assert "declaration_exclusions" not in suite["tasks"][0]["source_oracle"]
+
+    gold = holdout_c4._read(capsule / "gold.json")
+    gold["tasks"][0]["census_text_excluded"] = []
+    _resign(capsule, "gold.json", gold)
+    with pytest.raises(ValueError, match="no admitted declaration task"):
+        holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
+
+
+def test_c4_refuses_disputed_file_with_possible_answer(tmp_path, monkeypatch):
+    release, capsule, checkout = _fixture(
+        tmp_path, monkeypatch, checker_disagreement=True, disputed_name="Alpha"
+    )
+    with pytest.raises((ValueError, evaluator.EvidenceError), match="query match|labels differ"):
+        holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
 
 
 @pytest.mark.parametrize("kind", ["missing", "disagreement", "forged_parser_refusal"])
@@ -302,7 +349,7 @@ def test_c4_refuses_unproved_partial_census(tmp_path, monkeypatch, kind):
         gold["census_audits"]["go"]["refused_paths"] = ["main.go"]
     _resign(capsule, "gold.json", gold)
     if kind == "disagreement":
-        with pytest.raises(ValueError, match="checker disagreement"):
+        with pytest.raises(ValueError, match="not admitted or query-provable"):
             holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
     elif kind == "missing":
         with pytest.raises(ValueError, match="no admitted declaration task"):

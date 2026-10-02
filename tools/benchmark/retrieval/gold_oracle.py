@@ -396,8 +396,8 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
                         task["language"], path, raw
                     )
                 if (
-                    reason == "census_refused"
-                    and source_refusals[refusal_key]
+                    reason in ("census_refused", "census_disagreement")
+                    and (reason == "census_disagreement" or source_refusals[refusal_key])
                     and _textually_excluded(raw, task["query"], DECLARATION_INTENTS[task["intent"]])
                 ):
                     # The query cannot match any name written in this file.
