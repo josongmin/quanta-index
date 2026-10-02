@@ -4446,6 +4446,7 @@ name = "quanta-index-ipc"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "ciborium-ll",
  "nix",
  "quanta-index-contract",
  "quanta-index-core",

@@ -17,8 +17,8 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponseEnvelope,
 };
 use quanta_index_ipc::{
-    BoundSocketPathProbe, IpcDispatcher, IpcError, IpcPlane, IpcServerCounters, RequestEnvelope,
-    ResponseEnvelope, ServerAdmissionPolicy, ShutdownHandle as IpcShutdownHandle,
+    BoundSocketPathProbe, IngressBudget, IpcDispatcher, IpcError, IpcPlane, IpcServerCounters,
+    RequestEnvelope, ResponseEnvelope, ServerAdmissionPolicy, ShutdownHandle as IpcShutdownHandle,
     SocketAccessPolicy, UdsServer,
 };
 
@@ -86,9 +86,11 @@ where
         access: SocketAccessPolicy,
         directory_access: &SocketAccessPolicy,
         counters: Arc<IpcServerCounters>,
+        ingress: Arc<IngressBudget>,
     ) -> Result<Self, IpcError> {
         let server =
-            UdsServer::bind_observed_in(socket_path, policy, access, directory_access, counters)?;
+            UdsServer::bind_observed_in(socket_path, policy, access, directory_access, counters)?
+                .with_ingress_budget(ingress);
         Ok(Self {
             server,
             dispatcher,

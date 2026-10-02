@@ -6,7 +6,9 @@
 //! gave up left its query running to completion with nothing to tell the
 //! dispatcher.
 //!
-//! Admission is ordered ingress → dispatch slot → execution. Each accepted
+//! Admission is ordered ingress → dispatch slot → execution. Decoding holds a
+//! process-wide request-buffer budget and a request-count bound through the
+//! response, including queued payloads. Each accepted
 //! connection gets its own thread (bounded by `max_connections`; past that
 //! the accept loop closes the connection immediately rather than queue it
 //! unbounded), so reading a request never waits on another peer. Running the
@@ -21,12 +23,14 @@
 //! peer hangs up mid-dispatch.
 
 use std::collections::BTreeMap;
-use std::sync::{Condvar, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::{ERR_SERVER_OVERLOADED, SearchPlaneIpcError};
 
 use crate::codec::IpcError;
+use crate::server::IpcPlane;
 
 /// Ingress and dispatch limits for one server.
 ///
@@ -157,6 +161,184 @@ pub struct DispatchSlots {
     released: Condvar,
     capacity: usize,
     per_repo_capacity: usize,
+    ingress: Arc<IngressBudget>,
+}
+
+/// Enough for one maximum 128 MiB multiframe request, its 16 MiB first
+/// frame and one 16 MiB following frame, with room for smaller requests.
+const DECODE_BYTE_CAPACITY: usize = 256 * 1024 * 1024;
+
+/// Request-body admission shared by the query, control and ingest sockets of
+/// one daemon. The process budget reserves 32 MiB and two requests for the
+/// control socket under data-plane saturation. Standalone servers use the
+/// same total and data-plane limits, without a control reserve.
+#[derive(Debug)]
+pub struct IngressBudget {
+    decode_bytes_in_flight: AtomicUsize,
+    decode_byte_capacity: usize,
+    decode_requests_in_flight: AtomicUsize,
+    decode_request_capacity: usize,
+    data_bytes_in_flight: AtomicUsize,
+    data_byte_capacity: usize,
+    data_requests_in_flight: AtomicUsize,
+    data_request_capacity: usize,
+}
+
+impl IngressBudget {
+    /// One process-wide budget for all three daemon sockets. Query and ingest
+    /// can use the full standalone 256 MiB bound; the additional 32 MiB and
+    /// two request permits keep operator control reachable under saturation.
+    #[must_use]
+    pub const fn for_process() -> Self {
+        Self::new(288 * 1024 * 1024, 18, DECODE_BYTE_CAPACITY, 16)
+    }
+
+    pub(crate) fn for_server(policy: ServerAdmissionPolicy) -> Self {
+        let requests = policy
+            .max_connections()
+            .min(policy.dispatch_slots().saturating_add(4).max(8));
+        Self::with_request_capacity(requests)
+    }
+
+    const fn with_request_capacity(requests: usize) -> Self {
+        Self::new(
+            DECODE_BYTE_CAPACITY,
+            requests,
+            DECODE_BYTE_CAPACITY,
+            requests,
+        )
+    }
+
+    const fn new(bytes: usize, requests: usize, data_bytes: usize, data_requests: usize) -> Self {
+        Self {
+            decode_bytes_in_flight: AtomicUsize::new(0),
+            decode_byte_capacity: bytes,
+            decode_requests_in_flight: AtomicUsize::new(0),
+            decode_request_capacity: requests,
+            data_bytes_in_flight: AtomicUsize::new(0),
+            data_byte_capacity: data_bytes,
+            data_requests_in_flight: AtomicUsize::new(0),
+            data_request_capacity: data_requests,
+        }
+    }
+
+    fn saturated(&self, data_plane: bool) -> IpcError {
+        IpcError::IngressSaturated {
+            bytes: if data_plane {
+                self.data_byte_capacity
+            } else {
+                self.decode_byte_capacity
+            },
+            requests: if data_plane {
+                self.data_request_capacity
+            } else {
+                self.decode_request_capacity
+            },
+        }
+    }
+
+    fn try_acquire(
+        &self,
+        body_bytes: usize,
+        plane: IpcPlane,
+    ) -> Result<DecodePermit<'_>, IpcError> {
+        let data_plane = plane != IpcPlane::Control;
+        if data_plane
+            && !try_reserve_atomic(&self.data_requests_in_flight, 1, self.data_request_capacity)
+        {
+            return Err(self.saturated(true));
+        }
+        if !try_reserve_atomic(
+            &self.decode_requests_in_flight,
+            1,
+            self.decode_request_capacity,
+        ) {
+            if data_plane {
+                let _previous = self.data_requests_in_flight.fetch_sub(1, Ordering::Release);
+            }
+            return Err(self.saturated(data_plane));
+        }
+        if let Err(error) = self.reserve_bytes(body_bytes, data_plane) {
+            let _previous = self
+                .decode_requests_in_flight
+                .fetch_sub(1, Ordering::Release);
+            if data_plane {
+                let _previous = self.data_requests_in_flight.fetch_sub(1, Ordering::Release);
+            }
+            return Err(error);
+        }
+        Ok(DecodePermit {
+            budget: self,
+            reserved_bytes: body_bytes,
+            data_plane,
+        })
+    }
+
+    fn reserve_bytes(&self, bytes: usize, data_plane: bool) -> Result<(), IpcError> {
+        if data_plane
+            && !try_reserve_atomic(&self.data_bytes_in_flight, bytes, self.data_byte_capacity)
+        {
+            return Err(self.saturated(true));
+        }
+        if !try_reserve_atomic(
+            &self.decode_bytes_in_flight,
+            bytes,
+            self.decode_byte_capacity,
+        ) {
+            if data_plane {
+                let _previous = self
+                    .data_bytes_in_flight
+                    .fetch_sub(bytes, Ordering::Release);
+            }
+            return Err(self.saturated(data_plane));
+        }
+        Ok(())
+    }
+}
+
+/// Held from the first request-body allocation until the corresponding
+/// response is written or the connection closes.
+#[derive(Debug)]
+pub(crate) struct DecodePermit<'a> {
+    budget: &'a IngressBudget,
+    reserved_bytes: usize,
+    data_plane: bool,
+}
+
+impl DecodePermit<'_> {
+    pub(crate) fn reserve(&mut self, additional_bytes: usize) -> Result<(), IpcError> {
+        let new_reserved = self
+            .reserved_bytes
+            .checked_add(additional_bytes)
+            .ok_or_else(|| self.budget.saturated(self.data_plane))?;
+        self.budget
+            .reserve_bytes(additional_bytes, self.data_plane)?;
+        self.reserved_bytes = new_reserved;
+        Ok(())
+    }
+}
+
+impl Drop for DecodePermit<'_> {
+    fn drop(&mut self) {
+        let _previous = self
+            .budget
+            .decode_bytes_in_flight
+            .fetch_sub(self.reserved_bytes, Ordering::Release);
+        let _previous = self
+            .budget
+            .decode_requests_in_flight
+            .fetch_sub(1, Ordering::Release);
+        if self.data_plane {
+            let _previous = self
+                .budget
+                .data_bytes_in_flight
+                .fetch_sub(self.reserved_bytes, Ordering::Release);
+            let _previous = self
+                .budget
+                .data_requests_in_flight
+                .fetch_sub(1, Ordering::Release);
+        }
+    }
 }
 
 /// One held dispatch slot; dropping it releases the slot and, when the
@@ -244,13 +426,28 @@ impl DispatchSlots {
     /// Slots for `policy`: its slot count, with its per-repository cap.
     #[must_use]
     pub fn for_policy(policy: ServerAdmissionPolicy) -> Self {
-        Self::new(policy.dispatch_slots(), policy.max_in_flight_per_repo())
+        // Keep room for a half frame and queued requests while all dispatch
+        // slots are occupied. A decode cap equal to dispatch slots breaks the
+        // socket's slow-peer isolation and typed queue refusal contract.
+        Self::with_shared_ingress(policy, Arc::new(IngressBudget::for_server(policy)))
+    }
+
+    /// The dispatch limits remain socket-local while all sockets can share
+    /// one ingress byte and request-count budget.
+    #[must_use]
+    pub(crate) fn with_shared_ingress(
+        policy: ServerAdmissionPolicy,
+        ingress: Arc<IngressBudget>,
+    ) -> Self {
+        let mut slots = Self::new(policy.dispatch_slots(), policy.max_in_flight_per_repo());
+        slots.ingress = ingress;
+        slots
     }
 
     /// `capacity` slots, of which one repository may hold at most
     /// `per_repo_capacity` (clamped to `capacity`; zero means one).
     #[must_use]
-    pub const fn new(capacity: usize, per_repo_capacity: usize) -> Self {
+    pub fn new(capacity: usize, per_repo_capacity: usize) -> Self {
         let per_repo_capacity = if per_repo_capacity == 0 {
             1
         } else if per_repo_capacity > capacity {
@@ -266,7 +463,20 @@ impl DispatchSlots {
             released: Condvar::new(),
             capacity,
             per_repo_capacity,
+            ingress: Arc::new(IngressBudget::with_request_capacity(
+                capacity.saturating_add(4).max(8),
+            )),
         }
+    }
+
+    /// Reject immediately instead of waiting while retaining a partially
+    /// decoded request. Such waits could deadlock the shared byte budget.
+    pub(crate) fn try_acquire_decode(
+        &self,
+        body_bytes: usize,
+        plane: IpcPlane,
+    ) -> Result<DecodePermit<'_>, IpcError> {
+        self.ingress.try_acquire(body_bytes, plane)
     }
 
     #[must_use]
@@ -383,13 +593,32 @@ impl DispatchSlots {
     }
 }
 
+fn try_reserve_atomic(counter: &AtomicUsize, additional: usize, capacity: usize) -> bool {
+    let mut held = counter.load(Ordering::Acquire);
+    loop {
+        let Some(next) = held
+            .checked_add(additional)
+            .filter(|total| *total <= capacity)
+        else {
+            return false;
+        };
+        match counter.compare_exchange_weak(held, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_previous) => return true,
+            Err(actual) => held = actual,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
 
-    use super::{DispatchSlots, ServerAdmissionPolicy, SlotRefusal};
+    use super::{
+        DECODE_BYTE_CAPACITY, DispatchSlots, IngressBudget, ServerAdmissionPolicy, SlotRefusal,
+    };
+    use crate::server::IpcPlane;
 
     #[test]
     fn a_policy_refuses_zero_limits_and_more_slots_than_connections() {
@@ -410,6 +639,124 @@ mod tests {
             ServerAdmissionPolicy::SERIAL_DISPATCH.max_in_flight_per_repo(),
             1
         );
+    }
+
+    #[test]
+    fn decode_admission_counts_bytes_and_releases_upgrades_on_drop() {
+        let slots = DispatchSlots::for_policy(ServerAdmissionPolicy::DEFAULT);
+        let mut first = slots
+            .try_acquire_decode(16, IpcPlane::Query)
+            .expect("first decode admitted");
+        let second = slots
+            .try_acquire_decode(32, IpcPlane::Query)
+            .expect("second decode admitted");
+        first
+            .reserve(DECODE_BYTE_CAPACITY - 48)
+            .expect("upgrade fits");
+        assert!(matches!(
+            slots.try_acquire_decode(1, IpcPlane::Query),
+            Err(crate::codec::IpcError::IngressSaturated {
+                bytes: DECODE_BYTE_CAPACITY,
+                requests: 8,
+            })
+        ));
+        assert!(matches!(
+            first.reserve(1),
+            Err(crate::codec::IpcError::IngressSaturated {
+                bytes: DECODE_BYTE_CAPACITY,
+                requests: 8,
+            })
+        ));
+        let dispatch = slots
+            .acquire(Duration::ZERO, None)
+            .expect("dispatch slots remain independent");
+        drop(dispatch);
+        drop(first);
+        let third = slots
+            .try_acquire_decode(16, IpcPlane::Query)
+            .expect("drop releases upgrade");
+        drop(second);
+        drop(third);
+        assert!(
+            slots
+                .try_acquire_decode(DECODE_BYTE_CAPACITY, IpcPlane::Query)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn decode_admission_also_bounds_tiny_decoded_envelopes() {
+        let slots = DispatchSlots::for_policy(ServerAdmissionPolicy::DEFAULT);
+        let permits: Vec<_> = (0..8)
+            .map(|_| {
+                slots
+                    .try_acquire_decode(1, IpcPlane::Query)
+                    .expect("small request admitted")
+            })
+            .collect();
+        assert!(matches!(
+            slots.try_acquire_decode(1, IpcPlane::Query),
+            Err(crate::codec::IpcError::IngressSaturated { requests: 8, .. })
+        ));
+        drop(permits);
+        assert!(slots.try_acquire_decode(1, IpcPlane::Query).is_ok());
+    }
+
+    #[test]
+    fn two_socket_dispatch_ledgers_share_one_ingress_byte_budget() {
+        let ingress = Arc::new(IngressBudget::for_process());
+        let query = DispatchSlots::with_shared_ingress(
+            ServerAdmissionPolicy::DEFAULT,
+            Arc::clone(&ingress),
+        );
+        let ingest = DispatchSlots::with_shared_ingress(
+            ServerAdmissionPolicy::SERIAL_DISPATCH,
+            Arc::clone(&ingress),
+        );
+        let held = query
+            .try_acquire_decode(DECODE_BYTE_CAPACITY - 1, IpcPlane::Query)
+            .expect("query fills shared budget");
+        assert!(matches!(
+            ingest.try_acquire_decode(2, IpcPlane::Ingest),
+            Err(crate::codec::IpcError::IngressSaturated { requests: 16, .. })
+        ));
+        let control =
+            DispatchSlots::with_shared_ingress(ServerAdmissionPolicy::SERIAL_DISPATCH, ingress);
+        let control_permit = control
+            .try_acquire_decode(32 * 1024 * 1024, IpcPlane::Control)
+            .expect("control reserve survives saturated data plane");
+        drop(control_permit);
+        drop(held);
+        assert!(ingest.try_acquire_decode(2, IpcPlane::Ingest).is_ok());
+    }
+
+    #[test]
+    fn control_request_permits_survive_data_plane_count_saturation() {
+        let ingress = Arc::new(IngressBudget::for_process());
+        let query = DispatchSlots::with_shared_ingress(
+            ServerAdmissionPolicy::DEFAULT,
+            Arc::clone(&ingress),
+        );
+        let control =
+            DispatchSlots::with_shared_ingress(ServerAdmissionPolicy::SERIAL_DISPATCH, ingress);
+        let query_permits: Vec<_> = (0..16)
+            .map(|_| {
+                query
+                    .try_acquire_decode(1, IpcPlane::Query)
+                    .expect("data permit")
+            })
+            .collect();
+        assert!(query.try_acquire_decode(1, IpcPlane::Query).is_err());
+        let control_permits: Vec<_> = (0..2)
+            .map(|_| {
+                control
+                    .try_acquire_decode(1, IpcPlane::Control)
+                    .expect("control permit")
+            })
+            .collect();
+        assert!(control.try_acquire_decode(1, IpcPlane::Control).is_err());
+        drop(query_permits);
+        drop(control_permits);
     }
 
     #[test]

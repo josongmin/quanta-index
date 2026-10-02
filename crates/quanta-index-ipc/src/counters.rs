@@ -124,6 +124,8 @@ pub struct IpcServerCounters {
     connections_live: AtomicU64,
     /// Requests that could not be decoded; the connection closed.
     request_decode_failures: AtomicU64,
+    /// Frames refused before envelope decode by ingress memory admission.
+    ingress_admission_refusals: AtomicU64,
     /// Requests that found no dispatch slot within the queue wait.
     requests_overloaded: AtomicU64,
     /// Requests refused because their repository held its per-repository
@@ -165,6 +167,7 @@ pub struct IpcServerCountersSnapshot {
     pub peer_credentials_unreadable: u64,
     pub connections_live: u64,
     pub request_decode_failures: u64,
+    pub ingress_admission_refusals: u64,
     pub requests_overloaded: u64,
     pub requests_overloaded_repo: u64,
     pub dispatch_queue_waits: u64,
@@ -194,6 +197,7 @@ impl IpcServerCounters {
             peer_credentials_unreadable: AtomicU64::new(0),
             connections_live: AtomicU64::new(0),
             request_decode_failures: AtomicU64::new(0),
+            ingress_admission_refusals: AtomicU64::new(0),
             requests_overloaded: AtomicU64::new(0),
             requests_overloaded_repo: AtomicU64::new(0),
             dispatch_queue_waits: AtomicU64::new(0),
@@ -238,6 +242,7 @@ impl IpcServerCounters {
             peer_credentials_unreadable: self.peer_credentials_unreadable.load(Ordering::Acquire),
             connections_live: self.connections_live.load(Ordering::Acquire),
             request_decode_failures: self.request_decode_failures.load(Ordering::Acquire),
+            ingress_admission_refusals: self.ingress_admission_refusals.load(Ordering::Acquire),
             requests_overloaded: self.requests_overloaded.load(Ordering::Acquire),
             requests_overloaded_repo: self.requests_overloaded_repo.load(Ordering::Acquire),
             dispatch_queue_waits: self.dispatch_queue_waits.load(Ordering::Acquire),
@@ -284,8 +289,13 @@ impl IpcServerCounters {
         let _prior = self.request_decode_failures.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// A slot refusal: the global bound or, when `repo_scoped`, the
-    /// per-repository one.
+    pub(crate) fn ingress_admission_refused(&self) {
+        let _prior = self
+            .ingress_admission_refusals
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// A dispatch slot refusal: global or, when `repo_scoped`, per repository.
     pub(crate) fn request_overloaded(&self, repo_scoped: bool) {
         if repo_scoped {
             let _prior = self.requests_overloaded_repo.fetch_add(1, Ordering::AcqRel);
@@ -409,6 +419,10 @@ impl MetricSourcePort for IpcServerCounters {
             MetricPointV1::counter(
                 self.metric_name("request_decode_failures_total"),
                 snapshot.request_decode_failures,
+            ),
+            MetricPointV1::counter(
+                self.metric_name("ingress_admission_refusals_total"),
+                snapshot.ingress_admission_refusals,
             ),
             MetricPointV1::counter(
                 self.metric_name("requests_overloaded_total"),

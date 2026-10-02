@@ -271,6 +271,7 @@ fn transport_kind(error: &IpcError) -> String {
         IpcError::EmptyFrame => "empty_frame".to_string(),
         IpcError::Encode(_) => "encode".to_string(),
         IpcError::Decode(_) => "decode".to_string(),
+        IpcError::IngressSaturated { .. } => "ingress_saturated".to_string(),
         IpcError::ZeroRequestId => "zero_request_id".to_string(),
         IpcError::Timeout { .. }
         | IpcError::InvalidClientIoTimeout

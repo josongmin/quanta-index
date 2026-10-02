@@ -12,13 +12,16 @@ compile_error!(
 
 mod admission;
 mod batch_digest;
+mod cbor_preflight;
 mod codec;
 mod counters;
 mod peer_credentials;
 mod server;
 mod socket_access;
 
-pub use admission::{DispatchPermit, DispatchSlots, ServerAdmissionPolicy, SlotRefusal};
+pub use admission::{
+    DispatchPermit, DispatchSlots, IngressBudget, ServerAdmissionPolicy, SlotRefusal,
+};
 pub use batch_digest::{
     BatchDigestVerdictV1, canonical_batch_digest_v1, stamp_batch_digest_v1, verify_batch_digest_v1,
 };

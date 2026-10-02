@@ -85,6 +85,8 @@ pub enum IpcError {
     /// A server admission policy named a zero limit or more dispatch slots
     /// than connections.
     InvalidAdmissionPolicy,
+    /// Concurrent request payloads exhausted a server ingress bound.
+    IngressSaturated { bytes: usize, requests: usize },
     /// A live listener already answers at the socket path; it was left in
     /// place (QI-BB-014).
     SocketInUse(std::path::PathBuf),
@@ -150,6 +152,9 @@ impl core::fmt::Display for IpcError {
             Self::InvalidAdmissionPolicy => f.write_str(
                 "server admission policy must have non-zero connections, slots, per-repository in-flight cap, budget and I/O timeout, with per-repository cap <= slots <= connections",
             ),
+            Self::IngressSaturated { bytes, requests } => {
+                write!(f, "ipc request ingress admission saturated (up to {bytes} request-buffer bytes and {requests} concurrent requests)")
+            }
             Self::SocketInUse(path) => write!(
                 f,
                 "SOCKET_IN_USE: a live listener already answers at {}; refusing to take its path",
@@ -186,6 +191,7 @@ impl std::error::Error for IpcError {
             | Self::ClientIoDeadlineElapsed
             | Self::ReadinessTimeout { .. }
             | Self::InvalidAdmissionPolicy
+            | Self::IngressSaturated { .. }
             | Self::SocketInUse(_)
             | Self::SocketPathInsecure { .. }
             | Self::SocketAccessUnsatisfiable { .. }
@@ -338,7 +344,23 @@ where
     T: serde::de::DeserializeOwned,
     R: Read,
 {
-    decode_frame(reader, true)
+    decode_frame(reader, true, false, |_| Ok(()), |_, _| Ok(())).map(|(value, ())| value)
+}
+
+/// Reserve server ingress bytes after validating the first frame header,
+/// before allocating its body. The returned guard must cover the decoded
+/// request through dispatch and response; otherwise queued envelopes can
+/// exceed the ingress bound after parsing.
+pub(crate) fn decode_request_guarded<T, R, G>(
+    reader: &mut R,
+    admit: impl FnOnce(usize) -> Result<G, IpcError>,
+    reserve: impl FnMut(&mut G, usize) -> Result<(), IpcError>,
+) -> Result<(T, G), IpcError>
+where
+    T: serde::de::DeserializeOwned,
+    R: Read,
+{
+    decode_frame(reader, true, true, admit, reserve)
 }
 
 pub fn decode_response<T, R>(reader: &mut R) -> Result<T, IpcError>
@@ -346,14 +368,26 @@ where
     T: serde::de::DeserializeOwned,
     R: Read,
 {
-    decode_frame(reader, false)
+    decode_frame(reader, false, false, |_| Ok(()), |_, _| Ok(())).map(|(value, ())| value)
 }
 
 pub fn decode_cbor_payload<T>(bytes: &[u8]) -> Result<T, IpcError>
 where
     T: serde::de::DeserializeOwned,
 {
-    ciborium::from_reader(bytes).map_err(|err| IpcError::Decode(err.to_string()))
+    let mut reader = std::io::Cursor::new(bytes);
+    let decoded =
+        ciborium::from_reader(&mut reader).map_err(|err| IpcError::Decode(err.to_string()))?;
+    if reader.position()
+        != u64::try_from(bytes.len()).map_err(|error| {
+            IpcError::Decode(format!("CBOR payload length does not fit u64: {error}"))
+        })?
+    {
+        return Err(IpcError::Decode(
+            "CBOR payload contains trailing bytes after its value".to_string(),
+        ));
+    }
+    Ok(decoded)
 }
 
 #[expect(
@@ -386,7 +420,13 @@ fn encode_frame<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IpcError> {
     Ok(frame)
 }
 
-fn decode_frame<T, R>(reader: &mut R, allow_compressed_request: bool) -> Result<T, IpcError>
+fn decode_frame<T, R, G>(
+    reader: &mut R,
+    allow_compressed_request: bool,
+    preflight_request: bool,
+    admit: impl FnOnce(usize) -> Result<G, IpcError>,
+    mut reserve: impl FnMut(&mut G, usize) -> Result<(), IpcError>,
+) -> Result<(T, G), IpcError>
 where
     T: serde::de::DeserializeOwned,
     R: Read,
@@ -406,6 +446,7 @@ where
     let body_len = usize::try_from(body_len_u32)
         .map_err(|_overflow| IpcError::Decode("declared body length overflowed usize".into()))?;
 
+    let mut guard = admit(body_len)?;
     let mut body = vec![0u8; body_len];
     read_exact_or_truncated(reader, &mut body)?;
     if body.starts_with(MULTIFRAME_REQUEST_MAGIC) {
@@ -414,10 +455,19 @@ where
                 "multiframe request framing is invalid for an IPC response".into(),
             ));
         }
-        return decode_multiframe_request(reader, &body);
+        let decoded = decode_multiframe_request(reader, &body, |extra| reserve(&mut guard, extra))?;
+        let value = decode_materialized(
+            decoded.as_slice(),
+            &mut guard,
+            preflight_request,
+            &mut reserve,
+        )?;
+        return Ok((value, guard));
     }
     let Some(compressed) = body.strip_prefix(COMPRESSED_REQUEST_MAGIC) else {
-        return decode_cbor_payload(body.as_slice());
+        let value =
+            decode_materialized(body.as_slice(), &mut guard, preflight_request, &mut reserve)?;
+        return Ok((value, guard));
     };
     if !allow_compressed_request {
         return Err(IpcError::Decode(
@@ -443,6 +493,7 @@ where
             "compressed request expands to {declared_len} bytes, exceeding the {MAX_DECOMPRESSED_FRAME_BODY_BYTES} byte decoded-request cap"
         )));
     }
+    reserve(&mut guard, declared_len)?;
     let (expected_digest, compressed_bytes) = rest.split_at(32);
     if compressed_bytes.is_empty() {
         return Err(IpcError::Decode(
@@ -463,12 +514,34 @@ where
             "compressed request SHA-256 does not match decoded body".into(),
         ));
     }
-    decode_cbor_payload(decoded.as_slice())
+    let value = decode_materialized(
+        decoded.as_slice(),
+        &mut guard,
+        preflight_request,
+        &mut reserve,
+    )?;
+    Ok((value, guard))
 }
 
-fn decode_multiframe_request<T, R>(reader: &mut R, first: &[u8]) -> Result<T, IpcError>
+fn decode_materialized<T: serde::de::DeserializeOwned, G>(
+    bytes: &[u8],
+    guard: &mut G,
+    preflight_request: bool,
+    reserve: &mut impl FnMut(&mut G, usize) -> Result<(), IpcError>,
+) -> Result<T, IpcError> {
+    if preflight_request {
+        let text_storage = crate::cbor_preflight::retained_text_budget(bytes)?;
+        reserve(guard, text_storage)?;
+    }
+    decode_cbor_payload(bytes)
+}
+
+fn decode_multiframe_request<R>(
+    reader: &mut R,
+    first: &[u8],
+    reserve: impl FnOnce(usize) -> Result<(), IpcError>,
+) -> Result<Vec<u8>, IpcError>
 where
-    T: serde::de::DeserializeOwned,
     R: Read,
 {
     let metadata = first
@@ -498,8 +571,15 @@ where
             "multiframe first fragment has noncanonical length".into(),
         ));
     }
-    // Do not reserve the untrusted declaration before receiving its bytes.
-    let mut decoded = Vec::with_capacity(expected_first_len);
+    // Account for the decoded body and one following frame while retaining
+    // the first frame. Later frames are replaced, not retained together.
+    let additional = declared_len
+        .checked_add(MAX_FRAME_BODY_BYTES)
+        .ok_or_else(|| IpcError::Decode("multiframe reservation overflow".into()))?;
+    reserve(additional)?;
+    // Admission reserves this capacity before allocation; reading fragments
+    // into one buffer avoids transient reallocations of a 128 MiB body.
+    let mut decoded = Vec::with_capacity(declared_len);
     decoded.extend_from_slice(fragment);
     let mut expected_sequence = 1_u32;
     while decoded.len() < declared_len {
@@ -552,7 +632,7 @@ where
             "multiframe request SHA-256 does not match decoded body".into(),
         ));
     }
-    decode_cbor_payload(decoded.as_slice())
+    Ok(decoded)
 }
 
 /// Fill `buf` from `reader`, returning [`IpcError::Truncated`] on EOF and
@@ -586,8 +666,8 @@ mod tests {
     use super::{
         COMPRESSED_REQUEST_HEADER_BYTES, COMPRESSED_REQUEST_MAGIC, IpcError,
         MAX_DECOMPRESSED_FRAME_BODY_BYTES, MAX_FRAME_BODY_BYTES, MAX_MULTIFRAME_REQUEST_BODY_BYTES,
-        MULTIFRAME_REQUEST_MAGIC, decode_cbor_payload, decode_request, decode_response,
-        encode_cbor_payload, encode_request,
+        MULTIFRAME_REQUEST_MAGIC, decode_cbor_payload, decode_request, decode_request_guarded,
+        decode_response, encode_cbor_payload, encode_request,
     };
 
     #[test]
@@ -616,6 +696,72 @@ mod tests {
     }
 
     #[test]
+    fn request_frame_rejects_a_second_cbor_value_after_the_envelope() {
+        let mut bytes = encode_cbor_payload(&7_u32).expect("first value");
+        bytes.extend(encode_cbor_payload(&8_u32).expect("second value"));
+        let result = decode_cbor_payload::<u32>(&bytes);
+        assert!(matches!(result, Err(IpcError::Decode(_))), "{result:?}");
+        let mut frame = Vec::with_capacity(bytes.len() + 4);
+        frame.extend_from_slice(
+            &u32::try_from(bytes.len())
+                .expect("small frame length")
+                .to_le_bytes(),
+        );
+        frame.extend_from_slice(&bytes);
+        let result = decode_request::<u32, _>(&mut Cursor::new(frame));
+        assert!(matches!(result, Err(IpcError::Decode(_))), "{result:?}");
+    }
+
+    #[test]
+    fn ingress_admission_precedes_frame_body_read() {
+        let header = u32::try_from(MAX_FRAME_BODY_BYTES)
+            .expect("frame cap fits u32")
+            .to_le_bytes();
+        let mut reader = Cursor::new(header);
+        let result = decode_request_guarded::<u32, _, ()>(
+            &mut reader,
+            |_body_bytes| {
+                Err(IpcError::IngressSaturated {
+                    bytes: 256,
+                    requests: 4,
+                })
+            },
+            |_, _| Ok(()),
+        );
+        assert!(matches!(
+            result,
+            Err(IpcError::IngressSaturated {
+                bytes: 256,
+                requests: 4
+            })
+        ));
+        assert_eq!(reader.position(), 4);
+    }
+
+    #[test]
+    fn guarded_request_rejects_text_collection_growth_before_deserializing() {
+        let frame = encode_request(&vec![String::new(); 1_000]).expect("bounded frame");
+        let result = decode_request_guarded::<Vec<String>, _, usize>(
+            &mut Cursor::new(frame),
+            Ok,
+            |held, additional| {
+                let next = held
+                    .checked_add(additional)
+                    .expect("test budget fits usize");
+                if next > 10_000 {
+                    return Err(IpcError::IngressSaturated {
+                        bytes: 10_000,
+                        requests: 1,
+                    });
+                }
+                *held = next;
+                Ok(())
+            },
+        );
+        assert!(matches!(result, Err(IpcError::IngressSaturated { .. })));
+    }
+
+    #[test]
     fn compressible_request_larger_than_wire_cap_round_trips_under_wire_cap() {
         let expected = "x".repeat(MAX_FRAME_BODY_BYTES + 1024);
         let frame = encode_request(&expected).expect("bounded compressed request");
@@ -632,8 +778,19 @@ mod tests {
                 .expect("body after length header")
                 .starts_with(COMPRESSED_REQUEST_MAGIC)
         );
-        let actual: String = decode_request(&mut Cursor::new(frame)).expect("decoded request");
+        let (actual, reserved): (String, usize) =
+            decode_request_guarded(&mut Cursor::new(frame), Ok, |held, additional| {
+                *held += additional;
+                Ok(())
+            })
+            .expect("decoded request");
         assert_eq!(actual, expected);
+        let logical_len = usize::try_from(super::cbor_payload_len(&expected).expect("CBOR length"))
+            .expect("length fits usize");
+        assert_eq!(
+            reserved,
+            wire_len + logical_len + 2 * std::mem::size_of::<String>()
+        );
     }
 
     #[test]
@@ -676,15 +833,6 @@ mod tests {
                 .expect("first body")
                 .starts_with(MULTIFRAME_REQUEST_MAGIC)
         );
-        let actual: Vec<u8> =
-            decode_request(&mut Cursor::new(frame.as_slice())).expect("decoded request");
-        assert_eq!(actual, expected);
-
-        let mut truncated = frame.clone();
-        let _last = truncated.pop();
-        let result: Result<Vec<u8>, IpcError> = decode_request(&mut Cursor::new(truncated));
-        assert!(matches!(result, Err(IpcError::Truncated)));
-
         let first_frame_len = usize::try_from(u32::from_le_bytes(
             frame
                 .get(..4)
@@ -693,6 +841,28 @@ mod tests {
                 .expect("header width"),
         ))
         .expect("first length fits");
+        let (actual, reserved): (Vec<u8>, usize) = decode_request_guarded(
+            &mut Cursor::new(frame.as_slice()),
+            Ok,
+            |held, additional| {
+                *held += additional;
+                Ok(())
+            },
+        )
+        .expect("decoded request");
+        assert_eq!(actual, expected);
+        let logical_len = usize::try_from(super::cbor_payload_len(&expected).expect("CBOR length"))
+            .expect("length fits usize");
+        assert_eq!(
+            reserved,
+            first_frame_len + logical_len + MAX_FRAME_BODY_BYTES
+        );
+
+        let mut truncated = frame.clone();
+        let _last = truncated.pop();
+        let result: Result<Vec<u8>, IpcError> = decode_request(&mut Cursor::new(truncated));
+        assert!(matches!(result, Err(IpcError::Truncated)));
+
         let sequence_offset = 4_usize
             .checked_add(first_frame_len)
             .and_then(|value| value.checked_add(4 + MULTIFRAME_REQUEST_MAGIC.len()))

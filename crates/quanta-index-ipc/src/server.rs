@@ -13,7 +13,8 @@
 //! and counted, never answered (QI-BB-014).
 //!
 //! Connection-fatal failures (framing, oversized, CBOR decode) close the
-//! connection without writing a response. Request-domain failures (e.g.
+//! connection without writing a response. Ingress admission exhaustion also
+//! closes before a request id can be decoded. Request-domain failures (e.g.
 //! `NOT_READY`, `INVALID_REQUEST`), a full dispatch queue and an oversized
 //! response flow through as an `Error` variant in the response envelope.
 
@@ -32,7 +33,7 @@ use quanta_index_core::{
     RequestBudgetV1, RequestCorrelationV1, RequestProviderStageV1, RequestStageDiagnosticPortV1,
 };
 
-use crate::admission::{DispatchSlots, ServerAdmissionPolicy, SlotRefusal};
+use crate::admission::{DispatchSlots, IngressBudget, ServerAdmissionPolicy, SlotRefusal};
 use crate::peer_credentials::{KernelPeerCredentials, PeerCredentialsSource};
 use crate::socket_access::{PeerRefusal, SocketAccessPolicy, admit_peer};
 
@@ -61,8 +62,10 @@ use rustix::net::{
 #[cfg(target_os = "linux")]
 use rustix::net::{SocketFlags, socket_with};
 
+#[cfg(test)]
+use crate::codec::decode_request;
 use crate::codec::{
-    IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, decode_request, decode_response,
+    IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, decode_request_guarded, decode_response,
     encode_request, encode_response,
 };
 use crate::counters::{IpcServerCounters, RequestEventSinkV1, RequestEventStageV1, RequestEventV1};
@@ -507,6 +510,7 @@ pub struct UdsServer {
     socket_path_identity: SocketPathIdentity,
     shutdown: Arc<AtomicBool>,
     policy: ServerAdmissionPolicy,
+    ingress: Arc<IngressBudget>,
     /// Who the socket admits (QI-BB-014): the file mode was set from it at
     /// bind, and every accepted peer is checked against it before a frame
     /// is read.
@@ -965,6 +969,7 @@ impl UdsServer {
             socket_path_identity,
             shutdown: Arc::new(AtomicBool::new(false)),
             policy,
+            ingress: Arc::new(IngressBudget::for_server(policy)),
             access,
             owner,
             peer_source,
@@ -976,6 +981,13 @@ impl UdsServer {
     #[must_use]
     pub const fn admission_policy(&self) -> ServerAdmissionPolicy {
         self.policy
+    }
+
+    /// Join the process-wide ingress budget before starting the accept loop.
+    #[must_use]
+    pub fn with_ingress_budget(mut self, ingress: Arc<IngressBudget>) -> Self {
+        self.ingress = ingress;
+        self
     }
 
     /// Who this socket admits (QI-BB-014).
@@ -1064,7 +1076,10 @@ impl UdsServer {
         ResponseEnvelopeT: ResponseEnvelope<Response>,
         D: IpcDispatcher<Request, Response> + ?Sized + 'static,
     {
-        let slots = Arc::new(DispatchSlots::for_policy(self.policy));
+        let slots = Arc::new(DispatchSlots::with_shared_ingress(
+            self.policy,
+            Arc::clone(&self.ingress),
+        ));
         let max_connections =
             u64::try_from(self.policy.max_connections()).map_or(u64::MAX, |cap| cap);
         let mut connection_threads: Vec<std::thread::JoinHandle<ConnectionCloseReason>> =
@@ -1341,14 +1356,35 @@ where
         return ConnectionCloseReason::TimeoutConfigFailed(format!("set_write_timeout: {err}"));
     }
     loop {
-        let request = match decode_request::<RequestEnvelopeT, _>(&mut stream) {
-            Ok(env) => env,
+        // The per-operation socket timeout permits a peer to drip bytes
+        // forever. Bound the entire request read and retain ingress admission
+        // through dispatch and response, including the queue wait.
+        let deadline = Instant::now()
+            .checked_add(policy.io_timeout())
+            .unwrap_or_else(Instant::now);
+        let mut ingress_reader = IngressDeadlineReader {
+            stream: &mut stream,
+            deadline,
+        };
+        let (request, _decode_permit) = match decode_request_guarded::<RequestEnvelopeT, _, _>(
+            &mut ingress_reader,
+            |body_bytes| slots.try_acquire_decode(body_bytes, plane),
+            |permit, additional_bytes| permit.reserve(additional_bytes),
+        ) {
+            Ok(request) => request,
             Err(IpcError::Truncated) => return ConnectionCloseReason::PeerClosed,
+            Err(err @ IpcError::IngressSaturated { .. }) => {
+                counters.ingress_admission_refused();
+                return ConnectionCloseReason::RequestDecodeFailed(err);
+            }
             Err(err) => {
                 counters.request_decode_failed();
                 return ConnectionCloseReason::RequestDecodeFailed(err);
             }
         };
+        if let Err(err) = stream.set_read_timeout(Some(policy.io_timeout())) {
+            return ConnectionCloseReason::TimeoutConfigFailed(format!("set_read_timeout: {err}"));
+        }
         // W10-R2: the id gate runs before shutdown, admission and
         // dispatch alike — a 0 envelope is malformed, refused typed, and
         // answered with nothing, exactly like a corrupt frame.
@@ -1521,6 +1557,25 @@ where
         counters.response_written(frame_bytes(&frame));
         event_scope.finish(RequestEventStageV1::ResponseWritten);
         // continue: next request on same conn
+    }
+}
+
+/// Server ingress deadline across the whole request, including all fragments.
+/// The socket timeout is refreshed to the remaining total deadline before
+/// every read so a trickle of bytes cannot renew admission indefinitely.
+struct IngressDeadlineReader<'a> {
+    stream: &'a mut UnixStream,
+    deadline: Instant,
+}
+
+impl Read for IngressDeadlineReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(deadline_elapsed_error());
+        }
+        self.stream.set_read_timeout(Some(remaining))?;
+        self.stream.read(buffer)
     }
 }
 
@@ -2073,6 +2128,7 @@ fn classify_client_decode_error(
         | IpcError::ClientIoDeadlineElapsed
         | IpcError::ReadinessTimeout { .. }
         | IpcError::InvalidAdmissionPolicy
+        | IpcError::IngressSaturated { .. }
         | IpcError::SocketInUse(_)
         | IpcError::SocketPathInsecure { .. }
         | IpcError::SocketAccessUnsatisfiable { .. }
@@ -2123,7 +2179,7 @@ mod tests {
     use serde::ser::SerializeStruct;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    use crate::admission::{DispatchSlots, ServerAdmissionPolicy, SlotRefusal};
+    use crate::admission::{DispatchSlots, IngressBudget, ServerAdmissionPolicy, SlotRefusal};
     use crate::codec::MAX_FRAME_BODY_BYTES;
 
     type TestRes = Result<(), String>;
@@ -2138,6 +2194,18 @@ mod tests {
 
     fn test_policy() -> ServerAdmissionPolicy {
         ServerAdmissionPolicy::DEFAULT
+    }
+
+    #[test]
+    fn ingress_reader_rejects_an_elapsed_request_deadline() {
+        let (mut stream, mut peer) = UnixStream::pair().expect("socket pair");
+        peer.write_all(&[7]).expect("available input");
+        let mut reader = super::IngressDeadlineReader {
+            stream: &mut stream,
+            deadline: Instant::now() - Duration::from_millis(1),
+        };
+        let error = reader.read(&mut [0]).expect_err("deadline precedes input");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
     }
 
     /// Failure-containment bound for watch-event waits: the test fails
@@ -3432,6 +3500,110 @@ mod tests {
             Ok(())
         })();
         assert_test_ok(&result);
+    }
+
+    #[test]
+    fn handle_connection_refuses_a_frame_before_dispatch_when_ingress_is_full() {
+        let (mut client, server) = UnixStream::pair().expect("socket pair");
+        let frame = encode_test_frame(12, 4).expect("request frame");
+        client.write_all(&frame).expect("write request");
+        client.shutdown(Shutdown::Write).expect("finish request");
+        let slots = test_slots();
+        let permits: Vec<_> = (0..8)
+            .map(|_| {
+                slots
+                    .try_acquire_decode(1, IpcPlane::Query)
+                    .expect("fill ingress")
+            })
+            .collect();
+        let counters = test_counters();
+        let reason = handle_connection::<
+            TestRequestEnvelope,
+            u64,
+            TestResponseEnvelope,
+            u64,
+            TestDispatcher,
+        >(
+            server,
+            &TestDispatcher,
+            &slots,
+            test_policy(),
+            IpcPlane::Query,
+            PeerCredentials {
+                uid: 0,
+                gid: 0,
+                pid: None,
+            },
+            0,
+            1,
+            &AtomicBool::new(false),
+            &counters,
+        );
+        assert!(matches!(
+            reason,
+            ConnectionCloseReason::RequestDecodeFailed(IpcError::IngressSaturated {
+                requests: 8,
+                ..
+            })
+        ));
+        let snapshot = counters.snapshot();
+        assert_eq!(snapshot.ingress_admission_refusals, 1);
+        assert_eq!(snapshot.requests_overloaded, 0);
+        assert_eq!(snapshot.request_decode_failures, 0);
+        assert_eq!(snapshot.requests_dispatched, 0);
+        drop(permits);
+    }
+
+    #[test]
+    fn control_frame_dispatches_while_query_ingress_is_saturated() {
+        let ingress = Arc::new(IngressBudget::for_process());
+        let query_slots = DispatchSlots::with_shared_ingress(
+            ServerAdmissionPolicy::DEFAULT,
+            Arc::clone(&ingress),
+        );
+        let control_slots =
+            DispatchSlots::with_shared_ingress(ServerAdmissionPolicy::SERIAL_DISPATCH, ingress);
+        let query_permits: Vec<_> = (0..16)
+            .map(|_| {
+                query_slots
+                    .try_acquire_decode(MAX_FRAME_BODY_BYTES, IpcPlane::Query)
+                    .expect("query permit")
+            })
+            .collect();
+        let (mut client, server) = UnixStream::pair().expect("socket pair");
+        client
+            .write_all(&encode_test_frame(12, 4).expect("control request"))
+            .expect("write control request");
+        client.shutdown(Shutdown::Write).expect("finish request");
+        let counters = test_counters();
+        let reason = handle_connection::<
+            TestRequestEnvelope,
+            u64,
+            TestResponseEnvelope,
+            u64,
+            TestDispatcher,
+        >(
+            server,
+            &TestDispatcher,
+            &control_slots,
+            test_policy(),
+            IpcPlane::Control,
+            PeerCredentials {
+                uid: 0,
+                gid: 0,
+                pid: None,
+            },
+            0,
+            1,
+            &AtomicBool::new(false),
+            &counters,
+        );
+        assert!(matches!(reason, ConnectionCloseReason::PeerClosed));
+        let response: TestResponseEnvelope = decode_response(&mut client).expect("control reply");
+        assert_eq!(response.request_id, 12);
+        assert_eq!(response.payload, 5);
+        assert_eq!(counters.snapshot().requests_dispatched, 1);
+        drop(query_permits);
     }
 
     /// A response that encodes past the frame limit is answered with the

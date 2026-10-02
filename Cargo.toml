@@ -121,6 +121,7 @@ anyhow = "1.0.100"
 arrow-array = "58"
 arrow-schema = "58"
 ciborium = "0.2.2"
+ciborium-ll = "0.2.2"
 crc32fast = "1.4.2"
 criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
 fs2 = "0.4.3"

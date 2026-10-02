@@ -1748,6 +1748,7 @@ impl SearchdRuntime {
                 .iter()
                 .map(|role| socket_access.for_role(*role)),
         );
+        let ingress = Arc::new(quanta_index_ipc::IngressBudget::for_process());
         let query_server = SearchPlaneQueryServer::bind(
             quanta_index_ipc::IpcPlane::Query,
             "quanta-index-query-uds",
@@ -1757,6 +1758,7 @@ impl SearchdRuntime {
             socket_access.for_role(SocketRole::Query).clone(),
             &directory_access,
             query_counters,
+            Arc::clone(&ingress),
         )
         .map_err(anyhow::Error::from)?;
         let control_adapter: Arc<
@@ -1773,6 +1775,7 @@ impl SearchdRuntime {
             socket_access.for_role(SocketRole::Control).clone(),
             &directory_access,
             control_counters,
+            Arc::clone(&ingress),
         )
         .map_err(anyhow::Error::from)?;
         let ingest_adapter: Arc<
@@ -1787,6 +1790,7 @@ impl SearchdRuntime {
             socket_access.for_role(SocketRole::Ingest).clone(),
             &directory_access,
             ingest_counters,
+            ingress,
         )
         .map_err(anyhow::Error::from)?;
         socket_probes

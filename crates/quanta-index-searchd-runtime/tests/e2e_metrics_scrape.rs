@@ -486,6 +486,7 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
     for plane in ["query", "control", "ingest"] {
         for suffix in [
             "connections_refused_total",
+            "ingress_admission_refusals_total",
             "requests_overloaded_total",
             "requests_overloaded_repo_total",
         ] {
