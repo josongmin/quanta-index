@@ -80,21 +80,23 @@ pub(crate) fn verify_integrity(
                 // retry superseded, is exactly attributable through its
                 // Invalidation event (same identity digest). Every other
                 // missing pair is corruption.
-                let commitment = event_commitment(sequence, kind, &identity, &payload);
-                let invalidated =
-                    has_later_invalidation(connection, path, sequence, &identity, &commitment)?;
                 let paired =
                     crate::idempotency::verify_terminal_event_pair(connection, path, sequence)?;
-                match (paired, invalidated) {
-                    (Some(state), _) if state == expected_state => {}
-                    (None, true) => {}
-                    (paired, _) => {
-                        return Err(corrupt(&format!(
-                            "operation event {sequence} (kind {}) has no exact domain pair \
-                             (row state {paired:?}, invalidated {invalidated})",
-                            kind.as_code()
-                        )));
-                    }
+                if paired == Some(expected_state) {
+                    continue;
+                }
+                let invalidated = if paired.is_none() {
+                    let commitment = event_commitment(sequence, kind, &identity, &payload);
+                    has_later_invalidation(connection, path, sequence, &identity, &commitment)?
+                } else {
+                    false
+                };
+                if !invalidated {
+                    return Err(corrupt(&format!(
+                        "operation event {sequence} (kind {}) has no exact domain pair \
+                         (row state {paired:?}, invalidated {invalidated})",
+                        kind.as_code()
+                    )));
                 }
             }
             // Repomap domain pairing (P03): every CandidateSeal and
