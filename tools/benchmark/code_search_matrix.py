@@ -10,6 +10,7 @@ independent gold or performance.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from pathlib import Path
 
@@ -391,6 +392,52 @@ def build_c4_spec(
     _spec(spec, repositories)
     if any(_read_control_file(path) != before for path, before in bound_files.items()):
         raise ValueError("matrix C4 admission changed during spec preparation")
+    return spec
+
+
+def write_c4_spec(
+    release: Path,
+    capsules: Path,
+    checkouts: Path,
+    admission_root: Path,
+    capture_roots_path: Path,
+    output: Path,
+) -> dict:
+    """Write a source-derived C4 spec to a fresh external file.
+
+    The capture-root inventory is a JSON object mapping every admitted
+    ``repository/intent`` to an absolute capture root or null for not-run.
+    """
+    output = _path(str(output), "output")
+    capture_roots_path = _path(str(capture_roots_path), "capture_roots_path")
+    destination = output.resolve(strict=False)
+    protected = (Path(__file__).resolve().parents[2], release, capsules, checkouts, admission_root)
+    if (
+        output.exists()
+        or output.is_symlink()
+        or any(
+            destination.is_relative_to(root.resolve()) or root.resolve().is_relative_to(destination)
+            for root in protected
+        )
+    ):
+        raise ValueError("matrix output must be fresh and external to the source and inputs")
+    capture_roots_raw = _read_control_file(capture_roots_path)
+    capture_roots = live._json(capture_roots_raw)
+    spec = build_c4_spec(release, capsules, checkouts, admission_root, capture_roots)
+    if _read_control_file(capture_roots_path) != capture_roots_raw:
+        raise ValueError("matrix capture-root inventory changed during spec preparation")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(output, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(canonical_json(spec).encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        output.unlink(missing_ok=True)
+        raise
     return spec
 
 

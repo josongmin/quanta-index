@@ -339,6 +339,15 @@ def test_matrix_v3_rederives_source_bound_c4_cells(tmp_path, monkeypatch):
         if row["status"] == "diagnostic_unqualified"
     }
     assert matrix.build_c4_spec(release, capsules, checkouts, output, capture_roots) == spec
+    roots_path = tmp_path / "capture-roots.json"
+    roots_path.write_text(json.dumps(capture_roots))
+    written_path = tmp_path / "written-matrix-v3.json"
+    assert (
+        matrix.write_c4_spec(release, capsules, checkouts, output, roots_path, written_path) == spec
+    )
+    assert json.loads(written_path.read_bytes()) == spec
+    with pytest.raises(ValueError, match="fresh and external"):
+        matrix.write_c4_spec(release, capsules, checkouts, output, roots_path, written_path)
     capture_key = next(iter(capture_roots))
     captured_spec = matrix.build_c4_spec(
         release, capsules, checkouts, output, {capture_key: str(tmp_path / "new-pair")}

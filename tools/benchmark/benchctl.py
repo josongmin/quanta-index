@@ -155,6 +155,11 @@ def parse_args(
             type=Path,
             required=True,
         )
+    c4_spec = workflow_modes.add_parser(
+        "matrix-build-c4", help="write a source-derived C4 diagnostic matrix spec"
+    )
+    for name in ("release", "capsules", "checkouts", "admission-root", "capture-roots", "output"):
+        c4_spec.add_argument(f"--{name}", type=Path, required=True)
     corpus = subparsers.add_parser(
         "corpus", help="create or validate an immutable external corpus release"
     )
@@ -1426,6 +1431,7 @@ def main(argv: list[str] | None = None) -> int:
             if repo_root != ROOT:
                 raise EvidenceError("workflow driver must come from the requested checkout")
             from code_search_matrix import verify as verify_code_search_matrix
+            from code_search_matrix import write_c4_spec
             from code_search_workflow import capture as capture_code_search
             from code_search_workflow import verify as verify_code_search
 
@@ -1440,6 +1446,21 @@ def main(argv: list[str] | None = None) -> int:
                 result = live_lexical_external.capture(args.spec)
             elif args.code_search_action == "matrix-verify":
                 result = verify_code_search_matrix(repo_root, args.spec)
+            elif args.code_search_action == "matrix-build-c4":
+                spec = write_c4_spec(
+                    args.release,
+                    args.capsules,
+                    args.checkouts,
+                    args.admission_root,
+                    args.capture_roots,
+                    args.output,
+                )
+                result = {
+                    "status": "diagnostic_spec_created",
+                    "path": str(args.output),
+                    "sha256": file_digest(args.output)[0],
+                    "cells": len(spec["cells"]),
+                }
             else:
                 result = live_lexical_external.verify(args.capture)
         except (
