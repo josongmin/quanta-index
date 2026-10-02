@@ -14,7 +14,17 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from tools.benchmark.retrieval import evaluator, query_plan, source_oracle, source_oracle_suite
+from tools.benchmark.retrieval import (
+    evaluator,
+    identifier_osa1_absence_suite,
+    query_plan,
+    source_oracle,
+    source_oracle_suite,
+)
+
+NEGATIVE_LANES = frozenset(
+    ("no-answer-content", "typo-content-absence", identifier_osa1_absence_suite.TARGET_LANE)
+)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -78,6 +88,46 @@ def verify_generation_manifest(
             observed == paths[name],
             "generation artifact mismatch: " + name,
         )
+    if lane == identifier_osa1_absence_suite.TARGET_LANE:
+        source_name = "source-no-answer-content-suite.json"
+        _require(source_name in paths, "missing generation source suite")
+        source_path = manifest_path.parent / source_name
+        source_raw = source_path.read_bytes()
+        _require(
+            evaluator.digest(source_raw)
+            == paths[source_name]
+            == manifest.get("source_suite_sha256"),
+            "generation source suite mismatch",
+        )
+        source_suite = evaluator.read_json(source_path)
+        _require(
+            suite["suite_id"]
+            == source_suite["suite_id"] + identifier_osa1_absence_suite.SUITE_SUFFIX
+            and source_suite["repository_commit"] == suite["repository_commit"]
+            and len(source_suite["tasks"]) == len(suite["tasks"])
+            and all(
+                {**source_task, "source_oracle": target_task["source_oracle"]} == target_task
+                and source_task["source_oracle"]
+                == {
+                    "contract": identifier_osa1_absence_suite.SOURCE_CONTRACT,
+                    "unit": "distinct_file",
+                }
+                for source_task, target_task in zip(
+                    source_suite["tasks"], suite["tasks"], strict=True
+                )
+            ),
+            "target suite is not the frozen source population with a new oracle",
+        )
+        params = manifest.get("parameters")
+        source_rows = census["lanes"][identifier_osa1_absence_suite.SOURCE_LANE]["records"]
+        _require(
+            isinstance(params, dict)
+            and params.get("source_lane") == identifier_osa1_absence_suite.SOURCE_LANE
+            and params.get("source_admitted") == len(source_rows) == len(source_suite["tasks"])
+            and params.get("target_contract")
+            == source_oracle.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD,
+            "identifier OSA1 generation parameters mismatch",
+        )
     if lane in ("no-answer-content", "typo-content-absence"):
         params = manifest.get("parameters")
         _require(isinstance(params, dict), "missing generation parameters")
@@ -108,7 +158,7 @@ def _policy(capture: dict) -> dict[str, str | None]:
             "policy": name,
             "case": (
                 "folded"
-                if name == "code_search_file"
+                if name in ("code_search_file", "code_search_typo_file")
                 else "normalizer_defined"
                 if name == "literal_file"
                 else "sensitive"
@@ -116,6 +166,8 @@ def _policy(capture: dict) -> dict[str, str | None]:
             "scope": (
                 "content_and_path"
                 if name in ("keyword_file", "code_search_file")
+                else "identifier"
+                if name == "code_search_typo_file"
                 else "content"
                 if name == "substring_file"
                 else "policy_unspecified"
@@ -190,6 +242,19 @@ def compose(
     lane_data = census["lanes"][lane]
     tasks = _unique([t for t in suite["tasks"] if t["split"] == "eval"], "suite")
     _require(len(tasks) == len(suite["tasks"]), "non-eval task in diagnostic suite")
+    if policy["policy"] == "code_search_typo_file" and any(
+        not task["answerable"] for task in tasks.values()
+    ):
+        _require(
+            lane_data["contract"] == source_oracle.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD
+            and all(
+                task["answerable"]
+                or task["source_oracle"]["contract"]
+                == source_oracle.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD
+                for task in tasks.values()
+            ),
+            "typo no-answer requires independent ascii_identifier_osa1_absent_casefold_v1 oracle",
+        )
     if not paired:
         _require(
             diagnostic.get("selected_eval_tasks") == len(tasks), "selected task count mismatch"
@@ -207,7 +272,7 @@ def compose(
     )
 
     records = _unique(lane_data["records"], "census")
-    if lane in ("no-answer-content", "typo-content-absence"):
+    if lane in NEGATIVE_LANES:
         _require(len(records) == lane_data["admitted"], "content no-answer admission mismatch")
         _require(set(records) == set(tasks), "content no-answer census/suite mismatch")
         source_records = {
@@ -383,6 +448,9 @@ def compose(
     elif contract == source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD:
         evaluation_intent = "code_search_absence_negative_control"
         negative_reference_scope = "folded_content_and_path_absent"
+    elif contract == source_oracle.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD:
+        evaluation_intent = "identifier_osa1_absence_negative_control"
+        negative_reference_scope = "folded_ascii_identifier_osa1_absent"
     else:
         evaluation_intent = "declaration_name_file_retrieval_diagnostic"
         negative_reference_scope = "declaration_local_name_absent"
@@ -400,13 +468,12 @@ def compose(
         # Only the CLI may promote this flag after load_evidence has replayed
         # the source oracle. compose() also serves unit fixtures without source.
         "content_absence_replay_verified": False,
+        "identifier_osa1_absence_replay_verified": False,
         "rank_unit": "distinct_file",
         **policy,
         "requested": requested,
         "not_admitted": not_admitted,
-        "unsupported_query_form": len(unsupported)
-        if lane not in ("no-answer-content", "typo-content-absence")
-        else 0,
+        "unsupported_query_form": len(unsupported) if lane not in NEGATIVE_LANES else 0,
         "submitted": len(tasks),
         "eligible": len(eligible),
         "status_counts": dict(sorted(statuses.items())),
@@ -480,7 +547,7 @@ def verify_census_against_source(
     repo: Path, suite: dict[str, Any], census: dict[str, Any], lane: str
 ) -> None:
     """Independently rederive the ambiguity strata from the frozen Go files."""
-    if lane == "no-answer-content":
+    if lane in ("no-answer-content", identifier_osa1_absence_suite.TARGET_LANE):
         # NOC task labels are replayed by validate_suite. Archived NOC used a
         # declaration-only oracle and remains explicitly unverified.
         return
@@ -598,6 +665,11 @@ def main() -> int:
         ) or (
             args.lane == "typo-content-absence"
             and output["source_oracle_contract"] == source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD
+        )
+        output["identifier_osa1_absence_replay_verified"] = (
+            args.lane == identifier_osa1_absence_suite.TARGET_LANE
+            and output["source_oracle_contract"]
+            == source_oracle.ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD
         )
         rendered = json.dumps(output, indent=2, sort_keys=True, allow_nan=False) + "\n"
         if args.output:

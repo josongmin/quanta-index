@@ -301,6 +301,19 @@ def test_symbol_diagnostic_refuses_non_bare_query(tmp_path):
         _tasks(suite, pack)
 
 
+def test_file_pair_task_admission_uses_bound_typo_policy(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    suite["routes"] = pack["routes"] = ["lexical", "semble-lexical-file"]
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    assert len(_tasks(suite, pack, file_policy="code_search_typo_file")) == 20
+    suite["tasks"][0]["query"] = pack["tasks"][0]["query"] = "ab"
+    invalid_digest = hashlib.sha256(b"ab").hexdigest()
+    suite["tasks"][0]["query_sha256"] = pack["tasks"][0]["query_sha256"] = invalid_digest
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    with pytest.raises(ValueError, match="3..=64 bytes"):
+        _tasks(suite, pack, file_policy="code_search_typo_file")
+
+
 def test_symbol_diagnostic_distinguishes_judged_no_answer_from_unjudged(tmp_path):
     _, _, suite, pack = fixture_inputs(tmp_path)
     suite["tasks"][0]["gold"] = []

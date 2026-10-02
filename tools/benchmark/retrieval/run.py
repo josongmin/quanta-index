@@ -121,7 +121,8 @@ SEMBLE_ROUTE_BY_MODE = {
 }
 QUANTA_SYMBOL_PRODUCER_IDENTITY = "source-bound-symbols-v2"
 QUANTA_SYMBOL_GRAMMARS = symbol_coverage.grammar_identity()
-PAIR_QUANTA_POLICIES = frozenset((*qp.V4_SUPPORTED_POLICIES, "code_search_file"))
+CODE_SEARCH_FILE_DIAGNOSTIC_POLICIES = frozenset(("code_search_file", "code_search_typo_file"))
+PAIR_QUANTA_POLICIES = frozenset((*qp.V4_SUPPORTED_POLICIES, *CODE_SEARCH_FILE_DIAGNOSTIC_POLICIES))
 PAIR_CONTEXT_QUALITY_POLICIES = frozenset(qp.V4_SUPPORTED_POLICIES)
 
 
@@ -2876,15 +2877,15 @@ def load_spec(path: Path) -> dict:
         )
     if "semble" in profiles:
         _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
-    if quanta_profile["policy"] == "code_search_file":
+    if quanta_profile["policy"] in CODE_SEARCH_FILE_DIAGNOSTIC_POLICIES:
         if spec.get("scope", "exploratory") != "exploratory" or any(
             spec.get("claims", {}).values()
         ):
-            raise RunError("code_search_file pair is exploratory diagnostic only")
+            raise RunError("code-search file pair is exploratory diagnostic only")
         if spec.get("routes", ["lexical", "semantic", "hybrid"]) != ["lexical"]:
-            raise RunError("code_search_file pair requires lexical-only Quanta route")
+            raise RunError("code-search file pair requires lexical-only Quanta route")
         if "semble" in profiles and profiles["semble"].get("mode") != "lexical-file":
-            raise RunError("code_search_file pair requires Semble lexical-file rank unit")
+            raise RunError("code-search file pair requires Semble lexical-file rank unit")
     _spec_int(spec, "top_k", 1)
     server_observation_configuration(spec.get("query_stage_observation", "enabled"))
     hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100"))
@@ -6813,7 +6814,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         merged, merged_digest = combos[strategy]
         if (
             protocol_payload.get("execution_profiles", {}).get("quanta", {}).get("policy")
-            == "code_search_file"
+            in CODE_SEARCH_FILE_DIAGNOSTIC_POLICIES
         ):
             try:
                 report_digest = sha_note(path, "report_bytes", ("T13",))
@@ -8232,8 +8233,8 @@ def run_pair(spec: dict) -> int:
     profiles = spec.get("execution_profiles")
     quanta_profile = profiles.get("quanta") if isinstance(profiles, dict) else None
     semble_profile = profiles.get("semble") if isinstance(profiles, dict) else None
-    code_search_file = (
-        isinstance(quanta_profile, dict) and quanta_profile.get("policy") == "code_search_file"
+    code_search_file = isinstance(quanta_profile, dict) and (
+        quanta_profile.get("policy") in CODE_SEARCH_FILE_DIAGNOSTIC_POLICIES
     )
     if code_search_file and (
         scope != "exploratory"
@@ -8341,7 +8342,9 @@ def run_pair(spec: dict) -> int:
 def _run_pair_staged(spec: dict, stage: Path) -> dict:
     if "semble" not in spec["execution_profiles"]:
         raise RunError("pair requires spec.execution_profiles.semble")
-    code_search_file = spec["execution_profiles"]["quanta"]["policy"] == "code_search_file"
+    code_search_file = (
+        spec["execution_profiles"]["quanta"]["policy"] in CODE_SEARCH_FILE_DIAGNOSTIC_POLICIES
+    )
     order = spec.get("order", ["quanta", "semble"])
     if sorted(order) != ["quanta", "semble"]:
         raise RunError("spec.order must list quanta and semble exactly once")

@@ -11025,17 +11025,16 @@ def test_pair_spec_refuses_diagnostic_rank_profiles_before_quality_gate(tmp_path
             pairrun.load_spec(spec_path)
 
 
-def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path):
+@pytest.mark.parametrize("policy", ["code_search_file", "code_search_typo_file"])
+def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, policy):
     spec_path = tmp_path / "pair-spec.json"
     spec = _g0_spec()
-    spec["execution_profiles"]["quanta"] = qp.execution_profile("code_search_file")
+    spec["execution_profiles"]["quanta"] = qp.execution_profile(policy)
     spec["execution_profiles"]["semble"] = semble_adapter.execution_profile("lexical-file", None)
     spec["routes"] = ["lexical"]
     jsonschema.validate(spec, _load_schema("pair-spec.schema.json"))
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
-    assert (
-        pairrun.load_spec(spec_path)["execution_profiles"]["quanta"]["policy"] == "code_search_file"
-    )
+    assert pairrun.load_spec(spec_path)["execution_profiles"]["quanta"]["policy"] == policy
 
     for change, match in (
         (
@@ -13775,7 +13774,7 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
     run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
     run["route_provenance"] = {"lexical": {"capture_id": "q0"}}
     run["results"] = [row for row in run["results"] if row["route"] == "lexical"]
-    if policy == "code_search_file":
+    if policy in ("code_search_file", "code_search_typo_file"):
         run["span_accounting_version"] = 1
     for task, row in zip(suite["tasks"], run["results"], strict=True):
         row["rank_unit"] = "distinct_file"
@@ -13787,7 +13786,7 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
         by_file = {}
         for item in row["candidates"]:
             by_file.setdefault(item["path"], item)
-        if policy == "code_search_file":
+        if policy in ("code_search_file", "code_search_typo_file"):
             repo_bytes = b"bench-repo"
             for path, item in by_file.items():
                 path_bytes = path.encode("utf-8")
@@ -14108,6 +14107,104 @@ def test_code_search_file_policy_binds_syntax_scores_and_file_unit(tmp_path):
         record_v3(repo, suite, forged_unit, suite_path, runner_path)
 
 
+def test_code_search_typo_file_policy_binds_distinct_request_and_file_unit(tmp_path):
+    assert qp.plan_lexical_request("code_search_typo_file", "ljs") == "typo:ljs"
+    assert qp.plan_lexical_request("code_search_typo_file", "load_jsom") == "typo:load_jsom"
+    assert qp.execution_profile("code_search_typo_file")["profile_id"] == (
+        "quanta-code-search-typo-file-v1"
+    )
+    assert ev.digest(qp.policy_config_canonical("code_search_typo_file").encode()) == (
+        "652b78bd66c84f7019f496b80660b14ab8c60b7a24ff13545f603980e1315cae"
+    )
+    assert qp.execution_profile_sha256("code_search_typo_file") == (
+        "2d6247a92e7e6693d3059ab191a5b0ef2fcb93a484c1099fa1c8bed9e3dc1066"
+    )
+    assert qp.execution_profile_sha256("code_search_file") == (
+        "e39867e466be2ab7f4c5cb779f1fad338a280f5d6669a97c8ed8552486d5ff61"
+    )
+    assert (
+        qp.derive_query_identity("code_search_typo_file", "load_jsom")[
+            "effective_lexical_request_sha256"
+        ]
+        == "4a9305acacf83f7e71ac1af4e65d17ddcddd04499743146f34eb29d1c309965c"
+    )
+    assert qp.derive_query_identity(
+        "code_search_typo_file", "load_jsom"
+    ) != qp.derive_query_identity("code_search_file", "load_jsom")
+    assert (
+        qp.derive_query_identity("code_search_file", "writeContentType")[
+            "effective_lexical_request_sha256"
+        ]
+        == "828e78026cd79b527cc0956b3be52fdf0ebd8b110071f5c309963af3bf719480"
+    )
+    for raw in (
+        "",
+        "ab",
+        "1number",
+        "load-jsom",
+        "typo:load_jsom",
+        "load_jsom extra",
+        "Cafés",
+        "a" * 65,
+    ):
+        with pytest.raises(qp.QueryPlanError):
+            qp.plan_lexical_request("code_search_typo_file", raw)
+
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path, "code_search_typo_file", queries=["alphaTwp", "alphaThre"]
+    )
+    for row in run["results"]:
+        row["score_evidence"] = "native_sdk_score_v1"
+        for index, candidate in enumerate(row["candidates"]):
+            candidate["score"] = float(len(row["candidates"]) - index)
+    _pack, run = _repack(repo, suite, run)
+    jsonschema.validate(run, _load_schema("runner.schema.json"))
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    route = ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)["judgment_metrics"][
+        "file_judgments"
+    ]["routes"]["lexical"]
+    assert (route["rank_unit"], route["ordering"], route["score_evidence"]) == (
+        "distinct_file",
+        "score_desc_path_tiebreak",
+        "native_sdk_score_v1",
+    )
+    forged = copy.deepcopy(run)
+    forged["results"][0]["query_identity"] = qp.derive_query_identity(
+        "code_search_file", suite["tasks"][0]["query"]
+    )
+    with pytest.raises(ev.EvidenceError, match="independently re-derived plan"):
+        record_v3(repo, suite, forged, suite_path, runner_path)
+
+
+def test_code_search_typo_file_reports_answerable_and_no_answer_separately(tmp_path):
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path, "code_search_typo_file", queries=["alphaTwp", "alphaThre"]
+    )
+    no_answer_task = suite["tasks"][1]
+    no_answer_task["answerable"] = False
+    no_answer_task["gold"] = []
+    no_answer_task["file_judgments"] = []
+    for row in run["results"]:
+        row["score_evidence"] = "native_sdk_score_v1"
+        for index, candidate in enumerate(row["candidates"]):
+            candidate["score"] = float(len(row["candidates"]) - index)
+    _pack, run = _repack(repo, suite, run)
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    diagnostic = ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)
+    assert (
+        diagnostic["judgment_metrics"]["file_judgments"]["routes"]["lexical"][
+            "selected_answerable_tasks"
+        ]
+        == 1
+    )
+    assert diagnostic["no_answer"]["sample_count"] == 1
+    assert diagnostic["no_answer"]["nonempty_results"] == 1
+    assert (
+        diagnostic["no_answer"]["reference_contracts"][0]["source_oracle_contract"]
+        == "not_declared"
+    )
+
+
 def test_empty_file_candidate_is_source_bound_and_replayable():
     repo_id = b"bench-repo"
     path = b"empty.go"
@@ -14194,9 +14291,16 @@ def test_code_search_file_refuses_context_metric_from_full_file_identity():
         ev.evaluate({}, {}, run, "lexical", "semantic")
 
 
-def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path):
+@pytest.mark.parametrize(
+    ("policy", "queries"),
+    [
+        ("code_search_file", ["alphaTwo", "alphaThree"]),
+        ("code_search_typo_file", ["alphaTwp", "alphaThre"]),
+    ],
+)
+def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path, policy, queries):
     repo, suite, run, _suite_path, _runner_path = _file_projection_run(
-        tmp_path, "code_search_file", queries=["alphaTwo", "alphaThree"]
+        tmp_path, policy, queries=queries
     )
     del repo
     suite["routes"] = ["lexical", "semble-lexical-file"]

@@ -39,6 +39,7 @@ SUPPORTED_POLICIES = (
     "keyword_file",
     "substring_file",
     "code_search_file",
+    "code_search_typo_file",
 )
 #: File-projection policies and how each orders its distinct files. A phrase or
 #: raw substring is a match-only restriction (constant score, path order); a
@@ -50,10 +51,13 @@ FILE_PROJECTION_ORDERING = {
     "keyword_file": ORDERING_SCORE_DESC,
     "substring_file": ORDERING_PATH_ORDER,
     "code_search_file": ORDERING_SCORE_DESC,
+    "code_search_typo_file": ORDERING_SCORE_DESC,
 }
 MAX_KEYWORD_FILE_BYTES = 256
 MIN_SUBSTRING_FILE_BYTES = 3
 MAX_SUBSTRING_FILE_BYTES = 256
+MIN_CODE_SEARCH_TYPO_BYTES = 3
+MAX_CODE_SEARCH_TYPO_BYTES = 64
 #: Bare words the LQ tokenizer reads as boolean operators (case-sensitive).
 _LQ_OPERATOR_WORDS = frozenset({"AND", "OR", "NOT"})
 PROFILE_IDS = {
@@ -65,6 +69,7 @@ PROFILE_IDS = {
     "keyword_file": "quanta-keyword-file-v1",
     "substring_file": "quanta-substring-file-v1",
     "code_search_file": "quanta-code-search-file-v1",
+    "code_search_typo_file": "quanta-code-search-typo-file-v1",
 }
 _BARE_SYMBOL_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 _BARE_CODE_SEARCH_ATOM = re.compile(r"[A-Za-z_0-9]+\Z")
@@ -118,6 +123,13 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
             '{"case":"folded","match":"code_search_v1",'
             f'"ordering":"{ORDERING_SCORE_DESC}","policy":"code_search_file",'
             '"projection":"file","scope":"content_and_path","syntax":"code_search"}'
+        )
+    if policy == "code_search_typo_file":
+        return (
+            '{"case":"folded","match":"identifier_typo_v1",'
+            f'"max_bytes":{MAX_CODE_SEARCH_TYPO_BYTES},"min_bytes":{MIN_CODE_SEARCH_TYPO_BYTES},'
+            f'"ordering":"{ORDERING_SCORE_DESC}","policy":"code_search_typo_file",'
+            '"projection":"file","scope":"identifier","syntax":"code_search"}'
         )
     if policy == "natural_language":
         resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
@@ -329,6 +341,15 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
                 "code-search-file policy requires 1 to 32 bare ASCII alphanumeric atoms of at most 256 bytes each"
             )
         return raw
+    if policy == "code_search_typo_file":
+        if (
+            not MIN_CODE_SEARCH_TYPO_BYTES <= len(raw) <= MAX_CODE_SEARCH_TYPO_BYTES
+            or _BARE_SYMBOL_NAME.fullmatch(raw) is None
+        ):
+            raise QueryPlanError(
+                "code-search-typo-file policy requires one bare ASCII identifier of 3..=64 bytes"
+            )
+        return f"typo:{raw}"
     if policy == "natural_language":
         resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
         distinct: list[str] = []
@@ -363,7 +384,7 @@ def derive_query_identity(
     if policy not in SUPPORTED_POLICIES:
         raise QueryPlanError(f"unsupported query input policy: {policy}")
     lexical_request = plan_lexical_request(policy, raw, config)
-    if policy == "code_search_file":
+    if policy in ("code_search_file", "code_search_typo_file"):
         import json
 
         effective_bytes = json.dumps(

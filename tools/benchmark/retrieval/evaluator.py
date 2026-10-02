@@ -1597,7 +1597,7 @@ def _validate_run(
             )
         ordering = result.get("ordering")
         score_evidence = result.get("score_evidence")
-        if profile_policy == "code_search_file":
+        if profile_policy in ("code_search_file", "code_search_typo_file"):
             require(
                 span_protocol == 1,
                 f"code_search_file requires source-bound file span evidence: {key}",
@@ -1609,18 +1609,22 @@ def _validate_run(
         if score_evidence is not None:
             require(
                 (
-                    profile_policy in ("keyword_file", "code_search_file")
+                    profile_policy in ("keyword_file", "code_search_file", "code_search_typo_file")
                     and score_evidence == "native_sdk_score_v1"
                 )
                 or (semble_file and score_evidence == "semble_bm25_score_v1"),
                 f"score evidence requires a scored Quanta file policy with native SDK scores or Semble lexical-file BM25 scores: {key}",
             )
-        if profile_policy in ("keyword_file", "code_search_file") or semble_file:
+        if (
+            profile_policy in ("keyword_file", "code_search_file", "code_search_typo_file")
+            or semble_file
+        ):
             if key[1] in score_evidence_by_route:
                 require(
                     score_evidence_by_route[key[1]] == score_evidence,
                     f"{profile_policy} route mixes score evidence states: {key[1]}"
-                    if profile_policy in ("keyword_file", "code_search_file")
+                    if profile_policy
+                    in ("keyword_file", "code_search_file", "code_search_typo_file")
                     else f"Semble lexical-file route mixes score evidence states: {key[1]}",
                 )
             else:
@@ -1843,7 +1847,8 @@ def _validate_run(
                             and (semble_file or path.encode() >= previous_path.encode())
                         ),
                         f"{profile_policy} native SDK score/path order is invalid: {key}"
-                        if profile_policy in ("keyword_file", "code_search_file")
+                        if profile_policy
+                        in ("keyword_file", "code_search_file", "code_search_typo_file")
                         else f"Semble lexical-file native score order is invalid: {key}",
                     )
                 previous_scored_file = (score, path)
@@ -1851,7 +1856,8 @@ def _validate_run(
                 require(span_protocol == 1, f"span evidence lacks record protocol: {key}")
                 accounting = candidate["span_accounting"]
                 require(
-                    (profile_policy == "code_search_file") == (accounting["unit_kind"] == "file"),
+                    (profile_policy in ("code_search_file", "code_search_typo_file"))
+                    == (accounting["unit_kind"] == "file"),
                     f"code_search_file requires file identity and other profiles cannot claim it: {key}",
                 )
                 if rank_unit == "symbol":
@@ -2068,9 +2074,9 @@ def indexed_span_diagnostics(
         if run["captures"][capture_id]["system"] != "quanta":
             routes[route] = {"status": "not_applicable", "reason": "no_published_unit_authority"}
             continue
-        if (
-            run["captures"][capture_id].get("execution_profile", {}).get("policy")
-            == "code_search_file"
+        if run["captures"][capture_id].get("execution_profile", {}).get("policy") in (
+            "code_search_file",
+            "code_search_typo_file",
         ):
             routes[route] = {"status": "not_applicable", "reason": "file_unit_is_not_context_span"}
             continue
@@ -2848,7 +2854,8 @@ def evaluate(
     # candidate's full-file proof span is an identity, not returned context.
     require(
         all(
-            capture.get("execution_profile", {}).get("policy") != "code_search_file"
+            capture.get("execution_profile", {}).get("policy")
+            not in ("code_search_file", "code_search_typo_file")
             for capture in run.get("captures", {}).values()
         ),
         "code_search_file requires file-judgment diagnostics; context metrics are undefined",

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.benchmark.retrieval import evaluator
+from tools.benchmark.retrieval import evaluator, identifier_osa1_absence_suite
 from tools.benchmark.retrieval.identifier_robustness_report import (
     _write_output,
     compose,
@@ -176,6 +176,16 @@ def test_code_search_file_reports_scored_family_separately():
     assert output["ordering"] == "score_desc_path_tiebreak"
     assert output["lane"] == "prefix"
     assert output["status"] == "diagnostic_unqualified"
+
+
+def test_code_search_typo_file_keeps_answerable_scores():
+    evidence = fixture("code_search_typo_file")
+    output = compose(*evidence, "prefix")
+    assert (output["policy"], output["scope"], output["strata"]["unique"]["hit_at_10_count"]) == (
+        "code_search_typo_file",
+        "identifier",
+        1,
+    )
 
 
 def test_code_search_file_pair_report_selects_one_bound_route(monkeypatch):
@@ -403,9 +413,29 @@ def test_no_answer_success_with_candidates_is_visible():
         compose(suite, census, record, diagnostic, "prefix")
 
 
-def test_new_content_absence_contract_is_separate_from_legacy():
-    suite, census, record, diagnostic = fixture()
-    contract = "ascii_content_absent_casefold_v1"
+@pytest.mark.parametrize(
+    ("policy", "contract", "intent", "scope", "lane"),
+    [
+        (
+            "keyword_file",
+            "ascii_content_absent_casefold_v1",
+            "content_absence_negative_control",
+            "folded_content_absent",
+            "no-answer-content",
+        ),
+        (
+            "code_search_typo_file",
+            "ascii_identifier_osa1_absent_casefold_v1",
+            "identifier_osa1_absence_negative_control",
+            "folded_ascii_identifier_osa1_absent",
+            "typo-osa1-absence",
+        ),
+    ],
+)
+def test_new_content_absence_contract_is_separate_from_legacy(
+    policy, contract, intent, scope, lane
+):
+    suite, census, record, diagnostic = fixture(policy)
     suite["tasks"] = [
         {
             "task_id": "NOC1",
@@ -417,13 +447,14 @@ def test_new_content_absence_contract_is_separate_from_legacy():
             "source_oracle": {"contract": contract, "unit": "distinct_file"},
         }
     ]
+    source_lane = "no-answer-content" if policy == "code_search_typo_file" else "no-answer"
     census["lanes"] = {
-        "no-answer": {
+        source_lane: {
             "records": [{"task_id": "NOA1", "query": "absentName", "status": "admitted"}]
         },
-        "no-answer-content": {
+        lane: {
             "contract": contract,
-            "derived_from": "no-answer",
+            "derived_from": source_lane,
             "source_admitted": 1,
             "admitted": 1,
             "excluded": 0,
@@ -462,14 +493,28 @@ def test_new_content_absence_contract_is_separate_from_legacy():
         "nonempty_result_rate": 0.0,
         "status_counts": {"abstained": 1},
     }
-    output = compose(suite, census, record, diagnostic, "no-answer-content")
+    output = compose(suite, census, record, diagnostic, lane)
     assert output["content_absence_replay_verified"] is False
-    assert output["evaluation_intent"] == "content_absence_negative_control"
-    assert output["no_answer"]["negative_reference_scope"] == "folded_content_absent"
-    suite["tasks"][0]["source_oracle"]["contract"] = "go_exact_local_name_v3"
-    census["lanes"]["no-answer-content"]["contract"] = "go_exact_local_name_v3"
+    assert output["identifier_osa1_absence_replay_verified"] is False
+    assert output["evaluation_intent"] == intent
+    assert output["no_answer"]["negative_reference_scope"] == scope
+    old_contract = (
+        "ascii_content_absent_casefold_v1"
+        if policy == "code_search_typo_file"
+        else "go_exact_local_name_v3"
+    )
+    suite["tasks"][0]["source_oracle"]["contract"] = old_contract
+    census["lanes"][lane]["contract"] = old_contract
     diagnostic["suite_commitment_sha256"] = evaluator.digest(evaluator.canonical(suite))
-    changed = compose(suite, census, record, diagnostic, "no-answer-content")
+    if policy == "code_search_typo_file":
+        census["lanes"]["no-answer-content"] = census["lanes"][lane]
+        with pytest.raises(ValueError, match="independent ascii_identifier_osa1_absent"):
+            compose(suite, census, record, diagnostic, "no-answer-content")
+        census["lanes"]["typo-content-absence"] = census["lanes"][lane]
+        with pytest.raises(ValueError, match="independent ascii_identifier_osa1_absent"):
+            compose(suite, census, record, diagnostic, "typo-content-absence")
+        return
+    changed = compose(suite, census, record, diagnostic, lane)
     assert changed["content_absence_replay_verified"] is False
     assert changed["no_answer"]["negative_reference_scope"] == "declaration_local_name_absent"
 
@@ -624,3 +669,69 @@ def test_content_no_answer_population_requires_frozen_generation_count(tmp_path)
         verify_generation_manifest(
             manifest_path, census_path, suite_path, suite, census, "no-answer-content"
         )
+
+
+def test_identifier_osa1_generation_binds_frozen_source_and_target_bytes(monkeypatch, tmp_path):
+    source = {
+        "suite_id": "frozen-no-answer-content-v2-seed7",
+        "repository_commit": "a" * 40,
+        "tasks": [
+            {
+                "task_id": "NOC-001",
+                "query": "missingName",
+                "split": "eval",
+                "answerable": False,
+                "file_judgments": [],
+                "source_oracle": {
+                    "contract": "ascii_content_absent_casefold_v1",
+                    "unit": "distinct_file",
+                },
+            }
+        ],
+    }
+
+    def validate(_repo, suite):
+        return (
+            suite,
+            {"suite_commitment_sha256": evaluator.digest(evaluator.canonical(suite))},
+            None,
+        )
+
+    monkeypatch.setattr(evaluator, "validate_suite", validate)
+    source_path = tmp_path / "source.json"
+    source_path.write_text(json.dumps(source))
+    target = copy.deepcopy(source)
+    target["suite_id"] += "-identifier-osa1-absence-v1"
+    target["tasks"][0]["source_oracle"]["contract"] = "ascii_identifier_osa1_absent_casefold_v1"
+    target_pack = {"suite_commitment_sha256": evaluator.digest(evaluator.canonical(target))}
+    target_path = tmp_path / "target.json"
+    pack_path = tmp_path / "target-pack.json"
+    target_path.write_text(json.dumps(target, indent=2))
+    pack_path.write_text(json.dumps(target_pack, indent=2))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    root = tmp_path / "generated"
+    identifier_osa1_absence_suite.write(corpus, source_path, root, target_path, pack_path)
+    suite_path = root / "typo-osa1-absence-suite.json"
+    census_path = root / "census.json"
+    manifest_path = root / "manifest.json"
+    assert suite_path.read_bytes() == target_path.read_bytes()
+    assert (root / "typo-osa1-absence-blind-pack.json").read_bytes() == pack_path.read_bytes()
+    census = evaluator.read_json(census_path)
+    verify_generation_manifest(
+        manifest_path, census_path, suite_path, target, census, "typo-osa1-absence"
+    )
+    (root / "source-no-answer-content-suite.json").write_text("{}")
+    with pytest.raises(ValueError, match="generation source suite mismatch"):
+        verify_generation_manifest(
+            manifest_path, census_path, suite_path, target, census, "typo-osa1-absence"
+        )
+    bad_target = copy.deepcopy(target)
+    bad_target["tasks"][0]["query"] = "drifted"
+    bad_path = tmp_path / "bad-target.json"
+    bad_path.write_text(json.dumps(bad_target))
+    with pytest.raises(ValueError, match="frozen target suite differs"):
+        identifier_osa1_absence_suite.write(
+            corpus, source_path, tmp_path / "rejected", bad_path, pack_path
+        )
+    assert not (tmp_path / "rejected").exists()

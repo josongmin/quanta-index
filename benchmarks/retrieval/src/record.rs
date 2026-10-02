@@ -1028,7 +1028,8 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
         QueryInputPolicy::LiteralFile
         | QueryInputPolicy::KeywordFile
         | QueryInputPolicy::SubstringFile
-        | QueryInputPolicy::CodeSearchFile => Some("distinct_file"),
+        | QueryInputPolicy::CodeSearchFile
+        | QueryInputPolicy::CodeSearchTypoFile => Some("distinct_file"),
         QueryInputPolicy::ExactSymbolName => Some("symbol"),
         QueryInputPolicy::Native
         | QueryInputPolicy::Literal
@@ -1045,7 +1046,9 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
     }
     if matches!(
         policy,
-        QueryInputPolicy::KeywordFile | QueryInputPolicy::CodeSearchFile
+        QueryInputPolicy::KeywordFile
+            | QueryInputPolicy::CodeSearchFile
+            | QueryInputPolicy::CodeSearchTypoFile
     ) {
         let _previous = object.insert(
             "score_evidence".to_string(),
@@ -1135,8 +1138,10 @@ pub fn result_value(
                 // Only the bound exact-symbol policy preserves independent
                 // symbol ranks when two definitions share a context line.
                 let mut proven = prove_hit(hit, candidates.len().saturating_add(1), files, units)?;
-                if (plan.policy == QueryInputPolicy::CodeSearchFile)
-                    != (proven.unit_kind == PublishedUnitKind::File)
+                if matches!(
+                    plan.policy,
+                    QueryInputPolicy::CodeSearchFile | QueryInputPolicy::CodeSearchTypoFile
+                ) != (proven.unit_kind == PublishedUnitKind::File)
                 {
                     return Err(BenchError::Protocol(format!(
                         "{} result has incompatible file identity: {}",
@@ -1146,7 +1151,9 @@ pub fn result_value(
                 }
                 if matches!(
                     plan.policy,
-                    QueryInputPolicy::KeywordFile | QueryInputPolicy::CodeSearchFile
+                    QueryInputPolicy::KeywordFile
+                        | QueryInputPolicy::CodeSearchFile
+                        | QueryInputPolicy::CodeSearchTypoFile
                 ) {
                     let score = serde_json::Number::from_f64(hit.score).ok_or_else(|| {
                         BenchError::Protocol(format!(
@@ -1553,6 +1560,46 @@ mod tests {
         assert_eq!(proven.candidate["start_line"], 0);
         assert_eq!(proven.candidate["end_byte"], 0);
         assert_eq!(proven.candidate["tokens"], 3);
+    }
+
+    #[test]
+    fn code_search_typo_result_preserves_file_identity_and_native_score() {
+        let (hit, files) = file_hit_fixture("src/main.go", "func load_json() {}\n", false);
+        let units = PublishedUnitRegistry::from_chunks_and_symbols(
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &files,
+        )
+        .expect("registry");
+        let plan = plan_query(
+            QueryInputPolicy::CodeSearchTypoFile,
+            "load_jsom",
+            &NlPlanConfig::default(),
+        )
+        .expect("typo plan");
+        let row = result_value(
+            "T1",
+            "lexical",
+            &QueryOutcome::ReturnedWindow {
+                hits: vec![hit],
+                window: QueryResultWindowV2::exact_probe(1),
+                explanation: Some(RouteExplanation::default()),
+                latency: Duration::from_millis(1),
+            },
+            &plan,
+            10,
+            &files,
+            &units,
+        )
+        .expect("source-bound file result");
+        assert_eq!(row["rank_unit"], "distinct_file");
+        assert_eq!(row["score_evidence"], "native_sdk_score_v1");
+        assert_eq!(row["candidates"][0]["score"].as_f64(), Some(2.0));
+        assert_eq!(row["candidates"][0]["span_accounting"]["unit_kind"], "file");
+        assert_eq!(
+            row["query_identity"]["effective_lexical_request_sha256"],
+            plan.effective_lexical_request_sha256
+        );
     }
 
     #[test]

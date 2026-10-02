@@ -53,6 +53,7 @@ FILE_INPUT_ROLES = (
     "semble_phase_metrics",
 )
 FILE_ROUTES = [QUANTA_LEXICAL_ROUTE, "semble-lexical-file"]
+CODE_SEARCH_FILE_POLICIES = frozenset(("code_search_file", "code_search_typo_file"))
 MAX_NATIVE_TRACE_BYTES = 128 * 1024 * 1024
 TIMING_LAYERS = {
     "sourcegraph": "loopback_stream_http_request_wall",
@@ -73,6 +74,15 @@ def input_roles(value: dict) -> tuple[str, ...]:
     if keys == set(INPUT_ROLES):
         return INPUT_ROLES
     raise ValueError("lexical input role inventory differs; current file pair requires raw roles")
+
+
+def _file_policy_from_lock(lock: dict) -> str:
+    profiles = lock.get("execution_profiles")
+    quanta = profiles.get("quanta") if isinstance(profiles, dict) else None
+    policy = quanta.get("policy") if isinstance(quanta, dict) else None
+    if policy not in CODE_SEARCH_FILE_POLICIES:
+        raise ValueError("current file pair requires a code-search file policy")
+    return policy
 
 
 def sourcegraph_capability(query: str) -> dict:
@@ -182,7 +192,9 @@ def _canonical_result_path(path: object) -> bool:
     )
 
 
-def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
+def _tasks(
+    suite: dict, pack: dict, *, file_policy: str = "code_search_file"
+) -> dict[str, tuple[str, list[str]]]:
     if pack.get("suite_commitment_sha256") != digest(canonical(suite)):
         raise ValueError("pack and suite commitment differ")
     if (
@@ -240,7 +252,7 @@ def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
         if routes == FILE_ROUTES:
             from tools.benchmark.retrieval.query_plan import derive_query_identity
 
-            derive_query_identity("code_search_file", query)
+            derive_query_identity(file_policy, query)
         if task["query_sha256"] != hashlib.sha256(query.encode()).hexdigest():
             raise ValueError(f"{task_id} query digest differs")
         blinded[task_id] = query, task["query_sha256"]
@@ -720,7 +732,6 @@ def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) 
     if missing:
         raise ValueError(f"current file pair is missing raw roles: {sorted(missing)}")
     suite, pack = _json(suite_raw), _json(pack_raw)
-    expected = _tasks(suite, pack)
     if suite["routes"] != FILE_ROUTES:
         raise ValueError("current file pair requires the frozen file route inventory")
     roles = (
@@ -751,8 +762,10 @@ def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) 
     lock, verdict, native = (
         values[role] for role in ("pair_lock", "pair_verdict", "semble_native")
     )
+    quanta_policy = _file_policy_from_lock(lock)
+    expected = _tasks(suite, pack, file_policy=quanta_policy)
     profiles = {
-        "quanta": execution_profile("code_search_file"),
+        "quanta": execution_profile(quanta_policy),
         "semble": {
             "profile_id": "semble-lexical-file-v1",
             "mode": "lexical-file",
@@ -1065,12 +1078,21 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
     suite_raw, pack_raw = _bytes(paths["suite"]), _bytes(paths["query_pack"])
     suite, pack = _json(suite_raw), _json(pack_raw)
     universe = _file_universe(suite, pack)
-    expected = _tasks(suite, pack)
+    file_policy = (
+        _file_policy_from_lock(_json(_bytes(paths["pair_lock"])))
+        if roles == FILE_INPUT_ROLES
+        else "code_search_file"
+    )
+    expected = _tasks(suite, pack, file_policy=file_policy)
     if any(path not in universe for _, gold in expected.values() for path in gold):
         raise ValueError("gold path is outside the frozen file universe")
     result = {
         "status": "diagnostic_unqualified",
-        "query_form": "code_search_atoms_v1"
+        "query_form": (
+            "code_search_typo_identifier_v1"
+            if file_policy == "code_search_typo_file"
+            else "code_search_atoms_v1"
+        )
         if suite["routes"] == FILE_ROUTES
         else "bare_symbol_v1",
         "metric": "gold_file_recall_in_native_top_10",

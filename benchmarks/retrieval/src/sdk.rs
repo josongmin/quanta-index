@@ -497,6 +497,7 @@ mod empty_status_tests {
             Policy::KeywordFile,
             Policy::SubstringFile,
             Policy::CodeSearchFile,
+            Policy::CodeSearchTypoFile,
         ] {
             assert_eq!(expected_lexical_rank_unit(policy), TextRankUnit::File);
         }
@@ -1313,7 +1314,11 @@ pub fn query_route_with_policy(
     match query.route {
         "lexical" => {
             let builder = query.client.lexical().query();
-            let builder = if policy == crate::query_plan::QueryInputPolicy::CodeSearchFile {
+            let builder = if matches!(
+                policy,
+                crate::query_plan::QueryInputPolicy::CodeSearchFile
+                    | crate::query_plan::QueryInputPolicy::CodeSearchTypoFile
+            ) {
                 builder.code_search(query.lexical_request)
             } else {
                 builder.native(query.lexical_request)
@@ -1337,16 +1342,17 @@ pub fn query_route_with_policy(
                             latency: start.elapsed(),
                         };
                     }
-                    if policy == crate::query_plan::QueryInputPolicy::CodeSearchFile
-                        && response.results.iter().any(|candidate| {
-                            let pin_matches = candidate.repo_id == expected_pin.repo_id
-                                && candidate.revision_id == expected_pin.revision_id
-                                && candidate.manifest_generation
-                                    == expected_pin.manifest_generation;
-                            let source_matches = candidate.source_repo_id == candidate.repo_id;
-                            !pin_matches || !source_matches
-                        })
-                    {
+                    if matches!(
+                        policy,
+                        crate::query_plan::QueryInputPolicy::CodeSearchFile
+                            | crate::query_plan::QueryInputPolicy::CodeSearchTypoFile
+                    ) && response.results.iter().any(|candidate| {
+                        let pin_matches = candidate.repo_id == expected_pin.repo_id
+                            && candidate.revision_id == expected_pin.revision_id
+                            && candidate.manifest_generation == expected_pin.manifest_generation;
+                        let source_matches = candidate.source_repo_id == candidate.repo_id;
+                        !pin_matches || !source_matches
+                    }) {
                         return QueryOutcome::SdkFailure {
                             status: "error",
                             code: "file_candidate_generation_mismatch".to_string(),

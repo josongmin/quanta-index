@@ -72,7 +72,7 @@ fn print_help() -> BenchResult<()> {
          fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
-         [--query-protocol PATH] [--query-input-policy native|literal|literal_file|keyword_file|substring_file|code_search_file|natural_language|exact_symbol_name]\n\
+         [--query-protocol PATH] [--query-input-policy native|literal|literal_file|keyword_file|substring_file|code_search_file|code_search_typo_file|natural_language|exact_symbol_name]\n\
          [--query-stage-observation enabled|disabled] (default enabled; server query stages only)\n\
          [--experimental-hybrid-fetch-floor 25|50|100] (default 100; explicit experimental startup policy)\n\
          --repo-id ID --revision-id ID --generation N\n\
@@ -315,7 +315,8 @@ fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
         QueryPlanError::InvalidSymbolName
         | QueryPlanError::EmptyTokenPlan
         | QueryPlanError::InvalidKeyword
-        | QueryPlanError::InvalidCodeSearch => serde_json::json!({}),
+        | QueryPlanError::InvalidCodeSearch
+        | QueryPlanError::InvalidCodeSearchTypo => serde_json::json!({}),
         QueryPlanError::InvalidSubstring { reason } => serde_json::json!({"reason": reason}),
         QueryPlanError::TokenLimitExceeded { tokens, max_tokens } => {
             serde_json::json!({"tokens": tokens, "max_tokens": max_tokens})
@@ -420,6 +421,7 @@ fn validate_policy_routes(policy: QueryInputPolicy, routes: &BTreeSet<&str>) -> 
             | QueryInputPolicy::KeywordFile
             | QueryInputPolicy::SubstringFile
             | QueryInputPolicy::CodeSearchFile
+            | QueryInputPolicy::CodeSearchTypoFile
     ) && routes != &BTreeSet::from(["lexical"])
     {
         return Err(BenchError::Config(format!(
@@ -1784,6 +1786,7 @@ mod tests {
             QueryInputPolicy::KeywordFile,
             QueryInputPolicy::SubstringFile,
             QueryInputPolicy::CodeSearchFile,
+            QueryInputPolicy::CodeSearchTypoFile,
         ] {
             assert!(validate_policy_routes(policy, &lexical).is_ok());
         }
@@ -1792,6 +1795,7 @@ mod tests {
             assert!(validate_policy_routes(QueryInputPolicy::KeywordFile, routes).is_err());
             assert!(validate_policy_routes(QueryInputPolicy::SubstringFile, routes).is_err());
             assert!(validate_policy_routes(QueryInputPolicy::CodeSearchFile, routes).is_err());
+            assert!(validate_policy_routes(QueryInputPolicy::CodeSearchTypoFile, routes).is_err());
         }
     }
 }

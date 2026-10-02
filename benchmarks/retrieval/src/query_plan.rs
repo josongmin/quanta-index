@@ -26,6 +26,9 @@
 //! * `code_search_file` — the raw text is submitted through the public
 //!   `code_search` syntax. File projection and scored ordering are part of
 //!   that product contract, not an injected Native LQ operator.
+//! * `code_search_typo_file` — one bare ASCII identifier of 3..=64 bytes is submitted as
+//!   `typo:<identifier>` through the public `code_search` syntax. The raw
+//!   query and effective request keep distinct identities.
 //!
 //! [`ordering_contract`] names how each file-projection policy orders its
 //! files; the record binds it next to the result unit.
@@ -38,7 +41,10 @@
 //! measurement phases.
 
 use crate::sha256_hex;
-use quanta_index_contract::{MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS};
+use quanta_index_contract::{
+    MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, MAX_CODE_SEARCH_TYPO_BYTES,
+    MIN_CODE_SEARCH_TYPO_BYTES, valid_code_search_typo_identifier,
+};
 use quanta_index_lq_norm::ast::{
     LqCase, LqExpr, LqFilter, LqLeaf, LqNormalizedQuery, LqOptions, LqSelect, LqType,
 };
@@ -74,9 +80,9 @@ const MAX_CODE_SEARCH_INPUT_BYTES: usize = 16 * 1024;
 #[must_use]
 pub const fn ordering_contract(policy: QueryInputPolicy) -> Option<&'static str> {
     match policy {
-        QueryInputPolicy::KeywordFile | QueryInputPolicy::CodeSearchFile => {
-            Some(ORDERING_SCORE_DESC)
-        }
+        QueryInputPolicy::KeywordFile
+        | QueryInputPolicy::CodeSearchFile
+        | QueryInputPolicy::CodeSearchTypoFile => Some(ORDERING_SCORE_DESC),
         QueryInputPolicy::LiteralFile | QueryInputPolicy::SubstringFile => {
             Some(ORDERING_PATH_ORDER)
         }
@@ -96,6 +102,7 @@ pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
         QueryInputPolicy::KeywordFile => "quanta-keyword-file-v1",
         QueryInputPolicy::SubstringFile => "quanta-substring-file-v1",
         QueryInputPolicy::CodeSearchFile => "quanta-code-search-file-v1",
+        QueryInputPolicy::CodeSearchTypoFile => "quanta-code-search-typo-file-v1",
         QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v2",
         QueryInputPolicy::ExactSymbolName => "quanta-exact-symbol-name-v1",
     }
@@ -116,6 +123,8 @@ pub enum QueryInputPolicy {
     SubstringFile,
     /// Public product code-search syntax, with scored distinct-file results.
     CodeSearchFile,
+    /// Explicit code-search typo mode, scored as distinct files.
+    CodeSearchTypoFile,
     /// Keep the raw query for the semantic lane and derive a deterministic
     /// token-OR lexical plan from it.
     NaturalLanguage,
@@ -138,6 +147,7 @@ impl QueryInputPolicy {
             "keyword_file" => Ok(Self::KeywordFile),
             "substring_file" => Ok(Self::SubstringFile),
             "code_search_file" => Ok(Self::CodeSearchFile),
+            "code_search_typo_file" => Ok(Self::CodeSearchTypoFile),
             "natural_language" => Ok(Self::NaturalLanguage),
             "exact_symbol_name" => Ok(Self::ExactSymbolName),
             other => Err(QueryPlanError::UnsupportedPolicy(other.to_string())),
@@ -154,6 +164,7 @@ impl QueryInputPolicy {
             Self::KeywordFile => "keyword_file",
             Self::SubstringFile => "substring_file",
             Self::CodeSearchFile => "code_search_file",
+            Self::CodeSearchTypoFile => "code_search_typo_file",
             Self::NaturalLanguage => "natural_language",
             Self::ExactSymbolName => "exact_symbol_name",
         }
@@ -247,6 +258,8 @@ pub enum QueryPlanError {
     InvalidSubstring { reason: &'static str },
     /// Code-search input is empty or exceeds the public query byte cap.
     InvalidCodeSearch,
+    /// The typo profile requires a bare ASCII identifier of 3..=64 bytes.
+    InvalidCodeSearchTypo,
 }
 
 impl QueryPlanError {
@@ -265,6 +278,7 @@ impl QueryPlanError {
             Self::InvalidKeyword => "RBR_QUERY_KEYWORD_INVALID",
             Self::InvalidSubstring { .. } => "RBR_QUERY_SUBSTRING_INVALID",
             Self::InvalidCodeSearch => "RBR_QUERY_CODE_SEARCH_INVALID",
+            Self::InvalidCodeSearchTypo => "RBR_QUERY_CODE_SEARCH_TYPO_INVALID",
         }
     }
 }
@@ -318,6 +332,10 @@ impl std::fmt::Display for QueryPlanError {
                 write!(f, "substring-file policy refused the fragment: {reason}")
             }
             Self::InvalidCodeSearch => write!(f, "code-search-file policy refused the query"),
+            Self::InvalidCodeSearchTypo => write!(
+                f,
+                "code-search-typo-file policy requires one bare ASCII identifier of 3..=64 bytes"
+            ),
         }
     }
 }
@@ -380,6 +398,12 @@ pub fn policy_config_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) 
              \"policy\":\"code_search_file\",\"projection\":\"file\",\"scope\":\"content_and_path\",\
              \"syntax\":\"{CODE_SEARCH_SYNTAX}\"}}"
         ),
+        QueryInputPolicy::CodeSearchTypoFile => format!(
+            "{{\"case\":\"folded\",\"match\":\"identifier_typo_v1\",\"max_bytes\":{MAX_CODE_SEARCH_TYPO_BYTES},\
+             \"min_bytes\":{MIN_CODE_SEARCH_TYPO_BYTES},\"ordering\":\"{ORDERING_SCORE_DESC}\",\
+             \"policy\":\"code_search_typo_file\",\"projection\":\"file\",\"scope\":\"identifier\",\
+             \"syntax\":\"{CODE_SEARCH_SYNTAX}\"}}"
+        ),
         QueryInputPolicy::NaturalLanguage => format!(
             "{{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"natural_language\",{}}}",
             config.canonical_fields()
@@ -408,6 +432,7 @@ pub fn execution_profile_canonical(policy: QueryInputPolicy, config: &NlPlanConf
         | QueryInputPolicy::KeywordFile
         | QueryInputPolicy::SubstringFile
         | QueryInputPolicy::CodeSearchFile
+        | QueryInputPolicy::CodeSearchTypoFile
         | QueryInputPolicy::ExactSymbolName => format!(
             "{{\"config\":{{}},\"planning_cost_in_latency\":false,\"policy\":\"{}\",\
              \"profile_id\":\"{}\"}}",
@@ -434,6 +459,7 @@ pub fn execution_profile_value(
         | QueryInputPolicy::KeywordFile
         | QueryInputPolicy::SubstringFile
         | QueryInputPolicy::CodeSearchFile
+        | QueryInputPolicy::CodeSearchTypoFile
         | QueryInputPolicy::ExactSymbolName => serde_json::json!({}),
     };
     serde_json::json!({
@@ -476,7 +502,10 @@ pub fn literalize(raw: &str) -> String {
 /// text-only digest; a code-search record cannot be relabeled as Native.
 #[must_use]
 pub fn effective_request_sha256(policy: QueryInputPolicy, lexical_request: &str) -> String {
-    if policy == QueryInputPolicy::CodeSearchFile {
+    if matches!(
+        policy,
+        QueryInputPolicy::CodeSearchFile | QueryInputPolicy::CodeSearchTypoFile
+    ) {
         let wire = serde_json::json!({
             "query_text": lexical_request,
             "syntax": CODE_SEARCH_SYNTAX,
@@ -606,6 +635,12 @@ pub fn plan_query(
             validate_code_search_benchmark_input(raw)?;
             raw.to_string()
         }
+        QueryInputPolicy::CodeSearchTypoFile => {
+            if !valid_code_search_typo_identifier(raw) {
+                return Err(QueryPlanError::InvalidCodeSearchTypo);
+            }
+            format!("typo:{raw}")
+        }
         QueryInputPolicy::NaturalLanguage => {
             let mut distinct: Vec<String> = Vec::new();
             for token in tokenize_nl(raw) {
@@ -651,7 +686,10 @@ pub fn plan_query(
     };
     // CodeSearch is a distinct public syntax. Parsing it as Native LQ would
     // misread literal operator words and never prove the product request.
-    if policy != QueryInputPolicy::CodeSearchFile {
+    if !matches!(
+        policy,
+        QueryInputPolicy::CodeSearchFile | QueryInputPolicy::CodeSearchTypoFile
+    ) {
         let parsed = validate_lexical_request(&lexical_request)?;
         // The request must parse back to exactly the one leaf the policy built:
         // no operator, filter or option can be smuggled in through the raw text.
@@ -693,6 +731,7 @@ pub fn plan_query(
             | QueryInputPolicy::KeywordFile
             | QueryInputPolicy::SubstringFile
             | QueryInputPolicy::CodeSearchFile
+            | QueryInputPolicy::CodeSearchTypoFile
             | QueryInputPolicy::NaturalLanguage
             | QueryInputPolicy::ExactSymbolName => {}
         }
@@ -1097,6 +1136,76 @@ mod tests {
                 Err(QueryPlanError::InvalidCodeSearch)
             ));
         }
+    }
+
+    #[test]
+    fn code_search_typo_file_binds_distinct_product_request() {
+        let config = NlPlanConfig::default();
+        let raw = "load_jsom";
+        let plan = plan_query(QueryInputPolicy::CodeSearchTypoFile, raw, &config)
+            .expect("bare typo identifier is valid");
+        assert_eq!(plan.original, raw);
+        assert_eq!(plan.lexical_request, "typo:load_jsom");
+        assert_eq!(plan.semantic_text, raw);
+        assert_eq!(
+            plan.policy_config_sha256,
+            "652b78bd66c84f7019f496b80660b14ab8c60b7a24ff13545f603980e1315cae"
+        );
+        assert_eq!(
+            execution_profile_sha256(plan.policy, &config),
+            "2d6247a92e7e6693d3059ab191a5b0ef2fcb93a484c1099fa1c8bed9e3dc1066"
+        );
+        assert_eq!(
+            plan.effective_lexical_request_sha256,
+            "4a9305acacf83f7e71ac1af4e65d17ddcddd04499743146f34eb29d1c309965c"
+        );
+        assert_eq!(ordering_contract(plan.policy), Some(ORDERING_SCORE_DESC));
+        assert_eq!(
+            execution_profile_id(plan.policy),
+            "quanta-code-search-typo-file-v1"
+        );
+        assert_ne!(
+            plan.effective_lexical_request_sha256,
+            plan_query(QueryInputPolicy::CodeSearchFile, raw, &config)
+                .expect("existing code-search profile")
+                .effective_lexical_request_sha256
+        );
+        assert_eq!(
+            execution_profile_sha256(QueryInputPolicy::CodeSearchFile, &config),
+            "e39867e466be2ab7f4c5cb779f1fad338a280f5d6669a97c8ed8552486d5ff61"
+        );
+        for invalid in [
+            "",
+            "ab",
+            "1number",
+            "load-jsom",
+            "typo:load_jsom",
+            "load_jsom extra",
+            "Cafés",
+        ] {
+            assert_eq!(
+                plan_query(QueryInputPolicy::CodeSearchTypoFile, invalid, &config)
+                    .unwrap_err()
+                    .code(),
+                "RBR_QUERY_CODE_SEARCH_TYPO_INVALID"
+            );
+        }
+        assert!(
+            plan_query(
+                QueryInputPolicy::CodeSearchTypoFile,
+                &"a".repeat(64),
+                &config
+            )
+            .is_ok()
+        );
+        assert!(
+            plan_query(
+                QueryInputPolicy::CodeSearchTypoFile,
+                &"a".repeat(65),
+                &config
+            )
+            .is_err()
+        );
     }
 
     #[test]

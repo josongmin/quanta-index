@@ -242,6 +242,16 @@
           "type": "object", "additionalProperties": false,
           "required": ["profile_id", "policy", "config", "planning_cost_in_latency"],
           "properties": {
+            "profile_id": {"const": "quanta-code-search-typo-file-v1"},
+            "policy": {"const": "code_search_typo_file"},
+            "config": {"type": "object", "additionalProperties": false, "maxProperties": 0},
+            "planning_cost_in_latency": {"const": false}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["profile_id", "policy", "config", "planning_cost_in_latency"],
+          "properties": {
             "profile_id": {"const": "quanta-exact-symbol-name-v1"},
             "policy": {"const": "exact_symbol_name"},
             "config": {"type": "object", "additionalProperties": false, "maxProperties": 0},
@@ -362,7 +372,7 @@
       "properties": {
         "task_id": {"type": "string", "minLength": 1},
         "route": {"type": "string", "minLength": 1},
-        "rank_unit": {"description": "Optional effective result unit. symbol is valid only for Quanta exact_symbol_name on the symbol route; distinct_file only for the lexical file projections literal_file, keyword_file, substring_file and code_search_file. It names the unit, not how the units are ordered. Historical symbol records may omit it.", "enum": ["distinct_file", "symbol"]},
+        "rank_unit": {"description": "Optional effective result unit. symbol is valid only for Quanta exact_symbol_name on the symbol route; distinct_file only for the lexical file projections literal_file, keyword_file, substring_file, code_search_file and code_search_typo_file. It names the unit, not how the units are ordered. Historical symbol records may omit it.", "enum": ["distinct_file", "symbol"]},
         "ordering": {"description": "How a file projection orders its distinct files: scored Quanta keyword files, path-ordered Quanta restrictions, or native-score Semble BM25 with upstream tie order.", "enum": ["score_desc_path_tiebreak", "path_order_constant_score", "score_desc_native_tiebreak"]},
         "score_evidence": {"description": "Present only when every candidate preserves its finite native score. Historical v5 records without it remain replayable but have no per-row score-order proof.", "enum": ["native_sdk_score_v1", "semble_bm25_score_v1"]},
         "file_collection": {
