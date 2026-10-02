@@ -693,7 +693,12 @@ pair contract to `code_search_typo_file` and
 requests must be marked unsupported, while a lexical-only cell cannot be
 silently marked unsupported. The matrix/workflow unit set passed 60 tests.
 This validates policy routing only. A source-bound bridge from C4 admission
-cells to native capture roots is still missing, including explicit handling
-of `no_admission_diagnostic` cells that have no suite or blind pack. The
-existing matrix v2 requires a suite and pack for every repository/family cell;
-it cannot represent those cells without a versioned contract change.
+cells to native capture roots was subsequently added as matrix v3 in
+`main@7c4d82dc`. `build_c4_spec()` re-derives the frozen C4 admission,
+requires one declared capture root or explicit not-run entry per admitted
+lexical cell, and derives `no_admission_diagnostic` cells without invented
+suites or packs. `verify()` replays the C4 source/capsules, emitted inputs and
+native captures, then reports missing captures separately from source-proven
+no-admission cells. The matrix/workflow unit set passed 62 tests, including a
+two-repository source-bound C4 fixture. No current 12-repository v3 spec or
+product capture has been executed; these code tests do not advance C5.

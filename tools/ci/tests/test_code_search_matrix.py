@@ -339,6 +339,17 @@ def test_matrix_v3_rederives_source_bound_c4_cells(tmp_path, monkeypatch):
         if row["status"] == "diagnostic_unqualified"
     }
     assert matrix.build_c4_spec(release, capsules, checkouts, output, capture_roots) == spec
+    capture_key = next(iter(capture_roots))
+    captured_spec = matrix.build_c4_spec(
+        release, capsules, checkouts, output, {capture_key: str(tmp_path / "new-pair")}
+    )
+    captured_cell = next(cell for cell in captured_spec["cells"] if cell["suite"] is not None)
+    assert captured_cell["captures"]["lexical-only"] == {
+        "kind": "pair",
+        "root": str(tmp_path / "new-pair"),
+    }
+    with pytest.raises(ValueError, match="canonical absolute path"):
+        matrix.build_c4_spec(release, capsules, checkouts, output, {capture_key: "relative"})
     with pytest.raises(ValueError, match="capture-root inventory differs"):
         matrix.build_c4_spec(release, capsules, checkouts, output, {})
     result = matrix.verify(tmp_path, spec_path)
