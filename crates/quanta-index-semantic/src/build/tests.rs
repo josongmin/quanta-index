@@ -474,6 +474,46 @@ fn cold_open_refuses_format_11_even_with_a_self_consistent_seal() -> TestResult 
     Ok(())
 }
 
+#[test]
+fn delta_seal_refuses_embedding_id_colliding_with_its_base() -> TestResult {
+    let temp = tempdir()?;
+    let adapter = crate::SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let base = batch(
+        ManifestGeneration::new(94),
+        "src/base.rs",
+        "base",
+        vec![1.0, 0.0, 0.0],
+        true,
+    )?;
+    build_with(&adapter, &base)?;
+    let mut delta = batch(
+        ManifestGeneration::new(95),
+        "src/delta.rs",
+        "delta",
+        vec![0.0, 1.0, 0.0],
+        true,
+    )?;
+    delta.mode = BatchIngestMode::Delta;
+    delta.base_generation = Some(base.generation);
+    delta.replace_scopes[0].embeddings[0].embedding_id =
+        base.replace_scopes[0].embeddings[0].embedding_id.clone();
+    assert!(matches!(
+        build_with(&adapter, &delta),
+        Err(CoreError::Storage(message)) if message.contains("duplicate embedding_id")
+    ));
+    let delta_dir = layout::generation_dir(
+        temp.path(),
+        &delta.repo_id,
+        &delta.revision_id,
+        delta.generation,
+    );
+    assert!(
+        !layout::sealed_marker_path(&delta_dir).exists(),
+        "rejected delta must not publish a sealed generation"
+    );
+    Ok(())
+}
+
 fn assert_recovered_promotion_state(
     root: &Path,
     boundary: &str,
