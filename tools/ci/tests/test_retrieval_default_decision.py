@@ -10,11 +10,16 @@ import pytest
 from tools.benchmark.retrieval import decision
 
 PROOF = "a" * 64
+REPOSITORY = "b" * 40
 
 
 def fixture_inputs(delta: float = 0.07) -> tuple[dict, dict, dict, dict, dict]:
     policy = {
         "schema_version": 1,
+        "repository_scope": {
+            "kind": "single_repository",
+            "repository_commit": REPOSITORY,
+        },
         "comparison": {
             "strategy": "whole_file",
             "baseline_route": "semble-hybrid",
@@ -48,24 +53,37 @@ def fixture_inputs(delta: float = 0.07) -> tuple[dict, dict, dict, dict, dict]:
         "states": states,
         "state_evidence": {key: {"proof_digest": PROOF} for key in states},
         "failure_class": "none",
-        "comparisons": [{**policy["comparison"], "primary_delta": delta, "report_digest": PROOF}],
+        "comparisons": [
+            {
+                **policy["comparison"],
+                "primary_delta": delta,
+                "report_digest": PROOF,
+                "graded": True,
+                "sample_count": 25,
+            }
+        ],
     }
     report = {
+        "repository_commit": REPOSITORY,
+        "graded": True,
         "rank_metrics": {
             "comparison": {
                 "baseline": "semble-hybrid",
                 "candidate": "hybrid",
                 "primary_metric": "ndcg_at_10",
                 "primary_delta": delta,
+                "sample_count": 25,
                 "stratified_primary_delta": {
                     "category": {"definition": {"sample_count": 25, "mean_delta": 0.04}}
                 },
                 "no_answer_abstention_delta": {"sample_count": 5, "mean_delta": 0.0},
             }
-        }
+        },
     }
     cluster = {
         "method": "paired_query_family_cluster_bootstrap_percentile_v1",
+        "sample_count": 25,
+        "cluster_count": 25,
         "lower_95": 0.01,
     }
     measurements = {"query_p95_ms": 90.0, "peak_rss_bytes": 900_000, "index_bytes": 1_900_000}
@@ -115,6 +133,57 @@ def test_missing_predeclared_or_observed_input_fails_closed() -> None:
     report = fixture_inputs()[2]
     verdict["states"]["PERF_QUALIFIED"] = "not_applicable"
     with pytest.raises(decision.DecisionError, match="PERF_QUALIFIED"):
+        decision.evaluate_decision(policy, verdict, report, cluster, measurements)
+
+
+def test_repository_scope_is_bound_and_multi_repository_cannot_use_single_repo_ci() -> None:
+    policy, verdict, report, cluster, measurements = fixture_inputs()
+    for changed in (
+        {"kind": "multi_repository", "repository_commit": REPOSITORY},
+        {"kind": "single_repository", "repository_commit": "c" * 40},
+        {"kind": "single_repository", "repository_commit": "short"},
+    ):
+        altered = {**policy, "repository_scope": changed}
+        with pytest.raises(decision.DecisionError, match="repository"):
+            decision.evaluate_decision(altered, verdict, report, cluster, measurements)
+    assert (
+        decision.evaluate_decision(policy, verdict, report, cluster, measurements)[
+            "repository_scope"
+        ]
+        == policy["repository_scope"]
+    )
+    report["repository_commit"] = "c" * 40
+    with pytest.raises(decision.DecisionError, match="bound report repository"):
+        decision.evaluate_decision(policy, verdict, report, cluster, measurements)
+
+
+def test_unsupported_comparator_and_missing_coverage_refuse() -> None:
+    policy, verdict, report, cluster, measurements = fixture_inputs()
+    verdict["comparisons"][0]["graded"] = False
+    with pytest.raises(decision.DecisionError, match="not graded"):
+        decision.evaluate_decision(policy, verdict, report, cluster, measurements)
+    verdict["comparisons"][0]["graded"] = True
+    report["graded"] = False
+    with pytest.raises(decision.DecisionError, match="bound report is not graded"):
+        decision.evaluate_decision(policy, verdict, report, cluster, measurements)
+    report["graded"] = True
+    report["rank_metrics"]["comparison"]["no_answer_abstention_delta"]["sample_count"] = 0
+    with pytest.raises(decision.DecisionError, match="lacks coverage"):
+        decision.evaluate_decision(policy, verdict, report, cluster, measurements)
+    report["rank_metrics"]["comparison"]["no_answer_abstention_delta"]["sample_count"] = 5
+    verdict["comparisons"][0]["sample_count"] = 24
+    with pytest.raises(decision.DecisionError, match="paired graded coverage"):
+        decision.evaluate_decision(policy, verdict, report, cluster, measurements)
+    verdict["comparisons"][0]["sample_count"] = 25
+    cluster["sample_count"] = 24
+    with pytest.raises(decision.DecisionError, match="cluster interval lacks paired coverage"):
+        decision.evaluate_decision(policy, verdict, report, cluster, measurements)
+
+
+def test_no_answer_stratum_must_be_predeclared() -> None:
+    policy, verdict, report, cluster, measurements = fixture_inputs()
+    policy["critical_strata"].pop()
+    with pytest.raises(decision.DecisionError, match="include no_answer"):
         decision.evaluate_decision(policy, verdict, report, cluster, measurements)
 
 
@@ -171,7 +240,7 @@ def test_capture_binding_selects_report_and_owned_resource_root(monkeypatch, tmp
     admission = tmp_path / "admission.json"
     admission.write_text(json.dumps({"decision_policy_sha256": policy_sha}), encoding="utf-8")
     suite = tmp_path / "suite.json"
-    suite.write_text("{}", encoding="utf-8")
+    suite.write_text(json.dumps({"repository_commit": REPOSITORY}), encoding="utf-8")
     manifest = tmp_path / "run-manifest.json"
     manifest.write_text("{}", encoding="utf-8")
     report_path = tmp_path / "report.json"
@@ -222,6 +291,10 @@ def test_capture_binding_selects_report_and_owned_resource_root(monkeypatch, tmp
     assert result["status"] == "admit"
     assert result["policy_sha256"] == policy_sha
     assert result["report_digest"] == decision.run.sha_file(report_path)
+    suite.write_text(json.dumps({"repository_commit": "c" * 40}), encoding="utf-8")
+    with pytest.raises(decision.DecisionError, match="bound suite repository"):
+        decision.build_decision(tmp_path, suite, manifest, policy_path)
+    suite.write_text(json.dumps({"repository_commit": REPOSITORY}), encoding="utf-8")
     matrix.write_text(
         json.dumps(
             {

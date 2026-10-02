@@ -965,6 +965,24 @@ mod tests {
             lower_code_search_query_text(r#""a\"b\\c""#)?.expr,
             LqExpr::Leaf(LqLeaf::RawString("a\"b\\c".to_string())),
         );
+        let exact_content =
+            lower_code_search_query_text(r#"content:"say(\"can't\\skip\")" case:yes"#)?;
+        expect_equal!(exact_content.options.case, Some(LqCase::Sensitive));
+        expect_equal!(
+            exact_content.filters,
+            vec![LqFilter::Select {
+                dim: LqSelect::File
+            }],
+        );
+        expect_equal!(
+            exact_content.expr,
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "code_search.content".to_string(),
+                args: vec![LqPredicateArg::RawString(
+                    "say(\"can't\\skip\")".to_string()
+                )],
+            }),
+        );
         expect_equal!(
             lower_code_search_query_text("A AND B")?.expr,
             LqExpr::All(vec![

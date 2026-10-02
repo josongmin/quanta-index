@@ -48,6 +48,7 @@ def validate_policy(value: object) -> dict:
         value,
         {
             "schema_version",
+            "repository_scope",
             "comparison",
             "min_useful_delta",
             "min_cluster_lower_95",
@@ -59,6 +60,18 @@ def validate_policy(value: object) -> dict:
     )
     if type(policy["schema_version"]) is not int or policy["schema_version"] != 1:
         raise DecisionError("decision policy schema_version must be 1")
+    scope = _object(
+        policy["repository_scope"],
+        {"kind", "repository_commit"},
+        "repository_scope",
+    )
+    if scope["kind"] != "single_repository":
+        raise DecisionError(
+            "multi-repository decision requires repository-bound capture, "
+            "cell inventory, and repository-cluster uncertainty"
+        )
+    if not run._is_hex(scope["repository_commit"], 40):
+        raise DecisionError("repository_scope.repository_commit must be a full Git SHA")
     comparison = _object(
         policy["comparison"],
         {"strategy", "baseline_route", "candidate_route", "primary_metric"},
@@ -91,6 +104,8 @@ def validate_policy(value: object) -> dict:
             raise DecisionError("critical stratum is duplicated")
         seen.add((axis, name))
         _number(row["min_delta"], f"critical_strata[{index}].min_delta")
+    if ("no_answer", "all") not in seen:
+        raise DecisionError("critical_strata must include no_answer:all")
     limits = _object(
         policy["resource_limits"],
         {"max_query_p95_ms", "max_peak_rss_bytes", "max_index_bytes"},
@@ -132,11 +147,17 @@ def evaluate_decision(
     if len(matches) != 1:
         raise DecisionError("predeclared comparison is absent or ambiguous")
     selected = matches[0]
+    if selected.get("graded") is not True:
+        raise DecisionError("predeclared comparison is not graded")
     comparison = (
         report.get("rank_metrics", {}).get("comparison") if isinstance(report, dict) else None
     )
     if not isinstance(comparison, dict):
         raise DecisionError("bound rank comparison is missing")
+    if report.get("repository_commit") != policy["repository_scope"]["repository_commit"]:
+        raise DecisionError("bound report repository differs from policy")
+    if report.get("graded") is not True:
+        raise DecisionError("bound report is not graded")
     for policy_key, report_key in (
         ("baseline_route", "baseline"),
         ("candidate_route", "candidate"),
@@ -147,8 +168,18 @@ def evaluate_decision(
     delta = _number(comparison.get("primary_delta"), "primary_delta")
     if selected.get("primary_delta") != comparison["primary_delta"]:
         raise DecisionError("verdict and report primary deltas differ")
+    count = comparison.get("sample_count")
+    if type(count) is not int or count <= 0 or selected.get("sample_count") != count:
+        raise DecisionError("predeclared comparison lacks paired graded coverage")
     if not isinstance(cluster_ci, dict) or cluster_ci.get("method") != policy["confidence_method"]:
         raise DecisionError("qualified cluster interval is missing")
+    if (
+        type(cluster_ci.get("sample_count")) is not int
+        or cluster_ci["sample_count"] != count
+        or type(cluster_ci.get("cluster_count")) is not int
+        or cluster_ci["cluster_count"] <= 0
+    ):
+        raise DecisionError("qualified cluster interval lacks paired coverage")
     lower = _number(cluster_ci.get("lower_95"), "cluster lower_95")
     if not isinstance(measurements, dict) or set(measurements) != {
         "query_p95_ms",
@@ -169,14 +200,20 @@ def evaluate_decision(
         reasons.append("cluster_lower_bound_below_minimum")
     for row in policy["critical_strata"]:
         if row["axis"] == "no_answer":
-            value = comparison.get("no_answer_abstention_delta", {}).get("mean_delta")
+            stratum = comparison.get("no_answer_abstention_delta", {})
         else:
-            value = (
+            stratum = (
                 comparison.get("stratified_primary_delta", {})
                 .get(row["axis"], {})
                 .get(row["name"], {})
-                .get("mean_delta")
             )
+        if (
+            not isinstance(stratum, dict)
+            or type(stratum.get("sample_count")) is not int
+            or stratum["sample_count"] <= 0
+        ):
+            raise DecisionError(f"critical stratum {row['axis']}:{row['name']} lacks coverage")
+        value = stratum.get("mean_delta")
         observed = _number(value, f"critical stratum {row['axis']}:{row['name']}")
         if observed < row["min_delta"]:
             reasons.append(f"critical_stratum_regression:{row['axis']}:{row['name']}")
@@ -190,6 +227,7 @@ def evaluate_decision(
             reasons.append(reason)
     return {
         "decision_version": 1,
+        "repository_scope": policy["repository_scope"],
         "status": "refuse" if reasons else "admit",
         "reasons": reasons,
         "comparison": policy["comparison"],
@@ -261,6 +299,11 @@ def build_decision(repo: Path, suite: Path, manifest_path: Path, policy_path: Pa
         raise DecisionError("selected report does not match a verified comparison digest")
     report = bound_json(selected_reports[0])
     suite_payload = bound_json(suite)
+    if (
+        not isinstance(suite_payload, dict)
+        or suite_payload.get("repository_commit") != policy["repository_scope"]["repository_commit"]
+    ):
+        raise DecisionError("bound suite repository differs from policy")
     comparison = policy["comparison"]
     cluster_ci = qualified_query_family_ci(
         suite_payload, report, comparison["baseline_route"], comparison["candidate_route"]

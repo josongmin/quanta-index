@@ -16,6 +16,7 @@ both in one commit and re-freezing evidence.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 
 import regex
@@ -191,6 +192,45 @@ def literalize(raw: str) -> str:
             out.append(ch)
     out.append('"')
     return "".join(out)
+
+
+def plan_code_search_exact_content_request(raw: str) -> str:
+    """Encode one raw UTF-8 content needle for the public CodeSearch syntax.
+
+    This is a diagnostic request builder, not a runner policy. The benchmark
+    runner needs its own bound policy before these requests can be captured or
+    scored as a product run. NFC is required because CodeSearch normalizes
+    indexed content while the literal gold contract compares original bytes.
+    """
+    if not isinstance(raw, str):
+        raise QueryPlanError("exact-content CodeSearch requires UTF-8 text")
+    try:
+        size = len(raw.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise QueryPlanError("exact-content CodeSearch requires UTF-8 text") from exc
+    if (
+        not raw
+        or size > MAX_CODE_SEARCH_TERM_BYTES
+        or unicodedata2.normalize("NFC", raw) != raw
+        or any(unicodedata2.category(ch) == "Cc" for ch in raw)
+    ):
+        raise QueryPlanError(
+            "exact-content CodeSearch requires nonempty NFC printable UTF-8 of at most 256 bytes"
+        )
+    escaped = raw.replace("\\", "\\\\").replace('"', '\\"')
+    return f'content:"{escaped}" case:yes'
+
+
+def code_search_effective_request_sha256(request: str) -> str:
+    """Hash a CodeSearch request at the same syntax-bound boundary as v5."""
+    return _sha256_hex(
+        json.dumps(
+            {"query_text": request, "syntax": "code_search"},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    )
 
 
 def _refuse_native_rank_projection(raw: str) -> None:
@@ -386,20 +426,14 @@ def derive_query_identity(
     if policy not in SUPPORTED_POLICIES:
         raise QueryPlanError(f"unsupported query input policy: {policy}")
     lexical_request = plan_lexical_request(policy, raw, config)
-    if policy in CODE_SEARCH_FILE_POLICIES:
-        import json
-
-        effective_bytes = json.dumps(
-            {"query_text": lexical_request, "syntax": "code_search"},
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode()
-    else:
-        effective_bytes = lexical_request.encode()
+    effective_digest = (
+        code_search_effective_request_sha256(lexical_request)
+        if policy in CODE_SEARCH_FILE_POLICIES
+        else _sha256_hex(lexical_request.encode())
+    )
     return {
         "original_query_sha256": _sha256_hex(raw.encode()),
-        "effective_lexical_request_sha256": _sha256_hex(effective_bytes),
+        "effective_lexical_request_sha256": effective_digest,
         "semantic_text_sha256": _sha256_hex(raw.encode()),
     }
 
