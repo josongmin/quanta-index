@@ -217,8 +217,13 @@ fn source_file_bytes_have_a_typed_ceiling() -> TestResult {
     let batch = batch(&["abcdef"], &[])?;
     let at_source = IngestResourcePolicy::new(usize::MAX, 6, u64::MAX)?;
     let admitted = at_source.admit_search_corpus_batch(&batch, DIMENSION)?;
-    assert_eq!(admitted.source_bytes, 6);
-    assert_eq!(admitted.text_bytes, 0);
+    if admitted.source_bytes != 6 || admitted.text_bytes != 0 {
+        return Err(format!(
+            "unexpected admitted bytes: source={}, text={}",
+            admitted.source_bytes, admitted.text_bytes
+        )
+        .into());
+    }
     let over_source = IngestResourcePolicy::new(usize::MAX, 5, u64::MAX)?;
     expect_refusal(
         over_source.admit_search_corpus_batch(&batch, DIMENSION),

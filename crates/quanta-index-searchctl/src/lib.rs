@@ -514,8 +514,9 @@ impl KeysetPageQueryArgs {
 }
 
 /// Parse `<command> [--syntax] --query-text --top-k [--cursor-json PATH|-]`
-/// with the pinned-generation flags. Only `lexical` defaults to code search;
-/// the other routes retain an explicit syntax requirement.
+/// with the pinned-generation flags.
+///
+/// Only `lexical` defaults to code search; other routes require a syntax.
 fn parse_keyset_page_query(
     common: &mut CommonOptions,
     rest: &mut VecDeque<String>,

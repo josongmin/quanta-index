@@ -643,9 +643,10 @@ fn no_storage_free_preflight<B: IngestBatchBodyV1>(_body: &B) -> Result<(), Core
     Ok(())
 }
 
-/// Only a typed refusal is frozen policy. The catalog's terminal refusal
-/// transition requires `CoreError::Typed`; an internal contract error must
-/// stay retryable rather than being reported as durably refused.
+/// Only a typed refusal is frozen policy.
+///
+/// The catalog's terminal refusal transition requires `CoreError::Typed`;
+/// an internal contract error stays retryable.
 ///
 /// Recording it lets a retry replay the refusal exactly with no
 /// in-progress residue. Other apply failures mark the record uncertain;

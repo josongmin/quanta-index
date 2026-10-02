@@ -55,6 +55,12 @@ use crate::searchd_binary_process::SearchdBinaryProcess;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+fn code_search_uses_separate_fixture<T>() -> Result<T, SdkError> {
+    Err(SdkError::Protocol(
+        "CodeSearch is exercised by its own lexical fixture".into(),
+    ))
+}
+
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -1548,15 +1554,14 @@ fn sdk_default_code_search_matches_terms_across_chunks_as_one_file() -> TestResu
         |response| response.generation == pin() && response.results.len() == 1,
     )?;
     let file = response.results.first().ok_or("missing file result")?;
+    let scope = corpus_batch
+        .replace_scopes()
+        .first()
+        .ok_or("missing replacement scope")?;
     if file.repo_relative_path.as_str() != "src/lib.rs"
         || !file.candidate_id.starts_with("file:")
         || file.source.as_ref().map(|source| source.source_sha256)
-            != Some(
-                corpus_batch.replace_scopes()[0]
-                    .coverage
-                    .source
-                    .source_sha256,
-            )
+            != Some(scope.coverage.source.source_sha256)
     {
         return Err(format!("default CodeSearch file identity drift: {file:?}").into());
     }
@@ -1606,10 +1611,18 @@ fn sdk_default_code_search_matches_terms_across_chunks_as_one_file() -> TestResu
         .top_k(1)
         .after(cursor)
         .execute()?;
+    let first_file = first_page
+        .results
+        .first()
+        .ok_or("missing first file page result")?;
+    let second_file = second_page
+        .results
+        .first()
+        .ok_or("missing second file page result")?;
     if second_page.rank_unit != quanta_index_contract::TextRankUnit::File
         || second_page.results.len() != 1
         || second_page.next_cursor.is_some()
-        || first_page.results[0].repo_relative_path == second_page.results[0].repo_relative_path
+        || first_file.repo_relative_path == second_file.repo_relative_path
     {
         return Err(format!("CodeSearch second file page drift: {second_page:?}").into());
     }
@@ -2832,9 +2845,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .pinned(pin())
                                 .top_k(10)
                                 .execute(),
-                            TextQuerySyntax::CodeSearch => {
-                                unreachable!("CodeSearch is exercised by its own lexical fixture")
-                            }
+                            TextQuerySyntax::CodeSearch => code_search_uses_separate_fixture(),
                             TextQuerySyntax::Sourcegraph => client
                                 .lexical()
                                 .query()
@@ -2872,9 +2883,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .active(repo(), revision())
                                 .top_k(10)
                                 .execute(),
-                            TextQuerySyntax::CodeSearch => {
-                                unreachable!("CodeSearch is exercised by its own lexical fixture")
-                            }
+                            TextQuerySyntax::CodeSearch => code_search_uses_separate_fixture(),
                             TextQuerySyntax::Sourcegraph => client
                                 .symbol()
                                 .query()
@@ -2911,9 +2920,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .pinned(pin())
                                 .top_k(10)
                                 .execute(),
-                            TextQuerySyntax::CodeSearch => {
-                                unreachable!("CodeSearch is exercised by its own lexical fixture")
-                            }
+                            TextQuerySyntax::CodeSearch => code_search_uses_separate_fixture(),
                             TextQuerySyntax::Sourcegraph => client
                                 .structural()
                                 .query()
@@ -2952,9 +2959,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .pinned(pin())
                                 .top_k(10)
                                 .execute(),
-                            TextQuerySyntax::CodeSearch => {
-                                unreachable!("CodeSearch is exercised by its own lexical fixture")
-                            }
+                            TextQuerySyntax::CodeSearch => code_search_uses_separate_fixture(),
                             TextQuerySyntax::Sourcegraph => client
                                 .runtime()
                                 .query()
@@ -3009,9 +3014,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                             .top_k(10)
                             .order(HistoryOrderV1::Recency)
                             .execute(),
-                        TextQuerySyntax::CodeSearch => {
-                            unreachable!("CodeSearch is exercised by its own lexical fixture")
-                        }
+                        TextQuerySyntax::CodeSearch => code_search_uses_separate_fixture(),
                         TextQuerySyntax::Sourcegraph => client
                             .history()
                             .query()
@@ -3051,9 +3054,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .active(repo(), revision())
                                 .top_k(10)
                                 .execute(),
-                            TextQuerySyntax::CodeSearch => {
-                                unreachable!("CodeSearch is exercised by its own lexical fixture")
-                            }
+                            TextQuerySyntax::CodeSearch => code_search_uses_separate_fixture(),
                             TextQuerySyntax::Sourcegraph => client
                                 .lexical()
                                 .query()
@@ -3075,9 +3076,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                     .top_k(10)
                                     .order(HistoryOrderV1::Recency)
                                     .execute(),
-                                TextQuerySyntax::CodeSearch => unreachable!(
-                                    "CodeSearch is exercised by its own lexical fixture"
-                                ),
+                                TextQuerySyntax::CodeSearch => code_search_uses_separate_fixture(),
                                 TextQuerySyntax::Sourcegraph => client
                                     .history()
                                     .query()
@@ -3098,9 +3097,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                                 .pinned(pin())
                                 .top_k(10)
                                 .execute(),
-                            TextQuerySyntax::CodeSearch => {
-                                unreachable!("CodeSearch is exercised by its own lexical fixture")
-                            }
+                            TextQuerySyntax::CodeSearch => code_search_uses_separate_fixture(),
                             TextQuerySyntax::Sourcegraph => client
                                 .structural()
                                 .query()

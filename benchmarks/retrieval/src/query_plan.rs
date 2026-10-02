@@ -27,7 +27,7 @@
 //!   `code_search` syntax. File projection and scored ordering are part of
 //!   that product contract, not an injected Native LQ operator.
 //! * `code_search_exact_content_file` — one printable NFC UTF-8 needle is
-//!   escaped into a case-sensitive content-only CodeSearch literal. It uses
+//!   escaped into a case-sensitive content-only `CodeSearch` literal. It uses
 //!   the same public file-ranking route as `code_search_file`.
 //! * `code_search_typo_file` — one bare ASCII identifier of 3..=64 bytes is submitted as
 //!   `typo:<identifier>` through the public `code_search` syntax. The raw
@@ -128,7 +128,7 @@ pub enum QueryInputPolicy {
     SubstringFile,
     /// Public product code-search syntax, with scored distinct-file results.
     CodeSearchFile,
-    /// Case-sensitive exact content literal through public CodeSearch.
+    /// Case-sensitive exact content literal through public `CodeSearch`.
     CodeSearchExactContentFile,
     /// Explicit code-search typo mode, scored as distinct files.
     CodeSearchTypoFile,
@@ -267,7 +267,7 @@ pub enum QueryPlanError {
     InvalidSubstring { reason: &'static str },
     /// Code-search input is empty or exceeds the public query byte cap.
     InvalidCodeSearch,
-    /// Exact-content CodeSearch input cannot preserve the raw UTF-8 gold.
+    /// Exact-content `CodeSearch` input cannot preserve the raw UTF-8 gold.
     InvalidCodeSearchExactContent,
     /// The typo profile requires a bare ASCII identifier of 3..=64 bytes.
     InvalidCodeSearchTypo,

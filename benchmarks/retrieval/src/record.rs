@@ -637,8 +637,15 @@ fn capture_value(capture_id: &str, capture: &CaptureProvenance) -> BenchResult<V
         "execution_profile": capture.execution_profile,
         "execution_profile_sha256": capture.execution_profile_sha256,
     });
-    if capture.execution_profile["policy"] == "code_search_exact_content_file" {
-        let object = value.as_object_mut().expect("capture JSON is an object");
+    if capture
+        .execution_profile
+        .get("policy")
+        .and_then(Value::as_str)
+        == Some("code_search_exact_content_file")
+    {
+        let object = value.as_object_mut().ok_or_else(|| {
+            BenchError::Protocol(format!("capture {capture_id} JSON is not an object"))
+        })?;
         drop(object.insert(
             "source_repo_id".to_string(),
             serde_json::json!(capture.source_repo_id),
@@ -1535,7 +1542,7 @@ mod tests {
         let hit = RankedHit {
             candidate_id: expected_file_candidate_id(repo.as_str(), path).expect("file ID"),
             path: path.to_string(),
-            start_line: if path_only { 0 } else { 1 },
+            start_line: u32::from(!path_only),
             end_line: if path_only {
                 0
             } else {

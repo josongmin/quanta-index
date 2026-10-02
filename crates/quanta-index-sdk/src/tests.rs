@@ -460,6 +460,7 @@ fn resolved_active_without_explicit_pin_binds_the_final_text_generation() {
                 if sent.generation == Some(sample_generation_pin())
                     && sent.generation_selector == request.generation_selector
         ));
+        drop(requests);
     }
 }
 
@@ -509,6 +510,7 @@ fn resolved_active_without_explicit_pin_refuses_a_changed_activation_token() {
         1,
         "a stale token must not send a text query"
     );
+    drop(requests);
 }
 
 #[test]
@@ -611,6 +613,7 @@ fn quoted_timeref_literals_do_not_resolve_or_relax_text_response_pins() {
         requests.first().map(|request| &request.payload),
         Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent)) if sent == &request
     ));
+    drop(requests);
 }
 
 #[test]

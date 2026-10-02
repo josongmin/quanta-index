@@ -156,10 +156,11 @@ impl ExpectedIngestResponseV1 {
     }
 }
 
-/// Whether this syntax can carry a `rev:at.time(...)` selector. CodeSearch
-/// treats the text as a search literal, so it cannot authorize rebinding.
-/// Native and Sourcegraph candidate requests are resolved by the query plane;
-/// the final response is then bound exactly to that resolved generation.
+/// Whether this syntax can carry a `rev:at.time(...)` selector.
+///
+/// `CodeSearch` treats the text as a literal and cannot authorize rebinding.
+/// Native and Sourcegraph requests are resolved by the query plane, and the
+/// final response is bound exactly to that generation.
 pub(crate) fn is_rev_at_time_query(syntax: TextQuerySyntax, query_text: &str) -> bool {
     syntax != TextQuerySyntax::CodeSearch && query_text.contains("rev:at.time")
 }

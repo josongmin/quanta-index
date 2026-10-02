@@ -2403,7 +2403,9 @@ mod code_search_wire_tests {
         let mut bytes = Vec::new();
         ciborium::ser::into_writer(&LqPatternType::CodeSearch, &mut bytes)?;
         let decoded: LqPatternType = ciborium::de::from_reader(bytes.as_slice())?;
-        assert_eq!(decoded, LqPatternType::CodeSearch);
+        if decoded != LqPatternType::CodeSearch {
+            return Err(std::io::Error::other("CodeSearch CBOR round trip changed variant").into());
+        }
         Ok(())
     }
 }

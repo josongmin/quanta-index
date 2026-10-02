@@ -417,7 +417,7 @@ fn sealed_row_commitment_refuses_duplicate_candidate_and_record_ids() -> TestRes
     let record_temp = tempdir()?;
     let record_tables =
         crate::run_blocking(&runtime, super::open_working_tables(record_temp.path(), 3))?;
-    let mut duplicate_record = second.clone();
+    let mut duplicate_record = second;
     duplicate_record.record_id = first.record_id.clone();
     crate::run_blocking(&runtime, async {
         let _added = record_tables
