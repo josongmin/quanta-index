@@ -429,7 +429,7 @@ fn validate_replace_scope(
     let mut embeddings_by_record_id = BTreeMap::new();
     if !scope.cluster_memberships.is_empty() {
         for embedding in &scope.embeddings {
-            embeddings_by_record_id
+            let _existing = embeddings_by_record_id
                 .entry(embedding.record_id.as_ref())
                 .or_insert(embedding);
         }

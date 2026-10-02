@@ -395,7 +395,8 @@ fn sealed_row_commitment_refuses_duplicate_candidate_and_record_ids() -> TestRes
             .execute()
             .await
             .map_err(|error| CoreError::Storage(format!("seed semantic rows: {error}")))?;
-        crate::semantic_row_integrity_v1::semantic_row_commitment_v1(&tables.table).await?;
+        let _commitment =
+            crate::semantic_row_integrity_v1::semantic_row_commitment_v1(&tables.table).await?;
         let mut duplicate = second.clone();
         duplicate.record_id = "record-third".into();
         duplicate.embedding_id = first.embedding_id.clone();
