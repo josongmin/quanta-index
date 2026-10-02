@@ -423,3 +423,38 @@ check a 128 MiB builder estimate at seal and cold open. This is a source-level
 admission calculation conditional on producer text coverage. Full ingest,
 activation, physical RSS, all 12 repository captures and B08 product
 qualification remain `NOT_RUN`.
+
+## Current-source ingest diagnostic (2026-10-02)
+
+The all-features release preflight at `14fdeffb` failed to publish the frozen
+Tailscale view: its 2,532 files and 6,257 chunks produced a 75,624,895-byte
+CBOR request over the 67,108,864-byte decoded-frame limit. The lexical-only
+benchmark batch had copied every chunk's text into both lexical and unused
+semantic raw-fallback scopes. This was a producer payload failure before seal,
+not evidence that the file candidate index rejected the corpus. The preserved
+diagnostic is
+[`RESULTS.md`](/private/tmp/qi-b08-ingest-14f-AritdR/RESULTS.md).
+
+Commit `912558b8` makes the existing batch assembler omit semantic scopes for
+lexical-only routes while keeping source, lexical chunks, symbols and the paired
+generation contract. It adds a unit test comparing lexical-only and semantic
+batches. The release binaries built from that clean commit have SHA-256
+`fc114f6a183f09c0ef1c648231ecc5e84db1a2da0054d12295632dfb246848a9`
+(searchd) and
+`f8e889e32660a4eb0b9c9af1f11b4075b867498f7a3a9ebe286ba2fe610d10cf`
+(runner). A fresh external run at `/private/tmp/b8fix-lebuDK/q` completed
+publish, seal, activation and one lexical query over all 2,532 files. Its
+receipt records 2,532 lexical replacement scopes and zero semantic scopes;
+the query returned 10 distinct files with `capped`/`lower_bound`, as expected
+for 68 matching candidates. Driver elapsed 76.21 s, opaque SDK publish plus
+activation 70.28 s, server lexical build observation 62.72 s and sampled
+process-tree peak RSS 1,230,405,632 bytes. These are one contended-host
+diagnostic, not B07 performance evidence. The run does not prove the general
+semantic/hybrid payload path can handle a >64 MiB batch.
+
+One current-source mechanical oracle recapture for `zustand` is at
+`/private/tmp/qi-b08-current-oracle-bnqaJn/capsules/zustand`. It retained the
+same 80 task IDs/queries/intents and 174 labels, but changed six unsupported
+states and five answerability states versus the frozen capsule. The remaining
+eleven capsules and independent human relevance review are `NOT_RUN`; the
+frozen counts cannot be silently promoted to current-source qualification.
