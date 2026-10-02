@@ -122,7 +122,11 @@ def test_live_native_decoders_refuse_failure_and_partial_results(tmp_path):
     valid_opengrok = {
         "time": 1,
         "resultCount": 1,
-        "results": {"/fixture/src/file.go": [1]},
+        "results": {
+            "/fixture/src/file.go": [
+                {"line": "func symbol() {}", "lineNumber": "1", "tag": "function"}
+            ]
+        },
         "startDocument": 0,
         "endDocument": 0,
     }
@@ -138,6 +142,25 @@ def test_live_native_decoders_refuse_failure_and_partial_results(tmp_path):
         json.dumps(valid_opengrok).encode(),
         1.0,
     )["file_paths_top_10"] == ["src/file.go"]
+    for hit in (
+        {"line": "func symbol() {}", "lineNumber": "1", "tag": None},
+        {"line": "func symbol() {}", "lineNumber": "1"},
+    ):
+        body = {**valid_opengrok, "results": {"/fixture/src/file.go": [hit]}}
+        assert (
+            live._opengrok_response(
+                config,
+                task,
+                gold,
+                view,
+                admitted,
+                200,
+                "application/json",
+                json.dumps(body).encode(),
+                1.0,
+            )["file_hit_at_10"]
+            is True
+        )
     assert (
         live._opengrok_response(
             config,
@@ -155,7 +178,15 @@ def test_live_native_decoders_refuse_failure_and_partial_results(tmp_path):
     for status, body in (
         (500, valid_opengrok),
         (200, {**valid_opengrok, "endDocument": 1}),
-        (200, {**valid_opengrok, "results": {"/other/src/file.go": [1]}}),
+        (
+            200,
+            {
+                **valid_opengrok,
+                "results": {
+                    "/other/src/file.go": valid_opengrok["results"]["/fixture/src/file.go"]
+                },
+            },
+        ),
         (200, {"error": "backend failed"}),
     ):
         with pytest.raises(ValueError):
@@ -186,6 +217,44 @@ def test_live_native_decoders_refuse_failure_and_partial_results(tmp_path):
     ):
         with pytest.raises(ValueError):
             live._cs_response(task, gold, view, admitted, code, stdout, stderr, 1.0)
+
+
+@pytest.mark.parametrize(
+    "hits",
+    [
+        [None],
+        [1],
+        [{}],
+        [{"line": "func symbol() {}"}],
+        [{"line": "func symbol() {}", "lineNumber": 1}],
+        [{"line": "func symbol() {}", "lineNumber": "0"}],
+        [{"line": "func symbol() {}", "lineNumber": "1", "tag": 1}],
+    ],
+)
+def test_opengrok_response_refuses_malformed_search_hits(tmp_path, hits):
+    view = tmp_path / "view"
+    (view / "src").mkdir(parents=True)
+    source = view / "src/file.go"
+    source.write_bytes(b"func symbol() {}\n")
+    body = {
+        "time": 1,
+        "resultCount": 1,
+        "results": {"/fixture/src/file.go": hits},
+        "startDocument": 0,
+        "endDocument": 0,
+    }
+    with pytest.raises(ValueError, match="malformed SearchHit"):
+        live._opengrok_response(
+            {"project": "fixture", "server_image_digest": "a" * 64},
+            {"task_id": "S00", "query": "symbol"},
+            ["src/file.go"],
+            view,
+            {"src/file.go": live._sha(source.read_bytes())},
+            200,
+            "application/json",
+            json.dumps(body).encode(),
+            1.0,
+        )
 
 
 @pytest.mark.parametrize("status,body", [(404, b"missing"), (200, b"stale source")])
@@ -462,7 +531,13 @@ class SearchHandler(BaseHTTPRequestHandler):
                 {
                     "time": 1,
                     "resultCount": int(hit),
-                    "results": {"/fixture/src/0.go": [1]} if hit else {},
+                    "results": {
+                        "/fixture/src/0.go": [
+                            {"line": "func symbol_0() {}", "lineNumber": "1", "tag": None}
+                        ]
+                    }
+                    if hit
+                    else {},
                     "startDocument": 0,
                     "endDocument": 0,
                 }

@@ -485,6 +485,20 @@ def _opengrok_response(
             or not hits
         ):
             raise ValueError("OpenGrok response has an invalid project path or empty hit")
+        # Benchmark admission requires a source line and location even though
+        # OpenAPI does not mark SearchHit fields required. Captured OpenGrok
+        # responses also use null for an absent optional tag.
+        for hit in hits:
+            if (
+                not isinstance(hit, dict)
+                or not {"line", "lineNumber"} <= set(hit)
+                or set(hit) - {"line", "lineNumber", "tag"}
+                or not isinstance(hit["line"], str)
+                or not isinstance(hit["lineNumber"], str)
+                or re.fullmatch(r"[1-9][0-9]*", hit["lineNumber"]) is None
+                or ("tag" in hit and hit["tag"] is not None and not isinstance(hit["tag"], str))
+            ):
+                raise ValueError("OpenGrok response has a malformed SearchHit")
         paths.append(absolute[len(prefix) :])
     paths = _paths(paths, admitted, view)
     return _row(
