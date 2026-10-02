@@ -14477,6 +14477,20 @@ def test_intended_name_near_exclusion_replays_parser_refusal(tmp_path):
     with pytest.raises(ev.EvidenceError, match="may contain a query match"):
         ev.validate_suite(repo, bad)
 
+    second = copy.deepcopy(suite["tasks"][0])
+    second["task_id"] = "T2"
+    second["query"] = "Parax"
+    second["query_sha256"] = ev.digest(b"Parax")
+    repeated_target = copy.deepcopy(suite)
+    repeated_target["tasks"].append(second)
+    _loaded, projected_pack, _source = ev.validate_suite(repo, repeated_target)
+    assert [task["task_id"] for task in projected_pack["tasks"]] == ["T1", "T2"]
+
+    conflicting = copy.deepcopy(repeated_target)
+    conflicting["tasks"][1]["source_oracle"]["declaration_exclusions"] = ["main.go"]
+    with pytest.raises(ev.EvidenceError, match="conflicting declaration exclusion query"):
+        ev.validate_suite(repo, conflicting)
+
 
 def test_declaration_navigation_contract_requires_symbol_policy(tmp_path):
     repo, suite, run, suite_path, runner_path, _files = _exact_symbol_record_fixture(tmp_path)

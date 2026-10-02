@@ -1163,8 +1163,14 @@ def validate_suite(
                     if owner == (name_contract[0], "osa1_casefold")
                 )
                 key = (near_contract, raw["query"])
-            require(key not in declaration_exclusions, "duplicate declaration exclusion query")
-            declaration_exclusions[key] = set(paths)
+            excluded = set(paths)
+            if key in declaration_exclusions:
+                require(
+                    declaration_exclusions[key] == excluded,
+                    "conflicting declaration exclusion query",
+                )
+            else:
+                declaration_exclusions[key] = excluded
     seen_ids = set()
     seen_queries = set()
     eval_count = 0
