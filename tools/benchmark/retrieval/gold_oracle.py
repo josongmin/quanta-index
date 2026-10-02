@@ -507,7 +507,8 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
             near_metadata = {
                 "near_declaration_state": (
                     "partial"
-                    if len(near_excluded) != len(uncertain_rows) or any(row["path"] is None for row in unsupported)
+                    if len(near_excluded) != len(uncertain_rows)
+                    or any(row["path"] is None for row in unsupported)
                     else "complete"
                 ),
                 "near_census_text_excluded": near_excluded,

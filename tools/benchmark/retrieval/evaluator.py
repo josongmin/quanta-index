@@ -3002,7 +3002,10 @@ def repository_cluster_ci(
         isinstance(release_digest, str) and bool(HEX64_RE.fullmatch(release_digest)),
         "cluster release digest is invalid",
     )
-    require(isinstance(repositories, dict) and bool(repositories), "cluster repository inventory is empty")
+    require(
+        isinstance(repositories, dict) and bool(repositories),
+        "cluster repository inventory is empty",
+    )
     for name, commit in repositories.items():
         require(
             isinstance(name, str)
@@ -3014,7 +3017,11 @@ def repository_cluster_ci(
     families: dict[str, dict[str, list[float]]] = {name: {} for name in repositories}
     seen_tasks: set[tuple[str, str]] = set()
     family_owner: dict[str, str] = {}
-    for repository, task_id, family_id, delta in rows:
+    require(isinstance(rows, list), "cluster rows must be a list")
+    for row in rows:
+        require(isinstance(row, tuple) and len(row) == 4, "cluster row is malformed")
+        repository, task_id, family_id, delta = row
+        require(isinstance(repository, str), "cluster repository is invalid")
         require(repository in repositories, "cluster row has an unknown repository")
         require(
             isinstance(task_id, str)
@@ -3033,7 +3040,10 @@ def repository_cluster_ci(
         families[repository].setdefault(family_id, []).append(delta)
     require(all(families.values()), "cluster repository lacks paired rows")
     means = [
-        sum(sum(deltas) / len(deltas) for deltas in families[name].values())
+        math.fsum(
+            math.fsum(sorted(families[name][family_id])) / len(families[name][family_id])
+            for family_id in sorted(families[name])
+        )
         / len(families[name])
         for name in sorted(repositories)
     ]
@@ -3058,7 +3068,7 @@ def repository_cluster_ci(
     )
     rng = random.Random(int(digest(seed)[:16], 16))
     sampled = sorted(
-        sum(means[rng.randrange(len(means))] for _ in means) / len(means)
+        math.fsum(means[rng.randrange(len(means))] for _ in means) / len(means)
         for _ in range(10_000)
     )
 
@@ -3072,7 +3082,7 @@ def repository_cluster_ci(
         **summary,
         "resamples": 10_000,
         "seed_sha256": digest(seed),
-        "mean": sum(means) / len(means),
+        "mean": math.fsum(means) / len(means),
         "lower_95": quantile(0.025),
         "upper_95": quantile(0.975),
     }

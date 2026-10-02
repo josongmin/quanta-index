@@ -290,6 +290,13 @@ struct ScoredMatch {
     primary_term: usize,
 }
 
+#[derive(Clone, Copy)]
+enum TermsToScore {
+    Literals,
+    Regex,
+    All,
+}
+
 fn add_witness_score(
     scored: &mut Option<ScoredMatch>,
     file: &SourceFile,
@@ -342,12 +349,13 @@ fn score_terms(
     terms: &[CodeSearchTerm],
     case: CaseMode,
     mut scored: Option<ScoredMatch>,
-    literals_only: bool,
+    selection: TermsToScore,
     budget: &RequestBudgetV1,
 ) -> Result<Option<ScoredMatch>, CoreError> {
-    let reuse_literals = scored.is_some() && !literals_only;
     for (index, term) in terms.iter().enumerate() {
-        if (literals_only && term.regex.is_some()) || (reuse_literals && term.regex.is_none()) {
+        if (matches!(selection, TermsToScore::Literals) && term.regex.is_some())
+            || (matches!(selection, TermsToScore::Regex) && term.regex.is_none())
+        {
             continue;
         }
         let Some(witness) = choose_witness(file, term, case, budget)? else {
@@ -1003,7 +1011,7 @@ fn candidate_ids(
                         }
                         let file = file_for_id(authority, id)?;
                         let Some(scored) =
-                            score_terms(file, terms, case, None, true, budget)?
+                            score_terms(file, terms, case, None, TermsToScore::Literals, budget)?
                         else {
                             return Ok(false);
                         };
@@ -1051,7 +1059,8 @@ fn candidate_ids(
             .files
             .get(key)
             .ok_or_else(|| CoreError::Storage("lexical: file authority id has no source".into()))?;
-        if let Some(scored) = score_terms(file, terms, case, None, true, budget)? {
+        if let Some(scored) = score_terms(file, terms, case, None, TermsToScore::Literals, budget)?
+        {
             let _previous = hits.insert(id, scored);
         }
     }
@@ -1790,8 +1799,19 @@ impl TantivySearcher {
                 .files
                 .get(key)
                 .ok_or_else(|| CoreError::Storage("lexical: file id has no source".into()))?;
-            let Some(scored) =
-                score_terms(file, &parsed.terms, parsed.case, preverified, false, budget)?
+            let selection = if preverified.is_some() {
+                TermsToScore::Regex
+            } else {
+                TermsToScore::All
+            };
+            let Some(scored) = score_terms(
+                file,
+                &parsed.terms,
+                parsed.case,
+                preverified,
+                selection,
+                budget,
+            )?
             else {
                 continue;
             };
@@ -1861,10 +1881,10 @@ impl TantivySearcher {
 mod tests {
     use super::{
         CodeSearchTerm, HitSurface, MAX_TYPO_POSTING_VISITS, MAX_TYPO_TOKEN_COMPARISONS,
-        OverlappingMatches, Scope, best_in, boundary_score, candidate_ids, content_witness_lines,
-        file_candidate_id, language_eligible_ids, min_cover_gap, nfc_identity_focus,
-        path_highlight, regex_scan_scope, scanned_bytes, source_bytes_checked, typo_candidates,
-        typo_distance, typo_witness,
+        OverlappingMatches, Scope, TermsToScore, best_in, boundary_score, candidate_ids,
+        content_witness_lines, file_candidate_id, language_eligible_ids, min_cover_gap,
+        nfc_identity_focus, path_highlight, regex_scan_scope, scanned_bytes, score_terms,
+        source_bytes_checked, typo_candidates, typo_distance, typo_witness,
     };
     use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
@@ -2306,6 +2326,115 @@ mod tests {
     fn exact_identifier_beats_prefix_and_infix() {
         assert!(boundary_score("foo", 0..3, false) > boundary_score("foobar", 0..3, false));
         assert!(boundary_score("foobar", 0..3, false) > boundary_score("afoobar", 1..4, false));
+    }
+
+    #[test]
+    fn cached_literal_score_preserves_earlier_regex_witness_and_rejection() {
+        let text = "abc abc";
+        let file = SourceFile {
+            source: SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: RepoId::new("fixture").expect("repo"),
+                    repo_relative_path: RepoRelativePath::new("file.rs"),
+                },
+                revision_id: RevisionId::new("revision").expect("revision"),
+                source_sha256: [0; 32],
+            },
+            bytes: text.as_bytes().to_vec(),
+            text_admitted: true,
+            language: LanguageCode::new("rust").expect("language"),
+            indexed_text: Some(text.into()),
+            folded_text: Some(text.into()),
+            indexed_path: "file.rs".into(),
+            folded_path: "file.rs".into(),
+            expected_postings: 0,
+        };
+        let terms = [
+            CodeSearchTerm {
+                text: "abc".into(),
+                needle: "abc".into(),
+                scope: Scope::Content,
+                regex: Some(RegexExecutor::compile("abc").expect("regex")),
+            },
+            CodeSearchTerm {
+                text: "abc".into(),
+                needle: "abc".into(),
+                scope: Scope::Content,
+                regex: None,
+            },
+        ];
+        let budget = RequestBudgetV1::unbounded();
+        let cached = score_terms(
+            &file,
+            &terms,
+            CaseMode::Sensitive,
+            None,
+            TermsToScore::Literals,
+            &budget,
+        )
+        .expect("literal score")
+        .expect("literal match");
+        assert_eq!(cached.primary_term, 1);
+        let reused = score_terms(
+            &file,
+            &terms,
+            CaseMode::Sensitive,
+            Some(cached),
+            TermsToScore::Regex,
+            &budget,
+        )
+        .expect("cached score")
+        .expect("complete match");
+        let fresh = score_terms(
+            &file,
+            &terms,
+            CaseMode::Sensitive,
+            None,
+            TermsToScore::All,
+            &budget,
+        )
+        .expect("fresh score")
+        .expect("complete match");
+        assert_eq!(reused.score, fresh.score);
+        assert_eq!(reused.primary_term, 0);
+        assert_eq!(reused.primary.normalized, fresh.primary.normalized);
+
+        let missing_regex = [
+            CodeSearchTerm {
+                text: "missing".into(),
+                needle: "missing".into(),
+                scope: Scope::Content,
+                regex: Some(RegexExecutor::compile("missing").expect("regex")),
+            },
+            CodeSearchTerm {
+                text: "abc".into(),
+                needle: "abc".into(),
+                scope: Scope::Content,
+                regex: None,
+            },
+        ];
+        let cached = score_terms(
+            &file,
+            &missing_regex,
+            CaseMode::Sensitive,
+            None,
+            TermsToScore::Literals,
+            &budget,
+        )
+        .expect("literal score")
+        .expect("literal match");
+        assert!(
+            score_terms(
+                &file,
+                &missing_regex,
+                CaseMode::Sensitive,
+                Some(cached),
+                TermsToScore::Regex,
+                &budget,
+            )
+            .expect("regex score")
+            .is_none()
+        );
     }
 
     #[test]

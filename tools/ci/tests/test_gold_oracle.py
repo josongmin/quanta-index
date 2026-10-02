@@ -15,8 +15,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools/benchmark"))
 import corpus_binding as binding
 from evidence import canonical_json
-from tools.benchmark.evidence import EvidenceError as OracleEvidenceError
 
+from tools.benchmark.evidence import EvidenceError as OracleEvidenceError
 from tools.benchmark.retrieval import gold_oracle, source_oracle
 from tools.ci.tests.test_corpus_binding import (  # noqa: F401
     disjoint_assignments,
@@ -116,9 +116,7 @@ def test_casefold_typo_gold_keeps_intended_and_near_declarations_separate(tmp_pa
 
 
 @pytest.mark.parametrize("near_text_present", [False, True])
-def test_typo_near_census_uses_query_specific_absence_for_refused_file(
-    tmp_path, near_text_present
-):
+def test_typo_near_census_uses_query_specific_absence_for_refused_file(tmp_path, near_text_present):
     view = tmp_path / "view"
     view.mkdir()
     files = {
@@ -159,9 +157,7 @@ def test_typo_near_census_uses_query_specific_absence_for_refused_file(
     assert [(label["path"], label["local_name"]) for label in row["labels"]] == [
         ("main.go", "Param")
     ]
-    assert row["census_text_excluded"] == [
-        {"path": "broken.go", "reason": "census_refused"}
-    ]
+    assert row["census_text_excluded"] == [{"path": "broken.go", "reason": "census_refused"}]
     assert row["near_declaration_state"] == ("partial" if near_text_present else "complete")
     assert row["near_census_text_excluded"] == (
         [] if near_text_present else [{"path": "broken.go", "reason": "census_refused"}]
@@ -857,9 +853,7 @@ def test_holdout_sampling_freezes_seeded_ledger_recipes_and_split(split_releases
     assert recipe["split"] == "holdout"
     assert recipe["split_manifest_sha256"] == hashlib.sha256(manifest_raw).hexdigest()
     beta = ledger["repositories"]["beta"]
-    assert recipe["checker_identity"] == {
-        beta["language"]: beta["census_audit"]["checker"]
-    }
+    assert recipe["checker_identity"] == {beta["language"]: beta["census_audit"]["checker"]}
     assert ledger["sampling_version"] == 3
     assert beta["census_audit"]["status"] == "admitted"
     lanes = {task["task_id"].split(".")[1] for task in recipe["tasks"]}

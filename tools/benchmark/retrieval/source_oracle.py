@@ -600,8 +600,7 @@ class SourceOracleIndex:
             "exact_content_collision_paths": collisions,
             # Every exact name match is in the OSA1 near-name set. This remains
             # valid when a refused file is excluded for this specific query.
-            "query_is_declaration_name": query.casefold()
-            in {name.casefold() for name in names},
+            "query_is_declaration_name": query.casefold() in {name.casefold() for name in names},
             "user_intent_state": "unjudged",
         }
 

@@ -2120,6 +2120,73 @@ def test_qualified_cluster_interval_refuses_correlated_task_pseudoreplication():
     )
 
 
+def test_repository_cluster_interval_uses_equal_family_and_repository_weights():
+    repositories = {f"repo-{i:02d}": f"{i + 1:040x}" for i in range(12)}
+    rows = (
+        [
+            (repository, f"{repository}-a1", f"{repository}-family-a", 1.0)
+            for repository in repositories
+        ]
+        + [
+            (repository, f"{repository}-a2", f"{repository}-family-a", 1.0)
+            for repository in repositories
+        ]
+        + [
+            (repository, f"{repository}-b", f"{repository}-family-b", 0.0)
+            for repository in repositories
+        ]
+    )
+    ci = ev.repository_cluster_ci(rows, "a" * 64, repositories)
+    assert ci["status"] == "available"
+    assert (ci["repository_count"], ci["family_count"], ci["sample_count"]) == (12, 24, 36)
+    assert (ci["mean"], ci["lower_95"], ci["upper_95"]) == (0.5, 0.5, 0.5)
+    assert ev.repository_cluster_ci(list(reversed(rows)), "a" * 64, repositories) == ci
+
+
+def test_repository_cluster_interval_refuses_incomplete_or_cross_repo_evidence():
+    repositories = {f"repo-{i:02d}": f"{i + 1:040x}" for i in range(12)}
+    rows = [
+        (repository, f"task-{i:02d}", f"family-{i:02d}", 0.5)
+        for i, repository in enumerate(repositories)
+    ]
+    with pytest.raises(ev.EvidenceError, match="lacks paired rows"):
+        ev.repository_cluster_ci(rows[:-1], "a" * 64, repositories)
+    with pytest.raises(ev.EvidenceError, match="crosses repositories"):
+        ev.repository_cluster_ci(
+            [*rows, ("repo-01", "extra", "family-00", 0.5)], "a" * 64, repositories
+        )
+    with pytest.raises(ev.EvidenceError, match="duplicated"):
+        ev.repository_cluster_ci([*rows, rows[0]], "a" * 64, repositories)
+    with pytest.raises(ev.EvidenceError, match="not finite"):
+        ev.repository_cluster_ci(
+            [*rows[:-1], (*rows[-1][:3], float("nan"))], "a" * 64, repositories
+        )
+    small = {name: commit for name, commit in repositories.items() if name != "repo-11"}
+    result = ev.repository_cluster_ci(rows[:-1], "a" * 64, small)
+    assert result["status"] == ev.NOT_APPLICABLE
+    assert result["reason"] == "insufficient_independent_repositories"
+
+
+def test_repository_cluster_interval_does_not_count_extra_tasks_as_repositories():
+    repositories = {f"repo-{i:02d}": f"{i + 1:040x}" for i in range(12)}
+    rows = [
+        (repository, f"task-{i:02d}", f"family-{i:02d}", 1.0 if i < 6 else -1.0)
+        for i, repository in enumerate(repositories)
+    ]
+    base = ev.repository_cluster_ci(rows, "b" * 64, repositories)
+    extra = [
+        ("repo-00", f"replica-{i:03d}", "family-00", 1.0) for i in range(100)
+    ]
+    expanded = ev.repository_cluster_ci([*rows, *extra], "b" * 64, repositories)
+    assert base["mean"] == expanded["mean"] == 0.0
+    assert (base["lower_95"], base["upper_95"]) == (
+        expanded["lower_95"],
+        expanded["upper_95"],
+    )
+    assert base["lower_95"] < 0 < base["upper_95"]
+    assert expanded["repository_count"] == 12 and expanded["sample_count"] == 112
+
+
 def test_stratified_delta_summary_binds_category_language_and_repository(monkeypatch):
     monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
     rows = [
