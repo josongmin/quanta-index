@@ -720,3 +720,13 @@ numbers, missing repositories and an inconsistent reported effect. This is an
 input integrity helper. Per-repository qualified capture replay, global
 admission binding, human relevance adjudication, and product decision remain
 `NOT_RUN`.
+
+Focused `test_retrieval_default_decision.py` passed 9 tests. A broader
+`test_retrieval_benchmark.py` run exposed one regression: refusing an ungraded
+report before the existing verdict could classify `QUALITY_DELTA=fail`. The
+single-repository replay now retains that classification, while the
+multi-repository interval requires graded rows. The same broad run also had
+one setup error from a noncanonical `PYTHONPATH`. The two affected tests and
+the new repository-row test passed 3/3 with `PYTHONPATH` unset after the fix
+(`main@e4787852`). The full 439-test file after that fix is `NOT_RUN`; the
+pre-fix run was 437 passed, 1 failed, 1 setup error.
