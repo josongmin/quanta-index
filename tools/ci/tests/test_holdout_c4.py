@@ -374,6 +374,42 @@ def test_c4_admits_typo_with_query_proven_refused_file(tmp_path, monkeypatch):
     assert suite["tasks"][0]["query"] == "Alphb"
 
 
+def test_c4_reuses_one_intended_name_exclusion_for_distinct_typos(tmp_path, monkeypatch):
+    release, capsule, checkout = _fixture(tmp_path, monkeypatch, parser_refusal=True)
+    gold = holdout_c4._read(capsule / "gold.json")
+    blind = holdout_c4._read(capsule / "blind.json")
+    for payload in (gold, blind):
+        task = payload["tasks"][0]
+        task.update(
+            intent="declaration_name_osa1_casefold",
+            query="Alphb",
+            case_semantics="casefold",
+        )
+        second = {**task, "task_id": "toy.osa.002", "query": "Alphx"}
+        payload["tasks"].append(second)
+    gold["tasks"][0].update(
+        intended_name="Alpha",
+        near_declaration_state="complete",
+        near_census_text_excluded=[{"path": "broken.go", "reason": "census_refused"}],
+        near_declaration_names=["Alpha"],
+        near_declaration_files=["main.go"],
+        exact_collision_names=[],
+        exact_collision_files=[],
+    )
+    gold["tasks"][1].update(gold["tasks"][0])
+    gold["tasks"][1]["task_id"] = "toy.osa.002"
+    gold["tasks"][1]["query"] = "Alphx"
+    _resign(capsule, "gold.json", gold)
+    _resign(capsule, "blind.json", blind)
+
+    suite, pack, report = holdout_c4.derive(
+        release, capsule, checkout, "declaration_name_osa1_casefold"
+    )
+    assert report["selected"] == 2
+    assert [task["query"] for task in pack["tasks"]] == ["Alphb", "Alphx"]
+    assert [task["intended_name"] for task in suite["tasks"]] == ["Alpha", "Alpha"]
+
+
 def test_c4_admits_typo_with_query_proven_checker_disagreement(tmp_path, monkeypatch):
     release, capsule, checkout = _fixture(tmp_path, monkeypatch, checker_disagreement=True)
     gold = holdout_c4._read(capsule / "gold.json")
