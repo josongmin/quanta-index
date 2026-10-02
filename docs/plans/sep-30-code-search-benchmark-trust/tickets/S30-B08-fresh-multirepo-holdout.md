@@ -1,6 +1,7 @@
 # S30-B08 — fresh multi-repository holdout and product decision
 
-Status: C4 `VERIFIED` as diagnostic admission; C5 `NOT_RUN` (2026-10-02).
+Status: C4 `VERIFIED` as diagnostic admission; 240 exact-content product tasks
+captured and replayed; C5 `NOT_RUN` (2026-10-03).
 Priority: P2. Parent:
 [Sep 30 plan](../README.md). Contract owners:
 [CS-BENCH-01](../../sep-27-code-search-remediation/rfcs/CS-BENCH-01-corpus-gold-and-holdout.md),
@@ -603,3 +604,68 @@ attestation, repository-cluster decision, and qualified quiet-host timing. The
 current pair quality gate treats CodeSearch file policies as diagnostic; a
 future file-quality gate must use an independent file relevance contract rather
 than relaxing that refusal on this evidence.
+
+## Exact-content replay and product capture (2026-10-03)
+
+This section supersedes the admission-only and `NOT_RUN` literal-capture status
+above. The earlier receipts remain historical, source-bound observations.
+
+**VERIFIED, diagnostic only:** `main@e70add73` adds an independent raw-byte
+literal oracle, source-bound suite/blind-pack generation, replay validation,
+and an exact-content file request policy. The request uses the existing
+`LqQuery` and public CodeSearch route (`content:"..." case:yes`); no second IR
+or new engine route was introduced. Shared C4/literal batch admission binds
+the direct and transitive oracle/tool sources. All 12 gold capsules were
+recaptured after the source-oracle change; selection, recipe, gold, blind, and
+split payloads remained byte-identical, while producer source identity changed.
+
+The C4 matrix is
+[`/private/tmp/qi-b08-c4-admit-e70-Hb0V1H/c4/admission-matrix.json`](/private/tmp/qi-b08-c4-admit-e70-Hb0V1H/c4/admission-matrix.json)
+(SHA-256 `a7b04ac8e4b2e76cd4cb2cfe7d6711d7d787cab3314d3566d5e346a1e9df8423`):
+12 repositories, 60 cells, 640 selected tasks and 80 exclusions. The separate
+exact-content matrix is
+[`/private/tmp/qi-b08-literal-admit-e70-MtjCff/literal/literal-matrix.json`](/private/tmp/qi-b08-literal-admit-e70-MtjCff/literal/literal-matrix.json)
+(SHA-256 `0336ea5d91f18d39683c26f36370c40875130154aa94e5e97b660fde90faef9c`):
+12 repositories, 240 selected tasks. Both are `diagnostic_unqualified`; do not
+merge their tasks or metrics.
+
+**VERIFIED, product capture and replay:** all 240 exact-content tasks ran on
+the 12 frozen repositories through the public SDK, release search daemon, and
+fresh repository state. Each repository's suite/blind-pack hashes matched the
+matrix, its manifest revision matched the recorded source revision, and its
+record replayed through `evaluate-diagnostic`. The independent summary is
+[`/private/tmp/qi-b08-literal-product-release-mav0u6/independent-summary.json`](/private/tmp/qi-b08-literal-product-release-mav0u6/independent-summary.json)
+(SHA-256 `c470a32a4d5d337936f79908e965bafae0b1fe1e61fd03e72ec42db185e5ed2f`);
+per-repository `binding.json`, `record.json`, `report.json`, and `phases.json`
+are under the same output root. The release runner SHA-256 is
+`78aeac8ed59ab7508110af0243fdcff952bfafb90b24f3dcdfadf368c52d32c2`;
+the daemon SHA-256 is
+`eb9bbb0bdf5815a44fddf51bd8e4c54bab382481ba0316ae785594fbf84a7191`.
+
+There were 238 `success` and two `capped` responses, with zero execution
+failures. Hit@10 was 240/240, mean NDCG@10 was 1.0, and mean Recall@10 was
+0.994003. The capped tasks had 165 and 20 relevant files respectively;
+their ten distinct returned files therefore give Recall@10 of 10/165 and
+10/20. Of the 240 tasks, 206 had exactly one relevant file. These numbers
+test exact-content file retrieval, not default folded CodeSearch quality or
+cross-product ranking.
+
+**VERIFIED, execution timing only:** the `--release --all-features --locked`
+binary build took 13m25s. Across 12 captures, summed wall time was 356.84s,
+including 303.278s of publish/seal/activate phases. The 240 SDK call
+observations summed to 892.691ms, with p50 3.061ms and p95 7.681ms. These
+single-run, busy-host timings are not a qualified latency comparison. An
+earlier debug `zellij` capture hit its 30s IPC timeout during publish; retry
+with 180s completed and replayed 20/20 tasks.
+
+**VERIFIED, focused rails:** the retrieval-bench Rust suite passed 191 tests
+with a pinned daemon; the Python retrieval-benchmark suite passed 428 tests;
+the C4/literal/source-oracle subset passed 88 tests after the final tool-source
+binding edit. Ruff, Rust formatting, and `git diff --check` passed. These
+checks cover the exact-content adapter and replay, not full C5 qualification.
+
+**NOT_RUN:** human relevance adjudication, workflow labels, live external
+indexed-universe attestation, a preregistered repository-cluster decision,
+and quiet-host performance qualification. The new exact-content tasks are
+mechanical diagnostic labels and must remain separate from the declaration
+matrix and the older gin query sets.
