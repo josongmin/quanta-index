@@ -375,8 +375,7 @@ def build_c4_spec(
             }
         else:
             captures = {
-                mode: {"kind": "not_applicable", "reason": NO_ADMISSION_REASON}
-                for mode in MODES
+                mode: {"kind": "not_applicable", "reason": NO_ADMISSION_REASON} for mode in MODES
             }
         spec["cells"].append(
             {
@@ -536,6 +535,8 @@ def verify(repo: Path, spec_path: Path) -> dict:
             if no_admission == len(spec["cells"])
             else "diagnostic_incomplete"
             if not_run
+            else "diagnostic_partial_admission"
+            if no_admission
             else "diagnostic_unqualified"
         ),
         "source": source,

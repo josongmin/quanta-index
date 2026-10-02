@@ -195,6 +195,56 @@ def test_matrix_v3_replays_c4_no_admission_without_inventing_inputs(tmp_path, mo
         2,
     )
     assert result["status"] == "diagnostic_incomplete"
+    captured = copy.deepcopy(spec)
+    admitted_capture = next(
+        cell for cell in captured["cells"] if cell["query_family"] == "declaration_name_exact"
+    )
+    admitted_capture["captures"]["lexical-only"] = {
+        "kind": "pair",
+        "root": str(tmp_path / "pair-capture"),
+    }
+    source = {"revision": "a" * 40, "dirty": False}
+
+    def pair(_repo, root, _registry):
+        assert root == tmp_path / "pair-capture"
+        baseline = matrix.pair_run.SEMBLE_ROUTE_BY_MODE["lexical-file"]
+        return (
+            source,
+            {
+                "scope": "exploratory",
+                "claims": {
+                    "quality": False,
+                    "speed": False,
+                    "same_model": False,
+                    "incremental": False,
+                },
+                "routes": ["lexical"],
+                "candidate_route": "lexical",
+                "baseline_route": baseline,
+                "semble_route": baseline,
+                "execution_profiles": {
+                    "quanta": matrix.query_plan.execution_profile("code_search_file"),
+                    "semble": {"mode": "lexical-file"},
+                },
+                "top_k": 10,
+            },
+            {
+                "manifest": b"manifest",
+                "suite": (
+                    admission_root / "repo-a" / "declaration_name_exact" / "suite.json"
+                ).read_bytes(),
+                "query_pack": (
+                    admission_root / "repo-a" / "declaration_name_exact" / "blind-pack.json"
+                ).read_bytes(),
+            },
+        )
+
+    monkeypatch.setattr(matrix, "_pair", pair)
+    spec_path.write_text(json.dumps(captured))
+    captured_result = matrix.verify(tmp_path, spec_path)
+    assert captured_result["status"] == "diagnostic_partial_admission"
+    assert (captured_result["pairs"], captured_result["not_run_cells"]) == (1, 0)
+    spec_path.write_text(json.dumps(spec))
     changed = copy.deepcopy(spec)
     changed["cells"][0]["captures"]["lexical-only"] = {
         "kind": "not_run",
@@ -202,6 +252,25 @@ def test_matrix_v3_replays_c4_no_admission_without_inventing_inputs(tmp_path, mo
     }
     with pytest.raises(ValueError, match="no-admission cell"):
         matrix._spec(changed, {"repo-a"})
+    changed = copy.deepcopy(spec)
+    admitted_cell = next(
+        cell for cell in changed["cells"] if cell["query_family"] == "declaration_name_exact"
+    )
+    admitted_cell["suite"] = admitted_cell["query_pack"] = None
+    admitted_cell["captures"] = {
+        mode: {"kind": "not_applicable", "reason": matrix.NO_ADMISSION_REASON}
+        for mode in matrix.MODES
+    }
+    spec_path.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="cell inputs differ"):
+        matrix.verify(tmp_path, spec_path)
+    spec_path.write_text(json.dumps(spec))
+    suite_path = admission_root / "repo-a" / "declaration_name_exact" / "suite.json"
+    original_suite = suite_path.read_bytes()
+    suite_path.write_bytes(b"{}")
+    with pytest.raises(ValueError, match="emitted input differs"):
+        matrix.verify(tmp_path, spec_path)
+    suite_path.write_bytes(original_suite)
     forged = json.loads((admission_root / "admission-matrix.json").read_text())
     forged["cells"][1]["status"] = "no_admission_diagnostic"
     (admission_root / "admission-matrix.json").write_text(json.dumps(forged))
