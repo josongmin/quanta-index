@@ -3,6 +3,7 @@ pub use quanta_index_contract::ACTIVATION_ROOT_INCARNATION_BYTES_V1
 pub use quanta_index_contract::ActivationTokenValidationErrorV1
 pub use quanta_index_contract::ApproximateMethodV2
 pub use quanta_index_contract::ApproximateQualityContractV2
+pub use quanta_index_contract::CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE
 pub use quanta_index_contract::CURSOR_ENVELOPE_V2_VERSION
 pub use quanta_index_contract::CandidateCountV1
 pub use quanta_index_contract::ContinuationTokenError
@@ -69,6 +70,8 @@ pub use quanta_index_contract::LqVisibility
 pub use quanta_index_contract::LqYesNoOnly
 pub use quanta_index_contract::MAX_CODE_SEARCH_TERMS
 pub use quanta_index_contract::MAX_CODE_SEARCH_TERM_BYTES
+pub use quanta_index_contract::MAX_CODE_SEARCH_TYPO_BYTES
+pub use quanta_index_contract::MIN_CODE_SEARCH_TYPO_BYTES
 pub use quanta_index_contract::ManifestDigest
 pub use quanta_index_contract::ManifestGeneration
 pub use quanta_index_contract::PUBLIC_TOP_K_MAX
@@ -97,6 +100,7 @@ pub use quanta_index_contract::TextQueryRequest
 pub use quanta_index_contract::TextQuerySyntax
 pub use quanta_index_contract::TopKOutOfRangeV1
 pub use quanta_index_contract::continuation_fetch_size
+pub use quanta_index_contract::valid_code_search_typo_identifier
 pub use quanta_index_contract::validate_internal_fetch_size
 pub use quanta_index_contract::validate_lexical_page_v1
 pub use quanta_index_contract::validate_public_top_k
@@ -5398,6 +5402,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::WeightsH
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHashError
 pub fn quanta_index_contract::lex::compute_parse_tree_source_hash(text: &str) -> [u8; 32]
 pub mod quanta_index_contract::query
+pub use quanta_index_contract::query::CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE
 pub use quanta_index_contract::query::ContinuationTokenError
 pub use quanta_index_contract::query::ContinuationTokenV2
 pub use quanta_index_contract::query::ExactRepoRelativePathV1
@@ -5431,12 +5436,15 @@ pub use quanta_index_contract::query::LqVisibility
 pub use quanta_index_contract::query::LqYesNoOnly
 pub use quanta_index_contract::query::MAX_CODE_SEARCH_TERMS
 pub use quanta_index_contract::query::MAX_CODE_SEARCH_TERM_BYTES
+pub use quanta_index_contract::query::MAX_CODE_SEARCH_TYPO_BYTES
+pub use quanta_index_contract::query::MIN_CODE_SEARCH_TYPO_BYTES
 pub use quanta_index_contract::query::QUERY_CURSOR_GENERATION_MISMATCH_CODE
 pub use quanta_index_contract::query::QUERY_CURSOR_UNSUPPORTED_CODE
 pub use quanta_index_contract::query::QueryConstraintIntersectionV1
 pub use quanta_index_contract::query::QueryConstraintSetV1
 pub use quanta_index_contract::query::TextQueryRequest
 pub use quanta_index_contract::query::TextQuerySyntax
+pub use quanta_index_contract::query::valid_code_search_typo_identifier
 pub use quanta_index_contract::query::validate_lexical_page_v1
 pub enum quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1
 pub quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1::BatchTooLarge
