@@ -770,6 +770,9 @@ def test_typo_gold_partition_separates_intent_from_near_names_and_content():
     assert partition["near_declaration_files"] == ["neighbor.go", "original.go"]
     assert partition["exact_content_collision_paths"] == ["mention.go"]
     assert partition["user_intent_state"] == "unjudged"
+    exact_query = oracle.typo_gold_partition("go", "render", "rendor")
+    assert exact_query["near_declaration_names"] == ["rendor"]
+    assert exact_query["query_is_declaration_name"] is True
     with pytest.raises(so.SourceOracleError, match="not within one edit"):
         oracle.typo_gold_partition("go", "rendar", "unrelated")
 

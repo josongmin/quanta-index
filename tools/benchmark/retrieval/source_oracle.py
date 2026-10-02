@@ -591,6 +591,11 @@ class SourceOracleIndex:
         near = self.expected_rows(contract, query, "distinct_file")
         folded = query.casefold()
         collisions = sorted(self._index_folded_tokens().get(folded, ()))
+        excluded = self.declaration_exclusions.get((contract, query), frozenset())
+        query_is_declaration_name = any(
+            _name_text(token).casefold() == folded
+            for token in self._index_declarations(language, excluded)
+        )
         return {
             "intended_base_name": intended_name,
             "intended_base_files": [row["path"] for row in intended],
@@ -598,9 +603,7 @@ class SourceOracleIndex:
             "near_declaration_files": [row["path"] for row in near],
             "other_near_declaration_names": [name for name in names if name != intended_name],
             "exact_content_collision_paths": collisions,
-            # Every exact name match is in the OSA1 near-name set. This remains
-            # valid when a refused file is excluded for this specific query.
-            "query_is_declaration_name": query.casefold() in {name.casefold() for name in names},
+            "query_is_declaration_name": query_is_declaration_name,
             "user_intent_state": "unjudged",
         }
 

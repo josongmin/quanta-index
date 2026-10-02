@@ -9,6 +9,7 @@ independent gold or performance.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from registry import load_registry, registry_digest
 
 from tools.benchmark.retrieval import lexical_file_comparison as lexical
 from tools.benchmark.retrieval import live_lexical_external as live
+from tools.benchmark.retrieval import holdout_c4
 from tools.benchmark.retrieval import query_plan
 from tools.benchmark.retrieval import run as pair_run
 
@@ -37,6 +39,7 @@ LEXICAL_ONLY_FILE_POLICIES = frozenset(
 QUERY_POLICIES = frozenset({"native", "natural_language", *LEXICAL_ONLY_FILE_POLICIES})
 UNSUPPORTED_REASON = "query_policy_not_supported_for_mode"
 MISSING_REASON = "capture_missing"
+NO_ADMISSION_REASON = "no_admitted_tasks"
 LABEL_FIELDS = frozenset(
     {
         "gold",
@@ -66,16 +69,23 @@ def _path(value: object, where: str) -> Path:
 
 
 def _spec(value: dict, repositories: set[str]) -> dict:
+    version = value.get("schema_version") if isinstance(value, dict) else None
+    fields = {"schema_version", "release_path", "release_digest", "query_families", "cells"}
+    if version == 3:
+        fields |= {"c4_admission_root", "c4_capsules", "c4_checkouts"}
     if (
-        set(value)
-        != {"schema_version", "release_path", "release_digest", "query_families", "cells"}
-        or type(value["schema_version"]) is not int
-        or value["schema_version"] != 2
+        not isinstance(value, dict)
+        or set(value) != fields
+        or type(version) is not int
+        or version not in (2, 3)
         or not isinstance(value["release_digest"], str)
         or SHA.fullmatch(value["release_digest"]) is None
     ):
-        raise ValueError("matrix requires a closed schema v2 and release digest")
+        raise ValueError("matrix requires a closed schema v2/v3 and release digest")
     _path(value["release_path"], "release_path")
+    if version == 3:
+        for field in ("c4_admission_root", "c4_capsules", "c4_checkouts"):
+            _path(value[field], field)
     families = value["query_families"]
     if (
         not isinstance(families, list)
@@ -114,19 +124,25 @@ def _spec(value: dict, repositories: set[str]) -> dict:
         observed.add(key)
         if not isinstance(cell["view"], str) or cell["view"] not in corpus_release.VIEWS:
             raise ValueError("matrix cell view is unsupported")
-        input_paths = (
-            cell["repository"],
-            _path(cell["suite"], "suite"),
-            _path(cell["query_pack"], "query_pack"),
-        )
-        if input_paths in family_input_paths:
-            raise ValueError("matrix reuses one suite/query pack as another query family")
-        family_input_paths.add(input_paths)
+        no_admission = version == 3 and cell["suite"] is None and cell["query_pack"] is None
+        if not no_admission:
+            input_paths = (
+                cell["repository"],
+                _path(cell["suite"], "suite"),
+                _path(cell["query_pack"], "query_pack"),
+            )
+            if input_paths in family_input_paths:
+                raise ValueError("matrix reuses one suite/query pack as another query family")
+            family_input_paths.add(input_paths)
         captures = cell["captures"]
         if not isinstance(captures, dict) or set(captures) != set(MODES):
             raise ValueError("matrix cell lacks a required mode")
         for mode in MODES:
             capture = captures[mode]
+            if no_admission:
+                if capture != {"kind": "not_applicable", "reason": NO_ADMISSION_REASON}:
+                    raise ValueError("matrix no-admission cell has a capture or wrong reason")
+                continue
             if (
                 not isinstance(capture, dict)
                 or not isinstance(capture.get("kind"), str)
