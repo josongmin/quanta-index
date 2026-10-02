@@ -315,6 +315,70 @@ fn repartition_code_scope(
 }
 
 #[test]
+fn explicit_typo_search_uses_source_tokens_and_valid_spans() -> TestResult {
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("exact.rs", "load_jsom", 4)?,
+        code_scope("typo.rs", "load_json", 4)?,
+        code_scope("negative.rs", "load_jsxx", 4)?,
+        code_scope("load_json.rs", "other stuff", 5)?,
+    ])?;
+    let mut request = code_query(&["load_jsom"], false);
+    request.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.identifier_typo".into(),
+        args: vec![LqPredicateArg::RawString("load_jsom".into())],
+    });
+    let rows = searcher
+        .search_constrained(
+            &request,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["exact.rs", "typo.rs"]
+    );
+    assert!(rows[0].score > rows[1].score);
+    assert_eq!(
+        rows[1]
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.original_focus)
+            .map(|span| (span.start, span.end)),
+        Some((0, 9))
+    );
+    let exact = code_query(&["load_jsom"], false);
+    let exact_rows = searcher
+        .search_constrained(
+            &exact,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(exact_rows.len(), 1);
+    assert_eq!(exact_rows[0].repo_relative_path.as_str(), "exact.rs");
+    request.options.case = Some(LqCase::Sensitive);
+    request.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.identifier_typo".into(),
+        args: vec![LqPredicateArg::RawString("LOAD_JSOM".into())],
+    });
+    let sensitive_rows = searcher
+        .search_constrained(
+            &request,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert!(sensitive_rows.is_empty());
+    Ok(())
+}
+
+#[test]
 fn code_search_matches_file_across_chunk_boundaries_and_maps_unicode_source_span() -> TestResult {
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("cross.rs", "alphaBeta İ", 5)?,

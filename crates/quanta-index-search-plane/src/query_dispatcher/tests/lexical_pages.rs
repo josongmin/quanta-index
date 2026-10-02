@@ -212,6 +212,39 @@ fn code_search_pages_bind_the_overlap_ranking_order() -> TestResult {
 }
 
 #[test]
+fn typo_cursor_uses_its_own_order_and_rejects_exact_reuse() -> TestResult {
+    let mut files = rows(3, 8);
+    for (index, file) in files.iter_mut().enumerate() {
+        file.repo_relative_path = RepoRelativePath::new(format!("src/{index:02}.rs"));
+    }
+    let dispatcher = stub_dispatcher(files)?;
+    let mut request = request(2, None);
+    let SearchPlaneQueryIpcRequest::Text(text_request) = &mut request else {
+        return Err("text fixture drifted".into());
+    };
+    text_request.syntax = TextQuerySyntax::CodeSearch;
+    text_request.query_text = "typo:needlx".into();
+    let first = text(dispatcher.dispatch(request.clone(), &RequestBudgetV1::unbounded()))?;
+    let token = first.next_cursor.ok_or("typo page continues")?;
+    let opened = dispatcher.cursors()?.open::<LexicalCursor>(&token)?;
+    if opened.binding().order
+        != "code_search_identifier_typo_osa1_v1_desc_source_repo_path_line_candidate"
+    {
+        return Err(format!("wrong typo cursor order: {}", opened.binding().order).into());
+    }
+    let SearchPlaneQueryIpcRequest::Text(text_request) = &mut request else {
+        return Err("text fixture drifted".into());
+    };
+    text_request.cursor = Some(token);
+    text_request.query_text = "needlx".into();
+    let (code, _) = ipc_error_from(dispatcher.dispatch(request, &RequestBudgetV1::unbounded()))?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch {
+        return Err(format!("exact query reused typo cursor: {code}").into());
+    }
+    Ok(())
+}
+
+#[test]
 fn the_cursor_reaches_the_searcher_and_another_generations_is_refused_first() -> TestResult {
     let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
     let dispatcher = dispatcher_with_obs(

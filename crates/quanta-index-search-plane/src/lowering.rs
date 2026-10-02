@@ -1,11 +1,12 @@
 use std::collections::BTreeSet;
 
 use quanta_index_contract::{
-    LqCase, LqExpr, LqFilter, LqLeaf, LqMetaVar, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
-    LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
-    LqStructuralHoleMultiplicity, LqStructuralHoleRef, LqStructuralNode,
-    MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1,
-    TextQueryRequest, TextQuerySyntax,
+    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, LqCase, LqExpr, LqFilter, LqLeaf, LqMetaVar,
+    LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqStructuralBlock, LqStructuralConstraint,
+    LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleMultiplicity,
+    LqStructuralHoleRef, LqStructuralNode, MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS,
+    MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1, TextQueryRequest, TextQuerySyntax,
+    valid_code_search_typo_identifier,
 };
 use quanta_index_lq_bridge::{
     BridgeError, BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag, parse_sourcegraph,
@@ -67,6 +68,23 @@ pub(crate) fn lower_code_search_query_text(query_text: &str) -> Result<LqQuery, 
                 _ => return Err(code_search_invalid("case: accepts only yes or no")),
             });
             continue;
+        }
+        if !word.quoted
+            && let Some(identifier) = word.text.strip_prefix("typo:")
+        {
+            if terms.is_empty() && valid_code_search_typo_identifier(identifier) {
+                terms.push(LqExpr::Leaf(LqLeaf::Predicate {
+                    name: CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE.to_string(),
+                    args: vec![LqPredicateArg::RawString(identifier.to_string())],
+                }));
+                continue;
+            }
+            return Err(code_search_invalid(
+                "typo: requires one ASCII identifier of 3..=64 bytes and cannot mix with other terms",
+            ));
+        }
+        if terms.iter().any(|term| matches!(term, LqExpr::Leaf(LqLeaf::Predicate { name, .. }) if name == CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE)) {
+            return Err(code_search_invalid("typo: cannot mix with other terms"));
         }
         let scoped = !word.quoted || word.scope_prefix_before_quote;
         let (scope, literal) = if scoped && let Some(value) = word.text.strip_prefix("content:") {
@@ -982,6 +1000,42 @@ mod tests {
             lower_code_search_query_text(r#""regex:/foo/""#)?.expr,
             LqExpr::Leaf(LqLeaf::RawString("regex:/foo/".to_string())),
         );
+        Ok(())
+    }
+
+    #[test]
+    fn code_search_typo_is_explicit_and_single_term() -> TestResult {
+        let query = lower_code_search_query_text("case:no typo:load_jsom")?;
+        expect_equal!(query.options.case, Some(LqCase::Insensitive));
+        expect_equal!(
+            query.expr,
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "code_search.identifier_typo".to_string(),
+                args: vec![LqPredicateArg::RawString("load_jsom".to_string())],
+            }),
+        );
+        expect_equal!(
+            lower_code_search_query_text("load_jsom")?.expr,
+            LqExpr::Leaf(LqLeaf::RawString("load_jsom".to_string())),
+        );
+        expect_equal!(
+            lower_code_search_query_text("typo:gin")?.expr,
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "code_search.identifier_typo".to_string(),
+                args: vec![LqPredicateArg::RawString("gin".to_string())],
+            }),
+        );
+        for invalid in [
+            "typo:fo",
+            "typo:load-jsom",
+            "typo:load_jsom exact",
+            "exact typo:load_jsom",
+            "typo:load_jsom typo:load_json",
+        ] {
+            if lower_code_search_query_text(invalid).is_ok() {
+                return Err(format!("must refuse {invalid:?}").into());
+            }
+        }
         Ok(())
     }
 

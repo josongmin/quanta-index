@@ -19,10 +19,12 @@ pub use history_cursor::*;
 pub use history_order::*;
 pub use options::*;
 pub use quanta_index_contract_base::query::{
-    ExactRepoRelativePathV1, GenerationPin, GenerationSelector, LexicalCursor, LexicalRowOrderKey,
-    MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, QUERY_CURSOR_GENERATION_MISMATCH_CODE,
-    QUERY_CURSOR_UNSUPPORTED_CODE, QueryConstraintIntersectionV1, QueryConstraintSetV1,
-    TextQueryRequest, TextQuerySyntax, validate_lexical_page_v1,
+    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, ExactRepoRelativePathV1, GenerationPin,
+    GenerationSelector, LexicalCursor, LexicalRowOrderKey, MAX_CODE_SEARCH_TERM_BYTES,
+    MAX_CODE_SEARCH_TERMS, MAX_CODE_SEARCH_TYPO_BYTES, MIN_CODE_SEARCH_TYPO_BYTES,
+    QUERY_CURSOR_GENERATION_MISMATCH_CODE, QUERY_CURSOR_UNSUPPORTED_CODE,
+    QueryConstraintIntersectionV1, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
+    valid_code_search_typo_identifier, validate_lexical_page_v1,
 };
 pub use quanta_index_contract_base::results::{ContinuationTokenError, ContinuationTokenV2};
 pub use requests::*;

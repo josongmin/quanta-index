@@ -3074,7 +3074,12 @@ mod tests {
                 None => {
                     let _removed = invalid.as_object_mut().expect("object").remove("rank_unit");
                 }
-                Some(unit) => invalid["rank_unit"] = serde_json::Value::String(unit.to_string()),
+                Some(unit) => {
+                    let _prior = invalid.as_object_mut().expect("object").insert(
+                        "rank_unit".to_string(),
+                        serde_json::Value::String(unit.to_string()),
+                    );
+                }
             }
             assert!(serde_json::from_value::<TextQueryResponse>(invalid).is_err());
         }
@@ -3108,7 +3113,10 @@ mod tests {
             next_cursor: None,
         };
         let mut file_value = serde_json::to_value(&chunk_page).expect("chunk page must encode");
-        file_value["rank_unit"] = serde_json::Value::String("file".to_string());
+        let _prior = file_value.as_object_mut().expect("object").insert(
+            "rank_unit".to_string(),
+            serde_json::Value::String("file".to_string()),
+        );
         assert!(serde_json::from_value::<TextQueryResponse>(file_value).is_err());
         let file_page = TextQueryResponse {
             rank_unit: TextRankUnit::File,

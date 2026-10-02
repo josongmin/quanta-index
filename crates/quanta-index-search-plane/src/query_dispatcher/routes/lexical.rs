@@ -1,10 +1,11 @@
 //! Lexical text and symbol query routes.
 
 use quanta_index_contract::{
-    CursorRouteV2, EngineTouched, GenerationPin, LexicalCursor, LexicalRowOrderKey, LqPatternType,
-    QueryResultWindowV1, QueryResultWindowV2, QueryStageKindV1, QueryStageTimingV1,
-    SearchExplanation, SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse,
-    TextQueryRequest, TextQueryResponse, validate_lexical_page_v1,
+    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CursorRouteV2, EngineTouched, GenerationPin,
+    LexicalCursor, LexicalRowOrderKey, LqExpr, LqLeaf, LqPatternType, LqQuery, QueryResultWindowV1,
+    QueryResultWindowV2, QueryStageKindV1, QueryStageTimingV1, SearchExplanation,
+    SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
+    TextQueryResponse, validate_lexical_page_v1,
 };
 use quanta_index_core::{
     CoreError, LexicalEndpoint, LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1,
@@ -34,6 +35,23 @@ const LEXICAL_CURSOR_ORDER_V2: &str = "score_desc_source_repo_path_line_candidat
 // even if the sealed generation and query text remain identical.
 const CODE_SEARCH_CURSOR_ORDER: &str =
     "code_search_file_overlap_score_v1_desc_source_repo_path_line_candidate";
+const CODE_SEARCH_TYPO_CURSOR_ORDER: &str =
+    "code_search_identifier_typo_osa1_v1_desc_source_repo_path_line_candidate";
+
+fn is_code_search_typo(query: &LqQuery) -> bool {
+    if query.options.pattern_type != LqPatternType::CodeSearch {
+        return false;
+    }
+    let leaf = match &query.expr {
+        LqExpr::Leaf(leaf) => Some(leaf),
+        LqExpr::All(parts) => match parts.as_slice() {
+            [LqExpr::Leaf(leaf)] => Some(leaf),
+            _ => None,
+        },
+        LqExpr::Empty | LqExpr::Not(_) | LqExpr::Any(_) => None,
+    };
+    matches!(leaf, Some(LqLeaf::Predicate { name, .. }) if name == CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE)
+}
 
 fn lexical_explanation(
     budget: &RequestBudgetV1,
@@ -100,7 +118,9 @@ impl SearchPlaneDispatcher {
             pin: &planned.pin,
             query: &planned.query,
             constraints: &planned.constraints,
-            order: if planned.query.options.pattern_type == LqPatternType::CodeSearch {
+            order: if is_code_search_typo(&planned.query) {
+                CODE_SEARCH_TYPO_CURSOR_ORDER
+            } else if planned.query.options.pattern_type == LqPatternType::CodeSearch {
                 CODE_SEARCH_CURSOR_ORDER
             } else {
                 LEXICAL_CURSOR_ORDER_V2
@@ -406,5 +426,20 @@ impl LexicalQueryPort for SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> Result<TextQueryResponse, CoreError> {
         self.lexical(&request, budget)
+    }
+}
+
+#[cfg(test)]
+mod typo_cursor_tests {
+    use super::{CODE_SEARCH_CURSOR_ORDER, CODE_SEARCH_TYPO_CURSOR_ORDER, is_code_search_typo};
+    use crate::lowering::lower_code_search_query_text;
+
+    #[test]
+    fn typo_cursor_order_is_distinct_from_exact_code_search() {
+        let typo = lower_code_search_query_text("typo:load_jsom").expect("typo query");
+        let exact = lower_code_search_query_text("load_jsom").expect("exact query");
+        assert!(is_code_search_typo(&typo));
+        assert!(!is_code_search_typo(&exact));
+        assert_ne!(CODE_SEARCH_TYPO_CURSOR_ORDER, CODE_SEARCH_CURSOR_ORDER);
     }
 }

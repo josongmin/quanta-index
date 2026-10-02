@@ -270,6 +270,16 @@ the current guards are not proof of a physical heap ceiling.
   Unsupported
   query forms or resource limits refuse explicitly rather than returning a
   falsely complete result.
+- Explicit `typo:<identifier>` uses the same `LqQuery` and file authority.
+  The operand is one ASCII identifier of 3–64 bytes. It finds complete source
+  identifier tokens at optimal-string-alignment distance at most one, on the
+  content surface only. The default is ASCII case-insensitive; `case:yes`
+  selects sensitive matching. Exact token matches rank before one-edit matches.
+  Folded content trigrams only shortlist files; the original source token and
+  preview span are verified before ranking. Short queries use a bounded scan.
+  Posting, file, source-byte and token-comparison limits return a typed error;
+  no partial result is reported as complete. This explicit request has its own
+  cursor order. Ordinary CodeSearch terms retain their literal semantics.
 - The request budget reaches cold generation open and file-index construction.
   Trigram construction checks between 64 KiB overlapping slices. One source
   read or normalization call can still process an admitted 8 MiB file before

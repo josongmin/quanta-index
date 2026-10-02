@@ -4,13 +4,15 @@
 //! pattern type. This executor does not reinterpret Native LQ raw-string
 //! leaves: its AND and ranking unit is one immutable source file.
 
-use std::collections::BTreeSet;
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, BinaryHeap};
 use std::ops::Range;
 
 use quanta_index_contract::{
-    HighlightSpan, LexicalCandidate, LqExpr, LqFilter, LqLeaf, LqPatternType, LqPredicateArg,
-    LqQuery, LqSelect, MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, PreviewByteRange,
-    PreviewKind, PreviewMetadata, PreviewUnavailableReason, QueryConstraintSetV1,
+    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, HighlightSpan, LexicalCandidate, LqExpr, LqFilter,
+    LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqSelect, MAX_CODE_SEARCH_TERM_BYTES,
+    MAX_CODE_SEARCH_TERMS, PreviewByteRange, PreviewKind, PreviewMetadata,
+    PreviewUnavailableReason, QueryConstraintSetV1, valid_code_search_typo_identifier,
 };
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
 use quanta_index_lq_regex::RegexExecutor;
@@ -33,6 +35,8 @@ const MAX_REGEX_SCAN_FILES: usize = 10_000;
 const MAX_REGEX_SCAN_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REGEX_MATCHES_PER_SURFACE: usize = 4_096;
 const MAX_REGEX_TERMS: usize = 4;
+const MAX_TYPO_TOKEN_COMPARISONS: usize = 1_000_000;
+const MAX_TYPO_POSTING_VISITS: usize = 2_000_000;
 
 #[derive(Clone, Copy)]
 enum Scope {
@@ -52,6 +56,7 @@ pub(crate) struct CodeSearchTerm {
 pub(crate) struct CodeSearchPlan {
     terms: Vec<CodeSearchTerm>,
     case: CaseMode,
+    typo: Option<String>,
 }
 
 fn unsupported(reason: &str) -> CoreError {
@@ -138,6 +143,23 @@ impl CodeSearchPlan {
         };
         if parts.is_empty() || parts.len() > MAX_CODE_SEARCH_TERMS {
             return Err(unsupported("code_search term count must be 1..=32"));
+        }
+        if let [LqExpr::Leaf(LqLeaf::Predicate { name, args })] = parts
+            && name == CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE
+        {
+            let [LqPredicateArg::RawString(identifier)] = args.as_slice() else {
+                return Err(unsupported("typo: requires one raw identifier"));
+            };
+            if !valid_code_search_typo_identifier(identifier) {
+                return Err(unsupported(
+                    "typo: requires an ASCII identifier of 3..=64 bytes",
+                ));
+            }
+            return Ok(Self {
+                terms: Vec::new(),
+                case: query.options.case_mode(),
+                typo: Some(identifier.clone()),
+            });
         }
         let regex_terms = parts
             .iter()
@@ -240,7 +262,11 @@ impl CodeSearchPlan {
                 regex: compiled,
             });
         }
-        Ok(Self { terms, case })
+        Ok(Self {
+            terms,
+            case,
+            typo: None,
+        })
     }
 }
 
@@ -447,6 +473,233 @@ fn choose_witness(
         best = Some(path_match);
     }
     Ok(best)
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "the first mismatch and equal-length branches prove the accessed byte ranges"
+)]
+fn typo_distance(needle: &[u8], token: &[u8], case: CaseMode) -> Option<u8> {
+    let same = |left: u8, right: u8| match case {
+        CaseMode::Sensitive => left == right,
+        CaseMode::Folded => left.eq_ignore_ascii_case(&right),
+    };
+    let (short, long) = if needle.len() <= token.len() {
+        (needle, token)
+    } else {
+        (token, needle)
+    };
+    if long.len().saturating_sub(short.len()) > 1 {
+        return None;
+    }
+    let first = (0..short.len()).find(|&index| !same(short[index], long[index]));
+    if needle.len() == token.len() {
+        let Some(index) = first else { return Some(0) };
+        if short[index + 1..]
+            .iter()
+            .zip(&long[index + 1..])
+            .all(|(&left, &right)| same(left, right))
+        {
+            return Some(1);
+        }
+        if index + 1 < short.len()
+            && same(short[index], long[index + 1])
+            && same(short[index + 1], long[index])
+            && short[index + 2..]
+                .iter()
+                .zip(&long[index + 2..])
+                .all(|(&left, &right)| same(left, right))
+        {
+            return Some(1);
+        }
+        return None;
+    }
+    let index = first.unwrap_or(short.len());
+    short[index..]
+        .iter()
+        .zip(&long[index + 1..])
+        .all(|(&left, &right)| same(left, right))
+        .then_some(1)
+}
+
+fn typo_witness(
+    text: &str,
+    needle: &str,
+    case: CaseMode,
+    comparisons: &mut usize,
+    budget: &RequestBudgetV1,
+) -> Result<Option<(Witness, u8)>, CoreError> {
+    let mut start = None;
+    let mut best: Option<(Witness, u8)> = None;
+    let mut check_token = |span: Range<usize>| -> Result<(), CoreError> {
+        let token = text
+            .get(span.clone())
+            .ok_or_else(|| CoreError::Storage("lexical: typo token span invalid".into()))?;
+        if !token.is_ascii()
+            || !token
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+            || token.len().abs_diff(needle.len()) > 1
+        {
+            return Ok(());
+        }
+        *comparisons = comparisons.saturating_add(1);
+        if *comparisons > MAX_TYPO_TOKEN_COMPARISONS {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                message: "lexical code search: typo token comparison budget exceeded".into(),
+            });
+        }
+        if (*comparisons).is_multiple_of(256) {
+            budget.checkpoint("lexical:code-search-typo-token")?;
+        }
+        if let Some(distance) = typo_distance(needle.as_bytes(), token.as_bytes(), case) {
+            match &mut best {
+                Some((witness, prior)) if distance == *prior => {
+                    witness.occurrences = witness.occurrences.saturating_add(1).min(4);
+                }
+                Some((_, prior)) if distance > *prior => {}
+                _ => {
+                    best = Some((
+                        Witness {
+                            surface: HitSurface::Content,
+                            normalized: span,
+                            score: 100,
+                            occurrences: 1,
+                            mapping_case: CaseMode::Sensitive,
+                        },
+                        distance,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    };
+    budget.checkpoint("lexical:code-search-typo-file-start")?;
+    for (ordinal, (index, ch)) in text.char_indices().enumerate() {
+        if ordinal.is_multiple_of(16_384) {
+            budget.checkpoint("lexical:code-search-typo-scan")?;
+        }
+        match (start, normalize::is_token_char(ch)) {
+            (None, true) => start = Some(index),
+            (Some(from), false) => {
+                check_token(from..index)?;
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(from) = start {
+        check_token(from..text.len())?;
+    }
+    budget.checkpoint("lexical:code-search-typo-file-end")?;
+    Ok(best)
+}
+
+/// Conservatively shortlist files with shared trigrams.
+///
+/// One OSA edit disturbs at most four distinct query byte trigrams for ASCII
+/// identifiers. File postings are a superset; source tokens remain the truth.
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "heap entries are created only from live list positions and posting count is bounded"
+)]
+fn typo_candidates(
+    index: &TrigramIndex,
+    identifier: &str,
+    eligible: Option<&BTreeSet<u64>>,
+    max_posting_visits: usize,
+    budget: &RequestBudgetV1,
+) -> Result<Option<BTreeSet<u64>>, CoreError> {
+    let mut grams: Vec<Trigram> = trigrams_of(identifier.to_ascii_lowercase().as_bytes()).collect();
+    grams.sort_unstable();
+    grams.dedup();
+    let Some(threshold) = grams.len().checked_sub(4).filter(|count| *count > 0) else {
+        return Ok(None);
+    };
+    let lists: Vec<&[DocId]> = grams.iter().map(|gram| index.lookup(*gram)).collect();
+    if let Some(eligible) = eligible {
+        let probes = eligible.len().saturating_mul(lists.len());
+        if probes > max_posting_visits {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                message: "lexical code search: typo eligible posting probes exceeded".into(),
+            });
+        }
+        let mut candidates = BTreeSet::new();
+        for (ordinal, &id) in eligible.iter().enumerate() {
+            if ordinal.is_multiple_of(256) {
+                budget.checkpoint("lexical:code-search-typo-eligible-postings")?;
+            }
+            let count = lists
+                .iter()
+                .filter(|list| list.binary_search(&DocId(id)).is_ok())
+                .count();
+            if count >= threshold {
+                if candidates.len() >= MAX_CANDIDATE_PRE_VERIFY {
+                    return Err(CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                        message: "lexical code search: typo candidate set budget exceeded".into(),
+                    });
+                }
+                let _inserted = candidates.insert(id);
+            }
+        }
+        budget.checkpoint("lexical:code-search-typo-eligible-postings-end")?;
+        return Ok(Some(candidates));
+    }
+    let total_visits = lists
+        .iter()
+        .fold(0_usize, |sum, list| sum.saturating_add(list.len()));
+    if total_visits > max_posting_visits {
+        return Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+            message: "lexical code search: typo posting walk budget exceeded".into(),
+        });
+    }
+    let mut heap = BinaryHeap::new();
+    for (list_index, list) in lists.iter().enumerate() {
+        if let Some(&id) = list.first() {
+            heap.push(Reverse((id, list_index, 0_usize)));
+        }
+    }
+    let mut candidates = BTreeSet::new();
+    let mut visited = 0_usize;
+    while let Some(Reverse((id, list_index, offset))) = heap.pop() {
+        if visited.is_multiple_of(256) {
+            budget.checkpoint("lexical:code-search-typo-postings")?;
+        }
+        visited = visited.saturating_add(1);
+        if let Some(&next) = lists[list_index].get(offset + 1) {
+            heap.push(Reverse((next, list_index, offset + 1)));
+        }
+        let mut count = 1_usize;
+        while heap.peek().is_some_and(|Reverse((next, _, _))| *next == id) {
+            let Some(Reverse((_, next_list, next_offset))) = heap.pop() else {
+                break;
+            };
+            visited = visited.saturating_add(1);
+            if let Some(&next) = lists[next_list].get(next_offset + 1) {
+                heap.push(Reverse((next, next_list, next_offset + 1)));
+            }
+            count += 1;
+        }
+        if count >= threshold {
+            if candidates.len() >= MAX_CANDIDATE_PRE_VERIFY {
+                return Err(CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                    message: "lexical code search: typo candidate set budget exceeded".into(),
+                });
+            }
+            let _inserted = candidates.insert(id.0);
+        }
+    }
+    budget.checkpoint("lexical:code-search-typo-postings-end")?;
+    Ok(Some(candidates))
 }
 
 /// Smallest byte gap covering each term on one surface.
@@ -1241,6 +1494,118 @@ fn file_candidate(
 }
 
 impl TantivySearcher {
+    fn search_code_files_typo(
+        &self,
+        authority: &FileAuthority,
+        query: &LqQuery,
+        identifier: &str,
+        case: CaseMode,
+        constraints: &QueryConstraintSetV1,
+        page: &LexicalPageSpec,
+        budget: &RequestBudgetV1,
+    ) -> Result<LexicalSearchPageV1, CoreError> {
+        let eligible = language_eligible_ids(authority, constraints, budget)?;
+        let possible = if constraints.repo_relative_path_exact.is_some() {
+            None
+        } else {
+            typo_candidates(
+                &authority.content_folded,
+                identifier,
+                eligible.as_ref(),
+                MAX_TYPO_POSTING_VISITS,
+                budget,
+            )?
+        };
+        let mut selected = Vec::new();
+        let mut source_bytes = 0_usize;
+        for (position, key) in authority.ordered_keys.iter().enumerate() {
+            if position.is_multiple_of(256) {
+                budget.checkpoint("lexical:code-search-typo-admission")?;
+            }
+            let id = file_id_at(position)?;
+            if possible.as_ref().is_some_and(|ids| !ids.contains(&id))
+                || eligible.as_ref().is_some_and(|ids| !ids.contains(&id))
+                || constraints
+                    .repo_relative_path_exact
+                    .as_ref()
+                    .is_some_and(|path| key.repo_relative_path.as_str() != path.as_str())
+            {
+                continue;
+            }
+            let file = authority.files.get(key).ok_or_else(|| {
+                CoreError::Storage("lexical: file authority id has no source".into())
+            })?;
+            let Some(content) = file.indexed_text.as_ref() else {
+                continue;
+            };
+            source_bytes = source_bytes.saturating_add(content.len());
+            selected.push(key);
+            if selected.len() > MAX_SHORT_SCAN_FILES || source_bytes > MAX_SHORT_SCAN_SOURCE_BYTES {
+                return Err(CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                    message: "lexical code search: typo scan exceeds file or source-byte budget"
+                        .into(),
+                });
+            }
+        }
+        let mut comparisons = 0;
+        let mut ranked = Vec::new();
+        for key in selected {
+            budget.checkpoint("lexical:code-search-typo-file")?;
+            let file = authority.files.get(key).ok_or_else(|| {
+                CoreError::Storage("lexical: typo file disappeared from authority".into())
+            })?;
+            let content = file.indexed_text.as_deref().ok_or_else(|| {
+                CoreError::Storage("lexical: admitted typo file has no content".into())
+            })?;
+            let Some((witness, distance)) =
+                typo_witness(content, identifier, case, &mut comparisons, budget)?
+            else {
+                continue;
+            };
+            let score = f32::from(
+                200_u16
+                    .saturating_sub(u16::from(distance).saturating_mul(100))
+                    .saturating_add(
+                        u16::from(witness.occurrences.saturating_sub(1)).saturating_mul(2),
+                    ),
+            );
+            ranked.push((
+                file_candidate(self, file, score, Some(&witness), false, budget)?,
+                witness,
+            ));
+        }
+        ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
+        let after = self.page_boundary(page)?;
+        if let Some(after) = after {
+            ranked.retain(|(candidate, _)| after.admits(&candidate.order_key()));
+        }
+        let exact_total = Some(u64::try_from(ranked.len()).map_err(|error| {
+            CoreError::Storage(format!("lexical: typo file count overflow: {error}"))
+        })?);
+        ranked.truncate(Self::page_limit(
+            query,
+            usize::try_from(page.fetch).map_err(|error| {
+                CoreError::Storage(format!("lexical: typo fetch overflow: {error}"))
+            })?,
+        ));
+        for (candidate, witness) in &mut ranked {
+            budget.checkpoint("lexical:code-search-typo-preview")?;
+            let source = candidate.source.as_ref().ok_or_else(|| {
+                CoreError::Storage("lexical: typo candidate has no source".into())
+            })?;
+            let file = authority.files.get(&source.file).ok_or_else(|| {
+                CoreError::Storage("lexical: typo candidate source disappeared".into())
+            })?;
+            *candidate = file_candidate(self, file, candidate.score, Some(witness), true, budget)?;
+        }
+        Ok(LexicalSearchPageV1 {
+            candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
+            exact_total,
+        })
+    }
+
     pub(crate) fn search_code_files(
         &self,
         query: &LqQuery,
@@ -1253,6 +1618,17 @@ impl TantivySearcher {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
             message: "lexical code search requires rebuilt full-file source authority".into(),
         })?;
+        if let Some(identifier) = parsed.typo.as_deref() {
+            return self.search_code_files_typo(
+                authority,
+                query,
+                identifier,
+                parsed.case,
+                constraints,
+                page,
+                budget,
+            );
+        }
         let eligible = language_eligible_ids(authority, constraints, budget)?;
         let eligible = eligible.as_ref();
         let ids: Option<BTreeSet<u64>> = if let Some(path) = &constraints.repo_relative_path_exact {
@@ -1422,12 +1798,22 @@ impl TantivySearcher {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::indexing_slicing,
+    clippy::needless_range_loop,
+    clippy::string_slice,
+    reason = "small exhaustive independent DP oracle and fixed ASCII fixtures use checked dimensions"
+)]
 mod tests {
     use super::{
-        CodeSearchTerm, HitSurface, OverlappingMatches, Scope, best_in, boundary_score,
-        candidate_ids, content_witness_lines, file_candidate_id, language_eligible_ids,
-        min_cover_gap, nfc_identity_focus, path_highlight, regex_scan_scope, scanned_bytes,
-        source_bytes_checked,
+        CodeSearchTerm, HitSurface, MAX_TYPO_POSTING_VISITS, MAX_TYPO_TOKEN_COMPARISONS,
+        OverlappingMatches, Scope, best_in, boundary_score, candidate_ids, content_witness_lines,
+        file_candidate_id, language_eligible_ids, min_cover_gap, nfc_identity_focus,
+        path_highlight, regex_scan_scope, scanned_bytes, source_bytes_checked, typo_candidates,
+        typo_distance, typo_witness,
     };
     use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
@@ -1441,6 +1827,230 @@ mod tests {
 
     use crate::file_authority::{FileAuthority, SourceFile, from_verified_files};
     use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText};
+
+    fn osa_oracle(left: &[u8], right: &[u8]) -> usize {
+        let mut rows = vec![vec![0; right.len() + 1]; left.len() + 1];
+        for (index, row) in rows.iter_mut().enumerate() {
+            row[0] = index;
+        }
+        for index in 0..=right.len() {
+            rows[0][index] = index;
+        }
+        for i in 1..=left.len() {
+            for j in 1..=right.len() {
+                rows[i][j] = (rows[i - 1][j] + 1)
+                    .min(rows[i][j - 1] + 1)
+                    .min(rows[i - 1][j - 1] + usize::from(left[i - 1] != right[j - 1]));
+                if i > 1 && j > 1 && left[i - 1] == right[j - 2] && left[i - 2] == right[j - 1] {
+                    rows[i][j] = rows[i][j].min(rows[i - 2][j - 2] + 1);
+                }
+            }
+        }
+        rows[left.len()][right.len()]
+    }
+
+    #[test]
+    fn typo_distance_matches_independent_osa_oracle() {
+        let alphabet = [b'a', b'b', b'c'];
+        let mut words = vec![Vec::new()];
+        for length in 1..=5 {
+            for mut index in 0..3_usize.pow(length) {
+                let mut word = vec![b'a'; length as usize];
+                for byte in &mut word {
+                    *byte = alphabet[index % 3];
+                    index /= 3;
+                }
+                words.push(word);
+            }
+        }
+        for left in &words {
+            for right in &words {
+                let expected = osa_oracle(left, right);
+                let actual = typo_distance(left, right, CaseMode::Sensitive);
+                assert_eq!(
+                    actual,
+                    (expected <= 1).then_some(expected as u8),
+                    "{left:?} {right:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn typo_trigram_prefilter_retains_every_single_edit_token() {
+        let originals = ["load_json", "publish_event", "collect_index", "aaaaabaaaa"];
+        let budget = RequestBudgetV1::unbounded();
+        for original in originals {
+            let mut builder = TrigramIndexBuilder::new(1).expect("index");
+            builder.add_doc(DocId(1), original.as_bytes());
+            let index = builder.finish();
+            let bytes = original.as_bytes();
+            let mut queries = Vec::new();
+            for position in 0..bytes.len() {
+                let mut substitute = bytes.to_vec();
+                substitute[position] = if bytes[position] == b'z' { b'y' } else { b'z' };
+                queries.push(substitute);
+                let mut deletion = bytes.to_vec();
+                let _removed = deletion.remove(position);
+                queries.push(deletion);
+                let mut insertion = bytes.to_vec();
+                insertion.insert(position, b'z');
+                queries.push(insertion);
+                if position + 1 < bytes.len() {
+                    let mut transpose = bytes.to_vec();
+                    transpose.swap(position, position + 1);
+                    queries.push(transpose);
+                }
+            }
+            for query in queries {
+                assert!(osa_oracle(bytes, &query) <= 1);
+                let query = String::from_utf8(query).expect("ASCII");
+                let candidates =
+                    typo_candidates(&index, &query, None, MAX_TYPO_POSTING_VISITS, &budget)
+                        .expect("prefilter");
+                assert!(
+                    candidates.as_ref().is_none_or(|ids| ids.contains(&1)),
+                    "{original} {query}"
+                );
+            }
+        }
+        let mut content_only = TrigramIndexBuilder::new(1).expect("content index");
+        content_only.add_doc(DocId(1), b"unrelated content");
+        let path_only = typo_candidates(
+            &content_only.finish(),
+            "load_jsom",
+            None,
+            MAX_TYPO_POSTING_VISITS,
+            &budget,
+        )
+        .expect("content prefilter")
+        .expect("query has enough distinct trigrams");
+        assert!(
+            path_only.is_empty(),
+            "a path-only hit must not enter content typo search"
+        );
+    }
+
+    #[test]
+    fn typo_language_eligibility_precedes_global_posting_budget() {
+        let mut builder = TrigramIndexBuilder::new(1).expect("index");
+        for id in 1..=20 {
+            builder.add_doc(DocId(id), b"load_json");
+        }
+        let index = builder.finish();
+        let budget = RequestBudgetV1::unbounded();
+        assert!(matches!(
+            typo_candidates(&index, "load_jsom", None, 8, &budget),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                ..
+            })
+        ));
+        let one = BTreeSet::from([1_u64]);
+        assert_eq!(
+            typo_candidates(&index, "load_jsom", Some(&one), 8, &budget)
+                .expect("one eligible file")
+                .expect("indexed candidate set"),
+            one
+        );
+        let empty = BTreeSet::new();
+        assert!(
+            typo_candidates(&index, "load_jsom", Some(&empty), 0, &budget)
+                .expect("no eligible files")
+                .expect("indexed candidate set")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn typo_witness_requires_a_whole_content_identifier() {
+        let budget = RequestBudgetV1::unbounded();
+        let mut comparisons = 0;
+        let absent_tokens = ["load_jsxx", "load_jsom_suffix", "unrelated"];
+        for token in absent_tokens {
+            assert!(osa_oracle(b"load_jsom", token.as_bytes()) > 1, "{token}");
+        }
+        assert!(
+            typo_witness(
+                &absent_tokens.join(" "),
+                "load_jsom",
+                CaseMode::Folded,
+                &mut comparisons,
+                &budget,
+            )
+            .expect("independent no-answer fixture")
+            .is_none()
+        );
+        let mut exhausted = MAX_TYPO_TOKEN_COMPARISONS;
+        assert!(matches!(
+            typo_witness(
+                "load_json",
+                "load_jsom",
+                CaseMode::Folded,
+                &mut exhausted,
+                &budget
+            ),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                ..
+            })
+        ));
+        for absent in [
+            "// load_jsomized",
+            "load_jsxx",
+            "load_jsom_suffix",
+            "한load_json",
+        ] {
+            assert!(
+                typo_witness(
+                    absent,
+                    "load_jsom",
+                    CaseMode::Folded,
+                    &mut comparisons,
+                    &budget
+                )
+                .expect("scan")
+                .is_none(),
+                "{absent}"
+            );
+        }
+        let text = "// load_json and LOAD_JSON";
+        let (witness, distance) = typo_witness(
+            text,
+            "load_jsom",
+            CaseMode::Folded,
+            &mut comparisons,
+            &budget,
+        )
+        .expect("scan")
+        .expect("match");
+        assert_eq!(distance, 1);
+        assert_eq!(&text[witness.normalized], "load_json");
+        assert_eq!(witness.occurrences, 2);
+        let exact = "load_json load_jsom";
+        let (exact_witness, exact_distance) = typo_witness(
+            exact,
+            "load_jsom",
+            CaseMode::Folded,
+            &mut comparisons,
+            &budget,
+        )
+        .expect("scan")
+        .expect("exact match");
+        assert_eq!(exact_distance, 0);
+        assert_eq!(&exact[exact_witness.normalized], "load_jsom");
+        assert!(
+            typo_witness(
+                "LOAD_JSON",
+                "load_jsom",
+                CaseMode::Sensitive,
+                &mut comparisons,
+                &budget
+            )
+            .expect("scan")
+            .is_none()
+        );
+    }
 
     fn fixture_postings(path: &str, content: Option<&str>) -> u32 {
         let path = normalize::nfc(path).into_owned();

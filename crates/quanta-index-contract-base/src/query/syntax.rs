@@ -11,6 +11,22 @@ pub const MAX_CODE_SEARCH_TERMS: usize = 32;
 /// Maximum UTF-8 byte length of one product code-search literal.
 pub const MAX_CODE_SEARCH_TERM_BYTES: usize = 256;
 
+/// Canonical LQ predicate used by the explicit product code-search typo mode.
+pub const CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE: &str = "code_search.identifier_typo";
+pub const MIN_CODE_SEARCH_TYPO_BYTES: usize = 3;
+pub const MAX_CODE_SEARCH_TYPO_BYTES: usize = 64;
+
+/// The explicit typo operand is one ASCII identifier, never query syntax.
+#[must_use]
+pub fn valid_code_search_typo_identifier(identifier: &str) -> bool {
+    let mut bytes = identifier.bytes();
+    (MIN_CODE_SEARCH_TYPO_BYTES..=MAX_CODE_SEARCH_TYPO_BYTES).contains(&identifier.len())
+        && bytes
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextQuerySyntax {
     /// Product code search: ranked distinct files, with bare terms matched
@@ -81,17 +97,27 @@ impl<'de> Deserialize<'de> for TextQuerySyntax {
 
 #[cfg(test)]
 mod tests {
-    use super::TextQuerySyntax;
+    use super::{TextQuerySyntax, valid_code_search_typo_identifier};
 
     #[test]
-    fn code_search_wire_spelling_is_exact() -> Result<(), Box<dyn std::error::Error>> {
-        let encoded = serde_json::to_string(&TextQuerySyntax::CodeSearch)?;
+    fn code_search_typo_identifier_is_closed() {
+        for valid in ["gin", "_ab", &"a".repeat(64)] {
+            assert!(valid_code_search_typo_identifier(valid), "{valid}");
+        }
+        for invalid in ["", "ab", "9ab", "a-b", "café", &"a".repeat(65)] {
+            assert!(!valid_code_search_typo_identifier(invalid), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn code_search_wire_spelling_is_exact() {
+        let encoded =
+            serde_json::to_string(&TextQuerySyntax::CodeSearch).expect("serialize syntax");
         assert_eq!(encoded, "\"code_search\"");
         assert_eq!(
-            serde_json::from_str::<TextQuerySyntax>(&encoded)?,
+            serde_json::from_str::<TextQuerySyntax>(&encoded).expect("deserialize syntax"),
             TextQuerySyntax::CodeSearch
         );
         assert!(serde_json::from_str::<TextQuerySyntax>("\"CodeSearch\"").is_err());
-        Ok(())
     }
 }
