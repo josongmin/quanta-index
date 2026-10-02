@@ -789,7 +789,7 @@ mod tests {
             .expect("length fits usize");
         assert_eq!(
             reserved,
-            wire_len + logical_len + 2 * std::mem::size_of::<String>()
+            wire_len + logical_len + 3 * std::mem::size_of::<String>()
         );
     }
 

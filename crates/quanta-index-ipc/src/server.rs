@@ -3509,7 +3509,7 @@ mod tests {
         client.write_all(&frame).expect("write request");
         client.shutdown(Shutdown::Write).expect("finish request");
         let slots = test_slots();
-        let permits: Vec<_> = (0..8)
+        let permits: Vec<_> = (0..64)
             .map(|_| {
                 slots
                     .try_acquire_decode(1, IpcPlane::Query)
@@ -3542,7 +3542,7 @@ mod tests {
         assert!(matches!(
             reason,
             ConnectionCloseReason::RequestDecodeFailed(IpcError::IngressSaturated {
-                requests: 8,
+                requests: 64,
                 ..
             })
         ));
@@ -3563,10 +3563,10 @@ mod tests {
         );
         let control_slots =
             DispatchSlots::with_shared_ingress(ServerAdmissionPolicy::SERIAL_DISPATCH, ingress);
-        let query_permits: Vec<_> = (0..16)
+        let query_permits: Vec<_> = (0..64)
             .map(|_| {
                 query_slots
-                    .try_acquire_decode(MAX_FRAME_BODY_BYTES, IpcPlane::Query)
+                    .try_acquire_decode(MAX_FRAME_BODY_BYTES / 4, IpcPlane::Query)
                     .expect("query permit")
             })
             .collect();

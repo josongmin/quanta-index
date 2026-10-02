@@ -4,10 +4,10 @@ use ciborium_ll::{Decoder, Header};
 
 use crate::codec::IpcError;
 
-// A retained String occupies at least its inline header; doubling the header
-// covers Vec growth while the old allocation is being copied. CBOR text bytes
-// are already charged as request buffers by ingress admission.
-const TEXT_VALUE_STORAGE_BYTES: usize = 2 * std::mem::size_of::<String>();
+// A retained String occupies its inline header. During Vec growth, the old
+// allocation and a double-capacity replacement can briefly coexist. CBOR
+// text bytes are already charged as request buffers by ingress admission.
+const TEXT_VALUE_STORAGE_BYTES: usize = 3 * std::mem::size_of::<String>();
 
 pub(crate) fn retained_text_budget(bytes: &[u8]) -> Result<usize, IpcError> {
     let mut decoder = Decoder::from(bytes);

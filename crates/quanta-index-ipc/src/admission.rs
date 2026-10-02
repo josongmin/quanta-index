@@ -188,16 +188,15 @@ impl IngressBudget {
     /// One process-wide budget for all three daemon sockets. Query and ingest
     /// can use the full standalone 256 MiB bound; the additional 32 MiB and
     /// two request permits keep operator control reachable under saturation.
+    /// The data count covers 64 connections on each of the query and ingest
+    /// sockets, so ordinary concurrent retries keep their prior capacity.
     #[must_use]
     pub const fn for_process() -> Self {
-        Self::new(288 * 1024 * 1024, 18, DECODE_BYTE_CAPACITY, 16)
+        Self::new(288 * 1024 * 1024, 130, DECODE_BYTE_CAPACITY, 128)
     }
 
     pub(crate) fn for_server(policy: ServerAdmissionPolicy) -> Self {
-        let requests = policy
-            .max_connections()
-            .min(policy.dispatch_slots().saturating_add(4).max(8));
-        Self::with_request_capacity(requests)
+        Self::with_request_capacity(policy.max_connections())
     }
 
     const fn with_request_capacity(requests: usize) -> Self {
@@ -657,14 +656,14 @@ mod tests {
             slots.try_acquire_decode(1, IpcPlane::Query),
             Err(crate::codec::IpcError::IngressSaturated {
                 bytes: DECODE_BYTE_CAPACITY,
-                requests: 8,
+                requests: 64,
             })
         ));
         assert!(matches!(
             first.reserve(1),
             Err(crate::codec::IpcError::IngressSaturated {
                 bytes: DECODE_BYTE_CAPACITY,
-                requests: 8,
+                requests: 64,
             })
         ));
         let dispatch = slots
@@ -687,7 +686,7 @@ mod tests {
     #[test]
     fn decode_admission_also_bounds_tiny_decoded_envelopes() {
         let slots = DispatchSlots::for_policy(ServerAdmissionPolicy::DEFAULT);
-        let permits: Vec<_> = (0..8)
+        let permits: Vec<_> = (0..64)
             .map(|_| {
                 slots
                     .try_acquire_decode(1, IpcPlane::Query)
@@ -696,7 +695,7 @@ mod tests {
             .collect();
         assert!(matches!(
             slots.try_acquire_decode(1, IpcPlane::Query),
-            Err(crate::codec::IpcError::IngressSaturated { requests: 8, .. })
+            Err(crate::codec::IpcError::IngressSaturated { requests: 64, .. })
         ));
         drop(permits);
         assert!(slots.try_acquire_decode(1, IpcPlane::Query).is_ok());
@@ -718,7 +717,7 @@ mod tests {
             .expect("query fills shared budget");
         assert!(matches!(
             ingest.try_acquire_decode(2, IpcPlane::Ingest),
-            Err(crate::codec::IpcError::IngressSaturated { requests: 16, .. })
+            Err(crate::codec::IpcError::IngressSaturated { requests: 128, .. })
         ));
         let control =
             DispatchSlots::with_shared_ingress(ServerAdmissionPolicy::SERIAL_DISPATCH, ingress);
@@ -737,13 +736,24 @@ mod tests {
             ServerAdmissionPolicy::DEFAULT,
             Arc::clone(&ingress),
         );
+        let ingest = DispatchSlots::with_shared_ingress(
+            ServerAdmissionPolicy::SERIAL_DISPATCH,
+            Arc::clone(&ingress),
+        );
         let control =
             DispatchSlots::with_shared_ingress(ServerAdmissionPolicy::SERIAL_DISPATCH, ingress);
-        let query_permits: Vec<_> = (0..16)
+        let query_permits: Vec<_> = (0..64)
             .map(|_| {
                 query
                     .try_acquire_decode(1, IpcPlane::Query)
                     .expect("data permit")
+            })
+            .collect();
+        let ingest_permits: Vec<_> = (0..64)
+            .map(|_| {
+                ingest
+                    .try_acquire_decode(1, IpcPlane::Ingest)
+                    .expect("ingest permit")
             })
             .collect();
         assert!(query.try_acquire_decode(1, IpcPlane::Query).is_err());
@@ -756,6 +766,7 @@ mod tests {
             .collect();
         assert!(control.try_acquire_decode(1, IpcPlane::Control).is_err());
         drop(query_permits);
+        drop(ingest_permits);
         drop(control_permits);
     }
 
