@@ -645,6 +645,48 @@ fn restored_db_reconciles_from_the_ledger_alone() -> TestResult {
 }
 
 #[test]
+fn exhausted_allocator_cannot_reopen_a_nonmax_ledger() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    {
+        let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(200))?;
+        let _sequence = apply_and_commit(
+            &catalog,
+            &key(IngestOperationKindV1::RepoTopic, 13, "d-exhausted"),
+            &[5_u8; 32],
+            &receipt(13, "d-exhausted"),
+        )?;
+    }
+    {
+        let connection = raw(&temp)?;
+        let digest = allocator_row_digest(None, true);
+        let changed = connection.execute(
+            "UPDATE catalog_sequence_v2 SET next = NULL, exhausted = 1, row_sha256 = ?1 WHERE id = 1",
+            rusqlite::params![digest.as_slice()],
+        )?;
+        if changed != 1 {
+            return Err("expected to set one exhausted allocator row".into());
+        }
+    }
+    let error = SqliteCatalog::open(temp.path(), Duration::from_millis(200))
+        .expect_err("exhausted allocator cannot be reconciled below the final sequence");
+    if typed_code(&error) != Some(CATALOG_ROW_CORRUPT_CODE)
+        || !error.to_string().contains("future events are absent")
+    {
+        return Err(format!("expected missing-ledger corruption, got {error}").into());
+    }
+    let connection = raw(&temp)?;
+    let (next, exhausted): (Option<i64>, i64) = connection.query_row(
+        "SELECT next, exhausted FROM catalog_sequence_v2 WHERE id = 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if next.is_some() || exhausted != 1 {
+        return Err("failed reopen modified the exhausted allocator".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn unfinished_recovery_reconciles_a_behind_allocator_before_appending() -> TestResult {
     let temp = tempfile::tempdir()?;
     let committed = key(

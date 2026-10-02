@@ -498,7 +498,8 @@ pub(crate) fn seed_allocator(
 /// beyond `max + 1` describes future events the ledger does not hold:
 /// that is corruption (fail closed, [`CatalogRowCorrupt`]), never
 /// silently pulled back — reissuing those sequences would break the
-/// uniqueness receipts already depend on.
+/// uniqueness receipts already depend on. An exhausted allocator likewise
+/// cannot be reopened unless the ledger holds the final sequence.
 pub(crate) fn reconcile(
     transaction: &rusqlite::Transaction<'_>,
     path: &std::path::Path,
@@ -519,6 +520,11 @@ pub(crate) fn reconcile(
         Some(max) => (Some(max.saturating_add(1)), false),
     };
     let existing = read_allocator(transaction, path)?;
+    if existing.exhausted && !expected_exhausted {
+        return Err(corrupt(&format!(
+            "sequence allocator is exhausted but the generic ledger holds max={max:?}; future events are absent"
+        )));
+    }
     if let (Some(stored_next), Some(expected)) = (existing.next, expected_next)
         && stored_next > expected
     {
