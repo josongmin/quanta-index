@@ -393,6 +393,125 @@ fn active_resolution_rejects_wrong_same_domain_query_generation() {
 }
 
 #[test]
+fn resolved_active_without_explicit_pin_binds_the_final_text_generation() {
+    let snapshot = GenerationSnapshot {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        track: Track::Lexical,
+        manifest_generation: ManifestGeneration::new(7),
+        manifest_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+    };
+    let resolution = active_resolution(snapshot);
+    let token = resolution.head.activation_token;
+    let request = quanta_index_contract::TextQueryRequest {
+        syntax: quanta_index_contract::TextQuerySyntax::Native,
+        query_text: "needle".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: Some(GenerationSelector::ResolvedActive {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            activation_token: token,
+        }),
+        top_k: 5,
+        cursor: None,
+    };
+    let wrong = quanta_index_contract::GenerationPin::new(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(8),
+    );
+    for final_pin in [sample_generation_pin(), wrong] {
+        let query = Arc::new(StubQueryTransport::sequence([
+            SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(resolution.clone()),
+            SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+                rank_unit: quanta_index_contract::TextRankUnit::Chunk,
+                explanation: quanta_index_contract::SearchExplanation::empty(),
+                generation: final_pin.clone(),
+                results: Vec::new(),
+                window: QueryResultWindowV2::exact_probe(0),
+                file_owner_rows: None,
+                next_cursor: None,
+            }),
+        ]));
+        let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+        let result = client.lexical().query_request(request.clone());
+        if final_pin == sample_generation_pin() {
+            assert_eq!(ok_or_fail!(result).generation, final_pin);
+        } else {
+            assert!(matches!(
+                result,
+                Err(crate::SdkError::Binding {
+                    axis: crate::ResponseBindingAxis::ReadIdentity,
+                    ..
+                })
+            ));
+        }
+        let requests = ok_or_fail!(query.requests.lock());
+        assert_eq!(requests.len(), 2);
+        assert!(matches!(
+            requests.first().map(|request| &request.payload),
+            Some(quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_))
+        ));
+        assert!(matches!(
+            requests.last().map(|request| &request.payload),
+            Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent))
+                if sent.generation == Some(sample_generation_pin())
+                    && sent.generation_selector == request.generation_selector
+        ));
+    }
+}
+
+#[test]
+fn resolved_active_without_explicit_pin_refuses_a_changed_activation_token() {
+    let snapshot = GenerationSnapshot {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        track: Track::Lexical,
+        manifest_generation: ManifestGeneration::new(7),
+        manifest_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+    };
+    let resolution = active_resolution(snapshot);
+    let different_token = SearchCorpusActivationTokenV1::new(
+        [7; 16],
+        NonZeroU64::new(2).expect("fixture activation sequence is positive"),
+    )
+    .expect("fixture incarnation is nonzero");
+    let query = Arc::new(StubQueryTransport::sequence([
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(resolution),
+    ]));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let request = quanta_index_contract::TextQueryRequest {
+        syntax: quanta_index_contract::TextQuerySyntax::Native,
+        query_text: "needle".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: Some(GenerationSelector::ResolvedActive {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+            activation_token: different_token,
+        }),
+        top_k: 5,
+        cursor: None,
+    };
+    assert!(matches!(
+        client.lexical().query_request(request),
+        Err(crate::SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::NotReady,
+            ..
+        })
+    ));
+    let requests = ok_or_fail!(query.requests.lock());
+    assert_eq!(
+        requests.len(),
+        1,
+        "a stale token must not send a text query"
+    );
+}
+
+#[test]
 fn lexical_time_resolution_binds_the_final_ancestor_pin() {
     let ancestor = quanta_index_contract::GenerationPin::new(
         repo_id(),

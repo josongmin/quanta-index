@@ -211,6 +211,8 @@ impl QuantaIndex {
     /// that the catalog still selects the same generation at dispatch time,
     /// while the SDK exact-binds the final response. Semantic reads also
     /// retain the catalog manifest-digest check in the acquired view.
+    /// A public request may carry `ResolvedActive` without an explicit pin;
+    /// resolve it here so its final response is bound to one generation.
     /// The query-only profile has no control transport.
     fn pin_active_selector(
         &self,
@@ -218,12 +220,17 @@ impl QuantaIndex {
         selector: &mut Option<GenerationSelector>,
         track: SearchPlaneTrackKind,
     ) -> Result<(), SdkError> {
-        let Some(GenerationSelector::Active {
-            repo_id,
-            revision_id,
-        }) = selector.as_ref()
-        else {
-            return Ok(());
+        let (repo_id, revision_id, expected_token) = match selector.as_ref() {
+            Some(GenerationSelector::Active {
+                repo_id,
+                revision_id,
+            }) => (repo_id, revision_id, None),
+            Some(GenerationSelector::ResolvedActive {
+                repo_id,
+                revision_id,
+                activation_token,
+            }) if generation.is_none() => (repo_id, revision_id, Some(*activation_token)),
+            _ => return Ok(()),
         };
         let request = CurrentGenerationRequest {
             repo_id: repo_id.clone(),
@@ -241,6 +248,17 @@ impl QuantaIndex {
             SdkError::Protocol("active resolution returned an unsupported track".to_string())
         })?;
         let activation_token = resolution.head.activation_token;
+        if expected_token.is_some_and(|expected| expected != activation_token) {
+            return Err(SdkError::Remote {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::NotReady,
+                message: format!(
+                    "active composite activation token changed for repo={} revision={}",
+                    repo_id.as_str(),
+                    revision_id.as_str()
+                ),
+                repair: None,
+            });
+        }
         let resolved = GenerationPin::new(
             snapshot.repo_id.clone(),
             snapshot.revision_id.clone(),
