@@ -619,6 +619,31 @@ def test_c4_matrix_refuses_source_change_during_admission(tmp_path, monkeypatch)
         holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
 
 
+@pytest.mark.parametrize("file_name", ["split-manifest.json", "split-releases.json"])
+def test_c4_matrix_rechecks_split_control_bytes(tmp_path, monkeypatch, file_name):
+    release, capsules, checkouts = _matrix_fixture(tmp_path, monkeypatch)
+    original = holdout_c4._derive_prepared
+    changed = False
+
+    def mutate(prepared, intent, *, allow_empty=False, filter_query_duplicates=False):
+        nonlocal changed
+        result = original(
+            prepared,
+            intent,
+            allow_empty=allow_empty,
+            filter_query_duplicates=filter_query_duplicates,
+        )
+        if not changed:
+            control = capsules / "repo_a" / file_name
+            control.write_bytes(control.read_bytes() + b" ")
+            changed = True
+        return result
+
+    monkeypatch.setattr(holdout_c4, "_derive_prepared", mutate)
+    with pytest.raises(ValueError, match="input changed during admission"):
+        holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
+
+
 def test_c4_matrix_records_unsupported_language_cells(tmp_path, monkeypatch):
     release, capsules, checkouts = _matrix_fixture(tmp_path, monkeypatch)
     document = holdout_c4._read(release / "release.json")

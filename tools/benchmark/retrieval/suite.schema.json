@@ -135,7 +135,7 @@
         "answerable": {"type": "boolean"},
         "category": {"type": "string", "minLength": 1},
         "query_intent": {
-          "enum": ["bare_symbol", "semantic_intent"],
+          "enum": ["bare_symbol", "semantic_intent", "exact_content"],
           "description": "Suite-author declaration. This is omitted from the blinded runner pack."
         },
         "label_review": {"$ref": "#/$defs/label_review"},
@@ -154,11 +154,14 @@
          "then": {
            "required": ["query_intent", "judgment_policy"],
            "properties": {
-             "query_intent": {"const": "bare_symbol"},
+             "query_intent": {"enum": ["bare_symbol", "exact_content"]},
              "judgment_policy": {"const": "source_oracle_complete_v1"}
            },
            "not": {"required": ["label_review"]},
            "allOf": [
+             {"if": {"properties": {"source_oracle": {"properties": {"contract": {"const": "content_literal_utf8_exact_v1"}}}}},
+              "then": {"properties": {"query_intent": {"const": "exact_content"}}},
+              "else": {"properties": {"query_intent": {"const": "bare_symbol"}}}},
              {"if": {"properties": {"source_oracle": {"properties": {"unit": {"const": "symbol"}}}}},
               "then": {"required": ["declaration_judgments"], "not": {"required": ["file_judgments"]}}},
              {"if": {"properties": {"source_oracle": {"properties": {"unit": {"const": "distinct_file"}}}}},
@@ -174,7 +177,7 @@
       "required": ["contract", "unit"],
       "properties": {
         "contract": {"enum": [
-          "go_exact_local_name_v3", "ascii_identifier_word_v1",
+          "go_exact_local_name_v3", "ascii_identifier_word_v1", "content_literal_utf8_exact_v1",
           "ascii_content_absent_casefold_v1", "ascii_code_search_absent_casefold_v1",
           "ascii_identifier_osa1_absent_casefold_v1",
           "go_declaration_name_prefix_v1", "go_declaration_name_infix_v1",
@@ -192,6 +195,8 @@
         }
       },
       "allOf": [
+        {"if": {"properties": {"contract": {"const": "content_literal_utf8_exact_v1"}}},
+         "then": {"properties": {"unit": {"const": "distinct_file"}}}},
         {"if": {"properties": {"contract": {"const": "ascii_identifier_word_v1"}}},
          "then": {"properties": {"unit": {"const": "distinct_file"}}}},
         {"if": {"properties": {"contract": {"const": "ascii_content_absent_casefold_v1"}}},

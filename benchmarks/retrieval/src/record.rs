@@ -508,6 +508,8 @@ pub struct CaptureProvenance {
     pub runner_binary_digest: String,
     pub searchd_binary_digest: String,
     pub generation: u64,
+    pub source_repo_id: String,
+    pub source_revision_id: String,
     pub receipt_digest: String,
     pub activation_digest: String,
     pub model: String,
@@ -609,6 +611,8 @@ fn capture_value(capture_id: &str, capture: &CaptureProvenance) -> BenchResult<V
     for (label, text) in [
         ("model", &capture.model),
         ("model_revision", &capture.model_revision),
+        ("source_repo_id", &capture.source_repo_id),
+        ("source_revision_id", &capture.source_revision_id),
     ] {
         if text.trim().is_empty() {
             return Err(BenchError::Protocol(format!(
@@ -616,7 +620,7 @@ fn capture_value(capture_id: &str, capture: &CaptureProvenance) -> BenchResult<V
             )));
         }
     }
-    Ok(serde_json::json!({
+    let mut value = serde_json::json!({
         "system": CAPTURE_SYSTEM_QUANTA,
         "chunk_strategy": capture.chunk_strategy,
         "chunk_config": capture.chunk_config,
@@ -632,7 +636,19 @@ fn capture_value(capture_id: &str, capture: &CaptureProvenance) -> BenchResult<V
         "model_revision": capture.model_revision,
         "execution_profile": capture.execution_profile,
         "execution_profile_sha256": capture.execution_profile_sha256,
-    }))
+    });
+    if capture.execution_profile["policy"] == "code_search_exact_content_file" {
+        let object = value.as_object_mut().expect("capture JSON is an object");
+        drop(object.insert(
+            "source_repo_id".to_string(),
+            serde_json::json!(capture.source_repo_id),
+        ));
+        drop(object.insert(
+            "source_revision_id".to_string(),
+            serde_json::json!(capture.source_revision_id),
+        ));
+    }
+    Ok(value)
 }
 
 fn duration_ms(latency: Duration) -> BenchResult<f64> {
@@ -1029,6 +1045,7 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
         | QueryInputPolicy::KeywordFile
         | QueryInputPolicy::SubstringFile
         | QueryInputPolicy::CodeSearchFile
+        | QueryInputPolicy::CodeSearchExactContentFile
         | QueryInputPolicy::CodeSearchTypoFile => Some("distinct_file"),
         QueryInputPolicy::ExactSymbolName => Some("symbol"),
         QueryInputPolicy::Native
@@ -1048,6 +1065,7 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
         policy,
         QueryInputPolicy::KeywordFile
             | QueryInputPolicy::CodeSearchFile
+            | QueryInputPolicy::CodeSearchExactContentFile
             | QueryInputPolicy::CodeSearchTypoFile
     ) {
         let _previous = object.insert(
@@ -1140,7 +1158,9 @@ pub fn result_value(
                 let mut proven = prove_hit(hit, candidates.len().saturating_add(1), files, units)?;
                 if matches!(
                     plan.policy,
-                    QueryInputPolicy::CodeSearchFile | QueryInputPolicy::CodeSearchTypoFile
+                    QueryInputPolicy::CodeSearchFile
+                        | QueryInputPolicy::CodeSearchExactContentFile
+                        | QueryInputPolicy::CodeSearchTypoFile
                 ) != (proven.unit_kind == PublishedUnitKind::File)
                 {
                     return Err(BenchError::Protocol(format!(
@@ -1153,6 +1173,7 @@ pub fn result_value(
                     plan.policy,
                     QueryInputPolicy::KeywordFile
                         | QueryInputPolicy::CodeSearchFile
+                        | QueryInputPolicy::CodeSearchExactContentFile
                         | QueryInputPolicy::CodeSearchTypoFile
                 ) {
                     let score = serde_json::Number::from_f64(hit.score).ok_or_else(|| {
@@ -1563,7 +1584,7 @@ mod tests {
     }
 
     #[test]
-    fn code_search_typo_result_preserves_file_identity_and_native_score() {
+    fn code_search_file_profiles_preserve_file_identity_and_native_score() {
         let (hit, files) = file_hit_fixture("src/main.go", "func load_json() {}\n", false);
         let units = PublishedUnitRegistry::from_chunks_and_symbols(
             &BTreeMap::new(),
@@ -1571,35 +1592,35 @@ mod tests {
             &files,
         )
         .expect("registry");
-        let plan = plan_query(
-            QueryInputPolicy::CodeSearchTypoFile,
-            "load_jsom",
-            &NlPlanConfig::default(),
-        )
-        .expect("typo plan");
-        let row = result_value(
-            "T1",
-            "lexical",
-            &QueryOutcome::ReturnedWindow {
-                hits: vec![hit],
-                window: QueryResultWindowV2::exact_probe(1),
-                explanation: Some(RouteExplanation::default()),
-                latency: Duration::from_millis(1),
-            },
-            &plan,
-            10,
-            &files,
-            &units,
-        )
-        .expect("source-bound file result");
-        assert_eq!(row["rank_unit"], "distinct_file");
-        assert_eq!(row["score_evidence"], "native_sdk_score_v1");
-        assert_eq!(row["candidates"][0]["score"].as_f64(), Some(2.0));
-        assert_eq!(row["candidates"][0]["span_accounting"]["unit_kind"], "file");
-        assert_eq!(
-            row["query_identity"]["effective_lexical_request_sha256"],
-            plan.effective_lexical_request_sha256
-        );
+        for (policy, raw) in [
+            (QueryInputPolicy::CodeSearchTypoFile, "load_jsom"),
+            (QueryInputPolicy::CodeSearchExactContentFile, "load_json()"),
+        ] {
+            let plan = plan_query(policy, raw, &NlPlanConfig::default()).expect("file plan");
+            let row = result_value(
+                "T1",
+                "lexical",
+                &QueryOutcome::ReturnedWindow {
+                    hits: vec![hit.clone()],
+                    window: QueryResultWindowV2::exact_probe(1),
+                    explanation: Some(RouteExplanation::default()),
+                    latency: Duration::from_millis(1),
+                },
+                &plan,
+                10,
+                &files,
+                &units,
+            )
+            .expect("source-bound file result");
+            assert_eq!(row["rank_unit"], "distinct_file");
+            assert_eq!(row["score_evidence"], "native_sdk_score_v1");
+            assert_eq!(row["candidates"][0]["score"].as_f64(), Some(2.0));
+            assert_eq!(row["candidates"][0]["span_accounting"]["unit_kind"], "file");
+            assert_eq!(
+                row["query_identity"]["effective_lexical_request_sha256"],
+                plan.effective_lexical_request_sha256
+            );
+        }
     }
 
     #[test]
@@ -2264,6 +2285,8 @@ mod tests {
             runner_binary_digest: "e".repeat(64),
             searchd_binary_digest: "f".repeat(64),
             generation: 7,
+            source_repo_id: "bench-repo".to_string(),
+            source_revision_id: "bench-revision".to_string(),
             receipt_digest: "a".repeat(64),
             activation_digest: "b".repeat(64),
             model: "none:lexical".to_string(),
@@ -2277,6 +2300,28 @@ mod tests {
                 &NlPlanConfig::default(),
             ),
         }
+    }
+
+    #[test]
+    fn quanta_capture_binds_source_pin() {
+        let mut capture = v3_capture_fixture();
+        let historical = capture_value("cap-1", &capture).expect("historical capture");
+        assert!(historical.get("source_repo_id").is_none());
+        assert!(historical.get("source_revision_id").is_none());
+        capture.execution_profile = execution_profile_value(
+            QueryInputPolicy::CodeSearchExactContentFile,
+            &NlPlanConfig::default(),
+        );
+        capture.execution_profile_sha256 = execution_profile_sha256(
+            QueryInputPolicy::CodeSearchExactContentFile,
+            &NlPlanConfig::default(),
+        );
+        let value = capture_value("cap-1", &capture).expect("source-bound capture");
+        assert_eq!(value["source_repo_id"], "bench-repo");
+        assert_eq!(value["source_revision_id"], "bench-revision");
+        let mut missing = capture;
+        missing.source_revision_id.clear();
+        assert!(capture_value("cap-1", &missing).is_err());
     }
 
     #[test]

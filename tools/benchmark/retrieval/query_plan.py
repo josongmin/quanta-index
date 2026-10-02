@@ -40,6 +40,7 @@ SUPPORTED_POLICIES = (
     "keyword_file",
     "substring_file",
     "code_search_file",
+    "code_search_exact_content_file",
     "code_search_typo_file",
 )
 #: File-projection policies and how each orders its distinct files. A phrase or
@@ -52,9 +53,12 @@ FILE_PROJECTION_ORDERING = {
     "keyword_file": ORDERING_SCORE_DESC,
     "substring_file": ORDERING_PATH_ORDER,
     "code_search_file": ORDERING_SCORE_DESC,
+    "code_search_exact_content_file": ORDERING_SCORE_DESC,
     "code_search_typo_file": ORDERING_SCORE_DESC,
 }
-CODE_SEARCH_FILE_POLICIES = frozenset(("code_search_file", "code_search_typo_file"))
+CODE_SEARCH_FILE_POLICIES = frozenset(
+    ("code_search_file", "code_search_exact_content_file", "code_search_typo_file")
+)
 SCORED_QUANTA_FILE_POLICIES = frozenset((*CODE_SEARCH_FILE_POLICIES, "keyword_file"))
 MAX_KEYWORD_FILE_BYTES = 256
 MIN_SUBSTRING_FILE_BYTES = 3
@@ -72,6 +76,7 @@ PROFILE_IDS = {
     "keyword_file": "quanta-keyword-file-v1",
     "substring_file": "quanta-substring-file-v1",
     "code_search_file": "quanta-code-search-file-v1",
+    "code_search_exact_content_file": "quanta-code-search-exact-content-file-v1",
     "code_search_typo_file": "quanta-code-search-typo-file-v1",
 }
 _BARE_SYMBOL_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
@@ -126,6 +131,14 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
             '{"case":"folded","match":"code_search_v1",'
             f'"ordering":"{ORDERING_SCORE_DESC}","policy":"code_search_file",'
             '"projection":"file","scope":"content_and_path","syntax":"code_search"}'
+        )
+    if policy == "code_search_exact_content_file":
+        return (
+            '{"case":"sensitive","escaping":"code_search_quoted_literal",'
+            '"match":"literal_utf8_exact",'
+            f'"max_bytes":{MAX_CODE_SEARCH_TERM_BYTES},"ordering":"{ORDERING_SCORE_DESC}",'
+            '"policy":"code_search_exact_content_file","projection":"file",'
+            '"scope":"content","syntax":"code_search"}'
         )
     if policy == "code_search_typo_file":
         return (
@@ -383,6 +396,8 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
                 "code-search-file policy requires 1 to 32 bare ASCII alphanumeric atoms of at most 256 bytes each"
             )
         return raw
+    if policy == "code_search_exact_content_file":
+        return plan_code_search_exact_content_request(raw)
     if policy == "code_search_typo_file":
         if (
             not MIN_CODE_SEARCH_TYPO_BYTES <= len(raw) <= MAX_CODE_SEARCH_TYPO_BYTES

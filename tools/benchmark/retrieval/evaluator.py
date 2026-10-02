@@ -57,8 +57,8 @@ try:
     from tools.benchmark.evidence import (
         _consume_regular_file,
     )
+    from tools.benchmark.retrieval import literal_source_oracle, retrieval_contract, source_oracle
     from tools.benchmark.retrieval import query_plan as query_plan_contract
-    from tools.benchmark.retrieval import retrieval_contract, source_oracle
     from tools.benchmark.retrieval.finite_json import is_finite_json_number
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -68,8 +68,8 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.benchmark.evidence import (
         _consume_regular_file,
     )
+    from tools.benchmark.retrieval import literal_source_oracle, retrieval_contract, source_oracle
     from tools.benchmark.retrieval import query_plan as query_plan_contract
-    from tools.benchmark.retrieval import retrieval_contract, source_oracle
     from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
 SCHEMA_VERSION = 3
@@ -102,7 +102,7 @@ CHUNK_STRATEGIES = (
     "brace_heuristic",
     "semble_native",
 )
-QUERY_INTENTS = ("bare_symbol", "semantic_intent")
+QUERY_INTENTS = ("bare_symbol", "semantic_intent", "exact_content")
 LABEL_REVIEW_ASSESSMENTS = ("unreviewed", "reviewed_unambiguous", "reviewed_ambiguous")
 OBSERVED_PREFIX_DIAGNOSTIC_POLICY = "observed_prefix_v1"
 UNJUDGED_POLICY = "unjudged_zero_v1"
@@ -312,6 +312,14 @@ def validate_capture(
     ]
     if version == 5:
         fields.extend(["execution_profile", "execution_profile_sha256"])
+    exact_content = (
+        version == 5
+        and isinstance(value, dict)
+        and isinstance(value.get("execution_profile"), dict)
+        and value["execution_profile"].get("policy") == "code_search_exact_content_file"
+    )
+    if exact_content:
+        fields.extend(["source_repo_id", "source_revision_id"])
     capture = object_keys(
         value,
         fields,
@@ -319,6 +327,10 @@ def validate_capture(
     )
     system = capture["system"]
     require(system in CAPTURE_SYSTEMS, f"{where}.system must be quanta or semble")
+    if exact_content:
+        require(system == "quanta", f"{where}.exact-content capture must be Quanta")
+        string(capture["source_repo_id"], where + ".source_repo_id")
+        string(capture["source_revision_id"], where + ".source_revision_id")
     require(
         capture["chunk_strategy"] in CHUNK_STRATEGIES,
         f"{where}.chunk_strategy is not a frozen v3 strategy",
@@ -463,7 +475,7 @@ class SourceSnapshot:
 
 def source_oracle_gold(
     source: SourceSnapshot,
-    oracle: source_oracle.SourceOracleIndex,
+    oracle: source_oracle.SourceOracleIndex | literal_source_oracle.LiteralSourceOracleIndex,
     contract: str,
     query: str,
 ) -> list[dict[str, Any]]:
@@ -1024,6 +1036,7 @@ def validate_suite(
     entries, ordered_universe = validate_file_universe(source, suite["file_universe"])
     universe = set(entries)
     oracle_index: source_oracle.SourceOracleIndex | None = None
+    literal_index: literal_source_oracle.LiteralSourceOracleIndex | None = None
     require(
         sha(suite["file_universe_digest"], "file_universe_digest")
         == universe_digest(ordered_universe),
@@ -1036,7 +1049,18 @@ def validate_suite(
     oracle_names = {
         raw["query"]
         for raw in tasks
-        if isinstance(raw, dict) and "source_oracle" in raw and isinstance(raw.get("query"), str)
+        if isinstance(raw, dict)
+        and isinstance(raw.get("source_oracle"), dict)
+        and raw["source_oracle"].get("contract") != literal_source_oracle.CONTENT_LITERAL_UTF8_EXACT
+        and isinstance(raw.get("query"), str)
+    }
+    literal_names = {
+        raw["query"]
+        for raw in tasks
+        if isinstance(raw, dict)
+        and isinstance(raw.get("source_oracle"), dict)
+        and raw["source_oracle"].get("contract") == literal_source_oracle.CONTENT_LITERAL_UTF8_EXACT
+        and isinstance(raw.get("query"), str)
     }
     declaration_exclusions: dict[tuple[str, str], set[str]] = {}
     for raw in tasks:
@@ -1123,10 +1147,19 @@ def validate_suite(
                 ["declaration_exclusions"],
                 "source_oracle",
             )
-            require(
-                task.get("query_intent") == "bare_symbol",
-                f"source oracle requires bare_symbol intent: {task_id}",
+            literal_contract = (
+                oracle["contract"] == literal_source_oracle.CONTENT_LITERAL_UTF8_EXACT
             )
+            required_intent = "exact_content" if literal_contract else "bare_symbol"
+            require(
+                task.get("query_intent") == required_intent,
+                f"source oracle requires {required_intent} intent: {task_id}",
+            )
+            if literal_contract:
+                require(
+                    suite["routes"] == ["lexical"] and oracle["unit"] == "distinct_file",
+                    f"exact-content source oracle requires Quanta lexical file diagnostic: {task_id}",
+                )
             expected_kind = (
                 "declaration_judgments" if oracle["unit"] == "symbol" else "file_judgments"
             )
@@ -1170,16 +1203,37 @@ def validate_suite(
         validate_judgments(source, task, universe, task_id)
         if "source_oracle" in task:
             try:
-                if oracle_index is None:
-                    oracle_index = source_oracle.SourceOracleIndex(
-                        {path: (source.file(path)[0], entries[path]) for path in sorted(universe)},
-                        oracle_names,
-                        declaration_exclusions,
-                    )
-                expected = oracle_index.expected_rows(
+                if (
+                    task["source_oracle"]["contract"]
+                    == literal_source_oracle.CONTENT_LITERAL_UTF8_EXACT
+                ):
+                    if literal_index is None:
+                        literal_index = literal_source_oracle.LiteralSourceOracleIndex(
+                            {
+                                path: (source.file(path)[0], entries[path])
+                                for path in sorted(universe)
+                            },
+                            literal_names,
+                        )
+                    active_oracle = literal_index
+                else:
+                    if oracle_index is None:
+                        oracle_index = source_oracle.SourceOracleIndex(
+                            {
+                                path: (source.file(path)[0], entries[path])
+                                for path in sorted(universe)
+                            },
+                            oracle_names,
+                            declaration_exclusions,
+                        )
+                    active_oracle = oracle_index
+                expected = active_oracle.expected_rows(
                     task["source_oracle"]["contract"], query, task["source_oracle"]["unit"]
                 )
-            except source_oracle.SourceOracleError as exc:
+            except (
+                source_oracle.SourceOracleError,
+                literal_source_oracle.LiteralOracleError,
+            ) as exc:
                 raise EvidenceError(
                     f"source oracle derivation failed for {task_id}: {exc}"
                 ) from exc
@@ -1215,6 +1269,12 @@ def validate_suite(
                 if task["source_oracle"]["contract"] in source_oracle.DECLARATION_NAME_CONTRACTS
                 else []
             )
+            literal_spans = (
+                literal_index.spans(query)
+                if task["source_oracle"]["contract"]
+                == literal_source_oracle.CONTENT_LITERAL_UTF8_EXACT
+                else []
+            )
         seen_labels = set()
         for label in labels:
             block(
@@ -1226,7 +1286,17 @@ def validate_suite(
                 allow_grade=True,
             )
             if "source_oracle" in task:
-                if oracle_spans:
+                if (
+                    task["source_oracle"]["contract"]
+                    == literal_source_oracle.CONTENT_LITERAL_UTF8_EXACT
+                ):
+                    matched = any(
+                        path == label["path"]
+                        and label["start_byte"] <= start
+                        and end <= label["end_byte"]
+                        for path, start, end in literal_spans
+                    )
+                elif oracle_spans:
                     matched = any(
                         path == label["path"]
                         and label["start_byte"] <= name_start
@@ -1251,7 +1321,7 @@ def validate_suite(
             require(
                 labels
                 == source_oracle_gold(
-                    source, oracle_index, task["source_oracle"]["contract"], query
+                    source, active_oracle, task["source_oracle"]["contract"], query
                 ),
                 f"source oracle gold differs from canonical first match: {task_id}",
             )
@@ -1524,6 +1594,15 @@ def _validate_run(
             "capture_id must be a nonempty string",
         )
         validate_capture(entry, f"captures.{capture_id}", version)
+        if (
+            version == 5
+            and entry["system"] == "quanta"
+            and entry["execution_profile"]["policy"] == "code_search_exact_content_file"
+        ):
+            require(
+                entry["source_revision_id"] == suite["repository_commit"],
+                f"captures.{capture_id}.source_revision_id differs from frozen repository",
+            )
     if span_protocol == 1:
         require(
             any(entry["system"] == "quanta" for entry in captures.values()),
@@ -1549,6 +1628,13 @@ def _validate_run(
         require(
             capture_id in captures,
             f"route_provenance.{route} references unknown capture_id: {capture_id}",
+        )
+    if any(task.get("query_intent") == "exact_content" for task in suite["tasks"]):
+        require(
+            suite["routes"] == ["lexical"]
+            and captures[provenance["lexical"]["capture_id"]]["execution_profile"]["policy"]
+            == "code_search_exact_content_file",
+            "exact-content suite requires its bound Quanta request policy",
         )
     universe: set[str] | None = None
     if "file_universe" in suite:
@@ -1830,6 +1916,13 @@ def _validate_run(
                 allow_span_accounting=version == 5 and capture["system"] == "quanta",
                 allow_score=score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1"),
             )
+            if profile_policy == "code_search_exact_content_file":
+                accounting = candidate["span_accounting"]
+                require(
+                    accounting["source_repo_id"] == capture["source_repo_id"]
+                    and accounting["source_revision_id"] == capture["source_revision_id"],
+                    f"exact-content candidate source pin differs from capture: {key}",
+                )
             if score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1"):
                 require("score" in candidate, f"missing native SDK score for {key}")
                 score = float(candidate["score"])

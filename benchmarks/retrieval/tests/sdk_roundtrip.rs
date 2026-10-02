@@ -32,7 +32,7 @@ use quanta_index_retrieval_bench::record::{
 };
 use quanta_index_retrieval_bench::sdk::{
     DaemonConfig, DaemonSession, QueryOutcome, RouteQuery, publish_and_activate, query_route,
-    resolve_searchd_binary,
+    query_route_with_policy, resolve_searchd_binary,
 };
 use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, sha256_hex};
@@ -342,6 +342,7 @@ fn assemble_fixture_batch(
             expected_base_event_id: None,
             payload_sha256: [0; 32],
         },
+        true,
     )
 }
 
@@ -521,26 +522,32 @@ fn literal_file_public_route_groups_before_top_k_and_records_distinct_files() {
         &NlPlanConfig::default(),
     )
     .expect("file plan");
-    let outcome = query_route(&RouteQuery {
-        client: session.client(),
-        route: "lexical",
-        lexical_request: &plan.lexical_request,
-        semantic_text: &plan.semantic_text,
-        repo_id: &identity.repo_id,
-        revision_id: &identity.revision_id,
-        generation: identity.generation,
-        top_k: 10,
-    });
-    let repeated_outcome = query_route(&RouteQuery {
-        client: session.client(),
-        route: "lexical",
-        lexical_request: &plan.lexical_request,
-        semantic_text: &plan.semantic_text,
-        repo_id: &identity.repo_id,
-        revision_id: &identity.revision_id,
-        generation: identity.generation,
-        top_k: 10,
-    });
+    let outcome = query_route_with_policy(
+        &RouteQuery {
+            client: session.client(),
+            route: "lexical",
+            lexical_request: &plan.lexical_request,
+            semantic_text: &plan.semantic_text,
+            repo_id: &identity.repo_id,
+            revision_id: &identity.revision_id,
+            generation: identity.generation,
+            top_k: 10,
+        },
+        QueryInputPolicy::LiteralFile,
+    );
+    let repeated_outcome = query_route_with_policy(
+        &RouteQuery {
+            client: session.client(),
+            route: "lexical",
+            lexical_request: &plan.lexical_request,
+            semantic_text: &plan.semantic_text,
+            repo_id: &identity.repo_id,
+            revision_id: &identity.revision_id,
+            generation: identity.generation,
+            top_k: 10,
+        },
+        QueryInputPolicy::LiteralFile,
+    );
     let mut paged_paths = Vec::new();
     let mut page = session
         .client()
@@ -696,16 +703,19 @@ fn keyword_and_substring_file_public_routes_group_order_scope_and_case() {
         .collect();
     let run = |policy: QueryInputPolicy, raw: &str, top_k: u32| {
         let plan = plan_query(policy, raw, &NlPlanConfig::default()).expect("file plan");
-        let outcome = query_route(&RouteQuery {
-            client: session.client(),
-            route: "lexical",
-            lexical_request: &plan.lexical_request,
-            semantic_text: &plan.semantic_text,
-            repo_id: &identity.repo_id,
-            revision_id: &identity.revision_id,
-            generation: identity.generation,
-            top_k,
-        });
+        let outcome = query_route_with_policy(
+            &RouteQuery {
+                client: session.client(),
+                route: "lexical",
+                lexical_request: &plan.lexical_request,
+                semantic_text: &plan.semantic_text,
+                repo_id: &identity.repo_id,
+                revision_id: &identity.revision_id,
+                generation: identity.generation,
+                top_k,
+            },
+            policy,
+        );
         (plan, outcome)
     };
     for (policy, raw, ordering) in [
@@ -1689,6 +1699,8 @@ fn real_daemon_roundtrip_publishes_and_queries() {
                 runner_binary_digest: sha256_hex(&runner_bytes),
                 searchd_binary_digest: sha256_hex(&searchd_bytes),
                 generation: identity.generation.get(),
+                source_repo_id: identity.repo_id.as_str().to_string(),
+                source_revision_id: identity.revision_id.as_str().to_string(),
                 receipt_digest: receipt_binding.clone(),
                 activation_digest: activation_binding.clone(),
                 model: model.to_string(),
@@ -1978,6 +1990,7 @@ fn incomplete_symbol_profile_publishes_malformed_text_and_refuses_symbol_authori
             expected_base_event_id: None,
             payload_sha256: [0; 32],
         },
+        true,
     )
     .expect("explicit incomplete admission");
     assert_eq!(assembly.scopes, 7);

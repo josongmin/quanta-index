@@ -45,6 +45,25 @@ class _Prepared:
     files: dict[str, bytes]
 
 
+@dataclass(frozen=True)
+class _Batch:
+    release: Path
+    capsule_root: Path
+    checkout_root: Path
+    document_raw: bytes
+    document: dict
+    names: tuple[str, ...]
+    split_raw: bytes
+    split_releases_raw: bytes
+    releases: dict[str, Path]
+    split_manifest: dict
+    documents: dict[str, dict]
+
+    @property
+    def verified_split(self) -> tuple[bytes, dict[str, Path], dict, dict[str, dict]]:
+        return self.split_raw, self.releases, self.split_manifest, self.documents
+
+
 def _read(path: Path) -> dict:
     value = parse_json(_read_control_file(path).decode("utf-8"))
     if not isinstance(value, dict):
@@ -418,19 +437,10 @@ def derive(release: Path, capsule: Path, checkout: Path, intent: str) -> tuple[d
     return suite, pack, report
 
 
-def derive_matrix(
-    release: Path, capsule_root: Path, checkout_root: Path, *, expected_repositories: int = 12
-) -> dict:
-    """Admit all declaration intents without publishing suites or product scores."""
-    tool_sources = {
-        "holdout_c4": Path(__file__),
-        "gold_oracle": Path(gold_oracle.__file__),
-        "source_oracle": Path(source_oracle.__file__),
-        "query_plan": Path(query_plan.__file__),
-        "evaluator": Path(evaluator.__file__),
-        "corpus_binding": Path(corpus_binding.__file__),
-    }
-    source_digests = {name: digest_bytes(path.read_bytes()) for name, path in tool_sources.items()}
+def _batch_preflight(
+    release: Path, capsule_root: Path, checkout_root: Path, expected_repositories: int
+) -> _Batch:
+    """Validate the shared release roster and global split once per batch."""
     document_raw = _read_control_file(release / "release.json")
     document = parse_json(document_raw.decode("utf-8"))
     if not isinstance(document, dict) or not isinstance(document.get("repositories"), list):
@@ -446,20 +456,114 @@ def derive_matrix(
     capsule_names = {path.name for path in capsule_root.iterdir() if path.is_dir()}
     if capsule_names != set(names) or any(path.is_symlink() for path in capsule_root.iterdir()):
         raise ValueError("C4 matrix capsule roster differs from release")
-    first = capsule_root / sorted(names)[0]
+    first = capsule_root / min(names)
     split_raw = _read_control_file(first / "split-manifest.json")
-    releases = corpus_binding._split_releases(_read(first / "split-releases.json"))
-    manifest, documents = corpus_binding._validated_split_manifest(split_raw, releases)
+    split_releases_raw = _read_control_file(first / "split-releases.json")
+    parsed_releases = parse_json(split_releases_raw.decode("utf-8"))
+    if not isinstance(parsed_releases, dict):
+        raise ValueError("C4 matrix split releases are malformed")
+    releases = corpus_binding._split_releases(parsed_releases)
+    split_manifest, documents = corpus_binding._validated_split_manifest(split_raw, releases)
     if releases.get(document["digest"]) != release or documents[document["digest"]] != document:
         raise ValueError("C4 matrix validated release differs")
-    verified_split = (split_raw, releases, manifest, documents)
-    cells = []
-    for name in sorted(names):
-        prepared = _prepare(
-            release, capsule_root / name, checkout_root / name, verified_split=verified_split
+    return _Batch(
+        release,
+        capsule_root,
+        checkout_root,
+        document_raw,
+        document,
+        tuple(sorted(names)),
+        split_raw,
+        split_releases_raw,
+        releases,
+        split_manifest,
+        documents,
+    )
+
+
+def _batch_prepare(batch: _Batch, name: str) -> _Prepared:
+    if name not in batch.names:
+        raise ValueError("C4 matrix capsule is outside release roster")
+    capsule = batch.capsule_root / name
+    if (
+        _read_control_file(capsule / "split-manifest.json") != batch.split_raw
+        or _read_control_file(capsule / "split-releases.json") != batch.split_releases_raw
+    ):
+        raise ValueError("C4 matrix capsule split differs")
+    prepared = _prepare(
+        batch.release,
+        capsule,
+        batch.checkout_root / name,
+        verified_split=batch.verified_split,
+    )
+    if prepared.selection["repository"] != name:
+        raise ValueError("C4 matrix capsule/repository mismatch")
+    return prepared
+
+
+def _batch_recheck(
+    batch: _Batch,
+    prepared_rows: list[_Prepared],
+    tool_sources: dict[str, Path],
+    source_digests: dict[str, str],
+) -> None:
+    """Reopen cached source and every input before publishing batch artifacts."""
+    if len(prepared_rows) != len(batch.names) or {
+        row.selection["repository"] for row in prepared_rows
+    } != set(batch.names):
+        raise ValueError("C4 matrix prepared repository roster differs")
+    for prepared in prepared_rows:
+        fresh = evaluator.SourceSnapshot(
+            batch.checkout_root / prepared.selection["repository"],
+            prepared.manifest["repository_commit"],
         )
-        if prepared.selection["repository"] != name:
-            raise ValueError("C4 matrix capsule/repository mismatch")
+        evaluator.validate_file_universe(fresh, prepared.manifest["files"])
+        if (
+            hashlib.sha256(_read_control_file(prepared.capsule / "identity.json")).hexdigest()
+            != prepared.identity_sha256
+            or _read_control_file(prepared.capsule / "split-manifest.json") != batch.split_raw
+            or _read_control_file(prepared.capsule / "split-releases.json")
+            != batch.split_releases_raw
+            or _read_control_file(batch.release / prepared.row["views"]["code_only"]["manifest"])
+            != prepared.manifest_raw
+        ):
+            raise ValueError("C4 matrix input changed during admission")
+        for file_name in ("selection.json", "recipe.json", "gold.json", "blind.json"):
+            if prepared.identity["files"][file_name] != digest_bytes(
+                _read_control_file(prepared.capsule / file_name)
+            ):
+                raise ValueError("C4 matrix capsule changed during admission")
+    if (
+        _read_control_file(batch.release / "release.json") != batch.document_raw
+        or corpus_binding.validate_split_manifest(batch.split_raw, batch.releases)
+        != batch.split_manifest
+        or any(
+            digest_bytes(path.read_bytes()) != source_digests[name]
+            for name, path in tool_sources.items()
+        )
+    ):
+        raise ValueError("C4 matrix split or tool source changed during admission")
+
+
+def derive_matrix(
+    release: Path, capsule_root: Path, checkout_root: Path, *, expected_repositories: int = 12
+) -> dict:
+    """Admit all declaration intents without publishing suites or product scores."""
+    tool_sources = {
+        "holdout_c4": Path(__file__),
+        "gold_oracle": Path(gold_oracle.__file__),
+        "source_oracle": Path(source_oracle.__file__),
+        "query_plan": Path(query_plan.__file__),
+        "evaluator": Path(evaluator.__file__),
+        "corpus_binding": Path(corpus_binding.__file__),
+    }
+    source_digests = {name: digest_bytes(path.read_bytes()) for name, path in tool_sources.items()}
+    batch = _batch_preflight(release, capsule_root, checkout_root, expected_repositories)
+    cells = []
+    prepared_rows = []
+    for name in batch.names:
+        prepared = _batch_prepare(batch, name)
+        prepared_rows.append(prepared)
         language = prepared.row["recipe"]["language"]
         for intent in MATRIX_INTENTS:
             candidate_ids = [
@@ -509,41 +613,17 @@ def derive_matrix(
                     "blind_pack_sha256": pack_sha,
                 }
             )
-        # SourceSnapshot caches bytes. Reopen the frozen source before publishing.
-        fresh = evaluator.SourceSnapshot(
-            checkout_root / name, prepared.manifest["repository_commit"]
-        )
-        evaluator.validate_file_universe(fresh, prepared.manifest["files"])
-        if (
-            hashlib.sha256(_read_control_file(prepared.capsule / "identity.json")).hexdigest()
-            != prepared.identity_sha256
-            or _read_control_file(release / "release.json") != document_raw
-            or _read_control_file(release / prepared.row["views"]["code_only"]["manifest"])
-            != prepared.manifest_raw
-        ):
-            raise ValueError("C4 matrix input changed during admission")
-        for file_name in ("selection.json", "recipe.json", "gold.json", "blind.json"):
-            if prepared.identity["files"][file_name] != digest_bytes(
-                _read_control_file(prepared.capsule / file_name)
-            ):
-                raise ValueError("C4 matrix capsule changed during admission")
-    if corpus_binding.validate_split_manifest(split_raw, releases) != manifest:
-        raise ValueError("C4 matrix split changed during admission")
-    if any(
-        digest_bytes(path.read_bytes()) != source_digests[name]
-        for name, path in tool_sources.items()
-    ):
-        raise ValueError("C4 matrix tool source changed during admission")
+    _batch_recheck(batch, prepared_rows, tool_sources, source_digests)
     return {
         "schema_version": 1,
         "status": "diagnostic_unqualified",
         "product_capture": False,
         "qualified_default_search_conformance": False,
-        "release_digest": document["digest"],
-        "release_document_sha256": digest_bytes(document_raw),
-        "split_manifest_sha256": hashlib.sha256(split_raw).hexdigest(),
+        "release_digest": batch.document["digest"],
+        "release_document_sha256": digest_bytes(batch.document_raw),
+        "split_manifest_sha256": hashlib.sha256(batch.split_raw).hexdigest(),
         "tool_source_sha256": source_digests,
-        "repository_count": len(names),
+        "repository_count": len(batch.names),
         "intent_count": len(MATRIX_INTENTS),
         "cells": cells,
     }

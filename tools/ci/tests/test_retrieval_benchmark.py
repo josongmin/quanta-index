@@ -13774,9 +13774,16 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
     profile = qp.execution_profile(policy)
     run["captures"]["q0"]["execution_profile"] = profile
     run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    if policy == "code_search_exact_content_file":
+        run["captures"]["q0"]["source_repo_id"] = "bench-repo"
+        run["captures"]["q0"]["source_revision_id"] = suite["repository_commit"]
     run["route_provenance"] = {"lexical": {"capture_id": "q0"}}
     run["results"] = [row for row in run["results"] if row["route"] == "lexical"]
-    if policy in ("code_search_file", "code_search_typo_file"):
+    if policy in (
+        "code_search_file",
+        "code_search_exact_content_file",
+        "code_search_typo_file",
+    ):
         run["span_accounting_version"] = 1
     for task, row in zip(suite["tasks"], run["results"], strict=True):
         row["rank_unit"] = "distinct_file"
@@ -13788,7 +13795,11 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
         by_file = {}
         for item in row["candidates"]:
             by_file.setdefault(item["path"], item)
-        if policy in ("code_search_file", "code_search_typo_file"):
+        if policy in (
+            "code_search_file",
+            "code_search_exact_content_file",
+            "code_search_typo_file",
+        ):
             repo_bytes = b"bench-repo"
             for path, item in by_file.items():
                 path_bytes = path.encode("utf-8")
@@ -13819,7 +13830,11 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
                         "sdk_end_line": 0,
                         "extra_context_bytes": 0,
                         "source_repo_id": repo_bytes.decode(),
-                        "source_revision_id": "bench-revision",
+                        "source_revision_id": (
+                            suite["repository_commit"]
+                            if policy == "code_search_exact_content_file"
+                            else "bench-revision"
+                        ),
                         "preview_kind": "path",
                         "preview_start_byte": None,
                         "preview_end_byte": None,
@@ -14107,6 +14122,75 @@ def test_code_search_file_policy_binds_syntax_scores_and_file_unit(tmp_path):
     forged_unit["results"][0]["candidates"][0]["span_accounting"]["unit_kind"] = "chunk"
     with pytest.raises(ev.EvidenceError):
         record_v3(repo, suite, forged_unit, suite_path, runner_path)
+
+
+def test_exact_content_file_policy_binds_request_unit_score_and_source(tmp_path):
+    policy = "code_search_exact_content_file"
+    raw = 'say("can\'t\\skip")'
+    request = qp.plan_lexical_request(policy, raw)
+    assert request == 'content:"say(\\"can\'t\\\\skip\\")" case:yes'
+    assert qp.execution_profile(policy)["profile_id"] == (
+        "quanta-code-search-exact-content-file-v1"
+    )
+    assert qp.derive_query_identity(policy, raw)["effective_lexical_request_sha256"] == (
+        qp.code_search_effective_request_sha256(request)
+    )
+    assert qp.derive_query_identity(policy, raw) != qp.derive_query_identity(
+        "code_search_file", "alphaTwo"
+    )
+    for invalid in ("", "e\u0301", "line\nbreak", "x" * 257):
+        with pytest.raises(qp.QueryPlanError):
+            qp.plan_lexical_request(policy, invalid)
+
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path, policy, queries=[raw, "content:case:yes"]
+    )
+    for row in run["results"]:
+        row["score_evidence"] = "native_sdk_score_v1"
+        for index, candidate in enumerate(row["candidates"]):
+            candidate["score"] = float(len(row["candidates"]) - index)
+    _pack, run = _repack(repo, suite, run)
+    jsonschema.validate(run, _load_schema("runner.schema.json"))
+    missing_pin = copy.deepcopy(run)
+    del missing_pin["captures"]["q0"]["source_revision_id"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_pin, _load_schema("runner.schema.json"))
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    route = ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)["judgment_metrics"][
+        "file_judgments"
+    ]["routes"]["lexical"]
+    assert (route["rank_unit"], route["ordering"], route["score_evidence"]) == (
+        "distinct_file",
+        "score_desc_path_tiebreak",
+        "native_sdk_score_v1",
+    )
+
+    forged = copy.deepcopy(run)
+    forged["results"][0]["query_identity"] = qp.derive_query_identity(
+        "code_search_file", "alphaTwo"
+    )
+    with pytest.raises(ev.EvidenceError, match="independently re-derived plan"):
+        record_v3(repo, suite, forged, suite_path, runner_path)
+    forged = copy.deepcopy(run)
+    forged["results"][0]["rank_unit"] = "symbol"
+    with pytest.raises(ev.EvidenceError, match="requires lexical distinct_file"):
+        record_v3(repo, suite, forged, suite_path, runner_path)
+    forged = copy.deepcopy(run)
+    forged["results"][0]["candidates"][-1]["score"] = 100.0
+    with pytest.raises(ev.EvidenceError, match="score/path order is invalid"):
+        record_v3(repo, suite, forged, suite_path, runner_path)
+    forged = copy.deepcopy(run)
+    forged["results"][0]["candidates"][0]["span_accounting"]["source_repo_id"] = "wrong"
+    with pytest.raises(ev.EvidenceError, match="file identity digest mismatch"):
+        record_v3(repo, suite, forged, suite_path, runner_path)
+    forged = copy.deepcopy(run)
+    forged["results"][0]["candidates"][0]["span_accounting"]["source_revision_id"] = "wrong"
+    with pytest.raises(ev.EvidenceError, match="source pin"):
+        record_v3(repo, suite, forged, suite_path, runner_path)
+    forged = copy.deepcopy(run)
+    forged["captures"]["q0"]["source_revision_id"] = "wrong"
+    with pytest.raises(ev.EvidenceError, match="frozen repository"):
+        record_v3(repo, suite, forged, suite_path, runner_path)
 
 
 def test_code_search_typo_file_policy_binds_distinct_request_and_file_unit(tmp_path):

@@ -26,6 +26,9 @@
 //! * `code_search_file` — the raw text is submitted through the public
 //!   `code_search` syntax. File projection and scored ordering are part of
 //!   that product contract, not an injected Native LQ operator.
+//! * `code_search_exact_content_file` — one printable NFC UTF-8 needle is
+//!   escaped into a case-sensitive content-only CodeSearch literal. It uses
+//!   the same public file-ranking route as `code_search_file`.
 //! * `code_search_typo_file` — one bare ASCII identifier of 3..=64 bytes is submitted as
 //!   `typo:<identifier>` through the public `code_search` syntax. The raw
 //!   query and effective request keep distinct identities.
@@ -82,6 +85,7 @@ pub const fn ordering_contract(policy: QueryInputPolicy) -> Option<&'static str>
     match policy {
         QueryInputPolicy::KeywordFile
         | QueryInputPolicy::CodeSearchFile
+        | QueryInputPolicy::CodeSearchExactContentFile
         | QueryInputPolicy::CodeSearchTypoFile => Some(ORDERING_SCORE_DESC),
         QueryInputPolicy::LiteralFile | QueryInputPolicy::SubstringFile => {
             Some(ORDERING_PATH_ORDER)
@@ -102,6 +106,7 @@ pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
         QueryInputPolicy::KeywordFile => "quanta-keyword-file-v1",
         QueryInputPolicy::SubstringFile => "quanta-substring-file-v1",
         QueryInputPolicy::CodeSearchFile => "quanta-code-search-file-v1",
+        QueryInputPolicy::CodeSearchExactContentFile => "quanta-code-search-exact-content-file-v1",
         QueryInputPolicy::CodeSearchTypoFile => "quanta-code-search-typo-file-v1",
         QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v2",
         QueryInputPolicy::ExactSymbolName => "quanta-exact-symbol-name-v1",
@@ -123,6 +128,8 @@ pub enum QueryInputPolicy {
     SubstringFile,
     /// Public product code-search syntax, with scored distinct-file results.
     CodeSearchFile,
+    /// Case-sensitive exact content literal through public CodeSearch.
+    CodeSearchExactContentFile,
     /// Explicit code-search typo mode, scored as distinct files.
     CodeSearchTypoFile,
     /// Keep the raw query for the semantic lane and derive a deterministic
@@ -147,6 +154,7 @@ impl QueryInputPolicy {
             "keyword_file" => Ok(Self::KeywordFile),
             "substring_file" => Ok(Self::SubstringFile),
             "code_search_file" => Ok(Self::CodeSearchFile),
+            "code_search_exact_content_file" => Ok(Self::CodeSearchExactContentFile),
             "code_search_typo_file" => Ok(Self::CodeSearchTypoFile),
             "natural_language" => Ok(Self::NaturalLanguage),
             "exact_symbol_name" => Ok(Self::ExactSymbolName),
@@ -164,6 +172,7 @@ impl QueryInputPolicy {
             Self::KeywordFile => "keyword_file",
             Self::SubstringFile => "substring_file",
             Self::CodeSearchFile => "code_search_file",
+            Self::CodeSearchExactContentFile => "code_search_exact_content_file",
             Self::CodeSearchTypoFile => "code_search_typo_file",
             Self::NaturalLanguage => "natural_language",
             Self::ExactSymbolName => "exact_symbol_name",
@@ -258,6 +267,8 @@ pub enum QueryPlanError {
     InvalidSubstring { reason: &'static str },
     /// Code-search input is empty or exceeds the public query byte cap.
     InvalidCodeSearch,
+    /// Exact-content CodeSearch input cannot preserve the raw UTF-8 gold.
+    InvalidCodeSearchExactContent,
     /// The typo profile requires a bare ASCII identifier of 3..=64 bytes.
     InvalidCodeSearchTypo,
 }
@@ -278,6 +289,7 @@ impl QueryPlanError {
             Self::InvalidKeyword => "RBR_QUERY_KEYWORD_INVALID",
             Self::InvalidSubstring { .. } => "RBR_QUERY_SUBSTRING_INVALID",
             Self::InvalidCodeSearch => "RBR_QUERY_CODE_SEARCH_INVALID",
+            Self::InvalidCodeSearchExactContent => "RBR_QUERY_CODE_SEARCH_EXACT_CONTENT_INVALID",
             Self::InvalidCodeSearchTypo => "RBR_QUERY_CODE_SEARCH_TYPO_INVALID",
         }
     }
@@ -332,6 +344,10 @@ impl std::fmt::Display for QueryPlanError {
                 write!(f, "substring-file policy refused the fragment: {reason}")
             }
             Self::InvalidCodeSearch => write!(f, "code-search-file policy refused the query"),
+            Self::InvalidCodeSearchExactContent => write!(
+                f,
+                "code-search exact-content policy requires nonempty NFC printable UTF-8 of at most 256 bytes"
+            ),
             Self::InvalidCodeSearchTypo => write!(
                 f,
                 "code-search-typo-file policy requires one bare ASCII identifier of 3..=64 bytes"
@@ -398,6 +414,12 @@ pub fn policy_config_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) 
              \"policy\":\"code_search_file\",\"projection\":\"file\",\"scope\":\"content_and_path\",\
              \"syntax\":\"{CODE_SEARCH_SYNTAX}\"}}"
         ),
+        QueryInputPolicy::CodeSearchExactContentFile => format!(
+            "{{\"case\":\"sensitive\",\"escaping\":\"code_search_quoted_literal\",\"match\":\"literal_utf8_exact\",\
+             \"max_bytes\":{MAX_CODE_SEARCH_TERM_BYTES},\"ordering\":\"{ORDERING_SCORE_DESC}\",\
+             \"policy\":\"code_search_exact_content_file\",\"projection\":\"file\",\"scope\":\"content\",\
+             \"syntax\":\"{CODE_SEARCH_SYNTAX}\"}}"
+        ),
         QueryInputPolicy::CodeSearchTypoFile => format!(
             "{{\"case\":\"folded\",\"match\":\"identifier_typo_v1\",\"max_bytes\":{MAX_CODE_SEARCH_TYPO_BYTES},\
              \"min_bytes\":{MIN_CODE_SEARCH_TYPO_BYTES},\"ordering\":\"{ORDERING_SCORE_DESC}\",\
@@ -432,6 +454,7 @@ pub fn execution_profile_canonical(policy: QueryInputPolicy, config: &NlPlanConf
         | QueryInputPolicy::KeywordFile
         | QueryInputPolicy::SubstringFile
         | QueryInputPolicy::CodeSearchFile
+        | QueryInputPolicy::CodeSearchExactContentFile
         | QueryInputPolicy::CodeSearchTypoFile
         | QueryInputPolicy::ExactSymbolName => format!(
             "{{\"config\":{{}},\"planning_cost_in_latency\":false,\"policy\":\"{}\",\
@@ -459,6 +482,7 @@ pub fn execution_profile_value(
         | QueryInputPolicy::KeywordFile
         | QueryInputPolicy::SubstringFile
         | QueryInputPolicy::CodeSearchFile
+        | QueryInputPolicy::CodeSearchExactContentFile
         | QueryInputPolicy::CodeSearchTypoFile
         | QueryInputPolicy::ExactSymbolName => serde_json::json!({}),
     };
@@ -504,7 +528,9 @@ pub fn literalize(raw: &str) -> String {
 pub fn effective_request_sha256(policy: QueryInputPolicy, lexical_request: &str) -> String {
     if matches!(
         policy,
-        QueryInputPolicy::CodeSearchFile | QueryInputPolicy::CodeSearchTypoFile
+        QueryInputPolicy::CodeSearchFile
+            | QueryInputPolicy::CodeSearchExactContentFile
+            | QueryInputPolicy::CodeSearchTypoFile
     ) {
         let wire = serde_json::json!({
             "query_text": lexical_request,
@@ -635,6 +661,16 @@ pub fn plan_query(
             validate_code_search_benchmark_input(raw)?;
             raw.to_string()
         }
+        QueryInputPolicy::CodeSearchExactContentFile => {
+            if raw.is_empty()
+                || raw.len() > MAX_CODE_SEARCH_TERM_BYTES
+                || raw.chars().any(char::is_control)
+                || nfc(raw).as_ref() != raw
+            {
+                return Err(QueryPlanError::InvalidCodeSearchExactContent);
+            }
+            format!("content:{} case:yes", literalize(raw))
+        }
         QueryInputPolicy::CodeSearchTypoFile => {
             if !valid_code_search_typo_identifier(raw) {
                 return Err(QueryPlanError::InvalidCodeSearchTypo);
@@ -688,7 +724,9 @@ pub fn plan_query(
     // misread literal operator words and never prove the product request.
     if !matches!(
         policy,
-        QueryInputPolicy::CodeSearchFile | QueryInputPolicy::CodeSearchTypoFile
+        QueryInputPolicy::CodeSearchFile
+            | QueryInputPolicy::CodeSearchExactContentFile
+            | QueryInputPolicy::CodeSearchTypoFile
     ) {
         let parsed = validate_lexical_request(&lexical_request)?;
         // The request must parse back to exactly the one leaf the policy built:
@@ -731,6 +769,7 @@ pub fn plan_query(
             | QueryInputPolicy::KeywordFile
             | QueryInputPolicy::SubstringFile
             | QueryInputPolicy::CodeSearchFile
+            | QueryInputPolicy::CodeSearchExactContentFile
             | QueryInputPolicy::CodeSearchTypoFile
             | QueryInputPolicy::NaturalLanguage
             | QueryInputPolicy::ExactSymbolName => {}
@@ -1135,6 +1174,49 @@ mod tests {
                 plan_query(QueryInputPolicy::CodeSearchFile, raw, &config),
                 Err(QueryPlanError::InvalidCodeSearch)
             ));
+        }
+    }
+
+    #[test]
+    fn exact_content_file_uses_public_code_search_with_distinct_request_identity() {
+        let config = NlPlanConfig::default();
+        let raw = "say(\"can't\\skip\")";
+        let plan = plan_query(QueryInputPolicy::CodeSearchExactContentFile, raw, &config)
+            .expect("printable NFC literal");
+        assert_eq!(plan.original, raw);
+        assert_eq!(
+            plan.lexical_request,
+            r#"content:"say(\"can't\\skip\")" case:yes"#
+        );
+        assert_eq!(plan.semantic_text, raw);
+        assert_eq!(ordering_contract(plan.policy), Some(ORDERING_SCORE_DESC));
+        assert_eq!(
+            plan.effective_lexical_request_sha256,
+            effective_request_sha256(plan.policy, &plan.lexical_request)
+        );
+        assert_ne!(
+            plan.effective_lexical_request_sha256,
+            sha256_hex(plan.lexical_request.as_bytes())
+        );
+        assert_eq!(
+            execution_profile_id(plan.policy),
+            "quanta-code-search-exact-content-file-v1"
+        );
+        assert_eq!(
+            QueryInputPolicy::parse("code_search_exact_content_file"),
+            Ok(QueryInputPolicy::CodeSearchExactContentFile)
+        );
+        for invalid in ["", "e\u{301}", "line\nbreak", "x\u{0}y", &"x".repeat(257)] {
+            assert_eq!(
+                plan_query(
+                    QueryInputPolicy::CodeSearchExactContentFile,
+                    invalid,
+                    &config
+                )
+                .unwrap_err()
+                .code(),
+                "RBR_QUERY_CODE_SEARCH_EXACT_CONTENT_INVALID"
+            );
         }
     }
 

@@ -60,7 +60,7 @@ fn print_help() -> BenchResult<()> {
         .write_all(
             b"quanta-index-retrieval-bench run|chunk|preflight [flags]\n\
          \n\
-         run: manifest -> chunks -> real searchd publish/activate -> SDK queries -> v3 record\n\
+         run: manifest -> chunks -> real searchd publish/activate -> SDK queries -> v5 record\n\
          chunk: manifest -> chunks + coverage JSON (no daemon)\n\
          preflight: --repo PATH --manifest PATH --out PATH (all-file symbol census; no daemon)\n\
          [--symbol-coverage require-complete|allow-incomplete] (default require-complete)\n\
@@ -72,7 +72,7 @@ fn print_help() -> BenchResult<()> {
          fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
-         [--query-protocol PATH] [--query-input-policy native|literal|literal_file|keyword_file|substring_file|code_search_file|code_search_typo_file|natural_language|exact_symbol_name]\n\
+         [--query-protocol PATH] [--query-input-policy native|literal|literal_file|keyword_file|substring_file|code_search_file|code_search_exact_content_file|code_search_typo_file|natural_language|exact_symbol_name]\n\
          [--query-stage-observation enabled|disabled] (default enabled; server query stages only)\n\
          [--experimental-hybrid-fetch-floor 25|50|100] (default 100; explicit experimental startup policy)\n\
          --repo-id ID --revision-id ID --generation N\n\
@@ -316,6 +316,7 @@ fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
         | QueryPlanError::EmptyTokenPlan
         | QueryPlanError::InvalidKeyword
         | QueryPlanError::InvalidCodeSearch
+        | QueryPlanError::InvalidCodeSearchExactContent
         | QueryPlanError::InvalidCodeSearchTypo => serde_json::json!({}),
         QueryPlanError::InvalidSubstring { reason } => serde_json::json!({"reason": reason}),
         QueryPlanError::TokenLimitExceeded { tokens, max_tokens } => {
@@ -421,6 +422,7 @@ fn validate_policy_routes(policy: QueryInputPolicy, routes: &BTreeSet<&str>) -> 
             | QueryInputPolicy::KeywordFile
             | QueryInputPolicy::SubstringFile
             | QueryInputPolicy::CodeSearchFile
+            | QueryInputPolicy::CodeSearchExactContentFile
             | QueryInputPolicy::CodeSearchTypoFile
     ) && routes != &BTreeSet::from(["lexical"])
     {
@@ -428,6 +430,20 @@ fn validate_policy_routes(policy: QueryInputPolicy, routes: &BTreeSet<&str>) -> 
             "{} requires only the lexical route",
             policy.as_str()
         )));
+    }
+    Ok(())
+}
+
+fn validate_source_revision_for_policy(
+    policy: QueryInputPolicy,
+    revision_id: &str,
+    repository_commit: &str,
+) -> BenchResult<()> {
+    if policy == QueryInputPolicy::CodeSearchExactContentFile && revision_id != repository_commit {
+        return Err(BenchError::Protocol(
+            "exact-content source revision must equal the pinned manifest repository commit"
+                .to_string(),
+        ));
     }
     Ok(())
 }
@@ -852,6 +868,11 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     // has one accepted plan.
     let (policy, nl_plan_config, task_plans) = plan_query_pack(args, &pack, &refusal_out)?;
     validate_policy_routes(policy, &selected)?;
+    validate_source_revision_for_policy(
+        policy,
+        &required(args, "revision-id")?,
+        &manifest.repository_commit,
+    )?;
     let limits = CorpusLimits {
         max_file_bytes: optional_u64(
             args,
@@ -1078,6 +1099,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                     runner_binary_digest: runner_digest.clone(),
                     searchd_binary_digest: searchd_digest.clone(),
                     generation: identity.generation.get(),
+                    source_repo_id: identity.repo_id.as_str().to_string(),
+                    source_revision_id: identity.revision_id.as_str().to_string(),
                     receipt_digest: receipt_binding.clone(),
                     activation_digest: activation_binding.clone(),
                     model: model.to_string(),
@@ -1665,6 +1688,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exact_content_source_revision_must_match_manifest_commit() {
+        let commit = "a".repeat(40);
+        assert!(
+            validate_source_revision_for_policy(
+                QueryInputPolicy::CodeSearchExactContentFile,
+                &commit,
+                &commit
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_source_revision_for_policy(
+                QueryInputPolicy::CodeSearchExactContentFile,
+                "synthetic-revision",
+                &commit
+            )
+            .is_err()
+        );
+        assert!(
+            validate_source_revision_for_policy(
+                QueryInputPolicy::CodeSearchFile,
+                "synthetic-revision",
+                &commit
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn evidence_output_is_external_and_never_overwritten() {
         let parent = tempfile::tempdir().expect("tempdir");
         let repo = parent.path().join("repo");
@@ -1786,6 +1838,7 @@ mod tests {
             QueryInputPolicy::KeywordFile,
             QueryInputPolicy::SubstringFile,
             QueryInputPolicy::CodeSearchFile,
+            QueryInputPolicy::CodeSearchExactContentFile,
             QueryInputPolicy::CodeSearchTypoFile,
         ] {
             assert!(validate_policy_routes(policy, &lexical).is_ok());
@@ -1795,6 +1848,10 @@ mod tests {
             assert!(validate_policy_routes(QueryInputPolicy::KeywordFile, routes).is_err());
             assert!(validate_policy_routes(QueryInputPolicy::SubstringFile, routes).is_err());
             assert!(validate_policy_routes(QueryInputPolicy::CodeSearchFile, routes).is_err());
+            assert!(
+                validate_policy_routes(QueryInputPolicy::CodeSearchExactContentFile, routes)
+                    .is_err()
+            );
             assert!(validate_policy_routes(QueryInputPolicy::CodeSearchTypoFile, routes).is_err());
         }
     }
