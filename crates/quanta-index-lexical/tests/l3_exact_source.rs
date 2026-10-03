@@ -895,6 +895,65 @@ fn code_search_rank_study_keeps_declaration_usage_and_unknown_metadata_distinct(
 }
 
 #[test]
+fn code_search_rank_study_refuses_unverified_declaration_names_without_losing_literal_candidates()
+-> TestResult {
+    use quanta_index_core::LexicalCandidateExplanationV1;
+
+    let mut file = code_scope("wrong_name.rs", "fn needle() {}", 4)?;
+    // The legacy Unspecified producer contract admits a display name. That
+    // name cannot become source-verified declaration ranking evidence.
+    let mut symbol = scope(
+        "source-a",
+        "wrong_name.rs",
+        &[("wrong-name", "manufactured", "manufactured", None)],
+    )?
+    .symbols
+    .remove(0);
+    symbol.definition_span.byte_end = u32::try_from(file.source_bytes.len())?;
+    file.symbols.push(symbol);
+    file.coverage.symbols = SymbolCoverage::Complete { symbol_count: 1 };
+    file.coverage.unit_set_sha256 = source_file_unit_set_sha256(&file.chunks, &file.symbols)?;
+    let (_dir, searcher) = fixture_with_scopes(vec![file])?;
+    let query = code_query(&["needle"], false);
+    let page = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(
+        page.candidates.len(),
+        1,
+        "literal admission is independent of metadata"
+    );
+    let error = searcher
+        .explain_candidate(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &page.candidates[0].candidate_id,
+            &RequestBudgetV1::unbounded(),
+        )
+        .expect_err("unverified declaration evidence");
+    assert!(
+        matches!(error, quanta_index_core::CoreError::Storage(ref message)
+        if message.contains("declaration name is absent")),
+        "{error:?}"
+    );
+    // A normal no-match can still be decided without extracting features.
+    let other_query = code_query(&["absent token"], false);
+    assert!(matches!(
+        searcher.explain_candidate(
+            &other_query,
+            &QueryConstraintSetV1::default(),
+            &page.candidates[0].candidate_id,
+            &RequestBudgetV1::unbounded()
+        )?,
+        LexicalCandidateExplanationV1::NotMatched { .. }
+    ));
+    Ok(())
+}
+
+#[test]
 fn code_search_rank_study_recovers_original_boundaries_after_unicode_normalization() -> TestResult {
     use quanta_index_core::LexicalCandidateExplanationV1;
 

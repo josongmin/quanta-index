@@ -1159,7 +1159,7 @@ mod code_search_score_tests {
 
     #[test]
     fn code_search_ranker_hash_tracks_engine_without_selecting_experimental_weights() {
-        let plain = LqOptions::default();
+        let plain = LqOptions::defaults();
         let mut code = plain.clone();
         code.pattern_type = quanta_index_contract::LqPatternType::CodeSearch;
         let code_hash = ranker_weights_hash_v1(&code, RankerFusionV1::None);
