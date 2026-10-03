@@ -2033,8 +2033,8 @@ def _ps_process_snapshot() -> dict[int, tuple[int, str, str]] | None:
             return None
         if pid < 1 or ppid < 0 or pid in processes:
             return None
-        # lstart is five fields. Keep it with the PID so a reused PID whose
-        # command changes between pgrep and ps cannot be silently admitted.
+        # lstart is five fields. Retain the process identity observed with
+        # its parent and command in this single ps snapshot.
         started = " ".join(fields[2:7])
         argv = fields[7]
         if not started or not argv:
@@ -7030,6 +7030,51 @@ def _validate_isolation_proof(
     return result
 
 
+def _quanta_admission_model_revision(records) -> str:
+    """Derive model authority from bound routes, never an unused encoder option."""
+    identities: set[tuple[str, str]] = set()
+    observed = False
+    for record in records:
+        if not isinstance(record, dict):
+            raise RunError("Quanta admission model record is malformed")
+        captures = record.get("captures")
+        routes = record.get("route_provenance")
+        if not isinstance(captures, dict) or not isinstance(routes, dict) or not routes:
+            raise RunError("Quanta admission model lacks bound routes and captures")
+        bound_ids = set()
+        for route, binding in routes.items():
+            if route not in ("lexical", "symbol", "semantic", "hybrid") or not isinstance(
+                binding, dict
+            ):
+                raise RunError("Quanta admission model route is malformed")
+            capture_id = binding.get("capture_id")
+            if not isinstance(capture_id, str) or not isinstance(captures.get(capture_id), dict):
+                raise RunError("Quanta admission model route has no capture")
+            bound_ids.add(capture_id)
+            capture = captures[capture_id]
+            model, revision = capture.get("model"), capture.get("model_revision")
+            if route in ("lexical", "symbol"):
+                if (model, revision) != (f"none:{route}", "not-applicable"):
+                    raise RunError("Quanta no-model route has an invalid model identity")
+            else:
+                if (
+                    not isinstance(model, str)
+                    or not model.strip()
+                    or model.startswith("none:")
+                    or not isinstance(revision, str)
+                    or not revision.strip()
+                    or revision == "not-applicable"
+                ):
+                    raise RunError("Quanta modeled route lacks a real model identity")
+                identities.add((model, revision))
+            observed = True
+        if bound_ids != set(captures):
+            raise RunError("Quanta admission model has unbound captures")
+    if not observed or len(identities) > 1:
+        raise RunError("Quanta admission requires one consistent routed model identity")
+    return next(iter(identities))[1] if identities else "not-applicable"
+
+
 def _quanta_semantic_capture_identity_matches(
     validated: dict, selector: str, declared_quanta_routes: set[str]
 ) -> bool:
@@ -8212,15 +8257,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             annotation_paths = resolved.get("annotation_receipts")
             if not isinstance(annotation_paths, list):
                 raise RunError("qualified verdict lacks annotation receipts")
-            quanta_model_revisions = {
-                capture.get("model_revision")
+            quanta_model_revision = _quanta_admission_model_revision(
+                entry["run"]
                 for entry in validated.values()
                 if entry["rep"] == "rep-00" and entry["system"] == "quanta"
-                for capture in entry["run"]["captures"].values()
-                if capture.get("model_revision") != "not-applicable"
-            }
-            if len(quanta_model_revisions) != 1:
-                raise RunError("qualified verdict requires one Quanta model revision")
+            )
             if not isinstance(adapter, dict):
                 raise RunError("qualified verdict lacks the Semble adapter manifest")
             receipt_paths = {
@@ -8253,7 +8294,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 host_profile_path=resolved["host_profile"],
                 cache_regime=manifest["host"]["cache_regime"],
                 receipt_paths=receipt_paths,
-                quanta_model_revision=next(iter(quanta_model_revisions)),
+                quanta_model_revision=quanta_model_revision,
                 semble_model_revision=adapter.get("model_revision"),
                 semble_model_asset_sha256=adapter.get("model_asset_digest"),
             )
@@ -8864,7 +8905,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     ):
         set_state("QUALITY_DELTA", "fail", "file_quality_metric_mismatch", None)
         classes.append("scoring")
-    elif provenance_claims["quanta"].get("embedder") != "potion-code":
+    elif (
+        set(protocol_payload.get("quanta_routes", [])) & {"semantic", "hybrid"}
+        and provenance_claims["quanta"].get("embedder") != "potion-code"
+    ):
         # T10: non-default encoder controls lack a qualified quality gate.
         set_state("QUALITY_DELTA", "fail", "model_quality_embedder", None)
         classes.append("model")
@@ -10837,19 +10881,9 @@ def build_run_manifest(
         annotation_refs = admission_files["annotation_receipts"]
         if not isinstance(annotation_refs, list):
             raise RunError("frozen admission annotation receipts are malformed")
-        quanta_model_revisions = set()
-        for record_path in rep0["quanta"].values():
-            record = read_json(Path(record_path))
-            if not isinstance(record, dict) or not isinstance(record.get("captures"), dict):
-                raise RunError("qualified admission cannot inspect Quanta capture models")
-            for capture in record["captures"].values():
-                if not isinstance(capture, dict):
-                    raise RunError("qualified admission found a malformed Quanta capture")
-                revision = capture.get("model_revision")
-                if isinstance(revision, str) and revision != "not-applicable":
-                    quanta_model_revisions.add(revision)
-        if len(quanta_model_revisions) != 1:
-            raise RunError("qualified admission requires one Quanta model revision")
+        quanta_model_revision = _quanta_admission_model_revision(
+            read_json(Path(record_path)) for record_path in rep0["quanta"].values()
+        )
         admission = verify_admission_bundle(
             Path(str(admission_files["manifest"])),
             Path(str(admission_files["license_receipt"])),
@@ -10880,7 +10914,7 @@ def build_run_manifest(
                 for key in ("contract_python_receipt", "contract_rust_receipt", "sdk_receipt")
                 if key in frozen
             },
-            quanta_model_revision=next(iter(quanta_model_revisions)),
+            quanta_model_revision=quanta_model_revision,
             semble_model_revision=adapter_manifest.get("model_revision"),
             semble_model_asset_sha256=adapter_manifest.get("model_asset_digest"),
         )
