@@ -32,7 +32,8 @@ pub use ids::{
     ManifestGeneration, RepoId, RepoRelativePath, RepositoryRevisionIdentityV1, RevisionId,
 };
 pub use query::{
-    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, ExactRepoRelativePathV1, GenerationPin,
+    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE,
+    ExactRepoRelativePathV1, GenerationPin,
     GenerationSelector, INTERNAL_FETCH_CEILING, INTERNAL_FETCH_OUT_OF_RANGE_CODE,
     InternalFetchOutOfRangeV1, LanguageCode, LexicalCursor, LexicalRowOrderKey,
     MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, MAX_CODE_SEARCH_TYPO_BYTES,
@@ -40,6 +41,7 @@ pub use query::{
     QUERY_CURSOR_GENERATION_MISMATCH_CODE, QUERY_CURSOR_UNSUPPORTED_CODE,
     QueryConstraintIntersectionV1, QueryConstraintSetV1, TOP_K_OUT_OF_RANGE_CODE, TextQueryRequest,
     TextQuerySyntax, TopKOutOfRangeV1, continuation_fetch_size, valid_code_search_typo_identifier,
+    valid_code_search_component_query,
     validate_internal_fetch_size, validate_lexical_page_v1, validate_public_top_k,
 };
 pub use results::{

@@ -81,6 +81,7 @@ mod regex_match_cache;
 mod sealed_generation;
 
 pub mod symbol;
+mod symbol_components;
 
 mod text_authority;
 
@@ -221,6 +222,7 @@ struct SchemaFields {
     symbol_kind_family: Field,
     symbol_local_name: Field,
     symbol_local_name_folded: Field,
+    symbol_component_folded: Field,
     symbol_qualified_name: Field,
     symbol_qualified_name_folded: Field,
     symbol_local_name_original: Field,

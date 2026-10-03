@@ -13,6 +13,22 @@ pub const MAX_CODE_SEARCH_TERM_BYTES: usize = 256;
 
 /// Canonical LQ predicate used by the explicit product code-search typo mode.
 pub const CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE: &str = "code_search.identifier_typo";
+/// Canonical LQ predicate for an ordered symbol local-name component request.
+pub const CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE: &str = "code_search.symbol_components";
+
+/// Canonical operand for the explicit ordered local-name component search.
+#[must_use]
+pub fn valid_code_search_component_query(query: &str) -> bool {
+    let parts: Vec<_> = query.split(' ').collect();
+    (2..=MAX_CODE_SEARCH_TERMS).contains(&parts.len())
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.len() <= MAX_CODE_SEARCH_TERM_BYTES
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
+}
 pub const MIN_CODE_SEARCH_TYPO_BYTES: usize = 3;
 pub const MAX_CODE_SEARCH_TYPO_BYTES: usize = 64;
 

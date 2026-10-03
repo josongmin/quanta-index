@@ -118,6 +118,12 @@ pub(crate) fn add_symbol_fields(
         fields.symbol_local_name_folded,
         normalize::fold(local.as_ref()),
     );
+    for component in crate::symbol_components::name_components(local.as_ref())
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        doc.add_text(fields.symbol_component_folded, component);
+    }
     doc.add_text(fields.symbol_qualified_name, qualified.as_ref());
     doc.add_text(
         fields.symbol_qualified_name_folded,

@@ -184,3 +184,52 @@ query/gold equality to the explicit suites passed. The affected source-oracle
 and reporter tests passed 72/72, followed by Ruff check/format and
 `git diff --check`. This extends the diagnostic inputs, not the qualified
 five-product comparison.
+
+## Full Gin ordinary-input fallback diagnostic (2026-10-03)
+
+**VERIFIED, diagnostic only:** the clean `12fe7d9f` source was built with
+`--release --all-features`. The paired runner completed all five frozen Gin
+ordinary-input suites and every verdict reported `PAIR_VALID=pass` with no
+execution failures. An external checker independently joined suite file gold
+`(path, file_sha256)` to both native distinct-file records, checked all task
+IDs, hashes and report scores, and verified that all preexisting Quanta
+nonempty results retained their status and complete top-ten candidates.
+The checker output is
+`/private/tmp/qi-default-auto-12fe-20261003/gin-default-summary.json`
+(SHA-256 `74c8b9fd0c551beab556683a98b3edb2a97e232fbd9dbc83672cc7d6410b70e2`).
+
+| Lane | Quanta file Hit@10 | Semble file Hit@10 | Paired runner wall |
+| --- | ---: | ---: | ---: |
+| Clean | 1,187 / 1,196 | 1,190 / 1,196 | 380.307s |
+| Insertion | 1,176 / 1,192 | 1,036 / 1,192 | 362.509s |
+| Deletion | 1,158 / 1,178 | 1,004 / 1,178 | 532.454s |
+| Substitution | 1,174 / 1,192 | 1,034 / 1,192 | 782.490s |
+| Transposition | 1,171 / 1,192 | 967 / 1,192 | 756.744s |
+
+The five runner walls sum to 2,814.504 seconds and include repeated setup and
+indexing under concurrent builds. They are not comparable query-latency
+measurements. The four typo lanes share the original 1,196 query families;
+their rows are not independent samples. This mechanical intended-declaration
+file gold is not independently reviewed general-file relevance.
+
+The 84 Quanta misses across five lanes were inspected in the native rows:
+9 clean, 16 insertion, 20 deletion, 18 substitution and 21 transposition.
+Among the 75 typo-lane misses, 36 had a preexisting literal result, so the
+empty-result fallback was not entered; all such results were identical to the
+older ordinary-input records. The other 39 arose after the new fallback and
+returned ten files with `capped` status. A separate audit records every query,
+gold path, top-ten path and status in
+`/private/tmp/qi-default-auto-12fe-20261003/gin-miss-audit.json`
+(SHA-256 `c445ca2246549258b3c20bad9fe0f3d8130efc14aae4089d1e633e36fd1986e9`).
+An earlier explicit-OSA1 source sometimes hit misses with preexisting literal
+results; that is feasibility evidence from a different binary, not a causal
+effect estimate for merging candidate sets. Native ranks beyond ten remain
+unobserved.
+
+A separate source-checked Gin absence suite contained 99 casefold-substring
+absent queries. The new default route abstained on all 99 without error;
+the receipt is
+`/private/tmp/qi-default-auto-12fe-20261003/gin-absence-receipt.json`
+(SHA-256 `45b200ac6f8e9abc87841d6f324776ba65b184de137539a37a106eb27534a262`).
+Five-product matching, human relevance review, fresh holdout and qualified
+performance remain **NOT_RUN** for this diagnostic.

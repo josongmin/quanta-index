@@ -63,6 +63,7 @@ impl SchemaFields {
         let symbol_kind_family = builder.add_text_field("symbol_kind_family", STRING | STORED);
         let symbol_local_name = builder.add_text_field("symbol_local_name", STRING | STORED);
         let symbol_local_name_folded = builder.add_text_field("symbol_local_name_folded", STRING);
+        let symbol_component_folded = builder.add_text_field("symbol_component_folded", STRING);
         let symbol_qualified_name =
             builder.add_text_field("symbol_qualified_name", STRING | STORED);
         let symbol_qualified_name_folded =
@@ -104,6 +105,7 @@ impl SchemaFields {
             symbol_kind_family,
             symbol_local_name,
             symbol_local_name_folded,
+            symbol_component_folded,
             symbol_qualified_name,
             symbol_qualified_name_folded,
             symbol_local_name_original,

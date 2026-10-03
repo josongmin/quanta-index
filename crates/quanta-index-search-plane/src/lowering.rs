@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 
 use quanta_index_contract::{
-    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, LqCase, LqExpr, LqFilter, LqLeaf, LqMetaVar,
+    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, LqCase,
+    LqExpr, LqFilter, LqLeaf, LqMetaVar,
     LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqStructuralBlock, LqStructuralConstraint,
     LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleMultiplicity,
     LqStructuralHoleRef, LqStructuralNode, MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS,
     MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1, TextQueryRequest, TextQuerySyntax,
-    valid_code_search_typo_identifier,
+    valid_code_search_component_query, valid_code_search_typo_identifier,
 };
 use quanta_index_lq_bridge::{
     BridgeError, BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag, parse_sourcegraph,
@@ -83,8 +84,22 @@ pub(crate) fn lower_code_search_query_text(query_text: &str) -> Result<LqQuery, 
                 "typo: requires one ASCII identifier of 3..=64 bytes and cannot mix with other terms",
             ));
         }
-        if terms.iter().any(|term| matches!(term, LqExpr::Leaf(LqLeaf::Predicate { name, .. }) if name == CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE)) {
-            return Err(code_search_invalid("typo: cannot mix with other terms"));
+        if word.scope_prefix_before_quote
+            && let Some(value) = word.text.strip_prefix("components:")
+        {
+            if !terms.is_empty() || !valid_code_search_component_query(value) {
+                return Err(code_search_invalid(
+                    "components: requires 2..=32 lower-case ASCII words and cannot mix with other terms",
+                ));
+            }
+            terms.push(LqExpr::Leaf(LqLeaf::Predicate {
+                name: CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE.to_string(),
+                args: vec![LqPredicateArg::RawString(value.to_string())],
+            }));
+            continue;
+        }
+        if terms.iter().any(|term| matches!(term, LqExpr::Leaf(LqLeaf::Predicate { name, .. }) if name == CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE || name == CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE)) {
+            return Err(code_search_invalid("typed search mode cannot mix with other terms"));
         }
         let scoped = !word.quoted || word.scope_prefix_before_quote;
         let (scope, literal) = if scoped && let Some(value) = word.text.strip_prefix("content:") {
@@ -247,7 +262,7 @@ fn code_search_words(query_text: &str) -> Result<Vec<CodeSearchWord>, CoreError>
             in_regex = true;
             regex_delimited = true;
         } else if ch == '"' {
-            if !text.is_empty() && !matches!(text.as_str(), "content:" | "path:") {
+            if !text.is_empty() && !matches!(text.as_str(), "content:" | "path:" | "components:") {
                 return Err(code_search_invalid(
                     "quotes must start a term or scoped value",
                 ));
@@ -291,6 +306,7 @@ fn code_search_reserved_word(literal: &str) -> bool {
         "rev:",
         "regex:",
         "symbol:",
+        "components:",
         "patterntype:",
     ]
     .iter()
