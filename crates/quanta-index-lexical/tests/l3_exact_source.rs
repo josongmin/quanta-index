@@ -776,24 +776,33 @@ fn code_search_explanation_uses_the_same_file_score_outside_top_k() -> TestResul
         code_scope("last.rs", "needle", 3)?,
     ])?;
     let query = code_query(&["needle"], false);
-    let rows = searcher.search_constrained(
-        &query,
-        &QueryConstraintSetV1::default(),
-        &LexicalPageSpec::first(10),
-        &RequestBudgetV1::unbounded(),
-    )?.candidates;
+    let rows = searcher
+        .search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows.iter().map(|row| row.score).collect::<Vec<_>>(), vec![109.0, 105.0]);
+    assert_eq!(
+        rows.iter().map(|row| row.score).collect::<Vec<_>>(),
+        vec![109.0, 105.0]
+    );
     assert_eq!(rows[1].repo_relative_path.as_str(), "last.rs");
     for row in &rows {
         match searcher.explain_candidate(
-            &query, &QueryConstraintSetV1::default(), &row.candidate_id,
+            &query,
+            &QueryConstraintSetV1::default(),
+            &row.candidate_id,
             &RequestBudgetV1::unbounded(),
         )? {
             LexicalCandidateExplanationV1::Matched(trace) => {
                 assert_eq!(trace.emitted_score, row.score);
                 assert_eq!(trace.engine.as_str(), "code_search_file");
-                let components = trace.code_search_components.expect("native additive components");
+                let components = trace
+                    .code_search_components
+                    .expect("native additive components");
                 assert_eq!(f32::from(u16::try_from(components.total())?), row.score);
                 assert_eq!(components.boundary_and_path, 100);
                 assert_eq!(components.exact_case, 5);
@@ -809,28 +818,53 @@ fn code_search_rank_study_keeps_declaration_usage_and_unknown_metadata_distinct(
     use quanta_index_core::LexicalCandidateExplanationV1;
 
     let mut definition = code_scope("z_definition.rs", "fn needle() {}", 4)?;
-    let mut symbol = scope("source-a", "z_definition.rs",
-        &[("needle-definition", "needle", "needle", None)])?.symbols.remove(0);
+    let mut symbol = scope(
+        "source-a",
+        "z_definition.rs",
+        &[("needle-definition", "needle", "needle", None)],
+    )?
+    .symbols
+    .remove(0);
     symbol.definition_span.byte_end = u32::try_from(definition.source_bytes.len())?;
     definition.symbols.push(symbol);
     definition.coverage.symbols = SymbolCoverage::Complete { symbol_count: 1 };
-    definition.coverage.unit_set_sha256 = source_file_unit_set_sha256(&definition.chunks, &definition.symbols)?;
+    definition.coverage.unit_set_sha256 =
+        source_file_unit_set_sha256(&definition.chunks, &definition.symbols)?;
     let mut unknown = code_scope("unknown.rs", "needle", 3)?;
     unknown.coverage.symbols = SymbolCoverage::NotRequested;
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("a_usage_test.rs", "needle(); needle(); needle();", 5)?,
-        definition, unknown,
+        definition,
+        unknown,
     ])?;
     let query = code_query(&["needle"], false);
-    let rows = searcher.search_constrained(&query, &QueryConstraintSetV1::default(),
-        &LexicalPageSpec::first(10), &RequestBudgetV1::unbounded())?.candidates;
-    assert_eq!(rows.len(), 3, "optional metadata never removes a literal match");
+    let rows = searcher
+        .search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(
+        rows.len(),
+        3,
+        "optional metadata never removes a literal match"
+    );
     let mut proposed = Vec::new();
     for row in &rows {
         let LexicalCandidateExplanationV1::Matched(trace) = searcher.explain_candidate(
-            &query, &QueryConstraintSetV1::default(), &row.candidate_id,
-            &RequestBudgetV1::unbounded())? else { panic!("matching source must be explained") };
-        let study = trace.code_search_rank_study.expect("native diagnostic ablation");
+            &query,
+            &QueryConstraintSetV1::default(),
+            &row.candidate_id,
+            &RequestBudgetV1::unbounded(),
+        )?
+        else {
+            panic!("matching source must be explained")
+        };
+        let study = trace
+            .code_search_rank_study
+            .expect("native diagnostic ablation");
         assert_eq!(f32::from(u16::try_from(study.baseline)?), row.score);
         match row.repo_relative_path.as_str() {
             "z_definition.rs" => {
@@ -852,8 +886,11 @@ fn code_search_rank_study_keeps_declaration_usage_and_unknown_metadata_distinct(
     }
     proposed.sort_by_key(|(score, path)| (std::cmp::Reverse(*score), *path));
     assert_eq!(proposed[0].1, "z_definition.rs");
-    assert_eq!(rows[0].repo_relative_path.as_str(), "a_usage_test.rs",
-        "an unqualified experimental policy is not selected implicitly");
+    assert_eq!(
+        rows[0].repo_relative_path.as_str(),
+        "a_usage_test.rs",
+        "an unqualified experimental policy is not selected implicitly"
+    );
     Ok(())
 }
 
@@ -861,57 +898,140 @@ fn code_search_rank_study_keeps_declaration_usage_and_unknown_metadata_distinct(
 fn code_search_rank_study_recovers_original_boundaries_after_unicode_normalization() -> TestResult {
     use quanta_index_core::LexicalCandidateExplanationV1;
 
-    for body in ["İfooBar", "cafe\u{301}fooBar", "HTTPServer", "foo_bar", "parse2Value"] {
-        let needle = if body == "HTTPServer" { "server" }
-            else if body == "parse2Value" { "2" } else { "bar" };
+    for body in [
+        "İfooBar",
+        "cafe\u{301}fooBar",
+        "HTTPServer",
+        "foo_bar",
+        "parse2Value",
+    ] {
+        let needle = if body == "HTTPServer" {
+            "server"
+        } else if body == "parse2Value" {
+            "2"
+        } else {
+            "bar"
+        };
         let (_dir, searcher) = fixture_with_scopes(vec![code_scope("source.rs", body, 0)?])?;
         let query = code_query(&[needle], false);
-        let rows = searcher.search_constrained(&query, &QueryConstraintSetV1::default(),
-            &LexicalPageSpec::first(10), &RequestBudgetV1::unbounded())?.candidates;
+        let rows = searcher
+            .search_constrained(
+                &query,
+                &QueryConstraintSetV1::default(),
+                &LexicalPageSpec::first(10),
+                &RequestBudgetV1::unbounded(),
+            )?
+            .candidates;
         assert_eq!(rows.len(), 1);
         let LexicalCandidateExplanationV1::Matched(trace) = searcher.explain_candidate(
-            &query, &QueryConstraintSetV1::default(), &rows[0].candidate_id,
-            &RequestBudgetV1::unbounded())? else { panic!("matching source must be explained") };
-        assert_eq!(trace.code_search_rank_study.expect("study").original_boundary_bonus, 16, "{body}");
+            &query,
+            &QueryConstraintSetV1::default(),
+            &rows[0].candidate_id,
+            &RequestBudgetV1::unbounded(),
+        )?
+        else {
+            panic!("matching source must be explained")
+        };
+        assert_eq!(
+            trace
+                .code_search_rank_study
+                .expect("study")
+                .original_boundary_bonus,
+            16,
+            "{body}"
+        );
         assert_eq!(trace.emitted_score, rows[0].score);
     }
     Ok(())
 }
 
 #[test]
-fn code_search_explanation_preserves_constraints_cancellation_and_global_auto_typo_gate() -> TestResult {
+fn code_search_explanation_preserves_constraints_cancellation_and_global_auto_typo_gate()
+-> TestResult {
     use quanta_index_contract::CandidatePresenceV1;
     use quanta_index_core::LexicalCandidateExplanationV1;
 
     let (_dir, searcher) = fixture_with_scopes(vec![
-        code_scope("literal.rs", "needle", 0)?, code_scope("neighbor.rs", "needl", 0)?,
+        code_scope("literal.rs", "needle", 0)?,
+        code_scope("neighbor.rs", "needl", 0)?,
     ])?;
     let neighbor_query = code_query(&["needl"], true);
-    let rows = searcher.search_constrained(&neighbor_query, &QueryConstraintSetV1::default(),
-        &LexicalPageSpec::first(10), &RequestBudgetV1::unbounded())?.candidates;
-    let neighbor = rows.iter().find(|row| row.repo_relative_path.as_str() == "neighbor.rs").expect("neighbor source");
-    assert_eq!(searcher.candidate_presence(&neighbor.candidate_id)?, CandidatePresenceV1::Indexed);
-    assert_eq!(searcher.candidate_presence("file:missing")?, CandidatePresenceV1::NotIndexed);
+    let rows = searcher
+        .search_constrained(
+            &neighbor_query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    let neighbor = rows
+        .iter()
+        .find(|row| row.repo_relative_path.as_str() == "neighbor.rs")
+        .expect("neighbor source");
+    assert_eq!(
+        searcher.candidate_presence(&neighbor.candidate_id)?,
+        CandidatePresenceV1::Indexed
+    );
+    assert_eq!(
+        searcher.candidate_presence("file:missing")?,
+        CandidatePresenceV1::NotIndexed
+    );
     let literal_query = code_query(&["needle"], false);
-    assert!(matches!(searcher.explain_candidate(&literal_query, &QueryConstraintSetV1::default(),
-        &neighbor.candidate_id, &RequestBudgetV1::unbounded())?,
-        LexicalCandidateExplanationV1::NotMatched { .. }), "another file's literal match disables automatic typo recovery");
+    assert!(
+        matches!(
+            searcher.explain_candidate(
+                &literal_query,
+                &QueryConstraintSetV1::default(),
+                &neighbor.candidate_id,
+                &RequestBudgetV1::unbounded()
+            )?,
+            LexicalCandidateExplanationV1::NotMatched { .. }
+        ),
+        "another file's literal match disables automatic typo recovery"
+    );
     let constrained = QueryConstraintSetV1 {
-        repo_relative_path_exact: Some(quanta_index_contract::ExactRepoRelativePathV1::new("neighbor.rs")?),
+        repo_relative_path_exact: Some(quanta_index_contract::ExactRepoRelativePathV1::new(
+            "neighbor.rs",
+        )?),
         ..QueryConstraintSetV1::default()
     };
-    let recovered = searcher.search_constrained(&literal_query, &constrained,
-        &LexicalPageSpec::first(10), &RequestBudgetV1::unbounded())?.candidates;
+    let recovered = searcher
+        .search_constrained(
+            &literal_query,
+            &constrained,
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
     assert_eq!(recovered.len(), 1);
     let LexicalCandidateExplanationV1::Matched(trace) = searcher.explain_candidate(
-        &literal_query, &constrained, &neighbor.candidate_id, &RequestBudgetV1::unbounded())?
-        else { panic!("scoped recovery must be explained") };
+        &literal_query,
+        &constrained,
+        &neighbor.candidate_id,
+        &RequestBudgetV1::unbounded(),
+    )?
+    else {
+        panic!("scoped recovery must be explained")
+    };
     assert_eq!(trace.emitted_score, recovered[0].score);
-    assert!(trace.code_search_components.is_none(), "a recovery score is not a literal decomposition");
+    assert!(
+        trace.code_search_components.is_none(),
+        "a recovery score is not a literal decomposition"
+    );
     let cancelled = RequestBudgetV1::unbounded();
     cancelled.cancel_handle().cancel();
-    assert!(matches!(searcher.explain_candidate(&literal_query, &constrained, &neighbor.candidate_id, &cancelled),
-        Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled, .. })));
+    assert!(matches!(
+        searcher.explain_candidate(
+            &literal_query,
+            &constrained,
+            &neighbor.candidate_id,
+            &cancelled
+        ),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled,
+            ..
+        })
+    ));
     Ok(())
 }
 

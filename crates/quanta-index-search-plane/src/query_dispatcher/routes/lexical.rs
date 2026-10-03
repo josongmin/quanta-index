@@ -33,7 +33,7 @@ use crate::query_dispatcher::window::{
 const LEXICAL_CURSOR_ORDER_V2: &str = "score_desc_source_repo_path_line_candidate_v2";
 // The signed cursor context must change when CodeSearch scoring changes,
 // even if the sealed generation and query text remain identical.
-const CODE_SEARCH_CURSOR_ORDER: &str =
+pub(super) const CODE_SEARCH_CURSOR_ORDER: &str =
     "code_search_file_overlap_score_v1_desc_source_repo_path_line_candidate";
 const CODE_SEARCH_TYPO_CURSOR_ORDER: &str =
     "code_search_identifier_typo_osa1_v1_desc_source_repo_path_line_candidate";

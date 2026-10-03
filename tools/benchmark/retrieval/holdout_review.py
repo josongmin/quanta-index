@@ -9,14 +9,122 @@ existing evaluator judgments and run.py annotation/adjudication receipts.
 
 from __future__ import annotations
 
+import argparse
+import copy
 import hashlib
 import shutil
 from pathlib import Path
 
-from tools.benchmark.retrieval import evaluator, source_oracle
+from tools.benchmark.evidence import _read_control_file, parse_json
+from tools.benchmark.retrieval import evaluator, query_plan, source_oracle
 
 POOL_KINDS = ("retrieval", "source_alternative", "random_control")
 MAX_REVIEW_BYTES = 64 * 1024 * 1024
+
+
+def project_natural_language_file_diagnostic(
+    checkout: Path, suite_bytes: bytes, *, suite_id: str
+) -> tuple[dict, dict, dict]:
+    """Reissue reviewed NL tasks without carrying mixed-suite admission claims.
+
+    The complete input suite must still validate. Every selected query, label,
+    family and review identity is preserved; only its request contract changes.
+    Review identities remain self-reported and existing receipts still bind the
+    original suite, so this projection cannot qualify a comparison.
+    """
+    original = parse_json(suite_bytes.decode("utf-8"))
+    evaluator.validate_suite(checkout, original)
+    evaluator.string(suite_id, "projected suite ID")
+    evaluator.require(suite_id != original["suite_id"], "projection requires a new suite ID")
+    selected = [task for task in original["tasks"] if task.get("query_intent") == "semantic_intent"]
+    evaluator.require(bool(selected), "reviewed NL projection has no semantic_intent tasks")
+    for task in selected:
+        evaluator.require(
+            task["split"] == "eval"
+            and "source_oracle" not in task
+            and "file_judgments" in task
+            and task.get("judgment_policy") == evaluator.COMPLETE_JUDGMENT_POLICY
+            and task.get("label_review", {}).get("assessment")
+            in evaluator.LABEL_REVIEW_ASSESSMENTS[1:],
+            "NL projection requires reviewed eval file judgments: " + task["task_id"],
+        )
+        query_plan.plan_lexical_request("natural_language_file", task["query"])
+    projected = copy.deepcopy(original)
+    projected["suite_id"] = suite_id
+    projected["routes"] = ["lexical", "semble-lexical-file"]
+    projected["diagnostic_policy"] = evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    projected["tasks"] = copy.deepcopy(selected)
+    contract = {
+        "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+        "gold_unit": "distinct_file",
+        "result_unit": "distinct_file",
+    }
+    for task in projected["tasks"]:
+        task["evaluation_contract"] = dict(contract)
+    checked, pack, _source = evaluator.validate_suite(checkout, projected)
+    selected_ids = {task["task_id"] for task in selected}
+    lineage = {
+        "schema_version": 1,
+        "status": "diagnostic_unqualified",
+        "qualified": False,
+        "human_provenance_attested": False,
+        "split_admission": "not_carried_forward",
+        "review_receipts": "remain_bound_to_original_suite",
+        "input_suite_bytes_sha256": evaluator.digest(suite_bytes),
+        "input_suite_canonical_sha256": _digest(original),
+        "suite_sha256": _digest(checked),
+        "blind_pack_sha256": _digest(pack),
+        "repository_commit": checked["repository_commit"],
+        "file_universe_digest": checked["file_universe_digest"],
+        "preserved_task_fields_except": ["evaluation_contract"],
+        "selected_task_ids": [task["task_id"] for task in selected],
+        "excluded_task_ids": [
+            task["task_id"] for task in original["tasks"] if task["task_id"] not in selected_ids
+        ],
+    }
+    return checked, pack, lineage
+
+
+def write_natural_language_file_diagnostic(
+    checkout: Path, suite_path: Path, output: Path, *, suite_id: str
+) -> dict:
+    """Write the projection to a fresh external root, rechecking its inputs."""
+    if not output.is_absolute() or output.exists() or output.is_symlink():
+        raise ValueError("NL diagnostic output root must be fresh and absolute")
+    target = output.resolve()
+    for root in (
+        checkout.resolve(),
+        suite_path.parent.resolve(),
+        Path(__file__).resolve().parents[3],
+    ):
+        if target.is_relative_to(root) or root.is_relative_to(target):
+            raise ValueError("NL diagnostic output root must be external and disjoint")
+    sources = [Path(__file__), Path(evaluator.__file__), Path(query_plan.__file__)]
+    source_digests = {path.name: evaluator.digest(path.read_bytes()) for path in sources}
+    raw = _read_control_file(suite_path)
+    suite, pack, lineage = project_natural_language_file_diagnostic(
+        checkout, raw, suite_id=suite_id
+    )
+    evaluator.validate_file_universe(
+        evaluator.SourceSnapshot(checkout, suite["repository_commit"]), suite["file_universe"]
+    )
+    if raw != _read_control_file(suite_path) or source_digests != {
+        path.name: evaluator.digest(path.read_bytes()) for path in sources
+    }:
+        raise ValueError("NL diagnostic input or tool changed during projection")
+    lineage["tool_source_sha256"] = source_digests
+    output.mkdir(parents=True)
+    try:
+        for name, payload in (
+            ("suite.json", suite),
+            ("blind-pack.json", pack),
+            ("lineage.json", lineage),
+        ):
+            (output / name).write_bytes(evaluator.canonical(payload))
+    except BaseException:
+        shutil.rmtree(output)
+        raise
+    return lineage
 
 
 def _digest(value: object) -> str:
@@ -335,3 +443,21 @@ def validate_completed_forms(
         "task_count": len(pack["tasks"]),
         "disagreements": disagreements,
     }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Project reviewed NL tasks to a file diagnostic")
+    parser.add_argument("--repo", required=True, type=Path)
+    parser.add_argument("--suite", required=True, type=Path)
+    parser.add_argument("--suite-id", required=True)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+    lineage = write_natural_language_file_diagnostic(
+        args.repo, args.suite, args.output, suite_id=args.suite_id
+    )
+    print(f"projected {len(lineage['selected_task_ids'])} diagnostic NL tasks at {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

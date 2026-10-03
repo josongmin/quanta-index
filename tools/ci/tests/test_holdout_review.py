@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.benchmark.retrieval import evaluator, holdout_review
+from tools.benchmark.retrieval import evaluator, holdout_review, query_plan
 
 
 def _fixture(tmp_path: Path):
@@ -376,3 +376,157 @@ def test_completed_forms_refuse_missing_decisions_or_source_drift(tmp_path, faul
         task["files"].pop()
     with pytest.raises(evaluator.EvidenceError):
         holdout_review.validate_completed_forms(checkout, pack, contexts, pools, completed, seed=42)
+
+
+def _reviewed_suite_fixture(tmp_path):
+    checkout, pack, _contexts, _pools = _fixture(tmp_path)
+    suite = {
+        key: copy.deepcopy(pack[key])
+        for key in (
+            "schema_version",
+            "suite_id",
+            "repository_commit",
+            "comparison_contract",
+            "routes",
+            "file_universe",
+            "file_universe_digest",
+        )
+    }
+    suite["diagnostic_policy"] = evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    tasks = []
+    for task_id, query, intent, path in (
+        ("toy.nl", "Find alpha behavior", "semantic_intent", "answer.py"),
+        ("toy.name", "beta", "bare_symbol", "alternative.py"),
+    ):
+        raw = (checkout / path).read_bytes()
+        sha = evaluator.digest(raw)
+        tasks.append(
+            {
+                "task_id": task_id,
+                "split": "eval",
+                "query": query,
+                "query_sha256": evaluator.digest(query.encode()),
+                "query_family_id": task_id,
+                "query_intent": intent,
+                "answerable": True,
+                "evaluation_contract": {
+                    "request_mode": "default_file_search",
+                    "gold_unit": "distinct_file",
+                    "result_unit": "distinct_file",
+                },
+                "judgment_policy": evaluator.COMPLETE_JUDGMENT_POLICY,
+                "label_review": {
+                    "assessment": "reviewed_unambiguous",
+                    "reviewer_id": "ai:fixture",
+                    "evidence_sha256": "e" * 64,
+                },
+                "file_judgments": [{"path": path, "file_sha256": sha, "grade": 3}],
+                "gold": [
+                    {
+                        "path": path,
+                        "file_sha256": sha,
+                        "block_sha256": sha,
+                        "start_line": 1,
+                        "end_line": len(raw.splitlines()),
+                        "start_byte": 0,
+                        "end_byte": len(raw),
+                        "grade": 3,
+                    }
+                ],
+            }
+        )
+    suite["tasks"] = tasks
+    return checkout, suite
+
+
+def test_nl_projection_preserves_labels_and_blinds_only_selected_queries(tmp_path):
+    checkout, original = _reviewed_suite_fixture(tmp_path)
+    raw = evaluator.canonical(original)
+    projected, pack, lineage = holdout_review.project_natural_language_file_diagnostic(
+        checkout, raw, suite_id="new-nl-file-diagnostic"
+    )
+    expected = copy.deepcopy(original["tasks"][0])
+    expected["evaluation_contract"] = {
+        "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+        "gold_unit": "distinct_file",
+        "result_unit": "distinct_file",
+    }
+    assert projected["tasks"] == [expected]
+    assert evaluator.canonical(original) == raw
+    assert pack["tasks"] == [{key: expected[key] for key in ("task_id", "query", "query_sha256")}]
+    assert lineage["selected_task_ids"] == ["toy.nl"]
+    assert lineage["excluded_task_ids"] == ["toy.name"]
+    assert lineage["input_suite_bytes_sha256"] == evaluator.digest(raw)
+    assert lineage["suite_sha256"] == evaluator.digest(evaluator.canonical(projected))
+    assert lineage["qualified"] is False
+    assert lineage["human_provenance_attested"] is False
+    assert lineage["review_receipts"] == "remain_bound_to_original_suite"
+    assert lineage["split_admission"] == "not_carried_forward"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "no_nl",
+        "unreviewed",
+        "partial_grade",
+        "wrong_hash",
+        "bad_excluded_gold",
+        "over_limit",
+        "same_id",
+    ],
+)
+def test_nl_projection_refuses_invalid_input_without_silently_dropping_tasks(tmp_path, fault):
+    checkout, suite = _reviewed_suite_fixture(tmp_path)
+    suite_id = "new-nl-file-diagnostic"
+    task = suite["tasks"][0]
+    if fault == "no_nl":
+        task["query_intent"] = "bare_symbol"
+    elif fault == "unreviewed":
+        task["label_review"] = {"assessment": "unreviewed"}
+    elif fault == "partial_grade":
+        task["file_judgments"][0]["grade"] = None
+    elif fault == "wrong_hash":
+        task["file_judgments"][0]["file_sha256"] = "f" * 64
+    elif fault == "bad_excluded_gold":
+        suite["tasks"][1]["gold"][0]["block_sha256"] = "f" * 64
+    elif fault == "over_limit":
+        task["query"] = " ".join(f"word{i}" for i in range(33))
+        task["query_sha256"] = evaluator.digest(task["query"].encode())
+    else:
+        suite_id = suite["suite_id"]
+    with pytest.raises((evaluator.EvidenceError, query_plan.QueryPlanError)):
+        holdout_review.project_natural_language_file_diagnostic(
+            checkout, evaluator.canonical(suite), suite_id=suite_id
+        )
+
+
+def test_nl_projection_writer_refuses_overwrite_and_input_race(tmp_path, monkeypatch):
+    checkout, suite = _reviewed_suite_fixture(tmp_path)
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    suite_path = inputs / "suite.json"
+    suite_path.write_bytes(evaluator.canonical(suite))
+    output = tmp_path / "output"
+    receipt = holdout_review.write_natural_language_file_diagnostic(
+        checkout, suite_path, output, suite_id="new-nl-file-diagnostic"
+    )
+    assert json.loads((output / "lineage.json").read_bytes()) == receipt
+    with pytest.raises(ValueError, match="fresh and absolute"):
+        holdout_review.write_natural_language_file_diagnostic(
+            checkout, suite_path, output, suite_id="new-nl-file-diagnostic"
+        )
+    original = holdout_review.project_natural_language_file_diagnostic
+
+    def race(*args, **kwargs):
+        result = original(*args, **kwargs)
+        suite_path.write_bytes(suite_path.read_bytes() + b"\n")
+        return result
+
+    monkeypatch.setattr(holdout_review, "project_natural_language_file_diagnostic", race)
+    racing_output = tmp_path / "racing-output"
+    with pytest.raises(ValueError, match="changed during projection"):
+        holdout_review.write_natural_language_file_diagnostic(
+            checkout, suite_path, racing_output, suite_id="new-nl-file-diagnostic"
+        )
+    assert not racing_output.exists()

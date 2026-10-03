@@ -525,7 +525,8 @@ fn ranker_weights_hash_v1(options: &LqOptions, fusion: RankerFusionV1) -> [u8; 3
     hasher.update(b"engine=");
     hasher.update(engine.as_str().as_bytes());
     if engine == LexicalScoreEngineV1::CodeSearchFile {
-        hasher.update(b"\ncode_search_rank=overlap_score_v1");
+        hasher.update(b"\ncode_search_rank=");
+        hasher.update(super::lexical::CODE_SEARCH_CURSOR_ORDER.as_bytes());
     }
     hasher.update(b"\nboost_millis=");
     match options.boost_millis {
@@ -603,13 +604,30 @@ fn lexical_trace_row_v1(
         )));
     }
     if let Some(components) = trace.code_search_components {
-        let total = u16::try_from(components.total()).map_err(|error|
-            CoreError::Storage(format!("explain: file score decomposition overflow: {error}")))?;
+        let total = u16::try_from(components.total()).map_err(|error| {
+            CoreError::Storage(format!(
+                "explain: file score decomposition overflow: {error}"
+            ))
+        })?;
         if trace.engine != LexicalScoreEngineV1::CodeSearchFile
             || f32::from(total) != trace.engine_score
             || trace.boost_factor != 1.0
-            || trace.emitted_score != trace.engine_score {
-            return Err(CoreError::Storage("explain: file score differs from its decomposition".into()));
+            || trace.emitted_score != trace.engine_score
+        {
+            return Err(CoreError::Storage(
+                "explain: file score differs from its decomposition".into(),
+            ));
+        }
+    }
+    if let Some(study) = trace.code_search_rank_study {
+        if trace.code_search_components.is_none()
+            || trace.engine != LexicalScoreEngineV1::CodeSearchFile
+            || u16::try_from(study.baseline).map(f32::from).ok() != Some(trace.engine_score)
+            || (study.declaration_coverage_complete && study.declaration_bonus.is_none())
+        {
+            return Err(CoreError::Storage(
+                "explain: rank study disagrees with the selected file scorer".into(),
+            ));
         }
     }
     Ok(ExplanationRow {
@@ -687,13 +705,19 @@ fn build_lexical_score_explanation(
                         study.declaration_coverage_complete, study.original_boundary_bonus),
                 });
                 for (name, value) in [
-                    ("baseline", study.baseline), ("declaration_only", study.declaration_only),
-                    ("boundary_only", study.boundary_only), ("occurrence_half", study.occurrence_half),
-                    ("occurrence_none", study.occurrence_none), ("combined", study.combined),
+                    ("baseline", study.baseline),
+                    ("declaration_only", study.declaration_only),
+                    ("boundary_only", study.boundary_only),
+                    ("occurrence_half", study.occurrence_half),
+                    ("occurrence_none", study.occurrence_none),
+                    ("combined", study.combined),
                 ] {
                     planner_trace.push(PlannerTraceEntry {
                         stage: PlannerStage::Merge,
-                        detail: format!("explain.code_search_rank_study_v1.{name}={value};selected=false"),
+                        detail: format!(
+                            "explain.code_search_rank_study_v1.{name}={value};selected={}",
+                            name == "baseline"
+                        ),
                     });
                 }
             }
@@ -1057,4 +1081,96 @@ fn rederived_ranks_detail(ranks: RederivedHybridRanksV1) -> String {
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+#[cfg(test)]
+mod code_search_score_tests {
+    use super::*;
+    use quanta_index_core::{CodeSearchRankStudyV1, CodeSearchScoreComponentsV1};
+
+    fn fixed_trace() -> LexicalScoreTraceV1 {
+        LexicalScoreTraceV1 {
+            engine: LexicalScoreEngineV1::CodeSearchFile,
+            engine_score: 109.0,
+            boost_factor: 1.0,
+            emitted_score: 109.0,
+            code_search_components: Some(CodeSearchScoreComponentsV1 {
+                boundary_and_path: 100,
+                occurrence: 4,
+                exact_case: 5,
+                proximity: 0,
+            }),
+            code_search_rank_study: Some(CodeSearchRankStudyV1 {
+                declaration_bonus: None,
+                declaration_coverage_complete: false,
+                original_boundary_bonus: 0,
+                baseline: 109,
+                declaration_only: 109,
+                boundary_only: 109,
+                occurrence_half: 107,
+                occurrence_none: 105,
+                combined: 105,
+            }),
+        }
+    }
+
+    #[test]
+    fn code_search_score_decomposition_rejects_cross_engine_overflow_and_mismatches() {
+        let valid = fixed_trace();
+        let row = lexical_trace_row_v1("file:fixture", &valid).expect("valid trace");
+        assert_eq!(row.contribution, 109.0);
+        assert_eq!(row.signal_name.as_ref(), "lexical.code_search_file");
+        for mutate in [
+            |trace: &mut LexicalScoreTraceV1| trace.engine = LexicalScoreEngineV1::Bm25,
+            |trace: &mut LexicalScoreTraceV1| trace.engine_score = 108.0,
+            |trace: &mut LexicalScoreTraceV1| trace.emitted_score = 110.0,
+            |trace: &mut LexicalScoreTraceV1| trace.boost_factor = 2.0,
+            |trace: &mut LexicalScoreTraceV1| {
+                trace
+                    .code_search_components
+                    .as_mut()
+                    .expect("components")
+                    .occurrence = u32::MAX
+            },
+            |trace: &mut LexicalScoreTraceV1| {
+                trace
+                    .code_search_rank_study
+                    .as_mut()
+                    .expect("study")
+                    .baseline = 108
+            },
+            |trace: &mut LexicalScoreTraceV1| trace.code_search_components = None,
+            |trace: &mut LexicalScoreTraceV1| {
+                trace
+                    .code_search_rank_study
+                    .as_mut()
+                    .expect("study")
+                    .declaration_coverage_complete = true
+            },
+        ] {
+            let mut invalid = valid.clone();
+            mutate(&mut invalid);
+            assert!(
+                lexical_trace_row_v1("file:fixture", &invalid).is_err(),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_search_ranker_hash_tracks_engine_without_selecting_experimental_weights() {
+        let plain = LqOptions::default();
+        let mut code = plain.clone();
+        code.pattern_type = quanta_index_contract::LqPatternType::CodeSearch;
+        let code_hash = ranker_weights_hash_v1(&code, RankerFusionV1::None);
+        assert_ne!(code_hash, [0; 32]);
+        assert_ne!(
+            code_hash,
+            ranker_weights_hash_v1(&plain, RankerFusionV1::None)
+        );
+        assert_eq!(
+            code_hash,
+            ranker_weights_hash_v1(&code, RankerFusionV1::None)
+        );
+    }
 }

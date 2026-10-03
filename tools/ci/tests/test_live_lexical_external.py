@@ -751,8 +751,19 @@ class SearchHandler(BaseHTTPRequestHandler):
 
 
 @pytest.mark.parametrize(
-    ("index_changes_during_queries", "unsupported_query", "backend_changes_during_queries"),
-    [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
+    (
+        "index_changes_during_queries",
+        "unsupported_query",
+        "backend_changes_during_queries",
+        "use_bound_release",
+    ),
+    [
+        (False, False, False, False),
+        (False, False, False, True),
+        (True, False, False, False),
+        (False, True, False, False),
+        (False, False, True, False),
+    ],
 )
 def test_live_capture_makes_three_product_requests_and_retains_raw(
     tmp_path,
@@ -760,6 +771,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     index_changes_during_queries,
     unsupported_query,
     backend_changes_during_queries,
+    use_bound_release,
     monkeypatch,
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
@@ -875,7 +887,21 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             with pytest.raises(ValueError, match="backend process, mount or index changed"):
                 live.capture(spec_path)
         else:
-            result = live.capture(spec_path)
+            if use_bound_release:
+                full_validate = live.corpus_release.validate
+                validations = []
+
+                def counted_validate(root):
+                    validations.append(root)
+                    return full_validate(root)
+
+                monkeypatch.setattr(live.corpus_release, "validate", counted_validate)
+                bound = live.BoundRelease.begin(Path(corpus["release_path"]))
+                result = live.capture(spec_path, bound_release=bound)
+                assert live.verify(Path(spec["output_root"]), bound_release=bound) == result
+                assert len(validations) == 1
+            else:
+                result = live.capture(spec_path)
     finally:
         server.shutdown()
         server.server_close()

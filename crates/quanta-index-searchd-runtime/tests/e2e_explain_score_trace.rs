@@ -82,6 +82,68 @@ fn contribution_sum(explanation: &SearchExplanation) -> f32 {
         .sum()
 }
 
+fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
+    let result = rt.query_text(TextQuerySyntax::CodeSearch, PLAIN_QUERY, 10);
+    if let Some(error) = result.typed_error {
+        return Err(format!("CodeSearch refused: {error}").into());
+    }
+    let actual: Vec<_> = result
+        .candidates
+        .iter()
+        .map(|row| (row.repo_relative_path.as_str(), row.score))
+        .collect();
+    // Fixed goldens from this source fixture, independent of explanation output.
+    if actual
+        != [
+            ("src/dense.rs", 109.0),
+            ("src/twice.rs", 107.0),
+            ("src/sparse.rs", 105.0),
+        ]
+    {
+        return Err(format!("source-file score goldens disagree: {actual:?}").into());
+    }
+    let bm25_top = page(rt, PLAIN_QUERY)?
+        .into_iter()
+        .next()
+        .ok_or("BM25 fixture hit")?;
+    let (_, bm25) = explained(rt, bm25_top, PLAIN_QUERY)?;
+    for candidate in result.candidates {
+        let carried = candidate.score;
+        let presence = rt.explain_candidate(candidate.clone());
+        if presence.typed_error.is_some() || presence.presence != Some(CandidatePresenceV1::Indexed)
+        {
+            return Err(format!("file candidate exact presence failed: {presence:?}").into());
+        }
+        let explained =
+            rt.explain_candidate_under_query(candidate, TextQuerySyntax::CodeSearch, PLAIN_QUERY);
+        if let Some(error) = explained.typed_error {
+            return Err(format!("CodeSearch explanation refused: {error}").into());
+        }
+        let trace = explained
+            .explanation
+            .ok_or("CodeSearch explanation missing")?;
+        if explained.presence != Some(CandidatePresenceV1::Indexed)
+            || trace.contributions.len() != 1
+            || trace.contributions[0].signal_name.as_ref() != "lexical.code_search_file"
+            || contribution_sum(&trace) != carried
+            || !trace_says(&trace, "explain.code_search_score.boundary_and_path=100")
+            || !trace_says(&trace, "explain.code_search_score.exact_case=5")
+            || !trace_says(&trace, "explain.code_search_score.proximity=0")
+            || !trace_says(&trace, "explain.score_reconciled=true")
+            || !trace_says(
+                &trace,
+                &format!("explain.code_search_rank_study_v1.baseline={carried:.0};selected=true"),
+            )
+            || trace.ranker_weights_hash == bm25.ranker_weights_hash
+        {
+            return Err(
+                format!("native file score must reach the public explanation: {trace:?}").into(),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn verify_page_candidate_scores(rt: &mut E2eRuntime) -> TestResult {
     let candidates = page(rt, PLAIN_QUERY)?;
     if candidates.len() != 3 {
@@ -548,6 +610,7 @@ fn explain_score_traces_share_one_indexed_fixture() -> TestResult {
         verify_page_candidate_scores;
     for (name, verify) in [
         ("page_candidate_scores", verify_page_candidate_scores_fn),
+        ("code_search_file_scores", verify_code_search_file_scores),
         ("boost", verify_boost),
         ("presence", verify_presence),
         ("hybrid_both_lane", verify_hybrid_both_lane),

@@ -454,7 +454,10 @@ impl LexicalSearcher for TantivySearcher {
 
     fn candidate_presence(&self, candidate_id: &str) -> Result<CandidatePresenceV1, CoreError> {
         if candidate_id.starts_with("file:")
-            && self.code_search_file_by_id(candidate_id, &RequestBudgetV1::unbounded())?.is_some() {
+            && self
+                .code_search_file_by_id(candidate_id, &RequestBudgetV1::unbounded())?
+                .is_some()
+        {
             return Ok(CandidatePresenceV1::Indexed);
         }
         let searcher = self.reader.searcher();

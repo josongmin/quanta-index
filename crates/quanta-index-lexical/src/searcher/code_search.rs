@@ -17,9 +17,11 @@ use quanta_index_contract::{
     PreviewMetadata, PreviewUnavailableReason, QueryConstraintSetV1, SymbolCoverage,
     SymbolNameSourcePolicyV1, valid_code_search_typo_identifier,
 };
+use quanta_index_core::{
+    CodeSearchScoreComponentsV1, LexicalCandidateExplanationV1, LexicalScoreEngineV1,
+    LexicalScoreTraceV1,
+};
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
-use quanta_index_core::{CodeSearchScoreComponentsV1, LexicalCandidateExplanationV1,
-    LexicalScoreEngineV1, LexicalScoreTraceV1};
 use quanta_index_lq_regex::RegexExecutor;
 use quanta_index_lq_trigram::{
     DocId, MAX_CANDIDATE_PRE_VERIFY, Trigram, TrigramIndex, TrigramIntersectionError, trigrams_of,
@@ -368,9 +370,18 @@ fn add_witness_score(
     };
     match scored {
         Some(prior) => {
-            prior.components.boundary_and_path = prior.components.boundary_and_path.saturating_add(components.boundary_and_path);
-            prior.components.occurrence = prior.components.occurrence.saturating_add(components.occurrence);
-            prior.components.exact_case = prior.components.exact_case.saturating_add(components.exact_case);
+            prior.components.boundary_and_path = prior
+                .components
+                .boundary_and_path
+                .saturating_add(components.boundary_and_path);
+            prior.components.occurrence = prior
+                .components
+                .occurrence
+                .saturating_add(components.occurrence);
+            prior.components.exact_case = prior
+                .components
+                .exact_case
+                .saturating_add(components.exact_case);
             if witness.score > prior.primary.score
                 || (witness.score == prior.primary.score && term_index < prior.primary_term)
             {
@@ -1667,11 +1678,16 @@ impl TantivySearcher {
         candidate_id: &str,
         budget: &RequestBudgetV1,
     ) -> Result<Option<&SourceFile>, CoreError> {
-        let Some(authority) = &self.file_authority else { return Ok(None) };
+        let Some(authority) = &self.file_authority else {
+            return Ok(None);
+        };
         for file in authority.files.values() {
             budget.checkpoint("lexical:code-search-file-presence")?;
-            if file_candidate_id(file.source.file.source_repo_id.as_str(),
-                file.source.file.repo_relative_path.as_str())? == candidate_id {
+            if file_candidate_id(
+                file.source.file.source_repo_id.as_str(),
+                file.source.file.repo_relative_path.as_str(),
+            )? == candidate_id
+            {
                 return Ok(Some(file));
             }
         }
@@ -1693,42 +1709,66 @@ impl TantivySearcher {
         let not_matched = || LexicalCandidateExplanationV1::NotMatched {
             reason: "the source file does not match the code-search request".into(),
         };
-        if constraints.repo_relative_path_exact.as_ref().is_some_and(|path|
-            file.source.file.repo_relative_path.as_str() != path.as_str())
+        if constraints
+            .repo_relative_path_exact
+            .as_ref()
+            .is_some_and(|path| file.source.file.repo_relative_path.as_str() != path.as_str())
             || (!constraints.language_any_of.is_empty()
-                && !constraints.language_any_of.contains(&file.language)) {
+                && !constraints.language_any_of.contains(&file.language))
+        {
             return Ok(not_matched());
         }
-        if parsed.typo.is_none() && parsed.components.is_none()
-            && let Some(mut scored) = score_terms(file, &parsed.terms, parsed.case,
-                None, TermsToScore::All, budget)? {
-            let (score, components) = finish_score(file, &parsed.terms, parsed.case,
-                &mut scored, budget)?;
+        if parsed.typo.is_none()
+            && parsed.components.is_none()
+            && let Some(mut scored) = score_terms(
+                file,
+                &parsed.terms,
+                parsed.case,
+                None,
+                TermsToScore::All,
+                budget,
+            )?
+        {
+            let (score, components) =
+                finish_score(file, &parsed.terms, parsed.case, &mut scored, budget)?;
             let study = ranking::study(self, file, &parsed.terms, parsed.case, components, budget)?;
-            return Ok(LexicalCandidateExplanationV1::Matched(LexicalScoreTraceV1 {
-                engine: LexicalScoreEngineV1::CodeSearchFile,
-                engine_score: score, boost_factor: 1.0, emitted_score: score,
-                code_search_components: Some(components),
-                code_search_rank_study: Some(study),
-            }));
+            return Ok(LexicalCandidateExplanationV1::Matched(
+                LexicalScoreTraceV1 {
+                    engine: LexicalScoreEngineV1::CodeSearchFile,
+                    engine_score: score,
+                    boost_factor: 1.0,
+                    emitted_score: score,
+                    code_search_components: Some(components),
+                    code_search_rank_study: Some(study),
+                },
+            ));
         }
         // Auto-typo eligibility depends on the original scoped literal set.
         // Reuse that executor for recovery/components, without a top-k cap or
         // narrowing the scope to this file (which could create a false fallback).
-        let authority = self.file_authority.as_ref().ok_or_else(||
-            CoreError::Storage("lexical: file authority disappeared".into()))?;
-        let fetch = u32::try_from(authority.files.len().max(1)).map_err(|error|
-            CoreError::Storage(format!("lexical: explain file cardinality: {error}")))?;
-        let result = self.search_code_files(query, constraints,
-            &LexicalPageSpec::first(fetch), budget)?;
-        Ok(result.candidates.into_iter().find(|row| row.candidate_id == candidate_id)
-            .map_or_else(not_matched, |row|
+        let authority = self
+            .file_authority
+            .as_ref()
+            .ok_or_else(|| CoreError::Storage("lexical: file authority disappeared".into()))?;
+        let fetch = u32::try_from(authority.files.len().max(1)).map_err(|error| {
+            CoreError::Storage(format!("lexical: explain file cardinality: {error}"))
+        })?;
+        let result =
+            self.search_code_files(query, constraints, &LexicalPageSpec::first(fetch), budget)?;
+        Ok(result
+            .candidates
+            .into_iter()
+            .find(|row| row.candidate_id == candidate_id)
+            .map_or_else(not_matched, |row| {
                 LexicalCandidateExplanationV1::Matched(LexicalScoreTraceV1 {
                     engine: LexicalScoreEngineV1::CodeSearchFile,
-                    engine_score: row.score, boost_factor: 1.0, emitted_score: row.score,
+                    engine_score: row.score,
+                    boost_factor: 1.0,
+                    emitted_score: row.score,
                     code_search_components: None,
                     code_search_rank_study: None,
-                })))
+                })
+            }))
     }
 
     /// Match ordered components in one stored symbol name before projecting
@@ -2164,14 +2204,8 @@ impl TantivySearcher {
                 continue;
             };
             let score = finish_score(file, &parsed.terms, parsed.case, &mut scored, budget)?.0;
-            let candidate = file_candidate(
-                self,
-                file,
-                score,
-                Some(&scored.primary),
-                false,
-                budget,
-            )?;
+            let candidate =
+                file_candidate(self, file, score, Some(&scored.primary), false, budget)?;
             ranked.push((candidate, scored.primary));
         }
         // A bare identifier with no literal file match may be misspelled.
