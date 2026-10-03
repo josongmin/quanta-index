@@ -50,6 +50,7 @@ try:
         canonical,
         digest,
         evaluate,
+        evaluate_complete_scored_file_evidence,
         evaluate_paired_file_diagnostic,
         load_evidence,
         qualified_query_family_ci,
@@ -80,6 +81,7 @@ except ImportError:  # direct script invocation: import the sibling module
         canonical,
         digest,
         evaluate,
+        evaluate_complete_scored_file_evidence,
         evaluate_paired_file_diagnostic,
         load_evidence,
         qualified_query_family_ci,
@@ -6514,6 +6516,49 @@ def replay_paired_file_diagnostic_report(
         "report_digest": report_digest,
         "report_sha": digest(canonical(report)),
         "graded": False,
+    }
+
+
+def replay_complete_scored_file_report(
+    suite: dict,
+    pack: dict,
+    merged: dict,
+    report: dict,
+    strategy: str,
+    report_digest: str,
+) -> dict:
+    """Re-score complete file judgments and paired uncertainty from frozen rows."""
+    if report.get("report_scope") != "paired_complete_scored_file_evidence_v1":
+        raise RunError("wrong complete scored file report scope")
+    rank = report.get("rank_metrics")
+    comparison = rank.get("comparison") if isinstance(rank, dict) else None
+    if not isinstance(comparison, dict):
+        raise RunError("complete scored file comparison is missing")
+    baseline = comparison.get("baseline")
+    candidate = comparison.get("candidate")
+    rescored = evaluate_complete_scored_file_evidence(suite, pack, merged, baseline, candidate)
+    if digest(canonical(rescored)) != digest(canonical(report)):
+        raise RunError("complete scored file report differs from independent replay")
+    cluster_ci = qualified_query_family_ci(suite, rescored, baseline, candidate)
+    observed = rescored["rank_metrics"]["comparison"]
+    return {
+        "strategy": strategy,
+        "baseline_route": baseline,
+        "candidate_route": candidate,
+        "primary_metric": "file_ndcg_at_10",
+        "primary_delta": observed["primary_delta"],
+        "sample_count": observed["sample_count"],
+        "paired_wins": observed["paired_wins"],
+        "paired_losses": observed["paired_losses"],
+        "paired_ties": observed["paired_ties"],
+        "record_digest": digest(canonical(merged)),
+        "report_digest": report_digest,
+        "graded": True,
+        "primary_delta_ci_95": observed["primary_delta_ci_95"],
+        "primary_delta_cluster_ci_95": cluster_ci,
+        "stratified_primary_delta": observed["stratified_primary_delta"],
+        "no_answer_abstention_delta": observed["no_answer_abstention_delta"],
+        "report_sha": digest(canonical(report)),
     }
 
 

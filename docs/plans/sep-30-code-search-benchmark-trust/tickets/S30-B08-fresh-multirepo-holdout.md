@@ -871,6 +871,14 @@ fully judged file tasks and reject unreviewed policy, missing judgments and
 missing score evidence (2 tests passed). This selector is not wired into a
 qualified report or product gate; those remain `NOT_RUN`.
 
+The selector now feeds a separate `file-judgments-complete-v1` evidence report.
+It records per-query file NDCG, paired mean, within-repository uncertainty,
+stratified deltas and no-answer abstention from the same validated result rows.
+It remains explicitly `diagnostic_unqualified`. Focused fixed-grade tests
+verify a reversed file ordering against an independent NDCG value and reject
+failed or absent no-answer controls. The qualified runner and C5 decision do
+not yet accept this report.
+
 ## Frozen C4 v6 and native typo diagnostics (2026-10-03)
 
 **VERIFIED, diagnostic only:** clean `9d38b69d` rebuilt all twelve source-oracle

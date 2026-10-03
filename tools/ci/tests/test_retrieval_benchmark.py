@@ -15283,14 +15283,37 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
     assert file_evidence["status"] == "diagnostic_unqualified"
     assert file_evidence["rank_metric_version"] == "file-judgments-complete-v1"
     assert file_evidence["rank_metrics"]["comparison"]["sample_count"] == 2
-    assert file_evidence["rank_metrics"]["comparison"]["no_answer_abstention_delta"] == {
-        "sample_count": 1,
-        "mean_delta": 0.0,
-    }
+    assert (
+        file_evidence["rank_metrics"]["comparison"]["no_answer_abstention_delta"]["sample_count"]
+        == 1
+    )
+    assert (
+        file_evidence["rank_metrics"]["comparison"]["no_answer_abstention_delta"]["mean_delta"]
+        == 0.0
+    )
     assert (
         len(ev.paired_query_family_rows(suite, file_evidence, "semble-lexical-file", "lexical"))
         == 2
     )
+    reversed_baseline = copy.deepcopy(run)
+    baseline_t1 = next(
+        row
+        for row in reversed_baseline["results"]
+        if row["task_id"] == "T1" and row["route"] == "semble-lexical-file"
+    )
+    baseline_t1["candidates"].reverse()
+    for rank, item in enumerate(baseline_t1["candidates"], 1):
+        item["rank"] = rank
+        item["score"] = float(3 - rank)
+    reordered_evidence = ev.evaluate_complete_scored_file_evidence(
+        suite, pack, reversed_baseline, "semble-lexical-file", "lexical"
+    )
+    baseline_score = next(
+        row["file_ndcg_at_10"]
+        for row in reordered_evidence["per_query"]
+        if row["task_id"] == "T1" and row["route"] == "semble-lexical-file"
+    )
+    assert baseline_score == pytest.approx((1 + 7 / math.log2(3)) / (7 + 1 / math.log2(3)))
     failed_negative = copy.deepcopy(run)
     next(
         row
