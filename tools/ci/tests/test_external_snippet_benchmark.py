@@ -105,6 +105,15 @@ def test_clarc_native_pack_is_blind_source_bound_and_preserves_default_refusals(
     assert gold["default_32_admission"]["refused_count"] == 1
     assert "gold" not in json.dumps(pack).lower()
     assert "c_group_1_id_0.cpp" not in json.dumps(pack["tasks"])
+    frozen = ext.write_freeze(pack, gold, tmp_path / "frozen")
+    assert json.loads((tmp_path / "frozen/query-pack.json").read_text()) == pack
+    assert json.loads((tmp_path / "frozen/gold-sidecar.json").read_text()) == gold
+    assert (
+        frozen["query_pack_canonical_sha256"]
+        == hashlib.sha256(retrieval_contract.canonical(pack)).hexdigest()
+    )
+    with pytest.raises(ext.ExternalSnippetError, match="new absolute root"):
+        ext.write_freeze(pack, gold, tmp_path / "frozen")
     explicit = {"max_tokens": 128, "max_token_chars": 96, "min_token_chars": 1}
     pack128, gold128 = ext.freeze_clarc(
         data_root, "original", repo, commit, raws, suite_id="clarc-fixture-128", config=explicit
@@ -167,16 +176,20 @@ def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_
     urls = [
         f"https://github.com/example/project/blob/{sha40}/code.py#L{line}" for line in (1, 2, 3)
     ]
+    missing_url = f"https://github.com/example/project/blob/{sha40}/missing.py#L1"
     qrels = [
         {"language": "python", "query": "find value", "github_url": urls[0], "mean_grade": 2.5},
         {"language": "python", "query": "find value", "github_url": urls[1], "mean_grade": 0.5},
         {"language": "python", "query": "read file", "github_url": urls[2], "mean_grade": 1.0},
+        {"language": "python", "query": "read file", "github_url": missing_url, "mean_grade": 3.0},
         {"language": "go", "query": "find value", "github_url": urls[0], "mean_grade": 3.0},
     ]
     seed = {"source": {"sha256": "a" * 64}, "qrels": qrels}
     monkeypatch.setattr(csn_qrels, "diagnostic_seed", lambda _raw: seed)
 
-    def fetch(_url):
+    def fetch(url):
+        if "missing.py" in url:
+            return {"status": "http_error", "http_status": 404, "attempts": 1}
         return {
             "status": "fetched",
             "http_status": 200,
@@ -193,7 +206,7 @@ def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_
     source_paths = {
         row["snippet_path"]
         for row in json.loads((root / "qrels.json").read_text())
-        if row["language"] == "python"
+        if row["language"] == "python" and row["snippet_path"] is not None
     }
     for path in source_paths:
         destination = repo / path
@@ -204,10 +217,15 @@ def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_
         b"mock CSV", root, repo, commit, language="python", suite_id="csn-python-fixture"
     )
     assert gold["all_query_language_pairs"] == 3
-    assert gold["qrels_total"] == 3
+    assert gold["qrels_total"] == 4
     assert gold["qrels_materialized"] == 3
-    assert gold["judgments"][pack["tasks"][0]["task_id"]][0]["grade"] in (0.5, 1.0, 2.5)
-    assert len(pack["tasks"]) == 2
+    assert gold["population_task_count"] == 2
+    assert gold["materialized_complete_tasks"] == 1
+    assert sorted(row["grade"] for row in gold["judgments"][pack["tasks"][0]["task_id"]]) == [
+        0.5,
+        2.5,
+    ]
+    assert len(pack["tasks"]) == 1
     assert "grade" not in json.dumps(pack)
     with pytest.raises(ext.ExternalSnippetError, match="supported language"):
         ext.freeze_codesearchnet(

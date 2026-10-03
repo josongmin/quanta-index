@@ -518,3 +518,35 @@ def score_capture(
         report["qrels_total"] = sidecar["qrels_total"]
         report["all_query_language_pairs"] = sidecar["all_query_language_pairs"]
     return report
+
+
+def write_freeze(
+    pack: dict[str, Any], sidecar: dict[str, Any], output_root: Path
+) -> dict[str, str]:
+    """Write a fresh external pack and separately held score sidecar."""
+    if (
+        not output_root.is_absolute()
+        or not output_root.parent.is_dir()
+        or output_root.exists()
+        or output_root.is_symlink()
+        or output_root.resolve(strict=False).is_relative_to(Path(__file__).resolve().parents[3])
+    ):
+        raise ExternalSnippetError("freeze output must be a new absolute root outside checkout")
+    if pack.get("suite_commitment_sha256") != _sha(_canonical(sidecar)):
+        raise ExternalSnippetError("pack does not bind external score sidecar")
+    output_root.mkdir(mode=0o700)
+    pack_path = output_root / "query-pack.json"
+    gold_path = output_root / "gold-sidecar.json"
+    pack_raw = _canonical(pack) + b"\n"
+    gold_raw = _canonical(sidecar) + b"\n"
+    with pack_path.open("xb") as handle:
+        handle.write(pack_raw)
+    with gold_path.open("xb") as handle:
+        handle.write(gold_raw)
+    return {
+        "query_pack": str(pack_path),
+        "query_pack_bytes_sha256": _sha(pack_raw),
+        "query_pack_canonical_sha256": _sha(_canonical(pack)),
+        "gold_sidecar": str(gold_path),
+        "gold_sidecar_bytes_sha256": _sha(gold_raw),
+    }

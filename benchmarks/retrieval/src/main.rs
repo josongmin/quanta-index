@@ -1974,7 +1974,7 @@ mod tests {
         let parent = tempfile::tempdir().expect("tempdir");
         let refusal = parent.path().join("refusal.json");
         assert!(plan_query_pack(&args, &pack, &refusal).is_err());
-        args.flags
+        let _ = args.flags
             .insert("nl-max-tokens".to_string(), "128".to_string());
         let (planned_policy, config, plans) =
             plan_query_pack(&args, &pack, &refusal).expect("bounded exploratory plan");
@@ -1991,14 +1991,14 @@ mod tests {
             execution_profile_sha256(policy, &NlPlanConfig::default())
         );
         for invalid in ["0", "129", "-1", "1.5", "true", " 48", ""] {
-            args.flags
+            let _ = args.flags
                 .insert("nl-max-tokens".to_string(), invalid.to_string());
             assert!(
                 nl_plan_config(&args, policy).is_err(),
                 "accepted {invalid:?}"
             );
         }
-        args.flags
+        let _ = args.flags
             .insert("nl-max-tokens".to_string(), "48".to_string());
         assert!(nl_plan_config(&args, QueryInputPolicy::Native).is_err());
     }
