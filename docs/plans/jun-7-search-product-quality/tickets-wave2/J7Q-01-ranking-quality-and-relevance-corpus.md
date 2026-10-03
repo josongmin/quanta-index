@@ -553,6 +553,62 @@ The first fresh native execution completed all 1,196 candidate pools but refused
 cannot represent the full suite. Those original diagnostic artifacts are
 preserved; the repair is replayed in a separate state/output root.
 
+### Fresh complete-pool replay after the retained-byte repair
+
+`VERIFIED`: new native execution and source-validated consumer completed in
+`/private/tmp/qi-rank-study-gin-1196-nfc-fixed-20261004-lxv_hswi/`.
+The runner wall time was 170.982 s; post-measurement diagnostics consumed
+87.370 s. These are development-build diagnostic costs on a shared host, not
+qualified product latency. The binding file records exact binary/input hashes
+and argv; no frozen compiled-source snapshot is claimed.
+
+- Original records: 1,109 `success`, 87 `capped`, zero execution failures.
+- Complete native pools: 1,196/1,196, 1,431 pages, 4,608 candidates and 4,608
+  returned explanations. All five ablations admit all 1,196 tasks; no exclusions.
+- `baseline-equality.json` compares status, entire candidates, query identity,
+  rank unit, ordering and score evidence against the pre-repair native capture.
+  All 1,196 result rows are identical. The fix changes diagnostic availability,
+  not production retrieval quality.
+- `ablation-report.json` validates native paging/exhaustion, original first-page
+  reproduction, source identity and selected/experimental score algebra.
+- `baseline-miss-rca.json` retains full source hashes, observed native ranks and
+  additive features for all nine baseline misses. Every miss's positive file
+  is present in the exhausted pool: these are ranking/top-ten misses in this
+  development capture, not missing indexing or literal recall.
+
+| Diagnostic policy | File Hit@10 | MRR@10 | File NDCG@10 | Regressions versus baseline |
+| --- | --- | --- | --- | --- |
+| Selected baseline | 1,187/1,196 | 0.924163 | 0.937654 | Reference |
+| Declaration only | 1,195/1,196 | 0.997910 | 0.998290 | Zero Hit/MRR regressions on this exposed set |
+| Original boundary only | 1,191/1,196 | 0.894187 | 0.916485 | One Hit regression (`L0137`), 92 MRR regressions |
+| Half occurrence | 1,187/1,196 | 0.923536 | 0.937396 | Three MRR regressions |
+| No occurrence | 1,187/1,196 | 0.914066 | 0.930258 | Two Hit regressions (`L0070`, `L0294`), 93 MRR regressions |
+| Declaration + boundary, no occurrence | 1,196/1,196 | 0.998421 | 0.998815 | Zero Hit/MRR regressions on this exposed set |
+
+| Task/query | Best positive native rank | Declaration-only rank | Combined rank |
+| --- | --- | --- | --- |
+| `L0978 Type` | 32 | 1 | 1 |
+| `L1291 writeContentType` | 13 | 13 | 9 |
+| `L0101 Err` | 15 | 1 | 1 |
+| `L0187 H` | 14 | 1 | 1 |
+| `L0245 Name` | 18 | 1 | 1 |
+| `L0248 New` | 11 | 1 | 1 |
+| `L0984 Use` | 13 | 1 | 1 |
+| `L1193 route` | 11 | 1 | 1 |
+| `L1293 x` | 17 | 1 | 1 |
+
+`writeContentType` shows why these experiments do not authorize a default:
+the request is folded, so exported `WriteContentType` declarations in other
+render files receive the same declaration bonus (64) as the lowercase helper
+in `render/render.go:37`. Both have exact-case *content* occurrences. Gold's
+occurrence contribution is 4 versus 6 in earlier files; removing occurrence
+leaves tied scores and the helper at rank 9. This is observed case/intent and
+tie-order evidence, not proof that the combined policy is generally optimal.
+Several common-name misses similarly tie at selected score 111 and are resolved
+by stable path order. The development declaration gold does not evaluate useful
+content/use-example ranking, precise declaration-name span recovery, typo,
+prefix/infix or independently judged production intent.
+
 ### Local checks
 
 All commands ran from this checkout; output was retained in the chat, not as
@@ -593,31 +649,29 @@ E2E. Rust checks waited at the shared resource admission lock,
 including another task's full workspace run. An admission timeout does not
 execute the product check.
 
-### Remaining execution, ordered by dependency
+### Remaining production-selection work, ordered by dependency
 
-1. Finish the existing `actual_runner_binary_emits_receipt_bound_v5_record` E2E extension.
-   The extension checks all three top-one file pages and a one-page diagnostic
-   cap while preserving the original `capped` record. Its standalone daemon
-   must be explicitly built/pinned. Source implementation is present; final
-   execution is pending resource admission. Module/test inventory is verified.
-2. Run fresh diagnostic complete-pool capture and the source-validated analyzer
-   using new external outputs. The capture and reporting code is implemented;
-   no historical top-ten-only capture can be promoted to a complete experiment.
-3. Freeze development/holdout by repository and seed family before expanding
+The actual runner E2E and fresh source-validated complete-pool replay are done.
+No historical top-ten-only capture was promoted to a complete experiment.
+
+1. Freeze development/holdout by repository and seed family before expanding
    exact/prefix/infix/components/typo/no-answer tasks. Reuse the existing source
    oracle, evaluator and review tools. Prepare default-content/use-example and
    typed-declaration pools separately; obtain genuine independent judgments.
-4. Batch declaration enrichment once per ranked request before experimenting
+2. Batch declaration enrichment once per ranked request before experimenting
    with production selection. Preserve unknown evidence, literal recall, typed
    errors, budget accounting, deterministic ordering and score-version cursors.
-5. Select a frozen policy only after reviewed, unexposed holdout improvement;
+3. Select a frozen policy only after reviewed, unexposed holdout improvement;
    report regressions by intent and repository. Run comparable API/build/input
    latency and memory measurements on an uncontended host.
-6. Bind served external inventories/versions and run the existing five-product
+4. Bind served external inventories/versions and run the existing five-product
    capture per supported lane. Qualification does not follow from the historical
    Gin counts or from this local explanation fixture.
 
-`NOT_RUN`: fresh 1,196-task or expanded five-product capture, complete-pool
-ablation, independent human relevance qualification, comparable performance,
-release/deployment and scale optimizations. No default relevance improvement
-has been established by this execution.
+`VERIFIED`: diagnostic implementation, focused contracts, actual SDK/native
+interop, all 1,196 complete development pools/ablations and unchanged original
+retrieval rows after repair.
+`NOT_RUN`: fresh expanded five-product capture, independent human relevance
+qualification, unexposed holdout, comparable performance, release/deployment
+and scale optimizations. No production default relevance improvement has been
+established by this execution.
