@@ -860,6 +860,13 @@ unmocked qualified pair capture and verdict replay. The 12-repository file
 capture, independently reviewed labels, external indexed-universe attestations
 and product-default decision remain `NOT_RUN`.
 
+Post-fix retrieval regression at `main@ff2bae33`: the full
+`test_retrieval_benchmark.py` file passed **447/447** in 332.35s using
+`env -u PYTHONPATH .venv/bin/python -m pytest -q`.
+The subsequent commits through `4f751b64` did not change `run.py`,
+`evaluator.py`, `decision.py` or that test file. This is a code regression
+check, not an unmocked qualified file capture.
+
 ## Frozen C4 v6 and native typo diagnostics (2026-10-03)
 
 **VERIFIED, diagnostic only:** clean `9d38b69d` rebuilt all twelve source-oracle
@@ -995,5 +1002,9 @@ Per-repository deltas, source-file hashes, record hashes and evaluator report
 hashes are in
 `/private/tmp/qi-b08-product-8e8592f4-20261003/exact-complete-file-evidence.json`
 (SHA-256 `c63a0e3785db5c52c57a5541de9008087def30c01e377b1d777dad6b59e2c3ab`).
+An independent read-only pass over those twelve roots also called
+`replay_complete_scored_file_report` and both qualified uncertainty-shape
+checks: **12/12** reports and both checks passed, with per-repository positive
+counts exactly matching the frozen summary (1,132 total). It wrote no capture.
 No qualified native capture, human review, external index attestation or C5
 decision was performed by this replay.
