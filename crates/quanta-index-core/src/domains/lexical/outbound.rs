@@ -285,6 +285,8 @@ pub struct LexicalScoreTraceV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CodeSearchRankStudyV1 {
     pub declaration_bonus: Option<u32>,
+    /// Complete symbol census and source spelling verified for its names.
+    /// Legacy display names can leave this false even with complete census.
     pub declaration_coverage_complete: bool,
     pub original_boundary_bonus: u32,
     pub baseline: u32,

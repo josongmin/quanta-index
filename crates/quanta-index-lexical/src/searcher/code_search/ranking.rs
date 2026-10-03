@@ -208,7 +208,7 @@ fn declaration_features(
             "lexical: rank declaration coverage has stale source".into(),
         ));
     }
-    let complete =
+    let mut complete =
         coverage.is_some_and(|row| matches!(row.symbols, SymbolCoverage::Complete { .. }));
     if !terms
         .iter()
@@ -273,10 +273,27 @@ fn declaration_features(
         let source = file.bytes.get(start..end).ok_or_else(|| {
             CoreError::Storage("lexical: rank declaration range is outside source".into())
         })?;
-        if name.is_empty() || memchr::memmem::find(source, name.as_bytes()).is_none() {
+        if name.is_empty() {
             return Err(CoreError::Storage(
-                "lexical: rank declaration name is absent from source range".into(),
+                "lexical: rank declaration name is empty".into(),
             ));
+        }
+        if memchr::memmem::find(source, name.as_bytes()).is_none() {
+            if name.is_ascii()
+                && coverage.is_some_and(|row| {
+                    row.symbol_name_source_policy
+                        == quanta_index_contract::SymbolNameSourcePolicyV1::RawAsciiLocalName
+                })
+            {
+                return Err(CoreError::Storage(
+                    "lexical: promised declaration name is absent from source range".into(),
+                ));
+            }
+            // Unspecified/non-ASCII producer names may legitimately differ
+            // from source spelling. Keep the selected score and expose unknown
+            // evidence; never treat their unverified absence as a zero feature.
+            complete = false;
+            continue;
         }
         let name = normalize::nfc(name);
         let name = normalize::apply_case(name.as_ref(), case);

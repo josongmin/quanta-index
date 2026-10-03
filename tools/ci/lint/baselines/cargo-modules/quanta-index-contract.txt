@@ -732,6 +732,7 @@ crate quanta_index_contract
     ├── struct SourceFileCoverage: pub
     ├── struct SourcePublicationEvent: pub
     ├── enum SymbolCoverage: pub
+    ├── enum SymbolNameSourcePolicyV1: pub
     └── mod snapshot: pub(self)
         ├── struct FileCoverageIter: pub
         ├── struct FileCoverageSnapshot: pub

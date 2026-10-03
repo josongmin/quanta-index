@@ -97,6 +97,8 @@ crate quanta_index_core
 │   │   ├── mod inbound: pub(self)
 │   │   │   └── trait LexicalQueryPort: pub
 │   │   ├── mod outbound: pub(self)
+│   │   │   ├── struct CodeSearchRankStudyV1: pub
+│   │   │   ├── struct CodeSearchScoreComponentsV1: pub
 │   │   │   ├── trait FileContributorIngestPort: pub
 │   │   │   ├── trait FileOwnershipIngestPort: pub
 │   │   │   ├── enum LexicalCandidateExplanationV1: pub

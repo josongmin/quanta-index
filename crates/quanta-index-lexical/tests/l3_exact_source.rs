@@ -895,7 +895,7 @@ fn code_search_rank_study_keeps_declaration_usage_and_unknown_metadata_distinct(
 }
 
 #[test]
-fn code_search_rank_study_refuses_unverified_declaration_names_without_losing_literal_candidates()
+fn code_search_rank_study_marks_unverified_declaration_names_unknown_without_losing_literal_candidates()
 -> TestResult {
     use quanta_index_core::LexicalCandidateExplanationV1;
 
@@ -926,19 +926,20 @@ fn code_search_rank_study_refuses_unverified_declaration_names_without_losing_li
         1,
         "literal admission is independent of metadata"
     );
-    let error = searcher
-        .explain_candidate(
-            &query,
-            &QueryConstraintSetV1::default(),
-            &page.candidates[0].candidate_id,
-            &RequestBudgetV1::unbounded(),
-        )
-        .expect_err("unverified declaration evidence");
-    assert!(
-        matches!(error, quanta_index_core::CoreError::Storage(ref message)
-        if message.contains("declaration name is absent")),
-        "{error:?}"
-    );
+    let explained = searcher.explain_candidate(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &page.candidates[0].candidate_id,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let LexicalCandidateExplanationV1::Matched(trace) = explained else {
+        panic!("valid legacy metadata cannot erase the selected file score");
+    };
+    let study = trace.code_search_rank_study.expect("native study");
+    assert_eq!(trace.emitted_score, 105.0);
+    assert_eq!(study.declaration_bonus, None);
+    assert!(!study.declaration_coverage_complete);
+    assert_eq!(study.declaration_only, study.baseline);
     // A normal no-match can still be decided without extracting features.
     let other_query = code_query(&["absent token"], false);
     assert!(matches!(
