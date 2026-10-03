@@ -765,7 +765,7 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
                 response.typed_error.is_none(),
                 "open-loop source-repository probe returned a typed error: {source_repo_id}"
             );
-            oracle.verify_page(Some(&source_repo_id), &response.candidates)?;
+            let _result_count = oracle.verify_page(Some(&source_repo_id), &response.candidates)?;
         }
     }
     let preflight = runtime.query_once(|_| request(&pin))?;
@@ -797,7 +797,7 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
                     "open-loop baseline returned a foreign source repository"
                 );
             }
-            fixture_candidate_ids(
+            let _validated_ids = fixture_candidate_ids(
                 &source_paths,
                 observed
                     .iter()

@@ -1718,8 +1718,8 @@ mod tests {
         assert!(oracle.paths_by_repo["repo0"].contains(shared_path));
         assert!(oracle.paths_by_repo["repo1"].contains(shared_path));
         assert_ne!(files[0].content, files[64].content);
-        assert_eq!(oracle.expected_count(Some("repo0")), 10);
-        assert_eq!(oracle.expected_count(None), 10);
+        assert_eq!(oracle.expected_count(Some("repo0"))?, 10);
+        assert_eq!(oracle.expected_count(None)?, 10);
         let repo1_rows = files
             .iter()
             .filter(|file| file.source_repo_id == "repo1")
@@ -1831,7 +1831,7 @@ mod tests {
     #[test]
     fn scoped_source_admission_counts_the_newline_and_rejects_each_hard_limit() {
         let files = generate_scoped_corpus(ScaleTier::Medium, 11).expect("seeded fixture");
-        let expected_source_bytes = files
+        let expected_source_bytes: u64 = files
             .iter()
             .map(|file| u64::try_from(file.content.len() + 1).expect("fixture length"))
             .sum();
