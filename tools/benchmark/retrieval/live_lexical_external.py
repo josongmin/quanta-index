@@ -1448,9 +1448,7 @@ def capture(spec_path: Path) -> dict:
     _write(stage / "query-pack.json", pack_raw)
     _write(stage / "manifest.json", manifest_raw)
     if projection is not None:
-        _write(
-            stage / "sourcegraph-projection.json", canonical_json(projection).encode() + b"\n"
-        )
+        _write(stage / "sourcegraph-projection.json", canonical_json(projection).encode() + b"\n")
     backend_names = tuple(
         name for name in ("sourcegraph", "opengrok") if "backend_snapshot" in spec[name]
     )
@@ -1662,10 +1660,16 @@ def verify(root: Path) -> dict:
     if manifest_raw != _read_control_file(release / repository["views"][view_name]["manifest"]):
         raise ValueError("retained manifest differs from release")
     binding = corpus_binding._bind(document, manifest_raw, spec["corpus"], suite_raw, pack_raw)
+    manifest = _json(manifest_raw)
+    projection = _projection_binding(spec["sourcegraph"], manifest)
+    if projection is not None:
+        spec["sourcegraph"]["projection_revision"] = projection["projection_revision"]
+        if _json(_read_control_file(root / "sourcegraph-projection.json")) != projection:
+            raise ValueError("Sourcegraph projection differs from retained capture")
     _, sourcegraph_max_request_target_bytes = _preflight_sourcegraph_request_targets(
         spec["sourcegraph"],
         pack["tasks"],
-        _json(manifest_raw),
+        manifest,
     )
     if (
         canonical_json(binding) != canonical_json(_json(_read_control_file(root / "binding.json")))
@@ -1676,14 +1680,8 @@ def verify(root: Path) -> dict:
         != sourcegraph_max_request_target_bytes
     ):
         raise ValueError("external capture binding differs")
-    manifest = _json(manifest_raw)
     files = {row["path"]: row["file_sha256"] for row in manifest["files"]}
     view = release / "views" / spec["corpus"]["repository"] / view_name
-    projection = _projection_binding(spec["sourcegraph"], manifest)
-    if projection is not None:
-        spec["sourcegraph"]["projection_revision"] = projection["projection_revision"]
-        if _json(_read_control_file(root / "sourcegraph-projection.json")) != projection:
-            raise ValueError("Sourcegraph projection differs from retained capture")
     probe_indexed_view = spec["opengrok"].get("indexed_view_probe") == "full"
     if type(summary.get("opengrok_indexed_view_files")) is not int or summary[
         "opengrok_indexed_view_files"

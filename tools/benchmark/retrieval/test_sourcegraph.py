@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
+from tools.benchmark.retrieval import live_lexical_external
 from tools.benchmark.retrieval.sourcegraph import (
     CaptureError,
     file_extensions,
@@ -80,6 +85,128 @@ def inputs(raw: bytes | None = None) -> tuple[dict, bytes, dict, dict]:
 
 
 class SourcegraphCaptureTests(unittest.TestCase):
+    def test_projection_capture_binds_source_and_service_revisions_separately(self) -> None:
+        service_revision = "b" * 40
+        raw = good_stream().replace(REVISION.encode(), service_revision.encode())
+        request, _, manifest, universe = inputs(raw)
+        request.update(
+            {
+                "capture_version": 3,
+                "source_revision": REVISION,
+                "revision": service_revision,
+                "file_filter_extensions": [".py"],
+                "request_query": query_expression(
+                    QUERY, REPOSITORY, service_revision, file_extensions_filter=[".py"]
+                ),
+            }
+        )
+        universe.update({"method": "input_manifest_postfiltered", "revision": service_revision})
+
+        result = validate_capture(request, raw, manifest, universe)
+        self.assertEqual(result["source_revision"], REVISION)
+        self.assertEqual(result["revision"], service_revision)
+        self.assertEqual([row["path"] for row in result["file_order"]], ["b.py", "a.py"])
+
+        changed = copy.deepcopy(request)
+        changed["source_revision"] = service_revision
+        self.assert_refused(changed, raw, manifest, universe)
+        changed = copy.deepcopy(request)
+        changed["request_query"] = changed["request_query"].replace(service_revision, REVISION)
+        self.assert_refused(changed, raw, manifest, universe)
+        changed = copy.deepcopy(universe)
+        changed["revision"] = REVISION
+        self.assert_refused(request, raw, manifest, changed)
+        self.assert_refused(request, good_stream(), manifest, universe)
+
+    def test_live_projection_requires_exact_clean_git_file_universe(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+            root = Path(temporary)
+            (root / "a.py").write_text("a = 1\n")
+            manifest = {
+                "repository_commit": REVISION,
+                "files": [
+                    {
+                        "path": "a.py",
+                        "file_sha256": hashlib.sha256((root / "a.py").read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+            subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "a.py"], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "fixture",
+                ],
+                check=True,
+            )
+            config = {"projection_git_root": str(root)}
+            binding = live_lexical_external._projection_binding(config, manifest)
+            self.assertEqual(binding["source_revision"], REVISION)
+            self.assertEqual(binding["file_count"], 1)
+            self.assertEqual(
+                live_lexical_external._sourcegraph_revision(
+                    {**config, "projection_revision": binding["projection_revision"]}, manifest
+                ),
+                binding["projection_revision"],
+            )
+            (root / "a.py").write_text("a = 2\n")
+            with self.assertRaises(ValueError):
+                live_lexical_external._projection_binding(config, manifest)
+            (root / "a.py").write_text("a = 1\n")
+            (root / "extra.py").write_text("untracked = True\n")
+            with self.assertRaises(ValueError):
+                live_lexical_external._projection_binding(config, manifest)
+
+    def test_live_response_uses_projection_revision_and_source_manifest(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+            view = Path(temporary)
+            for name in ("a.py", "b.py"):
+                (view / name).write_text(QUERY + "\n")
+            manifest = {
+                "repository_commit": REVISION,
+                "files": [
+                    {
+                        "path": name,
+                        "file_sha256": hashlib.sha256((view / name).read_bytes()).hexdigest(),
+                    }
+                    for name in ("a.py", "b.py")
+                ],
+            }
+            service_revision = "b" * 40
+            config = {
+                "repository": REPOSITORY,
+                "server_image_digest": "e" * 64,
+                "projection_git_root": str(view),
+                "projection_revision": service_revision,
+            }
+            task = {"task_id": "S01", "query": QUERY, "query_sha256": sha256(QUERY.encode())}
+            raw = good_stream().replace(REVISION.encode(), service_revision.encode())
+            row = live_lexical_external._sourcegraph_response(
+                config,
+                task,
+                ["a.py"],
+                manifest,
+                view,
+                {entry["path"]: entry["file_sha256"] for entry in manifest["files"]},
+                200,
+                "text/event-stream",
+                raw,
+                1.5,
+            )
+            self.assertEqual(row["file_paths_top_10"], ["b.py", "a.py"])
+            self.assertTrue(row["file_hit_at_10"])
+            self.assertIn(f"rev:{service_revision}", row["request_query"])
+
     def test_complete_zero_result_stream_is_valid_but_unqualified(self) -> None:
         raw = event(
             "progress", {"done": True, "skipped": [], "matchCount": 0, "durationMs": 1}
