@@ -50,6 +50,21 @@ fn original_boundary_bonus(raw: &str, span: Range<usize>) -> Result<u32, CoreErr
     Ok(if left && right { 16 } else { 8 })
 }
 
+#[expect(
+    clippy::manual_ok_err,
+    reason = "invalid UTF-8 source has no content-boundary feature; path features still apply"
+)]
+#[expect(
+    clippy::option_if_let_else,
+    reason = "invalid UTF-8 source is an expected absence of this optional diagnostic feature"
+)]
+fn utf8_text_or_none(bytes: &[u8]) -> Option<&str> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Some(text),
+        Err(_) => None,
+    }
+}
+
 fn boundary_features(
     owner: &TantivySearcher,
     file: &SourceFile,
@@ -58,10 +73,7 @@ fn boundary_features(
     budget: &RequestBudgetV1,
 ) -> Result<u32, CoreError> {
     // Binary source has no content-boundary signal; path features still apply.
-    let raw_content = match std::str::from_utf8(&file.bytes) {
-        Ok(content) => Some(content),
-        Err(_) => None,
-    };
+    let raw_content = utf8_text_or_none(&file.bytes);
     let surfaces = [
         (Scope::Content, raw_content, file.indexed_text.as_deref()),
         (

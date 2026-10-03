@@ -50,7 +50,10 @@ const MAX_TYPO_POSTING_VISITS: usize = 2_000_000;
 
 // Request-local bounded memoization; this is neither persisted nor externally
 // ordered, so hashing keeps repeated-token distance lookup inexpensive.
-#[allow(clippy::disallowed_types)]
+#[expect(
+    clippy::disallowed_types,
+    reason = "bounded request-local memoization is not persisted or externally ordered"
+)]
 type TypoDistanceCache = std::collections::HashMap<Vec<u8>, Option<u8>>;
 
 #[derive(Clone, Copy)]

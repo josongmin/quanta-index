@@ -73,6 +73,7 @@ Implemented owners:
 | Independent CodeSearchNet aggregation | VERIFIED | Separate CSV parser, integer histograms and rational mean calculation agree for every qrel; all original row identities/grades/notes preserved exactly once |
 | Existing gin noisy-input strata | VERIFIED | All six frozen lanes rederived from intended-name/query bytes; original suites/census untouched; input distribution only |
 | Focused owner/policy/authority tests | VERIFIED | 293 passed in 48.71 seconds; includes historical replay, policy tampering, forged upstream input and symlink output refusal |
+| Final enrollment and source-closure tests | VERIFIED | 67 passed in 73.21 seconds after adding the two test owners to the existing execution scope and source profiles |
 | Python style and test-authority guard | VERIFIED | Ruff check/format and `check-test-authority.py` passed |
 | External review-seed product execution | NOT_RUN | Source snippet materialization, corpus licensing and executable scoring contract remain prerequisites |
 | New five-product score or performance comparison | NOT_RUN | No product calls were made by this change; historical scores are not recomputed or combined |
@@ -107,7 +108,7 @@ Per-run evidence is outside the checkout:
 Executed commands from the repository root:
 
 ```sh
-uv run --frozen --extra dev python -m tools.benchmark.retrieval.codesearchnet_qrels \
+python3 tools/benchmark/retrieval/codesearchnet_qrels.py \
   --csv /private/tmp/qi-public-bench-audit-y1tax5mf/codesearchnet-annotationStore.csv \
   --output /private/tmp/qi-public-bench-audit-y1tax5mf/codesearchnet-review-seed-v2.json
 uv run --frozen --extra dev python -c "import runpy; runpy.run_path('/private/tmp/qi-b09-verification-20261004-ytzcxwj_/verify_inputs.py', run_name='__main__')"
@@ -119,6 +120,10 @@ uv run --frozen --extra dev python -m pytest -q \
   tools/ci/tests/test_benchmark_policy.py \
   tools/ci/tests/test_check_test_authority.py
 uv run --frozen --extra dev python tools/ci/lint/check-test-authority.py
+uv run --frozen --extra dev python -m pytest -q \
+  tools/ci/tests/test_benchmark_policy.py::test_execution_regressions_are_registered_to_the_real_owner_scope \
+  tools/ci/tests/test_benchmark_policy.py::test_execution_regression_owners_have_nonempty_live_collection \
+  tools/ci/tests/test_benchmark_source_closure.py
 ```
 
 The imported annotations and new diagnostic report fields are implemented.
