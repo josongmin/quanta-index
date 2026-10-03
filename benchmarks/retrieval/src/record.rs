@@ -1054,7 +1054,8 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
         | QueryInputPolicy::CodeSearchFile
         | QueryInputPolicy::CodeSearchExactContentFile
         | QueryInputPolicy::CodeSearchTypoFile
-        | QueryInputPolicy::CodeSearchComponentsFile => Some("distinct_file"),
+        | QueryInputPolicy::CodeSearchComponentsFile
+        | QueryInputPolicy::NaturalLanguageFile => Some("distinct_file"),
         QueryInputPolicy::ExactSymbolName => Some("symbol"),
         QueryInputPolicy::Native
         | QueryInputPolicy::Literal
@@ -1076,6 +1077,7 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
             | QueryInputPolicy::CodeSearchExactContentFile
             | QueryInputPolicy::CodeSearchTypoFile
             | QueryInputPolicy::CodeSearchComponentsFile
+            | QueryInputPolicy::NaturalLanguageFile
     ) {
         let _previous = object.insert(
             "score_evidence".to_string(),
@@ -1171,6 +1173,7 @@ pub fn result_value(
                         | QueryInputPolicy::CodeSearchExactContentFile
                         | QueryInputPolicy::CodeSearchTypoFile
                         | QueryInputPolicy::CodeSearchComponentsFile
+                        | QueryInputPolicy::NaturalLanguageFile
                 ) != (proven.unit_kind == PublishedUnitKind::File)
                 {
                     return Err(BenchError::Protocol(format!(
@@ -1186,6 +1189,7 @@ pub fn result_value(
                         | QueryInputPolicy::CodeSearchExactContentFile
                         | QueryInputPolicy::CodeSearchTypoFile
                         | QueryInputPolicy::CodeSearchComponentsFile
+                        | QueryInputPolicy::NaturalLanguageFile
                 ) {
                     let score = serde_json::Number::from_f64(hit.score).ok_or_else(|| {
                         BenchError::Protocol(format!(
@@ -1595,7 +1599,7 @@ mod tests {
     }
 
     #[test]
-    fn code_search_file_profiles_preserve_file_identity_and_native_score() {
+    fn scored_file_profiles_preserve_file_identity_and_native_score() {
         let (hit, files) = file_hit_fixture("src/main.go", "func load_json() {}\n", false);
         let units = PublishedUnitRegistry::from_chunks_and_symbols(
             &BTreeMap::new(),
@@ -1606,6 +1610,7 @@ mod tests {
         for (policy, raw) in [
             (QueryInputPolicy::CodeSearchTypoFile, "load_jsom"),
             (QueryInputPolicy::CodeSearchExactContentFile, "load_json()"),
+            (QueryInputPolicy::NaturalLanguageFile, "find load_json"),
         ] {
             let plan = plan_query(policy, raw, &NlPlanConfig::default()).expect("file plan");
             let row = result_value(

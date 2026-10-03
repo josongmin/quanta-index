@@ -634,6 +634,14 @@ def _batch_preflight(
     capsule_names = {path.name for path in capsule_root.iterdir() if path.is_dir()}
     if capsule_names != set(names) or any(path.is_symlink() for path in capsule_root.iterdir()):
         raise ValueError("C4 matrix capsule roster differs from release")
+    # A source mismatch makes every regenerated gold byte ineligible. Check all
+    # capsule identities before the expensive corpus-wide split replay; the
+    # full source-derived capsule validation below remains the authority.
+    producer_sources = corpus_binding._gold_producer_source_digests()
+    for name in names:
+        identity = _read(capsule_root / name / "identity.json")
+        if identity.get("producer_source_digests") != producer_sources:
+            raise ValueError(f"C4 gold producer source differs: {name}")
     first = capsule_root / min(names)
     split_raw = _read_control_file(first / "split-manifest.json")
     split_releases_raw = _read_control_file(first / "split-releases.json")

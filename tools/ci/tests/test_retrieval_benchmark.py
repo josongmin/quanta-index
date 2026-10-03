@@ -11472,7 +11472,13 @@ def test_pair_spec_refuses_diagnostic_rank_profiles_before_quality_gate(tmp_path
 
 
 @pytest.mark.parametrize(
-    "policy", ["code_search_file", "code_search_typo_file", "code_search_components_file"]
+    "policy",
+    [
+        "code_search_file",
+        "code_search_typo_file",
+        "code_search_components_file",
+        "natural_language_file",
+    ],
 )
 def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, policy):
     spec_path = tmp_path / "pair-spec.json"
@@ -11527,6 +11533,58 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
     else:
         with pytest.raises(pairrun.RunError, match="requires code_search_file"):
             pairrun.load_spec(spec_path)
+
+
+def test_natural_language_file_planner_has_distinct_scored_file_contract():
+    raw = "Find retry handling"
+    policy = "natural_language_file"
+    assert qp.plan_lexical_request(policy, raw) == 'select:file "Find" OR "retry" OR "handling"'
+    assert qp.plan_lexical_request("natural_language", raw) == '"Find" OR "retry" OR "handling"'
+    assert qp.derive_query_identity(policy, raw) != qp.derive_query_identity(
+        "natural_language", raw
+    )
+    assert qp.FILE_PROJECTION_ORDERING[policy] == qp.ORDERING_SCORE_DESC
+    assert qp.QUANTA_EVALUATION_POLICIES[qp.NATURAL_LANGUAGE_FILE_SEARCH] == frozenset((policy,))
+    assert qp.execution_profile(policy)["config"] == qp.DEFAULT_NL_CONFIG
+    for raw in ("--- ... ///", " ".join(f"a{i}" for i in range(33)), "x" * 97):
+        with pytest.raises(qp.QueryPlanError):
+            qp.plan_lexical_request(policy, raw)
+
+
+def test_natural_language_file_contract_binds_intent_policy_and_unit(tmp_path):
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path, "natural_language_file", queries=["find alphaTwo", "find alphaThree"]
+    )
+    for task in suite["tasks"]:
+        task["query_intent"] = "semantic_intent"
+        task["evaluation_contract"] = {
+            "request_mode": qp.NATURAL_LANGUAGE_FILE_SEARCH,
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+    for row in run["results"]:
+        row["score_evidence"] = "native_sdk_score_v1"
+        for candidate in row["candidates"]:
+            candidate["score"] = 1.0
+    _pack, run = _repack(repo, suite, run)
+    jsonschema.validate(suite, _load_schema("suite.schema.json"))
+    jsonschema.validate(run, _load_schema("runner.schema.json"))
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    assert (
+        ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)["evaluation_contract"]
+        == (suite["tasks"][0]["evaluation_contract"])
+    )
+    wrong_policy = copy.deepcopy(run)
+    wrong_policy["captures"]["q0"]["execution_profile"] = qp.execution_profile("code_search_file")
+    wrong_policy["captures"]["q0"]["execution_profile_sha256"] = ev.digest(
+        ev.canonical(wrong_policy["captures"]["q0"]["execution_profile"])
+    )
+    with pytest.raises(ev.EvidenceError, match="request mode differs from bound product policy"):
+        record_v3(repo, suite, wrong_policy, suite_path, runner_path)
+    wrong_intent = copy.deepcopy(suite)
+    wrong_intent["tasks"][0]["query_intent"] = "bare_symbol"
+    with pytest.raises(ev.EvidenceError, match="requires independently judged semantic_intent"):
+        ev.validate_suite(repo, wrong_intent)
 
 
 @pytest.mark.parametrize(
@@ -14411,6 +14469,7 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
         "code_search_exact_content_file",
         "code_search_typo_file",
         "code_search_components_file",
+        "natural_language_file",
     ):
         run["span_accounting_version"] = 1
     for task, row in zip(suite["tasks"], run["results"], strict=True):
@@ -14428,6 +14487,7 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
             "code_search_exact_content_file",
             "code_search_typo_file",
             "code_search_components_file",
+            "natural_language_file",
         ):
             repo_bytes = b"bench-repo"
             for path, item in by_file.items():
@@ -15355,9 +15415,10 @@ def test_empty_file_candidate_is_source_bound_and_replayable():
 
 
 def test_code_search_file_refuses_context_metric_from_full_file_identity():
-    run = {"captures": {"q0": {"execution_profile": qp.execution_profile("code_search_file")}}}
-    with pytest.raises(ev.EvidenceError, match="context metrics are undefined"):
-        ev.evaluate({}, {}, run, "lexical", "semantic")
+    for policy in ("code_search_file", "natural_language_file"):
+        run = {"captures": {"q0": {"execution_profile": qp.execution_profile(policy)}}}
+        with pytest.raises(ev.EvidenceError, match="context metrics are undefined"):
+            ev.evaluate({}, {}, run, "lexical", "semantic")
 
 
 @pytest.mark.parametrize(
@@ -15365,6 +15426,7 @@ def test_code_search_file_refuses_context_metric_from_full_file_identity():
     [
         ("code_search_file", ["alphaTwo", "alphaThree"]),
         ("code_search_typo_file", ["alphaTwp", "alphaThre"]),
+        ("natural_language_file", ["find alphaTwo", "find alphaThree"]),
     ],
 )
 def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path, policy, queries):

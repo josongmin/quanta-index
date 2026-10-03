@@ -252,6 +252,11 @@ def validate_evaluation_contract(task: dict[str, Any], task_id: str) -> dict[str
             task.get("query_intent") == "symbol_components",
             f"explicit_symbol_components requires symbol_components intent for {task_id}",
         )
+    if mode == query_plan_contract.NATURAL_LANGUAGE_FILE_SEARCH:
+        require(
+            task.get("query_intent") == "semantic_intent" and "source_oracle" not in task,
+            f"natural_language_file_search requires independently judged semantic_intent for {task_id}",
+        )
     return contract
 
 
@@ -1789,7 +1794,11 @@ def _validate_run(
         expected_policies = query_plan_contract.QUANTA_EVALUATION_POLICIES[mode]
         allowed_routes = (
             {"lexical", "semble-lexical-file"}
-            if mode == query_plan_contract.DEFAULT_FILE_SEARCH
+            if mode
+            in (
+                query_plan_contract.DEFAULT_FILE_SEARCH,
+                query_plan_contract.NATURAL_LANGUAGE_FILE_SEARCH,
+            )
             else {"symbol"}
             if mode == query_plan_contract.DECLARATION_NAVIGATION
             else {"lexical"}
@@ -1807,7 +1816,11 @@ def _validate_run(
                     and capture["execution_profile"]["policy"] in expected_policies
                 )
                 or (
-                    mode == query_plan_contract.DEFAULT_FILE_SEARCH
+                    mode
+                    in (
+                        query_plan_contract.DEFAULT_FILE_SEARCH,
+                        query_plan_contract.NATURAL_LANGUAGE_FILE_SEARCH,
+                    )
                     and route == "semble-lexical-file"
                     and capture["system"] == "semble"
                     and capture["execution_profile"].get("mode") == "lexical-file"
@@ -1873,7 +1886,7 @@ def _validate_run(
             )
         ordering = result.get("ordering")
         score_evidence = result.get("score_evidence")
-        if profile_policy in query_plan_contract.CODE_SEARCH_FILE_POLICIES:
+        if profile_policy in query_plan_contract.FILE_PAIR_POLICIES:
             require(
                 span_protocol == 1,
                 f"code_search_file requires source-bound file span evidence: {key}",
@@ -2134,7 +2147,7 @@ def _validate_run(
                 require(span_protocol == 1, f"span evidence lacks record protocol: {key}")
                 accounting = candidate["span_accounting"]
                 require(
-                    (profile_policy in query_plan_contract.CODE_SEARCH_FILE_POLICIES)
+                    (profile_policy in query_plan_contract.FILE_PAIR_POLICIES)
                     == (accounting["unit_kind"] == "file"),
                     f"code_search_file requires file identity and other profiles cannot claim it: {key}",
                 )
@@ -2354,7 +2367,7 @@ def indexed_span_diagnostics(
             continue
         if (
             run["captures"][capture_id].get("execution_profile", {}).get("policy")
-            in query_plan_contract.CODE_SEARCH_FILE_POLICIES
+            in query_plan_contract.FILE_PAIR_POLICIES
         ):
             routes[route] = {"status": "not_applicable", "reason": "file_unit_is_not_context_span"}
             continue
@@ -3403,7 +3416,7 @@ def evaluate(
     require(
         all(
             capture.get("execution_profile", {}).get("policy")
-            not in query_plan_contract.CODE_SEARCH_FILE_POLICIES
+            not in query_plan_contract.FILE_PAIR_POLICIES
             for capture in run.get("captures", {}).values()
         ),
         "code_search_file requires file-judgment diagnostics; context metrics are undefined",

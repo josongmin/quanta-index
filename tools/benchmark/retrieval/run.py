@@ -125,7 +125,7 @@ SEMBLE_ROUTE_BY_MODE = {
 }
 QUANTA_SYMBOL_PRODUCER_IDENTITY = "source-bound-symbols-v2"
 QUANTA_SYMBOL_GRAMMARS = symbol_coverage.grammar_identity()
-PAIR_QUANTA_POLICIES = frozenset((*qp.V4_SUPPORTED_POLICIES, *qp.CODE_SEARCH_FILE_POLICIES))
+PAIR_QUANTA_POLICIES = frozenset((*qp.V4_SUPPORTED_POLICIES, *qp.FILE_PAIR_POLICIES))
 PAIR_CONTEXT_QUALITY_POLICIES = frozenset(qp.V4_SUPPORTED_POLICIES)
 
 
@@ -3017,7 +3017,7 @@ def load_spec(path: Path) -> dict:
         )
     if "semble" in profiles:
         _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
-    if quanta_profile["policy"] in qp.CODE_SEARCH_FILE_POLICIES:
+    if quanta_profile["policy"] in qp.FILE_PAIR_POLICIES:
         file_qualified = spec.get("scope", "exploratory") == "qualified"
         if file_qualified:
             if (
@@ -7057,7 +7057,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         merged, merged_digest = combos[strategy]
         if (
             protocol_payload.get("execution_profiles", {}).get("quanta", {}).get("policy")
-            in qp.CODE_SEARCH_FILE_POLICIES
+            in qp.FILE_PAIR_POLICIES
         ):
             try:
                 report_digest = sha_note(path, "report_bytes", ("T13",))
@@ -8506,7 +8506,7 @@ def run_pair(spec: dict) -> int:
     quanta_profile = profiles.get("quanta") if isinstance(profiles, dict) else None
     semble_profile = profiles.get("semble") if isinstance(profiles, dict) else None
     code_search_file = isinstance(quanta_profile, dict) and (
-        quanta_profile.get("policy") in qp.CODE_SEARCH_FILE_POLICIES
+        quanta_profile.get("policy") in qp.FILE_PAIR_POLICIES
     )
     if code_search_file and (
         spec.get("routes") != ["lexical"]
@@ -8625,9 +8625,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     if "semble" not in spec["execution_profiles"]:
         raise RunError("pair requires spec.execution_profiles.semble")
     scope = spec.get("scope", "exploratory")
-    code_search_file = (
-        spec["execution_profiles"]["quanta"]["policy"] in qp.CODE_SEARCH_FILE_POLICIES
-    )
+    code_search_file = spec["execution_profiles"]["quanta"]["policy"] in qp.FILE_PAIR_POLICIES
     if (
         code_search_file
         and scope == "qualified"

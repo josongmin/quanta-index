@@ -500,6 +500,7 @@ mod empty_status_tests {
             Policy::CodeSearchExactContentFile,
             Policy::CodeSearchTypoFile,
             Policy::CodeSearchComponentsFile,
+            Policy::NaturalLanguageFile,
         ] {
             assert_eq!(expected_lexical_rank_unit(policy), TextRankUnit::File);
         }
@@ -1352,6 +1353,7 @@ pub fn query_route_with_policy(
                             | crate::query_plan::QueryInputPolicy::CodeSearchExactContentFile
                             | crate::query_plan::QueryInputPolicy::CodeSearchTypoFile
                             | crate::query_plan::QueryInputPolicy::CodeSearchComponentsFile
+                            | crate::query_plan::QueryInputPolicy::NaturalLanguageFile
                     ) && response.results.iter().any(|candidate| {
                         let pin_matches = candidate.repo_id == expected_pin.repo_id
                             && candidate.revision_id == expected_pin.revision_id
@@ -1362,9 +1364,8 @@ pub fn query_route_with_policy(
                         return QueryOutcome::SdkFailure {
                             status: "error",
                             code: "file_candidate_generation_mismatch".to_string(),
-                            message:
-                                "code search file candidate differs from pinned source/generation"
-                                    .to_string(),
+                            message: "file candidate differs from pinned source/generation"
+                                .to_string(),
                             latency: start.elapsed(),
                         };
                     }

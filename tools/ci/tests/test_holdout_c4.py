@@ -180,7 +180,8 @@ def _fixture(
         "files": {
             name: "sha256:" + hashlib.sha256((capsule / name).read_bytes()).hexdigest()
             for name in payloads
-        }
+        },
+        "producer_source_digests": holdout_c4.corpus_binding._gold_producer_source_digests(),
     }
     (capsule / "identity.json").write_bytes(holdout_c4._raw(identity))
     monkeypatch.setattr(
@@ -835,6 +836,21 @@ def _matrix_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(holdout_c4.corpus_binding, "validate_split_manifest", lambda *_: manifest)
     monkeypatch.setattr(holdout_c4.corpus_binding, "_gold_material", gold_material)
     return release, capsules, checkouts
+
+
+def test_c4_matrix_refuses_stale_gold_source_before_split_replay(tmp_path, monkeypatch):
+    release, capsules, checkouts = _matrix_fixture(tmp_path, monkeypatch)
+    identity_path = capsules / "repo_b" / "identity.json"
+    identity = holdout_c4._read(identity_path)
+    identity["producer_source_digests"]["gold_oracle"] = "sha256:" + "0" * 64
+    identity_path.write_bytes(holdout_c4._raw(identity))
+
+    def unexpected_replay(*_args, **_kwargs):
+        raise AssertionError("split replay must not start for a stale gold producer")
+
+    monkeypatch.setattr(holdout_c4.corpus_binding, "_validated_split_manifest", unexpected_replay)
+    with pytest.raises(ValueError, match="C4 gold producer source differs: repo_b"):
+        holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
 
 
 def test_c4_matrix_has_independent_cell_inventory_and_validates_once(tmp_path, monkeypatch):

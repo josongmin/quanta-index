@@ -195,7 +195,9 @@
              {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "explicit_osa1_typo"}}}}},
               "then": {"properties": {"query_intent": {"const": "bare_symbol"}}}},
              {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "explicit_symbol_components"}}}}},
-              "then": {"properties": {"query_intent": {"const": "symbol_components"}}}}
+              "then": {"properties": {"query_intent": {"const": "symbol_components"}}}},
+             {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "natural_language_file_search"}}}}},
+              "then": {"properties": {"query_intent": {"const": "semantic_intent"}}, "not": {"required": ["source_oracle"]}}}
            ]
          }},
         {"if": {"required": ["intended_name"]},
@@ -218,7 +220,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["request_mode", "gold_unit", "result_unit"],
       "properties": {
-        "request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "explicit_symbol_components", "declaration_navigation"]},
+        "request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "explicit_symbol_components", "declaration_navigation", "natural_language_file_search"]},
         "gold_unit": {"enum": ["distinct_file", "symbol"]},
         "result_unit": {"enum": ["distinct_file", "symbol"]}
       },
