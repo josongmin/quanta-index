@@ -988,11 +988,6 @@ def capture_cs_fuzzy(spec_path: Path) -> dict:
         Path(spec["suite"]),
         Path(spec["query_pack"]),
         Path(spec["cs"]["binary"]),
-        *(
-            (Path(spec["sourcegraph"]["projection_git_root"]),)
-            if "projection_git_root" in spec["sourcegraph"]
-            else ()
-        ),
     )
     if any(path.resolve().is_relative_to(checkout) for path in input_paths):
         raise ValueError("cs fuzzy inputs and output must stay outside the source checkout")
@@ -1401,6 +1396,11 @@ def capture(spec_path: Path) -> dict:
         Path(spec["suite"]),
         Path(spec["query_pack"]),
         Path(spec["cs"]["binary"]),
+        *(
+            (Path(spec["sourcegraph"]["projection_git_root"]),)
+            if "projection_git_root" in spec["sourcegraph"]
+            else ()
+        ),
         *(
             Path(spec[name]["backend_snapshot"]["root"])
             for name in ("sourcegraph", "opengrok")

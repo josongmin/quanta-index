@@ -26,7 +26,6 @@ from tools.benchmark.evidence import (
 )
 from tools.benchmark.retrieval.evaluator import (
     canonical,
-    declared_evaluation_contract,
     digest,
     validate_comparison_contract,
 )
@@ -247,12 +246,24 @@ def _tasks(
         or not pack_tasks
     ):
         raise ValueError("pack and suite task counts differ or are empty")
-    evaluation = declared_evaluation_contract(suite_tasks)
-    if (
-        evaluation is not None
-        and file_policy not in QUANTA_EVALUATION_POLICIES[evaluation["request_mode"]]
-    ):
-        raise ValueError("native file policy differs from the evaluation request mode")
+    if any(not isinstance(task, dict) for task in suite_tasks):
+        raise ValueError("malformed suite task")
+    declared = [task.get("evaluation_contract") for task in suite_tasks]
+    if any(value is not None for value in declared):
+        if any(
+            not isinstance(value, dict)
+            or set(value) != {"request_mode", "gold_unit", "result_unit"}
+            or not isinstance(value["request_mode"], str)
+            or value["gold_unit"] != "distinct_file"
+            or value["result_unit"] != "distinct_file"
+            for value in declared
+        ):
+            raise ValueError("external file evaluation contract differs")
+        modes = {value["request_mode"] for value in declared}
+        if len(modes) != 1 or file_policy not in QUANTA_EVALUATION_POLICIES.get(
+            next(iter(modes)), frozenset()
+        ):
+            raise ValueError("native file policy differs from the evaluation request mode")
     expected: dict[str, tuple[str, list[str]]] = {}
     blinded: dict[str, tuple[str, str]] = {}
     for task in pack_tasks:
