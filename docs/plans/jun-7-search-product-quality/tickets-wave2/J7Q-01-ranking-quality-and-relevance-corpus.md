@@ -496,9 +496,23 @@ Owners: `searcher/code_search.rs`, `searcher/port.rs`,
   Exact-path/regex-only zero literal counts mean no literal prefilter execution.
   Explicit recovery/components remain unobserved; limits/cancellation remain
   typed errors rather than fabricated complete statistics.
-- Existing runner diagnostics already retain native planner traces. Per-file
-  score-study capture and complete-pool ablation reporting are not yet wired
-  into that runner. Top-ten-only studies cannot establish post-change full ranks.
+- Existing runner diagnostics retain native planner traces. The optional
+  `--rank-study-out` runner path now retains native pinned pages and per-file
+  explanations after all measured requests. It reproduces the measured first
+  window before following the original page-size cursors. Total/count drift,
+  duplicate files, non-progressing cursors, limits and refusals remain explicit.
+- `code_search_rank_study.py` binds the diagnostic to original record bytes,
+  blind pack, effective request/profile, generation and source-file universe.
+  It reuses existing file NDCG/Hit/MRR on proven complete pools. Each baseline
+  comparison uses the same admitted tasks and lists exclusions/coverage.
+  Unknown declaration census excludes declaration policies; a refused explain
+  or stopped walk never becomes a zero or a full-rank claim. File-level features
+  are explicitly not declaration-span recovery metrics.
+- The driver accepts explicit bounded `code_search_rank_study` limits and
+  retains original captures when optional study validation fails. A speed claim
+  is refused with this mode: query timers exclude diagnostics, but whole-process
+  CPU/RSS includes them. Separate performance captures are required. Deadlines
+  are checked between SDK calls; the SDK I/O timeout bounds an individual call.
 
 ### Local checks
 
@@ -516,6 +530,9 @@ one-off repository evidence files.
 | `git diff --check`; `python3 tools/ci/lint/check-module-discipline.py`; `just rust-hexagonal` | `VERIFIED` | Hygiene and dependency/facade boundaries |
 | `just rust-cargo-modules` | `VERIFIED`: corrected core/contract snapshots match both native module trees | Module inventory, not behavioral qualification |
 | `python3 tools/ci/lint/check-test-authority.py` | `VERIFIED` | Existing test targets remain registered |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench rank_study::tests` | `VERIFIED`: 3 passed before the fourth bounds test was added; final rerun pending | Stable counts/order, duplicate/drift refusal and ordinary-policy separation |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_identifier_robustness_report.py` | `VERIFIED`: 55 passed | Complete-pool independent golden, artifact mutations, refusal/unknown/partial exclusions and existing intent contracts |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_retrieval_benchmark.py -k 'code_search_rank_study or spec or server_observation or hybrid_fetch or quanta_strategy or query_protocol'` | `VERIFIED`: 32 passed | Study and affected driver/protocol contracts |
 
 Some first attempts had test-code compilation errors, corrected before the
 passing runs. An accidental system Python 3.9 invocation failed on the existing
@@ -523,29 +540,34 @@ passing runs. An accidental system Python 3.9 invocation failed on the existing
 One native command was not admitted after 300 seconds of another task's build
 lock; a subsequent admitted attempt passed. Build/admission time is not query
 or indexing latency.
+The later SDK extension's raw paging call omitted its required generation pin;
+that test fixture was corrected to the sealed identity. This was a test setup
+failure, not a newly reproduced product defect. Subsequent SDK reruns and the
+pinned standalone daemon build have repeatedly waited at the shared resource
+admission lock. An admission timeout does not execute the product check.
 
 ### Remaining execution, ordered by dependency
 
-1. Finish the final SDK public work-count proof. Module inventory is verified.
-2. Extend the existing SDK runner's optional diagnostic path to retain each
-   returned candidate's native score explanation under its exact effective
-   request and generation. Bind it to the existing record/input/binary identities;
-   record explanation cost separately from measured query cost. An explanation
-   refusal must stay visible and must not erase valid original quality results.
-3. For candidate-complete ablation, collect every matching file through the
-   existing paging contract and prove exhaustion; do not re-rank only a top-ten
-   pool and call it full recall. Add an independent fixed-rank study golden.
-4. Freeze development/holdout by repository and seed family before expanding
+1. Finish the corrected SDK public work-count proof, bounds unit rerun, and
+   existing `actual_runner_binary_emits_receipt_bound_v5_record` E2E extension.
+   The extension checks all three top-one file pages and a one-page diagnostic
+   cap while preserving the original `capped` record. Its standalone daemon
+   must be explicitly built/pinned. Source implementation is present; final
+   execution is pending resource admission. Module/test inventory is verified.
+2. Run fresh diagnostic complete-pool capture and the source-validated analyzer
+   using new external outputs. The capture and reporting code is implemented;
+   no historical top-ten-only capture can be promoted to a complete experiment.
+3. Freeze development/holdout by repository and seed family before expanding
    exact/prefix/infix/components/typo/no-answer tasks. Reuse the existing source
    oracle, evaluator and review tools. Prepare default-content/use-example and
    typed-declaration pools separately; obtain genuine independent judgments.
-5. Batch declaration enrichment once per ranked request before experimenting
+4. Batch declaration enrichment once per ranked request before experimenting
    with production selection. Preserve unknown evidence, literal recall, typed
    errors, budget accounting, deterministic ordering and score-version cursors.
-6. Select a frozen policy only after reviewed, unexposed holdout improvement;
+5. Select a frozen policy only after reviewed, unexposed holdout improvement;
    report regressions by intent and repository. Run comparable API/build/input
    latency and memory measurements on an uncontended host.
-7. Bind served external inventories/versions and run the existing five-product
+6. Bind served external inventories/versions and run the existing five-product
    capture per supported lane. Qualification does not follow from the historical
    Gin counts or from this local explanation fixture.
 

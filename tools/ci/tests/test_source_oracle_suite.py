@@ -23,11 +23,14 @@ def test_typescript_oracles_use_the_producer_compatibility_grammar(suffix):
         b'export type * as Other from "./other";\n'
         b"export function Locate() {\n"
         b"  return runnerImport<typeof import('./basic')>(fixture('cjs.js'),);\n"
-        b"}\n"
+        + (b"  return <div />;\n" if suffix == "tsx" else b"")
+        + b"}\n"
     )
     rows = source_oracle.declaration_census("typescript", "input." + suffix, raw)
     assert [raw[start:end] for start, end, *_ in rows] == [b"Locate"]
-    spans, refusal = gold_oracle._definition_spans(raw, b"Locate", "typescript")
+    spans, refusal = gold_oracle._definition_spans(
+        raw, b"Locate", "typescript", path="input." + suffix
+    )
     assert refusal is None
     assert len(spans) == 1
     assert raw[spans[0][0] : spans[0][1]] == b"Locate"
@@ -38,8 +41,9 @@ def test_typescript_oracles_use_the_producer_compatibility_grammar(suffix):
 
 
 def test_vendored_parser_cache_refuses_identity_and_binary_tampering(tmp_path):
-    from tools.benchmark.retrieval import declaration_parsers
     from hashlib import sha256
+
+    from tools.benchmark.retrieval import declaration_parsers
 
     binary = tmp_path / "parser.so"
     binary.write_bytes(b"fixed parser bytes")

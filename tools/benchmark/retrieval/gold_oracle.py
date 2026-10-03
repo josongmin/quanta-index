@@ -25,7 +25,6 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-
 try:
     from tools.benchmark.retrieval import declaration_census_audit, source_oracle
 except ModuleNotFoundError:  # benchmark script path without the repository root
@@ -364,9 +363,13 @@ def _literal_spans(raw: bytes, query: bytes) -> list[tuple[int, int, str]]:
     return spans
 
 
-def _definition_spans(raw: bytes, query: bytes, language: str) -> tuple[list, str | None]:
+def _definition_spans(
+    raw: bytes, query: bytes, language: str, *, path: str
+) -> tuple[list, str | None]:
     try:
-        root = get_parser(language).parse(raw).root_node
+        suffix = "." + path.rsplit(".", 1)[-1]
+        grammar = source_oracle.DECLARATION_GRAMMARS[language][suffix]
+        root = get_parser(grammar).parse(raw).root_node
     except (LookupError, ValueError) as error:
         return [], type(error).__name__
     if root.has_error:
@@ -506,7 +509,7 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
                     )
                 )
             else:
-                spans, reason = _definition_spans(raw, query, task["language"])
+                spans, reason = _definition_spans(raw, query, task["language"], path=path)
             if reason is not None:
                 unsupported.append({"path": path, "reason": reason})
                 continue

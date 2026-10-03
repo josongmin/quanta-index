@@ -559,7 +559,10 @@ def _gold_producer_source_digests() -> dict[str, str]:
     }
     return {
         **{name: digest_bytes(_read_regular_file(path)) for name, path in sorted(owners.items())},
-        **declaration_parsers.component_source_digests(),
+        **{
+            name: "sha256:" + digest
+            for name, digest in declaration_parsers.component_source_digests().items()
+        },
     }
 
 

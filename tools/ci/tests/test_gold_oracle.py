@@ -199,11 +199,11 @@ def test_typo_near_census_uses_query_specific_absence_for_refused_file(tmp_path,
 )
 def test_named_function_oracle_has_fixed_declaration_spans(name, language, expected):
     raw = (FIXTURES / name).read_bytes()
-    spans, error = gold_oracle._definition_spans(raw, b"target", language)
+    spans, error = gold_oracle._definition_spans(raw, b"target", language, path=name)
     assert error is None
     assert [start for start, _end, _kind in spans] == expected
     assert all(raw[start:end] == b"target" for start, end, _kind in spans)
-    absent, error = gold_oracle._definition_spans(raw, b"absent", language)
+    absent, error = gold_oracle._definition_spans(raw, b"absent", language, path=name)
     assert absent == [] and error is None
 
 

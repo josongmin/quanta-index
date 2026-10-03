@@ -47,7 +47,11 @@ def _checked_library(directory: Path, expected: dict) -> Path:
         metadata = json.loads(marker.read_text())
     except (OSError, ValueError) as error:
         raise ValueError("vendored parser cache marker malformed or missing") from error
-    if set(metadata) != {"identity", "binary_sha256"} or metadata["identity"] != expected:
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != {"identity", "binary_sha256"}
+        or metadata["identity"] != expected
+    ):
         raise ValueError("vendored parser cache identity differs")
     if (
         not library.is_file()
