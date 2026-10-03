@@ -3204,3 +3204,48 @@ remain **NOT_RUN**. This closes the conservative Sourcegraph submission guard;
 native literal AND search is not Quanta NL token-OR or semantic retrieval.
 Declare product workflow versus matched predicates before interpreting quality
 or performance. All new executions remain diagnostic and unqualified.
+
+### 2026-10-04: native OpenGrok full-posting coverage
+
+- **VERIFIED**, read-only Lucene enumeration separates **13,347 live file
+  documents** from **4,268 auxiliary documents** across the 12 C3 repositories.
+  File paths and unique UIDs match every release manifest; each corresponding
+  frozen source hash matches its manifest. Native `full` postings are present
+  for **13,346 files**, rather than all 13,347 manifest paths.
+- The sole file without `full` postings is
+  `bat/tests/syntax-tests/highlighted/TypeScriptReact/app.tsx`, SHA
+  `17b4dfd05ccec0f28dd0f97fcd4851740aac3e0b1e874a2e19e7618c39e3d696`.
+  Its frozen 6,499 bytes contain 494 ANSI escape bytes; OpenGrok retains its
+  path/UID metadata as type `file`, without the stored `t` field. This is direct
+  evidence of metadata-only inclusion, not an observed query execution failure.
+  Do not silently remove this path, rewrite the release, or claim full content
+  search coverage from UID/path counts. Final admission must retain this scope
+  exception and determine whether any final task requires that file.
+- Both bracketing runtime/index snapshots are identical, including 84 native
+  files / 136,566,270 bytes and index SHA
+  `38971d8ec7e83a17d3a32b2bd9fe7e8fe4087a82f8bcd7d38759b95c3ab76d6e`.
+  Missing-file, duplicate-file and forged-UID controls all refuse. Independent
+  post-exit replay rechecked the raw output hash, helper hash, counts and
+  bracketing snapshots. Command: `.venv/bin/python
+  <external-root>/opengrok-native-full-postings-y0o5m0qe/probe.py`;
+  elapsed **16.564s**. Artifacts are under the existing external closeout root;
+  original captures, frozen checkouts and index files are unchanged.
+- **FAILED**, the preceding `opengrok-native-file-universe-9cjsur69` wrapper
+  incorrectly required every primary document to have `t=p` and assumed one
+  auxiliary stored-field shape. Native extraction succeeded, but those wrapper
+  assertions did not. Its raw output is preserved; the new posting probe uses
+  manifest/UID identity and actual postings instead. The earlier field-helper
+  compilation failure and corrected retry also remain separate artifacts.
+- **NOT_RUN**, complete analyzer-term/source equivalence, reviewed C3 scoring
+  and final comparison qualification. Posting presence does not prove all
+  expected tokens, ranking, or search responses. The 40/240 review issuance and
+  reported 08:40 KST external-model quota reset remain unchanged.
+
+Matching proof production is live from clean **89058da8** in
+`integrated-portable-proof-89058da8-8d6s3e1w/`: Contract PID 4092 and SDK PID
+4227 were confirmed alive, both waiting for canonical Rust resource admission.
+Contract Python collection matches **677** required identities; no terminal
+test success is inferred from collection or waiting. These jobs do not include
+later main changes to external fresh-join or execution batching. Retain the
+source distinction when assembling final admission; do not relabel the old
+9e27b8ba receipts or duplicate the live jobs because observation yielded.
