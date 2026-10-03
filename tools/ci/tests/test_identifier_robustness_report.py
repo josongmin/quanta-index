@@ -999,6 +999,47 @@ def test_generation_manifest_accepts_only_exact_pair_route_projection(tmp_path):
         verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
 
 
+def test_generation_manifest_accepts_quanta_projection_of_generated_pair(tmp_path):
+    from tools.benchmark.retrieval.source_oracle_suite import _json_bytes
+
+    suite, census, _, _ = fixture()
+    census.update(generation="paired_full_osa1_casefold_v3", seed=7)
+    source_suite = {**suite, "routes": ["lexical", "semble-lexical-file"]}
+    source_path = tmp_path / "prefix-suite.json"
+    projected_path = tmp_path / "quanta-suite.json"
+    census_path = tmp_path / "census.json"
+    manifest_path = tmp_path / "manifest.json"
+    source_path.write_bytes(_json_bytes(source_suite))
+    projected_path.write_bytes(_json_bytes(suite))
+    census_path.write_bytes(_json_bytes(census))
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "qualification": "diagnostic_unqualified_source_exposed",
+                "repository_commit": suite["repository_commit"],
+                "parameters": {"paired_full": True, "seed": 7},
+                "artifacts": [
+                    {"path": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                    for name, path in (
+                        ("census.json", census_path),
+                        ("prefix-suite.json", source_path),
+                    )
+                ],
+            }
+        )
+    )
+    verify_generation_manifest(
+        manifest_path, census_path, projected_path, suite, census, "prefix"
+    )
+    suite["suite_id"] = "different"
+    projected_path.write_bytes(_json_bytes(suite))
+    with pytest.raises(ValueError, match="generation artifact mismatch: prefix-suite.json"):
+        verify_generation_manifest(
+            manifest_path, census_path, projected_path, suite, census, "prefix"
+        )
+
+
 def test_content_no_answer_population_requires_frozen_generation_count(tmp_path):
     suite, census, _, _ = fixture()
     census["lanes"]["no-answer"] = {"records": [{"task_id": "NOA1"}]}

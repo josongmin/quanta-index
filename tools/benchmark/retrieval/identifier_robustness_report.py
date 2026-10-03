@@ -193,11 +193,20 @@ def verify_generation_manifest(
         observed = evaluator.digest(path.read_bytes())
         if name == f"{lane}-suite.json" and observed != paths[name]:
             # The pair runner adds exactly one external route. Bind all other
-            # bytes back to the generator's single-route suite.
+            # bytes back to the generator's single-route suite. A Quanta-only
+            # capture of a generated paired clean suite removes that route.
             if suite.get("routes") == ["lexical", "semble-lexical-file"]:
                 source_suite = {**suite, "routes": ["lexical"]}
                 observed = evaluator.digest(source_oracle_suite._json_bytes(source_suite))
-            elif suite.get("routes") != ["lexical"]:
+            elif suite.get("routes") == ["lexical"]:
+                source_suite = evaluator.read_json(manifest_path.parent / name)
+                if (
+                    isinstance(source_suite, dict)
+                    and source_suite.get("routes") == ["lexical", "semble-lexical-file"]
+                    and {**source_suite, "routes": ["lexical"]} == suite
+                ):
+                    observed = paths[name]
+            else:
                 raise ValueError("unsupported robustness pair route projection")
         _require(
             observed == paths[name],
