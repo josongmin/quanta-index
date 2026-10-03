@@ -768,6 +768,38 @@ fn code_search_matches_file_across_chunk_boundaries_and_maps_unicode_source_span
 }
 
 #[test]
+fn code_search_explanation_uses_the_same_file_score_outside_top_k() -> TestResult {
+    use quanta_index_core::LexicalCandidateExplanationV1;
+
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("first.rs", "needle needle needle", 5)?,
+        code_scope("last.rs", "needle", 3)?,
+    ])?;
+    let query = code_query(&["needle"], false);
+    let rows = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?.candidates;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].repo_relative_path.as_str(), "last.rs");
+    for row in &rows {
+        match searcher.explain_candidate(
+            &query, &QueryConstraintSetV1::default(), &row.candidate_id,
+            &RequestBudgetV1::unbounded(),
+        )? {
+            LexicalCandidateExplanationV1::Matched(trace) => {
+                assert_eq!(trace.emitted_score, row.score);
+                assert_eq!(trace.engine.as_str(), "code_search_file");
+            }
+            other => panic!("indexed matching file must be explained: {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn code_search_preview_flags_only_actual_nfc_source_difference() -> TestResult {
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("identity.rs", "needle", 6)?,

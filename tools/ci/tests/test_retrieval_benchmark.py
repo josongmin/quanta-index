@@ -2817,6 +2817,18 @@ def test_pair_preflights_searchd_socket_length_before_creating_stage(tmp_path, m
     assert not stage.exists()
 
 
+def test_fixed_window_strategy_path_is_short_and_matches_socket_preflight(monkeypatch):
+    monkeypatch.setattr(pairrun, "_unix_socket_path_limit", lambda: 103)
+    stage = Path("/private/tmp/p5/07e114f9.staging")
+    assert pairrun._strategy_run_directory(0, "fixed_window_strict") == "strategy-00-fw_strict"
+    assert pairrun._strategy_run_directory(0, "whole_file") == "strategy-00-whole_file"
+    pairrun.preflight_daemon_socket_paths(
+        stage, [{"name": "fixed_window_strict"}], repetitions=1, paired=True
+    )
+    with pytest.raises(pairrun.RunError, match="unknown strategy"):
+        pairrun._strategy_run_directory(0, "unknown")
+
+
 def test_semble_model_revision_requires_observed_pinned_cache(tmp_path):
     model = "minishlab/potion-code-16M-v2"
     with pytest.raises(semble_adapter.AdapterError, match="revision unavailable"):

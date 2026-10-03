@@ -3256,6 +3256,15 @@ def _unix_socket_path_limit() -> int | None:
     return None
 
 
+def _strategy_run_directory(index: int, name: str) -> str:
+    """Keep fixed-window state paths within the pathname Unix socket limit."""
+    if name not in RUNNABLE_STRATEGIES:
+        raise RunError(f"unknown strategy: {name}")
+    # The strategy name remains in the record; this is only an artifact path.
+    path_name = "fw_strict" if name == "fixed_window_strict" else name
+    return f"strategy-{index:02d}-{path_name}"
+
+
 def preflight_daemon_socket_paths(
     output_root: Path, strategies: list[dict], *, repetitions: int = 1, paired: bool = False
 ) -> None:
@@ -3269,9 +3278,7 @@ def preflight_daemon_socket_paths(
         root = output_root / f"rep-{rep:02d}" / "quanta" if paired else output_root
         for index, strategy in enumerate(strategies):
             name = strategy.get("name")
-            if name not in RUNNABLE_STRATEGIES:
-                raise RunError(f"unknown strategy: {name}")
-            socket = root / f"strategy-{index:02d}-{name}" / "state/search-plane/control.sock"
+            socket = root / _strategy_run_directory(index, name) / "state/search-plane/control.sock"
             length = len(os.fsencode(socket.resolve()))
             if length > limit:
                 raise RunError(
@@ -4541,7 +4548,7 @@ def run_quanta_strategy(
     if name not in RUNNABLE_STRATEGIES:
         raise RunError(f"unknown strategy: {name}")
     out_abs = out_root.resolve()
-    run_dir = out_root / f"strategy-{index:02d}-{name}"
+    run_dir = out_root / _strategy_run_directory(index, name)
     run_dir.mkdir(parents=True)
     state_root = (run_dir / "state").resolve()
     record_path = (run_dir / "record.json").resolve()
