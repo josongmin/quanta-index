@@ -54,6 +54,7 @@ impl LexicalSearcher for TantivySearcher {
         let _accepted_fetch = validate_internal_fetch_size(page.fetch)?;
         let after = self.page_boundary(page)?;
         let empty_page = || LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: Vec::new(),
             exact_total: Self::wants_exact_total(&effective_query).then_some(0),
         };
@@ -134,6 +135,7 @@ impl LexicalSearcher for TantivySearcher {
             budget,
         )?;
         Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: self.rows_to_candidates(
                 &searcher,
                 rows,
@@ -204,6 +206,7 @@ impl LexicalSearcher for TantivySearcher {
         let after = self.page_boundary(page)?;
         let Some(prepared_query) = self.prepare_executable_query(&plan, budget)? else {
             return Ok(SymbolSearchPageV1 {
+                code_search_stats: None,
                 candidates: Vec::new(),
                 exact_total: Some(0),
             });
@@ -215,6 +218,7 @@ impl LexicalSearcher for TantivySearcher {
         )?;
         if !self.repo_filters_allow(&effective_query)? {
             return Ok(SymbolSearchPageV1 {
+                code_search_stats: None,
                 candidates: Vec::new(),
                 exact_total: Some(0),
             });
@@ -236,6 +240,7 @@ impl LexicalSearcher for TantivySearcher {
                 budget,
             )?;
             return Ok(SymbolSearchPageV1 {
+                code_search_stats: None,
                 candidates: self.render_manual_candidates(
                     rows,
                     &mut preview,
@@ -252,6 +257,7 @@ impl LexicalSearcher for TantivySearcher {
         )?
         else {
             return Ok(SymbolSearchPageV1 {
+                code_search_stats: None,
                 candidates: Vec::new(),
                 exact_total: Some(0),
             });
@@ -275,6 +281,7 @@ impl LexicalSearcher for TantivySearcher {
             budget,
         )?;
         Ok(SymbolSearchPageV1 {
+            code_search_stats: None,
             candidates: self.rows_to_candidates(
                 &searcher,
                 fruit.rows,
@@ -453,6 +460,13 @@ impl LexicalSearcher for TantivySearcher {
     }
 
     fn candidate_presence(&self, candidate_id: &str) -> Result<CandidatePresenceV1, CoreError> {
+        if candidate_id.starts_with("file:")
+            && self
+                .code_search_file_by_id(candidate_id, &RequestBudgetV1::unbounded())?
+                .is_some()
+        {
+            return Ok(CandidatePresenceV1::Indexed);
+        }
         let searcher = self.reader.searcher();
         Ok(
             match self.locate_candidate(&searcher, candidate_id, TEXT_DOC_KIND)? {
@@ -469,6 +483,10 @@ impl LexicalSearcher for TantivySearcher {
         candidate_id: &str,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalCandidateExplanationV1, CoreError> {
+        if query.options.pattern_type == LqPatternType::CodeSearch {
+            let _plan = LexicalPolicy::plan_query(query, constraints, LexicalEndpoint::Text)?;
+            return self.explain_code_file(query, constraints, candidate_id, budget);
+        }
         // The same preparation as `search_constrained`, step for step, so
         // the plan that scores this one document is the plan that ranked it.
         let effective_query =
@@ -524,6 +542,8 @@ impl LexicalSearcher for TantivySearcher {
             return Ok(LexicalCandidateExplanationV1::Matched(
                 LexicalScoreTraceV1 {
                     engine: LexicalScoreEngineV1::UnindexedScan,
+                    code_search_components: None,
+                    code_search_rank_study: None,
                     engine_score: 1.0,
                     boost_factor,
                     emitted_score: Self::apply_query_boost_score(1.0, &effective_query.options),
@@ -547,6 +567,8 @@ impl LexicalSearcher for TantivySearcher {
         Ok(LexicalCandidateExplanationV1::Matched(
             LexicalScoreTraceV1 {
                 engine: LexicalScoreEngineV1::Bm25,
+                code_search_components: None,
+                code_search_rank_study: None,
                 engine_score,
                 boost_factor,
                 emitted_score: Self::apply_query_boost_score(

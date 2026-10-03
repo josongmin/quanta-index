@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     CandidatePresenceV1, ExplainCandidateV1, ExplanationRow, HybridCandidateV1, HybridLaneV1,
-    LexicalCandidate, LqOptions, LqYesNoOnly, PlannerStage, PlannerTraceEntry, SearchExplanation,
+    LexicalCandidate, LqYesNoOnly, PlannerStage, PlannerTraceEntry, SearchExplanation,
     SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse, TextQueryRequest,
 };
 use quanta_index_core::{
@@ -511,9 +511,15 @@ enum RankerFusionV1 {
 /// The digest covers the engine the lexical plan runs on, the boost it
 /// applies, and the fusion over it. Two explanations with equal hashes
 /// were scored under the same weights.
-fn ranker_weights_hash_v1(options: &LqOptions, fusion: RankerFusionV1) -> [u8; 32] {
+fn ranker_weights_hash_v1(
+    query: &quanta_index_contract::LqQuery,
+    fusion: RankerFusionV1,
+) -> [u8; 32] {
     use sha2::Digest as _;
-    let engine = if matches!(options.index_mode, Some(LqYesNoOnly::No)) {
+    let options = &query.options;
+    let engine = if options.pattern_type == quanta_index_contract::LqPatternType::CodeSearch {
+        LexicalScoreEngineV1::CodeSearchFile
+    } else if matches!(options.index_mode, Some(LqYesNoOnly::No)) {
         LexicalScoreEngineV1::UnindexedScan
     } else {
         LexicalScoreEngineV1::Bm25
@@ -522,6 +528,10 @@ fn ranker_weights_hash_v1(options: &LqOptions, fusion: RankerFusionV1) -> [u8; 3
     hasher.update(b"quanta-index lexical ranker weights v1\n");
     hasher.update(b"engine=");
     hasher.update(engine.as_str().as_bytes());
+    if engine == LexicalScoreEngineV1::CodeSearchFile {
+        hasher.update(b"\ncode_search_rank=");
+        hasher.update(super::lexical::code_search_rank_order(query).as_bytes());
+    }
     hasher.update(b"\nboost_millis=");
     match options.boost_millis {
         Some(millis) => hasher.update(millis.to_string().as_bytes()),
@@ -597,6 +607,33 @@ fn lexical_trace_row_v1(
             "explain: the lexical engine emitted a non-finite score for {candidate_id}"
         )));
     }
+    if let Some(components) = trace.code_search_components {
+        let total = u16::try_from(components.total()).map_err(|error| {
+            CoreError::Storage(format!(
+                "explain: file score decomposition overflow: {error}"
+            ))
+        })?;
+        if trace.engine != LexicalScoreEngineV1::CodeSearchFile
+            || f32::from(total) != trace.engine_score
+            || trace.boost_factor != 1.0
+            || trace.emitted_score != trace.engine_score
+        {
+            return Err(CoreError::Storage(
+                "explain: file score differs from its decomposition".into(),
+            ));
+        }
+    }
+    if let Some(study) = trace.code_search_rank_study {
+        if trace.code_search_components.is_none()
+            || trace.engine != LexicalScoreEngineV1::CodeSearchFile
+            || u16::try_from(study.baseline).map(f32::from).ok() != Some(trace.engine_score)
+            || (study.declaration_coverage_complete && study.declaration_bonus.is_none())
+        {
+            return Err(CoreError::Storage(
+                "explain: rank study disagrees with the selected file scorer".into(),
+            ));
+        }
+    }
     Ok(ExplanationRow {
         signal_name: format!("lexical.{}", trace.engine.as_str()).into_boxed_str(),
         signal_value: trace.engine_score,
@@ -651,6 +688,43 @@ fn build_lexical_score_explanation(
                 stage: PlannerStage::Merge,
                 detail: format!("explain.score_reconciled={reconciled}"),
             });
+            if let Some(components) = trace.code_search_components {
+                for (name, value) in [
+                    ("boundary_and_path", components.boundary_and_path),
+                    ("occurrence", components.occurrence),
+                    ("exact_case", components.exact_case),
+                    ("proximity", components.proximity),
+                ] {
+                    planner_trace.push(PlannerTraceEntry {
+                        stage: PlannerStage::Merge,
+                        detail: format!("explain.code_search_score.{name}={value}"),
+                    });
+                }
+            }
+            if let Some(study) = trace.code_search_rank_study {
+                planner_trace.push(PlannerTraceEntry {
+                    stage: PlannerStage::Merge,
+                    detail: format!("explain.code_search_rank_study_v1.declaration_bonus={};coverage_complete={};original_boundary_bonus={}",
+                        study.declaration_bonus.map_or_else(|| "unknown".to_string(), |value| value.to_string()),
+                        study.declaration_coverage_complete, study.original_boundary_bonus),
+                });
+                for (name, value) in [
+                    ("baseline", study.baseline),
+                    ("declaration_only", study.declaration_only),
+                    ("boundary_only", study.boundary_only),
+                    ("occurrence_half", study.occurrence_half),
+                    ("occurrence_none", study.occurrence_none),
+                    ("combined", study.combined),
+                ] {
+                    planner_trace.push(PlannerTraceEntry {
+                        stage: PlannerStage::Merge,
+                        detail: format!(
+                            "explain.code_search_rank_study_v1.{name}={value};selected={}",
+                            name == "baseline"
+                        ),
+                    });
+                }
+            }
             let prose = lexical_trace_prose_v1(trace);
             let summary = if reconciled {
                 format!(
@@ -675,7 +749,7 @@ fn build_lexical_score_explanation(
         stage_timings: None,
         early_stop_reason: None,
         contributions,
-        ranker_weights_hash: ranker_weights_hash_v1(&query.options, RankerFusionV1::None),
+        ranker_weights_hash: ranker_weights_hash_v1(query, RankerFusionV1::None),
         strategy: "lexical_score_trace".to_string(),
         summary,
     })
@@ -805,7 +879,7 @@ fn build_hybrid_score_explanation(
     report.lexical_lane(hybrid, query, explained)?;
     report.dense_lane(hybrid, derived);
     report.fusion(hybrid, derived.ranks);
-    Ok(report.close(&query.options, execution, request_id))
+    Ok(report.close(query, execution, request_id))
 }
 
 /// The hybrid explanation under assembly: one method per lane, then the
@@ -963,7 +1037,7 @@ impl HybridTraceReportV1 {
 
     fn close(
         self,
-        options: &LqOptions,
+        query: &quanta_index_contract::LqQuery,
         execution: &LaneExecutionSummaryV1,
         request_id: u64,
     ) -> SearchExplanation {
@@ -978,7 +1052,7 @@ impl HybridTraceReportV1 {
             stage_timings: None,
             early_stop_reason: None,
             contributions: self.contributions,
-            ranker_weights_hash: ranker_weights_hash_v1(options, RankerFusionV1::Rrf),
+            ranker_weights_hash: ranker_weights_hash_v1(query, RankerFusionV1::Rrf),
             strategy: "hybrid_score_trace".to_string(),
             summary: self.summary.concat(),
         }
@@ -1011,4 +1085,102 @@ fn rederived_ranks_detail(ranks: RederivedHybridRanksV1) -> String {
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+#[cfg(test)]
+mod code_search_score_tests {
+    use super::*;
+    use quanta_index_core::{CodeSearchRankStudyV1, CodeSearchScoreComponentsV1};
+
+    fn fixed_trace() -> LexicalScoreTraceV1 {
+        LexicalScoreTraceV1 {
+            engine: LexicalScoreEngineV1::CodeSearchFile,
+            engine_score: 109.0,
+            boost_factor: 1.0,
+            emitted_score: 109.0,
+            code_search_components: Some(CodeSearchScoreComponentsV1 {
+                boundary_and_path: 100,
+                occurrence: 4,
+                exact_case: 5,
+                proximity: 0,
+            }),
+            code_search_rank_study: Some(CodeSearchRankStudyV1 {
+                declaration_bonus: None,
+                declaration_coverage_complete: false,
+                original_boundary_bonus: 0,
+                baseline: 109,
+                declaration_only: 109,
+                boundary_only: 109,
+                occurrence_half: 107,
+                occurrence_none: 105,
+                combined: 105,
+            }),
+        }
+    }
+
+    #[test]
+    fn code_search_score_decomposition_rejects_cross_engine_overflow_and_mismatches() {
+        let valid = fixed_trace();
+        let row = lexical_trace_row_v1("file:fixture", &valid).expect("valid trace");
+        assert_eq!(row.contribution, 109.0);
+        assert_eq!(row.signal_name.as_ref(), "lexical.code_search_file");
+        for mutate in [
+            |trace: &mut LexicalScoreTraceV1| trace.engine = LexicalScoreEngineV1::Bm25,
+            |trace: &mut LexicalScoreTraceV1| trace.engine_score = 108.0,
+            |trace: &mut LexicalScoreTraceV1| trace.emitted_score = 110.0,
+            |trace: &mut LexicalScoreTraceV1| trace.boost_factor = 2.0,
+            |trace: &mut LexicalScoreTraceV1| {
+                trace
+                    .code_search_components
+                    .as_mut()
+                    .expect("components")
+                    .occurrence = u32::MAX
+            },
+            |trace: &mut LexicalScoreTraceV1| {
+                trace
+                    .code_search_rank_study
+                    .as_mut()
+                    .expect("study")
+                    .baseline = 108
+            },
+            |trace: &mut LexicalScoreTraceV1| trace.code_search_components = None,
+            |trace: &mut LexicalScoreTraceV1| {
+                trace
+                    .code_search_rank_study
+                    .as_mut()
+                    .expect("study")
+                    .declaration_coverage_complete = true
+            },
+        ] {
+            let mut invalid = valid.clone();
+            mutate(&mut invalid);
+            assert!(
+                lexical_trace_row_v1("file:fixture", &invalid).is_err(),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_search_ranker_hash_tracks_engine_without_selecting_experimental_weights() {
+        let plain = crate::lower_sourcegraph_query_text("needle").expect("BM25 query");
+        let code = crate::lowering::lower_code_search_query_text("needle").expect("file query");
+        let code_hash = ranker_weights_hash_v1(&code, RankerFusionV1::None);
+        assert_ne!(code_hash, [0; 32]);
+        assert_ne!(
+            code_hash,
+            ranker_weights_hash_v1(&plain, RankerFusionV1::None)
+        );
+        assert_eq!(
+            code_hash,
+            ranker_weights_hash_v1(&code, RankerFusionV1::None)
+        );
+        for text in ["typo:needel", "components:\"needle helper\""] {
+            let query = crate::lowering::lower_code_search_query_text(text).expect("typed query");
+            assert_ne!(
+                code_hash,
+                ranker_weights_hash_v1(&query, RankerFusionV1::None)
+            );
+        }
+    }
 }

@@ -637,12 +637,10 @@ fn capture_value(capture_id: &str, capture: &CaptureProvenance) -> BenchResult<V
         "execution_profile": capture.execution_profile,
         "execution_profile_sha256": capture.execution_profile_sha256,
     });
-    if capture
-        .execution_profile
-        .get("policy")
-        .and_then(Value::as_str)
-        == Some("code_search_exact_content_file")
-    {
+    if matches!(
+        capture.execution_profile.get("policy").and_then(Value::as_str),
+        Some("code_search_file" | "code_search_exact_content_file")
+    ) {
         let object = value.as_object_mut().ok_or_else(|| {
             BenchError::Protocol(format!("capture {capture_id} JSON is not an object"))
         })?;
@@ -1054,7 +1052,8 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
         | QueryInputPolicy::CodeSearchFile
         | QueryInputPolicy::CodeSearchExactContentFile
         | QueryInputPolicy::CodeSearchTypoFile
-        | QueryInputPolicy::CodeSearchComponentsFile => Some("distinct_file"),
+        | QueryInputPolicy::CodeSearchComponentsFile
+        | QueryInputPolicy::NaturalLanguageFile => Some("distinct_file"),
         QueryInputPolicy::ExactSymbolName => Some("symbol"),
         QueryInputPolicy::Native
         | QueryInputPolicy::Literal
@@ -1076,6 +1075,7 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
             | QueryInputPolicy::CodeSearchExactContentFile
             | QueryInputPolicy::CodeSearchTypoFile
             | QueryInputPolicy::CodeSearchComponentsFile
+            | QueryInputPolicy::NaturalLanguageFile
     ) {
         let _previous = object.insert(
             "score_evidence".to_string(),
@@ -1186,6 +1186,7 @@ pub fn result_value(
                         | QueryInputPolicy::CodeSearchExactContentFile
                         | QueryInputPolicy::CodeSearchTypoFile
                         | QueryInputPolicy::CodeSearchComponentsFile
+                        | QueryInputPolicy::NaturalLanguageFile
                 ) {
                     let score = serde_json::Number::from_f64(hit.score).ok_or_else(|| {
                         BenchError::Protocol(format!(
@@ -1595,7 +1596,7 @@ mod tests {
     }
 
     #[test]
-    fn code_search_file_profiles_preserve_file_identity_and_native_score() {
+    fn scored_file_profiles_preserve_file_identity_and_native_score() {
         let (hit, files) = file_hit_fixture("src/main.go", "func load_json() {}\n", false);
         let units = PublishedUnitRegistry::from_chunks_and_symbols(
             &BTreeMap::new(),
@@ -1632,6 +1633,63 @@ mod tests {
                 plan.effective_lexical_request_sha256
             );
         }
+    }
+
+    #[test]
+    fn natural_language_file_preserves_native_representative_chunk_authority() {
+        // Native select:file groups before top-k, but retains the winning
+        // chunk identity. Rank unit and published unit kind are independent.
+        let (files, units, hit) = status_fixture();
+        let plan = plan_query(
+            QueryInputPolicy::NaturalLanguageFile,
+            "find main",
+            &NlPlanConfig::default(),
+        )
+        .expect("native file plan");
+        let outcome = QueryOutcome::ReturnedWindow {
+            hits: vec![hit.clone()],
+            window: QueryResultWindowV2::exact_probe(1),
+            explanation: Some(RouteExplanation::default()),
+            latency: Duration::from_millis(1),
+        };
+        let row = result_value("T1", "lexical", &outcome, &plan, 10, &files, &units)
+            .expect("source-bound native representative");
+        assert_eq!(row["rank_unit"], "distinct_file");
+        assert_eq!(row["score_evidence"], "native_sdk_score_v1");
+        assert_eq!(row["candidates"][0]["score"].as_f64(), Some(1.0));
+        assert_eq!(
+            row["candidates"][0]["span_accounting"]["unit_kind"],
+            "chunk"
+        );
+        assert_eq!(
+            row["candidates"][0]["span_accounting"]["unit_id"],
+            "chunk-id"
+        );
+        let duplicate = QueryOutcome::ReturnedWindow {
+            hits: vec![hit.clone(), hit],
+            window: QueryResultWindowV2::exact_probe(2),
+            explanation: Some(RouteExplanation::default()),
+            latency: Duration::from_millis(1),
+        };
+        assert!(
+            result_value("T1", "lexical", &duplicate, &plan, 10, &files, &units)
+                .expect_err("duplicate files must fail")
+                .to_string()
+                .contains("duplicate file path")
+        );
+        let (file_hit, files) = file_hit_fixture("a.txt", "fn main() {}\n", false);
+        let wrong_identity = QueryOutcome::ReturnedWindow {
+            hits: vec![file_hit],
+            window: QueryResultWindowV2::exact_probe(1),
+            explanation: Some(RouteExplanation::default()),
+            latency: Duration::from_millis(1),
+        };
+        assert!(
+            result_value("T1", "lexical", &wrong_identity, &plan, 10, &files, &units)
+                .expect_err("CodeSearch identity is not a Native representative")
+                .to_string()
+                .contains("incompatible file identity")
+        );
     }
 
     #[test]
@@ -2319,17 +2377,13 @@ mod tests {
         let historical = capture_value("cap-1", &capture).expect("historical capture");
         assert!(historical.get("source_repo_id").is_none());
         assert!(historical.get("source_revision_id").is_none());
-        capture.execution_profile = execution_profile_value(
-            QueryInputPolicy::CodeSearchExactContentFile,
-            &NlPlanConfig::default(),
-        );
-        capture.execution_profile_sha256 = execution_profile_sha256(
-            QueryInputPolicy::CodeSearchExactContentFile,
-            &NlPlanConfig::default(),
-        );
-        let value = capture_value("cap-1", &capture).expect("source-bound capture");
-        assert_eq!(value["source_repo_id"], "bench-repo");
-        assert_eq!(value["source_revision_id"], "bench-revision");
+        for policy in [QueryInputPolicy::CodeSearchFile, QueryInputPolicy::CodeSearchExactContentFile] {
+            capture.execution_profile = execution_profile_value(policy, &NlPlanConfig::default());
+            capture.execution_profile_sha256 = execution_profile_sha256(policy, &NlPlanConfig::default());
+            let value = capture_value("cap-1", &capture).expect("source-bound capture without candidate rows");
+            assert_eq!(value["source_repo_id"], "bench-repo");
+            assert_eq!(value["source_revision_id"], "bench-revision");
+        }
         let mut missing = capture;
         missing.source_revision_id.clear();
         assert!(capture_value("cap-1", &missing).is_err());

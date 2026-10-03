@@ -12,6 +12,8 @@
 //!   lexical lane receives a deterministic token-OR plan built from the
 //!   query alone (fixed tokenization, dedup, limits, escaping). Empty or
 //!   over-limit plans are typed refusals; there is no match-all fallback.
+//! * `natural_language_file` — the same token-OR plan with the public
+//!   `select:file` projection, scored and deduplicated before top-k.
 //! * `exact_symbol_name` — one bare ASCII identifier becomes a case-sensitive
 //!   exact local-name predicate for the symbol route. Other text refuses.
 //! * `literal_file` — one raw query becomes a safely escaped lexical phrase
@@ -88,7 +90,8 @@ pub const fn ordering_contract(policy: QueryInputPolicy) -> Option<&'static str>
         | QueryInputPolicy::CodeSearchFile
         | QueryInputPolicy::CodeSearchExactContentFile
         | QueryInputPolicy::CodeSearchTypoFile
-        | QueryInputPolicy::CodeSearchComponentsFile => Some(ORDERING_SCORE_DESC),
+        | QueryInputPolicy::CodeSearchComponentsFile
+        | QueryInputPolicy::NaturalLanguageFile => Some(ORDERING_SCORE_DESC),
         QueryInputPolicy::LiteralFile | QueryInputPolicy::SubstringFile => {
             Some(ORDERING_PATH_ORDER)
         }
@@ -112,6 +115,7 @@ pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
         QueryInputPolicy::CodeSearchTypoFile => "quanta-code-search-typo-file-v1",
         QueryInputPolicy::CodeSearchComponentsFile => "quanta-code-search-components-file-v1",
         QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v2",
+        QueryInputPolicy::NaturalLanguageFile => "quanta-natural-language-file-ucd17-v1",
         QueryInputPolicy::ExactSymbolName => "quanta-exact-symbol-name-v1",
     }
 }
@@ -140,6 +144,7 @@ pub enum QueryInputPolicy {
     /// Keep the raw query for the semantic lane and derive a deterministic
     /// token-OR lexical plan from it.
     NaturalLanguage,
+    NaturalLanguageFile,
     /// Query an exact, case-sensitive local symbol name on the symbol route.
     ExactSymbolName,
 }
@@ -163,6 +168,7 @@ impl QueryInputPolicy {
             "code_search_typo_file" => Ok(Self::CodeSearchTypoFile),
             "code_search_components_file" => Ok(Self::CodeSearchComponentsFile),
             "natural_language" => Ok(Self::NaturalLanguage),
+            "natural_language_file" => Ok(Self::NaturalLanguageFile),
             "exact_symbol_name" => Ok(Self::ExactSymbolName),
             other => Err(QueryPlanError::UnsupportedPolicy(other.to_string())),
         }
@@ -182,6 +188,7 @@ impl QueryInputPolicy {
             Self::CodeSearchTypoFile => "code_search_typo_file",
             Self::CodeSearchComponentsFile => "code_search_components_file",
             Self::NaturalLanguage => "natural_language",
+            Self::NaturalLanguageFile => "natural_language_file",
             Self::ExactSymbolName => "exact_symbol_name",
         }
     }
@@ -449,6 +456,11 @@ pub fn policy_config_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) 
             "{{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"natural_language\",{}}}",
             config.canonical_fields()
         ),
+        QueryInputPolicy::NaturalLanguageFile => format!(
+            "{{\"escaping\":\"lq-norm-phrase-v1\",\"ordering\":\"{ORDERING_SCORE_DESC}\",\
+             \"policy\":\"natural_language_file\",\"projection\":\"file\",{}}}",
+            config.canonical_fields()
+        ),
     }
 }
 
@@ -458,7 +470,7 @@ pub fn policy_config_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) 
 pub fn execution_profile_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) -> String {
     let profile_id = execution_profile_id(policy);
     match policy {
-        QueryInputPolicy::NaturalLanguage => format!(
+        QueryInputPolicy::NaturalLanguage | QueryInputPolicy::NaturalLanguageFile => format!(
             "{{\"config\":{{\"max_token_chars\":{},\"max_tokens\":{},\"min_token_chars\":{}}},\
              \"planning_cost_in_latency\":false,\"policy\":\"{}\",\"profile_id\":\"{}\"}}",
             config.max_token_chars,
@@ -491,11 +503,13 @@ pub fn execution_profile_value(
     config: &NlPlanConfig,
 ) -> serde_json::Value {
     let config_value = match policy {
-        QueryInputPolicy::NaturalLanguage => serde_json::json!({
-            "max_token_chars": config.max_token_chars,
-            "max_tokens": config.max_tokens,
-            "min_token_chars": config.min_token_chars,
-        }),
+        QueryInputPolicy::NaturalLanguage | QueryInputPolicy::NaturalLanguageFile => {
+            serde_json::json!({
+                "max_token_chars": config.max_token_chars,
+                "max_tokens": config.max_tokens,
+                "min_token_chars": config.min_token_chars,
+            })
+        }
         QueryInputPolicy::Native
         | QueryInputPolicy::Literal
         | QueryInputPolicy::LiteralFile
@@ -705,7 +719,7 @@ pub fn plan_query(
             }
             format!("components:\"{raw}\"")
         }
-        QueryInputPolicy::NaturalLanguage => {
+        QueryInputPolicy::NaturalLanguage | QueryInputPolicy::NaturalLanguageFile => {
             let mut distinct: Vec<String> = Vec::new();
             for token in tokenize_nl(raw) {
                 let chars = token.chars().count();
@@ -741,11 +755,16 @@ pub fn plan_query(
                     max_tokens: config.max_tokens,
                 });
             }
-            distinct
+            let plan = distinct
                 .iter()
                 .map(|token| literalize(token))
                 .collect::<Vec<String>>()
-                .join(" OR ")
+                .join(" OR ");
+            if policy == QueryInputPolicy::NaturalLanguageFile {
+                format!("select:file {plan}")
+            } else {
+                plan
+            }
         }
     };
     // CodeSearch is a distinct public syntax. Parsing it as Native LQ would
@@ -802,6 +821,7 @@ pub fn plan_query(
             | QueryInputPolicy::CodeSearchTypoFile
             | QueryInputPolicy::CodeSearchComponentsFile
             | QueryInputPolicy::NaturalLanguage
+            | QueryInputPolicy::NaturalLanguageFile
             | QueryInputPolicy::ExactSymbolName => {}
         }
     }
@@ -1378,6 +1398,43 @@ mod tests {
         let again = plan_query(QueryInputPolicy::NaturalLanguage, raw, &config)
             .expect("nonempty query plans");
         assert_eq!(plan, again);
+    }
+
+    #[test]
+    fn natural_language_file_projects_the_same_token_plan_before_top_k() {
+        let config = NlPlanConfig::default();
+        let raw = "Find retry handling";
+        let chunk = plan_query(QueryInputPolicy::NaturalLanguage, raw, &config).expect("chunk");
+        let file = plan_query(QueryInputPolicy::NaturalLanguageFile, raw, &config).expect("file");
+        assert_eq!(
+            chunk.lexical_request,
+            "\"Find\" OR \"retry\" OR \"handling\""
+        );
+        assert_eq!(
+            file.lexical_request,
+            format!("select:file {}", chunk.lexical_request)
+        );
+        assert_ne!(
+            file.effective_lexical_request_sha256,
+            chunk.effective_lexical_request_sha256
+        );
+        assert_eq!(file.semantic_text_sha256, chunk.semantic_text_sha256);
+        assert_eq!(
+            ordering_contract(QueryInputPolicy::NaturalLanguageFile),
+            Some(ORDERING_SCORE_DESC)
+        );
+        assert_eq!(
+            execution_profile_id(QueryInputPolicy::NaturalLanguageFile),
+            "quanta-natural-language-file-ucd17-v1"
+        );
+        assert_eq!(
+            file.policy_config_sha256,
+            "555fc411960f7f9915c1829a2bb71750fc4cf4e0db93d3faced06638943664e6"
+        );
+        assert_eq!(
+            file.effective_lexical_request_sha256,
+            "eca8faf61ffd7f1b97d7e1135394c38bc137afca51f20d913ddcd2c7df979048"
+        );
     }
 
     #[test]

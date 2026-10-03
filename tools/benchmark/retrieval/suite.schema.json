@@ -42,6 +42,7 @@
         {"required": ["query_intent"]}, {"required": ["label_review"]},
         {"required": ["file_judgments"]}, {"required": ["declaration_judgments"]},
         {"required": ["judgment_policy"]}, {"required": ["source_oracle"]},
+        {"required": ["answerability_min_grade"]},
         {"required": ["evaluation_contract"]}
       ]}}}},
       "then": {"required": ["diagnostic_policy"]}
@@ -138,6 +139,10 @@
           "description": "Paraphrase family. One family must not appear in both train and eval."
         },
         "answerable": {"type": "boolean"},
+        "answerability_min_grade": {
+          "type": "integer", "minimum": 1, "maximum": 3,
+          "description": "Minimum independent judgment grade that makes a task answerable; omitted means 1. Grade-1 partial relevance still contributes to graded retrieval metrics."
+        },
         "category": {"type": "string", "minLength": 1},
         "query_intent": {
           "enum": ["bare_symbol", "symbol_components", "semantic_intent", "exact_content"],
@@ -156,6 +161,10 @@
         "gold": {"type": "array", "items": {"$ref": "#/$defs/block"}}
       },
       "allOf": [
+        {"if": {"required": ["answerability_min_grade"]}, "then": {
+          "anyOf": [{"required": ["file_judgments"]}, {"required": ["declaration_judgments"]}],
+          "not": {"required": ["source_oracle"]}
+        }},
         {"if": {"properties": {"answerable": {"const": true}}}, "then": {"properties": {"gold": {"minItems": 1}}}},
         {"if": {"properties": {"answerable": {"const": false}}}, "then": {"properties": {"gold": {"maxItems": 0}}}},
         {"if": {"anyOf": [{"required": ["file_judgments"]}, {"required": ["declaration_judgments"]}]},
@@ -195,7 +204,9 @@
              {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "explicit_osa1_typo"}}}}},
               "then": {"properties": {"query_intent": {"const": "bare_symbol"}}}},
              {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "explicit_symbol_components"}}}}},
-              "then": {"properties": {"query_intent": {"const": "symbol_components"}}}}
+              "then": {"properties": {"query_intent": {"const": "symbol_components"}}}},
+             {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "natural_language_file_search"}}}}},
+              "then": {"properties": {"query_intent": {"const": "semantic_intent"}}, "not": {"required": ["source_oracle"]}}}
            ]
          }},
         {"if": {"required": ["intended_name"]},
@@ -218,7 +229,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["request_mode", "gold_unit", "result_unit"],
       "properties": {
-        "request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "explicit_symbol_components", "declaration_navigation"]},
+        "request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "explicit_symbol_components", "declaration_navigation", "natural_language_file_search"]},
         "gold_unit": {"enum": ["distinct_file", "symbol"]},
         "result_unit": {"enum": ["distinct_file", "symbol"]}
       },
@@ -236,6 +247,7 @@
         "contract": {"enum": [
           "go_exact_local_name_v3", "ascii_identifier_word_v1", "content_literal_utf8_exact_v1",
           "ascii_content_absent_casefold_v1", "ascii_code_search_absent_casefold_v1",
+          "ascii_code_search_default_absent_casefold_v1",
           "ascii_identifier_osa1_absent_casefold_v1",
           "go_declaration_name_prefix_v1", "go_declaration_name_infix_v1",
           "go_declaration_name_components_v1", "go_declaration_name_osa1_v1", "go_declaration_name_osa1_casefold_v1",
@@ -264,6 +276,8 @@
         {"if": {"properties": {"contract": {"const": "ascii_content_absent_casefold_v1"}}},
          "then": {"properties": {"unit": {"const": "distinct_file"}}}},
         {"if": {"properties": {"contract": {"const": "ascii_code_search_absent_casefold_v1"}}},
+         "then": {"properties": {"unit": {"const": "distinct_file"}}}},
+        {"if": {"properties": {"contract": {"const": "ascii_code_search_default_absent_casefold_v1"}}},
          "then": {"properties": {"unit": {"const": "distinct_file"}}}},
         {"if": {"properties": {"contract": {"const": "ascii_identifier_osa1_absent_casefold_v1"}}},
          "then": {"properties": {"unit": {"const": "distinct_file"}}}},

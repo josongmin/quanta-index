@@ -43,6 +43,7 @@ SUPPORTED_POLICIES = (
     "code_search_exact_content_file",
     "code_search_typo_file",
     "code_search_components_file",
+    "natural_language_file",
 )
 #: File-projection policies and how each orders its distinct files. A phrase or
 #: raw substring is a match-only restriction (constant score, path order); a
@@ -57,6 +58,7 @@ FILE_PROJECTION_ORDERING = {
     "code_search_exact_content_file": ORDERING_SCORE_DESC,
     "code_search_typo_file": ORDERING_SCORE_DESC,
     "code_search_components_file": ORDERING_SCORE_DESC,
+    "natural_language_file": ORDERING_SCORE_DESC,
 }
 CODE_SEARCH_FILE_POLICIES = frozenset(
     (
@@ -66,14 +68,22 @@ CODE_SEARCH_FILE_POLICIES = frozenset(
         "code_search_components_file",
     )
 )
+FILE_PAIR_POLICIES = CODE_SEARCH_FILE_POLICIES | frozenset(("natural_language_file",))
 # Evaluation meaning is separate from the product's execution profile. These
 # names describe the request submitted, not the relevance labels it may score.
 DEFAULT_FILE_SEARCH = "default_file_search"
 EXPLICIT_OSA1_TYPO = "explicit_osa1_typo"
 EXPLICIT_SYMBOL_COMPONENTS = "explicit_symbol_components"
 DECLARATION_NAVIGATION = "declaration_navigation"
+NATURAL_LANGUAGE_FILE_SEARCH = "natural_language_file_search"
 EVALUATION_REQUEST_MODES = frozenset(
-    (DEFAULT_FILE_SEARCH, EXPLICIT_OSA1_TYPO, EXPLICIT_SYMBOL_COMPONENTS, DECLARATION_NAVIGATION)
+    (
+        DEFAULT_FILE_SEARCH,
+        EXPLICIT_OSA1_TYPO,
+        EXPLICIT_SYMBOL_COMPONENTS,
+        DECLARATION_NAVIGATION,
+        NATURAL_LANGUAGE_FILE_SEARCH,
+    )
 )
 EVALUATION_UNITS = frozenset(("distinct_file", "symbol"))
 QUANTA_EVALUATION_POLICIES = {
@@ -81,8 +91,9 @@ QUANTA_EVALUATION_POLICIES = {
     EXPLICIT_OSA1_TYPO: frozenset(("code_search_typo_file",)),
     EXPLICIT_SYMBOL_COMPONENTS: frozenset(("code_search_components_file",)),
     DECLARATION_NAVIGATION: frozenset(("exact_symbol_name",)),
+    NATURAL_LANGUAGE_FILE_SEARCH: frozenset(("natural_language_file",)),
 }
-SCORED_QUANTA_FILE_POLICIES = frozenset((*CODE_SEARCH_FILE_POLICIES, "keyword_file"))
+SCORED_QUANTA_FILE_POLICIES = frozenset((*FILE_PAIR_POLICIES, "keyword_file"))
 MAX_KEYWORD_FILE_BYTES = 256
 MIN_SUBSTRING_FILE_BYTES = 3
 MAX_SUBSTRING_FILE_BYTES = 256
@@ -94,6 +105,7 @@ PROFILE_IDS = {
     "native": "quanta-native-v1",
     "literal": "quanta-literal-v1",
     "natural_language": "quanta-natural-language-ucd17-v2",
+    "natural_language_file": "quanta-natural-language-file-ucd17-v1",
     "exact_symbol_name": "quanta-exact-symbol-name-v1",
     "literal_file": "quanta-literal-file-v1",
     "keyword_file": "quanta-keyword-file-v1",
@@ -177,16 +189,24 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
             f'"ordering":"{ORDERING_SCORE_DESC}","policy":"code_search_components_file",'
             '"projection":"file","scope":"symbol_local_name","syntax":"code_search"}'
         )
-    if policy == "natural_language":
+    if policy in ("natural_language", "natural_language_file"):
         resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
+        projection = (
+            f'"ordering":"{ORDERING_SCORE_DESC}","policy":"natural_language_file","projection":"file",'
+            if policy == "natural_language_file"
+            else '"policy":"natural_language",'
+        )
         return (
-            '{"escaping":"lq-norm-phrase-v1","policy":"natural_language",'
-            f'"max_token_chars":{resolved["max_token_chars"]},'
-            f'"max_tokens":{resolved["max_tokens"]},'
-            f'"min_token_chars":{resolved["min_token_chars"]},'
-            f'"profile":"{NL_PLAN_PROFILE}",'
-            f'"text_normalizer_version":"{TEXT_NORMALIZER_VERSION}",'
-            '"tokenization":"lexical-ssot-nfc-with-path-joiners"}'
+            '{"escaping":"lq-norm-phrase-v1",'
+            + projection
+            + (
+                f'"max_token_chars":{resolved["max_token_chars"]},'
+                f'"max_tokens":{resolved["max_tokens"]},'
+                f'"min_token_chars":{resolved["min_token_chars"]},'
+                f'"profile":"{NL_PLAN_PROFILE}",'
+                f'"text_normalizer_version":"{TEXT_NORMALIZER_VERSION}",'
+                '"tokenization":"lexical-ssot-nfc-with-path-joiners"}'
+            )
         )
     raise QueryPlanError(f"unsupported query input policy: {policy}")
 
@@ -196,8 +216,12 @@ def execution_profile(policy: str, config: dict[str, int] | None = None) -> dict
         raise QueryPlanError(f"unsupported query input policy: {policy}")
     resolved = (
         dict(DEFAULT_NL_CONFIG)
-        if policy == "natural_language" and config is None
-        else (dict(config) if policy == "natural_language" and config is not None else {})
+        if policy in ("natural_language", "natural_language_file") and config is None
+        else (
+            dict(config)
+            if policy in ("natural_language", "natural_language_file") and config is not None
+            else {}
+        )
     )
     return {
         "profile_id": PROFILE_IDS[policy],
@@ -448,7 +472,7 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
                 "code-search-components-file policy requires 2..=32 canonical lower-case ASCII words"
             )
         return f'components:"{raw}"'
-    if policy == "natural_language":
+    if policy in ("natural_language", "natural_language_file"):
         resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
         distinct: list[str] = []
         for token in tokenize_nl(raw):
@@ -469,6 +493,8 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
                 f"natural-language plan has {len(distinct)} tokens (max {resolved['max_tokens']})"
             )
         request = " OR ".join(literalize(token) for token in distinct)
+        if policy == "natural_language_file":
+            request = "select:file " + request
         if len(request.encode()) > MAX_INPUT_BYTES:
             raise QueryPlanError("lexical request exceeds 16384 bytes")
         return request

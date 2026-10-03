@@ -180,7 +180,8 @@ def _fixture(
         "files": {
             name: "sha256:" + hashlib.sha256((capsule / name).read_bytes()).hexdigest()
             for name in payloads
-        }
+        },
+        "producer_source_digests": holdout_c4.corpus_binding._gold_producer_source_digests(),
     }
     (capsule / "identity.json").write_bytes(holdout_c4._raw(identity))
     monkeypatch.setattr(
@@ -283,6 +284,11 @@ def test_c4_independent_name_variants(tmp_path, monkeypatch, intent, query, name
         else "code_search_file"
     )
     assert report["execution_policy"] == expected_policy
+    assert suite["routes"] == (
+        ["lexical"]
+        if intent == "declaration_name_components"
+        else ["lexical", "semble-lexical-file"]
+    )
     assert suite["tasks"][0]["evaluation_contract"] == {
         "request_mode": (
             "explicit_symbol_components"
@@ -326,6 +332,7 @@ def test_c4_casefold_typo_binds_intended_name_and_request_mode(tmp_path, monkeyp
     assert task["intended_name"] == "Alpha"
     assert task["source_oracle"]["contract"] == "go_exact_local_name_v3"
     assert task["evaluation_contract"]["request_mode"] == "explicit_osa1_typo"
+    assert suite["routes"] == ["lexical"]
     assert report["execution_policy"] == "code_search_typo_file"
     assert (
         query_plan.plan_lexical_request(report["execution_policy"], task["query"]) == "typo:Alphb"
@@ -495,10 +502,17 @@ def test_c4_reuses_one_intended_name_exclusion_for_distinct_typos(tmp_path, monk
     assert checked_sizes == [2, 2, 2, 3]
 
 
-def test_c4_admits_typo_with_query_proven_checker_disagreement(tmp_path, monkeypatch):
+@pytest.mark.parametrize("checker_reason", ["census_disagreement", "census_refused"])
+def test_c4_admits_typo_with_query_proven_checker_disagreement(
+    tmp_path, monkeypatch, checker_reason
+):
     release, capsule, checkout = _fixture(tmp_path, monkeypatch, checker_disagreement=True)
     gold = holdout_c4._read(capsule / "gold.json")
     blind = holdout_c4._read(capsule / "blind.json")
+    if checker_reason == "census_refused":
+        audit = gold["census_audits"]["go"]
+        audit["refused_paths"] = ["disputed.go"]
+        audit["disagreement_paths"] = []
     for payload in (gold, blind):
         payload["tasks"][0].update(
             intent="declaration_name_osa1_casefold",
@@ -508,12 +522,13 @@ def test_c4_admits_typo_with_query_proven_checker_disagreement(tmp_path, monkeyp
     gold["tasks"][0].update(
         intended_name="Alpha",
         near_declaration_state="complete",
-        near_census_text_excluded=[{"path": "disputed.go", "reason": "census_disagreement"}],
+        near_census_text_excluded=[{"path": "disputed.go", "reason": checker_reason}],
         near_declaration_names=["Alpha"],
         near_declaration_files=["main.go"],
         exact_collision_names=[],
         exact_collision_files=[],
     )
+    gold["tasks"][0]["census_text_excluded"] = [{"path": "disputed.go", "reason": checker_reason}]
     _resign(capsule, "gold.json", gold)
     _resign(capsule, "blind.json", blind)
     suite, _pack, report = holdout_c4.derive(
@@ -523,11 +538,15 @@ def test_c4_admits_typo_with_query_proven_checker_disagreement(tmp_path, monkeyp
     assert "near_declaration_exclusions" not in suite["tasks"][0]["source_oracle"]
 
 
-def test_c4_excludes_negative_with_default_content_or_path_match(tmp_path, monkeypatch):
+def test_c4_excludes_negative_with_default_literal_path_or_typo_match(tmp_path, monkeypatch):
     release, capsule, checkout = _fixture(tmp_path, monkeypatch)
     gold = holdout_c4._read(capsule / "gold.json")
     blind = holdout_c4._read(capsule / "blind.json")
-    for query, task_id in (("package", "toy.negative.content"), ("main", "toy.negative.path")):
+    for query, task_id in (
+        ("package", "toy.negative.content"),
+        ("main", "toy.negative.path"),
+        ("Alphb", "toy.negative.near"),
+    ):
         candidate = dict(gold["tasks"][0])
         candidate.update(task_id=task_id, query=query, answerable=False, labels=[])
         gold["tasks"].append(candidate)
@@ -548,7 +567,7 @@ def test_c4_excludes_negative_with_default_content_or_path_match(tmp_path, monke
         "toy.negative.absent",
     ]
     assert suite["tasks"][1]["source_oracle"] == {
-        "contract": source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+        "contract": source_oracle.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD,
         "unit": "distinct_file",
     }
     assert suite["tasks"][1]["file_judgments"] == []
@@ -556,9 +575,14 @@ def test_c4_excludes_negative_with_default_content_or_path_match(tmp_path, monke
     assert report["excluded"] == [
         {"task_id": "toy.negative.content", "reason": "negative_not_default_search_absent"},
         {"task_id": "toy.negative.path", "reason": "negative_not_default_search_absent"},
+        {"task_id": "toy.negative.near", "reason": "negative_not_default_search_absent"},
     ]
 
-    for query, reason in (("package", "content absent"), ("main", "path match")):
+    for query, reason in (
+        ("package", "content absent"),
+        ("main", "path match"),
+        ("Alphb", "identifier osa1 absent"),
+    ):
         tampered = {**suite, "tasks": [dict(task) for task in suite["tasks"]]}
         negative = tampered["tasks"][1]
         negative["query"] = query
@@ -610,6 +634,23 @@ def test_c4_admits_query_specific_checker_disagreement(tmp_path, monkeypatch):
         holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
 
 
+def test_c4_checker_refusal_with_complete_primary_census(tmp_path, monkeypatch):
+    release, capsule, checkout = _fixture(tmp_path, monkeypatch, checker_disagreement=True)
+    gold = holdout_c4._read(capsule / "gold.json")
+    audit = gold["census_audits"]["go"]
+    audit["refused_paths"] = ["disputed.go"]
+    audit["disagreement_paths"] = []
+    gold["tasks"][0]["census_text_excluded"] = [{"path": "disputed.go", "reason": "census_refused"}]
+    _resign(capsule, "gold.json", gold)
+
+    suite, _pack, report = holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
+    assert report["selected"] == 1
+    assert report["census_excluded_source_paths"] == [
+        {"path": "disputed.go", "reason": "census_refused"}
+    ]
+    assert "declaration_exclusions" not in suite["tasks"][0]["source_oracle"]
+
+
 def test_c4_refuses_disputed_file_with_possible_answer(tmp_path, monkeypatch):
     release, capsule, checkout = _fixture(
         tmp_path, monkeypatch, checker_disagreement=True, disputed_name="Alpha"
@@ -637,7 +678,9 @@ def test_c4_refuses_unproved_partial_census(tmp_path, monkeypatch, kind):
         with pytest.raises(ValueError, match="no admitted declaration task"):
             holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
     else:
-        with pytest.raises((ValueError, evaluator.EvidenceError), match="excluded|refuse"):
+        with pytest.raises(
+            (ValueError, evaluator.EvidenceError), match="excluded|refuse|parse error"
+        ):
             holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
 
 
@@ -802,6 +845,21 @@ def _matrix_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(holdout_c4.corpus_binding, "validate_split_manifest", lambda *_: manifest)
     monkeypatch.setattr(holdout_c4.corpus_binding, "_gold_material", gold_material)
     return release, capsules, checkouts
+
+
+def test_c4_matrix_refuses_stale_gold_source_before_split_replay(tmp_path, monkeypatch):
+    release, capsules, checkouts = _matrix_fixture(tmp_path, monkeypatch)
+    identity_path = capsules / "repo_b" / "identity.json"
+    identity = holdout_c4._read(identity_path)
+    identity["producer_source_digests"]["gold_oracle"] = "sha256:" + "0" * 64
+    identity_path.write_bytes(holdout_c4._raw(identity))
+
+    def unexpected_replay(*_args, **_kwargs):
+        raise AssertionError("split replay must not start for a stale gold producer")
+
+    monkeypatch.setattr(holdout_c4.corpus_binding, "_validated_split_manifest", unexpected_replay)
+    with pytest.raises(ValueError, match="C4 gold producer source differs: repo_b"):
+        holdout_c4.derive_matrix(release, capsules, checkouts, expected_repositories=2)
 
 
 def test_c4_matrix_has_independent_cell_inventory_and_validates_once(tmp_path, monkeypatch):

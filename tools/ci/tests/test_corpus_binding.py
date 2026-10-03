@@ -81,6 +81,21 @@ def test_mutated_consumer_copy_cannot_poison_next_case(inputs, release_seed, tmp
     assert binding.replay(capsule, selection, canonical(suite), canonical(pack)) == result
 
 
+def test_gold_producer_binds_the_actual_vendored_parser_sources():
+    from tools.benchmark.retrieval import declaration_parsers
+
+    digests = binding._gold_producer_source_digests()
+    assert "declaration_parsers" in digests
+    for relative in (
+        "vendor/tree-sitter-typescript/typescript/src/parser.c",
+        "vendor/tree-sitter-typescript/tsx/src/parser.c",
+        "vendor/tree-sitter-typescript/common/scanner.h",
+    ):
+        assert digests[relative] == binding.digest_bytes(
+            (declaration_parsers.ROOT / relative).read_bytes()
+        )
+
+
 @pytest.mark.parametrize("view", ["code_only", "developer_search"])
 def test_capsule_replays_after_original_sources_are_unavailable(source, tmp_path, view):  # noqa: F811
     # This oracle must remove the actual producer checkout, not a spare seed copy.

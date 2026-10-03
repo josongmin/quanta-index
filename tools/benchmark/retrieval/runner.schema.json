@@ -313,6 +313,24 @@
         },
         {
           "type": "object", "additionalProperties": false,
+          "required": ["profile_id", "policy", "config", "planning_cost_in_latency"],
+          "properties": {
+            "profile_id": {"const": "quanta-natural-language-file-ucd17-v1"},
+            "policy": {"const": "natural_language_file"},
+            "config": {
+              "type": "object", "additionalProperties": false,
+              "required": ["max_token_chars", "max_tokens", "min_token_chars"],
+              "properties": {
+                "max_token_chars": {"const": 96},
+                "max_tokens": {"const": 32},
+                "min_token_chars": {"const": 1}
+              }
+            },
+            "planning_cost_in_latency": {"const": false}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
           "required": ["profile_id", "mode", "alpha", "rerank"],
           "properties": {
             "profile_id": {"enum": ["semble-native-default-v1", "semble-hybrid-no-rerank-v1", "semble-lexical-only-v1", "semble-lexical-file-v1", "semble-semantic-only-v1"]},

@@ -118,6 +118,15 @@ golden, re-derived independently by `query_plan.py`:
   masquerade as this profile. New rows require finite SDK scores and descending
   score/path order. Report exact, prefix, infix, components, typo, and no-answer
   suites separately; a file gold is not a declaration gold.
+- `natural_language_file` (`quanta-natural-language-file-ucd17-v1`): apply the
+  pinned `natural_language` token-OR plan to the public Native `select:file`
+  projection. The lexical route returns scored distinct files before top-k;
+  the request and profile hashes differ from the chunk-ranked policy. Scores
+  can reflect token coverage with path tie breaks rather than semantic
+  relevance. Use `natural_language_file_search` with independently judged
+  `semantic_intent` file labels. This is diagnostic only; it does not qualify
+  a product comparison or relabel an existing frozen suite.
+
 - `code_search_typo_file` (`quanta-code-search-typo-file-v1`): submit one ASCII
   identifier of 3–64 bytes as `typo:<identifier>` through SDK
   `.code_search(...)`. This is the product's explicit content-identifier
@@ -138,6 +147,30 @@ golden, re-derived independently by `query_plan.py`:
   bytes lack at least one requested component. A source-oracle exclusion in a
   diagnostic suite does not override this product check. Preserve a typed
   refusal as an execution failure; do not score it as a retrieval miss.
+
+To reissue the reviewed natural-language tasks of a mixed suite, use a fresh
+external output root and a new suite ID:
+
+```sh
+python -m tools.benchmark.retrieval.holdout_review \
+  --repo /absolute/frozen-checkout --suite /absolute/original-suite.json \
+  --suite-id new-nl-file-diagnostic --output /absolute/new-external-root
+```
+
+This validates the complete original suite before selecting `semantic_intent`
+tasks. Every selected query, family, label and review identity stays unchanged;
+only the request contract changes to `natural_language_file_search`. It writes
+`suite.json`, a blinded query pack and source/input lineage. Invalid or oversized
+queries are rejected instead of silently removed. Existing split admission and
+review receipts remain bound to the original suite. AI review identities remain
+AI identities, and the new artifacts are `diagnostic_unqualified`.
+
+Native `select:file` ranks distinct files while retaining a representative
+published chunk as its source witness. `natural_language_file` records that
+chunk identity and exact indexed span; it does not manufacture a `file:` ID or
+replace the witness with a whole-file span. The separate CodeSearch profiles
+return source-bound `file:` identities. The recorder and independent evaluator
+check each identity contract separately from `rank_unit`.
 
 Every file-projection result records `rank_unit: distinct_file` (the unit) and
 `ordering` (how the units are ordered, derived from the policy). The evaluator
@@ -170,8 +203,8 @@ metrics are opt-in; the original 300-query native capture stays on its frozen
 policy and report contract.
 
 The benchmark runner refuses native `select:` and `type:path`/`type:repo`
-projections that change the ranked result unit. Use a file-projection policy (`literal_file`, `keyword_file` or
-`substring_file`) or the public `code_search_file` policy for a distinct-file benchmark. A quoted `"select:file"` remains ordinary content text
+projections that change the ranked result unit. Use a file-projection policy (`literal_file`, `keyword_file`,
+`substring_file`, or `natural_language_file`) or the public `code_search_file` policy for a distinct-file benchmark. A quoted `"select:file"` remains ordinary content text
 under `native`.
 
 After freezing the reviewed suite and recording its single-route run, score
@@ -194,7 +227,7 @@ requires schema-v3 repository-disjoint admission, a complete source-bound
 file-judgment suite, scored native file ordering, and the other qualified
 controls. Its separate `file-judgments-complete-v1` report uses
 `file_ndcg_at_10`; the verdict replays it from the merged record. This code
-path has no qualified native capture yet. `code_search_typo_file`,
+path has no qualified native capture yet. `natural_language_file`, `code_search_typo_file`,
 `code_search_components_file`, and `code_search_exact_content_file` remain
 diagnostic. Run the exact-name and
 each identifier-robustness lane in separate fresh output roots; never
@@ -204,9 +237,48 @@ declaration diagnostics. Each returned top-10 file or published declaration
 must have an explicit source-bound grade, including grade 0 for irrelevant
 results. A missing judgment excludes that task with `unjudged_ranked_file` or
 `unjudged_ranked_declaration`; it is not silently scored as irrelevant. The
-historical `unjudged_zero_v1` policy remains available for exploratory reports
+route's all-selected `operational_mean` is also `not_applicable` when a ranked
+judgment is missing, with `operational_unavailable_reason` set to
+`incomplete_ranked_judgments`. Conditional scores still use the eligible cohort;
+observed execution errors and timeouts retain their operational zero penalty.
+The historical `unjudged_zero_v1` policy remains available for exploratory reports
 and retains its original behavior. Neither policy turns a post-result review
 into a pre-result qualified holdout.
+
+For reviewed tasks whose rubric requires a sufficient answer (grade 2 or 3),
+declare `answerability_min_grade: 2` in both the review context and suite task.
+An unanswerable task may then contain grade-1 partial clues, but no judgment
+at or above the declared threshold and no gold blocks. Answerable tasks need
+a sufficient-answer judgment and gold grade. The threshold is frozen with the
+review context and suite commitment, and omitted from the blind query pack.
+It does not change graded NDCG gains or the existing positive-relevance
+Hit/MRR definition (grade > 0). Reports expose each declared answerability
+threshold separately. Omission retains the historical threshold of 1;
+mechanical source-oracle tasks retain their own answerability contract.
+
+Use `holdout_review.capture_review_pool(checkout, suite_path, record_path,
+pool_id=...)` to extend a review pool from an actual single-route file capture.
+It runs the existing source/pack/record validation, retains abstentions as empty
+candidate lists, rejects chunk collapse and changed inputs, and exports only
+paths and file hashes. Add this retrieval pool to the existing diverse pools
+and call `holdout_review.prepare`/`write` again; both forms remain unjudged.
+
+After actual completion, `holdout_review.finalize_file_review_labels` accepts
+both original forms, a slot-1 adjudication form with a third distinct identity,
+and each task's declared `natural_language_file_search` contract. It reuses the
+frozen form/source validators, preserves the answerability threshold, and
+requires a sufficiently graded pooled file whenever any final or original
+review claims an answer. Missing judgments, changed text/hashes/thresholds,
+wrong units and other request modes are refused. Adjudicator overrides remain
+marked ambiguous. Its task-label output uses existing file judgments and
+whole-file gold witnesses; those witnesses are not declaration/context spans.
+Merge the labels into a new suite and call `evaluator.validate_suite` to issue
+a new blind-pack commitment. Original captured records retain their original
+commitment. The function does not attest human provenance, reviewer independence,
+pool execution or benchmark qualification; do not reuse a one-off finalizer
+that silently drops `answerability_min_grade`.
+Keep its capture custody in the owner area. Revised labels require a new suite
+commitment and capture; never rebind an old runner record to new qrels.
 
 For objective lexical checks, a task may instead declare `source_oracle` with
 `contract: go_exact_local_name_v3` and `unit: symbol` or `distinct_file`, or
@@ -264,6 +336,17 @@ written). Pass `--language`; a non-Go language is admitted only when
 `census_checkers/` into a cache outside the checkout) reports the same
 (name start byte, name bytes) set for every file. Any refusal or disagreement
 keeps the language unsupported instead of producing empty gold:
+
+TypeScript and TSX census and named-definition gold use the same vendored
+grammar sources as the producer (`vendor/tree-sitter-typescript`), including its
+syntax compatibility fixes. On Darwin or Linux, the first use requires `cc` and
+compiles into a source/platform-keyed cache outside the checkout; set
+`QUANTA_CENSUS_PARSER_CACHE` to choose that root. Missing compilers, changed cache
+identities and binary tampering fail explicitly; no unpatched grammar fallback
+is used. Gold capsule producer bindings include the factory and actual C/header
+bytes. Source changes require fresh capsules; frozen capsule identities are
+never rewritten. Other languages retain the pinned language-pack grammar and
+their independent census checks.
 
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.declaration_census_audit \
@@ -520,6 +603,15 @@ The JSON schema is the complete field authority; frequently used options:
 | `claims` | all `false` | `{quality,speed,same_model,incremental}` |
 | `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL, actual-runner record and Python/Rust/SDK collection inventories; all bytes are frozen and raw evidence is reparsed by the verdict |
 | `timeout_secs` | `1800` | per-capture timeout |
+
+Direct `quanta` capture also honors explicitly supplied `query_warmup_passes`
+and `query_repetitions_per_root` through the same query protocol. Its omitted
+values are zero warmup passes and one measured pass; without either option it
+keeps the single measured traversal. The runner's phase receipt must match the
+requested protocol and pass counts. A direct capture supports one fresh root;
+use `pair` for multiple fresh-root repetitions. Historical direct captures
+whose phase receipts report zero warmups cannot be relabeled as warmed merely
+because their spec requested a warmup.
 
 For `qualified`, the license receipt must be JSON with exactly
 `schema_version: 1`, `reviewer_id`, `decision: approved`, `repository_commit`,

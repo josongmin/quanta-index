@@ -35,6 +35,7 @@ from pathlib import Path
 
 try:
     from tools.benchmark.retrieval import (
+        code_search_rank_study,
         linux_isolation,
         linux_process,
         portable_proof,
@@ -68,6 +69,7 @@ try:
     from tools.benchmark.retrieval.sdk_proof import build_summary_from_evidence
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import code_search_rank_study  # noqa: E402
     import linux_isolation  # noqa: E402
     import linux_process  # noqa: E402
     import portable_proof  # noqa: E402
@@ -125,7 +127,7 @@ SEMBLE_ROUTE_BY_MODE = {
 }
 QUANTA_SYMBOL_PRODUCER_IDENTITY = "source-bound-symbols-v2"
 QUANTA_SYMBOL_GRAMMARS = symbol_coverage.grammar_identity()
-PAIR_QUANTA_POLICIES = frozenset((*qp.V4_SUPPORTED_POLICIES, *qp.CODE_SEARCH_FILE_POLICIES))
+PAIR_QUANTA_POLICIES = frozenset((*qp.V4_SUPPORTED_POLICIES, *qp.FILE_PAIR_POLICIES))
 PAIR_CONTEXT_QUALITY_POLICIES = frozenset(qp.V4_SUPPORTED_POLICIES)
 
 
@@ -2370,6 +2372,7 @@ SPEC_OPTIONAL = (
     "query_repetitions_per_root",
     "query_warmup_passes",
     "query_stage_observation",
+    "code_search_rank_study",
     "experimental_hybrid_fetch_floor",
     "baseline_route",
     "candidate_route",
@@ -2963,8 +2966,8 @@ def _spec_int(spec: dict, key: str, minimum: int) -> int:
     return value
 
 
-def load_spec(path: Path) -> dict:
-    """Load a capture spec under the pair-spec contract (closed keys, typed)."""
+def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
+    """Load a capture spec with pair-only policies unless Quanta runs alone."""
     spec = read_json(path)
     if not isinstance(spec, dict):
         raise RunError("spec must be an object")
@@ -3011,13 +3014,27 @@ def load_spec(path: Path) -> dict:
     if quanta_profile != qp.execution_profile(quanta_profile["policy"]):
         raise RunError("spec.execution_profiles.quanta differs from the frozen profile")
     if quanta_profile["policy"] not in PAIR_QUANTA_POLICIES:
-        raise RunError(
-            "spec.execution_profiles.quanta uses a diagnostic rank profile; "
-            "run it as a standalone Quanta capture"
+        if not standalone_quanta:
+            raise RunError(
+                "spec.execution_profiles.quanta uses a diagnostic rank profile; "
+                "run it as a standalone Quanta capture"
+            )
+        if "semble" in profiles:
+            raise RunError("standalone diagnostic rank profile cannot include Semble")
+        if spec.get("scope", "exploratory") != "exploratory" or any(
+            spec.get("claims", {}).values()
+        ):
+            raise RunError("standalone diagnostic rank profile cannot carry qualified claims")
+        required_routes = (
+            ["symbol"] if quanta_profile["policy"] == "exact_symbol_name" else ["lexical"]
         )
+        if spec.get("routes") != required_routes:
+            raise RunError(
+                f"{quanta_profile['policy']} standalone capture requires {required_routes} route"
+            )
     if "semble" in profiles:
         _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
-    if quanta_profile["policy"] in qp.CODE_SEARCH_FILE_POLICIES:
+    if quanta_profile["policy"] in qp.FILE_PAIR_POLICIES:
         file_qualified = spec.get("scope", "exploratory") == "qualified"
         if file_qualified:
             if (
@@ -3039,6 +3056,13 @@ def load_spec(path: Path) -> dict:
     _spec_int(spec, "top_k", 1)
     server_observation_configuration(spec.get("query_stage_observation", "enabled"))
     hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100"))
+    if "code_search_rank_study" in spec:
+        rank_study_configuration(
+            spec["code_search_rank_study"],
+            quanta_profile["policy"],
+            spec.get("routes", []),
+            speed_claim=spec.get("claims", {}).get("speed") is True,
+        )
     if not _is_hex(spec["searchd_expected_sha256"], 64):
         raise RunError("spec.searchd_expected_sha256 must be a lowercase sha256")
     strategies = spec["strategies"]
@@ -3090,7 +3114,7 @@ def load_spec(path: Path) -> dict:
         ("io_timeout_secs", 1),
         ("repetitions", 1),
         ("query_repetitions_per_root", 1),
-        ("query_warmup_passes", 1),
+        ("query_warmup_passes", 0),
     ):
         if key in spec:
             _spec_int(spec, key, minimum)
@@ -3256,6 +3280,15 @@ def _unix_socket_path_limit() -> int | None:
     return None
 
 
+def _strategy_run_directory(index: int, name: str) -> str:
+    """Keep fixed-window state paths within the pathname Unix socket limit."""
+    if name not in RUNNABLE_STRATEGIES:
+        raise RunError(f"unknown strategy: {name}")
+    # The strategy name remains in the record; this is only an artifact path.
+    path_name = "fw_strict" if name == "fixed_window_strict" else name
+    return f"strategy-{index:02d}-{path_name}"
+
+
 def preflight_daemon_socket_paths(
     output_root: Path, strategies: list[dict], *, repetitions: int = 1, paired: bool = False
 ) -> None:
@@ -3269,9 +3302,7 @@ def preflight_daemon_socket_paths(
         root = output_root / f"rep-{rep:02d}" / "quanta" if paired else output_root
         for index, strategy in enumerate(strategies):
             name = strategy.get("name")
-            if name not in RUNNABLE_STRATEGIES:
-                raise RunError(f"unknown strategy: {name}")
-            socket = root / f"strategy-{index:02d}-{name}" / "state/search-plane/control.sock"
+            socket = root / _strategy_run_directory(index, name) / "state/search-plane/control.sock"
             length = len(os.fsencode(socket.resolve()))
             if length > limit:
                 raise RunError(
@@ -3282,7 +3313,9 @@ def preflight_daemon_socket_paths(
 
 def cmd_quanta(args: argparse.Namespace) -> int:
     try:
-        return run_quanta(load_spec(Path(args.spec)), Path(args.spec).parent)
+        return run_quanta(
+            load_spec(Path(args.spec), standalone_quanta=True), Path(args.spec).parent
+        )
     except (RunError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -3976,6 +4009,27 @@ def _validate_hybrid_fetch_policy(payload: object) -> dict:
     return config
 
 
+def rank_study_configuration(
+    payload: object, policy: str, routes: list[str], *, speed_claim: bool = False
+) -> dict:
+    """Explicit diagnostic limits; no inherited env or ranking policy override."""
+    config = _exact_keys(
+        payload, {"max_files", "max_pages", "timeout_ms"}, "code_search_rank_study"
+    )
+    if policy not in ("code_search_file", "code_search_exact_content_file") or routes != [
+        "lexical"
+    ]:
+        raise RunError("rank study requires lexical-only ordinary CodeSearch file policy")
+    if speed_claim:
+        raise RunError(
+            "rank-study paging/explanations contaminate whole-process resource measurements; use a separate performance capture"
+        )
+    for key, maximum in (("max_files", 100_000), ("max_pages", 10_000), ("timeout_ms", 300_000)):
+        if type(config[key]) is not int or not 1 <= config[key] <= maximum:
+            raise RunError(f"rank study {key} must be an integer in 1..{maximum}")
+    return config
+
+
 def _validate_hybrid_initial_fetch(trace: list[dict], top_k: int, policy: dict) -> None:
     # Independent public-cap/probe invariant, not the producer's self-reported count.
     effective = max(min(max(top_k, policy["floor"]), 10_000), top_k + 1)
@@ -4483,6 +4537,8 @@ def validate_retrieval_diagnostic(
 
 def run_quanta(spec: dict, _spec_dir: Path) -> int:
     """Run the Rust SDK runner once per strategy. Returns process exit code."""
+    if "_query_protocol" not in spec and _int(spec.get("repetitions", 1), "spec.repetitions") != 1:
+        raise RunError("direct quanta capture supports one fresh root; use pair for repetitions")
     out_root = preflight_capture(spec)
     if out_root.exists():
         raise RunError(f"output root already exists (refusing reuse): {out_root}")
@@ -4512,11 +4568,26 @@ def run_quanta(spec: dict, _spec_dir: Path) -> int:
         routes,
         out_root / "quanta-pack.json",
     )
+    capture_spec = dict(spec)
+    task_ids = [task["task_id"] for task in read_json(pack_path)["tasks"]]
+    if "_query_protocol" not in capture_spec and any(
+        field in spec for field in ("query_warmup_passes", "query_repetitions_per_root")
+    ):
+        protocol = build_query_protocol(
+            task_ids,
+            _int(spec.get("seed", 0), "spec.seed"),
+            _int(spec.get("query_warmup_passes", 0), "spec.query_warmup_passes"),
+            _int(spec.get("query_repetitions_per_root", 1), "spec.query_repetitions_per_root"),
+        )
+        protocol_path = out_root / "query-protocol.json"
+        protocol_path.write_bytes(canonical_bytes(protocol))
+        capture_spec["_query_protocol"] = str(protocol_path)
+    _requested_quanta_query_protocol(capture_spec, task_ids)
     runs = []
     for index, strategy in enumerate(strategies):
         runs.append(
             run_quanta_strategy(
-                spec, strategy, index, out_root, routes, pack_path, runner_binary_sha256
+                capture_spec, strategy, index, out_root, routes, pack_path, runner_binary_sha256
             )
         )
         if sha_file(Path(runner_bin)) != runner_binary_sha256:
@@ -4526,6 +4597,30 @@ def run_quanta(spec: dict, _spec_dir: Path) -> int:
     )
     print(json.dumps({"runs": len(runs), "output_root": str(out_root)}, indent=2))
     return 0
+
+
+def _requested_quanta_query_protocol(spec: dict, task_ids: list[str]) -> dict | None:
+    if "_query_protocol" not in spec:
+        return None
+    protocol = validate_query_protocol(
+        read_json(Path(spec["_query_protocol"])), task_ids, "requested Quanta query protocol"
+    )
+    for field, schedule in (
+        ("query_warmup_passes", "warmup_schedules"),
+        ("query_repetitions_per_root", "measurement_schedules"),
+    ):
+        if field in spec and len(protocol[schedule]) != _int(spec[field], "spec." + field):
+            raise RunError("requested Quanta query protocol differs from spec." + field)
+    return protocol
+
+
+def _validate_quanta_query_protocol_execution(expected: dict | None, phase: dict) -> None:
+    if expected is not None and (
+        phase.get("query_protocol") != expected
+        or phase.get("warmup_passes") != len(expected["warmup_schedules"])
+        or phase.get("measurement_repetitions") != len(expected["measurement_schedules"])
+    ):
+        raise RunError("Rust runner query protocol differs from requested schedule")
 
 
 def run_quanta_strategy(
@@ -4540,13 +4635,24 @@ def run_quanta_strategy(
     name = strategy.get("name")
     if name not in RUNNABLE_STRATEGIES:
         raise RunError(f"unknown strategy: {name}")
+    requested_protocol = (
+        _requested_quanta_query_protocol(
+            spec, [task["task_id"] for task in read_json(pack_path)["tasks"]]
+        )
+        if "_query_protocol" in spec
+        else None
+    )
+    protocol_bytes = (
+        Path(spec["_query_protocol"]).read_bytes() if requested_protocol is not None else None
+    )
     out_abs = out_root.resolve()
-    run_dir = out_root / f"strategy-{index:02d}-{name}"
+    run_dir = out_root / _strategy_run_directory(index, name)
     run_dir.mkdir(parents=True)
     state_root = (run_dir / "state").resolve()
     record_path = (run_dir / "record.json").resolve()
     phase_path = (run_dir / "phase-metrics.json").resolve()
     diagnostic_path = (run_dir / "retrieval-diagnostic.json").resolve()
+    rank_study_path = (run_dir / "code-search-rank-study.json").resolve()
     resource_path = (run_dir / "resource-metrics.json").resolve()
     refusal_path = (run_dir / "query-plan-refusal.json").resolve()
     preflight_path = (run_dir / "symbol-preflight.json").resolve()
@@ -4617,6 +4723,20 @@ def run_quanta_strategy(
     ]
     if "_query_protocol" in spec:
         command += ["--query-protocol", spec["_query_protocol"]]
+    if "code_search_rank_study" in spec:
+        study_limits = rank_study_configuration(
+            spec["code_search_rank_study"],
+            spec["execution_profiles"]["quanta"]["policy"],
+            routes,
+            speed_claim=spec.get("claims", {}).get("speed") is True,
+        )
+        command += ["--rank-study-out", str(rank_study_path)]
+        for key, flag in (
+            ("max_files", "max-files"),
+            ("max_pages", "max-pages"),
+            ("timeout_ms", "timeout-ms"),
+        ):
+            command += [f"--rank-study-{flag}", str(study_limits[key])]
     command += ["--searchd-bin", spec["searchd_binary"]]
     command += ["--searchd-expected-sha256", spec["searchd_expected_sha256"]]
     if "io_timeout_secs" in spec:
@@ -4714,6 +4834,9 @@ def run_quanta_strategy(
         raise RunError("captured ingest identity differs from requested batch scope")
     index_bytes = tree_size(state_root)
     phase = _validate_phase_metrics(read_json(phase_path), f"Rust runner phase metrics for {name}")
+    _validate_quanta_query_protocol_execution(requested_protocol, phase)
+    if protocol_bytes is not None and Path(spec["_query_protocol"]).read_bytes() != protocol_bytes:
+        raise RunError("Quanta query protocol changed during capture")
     if phase["symbol_coverage_policy"] != spec.get("symbol_coverage_policy", "require-complete"):
         raise RunError("Rust runner symbol coverage policy differs from the requested profile")
     try:
@@ -4734,7 +4857,7 @@ def run_quanta_strategy(
             "index_measurement": "filesystem_tree_v1",
         },
     )
-    return {
+    result = {
         "strategy": name,
         "strategy_config": strategy,
         # Rename-safe: paths stay relative to the quanta output root so a
@@ -4754,6 +4877,39 @@ def run_quanta_strategy(
         "resource_metrics_digest": sha_file(resource_path),
         "state_root": state_root.relative_to(out_abs).as_posix(),
     }
+    if "code_search_rank_study" in spec:
+        # Optional diagnostics cannot discard the valid original quality record.
+        # Failed validation stays explicit and the original artifact is retained.
+        study_summary = {"status": "failed", "qualification": "diagnostic_unqualified"}
+        if rank_study_path.is_file():
+            study_summary.update(
+                {
+                    "artifact": rank_study_path.relative_to(out_abs).as_posix(),
+                    "sha256": sha_file(rank_study_path),
+                }
+            )
+            try:
+                rows = code_search_rank_study.validate_artifact(
+                    read_json(rank_study_path),
+                    read_json(record_path),
+                    sha_file(record_path),
+                    read_json(pack_path),
+                )
+                study_summary.update(
+                    {
+                        "status": "verified",
+                        "complete_pools": sum(
+                            row["collection"]["status"] == "returned" for row in rows.values()
+                        ),
+                        "task_count": len(rows),
+                    }
+                )
+            except (ValueError, KeyError, TypeError) as error:
+                study_summary["reason"] = f"rank_study_validation: {error}"
+        else:
+            study_summary["reason"] = "rank_study_artifact_missing"
+        result["code_search_rank_study"] = study_summary
+    return result
 
 
 def cmd_verdict(args: argparse.Namespace) -> int:
@@ -7050,7 +7206,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         merged, merged_digest = combos[strategy]
         if (
             protocol_payload.get("execution_profiles", {}).get("quanta", {}).get("policy")
-            in qp.CODE_SEARCH_FILE_POLICIES
+            in qp.FILE_PAIR_POLICIES
         ):
             try:
                 report_digest = sha_note(path, "report_bytes", ("T13",))
@@ -8499,7 +8655,7 @@ def run_pair(spec: dict) -> int:
     quanta_profile = profiles.get("quanta") if isinstance(profiles, dict) else None
     semble_profile = profiles.get("semble") if isinstance(profiles, dict) else None
     code_search_file = isinstance(quanta_profile, dict) and (
-        quanta_profile.get("policy") in qp.CODE_SEARCH_FILE_POLICIES
+        quanta_profile.get("policy") in qp.FILE_PAIR_POLICIES
     )
     if code_search_file and (
         spec.get("routes") != ["lexical"]
@@ -8618,9 +8774,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     if "semble" not in spec["execution_profiles"]:
         raise RunError("pair requires spec.execution_profiles.semble")
     scope = spec.get("scope", "exploratory")
-    code_search_file = (
-        spec["execution_profiles"]["quanta"]["policy"] in qp.CODE_SEARCH_FILE_POLICIES
-    )
+    code_search_file = spec["execution_profiles"]["quanta"]["policy"] in qp.FILE_PAIR_POLICIES
     if (
         code_search_file
         and scope == "qualified"

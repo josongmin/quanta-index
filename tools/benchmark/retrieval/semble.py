@@ -1248,8 +1248,29 @@ def count_tokens(text: str) -> int:
     return len(TOKEN_RE.findall(text))
 
 
+def _source_line_offsets(file_lines: dict[str, list[bytes]]) -> dict[str, list[int]]:
+    offsets_by_path = {}
+    for path, lines in file_lines.items():
+        offsets = [0]
+        for line in lines:
+            offsets.append(offsets[-1] + len(line))
+        offsets_by_path[path] = offsets
+    return offsets_by_path
+
+
 def normalize_results(
-    pack, native, latencies, file_shas, file_lines, contract, route, profile, *, indexed_chunks=None
+    pack,
+    native,
+    latencies,
+    file_shas,
+    file_lines,
+    contract,
+    route,
+    profile,
+    *,
+    indexed_chunks=None,
+    source_line_offsets=None,
+    verified_blocks=None,
 ):
     """One canonical per-query normalization owner; capture envelopes are separate."""
     if not isinstance(contract, dict) or pack.get("comparison_contract") != contract:
@@ -1262,12 +1283,11 @@ def normalize_results(
     file_mode = profile.get("mode") == "lexical-file"
     if file_mode and (type(indexed_chunks) is not int or indexed_chunks <= 0):
         raise AdapterError("Semble file collection lacks indexed chunk count")
-    line_offsets = {}
-    for path, lines in file_lines.items():
-        offsets = [0]
-        for line in lines:
-            offsets.append(offsets[-1] + len(line))
-        line_offsets[path] = offsets
+    line_offsets = (
+        _source_line_offsets(file_lines) if source_line_offsets is None else source_line_offsets
+    )
+    if verified_blocks is None:
+        verified_blocks = {}
     results = []
 
     def append_result(
@@ -1396,24 +1416,35 @@ def normalize_results(
                     "message": f"Semble hit spans beyond EOF: {path}:{start}-{end}",
                 }
                 break
-            block = b"".join(lines[start - 1 : end])
-            try:
-                text = block.decode("utf-8")
-            except UnicodeDecodeError:
-                hit_error = {
-                    "code": "semble_hit_not_utf8",
-                    "message": f"Semble hit block is not UTF-8: {path}",
-                }
-                break
-            tokens = count_tokens(text)
-            if tokens == 0:
-                hit_error = {
-                    "code": "semble_hit_no_tokens",
-                    "message": f"Semble hit holds no tokens: {path}:{start}-{end}",
-                }
-                break
-            start_byte = line_offsets[path][start - 1]
-            span = (path, start_byte, start_byte + len(block))
+            cache_key = (path, start, end)
+            verified = verified_blocks.get(cache_key)
+            if verified is None:
+                block = b"".join(lines[start - 1 : end])
+                try:
+                    text = block.decode("utf-8")
+                except UnicodeDecodeError:
+                    hit_error = {
+                        "code": "semble_hit_not_utf8",
+                        "message": f"Semble hit block is not UTF-8: {path}",
+                    }
+                    break
+                tokens = count_tokens(text)
+                if tokens == 0:
+                    hit_error = {
+                        "code": "semble_hit_no_tokens",
+                        "message": f"Semble hit holds no tokens: {path}:{start}-{end}",
+                    }
+                    break
+                start_byte = line_offsets[path][start - 1]
+                verified = (
+                    start_byte,
+                    start_byte + len(block),
+                    hashlib.sha256(block).hexdigest(),
+                    tokens,
+                )
+                verified_blocks[cache_key] = verified
+            start_byte, end_byte, block_sha256, tokens = verified
+            span = (path, start_byte, end_byte)
             # Native hits remain in the raw capture. Prove every hit before
             # either source-span collapse or first-occurrence file projection.
             if file_mode:
@@ -1429,11 +1460,11 @@ def normalize_results(
             candidate = {
                 "path": path,
                 "start_byte": start_byte,
-                "end_byte": start_byte + len(block),
+                "end_byte": end_byte,
                 "start_line": start,
                 "end_line": end,
                 "file_sha256": file_shas[path],
-                "block_sha256": hashlib.sha256(block).hexdigest(),
+                "block_sha256": block_sha256,
                 "tokens": tokens,
                 "rank": len(candidates) + 1,
             }
@@ -1883,6 +1914,8 @@ def run_adapter(args: argparse.Namespace) -> int:
         file_lines[name] = data.splitlines(keepends=True)
 
     tasks_by_id = {task["task_id"]: task for task in pack["tasks"]}
+    source_line_offsets = _source_line_offsets(file_lines)
+    verified_blocks = {}
 
     def normalize_response(task_id, hits, indexed_chunks):
         single_pack = dict(pack, tasks=[tasks_by_id[task_id]])
@@ -1896,6 +1929,8 @@ def run_adapter(args: argparse.Namespace) -> int:
             args.route,
             profile,
             indexed_chunks=indexed_chunks,
+            source_line_offsets=source_line_offsets,
+            verified_blocks=verified_blocks,
         )
         return normalized[0]
 

@@ -171,6 +171,16 @@ def judgment_grade(value: Any, where: str) -> int:
     return value
 
 
+def answerability_min_grade(task: dict[str, Any], where: str) -> int:
+    """Keep sufficient-answer grades separate from partial relevance gains."""
+    value = task.get("answerability_min_grade", 1)
+    require(
+        type(value) is int and 1 <= value <= 3,
+        f"{where} answerability_min_grade must be an integer 1-3",
+    )
+    return value
+
+
 def finite_timing(value: Any, where: str) -> float:
     require(
         is_finite_json_number(value) and value >= 0,
@@ -251,6 +261,11 @@ def validate_evaluation_contract(task: dict[str, Any], task_id: str) -> dict[str
         require(
             task.get("query_intent") == "symbol_components",
             f"explicit_symbol_components requires symbol_components intent for {task_id}",
+        )
+    if mode == query_plan_contract.NATURAL_LANGUAGE_FILE_SEARCH:
+        require(
+            task.get("query_intent") == "semantic_intent" and "source_oracle" not in task,
+            f"natural_language_file_search requires independently judged semantic_intent for {task_id}",
         )
     return contract
 
@@ -384,7 +399,14 @@ def validate_capture(
         and isinstance(value.get("execution_profile"), dict)
         and value["execution_profile"].get("policy") == "code_search_exact_content_file"
     )
-    if exact_content:
+    source_bound = exact_content or (
+        version == 5
+        and isinstance(value, dict)
+        and isinstance(value.get("execution_profile"), dict)
+        and value["execution_profile"].get("policy") == "code_search_file"
+        and ("source_repo_id" in value or "source_revision_id" in value)
+    )
+    if source_bound:
         fields.extend(["source_repo_id", "source_revision_id"])
     capture = object_keys(
         value,
@@ -393,8 +415,8 @@ def validate_capture(
     )
     system = capture["system"]
     require(system in CAPTURE_SYSTEMS, f"{where}.system must be quanta or semble")
-    if exact_content:
-        require(system == "quanta", f"{where}.exact-content capture must be Quanta")
+    if source_bound:
+        require(system == "quanta", f"{where}.source-bound capture must be Quanta")
         string(capture["source_repo_id"], where + ".source_repo_id")
         string(capture["source_revision_id"], where + ".source_revision_id")
     require(
@@ -888,6 +910,12 @@ def validate_judgments(
     """Bind optional independent file and declaration judgments to source bytes."""
     kinds = ("file_judgments", "declaration_judgments")
     present = [kind for kind in kinds if kind in task]
+    if "answerability_min_grade" in task:
+        require(
+            bool(present) and "source_oracle" not in task,
+            f"answerability_min_grade requires independent judgments: {task_id}",
+        )
+    answer_grade = answerability_min_grade(task, task_id)
     if not present:
         require("judgment_policy" not in task, f"orphan judgment_policy: {task_id}")
         require("source_oracle" not in task, f"source oracle lacks judgments: {task_id}")
@@ -942,12 +970,12 @@ def validate_judgments(
             seen.add(key)
         if task["answerable"]:
             require(
-                any(row["grade"] > 0 for row in judgments),
-                f"{kind} lacks a positive judgment: {task_id}",
+                any(row["grade"] >= answer_grade for row in judgments),
+                f"{kind} lacks a positive judgment at answerability_min_grade: {task_id}",
             )
         else:
             require(
-                not any(row["grade"] > 0 for row in judgments),
+                not any(row["grade"] >= answer_grade for row in judgments),
                 f"{kind} answerability mismatch: {task_id}",
             )
 
@@ -1205,6 +1233,7 @@ def validate_suite(
                 "query_intent",
                 "label_review",
                 "judgment_policy",
+                "answerability_min_grade",
                 "file_judgments",
                 "declaration_judgments",
                 "source_oracle",
@@ -1223,6 +1252,7 @@ def validate_suite(
                     "query_intent",
                     "label_review",
                     "judgment_policy",
+                    "answerability_min_grade",
                     "file_judgments",
                     "declaration_judgments",
                     "source_oracle",
@@ -1428,6 +1458,11 @@ def validate_suite(
                 universe=universe,
                 allow_grade=True,
             )
+            if "answerability_min_grade" in task:
+                require(
+                    label.get("grade", 1) >= answerability_min_grade(task, task_id),
+                    "gold grade below answerability_min_grade: " + task_id,
+                )
             if "source_oracle" in task:
                 if (
                     task["source_oracle"]["contract"]
@@ -1789,7 +1824,11 @@ def _validate_run(
         expected_policies = query_plan_contract.QUANTA_EVALUATION_POLICIES[mode]
         allowed_routes = (
             {"lexical", "semble-lexical-file"}
-            if mode == query_plan_contract.DEFAULT_FILE_SEARCH
+            if mode
+            in (
+                query_plan_contract.DEFAULT_FILE_SEARCH,
+                query_plan_contract.NATURAL_LANGUAGE_FILE_SEARCH,
+            )
             else {"symbol"}
             if mode == query_plan_contract.DECLARATION_NAVIGATION
             else {"lexical"}
@@ -1807,7 +1846,11 @@ def _validate_run(
                     and capture["execution_profile"]["policy"] in expected_policies
                 )
                 or (
-                    mode == query_plan_contract.DEFAULT_FILE_SEARCH
+                    mode
+                    in (
+                        query_plan_contract.DEFAULT_FILE_SEARCH,
+                        query_plan_contract.NATURAL_LANGUAGE_FILE_SEARCH,
+                    )
                     and route == "semble-lexical-file"
                     and capture["system"] == "semble"
                     and capture["execution_profile"].get("mode") == "lexical-file"
@@ -1873,7 +1916,7 @@ def _validate_run(
             )
         ordering = result.get("ordering")
         score_evidence = result.get("score_evidence")
-        if profile_policy in query_plan_contract.CODE_SEARCH_FILE_POLICIES:
+        if profile_policy in query_plan_contract.FILE_PAIR_POLICIES:
             require(
                 span_protocol == 1,
                 f"code_search_file requires source-bound file span evidence: {key}",
@@ -2106,12 +2149,12 @@ def _validate_run(
                 allow_span_accounting=version == 5 and capture["system"] == "quanta",
                 allow_score=score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1"),
             )
-            if profile_policy == "code_search_exact_content_file":
+            if profile_policy in ("code_search_file", "code_search_exact_content_file") and "source_repo_id" in capture:
                 accounting = candidate["span_accounting"]
                 require(
                     accounting["source_repo_id"] == capture["source_repo_id"]
                     and accounting["source_revision_id"] == capture["source_revision_id"],
-                    f"exact-content candidate source pin differs from capture: {key}",
+                    f"file candidate source pin differs from capture: {key}",
                 )
             if score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1"):
                 require("score" in candidate, f"missing native SDK score for {key}")
@@ -2354,7 +2397,7 @@ def indexed_span_diagnostics(
             continue
         if (
             run["captures"][capture_id].get("execution_profile", {}).get("policy")
-            in query_plan_contract.CODE_SEARCH_FILE_POLICIES
+            in query_plan_contract.FILE_PAIR_POLICIES
         ):
             routes[route] = {"status": "not_applicable", "reason": "file_unit_is_not_context_span"}
             continue
@@ -2659,6 +2702,10 @@ def judgment_diagnostics(
     output: dict[str, Any] = {
         "unjudged_policy": policy,
     }
+    if any("answerability_min_grade" in task for task in tasks.values()):
+        output["answerability_min_grade_by_task"] = {
+            task_id: answerability_min_grade(task, task_id) for task_id, task in tasks.items()
+        }
     evaluation_contract = declared_evaluation_contract(list(tasks.values()))
     for kind in kinds:
         if kind == "file_judgments":
@@ -2766,6 +2813,10 @@ def judgment_diagnostics(
                 if kind == "file_judgments"
                 else "symbol_rank"
             )
+            missing_ranked_judgments = any(
+                item["reason"] in ("unjudged_ranked_file", "unjudged_ranked_declaration")
+                for item in excluded
+            )
             by_route[route] = {
                 "rank_unit": expected_unit,
                 "ordering": ordering,
@@ -2785,7 +2836,11 @@ def judgment_diagnostics(
                 "excluded": excluded,
                 "status_counts": status_counts,
                 "operational_mean": {
-                    metric: value / len(answerable_ids) if answerable_ids else NOT_APPLICABLE
+                    metric: (
+                        value / len(answerable_ids)
+                        if answerable_ids and not missing_ranked_judgments
+                        else NOT_APPLICABLE
+                    )
                     for metric, value in operational.items()
                 },
                 "conditional_mean": {
@@ -2793,6 +2848,8 @@ def judgment_diagnostics(
                     for metric, value in conditional.items()
                 },
             }
+            if missing_ranked_judgments:
+                by_route[route]["operational_unavailable_reason"] = "incomplete_ranked_judgments"
         if candidate is None:
             comparison: dict[str, Any] | str = NOT_APPLICABLE
         else:
@@ -3403,7 +3460,7 @@ def evaluate(
     require(
         all(
             capture.get("execution_profile", {}).get("policy")
-            not in query_plan_contract.CODE_SEARCH_FILE_POLICIES
+            not in query_plan_contract.FILE_PAIR_POLICIES
             for capture in run.get("captures", {}).values()
         ),
         "code_search_file requires file-judgment diagnostics; context metrics are undefined",

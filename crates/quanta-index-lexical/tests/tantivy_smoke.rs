@@ -2027,6 +2027,30 @@ fn tantivy_select_file_collapses_multiple_chunks_per_path() -> TestResult {
         .into());
     }
 
+    let natural_language_file_query = make_query_with_filters(
+        LqExpr::Any(vec![
+            LqExpr::Leaf(LqLeaf::Keyword("file_projection_needle".to_string())),
+            LqExpr::Leaf(LqLeaf::Keyword("absent_token".to_string())),
+        ]),
+        vec![LqFilter::Select {
+            dim: LqSelect::File,
+        }],
+    );
+    let or_hits = searcher.search(
+        &natural_language_file_query,
+        2,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let or_ids: Vec<&str> = or_hits
+        .iter()
+        .map(|hit| hit.candidate_id.as_str())
+        .collect();
+    if or_ids != vec!["alpha", "gamma"] {
+        return Err(
+            format!("expected token-OR file projection before top-2, got {or_ids:?}").into(),
+        );
+    }
+
     let chunk_query = make_query_with_filters(
         LqExpr::Leaf(LqLeaf::Keyword("file_projection_needle".to_string())),
         Vec::new(),

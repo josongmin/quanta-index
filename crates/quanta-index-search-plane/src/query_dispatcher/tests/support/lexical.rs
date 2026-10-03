@@ -98,6 +98,7 @@ impl LexicalSearcher for StubLexicalSearcher {
         _budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: ranked_page(&self.results, page),
             exact_total: None,
         })
@@ -188,6 +189,8 @@ impl LexicalSearcher for StubLexicalSearcher {
             .map_or(LexicalCandidateExplanationV1::NotIndexed, |candidate| {
                 LexicalCandidateExplanationV1::Matched(quanta_index_core::LexicalScoreTraceV1 {
                     engine: LexicalScoreEngineV1::Bm25,
+                    code_search_components: None,
+                    code_search_rank_study: None,
                     engine_score: candidate.score,
                     boost_factor: 1.0,
                     emitted_score: candidate.score,
@@ -342,6 +345,7 @@ impl LexicalSearcher for RecordingLexicalSearcher {
             budget.checkpoint("stub:collect")?;
         }
         Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: ranked_page(&self.results, page),
             exact_total: None,
         })
@@ -461,6 +465,8 @@ impl LexicalSearcher for RecordingLexicalSearcher {
             .map_or(LexicalCandidateExplanationV1::NotIndexed, |candidate| {
                 LexicalCandidateExplanationV1::Matched(quanta_index_core::LexicalScoreTraceV1 {
                     engine: LexicalScoreEngineV1::Bm25,
+                    code_search_components: None,
+                    code_search_rank_study: None,
                     engine_score: candidate.score,
                     boost_factor: 1.0,
                     emitted_score: candidate.score,
@@ -614,6 +620,7 @@ fn symbol_fixture_page(
         usize::try_from(limit).map_err(|err| CoreError::InvalidContract(err.to_string()))?,
     );
     Ok(quanta_index_core::SymbolSearchPageV1 {
+        code_search_stats: None,
         candidates: rows,
         exact_total,
     })

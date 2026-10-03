@@ -21,6 +21,7 @@ pub use history_text::{
 };
 pub use inbound::LexicalQueryPort;
 pub use outbound::{
+    CodeSearchExecutionStatsV1, CodeSearchRankStudyV1, CodeSearchScoreComponentsV1,
     FileContributorIngestPort, FileOwnershipIngestPort, LexicalCandidateExplanationV1,
     LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec, LexicalReadiness,
     LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher,

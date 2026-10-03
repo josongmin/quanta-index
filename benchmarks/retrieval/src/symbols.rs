@@ -222,6 +222,9 @@ impl SymbolLanguage {
             (_, "enum_item" | "enum_declaration") => Some("enum"),
             (_, "trait_item") => Some("trait"),
             (_, "interface_declaration") => Some("interface"),
+            (Self::Rust, "const_item") => Some("constant"),
+            (Self::Rust, "static_item") => Some("variable"),
+            (Self::Rust, "macro_definition") => Some("macro"),
             (_, "type_item" | "type_alias" | "type_alias_declaration") => Some("type_alias"),
             (_, "mod_item" | "module" | "internal_module") => Some("module"),
             _ => None,
@@ -420,6 +423,9 @@ const RUST_QUERY: &str = r"
 (trait_item name: (type_identifier) @name) @def
 (type_item name: (type_identifier) @name) @def
 (mod_item name: (identifier) @name) @def
+(const_item name: (identifier) @name) @def
+(static_item name: (identifier) @name) @def
+(macro_definition name: (identifier) @name) @def
 ";
 
 const GO_QUERY: &str = r"
@@ -1002,6 +1008,45 @@ mod tests {
         assert_eq!(
             records.first().expect("first symbol").local_name.as_ref(),
             "Engine"
+        );
+    }
+
+    #[test]
+    fn rust_constants_statics_and_macro_definitions_are_indexed() {
+        let source = "pub const ATOM_EXPR_FIRST: u8 = 1;\n\
+                      pub static PRIVATE_KEY: &str = \"key\";\n\
+                      macro_rules! emit_token { () => {}; }\n\
+                      emit_token!();\n\
+                      mod inner { const EXCLUDE_CHARS: &str = \"x\"; }\n\
+                      struct Engine;\n\
+                      impl Engine { const KIND: u8 = 2; }\n";
+        let records = extract_symbols("src/names.rs", source).expect("rust parses");
+        for (name, kind, qualified_name) in [
+            ("ATOM_EXPR_FIRST", "constant", "ATOM_EXPR_FIRST"),
+            ("PRIVATE_KEY", "variable", "PRIVATE_KEY"),
+            ("emit_token", "macro", "emit_token"),
+            ("EXCLUDE_CHARS", "constant", "inner::EXCLUDE_CHARS"),
+            ("KIND", "constant", "Engine::KIND"),
+        ] {
+            let record = find(&records, name);
+            assert_eq!(record.symbol_kind.as_str(), kind);
+            assert_eq!(qualified(record), qualified_name);
+            let start = usize::try_from(record.definition_span.byte_start).expect("span start");
+            let end = usize::try_from(record.definition_span.byte_end).expect("span end");
+            assert!(
+                start < end
+                    && source
+                        .get(start..end)
+                        .is_some_and(|body| body.contains(name))
+            );
+        }
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.local_name.as_ref() == "emit_token")
+                .count(),
+            1,
+            "macro invocation must not become another declaration"
         );
     }
 

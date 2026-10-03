@@ -54,8 +54,9 @@ No semantic/hybrid or comparative SOTA claim is closed by this ticket alone.
 
 ## 2026-10-03 final audit and action plan
 
-Status: `PLANNED`; source inspection and offline diagnosis `VERIFIED`.
-Implementation, engine replay and new comparative capture: `NOT_RUN`.
+Historical audit status: `PLANNED`; source inspection and offline diagnosis `VERIFIED`.
+Implementation status is updated in the execution section below. Historical
+engine replay and comparative captures remain separate from that execution.
 Audit source: clean `main@e18805150ca3c74377e7f9bee0000306d56ce3d3`.
 
 ### Decision
@@ -226,3 +227,355 @@ top-ten reproduction. `NOT_RUN`: Rust tests, current daemon reproduction,
 proposed ranker, five-product recapture, reviewed holdout and performance gates.
 This edit is a plan update only. Historical captures and shared product source
 were not modified by the audit.
+
+## Zoekt and Blackbird implementation analysis (2026-10-03)
+
+Scope: read-only source/design analysis. Zoekt was inspected at
+`153817f643cde8b229ee388c1dddbcf07f4798af`; selected source files are in the
+external directory `/tmp/qi-zoekt-reference-_5z3qz_2`. Quanta was rechecked at
+`fabbe589866047e2c586e7218d91d5f57d3cee29`; the inspected file-search,
+file-authority and normalizer files are unchanged from `e1880515`.
+This Zoekt revision is not established as the version inside the earlier
+Sourcegraph benchmark image. Blackbird conclusions below use dated public
+engineering descriptions; its current full engine/ranking implementation was
+not available in the inspected material.
+
+### Zoekt: directly inspectable mechanisms
+
+- [Candidate selection](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/indexdata.go#L337)
+  selects low-frequency ngrams and adjusts overlapping choices; a positional
+  distance iterator rejects incompatible offsets before source comparison.
+  `matchtree.go` stages cheap checks before content and regex work. Unlike
+  Quanta's file-ID trigram intersection, this can reject spatially unrelated
+  grams without scanning the whole candidate file. It costs positional storage.
+- [Default scoring](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/score.go#L99)
+  uses the strongest matching fragment and matched query atoms. An occurrence
+  inside a stored symbol receives full/edge/overlap bonuses. Filename basename
+  matching has analogous distinctions. Repeated body occurrences do not enter
+  this default file formula as Quanta's occurrence bonus does.
+- [Constants and symbol kinds](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/contentprovider.go#L589):
+  full symbol bonus 7,000, edge 5,500, overlap 4,000; whole-word bonus 500,
+  partial-word 50. Kind/language adds another signal. These numbers establish
+  their relative priorities; copying their numeric scale into Quanta is not a
+  justified calibration.
+- [Index-time document order](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/builder.go#L887)
+  considers generated/vendor/test flags, path length and other properties.
+  It affects the file tie break and which files are visited before limits.
+  Thus the system's behavior depends on both query scoring and index order.
+- The optional BM25 branch in `index/score.go` uses constant IDF, byte-length
+  normalization, boosted filename/symbol term frequency and a low-priority
+  file adjustment. The executable code retains those code-specific signals;
+  the broad API comment about ignoring other scoring signals is not a complete
+  description. Record the actual option before attributing a result to BM25.
+- `DebugScore` explains score components. Search limits still apply; source
+  inspection does not establish exhaustive retrieval or reproduce the captured
+  Sourcegraph service's final ordering.
+
+### Blackbird: public design and its limits
+
+The [2021 engineering account](https://github.blog/engineering/architecture-optimization/a-brief-history-of-code-search-at-github/)
+explicitly describes boosting definitions and complete matches, with lower
+priority for tests and partial matches. Symbol extraction uses Tree-sitter.
+This supports adding declaration features to ordinary search. It does not
+publish the current weights or justify universally demoting test code.
+
+The [2023 architecture](https://github.blog/engineering/architecture-optimization/the-technology-behind-githubs-new-code-search/)
+uses content/symbol/path indices, blob-based sharding/deduplication, incremental
+compaction, and commit-consistent visibility. Sparse grams select variable-length
+grams deterministically at index/query time to reduce false candidates.
+Posting iterators exploit document priority; matches are source-verified and
+scored, then results are merged across shards. These are scale techniques,
+not evidence that a different gram layout improves Gin relevance.
+
+The [2026-07-31 case-folding article](https://github.blog/engineering/architecture-optimization/dont-stop-early-case-folding-source-code-at-memory-speed/)
+describes an ASCII pass that can be vectorized and reuses the input allocation,
+plus compact Unicode simple-fold tables. Its reported throughput is a folding
+microbenchmark, not end-to-end query performance. Quanta explicitly specifies
+NFC plus per-character Unicode lowercase. Simple folding differs for cases
+such as final sigma and dotted I: a replacement would require an intentional
+contract/version change and rebuilt generations. An ASCII-only fast path can
+instead be evaluated for exact equivalence to the existing contract.
+
+### Additions to the execution plan
+
+| Priority | Action | Gate |
+| --- | --- | --- |
+| P1 ranking | R3 compares best-match declaration features, symbol match extent, case and current occurrence signal. Use existing generation-bound symbol evidence and a deterministic rank function. | Independent declaration/usage fixtures and R2 reviewed holdout; no missing literal candidates or fabricated symbol evidence. |
+| P1 explainability | Provide one internal score decomposition used by both ranking tests and diagnostics; avoid duplicating the score formula in a report generator. | Native captured score equals its decomposition; distinct candidate, verification, scoring and preview work counts. |
+| P2 candidate cost | Measure posting visits, prefilter files, verified files and bytes scanned on long/common literals and regex. Compare current file postings with a positional prototype or sparse grams only if false candidates dominate. | Source-scan recall invariant, memory/index-build cost and identical API p95; no early top-k stop without a safe score upper bound or an explicitly partial contract. |
+| P2 capacity | Audit full-file source residency and index opening before increasing scale limits. Current `file_authority.rs` bounds source bytes at 128 MiB and posting memberships at 4,000,000; short-literal scanning has separate file/byte caps. | Explain admitted corpus size, cold-open peak RSS, index bytes and rejection behavior; do not simply raise constants. |
+| P2 normalization | Profile normalization allocations and ASCII throughput while preserving the current normalizer contract. | Byte-for-byte differential tests, source-offset mapping, Unicode edge cases and measured whole-index/query benefit. |
+| Later distributed scale | Consider blob deduplication, persistent compressed postings and sharding only after single-node costs and real repository sizes require them. | Repository/path/ACL identity, deletion and generation visibility survive deduplication and shard merging. |
+
+The immediate priority remains ranking and its evidence. Positional indexing,
+sparse grams and normalization optimization address measured cost; they do not
+substitute for independently judged relevance. Default ranking, optional BM25,
+typed symbol search and typo recovery are separate configurations in ablations.
+
+Verification: GitHub API pinned the Zoekt commit; selected files were downloaded
+to a new external directory and inspected with `rg`/`sed`. Official GitHub
+articles were read directly. Quanta relevant-file diff versus the prior audit
+was empty. `VERIFIED` covers these source/design observations. Zoekt execution,
+Blackbird execution, performance comparison and proposed Quanta changes are
+`NOT_RUN`.
+
+### Deeper comparison and adoption decisions (2026-10-03)
+
+Rechecked Quanta at `195f5aadb3aabe814b54d8e58d7213f69cf86d4f`.
+The relevant code-search, file-authority, adapter-open and normalizer diff
+against `fabbe589866047e2c586e7218d91d5f57d3cee29` is empty. The checkout
+was clean before this documentation addition. The Zoekt revision above is
+unchanged. The following are source observations, not new benchmark results.
+
+#### Additional findings that change implementation choices
+
+1. **Identifier boundary scoring is a separate opportunity from tokenization.**
+   Zoekt's [byteClass](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/bits.go#L210)
+   separates lowercase, uppercase, digits and other bytes; `scoreLine` compares
+   classes on both sides of an occurrence. Quanta's `boundary_score` uses
+   `is_token_char`, which deliberately keeps camelCase and snake_case intact.
+   Thus a component can receive a stronger boundary signal in Zoekt without
+   being a whole lexical token. Implement any analogous rank feature on the
+   original source with verified offset mapping: the folded buffer has already
+   lost camel-case transitions. Preserve query acceptance and literal recall.
+   Do not copy the byte classifier as a Unicode segmentation algorithm.
+
+2. **Zoekt's final order is not always descending score.**
+   [SortFiles](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/contentprovider.go#L971)
+   sorts by score and then promotes a file extension absent from the first two
+   results into third place, provided its score is at least 90% of the current
+   third result. `TestCollectSenderDocumentLimitKeepsNovelExtension` expects
+   this behavior. It cannot explain rankings on an all-Go file universe.
+   Defer such diversity reranking until mixed-language, multi-intent evaluation
+   shows a benefit. Record final returned order separately from score order.
+
+3. **Symbol metadata is useful; symbol location quality is not automatic.**
+   [tagsToSections.Convert](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/ctags.go#L126)
+   finds the first occurrence of a tag name on the reported line. Its comment
+   explicitly acknowledges wrong offsets for short names; missing names and
+   overlapping sections are skipped. The stored section covers the name,
+   not the entire function body. `buildShard` parses symbols before ordering
+   documents and may continue after parser errors unless configured otherwise.
+   For Quanta, distinguish a verified file-level declaration-name feature from
+   an occurrence-level definition hit. The latter requires an authoritative
+   name range, not a context snippet or the whole indexed function span.
+   Existing typed symbol identity/source revision checks remain mandatory.
+   Missing symbol metadata must not suppress ordinary literal results.
+
+4. **Exploration limits and display limits have different completeness effects.**
+   [limit.go](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/limit.go#L10)
+   sorts before applying display caps. `search/aggregate.go` maintains a bounded
+   ranked collection as batches arrive; `FlushWallTime` can switch to streaming.
+   In contrast, shard/repository match limits stop document exploration, and
+   `TotalMaxMatchCount` stops scheduling further shards while pending searches
+   finish. These limits are not an exact global top-k proof. Preserve Quanta's
+   current verified-candidate sorting before page truncation. If collection
+   changes, separately expose exhaustion, timeout and display truncation;
+   require stable ordering, late high-score admission and cursor continuity.
+
+5. **Regex optimization must preserve a candidate superset.**
+   Zoekt's [regex tests](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/eval_test.go#L82)
+   cover OR branches, optional literals, anchors, repetition and patterns with
+   no useful grams. For example `(foo|)` needs a brute-force candidate path;
+   selecting only `foo` would miss valid matches. A Quanta optimization must
+   match an independent source-scan oracle, or return its declared resource
+   refusal when exhaustive verification exceeds budget. An unsupported or
+   budget-refused query is never evidence that the corpus has no match.
+
+6. **Index lifecycle and query scheduling are operational references.**
+   Zoekt uses mmap-backed searchers, atomically renamed tombstone metadata,
+   shard replacement with delayed close until old readers are gone, and a
+   cooperative interactive/batch scheduler (`search/shards.go`, `index/tombstones.go`,
+   `search/sched.go`). These mechanisms do not establish crash durability from
+   rename alone. Quanta already has sealed generation authority; preserve it.
+   `adapter_open.rs:145` calls `from_verified_files`, which normalizes sources
+   and builds file trigram postings at generation load. This establishes a
+   cold-open cost to measure, not a per-query rebuild. Measure source residency,
+   open/reopen time and reader retirement before proposing persisted postings.
+
+7. **Blackbird's product scope is narrower than exhaustive source retrieval.**
+   GitHub's [official documentation source](https://github.com/github/docs/blob/main/content/search-github/github-code-search/about-github-code-search.md)
+   documents generated/vendor exclusions, file-size and long-line limits,
+   default-branch-only search, 100 returned results and no exhaustive search.
+   The [symbol qualifier](https://docs.github.com/en/search-github/github-code-search/understanding-github-code-search-syntax#symbol-qualifier)
+   finds definitions, not references, with language/type coverage limitations.
+   These constraints prohibit treating GitHub results as a complete oracle for
+   our fixed manifest, especially generated-code gold. Sparse grams and blob
+   deduplication remain scale references, not evidence of typo recovery or
+   stronger ranking on this corpus. Full engine weights remain unverified.
+
+8. **Reference tests do not replace independent relevance judgments.**
+   Zoekt's `internal/e2e/e2e_rank_test.go` pins several repository snapshots,
+   checks golden result order and reports recall/MRR. It even chooses an older
+   Zoekt snapshot to avoid matching its own golden files. Adopt snapshot pinning
+   and fixture-contamination prevention. Snapshot output alone only detects
+   change; independently reviewed relevance determines whether change is good.
+
+#### Work order and decisive checks
+
+| Order | Owned boundary | Concrete work | Independent completion check |
+| --- | --- | --- | --- |
+| 1 | `searcher/code_search.rs`, existing symbol identity conversion and rank/cursor contract | Add internal score decomposition; compare declaration-name evidence, original-source identifier boundaries and the existing occurrence feature as separate ablations. Audit available name-location authority before adding occurrence-level definition boosts. | Exact name vs usage; repeated usage; camel/snake/acronym/digit boundaries; same-line duplicate names; missing/stale metadata; tests/generated files that are genuinely relevant. No candidate recall change and no body hit falsely labeled as a definition. |
+| 2 | Existing retrieval evaluator, suite builder and report | Freeze intent lanes and eligibility. Report file Hit/MRR/NDCG separately from declaration-name recovery. Add candidate completeness and final-order provenance. | Same paired eligible IDs; refusals/failures retained in coverage/operational score; fixed metric goldens. Group derived queries by seed symbol and hold out repositories to avoid treating 1,000 variants as 1,000 independent cases. |
+| 3 | Existing candidate planner, file-authority and budget accounting | Instrument posting visits, candidate/source verification counts, bytes and stage timing; compare positional verification only if false candidates dominate. | Independent full-source oracle over literals/regex/Unicode; gram collisions and short/optional patterns; explicit limit refusal. Measure warm queries separately from cold-open and indexing. |
+| 4 | Existing file-rank collector, response projection and cursor tests | Validate score order versus final presentation, chunking-independent file projection and bounded collection. | Late better candidates; insertion/batch permutations; page concatenation equals exhaustive deterministic order; old rank-version cursor rejected; partial results labeled. No approximate early stop concealed as exact top-k. |
+| 5 | Normalizer and generation lifecycle owners, only after profiling | Evaluate equivalent ASCII normalization and persistent postings; later consider sparse grams, deduplication and scheduling changes if measured costs justify them. | Byte/offset equivalence, Unicode contract fixtures, activation with concurrent readers, delete/reopen, memory bounds and same-boundary latency. Contract changes require rebuilt generations. |
+
+Do not adopt Zoekt's magic score constants, first-string symbol offsets or
+extension-diversity policy wholesale. Do not adopt Blackbird's indexing
+exclusions into our manifest contract. Default literal search, explicit symbol
+search, component search and edit-distance recovery remain distinct evaluated
+behaviors even when a public search entrypoint dispatches between them.
+
+Verification for this addition: `git rev-parse HEAD`, `git status --short`,
+the relevant-file `git diff fabbe589866047e2c586e7218d91d5f57d3cee29 HEAD`,
+`rg`/`sed` source and test inspection, pinned GitHub raw-source downloads and
+official documentation reads. `VERIFIED`: the cited source/design findings;
+`NOT_RUN`: upstream tests, native comparison runs, runtime lifecycle/performance
+checks and proposed product changes. No benchmark counts were replaced.
+
+
+## 2026-10-03 execution: score authority and experimental features
+
+Status: `PARTIAL_IMPLEMENTATION`. Selected production ranking is unchanged.
+This section does not promote a retrieval-quality, performance, release or
+five-product qualification claim.
+
+The work started at `main@88c1366e764e4ae69fd2bc93c31c3b148da6b895`.
+Other tasks committed overlapping shared-main changes during execution; the
+reported local checks exercised live main and its then-current overlay.
+They are not a frozen-source qualification receipt. Existing captures and
+`/private/tmp/g3` were not modified or replayed into a new aggregate.
+
+### Confirmed defects repaired
+
+1. Backend explanation treated a CodeSearch `file:` identity as a stored chunk
+   document ID and returned `NotIndexed`. The sealed adapter fixture failed
+   at this exact assertion before repair. File presence now resolves the
+   immutable file authority; ordinary matched file explanation uses the same
+   selected scorer, independent of the search page cap. A `file:`-prefixed
+   legacy chunk ID still falls through to document lookup when no file matches.
+2. Public lexical explain refused CodeSearch at the shared planner before
+   reaching the backend. A real SDK/runtime test failed with `INVALID_REQUEST`
+   after backend repair. Lexical explain now admits the same CodeSearch plan
+   as lexical search. Hybrid and symbol admission stay route-specific.
+
+Owners: `searcher/code_search.rs`, `searcher/port.rs`,
+`query_dispatcher/planning.rs` and `routes/explain.rs`.
+
+### Implemented boundaries
+
+- `CodeSearchScoreComponentsV1` is the selected scorer's additive authority:
+  boundary/path, occurrence, exact case and proximity. Native explanation
+  refuses engine, boost, total or emitted-score contradictions.
+- `searcher/code_search/ranking.rs` extracts file-level producer declaration
+  names from the pinned symbol index and verifies identity and raw source
+  range. It does not infer a declaration-name occurrence span from a body hit.
+  One batched symbol query is used per explained file. This is diagnostic
+  extraction; a production multi-file ranker still needs per-request batching.
+- Optional declaration evidence distinguishes zero from unknown. Unspecified
+  display names stay unknown even when they occur incidentally in a function
+  body; non-ASCII names also lack this raw-ASCII authority. A promised raw ASCII
+  name absent from its definition range or a stale identity is an error.
+- Original-source camel/snake/acronym/digit boundary signals use verified
+  normalization provenance for Unicode. Literal membership, tokenizer and
+  selected ranking remain unchanged.
+- Native study exposes baseline, declaration-only, boundary-only,
+  half-occurrence, no-occurrence and combined scores. Provisional declaration
+  weights are 64/32/16; original-boundary weights are 16/8. These are experimental
+  constants, not holdout-selected defaults. Only baseline is marked selected.
+- Cursor order and explanation rank fingerprint share one policy authority;
+  ordinary, explicit typo and components use distinct fingerprints. No cursor
+  scoring-version bump is needed for these diagnostics because selected scores
+  and their order did not change.
+- `CodeSearchExecutionStatsV1` records successful ordinary-page work: literal
+  prefilter execution, source-verification attempts, verified literal files,
+  final candidate visits, all verified matches, cursor-eligible matches and
+  fetched files. Public trace adds the actual returned-file count after response
+  fitting. Counts are validated against the native page; conflicting counts
+  are refused. This is not raw posting-visit or distinct pre-verification count.
+  Exact-path/regex-only zero literal counts mean no literal prefilter execution.
+  Explicit recovery/components remain unobserved; limits/cancellation remain
+  typed errors rather than fabricated complete statistics.
+- Existing runner diagnostics retain native planner traces. The optional
+  `--rank-study-out` runner path now retains native pinned pages and per-file
+  explanations after all measured requests. It reproduces the measured first
+  window before following the original page-size cursors. Total/count drift,
+  duplicate files, non-progressing cursors, limits and refusals remain explicit.
+- `code_search_rank_study.py` binds the diagnostic to original record bytes,
+  blind pack, effective request/profile, generation and source-file universe.
+  It reuses existing file NDCG/Hit/MRR on proven complete pools. Each baseline
+  comparison uses the same admitted tasks and lists exclusions/coverage.
+  Unknown declaration census excludes declaration policies; a refused explain
+  or stopped walk never becomes a zero or a full-rank claim. File-level features
+  are explicitly not declaration-span recovery metrics.
+- The driver accepts explicit bounded `code_search_rank_study` limits and
+  retains original captures when optional study validation fails. A speed claim
+  is refused with this mode: query timers exclude diagnostics, but whole-process
+  CPU/RSS includes them. Separate performance captures are required. Deadlines
+  are checked between SDK calls; the SDK I/O timeout bounds an individual call.
+
+### Local checks
+
+All commands ran from this checkout; output was retained in the chat, not as
+one-off repository evidence files.
+
+| Command | Observed outcome | Scope |
+| --- | --- | --- |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical --test l3_exact_source code_search_explanation_uses_the_same_file_score_outside_top_k -- --exact` | RED: `NotIndexed`; then GREEN, 1 test | Confirmed backend defect |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical -p quanta-index-search-plane --lib code_search` | `VERIFIED`: 23 + 14 tests passed | Native feature, score, grammar, count and cursor contracts |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical --test l3_exact_source` | `VERIFIED`: final 28 tests passed | Sealed source/symbol index, unpromised display-name/body collision, Unicode, independent source oracle, gram collision, late better candidate, paging and exact-symbol separation |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-searchd-runtime --test runtime_fast_suite e2e_explain_score_trace::explain_score_traces_share_one_indexed_fixture -- --exact --nocapture` | RED: public planner refused CodeSearch; then GREEN. Final SDK extension `VERIFIED`: 1 passed | Real SDK/Unix IPC/runtime wiring, pinned native page, work counts and fixed 109/107/105 source score goldens |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_retrieval_benchmark.py -k 'independent_file_ndcg or declaration_judgment_requires or cross_suite_experiment_custody or v3_query_family_split or intended_name_source_oracle or code_search_file_refuses_context or code_search_file_policy_binds'` | `VERIFIED`: 7 passed | Existing file/declaration metrics and leakage guard |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_identifier_robustness_report.py -k 'scored_family_separately or fixed_golden_preserves or clean_to_typo or operation_and_length or policy_refusal or no_answer_success or rederived_from_source'` | `VERIFIED`: 7 passed | Existing lane, eligibility, no-answer and intended-name reporting |
+| `git diff --check`; `python3 tools/ci/lint/check-module-discipline.py`; `just rust-hexagonal` | `VERIFIED` | Hygiene and dependency/facade boundaries |
+| `just rust-cargo-modules` | `VERIFIED`: corrected core/contract snapshots match both native module trees | Module inventory, not behavioral qualification |
+| `python3 tools/ci/lint/check-test-authority.py` | `VERIFIED` | Existing test targets remain registered |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench` | `VERIFIED`: final 10 passed, including all 4 rank-study tests | Stable counts/order, duplicate/drift refusal, bounded work, ordinary-policy separation and existing runner guards |
+| `./scripts/cargow --lane code-search-rank-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked` | `VERIFIED`: fresh build after source-name guard | Standalone development-profile daemon for the explicitly pinned runner E2E; not release/performance qualification |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_identifier_robustness_report.py` | `VERIFIED`: 59 passed | Complete-pool independent golden, artifact mutations, refusal/unknown/partial exclusions, zero-hit source binding, original exhaustion status and existing intent contracts |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_retrieval_benchmark.py -k 'code_search_rank_study or spec or server_observation or hybrid_fetch or quanta_strategy or query_protocol'` | `VERIFIED`: 38 passed | Study and affected driver/protocol contracts on live main; overlaps the preceding row |
+
+Some first attempts had test-code compilation errors, corrected before the
+passing runs. An accidental system Python 3.9 invocation failed on the existing
+`zip(strict=True)` fixture; the frozen repository Python command passed.
+One native command was not admitted after 300 seconds of another task's build
+lock; a subsequent admitted attempt passed. Build/admission time is not query
+or indexing latency.
+The later SDK extension's raw paging call omitted its required generation pin;
+that test fixture was corrected to the sealed identity. This was a test setup
+failure, not a newly reproduced product defect. The corrected SDK extension
+passed. The source-name authority guard and runner bounds tests passed, and the
+standalone development-profile daemon was rebuilt afterwards for the runner
+E2E. Rust checks waited at the shared resource admission lock,
+including another task's full workspace run. An admission timeout does not
+execute the product check.
+
+### Remaining execution, ordered by dependency
+
+1. Finish the existing `actual_runner_binary_emits_receipt_bound_v5_record` E2E extension.
+   The extension checks all three top-one file pages and a one-page diagnostic
+   cap while preserving the original `capped` record. Its standalone daemon
+   must be explicitly built/pinned. Source implementation is present; final
+   execution is pending resource admission. Module/test inventory is verified.
+2. Run fresh diagnostic complete-pool capture and the source-validated analyzer
+   using new external outputs. The capture and reporting code is implemented;
+   no historical top-ten-only capture can be promoted to a complete experiment.
+3. Freeze development/holdout by repository and seed family before expanding
+   exact/prefix/infix/components/typo/no-answer tasks. Reuse the existing source
+   oracle, evaluator and review tools. Prepare default-content/use-example and
+   typed-declaration pools separately; obtain genuine independent judgments.
+4. Batch declaration enrichment once per ranked request before experimenting
+   with production selection. Preserve unknown evidence, literal recall, typed
+   errors, budget accounting, deterministic ordering and score-version cursors.
+5. Select a frozen policy only after reviewed, unexposed holdout improvement;
+   report regressions by intent and repository. Run comparable API/build/input
+   latency and memory measurements on an uncontended host.
+6. Bind served external inventories/versions and run the existing five-product
+   capture per supported lane. Qualification does not follow from the historical
+   Gin counts or from this local explanation fixture.
+
+`NOT_RUN`: fresh 1,196-task or expanded five-product capture, complete-pool
+ablation, independent human relevance qualification, comparable performance,
+release/deployment and scale optimizations. No default relevance improvement
+has been established by this execution.

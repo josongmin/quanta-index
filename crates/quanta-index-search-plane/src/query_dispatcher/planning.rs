@@ -71,7 +71,9 @@ impl SearchPlaneDispatcher {
         route: QueryRouteV1,
         budget: &RequestBudgetV1,
     ) -> Result<PlannedLexicalTextQuery, CoreError> {
-        if route != QueryRouteV1::Lexical {
+        // Lexical explanation uses the same distinct-file plan as search.
+        // Hybrid explanation retains its separate admission above.
+        if !matches!(route, QueryRouteV1::Lexical | QueryRouteV1::Explain) {
             reject_code_search_on_nonlexical_route(request.syntax, "lexical explain")?;
         }
         let lowered = lower_lexical_text_query(request)?;

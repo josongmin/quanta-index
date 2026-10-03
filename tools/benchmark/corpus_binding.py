@@ -543,15 +543,27 @@ def _split_binding(
 
 def _gold_producer_source_digests() -> dict[str, str]:
     """Bind the direct Python owners of mechanical gold and census admission."""
-    from tools.benchmark.retrieval import declaration_census_audit, gold_oracle, source_oracle
+    from tools.benchmark.retrieval import (
+        declaration_census_audit,
+        declaration_parsers,
+        gold_oracle,
+        source_oracle,
+    )
 
     owners = {
         "corpus_binding": Path(__file__),
         "declaration_census_audit": Path(declaration_census_audit.__file__),
+        "declaration_parsers": Path(declaration_parsers.__file__),
         "gold_oracle": Path(gold_oracle.__file__),
         "source_oracle": Path(source_oracle.__file__),
     }
-    return {name: digest_bytes(_read_regular_file(path)) for name, path in sorted(owners.items())}
+    return {
+        **{name: digest_bytes(_read_regular_file(path)) for name, path in sorted(owners.items())},
+        **{
+            name: "sha256:" + digest
+            for name, digest in declaration_parsers.component_source_digests().items()
+        },
+    }
 
 
 def _read_gold_capsule_file(path: Path) -> bytes:

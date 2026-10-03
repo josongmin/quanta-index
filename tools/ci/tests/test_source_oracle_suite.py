@@ -14,6 +14,80 @@ from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import source_oracle_suite
 
 
+@pytest.mark.parametrize("suffix", ["ts", "tsx"])
+def test_typescript_oracles_use_the_producer_compatibility_grammar(suffix):
+    from tools.benchmark.retrieval import gold_oracle, source_oracle
+
+    raw = (
+        b'export type * from "./other";\n'
+        b'export type * as Other from "./other";\n'
+        b"export function Locate() {\n"
+        b"  return runnerImport<typeof import('./basic')>(fixture('cjs.js'),);\n"
+        + (b"  return <div />;\n" if suffix == "tsx" else b"")
+        + b"}\n"
+    )
+    rows = source_oracle.declaration_census("typescript", "input." + suffix, raw)
+    assert [raw[start:end] for start, end, *_ in rows] == [b"Locate"]
+    spans, refusal = gold_oracle._definition_spans(
+        raw, b"Locate", "typescript", path="input." + suffix
+    )
+    assert refusal is None
+    assert len(spans) == 1
+    assert raw[spans[0][0] : spans[0][1]] == b"Locate"
+    with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
+        source_oracle.declaration_census(
+            "typescript", "broken." + suffix, raw + b"function Broken( {"
+        )
+
+
+def test_vendored_parser_cache_refuses_identity_and_binary_tampering(tmp_path):
+    from hashlib import sha256
+
+    from tools.benchmark.retrieval import declaration_parsers
+
+    binary = tmp_path / "parser.so"
+    binary.write_bytes(b"fixed parser bytes")
+    marker = tmp_path / "ready.json"
+    identity = {"grammar": "typescript"}
+    marker.write_text(
+        json.dumps({"identity": identity, "binary_sha256": sha256(binary.read_bytes()).hexdigest()})
+    )
+    assert declaration_parsers._checked_library(tmp_path, identity) == binary
+    with pytest.raises(ValueError, match="identity differs"):
+        declaration_parsers._checked_library(tmp_path, {"grammar": "tsx"})
+    binary.write_bytes(b"changed parser bytes")
+    with pytest.raises(ValueError, match="binary differs"):
+        declaration_parsers._checked_library(tmp_path, identity)
+    marker.write_text("null")
+    with pytest.raises(ValueError, match="identity differs"):
+        declaration_parsers._checked_library(tmp_path, identity)
+
+
+def test_vendored_parser_has_no_unpatched_fallback_when_compiler_is_missing(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import declaration_parsers
+
+    monkeypatch.setenv("QUANTA_CENSUS_PARSER_CACHE", str(tmp_path / "empty-parser-cache"))
+    monkeypatch.setattr(declaration_parsers.shutil, "which", lambda _name: None)
+    with pytest.raises(ValueError, match="C compiler unavailable"):
+        declaration_parsers._library("typescript")
+
+
+def test_vendored_parser_source_binding_rejects_linked_directories(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import declaration_parsers
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "bound.c").write_bytes(b"fixed compiled source")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "parser.c").write_bytes(b"unbound compiled source")
+    (vendor / "linked-src").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(declaration_parsers, "VENDOR", vendor)
+    monkeypatch.setattr(declaration_parsers, "ROOT", tmp_path)
+    with pytest.raises(ValueError, match="regular or directories"):
+        declaration_parsers.component_source_digests()
+
+
 def _source_repo(
     tmp_path: Path, extra_files: dict[str, bytes] | None = None
 ) -> tuple[Path, str, dict[str, bytes]]:
@@ -661,6 +735,26 @@ def test_code_search_absence_rejects_content_and_path_matches(tmp_path):
     )
 
 
+def test_default_code_search_absence_rejects_one_edit_fallback():
+    so = ev.source_oracle
+    raw = b"def test_init(): pass\n"
+    oracle = so.SourceOracleIndex({"tests.py": (raw, ev.digest(raw))}, {"test_unit", "Absent"})
+    assert (
+        oracle.expected_rows(so.ASCII_CODE_SEARCH_ABSENT_CASEFOLD, "test_unit", "distinct_file")
+        == []
+    )
+    with pytest.raises(so.SourceOracleError, match="identifier osa1 absent"):
+        oracle.expected_rows(
+            so.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD, "test_unit", "distinct_file"
+        )
+    assert (
+        oracle.expected_rows(
+            so.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD, "Absent", "distinct_file"
+        )
+        == []
+    )
+
+
 @pytest.mark.parametrize(
     "source_token",
     ["load_json", "load_jsom", "load_jsonx", "load_jso", "load_jsno", "LOAD_JSON"],
@@ -782,7 +876,7 @@ def test_typo_partition_accepts_query_proven_parser_refusal():
 
     files = {
         "main.go": b"package p\nfunc Param() {}\n",
-        "broken.go": b"package p\nfunc Broken(",
+        "broken.go": b"package p\nfunc Broken(\n// xParanY is a longer token\n",
     }
     oracle = so.SourceOracleIndex(
         {path: (raw, ev.digest(raw)) for path, raw in files.items()},
@@ -796,6 +890,17 @@ def test_typo_partition_accepts_query_proven_parser_refusal():
     assert partition["intended_base_files"] == ["main.go"]
     assert partition["near_declaration_names"] == ["Param"]
     assert partition["query_is_declaration_name"] is False
+    files["broken.go"] = b"package p\nfunc Broken(\n// Paran is a full token\n"
+    oracle = so.SourceOracleIndex(
+        {path: (raw, ev.digest(raw)) for path, raw in files.items()},
+        {"Param", "Paran"},
+        declaration_exclusions={
+            (so.GO_EXACT_LOCAL_NAME, "Param"): {"broken.go"},
+            (so.GO_NAME_OSA1_CASEFOLD, "Paran"): {"broken.go"},
+        },
+    )
+    with pytest.raises(so.SourceOracleError, match="may contain a query match"):
+        oracle.typo_gold_partition("go", "Paran", "Param")
 
 
 def test_osa1_text_exclusion_trigram_filter_preserves_regex_witnesses(monkeypatch):
@@ -813,22 +918,30 @@ def test_osa1_text_exclusion_trigram_filter_preserves_regex_witnesses(monkeypatc
     for name in sorted(one_edits):
         raw = f"prefix {name.upper()} suffix".encode()
         assert not so.declaration_query_textually_excluded(raw, query, "osa1_casefold")
-    assert not so.declaration_query_textually_excluded(
-        "abcdefghijKl".encode(), query, "osa1_casefold"
-    )
+    # The casefolded Unicode character is not an ASCII identifier name, so
+    # this text cannot witness the folded typo declaration contract.
+    assert so.declaration_query_textually_excluded("abcdefghijKl".encode(), query, "osa1_casefold")
 
     for raw in (b"abc" + b"x" * 20_000 + b"jkl", b"abxxefghijkl", b"nothing here"):
-        folded = raw.decode().casefold()
-        regex_absent = so._osa1_text_pattern(query).search(folded) is None
-        assert so.declaration_query_textually_excluded(raw, query, "osa1_casefold") == regex_absent
+        regex_absent = so._osa1_text_pattern(query).search(raw.decode()) is None
+        assert so.declaration_query_textually_excluded(raw, query, "osa1") == regex_absent
+        assert so.declaration_query_textually_excluded(raw, query, "osa1_casefold")
+
+    assert so.declaration_query_textually_excluded(
+        b"prefix_abcxefghijkl_suffix", query, "osa1_casefold"
+    )
+    assert not so.declaration_query_textually_excluded(
+        b"prefix abcxefghijkl suffix", query, "osa1_casefold"
+    )
+    assert not so.declaration_query_textually_excluded(
+        b"prefix ABCDEFGHIJKL suffix", query, "osa1_casefold"
+    )
 
     def unexpected_regex(_query):
         pytest.fail("the sparse source should be rejected before regex search")
 
     monkeypatch.setattr(so, "_osa1_text_pattern", unexpected_regex)
-    assert so.declaration_query_textually_excluded(
-        b"abc" + b"x" * 20_000 + b"jkl", query, "osa1_casefold"
-    )
+    assert so.declaration_query_textually_excluded(b"abc" + b"x" * 20_000 + b"jkl", query, "osa1")
 
 
 def test_osa1_text_anchor_scan_matches_unanchored_reference():

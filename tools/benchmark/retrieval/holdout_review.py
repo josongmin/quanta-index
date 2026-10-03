@@ -1,26 +1,178 @@
-"""Prepare two blind, unjudged file-review forms from an existing query pack.
+"""Prepare blind file-review forms and reissue reviewed NL file diagnostics.
 
 This is a preparation adapter, not a labeler or a qualification pipeline.
 Candidates from retrieval, source alternatives and random controls are pooled
 by file. Product identities and pool membership stay in the owner-only custody
 document; scores and ranks are rejected. Human decisions must subsequently enter the
 existing evaluator judgments and run.py annotation/adjudication receipts.
+Diagnostic projection preserves supplied labels and review identities without
+attesting human provenance or transferring the original admission receipts.
 """
 
 from __future__ import annotations
 
+import argparse
+import copy
 import hashlib
 import shutil
 from pathlib import Path
 
-from tools.benchmark.retrieval import evaluator, source_oracle
+from tools.benchmark.evidence import _read_control_file, parse_json
+from tools.benchmark.retrieval import evaluator, query_plan, source_oracle
 
 POOL_KINDS = ("retrieval", "source_alternative", "random_control")
 MAX_REVIEW_BYTES = 64 * 1024 * 1024
 
 
+def project_natural_language_file_diagnostic(
+    checkout: Path, suite_bytes: bytes, *, suite_id: str
+) -> tuple[dict, dict, dict]:
+    """Reissue reviewed NL tasks without carrying mixed-suite admission claims.
+
+    The complete input suite must still validate. Every selected query, label,
+    family and review identity is preserved; only its request contract changes.
+    Review identities remain self-reported and existing receipts still bind the
+    original suite, so this projection cannot qualify a comparison.
+    """
+    original = parse_json(suite_bytes.decode("utf-8"))
+    evaluator.validate_suite(checkout, original)
+    evaluator.string(suite_id, "projected suite ID")
+    evaluator.require(suite_id != original["suite_id"], "projection requires a new suite ID")
+    selected = [task for task in original["tasks"] if task.get("query_intent") == "semantic_intent"]
+    evaluator.require(bool(selected), "reviewed NL projection has no semantic_intent tasks")
+    for task in selected:
+        evaluator.require(
+            task["split"] == "eval"
+            and "source_oracle" not in task
+            and "file_judgments" in task
+            and task.get("judgment_policy") == evaluator.COMPLETE_JUDGMENT_POLICY
+            and task.get("label_review", {}).get("assessment")
+            in evaluator.LABEL_REVIEW_ASSESSMENTS[1:],
+            "NL projection requires reviewed eval file judgments: " + task["task_id"],
+        )
+        query_plan.plan_lexical_request("natural_language_file", task["query"])
+    projected = copy.deepcopy(original)
+    projected["suite_id"] = suite_id
+    projected["routes"] = ["lexical", "semble-lexical-file"]
+    projected["diagnostic_policy"] = evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    projected["tasks"] = copy.deepcopy(selected)
+    contract = {
+        "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+        "gold_unit": "distinct_file",
+        "result_unit": "distinct_file",
+    }
+    for task in projected["tasks"]:
+        task["evaluation_contract"] = dict(contract)
+    checked, pack, _source = evaluator.validate_suite(checkout, projected)
+    selected_ids = {task["task_id"] for task in selected}
+    lineage = {
+        "schema_version": 1,
+        "status": "diagnostic_unqualified",
+        "qualified": False,
+        "human_provenance_attested": False,
+        "split_admission": "not_carried_forward",
+        "review_receipts": "remain_bound_to_original_suite",
+        "input_suite_bytes_sha256": evaluator.digest(suite_bytes),
+        "input_suite_canonical_sha256": _digest(original),
+        "suite_sha256": _digest(checked),
+        "blind_pack_sha256": _digest(pack),
+        "repository_commit": checked["repository_commit"],
+        "file_universe_digest": checked["file_universe_digest"],
+        "preserved_task_fields_except": ["evaluation_contract"],
+        "selected_task_ids": [task["task_id"] for task in selected],
+        "excluded_task_ids": [
+            task["task_id"] for task in original["tasks"] if task["task_id"] not in selected_ids
+        ],
+    }
+    return checked, pack, lineage
+
+
+def write_natural_language_file_diagnostic(
+    checkout: Path, suite_path: Path, output: Path, *, suite_id: str
+) -> dict:
+    """Write the projection to a fresh external root, rechecking its inputs."""
+    if not output.is_absolute() or output.exists() or output.is_symlink():
+        raise ValueError("NL diagnostic output root must be fresh and absolute")
+    target = output.resolve()
+    for root in (
+        checkout.resolve(),
+        suite_path.parent.resolve(),
+        Path(__file__).resolve().parents[3],
+    ):
+        if target.is_relative_to(root) or root.is_relative_to(target):
+            raise ValueError("NL diagnostic output root must be external and disjoint")
+    sources = [Path(__file__), Path(evaluator.__file__), Path(query_plan.__file__)]
+    source_digests = {path.name: evaluator.digest(path.read_bytes()) for path in sources}
+    raw = _read_control_file(suite_path)
+    suite, pack, lineage = project_natural_language_file_diagnostic(
+        checkout, raw, suite_id=suite_id
+    )
+    evaluator.validate_file_universe(
+        evaluator.SourceSnapshot(checkout, suite["repository_commit"]), suite["file_universe"]
+    )
+    if raw != _read_control_file(suite_path) or source_digests != {
+        path.name: evaluator.digest(path.read_bytes()) for path in sources
+    }:
+        raise ValueError("NL diagnostic input or tool changed during projection")
+    lineage["tool_source_sha256"] = source_digests
+    output.mkdir(parents=True)
+    try:
+        for name, payload in (
+            ("suite.json", suite),
+            ("blind-pack.json", pack),
+            ("lineage.json", lineage),
+        ):
+            (output / name).write_bytes(evaluator.canonical(payload))
+    except BaseException:
+        shutil.rmtree(output)
+        raise
+    return lineage
+
+
 def _digest(value: object) -> str:
     return evaluator.digest(evaluator.canonical(value))
+
+
+def capture_review_pool(
+    checkout: Path, suite_path: Path, record_path: Path, *, pool_id: str
+) -> tuple[dict, dict, dict]:
+    """Harvest a checked file capture for reissuing unjudged review forms.
+
+    One pool represents one recorded route. Ranks, scores and capture identity
+    stay out of reviewer input; this never carries existing grades forward or
+    attests full external index coverage or independent reviewer provenance.
+    """
+    evaluator.string(pool_id, "review pool ID")
+    before = {p: _read_control_file(p) for p in (suite_path, record_path)}
+    suite, pack, record = evaluator.load_evidence(checkout, suite_path, record_path)
+    evaluator.require(len(suite["routes"]) == 1, "review pool requires one recorded route")
+    tasks = {task["task_id"]: [] for task in pack["tasks"]}
+    for row in record["results"]:
+        evaluator.require(
+            row.get("rank_unit") == "distinct_file",
+            "review pool requires native distinct_file results",
+        )
+        tasks[row["task_id"]] = sorted(
+            [{key: item[key] for key in ("path", "file_sha256")} for item in row["candidates"]],
+            key=lambda item: item["path"],
+        )
+    evaluator.require(
+        all(before[p] == _read_control_file(p) for p in before),
+        "review pool capture input changed during validation",
+    )
+    pool = {"pool_id": pool_id, "kind": "retrieval", "tasks": tasks}
+    custody = {
+        "status": "unjudged_preparation",
+        "qualified": False,
+        "pool_execution_attested": False,
+        "human_provenance_attested": False,
+        "suite_bytes_sha256": evaluator.digest(before[suite_path]),
+        "record_bytes_sha256": evaluator.digest(before[record_path]),
+        "query_pack_sha256": _digest(pack),
+        "pool_sha256": _digest(pool),
+        "route": suite["routes"][0],
+    }
+    return pack, pool, custody
 
 
 def prepare(
@@ -99,9 +251,16 @@ def prepare(
         "review context task coverage mismatch",
     )
     for context in contexts.values():
-        evaluator.object_keys(context, ["intent", "provenance", "rubric"], "review context")
+        evaluator.object_keys_optional(
+            context,
+            ["intent", "provenance", "rubric"],
+            ["answerability_min_grade"],
+            "review context",
+        )
+        evaluator.answerability_min_grade(context, "review context")
         for field, value in context.items():
-            evaluator.string(value, "review context " + field)
+            if field != "answerability_min_grade":
+                evaluator.string(value, "review context " + field)
     require(isinstance(pools, list) and bool(pools), "review candidate pools missing")
     pool_ids = set()
     candidates = {task_id: {} for task_id in task_ids}
@@ -274,7 +433,8 @@ def validate_completed_forms(
                 isinstance(row["files"], list) and len(row["files"]) == len(frozen["files"]),
                 "review candidate coverage changed",
             )
-            has_positive = False
+            has_answer = False
+            answer_grade = evaluator.answerability_min_grade(row, "review task")
             for file_row, source_row in zip(row["files"], frozen["files"], strict=True):
                 require(
                     isinstance(file_row, dict) and set(file_row) == set(source_row),
@@ -287,10 +447,10 @@ def validate_completed_forms(
                 grade = file_row["grade"]
                 require(type(grade) is int and 0 <= grade <= 3, "review grade must be 0..3")
                 evaluator.string(file_row["rationale"], "review file rationale")
-                has_positive |= grade > 0
+                has_answer |= grade >= answer_grade
             require(
-                row["answerable"] or not has_positive,
-                "review cannot deny answerability while grading a file relevant",
+                row["answerable"] or not has_answer,
+                "review cannot deny answerability with a sufficient-answer grade",
             )
     require(len(set(reviewer_ids)) == 2, "two distinct reviewer identities required")
 
@@ -335,3 +495,146 @@ def validate_completed_forms(
         "task_count": len(pack["tasks"]),
         "disagreements": disagreements,
     }
+
+
+def finalize_file_review_labels(
+    checkout: Path,
+    pack: dict,
+    contexts: dict,
+    pools: list[dict],
+    completed: list[dict],
+    adjudicated: dict,
+    task_contracts: dict,
+    *,
+    seed: int,
+) -> dict:
+    """Issue NL file-label IR from two reviews and a source-bound decision.
+
+    The adjudicator fills the slot-1 form with a third actual identity. Whole-file
+    gold blocks are file witnesses, never declaration/context-span judgments.
+    This does not attest human provenance, reviewer independence, pool execution
+    or qualification, and cannot rebind a captured record to the issued labels.
+    """
+    checked = validate_completed_forms(checkout, pack, contexts, pools, completed, seed=seed)
+    for form in completed:
+        for row in form["reviews"]:
+            threshold = evaluator.answerability_min_grade(row, "completed review")
+            evaluator.require(
+                row["answerable"] == any(file["grade"] >= threshold for file in row["files"]),
+                "review answerability requires a sufficient pooled file: " + row["task_id"],
+            )
+    evaluator.require(isinstance(adjudicated, dict), "adjudication form must be an object")
+    adjudicator = evaluator.string(adjudicated.get("reviewer_id"), "adjudicator identity")
+    evaluator.require(
+        adjudicator not in checked["reviewer_ids"], "adjudicator must differ from both reviewers"
+    )
+    # Reuse the frozen form/source checks on the actual adjudication form;
+    # neither its identity nor any original review is synthesized.
+    validate_completed_forms(
+        checkout, pack, contexts, pools, [adjudicated, completed[1]], seed=seed
+    )
+    evaluator.require(
+        isinstance(task_contracts, dict)
+        and set(task_contracts) == {task["task_id"] for task in pack["tasks"]},
+        "file review evaluation contract coverage differs",
+    )
+    source = evaluator.SourceSnapshot(
+        checkout, pack["repository_commit"], max_total_bytes=source_oracle.MAX_SOURCE_BYTES
+    )
+    disputed = {row["task_id"] for row in checked["disagreements"]}
+    original_rows = [{row["task_id"]: row for row in form["reviews"]} for form in completed]
+    evidence = {
+        "query_pack_sha256": checked["query_pack_sha256"],
+        "completed_form_sha256": checked["completed_form_sha256"],
+        "adjudicated_form_sha256": _digest(adjudicated),
+    }
+    labels = {}
+    for row in adjudicated["reviews"]:
+        task_id = row["task_id"]
+        final_grades = {file["path"]: file["grade"] for file in row["files"]}
+        if any(
+            original[task_id]["answerable"] != row["answerable"]
+            or {file["path"]: file["grade"] for file in original[task_id]["files"]} != final_grades
+            for original in original_rows
+        ):
+            disputed.add(task_id)
+        threshold = evaluator.answerability_min_grade(row, "adjudicated task")
+        judgments = [
+            {key: file[key] for key in ("path", "file_sha256", "grade")}
+            for file in sorted(row["files"], key=lambda file: file["path"])
+        ]
+        contract = evaluator.validate_evaluation_contract(
+            {
+                "evaluation_contract": task_contracts[task_id],
+                "file_judgments": judgments,
+                "query_intent": "semantic_intent",
+            },
+            task_id,
+        )
+        evaluator.require(
+            contract["request_mode"] == query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+            "file review issuer requires the NL file search contract",
+        )
+        sufficient = [file for file in judgments if file["grade"] >= threshold]
+        evaluator.require(
+            row["answerable"] == bool(sufficient),
+            "adjudicated answerability requires a sufficient pooled file: " + task_id,
+        )
+        gold = []
+        for file in sufficient:
+            raw, lines, digest = source.file(file["path"])
+            evaluator.require(raw and digest == file["file_sha256"], "file gold source differs")
+            gold.append(
+                {
+                    **file,
+                    "block_sha256": digest,
+                    "start_byte": 0,
+                    "end_byte": len(raw),
+                    "start_line": 1,
+                    "end_line": len(lines),
+                }
+            )
+        labels[task_id] = {
+            "query_intent": "semantic_intent",
+            "answerable": row["answerable"],
+            "answerability_min_grade": threshold,
+            "gold": gold,
+            "file_judgments": judgments,
+            "judgment_policy": "complete_ranked_pool_v1",
+            "evaluation_contract": dict(contract),
+            "label_review": {
+                "assessment": "reviewed_ambiguous"
+                if task_id in disputed
+                else "reviewed_unambiguous",
+                "reviewer_id": adjudicator,
+                "evidence_sha256": _digest({**evidence, "task_id": task_id}),
+            },
+        }
+    return {
+        "status": "adjudicated_file_labels_unqualified",
+        "qualified": False,
+        "human_provenance_attested": False,
+        "pool_execution_attested": False,
+        "reviewer_ids": checked["reviewer_ids"],
+        "adjudicator_id": adjudicator,
+        **evidence,
+        "task_labels": labels,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Project reviewed NL tasks to a file diagnostic")
+    parser.add_argument("--repo", required=True, type=Path)
+    parser.add_argument("--suite", required=True, type=Path)
+    parser.add_argument("--suite-id", required=True)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+    lineage = write_natural_language_file_diagnostic(
+        args.repo, args.suite, args.output, suite_id=args.suite_id
+    )
+    print(f"projected {len(lineage['selected_task_ids'])} diagnostic NL tasks at {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

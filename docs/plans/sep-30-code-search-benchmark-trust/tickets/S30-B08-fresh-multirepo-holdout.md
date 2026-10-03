@@ -1,7 +1,7 @@
 # S30-B08 — fresh multi-repository holdout and product decision
 
-Status: C4 `VERIFIED` as diagnostic admission; 240 exact-content product tasks
-captured and replayed; C5 `NOT_RUN` (2026-10-03).
+Status: C4 `VERIFIED` as diagnostic admission; C5 diagnostic capture in progress;
+qualified multi-repository decision `NOT_RUN` (2026-10-03).
 Priority: P2. Parent:
 [Sep 30 plan](../README.md). Contract owners:
 [CS-BENCH-01](../../sep-27-code-search-remediation/rfcs/CS-BENCH-01-corpus-gold-and-holdout.md),
@@ -205,6 +205,48 @@ and no-gold controls remain a separate external workflow track.
   Installed release, hosted CI, activation and deployment retain their own
   gates. The holdout is retired from future independent evaluation once used
   to select a policy.
+
+## C5 diagnostic update (2026-10-03)
+
+The corrected C4 mechanical suites admit 48 ordinary-search cells (5,521
+tasks per product), 12 explicit OSA1 typo cells (4,149 positive tasks), and
+12 component cells (64 tasks). This is exposed, mechanically labeled
+diagnostic data. No human-reviewed relevance judgments, complete external
+indexed-universe proof, repository-cluster decision, or qualified default
+change follows from these captures.
+
+- Sourcegraph, cs, and OpenGrok completed 48 ordinary-search cells. The raw
+  capture is `/private/tmp/qi-c5-external-session-v6-20261003`; independently
+  amended scoring is under `/private/tmp/qi-c5-external-score-v6-20261003`.
+  The original external scorer failed because it treated the legacy
+  representative `gold_paths` as the full multi-file judgment set. The amended
+  scorer validates that raw projection separately and uses the frozen
+  `file_judgments` for grading. All 144 cell-product rescored Hit@10/NDCG
+  outputs were checked against the repository evaluator.
+- Quanta explicit OSA1 completed 12 cells: 4,109/4,149 file Hit@10, with six
+  typed `LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED` errors. Evidence:
+  `/private/tmp/qi-c5-explicit-quanta-20261003-v2`. Quanta components completed
+  64 tasks (60 file hits, three producer abstentions and one typed parse
+  refusal): `/private/tmp/qi-c5-components-quanta-20261003-v1`.
+- Quanta exact declaration capture completed 12 cells:
+  `/private/tmp/qi-c5-declaration-quanta-20261003-v6`. The original precommitted
+  scorer failed on its zero-error assertion. A separately registered
+  post-capture amendment reports 649/658 Hit@10 among completed positive
+  tasks, 649/1,101 among attempted positive tasks, and 493 typed
+  `SYMBOL_COVERAGE_INCOMPLETE` rows across five repositories. Nine completed
+  positive misses are Rust constants or a macro in `zoxide` absent from the
+  captured producer. `benchmarks/retrieval/src/symbols.rs` now extracts these
+  Rust node kinds; a source-bound recapture has not yet verified the fix.
+- The repaired Quanta/Semble ordinary-search pair is still preparing. Do not
+  combine partial cells or the earlier failed pair batch with completed
+  48-cell results. The cs native `~1` OSA1-wide batch was stopped after one
+  completed `attrs` cell (386 tasks); the next cell's staging data remains
+  incomplete. Of 4,149 OSA1 tasks, only 1,033 one-character substitutions
+  match the verified cs edit class; whole-identifier versus content-window
+  matching and ranking still differ. The other 3,116 are outside the shared
+  operation class. Preserve the partial native capture and stop receipt at
+  `/private/tmp/qi-c5-cs-fuzzy-20261003-v5`; do not report a 12-repository cs
+  fuzzy score from it. A new substitution-only frozen suite is required.
 
 ## Execution receipt (2026-09-30)
 
@@ -1710,3 +1752,410 @@ OpenGrok service index, request-time indexed-universe attestation, fresh C5
 product queries, independent relevance approval, qualified product comparison
 and performance measurement. A Git projection is input evidence, not proof
 that a service indexed every file.
+
+## Fresh C5 external index progress (2026-10-03)
+
+An isolated Sourcegraph 6.8 service indexed the twelve exact-file Git
+projections. Its native `type:path` V3 streams returned 11,695 paths; each
+repository's path set and service revision matched the release manifest and
+projection commit. The raw streams and summary are under
+`/private/tmp/qi-c5-comparators-20261003-v1/sourcegraph-paths`; the summary
+SHA-256 is `db988e088ed1c5afaf17a4c026a92dab9da16d9420fb7aaa6e4993310c00ae78`.
+This proves the observed path-index inventory, not every content posting or
+request-time index stability. A post-stop Zoekt shard snapshot exists at
+`/private/tmp/qi-c5-comparators-20261003-v1/sourcegraph-index-snapshot.json`
+(`ff58bed2a5165b33ba27b79d19ce9998ebc5ee63bdd51b9dc62ce467b307d0d8`);
+there is no matching pre-query snapshot yet. The service is stopped with its
+data preserved so OpenGrok can index within Docker's memory limit.
+
+The isolated OpenGrok 1.14.18 service is still indexing the same 11,695-file
+projection. A live, two-sided indexed-file inventory and served-content probe
+passed for `attrs` (56/56 exact paths and file SHA-256s), with raw evidence at
+`/private/tmp/qi-c5-comparators-20261003-v1/opengrok-attrs-index-probe-v1`.
+Other repositories are not promoted until their indexer processes finish and
+their full inventories and content probes pass. The affected external-capture
+and adapter tests passed 119/119 with `pytest -q` over
+`test_live_lexical_external.py`, `test_lexical_file_comparison.py`, and
+`test_sourcegraph.py`; this is code verification, not a C5 product score.
+
+## C4 v6 admission audit and gold correction (2026-10-03)
+
+The frozen `dd86ec99` C4 run completed successfully in 1,940.81 seconds.
+Its matrix at `/private/tmp/qi-c5-fresh-20261003-v6/c4-v6/admission-matrix.json`
+has SHA-256 `e96f5d08ea0b7e8269296913252fca909192533f8108a629f4f6f78afdccc5f7`.
+Independent byte-hash and ID-partition checks verified all 72 cells, 54 emitted
+suite/pack/admission triples, 6,388 candidate IDs, 4,801 selected IDs and
+1,587 exclusions. Exclusion reasons were 1,366 unjudged/unsupported, 157
+ambiguous typo targets, 56 near-duplicate queries and 8 incomplete near-name
+censuses. The 240 literal tasks are outside this C4 declaration matrix.
+
+Every `rust-analyzer` declaration task was excluded. Its corpus contains
+intentionally invalid parser fixtures, and the independent `syn` checker
+refused some of those files. The old gold oracle treated a checker-refused file
+as unresolved even when the query spelling was absent from its bytes. For
+exact-name tasks, 4,070 of 4,082 `census_refused` task/file pairs had no query
+bytes; 102 of 110 exact tasks had no text hit in any unsupported file. A
+query-specific source-byte absence is a sufficient exclusion proof for an
+identifier declaration. Commit `9397c1b1` removes the extra primary-parser
+refusal precondition and versions the gold oracle to 5. The independent
+positive/negative fixture was red before the change; gold/C4 tests then passed
+120/120. This does not assert that every `rust-analyzer` task is now judged:
+files that may contain the name remain unjudged.
+
+The v6 C4 result is therefore superseded for C5 admission. A fresh source-bound
+gold capture at clean `9397c1b1` is running under
+`/private/tmp/qi-c5-fresh-20261003-v7`; its C4 wrapper is prepared but must
+wait for the matching gold receipt. No v6 labels or counts are merged with v7.
+
+## C5 checker-identity closure and native OpenGrok index (2026-10-03)
+
+The v7 gold capture failed after 1,896.417 seconds, before publishing any
+capsule. Its receipt is
+`/private/tmp/qi-c5-fresh-20261003-v7/gold-capture-receipt.json`
+(`2b003c1007a583b3fdd20f1dba75c5572081b0776347fccc502bd6b7f9ff5c53`).
+The failure was `gold checker identity differs from frozen recipe`: the v5
+sampling recipes bound only each repository's primary language, while the
+corrected gold oracle audits every supported source language in the unscoped
+file-search universe. For example, `chartjs` has JavaScript and TypeScript
+sources but its frozen recipe binds only the JavaScript checker. The current
+per-language checker binary identities themselves still match the recorded
+values. A new sampling run from clean `4bd35d39`, the same release and seed,
+was preregistered at
+`/private/tmp/qi-c5-fresh-20261003-v8/sampling-precommit.json`
+(`ee1897ebf0667aec3f48e139f62f355d8a93b509c308cc4228ec815e673d73fe`)
+and completed in 313.966 seconds. Its receipt is
+`/private/tmp/qi-c5-fresh-20261003-v8/sampling-receipt.json`; the split SHA-256
+is `8adc09ad9fdbf1d0684389ff84f38774ae828999b1080e3bf5097c3b682d5f94`.
+All twelve recipe files and the split manifest are byte-identical to a separate
+clean `9397c1b1` run. Only the ledger differs: it records the changed source hash
+of a formatting-only `gold_oracle.py` edit. The 6,628 task IDs and complete task
+records are unchanged from v5. Seven recipes now bind additional supported
+language checkers. The current `corpus_binding.py` replay validated the
+22-repository split and 6,628 tasks in 435.302 seconds; receipt:
+`/private/tmp/qi-c5-fresh-20261003-v8/split-validation.json`. Corrected gold
+at clean `9397c1b1` completed in 2,401.944 seconds with twelve capsules;
+receipt `/private/tmp/qi-c5-corrected-9397c1b1-20261003/gold-capture-receipt.json`
+(`3be3af2d7502b320179bac83ac864fb46589abbef5d9d0ae3914cfee930b8fa9`).
+Independent raw capsule comparison found 6,114 `mechanical_unreviewed` and 514
+`unjudged` tasks. The 496 state changes from v7 are `unjudged` to
+`mechanical_unreviewed`, with identical task IDs, queries and labels. This is
+source-eligibility evidence, not human relevance review or a product score.
+The v7 failed output remains excluded. Corrected C4 and literal admissions are
+running from this gold under separate external roots.
+
+The official OpenGrok `1.14.18` AMD64 image made an incomplete local index
+under emulation. Reducing its project workers from sixteen to two did not
+complete the three lagging projects. Both attempts and their volumes remain
+preserved. The official `1.14.18` source tag `74f9e21e` was then built for
+Linux ARM64 in a separate image and data volume. The new service indexed all
+12 projects. A full native UID inventory and served-byte probe verified
+11,695/11,695 paths and file SHA-256s before/after each repository probe.
+Its receipt is
+`/private/tmp/qi-c5-comparators-20261003-v1/opengrok-v3-full-probe-v2/summary.json`
+(`ae459adbdc11bfaea68ebc5df4f24916e89f9dc6bb83f2d903a9953c255bbf8b`);
+the observed wall time was 371.346 seconds, not a qualified indexing or query
+latency measure. Raw replay independently checked 23,439 captured files and
+the twelve manifests. The architecture/build change explains the successful
+operational workaround; it does not by itself isolate the root cause of the
+AMD64 stalls.
+
+The prior `text/plain` content probe returned HTTP 404 for a Chart.js path
+present in OpenGrok's Lucene UID inventory. In the official source, that route
+performs a separate `getDocument(path)` query; the octet route reads the source
+file. The capture now requires exact Lucene UID inventories around the probe
+and compares octet-source bytes against the release manifest. The previously
+failing Chart.js file returned HTTP 200 and its expected SHA-256. A focused
+positive/negative probe passed 4/4, and the live three-product capture/replay
+fixture passed. This proves indexed path membership and served source bytes,
+not equality of every Lucene content posting. Fresh C5 product queries remain
+`NOT_RUN`.
+
+Sourcegraph's first restart failed twice because its migrator contacted the
+PostgreSQL database during crash recovery. A one-off container using the same
+official image opened the preserved database, completed recovery and shut it
+down cleanly. The service then started normally. Its second container mounts
+the exact Zoekt index directory a second time, read-only, for backend snapshots.
+The capture adapter now permits only empty `.indexserver.tmp` and `.trash`
+directories and the `indexserver.sock` Unix socket as Zoekt runtime entries;
+an active staging file and other special files remain rejected. The focused
+positive/negative tests passed 3/3 and the full live-external adapter test file
+passed 40/40. After service restart, native Sourcegraph path search again
+matched all 11,695 manifest paths in twelve repositories. The v2 path summary
+is `/private/tmp/qi-c5-comparators-20261003-v1/sourcegraph-paths-v2/summary.json`
+(`0c9dee6621b349808e7dfd2192a3ad5eed209f976abb4bd66617eeb01bca5822`).
+Its 13-file, 246,805,099-byte backend snapshot was identical before and after
+the path queries; receipt:
+`/private/tmp/qi-c5-comparators-20261003-v1/sourcegraph-v2-backend-pre.json`
+(`5ebc0c436af8d3b09102cf24cf80cdb755ace62d9b342f6fdd1c01fde9d11b56`).
+This brackets the path probe, not the future product queries. Their capture
+must take its own before/after backend snapshots.
+
+The first C5 external precommit omitted the ordinary-input OSA1 lane: all
+twelve `declaration_name_osa1` C4 cells in the previous matrix were
+`no_admission_diagnostic`, while the case-folded OSA1 cells used the explicit
+typo request. It was superseded before product queries by
+`/private/tmp/qi-c5-external-20261003-v2/precommit.json`
+(`b41d02d81881dde6da2a2ecc524cb247a8ecfe07f29c402f15ff6af98327b73a`).
+The replacement freezes a source-validated projection of each selected
+case-folded OSA1 suite to `default_file_search`: only request mode and suite ID
+change; query, task ID, gold, and original C4 admission remain bound. A
+386-task `attrs` projection passed `evaluator.validate_suite` for both suite
+and blind pack. A single unscored `attrs` `convert` preflight returned ten
+in-manifest files each from Sourcegraph, OpenGrok and cs, with HTTP 200, HTTP
+200 and exit 0. Its first wrapper failed in summary formatting after the
+native requests; independent replay of the preserved responses passed, and
+Sourcegraph's backend snapshot matched its pre-query snapshot. Receipt:
+`/private/tmp/qi-c5-external-20261003-v2/preflight-attrs-convert/summary.json`
+(`3c9c078a5db85cefe5b1808c8bf615bfc53c035e951920f71484e03a0b5e5eea`).
+This preflight is not a relevance score or full C5 capture.
+
+## C4 checker refusal boundary and replacement capture (2026-10-03)
+
+The corrected v8 C4 run at clean `9397c1b1` exited 1 after 727.124 seconds;
+its receipt and traceback are under
+`/private/tmp/qi-c5-corrected-9397c1b1-20261003/`. The independent Rust
+checker refused `rust-analyzer`'s
+`crates/parser/test_data/lexer/ok/single_line_comments.rs`, but the primary
+tree-sitter oracle completed that file's census with zero declarations. C4
+incorrectly passed every checker refusal as a primary-parser exclusion, which
+the source oracle correctly rejected. No C4 matrix was published from that run.
+
+`holdout_c4.py` now excludes a checker-refused file from the primary oracle
+only when the primary parser also refuses it. The checker refusal and its
+query-specific textual absence remain in the gold provenance. Focused positive
+and forged-exclusion tests passed 7/7; the entire C4 test file passed 51/51,
+and Ruff, formatting and `git diff --check` passed. The fix and tests are on
+clean `main` at `17b2af2a`. A replacement C4 run from clean frozen
+`f2aa7d82` is active under `/private/tmp/qi-c5-c4-f2aa7d82-20261003/c4`;
+the literal v9 capture remains active independently. Neither has a successful
+final receipt yet.
+
+The C5 external ordinary-input selection was carried forward to a third
+precommit, `/private/tmp/qi-c5-external-20261003-v3/precommit.json`
+(`2f633ba7a1f99c65f85e583ac356d411920ff39bfb68f7679545a61970fdbf18`).
+It supersedes v2 after its three explicitly unscored native preflight queries
+and before any scored C5 product capture. It binds the replacement C4 output
+and source head; the external adapter source remains clean `a9b4ec6e`.
+Between those two commits only the C4 adapter and this ticket changed.
+The v3 preparation and batch scripts compile but have not run because the
+replacement C4 receipt is pending. **VERIFIED:** C4 cause, focused and full
+unit tests, source equivalence for the external adapter. **FAILED:** original
+C4 v8 capture. **NOT_RUN:** replacement C4 result verification and all scored
+C5 product cells.
+
+## Literal v9 independent replay and C4 source-identity failure (2026-10-03)
+
+The second C4 run from clean `f2aa7d82` also failed, after 1,078.928 seconds.
+Its traceback and failed receipt are under
+`/private/tmp/qi-c5-c4-f2aa7d82-20261003/`. This failure is a different
+boundary: the v8 gold capsule binds `gold_oracle.py` at clean `9397c1b1`,
+while `f2aa7d82` includes a formatting-only change to that file. The
+source-derived capsule validator rejected the changed producer SHA in
+`identity.json`. No C4 matrix or product score was published. A separate clean
+`9397c1b1`-based checkout now contains only the current C4 fix and tests at
+`2edb982d`; its four gold-producing source hashes match the frozen capsule,
+its C4 adapter and tests match current `main`, and seven focused tests pass.
+Its precommit is
+`/private/tmp/qi-c5-c4-goldbound-20261003-v1/precommit.json`
+(`b963362fbc785c574fe82b148236694dd92074111d712cf7b85c283efa2ba6d1`).
+A successful full C4 run from that source is still `NOT_RUN`.
+
+The separate literal v9 run from clean `9397c1b1` completed in 2,022.596
+seconds. Its receipt is
+`/private/tmp/qi-c5-literal-20261003-v9/literal-receipt.json`
+(`6dd69b2f045a82ee03b8734aa01d8702ae1fa0feaa9fb1f26fba7b8f37d0ba53`).
+An independent Python stdlib replay hashed all 11,695 source files
+(86,469,103 bytes), checked every gold literal byte span, rescanned each
+selected query against its full file universe, and matched all twelve suite,
+blind-pack and admission ID/hash partitions. Of 240 candidates, 239 were
+admitted and `zoxide.lit.013` was excluded as a near-duplicate. The replay is
+`/private/tmp/qi-c5-literal-20261003-v9/literal-independent-verification.json`
+(`af2a08aad300a6264378b87bcf610a0448603958b78eafbdacd243693bacd4f2`).
+This proves a mechanical exact-content input contract; product search and
+human relevance review remain `NOT_RUN` for this v9 lane.
+
+## Literal product execution and interrupted C4 retry (2026-10-03)
+
+A first Quanta whole-file product run captured seven repository cells, then
+`sympy` failed during publish with
+`LEX_PHRASE_PLAN_LIMIT_EXCEEDED[POSITIONS_PER_CELL]`: a single term/document
+cell would exceed 4,096 positions. This is an index-build failure, not a
+top-ten miss. Its failed receipt remains at
+`/private/tmp/qi-c5-literal-product-20261003-v1/sympy/receipt.json`; the seven
+successful whole-file cells are not pooled with the replacement run.
+
+The replacement froze `fixed_window_strict` at 4,096 bytes with 256-byte
+overlap. An independent byte scanner checked that all 239 selected literal
+occurrences, each at most 80 bytes, lie within a complete emitted window;
+receipt: `/private/tmp/qi-c5-external-20261003-v4/literal-window-coverage.json`.
+The first replacement process completed nine repository cells and was
+interrupted during `telegraf`; it left no receipt for that cell. A separately
+precommitted continuation captured `telegraf`, `zerolog`, and `zoxide` in a
+fresh root, preserving the partial original state. The combined independent
+raw-row scorer bound both precommits, each cell receipt, suite, manifest,
+record and report, then recomputed file metrics from returned paths:
+
+- 12 repositories, 239/239 file Hit@10, mean file Recall@10
+  `0.997907949790795`, mean file NDCG@10 `1.0`, one `capped` response.
+- The only incomplete-recall task is `rust-analyzer.lit.005`: 10 relevant
+  files returned from 20 judged files. All ten returned files are relevant,
+  hence its NDCG@10 is 1.0 despite Recall@10 of 0.5.
+- Sum of per-cell wall times is 520.158 seconds; SDK query timers sum to
+  720.377909 milliseconds. These have different boundaries and the host was
+  contended, so neither is a comparative latency claim.
+- Source-bound precommits:
+  `/private/tmp/qi-c5-literal-product-20261003-v2/precommit.json` and
+  `/private/tmp/qi-c5-literal-product-20261003-v3/precommit.json`.
+  Independent result:
+  `/private/tmp/qi-c5-literal-product-20261003-v3/independent-combined-results.json`
+  (`32f09287a43a187cb21dccdac61cad06189d266e5c6ca65894f655460b4dac1c`).
+
+This is `VERIFIED` as a mechanical, diagnostic Quanta literal-file result.
+It is not a five-product result or a human-reviewed relevance judgment. The
+first gold-compatible C4 rerun was interrupted with no receipt or matrix. Its
+replacement is active under `/private/tmp/qi-c5-c4-goldbound-20261003-v2/`;
+C4 matrix validation and scored declaration-product capture remain `NOT_RUN`.
+
+
+## C3 structural RCA and Native file capture repair (2026-10-03)
+
+The original mixed C3 suites remain invalid for qualification. Recomputed raw
+family sets confirm that all 12 omit 20 NL families from their split authority;
+20–42 split families are absent from the suites, depending on repository. The
+split equality gate is correct and was not relaxed. These C3 repositories are
+disjoint from fresh C5; their AI qrels cannot qualify C5.
+
+The existing `holdout_review.py` now reissues reviewed `semantic_intent` tasks
+under `natural_language_file_search` to a fresh diagnostic suite/pack. It first
+validates the complete original suite, preserves all task data except the
+request contract, rejects malformed excluded tasks and over-limit queries, and
+checks input/tool drift. Original receipts and split authority are not carried
+forward; AI identities remain AI identities. All 240 tasks in 12 repositories
+were reissued and validated without modifying the original capture.
+
+An actual uvicorn public capture reproduced a recorder defect: Native
+`select:file` ranks distinct files but preserves a representative published
+chunk. The recorder and Python evaluator wrongly required a CodeSearch `file:`
+identity, while the synthetic fixture fabricated one. The fix separates ranked
+file units from published source witnesses, preserving source/generation proof,
+native scores/order and duplicate-file rejection. The unit negative refuses a
+source-valid CodeSearch identity substituted into Native output.
+
+**VERIFIED:** `test_holdout_review.py` 47 passed; focused Python file contract
+selector 25 passed (438 deselected); retrieval-bench unit binary 112 passed;
+registered `sdk_roundtrip::native_file_public_routes_group_order_scope_and_case`
+1 passed, 24 filtered (2.87s). The SDK fixture uses >=15 matching chunks in one
+file plus nine others, proves token-OR/folded content semantics, excludes a
+path-only match, preserves source identity and score order, and walks cursors.
+The required-test inventory follows its renamed selector. Recorder, evaluator,
+SDK fixture and inventory bytes on main match the pinned proof source.
+
+**VERIFIED, diagnostic capture/replay:** corrected uvicorn and zustand each
+executed 20 tasks; all 40 rows are `capped` with ten distinct files and finite
+native scores. Capture wall times were 66.826s and 48.042s, respectively, using
+debug/hash-dev lexical-only on a contended host. These are execution observations,
+not speed measurements. The failed baseline remains preserved separately.
+
+**BLOCKED, relevance completeness:** 134 returned task/file pairs are absent
+from the existing AI qrels (uvicorn 64, zustand 70). Complete-ranked-pool scoring
+excludes 38/40 tasks; only 2/40 are eligible. No product ranking is reported.
+Two new source-bound unjudged packets include paths, hashes and frozen full text.
+Reissue the review pool/forms and adjudication with new suite/receipt digests;
+post-result diagnostic labels must not become pre-result qualification.
+
+**NOT_RUN:** remaining C3 200 live tasks, multi-product captures for this NL
+contract, and the independent v5 106-task mechanical audit. The old 106 packet
+binds v1 capsules and cannot be filled as v5 proof. C5 still needs its own fresh
+NL relevance data, family/split issuance and source-bound admission. A qualified
+semantic/hybrid ten-file comparison requires its own declared product contract;
+this repair establishes a lexical NL file diagnostic only. Full quality, speed,
+release and deployment qualification remain unclaimed.
+
+Evidence and commands:
+[structural RCA](/Users/songmin/Documents/code-new/qi-b08-structural-rca-20261003-j489jdg8/RCA.md),
+`projection-summary.json`, `original-family-audit.json`, `runtime-binding-fixed.json`,
+`runtime-summary-fixed.json`, `scoring-summary.json`, source archives and the
+per-repository missing-review packets in that fresh external root. Original
+path bindings remain in preserved copies; no old result or aggregate was changed.
+
+## C3 benchmark contract and parser follow-up (2026-10-04)
+
+The existing IR now carries an optional `answerability_min_grade` (integer 1–3,
+ default 1). The C3 rubric's grade-1 clue / grade-2 sufficient-answer distinction
+must explicitly use 2 in both review context and suite task. No-answer validation
+and sufficient-answer gold follow this threshold; graded relevance metrics remain
+based on positive grades. Orphan/source-oracle fields and threshold changes in
+completed forms are refused. This does not fabricate human review or independent
+AI identities.
+
+`capture_review_pool` exports source-validated distinct-file captures as rankless,
+scoreless review candidates, including tasks with empty/abstained output. Under
+`complete_ranked_pool_v1`, missing returned-file/declaration judgments now make
+operational means `not_applicable` with `incomplete_ranked_judgments`; they cannot
+become search failure zeros. Explicit grade zero and execution failures keep
+applicable operational treatment. Common eligible cohorts are still required.
+
+The dedicated local/formal retrieval rails now include `test_holdout_review.py`;
+the required Python identities are regenerated from actual collection. TypeScript
+and TSX census/named-definition gold use the producer vendored compatibility
+grammars, rather than an unpatched language-pack parser. Capsule producer bindings
+include the parser factory and actual C/header bytes. Linked source directories,
+wrong cache identity/binary and absent compilers fail explicitly. Frozen v5
+capsules were not rewritten. TypeORM's pinned index source parses with the repair;
+Go `new(expr)` and zustand overload syntax remain unsupported boundaries.
+
+An additional live-receipt RCA confirmed that the old direct driver accepted
+`query_warmup_passes: 1` but executed zero warmups. Direct `quanta` now forwards
+explicit warmup/measurement counts through the existing shared query protocol and
+checks the returned protocol/pass counts. It refuses silently ignored multiple
+fresh roots; `pair` owns those repetitions. Exploratory specs can explicitly
+request zero warmups; qualified speed still requires at least one. Existing pinned captures retain their
+actual zero-warmup observations. A two-file probe executed cold 1, warmup 2 and
+measured 6 calls, returning both fixed expected files. Complete current-driver
+capture failed the compiled symbol policy guard because its runner was from
+`f9454987` while current producer inputs had changed; the guard was not weakened.
+This is partial schedule proof, not current-main Rust/product qualification.
+
+**VERIFIED, focused local:** holdout owner 63 passed (16.11s); judgment/cohort
+selector 17 passed (8.56s); capture pool selector 5 passed (15.35s); parser/gold/
+corpus owners 165 passed (291.38s), followed by six focused parser checks (1.55s)
+covering subsequent compiler/link/source additions; direct/pair schedule selector
+16 passed (2.62s), including the explicit-zero spec/schema case; proof rail owner
+36 passed, later inventory/local selector seven passed (3.11s). Ruff,
+test-authority lint and diff checks passed. Repeated selectors
+are not summed into a whole-suite claim.
+
+**VERIFIED / BLOCKED, frozen v5 sample:** all 106 raw manifest/source bindings
+and 89 present label byte spans matched. Merged independent literal/AST/name-
+relation checks verified 86 tasks; 20 originally unjudged tasks remain blocked.
+Python, Go and TypeScript checks use their compiler/stdlib ASTs. The Rust replay
+uses the same pinned syn frontend as the original gold guard, independently
+replaying raw byte spans/name relations; it is not a third parser. A separate
+Rust build attempt was not admitted within its 1,200s bound; that attempt was
+not reported as compilation success.
+
+**Diagnostic capture progress:** 200/240 C3 rows have completed source-bound
+capture and replay, including Django (1,355.276s wall); all completed rows are
+`capped` with ten distinct files. At this checkpoint 1,063 returned task/file
+pairs are missing from the old qrels. Tailscale and TypeORM captures remain active
+under the original pinned source/binary batch; final per-repository state is in
+`capture-summary.json`. Process wall and contained publish/seal/activate times
+are reported separately from call sums and compile/admission waits. These
+contended debug/hash-dev runs do not qualify speed or semantic/hybrid quality.
+
+**Remaining data/admission work:** source-bound blank forms/batches include the
+new candidates and threshold 2; no completed independent reviews are invented.
+The old external `scripts/finalize_repo.py` uses `grade > 0` and drops the new
+threshold, so it must not be reused unchanged for this rubric. Final issue must
+preserve threshold, actual reviewer/adjudicator identities and new hashes. Missing
+qrels, original C3 family/split mismatch, full admission bundle, current-source
+binary proof and other-product NL/index-universe evidence remain open. C3 labels
+cannot qualify the repository-disjoint C5 corpus. Full CI/release/deployment
+qualification and product rankings remain unclaimed.
+
+Evidence: [follow-up results](/Users/songmin/Documents/code-new/qi-b08-nl-completion-20261003-p8hky9bm/RESULTS.md),
+`execution-observations.json`, `reports-complete-label-contract/`,
+`v5-sample-final/merged-summary.json`, `verification-current-score-contract.json`,
+`verification-parser-contract.json`, `single-capture-schedule-rca.json` and
+`direct-protocol-control-v3/RESULT.json` in the same fresh external root. Original
+captures, frozen sources and original review forms are preserved.

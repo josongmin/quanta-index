@@ -4,8 +4,10 @@
 //! pattern type. This executor does not reinterpret Native LQ raw-string
 //! leaves: its AND and ranking unit is one immutable source file.
 
+mod ranking;
+
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::ops::Range;
 
 use quanta_index_contract::{
@@ -14,6 +16,10 @@ use quanta_index_contract::{
     MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, PreviewByteRange, PreviewKind,
     PreviewMetadata, PreviewUnavailableReason, QueryConstraintSetV1, SymbolCoverage,
     SymbolNameSourcePolicyV1, valid_code_search_typo_identifier,
+};
+use quanta_index_core::{
+    CodeSearchExecutionStatsV1, CodeSearchScoreComponentsV1, LexicalCandidateExplanationV1,
+    LexicalScoreEngineV1, LexicalScoreTraceV1,
 };
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
 use quanta_index_lq_regex::RegexExecutor;
@@ -325,7 +331,7 @@ struct Witness {
 }
 
 struct ScoredMatch {
-    score: u32,
+    components: CodeSearchScoreComponentsV1,
     primary: Witness,
     primary_term: usize,
 }
@@ -356,13 +362,26 @@ fn add_witness_score(
             HitSurface::Path => file.indexed_path.contains(&term.text),
         }
     };
-    let increment = witness
-        .score
-        .saturating_add(u32::from(witness.occurrences.saturating_sub(1)).saturating_mul(2))
-        .saturating_add(if case_exact { 5 } else { 0 });
+    let components = CodeSearchScoreComponentsV1 {
+        boundary_and_path: witness.score,
+        occurrence: u32::from(witness.occurrences.saturating_sub(1)).saturating_mul(2),
+        exact_case: if case_exact { 5 } else { 0 },
+        proximity: 0,
+    };
     match scored {
         Some(prior) => {
-            prior.score = prior.score.saturating_add(increment);
+            prior.components.boundary_and_path = prior
+                .components
+                .boundary_and_path
+                .saturating_add(components.boundary_and_path);
+            prior.components.occurrence = prior
+                .components
+                .occurrence
+                .saturating_add(components.occurrence);
+            prior.components.exact_case = prior
+                .components
+                .exact_case
+                .saturating_add(components.exact_case);
             if witness.score > prior.primary.score
                 || (witness.score == prior.primary.score && term_index < prior.primary_term)
             {
@@ -372,7 +391,7 @@ fn add_witness_score(
         }
         None => {
             *scored = Some(ScoredMatch {
-                score: increment,
+                components,
                 primary: witness,
                 primary_term: term_index,
             });
@@ -400,6 +419,20 @@ fn score_terms(
         add_witness_score(&mut scored, file, term, case, index, witness);
     }
     Ok(scored)
+}
+
+fn finish_score(
+    file: &SourceFile,
+    terms: &[CodeSearchTerm],
+    case: CaseMode,
+    scored: &mut ScoredMatch,
+    budget: &RequestBudgetV1,
+) -> Result<(f32, CodeSearchScoreComponentsV1), CoreError> {
+    scored.components.proximity = proximity_bonus(file, terms, case, budget)?;
+    let score = u16::try_from(scored.components.total()).map_err(|error| {
+        CoreError::Storage(format!("lexical: code search score overflow: {error}"))
+    })?;
+    Ok((f32::from(score), scored.components))
 }
 
 fn boundary_score(text: &str, span: Range<usize>, path: bool) -> u32 {
@@ -646,6 +679,7 @@ fn typo_witness(
     needle: &str,
     case: CaseMode,
     comparisons: &mut usize,
+    distance_cache: &mut HashMap<Vec<u8>, Option<u8>>,
     budget: &RequestBudgetV1,
 ) -> Result<Option<(Witness, u8)>, CoreError> {
     let mut start = None;
@@ -663,17 +697,25 @@ fn typo_witness(
         {
             return Ok(());
         }
-        *comparisons = comparisons.saturating_add(1);
-        if *comparisons > MAX_TYPO_TOKEN_COMPARISONS {
-            return Err(CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
-                message: "lexical code search: typo token comparison budget exceeded".into(),
-            });
-        }
-        if (*comparisons).is_multiple_of(256) {
-            budget.checkpoint("lexical:code-search-typo-token")?;
-        }
-        if let Some(distance) = typo_distance(needle.as_bytes(), token.as_bytes(), case) {
+        let distance = if let Some(cached) = distance_cache.get(token.as_bytes()) {
+            *cached
+        } else {
+            *comparisons = comparisons.saturating_add(1);
+            if *comparisons > MAX_TYPO_TOKEN_COMPARISONS {
+                return Err(CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                    message: "lexical code search: typo token comparison budget exceeded".into(),
+                });
+            }
+            if (*comparisons).is_multiple_of(256) {
+                budget.checkpoint("lexical:code-search-typo-token")?;
+            }
+            let distance = typo_distance(needle.as_bytes(), token.as_bytes(), case);
+            let _previous = distance_cache.insert(token.as_bytes().to_vec(), distance);
+            distance
+        };
+        if let Some(distance) = distance {
             match &mut best {
                 Some((witness, prior)) if distance == *prior => {
                     witness.occurrences = witness.occurrences.saturating_add(1).min(4);
@@ -986,12 +1028,31 @@ fn file_for_id(authority: &FileAuthority, id: DocId) -> Result<&SourceFile, Core
 
 /// Generate one file-level AND set. A broad individual posting is never
 /// charged as a completed candidate before the remaining terms filter it.
+#[cfg(test)]
 fn candidate_ids(
     authority: &FileAuthority,
     terms: &[CodeSearchTerm],
     case: CaseMode,
     eligible: Option<&BTreeSet<u64>>,
     budget: &RequestBudgetV1,
+) -> Result<BTreeMap<u64, ScoredMatch>, CoreError> {
+    candidate_ids_observed(
+        authority,
+        terms,
+        case,
+        eligible,
+        budget,
+        &mut CodeSearchExecutionStatsV1::default(),
+    )
+}
+
+fn candidate_ids_observed(
+    authority: &FileAuthority,
+    terms: &[CodeSearchTerm],
+    case: CaseMode,
+    eligible: Option<&BTreeSet<u64>>,
+    budget: &RequestBudgetV1,
+    stats: &mut CodeSearchExecutionStatsV1,
 ) -> Result<BTreeMap<u64, ScoredMatch>, CoreError> {
     let literals: Vec<_> = terms.iter().filter(|term| term.regex.is_none()).collect();
     let mut indexed = Vec::new();
@@ -1053,6 +1114,8 @@ fn candidate_ids(
                             }
                         }
                         let file = file_for_id(authority, id)?;
+                        stats.literal_source_verification_attempts = stats.literal_source_verification_attempts.checked_add(1)
+                            .ok_or_else(|| CoreError::Storage("lexical: verification work count overflow".into()))?;
                         let Some(scored) =
                             score_terms(file, terms, case, None, TermsToScore::Literals, budget)?
                         else {
@@ -1102,6 +1165,12 @@ fn candidate_ids(
             .files
             .get(key)
             .ok_or_else(|| CoreError::Storage("lexical: file authority id has no source".into()))?;
+        stats.literal_source_verification_attempts = stats
+            .literal_source_verification_attempts
+            .checked_add(1)
+            .ok_or_else(|| {
+                CoreError::Storage("lexical: verification work count overflow".into())
+            })?;
         if let Some(scored) = score_terms(file, terms, case, None, TermsToScore::Literals, budget)?
         {
             let _previous = hits.insert(id, scored);
@@ -1641,6 +1710,105 @@ fn source_proves_component_absence(
 }
 
 impl TantivySearcher {
+    /// File candidates are source identities, not stored chunk document IDs.
+    pub(crate) fn code_search_file_by_id(
+        &self,
+        candidate_id: &str,
+        budget: &RequestBudgetV1,
+    ) -> Result<Option<&SourceFile>, CoreError> {
+        let Some(authority) = &self.file_authority else {
+            return Ok(None);
+        };
+        for file in authority.files.values() {
+            budget.checkpoint("lexical:code-search-file-presence")?;
+            if file_candidate_id(
+                file.source.file.source_repo_id.as_str(),
+                file.source.file.repo_relative_path.as_str(),
+            )? == candidate_id
+            {
+                return Ok(Some(file));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn explain_code_file(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+        candidate_id: &str,
+        budget: &RequestBudgetV1,
+    ) -> Result<LexicalCandidateExplanationV1, CoreError> {
+        budget.checkpoint("lexical:code-search-explain-start")?;
+        let parsed = CodeSearchPlan::parse(query, &self.regex_policy)?;
+        let authority = self.file_authority.as_ref().ok_or_else(|| CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+            message: "lexical code search requires rebuilt full-file source authority".into(),
+        })?;
+        let Some(file) = self.code_search_file_by_id(candidate_id, budget)? else {
+            return Ok(LexicalCandidateExplanationV1::NotIndexed);
+        };
+        let not_matched = || LexicalCandidateExplanationV1::NotMatched {
+            reason: "the source file does not match the code-search request".into(),
+        };
+        if constraints
+            .repo_relative_path_exact
+            .as_ref()
+            .is_some_and(|path| file.source.file.repo_relative_path.as_str() != path.as_str())
+            || (!constraints.language_any_of.is_empty()
+                && !constraints.language_any_of.contains(&file.language))
+        {
+            return Ok(not_matched());
+        }
+        if parsed.typo.is_none()
+            && parsed.components.is_none()
+            && let Some(mut scored) = score_terms(
+                file,
+                &parsed.terms,
+                parsed.case,
+                None,
+                TermsToScore::All,
+                budget,
+            )?
+        {
+            let (score, components) =
+                finish_score(file, &parsed.terms, parsed.case, &mut scored, budget)?;
+            let study = ranking::study(self, file, &parsed.terms, parsed.case, components, budget)?;
+            return Ok(LexicalCandidateExplanationV1::Matched(
+                LexicalScoreTraceV1 {
+                    engine: LexicalScoreEngineV1::CodeSearchFile,
+                    engine_score: score,
+                    boost_factor: 1.0,
+                    emitted_score: score,
+                    code_search_components: Some(components),
+                    code_search_rank_study: Some(study),
+                },
+            ));
+        }
+        // Auto-typo eligibility depends on the original scoped literal set.
+        // Reuse that executor for recovery/components, without a top-k cap or
+        // narrowing the scope to this file (which could create a false fallback).
+        let fetch = u32::try_from(authority.files.len().max(1)).map_err(|error| {
+            CoreError::Storage(format!("lexical: explain file cardinality: {error}"))
+        })?;
+        let result =
+            self.search_code_files(query, constraints, &LexicalPageSpec::first(fetch), budget)?;
+        Ok(result
+            .candidates
+            .into_iter()
+            .find(|row| row.candidate_id == candidate_id)
+            .map_or_else(not_matched, |row| {
+                LexicalCandidateExplanationV1::Matched(LexicalScoreTraceV1 {
+                    engine: LexicalScoreEngineV1::CodeSearchFile,
+                    engine_score: row.score,
+                    boost_factor: 1.0,
+                    emitted_score: row.score,
+                    code_search_components: None,
+                    code_search_rank_study: None,
+                })
+            }))
+    }
+
     /// Match ordered components in one stored symbol name before projecting
     /// the result to its immutable source file. The posting conjunction is a
     /// bounded superset; only the stored name decides membership.
@@ -1828,6 +1996,7 @@ impl TantivySearcher {
                 file_candidate(self, file, candidate.score, witness.as_ref(), true, budget)?;
         }
         Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
             exact_total,
         })
@@ -1889,6 +2058,7 @@ impl TantivySearcher {
             }
         }
         let mut comparisons = 0;
+        let mut distance_cache = HashMap::new();
         let mut ranked = Vec::new();
         for key in selected {
             budget.checkpoint("lexical:code-search-typo-file")?;
@@ -1898,8 +2068,14 @@ impl TantivySearcher {
             let content = file.indexed_text.as_deref().ok_or_else(|| {
                 CoreError::Storage("lexical: admitted typo file has no content".into())
             })?;
-            let Some((witness, distance)) =
-                typo_witness(content, identifier, case, &mut comparisons, budget)?
+            let Some((witness, distance)) = typo_witness(
+                content,
+                identifier,
+                case,
+                &mut comparisons,
+                &mut distance_cache,
+                budget,
+            )?
             else {
                 continue;
             };
@@ -1940,6 +2116,7 @@ impl TantivySearcher {
             *candidate = file_candidate(self, file, candidate.score, Some(witness), true, budget)?;
         }
         Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
             exact_total,
         })
@@ -1980,6 +2157,7 @@ impl TantivySearcher {
         }
         let eligible = language_eligible_ids(authority, constraints, budget)?;
         let eligible = eligible.as_ref();
+        let mut stats = CodeSearchExecutionStatsV1::default();
         let ids: Option<BTreeMap<u64, Option<ScoredMatch>>> =
             if let Some(path) = &constraints.repo_relative_path_exact {
                 let mut matching = BTreeMap::new();
@@ -1998,11 +2176,19 @@ impl TantivySearcher {
                 // dialect proves that literal mandatory. Join all literal terms
                 // first, then verify regex over the admitted file set.
                 budget.checkpoint("lexical:code-search-terms")?;
+                stats.literal_prefilter_executed = true;
                 Some(
-                    candidate_ids(authority, &parsed.terms, parsed.case, eligible, budget)?
-                        .into_iter()
-                        .map(|(id, scored)| (id, Some(scored)))
-                        .collect(),
+                    candidate_ids_observed(
+                        authority,
+                        &parsed.terms,
+                        parsed.case,
+                        eligible,
+                        budget,
+                        &mut stats,
+                    )?
+                    .into_iter()
+                    .map(|(id, scored)| (id, Some(scored)))
+                    .collect(),
                 )
             } else {
                 None
@@ -2050,9 +2236,19 @@ impl TantivySearcher {
         if let Some(scope) = regex_scope {
             admit_regex_scan(authority, ids.keys().copied(), scope, budget)?;
         }
+        // Exact-path and regex-only plans have no literal prefilter pass.
+        if stats.literal_prefilter_executed {
+            stats.literal_verified_files = u64::try_from(ids.len()).map_err(|error| {
+                CoreError::Storage(format!("lexical: literal match count overflow: {error}"))
+            })?;
+        }
         let mut ranked = Vec::new();
         for (id, preverified) in ids {
             budget.checkpoint("lexical:code-search-file")?;
+            stats.final_candidate_visits = stats
+                .final_candidate_visits
+                .checked_add(1)
+                .ok_or_else(|| CoreError::Storage("lexical: final work count overflow".into()))?;
             let position = usize::try_from(id.saturating_sub(1)).map_err(|error| {
                 CoreError::Storage(format!("lexical: file id overflow: {error}"))
             })?;
@@ -2069,7 +2265,7 @@ impl TantivySearcher {
             } else {
                 TermsToScore::All
             };
-            let Some(scored) = score_terms(
+            let Some(mut scored) = score_terms(
                 file,
                 &parsed.terms,
                 parsed.case,
@@ -2080,25 +2276,9 @@ impl TantivySearcher {
             else {
                 continue;
             };
-            let score = scored.score.saturating_add(proximity_bonus(
-                file,
-                &parsed.terms,
-                parsed.case,
-                budget,
-            )?);
-            // At most 32 terms contribute <= 146 points each, plus a 32 point
-            // proximity bonus. This fits u16 and converts to f32 exactly.
-            let score = u16::try_from(score).map_err(|error| {
-                CoreError::Storage(format!("lexical: code search score overflow: {error}"))
-            })?;
-            let candidate = file_candidate(
-                self,
-                file,
-                f32::from(score),
-                Some(&scored.primary),
-                false,
-                budget,
-            )?;
+            let score = finish_score(file, &parsed.terms, parsed.case, &mut scored, budget)?.0;
+            let candidate =
+                file_candidate(self, file, score, Some(&scored.primary), false, budget)?;
             ranked.push((candidate, scored.primary));
         }
         // A bare identifier with no literal file match may be misspelled.
@@ -2117,6 +2297,9 @@ impl TantivySearcher {
                 budget,
             );
         }
+        stats.verified_matching_files = u64::try_from(ranked.len()).map_err(|error| {
+            CoreError::Storage(format!("lexical: verified match count overflow: {error}"))
+        })?;
         ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
         let after = self.page_boundary(page)?;
         if let Some(after) = after {
@@ -2125,12 +2308,17 @@ impl TantivySearcher {
         let exact_total = Some(u64::try_from(ranked.len()).map_err(|error| {
             CoreError::Storage(format!("lexical: file count overflow: {error}"))
         })?);
+        stats.cursor_eligible_files = exact_total
+            .ok_or_else(|| CoreError::Storage("lexical: observed file total disappeared".into()))?;
         ranked.truncate(Self::page_limit(
             query,
             usize::try_from(page.fetch).map_err(|error| {
                 CoreError::Storage(format!("lexical: file fetch overflow: {error}"))
             })?,
         ));
+        stats.fetched_files = u64::try_from(ranked.len()).map_err(|error| {
+            CoreError::Storage(format!("lexical: fetched file count overflow: {error}"))
+        })?;
         for (candidate, witness) in &mut ranked {
             budget.checkpoint("lexical:code-search-selected-preview")?;
             let source = candidate
@@ -2143,6 +2331,7 @@ impl TantivySearcher {
             *candidate = file_candidate(self, file, candidate.score, Some(witness), true, budget)?;
         }
         Ok(LexicalSearchPageV1 {
+            code_search_stats: Some(stats),
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
             exact_total,
         })
@@ -2175,7 +2364,7 @@ mod tests {
     use quanta_index_core::{CoreError, RequestBudgetV1};
     use quanta_index_lq_regex::RegexExecutor;
     use quanta_index_lq_trigram::{DocId, TrigramIndexBuilder, TrigramIntersectionError};
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
 
     use crate::file_authority::{FileAuthority, SourceFile, from_verified_files};
     use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText};
@@ -2328,6 +2517,7 @@ mod tests {
                 "load_jsom",
                 CaseMode::Folded,
                 &mut comparisons,
+                &mut HashMap::new(),
                 &budget,
             )
             .expect("independent no-answer fixture")
@@ -2340,6 +2530,7 @@ mod tests {
                 "load_jsom",
                 CaseMode::Folded,
                 &mut exhausted,
+                &mut HashMap::new(),
                 &budget
             ),
             Err(CoreError::Typed {
@@ -2359,6 +2550,7 @@ mod tests {
                     "load_jsom",
                     CaseMode::Folded,
                     &mut comparisons,
+                    &mut HashMap::new(),
                     &budget
                 )
                 .expect("scan")
@@ -2372,6 +2564,7 @@ mod tests {
             "load_jsom",
             CaseMode::Folded,
             &mut comparisons,
+            &mut HashMap::new(),
             &budget,
         )
         .expect("scan")
@@ -2385,6 +2578,7 @@ mod tests {
             "load_jsom",
             CaseMode::Folded,
             &mut comparisons,
+            &mut HashMap::new(),
             &budget,
         )
         .expect("scan")
@@ -2397,11 +2591,60 @@ mod tests {
                 "load_jsom",
                 CaseMode::Sensitive,
                 &mut comparisons,
+                &mut HashMap::new(),
                 &budget
             )
             .expect("scan")
             .is_none()
         );
+    }
+
+    #[test]
+    fn typo_distance_budget_counts_distinct_tokens_across_files() {
+        let budget = RequestBudgetV1::unbounded();
+        let mut comparisons = MAX_TYPO_TOKEN_COMPARISONS - 1;
+        let mut distance_cache = HashMap::new();
+        let first = typo_witness(
+            "load_json",
+            "load_jsom",
+            CaseMode::Folded,
+            &mut comparisons,
+            &mut distance_cache,
+            &budget,
+        )
+        .expect("first file")
+        .expect("one-edit witness");
+        assert_eq!(first.1, 1);
+        assert_eq!(comparisons, MAX_TYPO_TOKEN_COMPARISONS);
+
+        let repeated = typo_witness(
+            "load_json load_json",
+            "load_jsom",
+            CaseMode::Folded,
+            &mut comparisons,
+            &mut distance_cache,
+            &budget,
+        )
+        .expect("repeated token does not repeat the distance computation")
+        .expect("one-edit witness");
+        assert_eq!(repeated.0.occurrences, 2);
+        assert_eq!(repeated.1, 1);
+        assert_eq!(comparisons, MAX_TYPO_TOKEN_COMPARISONS);
+
+        assert!(matches!(
+            typo_witness(
+                "load_jsob",
+                "load_jsom",
+                CaseMode::Folded,
+                &mut comparisons,
+                &mut distance_cache,
+                &budget,
+            ),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                ..
+            })
+        ));
     }
 
     fn fixture_postings(path: &str, content: Option<&str>) -> u32 {
@@ -2676,7 +2919,7 @@ mod tests {
         )
         .expect("fresh score")
         .expect("complete match");
-        assert_eq!(reused.score, fresh.score);
+        assert_eq!(reused.components, fresh.components);
         assert_eq!(reused.primary_term, 0);
         assert_eq!(reused.primary.normalized, fresh.primary.normalized);
 

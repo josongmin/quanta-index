@@ -345,6 +345,7 @@ targets = [
   "benchmark-code-search-workflow-python-owner",
   "benchmark-code-search-matrix-python-owner",
   "benchmark-gold-oracle-python-owner",
+  "benchmark-holdout-review-python-owner",
   "benchmark-profile-capture-python-owner",
   "benchmark-criterion-capture-python-owner",
   "benchmark-recorded-capture-python-owner",
@@ -353,6 +354,7 @@ targets = [
   "benchmark-lexical-scorer-python-owner",
   "benchmark-lexical-five-product-oracle-python-owner",
   "benchmark-identifier-robustness-report-python-owner",
+  "benchmark-code-search-rank-study-python-owner",
   "benchmark-portable-proof-python-owner",
   "benchmark-pair-capture-python-owner",
   "benchmark-corpus-release-python-owner",
@@ -370,6 +372,12 @@ targets = [
   "benchmark-pair-replay-workspace-python-owner",
   "benchmark-cargo-preparation-python-owner",
 ]
+
+[[python_targets]]
+id = "benchmark-holdout-review-python-owner"
+path = "tools/ci/tests/test_holdout_review.py"
+owner = "tools/benchmark/retrieval/holdout_review.py"
+rail = "pr-benchmark-control-python"
 
 [[python_targets]]
 id = "benchmark-live-external-python-owner"
@@ -525,6 +533,12 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-identifier-robustness-report-python-owner"
 path = "tools/ci/tests/test_identifier_robustness_report.py"
 owner = "tools/benchmark/retrieval/identifier_robustness_report.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-code-search-rank-study-python-owner"
+path = "tools/ci/tests/test_code_search_rank_study.py"
+owner = "tools/benchmark/retrieval/code_search_rank_study.py"
 rail = "pr-benchmark-control-python"
 
 [[python_targets]]

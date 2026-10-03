@@ -314,6 +314,40 @@ def test_file_pair_task_admission_uses_bound_typo_policy(tmp_path):
         _tasks(suite, pack, file_policy="code_search_typo_file")
 
 
+def test_file_diagnostic_accepts_small_repository_cell_but_refuses_empty(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    suite["routes"] = pack["routes"] = ["lexical", "semble-lexical-file"]
+    suite["tasks"] = suite["tasks"][:8]
+    pack["tasks"] = pack["tasks"][:8]
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    assert len(_tasks(suite, pack)) == 8
+
+    suite["tasks"] = []
+    pack["tasks"] = []
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    with pytest.raises(ValueError, match="empty"):
+        _tasks(suite, pack)
+
+
+def test_external_capture_refuses_explicit_typo_as_default_file_search(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    suite["routes"] = pack["routes"] = ["lexical", "semble-lexical-file"]
+    suite["tasks"] = suite["tasks"][:8]
+    pack["tasks"] = pack["tasks"][:8]
+    for task in suite["tasks"]:
+        task["query_intent"] = "bare_symbol"
+        task["file_judgments"] = [{"path": task["gold"][0]["path"], "grade": 3}]
+        task["evaluation_contract"] = {
+            "request_mode": "explicit_osa1_typo",
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    with pytest.raises(ValueError, match="evaluation request mode"):
+        _tasks(suite, pack)
+    assert len(_tasks(suite, pack, file_policy="code_search_typo_file")) == 8
+
+
 def test_symbol_diagnostic_distinguishes_judged_no_answer_from_unjudged(tmp_path):
     _, _, suite, pack = fixture_inputs(tmp_path)
     suite["tasks"][0]["gold"] = []

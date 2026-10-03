@@ -25,6 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 
 BENCH_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +48,38 @@ HTTP_TIMEOUT = 50
 MAX_SOURCEGRAPH_REQUEST_TARGET_BYTES = 8 * 1024
 CS_FUZZY_CAPABILITY = "cs_fuzzy_osa1_file"
 CS_FUZZY_VERIFIED_VERSION = "cs version 3.2.0"
+
+
+@dataclass(frozen=True)
+class BoundRelease:
+    """Reuse one full Git replay while rehashing every release file per cell."""
+
+    root: Path
+    document: dict
+    files: dict[str, str]
+    owner_sha256: str
+
+    @classmethod
+    def begin(cls, root: Path) -> BoundRelease:
+        root = root.resolve(strict=True)
+        files = {name: _sha_file(root / name) for name in sorted(corpus_release.regular_tree(root))}
+        owner_sha256 = _sha_file(Path(corpus_release.__file__))
+        document = corpus_release.validate(root)
+        if files != {
+            name: _sha_file(root / name) for name in sorted(corpus_release.regular_tree(root))
+        } or owner_sha256 != _sha_file(Path(corpus_release.__file__)):
+            raise ValueError("batch-bound release or validator changed during full validation")
+        return cls(root, document, files, owner_sha256)
+
+    def recheck(self, root: Path) -> dict:
+        if (
+            root.resolve(strict=True) != self.root
+            or _sha_file(Path(corpus_release.__file__)) != self.owner_sha256
+            or {name: _sha_file(root / name) for name in sorted(corpus_release.regular_tree(root))}
+            != self.files
+        ):
+            raise ValueError("batch-bound release root, owner or complete file bytes changed")
+        return self.document
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -627,20 +660,20 @@ def _opengrok_response(
 def _opengrok_indexed_view_response(
     row: dict, view: Path, status: int, content_type: str, raw: bytes
 ) -> None:
-    # text/plain checks indexed-document presence. Exact bytes bind the served
-    # source view, but do not prove that Lucene terms match the current bytes.
-    if status != 200 or content_type != "text/plain":
+    # The bracketing /projects/{project}/files responses enumerate Lucene UIDs.
+    # The octet endpoint binds each indexed path to served source bytes without
+    # relying on the text endpoint's separate getDocument(path) query.
+    # Neither check proves that Lucene content terms match the current bytes.
+    if status != 200 or content_type != "application/octet-stream":
         raise ValueError(
-            f"OpenGrok indexed document {row['path']} is unavailable or not plain text: "
+            f"OpenGrok indexed source {row['path']} is unavailable or not octet data: "
             f"HTTP {status} / {content_type}"
         )
     if (
         _sha(raw) != row["file_sha256"]
         or _sha(_read_control_file(view / row["path"])) != row["file_sha256"]
     ):
-        raise ValueError(
-            f"OpenGrok indexed document {row['path']} source bytes differ from release"
-        )
+        raise ValueError(f"OpenGrok indexed source {row['path']} bytes differ from release")
 
 
 def _opengrok_indexed_inventory_response(
@@ -707,7 +740,7 @@ def _opengrok_indexed_view(config: dict, manifest: dict, view: Path, target: Pat
             raise ValueError("OpenGrok full indexed view probe timed out")
         path = "/" + config["project"] + "/" + row["path"]
         status, content_type, raw, elapsed = _http(
-            config, "/api/v1/file/content", {"path": path}, "text/plain"
+            config, "/api/v1/file/content", {"path": path}, "application/octet-stream"
         )
         name = f"{index:06d}"
         _write(target / f"{name}.content", raw)
@@ -925,9 +958,15 @@ def _cs_fuzzy_spec(path: Path) -> dict:
     return spec
 
 
-def _cs_fuzzy_inputs(spec: dict) -> tuple[dict, bytes, bytes, bytes, dict, dict, dict, Path]:
+def _cs_fuzzy_inputs(
+    spec: dict, *, bound_release: BoundRelease | None = None
+) -> tuple[dict, bytes, bytes, bytes, dict, dict, dict, Path]:
     release = Path(spec["corpus"]["release_path"])
-    document = corpus_release.validate(release)
+    document = (
+        corpus_release.validate(release)
+        if bound_release is None
+        else bound_release.recheck(release)
+    )
     repository = next(
         (
             row
@@ -974,7 +1013,7 @@ def _cs_fuzzy_inputs(spec: dict) -> tuple[dict, bytes, bytes, bytes, dict, dict,
     )
 
 
-def capture_cs_fuzzy(spec_path: Path) -> dict:
+def capture_cs_fuzzy(spec_path: Path, *, bound_release: BoundRelease | None = None) -> dict:
     """Capture cs ~1 separately; never submit these rows to default product_result."""
     spec = _cs_fuzzy_spec(spec_path)
     root = Path(spec["output_root"])
@@ -1000,7 +1039,9 @@ def capture_cs_fuzzy(spec_path: Path) -> dict:
         or release.resolve().is_relative_to(root.resolve())
     ):
         raise ValueError("cs fuzzy output must be fresh and disjoint from release")
-    binding, suite_raw, pack_raw, manifest_raw, pack, tasks, admitted, view = _cs_fuzzy_inputs(spec)
+    binding, suite_raw, pack_raw, manifest_raw, pack, tasks, admitted, view = _cs_fuzzy_inputs(
+        spec, bound_release=bound_release
+    )
     binary = Path(spec["cs"]["binary"]).resolve(strict=True)
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError("cs fuzzy binary must be executable")
@@ -1031,7 +1072,12 @@ def capture_cs_fuzzy(spec_path: Path) -> dict:
         or _read_control_file(Path(spec["query_pack"])) != pack_raw
         or _sha_file(binary) != binary_sha
         or _source_hashes() != sources
-        or corpus_release.validate(release)["digest"] != binding["release_digest"]
+        or (
+            corpus_release.validate(release)
+            if bound_release is None
+            else bound_release.recheck(release)
+        )["digest"]
+        != binding["release_digest"]
     ):
         raise ValueError("cs fuzzy input, binary or source changed during capture")
     summary = {
@@ -1064,14 +1110,16 @@ def capture_cs_fuzzy(spec_path: Path) -> dict:
     return summary
 
 
-def verify_cs_fuzzy(root: Path) -> dict:
+def verify_cs_fuzzy(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     """Re-derive the explicit native argv and every row from captured process bytes."""
     inventory = corpus_release.regular_tree(root)
     spec = _cs_fuzzy_spec(root / "spec.json")
     if Path(spec["output_root"]) != root:
         raise ValueError("cs fuzzy output root differs from frozen spec")
     summary = _json(_read_control_file(root / "capture.json"))
-    binding, suite_raw, pack_raw, manifest_raw, pack, tasks, admitted, view = _cs_fuzzy_inputs(spec)
+    binding, suite_raw, pack_raw, manifest_raw, pack, tasks, admitted, view = _cs_fuzzy_inputs(
+        spec, bound_release=bound_release
+    )
     binary = Path(spec["cs"]["binary"]).resolve(strict=True)
     code, version_raw, stderr, _ = _process([str(binary), "--version"], 10)
     version = version_raw.decode().strip()
@@ -1162,6 +1210,8 @@ def verify_cs_fuzzy(root: Path) -> dict:
             raise ValueError("cs fuzzy row differs from native response")
 
     _replay_rows(root / "cs_fuzzy_rows.jsonl", pack["tasks"], replay)
+    if bound_release is not None:
+        bound_release.recheck(Path(spec["corpus"]["release_path"]))
     return summary
 
 
@@ -1282,8 +1332,38 @@ def _backend_runtime(config: dict) -> dict:
     }
 
 
+def _backend_index_paths(root: Path) -> set[str]:
+    """Inventory index files while rejecting active Zoekt staging artifacts."""
+    if root.is_symlink() or any(parent.is_symlink() for parent in root.absolute().parents):
+        raise ValueError("backend index contains a link or special file")
+
+    def onerror(error: OSError) -> None:
+        raise ValueError("backend index inventory is unreadable") from error
+
+    paths: set[str] = set()
+    for directory, directories, files in os.walk(root, followlinks=False, onerror=onerror):
+        base = Path(directory)
+        for name in tuple(directories):
+            path = base / name
+            if path.is_symlink():
+                raise ValueError("backend index contains a link or special file")
+            if base == root and name in {".indexserver.tmp", ".trash"}:
+                if any(path.iterdir()):
+                    raise ValueError("backend transient index directory is nonempty")
+                directories.remove(name)
+        for name in files:
+            path = base / name
+            mode = path.lstat().st_mode
+            if base == root and name == "indexserver.sock" and stat.S_ISSOCK(mode):
+                continue
+            if not stat.S_ISREG(mode):
+                raise ValueError("backend index contains a link or special file")
+            paths.add(path.relative_to(root).as_posix())
+    return paths
+
+
 def _backend_tree(root: Path) -> tuple[list[dict], str]:
-    paths = corpus_release.regular_tree(root)
+    paths = _backend_index_paths(root)
     if not paths or len(paths) > MAX_INDEX_FILES:
         raise ValueError("backend index file inventory is empty or exceeds 4096 files")
     rows = []
@@ -1308,7 +1388,7 @@ def _backend_tree(root: Path) -> tuple[list[dict], str]:
         ) != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size):
             raise ValueError("backend index file changed during hashing")
         rows.append({"path": name, "sha256": digest.removeprefix("sha256:"), "bytes": size})
-    if corpus_release.regular_tree(root) != paths:
+    if _backend_index_paths(root) != paths:
         raise ValueError("backend index inventory changed during hashing")
     return rows, _sha(canonical_json(rows).encode())
 
@@ -1383,7 +1463,7 @@ def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
         raise ValueError("backend snapshot tree digest differs")
 
 
-def capture(spec_path: Path) -> dict:
+def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> dict:
     spec = _spec(spec_path)
     root = Path(spec["output_root"])
     stage = root.with_name(root.name + ".staging")
@@ -1396,6 +1476,11 @@ def capture(spec_path: Path) -> dict:
         Path(spec["suite"]),
         Path(spec["query_pack"]),
         Path(spec["cs"]["binary"]),
+        *(
+            (Path(spec["sourcegraph"]["projection_git_root"]),)
+            if "projection_git_root" in spec["sourcegraph"]
+            else ()
+        ),
         *(
             Path(spec[name]["backend_snapshot"]["root"])
             for name in ("sourcegraph", "opengrok")
@@ -1430,7 +1515,11 @@ def capture(spec_path: Path) -> dict:
     tasks = lexical._tasks(suite, pack)
     if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id) is None for task_id in tasks):
         raise ValueError("task IDs must be safe filename components")
-    document = corpus_release.validate(release)
+    document = (
+        corpus_release.validate(release)
+        if bound_release is None
+        else bound_release.recheck(release)
+    )
     repository = next(
         (
             row
@@ -1537,7 +1626,12 @@ def capture(spec_path: Path) -> dict:
         destination = stage / f"{name}_rows.jsonl"
         lexical.product_result(name, destination, tasks, admitted)
     if (
-        corpus_release.validate(release) != document
+        (
+            corpus_release.validate(release)
+            if bound_release is None
+            else bound_release.recheck(release)
+        )
+        != document
         or _read_control_file(spec_path) != _read_control_file(stage / "spec.json")
         or _read_control_file(Path(spec["suite"])) != suite_raw
         or _read_control_file(Path(spec["query_pack"])) != pack_raw
@@ -1612,7 +1706,7 @@ def _replay_rows(path: Path, tasks: list[dict], replay) -> None:
     RawFile.capture(path).consume_lines(consume)
 
 
-def verify(root: Path) -> dict:
+def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     """Re-derive every external row from retained native bytes; no live searches."""
     inventory = corpus_release.regular_tree(root)
     spec = _spec(root / "spec.json")
@@ -1681,7 +1775,11 @@ def verify(root: Path) -> dict:
     if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id) is None for task_id in tasks):
         raise ValueError("task IDs must be safe filename components")
     release = Path(spec["corpus"]["release_path"])
-    document = corpus_release.validate(release)
+    document = (
+        corpus_release.validate(release)
+        if bound_release is None
+        else bound_release.recheck(release)
+    )
     repository = next(
         row
         for row in document["repositories"]
@@ -1895,6 +1993,8 @@ def verify(root: Path) -> dict:
                 raise ValueError("external row disagrees with retained native response")
 
         _replay_rows(row_path, pack["tasks"], replay_row)
+    if bound_release is not None:
+        bound_release.recheck(release)
     return summary
 
 

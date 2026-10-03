@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.benchmark.retrieval import evaluator, holdout_review
+from tools.benchmark.retrieval import evaluator, holdout_review, query_plan
 
 
 def _fixture(tmp_path: Path):
@@ -98,6 +98,185 @@ def _fixture(tmp_path: Path):
         },
     ]
     return checkout, pack, contexts, pools
+
+
+def _completed_file_review_fixture(tmp_path):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    contexts["toy.001"]["answerability_min_grade"] = 2
+    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+    for index, form in enumerate(forms):
+        form["reviewer_id"] = f"ai:fixture-reviewer-{index}"
+        row = form["reviews"][0]
+        row.update(answerable=True, rationale="The alpha definition answers this source fixture.")
+        for file in row["files"]:
+            file.update(
+                grade=3 if file["path"] == "answer.py" else 0, rationale="Fixed source fixture."
+            )
+    adjudicated = copy.deepcopy(forms[0])
+    adjudicated["reviewer_id"] = "ai:fixture-adjudicator"
+    contracts = {
+        "toy.001": {
+            "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+    }
+    return checkout, pack, contexts, pools, forms, adjudicated, contracts
+
+
+@pytest.mark.parametrize("answerable", [False, True])
+def test_file_review_issuer_preserves_sufficient_answer_threshold(tmp_path, answerable):
+    checkout, pack, contexts, pools, forms, adjudicated, contracts = _completed_file_review_fixture(
+        tmp_path
+    )
+    for form in [*forms, adjudicated]:
+        form["reviews"][0]["answerable"] = answerable
+        for file in form["reviews"][0]["files"]:
+            if file["path"] == "answer.py":
+                file["grade"] = 2 if answerable else 1
+    before = copy.deepcopy((pack, contexts, pools, forms, adjudicated, contracts))
+    result = holdout_review.finalize_file_review_labels(
+        checkout, pack, contexts, pools, forms, adjudicated, contracts, seed=42
+    )
+    labels = result["task_labels"]["toy.001"]
+    assert labels["answerability_min_grade"] == 2
+    assert labels["answerable"] is answerable
+    assert labels["evaluation_contract"] == contracts["toy.001"]
+    assert next(file for file in labels["file_judgments"] if file["path"] == "answer.py")[
+        "grade"
+    ] == (2 if answerable else 1)
+    if answerable:
+        raw = (checkout / "answer.py").read_bytes()
+        assert labels["gold"] == [
+            {
+                "path": "answer.py",
+                "file_sha256": evaluator.digest(raw),
+                "grade": 2,
+                "block_sha256": evaluator.digest(raw),
+                "start_byte": 0,
+                "end_byte": len(raw),
+                "start_line": 1,
+                "end_line": 2,
+            }
+        ]
+    else:
+        assert labels["gold"] == []
+    suite = {
+        key: copy.deepcopy(pack[key])
+        for key in (
+            "schema_version",
+            "suite_id",
+            "repository_commit",
+            "routes",
+            "comparison_contract",
+            "file_universe",
+            "file_universe_digest",
+        )
+    }
+    suite["tasks"] = [
+        {
+            **pack["tasks"][0],
+            "query_family_id": "toy.001",
+            "split": "eval",
+            "category": "nl_review_fixture",
+            **labels,
+        }
+    ]
+    suite["diagnostic_policy"] = evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    _checked, issued_pack, _tokens = evaluator.validate_suite(checkout, suite)
+    assert issued_pack["suite_commitment_sha256"] != pack["suite_commitment_sha256"]
+    assert (
+        result["qualified"]
+        is result["human_provenance_attested"]
+        is result["pool_execution_attested"]
+        is False
+    )
+    assert (pack, contexts, pools, forms, adjudicated, contracts) == before
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_review",
+        "same_adjudicator",
+        "missing_decision",
+        "changed_threshold",
+        "changed_hash",
+        "changed_source",
+        "unjudged",
+        "unsupported_answer",
+        "wrong_unit",
+        "missing_contract",
+        "wrong_mode",
+        "same_reviewer",
+        "original_unsupported_answer",
+    ],
+)
+def test_file_review_issuer_rejects_incomplete_or_unbound_decisions(tmp_path, fault):
+    checkout, pack, contexts, pools, forms, adjudicated, contracts = _completed_file_review_fixture(
+        tmp_path
+    )
+    if fault == "missing_review":
+        forms.pop()
+    elif fault == "same_adjudicator":
+        adjudicated["reviewer_id"] = forms[0]["reviewer_id"]
+    elif fault == "missing_decision":
+        adjudicated["reviews"] = []
+    elif fault == "changed_threshold":
+        adjudicated["reviews"][0]["answerability_min_grade"] = 1
+    elif fault == "changed_hash":
+        adjudicated["reviews"][0]["files"][0]["file_sha256"] = "f" * 64
+    elif fault == "changed_source":
+        adjudicated["reviews"][0]["files"][0]["source_text"] += "unbound source"
+    elif fault == "unjudged":
+        adjudicated["reviews"][0]["files"][0]["grade"] = None
+    elif fault == "unsupported_answer":
+        for file in adjudicated["reviews"][0]["files"]:
+            file["grade"] = 1
+    elif fault == "wrong_unit":
+        contracts["toy.001"].update(gold_unit="symbol", result_unit="symbol")
+    elif fault == "missing_contract":
+        contracts = {}
+    elif fault == "wrong_mode":
+        contracts["toy.001"]["request_mode"] = query_plan.DEFAULT_FILE_SEARCH
+    elif fault == "same_reviewer":
+        forms[1]["reviewer_id"] = forms[0]["reviewer_id"]
+    elif fault == "original_unsupported_answer":
+        for file in forms[0]["reviews"][0]["files"]:
+            file["grade"] = 1
+    expected = {
+        "missing_review": "two review forms required",
+        "same_adjudicator": "adjudicator must differ",
+        "missing_decision": "review task coverage changed",
+        "changed_threshold": "review query/context changed",
+        "changed_hash": "review source/candidate changed",
+        "changed_source": "review source/candidate changed",
+        "unjudged": "review grade must be 0..3",
+        "unsupported_answer": "adjudicated answerability requires a sufficient pooled file",
+        "wrong_unit": "evaluation_contract unit mismatch",
+        "missing_contract": "file review evaluation contract coverage differs",
+        "wrong_mode": "file review issuer requires the NL file search contract",
+        "same_reviewer": "two distinct reviewer identities required",
+        "original_unsupported_answer": "review answerability requires a sufficient pooled file",
+    }
+    with pytest.raises(evaluator.EvidenceError, match=expected[fault]):
+        holdout_review.finalize_file_review_labels(
+            checkout, pack, contexts, pools, forms, adjudicated, contracts, seed=42
+        )
+
+
+def test_file_review_issuer_marks_an_adjudicated_override_ambiguous(tmp_path):
+    checkout, pack, contexts, pools, forms, adjudicated, contracts = _completed_file_review_fixture(
+        tmp_path
+    )
+    for file in adjudicated["reviews"][0]["files"]:
+        if file["path"] == "answer.py":
+            file["grade"] = 2
+    result = holdout_review.finalize_file_review_labels(
+        checkout, pack, contexts, pools, forms, adjudicated, contracts, seed=42
+    )
+    assert result["task_labels"]["toy.001"]["label_review"]["assessment"] == "reviewed_ambiguous"
+    assert result["task_labels"]["toy.001"]["gold"][0]["grade"] == 2
 
 
 def test_prepare_deduplicates_blinds_and_retains_unjudged(tmp_path):
@@ -322,6 +501,42 @@ def test_answerable_may_be_outside_the_pooled_candidates(tmp_path):
     assert result["qualified"] is False
 
 
+def test_partial_clue_does_not_force_answerability_at_sufficient_answer_threshold(tmp_path):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    contexts["toy.001"]["answerability_min_grade"] = 2
+    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+    completed = _completed_forms(forms)
+    for form in completed:
+        form["reviews"][0]["answerable"] = False
+    validated = holdout_review.validate_completed_forms(
+        checkout, pack, contexts, pools, completed, seed=42
+    )
+    assert validated["disagreements"] == []
+    assert completed[0]["reviews"][0]["answerability_min_grade"] == 2
+    assert any(row["grade"] == 1 for row in completed[0]["reviews"][0]["files"])
+    completed[0]["reviews"][0]["files"][0]["grade"] = 2
+    with pytest.raises(evaluator.EvidenceError, match="sufficient-answer grade"):
+        holdout_review.validate_completed_forms(checkout, pack, contexts, pools, completed, seed=42)
+
+
+@pytest.mark.parametrize("threshold", [0, 4, True, "2", 2.0])
+def test_review_refuses_malformed_answerability_threshold(tmp_path, threshold):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    contexts["toy.001"]["answerability_min_grade"] = threshold
+    with pytest.raises(evaluator.EvidenceError, match="answerability_min_grade"):
+        holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+
+
+def test_review_threshold_is_frozen_with_context(tmp_path):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    contexts["toy.001"]["answerability_min_grade"] = 2
+    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+    completed = _completed_forms(forms)
+    completed[0]["reviews"][0]["answerability_min_grade"] = 1
+    with pytest.raises(evaluator.EvidenceError, match="query/context changed"):
+        holdout_review.validate_completed_forms(checkout, pack, contexts, pools, completed, seed=42)
+
+
 @pytest.mark.parametrize(
     "fault",
     [
@@ -376,3 +591,220 @@ def test_completed_forms_refuse_missing_decisions_or_source_drift(tmp_path, faul
         task["files"].pop()
     with pytest.raises(evaluator.EvidenceError):
         holdout_review.validate_completed_forms(checkout, pack, contexts, pools, completed, seed=42)
+
+
+def _reviewed_suite_fixture(tmp_path):
+    checkout, pack, _contexts, _pools = _fixture(tmp_path)
+    suite = {
+        key: copy.deepcopy(pack[key])
+        for key in (
+            "schema_version",
+            "suite_id",
+            "repository_commit",
+            "comparison_contract",
+            "routes",
+            "file_universe",
+            "file_universe_digest",
+        )
+    }
+    suite["diagnostic_policy"] = evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    tasks = []
+    for task_id, query, intent, path in (
+        ("toy.nl", "Find alpha behavior", "semantic_intent", "answer.py"),
+        ("toy.name", "beta", "bare_symbol", "alternative.py"),
+    ):
+        raw = (checkout / path).read_bytes()
+        sha = evaluator.digest(raw)
+        tasks.append(
+            {
+                "task_id": task_id,
+                "split": "eval",
+                "query": query,
+                "query_sha256": evaluator.digest(query.encode()),
+                "query_family_id": task_id,
+                "query_intent": intent,
+                "answerable": True,
+                "evaluation_contract": {
+                    "request_mode": "default_file_search",
+                    "gold_unit": "distinct_file",
+                    "result_unit": "distinct_file",
+                },
+                "judgment_policy": evaluator.COMPLETE_JUDGMENT_POLICY,
+                "label_review": {
+                    "assessment": "reviewed_unambiguous",
+                    "reviewer_id": "ai:fixture",
+                    "evidence_sha256": "e" * 64,
+                },
+                "file_judgments": [{"path": path, "file_sha256": sha, "grade": 3}],
+                "gold": [
+                    {
+                        "path": path,
+                        "file_sha256": sha,
+                        "block_sha256": sha,
+                        "start_line": 1,
+                        "end_line": len(raw.splitlines()),
+                        "start_byte": 0,
+                        "end_byte": len(raw),
+                        "grade": 3,
+                    }
+                ],
+            }
+        )
+    suite["tasks"] = tasks
+    return checkout, suite
+
+
+def test_nl_projection_preserves_labels_and_blinds_only_selected_queries(tmp_path):
+    checkout, original = _reviewed_suite_fixture(tmp_path)
+    raw = evaluator.canonical(original)
+    projected, pack, lineage = holdout_review.project_natural_language_file_diagnostic(
+        checkout, raw, suite_id="new-nl-file-diagnostic"
+    )
+    expected = copy.deepcopy(original["tasks"][0])
+    expected["evaluation_contract"] = {
+        "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+        "gold_unit": "distinct_file",
+        "result_unit": "distinct_file",
+    }
+    assert projected["tasks"] == [expected]
+    assert evaluator.canonical(original) == raw
+    assert pack["tasks"] == [{key: expected[key] for key in ("task_id", "query", "query_sha256")}]
+    assert lineage["selected_task_ids"] == ["toy.nl"]
+    assert lineage["excluded_task_ids"] == ["toy.name"]
+    assert lineage["input_suite_bytes_sha256"] == evaluator.digest(raw)
+    assert lineage["suite_sha256"] == evaluator.digest(evaluator.canonical(projected))
+    assert lineage["qualified"] is False
+    assert lineage["human_provenance_attested"] is False
+    assert lineage["review_receipts"] == "remain_bound_to_original_suite"
+    assert lineage["split_admission"] == "not_carried_forward"
+
+
+def test_suite_distinguishes_partial_relevance_from_answerability(tmp_path):
+    checkout, original = _reviewed_suite_fixture(tmp_path)
+    task = original["tasks"][0]
+    task["answerability_min_grade"] = 2
+    evaluator.validate_suite(checkout, original)
+    task["answerable"] = False
+    task["gold"] = []
+    task["file_judgments"][0]["grade"] = 1
+    checked, pack, _source = evaluator.validate_suite(checkout, original)
+    assert checked["tasks"][0]["file_judgments"][0]["grade"] == 1
+    assert "answerability_min_grade" not in pack["tasks"][0]
+    assert (
+        evaluator.file_ndcg_at_k(
+            [{"path": task["file_judgments"][0]["path"]}], task["file_judgments"], 10
+        )
+        == 1.0
+    )
+    task["file_judgments"][0]["grade"] = 2
+    with pytest.raises(evaluator.EvidenceError, match="answerability mismatch"):
+        evaluator.validate_suite(checkout, original)
+
+
+def test_suite_refuses_insufficient_answer_and_gold_grades(tmp_path):
+    checkout, original = _reviewed_suite_fixture(tmp_path)
+    task = original["tasks"][0]
+    task["answerability_min_grade"] = 2
+    task["file_judgments"][0]["grade"] = 1
+    with pytest.raises(evaluator.EvidenceError, match="lacks a positive judgment"):
+        evaluator.validate_suite(checkout, original)
+    task["file_judgments"][0]["grade"] = 3
+    task["gold"][0]["grade"] = 1
+    with pytest.raises(evaluator.EvidenceError, match="gold grade below"):
+        evaluator.validate_suite(checkout, original)
+
+
+@pytest.mark.parametrize("threshold", [0, 4, True, "2", 2.0])
+def test_suite_refuses_invalid_answerability_threshold(tmp_path, threshold):
+    checkout, original = _reviewed_suite_fixture(tmp_path)
+    original["tasks"][0]["answerability_min_grade"] = threshold
+    with pytest.raises(evaluator.EvidenceError, match="answerability_min_grade"):
+        evaluator.validate_suite(checkout, original)
+
+
+@pytest.mark.parametrize("fault", ["orphan", "source_oracle"])
+def test_suite_refuses_orphan_or_oracle_answerability_threshold(tmp_path, fault):
+    checkout, original = _reviewed_suite_fixture(tmp_path)
+    task = original["tasks"][1]
+    task["answerability_min_grade"] = 2
+    if fault == "orphan":
+        del task["file_judgments"]
+    else:
+        task["source_oracle"] = {"contract": "ascii_identifier_word_v1", "unit": "distinct_file"}
+    with pytest.raises(evaluator.EvidenceError, match="requires independent judgments"):
+        evaluator.validate_judgments(
+            evaluator.SourceSnapshot(checkout, original["repository_commit"]),
+            task,
+            {row["path"] for row in original["file_universe"]},
+            task["task_id"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("no_nl", "no semantic_intent tasks"),
+        ("unreviewed", "require reviewed label evidence"),
+        ("partial_grade", "grade must be an integer 0-3"),
+        ("wrong_hash", "file hash mismatch"),
+        ("bad_excluded_gold", "block hash mismatch"),
+        ("over_limit", "33 tokens"),
+        ("same_id", "requires a new suite ID"),
+    ],
+)
+def test_nl_projection_refuses_invalid_input_without_silently_dropping_tasks(
+    tmp_path, fault, message
+):
+    checkout, suite = _reviewed_suite_fixture(tmp_path)
+    suite_id = "new-nl-file-diagnostic"
+    task = suite["tasks"][0]
+    if fault == "no_nl":
+        task["query_intent"] = "bare_symbol"
+    elif fault == "unreviewed":
+        task["label_review"] = {"assessment": "unreviewed"}
+    elif fault == "partial_grade":
+        task["file_judgments"][0]["grade"] = None
+    elif fault == "wrong_hash":
+        task["file_judgments"][0]["file_sha256"] = "f" * 64
+    elif fault == "bad_excluded_gold":
+        suite["tasks"][1]["gold"][0]["block_sha256"] = "f" * 64
+    elif fault == "over_limit":
+        task["query"] = " ".join(f"word{i}" for i in range(33))
+        task["query_sha256"] = evaluator.digest(task["query"].encode())
+    else:
+        suite_id = suite["suite_id"]
+    with pytest.raises((evaluator.EvidenceError, query_plan.QueryPlanError), match=message):
+        holdout_review.project_natural_language_file_diagnostic(
+            checkout, evaluator.canonical(suite), suite_id=suite_id
+        )
+
+
+def test_nl_projection_writer_refuses_overwrite_and_input_race(tmp_path, monkeypatch):
+    checkout, suite = _reviewed_suite_fixture(tmp_path)
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    suite_path = inputs / "suite.json"
+    suite_path.write_bytes(evaluator.canonical(suite))
+    output = tmp_path / "output"
+    receipt = holdout_review.write_natural_language_file_diagnostic(
+        checkout, suite_path, output, suite_id="new-nl-file-diagnostic"
+    )
+    assert json.loads((output / "lineage.json").read_bytes()) == receipt
+    with pytest.raises(ValueError, match="fresh and absolute"):
+        holdout_review.write_natural_language_file_diagnostic(
+            checkout, suite_path, output, suite_id="new-nl-file-diagnostic"
+        )
+    original = holdout_review.project_natural_language_file_diagnostic
+
+    def race(*args, **kwargs):
+        result = original(*args, **kwargs)
+        suite_path.write_bytes(suite_path.read_bytes() + b"\n")
+        return result
+
+    monkeypatch.setattr(holdout_review, "project_natural_language_file_diagnostic", race)
+    racing_output = tmp_path / "racing-output"
+    with pytest.raises(ValueError, match="changed during projection"):
+        holdout_review.write_natural_language_file_diagnostic(
+            checkout, suite_path, racing_output, suite_id="new-nl-file-diagnostic"
+        )
+    assert not racing_output.exists()

@@ -768,6 +768,400 @@ fn code_search_matches_file_across_chunk_boundaries_and_maps_unicode_source_span
 }
 
 #[test]
+fn code_search_work_counts_separate_gram_collision_verification_rank_and_paging() -> TestResult {
+    use quanta_index_core::CodeSearchExecutionStatsV1;
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("a_usage.rs", "abcd", 2)?,
+        code_scope("collision.rs", "abc bcd", 3)?,
+        code_scope("z_late.rs", "abcd abcd abcd", 3)?,
+    ])?;
+    let query = code_query(&["abcd"], false);
+    let first = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(1),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(first.exact_total, Some(2));
+    assert_eq!(
+        first.candidates[0].repo_relative_path.as_str(),
+        "z_late.rs",
+        "a later high-score source must survive the one-file page cap"
+    );
+    let stats = first.code_search_stats.expect("ordinary exhaustive work");
+    assert_eq!(
+        stats,
+        CodeSearchExecutionStatsV1 {
+            literal_prefilter_executed: true,
+            literal_source_verification_attempts: 3,
+            literal_verified_files: 2,
+            final_candidate_visits: 2,
+            verified_matching_files: 2,
+            cursor_eligible_files: 2,
+            fetched_files: 1,
+        }
+    );
+    let boundary = quanta_index_contract::LexicalCursor::at(
+        first.candidates[0].manifest_generation,
+        first.candidates[0].order_key(),
+    );
+    let next = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec {
+            fetch: 1,
+            after: Some(boundary),
+        },
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(next.candidates[0].repo_relative_path.as_str(), "a_usage.rs");
+    assert_eq!(next.exact_total, Some(1));
+    assert_eq!(
+        next.code_search_stats.expect("continued exhaustive page"),
+        CodeSearchExecutionStatsV1 {
+            cursor_eligible_files: 1,
+            ..stats
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn code_search_explanation_uses_the_same_file_score_outside_top_k() -> TestResult {
+    use quanta_index_core::LexicalCandidateExplanationV1;
+
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("first.rs", "needle needle needle", 5)?,
+        code_scope("last.rs", "needle", 3)?,
+    ])?;
+    let query = code_query(&["needle"], false);
+    let rows = searcher
+        .search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.iter().map(|row| row.score).collect::<Vec<_>>(),
+        vec![109.0, 105.0]
+    );
+    assert_eq!(rows[1].repo_relative_path.as_str(), "last.rs");
+    for row in &rows {
+        match searcher.explain_candidate(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &row.candidate_id,
+            &RequestBudgetV1::unbounded(),
+        )? {
+            LexicalCandidateExplanationV1::Matched(trace) => {
+                assert_eq!(trace.emitted_score, row.score);
+                assert_eq!(trace.engine.as_str(), "code_search_file");
+                let components = trace
+                    .code_search_components
+                    .expect("native additive components");
+                assert_eq!(f32::from(u16::try_from(components.total())?), row.score);
+                assert_eq!(components.boundary_and_path, 100);
+                assert_eq!(components.exact_case, 5);
+            }
+            other => panic!("indexed matching file must be explained: {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn code_search_rank_study_keeps_declaration_usage_and_unknown_metadata_distinct() -> TestResult {
+    use quanta_index_core::LexicalCandidateExplanationV1;
+
+    let mut definition = code_scope("z_definition.rs", "fn needle() {}", 4)?;
+    let mut symbol = scope(
+        "source-a",
+        "z_definition.rs",
+        &[("needle-definition", "needle", "needle", None)],
+    )?
+    .symbols
+    .remove(0);
+    symbol.definition_span.byte_end = u32::try_from(definition.source_bytes.len())?;
+    definition.symbols.push(symbol);
+    definition.coverage.symbols = SymbolCoverage::Complete { symbol_count: 1 };
+    definition.coverage.symbol_name_source_policy =
+        quanta_index_contract::SymbolNameSourcePolicyV1::RawAsciiLocalName;
+    definition.coverage.unit_set_sha256 =
+        source_file_unit_set_sha256(&definition.chunks, &definition.symbols)?;
+    let mut unknown = code_scope("unknown.rs", "needle", 3)?;
+    unknown.coverage.symbols = SymbolCoverage::NotRequested;
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("a_usage_test.rs", "needle(); needle(); needle();", 5)?,
+        definition,
+        unknown,
+    ])?;
+    let query = code_query(&["needle"], false);
+    let rows = searcher
+        .search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(
+        rows.len(),
+        3,
+        "optional metadata never removes a literal match"
+    );
+    let mut proposed = Vec::new();
+    for row in &rows {
+        let LexicalCandidateExplanationV1::Matched(trace) = searcher.explain_candidate(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &row.candidate_id,
+            &RequestBudgetV1::unbounded(),
+        )?
+        else {
+            panic!("matching source must be explained")
+        };
+        let study = trace
+            .code_search_rank_study
+            .expect("native diagnostic ablation");
+        assert_eq!(f32::from(u16::try_from(study.baseline)?), row.score);
+        match row.repo_relative_path.as_str() {
+            "z_definition.rs" => {
+                assert_eq!(study.declaration_bonus, Some(64));
+                assert_eq!(study.declaration_only, 169);
+                assert!(study.declaration_coverage_complete);
+            }
+            "a_usage_test.rs" => {
+                assert_eq!(study.declaration_bonus, Some(0));
+                assert_eq!(study.occurrence_none, 105);
+            }
+            "unknown.rs" => {
+                assert_eq!(study.declaration_bonus, None);
+                assert!(!study.declaration_coverage_complete);
+            }
+            other => panic!("unexpected file {other}"),
+        }
+        proposed.push((study.declaration_only, row.repo_relative_path.as_str()));
+    }
+    proposed.sort_by_key(|(score, path)| (std::cmp::Reverse(*score), *path));
+    assert_eq!(proposed[0].1, "z_definition.rs");
+    assert_eq!(
+        rows[0].repo_relative_path.as_str(),
+        "a_usage_test.rs",
+        "an unqualified experimental policy is not selected implicitly"
+    );
+    Ok(())
+}
+
+#[test]
+fn code_search_rank_study_marks_unverified_declaration_names_unknown_without_losing_literal_candidates()
+-> TestResult {
+    use quanta_index_core::LexicalCandidateExplanationV1;
+
+    for (body, query_text) in [
+        ("fn needle() {}", "needle"),
+        ("fn needle() { let manufactured = 1; }", "manufactured"),
+    ] {
+        let mut file = code_scope("wrong_name.rs", body, 4)?;
+        // The legacy Unspecified producer contract admits a display name. That
+        // name cannot become source-verified declaration ranking evidence.
+        let mut symbol = scope(
+            "source-a",
+            "wrong_name.rs",
+            &[("wrong-name", "manufactured", "manufactured", None)],
+        )?
+        .symbols
+        .remove(0);
+        symbol.definition_span.byte_end = u32::try_from(file.source_bytes.len())?;
+        file.symbols.push(symbol);
+        file.coverage.symbols = SymbolCoverage::Complete { symbol_count: 1 };
+        file.coverage.unit_set_sha256 = source_file_unit_set_sha256(&file.chunks, &file.symbols)?;
+        let (_dir, searcher) = fixture_with_scopes(vec![file])?;
+        let query = code_query(&[query_text], false);
+        let page = searcher.search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?;
+        assert_eq!(
+            page.candidates.len(),
+            1,
+            "literal admission is independent of metadata"
+        );
+        let explained = searcher.explain_candidate(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &page.candidates[0].candidate_id,
+            &RequestBudgetV1::unbounded(),
+        )?;
+        let LexicalCandidateExplanationV1::Matched(trace) = explained else {
+            panic!("valid legacy metadata cannot erase the selected file score");
+        };
+        let study = trace.code_search_rank_study.expect("native study");
+        assert_eq!(trace.emitted_score, 105.0);
+        assert_eq!(study.declaration_bonus, None);
+        assert!(!study.declaration_coverage_complete);
+        assert_eq!(study.declaration_only, study.baseline);
+        // A normal no-match can still be decided without extracting features.
+        let other_query = code_query(&["absent token"], false);
+        assert!(matches!(
+            searcher.explain_candidate(
+                &other_query,
+                &QueryConstraintSetV1::default(),
+                &page.candidates[0].candidate_id,
+                &RequestBudgetV1::unbounded()
+            )?,
+            LexicalCandidateExplanationV1::NotMatched { .. }
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn code_search_rank_study_recovers_original_boundaries_after_unicode_normalization() -> TestResult {
+    use quanta_index_core::LexicalCandidateExplanationV1;
+
+    for body in [
+        "İfooBar",
+        "cafe\u{301}fooBar",
+        "HTTPServer",
+        "foo_bar",
+        "parse2Value",
+    ] {
+        let needle = if body == "HTTPServer" {
+            "server"
+        } else if body == "parse2Value" {
+            "2"
+        } else {
+            "bar"
+        };
+        let (_dir, searcher) = fixture_with_scopes(vec![code_scope("source.rs", body, 0)?])?;
+        let query = code_query(&[needle], false);
+        let rows = searcher
+            .search_constrained(
+                &query,
+                &QueryConstraintSetV1::default(),
+                &LexicalPageSpec::first(10),
+                &RequestBudgetV1::unbounded(),
+            )?
+            .candidates;
+        assert_eq!(rows.len(), 1);
+        let LexicalCandidateExplanationV1::Matched(trace) = searcher.explain_candidate(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &rows[0].candidate_id,
+            &RequestBudgetV1::unbounded(),
+        )?
+        else {
+            panic!("matching source must be explained")
+        };
+        assert_eq!(
+            trace
+                .code_search_rank_study
+                .expect("study")
+                .original_boundary_bonus,
+            16,
+            "{body}"
+        );
+        assert_eq!(trace.emitted_score, rows[0].score);
+    }
+    Ok(())
+}
+
+#[test]
+fn code_search_explanation_preserves_constraints_cancellation_and_global_auto_typo_gate()
+-> TestResult {
+    use quanta_index_contract::CandidatePresenceV1;
+    use quanta_index_core::LexicalCandidateExplanationV1;
+
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("literal.rs", "needle", 0)?,
+        code_scope("neighbor.rs", "needl", 0)?,
+    ])?;
+    let neighbor_query = code_query(&["needl"], true);
+    let rows = searcher
+        .search_constrained(
+            &neighbor_query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    let neighbor = rows
+        .iter()
+        .find(|row| row.repo_relative_path.as_str() == "neighbor.rs")
+        .expect("neighbor source");
+    assert_eq!(
+        searcher.candidate_presence(&neighbor.candidate_id)?,
+        CandidatePresenceV1::Indexed
+    );
+    assert_eq!(
+        searcher.candidate_presence("file:missing")?,
+        CandidatePresenceV1::NotIndexed
+    );
+    let literal_query = code_query(&["needle"], false);
+    assert!(
+        matches!(
+            searcher.explain_candidate(
+                &literal_query,
+                &QueryConstraintSetV1::default(),
+                &neighbor.candidate_id,
+                &RequestBudgetV1::unbounded()
+            )?,
+            LexicalCandidateExplanationV1::NotMatched { .. }
+        ),
+        "another file's literal match disables automatic typo recovery"
+    );
+    let constrained = QueryConstraintSetV1 {
+        repo_relative_path_exact: Some(quanta_index_contract::ExactRepoRelativePathV1::new(
+            "neighbor.rs",
+        )?),
+        ..QueryConstraintSetV1::default()
+    };
+    let recovered = searcher
+        .search_constrained(
+            &literal_query,
+            &constrained,
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(recovered.len(), 1);
+    let LexicalCandidateExplanationV1::Matched(trace) = searcher.explain_candidate(
+        &literal_query,
+        &constrained,
+        &neighbor.candidate_id,
+        &RequestBudgetV1::unbounded(),
+    )?
+    else {
+        panic!("scoped recovery must be explained")
+    };
+    assert_eq!(trace.emitted_score, recovered[0].score);
+    assert!(
+        trace.code_search_components.is_none(),
+        "a recovery score is not a literal decomposition"
+    );
+    let cancelled = RequestBudgetV1::unbounded();
+    cancelled.cancel_handle().cancel();
+    assert!(matches!(
+        searcher.explain_candidate(
+            &literal_query,
+            &constrained,
+            &neighbor.candidate_id,
+            &cancelled
+        ),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
 fn code_search_preview_flags_only_actual_nfc_source_difference() -> TestResult {
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("identity.rs", "needle", 6)?,

@@ -14,11 +14,12 @@ use std::error::Error;
 
 use crate::e2e_harness;
 use quanta_index_contract::{
-    CandidatePresenceV1, HybridLaneV1, LexicalCandidate, PlannerStage, SearchExplanation,
-    TextQuerySyntax,
+    CandidatePresenceV1, GenerationPin, HybridLaneV1, LexicalCandidate, PlannerStage,
+    QueryConstraintSetV1, SearchExplanation, TextQueryRequest, TextQuerySyntax,
 };
+use quanta_index_sdk::{ConnectOptions, QuantaIndex};
 
-use e2e_harness::E2eRuntime;
+use e2e_harness::{E2eRoutePage, E2eRuntime};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -80,6 +81,116 @@ fn contribution_sum(explanation: &SearchExplanation) -> f32 {
         .iter()
         .map(|row| row.contribution)
         .sum()
+}
+
+fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
+    let sealed = rt
+        .last_sealed_search_corpus_identity()
+        .ok_or("sealed corpus identity")?;
+    let request_pin =
+        GenerationPin::new(rt.repo(), rt.revision(), sealed.lexical.manifest_generation);
+    let native_page = match rt.query_text_page(
+        TextQuerySyntax::CodeSearch,
+        PLAIN_QUERY,
+        10,
+        Some(request_pin),
+        None,
+    )? {
+        E2eRoutePage::Served(page) => page,
+        E2eRoutePage::Refused(error) => {
+            return Err(format!("CodeSearch refused: {error}").into());
+        }
+    };
+    let pin = native_page.generation;
+    let (query, control, ingest) = rt.socket_paths().ok_or("started runtime sockets")?;
+    let client = QuantaIndex::connect(
+        ConnectOptions::from_state_root(rt.state_root())
+            .with_query_socket(query.to_path_buf())
+            .with_control_socket(control.to_path_buf())
+            .with_ingest_socket(ingest.to_path_buf()),
+    )?;
+    let result = client
+        .lexical()
+        .query()
+        .code_search(PLAIN_QUERY)
+        .pinned(pin.clone())
+        .top_k(10)
+        .execute()?;
+    if result.generation != pin || result.results != native_page.results {
+        return Err("SDK must preserve the pinned native file page".into());
+    }
+    let request_trace = &result.explanation;
+    for expected in [
+        "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true",
+        "code_search.execution.verified_matching_files=3",
+        "code_search.execution.cursor_eligible_files=3",
+        "code_search.execution.fetched_files=3",
+        "code_search.execution.returned_files=3",
+    ] {
+        if !trace_says(request_trace, expected) {
+            return Err(format!("CodeSearch public count missing: {expected}").into());
+        }
+    }
+    let actual: Vec<_> = result
+        .results
+        .iter()
+        .map(|row| (row.repo_relative_path.as_str(), row.score))
+        .collect();
+    // Fixed goldens from this source fixture, independent of explanation output.
+    if actual
+        != [
+            ("src/dense.rs", 109.0),
+            ("src/twice.rs", 107.0),
+            ("src/sparse.rs", 105.0),
+        ]
+    {
+        return Err(format!("source-file score goldens disagree: {actual:?}").into());
+    }
+    let bm25_top = page(rt, PLAIN_QUERY)?
+        .into_iter()
+        .next()
+        .ok_or("BM25 fixture hit")?;
+    let (_, bm25) = explained(rt, bm25_top, PLAIN_QUERY)?;
+    for candidate in result.results {
+        let carried = candidate.score;
+        let presence = client.search().explain(pin.clone(), candidate.clone())?;
+        if presence.presence != CandidatePresenceV1::Indexed {
+            return Err("file candidate exact presence must be Indexed".into());
+        }
+        let explained = client.search().explain_under_query(
+            pin.clone(),
+            candidate,
+            TextQueryRequest {
+                syntax: TextQuerySyntax::CodeSearch,
+                query_text: PLAIN_QUERY.into(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: None,
+                generation_selector: None,
+                top_k: 1,
+                cursor: None,
+            },
+        )?;
+        let trace = explained.explanation;
+        if explained.presence != CandidatePresenceV1::Indexed
+            || trace.contributions.len() != 1
+            || trace.contributions[0].signal_name.as_ref() != "lexical.code_search_file"
+            || contribution_sum(&trace) != carried
+            || !trace_says(&trace, "explain.code_search_score.boundary_and_path=100")
+            || !trace_says(&trace, "explain.code_search_score.exact_case=5")
+            || !trace_says(&trace, "explain.code_search_score.proximity=0")
+            || !trace_says(&trace, "explain.score_reconciled=true")
+            || !trace_says(
+                &trace,
+                &format!("explain.code_search_rank_study_v1.baseline={carried:.0};selected=true"),
+            )
+            || trace.ranker_weights_hash == bm25.ranker_weights_hash
+        {
+            return Err(
+                format!("native file score must reach the public explanation: {trace:?}").into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn verify_page_candidate_scores(rt: &mut E2eRuntime) -> TestResult {
@@ -548,6 +659,7 @@ fn explain_score_traces_share_one_indexed_fixture() -> TestResult {
         verify_page_candidate_scores;
     for (name, verify) in [
         ("page_candidate_scores", verify_page_candidate_scores_fn),
+        ("code_search_file_scores", verify_code_search_file_scores),
         ("boost", verify_boost),
         ("presence", verify_presence),
         ("hybrid_both_lane", verify_hybrid_both_lane),

@@ -31,6 +31,7 @@ GO_EXACT_LOCAL_NAME = "go_exact_local_name_v3"
 ASCII_IDENTIFIER_WORD = "ascii_identifier_word_v1"
 ASCII_CONTENT_ABSENT_CASEFOLD = "ascii_content_absent_casefold_v1"
 ASCII_CODE_SEARCH_ABSENT_CASEFOLD = "ascii_code_search_absent_casefold_v1"
+ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD = "ascii_code_search_default_absent_casefold_v1"
 ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD = "ascii_identifier_osa1_absent_casefold_v1"
 # Variants over the same indexed Go declaration set as v3. Prefix, infix and
 # osa1 compare exact (case-sensitive) name text; components compare lowercased
@@ -251,9 +252,26 @@ def declaration_query_textually_excluded(raw: bytes, query: str, variant: str) -
     """
     if variant in ("exact", "prefix", "infix"):
         return query.encode("utf-8") not in raw
-    folded = raw.decode("utf-8", "replace").casefold()
     if variant == "components":
+        folded = raw.decode("utf-8", "replace").casefold()
         return any(part not in folded for part in query.split(" "))
+    if (
+        variant == "osa1_casefold"
+        and IDENTIFIER.fullmatch(query) is not None
+        and 3 <= len(query) <= 64
+    ):
+        # This variant only matches ASCII identifier names. An arbitrary
+        # one-edit substring inside a longer token cannot be a matching
+        # declaration. Include exact folded collisions, which also make a
+        # submitted typo ambiguous even though _variant_matches excludes them.
+        query_folded = query.casefold()
+        for match in ASCII_TOKEN_SUPERSET.finditer(raw):
+            token = match.group()
+            if not token or token[0] in b"0123456789" or abs(len(token) - len(query)) > 1:
+                continue
+            if osa_distance_at_most_one(query_folded, token.decode("ascii").casefold()):
+                return False
+        return True
     if variant in ("osa1", "osa1_casefold"):
         if not 1 < len(query) <= 64:
             return False
@@ -333,7 +351,7 @@ def declaration_census(
     if grammar is None:
         raise SourceOracleError(f"{language} census does not admit file suffix: {path}")
     try:
-        from tree_sitter_language_pack import get_parser
+        from tools.benchmark.retrieval.declaration_parsers import get_parser
 
         parser = get_parser(grammar)
     except (ImportError, LookupError, ValueError) as exc:
@@ -473,13 +491,19 @@ class SourceOracleIndex:
                 raise SourceOracleError(f"content absent contract found a match: {path}")
 
     def _require_code_search_absent_casefold(self, query: str) -> None:
-        """A default file search may match either content or repository path."""
+        """Prove literal content/path absence, excluding the default typo fallback."""
         _require_query(ASCII_CODE_SEARCH_ABSENT_CASEFOLD, query)
         self._require_content_absent_casefold(query)
         folded = query.casefold()
         for path in self.files:
             if folded in path.casefold():
                 raise SourceOracleError(f"code search absent contract found a path match: {path}")
+
+    def _require_code_search_default_absent_casefold(self, query: str) -> None:
+        """Prove no literal or one-edit fallback match for default file search."""
+        _require_query(ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD, query)
+        self._require_code_search_absent_casefold(query)
+        self._require_identifier_osa1_absent_casefold(query)
 
     def _require_identifier_osa1_absent_casefold(self, query: str) -> None:
         """Prove no ASCII source token is within one OSA edit of the query."""
@@ -593,6 +617,9 @@ class SourceOracleIndex:
         elif contract == ASCII_CODE_SEARCH_ABSENT_CASEFOLD and unit == "distinct_file":
             self._require_code_search_absent_casefold(query)
             paths = set()
+        elif contract == ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD and unit == "distinct_file":
+            self._require_code_search_default_absent_casefold(query)
+            paths = set()
         elif contract == ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD and unit == "distinct_file":
             self._require_identifier_osa1_absent_casefold(query)
             paths = set()
@@ -669,9 +696,12 @@ class SourceOracleIndex:
         if contract in (
             ASCII_CONTENT_ABSENT_CASEFOLD,
             ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+            ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD,
             ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD,
         ):
-            if contract == ASCII_CODE_SEARCH_ABSENT_CASEFOLD:
+            if contract == ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD:
+                self._require_code_search_default_absent_casefold(query)
+            elif contract == ASCII_CODE_SEARCH_ABSENT_CASEFOLD:
                 self._require_code_search_absent_casefold(query)
             elif contract == ASCII_IDENTIFIER_OSA1_ABSENT_CASEFOLD:
                 self._require_identifier_osa1_absent_casefold(query)

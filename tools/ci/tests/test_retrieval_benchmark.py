@@ -19,6 +19,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import jsonschema
 import pytest
@@ -2817,6 +2818,18 @@ def test_pair_preflights_searchd_socket_length_before_creating_stage(tmp_path, m
     assert not stage.exists()
 
 
+def test_fixed_window_strategy_path_is_short_and_matches_socket_preflight(monkeypatch):
+    monkeypatch.setattr(pairrun, "_unix_socket_path_limit", lambda: 103)
+    stage = Path("/private/tmp/p5/07e114f9.staging")
+    assert pairrun._strategy_run_directory(0, "fixed_window_strict") == "strategy-00-fw_strict"
+    assert pairrun._strategy_run_directory(0, "whole_file") == "strategy-00-whole_file"
+    pairrun.preflight_daemon_socket_paths(
+        stage, [{"name": "fixed_window_strict"}], repetitions=1, paired=True
+    )
+    with pytest.raises(pairrun.RunError, match="unknown strategy"):
+        pairrun._strategy_run_directory(0, "unknown")
+
+
 def test_semble_model_revision_requires_observed_pinned_cache(tmp_path):
     model = "minishlab/potion-code-16M-v2"
     with pytest.raises(semble_adapter.AdapterError, match="revision unavailable"):
@@ -3753,6 +3766,111 @@ def test_freeze_inputs_freezes_lockfile(tmp_path):
     stage2.mkdir()
     with pytest.raises(pairrun.RunError, match="cannot freeze capture input semble_lockfile"):
         pairrun.freeze_inputs(dict(inputs, semble_lockfile=str(tmp_path / "absent.txt")), stage2)
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_direct_quanta_driver_honors_requested_query_schedule(tmp_path, monkeypatch, shared):
+    runner = tmp_path / "runner"
+    runner.write_bytes(b"fixed runner identity")
+    output = tmp_path / "output"
+    pack = tmp_path / "pack.json"
+    pack.write_text(json.dumps({"tasks": [{"task_id": "T1"}, {"task_id": "T2"}]}))
+    spec = {
+        "runner_binary": str(runner),
+        "searchd_binary": "/unused/searchd",
+        "searchd_expected_sha256": "b" * 64,
+        "query_pack": str(pack),
+        "suite": "/unused/suite",
+        "strategies": [{"name": "whole_file"}],
+        "query_warmup_passes": 1,
+        "query_repetitions_per_root": 3,
+        "seed": 7,
+        "repetitions": 1,
+    }
+    original_protocol_bytes = None
+    if shared:
+        protocol_path = tmp_path / "shared-protocol.json"
+        protocol_path.write_text(json.dumps(pairrun.build_query_protocol(["T1", "T2"], 8, 1, 3)))
+        original_protocol_bytes = protocol_path.read_bytes()
+        spec["_query_protocol"] = str(protocol_path)
+        # Parent pair repetitions already own fresh roots; don't create nested ones.
+        spec["repetitions"] = 3
+    before = copy.deepcopy(spec)
+    monkeypatch.setattr(pairrun, "preflight_capture", lambda _spec: output)
+    monkeypatch.setattr(pairrun, "preflight_daemon_socket_paths", lambda *_args: None)
+    monkeypatch.setattr(pairrun, "write_projected_pack", lambda *_args: pack)
+    observed = []
+
+    def fake_strategy(capture_spec, *_args):
+        protocol = json.loads(Path(capture_spec["_query_protocol"]).read_bytes())
+        assert protocol["task_ids"] == ["T1", "T2"]
+        assert len(protocol["warmup_schedules"]) == 1
+        assert len(protocol["measurement_schedules"]) == 3
+        assert all(
+            sorted(schedule) == ["T1", "T2"] for schedule in protocol["measurement_schedules"]
+        )
+        assert protocol["seed"] == (8 if shared else 7)
+        observed.append(protocol)
+        return {"strategy": "whole_file"}
+
+    monkeypatch.setattr(pairrun, "run_quanta_strategy", fake_strategy)
+    assert pairrun.run_quanta(spec, tmp_path) == 0
+    assert len(observed) == 1
+    assert spec == before
+    if shared:
+        assert protocol_path.read_bytes() == original_protocol_bytes
+        assert not (output / "query-protocol.json").exists()
+    else:
+        assert (output / "query-protocol.json").is_file()
+
+
+def test_direct_quanta_capture_does_not_silently_drop_fresh_root_repetitions(tmp_path):
+    with pytest.raises(pairrun.RunError, match="one fresh root"):
+        pairrun.run_quanta({"repetitions": 2}, tmp_path)
+
+
+def test_exploratory_query_protocol_accepts_explicit_zero_warmups(tmp_path):
+    spec = _g0_spec()
+    spec["query_warmup_passes"] = 0
+    schema = json.loads((Path(pairrun.__file__).parent / "pair-spec.schema.json").read_text())
+    jsonschema.validate(spec, schema)
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec))
+    assert pairrun.load_spec(path)["query_warmup_passes"] == 0
+    for invalid in (-1, True, 0.5):
+        changed = {**spec, "query_warmup_passes": invalid}
+        path.write_text(json.dumps(changed))
+        with pytest.raises(pairrun.RunError, match="query_warmup_passes"):
+            pairrun.load_spec(path)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(changed, schema)
+
+
+def test_quanta_capture_refuses_protocol_that_contradicts_requested_counts(tmp_path):
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(json.dumps(pairrun.build_query_protocol(["T1", "T2"], 8, 0, 1)))
+    with pytest.raises(pairrun.RunError, match="differs from spec.query_warmup_passes"):
+        pairrun._requested_quanta_query_protocol(
+            {"_query_protocol": str(protocol_path), "query_warmup_passes": 1}, ["T1", "T2"]
+        )
+    with pytest.raises(pairrun.RunError, match="differs from spec.query_repetitions_per_root"):
+        pairrun._requested_quanta_query_protocol(
+            {"_query_protocol": str(protocol_path), "query_repetitions_per_root": 2}, ["T1", "T2"]
+        )
+
+
+def test_quanta_query_protocol_execution_refuses_missing_or_different_schedule():
+    expected = pairrun.build_query_protocol(["T1", "T2"], 7, 1, 3)
+    phase = {"query_protocol": expected, "warmup_passes": 1, "measurement_repetitions": 3}
+    pairrun._validate_quanta_query_protocol_execution(expected, phase)
+    for changed in (
+        {},
+        {**phase, "warmup_passes": 0},
+        {**phase, "measurement_repetitions": 1},
+        {**phase, "query_protocol": pairrun.build_query_protocol(["T1", "T2"], 8, 1, 3)},
+    ):
+        with pytest.raises(pairrun.RunError, match="differs from requested schedule"):
+            pairrun._validate_quanta_query_protocol_execution(expected, changed)
 
 
 def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatch):
@@ -4732,6 +4850,90 @@ def test_semble_file_collection_preserves_native_rank_and_exhaustion(tmp_path):
     pairrun._validate_semble_route_binding(bound)
     with pytest.raises(pairrun.RunError, match="semble_route must be"):
         pairrun._validate_semble_route_binding({**bound, "semble_route": "semble-lexical-only"})
+
+
+def test_semble_file_collection_reuses_verified_source_work_across_queries(monkeypatch):
+    lines = {"a.txt": [f"item {index}\n".encode() for index in range(15)]}
+    lines.update({f"{letter}.txt": [b"value\n"] for letter in "bcdefghij"})
+    shas = {path: ev.digest(b"".join(parts)) for path, parts in lines.items()}
+    hits = [
+        {
+            "file_path": "a.txt",
+            "start_line": index + 1,
+            "end_line": index + 1,
+            "score": float(100 - index),
+        }
+        for index in range(15)
+    ]
+    hits.extend(
+        {"file_path": f"{letter}.txt", "start_line": 1, "end_line": 1, "score": float(80 - index)}
+        for index, letter in enumerate("bcdefghij")
+    )
+    contract = _v3_contract(10)
+    tasks = [{"task_id": task_id, "query": "item"} for task_id in ("T1", "T2")]
+    pack = {"comparison_contract": contract, "tasks": tasks}
+    native = [{"task_id": task["task_id"], "results": hits} for task in tasks]
+    args = (
+        shas,
+        lines,
+        contract,
+        "semble-lexical-file",
+        semble_adapter.execution_profile("lexical-file", None),
+    )
+    expected = semble_adapter.normalize_results(
+        pack, native, {"T1": [1.0], "T2": [1.0]}, *args, indexed_chunks=24
+    )
+    assert [[candidate["path"] for candidate in row["candidates"]] for row in expected] == [
+        ["a.txt", *(f"{letter}.txt" for letter in "bcdefghij")]
+    ] * 2
+    assert all(
+        row["file_collection"] == {"indexed_chunks": 24, "matched_chunks": 24, "matching_files": 10}
+        for row in expected
+    )
+
+    offsets = semble_adapter._source_line_offsets(lines)
+    verified_blocks = {}
+    original_count_tokens = semble_adapter.count_tokens
+    token_checks = []
+
+    def counted_tokens(text):
+        token_checks.append(text)
+        return original_count_tokens(text)
+
+    monkeypatch.setattr(semble_adapter, "count_tokens", counted_tokens)
+    monkeypatch.setattr(
+        semble_adapter,
+        "_source_line_offsets",
+        lambda _lines: pytest.fail("per-query normalization rebuilt source offsets"),
+    )
+    actual = [
+        semble_adapter.normalize_results(
+            {"comparison_contract": contract, "tasks": [task]},
+            [row],
+            {task["task_id"]: [1.0]},
+            *args,
+            indexed_chunks=24,
+            source_line_offsets=offsets,
+            verified_blocks=verified_blocks,
+        )[0]
+        for task, row in zip(tasks, native, strict=True)
+    ]
+    assert actual == expected
+    assert len(verified_blocks) == len(token_checks) == 24
+
+    malformed = copy.deepcopy(hits)
+    malformed[1]["end_line"] = 999
+    rejected = semble_adapter.normalize_results(
+        {"comparison_contract": contract, "tasks": [tasks[0]]},
+        [{"task_id": "T1", "results": malformed}],
+        {"T1": [1.0]},
+        *args,
+        indexed_chunks=24,
+        source_line_offsets=offsets,
+        verified_blocks=verified_blocks,
+    )[0]
+    assert rejected["status"] == "error"
+    assert rejected["error"]["code"] == "semble_hit_beyond_eof"
 
 
 def _single_route_record_v3(pack_sha, contract, route, system, capture_id, rows):
@@ -11459,8 +11661,68 @@ def test_pair_spec_refuses_diagnostic_rank_profiles_before_quality_gate(tmp_path
             pairrun.load_spec(spec_path)
 
 
+def test_exact_symbol_profile_admits_only_standalone_symbol_capture(tmp_path, monkeypatch):
+    spec_path = tmp_path / "symbol-spec.json"
+    spec = _g0_spec()
+    spec["execution_profiles"] = {"quanta": qp.execution_profile("exact_symbol_name")}
+    spec["routes"] = ["symbol"]
+    spec["candidate_route"] = "symbol"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    assert pairrun.load_spec(spec_path, standalone_quanta=True)["routes"] == ["symbol"]
+    observed = []
+    monkeypatch.setattr(
+        pairrun,
+        "run_quanta",
+        lambda loaded, _spec_dir: (
+            observed.append(loaded["execution_profiles"]["quanta"]["policy"]) or 0
+        ),
+    )
+    assert pairrun.cmd_quanta(SimpleNamespace(spec=str(spec_path))) == 0
+    assert observed == ["exact_symbol_name"]
+    with pytest.raises(pairrun.RunError, match="diagnostic rank profile"):
+        pairrun.load_spec(spec_path)
+
+    invalid = copy.deepcopy(spec)
+    invalid["routes"] = ["lexical"]
+    spec_path.write_text(json.dumps(invalid), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match=r"requires \['symbol'\] route"):
+        pairrun.load_spec(spec_path, standalone_quanta=True)
+
+    invalid = copy.deepcopy(spec)
+    invalid["execution_profiles"]["semble"] = semble_adapter.execution_profile("lexical-file", None)
+    spec_path.write_text(json.dumps(invalid), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="cannot include Semble"):
+        pairrun.load_spec(spec_path, standalone_quanta=True)
+
+    invalid = copy.deepcopy(spec)
+    invalid["claims"]["quality"] = True
+    spec_path.write_text(json.dumps(invalid), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="cannot carry qualified claims"):
+        pairrun.load_spec(spec_path, standalone_quanta=True)
+
+
+def test_literal_file_diagnostic_profile_admits_standalone_lexical_only(tmp_path):
+    spec = _g0_spec()
+    spec["execution_profiles"] = {"quanta": qp.execution_profile("literal_file")}
+    spec["routes"] = ["lexical"]
+    spec["candidate_route"] = "lexical"
+    path = tmp_path / "literal-spec.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    assert pairrun.load_spec(path, standalone_quanta=True)["routes"] == ["lexical"]
+    spec["scope"] = "qualified"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="cannot carry qualified claims"):
+        pairrun.load_spec(path, standalone_quanta=True)
+
+
 @pytest.mark.parametrize(
-    "policy", ["code_search_file", "code_search_typo_file", "code_search_components_file"]
+    "policy",
+    [
+        "code_search_file",
+        "code_search_typo_file",
+        "code_search_components_file",
+        "natural_language_file",
+    ],
 )
 def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, policy):
     spec_path = tmp_path / "pair-spec.json"
@@ -11515,6 +11777,70 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
     else:
         with pytest.raises(pairrun.RunError, match="requires code_search_file"):
             pairrun.load_spec(spec_path)
+
+
+def test_natural_language_file_planner_has_distinct_scored_file_contract():
+    raw = "Find retry handling"
+    policy = "natural_language_file"
+    assert qp.plan_lexical_request(policy, raw) == 'select:file "Find" OR "retry" OR "handling"'
+    assert qp.plan_lexical_request("natural_language", raw) == '"Find" OR "retry" OR "handling"'
+    assert qp.derive_query_identity(policy, raw) != qp.derive_query_identity(
+        "natural_language", raw
+    )
+    assert qp.FILE_PROJECTION_ORDERING[policy] == qp.ORDERING_SCORE_DESC
+    assert qp.QUANTA_EVALUATION_POLICIES[qp.NATURAL_LANGUAGE_FILE_SEARCH] == frozenset((policy,))
+    assert qp.execution_profile(policy)["config"] == qp.DEFAULT_NL_CONFIG
+    for raw in ("--- ... ///", " ".join(f"a{i}" for i in range(33)), "x" * 97):
+        with pytest.raises(qp.QueryPlanError):
+            qp.plan_lexical_request(policy, raw)
+
+
+def test_natural_language_file_contract_binds_intent_policy_and_unit(tmp_path):
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path, "natural_language_file", queries=["find alphaTwo", "find alphaThree"]
+    )
+    for task in suite["tasks"]:
+        task["query_intent"] = "semantic_intent"
+        task["evaluation_contract"] = {
+            "request_mode": qp.NATURAL_LANGUAGE_FILE_SEARCH,
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+    for row in run["results"]:
+        row["score_evidence"] = "native_sdk_score_v1"
+        for candidate in row["candidates"]:
+            candidate["score"] = 1.0
+    _pack, run = _repack(repo, suite, run)
+    jsonschema.validate(suite, _load_schema("suite.schema.json"))
+    jsonschema.validate(run, _load_schema("runner.schema.json"))
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    assert loaded_run["results"][0]["rank_unit"] == "distinct_file"
+    assert loaded_run["results"][0]["candidates"][0]["span_accounting"]["unit_kind"] == "chunk"
+    assert (
+        ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)["evaluation_contract"]
+        == (suite["tasks"][0]["evaluation_contract"])
+    )
+    wrong_policy = copy.deepcopy(run)
+    wrong_policy["captures"]["q0"]["execution_profile"] = qp.execution_profile("code_search_file")
+    wrong_policy["captures"]["q0"]["execution_profile_sha256"] = ev.digest(
+        ev.canonical(wrong_policy["captures"]["q0"]["execution_profile"])
+    )
+    with pytest.raises(ev.EvidenceError, match="request mode differs from bound product policy"):
+        record_v3(repo, suite, wrong_policy, suite_path, runner_path)
+    wrong_intent = copy.deepcopy(suite)
+    wrong_intent["tasks"][0]["query_intent"] = "bare_symbol"
+    with pytest.raises(ev.EvidenceError, match="requires independently judged semantic_intent"):
+        ev.validate_suite(repo, wrong_intent)
+
+    # A structurally source-valid CodeSearch file identity cannot be substituted
+    # for the Native select:file representative returned by this policy.
+    _, _, file_run, _, _ = _file_projection_run(tmp_path / "code-file", "code_search_file")
+    forged_identity = copy.deepcopy(run)
+    forged_identity["results"][0]["candidates"] = file_run["results"][0]["candidates"]
+    for candidate in forged_identity["results"][0]["candidates"]:
+        candidate["score"] = 1.0
+    with pytest.raises(ev.EvidenceError, match="other profiles cannot claim it"):
+        record_v3(repo, suite, forged_identity, suite_path, runner_path)
 
 
 @pytest.mark.parametrize(
@@ -12140,17 +12466,24 @@ def test_complete_ranked_pool_excludes_unjudged_file_and_declaration_results():
     assert file_report["file_judgments"]["routes"]["lexical"]["excluded"] == [
         {"task_id": "F", "reason": "unjudged_ranked_file"}
     ]
+    assert set(file_report["file_judgments"]["routes"]["lexical"]["operational_mean"].values()) == {
+        ev.NOT_APPLICABLE
+    }
     file_task["file_judgments"].append({"path": "unknown.go", "grade": 0})
     file_report = ev.judgment_diagnostics(
         file_suite, file_run, file_result, {"F": file_task}, "lexical", None
     )
     assert file_report["file_judgments"]["routes"]["lexical"]["eligible_task_ids"] == ["F"]
+    assert (
+        file_report["file_judgments"]["routes"]["lexical"]["operational_mean"]["ndcg_at_10"] == 1.0
+    )
     file_task["file_judgments"].pop()
     file_task["judgment_policy"] = ev.UNJUDGED_POLICY
     legacy = ev.judgment_diagnostics(
         file_suite, file_run, file_result, {"F": file_task}, "lexical", None
     )
     assert legacy["file_judgments"]["routes"]["lexical"]["eligible_task_ids"] == ["F"]
+    assert legacy["file_judgments"]["routes"]["lexical"]["operational_mean"]["ndcg_at_10"] == 1.0
 
     symbol_suite = {"comparison_contract": {"top_k": 10}, "routes": ["symbol"]}
     symbol_run = {
@@ -12194,6 +12527,9 @@ def test_complete_ranked_pool_excludes_unjudged_file_and_declaration_results():
     assert symbol_report["declaration_judgments"]["routes"]["symbol"]["excluded"] == [
         {"task_id": "D", "reason": "unjudged_ranked_declaration"}
     ]
+    assert set(
+        symbol_report["declaration_judgments"]["routes"]["symbol"]["operational_mean"].values()
+    ) == {ev.NOT_APPLICABLE}
     symbol_task["declaration_judgments"].append(
         {"path": "other.go", "start_byte": 30, "end_byte": 40, "grade": 0}
     )
@@ -12201,6 +12537,56 @@ def test_complete_ranked_pool_excludes_unjudged_file_and_declaration_results():
         symbol_suite, symbol_run, symbol_result, {"D": symbol_task}, "symbol", None
     )
     assert symbol_report["declaration_judgments"]["routes"]["symbol"]["eligible_task_ids"] == ["D"]
+
+
+def test_incomplete_judgments_do_not_become_operational_search_failures():
+    tasks = {
+        task_id: {
+            "answerable": True,
+            "judgment_policy": ev.COMPLETE_JUDGMENT_POLICY,
+            "file_judgments": [{"path": "answer.go", "grade": 3}],
+        }
+        for task_id in ("judged", "unknown")
+    }
+    suite = {"comparison_contract": {"top_k": 10}, "routes": ["lexical"]}
+    run = {
+        "route_provenance": {"lexical": {"capture_id": "q0"}},
+        "captures": {"q0": {"system": "quanta"}},
+    }
+    results = {
+        (task_id, "lexical"): {
+            "status": "success",
+            "rank_unit": "distinct_file",
+            "candidates": [{"path": path, "rank": 1}],
+        }
+        for task_id, path in (("judged", "answer.go"), ("unknown", "unknown.go"))
+    }
+
+    def scores():
+        return ev.judgment_diagnostics(suite, run, results, tasks, "lexical", None)[
+            "file_judgments"
+        ]["routes"]["lexical"]
+
+    report = scores()
+    assert report["eligible_task_ids"] == ["judged"]
+    assert report["coverage"] == 0.5
+    assert report["conditional_mean"]["ndcg_at_10"] == 1.0
+    assert set(report["operational_mean"].values()) == {ev.NOT_APPLICABLE}
+    assert report["operational_unavailable_reason"] == "incomplete_ranked_judgments"
+
+    tasks["unknown"]["file_judgments"].append({"path": "unknown.go", "grade": 0})
+    judged = scores()
+    assert judged["operational_mean"]["ndcg_at_10"] == 0.5
+    assert judged["conditional_mean"]["ndcg_at_10"] == 0.5
+    assert "operational_unavailable_reason" not in judged
+
+    tasks["unknown"]["file_judgments"].pop()
+    results[("unknown", "lexical")].update(status="timeout", candidates=[])
+    failed = scores()
+    assert failed["operational_mean"]["ndcg_at_10"] == 0.5
+    assert failed["conditional_mean"]["ndcg_at_10"] == 1.0
+    assert failed["excluded"] == [{"task_id": "unknown", "reason": "execution_status_timeout"}]
+    assert "operational_unavailable_reason" not in failed
 
 
 def test_independent_file_quality_uses_common_eligible_cohort():
@@ -14399,6 +14785,7 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
         "code_search_exact_content_file",
         "code_search_typo_file",
         "code_search_components_file",
+        "natural_language_file",
     ):
         run["span_accounting_version"] = 1
     for task, row in zip(suite["tasks"], run["results"], strict=True):
@@ -14458,12 +14845,105 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
                         "snippet_sha256": ev.digest(path_bytes),
                     },
                 )
+        if policy == "natural_language_file":
+            for item in by_file.values():
+                item["span_accounting"] = {
+                    "unit_kind": "chunk",
+                    "unit_id": f"{task['task_id']}:{item['rank']}",
+                    "producer_identity": run["captures"]["q0"]["chunk_strategy"],
+                    "indexed_start_byte": item["start_byte"],
+                    "indexed_end_byte": item["end_byte"],
+                    "sdk_start_line": item["start_line"],
+                    "sdk_end_line": item["end_line"],
+                    "extra_context_bytes": 0,
+                }
         chosen = [by_file[path] for path in sorted(by_file, reverse=reverse)]
         for rank, item in enumerate(chosen, 1):
             item["rank"] = rank
         row["candidates"] = chosen
     _pack, run = _repack(repo, suite, run)
     return repo, suite, run, suite_path, runner_path
+
+
+def _file_review_capture_fixture(tmp_path):
+    fixture = _file_projection_run(
+        tmp_path, "natural_language_file", queries=["find alphaTwo", "find alphaThree"]
+    )
+    for row in fixture[2]["results"]:
+        row["score_evidence"] = "native_sdk_score_v1"
+        for rank, candidate in enumerate(row["candidates"]):
+            candidate["score"] = float(len(row["candidates"]) - rank)
+    return fixture
+
+
+def test_capture_review_pool_blinds_native_files_and_preserves_empty_results(tmp_path):
+    from tools.benchmark.retrieval import holdout_review
+
+    repo, suite, run, suite_path, record_path = _file_review_capture_fixture(tmp_path)
+    run["results"][1]["status"] = "abstained"
+    run["results"][1]["candidates"] = []
+    _checked, original_pack, _record = record_v3(repo, suite, run, suite_path, record_path)
+    raw = record_path.read_bytes()
+    pack, pool, custody = holdout_review.capture_review_pool(
+        repo, suite_path, record_path, pool_id="observed-native-file-route"
+    )
+    assert pack == original_pack
+    assert pool == {
+        "pool_id": "observed-native-file-route",
+        "kind": "retrieval",
+        "tasks": {
+            suite["tasks"][0]["task_id"]: [
+                {"path": path, "file_sha256": ev.digest((repo / path).read_bytes())}
+                for path in ("a.txt", "b.txt")
+            ],
+            suite["tasks"][1]["task_id"]: [],
+        },
+    }
+    assert custody["record_bytes_sha256"] == ev.digest(raw)
+    assert custody["qualified"] is custody["pool_execution_attested"] is False
+    assert record_path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("fault", ["record_commitment", "source_digest", "input_race"])
+def test_capture_review_pool_refuses_unbound_inputs(tmp_path, monkeypatch, fault):
+    from tools.benchmark.retrieval import holdout_review
+
+    repo, suite, run, suite_path, record_path = _file_review_capture_fixture(tmp_path)
+    record_v3(repo, suite, run, suite_path, record_path)
+    if fault == "input_race":
+        original = ev.load_evidence
+
+        def raced(*args):
+            loaded = original(*args)
+            record_path.write_bytes(record_path.read_bytes() + b"\n")
+            return loaded
+
+        monkeypatch.setattr(ev, "load_evidence", raced)
+    else:
+        payload = json.loads(record_path.read_text())
+        if fault == "record_commitment":
+            payload["query_pack_sha256"] = "0" * 64
+        else:
+            payload["results"][0]["candidates"][0]["file_sha256"] = "0" * 64
+        record_path.write_bytes(ev.canonical(payload))
+    with pytest.raises(ev.EvidenceError):
+        holdout_review.capture_review_pool(repo, suite_path, record_path, pool_id="captured")
+
+
+def test_capture_review_pool_refuses_chunk_collapse_or_multi_route_pool(tmp_path):
+    from tools.benchmark.retrieval import holdout_review
+
+    repo, suite, run, suite_path, record_path, _files = fixture_v3(tmp_path)
+    record_v3(repo, suite, run, suite_path, record_path)
+    with pytest.raises(ev.EvidenceError, match="one recorded route"):
+        holdout_review.capture_review_pool(repo, suite_path, record_path, pool_id="captured")
+    suite["routes"] = ["lexical"]
+    run["route_provenance"] = {"lexical": {"capture_id": "q0"}}
+    run["results"] = [row for row in run["results"] if row["route"] == "lexical"]
+    _pack, run = _repack(repo, suite, run)
+    record_v3(repo, suite, run, suite_path, record_path)
+    with pytest.raises(ev.EvidenceError, match="native distinct_file"):
+        holdout_review.capture_review_pool(repo, suite_path, record_path, pool_id="captured")
 
 
 def test_file_projection_policies_bind_ordering_and_interpret_metrics(tmp_path):
@@ -14853,6 +15333,13 @@ def test_default_file_contract_accepts_bound_semble_pair(tmp_path):
         run["results"].append(baseline)
     _pack, run = _repack(repo, suite, run)
     record_v3(repo, suite, run, suite_path, runner_path)
+
+    explicit = copy.deepcopy(suite)
+    for task in explicit["tasks"]:
+        task["evaluation_contract"]["request_mode"] = "explicit_osa1_typo"
+    _pack, explicit_run = _repack(repo, explicit, run)
+    with pytest.raises(ev.EvidenceError, match="explicit_osa1_typo has an unsupported route"):
+        record_v3(repo, explicit, explicit_run, suite_path, runner_path)
 
 
 def test_evaluation_contract_rejects_partial_mixed_and_wrong_units(tmp_path):
@@ -15336,9 +15823,10 @@ def test_empty_file_candidate_is_source_bound_and_replayable():
 
 
 def test_code_search_file_refuses_context_metric_from_full_file_identity():
-    run = {"captures": {"q0": {"execution_profile": qp.execution_profile("code_search_file")}}}
-    with pytest.raises(ev.EvidenceError, match="context metrics are undefined"):
-        ev.evaluate({}, {}, run, "lexical", "semantic")
+    for policy in ("code_search_file", "natural_language_file"):
+        run = {"captures": {"q0": {"execution_profile": qp.execution_profile(policy)}}}
+        with pytest.raises(ev.EvidenceError, match="context metrics are undefined"):
+            ev.evaluate({}, {}, run, "lexical", "semantic")
 
 
 @pytest.mark.parametrize(
@@ -15346,6 +15834,7 @@ def test_code_search_file_refuses_context_metric_from_full_file_identity():
     [
         ("code_search_file", ["alphaTwo", "alphaThree"]),
         ("code_search_typo_file", ["alphaTwp", "alphaThre"]),
+        ("natural_language_file", ["find alphaTwo", "find alphaThree"]),
     ],
 )
 def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path, policy, queries):

@@ -220,6 +220,24 @@ pub trait FileContributorIngestPort: Send + Sync {
 pub struct LexicalSearchPageV1<Candidate = LexicalCandidate> {
     pub candidates: Vec<Candidate>,
     pub exact_total: Option<u64>,
+    /// Ordinary file-search work only; absent for unobserved/recovery paths.
+    pub code_search_stats: Option<CodeSearchExecutionStatsV1>,
+}
+
+/// Counts observed during one successful exhaustive ordinary CodeSearch page.
+/// Verification attempts may revisit a rejected file through content/path
+/// postings. They are work counts, not the size of a distinct candidate set.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CodeSearchExecutionStatsV1 {
+    /// False for exact-path and regex-only plans; their zero literal counts
+    /// describe no prefilter work, not a proof of no literal matches.
+    pub literal_prefilter_executed: bool,
+    pub literal_source_verification_attempts: u64,
+    pub literal_verified_files: u64,
+    pub final_candidate_visits: u64,
+    pub verified_matching_files: u64,
+    pub cursor_eligible_files: u64,
+    pub fetched_files: u64,
 }
 
 /// Symbol pages carry the same count authority as text pages.
@@ -273,6 +291,48 @@ pub struct LexicalScoreTraceV1 {
     pub engine_score: f32,
     pub boost_factor: f32,
     pub emitted_score: f32,
+    /// Present only for full-source file scoring; values come from the scorer.
+    pub code_search_components: Option<CodeSearchScoreComponentsV1>,
+    /// Diagnostic ablations, not the selected production policy or score.
+    pub code_search_rank_study: Option<CodeSearchRankStudyV1>,
+}
+
+/// Native-scored experimental policies over the same verified file match.
+/// Unknown declaration coverage stays explicit; its proposed contribution is
+/// neutral. These numbers do not establish relevance or holdout qualification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CodeSearchRankStudyV1 {
+    pub declaration_bonus: Option<u32>,
+    /// Complete symbol census and source spelling verified for its names.
+    /// Legacy display names can leave this false even with complete census.
+    pub declaration_coverage_complete: bool,
+    pub original_boundary_bonus: u32,
+    pub baseline: u32,
+    pub declaration_only: u32,
+    pub boundary_only: u32,
+    pub occurrence_half: u32,
+    pub occurrence_none: u32,
+    pub combined: u32,
+}
+
+/// Additive signals of the selected full-source file ranker. This is internal
+/// application-port data, not an independently recomputed explanation formula.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CodeSearchScoreComponentsV1 {
+    pub boundary_and_path: u32,
+    pub occurrence: u32,
+    pub exact_case: u32,
+    pub proximity: u32,
+}
+
+impl CodeSearchScoreComponentsV1 {
+    #[must_use]
+    pub const fn total(self) -> u32 {
+        self.boundary_and_path
+            .saturating_add(self.occurrence)
+            .saturating_add(self.exact_case)
+            .saturating_add(self.proximity)
+    }
 }
 
 /// Which scoring path produced a lexical engine score.
@@ -282,6 +342,8 @@ pub enum LexicalScoreEngineV1 {
     Bm25,
     /// An unindexed scan, where every match scores 1.
     UnindexedScan,
+    /// Source-verified, distinct-file CodeSearch scoring.
+    CodeSearchFile,
 }
 
 impl LexicalScoreEngineV1 {
@@ -290,6 +352,7 @@ impl LexicalScoreEngineV1 {
         match self {
             Self::Bm25 => "bm25",
             Self::UnindexedScan => "unindexed_scan",
+            Self::CodeSearchFile => "code_search_file",
         }
     }
 }

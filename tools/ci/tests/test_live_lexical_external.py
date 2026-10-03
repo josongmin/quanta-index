@@ -3,7 +3,10 @@
 import hashlib
 import json
 import selectors
+import shutil
+import socket
 import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,6 +19,72 @@ from tools.benchmark.retrieval import live_lexical_external as live
 from tools.ci.tests.test_lexical_capture import inputs
 
 pytest_plugins = ["tools.ci.tests.test_lexical_capture"]
+
+
+def test_bound_release_reuses_one_full_validation_and_refuses_changed_bytes(
+    tmp_path, lexical_release_seed, monkeypatch
+):
+    release = tmp_path / "release"
+    shutil.copytree(lexical_release_seed, release)
+    original_validate = live.corpus_release.validate
+    calls = []
+
+    def validate_once(root):
+        calls.append(root)
+        return original_validate(root)
+
+    monkeypatch.setattr(live.corpus_release, "validate", validate_once)
+    bound = live.BoundRelease.begin(release)
+    assert calls == [release]
+    assert bound.recheck(release) == bound.document
+    assert calls == [release]
+
+    (release / "untracked.txt").write_text("extra")
+    with pytest.raises(ValueError, match="complete file bytes changed"):
+        bound.recheck(release)
+    (release / "untracked.txt").unlink()
+    (release / "release.json").write_bytes((release / "release.json").read_bytes() + b" ")
+    with pytest.raises(ValueError, match="complete file bytes changed"):
+        bound.recheck(release)
+
+
+def test_bound_release_refuses_swapped_root_and_validator_identity(
+    tmp_path, lexical_release_seed, monkeypatch
+):
+    release = tmp_path / "release"
+    shutil.copytree(lexical_release_seed, release)
+    bound = live.BoundRelease.begin(release)
+    other = tmp_path / "other"
+    shutil.copytree(release, other)
+    with pytest.raises(ValueError, match="root, owner or complete file bytes changed"):
+        bound.recheck(other)
+
+    original_hash = live._sha_file
+    owner = Path(live.corpus_release.__file__)
+    monkeypatch.setattr(
+        live,
+        "_sha_file",
+        lambda path: "0" * 64 if path == owner else original_hash(path),
+    )
+    with pytest.raises(ValueError, match="root, owner or complete file bytes changed"):
+        bound.recheck(release)
+
+
+def test_bound_release_refuses_mutation_during_full_validation(
+    tmp_path, lexical_release_seed, monkeypatch
+):
+    release = tmp_path / "release"
+    shutil.copytree(lexical_release_seed, release)
+    original_validate = live.corpus_release.validate
+
+    def mutate_after_validation(root):
+        document = original_validate(root)
+        (root / "release.json").write_bytes((root / "release.json").read_bytes() + b" ")
+        return document
+
+    monkeypatch.setattr(live.corpus_release, "validate", mutate_after_validation)
+    with pytest.raises(ValueError, match="changed during full validation"):
+        live.BoundRelease.begin(release)
 
 
 def test_external_row_replay_streams_large_jsonl_and_refuses_invalid_order(tmp_path):
@@ -81,7 +150,10 @@ def test_cs_fuzzy_query_refuses_unsupported_shapes(query):
         live._cs_fuzzy_query(query)
 
 
-def test_cs_fuzzy_native_request_and_separate_replay(tmp_path, lexical_release_seed):
+@pytest.mark.parametrize("use_bound_release", [False, True])
+def test_cs_fuzzy_native_request_and_separate_replay(
+    tmp_path, lexical_release_seed, monkeypatch, use_bound_release
+):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
     suite = json.loads(paths["suite"].read_bytes())
     pack = json.loads(paths["query_pack"].read_bytes())
@@ -121,10 +193,19 @@ def test_cs_fuzzy_native_request_and_separate_replay(tmp_path, lexical_release_s
     }
     spec_path = tmp_path / "cs-fuzzy-spec.json"
     spec_path.write_text(json.dumps(spec))
-    summary = live.capture_cs_fuzzy(spec_path)
+    bound_release = (
+        live.BoundRelease.begin(Path(spec["corpus"]["release_path"])) if use_bound_release else None
+    )
+    if use_bound_release:
+        monkeypatch.setattr(
+            live.corpus_release,
+            "validate",
+            lambda _root: pytest.fail("bound cs fuzzy capture must reuse full validation"),
+        )
+    summary = live.capture_cs_fuzzy(spec_path, bound_release=bound_release)
     assert summary["tasks"] == 20
     assert summary["scoring_status"] == "not_scored"
-    assert live.verify_cs_fuzzy(root) == summary
+    assert live.verify_cs_fuzzy(root, bound_release=bound_release) == summary
     rows = [json.loads(line) for line in (root / "cs_fuzzy_rows.jsonl").read_bytes().splitlines()]
     assert rows[0]["native_query"] == "symbol_0~1"
     assert rows[0]["paths"] == ["src/0.go"]
@@ -136,7 +217,7 @@ def test_cs_fuzzy_native_request_and_separate_replay(tmp_path, lexical_release_s
     summary["raw_capture_sha256"]["cs/S00.process.json"] = live._sha_file(process)
     (root / "capture.json").write_text(json.dumps(summary))
     with pytest.raises(ValueError, match="native argv"):
-        live.verify_cs_fuzzy(root)
+        live.verify_cs_fuzzy(root, bound_release=bound_release)
 
 
 @pytest.mark.parametrize("failure", [KeyboardInterrupt, OSError])
@@ -322,7 +403,7 @@ def test_opengrok_response_refuses_malformed_search_hits(tmp_path, hits):
 
 
 @pytest.mark.parametrize("status,body", [(404, b"missing"), (200, b"stale source")])
-def test_opengrok_full_view_probe_refuses_missing_or_stale_indexed_document(
+def test_opengrok_full_view_probe_refuses_missing_or_stale_indexed_source(
     tmp_path, monkeypatch, status, body
 ):
     view = tmp_path / "view"
@@ -334,13 +415,37 @@ def test_opengrok_full_view_probe_refuses_missing_or_stale_indexed_document(
     def fake_http(_config, endpoint, _params, _accept):
         if endpoint.endswith("/files"):
             return 200, "application/json", b'["/fixture/file.go"]', 1.0
-        return status, "text/plain", body, 1.0
+        return status, "application/octet-stream", body, 1.0
 
     monkeypatch.setattr(live, "_http", fake_http)
-    with pytest.raises(ValueError, match="indexed document"):
+    with pytest.raises(ValueError, match="indexed source"):
         live._opengrok_indexed_view({"project": "fixture"}, manifest, view, target)
     assert (target / "000000.content").read_bytes() == body
     assert json.loads((target / "000000.transport.json").read_bytes())["path"] == "/fixture/file.go"
+
+
+def test_opengrok_full_view_probe_binds_index_uid_and_octet_source(tmp_path, monkeypatch):
+    view = tmp_path / "view"
+    view.mkdir()
+    (view / "file.go").write_bytes(b"current source")
+    manifest = {"files": [{"path": "file.go", "file_sha256": live._sha(b"current source")}]}
+    calls = []
+
+    def fake_http(_config, endpoint, _params, accept):
+        calls.append((endpoint, accept))
+        if endpoint.endswith("/files"):
+            return 200, "application/json", b'["/fixture/file.go"]', 1.0
+        assert accept == "application/octet-stream"
+        return 200, "application/octet-stream", b"current source", 1.0
+
+    monkeypatch.setattr(live, "_http", fake_http)
+    target = tmp_path / "probe"
+    live._opengrok_indexed_view({"project": "fixture"}, manifest, view, target)
+    assert calls == [
+        ("/api/v1/projects/fixture/files", "application/json"),
+        ("/api/v1/file/content", "application/octet-stream"),
+        ("/api/v1/projects/fixture/files", "application/json"),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -448,6 +553,28 @@ def test_local_backend_snapshot_binds_container_image_mount_port_and_index(tmp_p
         live._backend_snapshot(config)
 
 
+def test_backend_tree_accepts_only_idle_zoekt_runtime_entries():
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    with tempfile.TemporaryDirectory(prefix="qi-zoekt-", dir=temp_root) as directory:
+        root = Path(directory)
+        (root / "shard.zoekt").write_bytes(b"index")
+        (root / ".indexserver.tmp").mkdir()
+        (root / ".trash").mkdir()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(root / "indexserver.sock"))
+            rows, _ = live._backend_tree(root)
+            assert [row["path"] for row in rows] == ["shard.zoekt"]
+
+            (root / ".indexserver.tmp" / "active.zoekt").write_bytes(b"partial")
+            with pytest.raises(ValueError, match="transient index directory is nonempty"):
+                live._backend_tree(root)
+            (root / ".indexserver.tmp" / "active.zoekt").unlink()
+
+            (root / "other.sock").symlink_to(root / "shard.zoekt")
+            with pytest.raises(ValueError, match="link or special file"):
+                live._backend_tree(root)
+
+
 def test_backend_snapshot_refuses_process_restart_and_unbounded_index(tmp_path, monkeypatch):
     root = tmp_path / "index"
     root.mkdir()
@@ -513,7 +640,7 @@ def test_opengrok_full_view_probe_rejects_inventory_change_during_capture(tmp_pa
             if inventory_calls == 2:
                 paths.append("/fixture/extra.go")
             return 200, "application/json", json.dumps(paths).encode(), 1.0
-        return 200, "text/plain", b"current source", 1.0
+        return 200, "application/octet-stream", b"current source", 1.0
 
     monkeypatch.setattr(live, "_http", fake_http)
     target = tmp_path / "probe"
@@ -611,7 +738,7 @@ class SearchHandler(BaseHTTPRequestHandler):
             requested = query["path"][0]
             assert requested.startswith("/fixture/")
             body = (self.view / requested.removeprefix("/fixture/")).read_bytes()
-            content_type = "text/plain"
+            content_type = "application/octet-stream"
         elif parsed.path == "/api/v1/projects/fixture/files":
             paths = [
                 "/fixture/" + path.relative_to(self.view).as_posix()
@@ -636,8 +763,19 @@ class SearchHandler(BaseHTTPRequestHandler):
 
 
 @pytest.mark.parametrize(
-    ("index_changes_during_queries", "unsupported_query", "backend_changes_during_queries"),
-    [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
+    (
+        "index_changes_during_queries",
+        "unsupported_query",
+        "backend_changes_during_queries",
+        "use_bound_release",
+    ),
+    [
+        (False, False, False, False),
+        (False, False, False, True),
+        (True, False, False, False),
+        (False, True, False, False),
+        (False, False, True, False),
+    ],
 )
 def test_live_capture_makes_three_product_requests_and_retains_raw(
     tmp_path,
@@ -645,6 +783,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     index_changes_during_queries,
     unsupported_query,
     backend_changes_during_queries,
+    use_bound_release,
     monkeypatch,
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
@@ -760,7 +899,21 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             with pytest.raises(ValueError, match="backend process, mount or index changed"):
                 live.capture(spec_path)
         else:
-            result = live.capture(spec_path)
+            if use_bound_release:
+                full_validate = live.corpus_release.validate
+                validations = []
+
+                def counted_validate(root):
+                    validations.append(root)
+                    return full_validate(root)
+
+                monkeypatch.setattr(live.corpus_release, "validate", counted_validate)
+                bound = live.BoundRelease.begin(Path(corpus["release_path"]))
+                result = live.capture(spec_path, bound_release=bound)
+                assert live.verify(Path(spec["output_root"]), bound_release=bound) == result
+                assert len(validations) == 1
+            else:
+                result = live.capture(spec_path)
     finally:
         server.shutdown()
         server.server_close()
@@ -953,7 +1106,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             }
         )
     )
-    with pytest.raises(ValueError, match="source bytes differ from release"):
+    with pytest.raises(ValueError, match="bytes differ from release"):
         live.verify(root)
     probe_path.write_bytes(original_probe)
     summary_path.write_text(json.dumps(result))

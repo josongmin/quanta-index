@@ -252,6 +252,19 @@ def _derive_prepared(
         [(path, "census_refused") for path in refused_paths]
         + [(path, "census_disagreement") for path in disagreement_paths]
     )
+    # The independent checker can refuse a file that the primary parser
+    # censuses completely. Only primary parser refusals need an oracle
+    # exclusion; checker-only refusals remain visible in required_rows.
+    parser_refused_paths = set()
+    for path in refused_paths:
+        if path not in files:
+            raise ValueError("C4 refused declaration file is outside the universe")
+        try:
+            source_oracle.declaration_census(language, path, files[path])
+        except source_oracle.SourceOracleError as exc:
+            if not source_oracle._excludable_census_refusal(exc):
+                raise ValueError("C4 primary declaration census is unavailable") from exc
+            parser_refused_paths.add(path)
     gold_tasks, blind_tasks = gold["tasks"], blind["tasks"]
     selected, excluded = [], []
     declaration_exclusions: dict[tuple[str, str], set[str]] = {}
@@ -318,10 +331,10 @@ def _derive_prepared(
                     files[path], task["query"], "osa1_casefold"
                 ):
                     raise ValueError("C4 typo near-census exclusion is not query-proven")
-                if reason == "census_refused":
+                if path in parser_refused_paths and reason == "census_refused":
                     typo_exclusions.setdefault((near_contract, task["query"]), set()).add(path)
             for path, reason in expected:
-                if reason == "census_refused":
+                if path in parser_refused_paths and reason == "census_refused":
                     typo_exclusions.setdefault((contract, task["intended_name"]), set()).add(path)
     typo_oracle = (
         source_oracle.SourceOracleIndex(
@@ -396,14 +409,16 @@ def _derive_prepared(
             excluded.append({"task_id": task["task_id"], "reason": "incomplete_census_exclusion"})
             continue
         refused_selected_paths = [
-            path for path, reason in excluded_rows if reason == "census_refused"
+            path
+            for path, reason in excluded_rows
+            if reason == "census_refused" and path in parser_refused_paths
         ]
         if not task["answerable"]:
             try:
                 if absence_oracle is None:
                     raise source_oracle.SourceOracleError("negative query is not an identifier")
                 absence_oracle.expected_rows(
-                    source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+                    source_oracle.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD,
                     task["query"],
                     "distinct_file",
                 )
@@ -482,7 +497,9 @@ def _derive_prepared(
             if label["file_sha256"] != source.file(label["path"])[2]:
                 raise ValueError(f"C4 label file hash differs: {task['task_id']}")
         score_contract = (
-            contract if task["answerable"] else source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD
+            contract
+            if task["answerable"]
+            else source_oracle.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD
         )
         judgments = oracle.expected_rows(score_contract, oracle_query, "distinct_file")
         source_contract = {"contract": score_contract, "unit": "distinct_file"}
@@ -493,7 +510,7 @@ def _derive_prepared(
             near_paths = sorted(
                 row["path"]
                 for row in task.get("near_census_text_excluded", [])
-                if row["reason"] == "census_refused"
+                if row["reason"] == "census_refused" and row["path"] in parser_refused_paths
             )
             if near_paths:
                 source_contract["near_declaration_exclusions"] = near_paths
@@ -538,7 +555,11 @@ def _derive_prepared(
             "output_unit_policy": "rank_prefix",
             "span_unit": evaluator.SPAN_UNIT,
         },
-        "routes": ["lexical", "semble-lexical-file"],
+        "routes": (
+            ["lexical"]
+            if intent in ("declaration_name_components", "declaration_name_osa1_casefold")
+            else ["lexical", "semble-lexical-file"]
+        ),
         "file_universe": universe,
         "file_universe_digest": evaluator.universe_digest(universe),
         "diagnostic_policy": evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
@@ -615,6 +636,14 @@ def _batch_preflight(
     capsule_names = {path.name for path in capsule_root.iterdir() if path.is_dir()}
     if capsule_names != set(names) or any(path.is_symlink() for path in capsule_root.iterdir()):
         raise ValueError("C4 matrix capsule roster differs from release")
+    # A source mismatch makes every regenerated gold byte ineligible. Check all
+    # capsule identities before the expensive corpus-wide split replay; the
+    # full source-derived capsule validation below remains the authority.
+    producer_sources = corpus_binding._gold_producer_source_digests()
+    for name in names:
+        identity = _read(capsule_root / name / "identity.json")
+        if identity.get("producer_source_digests") != producer_sources:
+            raise ValueError(f"C4 gold producer source differs: {name}")
     first = capsule_root / min(names)
     split_raw = _read_control_file(first / "split-manifest.json")
     split_releases_raw = _read_control_file(first / "split-releases.json")

@@ -199,11 +199,11 @@ def test_typo_near_census_uses_query_specific_absence_for_refused_file(tmp_path,
 )
 def test_named_function_oracle_has_fixed_declaration_spans(name, language, expected):
     raw = (FIXTURES / name).read_bytes()
-    spans, error = gold_oracle._definition_spans(raw, b"target", language)
+    spans, error = gold_oracle._definition_spans(raw, b"target", language, path=name)
     assert error is None
     assert [start for start, _end, _kind in spans] == expected
     assert all(raw[start:end] == b"target" for start, end, _kind in spans)
-    absent, error = gold_oracle._definition_spans(raw, b"absent", language)
+    absent, error = gold_oracle._definition_spans(raw, b"absent", language, path=name)
     assert absent == [] and error is None
 
 
@@ -970,10 +970,12 @@ def test_census_disagreement_requires_query_specific_text_absence(tmp_path, monk
         },
     )
     gold, _blind = gold_oracle.derive(value, manifest, view)
-    target = gold["tasks"][0]
-    assert target["unsupported"] == [{"path": "disputed.py", "reason": "census_refused"}]
-    assert target["census_text_excluded"] == []
-    assert target["answerable"] is None
+    target, other = gold["tasks"]
+    assert target["unsupported"] == []
+    assert target["census_text_excluded"] == [{"path": "disputed.py", "reason": "census_refused"}]
+    assert target["answerable"] is True
+    assert other["unsupported"] == [{"path": "disputed.py", "reason": "census_refused"}]
+    assert other["answerable"] is None
 
 
 def test_holdout_sampling_freezes_seeded_ledger_recipes_and_split(split_releases, tmp_path):  # noqa: F811
@@ -1071,6 +1073,50 @@ def test_scale_negative_excludes_literal_path_and_near_content_token(split_relea
     assert not repository.default_file_search_absent("core.py")  # indexed path
     assert not repository.default_file_search_absent("worker_0")  # indexed content
     assert repository.default_file_search_absent("zzzzzzzzz")
+
+
+def test_sampler_binds_all_supported_language_checkers_without_sampling_other_names(tmp_path):
+    from tools.benchmark.retrieval import holdout_sampling
+
+    release = tmp_path / "release"
+    view = release / "views" / "mixed" / "code_only"
+    view.mkdir(parents=True)
+    files = {
+        "core.py": b"def primary():\n    pass\n",
+        "util.js": b"export function secondary() {}\n",
+    }
+    for path, raw in files.items():
+        (view / path).write_bytes(raw)
+    manifest_path = release / "manifests" / "mixed" / "code_only.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "repository_commit": "a" * 40,
+                "files": [
+                    {"path": path, "file_sha256": gold_oracle._sha(raw)}
+                    for path, raw in sorted(files.items())
+                ],
+            }
+        )
+    )
+    row = {
+        "recipe": {"name": "mixed", "language": "python", "revision": "a" * 40},
+        "views": {
+            "code_only": {
+                "manifest": "manifests/mixed/code_only.json",
+                "file_universe_digest": "sha256:" + "b" * 64,
+            }
+        },
+    }
+    repository = holdout_sampling.Repository(release, {"digest": "sha256:" + "c" * 64}, row)
+    repository.run_census()
+    assert set(repository.all_audits) == {"python", "javascript"}
+    assert repository.names == {"primary": 1}
+    assert repository.audit == repository.all_audits["python"]
+    assert {
+        language: audit["checker"]["id"] for language, audit in repository.all_audits.items()
+    } == {"python": "cpython_ast", "javascript": "typescript_compiler"}
 
 
 def test_literal_sampling_excludes_queries_outside_product_contract():
