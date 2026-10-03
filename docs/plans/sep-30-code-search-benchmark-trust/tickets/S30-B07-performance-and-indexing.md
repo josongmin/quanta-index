@@ -199,12 +199,15 @@ checks, not whole-repository or performance qualification. The public API
 baseline and `just rust-public-api` passed. The real
 `sdk_roundtrip::real_daemon_roundtrip_publishes_and_queries` passed 1/1 against
 the same-lane daemon; it crosses publication, activation, query and the nested
-stage response boundary. New scoped scale/open-loop tests and actual medium
-execution are still pending shared resource admission.
+stage response boundary. Scoped `scale::` tests passed 19/19 after correcting
+the activation/cold-open expectation; the earlier medium execution failed on
+that expectation. The corrected CLI rail and fresh medium rerun are pending
+shared resource admission. See the fresh execution update below.
 
-Fresh stage attribution, optimization A/B, actual medium/large/XL execution,
-quiet-host performance qualification and fresh five-product comparison remain
-`NOT_RUN`. No performance improvement has been established by instrumentation.
+Fresh single-run stage attribution is now available; optimization A/B,
+successful corrected medium/large/XL execution and quiet-host qualification
+remain `NOT_RUN`. Fresh five-product capture is in progress, not complete.
+No performance improvement has been established by instrumentation.
 
 Integration focused check: `uv run --frozen --extra dev python -m pytest
 tools/ci/tests/test_retrieval_benchmark.py -q -k
@@ -308,6 +311,14 @@ not evidence of the binaries' build source. Binary digests and the distinct
 source identities are retained outside captures. Existing `source_sha` fields
 bind the driver closure. Their description must not promote that closure to a
 Rust binary/source attestation.
+
+Current manifest/verdict readers retain historical v2 shapes, but a qualified
+speed or quality claim now fails with `binary_build_source_unattested` when the
+Rust binary's build source has no independently verified binding. Driver source
+closure, frozen binary SHA and SDK proof are separate valid evidence; none
+alone proves which source built that binary. Existing qualified test fixtures
+exercise the refusal, while a positive independently attested build-source
+qualification rail remains `NOT_RUN` pending a real build authority contract.
 
 The exact lane's fresh pair `/private/tmp/qf4a` passed capture and independent
 verdict replay: selected/executed/passed 2,392/2,392/2,392, failed 0. Its
