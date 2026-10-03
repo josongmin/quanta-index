@@ -211,6 +211,54 @@ def validate(artifact, record, pack):
     return study.validate_artifact(artifact, record, "a" * 64, pack)
 
 
+def test_intent_breakdown_exposes_content_regression_hidden_by_declaration_gains():
+    artifact, record, pack, suite = fixture()
+    original = validate(artifact, record, pack)["T1"]
+    rows = {task_id: copy.deepcopy(original) for task_id in ("D1", "D2", "C1", "C2")}
+    tasks = []
+    for task_id in rows:
+        task = copy.deepcopy(suite["tasks"][0])
+        task["task_id"] = task_id
+        declaration = task_id.startswith("D")
+        task["query_intent"] = "bare_symbol" if declaration else "exact_content"
+        task["source_oracle"] = {
+            "contract": "rust_exact_local_name_v1"
+            if declaration
+            else "content_literal_utf8_exact_v1"
+        }
+        if not declaration:
+            # A usage query has the opposite independently specified relevance.
+            task["file_judgments"][0]["grade"] = 0
+            task["file_judgments"][1]["grade"] = 3
+        tasks.append(task)
+    rows["C2"]["collection"].update(pool_complete=False, reason="diagnostic_page_limit")
+    suite["tasks"] = tasks
+    report = study.compose(suite, rows)["comparisons"]["declaration_only"]
+    assert report["paired_means"]["candidate"]["file_hit"] == 2 / 3
+    assert report["regressions"]["file_hit"] == ["C1"]
+    declaration, content = report["intent_comparisons"]
+    assert declaration["query_intent"] == "bare_symbol"
+    assert declaration["paired_means"]["candidate"]["file_hit"] == 1
+    assert declaration["paired_means"]["baseline"]["file_hit"] == 0
+    assert content["query_intent"] == "exact_content"
+    assert content["coverage"] == 0.5
+    assert content["paired_means"]["candidate"]["file_hit"] == 0
+    assert content["paired_means"]["baseline"]["file_hit"] == 1
+    assert content["excluded"] == [{"task_id": "C2", "reason": "diagnostic_page_limit"}]
+
+
+def test_fully_excluded_intent_has_no_fabricated_quality_mean():
+    artifact, record, pack, suite = fixture()
+    rows = validate(artifact, record, pack)
+    rows["T1"]["collection"].update(pool_complete=False, reason="diagnostic_page_limit")
+    report = study.compose(suite, rows)["comparisons"]["combined"]
+    group = report["intent_comparisons"][0]
+    assert group["coverage"] == 0
+    assert group["task_count"] == 1
+    assert group["paired_means"]["candidate"]["file_hit"] is None
+    assert group["regressions"]["file_hit"] == []
+
+
 def test_complete_pool_promotes_outside_original_top_k_with_fixed_file_goldens():
     artifact, record, pack, suite = fixture()
     report = study.compose(suite, validate(artifact, record, pack))

@@ -17,6 +17,7 @@ from typing import Any
 from tools.benchmark.retrieval import (
     evaluator,
     identifier_osa1_absence_suite,
+    identifier_robustness_suite,
     query_plan,
     source_oracle,
     source_oracle_suite,
@@ -62,6 +63,16 @@ def _lane_data(census: dict[str, Any], lane: str) -> dict[str, Any]:
         "default robustness projection source mismatch",
     )
     return source
+
+
+def _source_strata_policy(lane_data: dict[str, Any]) -> dict[str, Any] | None:
+    policy = lane_data.get("source_strata_policy")
+    if policy is not None:
+        _require(
+            policy == identifier_robustness_suite.TYPO_SOURCE_STRATA_POLICY,
+            "unsupported typo source strata policy",
+        )
+    return policy
 
 
 def _category_breakdown(
@@ -645,6 +656,16 @@ def compose(
         for task_id, row in records.items()
         if row.get("status") == "admitted" and task_id in tasks
     }
+    source_strata_policy = _source_strata_policy(lane_data)
+    if source_strata_policy is not None:
+        _require(
+            all(
+                isinstance(row.get("strata"), dict)
+                and {"literal_relation", "surviving_components"} <= row["strata"].keys()
+                for row in admitted_records.values()
+            ),
+            "incomplete typo source strata metadata",
+        )
     operation_records = {
         task_id: {"operation": row["generation"]["operation"]}
         for task_id, row in admitted_records.items()
@@ -662,6 +683,17 @@ def compose(
         detailed_strata[field] = _category_breakdown(subset, scored_rows, results, field)
         if subset:
             _require(set(subset) == set(admitted_records), f"incomplete {field} census metadata")
+    if source_strata_policy is not None:
+        for field in ("literal_relation", "surviving_components"):
+            detailed_strata[field] = _category_breakdown(
+                {
+                    task_id: {field: row["strata"][field]}
+                    for task_id, row in admitted_records.items()
+                },
+                scored_rows,
+                results,
+                field,
+            )
     sampling = (
         _sampling_breakdown(census, records, admitted_records, scored_rows, results)
         if lane != "no-answer" and lane not in NEGATIVE_LANES
@@ -721,6 +753,11 @@ def compose(
         },
         "strata": breakdown,
         "detailed_strata": detailed_strata,
+        **(
+            {"source_strata_policy": source_strata_policy}
+            if source_strata_policy is not None
+            else {}
+        ),
         "sampling": sampling,
     }
 
@@ -983,6 +1020,7 @@ def verify_census_against_source(
         return
     lane_data = _lane_data(census, lane)
     contract = lane_data.get("contract", lane_data.get("scoring_contract"))
+    source_strata_policy = _source_strata_policy(lane_data)
     _require(
         contract in source_oracle.DECLARATION_NAME_CONTRACTS,
         "census contract is not a declaration name contract",
@@ -1010,6 +1048,16 @@ def verify_census_against_source(
                     and row["matched_names"] == 1,
                     "census/source intended-name partition mismatch",
                 )
+                if source_strata_policy is not None:
+                    _require(
+                        all(
+                            row.get("strata", {}).get(field) == value
+                            for field, value in identifier_robustness_suite.typo_source_strata(
+                                row["intended_name"], row["query"]
+                            ).items()
+                        ),
+                        "census/source typo strata mismatch",
+                    )
         return
     names = {row["query"] for row in lane_data["records"] if row["status"] == "admitted"}
     oracle = source_oracle.SourceOracleIndex(files, names)
@@ -1027,6 +1075,16 @@ def verify_census_against_source(
             == len(oracle.expected_rows(contract, row["query"], "distinct_file")),
             "census/source declaration mismatch",
         )
+        if source_strata_policy is not None:
+            _require(
+                all(
+                    row.get("strata", {}).get(field) == value
+                    for field, value in identifier_robustness_suite.typo_source_strata(
+                        row["base_query"], row["query"]
+                    ).items()
+                ),
+                "census/source typo strata mismatch",
+            )
 
 
 def _write_output(path: Path, rendered: str, *, repo: Path | None = None) -> None:

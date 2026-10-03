@@ -444,6 +444,62 @@ def validate_artifact(
     return validated
 
 
+def _paired_means(samples: list[dict]) -> dict:
+    return {
+        side: {
+            name: sum(sample[side][name] for sample in samples) / len(samples)
+            if samples
+            else None
+            for name in ("file_ndcg", "file_hit", "file_mrr")
+        }
+        for side in ("baseline", "candidate")
+    }
+
+
+def _regressions(samples: list[dict]) -> dict:
+    return {
+        metric: [
+            sample["task_id"]
+            for sample in samples
+            if sample["candidate"][metric] < sample["baseline"][metric]
+        ]
+        for metric in ("file_ndcg", "file_hit", "file_mrr")
+    }
+
+
+def _intent_comparisons(tasks: dict, samples: list[dict], excluded: list[dict]) -> list[dict]:
+    # A literal-content oracle and a declaration oracle may use the same file
+    # metric but have different relevance contracts. Never hide them in one mean.
+    groups: dict[tuple[str, str], set[str]] = {}
+    for task_id, task in tasks.items():
+        key = (
+            task.get("query_intent", "unspecified"),
+            task.get("source_oracle", {}).get("contract", "reviewed_or_unspecified"),
+        )
+        groups.setdefault(key, set()).add(task_id)
+    result = []
+    for (intent, contract), ids in sorted(groups.items()):
+        admitted = [sample for sample in samples if sample["task_id"] in ids]
+        exclusions = [row for row in excluded if row["task_id"] in ids]
+        require(
+            len(admitted) + len(exclusions) == len(ids),
+            "intent comparison omitted a task",
+        )
+        result.append(
+            {
+                "query_intent": intent,
+                "source_oracle_contract": contract,
+                "task_count": len(ids),
+                "eligible_task_ids": [sample["task_id"] for sample in admitted],
+                "excluded": exclusions,
+                "coverage": len(admitted) / len(ids),
+                "paired_means": _paired_means(admitted),
+                "regressions": _regressions(admitted),
+            }
+        )
+    return result
+
+
 def compose(suite: dict, rows: dict[str, dict]) -> dict:
     """Use common eligible tasks for each baseline/candidate comparison."""
     tasks = {task["task_id"]: task for task in suite["tasks"]}
@@ -498,21 +554,14 @@ def compose(suite: dict, rows: dict[str, dict]) -> dict:
                     "candidate_top_k": [item["repo_relative_path"] for item in candidate[:k]],
                 }
             )
-        mean = {
-            side: {
-                name: sum(sample[side][name] for sample in samples) / len(samples)
-                if samples
-                else None
-                for name in ("file_ndcg", "file_hit", "file_mrr")
-            }
-            for side in ("baseline", "candidate")
-        }
         comparisons[policy] = {
             "eligible_task_ids": admitted,
             "excluded": excluded,
-            "paired_means": mean,
+            "paired_means": _paired_means(samples),
             "coverage": len(admitted) / len(rows) if rows else 0.0,
             "samples": samples,
+            "regressions": _regressions(samples),
+            "intent_comparisons": _intent_comparisons(tasks, samples, excluded),
         }
     return {
         "kind": "code_search_complete_pool_ablation_report",

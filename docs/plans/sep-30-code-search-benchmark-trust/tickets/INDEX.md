@@ -39,6 +39,7 @@ five-product semantics, controlled performance or the fresh holdout.
 | P1 | [S30-B06](S30-B06-arb-gin-workflow.md) | CS-BENCH-01/03 | ARB release and B04 adapter contract | ARB gin 88 positive cases on base-commit snapshots |
 | P1 | [S30-B07](S30-B07-performance-and-indexing.md) | CS-BENCH-04, MISC-06 | B04 correctness, quiet host | Equal-boundary query and separately bounded index/build timing |
 | P2 | [S30-B08](S30-B08-fresh-multirepo-holdout.md) | CS-BENCH-01/03/04, CS-INT-01 | Frozen new repositories and policy | Unseen cross-repository holdout and qualified product decision |
+| P1 | [S30-B09](S30-B09-external-robustness-adoption.md) | B03/B05/B08 and CS-BENCH-01/03 | Pinned external source and input contracts | External qrel intake and source-defined robustness strata; product qualification remains separate |
 
 Parallel preparation: B02 and B03 may run independently after B01; B06 release
 validation can start while B04 captures exact gin. B05 depends on admitted raw

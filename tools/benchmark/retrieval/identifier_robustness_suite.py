@@ -72,6 +72,14 @@ STRESS_TYPO_LANES = ("keyboard", "boundary")
 LETTERS = "abcdefghijklmnopqrstuvwxyz"
 MAX_ATTEMPTS = 8
 SHORT_NAME_MAX = 6
+SURVIVING_COMPONENT_MIN_LENGTH = 3
+TYPO_SOURCE_STRATA_POLICY = {
+    "component_tokenizer": source_oracle.COMPONENT_TOKENIZER,
+    "min_component_length": SURVIVING_COMPONENT_MIN_LENGTH,
+    "component_survival": "casefolded_component_token_identity",
+    "tokenizer_scope": "source_oracle_diagnostic_with_inferred_acronym_boundaries",
+    "literal_relation": "casefolded_proper_substring",
+}
 TOOL_FILES = source_oracle_suite.TOOL_FILES + (
     "tools/benchmark/retrieval/identifier_robustness_suite.py",
     "tools/benchmark/retrieval/declaration_census_audit.py",
@@ -109,6 +117,41 @@ def _name_length_stratum(name: str) -> str:
     if len(name) <= SHORT_NAME_MAX:
         return "short_1_6"
     return "medium_7_16" if len(name) <= 16 else "long_17_plus"
+
+
+def typo_source_strata(original: str, query: str) -> dict[str, str]:
+    """Describe source-text overlap without inferring retrieval cause or user intent."""
+    evaluator.require(
+        source_oracle.IDENTIFIER.fullmatch(original) is not None
+        and source_oracle.IDENTIFIER.fullmatch(query) is not None,
+        "typo source strata require ASCII identifiers",
+    )
+    intended, submitted = original.casefold(), query.casefold()
+    evaluator.require(intended != submitted, "noisy query equals intended name after case folding")
+    relation = (
+        "query_proper_substring"
+        if submitted in intended
+        else "intended_proper_substring"
+        if intended in submitted
+        else "neither"
+    )
+    original_components = {
+        part
+        for part in source_oracle.name_components(original)
+        if len(part) >= SURVIVING_COMPONENT_MIN_LENGTH
+    }
+    query_components = set(source_oracle.name_components(query))
+    survived = len(original_components & query_components)
+    survival = (
+        "no_eligible_components"
+        if not original_components
+        else "none"
+        if survived == 0
+        else "all"
+        if survived == len(original_components)
+        else "some"
+    )
+    return {"literal_relation": relation, "surviving_components": survival}
 
 
 def propose(lane: str, name: str, seed: int, family: str, attempt: int) -> tuple[str | None, dict]:
@@ -528,7 +571,7 @@ def derive(
                 record.update(
                     base_task_id=base["task_id"],
                     base_query=base["query"],
-                    strata=strata[base["task_id"]],
+                    strata=dict(strata[base["task_id"]]),
                 )
             if query is None:
                 record["status"] = "ineligible"
@@ -564,6 +607,8 @@ def derive(
                 ),
                 base_name_in_gold=None if base is None else base["query"] in names,
             )
+            if lane == "typo" and base is not None:
+                record["strata"].update(typo_source_strata(base["query"], query))
             if lane == "no-answer":
                 # The declaration-intent answer is empty; content search may still
                 # legitimately return these bytes, scored in a separate content lane.
@@ -623,6 +668,8 @@ def derive(
             ),
             "records": records,
         }
+        if lane == "typo":
+            census["lanes"][lane]["source_strata_policy"] = dict(TYPO_SOURCE_STRATA_POLICY)
     lane, code = CONTENT_NO_ANSWER
     outputs[lane], census["lanes"][lane] = _content_no_answer(
         repo, outputs["no-answer"][0], census["lanes"]["no-answer"]["records"], code, seed
@@ -938,6 +985,7 @@ def derive_paired_full(
             record["strata"]["near_name_collision"] = (
                 "yes" if partition["other_near_declaration_names"] else "no"
             )
+            record["strata"].update(typo_source_strata(base["query"], query))
             record["intended_name"] = base["query"]
             record["matched_names"] = 1
             record["gold_files"] = len(partition["intended_base_files"])
@@ -971,6 +1019,7 @@ def derive_paired_full(
         census["lanes"][lane] = {
             "scoring_contract": exact,
             "near_declaration_metadata_contract": near,
+            "source_strata_policy": dict(TYPO_SOURCE_STRATA_POLICY),
             "gold_kind": "intended_original_name",
             "admitted": len(rows),
             "status": _tally(records, "status"),

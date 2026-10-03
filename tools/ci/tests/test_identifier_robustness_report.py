@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from tools.benchmark.retrieval import evaluator, identifier_osa1_absence_suite, source_oracle
+from tools.benchmark.retrieval import (
+    evaluator,
+    identifier_osa1_absence_suite,
+    identifier_robustness_suite,
+    source_oracle,
+)
 from tools.benchmark.retrieval.identifier_robustness_report import (
     _verify_paired_capture_identity,
     _write_output,
@@ -420,6 +425,51 @@ def test_operation_and_length_breakdown_count_capped_as_eligible():
     }
     del census["lanes"]["prefix"]["records"][0]["generation"]
     with pytest.raises(ValueError, match="incomplete operation census metadata"):
+        compose(suite, census, record, diagnostic, "prefix")
+
+
+def test_source_text_strata_count_scored_rows_and_preserve_historical_reports():
+    suite, census, record, diagnostic = fixture()
+    historical = compose(suite, census, record, diagnostic, "prefix")
+    assert "source_strata_policy" not in historical
+    assert "literal_relation" not in historical["detailed_strata"]
+    assert "surviving_components" not in historical["detailed_strata"]
+    rows = census["lanes"]["prefix"]["records"][:4]
+    census["lanes"]["prefix"]["source_strata_policy"] = dict(
+        identifier_robustness_suite.TYPO_SOURCE_STRATA_POLICY
+    )
+    for row, relation, survival in zip(
+        rows,
+        ("query_proper_substring", "neither", "neither", "intended_proper_substring"),
+        ("none", "some", "all", "no_eligible_components"),
+        strict=True,
+    ):
+        row["strata"] = {"literal_relation": relation, "surviving_components": survival}
+    output = compose(suite, census, record, diagnostic, "prefix")
+    assert output["source_strata_policy"] == identifier_robustness_suite.TYPO_SOURCE_STRATA_POLICY
+    assert output["detailed_strata"]["literal_relation"] == {
+        "intended_proper_substring": {
+            "admitted": 1,
+            "eligible": 1,
+            "hit_at_10_count": 0,
+            "capped": 1,
+        },
+        "neither": {"admitted": 2, "eligible": 1, "hit_at_10_count": 1, "capped": 0},
+        "query_proper_substring": {
+            "admitted": 1,
+            "eligible": 1,
+            "hit_at_10_count": 1,
+            "capped": 0,
+        },
+    }
+    assert output["detailed_strata"]["surviving_components"]["some"] == {
+        "admitted": 1,
+        "eligible": 0,
+        "hit_at_10_count": 0,
+        "capped": 0,
+    }
+    del rows[0]["strata"]["literal_relation"]
+    with pytest.raises(ValueError, match="incomplete typo source strata metadata"):
         compose(suite, census, record, diagnostic, "prefix")
 
 
@@ -944,6 +994,15 @@ def test_intended_typo_partition_is_rederived_from_source(monkeypatch, tmp_path)
         lambda *_: Oracle(),
     )
     verify_census_against_source(tmp_path, suite, census, "typo-transposition")
+    census["lanes"]["typo-transposition"]["source_strata_policy"] = dict(
+        identifier_robustness_suite.TYPO_SOURCE_STRATA_POLICY
+    )
+    row["strata"] = identifier_robustness_suite.typo_source_strata("Write", "Wrtie")
+    verify_census_against_source(tmp_path, suite, census, "typo-transposition")
+    row["strata"]["surviving_components"] = "all"
+    with pytest.raises(ValueError, match="census/source typo strata mismatch"):
+        verify_census_against_source(tmp_path, suite, census, "typo-transposition")
+    row["strata"] = identifier_robustness_suite.typo_source_strata("Write", "Wrtie")
     row["source_partition"] = {**partition, "intended_base_files": ["wrong.go"]}
     with pytest.raises(ValueError, match="census/source intended-name partition mismatch"):
         verify_census_against_source(tmp_path, suite, census, "typo-transposition")

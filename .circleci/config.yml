@@ -3,6 +3,8 @@ version: 2.1
 # Connect only default-branch pushes and PR updates in CircleCI project settings.
 # The private repository uses the Free plan credit pool; expensive exploration
 # requires an explicit pipeline parameter and has no schedule trigger.
+# Cargo target output is deliberately not cached: scripts/cargow isolates it by
+# checkout path and lane, and a broad target cache mixes clippy/test artifacts.
 parameters:
   run_heavy:
     type: boolean
@@ -16,7 +18,8 @@ jobs:
     environment:
       CARGO_BUILD_JOBS: "2"
       CARGO_TERM_COLOR: always
-      UV_PYTHON: "3.12"
+      UV_PYTHON: "3.12.12"
+      CI_EVENT_NAME: << pipeline.event.name >>
     steps:
       - checkout
       - run: &install_verification_tools
@@ -47,18 +50,30 @@ jobs:
             set -euo pipefail
             unset BASH_ENV ENV
             test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"
-            rustc --version
-            cargo nextest --version
-            just --version
-            uv --version
+            [[ "$(rustc --version)" == rustc\ 1.92.0\ * ]]
+            [[ "$(cargo nextest --version)" == cargo-nextest\ 0.9.104* ]]
+            [[ "$(just --version)" == just\ 1.58.0 ]]
+            [[ "$(cargo deny --version)" == cargo-deny\ 0.19.7 ]]
+            [[ "$(uv --version)" == uv\ 0.9.11 ]]
+            uv python install 3.12.12
+            [[ "$(uv run --no-project --python 3.12.12 python --version)" == Python\ 3.12.12 ]]
+            uv lock --check
       - restore_cache:
           keys:
-            - cargo-deps-v1-rust1.92.0-{{ checksum "Cargo.lock" }}
-            - cargo-deps-v1-rust1.92.0-
-      - restore_cache:
-          keys:
-            - cargo-target-v1-rust1.92.0-clippy-{{ checksum "Cargo.lock" }}-{{ .Branch }}
-            - cargo-target-v1-rust1.92.0-clippy-{{ checksum "Cargo.lock" }}-
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-{{ checksum "Cargo.lock" }}
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-
+      - run:
+          name: Fetch locked Cargo dependencies
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            ./scripts/cargow fetch --locked
+            test -d "$HOME/.cargo/registry/src" || test -d "$HOME/.cargo/git/checkouts"
+      - save_cache:
+          key: quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
       - run:
           name: Rust format and clippy
           no_output_timeout: 20m
@@ -67,19 +82,6 @@ jobs:
             unset BASH_ENV ENV
             ./scripts/cargow fmt --all -- --check
             ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - save_cache:
-          key: cargo-deps-v1-rust1.92.0-{{ checksum "Cargo.lock" }}
-          paths:
-            - ~/.cargo/registry
-            - ~/.cargo/git
-      - save_cache:
-          key: cargo-target-v1-rust1.92.0-clippy-{{ checksum "Cargo.lock" }}-{{ .Branch }}
-          paths:
-            - ~/.cache/quanta-index/target
-      - restore_cache:
-          keys:
-            - cargo-target-v1-rust1.92.0-nextest-{{ checksum "Cargo.lock" }}-{{ .Branch }}
-            - cargo-target-v1-rust1.92.0-nextest-{{ checksum "Cargo.lock" }}-
       - run:
           name: rust nextest
           no_output_timeout: 30m
@@ -93,15 +95,15 @@ jobs:
             ./scripts/cargow nextest run --workspace --all-features --locked \
               --message-format libtest-json-plus --message-format-version 0.1 \
               | tee artifacts/test-authority/nextest.jsonl
-            if [[ -n "${CIRCLE_PULL_REQUEST:-}" ]]; then
+            if [[ "$CI_EVENT_NAME" == pull_request ]]; then
               tier=pr
               rail=pr-workspace-nextest
-            elif [[ "${CIRCLE_BRANCH:-}" == main ]]; then
+            elif [[ "$CI_EVENT_NAME" == push && "${CIRCLE_BRANCH:-}" == main ]]; then
               tier=main
               rail=main-workspace-nextest
             else
-              echo "No PR/main verification receipt for branch ${CIRCLE_BRANCH:-unknown}"
-              exit 0
+              echo "No PR/main verification receipt for event=$CI_EVENT_NAME branch=${CIRCLE_BRANCH:-unknown}" >&2
+              exit 2
             fi
             uv run --frozen --extra dev python tools/ci/write-verification-receipt.py \
               --rail "$rail" --tier "$tier" \
@@ -109,15 +111,6 @@ jobs:
               --evidence artifacts/test-authority/nextest.jsonl \
               --inventory artifacts/test-authority/inventory.json \
               --out artifacts/test-authority/receipt.json
-      - save_cache:
-          key: cargo-deps-v1-rust1.92.0-{{ checksum "Cargo.lock" }}
-          paths:
-            - ~/.cargo/registry
-            - ~/.cargo/git
-      - save_cache:
-          key: cargo-target-v1-rust1.92.0-nextest-{{ checksum "Cargo.lock" }}-{{ .Branch }}
-          paths:
-            - ~/.cache/quanta-index/target
       - store_artifacts:
           path: artifacts/test-authority
           destination: test-authority
@@ -129,18 +122,29 @@ jobs:
     environment:
       CARGO_BUILD_JOBS: "2"
       CARGO_TERM_COLOR: always
-      UV_PYTHON: "3.12"
+      UV_PYTHON: "3.12.12"
     steps:
       - checkout
       - run: *install_verification_tools
       - run: *verify_tool_versions
       - restore_cache:
           keys:
-            - uv-v1-{{ checksum "uv.lock" }}-{{ .Branch }}
-            - uv-v1-{{ checksum "uv.lock" }}-
+            - quanta-index-v2-linux-amd64-uv0.9.11-python3.12.12-{{ checksum "uv.lock" }}
+            - quanta-index-v2-linux-amd64-uv0.9.11-python3.12.12-
       - restore_cache:
           keys:
-            - cargo-modules-v1-linux-rust1.92.0-crate0.26.0-{{ .Branch }}
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-modules0.26.0
+      - run:
+          name: Install locked Python dependencies
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            uv sync --locked --extra dev
+            test -n "$(find "$HOME/.cache/uv" -mindepth 1 -print -quit)"
+      - save_cache:
+          key: quanta-index-v2-linux-amd64-uv0.9.11-python3.12.12-{{ checksum "uv.lock" }}
+          paths:
+            - ~/.cache/uv
       - run:
           name: Verify guarded module snapshots
           no_output_timeout: 20m
@@ -152,13 +156,9 @@ jobs:
             fi
             python3 tools/ci/lint/check-cargo-modules-snapshot.py
       - save_cache:
-          key: cargo-modules-v1-linux-rust1.92.0-crate0.26.0-{{ .Branch }}
+          key: quanta-index-v2-linux-amd64-rust1.92.0-cargo-modules0.26.0
           paths:
             - ~/.cargo/bin/cargo-modules
-      - save_cache:
-          key: uv-v1-{{ checksum "uv.lock" }}-{{ .Branch }}
-          paths:
-            - ~/.cache/uv
       - run:
           name: Python policy and tooling tests
           no_output_timeout: 20m
@@ -200,22 +200,25 @@ jobs:
       image: ubuntu-2404:2026.05.1
     resource_class: large
     environment:
-      UV_PYTHON: "3.12"
+      CARGO_BUILD_JOBS: "4"
+      UV_PYTHON: "3.12.12"
     steps:
       - checkout
       - run:
           name: Install nightly fuzz tooling
           command: |
             set -euo pipefail
+            sudo apt-get update
+            sudo apt-get install -y build-essential pkg-config libssl-dev protobuf-compiler python3-venv
             if ! command -v rustup >/dev/null 2>&1; then
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
                 sh -s -- -y --profile minimal --default-toolchain none
             fi
             . "$HOME/.cargo/env"
             rustup toolchain install 1.92.0 --profile minimal
-            rustup toolchain install nightly --profile minimal
+            rustup toolchain install nightly-2026-08-01 --profile minimal
             cargo install cargo-modules --version 0.26.0 --locked
-            cargo +nightly install cargo-fuzz --locked
+            cargo +nightly-2026-08-01 install cargo-fuzz --version 0.13.2 --locked
               curl --proto '=https' --tlsv1.2 -LsSf https://get.nexte.st/0.9.104/linux |
               tar zxf - -C "$HOME/.cargo/bin"
             curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/0.9.11/install.sh | sh
@@ -226,6 +229,11 @@ jobs:
             set -euo pipefail
             unset BASH_ENV ENV
             test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"
+            [[ "$(rustc --version)" == rustc\ 1.92.0\ * ]]
+            [[ "$(cargo nextest --version)" == cargo-nextest\ 0.9.104* ]]
+            [[ "$(cargo fuzz --version)" == cargo-fuzz\ 0.13.2* ]]
+            uv python install 3.12.12
+            uv lock --check
       - run:
           name: Verify guarded module snapshots
           no_output_timeout: 20m
@@ -256,19 +264,32 @@ jobs:
           path: artifacts/test-authority
           destination: test-authority
       - run:
+          name: Validate fuzz lockfiles
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            cargo +nightly-2026-08-01 metadata --manifest-path crates/quanta-index-contract/fuzz/Cargo.toml --locked --format-version 1 > /dev/null
+            cargo +nightly-2026-08-01 metadata --manifest-path crates/quanta-index-lq-norm/fuzz/Cargo.toml --locked --format-version 1 > /dev/null
+      - run:
           name: Fuzz all registered decoders
           no_output_timeout: 20m
           command: |
             set -euo pipefail
             unset BASH_ENV ENV
             cd crates/quanta-index-contract/fuzz
-            cargo +nightly fuzz build
-            cargo +nightly fuzz run ipc_request_decode -- -max_total_time=60
-            cargo +nightly fuzz run ipc_response_decode -- -max_total_time=60
-            cargo +nightly fuzz run search_corpus_ingest_decode -- -dict=dictionaries/search_corpus_ingest.dict -max_total_time=60
+            cargo +nightly-2026-08-01 fuzz build
+            cargo +nightly-2026-08-01 fuzz run ipc_request_decode -- -max_total_time=60
+            cargo +nightly-2026-08-01 fuzz run ipc_response_decode -- -max_total_time=60
+            cargo +nightly-2026-08-01 fuzz run search_corpus_ingest_decode -- -dict=dictionaries/search_corpus_ingest.dict -max_total_time=60
             cd ../../quanta-index-lq-norm/fuzz
-            cargo +nightly fuzz build
-            cargo +nightly fuzz run lq_parse_pipeline -- -max_total_time=60
+            cargo +nightly-2026-08-01 fuzz build
+            cargo +nightly-2026-08-01 fuzz run lq_parse_pipeline -- -max_total_time=60
+      - run:
+          name: Reject fuzz lockfile changes
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            git diff --exit-code -- crates/quanta-index-contract/fuzz/Cargo.lock crates/quanta-index-lq-norm/fuzz/Cargo.lock
 
 workflows:
   regular:

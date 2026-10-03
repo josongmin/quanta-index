@@ -34,6 +34,21 @@ macro_rules! named {
 }
 
 impl<'ast> Visit<'ast> for Census {
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        if let syn::Item::Verbatim(tokens) = item {
+            // syn retains attributed, semicolon-terminated function signatures
+            // as Verbatim items outside extern blocks. Attribute macros can
+            // supply their bodies; the source-written signature is still a
+            // named declaration. Parse the complete token stream as a typed
+            // signature, never infer a name from arbitrary macro tokens.
+            if let Ok(function) = syn::parse2::<syn::ForeignItemFn>(tokens.clone()) {
+                self.push(&function.sig.ident, "fn");
+            }
+        } else {
+            visit::visit_item(self, item);
+        }
+    }
+
     named!(visit_item_fn, syn::ItemFn, "fn", |i| &i.sig.ident);
     named!(visit_impl_item_fn, syn::ImplItemFn, "fn", |i| &i.sig.ident);
     named!(visit_trait_item_fn, syn::TraitItemFn, "fn", |i| &i.sig.ident);

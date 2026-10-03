@@ -93,6 +93,27 @@ def test_producer_grammar_raw_references_and_template_strings_have_exact_spans(
         source_oracle.declaration_census(grammar, path, invalid)
 
 
+def test_independent_rust_census_keeps_attributed_bodyless_function_signatures(tmp_path):
+    from tools.benchmark.retrieval import declaration_census_audit, source_oracle
+
+    raw = b"fn outer() {\n    #[ref_cast_custom]\n    fn ref_cast(value: &str) -> &str;\n}\n"
+    (tmp_path / "input.rs").write_bytes(raw)
+    rows = source_oracle.declaration_census("rust", "input.rs", raw)
+    assert [(start, raw[start:end]) for start, end, *_ in rows] == [
+        (3, b"outer"),
+        (raw.index(b"fn ref_cast") + 3, b"ref_cast"),
+    ]
+    audit = declaration_census_audit.audit_files("rust", tmp_path, ["input.rs"])
+    assert audit["status"] == "admitted"
+    assert audit["agreeing_declarations"] == 2
+    assert audit["disagreements"] == []
+    (tmp_path / "broken.rs").write_bytes(b"fn outer() { #[ref_cast_custom] fn broken( ; }")
+    audit = declaration_census_audit.audit_files("rust", tmp_path, ["broken.rs"])
+    assert audit["status"] == "unsupported"
+    assert len(audit["refused"]) == 1
+    assert audit["agreeing_declarations"] == 0
+
+
 def test_vendored_parser_cache_refuses_identity_and_binary_tampering(tmp_path):
     from hashlib import sha256
 
