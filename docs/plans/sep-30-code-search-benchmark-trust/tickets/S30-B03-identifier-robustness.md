@@ -122,9 +122,8 @@ probes as unjudged/unscored. The generated artifacts are under
 `3bd6f31c09e4c6248b481fc9bf63dc63a8c9706ef7c6427d79a7089ee2091b8c`.
 A second fresh generation under the adjacent `-repeat-20261003` root produced
 38 byte-identical files, including the manifest. All 37 manifest artifact
-digests were independently recomputed. Product execution and ranking for
-these new Gin operation suites are **NOT_RUN**; no archived 363-task score is
-combined with them.
+digests were independently recomputed. No archived 363-task score is combined
+with these suites.
 
 The independent reporter rederived all four admitted operation censuses from
 the frozen Gin bytes (insertion 2.467s, deletion 2.228s, substitution 2.204s,
@@ -135,3 +134,32 @@ separate source facts; they require intent review before navigation relevance
 claims. The reporter's projected-clean-suite binding was repaired in
 `72436e5e` and checked against the real generated manifest; 36 report tests
 passed.
+
+## Full Gin OSA1 Quanta diagnostic execution (2026-10-03)
+
+**VERIFIED, diagnostic only:** clean `quanta-index@7fc77bc1` release binaries
+ran the paired clean suite and all four core OSA1 operation suites against
+`gin@d3ffc998`. All 5 native records and evaluator replays completed; the
+operation reporter verified each generated census and paired family binding.
+The fixed reporter at `0f41f71f` also accepts equivalent suite JSON
+serialization only after verifying the original generated artifact digest;
+37 focused reporter tests passed. The source, binary, corpus, input and report
+bindings and per-lane times are in
+`/private/tmp/qi-gin-full-product-7fc-20261003/gin-full-summary.json`
+(SHA-256 `90289ab3c096c0c2607082e4063292196ad390c28af5f1da0b5c7b166bd9c890`).
+
+| Lane | File Hit@10 | Query-call sum | Query-call p50 / p95 | Runner wall |
+| --- | ---: | ---: | ---: | ---: |
+| Paired clean | 1,187 / 1,196 | 4.299s | 3.255 / 5.837ms | 11.484s |
+| Insertion | 1,181 / 1,192 | 4.826s | 3.695 / 6.546ms | 10.330s |
+| Deletion | 1,161 / 1,178 | 4.456s | 3.438 / 5.838ms | 10.869s |
+| Substitution | 1,174 / 1,192 | 4.382s | 3.333 / 5.694ms | 8.773s |
+| Transposition | 1,180 / 1,192 | 6.524s | 4.616 / 10.502ms | 10.533s |
+
+The call boundary is request construction through normalized response. The
+host was contended, each lane was run once, and the ~17-minute release build
+is separate from query and runner time. These times do not qualify a speed
+comparison. The four operation rows share 1,196 original-name families and
+are not independent samples. The report status is `diagnostic_unqualified`;
+human relevance review, five-product matching and a fresh holdout remain
+**NOT_RUN** for this Gin operation set.
