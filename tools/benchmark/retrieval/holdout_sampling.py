@@ -328,6 +328,8 @@ def _declarations(
     for name in paired_bases:
         family = f"{repository.name}.name.{name}"
         for operation in identifier_robustness_suite.TYPO_OPERATIONS:
+            if len(filled["variant_osa1"]) >= quotas["variant_osa1"]:
+                break
             record = {"lane": "variant_osa1", "base_name": name, "operation": operation}
             query = None
             for attempt in range(MAX_ATTEMPTS):
