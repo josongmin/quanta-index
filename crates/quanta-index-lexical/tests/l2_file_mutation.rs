@@ -818,7 +818,9 @@ fn empty_full_generation_and_empty_delta_retain_admission() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let empty = batch(1, None, Vec::new())?;
-    let full_stages = adapter.build_batch(&empty)?.ok_or("missing full-build timing")?;
+    let full_stages = adapter
+        .build_batch(&empty)?
+        .ok_or("missing full-build timing")?;
     assert!(full_stages.seal_ns.is_some());
     assert!(full_stages.seal_writer_commit_ns.is_some());
     assert!(full_stages.seal_merge_wait_ns.is_some());

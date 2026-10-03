@@ -538,7 +538,11 @@ fn collect_warm_samples(
         require_result_count(
             observed,
             expected,
-            &format!("warm query sample {}/{}", sample_index.saturating_add(1), sample_count),
+            &format!(
+                "warm query sample {}/{}",
+                sample_index.saturating_add(1),
+                sample_count
+            ),
         )?;
         samples_ms.push(elapsed);
     }

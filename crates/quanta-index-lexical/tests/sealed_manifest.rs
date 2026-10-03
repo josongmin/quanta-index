@@ -1391,7 +1391,8 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
         },
     ];
     for damaged_file in damaged_files {
-        let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let _stages =
+            adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
         let file = damaged_file(&dir)?;
         let what = file.display().to_string();
 
@@ -1560,7 +1561,8 @@ fn oversized_committed_control_files_are_refused_before_read() -> TestResult {
         let root = temp.path().to_path_buf();
         let adapter = LexicalAdapter::with_state_root(root.clone());
         let generation = ManifestGeneration::new(1);
-        let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let _stages =
+            adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
         let path = generation_dir(&root, generation).join(MANIFEST);
         let mut manifest: ciborium::Value =
             ciborium::from_reader(std::fs::read(&path)?.as_slice())?;
@@ -1621,7 +1623,8 @@ fn malformed_manifest_is_quarantined_by_door_reproof_and_scrub() -> TestResult {
         let root = temp.path().to_path_buf();
         let adapter = LexicalAdapter::with_state_root(root.clone());
         let generation = ManifestGeneration::new(1);
-        let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let _stages =
+            adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
         let dir = generation_dir(&root, generation);
         let path = dir.join(MANIFEST);
         let original = std::fs::read(&path)?;
@@ -1888,7 +1891,8 @@ fn reclaim_and_quarantine_discard_of_other_generations_preserve_a_paused_scrub()
         ManifestGeneration::new(3),
     );
     for generation in [scrubbed, reclaimed, quarantined] {
-        let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let _stages =
+            adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     }
     let one_byte = IntegrityScrubBudgetV1 { max_bytes: 1 };
     let first = adapter.scrub(&identity(scrubbed), None, one_byte)?;
@@ -2220,7 +2224,8 @@ fn older_formats_require_explicit_rebuild() -> TestResult {
         let root = temp.path().to_path_buf();
         let adapter = LexicalAdapter::with_state_root(root.clone());
         let generation = ManifestGeneration::new(1);
-        let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let _stages =
+            adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
         expect_admitted(&knock(&adapter, generation), "current format twelve")?;
         let manifest = generation_dir(&root, generation).join(MANIFEST);
         let raw = std::fs::read(&manifest)?;
@@ -2313,7 +2318,8 @@ fn an_invalid_quarantine_receipt_does_not_block_sibling_inventory() -> TestResul
     let damaged = ManifestGeneration::new(82);
     let healthy = ManifestGeneration::new(83);
     for generation in [damaged, healthy] {
-        let _stages = adapter.build_batch(&sealed_batch(generation, "fn sealed() { sealed_needle }")?)?;
+        let _stages =
+            adapter.build_batch(&sealed_batch(generation, "fn sealed() { sealed_needle }")?)?;
     }
     std::fs::write(
         generation_dir(&root, damaged).join(QUARANTINE_RECEIPT),
