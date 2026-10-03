@@ -517,6 +517,7 @@ class SourceOracleIndex:
             list[tuple[str, list[tuple[str, int, int, int, int]]]],
         ] = {}
         self._name_lengths: dict[tuple[str, frozenset[str]], dict[int, list[int]]] = {}
+        self._folded_declaration_names: dict[tuple[str, frozenset[str]], frozenset[str]] = {}
         self._name_match_cache: dict[
             tuple[str, str], tuple[tuple[str, int, int, int, int], ...]
         ] = {}
@@ -798,10 +799,13 @@ class SourceOracleIndex:
         folded = query.casefold()
         collisions = sorted(self._index_folded_tokens().get(folded, ()))
         excluded = self.declaration_exclusions.get((contract, query), frozenset())
-        query_is_declaration_name = any(
-            _name_text(token).casefold() == folded
-            for token in self._index_declarations(language, excluded)
-        )
+        index_key = (language, excluded)
+        if index_key not in self._folded_declaration_names:
+            # matched_names() above built and validated the complete name index.
+            self._folded_declaration_names[index_key] = frozenset(
+                name.casefold() for name, _rows in self._indexed_names[index_key]
+            )
+        query_is_declaration_name = folded in self._folded_declaration_names[index_key]
         return {
             "intended_base_name": intended_name,
             "intended_base_files": [row["path"] for row in intended],

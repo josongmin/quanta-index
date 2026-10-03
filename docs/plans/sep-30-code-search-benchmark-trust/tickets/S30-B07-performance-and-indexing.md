@@ -154,6 +154,31 @@ capture timer. Admission was absent from these exploratory C5 specs and cannot
 explain their cost. No fresh multi-repository performance qualification has
 been run.
 
+### 2026-10-04 oracle hot-path follow-up
+
+After census and source-snapshot sharing, `cProfile` of the four SymPy suites
+still recorded 302,520,970 function calls / 66.234 s under host contention.
+`_name_matches` used 52.327 s cumulatively: the typo partition asked for the
+same OSA1 query through matched names and expected rows, while every call
+checked all declaration names. This was an oracle validation cost, not Python
+GC or product query latency. The source oracle now caches each contract/query
+match and decodes declaration names once per declaration index. OSA1 checks
+only names whose character length differs by at most one; the exact variant
+predicate still makes the final decision. Folded declaration-name membership
+is cached for the typo partition. The cache is scoped to one immutable oracle
+instance and keeps original match order.
+
+The post-change `cProfile` recorded 55,109,268 calls / 27.598 s. OSA variant
+checks fell from 19,006,510 to 1,284,134 calls. This is a diagnostic profile,
+not a controlled end-to-end speed ratio. Its remaining dominant work is the
+first tree-sitter census of 1,526 SymPy files (12.997 s cumulatively), source
+universe validation (4.114 s), and one content-token collision index (4.165 s).
+The same current-main read-only preflight validated all eight eligible
+repositories and 32 original suites in **29.446 s** on a contended host. The
+fixed OSA cases and full source-oracle/declaration-census tests passed 90/90.
+Do not remove per-suite gold checks, final source verification or independent
+replay to save this remaining time; their proof boundaries are distinct.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
