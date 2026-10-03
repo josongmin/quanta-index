@@ -176,13 +176,16 @@ conditional means. It is `diagnostic_unqualified`; it does not enter the
 paired `QUALITY_DELTA` gate or alter the original 300-query scores.
 
 The canonical pair driver accepts `code_search_file` with exactly the
-`lexical` Quanta route and Semble `lexical-file` mode. This pair must use
-`scope: exploratory` and all claims false. It writes a paired independent
-file-judgment diagnostic report, and the verdict replays that report from the
-merged record. It does not compute context-span quality from the file identity
-span or pass the qualified quality gate. Run the exact-name and each
-identifier-robustness lane in separate fresh output roots; never aggregate
-their scores into one denominator.
+`lexical` Quanta route and Semble `lexical-file` mode. In exploratory scope it
+writes a paired independent file-judgment diagnostic report. Qualified scope
+requires schema-v3 repository-disjoint admission, a complete source-bound
+file-judgment suite, scored native file ordering, and the other qualified
+controls. Its separate `file-judgments-complete-v1` report uses
+`file_ndcg_at_10`; the verdict replays it from the merged record. This code
+path has no qualified native capture yet. `code_search_typo_file` and
+`code_search_exact_content_file` remain diagnostic. Run the exact-name and
+each identifier-robustness lane in separate fresh output roots; never
+aggregate their scores into one denominator.
 Use `judgment_policy: complete_ranked_pool_v1` for newly reviewed file or
 declaration diagnostics. Each returned top-10 file or published declaration
 must have an explicit source-bound grade, including grade 0 for irrelevant
