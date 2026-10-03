@@ -510,11 +510,12 @@ one-off repository evidence files.
 | `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical --test l3_exact_source code_search_explanation_uses_the_same_file_score_outside_top_k -- --exact` | RED: `NotIndexed`; then GREEN, 1 test | Confirmed backend defect |
 | `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical -p quanta-index-search-plane --lib code_search` | `VERIFIED`: 23 + 14 tests passed | Native feature, score, grammar, count and cursor contracts |
 | `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical --test l3_exact_source` | `VERIFIED`: 28 tests passed | Sealed source/symbol index, Unicode, independent source oracle, gram collision, late better candidate, paging and exact-symbol separation |
-| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-searchd-runtime --test runtime_fast_suite e2e_explain_score_trace::explain_score_traces_share_one_indexed_fixture -- --exact --nocapture` | RED: public planner refused CodeSearch; then GREEN, 1 test before work-count additions; final rerun pending | SDK/runtime wiring and fixed 109/107/105 source score goldens |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-searchd-runtime --test runtime_fast_suite e2e_explain_score_trace::explain_score_traces_share_one_indexed_fixture -- --exact --nocapture` | RED: public planner refused CodeSearch; then GREEN, 1 IPC fixture test before work-count additions; final SDK rerun pending | Runtime wiring and fixed 109/107/105 source score goldens; SDK extension uses the same pinned native page |
 | `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_retrieval_benchmark.py -k 'independent_file_ndcg or declaration_judgment_requires or cross_suite_experiment_custody or v3_query_family_split or intended_name_source_oracle or code_search_file_refuses_context or code_search_file_policy_binds'` | `VERIFIED`: 7 passed | Existing file/declaration metrics and leakage guard |
 | `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_identifier_robustness_report.py -k 'scored_family_separately or fixed_golden_preserves or clean_to_typo or operation_and_length or policy_refusal or no_answer_success or rederived_from_source'` | `VERIFIED`: 7 passed | Existing lane, eligibility, no-answer and intended-name reporting |
 | `git diff --check`; `python3 tools/ci/lint/check-module-discipline.py`; `just rust-hexagonal` | `VERIFIED` | Hygiene and dependency/facade boundaries |
-| `just rust-cargo-modules` | Initial drift exposed missing snapshots; corrected core/contract snapshots; final rerun pending | Module inventory, not behavioral qualification |
+| `just rust-cargo-modules` | `VERIFIED`: corrected core/contract snapshots match both native module trees | Module inventory, not behavioral qualification |
+| `python3 tools/ci/lint/check-test-authority.py` | `VERIFIED` | Existing test targets remain registered |
 
 Some first attempts had test-code compilation errors, corrected before the
 passing runs. An accidental system Python 3.9 invocation failed on the existing
@@ -525,7 +526,7 @@ or indexing latency.
 
 ### Remaining execution, ordered by dependency
 
-1. Finish the final public work-count proof and module inventory check.
+1. Finish the final SDK public work-count proof. Module inventory is verified.
 2. Extend the existing SDK runner's optional diagnostic path to retain each
    returned candidate's native score explanation under its exact effective
    request and generation. Bind it to the existing record/input/binary identities;
