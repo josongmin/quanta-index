@@ -2974,3 +2974,68 @@ isolated compiler target avoids mutating the earlier still-live `32fbdb2d` SDK
 target. This is a verification checkout; fixes remain on main. Neither new
 producer has yet issued a passing receipt, and later main commits are not
 silently included in this pinned proof.
+
+### 2026-10-04: index-scope consumer integration and SDK proof result
+
+- **VERIFIED**, the native Sourcegraph scope now has a reusable consumer in
+  `retrieval/sourcegraph_index_scope.py`. A live external spec may supply
+  `sourcegraph.indexed_scope_receipt`; this requires both `backend_snapshot`
+  and `projection_git_root`. The consumer independently checks the selected
+  manifest, native stored bodies, complete V3 indexed-path response, Git
+  projection, deployed-reader custody, and unchanged container/index identity.
+  The same consumer executes before/after queries and during offline replay.
+  Missing/duplicate paths, altered bodies, changed process/index identities,
+  partial/skipped path responses, and rehashed forged claims refuse. A path
+  response reporting more matches than returned paths also refuses.
+  `sourcegraph_index_scope` records this bounded scope; overall indexed-universe
+  and comparison qualification flags remain false. Posting correctness, other
+  products, subjective labels and performance are separate scopes.
+- **VERIFIED**, the final external-capture owner file passed **71 tests** in
+  **182.25 seconds**, including a local HTTP/process capture, offline replay,
+  forged scope metadata, and native-body mutation during queries. The existing
+  test-authority/source-closure checks passed **3 tests** in **3.31 seconds**.
+  Commands: `.venv/bin/python -m pytest -q
+  tools/ci/tests/test_live_lexical_external.py`; and the two authority/closure
+  test files with selector `live_code_search_owners_are_enrolled or
+  live_workflow_and_owner_tests_are_bound`. Ruff check, format check and diff
+  hygiene passed. The module is covered by the existing retrieval-directory
+  source closure; owner tests stay in the existing capture rail.
+- **VERIFIED**, the final consumer replayed **12 repositories / 13,347 files**
+  against the unchanged live query backend in **57.891 seconds**. Artifacts:
+  `sourcegraph-index-scope-final-ekct8xn0/` under the external closeout root.
+  Its result binds consumer hashes and every scoped receipt; the standalone
+  command was `PYTHONPATH=/Users/songmin/Documents/code-new/quanta-index
+  .venv/bin/python <external-root>/replay.py`. `launch-observation.json`
+  preserves the actual live argv: the system-Python bootstrap had recorded its
+  own interpreter in `precommit.json`, so that bootstrap command is not an
+  exact execution receipt. This is diagnostic verification, not a formal
+  product/performance run. No original bodies, indexes or captures changed.
+- **VERIFIED**, the clean pinned `9e27b8ba` SDK producer exited zero: **25
+  selected/executed/passed, zero failed**. Independent canonical verification
+  passed with `portable_proof.py verify --receipt
+  <external-root>/integrated-portable-proof-9e27-sj_x_b3k/sdk/execution-context.json`.
+  The initial verification invocation incorrectly selected `sdk_receipt.json`
+  and was refused as an invalid execution-context shape; selecting the actual
+  context closed that command-selection error without a code change. This SDK
+  proof does not include the later index-scope or other main changes.
+- The older `32fbdb2d` SDK producer is **terminal, exit 124**: its resource
+  admission wait expired after 1,800 seconds. It supplied no passing SDK
+  receipt. The new `9e27b8ba` contract producer remains live, session **72447**;
+  no passing contract result is inferred from the SDK result.
+- **VERIFIED**, the unscoped C3-holdout mechanical producer finished **72 C4
+  cells** in **4,383.392 seconds**, including **2,087.271 seconds** capsule
+  production. Sixty cells selected **5,971 tasks**; twelve have no tasks for
+  the distinct non-casefold OSA1 intent. All **180** emitted suite/pack/admission
+  byte digests match the matrix. This retains its `78085865`-plus-owned-overlay
+  source binding and is diagnostic, not a current-main result.
+- The other live C4 job uses the separate attrs/celery/chartjs/grpc-go/immer/
+  rust-analyzer/svelte/sympy/tauri/telegraf/zerolog/zoxide release. Its repository
+  set is disjoint from this C3 holdout. These are separate corpus jobs, not
+  duplicate execution or interchangeable matrices.
+
+**Remaining:** actual C3 review is still **40/240 issued tasks**, with **1,157**
+of the original **1,324** returned task/file pairs unissued. No review worker
+is live; the external service reported 08:40 KST quota reset. Final reviewed
+suite/split/license/model/proof admission, matching proofs for the final
+producer source, fresh five-product captures and equal-boundary repeated
+performance remain incomplete. This update does not close those scopes.

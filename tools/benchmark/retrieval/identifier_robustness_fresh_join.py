@@ -216,6 +216,14 @@ def _source_admission(
         == gold.get("source_head")
         and manifest.get("gold_producer_runtime", {}).get("dependency_versions")
         == gold.get("dependency_versions")
+        and manifest.get("gold_producer_runtime", {}).get("parser_runtime_versions")
+        == prepared.get("parser_runtime_versions")
+        == {
+            "tree-sitter": "0.23.2",
+            "tree-sitter-language-pack": "0.9.1",
+            "regex": "2025.10.23",
+            "unicodedata2": "17.0.0",
+        }
         and manifest.get("gold_producer_runtime", {}).get("python_executable")
         == gold.get("python_executable")
         == prepared.get("driver_python")
@@ -262,6 +270,8 @@ def _source_admission(
     for cell in manifest["cells"]:
         repo = cell["repository"]
         row, cohort = by_repo[repo], cohorts[repo]
+        identity_path = gold_receipt_path.parent / "gold-v10" / repo / "identity.json"
+        identity = read(identity_path)
         suite_path = Path(cell["spec_path"])
         suite = read(Path(read(suite_path)["suite"]))
         selected_ids = [task["task_id"] for task in suite["tasks"]]
@@ -272,7 +282,15 @@ def _source_admission(
             and row["gold_capsule_identity_sha256"]
             == manifest["gold_producer_sources"][repo]["identity_sha256"]
             == gold["identity_sha256"][repo]
-            == sha(gold_receipt_path.parent / "gold-v10" / repo / "identity.json")
+            == sha(identity_path)
+            and identity["parser_runtime"]
+            == manifest["gold_producer_sources"][repo]["parser_runtime"]
+            and manifest["gold_producer_sources"][repo]["parser_runtime"]["tree_sitter"]
+            == prepared["parser_runtime_versions"]["tree-sitter"]
+            and manifest["gold_producer_sources"][repo]["parser_runtime"][
+                "tree_sitter_language_pack"
+            ]
+            == prepared["parser_runtime_versions"]["tree-sitter-language-pack"]
             and row["release_digest"] == authority["release_digest"]
             and cell["tasks"] == cohort["selected"] == len(selected_ids)
             and cell["projected_suite_commitment_sha256"] == cohort["projected_suite_sha256"]
@@ -392,6 +410,8 @@ def _select_native_status(cell: dict[str, Any], prepared: dict[str, Any]) -> dic
                     and status.get("binary_build_source_sha")
                     == prepared["binary_build_source_sha"]
                     and status.get("driver_python_sha256") == prepared["driver_python_sha256"]
+                    and status.get("parser_runtime_versions")
+                    == prepared["parser_runtime_versions"]
                     and status.get("postrun_verification", {}).get("pair_valid") is True
                     and status.get("postrun_verification", {}).get("selected")
                     == 2 * cell["tasks"]

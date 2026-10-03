@@ -170,11 +170,16 @@ def test_fresh_join_global_status_binds_driver_binary_build_and_postrun(tmp_path
     prepared = {
         "source_commit": "driver", "driver_source_sha": "driver",
         "binary_build_source_sha": "binary-build", "driver_python_sha256": "python",
+        "parser_runtime_versions": {
+            "tree-sitter": "0.23.2", "tree-sitter-language-pack": "0.9.1",
+            "regex": "2025.10.23", "unicodedata2": "17.0.0",
+        },
         "runner_sha256": "runner", "searchd_sha256": "searchd",
     }
     status = {
         "returncode": 0, "source_commit": "driver", "driver_source_sha": "driver",
         "binary_build_source_sha": "binary-build", "driver_python_sha256": "python",
+        "parser_runtime_versions": prepared["parser_runtime_versions"],
         "runner_sha256": "runner", "searchd_sha256": "searchd",
         "spec_sha256": "spec", "output_root": str(tmp_path / "d"),
         "postrun_verification": {"pair_valid": True, "selected": 4},
@@ -185,6 +190,7 @@ def test_fresh_join_global_status_binds_driver_binary_build_and_postrun(tmp_path
     for changed in (
         {"binary_build_source_sha": "wrong"},
         {"driver_python_sha256": "wrong"},
+        {"parser_runtime_versions": {**prepared["parser_runtime_versions"], "tree-sitter": "wrong"}},
         {"postrun_verification": {"pair_valid": False, "selected": 4}},
         {"postrun_verification": {"pair_valid": True, "selected": 3}},
     ):
@@ -224,7 +230,12 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
             "projected_suite_sha256": repo + "-suite",
             "blind_pack_sha256": repo + "-pack",
         }
-        sources[repo] = {"identity_sha256": fresh.sha(identity)}
+        sources[repo] = {
+            "identity_sha256": fresh.sha(identity),
+            "parser_runtime": {
+                "tree_sitter": "0.23.2", "tree_sitter_language_pack": "0.9.1",
+            },
+        }
     gold_path = write(tmp_path / "gold.json", {
         "status": "captured", "capsule_count": 12, "source_head": "driver",
         "dependency_versions": {"parser": "pinned"},
@@ -253,6 +264,10 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         "source_commit": "driver", "driver_source_sha": "driver",
         "driver_python": "/pinned/python",
         "parser_dependency_versions": {"parser": "pinned"},
+        "parser_runtime_versions": {
+            "tree-sitter": "0.23.2", "tree-sitter-language-pack": "0.9.1",
+            "regex": "2025.10.23", "unicodedata2": "17.0.0",
+        },
         "pyproject_sha256": "project", "uv_lock_sha256": "lock",
         "gold_receipt_sha256": fresh.sha(gold_path),
         "projection_receipt_sha256": fresh.sha(projection_path),
@@ -270,6 +285,7 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         "gold_producer_runtime": {
             "receipt_sha256": fresh.sha(gold_path), "source_head": "driver",
             "dependency_versions": {"parser": "pinned"},
+            "parser_runtime_versions": prepared["parser_runtime_versions"],
             "python_executable": "/pinned/python", "python_executable_sha256": "python",
             "pyproject_sha256": "project", "uv_lock_sha256": "lock",
         },

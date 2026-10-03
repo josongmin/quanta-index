@@ -464,26 +464,115 @@ const MAX_SCALE_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_SCALE_POSTING_MEMBERSHIPS: u64 = 4_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScaleAdmissionLimit {
+    SourceFileBytes,
+    TotalSourceBytes,
+    TrigramPostingMemberships,
+}
+
+impl ScaleAdmissionLimit {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceFileBytes => "lexical_source_file_bytes_8m",
+            Self::TotalSourceBytes => "lexical_total_source_bytes_128m",
+            Self::TrigramPostingMemberships => "lexical_trigram_posting_memberships_4m",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ScaleAdmissionRefusal {
+    pub limit: ScaleAdmissionLimit,
+    pub observed: u64,
+    pub maximum: u64,
+}
+
+impl std::fmt::Display for ScaleAdmissionRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "scale: {} admission refused: observed {} > maximum {}",
+            self.limit.as_str(),
+            self.observed,
+            self.maximum
+        )
+    }
+}
+
+impl std::error::Error for ScaleAdmissionRefusal {}
+
+#[derive(Debug)]
+pub struct ScaleStageError {
+    pub stage: &'static str,
+    pub limit: Option<ScaleAdmissionLimit>,
+    pub observed: Option<u64>,
+    pub maximum: Option<u64>,
+    pub message: String,
+}
+
+impl std::fmt::Display for ScaleStageError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "scale {}: {}", self.stage, self.message)
+    }
+}
+
+impl std::error::Error for ScaleStageError {}
+
+impl ScaleStageError {
+    fn source_admission(error: anyhow::Error) -> Self {
+        let refusal = error.downcast_ref::<ScaleAdmissionRefusal>();
+        Self {
+            stage: "source_preflight",
+            limit: refusal.map(|refusal| refusal.limit),
+            observed: refusal.map(|refusal| refusal.observed),
+            maximum: refusal.map(|refusal| refusal.maximum),
+            message: format!("{error:#}"),
+        }
+    }
+
+    fn wire_admission(error: anyhow::Error) -> Self {
+        Self {
+            stage: "wire_preflight",
+            limit: None,
+            observed: None,
+            maximum: None,
+            message: format!("{error:#}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScopedCorpusAdmission {
     pub source_bytes: u64,
     pub posting_memberships: u64,
 }
 
-fn check_admission_counts(file_bytes: u64, source_bytes: u64, postings: u64) -> AnyResult<()> {
+fn check_admission_counts(
+    file_bytes: u64,
+    source_bytes: u64,
+    postings: u64,
+) -> Result<(), ScaleAdmissionRefusal> {
     if file_bytes > MAX_SCALE_FILE_BYTES {
-        return Err(anyhow::anyhow!(
-            "scale: source file exceeds lexical 8 MiB admission"
-        ));
+        return Err(ScaleAdmissionRefusal {
+            limit: ScaleAdmissionLimit::SourceFileBytes,
+            observed: file_bytes,
+            maximum: MAX_SCALE_FILE_BYTES,
+        });
     }
     if source_bytes > MAX_SCALE_SOURCE_BYTES {
-        return Err(anyhow::anyhow!(
-            "scale: corpus exceeds lexical 128 MiB source admission"
-        ));
+        return Err(ScaleAdmissionRefusal {
+            limit: ScaleAdmissionLimit::TotalSourceBytes,
+            observed: source_bytes,
+            maximum: MAX_SCALE_SOURCE_BYTES,
+        });
     }
     if postings > MAX_SCALE_POSTING_MEMBERSHIPS {
-        return Err(anyhow::anyhow!(
-            "scale: corpus exceeds lexical 4M trigram posting memberships"
-        ));
+        return Err(ScaleAdmissionRefusal {
+            limit: ScaleAdmissionLimit::TrigramPostingMemberships,
+            observed: postings,
+            maximum: MAX_SCALE_POSTING_MEMBERSHIPS,
+        });
     }
     Ok(())
 }
@@ -1072,7 +1161,7 @@ pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
     let files = generate_scoped_corpus(tier, seed)?;
     let corpus_digest = scoped_corpus_digest(DIMENSION, &files);
     let oracle = ScopedOracle::from_source(&files, tier)?;
-    let _admission = preflight_scoped_corpus(&files)?;
+    let _admission = preflight_scoped_corpus(&files).map_err(ScaleStageError::source_admission)?;
     let file_count = files.len();
     let corpus_bytes = files
         .iter()
@@ -1105,7 +1194,8 @@ pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
     let _ids = rt.ingest_text_files_one_batch(&batch_files)?;
     let ingest_ms = elapsed_ms(ingest_started);
     let (ingest_decoded_bytes, ingest_wire_bytes) =
-        rt.preview_pending_search_corpus_wire_bytes()?;
+        rt.preview_pending_search_corpus_wire_bytes()
+            .map_err(ScaleStageError::wire_admission)?;
     let seal_started = Instant::now();
     let _generation = rt.seal()?;
     let build_ms = ingest_ms + elapsed_ms(seal_started);
@@ -1598,9 +1688,24 @@ mod tests {
         assert!(
             admitted.posting_memberships > u64::from(params_for(ScaleTier::Medium).total_files())
         );
-        assert!(check_admission_counts(MAX_SCALE_FILE_BYTES + 1, 1, 1).is_err());
-        assert!(check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1).is_err());
-        assert!(check_admission_counts(1, 1, MAX_SCALE_POSTING_MEMBERSHIPS + 1).is_err());
+        assert_eq!(
+            check_admission_counts(MAX_SCALE_FILE_BYTES + 1, 1, 1)
+                .expect_err("file bound")
+                .limit,
+            ScaleAdmissionLimit::SourceFileBytes
+        );
+        assert_eq!(
+            check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1)
+                .expect_err("source bound")
+                .limit,
+            ScaleAdmissionLimit::TotalSourceBytes
+        );
+        assert_eq!(
+            check_admission_counts(1, 1, MAX_SCALE_POSTING_MEMBERSHIPS + 1)
+                .expect_err("posting bound")
+                .limit,
+            ScaleAdmissionLimit::TrigramPostingMemberships
+        );
         assert!(
             check_admission_counts(
                 MAX_SCALE_FILE_BYTES,
