@@ -1303,3 +1303,44 @@ and no product ranking is reported.
 
 **NOT_RUN:** human identity verification (superseded by the amendment), the
 full `verify_admission_bundle`, and live index attestation.
+
+## Component route verification and coverage limit (2026-10-03)
+
+At clean `main@19e5fa55`, the explicit `components:"word word"` route and
+`code_search_components_file` benchmark policy are wired. A follow-up audit
+removed a query-specific source-byte absence exemption: the product's
+`SymbolRecord.local_name` contract does not require the name to be a literal
+source-byte slice, so raw-byte absence cannot prove that a file with an
+incomplete symbol census has no matching declaration. The route now requires
+complete symbol coverage for every in-scope file and returns
+`SymbolCoverageIncomplete` otherwise. Exact path and language constraints may
+exclude an incomplete file before that check. A focused regression proves
+that a parse-failed file with no literal query component still causes refusal.
+
+**VERIFIED:** `./scripts/cargow --lane component-check-lane check -p
+quanta-index-search-plane -p quanta-index-lexical -p
+quanta-index-retrieval-bench --locked`; lexical `l3_exact_source` 22/22;
+search-plane component tests 2/2; retrieval-bench component request test 1/1;
+live-driver `runtime_risk_suite` component E2E 1/1 under `--all-features`;
+`test_holdout_c4.py` 48/48; Rust format check and `git diff --check`.
+The E2E publishes four source files, searches through CodeSearch syntax,
+checks exact-name precedence and distinct-file order, rejects terms split
+across separate symbols, and checks an empty answer. These checks prove the
+synthetic product route and benchmark request binding, not a twelve-repository
+quality improvement.
+
+**Remaining product limitation:** the frozen diagnostic preflight reports
+eleven `parse_failed` Go files in `cli`, two intentionally syntax-error
+JavaScript fixtures in `mocha`, and none in `zellij`. If those coverage states
+recur, the current unscoped component route refuses the first two repositories;
+the old four misses
+cannot be declared fixed from the synthetic E2E. Three inspected `cli` Go
+parse errors occur at `new(expression)` calls in its Go 1.27 source (for
+example `pkg/cmd/codespace/create_test.go:107`); this establishes a parser
+compatibility symptom, not the cause of all eleven failures. The separately
+frozen release-v4 also fails current-source generator-digest validation after
+`fd13216e`, so an actual current-source four-query or full C4 capture
+requires a new release/capsule/output root. **NOT_RUN:** that recapture,
+parser remediation, partial-coverage response design, independently reviewed
+file relevance, and C5 qualification. Do not score a typed coverage refusal
+as a top-ten miss or merge any future recapture into the frozen C4 totals.
