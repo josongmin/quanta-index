@@ -503,13 +503,16 @@ fn patch_every_top_k(value: &mut ciborium::Value, top_k: u32) -> usize {
     }
 }
 
-/// The daemon's query-plane decode-failure and dispatch counters, from the
-/// control scrape. Wait for all query connections to close before reading:
+/// The daemon's query-plane decode-failure and dispatch counters.
+///
+/// Wait for all query connections to close before reading the control scrape:
 /// one-shot clients receive the answer before the server finishes its next
 /// read and decrements its live-connection gauge, so a previous connection's
 /// close may otherwise land inside the next request's counter interval.
 fn ipc_query_counters(rt: &mut E2eRuntime) -> Result<(u64, u64), Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(5))
+        .ok_or("query-counter wait deadline overflowed")?;
     let snapshot = loop {
         let snapshot = rt.metrics_snapshot()?;
         let live = snapshot
