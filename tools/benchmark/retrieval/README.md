@@ -118,6 +118,14 @@ golden, re-derived independently by `query_plan.py`:
   masquerade as this profile. New rows require finite SDK scores and descending
   score/path order. Report exact, prefix, infix, components, typo, and no-answer
   suites separately; a file gold is not a declaration gold.
+- `natural_language_file` (`quanta-natural-language-file-ucd17-v1`): apply the
+  pinned `natural_language` token-OR plan to the public Native `select:file`
+  projection. The lexical route returns scored distinct files before top-k;
+  the request and profile hashes differ from the chunk-ranked policy. Scores
+  can reflect token coverage with path tie breaks rather than semantic
+  relevance. Use `natural_language_file_search` with independently judged
+  `semantic_intent` file labels. This is diagnostic only; it does not qualify
+  a product comparison or relabel an existing frozen suite.
 - `code_search_typo_file` (`quanta-code-search-typo-file-v1`): submit one ASCII
   identifier of 3–64 bytes as `typo:<identifier>` through SDK
   `.code_search(...)`. This is the product's explicit content-identifier
@@ -170,8 +178,8 @@ metrics are opt-in; the original 300-query native capture stays on its frozen
 policy and report contract.
 
 The benchmark runner refuses native `select:` and `type:path`/`type:repo`
-projections that change the ranked result unit. Use a file-projection policy (`literal_file`, `keyword_file` or
-`substring_file`) or the public `code_search_file` policy for a distinct-file benchmark. A quoted `"select:file"` remains ordinary content text
+projections that change the ranked result unit. Use a file-projection policy (`literal_file`, `keyword_file`,
+`substring_file`, or `natural_language_file`) or the public `code_search_file` policy for a distinct-file benchmark. A quoted `"select:file"` remains ordinary content text
 under `native`.
 
 After freezing the reviewed suite and recording its single-route run, score
@@ -194,7 +202,7 @@ requires schema-v3 repository-disjoint admission, a complete source-bound
 file-judgment suite, scored native file ordering, and the other qualified
 controls. Its separate `file-judgments-complete-v1` report uses
 `file_ndcg_at_10`; the verdict replays it from the merged record. This code
-path has no qualified native capture yet. `code_search_typo_file`,
+path has no qualified native capture yet. `natural_language_file`, `code_search_typo_file`,
 `code_search_components_file`, and `code_search_exact_content_file` remain
 diagnostic. Run the exact-name and
 each identifier-robustness lane in separate fresh output roots; never
