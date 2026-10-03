@@ -256,11 +256,30 @@ def test_cgroup_setup_failure_removes_only_new_subgroup(tmp_path, monkeypatch):
     assert list(parent.iterdir()) == [sibling]
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux qualification gate")
-def test_qualified_run_rejects_unavailable_delegation_before_workload(tmp_path):
+def test_qualified_run_rejects_unavailable_delegation_before_workload(
+    tmp_path, monkeypatch
+):
     parent = tmp_path / "ordinary-directory"
     parent.mkdir()
     marker = tmp_path / "workload-ran"
+    monkeypatch.setattr(linux_process.sys, "platform", "linux")
+    monkeypatch.setattr(linux_process.os, "pidfd_open", lambda *_args: -1, raising=False)
+    monkeypatch.setattr(
+        linux_process.signal,
+        "pidfd_send_signal",
+        lambda *_args: None,
+        raising=False,
+    )
+    real_read_text = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda self, *args, **kwargs: (
+            "1 1 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup rw"
+            if self == Path("/proc/self/mountinfo")
+            else real_read_text(self, *args, **kwargs)
+        ),
+    )
     with pytest.raises(linux_process.ProcessError, match="not on a cgroup v2 mount"):
         linux_process.run(
             [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],

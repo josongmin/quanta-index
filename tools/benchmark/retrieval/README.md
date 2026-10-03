@@ -368,6 +368,53 @@ be admitted first. Public annotations are source-exposed rather than an unseen
 holdout. See [S30-B09](../../../docs/plans/sep-30-code-search-benchmark-trust/tickets/S30-B09-external-robustness-adoption.md)
 for adoption decisions and remaining execution boundaries.
 
+### Executable external snippet diagnostics
+
+`codesearchnet_materialize.py` fetches source from the admitted commit-pinned
+URLs into a new external root. It records source bytes, snippet spans and
+digests, HTTP failures, and complete versus incomplete query pools. It never
+replaces unavailable code with generated snippets or silently drops its tasks:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.codesearchnet_materialize \
+  --csv /absolute/pinned/annotationStore.csv \
+  --output-root /absolute/new-materialization-root
+```
+
+`clarc_adapter.py` admits the pinned CLARC group1 original and neutral-renamed
+pair. `external_snippet_benchmark.prepare_external_lanes()` creates separate
+synthetic Git corpora and schema-3 runner packs for both variants and each
+CodeSearchNet language. The runner pack contains queries and the source
+universe; the commitment-bound `scorer-input/gold-sidecar.json` retains the
+upstream judgments. Distinct directory names and file modes alone do not prove
+runtime isolation. Attested diagnostics must not claim an enforced access block.
+
+The prepared manifest records source commitments, raw and canonical hashes,
+the selected profile, and submitted/source-blocked task counts. Use its bound
+profile without truncating or rewriting queries. The native CLI accepts
+`--nl-max-tokens N` only for natural-language policies, with `1 <= N <= 128`;
+the default remains 32. Nondefault budgets are exploratory, carry no qualified
+claim, and are preserved in the execution profile and effective-request digest.
+
+Run `natural_language_file` and Semble `lexical-file` on the frozen packs for
+an explicit lexical baseline. This does not measure semantic or hybrid search.
+One synthetic file represents one upstream snippet, rather than the upstream
+repository's full file. Full native record replay must verify query planning,
+capture identities, source byte spans, result status, ordering and file units
+before `score_capture()` computes metrics; the lightweight scorer alone is
+not that proof. Failed execution, unavailable source and conditional quality
+have separate denominators.
+
+CLARC supplies positive target labels only. Report target Hit/MRR, preserve
+identical neutral-code groups as metadata, and do not turn unjudged snippets
+into negative labels or invent exhaustive NDCG/precision. CodeSearchNet retains
+fractional grades and distinguishes pool-estimated NDCG@10 from its official
+judged-only-rank, full-IDCG diagnostic. Tasks whose judged pool contains no
+positive grade have undefined target-retrieval metrics; they do not establish
+that the source has no answer. Report those counts and source-blocked tasks
+alongside execution coverage. Original project attribution/licensing and the
+missing full upstream corpus remain qualification prerequisites.
+
 The same lanes exist for Rust, Python, TypeScript (`.ts`/`.tsx`) and
 JavaScript as `<language>_exact_local_name_v1` and
 `<language>_declaration_name_{prefix,infix,components,osa1}_v1` over the

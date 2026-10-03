@@ -151,7 +151,7 @@ def test_clarc_native_pack_is_blind_source_bound_and_preserves_default_refusals(
     assert report["hit_at_10"] == 1
     assert report["mrr_at_10"] == 0.5
     assert report["unjudged_returned"] == 1
-    assert report["operational_population_hit_at_10"] == 0.5
+    assert report["operational_population_yield_lower_bound_hit_at_10"] == 0.5
     assert "pool_estimated_ndcg_at_10" not in report
 
     first, second = pack128["tasks"]
@@ -181,8 +181,8 @@ def test_clarc_native_pack_is_blind_source_bound_and_preserves_default_refusals(
     mixed_report = ext.score_capture(pack128, gold128, mixed)
     assert mixed_report["hit_at_10"] == 1.0
     assert mixed_report["execution_failed"] == 1
-    assert mixed_report["operational_submitted_hit_at_10"] == 0.5
-    assert mixed_report["operational_population_hit_at_10"] == 0.5
+    assert mixed_report["operational_submitted_yield_lower_bound_hit_at_10"] == 0.5
+    assert mixed_report["operational_population_yield_lower_bound_hit_at_10"] == 0.5
 
     corrupt = json.loads(json.dumps(record))
     corrupt["results"][0]["candidates"][1]["rank"] = 3
@@ -306,8 +306,8 @@ def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_
     assert score["unjudged_returned"] == 1
     assert score["judged_returned_fraction"] == pytest.approx(2 / 3)
     assert score["population_tasks"] == 2 and score["materialized_complete_tasks"] == 1
-    assert score["operational_submitted_hit_at_10"] == 1.0
-    assert score["operational_population_hit_at_10"] == 0.5
+    assert score["operational_submitted_yield_lower_bound_hit_at_10"] == 1.0
+    assert score["operational_population_yield_lower_bound_hit_at_10"] == 0.5
     _, _, _, clarc_raws = _clarc(tmp_path, monkeypatch)
     prepared_root = tmp_path / "prepared"
     prepared = ext.prepare_external_lanes(
@@ -344,3 +344,62 @@ def test_official_codesearchnet_full_idcg_differs_from_pool_ndcg_at_10():
     assert ext.evaluator.file_ndcg_at_k(
         [{"path": path} for path in predictions], judgments, 10
     ) == pytest.approx(1.0)
+
+
+def test_no_positive_judgment_is_undefined_not_no_answer(tmp_path, monkeypatch):
+    _data, repo, commit, _raws = _clarc(tmp_path, monkeypatch)
+    paths = [f"snippets/c_group_1_id_{index}.cpp" for index in range(2)]
+    queries = ["Return a true value", "Find a second function"]
+    tasks = [
+        {
+            "task_id": f"CSN-FIXTURE-{index}",
+            "query": query,
+            "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
+        }
+        for index, query in enumerate(queries)
+    ]
+    pack, gold = ext._freeze(
+        kind="codesearchnet_fractional_pool_v1",
+        suite_id="csn-zero-positive-fixture",
+        repo=repo,
+        commit=commit,
+        expected_files={path: (repo / path).read_bytes() for path in paths},
+        tasks=tasks,
+        judgments={
+            tasks[0]["task_id"]: [{"path": paths[0], "grade": 0.0}],
+            tasks[1]["task_id"]: [{"path": paths[1], "grade": 2.5}],
+        },
+        source={"fixture": True},
+        config=None,
+        top_k=10,
+        extra={"qrels_total": 2, "qrels_materialized": 2, "all_query_language_pairs": 2},
+    )
+    record = {
+        "schema_version": 5,
+        "query_pack_sha256": hashlib.sha256(retrieval_contract.canonical(pack)).hexdigest(),
+        "comparison_contract": pack["comparison_contract"],
+        "results": [
+            {
+                "task_id": task["task_id"],
+                "route": "lexical",
+                "rank_unit": "distinct_file",
+                "query_identity": {"original_query_sha256": task["query_sha256"]},
+                "status": "success",
+                "candidates": [{"rank": 1, "path": path}],
+            }
+            for task, path in zip(tasks, paths)
+        ],
+    }
+    scored = ext.score_capture(pack, gold, record)
+    assert scored["positive_known_complete_tasks"] == 1
+    assert scored["no_positive_judgment_complete_tasks"] == 1
+    assert scored["conditional_quality_defined_tasks"] == 1
+    assert scored["per_query"][0]["judgment_state"] == (
+        "no_positive_judgment_unjudged_pool_unknown"
+    )
+    assert scored["per_query"][0]["hit_at_10"] is None
+    assert scored["per_query"][0]["mrr_at_10"] is None
+    assert scored["per_query"][0]["pool_estimated_ndcg_at_10"] is None
+    assert scored["hit_at_10"] == 1.0
+    assert scored["operational_resolved_positive_hit_at_10"] == 1.0
+    assert scored["operational_submitted_yield_lower_bound_hit_at_10"] == 0.5

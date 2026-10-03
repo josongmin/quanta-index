@@ -521,8 +521,21 @@ def score_capture(
         result = {
             "task_id": task_id,
             "status": status,
-            "hit_at_10": evaluator.file_hit_at_k_judged(candidate_rows, judged, 10),
-            "mrr_at_10": evaluator.file_mrr_at_k_judged(candidate_rows, judged, 10),
+            "judgment_state": (
+                "positive_known"
+                if any(item["grade"] > 0 for item in judged)
+                else "no_positive_judgment_unjudged_pool_unknown"
+            ),
+            "hit_at_10": (
+                evaluator.file_hit_at_k_judged(candidate_rows, judged, 10)
+                if any(item["grade"] > 0 for item in judged)
+                else None
+            ),
+            "mrr_at_10": (
+                evaluator.file_mrr_at_k_judged(candidate_rows, judged, 10)
+                if any(item["grade"] > 0 for item in judged)
+                else None
+            ),
         }
         if sidecar["kind"] == "codesearchnet_fractional_pool_v1":
             result["pool_estimated_ndcg_at_10"] = (
@@ -533,9 +546,13 @@ def score_capture(
         score_rows.append(result)
     if seen != set(tasks):
         raise ExternalSnippetError("native record task coverage incomplete")
-    hit_sum = sum(row["hit_at_10"] for row in score_rows)
-    mrr_sum = sum(row["mrr_at_10"] for row in score_rows)
+    defined_rows = [row for row in score_rows if row["judgment_state"] == "positive_known"]
+    hit_sum = sum(row["hit_at_10"] for row in defined_rows)
+    mrr_sum = sum(row["mrr_at_10"] for row in defined_rows)
     scored_count = len(score_rows)
+    positive_known_complete = sum(
+        any(item["grade"] > 0 for item in rows) for rows in sidecar["judgments"].values()
+    )
     submitted_count = len(tasks)
     population_count = sidecar["population_task_count"]
     report = {
@@ -543,9 +560,10 @@ def score_capture(
         "kind": sidecar["kind"],
         "record_validation_scope": "pack_commitment_result_status_rank_path_only",
         "denominator_contract": {
-            "conditional": "scored_responses_only_including_capped_and_abstained",
-            "operational_submitted": "all_native_pack_tasks_execution_failures_zero_filled",
-            "operational_population": "all_upstream_tasks_source_blocked_refused_and_execution_failures_zero_filled",
+            "conditional": "scored_responses_with_known_positive_including_capped_and_abstained",
+            "operational_resolved_positive": "source_complete_positive_known_tasks_execution_failures_zero_filled",
+            "operational_submitted_yield_lower_bound": "all_native_pack_tasks_no_positive_unknown_and_execution_failures_zero_filled",
+            "operational_population_yield_lower_bound": "all_upstream_tasks_source_blocked_no_positive_unknown_refused_and_execution_failures_zero_filled",
         },
         "population_tasks": population_count,
         "materialized_complete_tasks": sidecar["materialized_complete_tasks"],
@@ -554,18 +572,28 @@ def score_capture(
         "profile_refused_tasks": sidecar["admission"]["refused"],
         "submitted_tasks": submitted_count,
         "executed_scored": scored_count,
+        "positive_known_complete_tasks": positive_known_complete,
+        "no_positive_judgment_complete_tasks": sidecar["materialized_complete_tasks"]
+        - positive_known_complete,
+        "conditional_quality_defined_tasks": len(defined_rows),
         "execution_failed": len(failed),
         "failed_task_ids": sorted(failed),
         "unjudged_returned": unjudged,
         "returned": returned,
         "judged_returned_fraction": (returned - unjudged) / returned if returned else None,
         "hit_at_10_count": hit_sum,
-        "hit_at_10": hit_sum / scored_count if scored_count else None,
-        "mrr_at_10": mrr_sum / scored_count if scored_count else None,
-        "operational_submitted_hit_at_10": hit_sum / submitted_count,
-        "operational_submitted_mrr_at_10": mrr_sum / submitted_count,
-        "operational_population_hit_at_10": hit_sum / population_count,
-        "operational_population_mrr_at_10": mrr_sum / population_count,
+        "hit_at_10": hit_sum / len(defined_rows) if defined_rows else None,
+        "mrr_at_10": mrr_sum / len(defined_rows) if defined_rows else None,
+        "operational_resolved_positive_hit_at_10": (
+            hit_sum / positive_known_complete if positive_known_complete else None
+        ),
+        "operational_resolved_positive_mrr_at_10": (
+            mrr_sum / positive_known_complete if positive_known_complete else None
+        ),
+        "operational_submitted_yield_lower_bound_hit_at_10": hit_sum / submitted_count,
+        "operational_submitted_yield_lower_bound_mrr_at_10": mrr_sum / submitted_count,
+        "operational_population_yield_lower_bound_hit_at_10": hit_sum / population_count,
+        "operational_population_yield_lower_bound_mrr_at_10": mrr_sum / population_count,
         "per_query": score_rows,
     }
     if sidecar["kind"] == "codesearchnet_fractional_pool_v1":
@@ -579,6 +607,42 @@ def score_capture(
         report["qrels_materialized"] = sidecar["qrels_materialized"]
         report["qrels_total"] = sidecar["qrels_total"]
         report["all_query_language_pairs"] = sidecar["all_query_language_pairs"]
+    return report
+
+
+def verify_and_score_capture(
+    repo: Path,
+    pack: dict[str, Any],
+    sidecar: dict[str, Any],
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """Replay the native record against Git source without casting external qrels."""
+    if pack.get("suite_commitment_sha256") != _sha(_canonical(sidecar)):
+        raise ExternalSnippetError("native pack does not bind score sidecar")
+    commit = pack.get("repository_commit")
+    if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
+        raise ExternalSnippetError("native pack repository commit invalid")
+    try:
+        source = evaluator.SourceSnapshot(repo, commit)
+        if source.tracked != {row["path"] for row in pack["file_universe"]}:
+            raise ExternalSnippetError("native pack file universe differs from Git source")
+        for row in pack["file_universe"]:
+            if source.file(row["path"])[2] != row["file_sha256"]:
+                raise ExternalSnippetError("native pack file digest differs from Git source")
+        context = {
+            "repository_commit": commit,
+            "comparison_contract": pack["comparison_contract"],
+            "routes": pack["routes"],
+            "file_universe": pack["file_universe"],
+            "tasks": [
+                {"task_id": task["task_id"], "split": "eval"} for task in pack["tasks"]
+            ],
+        }
+        evaluator._validate_run(record, pack, context, source)
+    except (ValueError, OSError, evaluator.EvidenceError) as exc:
+        raise ExternalSnippetError(f"native record source replay failed: {exc}") from exc
+    report = score_capture(pack, sidecar, record)
+    report["record_validation_scope"] = "full_evaluator_record_source_replay_without_label_suite"
     return report
 
 

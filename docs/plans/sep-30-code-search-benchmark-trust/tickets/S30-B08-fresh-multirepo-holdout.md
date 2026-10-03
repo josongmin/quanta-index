@@ -2534,3 +2534,67 @@ amendment, projections, v5 audit and C5 ledger, plus read-only application
 thread status/history. No new heavy batch or duplicate product run was started
 for this inventory. Full five-product quality ranking and fair latency remain
 **NOT_RUN**.
+
+### Canonical reissuance and dedicated index progress — 2026-10-04
+
+All paths below are relative to the external root
+`/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91`.
+
+- **VERIFIED, actual reviewed issuance:** mocha's 20-task canonical NL suite
+  and all three review receipts passed. Together with zustand, **40/240 tasks
+  and 871 task/file judgment pairs** have issued suite/receipt proof. The
+  actual remaining-review process and issuance watcher remain live; the lo
+  review has begun. AI provenance remains explicit and unqualified.
+- **VERIFIED, NL family preparation only:**
+  `c3-nl-split-preparation/preparation.json` binds the 12 original authored NL
+  sets, 240 task/query commitments and exactly 20 families per repository.
+  Both issued suites agree with these families, source commits and universes.
+  Development/holdout corpus assignments are retained. **NOT_RUN:** canonical
+  full validation of this new split and complete admission. Do not substitute
+  the older mixed-suite split or weaken exact family equality.
+- The failed mechanical attempt is replaced by a fresh invocation using clean
+  `git archive f3d2ae2900a7c5728789b8ddeb3e333f473318fa`, preserved at
+  `pinned-src-f3d2ae29/`. Its actual `corpus_release.py` digest equals both
+  reissued releases' generator identity. All 12 amended recipes passed cheap
+  preflight before canonical `capture_gold_batch`. Session `14063` / observed
+  PID `52644` is live. Outputs are fresh
+  `mechanical-capsules-amended-f3d2ae29/` and
+  `mechanical-c4-amended-f3d2ae29/`; no completed capsule/matrix is claimed.
+  Source/archive/launcher/recipe bindings are in
+  `mechanical-amended-execution-precommit.json`. The old attempt is retained.
+- **VERIFIED, Sourcegraph path-index scope:** the dedicated C3 backend exposes
+  exactly **13,347 indexed paths across all 12 repositories** at their expected
+  projection commits. Full `type:path` streams ended normally with no skipped
+  entries; their path sets match the release manifests. The canonical native
+  read-only mount snapshot and runtime/port binding are identical before and
+  after the probe. Evidence:
+  `c3-comparators/sourcegraph-paths/summary.json`, raw streams and native
+  snapshots. This is path-index proof; content postings are not independently
+  decoded, and no product quality or fair latency verdict is issued.
+- OpenGrok native inspection observed 12 project shards, 84 files and
+  136,566,270 bytes. The first full-view caller failed with HTTP 401 because
+  the copied caller incorrectly targeted **C5 port 17083** with the C3 token.
+  A direct authenticated C3 request at **18083** passed; no service-side auth
+  defect is established. The original failed output/log is preserved.
+  `run_opengrok_full_probe_retry.py` uses a fresh output and asserts the
+  container's exact loopback port binding. Session `4247` is live. At
+  observation bat **79 files / 7.163 seconds** and cli **1,014 files /
+  121.786 seconds** passed canonical bracketing UID inventories and per-file
+  served-byte checks. Complete probe, after-index hash and comparison remain
+  unproved. These elapsed times are validation costs, not search latency.
+
+Commands actually executed: isolated Python canonical capsule launcher;
+`create_sourcegraph_token.py`, `register_sourcegraph.py`,
+`attest_sourcegraph_paths.py`; the terminal failed OpenGrok full probe followed
+by its fresh, port-bound retry; and `prepare_c3_nl_split.py`. Credentials are
+stored externally with mode 0600 and were not printed. Existing C5 service and
+captures remain unchanged. Complete admission, the four residual v5 judgments,
+fresh five-product quality and quiet-host API timing remain outstanding.
+
+**VERIFIED, cross-source revalidation:** the 40 issued zustand/mocha tasks,
+both blind packs and all six review receipts also passed the canonical
+validators at frozen `f3d2ae29` in **12.951 seconds**. Suite bytes and hashes
+are unchanged; the original artifacts are not relabeled as newly issued.
+`reviewed-nl-revalidation-f3d2ae29.json` records the precise revalidation scope.
+Both development and holdout release generator identities match this source.
+This does not supply full split/admission custody or product execution proof.
