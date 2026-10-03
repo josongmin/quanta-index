@@ -35,7 +35,7 @@ and searchd SHA
 | P0 done | `run.py`: phase timer, v7 ingest stage contract in direct capture, one final closure verification, and Python >=3.10 admission before product execution | Focused positive/negative tests; one complete source-bound pair with `PAIR_VALID=pass`; final source-drift refusal retained |
 | P1 partial | `execution_batch.py` and `run.py` now batch compatible blind packs at product execution: one native union record per product, independently validated original suites, per-suite scoring views and replay. The Rust runner and Semble adapter did not need changes for identical request profiles. This is exploratory diagnostic only | attrs four-intent product E2E and replay passed; all 512 rows per product and four reports matched prior independent captures. Remaining: 12-repository matrix, qualified performance and source-attested binary proof |
 | P1 partial | `source_closure.py` and pair driver accept an external prior closure for exploratory captures without claims. Reuse checks revision, clean source and file inventory. A manual quality-batch CLI is connected; no C5 matrix planner is connected yet | Focused refusal tests and clean-HEAD closure A/B passed. Full 12-repository C5 batch proof remains open |
-| P2 | Profile SymPy verifier under the current source. Optimize repeated parsing only inside one independent validation pass, keyed by source bytes and parser identity; keep verdict re-derivation independent | Report and verdict bytes unchanged; tampered source and parser identity rejected; representative large-cell wall and CPU reported |
+| P2 partial | `source_oracle.py`, `evaluator.py` and the quality-batch driver share parsed declaration census across compatible suites for one batch only, keyed by source bytes/digest and parser identity. File-universe and gold validation still run for every suite; replay uses a fresh cache | SymPy four-suite blind packs matched frozen originals; source/parser drift and cached parse-error tests passed. Same-host controlled timing and full 12-repository replay remain open |
 
 Exploratory C5 specs had no qualified admission bundle, so admission was not
 the observed bottleneck. Do not remove qualified admission or reuse indexes in
@@ -87,13 +87,17 @@ SymPy remains a separate verifier cost. Four independent `validate_suite`
 calls on its frozen C5 suites took 31.812, 44.921, 75.400 and 36.130 s on
 the contended host. A `cProfile` of the 8-query infix suite spent 27.231 s
 inside validation, including 16.432 s in declaration census and 8.500 s in
-file-universe validation. These are diagnostic costs, not quiet-host targets.
-The narrow P2 change is a batch-lifetime declaration census cache keyed by
-file bytes/digest and parser identity in `source_oracle.py`; each suite must
-still independently validate its gold and the corpus must be rechecked before
-promotion. Test fixed expected rows and reports, reject changed source or
-parser identity, then remeasure all four SymPy suites. Do not bypass the
-qualified admission contract to improve this exploratory workload.
+file-universe validation. With the batch-lifetime census cache, the four
+separately validated suites took 14.378, 4.829, 20.337 and 3.059 s; each
+derived blind pack was content-equal to its frozen original. Host load
+changed between runs, so these are diagnostic costs, not a measured speedup.
+The cache stores only census rows/errors, not source bytes; each suite still
+rechecks its file universe and gold. A source-byte/digest change or parser
+identity change refuses reuse. At clean driver `b2a16f5b`, attrs product
+capture `/private/tmp/qb-a7` and independent replay passed; all 512
+non-timing rows per product and four reports matched the old captures. The
+remaining proof is same-host controlled timing and the other repositories.
+Do not bypass qualified admission to improve this exploratory workload.
 
 ## Work and boundaries
 
