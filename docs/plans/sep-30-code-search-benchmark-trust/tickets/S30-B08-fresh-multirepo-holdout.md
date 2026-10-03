@@ -1429,3 +1429,46 @@ Sourcegraph/OpenGrok local endpoints on ports 7080/7081 refused connections
 at this audit; their full indexed universes are unattested. Do not combine
 these source-exposed mechanical cases with an independent holdout, infer a
 five-product ranking, or promote this admission matrix to a product decision.
+
+## Fresh C5 source preparation (2026-10-03)
+
+**VERIFIED for roster, source release, sampling and split validation;
+`diagnostic_unqualified` for quality.** Before any C5 product output, the
+selection ledger froze twelve additional complete-history repositories:
+zerolog/grpc-go/telegraf, zoxide/tauri/rust-analyzer, attrs/celery/sympy,
+and immer/chartjs/svelte. These have 11,695 `code_only` files. The provisional
+holdout release is
+`/private/tmp/qi-c5-fresh-20261003/combined-release`, digest
+`sha256:3ce648056f1e6fc6e927eb5fdcadfacbee69d3aab8d6444fdb59be302c094b56`.
+An exact/near-file audit against the ten development and twelve previously
+exposed repositories found no overlap above the declared 256-byte exact-file
+threshold or near-duplicate threshold. Small identical stubs below that
+threshold remain visible in the audit. License source files are pinned but
+approval is not attested.
+
+The old ten-repository development release used an earlier generator digest,
+so the current split validator correctly refused it. Clean source snapshot
+`40fbb710` rebuilt the same ten commits with the current generator into
+`/private/tmp/qi-c5-fresh-20261003/development-release-current`, digest
+`sha256:179f1f885e2c4f8104903d8624fec52e7f9c0f5148d048bcac32bac664ac1c70`.
+All 6,477 development `code_only` files and both release views matched the
+older release by repository. The predeclared `baseline_v3` sample was rerun
+with the same seed into `sampling-v4`; all 6,628 task rows, census summaries
+and lane counts match `sampling-v3`. The 22-repository source-replayed split
+validator passed in 337.324 seconds. Binding receipt:
+`/private/tmp/qi-c5-fresh-20261003/split-validation-v4.json`.
+
+The sampled tasks are 240 exact content, 1,200 exact declarations, 96 prefix,
+96 infix, 84 components, 4,792 OSA1 variants, and 60 each synthetic and
+wrong-repository negatives. Eight OSA1 proposals underfilled. Natural-language
+and workflow tasks underfilled 240/240. The independent declaration census
+refused 298 of rust-analyzer's 1,462 Rust files; those files are unsupported,
+not empty gold. Source gold capture and review remain separate admission gates.
+The retained first sampling attempt exited with a process crash before output;
+two later runs under the same seed produced byte-identical output. The current
+source-matched run used a new output root and changed only the split digest.
+
+**NOT_RUN for C5:** product retrieval, human relevance review, five-product
+index-universe attestation, repository-cluster decision, quiet-host timing,
+and deployment. The separate exposed twelve-repository diagnostics above
+cannot be folded into this fresh set.
