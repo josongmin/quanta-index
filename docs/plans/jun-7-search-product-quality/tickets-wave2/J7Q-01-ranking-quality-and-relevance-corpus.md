@@ -317,3 +317,118 @@ articles were read directly. Quanta relevant-file diff versus the prior audit
 was empty. `VERIFIED` covers these source/design observations. Zoekt execution,
 Blackbird execution, performance comparison and proposed Quanta changes are
 `NOT_RUN`.
+
+### Deeper comparison and adoption decisions (2026-10-03)
+
+Rechecked Quanta at `195f5aadb3aabe814b54d8e58d7213f69cf86d4f`.
+The relevant code-search, file-authority, adapter-open and normalizer diff
+against `fabbe589866047e2c586e7218d91d5f57d3cee29` is empty. The checkout
+was clean before this documentation addition. The Zoekt revision above is
+unchanged. The following are source observations, not new benchmark results.
+
+#### Additional findings that change implementation choices
+
+1. **Identifier boundary scoring is a separate opportunity from tokenization.**
+   Zoekt's [byteClass](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/bits.go#L210)
+   separates lowercase, uppercase, digits and other bytes; `scoreLine` compares
+   classes on both sides of an occurrence. Quanta's `boundary_score` uses
+   `is_token_char`, which deliberately keeps camelCase and snake_case intact.
+   Thus a component can receive a stronger boundary signal in Zoekt without
+   being a whole lexical token. Implement any analogous rank feature on the
+   original source with verified offset mapping: the folded buffer has already
+   lost camel-case transitions. Preserve query acceptance and literal recall.
+   Do not copy the byte classifier as a Unicode segmentation algorithm.
+
+2. **Zoekt's final order is not always descending score.**
+   [SortFiles](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/contentprovider.go#L971)
+   sorts by score and then promotes a file extension absent from the first two
+   results into third place, provided its score is at least 90% of the current
+   third result. `TestCollectSenderDocumentLimitKeepsNovelExtension` expects
+   this behavior. It cannot explain rankings on an all-Go file universe.
+   Defer such diversity reranking until mixed-language, multi-intent evaluation
+   shows a benefit. Record final returned order separately from score order.
+
+3. **Symbol metadata is useful; symbol location quality is not automatic.**
+   [tagsToSections.Convert](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/ctags.go#L126)
+   finds the first occurrence of a tag name on the reported line. Its comment
+   explicitly acknowledges wrong offsets for short names; missing names and
+   overlapping sections are skipped. The stored section covers the name,
+   not the entire function body. `buildShard` parses symbols before ordering
+   documents and may continue after parser errors unless configured otherwise.
+   For Quanta, distinguish a verified file-level declaration-name feature from
+   an occurrence-level definition hit. The latter requires an authoritative
+   name range, not a context snippet or the whole indexed function span.
+   Existing typed symbol identity/source revision checks remain mandatory.
+   Missing symbol metadata must not suppress ordinary literal results.
+
+4. **Exploration limits and display limits have different completeness effects.**
+   [limit.go](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/limit.go#L10)
+   sorts before applying display caps. `search/aggregate.go` maintains a bounded
+   ranked collection as batches arrive; `FlushWallTime` can switch to streaming.
+   In contrast, shard/repository match limits stop document exploration, and
+   `TotalMaxMatchCount` stops scheduling further shards while pending searches
+   finish. These limits are not an exact global top-k proof. Preserve Quanta's
+   current verified-candidate sorting before page truncation. If collection
+   changes, separately expose exhaustion, timeout and display truncation;
+   require stable ordering, late high-score admission and cursor continuity.
+
+5. **Regex optimization must preserve a candidate superset.**
+   Zoekt's [regex tests](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/eval_test.go#L82)
+   cover OR branches, optional literals, anchors, repetition and patterns with
+   no useful grams. For example `(foo|)` needs a brute-force candidate path;
+   selecting only `foo` would miss valid matches. A Quanta optimization must
+   match an independent source-scan oracle, or return its declared resource
+   refusal when exhaustive verification exceeds budget. An unsupported or
+   budget-refused query is never evidence that the corpus has no match.
+
+6. **Index lifecycle and query scheduling are operational references.**
+   Zoekt uses mmap-backed searchers, atomically renamed tombstone metadata,
+   shard replacement with delayed close until old readers are gone, and a
+   cooperative interactive/batch scheduler (`search/shards.go`, `index/tombstones.go`,
+   `search/sched.go`). These mechanisms do not establish crash durability from
+   rename alone. Quanta already has sealed generation authority; preserve it.
+   `adapter_open.rs:145` calls `from_verified_files`, which normalizes sources
+   and builds file trigram postings at generation load. This establishes a
+   cold-open cost to measure, not a per-query rebuild. Measure source residency,
+   open/reopen time and reader retirement before proposing persisted postings.
+
+7. **Blackbird's product scope is narrower than exhaustive source retrieval.**
+   GitHub's [official documentation source](https://github.com/github/docs/blob/main/content/search-github/github-code-search/about-github-code-search.md)
+   documents generated/vendor exclusions, file-size and long-line limits,
+   default-branch-only search, 100 returned results and no exhaustive search.
+   The [symbol qualifier](https://docs.github.com/en/search-github/github-code-search/understanding-github-code-search-syntax#symbol-qualifier)
+   finds definitions, not references, with language/type coverage limitations.
+   These constraints prohibit treating GitHub results as a complete oracle for
+   our fixed manifest, especially generated-code gold. Sparse grams and blob
+   deduplication remain scale references, not evidence of typo recovery or
+   stronger ranking on this corpus. Full engine weights remain unverified.
+
+8. **Reference tests do not replace independent relevance judgments.**
+   Zoekt's `internal/e2e/e2e_rank_test.go` pins several repository snapshots,
+   checks golden result order and reports recall/MRR. It even chooses an older
+   Zoekt snapshot to avoid matching its own golden files. Adopt snapshot pinning
+   and fixture-contamination prevention. Snapshot output alone only detects
+   change; independently reviewed relevance determines whether change is good.
+
+#### Work order and decisive checks
+
+| Order | Owned boundary | Concrete work | Independent completion check |
+| --- | --- | --- | --- |
+| 1 | `searcher/code_search.rs`, existing symbol identity conversion and rank/cursor contract | Add internal score decomposition; compare declaration-name evidence, original-source identifier boundaries and the existing occurrence feature as separate ablations. Audit available name-location authority before adding occurrence-level definition boosts. | Exact name vs usage; repeated usage; camel/snake/acronym/digit boundaries; same-line duplicate names; missing/stale metadata; tests/generated files that are genuinely relevant. No candidate recall change and no body hit falsely labeled as a definition. |
+| 2 | Existing retrieval evaluator, suite builder and report | Freeze intent lanes and eligibility. Report file Hit/MRR/NDCG separately from declaration-name recovery. Add candidate completeness and final-order provenance. | Same paired eligible IDs; refusals/failures retained in coverage/operational score; fixed metric goldens. Group derived queries by seed symbol and hold out repositories to avoid treating 1,000 variants as 1,000 independent cases. |
+| 3 | Existing candidate planner, file-authority and budget accounting | Instrument posting visits, candidate/source verification counts, bytes and stage timing; compare positional verification only if false candidates dominate. | Independent full-source oracle over literals/regex/Unicode; gram collisions and short/optional patterns; explicit limit refusal. Measure warm queries separately from cold-open and indexing. |
+| 4 | Existing file-rank collector, response projection and cursor tests | Validate score order versus final presentation, chunking-independent file projection and bounded collection. | Late better candidates; insertion/batch permutations; page concatenation equals exhaustive deterministic order; old rank-version cursor rejected; partial results labeled. No approximate early stop concealed as exact top-k. |
+| 5 | Normalizer and generation lifecycle owners, only after profiling | Evaluate equivalent ASCII normalization and persistent postings; later consider sparse grams, deduplication and scheduling changes if measured costs justify them. | Byte/offset equivalence, Unicode contract fixtures, activation with concurrent readers, delete/reopen, memory bounds and same-boundary latency. Contract changes require rebuilt generations. |
+
+Do not adopt Zoekt's magic score constants, first-string symbol offsets or
+extension-diversity policy wholesale. Do not adopt Blackbird's indexing
+exclusions into our manifest contract. Default literal search, explicit symbol
+search, component search and edit-distance recovery remain distinct evaluated
+behaviors even when a public search entrypoint dispatches between them.
+
+Verification for this addition: `git rev-parse HEAD`, `git status --short`,
+the relevant-file `git diff fabbe589866047e2c586e7218d91d5f57d3cee29 HEAD`,
+`rg`/`sed` source and test inspection, pinned GitHub raw-source downloads and
+official documentation reads. `VERIFIED`: the cited source/design findings;
+`NOT_RUN`: upstream tests, native comparison runs, runtime lifecycle/performance
+checks and proposed product changes. No benchmark counts were replaced.
