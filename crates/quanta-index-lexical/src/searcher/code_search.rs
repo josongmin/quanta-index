@@ -7,7 +7,7 @@
 mod ranking;
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::ops::Range;
 
 use quanta_index_contract::{
@@ -679,6 +679,7 @@ fn typo_witness(
     needle: &str,
     case: CaseMode,
     comparisons: &mut usize,
+    distance_cache: &mut HashMap<Vec<u8>, Option<u8>>,
     budget: &RequestBudgetV1,
 ) -> Result<Option<(Witness, u8)>, CoreError> {
     let mut start = None;
@@ -696,17 +697,25 @@ fn typo_witness(
         {
             return Ok(());
         }
-        *comparisons = comparisons.saturating_add(1);
-        if *comparisons > MAX_TYPO_TOKEN_COMPARISONS {
-            return Err(CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
-                message: "lexical code search: typo token comparison budget exceeded".into(),
-            });
-        }
-        if (*comparisons).is_multiple_of(256) {
-            budget.checkpoint("lexical:code-search-typo-token")?;
-        }
-        if let Some(distance) = typo_distance(needle.as_bytes(), token.as_bytes(), case) {
+        let distance = if let Some(cached) = distance_cache.get(token.as_bytes()) {
+            *cached
+        } else {
+            *comparisons = comparisons.saturating_add(1);
+            if *comparisons > MAX_TYPO_TOKEN_COMPARISONS {
+                return Err(CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                    message: "lexical code search: typo token comparison budget exceeded".into(),
+                });
+            }
+            if (*comparisons).is_multiple_of(256) {
+                budget.checkpoint("lexical:code-search-typo-token")?;
+            }
+            let distance = typo_distance(needle.as_bytes(), token.as_bytes(), case);
+            let _previous = distance_cache.insert(token.as_bytes().to_vec(), distance);
+            distance
+        };
+        if let Some(distance) = distance {
             match &mut best {
                 Some((witness, prior)) if distance == *prior => {
                     witness.occurrences = witness.occurrences.saturating_add(1).min(4);
@@ -2040,6 +2049,7 @@ impl TantivySearcher {
             }
         }
         let mut comparisons = 0;
+        let mut distance_cache = HashMap::new();
         let mut ranked = Vec::new();
         for key in selected {
             budget.checkpoint("lexical:code-search-typo-file")?;
@@ -2049,8 +2059,14 @@ impl TantivySearcher {
             let content = file.indexed_text.as_deref().ok_or_else(|| {
                 CoreError::Storage("lexical: admitted typo file has no content".into())
             })?;
-            let Some((witness, distance)) =
-                typo_witness(content, identifier, case, &mut comparisons, budget)?
+            let Some((witness, distance)) = typo_witness(
+                content,
+                identifier,
+                case,
+                &mut comparisons,
+                &mut distance_cache,
+                budget,
+            )?
             else {
                 continue;
             };
@@ -2340,7 +2356,7 @@ mod tests {
     use quanta_index_core::{CoreError, RequestBudgetV1};
     use quanta_index_lq_regex::RegexExecutor;
     use quanta_index_lq_trigram::{DocId, TrigramIndexBuilder, TrigramIntersectionError};
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
 
     use crate::file_authority::{FileAuthority, SourceFile, from_verified_files};
     use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText};
@@ -2493,6 +2509,7 @@ mod tests {
                 "load_jsom",
                 CaseMode::Folded,
                 &mut comparisons,
+                &mut HashMap::new(),
                 &budget,
             )
             .expect("independent no-answer fixture")
@@ -2505,6 +2522,7 @@ mod tests {
                 "load_jsom",
                 CaseMode::Folded,
                 &mut exhausted,
+                &mut HashMap::new(),
                 &budget
             ),
             Err(CoreError::Typed {
@@ -2524,6 +2542,7 @@ mod tests {
                     "load_jsom",
                     CaseMode::Folded,
                     &mut comparisons,
+                    &mut HashMap::new(),
                     &budget
                 )
                 .expect("scan")
@@ -2537,6 +2556,7 @@ mod tests {
             "load_jsom",
             CaseMode::Folded,
             &mut comparisons,
+            &mut HashMap::new(),
             &budget,
         )
         .expect("scan")
@@ -2550,6 +2570,7 @@ mod tests {
             "load_jsom",
             CaseMode::Folded,
             &mut comparisons,
+            &mut HashMap::new(),
             &budget,
         )
         .expect("scan")
@@ -2562,11 +2583,60 @@ mod tests {
                 "load_jsom",
                 CaseMode::Sensitive,
                 &mut comparisons,
+                &mut HashMap::new(),
                 &budget
             )
             .expect("scan")
             .is_none()
         );
+    }
+
+    #[test]
+    fn typo_distance_budget_counts_distinct_tokens_across_files() {
+        let budget = RequestBudgetV1::unbounded();
+        let mut comparisons = MAX_TYPO_TOKEN_COMPARISONS - 1;
+        let mut distance_cache = HashMap::new();
+        let first = typo_witness(
+            "load_json",
+            "load_jsom",
+            CaseMode::Folded,
+            &mut comparisons,
+            &mut distance_cache,
+            &budget,
+        )
+        .expect("first file")
+        .expect("one-edit witness");
+        assert_eq!(first.1, 1);
+        assert_eq!(comparisons, MAX_TYPO_TOKEN_COMPARISONS);
+
+        let repeated = typo_witness(
+            "load_json load_json",
+            "load_jsom",
+            CaseMode::Folded,
+            &mut comparisons,
+            &mut distance_cache,
+            &budget,
+        )
+        .expect("repeated token does not repeat the distance computation")
+        .expect("one-edit witness");
+        assert_eq!(repeated.0.occurrences, 2);
+        assert_eq!(repeated.1, 1);
+        assert_eq!(comparisons, MAX_TYPO_TOKEN_COMPARISONS);
+
+        assert!(matches!(
+            typo_witness(
+                "load_jsob",
+                "load_jsom",
+                CaseMode::Folded,
+                &mut comparisons,
+                &mut distance_cache,
+                &budget,
+            ),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                ..
+            })
+        ));
     }
 
     fn fixture_postings(path: &str, content: Option<&str>) -> u32 {
