@@ -39,8 +39,8 @@ pub use history::{
     RepoDescriptionMutation, RepoMetaBatch, RepoMetaMutation, RepoTopicBatch, RepoTopicMutation,
 };
 pub use lexical::{
-    LexicalNamespace, LexicalQueryBuilder, SearchCorpusBatch, SearchCorpusNamespace,
-    SdkPublishActivateDurationsV1,
+    LexicalNamespace, LexicalQueryBuilder, SdkPublishActivateDurationsV1, SearchCorpusBatch,
+    SearchCorpusNamespace,
 };
 pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
 pub use observability::ObservabilityNamespace;
