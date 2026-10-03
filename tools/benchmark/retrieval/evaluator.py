@@ -4046,7 +4046,7 @@ def evaluate_complete_scored_file_evidence(
     return {
         "schema_version": SCHEMA_VERSION,
         "report_scope": "paired_complete_scored_file_evidence_v1",
-        "status": "diagnostic_unqualified",
+        "status": "evidence_unqualified",
         "rank_metric_version": "file-judgments-complete-v1",
         "graded": True,
         "suite_id": suite["suite_id"],

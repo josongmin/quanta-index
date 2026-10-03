@@ -11417,14 +11417,37 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
             "Semble lexical-file",
         ),
         (lambda row: row.update(routes=["lexical", "hybrid"]), "lexical-only Quanta"),
-        (lambda row: row["claims"].update(quality=True), "exploratory diagnostic only"),
-        (lambda row: row.update(scope="qualified"), "exploratory diagnostic only"),
+        (lambda row: row["claims"].update(quality=True), "cannot carry claims"),
+        (lambda row: row.update(scope="qualified"), "requires a quality claim"),
     ):
         forged = copy.deepcopy(spec)
         change(forged)
         spec_path.write_text(json.dumps(forged), encoding="utf-8")
         with pytest.raises(pairrun.RunError, match=match):
             pairrun.load_spec(spec_path)
+    qualified = copy.deepcopy(spec)
+    qualified["scope"] = "qualified"
+    qualified["claims"]["quality"] = True
+    qualified["admission"] = {
+        "manifest": "/tmp/admission.json",
+        "split_manifest": "/tmp/split.json",
+        "split_releases": "/tmp/releases.json",
+        "license_receipt": "/tmp/license.json",
+        "annotation_receipts": ["/tmp/annotation-1.json", "/tmp/annotation-2.json"],
+        "adjudication_receipt": "/tmp/adjudication.json",
+    }
+    jsonschema.validate(qualified, _load_schema("pair-spec.schema.json"))
+    spec_path.write_text(json.dumps(qualified), encoding="utf-8")
+    assert pairrun.load_spec(spec_path) == qualified
+    local_admission = copy.deepcopy(qualified)
+    del local_admission["admission"]["split_manifest"]
+    del local_admission["admission"]["split_releases"]
+    local_admission["admission"].update(
+        development_suite="/tmp/development.json", experiment_custody="/tmp/custody.json"
+    )
+    spec_path.write_text(json.dumps(local_admission), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="repository-disjoint admission"):
+        pairrun.load_spec(spec_path)
 
 
 def test_verdict_quality_refuses_diagnostic_rank_profile(tmp_path, monkeypatch):
@@ -15280,7 +15303,7 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
     file_evidence = ev.evaluate_complete_scored_file_evidence(
         suite, pack, run, "semble-lexical-file", "lexical"
     )
-    assert file_evidence["status"] == "diagnostic_unqualified"
+    assert file_evidence["status"] == "evidence_unqualified"
     assert file_evidence["rank_metric_version"] == "file-judgments-complete-v1"
     assert file_evidence["rank_metrics"]["comparison"]["sample_count"] == 2
     assert (

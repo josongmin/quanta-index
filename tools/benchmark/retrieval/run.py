@@ -8573,6 +8573,7 @@ def run_pair(spec: dict) -> int:
 def _run_pair_staged(spec: dict, stage: Path) -> dict:
     if "semble" not in spec["execution_profiles"]:
         raise RunError("pair requires spec.execution_profiles.semble")
+    scope = spec.get("scope", "exploratory")
     code_search_file = (
         spec["execution_profiles"]["quanta"]["policy"] in qp.CODE_SEARCH_FILE_POLICIES
     )
