@@ -53,5 +53,74 @@ them does not create an unseen holdout or a qualified comparison.
   labels still need review. Repository/family-cluster statistics apply only
   after the applicable comparison admission.
 
-Per-run artifacts belong outside the checkout. Verification results and
-commands are recorded below after implementation.
+## Verification — 2026-10-04
+
+Implemented owners:
+
+- `tools/benchmark/retrieval/codesearchnet_qrels.py`: fixed upstream intake,
+  raw-judgment preservation, fractional aggregation and external no-overwrite output.
+- `tools/benchmark/retrieval/identifier_robustness_suite.py`: source-defined
+  component identity and literal-containment metadata in newly generated census.
+- `tools/benchmark/retrieval/identifier_robustness_report.py`: policy validation,
+  source replay and eligible file-hit breakdowns; historical policy-free input remains valid.
+- Their focused test files are enrolled in `tools/ci/test-authority.toml`,
+  `Justfile` and the applicable source-closure profiles. Existing policy tests
+  check owner enrollment, source-closure inclusion and nonempty collection.
+
+| Scope | Verdict | Observed result |
+| --- | --- | --- |
+| Full official CodeSearchNet intake | VERIFIED | 4,006 raw judgments; 99 queries; 573 query/language pairs; 2,914 qrels; 575 disagreed qrels |
+| Independent CodeSearchNet aggregation | VERIFIED | Separate CSV parser, integer histograms and rational mean calculation agree for every qrel; all original row identities/grades/notes preserved exactly once |
+| Existing gin noisy-input strata | VERIFIED | All six frozen lanes rederived from intended-name/query bytes; original suites/census untouched; input distribution only |
+| Focused owner/policy/authority tests | VERIFIED | 293 passed in 48.71 seconds; includes historical replay, policy tampering, forged upstream input and symlink output refusal |
+| Python style and test-authority guard | VERIFIED | Ruff check/format and `check-test-authority.py` passed |
+| External review-seed product execution | NOT_RUN | Source snippet materialization, corpus licensing and executable scoring contract remain prerequisites |
+| New five-product score or performance comparison | NOT_RUN | No product calls were made by this change; historical scores are not recomputed or combined |
+| CLARC product lane | NOT_RUN | Original/neutral-renamed 526-pair inputs inspected; positive-only qrels and long-query admission remain execution constraints |
+
+Input-only gin distribution under `camel-snake-v1`:
+
+| Operation | Tasks | No intact component of length >=3 | Some/all intact components | Query is a proper substring of intended name |
+| --- | ---: | ---: | ---: | ---: |
+| Insertion | 1,192 | 116 | 1,076 | 0 |
+| Deletion | 1,178 | 139 | 1,039 | 180 |
+| Substitution | 1,192 | 135 | 1,057 | 0 |
+| Transposition | 1,192 | 194 | 998 | 0 |
+| Keyboard stress | 1,192 | 133 | 1,059 | 0 |
+| Boundary stress | 1,056 | 270 | 786 | 0 |
+
+The groups overlap: intact components and literal containment are independent
+axes. Insertion additionally has 166 queries containing the complete intended
+name. These observations explain which inputs can be matched through simpler
+text overlap; they do not establish how any product retrieved a result.
+
+Per-run evidence is outside the checkout:
+
+- Raw public source audit: `/private/tmp/qi-public-bench-audit-y1tax5mf/manifest.json`.
+- Official seed: `/private/tmp/qi-public-bench-audit-y1tax5mf/codesearchnet-review-seed-v2.json`,
+  SHA-256 `fb40450f134ba4c95fea35b77932039d9c974a99177319d30f5ed7cd1ed77837`.
+- Independent check and six input-only lane outputs:
+  `/private/tmp/qi-b09-verification-20261004-ytzcxwj_/verification-manifest.json`.
+  This manifest binds script, input and analysis-tool bytes; it is not a product-capture receipt.
+- Memtrace code/data/license audit: `/private/tmp/qi-memtrace-audit-bDCppO/memtrace-public`.
+
+Executed commands from the repository root:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.codesearchnet_qrels \
+  --csv /private/tmp/qi-public-bench-audit-y1tax5mf/codesearchnet-annotationStore.csv \
+  --output /private/tmp/qi-public-bench-audit-y1tax5mf/codesearchnet-review-seed-v2.json
+uv run --frozen --extra dev python -c "import runpy; runpy.run_path('/private/tmp/qi-b09-verification-20261004-ytzcxwj_/verify_inputs.py', run_name='__main__')"
+uv run --frozen --extra dev python -m pytest -q \
+  tools/ci/tests/test_codesearchnet_qrels.py \
+  tools/ci/tests/test_identifier_robustness_strata.py \
+  tools/ci/tests/test_identifier_robustness_report.py \
+  tools/ci/tests/test_source_oracle_suite.py \
+  tools/ci/tests/test_benchmark_policy.py \
+  tools/ci/tests/test_check_test_authority.py
+uv run --frozen --extra dev python tools/ci/lint/check-test-authority.py
+```
+
+The imported annotations and new diagnostic report fields are implemented.
+Source materialization, local relevance review, declaration-position recovery,
+qualified product comparisons and an unseen holdout remain separate unfinished scopes.

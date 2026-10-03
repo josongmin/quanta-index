@@ -7,7 +7,7 @@
 mod ranking;
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::ops::Range;
 
 use quanta_index_contract::{
@@ -47,6 +47,11 @@ const MAX_REGEX_MATCHES_PER_SURFACE: usize = 4_096;
 const MAX_REGEX_TERMS: usize = 4;
 const MAX_TYPO_TOKEN_COMPARISONS: usize = 1_000_000;
 const MAX_TYPO_POSTING_VISITS: usize = 2_000_000;
+
+// Request-local bounded memoization; this is neither persisted nor externally
+// ordered, so hashing keeps repeated-token distance lookup inexpensive.
+#[allow(clippy::disallowed_types)]
+type TypoDistanceCache = std::collections::HashMap<Vec<u8>, Option<u8>>;
 
 #[derive(Clone, Copy)]
 enum Scope {
@@ -679,7 +684,7 @@ fn typo_witness(
     needle: &str,
     case: CaseMode,
     comparisons: &mut usize,
-    distance_cache: &mut HashMap<Vec<u8>, Option<u8>>,
+    distance_cache: &mut TypoDistanceCache,
     budget: &RequestBudgetV1,
 ) -> Result<Option<(Witness, u8)>, CoreError> {
     let mut start = None;
@@ -2078,7 +2083,7 @@ impl TantivySearcher {
             }
         }
         let mut comparisons = 0;
-        let mut distance_cache = HashMap::new();
+        let mut distance_cache = TypoDistanceCache::new();
         let mut ranked = Vec::new();
         for key in selected {
             budget.checkpoint("lexical:code-search-typo-file")?;

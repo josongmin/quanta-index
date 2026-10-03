@@ -1,4 +1,5 @@
 //! Source-bound feature extraction and diagnostic rank ablations.
+//!
 //! The selected file scorer remains owned by the parent; study scores are never
 //! silently substituted for its output. Symbol evidence is file-level only.
 
@@ -56,12 +57,13 @@ fn boundary_features(
     case: CaseMode,
     budget: &RequestBudgetV1,
 ) -> Result<u32, CoreError> {
+    // Binary source has no content-boundary signal; path features still apply.
+    let raw_content = match std::str::from_utf8(&file.bytes) {
+        Ok(content) => Some(content),
+        Err(_) => None,
+    };
     let surfaces = [
-        (
-            Scope::Content,
-            std::str::from_utf8(&file.bytes).ok(),
-            file.indexed_text.as_deref(),
-        ),
+        (Scope::Content, raw_content, file.indexed_text.as_deref()),
         (
             Scope::Path,
             Some(file.source.file.repo_relative_path.as_str()),
@@ -79,10 +81,10 @@ fn boundary_features(
             .filter(|(_, term)| {
                 term.regex.is_none() && matches!(term.scope, Scope::Both)
                     || term.regex.is_none()
-                        && match (term.scope, scope) {
-                            (Scope::Content, Scope::Content) | (Scope::Path, Scope::Path) => true,
-                            _ => false,
-                        }
+                        && matches!(
+                            (term.scope, scope),
+                            (Scope::Content, Scope::Content) | (Scope::Path, Scope::Path)
+                        )
             })
             .collect();
         if admitted.is_empty() {
@@ -161,10 +163,7 @@ fn boundary_features(
     Ok(per_term.into_iter().fold(0_u32, u32::saturating_add))
 }
 
-fn stored_text<'a>(
-    doc: &'a TantivyDocument,
-    field: tantivy::schema::Field,
-) -> Result<&'a str, CoreError> {
+fn stored_text(doc: &TantivyDocument, field: tantivy::schema::Field) -> Result<&str, CoreError> {
     let mut values = doc.get_all(field);
     let value = values
         .next()
@@ -351,7 +350,7 @@ pub(super) fn study(
         baseline,
         declaration_only: baseline.saturating_add(declaration),
         boundary_only: baseline.saturating_add(boundary),
-        occurrence_half: without_occurrences.saturating_add(components.occurrence / 2),
+        occurrence_half: without_occurrences.saturating_add(components.occurrence.div_euclid(2)),
         occurrence_none: without_occurrences,
         combined: without_occurrences
             .saturating_add(declaration)
