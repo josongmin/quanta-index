@@ -381,7 +381,7 @@ fn the_255_256_row_boundary_serves_the_exhaustive_oracle_through_both_lanes() ->
         assert!(
             ann_hits
                 .windows(2)
-                .all(|pair| pair[0].score >= pair[1].score),
+                .all(|pair| matches!(pair, [left, right] if left.score >= right.score)),
             "query {query_seed}: refined candidates must be ordered by exact score"
         );
     }
