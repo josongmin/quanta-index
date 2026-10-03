@@ -2667,6 +2667,57 @@ def test_pair_capture_preflight_requires_external_root_and_clean_pin(tmp_path):
         pairrun.preflight_capture(spec)
 
 
+def test_qualified_default_file_preflight_refuses_mechanical_positive(tmp_path):
+    repo, suite, _run, _sp, _rp, _files = fixture_v3(tmp_path)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"repository_commit": suite["repository_commit"]}))
+    suite_file = tmp_path / "suite.json"
+    searchd = tmp_path / "searchd"
+    searchd.write_bytes(b"searchd-binary")
+    spec = {
+        "repo": str(repo),
+        "manifest": str(manifest),
+        "suite": str(suite_file),
+        "top_k": 10,
+        "output_root": str(tmp_path / "capture"),
+        "searchd_binary": str(searchd),
+        "searchd_expected_sha256": ev.digest(b"searchd-binary"),
+        "scope": "qualified",
+        "execution_profiles": {"quanta": {"policy": "code_search_file"}},
+    }
+    positive = suite["tasks"][0]
+    positive["evaluation_contract"] = {
+        "request_mode": "default_file_search",
+        "gold_unit": "distinct_file",
+        "result_unit": "distinct_file",
+    }
+    positive["judgment_policy"] = ev.SOURCE_ORACLE_JUDGMENT_POLICY
+    positive["source_oracle"] = {
+        "contract": "go_declaration_name_components_v1",
+        "unit": "distinct_file",
+    }
+    suite_file.write_text(json.dumps(suite))
+    with pytest.raises(pairrun.RunError, match="independently reviewed complete relevance"):
+        pairrun.preflight_capture(spec)
+
+    positive.pop("source_oracle")
+    positive["judgment_policy"] = ev.COMPLETE_JUDGMENT_POLICY
+    negative = suite["tasks"][1]
+    negative["evaluation_contract"] = dict(positive["evaluation_contract"])
+    negative["judgment_policy"] = ev.SOURCE_ORACLE_JUDGMENT_POLICY
+    negative["source_oracle"] = {
+        "contract": "go_declaration_name_components_v1",
+        "unit": "distinct_file",
+    }
+    suite_file.write_text(json.dumps(suite))
+    assert pairrun.preflight_capture(spec) == tmp_path / "capture"
+
+    negative.pop("evaluation_contract")
+    suite_file.write_text(json.dumps(suite))
+    with pytest.raises(pairrun.RunError, match="declared file request mode"):
+        pairrun.preflight_capture(spec)
+
+
 def _pinned_semble_cache(tmp_path):
     cache = tmp_path / "semble-cache"
     revision = "a" * 40
@@ -9012,6 +9063,16 @@ def test_runtime_manifest_requires_qualified_source_closure_artifact(tmp_path):
     st = _pair_stage(tmp_path, scope="qualified")
     _rewrite_manifest(st, lambda manifest: manifest["artifacts"].pop("driver_source_closure"))
     with pytest.raises(pairrun.RunError, match="driver source closure"):
+        _stage_verdict(st)
+
+
+def test_qualified_default_file_verdict_requires_request_contract(tmp_path):
+    st = _pair_stage(tmp_path, scope="qualified")
+    protocol = st["stage"] / "protocol-lock.json"
+    payload = json.loads(protocol.read_text(encoding="utf-8"))
+    payload["execution_profiles"]["quanta"]["policy"] = "code_search_file"
+    protocol.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="declared file request mode"):
         _stage_verdict(st)
 
 
@@ -15376,9 +15437,7 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
     sufficiently_sampled_run = copy.deepcopy(run)
     for index in range(4, 22):
         source_id = "T1" if index % 2 == 0 else "T2"
-        source_task = next(
-            task for task in suite["tasks"] if task["task_id"] == source_id
-        )
+        source_task = next(task for task in suite["tasks"] if task["task_id"] == source_id)
         task = copy.deepcopy(source_task)
         task["task_id"] = f"T{index}"
         task["query"] = "v" + ev.digest(f"file-gate-variant-{index}".encode())[:20]

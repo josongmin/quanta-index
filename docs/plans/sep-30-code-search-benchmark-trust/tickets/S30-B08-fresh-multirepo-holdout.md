@@ -1049,3 +1049,58 @@ mechanical intended-declaration-file targets and have no human relevance
 review. The sequential run-plus-replay wall sum was 3,969.976s on a contended
 host; it is not a query-latency comparison. No five-product or C5 qualified
 claim follows from this diagnostic.
+
+## Component-query miss audit and qualification boundary (2026-10-03)
+
+The four Quanta component misses in the frozen 12-repository capture are
+`cli.com.002` (`test update available no current version`), `mocha.com.006`
+(`clean up`), `zellij.com.004` (`version info`) and `zellij.com.005`
+(`home unix`). All four returned ten distinct files with `capped` status;
+the capture does not locate their mechanical target beyond rank ten. Their
+suite gold files and source SHA-256 values match the pinned source view.
+`zellij.com.005` illustrates the intent mismatch: the source oracle labels
+`zellij-utils/src/lib.rs` because line 10 declares `mod home_unix`, while
+the implementation file `zellij-utils/src/home_unix.rs` is returned at rank
+two. The other three queries also contain ordinary terms that occur outside
+the generated declaration target. These observations require independent
+relevance review before a score change can be called an improvement.
+The task-level qrels are in
+`/private/tmp/qi-b08-c4-bundle-9d38b69d-20261003/{cli,mocha,zellij}/declaration_name_components/suite.json`;
+the corresponding original Quanta rows are in
+`/tmp/{v03,v12,v30}/rep-00/quanta/strategy-00-fixed_window_strict/record.json`.
+
+An isolated top-50 control at `/private/tmp/qc-ekzx7sj0` bound the original
+runner and searchd binary digests, the pinned corpus commits and manifests,
+and derived one- or two-query packs with a 50-file window. Two pre-index
+attempts were refused by the runner (pack route mismatch, then missing runner
+identity). The corrected `cli` attempt reached publish/activate but **FAILED**
+with a 30-second IPC read timeout on a contended host (load average above 40).
+It produced no query record. `mocha` and `zellij` top-50 controls are
+`NOT_RUN`; no off-page rank or candidate-admission conclusion is drawn for
+the four misses.
+
+The existing `holdout_review.write` adapter produced two blinded, unjudged
+forms per repository for these four tasks at
+`/private/tmp/qc-ekzx7sj0/{cli,mocha,zellij}/review/`. Each form contains
+frozen source text from both original retrieval routes, a source alternative
+and a random control; product membership, scores and ranks are withheld in
+owner custody. Form digests replayed for all three repositories. This is
+review preparation only: no reviewer identities, grades or adjudication were
+created, and the exposed diagnostic cases are not a fresh holdout.
+
+Qualified `code_search_file` capture and verdict now require every positive
+evaluation task to declare `default_file_search` with
+`complete_ranked_pool_v1` and no mechanical `source_oracle`. Mechanical
+no-answer controls remain admissible. The capture preflight rejects an
+unreviewed declaration-derived positive before indexing, and verdict replay
+rechecks the same condition. Existing component, exact-name and typo captures
+remain diagnostic. The independently reviewed relevance judgments and
+unmocked qualified pair remain `NOT_RUN`.
+
+At source base `a867f47b` with this focused overlay, the full
+`test_retrieval_benchmark.py` rail passed **448/448** in 666.56s. The
+additional verdict-boundary test added after collection passed with the
+capture-boundary test in a focused **2/2** run (16.77s); a new full-file
+449-test run is `NOT_RUN`. `ruff check`, `ruff format --check`, `git diff
+--check` and `pm.py lint` passed. These are code checks, not a qualified
+product capture or a completed relevance review.

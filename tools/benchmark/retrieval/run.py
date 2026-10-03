@@ -45,6 +45,7 @@ try:
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
     from tools.benchmark.retrieval.evaluator import (
         CHUNK_STRATEGIES,
+        COMPLETE_JUDGMENT_POLICY,
         RUNNER_SCHEMA_VERSION,
         TOKENIZER_BUDGET_VERSION,
         canonical,
@@ -76,6 +77,7 @@ except ImportError:  # direct script invocation: import the sibling module
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
     from evaluator import (  # noqa: E402
         CHUNK_STRATEGIES,
+        COMPLETE_JUDGMENT_POLICY,
         RUNNER_SCHEMA_VERSION,
         TOKENIZER_BUDGET_VERSION,
         canonical,
@@ -3020,8 +3022,7 @@ def load_spec(path: Path) -> dict:
         if file_qualified:
             if (
                 quanta_profile["policy"] != "code_search_file"
-                or
-                spec.get("claims", {}).get("quality") is not True
+                or spec.get("claims", {}).get("quality") is not True
                 or "admission" not in spec
                 or _admission_keys(spec["admission"]) != ADMISSION_DISJOINT_KEYS
             ):
@@ -3175,6 +3176,28 @@ def load_spec(path: Path) -> dict:
     return spec
 
 
+def require_reviewable_default_file_positives(suite: dict) -> None:
+    """Keep mechanical declaration targets out of qualified general-file quality."""
+    tasks = suite.get("tasks")
+    if not isinstance(tasks, list):
+        raise RunError("qualified default file suite lacks tasks")
+    for task in tasks:
+        if not isinstance(task, dict):
+            raise RunError("qualified default file suite task is malformed")
+        if task.get("split") != "eval":
+            continue
+        contract = task.get("evaluation_contract")
+        if not isinstance(contract, dict) or contract.get("request_mode") != "default_file_search":
+            raise RunError("qualified default file suite requires a declared file request mode")
+        if task.get("answerable") is not True:
+            continue
+        if "source_oracle" in task or task.get("judgment_policy") != COMPLETE_JUDGMENT_POLICY:
+            raise RunError(
+                "qualified default file positive requires independently reviewed "
+                f"complete relevance labels: {task.get('task_id', '<unknown>')}"
+            )
+
+
 def preflight_capture(spec: dict) -> Path:
     """Refuse dirty/wrong-HEAD inputs, contract drift and unpinned binaries."""
     manifest = read_json(Path(spec["manifest"]))
@@ -3194,6 +3217,14 @@ def preflight_capture(spec: dict) -> Path:
     suite_payload = read_json(Path(spec["suite"]))
     if not isinstance(suite_payload, dict) or suite_payload.get("schema_version") != 3:
         raise RunError("capture requires a v3 suite")
+    profiles = spec.get("execution_profiles")
+    quanta_profile = profiles.get("quanta") if isinstance(profiles, dict) else None
+    if (
+        spec.get("scope") == "qualified"
+        and isinstance(quanta_profile, dict)
+        and quanta_profile.get("policy") == "code_search_file"
+    ):
+        require_reviewable_default_file_positives(suite_payload)
     try:
         contract = validate_comparison_contract(
             suite_payload.get("comparison_contract"), "suite.comparison_contract"
@@ -6719,6 +6750,16 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     if mapping_digest != evidence["pair"]["mapping_proof_digest"]:
         pair_note("mapping_proof_digest_mismatch", ("T00", "T11"))
     protocol_payload = read_note(resolved["protocol_lock"], "protocol_lock", ("T12",))
+    profiles = (
+        protocol_payload.get("execution_profiles") if isinstance(protocol_payload, dict) else None
+    )
+    quanta_profile = profiles.get("quanta") if isinstance(profiles, dict) else None
+    if (
+        manifest["scope"] == "qualified"
+        and isinstance(quanta_profile, dict)
+        and quanta_profile.get("policy") == "code_search_file"
+    ):
+        require_reviewable_default_file_positives(suite)
     protocol_keys = {
         "lock_version",
         "suite_digest",
@@ -8470,8 +8511,7 @@ def run_pair(spec: dict) -> int:
         if scope == "qualified":
             if (
                 quanta_profile.get("policy") != "code_search_file"
-                or
-                spec.get("claims", {}).get("quality") is not True
+                or spec.get("claims", {}).get("quality") is not True
                 or not isinstance(spec.get("admission"), dict)
                 or _admission_keys(spec["admission"]) != ADMISSION_DISJOINT_KEYS
             ):
@@ -8731,9 +8771,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
                     suite, pack, combined, baseline, candidate
                 )
             elif code_search_file:
-                report = evaluate_paired_file_diagnostic(
-                    suite, pack, combined, baseline, candidate
-                )
+                report = evaluate_paired_file_diagnostic(suite, pack, combined, baseline, candidate)
             else:
                 report = evaluate(suite, pack, combined, baseline, candidate, strict_k=True)
             name = f"report-{baseline}-vs-{candidate}-{strategy}.json"
