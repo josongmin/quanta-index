@@ -782,7 +782,7 @@ def test_typo_partition_accepts_query_proven_parser_refusal():
 
     files = {
         "main.go": b"package p\nfunc Param() {}\n",
-        "broken.go": b"package p\nfunc Broken(",
+        "broken.go": b"package p\nfunc Broken(\n// xParanY is a longer token\n",
     }
     oracle = so.SourceOracleIndex(
         {path: (raw, ev.digest(raw)) for path, raw in files.items()},
@@ -796,6 +796,17 @@ def test_typo_partition_accepts_query_proven_parser_refusal():
     assert partition["intended_base_files"] == ["main.go"]
     assert partition["near_declaration_names"] == ["Param"]
     assert partition["query_is_declaration_name"] is False
+    files["broken.go"] = b"package p\nfunc Broken(\n// Paran is a full token\n"
+    oracle = so.SourceOracleIndex(
+        {path: (raw, ev.digest(raw)) for path, raw in files.items()},
+        {"Param", "Paran"},
+        declaration_exclusions={
+            (so.GO_EXACT_LOCAL_NAME, "Param"): {"broken.go"},
+            (so.GO_NAME_OSA1_CASEFOLD, "Paran"): {"broken.go"},
+        },
+    )
+    with pytest.raises(so.SourceOracleError, match="may contain a query match"):
+        oracle.typo_gold_partition("go", "Paran", "Param")
 
 
 def test_osa1_text_exclusion_trigram_filter_preserves_regex_witnesses(monkeypatch):

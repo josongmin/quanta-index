@@ -40,7 +40,7 @@ try:
 except ModuleNotFoundError:  # package import outside the benchmark script path
     from tools.benchmark.evidence import IO_CHUNK_BYTES, EvidenceError, _consume_regular_file
 
-ORACLE_VERSION = 3
+ORACLE_VERSION = 4
 MAX_TASKS = 2000
 MAX_FILES = 4096
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
