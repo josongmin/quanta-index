@@ -54,9 +54,11 @@ jobs:
       - restore_cache:
           keys:
             - cargo-deps-v1-rust1.92.0-{{ checksum "Cargo.lock" }}
+            - cargo-deps-v1-rust1.92.0-
       - restore_cache:
           keys:
             - cargo-target-v1-rust1.92.0-clippy-{{ checksum "Cargo.lock" }}-{{ .Branch }}
+            - cargo-target-v1-rust1.92.0-clippy-{{ checksum "Cargo.lock" }}-
       - run:
           name: Rust format and clippy
           no_output_timeout: 20m
@@ -77,6 +79,7 @@ jobs:
       - restore_cache:
           keys:
             - cargo-target-v1-rust1.92.0-nextest-{{ checksum "Cargo.lock" }}-{{ .Branch }}
+            - cargo-target-v1-rust1.92.0-nextest-{{ checksum "Cargo.lock" }}-
       - run:
           name: rust nextest
           no_output_timeout: 30m
@@ -133,6 +136,10 @@ jobs:
       - run: *verify_tool_versions
       - restore_cache:
           keys:
+            - uv-v1-{{ checksum "uv.lock" }}-{{ .Branch }}
+            - uv-v1-{{ checksum "uv.lock" }}-
+      - restore_cache:
+          keys:
             - cargo-modules-v1-linux-rust1.92.0-crate0.26.0-{{ .Branch }}
       - run:
           name: Verify guarded module snapshots
@@ -148,6 +155,10 @@ jobs:
           key: cargo-modules-v1-linux-rust1.92.0-crate0.26.0-{{ .Branch }}
           paths:
             - ~/.cargo/bin/cargo-modules
+      - save_cache:
+          key: uv-v1-{{ checksum "uv.lock" }}-{{ .Branch }}
+          paths:
+            - ~/.cache/uv
       - run:
           name: Python policy and tooling tests
           no_output_timeout: 20m
