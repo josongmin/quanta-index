@@ -3390,3 +3390,42 @@ with a new output root. The strict collection validator remains unchanged.
   distinction from the successful `89058da8` SDK proof. Final admission,
   remaining reviews, reviewed product comparison and equal-API timing remain
   incomplete.
+
+### 2026-10-04: matching proof closure and first actual batched issuance
+
+- **VERIFIED**, complete Contract proof from clean `ee764318`: Python
+  **694 selected/executed/passed, failed 0**; Rust **169 selected/executed/passed,
+  failed 0**. Native XML now emits 694 cases and declares 694 tests. Independent
+  `portable_proof.py verify --receipt <root>/contract/execution-context.json`
+  exits zero. Python command wall is 385.640s; Rust command wall is 209.955s,
+  including command-specific admission/wait overhead, not engine latency.
+- **VERIFIED**, SDK proof from the same `ee764318`: **25 selected/executed/passed,
+  failed 0**, actual separate-process runner/daemon execution. Independent
+  `portable_proof.py verify --receipt <root>/sdk/execution-context.json` exits
+  zero. Both roots are under `contract-authority-fixed-ee764318-8oom78td/`.
+  SDK uses a separate target seeded by an independent APFS cache clone;
+  original binaries are preserved. This is incremental debug correctness,
+  not a fresh release build or performance comparison.
+- **VERIFIED**, actual review resumed after the reported 08:40 reset. In the
+  fresh `c3-shared-source-two-pass-tm8zadsm/` root, two blinded passes run
+  concurrently and adjudication waits for both. **28** offline controls include
+  a barrier-based scheduling test with explicit synthetic fixture judgments;
+  those fixture outputs are not actual model reviews. Earlier roots/scripts
+  remain unchanged. All 240 author-basis paths occur in both candidate sets;
+  this establishes inclusion, not corpus-wide unanswerability or label quality.
+- lo's remaining actual assessments completed in **9** batch calls, **177 new
+  role/task/file decisions** (43 first-assessor, 67 second-assessor, 67
+  adjudicator). Original valid calls are reused. Independent replay reconstructs
+  all 60 role/task results from original and new raw calls without new calls or
+  changed receipts; actual batch usage is counted once, not cloned per pair.
+- Canonical lo labels, NL suite, two annotation receipts and adjudication receipt
+  issue and validate: **20 tasks / 454 file judgments**, unchanged query bytes.
+  Suite SHA `a0568acfbb9694f93dbfc1f7acc9a3fbcb340b9acecae56c80f9ea7637aaea0b`.
+  Together with mocha and zustand, **60/240 tasks / 1,325 expanded file judgments**
+  are now issued. The newly hash-checked original returned-pair recount is
+  **283/1,324 issued; 1,041 unissued**, separate from expanded pool counts.
+- Remaining nine repositories proceed through actual two-pass review, actual
+  adjudication, raw-call replay, canonical labels and suite issuance; bat was
+  confirmed live. Partial decisions do not increase issued counts. Final full
+  admission, reviewed five-product capture and equal-API repeated performance
+  remain **NOT_RUN**. Actual AI provenance remains explicit and unqualified.
