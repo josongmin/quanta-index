@@ -14653,6 +14653,21 @@ def test_keyword_file_native_score_evidence_is_complete_and_ordered(tmp_path):
         record_v3(repo, suite, mixed, suite_path, runner_path)
 
 
+def test_component_file_policy_rederives_request_and_refuses_noncanonical_input():
+    policy = "code_search_components_file"
+    request = qp.plan_lexical_request(policy, "clean up")
+    assert request == 'components:"clean up"'
+    assert qp.execution_profile(policy)["profile_id"] == "quanta-code-search-components-file-v1"
+    assert qp.FILE_PROJECTION_ORDERING[policy] == qp.ORDERING_SCORE_DESC
+    assert qp.derive_query_identity(policy, "clean up") != qp.derive_query_identity(
+        "code_search_file", "clean up"
+    )
+    assert qp.QUANTA_EVALUATION_POLICIES["explicit_symbol_components"] == frozenset((policy,))
+    for raw in ("clean", "clean  up", "Clean up", "clean_up", "clean\tup", "clean up ", "café up"):
+        with pytest.raises(qp.QueryPlanError):
+            qp.plan_lexical_request(policy, raw)
+
+
 def test_code_search_file_policy_binds_syntax_scores_and_file_unit(tmp_path):
     assert qp.plan_lexical_request("code_search_file", "writeContentType") == "writeContentType"
     assert qp.plan_lexical_request("code_search_file", "Go To") == "Go To"

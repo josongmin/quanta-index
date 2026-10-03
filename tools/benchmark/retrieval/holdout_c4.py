@@ -40,6 +40,8 @@ def _execution_policy(intent: str) -> str:
     return (
         "code_search_typo_file"
         if intent == "declaration_name_osa1_casefold"
+        else "code_search_components_file"
+        if intent == "declaration_name_components"
         else "code_search_file"
     )
 
@@ -499,6 +501,8 @@ def _derive_prepared(
                 "request_mode": (
                     query_plan.EXPLICIT_OSA1_TYPO
                     if intended_typo
+                    else query_plan.EXPLICIT_SYMBOL_COMPONENTS
+                    if intent == "declaration_name_components"
                     else query_plan.DEFAULT_FILE_SEARCH
                 ),
                 "gold_unit": "distinct_file",

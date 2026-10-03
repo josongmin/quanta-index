@@ -259,15 +259,25 @@ def test_c4_independent_name_variants(tmp_path, monkeypatch, intent, query, name
     assert report["selected"] == 1
     assert source_oracle.NAME_CONTRACTS[report["relevance_contract"]] == ("go", variant)
     assert suite["tasks"][0]["query"] == pack["tasks"][0]["query"] == query
-    expected_policy = "code_search_file"
+    expected_policy = (
+        "code_search_components_file"
+        if intent == "declaration_name_components"
+        else "code_search_file"
+    )
     assert report["execution_policy"] == expected_policy
     assert suite["tasks"][0]["evaluation_contract"] == {
-        "request_mode": "default_file_search",
+        "request_mode": (
+            "explicit_symbol_components"
+            if intent == "declaration_name_components"
+            else "default_file_search"
+        ),
         "gold_unit": "distinct_file",
         "result_unit": "distinct_file",
     }
     assert suite["suite_id"].endswith(expected_policy.replace("_", "-"))
-    assert query_plan.plan_lexical_request(expected_policy, query) == query
+    assert query_plan.plan_lexical_request(expected_policy, query) == (
+        f'components:"{query}"' if intent == "declaration_name_components" else query
+    )
 
 
 def test_c4_casefold_typo_binds_intended_name_and_request_mode(tmp_path, monkeypatch):

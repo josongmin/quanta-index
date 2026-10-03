@@ -1154,3 +1154,29 @@ and path matching; test any bounded declaration feature or fielded reranker
 only on independently reviewed graded file relevance. Do not turn these four
 source-exposed cases into a qualified improvement claim or silently apply a
 symbol-only preference to every file query.
+
+## Twelve-repository ordinary-input OSA1 baseline (2026-10-03)
+
+**VERIFIED, diagnostic only:** the frozen `9d38b69d` runner completed all 12
+projected ordinary-input OSA1 cells. Every pair verdict passed. An external
+checker independently joined `(path, file_sha256)` gold to both native
+distinct-file records and checked 4,206 task IDs, report scores and binary,
+suite, pack, manifest and verdict digests. Its output is
+`/private/tmp/qi-b08-default-osa1-20261003/default-pair-summary.json`
+(SHA-256 `e41a00d8196ea5490821a4aa8fb9f0c7048c9238adfb032b0e5065ebd5195a50`).
+
+| Route | File Hit@10 | Statuses |
+| --- | ---: | --- |
+| Quanta ordinary input | 112 / 4,206 | 4,077 abstained; 115 success; 14 capped |
+| Semble lexical-file | 3,053 / 4,206 | 3,769 success; 437 abstained |
+| Quanta explicit OSA1, separate request | 4,146 / 4,206 | Separate source-bound capture |
+
+The explicit OSA1 capture hit 4,025 of Quanta ordinary-input abstentions.
+This measures a request-policy gap in the old default route, not an index
+omission or a qualified product ranking. The serialized run walls summed
+11,202.907 seconds excluding the preverified `bat` row, under concurrent
+workload and repeated setup; they do not support a speed comparison. The
+mechanical intended-declaration targets have no human file-relevance review.
+The later `12fe7d9f` empty-result fallback is being captured separately;
+its results must not be merged with this older baseline as if source and
+binary identities were unchanged.

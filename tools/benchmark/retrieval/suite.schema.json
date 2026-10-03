@@ -199,7 +199,7 @@
            "required": ["evaluation_contract", "source_oracle"],
            "properties": {
              "query_intent": {"const": "bare_symbol"},
-             "evaluation_contract": {"properties": {"request_mode": {"enum": ["default_file_search", "explicit_osa1_typo"]}}},
+             "evaluation_contract": {"properties": {"request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "explicit_symbol_components"]}}},
              "source_oracle": {"properties": {"contract": {"enum": [
                "go_exact_local_name_v3", "rust_exact_local_name_v1", "python_exact_local_name_v1",
                "typescript_exact_local_name_v1", "javascript_exact_local_name_v1"
@@ -214,7 +214,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["request_mode", "gold_unit", "result_unit"],
       "properties": {
-        "request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "declaration_navigation"]},
+        "request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "explicit_symbol_components", "declaration_navigation"]},
         "gold_unit": {"enum": ["distinct_file", "symbol"]},
         "result_unit": {"enum": ["distinct_file", "symbol"]}
       },
