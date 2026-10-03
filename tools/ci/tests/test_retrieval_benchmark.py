@@ -667,7 +667,9 @@ def test_parity_reference_v2_input_envelope():
 
 def test_current_v7_pair_replays_nested_indexing_stages_and_phase_contract(tmp_path):
     stage = _pair_stage(tmp_path, diagnostic_version=7)
-    diagnostic_path = next(stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json"))
+    diagnostic_path = next(
+        stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json")
+    )
     diagnostic = json.loads(diagnostic_path.read_text())
     phase = json.loads(diagnostic_path.with_name("phase-metrics.json").read_text())
     protocol = json.loads((stage["stage"] / "protocol-lock.json").read_text())
@@ -15416,9 +15418,7 @@ def test_current_v7_diagnostic_replays_native_file_or_chunk_projection(tmp_path,
         scored["rank_unit"] = rank_unit
     hits = []
     assert len(scored["candidates"]) == len(row["candidates"])
-    for rank, (candidate, observed) in enumerate(
-        zip(scored["candidates"], row["candidates"]), 1
-    ):
+    for rank, (candidate, observed) in enumerate(zip(scored["candidates"], row["candidates"]), 1):
         if rank_unit == "distinct_file":
             source = (stage["stage"] / "runner-corpus" / candidate["path"]).read_bytes()
             candidate["start_byte"] = 0
