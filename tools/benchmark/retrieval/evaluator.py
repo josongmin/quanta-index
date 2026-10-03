@@ -3153,7 +3153,8 @@ def paired_query_family_rows(
     require(isinstance(comparison, dict), "cluster comparison is missing")
     primary = comparison.get("primary_metric")
     require(
-        isinstance(primary, str) and primary in {"ndcg_at_10", "recall_at_10"},
+        isinstance(primary, str)
+        and primary in {"ndcg_at_10", "recall_at_10", "file_ndcg_at_10"},
         "unsupported cluster primary metric",
     )
     require(
@@ -3206,7 +3207,11 @@ def paired_query_family_rows(
         key = (row.get("task_id"), row.get("route"))
         require(key not in by_key, "cluster query rows are duplicate")
         by_key[key] = row
-    field = "ndcg_at_10" if primary == "ndcg_at_10" else "chunk_recall_at_10"
+    field = {
+        "ndcg_at_10": "ndcg_at_10",
+        "recall_at_10": "chunk_recall_at_10",
+        "file_ndcg_at_10": "file_ndcg_at_10",
+    }[primary]
     rows = []
     for task_id, task in sorted(eval_tasks.items()):
         require(
@@ -3986,6 +3991,70 @@ def complete_scored_file_rows(
     return [
         (task_id, scores[task_id, baseline], scores[task_id, candidate]) for task_id in answerable
     ]
+
+
+def evaluate_complete_scored_file_evidence(
+    suite: dict[str, Any],
+    pack: dict[str, Any],
+    run: dict[str, Any],
+    baseline: str,
+    candidate: str,
+) -> dict[str, Any]:
+    """Expose a fully paired file metric without claiming qualification."""
+    rows = complete_scored_file_rows(suite, pack, run, baseline, candidate)
+    eval_tasks = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
+    results = {(row["task_id"], row["route"]): row for row in run["results"]}
+    deltas = [after - before for _task_id, before, after in rows]
+    negative_ids = sorted(task_id for task_id, task in eval_tasks.items() if not task["answerable"])
+    require(bool(negative_ids), "complete scored file evidence needs no-answer controls")
+    negative_delta = math.fsum(
+        float(results[task_id, candidate]["status"] == "abstained")
+        - float(results[task_id, baseline]["status"] == "abstained")
+        for task_id in negative_ids
+    ) / len(negative_ids)
+    per_query = []
+    for task_id, before, after in rows:
+        per_query.extend(
+            [
+                {"task_id": task_id, "route": baseline, "file_ndcg_at_10": before},
+                {"task_id": task_id, "route": candidate, "file_ndcg_at_10": after},
+            ]
+        )
+    for task_id in negative_ids:
+        per_query.extend(
+            {
+                "task_id": task_id,
+                "route": route,
+                "status": results[task_id, route]["status"],
+            }
+            for route in (baseline, candidate)
+        )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "report_scope": "paired_complete_scored_file_evidence_v1",
+        "status": "diagnostic_unqualified",
+        "rank_metric_version": "file-judgments-complete-v1",
+        "graded": True,
+        "suite_id": suite["suite_id"],
+        "suite_commitment_sha256": digest(canonical(suite)),
+        "query_pack_sha256": digest(canonical(pack)),
+        "runner_record_sha256": digest(canonical(run)),
+        "repository_commit": suite["repository_commit"],
+        "rank_metrics": {
+            "comparison": {
+                "baseline": baseline,
+                "candidate": candidate,
+                "primary_metric": "file_ndcg_at_10",
+                "sample_count": len(rows),
+                "primary_delta": math.fsum(deltas) / len(deltas),
+                "no_answer_abstention_delta": {
+                    "sample_count": len(negative_ids),
+                    "mean_delta": negative_delta,
+                },
+            }
+        },
+        "per_query": sorted(per_query, key=lambda row: (row["task_id"], row["route"])),
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
