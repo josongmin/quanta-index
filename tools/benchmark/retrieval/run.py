@@ -7011,13 +7011,25 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         ):
             try:
                 report_digest = sha_note(path, "report_bytes", ("T13",))
-                matched.append(
-                    replay_paired_file_diagnostic_report(
-                        suite, pack, merged, content, strategy, report_digest
+                if manifest["scope"] == "qualified":
+                    matched.append(
+                        replay_complete_scored_file_report(
+                            suite, pack, merged, content, strategy, report_digest
+                        )
                     )
-                )
+                else:
+                    matched.append(
+                        replay_paired_file_diagnostic_report(
+                            suite, pack, merged, content, strategy, report_digest
+                        )
+                    )
             except (KeyError, TypeError, ValueError, RunError):
-                pair_note("diagnostic_file_report_rescore_failed", ("T04", "T13"))
+                pair_note(
+                    "complete_file_report_rescore_failed"
+                    if manifest["scope"] == "qualified"
+                    else "diagnostic_file_report_rescore_failed",
+                    ("T04", "T13"),
+                )
             continue
         comparison = (
             content.get("rank_metrics", {}).get("comparison", {})
@@ -8120,6 +8132,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             classes.append(perf_fail[1])
 
     # QUALITY_DELTA: blinded, graded, in-scope quality only.
+    file_quality_policy = (
+        protocol_payload.get("execution_profiles", {}).get("quanta", {}).get("policy")
+        in qp.CODE_SEARCH_FILE_POLICIES
+    )
     isolation_claimed = manifest["blinding"] == "isolated"
     all_isolated = isolation_claimed
     if all_isolated:
@@ -8182,6 +8198,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     elif (
         protocol_payload.get("execution_profiles", {}).get("quanta", {}).get("policy")
         not in PAIR_CONTEXT_QUALITY_POLICIES
+        and not file_quality_policy
     ):
         set_state("QUALITY_DELTA", "fail", "diagnostic_rank_profile", None)
         classes.append("scoring")
@@ -8199,6 +8216,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         )
         missing.append("T17")
         classes.append("admission")
+    elif file_quality_policy and admission_evidence.get("schema_version") != 3:
+        set_state("QUALITY_DELTA", "fail", "file_quality_requires_disjoint_admission", None)
+        classes.append("admission")
+    elif file_quality_policy and any(
+        entry.get("primary_metric") != "file_ndcg_at_10" for entry in matched
+    ):
+        set_state("QUALITY_DELTA", "fail", "file_quality_metric_mismatch", None)
+        classes.append("scoring")
     elif provenance_claims["quanta"].get("embedder") != "potion-code":
         # T10: non-default encoder controls lack a qualified quality gate.
         set_state("QUALITY_DELTA", "fail", "model_quality_embedder", None)
@@ -8238,7 +8263,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         set_state(
             "QUALITY_DELTA",
             "pass",
-            "blinded_graded_context_density_delta",
+            "blinded_graded_file_ndcg_delta"
+            if file_quality_policy
+            else "blinded_graded_context_density_delta",
             digest(
                 canonical(
                     {
@@ -8688,13 +8715,16 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         )
         candidate_routes = sorted({row["route"] for row in payload["results"]})
         for candidate in candidate_routes:
-            report = (
-                evaluate_complete_scored_file_evidence(suite, pack, combined, baseline, candidate)
-                if code_search_file and scope == "qualified"
-                else evaluate_paired_file_diagnostic(suite, pack, combined, baseline, candidate)
-                if code_search_file
-                else evaluate(suite, pack, combined, baseline, candidate, strict_k=True)
-            )
+            if code_search_file and scope == "qualified":
+                report = evaluate_complete_scored_file_evidence(
+                    suite, pack, combined, baseline, candidate
+                )
+            elif code_search_file:
+                report = evaluate_paired_file_diagnostic(
+                    suite, pack, combined, baseline, candidate
+                )
+            else:
+                report = evaluate(suite, pack, combined, baseline, candidate, strict_k=True)
             name = f"report-{baseline}-vs-{candidate}-{strategy}.json"
             (stage / name).write_text(
                 json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
