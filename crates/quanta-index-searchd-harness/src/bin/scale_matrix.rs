@@ -41,6 +41,14 @@ struct CliArgs {
     client_timeout_ms: Option<u64>,
 }
 
+fn parse_client_timeout_ms(raw: &str) -> AnyResult<u64> {
+    let parsed = raw.parse::<u64>()?;
+    if !(1..=600_000).contains(&parsed) {
+        anyhow::bail!("--client-timeout-ms must be in 1..=600000");
+    }
+    Ok(parsed)
+}
+
 fn parse_args() -> AnyResult<CliArgs> {
     let mut out_dir = PathBuf::from("artifacts/search-quality/scale/latest");
     let mut seed = DEFAULT_SEED;
@@ -69,11 +77,7 @@ fn parse_args() -> AnyResult<CliArgs> {
                 let raw = args
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--client-timeout-ms requires a value"))?;
-                let parsed = raw.parse::<u64>()?;
-                if !(1..=600_000).contains(&parsed) {
-                    anyhow::bail!("--client-timeout-ms must be in 1..=600000");
-                }
-                client_timeout_ms = Some(parsed);
+                client_timeout_ms = Some(parse_client_timeout_ms(&raw)?);
             }
             "--tier" => {
                 let raw = args
@@ -220,6 +224,23 @@ fn main() -> ExitCode {
             measurement.delta.reclaimed_bytes,
             measurement.result_count,
         );
+        if let Some(cpu) = measurement.cpu {
+            println!(
+                "scale[{}] process_cpu: user_ms={:.3} system_ms={:.3} scope=harness+daemon-thread",
+                measurement.tier.as_str(),
+                cpu.user_ms,
+                cpu.system_ms,
+            );
+        }
+        if let Some(delete) = measurement.delete_reopen {
+            println!(
+                "scale[{}] delete_reopen: delete_seal_ms={:.3} activation_ms={:.3} same_process_reopen_ms={:.3}",
+                measurement.tier.as_str(),
+                delete.delete_seal_ms,
+                delete.delete_activation_ms,
+                delete.same_process_reopen_ms,
+            );
+        }
     }
     println!(
         "scale rail green (selected tiers measured; canonical performance qualification separate)"
@@ -229,11 +250,22 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::format_cold_open_ms;
+    use super::{format_cold_open_ms, parse_client_timeout_ms};
 
     #[test]
     fn absent_query_cold_open_is_not_printed_as_zero() {
         assert_eq!(format_cold_open_ms(None), "unavailable");
         assert_eq!(format_cold_open_ms(Some(0.0)), "0");
+    }
+
+    #[test]
+    fn scale_client_timeout_override_is_explicit_and_bounded() {
+        assert_eq!(
+            parse_client_timeout_ms("300000").expect("bounded timeout"),
+            300_000
+        );
+        for invalid in ["0", "600001", "nan", "-1"] {
+            assert!(parse_client_timeout_ms(invalid).is_err());
+        }
     }
 }

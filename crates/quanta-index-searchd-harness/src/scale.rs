@@ -1125,7 +1125,8 @@ fn require_single_source_file(
     }
     if result.candidates.len() != 1
         || !result.candidates.first().is_some_and(|candidate| {
-            candidate.source_repo_id == source_repo_id && candidate.repo_relative_path == path
+            candidate.source_repo_id.as_str() == source_repo_id
+                && candidate.repo_relative_path.as_str() == path
         })
     {
         anyhow::bail!("scale: file query did not return exactly {source_repo_id}/{path}");

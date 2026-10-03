@@ -2383,7 +2383,10 @@ pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::seal_file_admissio
 pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::seal_merge_wait_ns: core::option::Option<u64>
 pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::seal_ns: core::option::Option<u64>
 pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::seal_writer_commit_ns: core::option::Option<u64>
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::text_authority_collect_ns: core::option::Option<u64>
 pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::text_authority_ns: u64
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::text_authority_publish_ns: core::option::Option<u64>
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::text_authority_shard_build_ns: core::option::Option<u64>
 pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::writer_mutation_ns: u64
 impl core::clone::Clone for quanta_index_contract::LexicalBuildStageDurationsV1
 pub fn quanta_index_contract::LexicalBuildStageDurationsV1::clone(&self) -> quanta_index_contract::LexicalBuildStageDurationsV1
@@ -12539,7 +12542,10 @@ pub quanta_index_contract::LexicalBuildStageDurationsV1::seal_file_admission_ns:
 pub quanta_index_contract::LexicalBuildStageDurationsV1::seal_merge_wait_ns: core::option::Option<u64>
 pub quanta_index_contract::LexicalBuildStageDurationsV1::seal_ns: core::option::Option<u64>
 pub quanta_index_contract::LexicalBuildStageDurationsV1::seal_writer_commit_ns: core::option::Option<u64>
+pub quanta_index_contract::LexicalBuildStageDurationsV1::text_authority_collect_ns: core::option::Option<u64>
 pub quanta_index_contract::LexicalBuildStageDurationsV1::text_authority_ns: u64
+pub quanta_index_contract::LexicalBuildStageDurationsV1::text_authority_publish_ns: core::option::Option<u64>
+pub quanta_index_contract::LexicalBuildStageDurationsV1::text_authority_shard_build_ns: core::option::Option<u64>
 pub quanta_index_contract::LexicalBuildStageDurationsV1::writer_mutation_ns: u64
 impl core::clone::Clone for quanta_index_contract::LexicalBuildStageDurationsV1
 pub fn quanta_index_contract::LexicalBuildStageDurationsV1::clone(&self) -> quanta_index_contract::LexicalBuildStageDurationsV1

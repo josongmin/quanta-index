@@ -542,6 +542,35 @@ root's distribution, tail, coverage and refusals; do not pool host-contended
 diagnostics into qualified timing. Prefix/infix/components/no-answer remain
 separate follow-up suites from the completed exact/four-typo matrix.
 
+### Owner-specific optimization decisions and exit criteria (2026-10-04)
+
+Implemented attribution is a prerequisite, not an optimization result. Three
+owners may change disjoint search, indexing and scale files concurrently; the
+integration owner changes schemas, proof and scoring. Heavy Cargo execution
+and measured performance runs use one coordinated slot. Reuse the existing
+delta, paging and preview paths rather than implementing parallel paths.
+
+| Owner / boundary | Next decision and narrow change | Independent correctness and execution gate |
+| --- | --- | --- |
+| Search / typo | Read the implemented shortlist, token-scan/cache and materialization child clocks in a fresh capture. If token scan dominates, assess a generation-bound source-token dictionary or a conservative one-edit candidate superset. Short tokens must retain exhaustive fallback when an index cannot guarantee coverage. | Exhaustive OSA1 over independently enumerated source tokens, all four edits, short names, Unicode/case, mixed queries and no-answer. Compare every result identity, score, span, total, cursor page and budget outcome against the unchanged baseline. Record resident memory and index-build cost as well as query time. |
+| Search / ordinary | Attribute candidate and preview work before choosing either. Existing preview-after-page is already implemented. Inspect repeated witness evaluation, source loading and preview copying only where new clocks/profile show duplication. | Fixed full-scan/full-sort goldens, final-candidate winner, equal-score ties, every continuation page and tight response budgets. Folded content/file ranking and exact-case declaration recovery remain separate relevance contracts. |
+| Integration / SDK | Use phase-4 execute, post-execute and result-materialization clocks. If execute dominates, add request-bound active-resolution, transport and decode attribution in the existing SDK/IPC path before choosing connection reuse or resolve/search fusion. | Active-generation changes must refuse or return the pinned generation. Cover reconnect, malformed/partial responses, deadline, cancellation and concurrent callers. Do not infer IPC cost by subtracting independent server and SDK intervals. |
+| Index / text authority | Run diagnostic-8 collection, shard-build and publication clocks first. If collection dominates, compare existing all-document collection/sort with a streaming document iterator. If shard construction dominates, profile touched-shard loading and token/posting construction. If publication dominates, split encoding and durable publication before considering batching. | Fresh/no-op/one-file delta/scoped deletion/reopen must agree with an independent fresh rebuild, including typed file identities, postings and source digests. Retain untouched-shard reuse and durable manifest/seal checks. Run corruption and crash-boundary tests for any publication change. |
+| Scale / lifecycle | Preserve both primary measurement error and cleanup error with explicit teardown. Exercise the recorded bounded client-timeout configuration without automatic retries or changing defaults. Measure full, delta, deletion and same-process reopen at actual 256/4,096/32,768 tiers. | Inject primary-only, cleanup-only and combined failures; every failure must emit its binding and stage. Delete one `(source_repo_id, path)` while retaining the same path in another repository, including reopen. Distinguish process CPU, peak RSS and logical directory-size delta from physical I/O and process restart. A capacity refusal is not a successful timing sample. |
+| Benchmark / qualification | Freeze one baseline/candidate source-binary-input-feature tuple after focused tests. Execute randomized paired repetitions with host observation. Use the existing five-product collector and independent scorer for separately admitted lanes. | Report quality/coverage, call sum, p50/p95, full/delta/delete/reopen indexing boundaries, CPU/RSS/disk and refusals. Predeclare the performance decision and uncertainty calculation; reject correctness differences and unobserved/malformed runs. Fresh-build positive proof must be executed, not supplied by fixture tests or caller SHA. |
+
+The observed exact/four-typo matrix has 5,950 tasks. Prefix, infix, components,
+no-answer, natural language and real-repository holdout are separate cohorts;
+synthetic file tiers do not increase Gin's real source corpus. Do not fabricate
+1,000 distinct cases from a lane with fewer independently admissible names.
+Collect additional pinned repositories and independently admit their source
+and gold instead. Native bare-query comparisons do not establish the ranking
+of each product's explicit fuzzy interface.
+
+Current observation-on/off controls toggle plane stage/trace collection, while
+backend clock reads still execute in both arms. Such a control measures that
+specific overhead; it does not measure an instrumentation-free backend.
+
 ### Implementation and actual scale follow-up (2026-10-04)
 
 The current producer/reader cutover uses Quanta phase schema 4, retrieval

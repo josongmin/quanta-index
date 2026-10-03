@@ -79,8 +79,9 @@ That result does not verify the later scoped-tier implementation.
   success summary from that run. IPC encoder errors retain their original text
   with `limit: null` until the IPC owner has a typed cap error.
 
-The scoped-tier Rust owner tests, real medium/large/XL runs, canonical-host
-capacity and portability remain `NOT_RUN` at this code stage. A source limit or
+At the scoped-tier implementation stage, actual tier runs and canonical-host
+capacity/portability were `NOT_RUN`; the later diagnostic attempts are listed
+below. A source limit or
 wire admission refusal must be recorded with its exact tier and must not be
 converted into a throughput result.
 
