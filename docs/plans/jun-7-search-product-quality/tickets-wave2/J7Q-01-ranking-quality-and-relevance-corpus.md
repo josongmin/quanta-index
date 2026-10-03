@@ -474,7 +474,8 @@ Owners: `searcher/code_search.rs`, `searcher/port.rs`,
   One batched symbol query is used per explained file. This is diagnostic
   extraction; a production multi-file ranker still needs per-request batching.
 - Optional declaration evidence distinguishes zero from unknown. Unspecified
-  display names absent from raw source stay unknown. A promised raw ASCII
+  display names stay unknown even when they occur incidentally in a function
+  body; non-ASCII names also lack this raw-ASCII authority. A promised raw ASCII
   name absent from its definition range or a stale identity is an error.
 - Original-source camel/snake/acronym/digit boundary signals use verified
   normalization provenance for Unicode. Literal membership, tokenizer and
@@ -524,15 +525,15 @@ one-off repository evidence files.
 | `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical --test l3_exact_source code_search_explanation_uses_the_same_file_score_outside_top_k -- --exact` | RED: `NotIndexed`; then GREEN, 1 test | Confirmed backend defect |
 | `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical -p quanta-index-search-plane --lib code_search` | `VERIFIED`: 23 + 14 tests passed | Native feature, score, grammar, count and cursor contracts |
 | `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical --test l3_exact_source` | `VERIFIED`: 28 tests passed | Sealed source/symbol index, Unicode, independent source oracle, gram collision, late better candidate, paging and exact-symbol separation |
-| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-searchd-runtime --test runtime_fast_suite e2e_explain_score_trace::explain_score_traces_share_one_indexed_fixture -- --exact --nocapture` | RED: public planner refused CodeSearch; then GREEN, 1 IPC fixture test before work-count additions; final SDK rerun pending | Runtime wiring and fixed 109/107/105 source score goldens; SDK extension uses the same pinned native page |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-searchd-runtime --test runtime_fast_suite e2e_explain_score_trace::explain_score_traces_share_one_indexed_fixture -- --exact --nocapture` | RED: public planner refused CodeSearch; then GREEN. Final SDK extension `VERIFIED`: 1 passed | Real SDK/Unix IPC/runtime wiring, pinned native page, work counts and fixed 109/107/105 source score goldens |
 | `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_retrieval_benchmark.py -k 'independent_file_ndcg or declaration_judgment_requires or cross_suite_experiment_custody or v3_query_family_split or intended_name_source_oracle or code_search_file_refuses_context or code_search_file_policy_binds'` | `VERIFIED`: 7 passed | Existing file/declaration metrics and leakage guard |
 | `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_identifier_robustness_report.py -k 'scored_family_separately or fixed_golden_preserves or clean_to_typo or operation_and_length or policy_refusal or no_answer_success or rederived_from_source'` | `VERIFIED`: 7 passed | Existing lane, eligibility, no-answer and intended-name reporting |
 | `git diff --check`; `python3 tools/ci/lint/check-module-discipline.py`; `just rust-hexagonal` | `VERIFIED` | Hygiene and dependency/facade boundaries |
 | `just rust-cargo-modules` | `VERIFIED`: corrected core/contract snapshots match both native module trees | Module inventory, not behavioral qualification |
 | `python3 tools/ci/lint/check-test-authority.py` | `VERIFIED` | Existing test targets remain registered |
 | `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench rank_study::tests` | `VERIFIED`: 3 passed before the fourth bounds test was added; final rerun pending | Stable counts/order, duplicate/drift refusal and ordinary-policy separation |
-| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_identifier_robustness_report.py` | `VERIFIED`: 55 passed | Complete-pool independent golden, artifact mutations, refusal/unknown/partial exclusions and existing intent contracts |
-| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_retrieval_benchmark.py -k 'code_search_rank_study or spec or server_observation or hybrid_fetch or quanta_strategy or query_protocol'` | `VERIFIED`: 32 passed | Study and affected driver/protocol contracts |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_identifier_robustness_report.py` | `VERIFIED`: 59 passed | Complete-pool independent golden, artifact mutations, refusal/unknown/partial exclusions, zero-hit source binding, original exhaustion status and existing intent contracts |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_retrieval_benchmark.py -k 'code_search_rank_study or spec or server_observation or hybrid_fetch or quanta_strategy or query_protocol'` | `VERIFIED`: 38 passed | Study and affected driver/protocol contracts on live main; overlaps the preceding row |
 
 Some first attempts had test-code compilation errors, corrected before the
 passing runs. An accidental system Python 3.9 invocation failed on the existing
@@ -542,13 +543,16 @@ lock; a subsequent admitted attempt passed. Build/admission time is not query
 or indexing latency.
 The later SDK extension's raw paging call omitted its required generation pin;
 that test fixture was corrected to the sealed identity. This was a test setup
-failure, not a newly reproduced product defect. Subsequent SDK reruns and the
-pinned standalone daemon build have repeatedly waited at the shared resource
-admission lock. An admission timeout does not execute the product check.
+failure, not a newly reproduced product defect. The corrected SDK extension
+passed. A pinned standalone development-profile daemon also built successfully;
+the subsequent source-name authority guard needs a fresh rebuild for the runner
+E2E. Remaining Rust checks have waited at the shared resource admission lock,
+including another task's full workspace run. An admission timeout does not
+execute the product check.
 
 ### Remaining execution, ordered by dependency
 
-1. Finish the corrected SDK public work-count proof, bounds unit rerun, and
+1. Finish the source-name authority fixture, bounds unit rerun, and
    existing `actual_runner_binary_emits_receipt_bound_v5_record` E2E extension.
    The extension checks all three top-one file pages and a one-page diagnostic
    cap while preserving the original `capped` record. Its standalone daemon
