@@ -747,6 +747,7 @@
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$query_plan::tests::natural_language_plan_refuses_empty_token_set",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$query_plan::tests::natural_language_plan_refuses_over_limit_plans",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$query_plan::tests::natural_language_plan_refuses_oversized_single_token",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$query_plan::tests::natural_language_plan_respects_public_or_fanout",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$query_plan::tests::policy_config_identity_changes_with_config_fields",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$query_plan::tests::substring_file_policy_is_a_case_sensitive_raw_string_projection",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$query_plan::tests::unicode_scalar_token_property_matches_pinned_ucd17_oracle",
