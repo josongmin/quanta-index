@@ -22,7 +22,14 @@ except ImportError:  # Sibling import from the existing direct-script driver.
     import evaluator as ev
     import query_plan as qp
 
-POLICIES = ("baseline", "declaration_only", "boundary_only", "occurrence_half", "occurrence_none", "combined")
+POLICIES = (
+    "baseline",
+    "declaration_only",
+    "boundary_only",
+    "occurrence_half",
+    "occurrence_none",
+    "combined",
+)
 ORDINARY_SCOPE = "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true"
 
 
@@ -37,7 +44,10 @@ def _uint(value: object, where: str) -> int:
 
 
 def _number(value: object, where: str) -> float:
-    require(type(value) in (int, float) and math.isfinite(value) and value >= 0, f"{where}: invalid finite number")
+    require(
+        type(value) in (int, float) and math.isfinite(value) and value >= 0,
+        f"{where}: invalid finite number",
+    )
     return float(value)
 
 
@@ -48,34 +58,66 @@ def _details(explanation: dict) -> list[str]:
 
 
 def _count(details: list[str], name: str) -> int:
-    values = [text.removeprefix(f"code_search.execution.{name}=") for text in details
-              if text.startswith(f"code_search.execution.{name}=")]
-    require(len(values) == 1 and re.fullmatch(r"[0-9]+", values[0]) is not None, f"missing/duplicate/invalid count {name}")
+    values = [
+        text.removeprefix(f"code_search.execution.{name}=")
+        for text in details
+        if text.startswith(f"code_search.execution.{name}=")
+    ]
+    require(
+        len(values) == 1 and re.fullmatch(r"[0-9]+", values[0]) is not None,
+        f"missing/duplicate/invalid count {name}",
+    )
     return _uint(int(values[0]), name)
 
 
 def _order(candidate: dict, score: float | None = None) -> tuple:
-    return (-_number(candidate["score"] if score is None else score, "candidate score"),
-            candidate["source_repo_id"], candidate["repo_relative_path"],
-            candidate["start_line"], candidate["end_line"], candidate["candidate_id"])
+    return (
+        -_number(candidate["score"] if score is None else score, "candidate score"),
+        candidate["source_repo_id"],
+        candidate["repo_relative_path"],
+        candidate["start_line"],
+        candidate["end_line"],
+        candidate["candidate_id"],
+    )
 
 
 def _authority(candidate: dict, pin: dict) -> None:
-    require(candidate["source_repo_id"] == candidate["repo_id"] == pin["repo_id"]
-            and candidate["revision_id"] == pin["revision_id"]
-            and candidate["manifest_generation"] == pin["manifest_generation"], "candidate generation/source mismatch")
+    require(
+        candidate["source_repo_id"] == candidate["repo_id"] == pin["repo_id"]
+        and candidate["revision_id"] == pin["revision_id"]
+        and candidate["manifest_generation"] == pin["manifest_generation"],
+        "candidate generation/source mismatch",
+    )
     source = candidate["source"]
-    require(isinstance(source, dict) and source["revision_id"] == pin["revision_id"]
-            and source["file"] == {"source_repo_id": pin["repo_id"], "repo_relative_path": candidate["repo_relative_path"]},
-            "candidate source-file identity mismatch")
+    require(
+        isinstance(source, dict)
+        and source["revision_id"] == pin["revision_id"]
+        and source["file"]
+        == {
+            "source_repo_id": pin["repo_id"],
+            "repo_relative_path": candidate["repo_relative_path"],
+        },
+        "candidate source-file identity mismatch",
+    )
     digest = source["source_sha256"]
-    require(isinstance(digest, list) and len(digest) == 32
-            and all(type(byte) is int and 0 <= byte <= 255 for byte in digest), "invalid source digest")
+    require(
+        isinstance(digest, list)
+        and len(digest) == 32
+        and all(type(byte) is int and 0 <= byte <= 255 for byte in digest),
+        "invalid source digest",
+    )
     path = candidate["repo_relative_path"]
-    require(isinstance(path, str) and bool(path) and not Path(path).is_absolute()
-            and not set(path.split("/")) & {".", "..", ""}, "invalid file path")
-    require(candidate["candidate_id"].startswith("file:") and candidate["preview"] is not None,
-            "candidate lacks file authority")
+    require(
+        isinstance(path, str)
+        and bool(path)
+        and not Path(path).is_absolute()
+        and not set(path.split("/")) & {".", "..", ""},
+        "invalid file path",
+    )
+    require(
+        candidate["candidate_id"].startswith("file:") and candidate["preview"] is not None,
+        "candidate lacks file authority",
+    )
     _order(candidate)
 
 
@@ -90,50 +132,78 @@ def _pool(row: dict, original: dict) -> list[dict]:
         return []
     first = pages[0]
     original_candidates = original["candidates"]
-    require(len(first["results"]) == len(original_candidates), "first page differs from original window")
+    require(
+        len(first["results"]) == len(original_candidates), "first page differs from original window"
+    )
     for candidate, captured in zip(first["results"], original_candidates, strict=True):
-        require(candidate["candidate_id"] == captured["span_accounting"]["unit_id"]
-                and candidate["repo_relative_path"] == captured["path"]
-                and candidate["score"] == captured["score"]
-                and candidate["source_repo_id"] == captured["span_accounting"]["source_repo_id"]
-                and candidate["revision_id"] == captured["span_accounting"]["source_revision_id"]
-                and bytes(candidate["source"]["source_sha256"]).hex() == captured["file_sha256"],
-                "first page differs from record file authority")
+        require(
+            candidate["candidate_id"] == captured["span_accounting"]["unit_id"]
+            and candidate["repo_relative_path"] == captured["path"]
+            and candidate["score"] == captured["score"]
+            and candidate["source_repo_id"] == captured["span_accounting"]["source_repo_id"]
+            and candidate["revision_id"] == captured["span_accounting"]["source_revision_id"]
+            and bytes(candidate["source"]["source_sha256"]).hex() == captured["file_sha256"],
+            "first page differs from record file authority",
+        )
     candidates: list[dict] = []
     ids: set[str] = set()
     paths: set[str] = set()
     total: int | None = None
     for index, page in enumerate(pages):
-        require(page["generation"] == row["generation"] and page["rank_unit"] == "file", "page generation/unit mismatch")
+        require(
+            page["generation"] == row["generation"] and page["rank_unit"] == "file",
+            "page generation/unit mismatch",
+        )
         details = _details(page["explanation"])
-        require(details.count(ORDINARY_SCOPE) == 1, "ordinary exhaustive exploration not established")
+        require(
+            details.count(ORDINARY_SCOPE) == 1, "ordinary exhaustive exploration not established"
+        )
         verified = _count(details, "verified_matching_files")
         eligible = _count(details, "cursor_eligible_files")
         returned = len(page["results"])
         require(total is None or total == verified, "file universe changed between pages")
         total = verified
-        require(eligible == total - len(candidates) and returned <= eligible
-                and _count(details, "returned_files") == page["window"]["returned"] == returned,
-                "page counts disagree with full pool")
+        require(
+            eligible == total - len(candidates)
+            and returned <= eligible
+            and _count(details, "returned_files") == page["window"]["returned"] == returned,
+            "page counts disagree with full pool",
+        )
         if index:
-            require(pages[index - 1].get("next_cursor") is not None, "paging continued without native cursor")
+            require(
+                pages[index - 1].get("next_cursor") is not None,
+                "paging continued without native cursor",
+            )
         for candidate in page["results"]:
             _authority(candidate, row["generation"])
-            require(candidate["candidate_id"] not in ids and candidate["repo_relative_path"] not in paths,
-                    "duplicate file in complete pool")
-            require(not candidates or _order(candidates[-1]) < _order(candidate), "native paging order contradiction")
+            require(
+                candidate["candidate_id"] not in ids
+                and candidate["repo_relative_path"] not in paths,
+                "duplicate file in complete pool",
+            )
+            require(
+                not candidates or _order(candidates[-1]) < _order(candidate),
+                "native paging order contradiction",
+            )
             ids.add(candidate["candidate_id"])
             paths.add(candidate["repo_relative_path"])
             candidates.append(candidate)
     if collection["pool_complete"]:
         last = pages[-1]
-        require(last["window"]["outcome"]["kind"] == "exact_exhausted"
-                and last.get("next_cursor") is None and total == len(candidates), "false complete-pool exhaustion")
+        require(
+            last["window"]["outcome"]["kind"] == "exact_exhausted"
+            and last.get("next_cursor") is None
+            and total == len(candidates),
+            "false complete-pool exhaustion",
+        )
     return candidates
 
 
 def _scores(candidate: dict, response: dict, pin: dict) -> tuple[dict[str, int], bool]:
-    require(response["generation"] == pin and response["presence"] == "indexed", "explain generation/presence mismatch")
+    require(
+        response["generation"] == pin and response["presence"] == "indexed",
+        "explain generation/presence mismatch",
+    )
     explanation = response["explanation"]
     details = _details(explanation)
     require(details.count("explain.score_reconciled=true") == 1, "native score did not reconcile")
@@ -143,54 +213,110 @@ def _scores(candidate: dict, response: dict, pin: dict) -> tuple[dict[str, int],
     coverage: bool | None = None
     boundary: int | None = None
     for detail in details:
-        match = re.fullmatch(r"explain.code_search_score.(boundary_and_path|occurrence|exact_case|proximity)=([0-9]+)", detail)
+        match = re.fullmatch(
+            r"explain\.code_search_score\.(boundary_and_path|occurrence|exact_case|proximity)=([0-9]+)",
+            detail,
+        )
         if match:
             require(match[1] not in components, "duplicate score component")
             components[match[1]] = _uint(int(match[2]), "score component")
-        match = re.fullmatch(r"explain.code_search_rank_study_v1.(\w+)=([0-9]+);selected=(true|false)", detail)
+        match = re.fullmatch(
+            r"explain\.code_search_rank_study_v1\.(\w+)=([0-9]+);selected=(true|false)", detail
+        )
         if match:
-            require(match[1] in POLICIES and match[1] not in study
-                    and (match[3] == "true") == (match[1] == "baseline"), "unknown, duplicate or selected experimental policy")
+            require(
+                match[1] in POLICIES
+                and match[1] not in study
+                and (match[3] == "true") == (match[1] == "baseline"),
+                "unknown, duplicate or selected experimental policy",
+            )
             study[match[1]] = _uint(int(match[2]), "study score")
-        match = re.fullmatch(r"explain.code_search_rank_study_v1.declaration_bonus=(unknown|[0-9]+);coverage_complete=(true|false);original_boundary_bonus=([0-9]+)", detail)
+        match = re.fullmatch(
+            r"explain\.code_search_rank_study_v1\.declaration_bonus=(unknown|[0-9]+);coverage_complete=(true|false);original_boundary_bonus=([0-9]+)",
+            detail,
+        )
         if match:
             require(coverage is None, "duplicate declaration authority")
-            declaration = None if match[1] == "unknown" else _uint(int(match[1]), "declaration bonus")
+            declaration = (
+                None if match[1] == "unknown" else _uint(int(match[1]), "declaration bonus")
+            )
             coverage = match[2] == "true"
             boundary = _uint(int(match[3]), "boundary bonus")
-    require(set(components) == {"boundary_and_path", "occurrence", "exact_case", "proximity"}
-            and set(study) == set(POLICIES) and boundary is not None and coverage is not None,
-            "incomplete native ordinary score study")
+    require(
+        set(components) == {"boundary_and_path", "occurrence", "exact_case", "proximity"}
+        and set(study) == set(POLICIES)
+        and boundary is not None
+        and coverage is not None,
+        "incomplete native ordinary score study",
+    )
     baseline = sum(components.values())
-    require(baseline == candidate["score"] == study["baseline"], "native baseline contradicts selected score")
+    require(
+        baseline == candidate["score"] == study["baseline"],
+        "native baseline contradicts selected score",
+    )
     contributions = explanation["contributions"]
-    require(len(contributions) == 1 and contributions[0]["signal_name"] == "lexical.code_search_file"
-            and contributions[0]["candidate_id"] == candidate["candidate_id"]
-            and contributions[0]["contribution"] == baseline, "native total contribution mismatch")
-    require(not coverage or declaration is not None, "complete declaration census cannot be unknown")
+    require(
+        len(contributions) == 1
+        and contributions[0]["signal_name"] == "lexical.code_search_file"
+        and contributions[0]["candidate_id"] == candidate["candidate_id"]
+        and contributions[0]["contribution"] == baseline,
+        "native total contribution mismatch",
+    )
+    require(
+        not coverage or declaration is not None, "complete declaration census cannot be unknown"
+    )
     without = baseline - components["occurrence"]
-    sat = lambda value: min(value, 2**32 - 1)
-    require(study == {"baseline": baseline, "declaration_only": sat(baseline + (declaration or 0)),
-                     "boundary_only": sat(baseline + boundary),
-                     "occurrence_half": sat(without + components["occurrence"] // 2),
-                     "occurrence_none": without, "combined": sat(without + (declaration or 0) + boundary)},
-            "native ablation algebra contradiction")
+
+    def sat(value):
+        return min(value, 2**32 - 1)
+
+    require(
+        study
+        == {
+            "baseline": baseline,
+            "declaration_only": sat(baseline + (declaration or 0)),
+            "boundary_only": sat(baseline + boundary),
+            "occurrence_half": sat(without + components["occurrence"] // 2),
+            "occurrence_none": without,
+            "combined": sat(without + (declaration or 0) + boundary),
+        },
+        "native ablation algebra contradiction",
+    )
     return study, coverage
 
 
-def validate_artifact(artifact: dict, record: dict, record_sha256: str, pack: dict) -> dict[str, dict]:
+def validate_artifact(
+    artifact: dict, record: dict, record_sha256: str, pack: dict
+) -> dict[str, dict]:
     """Return validated rows. The caller must validate the original record first."""
-    require(artifact["schema_version"] == 1 and artifact["kind"] == "quanta_code_search_rank_study"
-            and artifact["qualification"] == "diagnostic_unqualified", "invalid rank-study contract")
-    require(re.fullmatch(r"[0-9a-f]{64}", record_sha256) is not None
-            and artifact["record_sha256"] == record_sha256, "study is not bound to original record bytes")
+    require(
+        artifact["schema_version"] == 1
+        and artifact["kind"] == "quanta_code_search_rank_study"
+        and artifact["qualification"] == "diagnostic_unqualified",
+        "invalid rank-study contract",
+    )
+    require(
+        re.fullmatch(r"[0-9a-f]{64}", record_sha256) is not None
+        and artifact["record_sha256"] == record_sha256,
+        "study is not bound to original record bytes",
+    )
     policy = artifact["policy"]
-    require(policy in ("code_search_file", "code_search_exact_content_file"), "unsupported rank-study policy")
+    require(
+        policy in ("code_search_file", "code_search_exact_content_file"),
+        "unsupported rank-study policy",
+    )
     capture = record["captures"][record["route_provenance"]["lexical"]["capture_id"]]
-    require(capture["execution_profile"] == qp.execution_profile(policy)
-            and artifact["execution_profile_sha256"] == capture["execution_profile_sha256"] == qp.execution_profile_sha256(policy),
-            "rank-study execution profile mismatch")
-    require(artifact["timing_boundary"] == "post_measurement_sdk_paging_and_explanations", "study cost must be outside query measurements")
+    require(
+        capture["execution_profile"] == qp.execution_profile(policy)
+        and artifact["execution_profile_sha256"]
+        == capture["execution_profile_sha256"]
+        == qp.execution_profile_sha256(policy),
+        "rank-study execution profile mismatch",
+    )
+    require(
+        artifact["timing_boundary"] == "post_measurement_sdk_paging_and_explanations",
+        "study cost must be outside query measurements",
+    )
     _number(artifact["diagnostic_ms"], "diagnostic_ms")
     for name in ("max_files", "max_pages", "timeout_ms"):
         require(_uint(artifact["limits"][name], name) > 0, "study limit must be positive")
@@ -200,26 +326,58 @@ def validate_artifact(artifact: dict, record: dict, record_sha256: str, pack: di
     validated: dict[str, dict] = {}
     for row in artifact["results"]:
         task_id = row["task_id"]
-        require(task_id in originals and task_id in tasks and task_id not in validated and row["route"] == "lexical", "study task inventory mismatch")
+        require(
+            task_id in originals
+            and task_id in tasks
+            and task_id not in validated
+            and row["route"] == "lexical",
+            "study task inventory mismatch",
+        )
         original = originals[task_id]
         derived = qp.derive_query_identity(policy, tasks[task_id]["query"])
-        require(all(row["query_identity"][name] == value == original["query_identity"][name] for name, value in derived.items()), "query identity mismatch")
-        require(row["query_identity"]["policy_config_sha256"] == hashlib.sha256(qp.policy_config_canonical(policy).encode()).hexdigest(), "policy config digest mismatch")
+        require(
+            all(
+                row["query_identity"][name] == value == original["query_identity"][name]
+                for name, value in derived.items()
+            ),
+            "query identity mismatch",
+        )
+        require(
+            row["query_identity"]["policy_config_sha256"]
+            == hashlib.sha256(qp.policy_config_canonical(policy).encode()).hexdigest(),
+            "policy config digest mismatch",
+        )
         pin = row["generation"]
-        require(pin["manifest_generation"] == capture["generation"], "study generation differs from original capture")
+        require(
+            pin["manifest_generation"] == capture["generation"],
+            "study generation differs from original capture",
+        )
         request = row["effective_request"]
-        require(request["syntax"] == "code_search" and request["generation"] == pin
-                and request["query_text"] == qp.plan_lexical_request(policy, tasks[task_id]["query"])
-                and request["top_k"] == record["comparison_contract"]["top_k"]
-                and request["constraints"] == {"language_any_of": []}
-                and request.get("cursor") is None and request.get("generation_selector") is None,
-                "effective request mismatch")
+        require(
+            request["syntax"] == "code_search"
+            and request["generation"] == pin
+            and request["query_text"] == qp.plan_lexical_request(policy, tasks[task_id]["query"])
+            and request["top_k"] == record["comparison_contract"]["top_k"]
+            and request["constraints"] == {"language_any_of": []}
+            and request.get("cursor") is None
+            and request.get("generation_selector") is None,
+            "effective request mismatch",
+        )
         collection = row["collection"]
-        require(collection["status"] in ("returned", "partial", "not_run"), "invalid collection status")
+        require(
+            collection["status"] in ("returned", "partial", "not_run"), "invalid collection status"
+        )
         if collection["status"] != "returned":
-            require(isinstance(collection["reason"], str) and bool(collection["reason"]), "incomplete study needs a reason")
-            require(type(collection["pool_complete"]) is bool, "pool completeness must be a boolean")
-            require(len(collection["pages"]) <= artifact["limits"]["max_pages"], "page limit exceeded")
+            require(
+                isinstance(collection["reason"], str) and bool(collection["reason"]),
+                "incomplete study needs a reason",
+            )
+            require(
+                type(collection["pool_complete"]) is bool, "pool completeness must be a boolean"
+            )
+            require(
+                len(collection["pages"]) <= artifact["limits"]["max_pages"], "page limit exceeded"
+            )
             _number(collection["diagnostic_ms"], "diagnostic_ms")
             # Incomplete evidence is retained for inspection, never normalized
             # into a scoreable pool. Unsupported recovery can lack ordinary
@@ -228,9 +386,15 @@ def validate_artifact(artifact: dict, record: dict, record_sha256: str, pack: di
             continue
         candidates = _pool(row, original)
         for candidate in candidates:
-            require(universe.get(candidate["repo_relative_path"]) == bytes(candidate["source"]["source_sha256"]).hex(),
-                    "complete pool contains a file outside the source-bound universe")
-        require(collection["reason"] is None and collection["pool_complete"], "returned study lacks complete pool")
+            require(
+                universe.get(candidate["repo_relative_path"])
+                == bytes(candidate["source"]["source_sha256"]).hex(),
+                "complete pool contains a file outside the source-bound universe",
+            )
+        require(
+            collection["reason"] is None and collection["pool_complete"],
+            "returned study lacks complete pool",
+        )
         require(len(collection["pages"]) <= artifact["limits"]["max_pages"], "page limit exceeded")
         require(len(candidates) <= artifact["limits"]["max_files"], "file limit exceeded")
         explained: dict[str, tuple[dict, bool]] = {}
@@ -238,15 +402,27 @@ def validate_artifact(artifact: dict, record: dict, record_sha256: str, pack: di
         for item in collection["explanations"]:
             candidate = item["candidate"]
             candidate_id = candidate["candidate_id"]
-            require(candidate_id in by_id and candidate == by_id[candidate_id] and candidate_id not in explained, "explanation candidate differs from native pool")
+            require(
+                candidate_id in by_id
+                and candidate == by_id[candidate_id]
+                and candidate_id not in explained,
+                "explanation candidate differs from native pool",
+            )
             _number(item["explanation_ms"], "explanation_ms")
             if item["status"] == "refused":
-                require(isinstance(item["error"], str) and bool(item["error"]), "refusal needs original error")
+                require(
+                    isinstance(item["error"], str) and bool(item["error"]),
+                    "refusal needs original error",
+                )
                 explained[candidate_id] = ({}, False)
             else:
                 require(item["status"] == "returned", "invalid explanation status")
                 explained[candidate_id] = _scores(candidate, item["response"], pin)
-        validated[task_id] = {"collection": collection, "candidates": candidates, "explained": explained}
+        validated[task_id] = {
+            "collection": collection,
+            "candidates": candidates,
+            "explained": explained,
+        }
     require(set(validated) == set(originals) == set(tasks), "study omitted original tasks")
     return validated
 
@@ -266,9 +442,13 @@ def compose(suite: dict, rows: dict[str, dict]) -> dict:
             reason = None
             if collection["status"] != "returned" or not collection["pool_complete"]:
                 reason = collection["reason"] or "pool_incomplete"
-            elif set(explained) != {candidate["candidate_id"] for candidate in row["candidates"]} or any(not value[0] for value in explained.values()):
+            elif set(explained) != {
+                candidate["candidate_id"] for candidate in row["candidates"]
+            } or any(not value[0] for value in explained.values()):
                 reason = "explanation_incomplete_or_refused"
-            elif policy in ("declaration_only", "combined") and any(not value[1] for value in explained.values()):
+            elif policy in ("declaration_only", "combined") and any(
+                not value[1] for value in explained.values()
+            ):
                 reason = "declaration_census_unknown_or_incomplete"
             elif "file_judgments" not in tasks[task_id]:
                 reason = "independent_file_judgments_absent"
@@ -279,26 +459,53 @@ def compose(suite: dict, rows: dict[str, dict]) -> dict:
                 continue
             admitted.append(task_id)
             baseline = row["candidates"]
-            candidate = sorted(baseline, key=lambda item: _order(item, explained[item["candidate_id"]][0][policy]))
+            candidate = sorted(
+                baseline, key=lambda item: _order(item, explained[item["candidate_id"]][0][policy])
+            )
             judgments = tasks[task_id]["file_judgments"]
-            def metrics(items):
+
+            def metrics(items, judgments=judgments):
                 files = [{"path": item["repo_relative_path"]} for item in items]
-                return {"file_ndcg": ev.file_ndcg_at_k(files, judgments, k),
-                        "file_hit": ev.file_hit_at_k_judged(files, judgments, k),
-                        "file_mrr": ev.file_mrr_at_k_judged(files, judgments, k)}
-            samples.append({"task_id": task_id, "baseline": metrics(baseline), "candidate": metrics(candidate),
-                            "baseline_top_k": [item["repo_relative_path"] for item in baseline[:k]],
-                            "candidate_top_k": [item["repo_relative_path"] for item in candidate[:k]]})
-        mean = {side: {name: sum(sample[side][name] for sample in samples) / len(samples)
-                       if samples else None for name in ("file_ndcg", "file_hit", "file_mrr")}
-                for side in ("baseline", "candidate")}
-        comparisons[policy] = {"eligible_task_ids": admitted, "excluded": excluded, "paired_means": mean,
-                               "coverage": len(admitted) / len(rows) if rows else 0.0,
-                               "samples": samples}
-    return {"kind": "code_search_complete_pool_ablation_report", "qualification": "diagnostic_unqualified",
-            "selected_policy": "baseline", "rank_unit": "distinct_file", "top_k": k,
-            "declaration_span_metrics": "not_applicable_file_level_features",
-            "comparisons": comparisons}
+                return {
+                    "file_ndcg": ev.file_ndcg_at_k(files, judgments, k),
+                    "file_hit": ev.file_hit_at_k_judged(files, judgments, k),
+                    "file_mrr": ev.file_mrr_at_k_judged(files, judgments, k),
+                }
+
+            samples.append(
+                {
+                    "task_id": task_id,
+                    "baseline": metrics(baseline),
+                    "candidate": metrics(candidate),
+                    "baseline_top_k": [item["repo_relative_path"] for item in baseline[:k]],
+                    "candidate_top_k": [item["repo_relative_path"] for item in candidate[:k]],
+                }
+            )
+        mean = {
+            side: {
+                name: sum(sample[side][name] for sample in samples) / len(samples)
+                if samples
+                else None
+                for name in ("file_ndcg", "file_hit", "file_mrr")
+            }
+            for side in ("baseline", "candidate")
+        }
+        comparisons[policy] = {
+            "eligible_task_ids": admitted,
+            "excluded": excluded,
+            "paired_means": mean,
+            "coverage": len(admitted) / len(rows) if rows else 0.0,
+            "samples": samples,
+        }
+    return {
+        "kind": "code_search_complete_pool_ablation_report",
+        "qualification": "diagnostic_unqualified",
+        "selected_policy": "baseline",
+        "rank_unit": "distinct_file",
+        "top_k": k,
+        "declaration_span_metrics": "not_applicable_file_level_features",
+        "comparisons": comparisons,
+    }
 
 
 def main() -> int:
@@ -308,9 +515,14 @@ def main() -> int:
     args = parser.parse_args()
     suite, pack, record = ev.load_evidence(args.repo, args.suite, args.record)
     artifact = ev.read_json(args.study)
-    rows = validate_artifact(artifact, record, hashlib.sha256(args.record.read_bytes()).hexdigest(), pack)
+    rows = validate_artifact(
+        artifact, record, hashlib.sha256(args.record.read_bytes()).hexdigest(), pack
+    )
     report = compose(suite, rows)
-    require(not args.out.resolve().is_relative_to(Path(__file__).resolve().parents[3]), "output must be outside the checkout")
+    require(
+        not args.out.resolve().is_relative_to(Path(__file__).resolve().parents[3]),
+        "output must be outside the checkout",
+    )
     with args.out.open("x", encoding="utf-8") as handle:
         handle.write(json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n")
     return 0
