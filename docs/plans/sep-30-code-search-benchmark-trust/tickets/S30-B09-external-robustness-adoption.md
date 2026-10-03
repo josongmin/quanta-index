@@ -12,8 +12,9 @@ runner, source oracle and evaluator remain the execution authorities.
   and CLARC original/neutral lanes; the original source-valid eight-repository
   typo cohort has 13,835 five-product responses and a fully replayed join.
 - In progress: the new global declaration-authority cohort for all 12
-  repositories. Its gold capsules are complete; the public 72-cell admission
-  matrix and new product captures must complete before it receives a score.
+  repositories. Its gold capsules and public 72-cell admission matrix are
+  complete. The new OSA1 lane contains4,363 tasks; ordinary-file projection
+  and new product captures must complete before it receives a score.
 - These are diagnostic captures. Local human relevance review, an unseen
   holdout, whole upstream corpus execution, and qualified performance remain
   separate gates. The eight-repository scores do not fill the new cohort.
@@ -276,8 +277,15 @@ pins completed12/12 capsules in1996.263s. The receipt is
 Supplementary `runtime-four-pin-binding.json` in the same root verifies the
 underlying tree-sitter lock/runtime as well as the three direct parser/tokenizer
 pins. It binds all12 existing capsule identities without rewriting them.
-The public72-cell C4 matrix is now running in that same environment; the new
-cohort is not scored until matrix/projection admission passes.
+The public72-cell C4 matrix completed in3484.876s (58m05s) in that same
+environment, SHA-256
+`a0324f60bead45b60ece41418a275a5fc431f4ac0990f2ddb42f00b9f1638c78`.
+The new OSA1 lane selects4,363 tasks across12 repositories, compared with the
+historical4,149 under the older contract. Ordered task-ID lists add214 IDs
+and remove none: chartjs+134, immer+34, svelte+27, tauri+14, telegraf+5.
+ID retention is not proof of unchanged query, gold, or request contracts.
+Ordinary-file projection is running; only completed projection and capture
+receipts can admit the new cohort to a score.
 
 Frozen runtime boundaries are explicit: Quanta binaries were built from
 clean `d7063ac755916d48867416d4f970b6aebc360abd`; the proposed new Python

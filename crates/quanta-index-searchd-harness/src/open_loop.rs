@@ -242,13 +242,17 @@ fn matches_expected_rows<'a>(
     expected: &[ExpectedRow],
     observed: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>,
 ) -> bool {
-    observed.into_iter().eq(expected.iter().map(|row| {
-        (
-            row.candidate_id.as_str(),
-            row.source_repo_id.as_str(),
-            row.repo_relative_path.as_str(),
-        )
-    }))
+    let mut rows = observed.into_iter();
+    expected.iter().all(|row| {
+        rows.next().is_some_and(|observed| {
+            observed
+                == (
+                    row.candidate_id.as_str(),
+                    row.source_repo_id.as_str(),
+                    row.repo_relative_path.as_str(),
+                )
+        })
+    }) && rows.next().is_none()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -776,7 +780,11 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
                     let path = if config.tier == ScaleTier::Small {
                         row.repo_relative_path.as_str().to_string()
                     } else {
-                        format!("{}/{}", row.source_repo_id, row.repo_relative_path)
+                        format!(
+                            "{}/{}",
+                            row.source_repo_id.as_str(),
+                            row.repo_relative_path.as_str()
+                        )
                     };
                     (row.candidate_id.clone(), path)
                 })
@@ -802,7 +810,7 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
                     source_repo_id: row.source_repo_id.as_str().to_string(),
                     repo_relative_path: row.repo_relative_path.as_str().to_string(),
                 })
-                .collect()
+                .collect::<Vec<_>>()
         }
         SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
