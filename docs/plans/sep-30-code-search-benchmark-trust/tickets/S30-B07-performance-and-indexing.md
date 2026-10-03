@@ -130,7 +130,9 @@ isolated `ff940010` checkout with runner SHA256
 and searchd SHA256
 `0304217033965e1bd4d91622aa19082974e5aede127ba019232fdc0f22c6bb58`.
 The new source-snapshot reuse on main has focused positive/drift tests, but is
-not part of that pinned product capture.
+not part of that pinned product capture. A read-only current-main preflight of
+SymPy's four suites completed in **24.145 s** and confirmed one shared snapshot;
+this single busy-host timing is diagnostic only.
 
 On this busy host, summed product-process elapsed time across the eight
 sequential groups was Quanta **447.35 s** and Semble **199.83 s**. Their own
