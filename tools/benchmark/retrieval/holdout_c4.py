@@ -508,8 +508,7 @@ def _derive_prepared(
             near_paths = sorted(
                 row["path"]
                 for row in task.get("near_census_text_excluded", [])
-                if row["reason"] == "census_refused"
-                and row["path"] in parser_refused_paths
+                if row["reason"] == "census_refused" and row["path"] in parser_refused_paths
             )
             if near_paths:
                 source_contract["near_declaration_exclusions"] = near_paths

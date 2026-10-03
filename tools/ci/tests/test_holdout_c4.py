@@ -495,10 +495,17 @@ def test_c4_reuses_one_intended_name_exclusion_for_distinct_typos(tmp_path, monk
     assert checked_sizes == [2, 2, 2, 3]
 
 
-def test_c4_admits_typo_with_query_proven_checker_disagreement(tmp_path, monkeypatch):
+@pytest.mark.parametrize("checker_reason", ["census_disagreement", "census_refused"])
+def test_c4_admits_typo_with_query_proven_checker_disagreement(
+    tmp_path, monkeypatch, checker_reason
+):
     release, capsule, checkout = _fixture(tmp_path, monkeypatch, checker_disagreement=True)
     gold = holdout_c4._read(capsule / "gold.json")
     blind = holdout_c4._read(capsule / "blind.json")
+    if checker_reason == "census_refused":
+        audit = gold["census_audits"]["go"]
+        audit["refused_paths"] = ["disputed.go"]
+        audit["disagreement_paths"] = []
     for payload in (gold, blind):
         payload["tasks"][0].update(
             intent="declaration_name_osa1_casefold",
@@ -508,12 +515,13 @@ def test_c4_admits_typo_with_query_proven_checker_disagreement(tmp_path, monkeyp
     gold["tasks"][0].update(
         intended_name="Alpha",
         near_declaration_state="complete",
-        near_census_text_excluded=[{"path": "disputed.go", "reason": "census_disagreement"}],
+        near_census_text_excluded=[{"path": "disputed.go", "reason": checker_reason}],
         near_declaration_names=["Alpha"],
         near_declaration_files=["main.go"],
         exact_collision_names=[],
         exact_collision_files=[],
     )
+    gold["tasks"][0]["census_text_excluded"] = [{"path": "disputed.go", "reason": checker_reason}]
     _resign(capsule, "gold.json", gold)
     _resign(capsule, "blind.json", blind)
     suite, _pack, report = holdout_c4.derive(
@@ -616,9 +624,7 @@ def test_c4_checker_refusal_with_complete_primary_census(tmp_path, monkeypatch):
     audit = gold["census_audits"]["go"]
     audit["refused_paths"] = ["disputed.go"]
     audit["disagreement_paths"] = []
-    gold["tasks"][0]["census_text_excluded"] = [
-        {"path": "disputed.go", "reason": "census_refused"}
-    ]
+    gold["tasks"][0]["census_text_excluded"] = [{"path": "disputed.go", "reason": "census_refused"}]
     _resign(capsule, "gold.json", gold)
 
     suite, _pack, report = holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
@@ -656,7 +662,9 @@ def test_c4_refuses_unproved_partial_census(tmp_path, monkeypatch, kind):
         with pytest.raises(ValueError, match="no admitted declaration task"):
             holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
     else:
-        with pytest.raises((ValueError, evaluator.EvidenceError), match="excluded|refuse"):
+        with pytest.raises(
+            (ValueError, evaluator.EvidenceError), match="excluded|refuse|parse error"
+        ):
             holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
 
 
