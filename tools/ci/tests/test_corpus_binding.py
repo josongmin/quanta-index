@@ -273,6 +273,29 @@ def test_gold_capture_checks_staged_bytes_without_rederiving_source(tmp_path, mo
         binding._verify_gold_material(target, material)
 
 
+def test_gold_payload_has_role_specific_bounded_read_and_publication(tmp_path, monkeypatch):
+    monkeypatch.setattr(binding, "CONTROL_DOCUMENT_BYTES", 16)
+    monkeypatch.setattr(binding, "GOLD_DOCUMENT_BYTES", 32)
+    gold = tmp_path / "gold.json"
+    blind = tmp_path / "blind.json"
+    gold.write_bytes(b"x" * 24)
+    blind.write_bytes(b"{}\n")
+    assert binding._read_gold_capsule_file(gold) == b"x" * 24
+    binding._require_gold_material_bounds({"gold.json": gold.read_bytes(), "blind.json": b"{}\n"})
+
+    blind.write_bytes(b"x" * 17)
+    with pytest.raises(EvidenceError, match="16-byte limit"):
+        binding._read_gold_capsule_file(blind)
+    with pytest.raises(EvidenceError, match="blind.json exceeds 16-byte limit"):
+        binding._require_gold_material_bounds({"blind.json": blind.read_bytes()})
+
+    gold.write_bytes(b"x" * 33)
+    with pytest.raises(EvidenceError, match="32-byte limit"):
+        binding._read_gold_capsule_file(gold)
+    with pytest.raises(EvidenceError, match="gold.json exceeds 32-byte limit"):
+        binding._require_gold_material_bounds({"gold.json": gold.read_bytes()})
+
+
 def test_gold_capture_refuses_source_drift_before_publication(tmp_path, monkeypatch):
     material = {
         "selection.json": b"{}\n",

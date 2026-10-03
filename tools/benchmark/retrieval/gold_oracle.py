@@ -6,8 +6,8 @@ declaration census of `source_oracle` and are labelled only for files where an
 independent parser agrees with that census (`declaration_census_audit`). A
 parser-refused file can be excluded from one query's labels only when its raw
 text proves that the queried name is absent. Disagreements remain unjudged.
-For an unscoped file-search request, a possible declaration in another
-supported language also leaves the task unjudged.
+For an unscoped file-search request, a matching declaration or unresolved
+census in another supported language also leaves the task unjudged.
 All labels remain unreviewed.
 
 Schema v1 recipes carry development and holdout tasks for one repository and
@@ -40,7 +40,7 @@ try:
 except ModuleNotFoundError:  # package import outside the benchmark script path
     from tools.benchmark.evidence import IO_CHUNK_BYTES, EvidenceError, _consume_regular_file
 
-ORACLE_VERSION = 2
+ORACLE_VERSION = 3
 MAX_TASKS = 2000
 MAX_FILES = 4096
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
@@ -261,9 +261,19 @@ def _name_contract(language: object, intent: str) -> str:
 
 
 def _census_audits(recipe: dict, sources: dict, view: Path) -> dict[str, dict]:
-    """Audit each declaration-intent language once over the complete view."""
-    languages = sorted(
-        {task["language"] for task in recipe["tasks"] if task["intent"] in DECLARATION_INTENTS}
+    """Audit every supported source language for unscoped declaration tasks."""
+    has_declaration_task = any(task["intent"] in DECLARATION_INTENTS for task in recipe["tasks"])
+    languages = (
+        sorted(
+            {
+                language
+                for path in sources
+                if (language := source_oracle.declaration_language(path))
+                in source_oracle.DECLARATION_CENSUS
+            }
+        )
+        if has_declaration_task
+        else []
     )
     audits = {}
     for language in languages:
@@ -304,6 +314,34 @@ def _declaration_spans(
         ):
             spans.append((start, end, kind))
     return spans
+
+
+def _other_language_declaration_conflict(
+    raw: bytes,
+    path: str,
+    scoring_query: str,
+    scoring_intent: str,
+    language: str,
+    census: dict,
+    typo_query: str | None,
+) -> bool:
+    if path not in census:
+        census[path] = source_oracle.declaration_census(language, path, raw)
+    variant = DECLARATION_INTENTS[scoring_intent]
+    for start, end, *_rest in census[path]:
+        name = source_oracle._name_text(raw[start:end])
+        if (
+            name == scoring_query
+            if variant == "exact"
+            else source_oracle._variant_matches(variant, scoring_query, name)
+        ):
+            return True
+        if typo_query is not None and (
+            name.casefold() == typo_query.casefold()
+            or source_oracle._variant_matches("osa1_casefold", typo_query, name)
+        ):
+            return True
+    return False
 
 
 def _textually_excluded(raw: bytes, query: str, variant: str) -> bool:
@@ -417,21 +455,33 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
             if task["intent"] in DECLARATION_INTENTS:
                 source_language = source_oracle.declaration_language(path)
                 if source_language != task["language"]:
-                    # The file-search request has no language filter. A name
-                    # that could be declared in another supported language
-                    # cannot be scored as an irrelevant file without a census.
-                    if source_language in source_oracle.DECLARATION_CENSUS and (
-                        not _textually_excluded(
-                            raw, scoring_query, DECLARATION_INTENTS[scoring_intent]
-                        )
-                        or (
-                            intended_typo
-                            and not _textually_excluded(raw, task["query"], "osa1_casefold")
-                        )
-                    ):
-                        unsupported.append(
-                            {"path": path, "reason": "other_language_possible_declaration"}
-                        )
+                    # The request has no language filter. Only an independently
+                    # audited census can prove that text in another language
+                    # is a use rather than a relevant declaration.
+                    if source_language in audits:
+                        audit = audits[source_language]
+                        if path in audit["refused_paths"] or path in audit["disagreement_paths"]:
+                            if not _textually_excluded(
+                                raw, scoring_query, DECLARATION_INTENTS[scoring_intent]
+                            ) or (
+                                intended_typo
+                                and not _textually_excluded(raw, task["query"], "osa1_casefold")
+                            ):
+                                unsupported.append(
+                                    {"path": path, "reason": "other_language_possible_declaration"}
+                                )
+                        elif _other_language_declaration_conflict(
+                            raw,
+                            path,
+                            scoring_query,
+                            scoring_intent,
+                            source_language,
+                            censuses[source_language],
+                            task["query"] if intended_typo else None,
+                        ):
+                            unsupported.append(
+                                {"path": path, "reason": "other_language_matching_declaration"}
+                            )
                     continue
             selected += 1
             if task["intent"] == "literal_utf8_exact":

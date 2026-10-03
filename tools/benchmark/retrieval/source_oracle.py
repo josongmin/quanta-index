@@ -214,6 +214,35 @@ def _osa1_text_pattern(query: str) -> re.Pattern[str]:
     return re.compile("(?:" + "|".join(sorted(alternatives)) + ")")
 
 
+def _osa1_text_witness(text: str, query: str) -> bool:
+    """Search only positions that can start a one-edit substring."""
+    pattern = _osa1_text_pattern(query)
+    size = len(query)
+    if size <= 2:
+        return pattern.search(text) is not None
+
+    # One edit (including an adjacent swap) cannot change both ends of a
+    # query of this length. A surviving prefix starts at offset zero or one;
+    # a surviving suffix ends after size-1, size, or size+1 characters.
+    anchor_size = 3 if size >= 7 else 2 if size >= 5 else 1
+    anchors = (
+        (query[:anchor_size], (0, 1)),
+        (
+            query[-anchor_size:],
+            (size - 1 - anchor_size, size - anchor_size, size + 1 - anchor_size),
+        ),
+    )
+    for anchor, offsets in anchors:
+        position = text.find(anchor)
+        while position >= 0:
+            for offset in offsets:
+                start = position - offset
+                if start >= 0 and pattern.match(text, start) is not None:
+                    return True
+            position = text.find(anchor, position + 1)
+    return False
+
+
 def declaration_query_textually_excluded(raw: bytes, query: str, variant: str) -> bool:
     """Conservatively prove that an uncensused file cannot contain a matching name.
 
@@ -250,7 +279,7 @@ def declaration_query_textually_excluded(raw: bytes, query: str, variant: str) -
                     missing += 1
                     if missing > 4:
                         return True
-        return _osa1_text_pattern(query).search(text) is None
+        return not _osa1_text_witness(text, query)
     raise SourceOracleError("unsupported declaration-name variant contract")
 
 

@@ -135,14 +135,25 @@ class Repository:
                 token = match.group().decode("ascii").lower()
                 self.ascii_tokens_by_length[len(token)].add(token)
         self.audit: dict[str, Any] | None = None
+        self.all_audits: dict[str, dict[str, Any]] = {}
         self.names: dict[str, int] = {}
 
     def run_census(self) -> None:
         if self.language not in source_oracle.DECLARATION_CENSUS:
             return
-        self.audit = declaration_census_audit.audit_files(
-            self.language, self.view, sorted(self.files)
+        languages = sorted(
+            {
+                language
+                for path in self.files
+                if (language := source_oracle.declaration_language(path))
+                in source_oracle.DECLARATION_CENSUS
+            }
         )
+        self.all_audits = {
+            language: declaration_census_audit.audit_files(language, self.view, sorted(self.files))
+            for language in languages
+        }
+        self.audit = self.all_audits[self.language]
         excluded = {row["path"] for row in self.audit["refused"]} | {
             row["path"] for row in self.audit["disagreements"]
         }
@@ -687,7 +698,9 @@ def build(
         }
         repository = repositories_by_name[name]
         if repository.audit is not None:
-            recipe["checker_identity"] = {repository.language: repository.audit["checker"]}
+            recipe["checker_identity"] = {
+                language: audit["checker"] for language, audit in repository.all_audits.items()
+            }
         gold_oracle.validate_recipe(recipe)
         recipes[name] = recipe
     summary = {

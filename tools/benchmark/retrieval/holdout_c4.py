@@ -84,7 +84,12 @@ class _Batch:
 
 
 def _read(path: Path) -> dict:
-    value = parse_json(_read_control_file(path).decode("utf-8"))
+    raw = (
+        corpus_binding._read_gold_capsule_file(path)
+        if path.name == "gold.json"
+        else _read_control_file(path)
+    )
+    value = parse_json(raw.decode("utf-8"))
     if not isinstance(value, dict):
         raise ValueError(f"C4 input is not an object: {path}")
     return value
@@ -140,7 +145,9 @@ def _prepare(
     if _read_control_file(release / "release.json") != release_document_raw:
         raise ValueError("C4 release document changed during validation")
     for name in ("selection.json", "recipe.json", "gold.json", "blind.json"):
-        if identity.get("files", {}).get(name) != digest_bytes(_read_control_file(capsule / name)):
+        if identity.get("files", {}).get(name) != digest_bytes(
+            corpus_binding._read_gold_capsule_file(capsule / name)
+        ):
             raise ValueError(f"C4 capsule identity differs: {name}")
     selection = _read(capsule / "selection.json")
     gold, blind = _read(capsule / "gold.json"), _read(capsule / "blind.json")
@@ -682,7 +689,7 @@ def _batch_recheck(
             raise ValueError("C4 matrix input changed during admission")
         for file_name in ("selection.json", "recipe.json", "gold.json", "blind.json"):
             if prepared.identity["files"][file_name] != digest_bytes(
-                _read_control_file(prepared.capsule / file_name)
+                corpus_binding._read_gold_capsule_file(prepared.capsule / file_name)
             ):
                 raise ValueError("C4 matrix capsule changed during admission")
     if (

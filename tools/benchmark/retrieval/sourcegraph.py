@@ -210,8 +210,12 @@ def validate_capture(
         request = _keys(request, request_keys, "request")
     elif capture_version == 2:
         request = _keys(request, request_keys | {"file_filter_extensions"}, "request")
+    elif capture_version == 3:
+        request = _keys(
+            request, request_keys | {"file_filter_extensions", "source_revision"}, "request"
+        )
     else:
-        raise CaptureError("only pinned V3 stream capture envelopes v1 and v2 are supported")
+        raise CaptureError("unsupported pinned V3 stream capture envelope")
     if type(capture_version) is not int or request["api_version"] != "V3":
         raise CaptureError("only the pinned V3 stream capture envelope is supported")
     if request["endpoint"] != "/.api/search/stream":
@@ -228,7 +232,10 @@ def validate_capture(
 
     manifest = _keys(manifest, {"repository_commit", "files"}, "manifest")
     _hex(manifest["repository_commit"], HEX40, "manifest.repository_commit")
-    if manifest["repository_commit"] != request["revision"]:
+    source_revision = request["source_revision"] if capture_version == 3 else request["revision"]
+    _hex(source_revision, HEX40, "source_revision")
+    _hex(request["revision"], HEX40, "revision")
+    if manifest["repository_commit"] != source_revision:
         raise CaptureError("manifest revision differs from request")
     admitted = _files(manifest["files"], "manifest.files")
     universe = _keys(
@@ -438,12 +445,13 @@ def validate_capture(
         "request": request,
         "rank_semantics": (
             "observed_stream_order_postfiltered_to_input_manifest"
-            if capture_version == 2
+            if capture_version in (2, 3)
             else "observed_stream_order_only"
         ),
         "query_sha256": request["query_sha256"],
         "repository": request["repository"],
         "revision": request["revision"],
+        **({"source_revision": source_revision} if capture_version == 3 else {}),
         "manifest_sha256": sha256(
             json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
         ),

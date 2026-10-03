@@ -19,6 +19,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.parse
@@ -144,6 +145,14 @@ def _service(value: object, keys: set[str], optional: set[str] = frozenset()) ->
         token = Path(value["token_file"])
         if not token.is_absolute() or ".." in token.parts:
             raise ValueError("token file path must be canonical absolute")
+    if "projection_git_root" in value:
+        projection = value["projection_git_root"]
+        if (
+            not isinstance(projection, str)
+            or not Path(projection).is_absolute()
+            or ".." in Path(projection).parts
+        ):
+            raise ValueError("projection Git root must be canonical absolute")
     if "backend_snapshot" in value:
         snapshot = value["backend_snapshot"]
         if not isinstance(snapshot, dict) or set(snapshot) != {
@@ -202,7 +211,7 @@ def _spec(path: Path) -> dict:
     value["sourcegraph"] = _service(
         value["sourcegraph"],
         {"base_url", "repository", "server_image_digest"},
-        {"backend_snapshot"},
+        {"backend_snapshot", "projection_git_root"},
     )
     value["opengrok"] = _service(
         value["opengrok"],
@@ -221,6 +230,101 @@ def _spec(path: Path) -> dict:
     if not isinstance(binary, str) or not Path(binary).is_absolute() or ".." in Path(binary).parts:
         raise ValueError("cs binary path must be canonical absolute")
     return value
+
+
+def _projection_binding(config: dict, manifest: dict) -> dict | None:
+    """Bind an exact-file Git projection to the original source manifest."""
+    if "projection_git_root" not in config:
+        return None
+    root = Path(config["projection_git_root"]).resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("projection Git root is not a directory")
+    try:
+        top = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"], timeout=30, text=True
+        ).strip()
+        revision = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "HEAD"], timeout=30, text=True
+        ).strip()
+        dirty = subprocess.check_output(
+            ["git", "-C", str(root), "status", "--porcelain"], timeout=30
+        )
+        tracked = subprocess.check_output(
+            ["git", "-C", str(root), "ls-files", "-z"], timeout=30
+        ).split(b"\0")[:-1]
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("projection Git repository inspection failed") from exc
+    if top != str(root) or dirty or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        raise ValueError("projection Git root, commit or clean state differs")
+    expected = {row["path"]: row["file_sha256"] for row in manifest["files"]}
+    if len(expected) != len(manifest["files"]):
+        raise ValueError("projection source manifest has duplicate paths")
+    try:
+        paths = [raw.decode("utf-8", "strict") for raw in tracked]
+    except UnicodeDecodeError as exc:
+        raise ValueError("projection Git path is not UTF-8") from exc
+    if len(paths) != len(set(paths)) or set(paths) != set(expected):
+        raise ValueError("projection tracked paths differ from the source manifest")
+    for path in paths:
+        file = root / path
+        if (
+            not lexical._canonical_result_path(path)
+            or not file.is_file()
+            or file.is_symlink()
+            or _sha_file(file) != expected[path]
+        ):
+            raise ValueError(f"projection file differs from source manifest: {path}")
+    # `git status` can hide skip-worktree or assume-unchanged content. Sourcegraph
+    # indexes the requested commit, so compare that commit's blobs directly.
+    process = subprocess.Popen(
+        ["git", "-C", str(root), "archive", "--format=tar", "HEAD"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    committed: set[str] = set()
+    try:
+        assert process.stdout is not None
+        with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+            for member in archive:
+                if member.isdir():
+                    continue
+                if not member.isfile() or member.name not in expected or member.name in committed:
+                    raise ValueError("projection commit tree has an unexpected file")
+                if member.size > MAX_INDEX_BYTES:
+                    raise ValueError("projection commit blob exceeds file bound")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise ValueError("projection commit blob cannot be read")
+                digest = hashlib.sha256()
+                with stream:
+                    while block := stream.read(1024 * 1024):
+                        digest.update(block)
+                if digest.hexdigest() != expected[member.name]:
+                    raise ValueError(f"projection commit blob differs: {member.name}")
+                committed.add(member.name)
+        if process.wait(timeout=30) != 0 or committed != set(expected):
+            raise ValueError("projection commit tree differs from source manifest")
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    return {
+        "source_revision": manifest["repository_commit"],
+        "projection_revision": revision,
+        "files_sha256": _sha(canonical_json(manifest["files"]).encode()),
+        "file_count": len(paths),
+    }
+
+
+def _sourcegraph_revision(config: dict, manifest: dict) -> str:
+    if "projection_git_root" in config:
+        revision = config.get("projection_revision")
+        if not isinstance(revision, str):
+            raise ValueError("Sourcegraph projection was not preflighted")
+        return revision
+    return manifest["repository_commit"]
 
 
 def _auth(config: dict, scheme: str) -> dict[str, str]:
@@ -301,7 +405,7 @@ def _sourcegraph(
     query = sourcegraph.query_expression(
         task["query"],
         config["repository"],
-        manifest["repository_commit"],
+        _sourcegraph_revision(config, manifest),
         file_extensions_filter=extensions,
     )
     status, content_type, raw, elapsed = _http(
@@ -355,11 +459,11 @@ def _sourcegraph_response(
     query = sourcegraph.query_expression(
         task["query"],
         config["repository"],
-        manifest["repository_commit"],
+        _sourcegraph_revision(config, manifest),
         file_extensions_filter=extensions,
     )
     request = {
-        "capture_version": 2,
+        "capture_version": 3 if "projection_git_root" in config else 2,
         "api_version": "V3",
         "endpoint": "/.api/search/stream",
         "query": task["query"],
@@ -367,17 +471,19 @@ def _sourcegraph_response(
         "file_filter_extensions": extensions,
         "request_query": query,
         "repository": config["repository"],
-        "revision": manifest["repository_commit"],
+        "revision": _sourcegraph_revision(config, manifest),
         "response_sha256": _sha(raw),
         "http_status": status,
         "content_type": content_type,
         "server_image_digest": config["server_image_digest"],
     }
+    if "projection_git_root" in config:
+        request["source_revision"] = manifest["repository_commit"]
     binding = {
         "proof_version": 1,
         "method": "input_manifest_postfiltered",
         "repository": config["repository"],
-        "revision": manifest["repository_commit"],
+        "revision": _sourcegraph_revision(config, manifest),
         "files": manifest["files"],
     }
     result = sourcegraph.validate_capture(request, raw, manifest, binding)
@@ -408,7 +514,7 @@ def _preflight_sourcegraph_request_targets(
         query = sourcegraph.query_expression(
             task["query"],
             config["repository"],
-            manifest["repository_commit"],
+            _sourcegraph_revision(config, manifest),
             file_extensions_filter=extensions,
         )
         target = "/.api/search/stream?" + urllib.parse.urlencode({"q": query, "v": "V3"})
@@ -882,6 +988,11 @@ def capture_cs_fuzzy(spec_path: Path) -> dict:
         Path(spec["suite"]),
         Path(spec["query_pack"]),
         Path(spec["cs"]["binary"]),
+        *(
+            (Path(spec["sourcegraph"]["projection_git_root"]),)
+            if "projection_git_root" in spec["sourcegraph"]
+            else ()
+        ),
     )
     if any(path.resolve().is_relative_to(checkout) for path in input_paths):
         raise ValueError("cs fuzzy inputs and output must stay outside the source checkout")
@@ -1343,6 +1454,17 @@ def capture(spec_path: Path) -> dict:
     files = {row["path"]: row["file_sha256"] for row in manifest["files"]}
     if set(files) != admitted:
         raise ValueError("live capture file universe differs from selected release")
+    projection = _projection_binding(spec["sourcegraph"], manifest)
+    if projection is not None:
+        projection_root = Path(spec["sourcegraph"]["projection_git_root"]).resolve(strict=True)
+        if (
+            projection_root.is_relative_to(release.resolve())
+            or projection_root.is_relative_to(root.resolve())
+            or release.resolve().is_relative_to(projection_root)
+            or root.resolve().is_relative_to(projection_root)
+        ):
+            raise ValueError("Sourcegraph projection root must be disjoint")
+        spec["sourcegraph"]["projection_revision"] = projection["projection_revision"]
     _, sourcegraph_max_request_target_bytes = _preflight_sourcegraph_request_targets(
         spec["sourcegraph"],
         pack["tasks"],
@@ -1362,6 +1484,8 @@ def capture(spec_path: Path) -> dict:
     _write(stage / "suite.json", suite_raw)
     _write(stage / "query-pack.json", pack_raw)
     _write(stage / "manifest.json", manifest_raw)
+    if projection is not None:
+        _write(stage / "sourcegraph-projection.json", canonical_json(projection).encode() + b"\n")
     backend_names = tuple(
         name for name in ("sourcegraph", "opengrok") if "backend_snapshot" in spec[name]
     )
@@ -1424,6 +1548,7 @@ def capture(spec_path: Path) -> dict:
         or _read_control_file(Path(spec["query_pack"])) != pack_raw
         or _sha_file(binary) != binary_sha
         or _source_hashes() != source_hashes
+        or _projection_binding(spec["sourcegraph"], manifest) != projection
     ):
         raise ValueError(
             "release, live spec, suite, pack, cs binary or producer source changed during capture"
@@ -1572,10 +1697,16 @@ def verify(root: Path) -> dict:
     if manifest_raw != _read_control_file(release / repository["views"][view_name]["manifest"]):
         raise ValueError("retained manifest differs from release")
     binding = corpus_binding._bind(document, manifest_raw, spec["corpus"], suite_raw, pack_raw)
+    manifest = _json(manifest_raw)
+    projection = _projection_binding(spec["sourcegraph"], manifest)
+    if projection is not None:
+        spec["sourcegraph"]["projection_revision"] = projection["projection_revision"]
+        if _json(_read_control_file(root / "sourcegraph-projection.json")) != projection:
+            raise ValueError("Sourcegraph projection differs from retained capture")
     _, sourcegraph_max_request_target_bytes = _preflight_sourcegraph_request_targets(
         spec["sourcegraph"],
         pack["tasks"],
-        _json(manifest_raw),
+        manifest,
     )
     if (
         canonical_json(binding) != canonical_json(_json(_read_control_file(root / "binding.json")))
@@ -1586,7 +1717,6 @@ def verify(root: Path) -> dict:
         != sourcegraph_max_request_target_bytes
     ):
         raise ValueError("external capture binding differs")
-    manifest = _json(manifest_raw)
     files = {row["path"]: row["file_sha256"] for row in manifest["files"]}
     view = release / "views" / spec["corpus"]["repository"] / view_name
     probe_indexed_view = spec["opengrok"].get("indexed_view_probe") == "full"
@@ -1630,6 +1760,7 @@ def verify(root: Path) -> dict:
         "suite.json",
         "query-pack.json",
         "manifest.json",
+        *(("sourcegraph-projection.json",) if projection is not None else ()),
         *(f"{name}_rows.jsonl" for name in lexical.PRODUCTS),
     }
     if (

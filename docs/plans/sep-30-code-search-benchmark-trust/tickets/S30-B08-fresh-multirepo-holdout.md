@@ -1033,7 +1033,7 @@ The route counts below were also recomputed directly from suite file gold
 `(path, file_sha256)` and both native records, independently of the report's
 aggregate. The complete per-repository and per-intent output is
 `/private/tmp/qi-b08-product-8e8592f4-20261003/partial-pair-summary.json`
-(SHA-256 `8e8406b8750da710135fc70b23224c0d687d7ee04c8dda379`).
+(SHA-256 `8e8406b8750da710135fc70c1164a6d4e6ec70b23224c0d687d7ee04c8dda379`).
 
 | Intent | Paired tasks | Quanta file Hit@10 | Semble file Hit@10 |
 | --- | ---: | ---: | ---: |
@@ -1473,6 +1473,56 @@ index-universe attestation, repository-cluster decision, quiet-host timing,
 and deployment. The separate exposed twelve-repository diagnostics above
 cannot be folded into this fresh set.
 
+## Fresh C5 mixed-language correction (2026-10-03)
+
+**VERIFIED for source-only amendment and split; still unqualified for quality.**
+The first C5 release used TypeScript declaration gold for all three JS/TS
+repositories, while `chartjs` has 659 JavaScript versus 85 TypeScript files
+and `svelte` has 3,447 JavaScript versus 86 TypeScript files in `code_only`.
+For example, `chartjs.def.020` names a TypeScript declaration in
+`src/types/index.d.ts` and JavaScript method implementations in two `src`
+files. An unscoped file-search request cannot treat those implementations as
+known irrelevant files. The benchmark owner now marks a declaration task
+`unjudged` when another supported language could contain a matching name;
+the mixed-language fixture and affected gold/C4 tests passed 117/117.
+
+Before C5 product capture, a source-only amendment at
+`/private/tmp/qi-c5-fresh-20261003-v5/amendment.json` froze the rule: choose
+each JS/TS repository's declaration language by the larger admitted extension
+count, with a deterministic tie break. This changes `chartjs` and `svelte` to
+JavaScript and leaves `immer` as TypeScript. The twelve repositories, commits,
+11,695 `code_only` files, and both materialized views remain unchanged. Clean
+`7e942bb0` produced the replacement release at
+`/private/tmp/qi-c5-fresh-20261003-v5/combined-release`, digest
+`sha256:2ec04aa364c573854dfeb7545144b658219f66b44e64ba05f42198dac32a58f2`.
+Its release creation and independent replay passed. The old release and
+terminated pre-amendment gold attempt remain separate evidence; no old values
+were overwritten.
+
+The same seed/profile generated 6,628 tasks in `sampling-v5`, with the same
+lane totals and the prior eight OSA1 and 240 natural-language/workflow
+underfills. The ten repositories whose language did not change retained all
+non-wrong-repository tasks. The negative candidate pool depends on the other
+repositories' declared names; only `immer` changed five such task queries.
+The 22-repository split, release identity, source bytes and leakage policy
+replayed successfully in 807.031 seconds. Receipt:
+`/private/tmp/qi-c5-fresh-20261003-v5/split-validation.json`.
+
+An independent Rust census refusal audit found that 287 of the 298 refused
+`rust-analyzer` files are under parser `test_data`; eleven are other source or
+utility files. Both checker and tree-sitter refuse some intentionally invalid
+fixtures. Ten non-`test_data` files were refused only by tree-sitter; observed
+error sites include `dyn` lifetime ordering and macro token patterns. The
+exact grammar-version cause is unverified. These remain explicit `unsupported` source
+coverage, never negative gold. Details:
+`/private/tmp/qi-c5-fresh-20261003-v5/rust-census-refusal-classes.json`.
+
+**IN_PROGRESS:** source gold capture from the replacement release and exact
+source. **NOT_RUN:** C5 product search, human review, external index-universe
+attestation, repository-cluster decision and quiet-host performance. Source
+text overlap in the three JS/TS repositories is a conservative unjudged bound,
+not a count of independently reviewed relevant files.
+
 ## Scale admission receipt audit and literal split digest correction (2026-10-03)
 
 An independent read-only join of the exposed scale ledger, all twelve recipes,
@@ -1504,3 +1554,159 @@ product capture, relevance review and scale quality decision. The initial
 `zip(strict=True)` is unsupported there; the subsequent `python -m pytest`
 attempt encountered a host pytest plugin mismatch. Neither failure is a
 product-test result; the project `.venv` uses Python 3.12 and passed.
+
+## Diagnostic ranking boundary audit (2026-10-03)
+
+The exposed twelve-repository pair receipts were rejoined read-only from each
+source-bound suite's `(path, file_sha256)` judgments and both native records.
+The independently recomputed task-level Hit@10 bits sum to the frozen counts:
+
+| Request and intent | Paired positive tasks | Quanta Hit@10 | Semble Hit@10 |
+| --- | ---: | ---: | ---: |
+| Default file, exact declaration name | 1,132 | 1,108 | 1,111 |
+| Default file, prefix | 77 | 73 | 48 |
+| Default file, infix | 74 | 73 | 29 |
+| Components file, component name | 71 | 67 | 69 |
+| Ordinary-input file, OSA1 typo | 4,206 | 112 | 3,053 |
+
+Quanta's **explicit** OSA1 request separately reached 4,146/4,206; it is a
+different request policy and is not substituted into the ordinary-input row.
+The newer exposed scale suites have at least 1,000 admitted tasks per sampled
+mechanical lane, but no corresponding product records. These tables cannot be
+promoted to a scale ranking or a C5 decision.
+
+The existing Gin five-product comparison remains the separate, source-exposed
+99-file diagnostic in S30-B04. Its five lane summaries and original native
+rows were independently rejoined for file Hit@10 on the common eligible task
+IDs; all five products' counts match that report. Sourcegraph and OpenGrok
+have no request-time indexed-universe attestation. At this audit, their local
+service ports 17080/17081 and 7080/7081 were closed, and Docker's daemon was
+unavailable. The preserved service state is Gin-specific, not a twelve-repo
+index. **BLOCKED:** a fresh five-product scale comparison. **NOT_RUN:** fresh
+scale Quanta/Semble capture, human-reviewed relevance, and C5 product decision.
+
+## Typed component route: four-case product diagnostic (2026-10-03)
+
+At build source `b1356784`, the producer publishes an explicit
+`raw_ascii_local_name_v1` source policy. Ingest checks every emitted ASCII
+local name against its definition bytes. For incomplete symbol coverage, the
+component route excludes a file only when its committed source lacks a
+requested component; otherwise it returns `SymbolCoverageIncomplete`. Sealed
+lexical manifest format 12 forces format-11 generations to be rebuilt.
+
+The four original `code_search_file` misses were rerun as a **different,
+explicit** `code_search_components_file` request over the same pinned corpus
+commits and unchanged mechanical gold. New suites and blind packs retained only
+those four task IDs. The binaries, inputs, original rows, new records and
+evaluation reports are joined in
+`/private/tmp/qi-component-actual-kYGykT/verification.json`; the CLI and
+Zellij successful retries are under `/private/tmp/qi-component-retry-9doaxN`.
+
+| Task | New gold-file rank | New file | Query call |
+| --- | ---: | --- | ---: |
+| `cli.com.002` | 1 | `pkg/cmd/extension/extension_test.go` | 15.564 ms |
+| `mocha.com.006` | 1 | `lib/reporters/base.js` | 11.770 ms |
+| `zellij.com.004` | 1 | `zellij-utils/src/web_server_commands.rs` | 59.784 ms |
+| `zellij.com.005` | 1 | `zellij-utils/src/lib.rs` | 22.784 ms |
+
+All four records have `success`, `distinct_file`, `score_desc_path_tiebreak`
+and native score evidence. `evaluate-diagnostic` replayed 4/4 Hit@10 and
+MRR@10 = 1. The original requests remain `capped` ten-file misses; this is
+contract-specific recovery, not a revision of those frozen scores. CLI and
+Zellij first attempts reached publish but timed out at the 180-second IPC
+read limit before producing any query record. Fresh-root retries completed
+with larger limits: publish/activate took 168.986 s (CLI), 45.620 s (Mocha)
+and 306.428 s (Zellij) on a heavily contended host. Those timings do not
+qualify a performance comparison.
+
+**VERIFIED:** contract source-name positive/negative test 1/1, lexical exact
+source integration 22/22, manifest format rejection 1/1, and three fresh
+SDK-to-daemon captures with four evaluated queries. **NOT_RUN:** full C4
+recapture and C5 qualification. Gold remains mechanical and unreviewed;
+product quality, external indexed-universe equivalence and a speed ranking
+remain unqualified.
+
+## Exposed ordinary-input typo pair completion (2026-10-03)
+
+The source-bound `12fe7d9f` pair finished all twelve previously exposed
+repositories. The independent raw-row join at
+`/private/tmp/qi-default-auto-12fe-20261003/new-default-pair-summary.json`
+has SHA-256 `9d2a36ee8111c91bd2f4421b2a23033db36c71b429540fbaa6e2e7e397d47934`.
+It checks all 4,206 selected task IDs, source file hashes, distinct-file rank
+units, native records, report scores and the separate explicit-typo capture.
+The frozen projection manifest SHA-256 is
+`a4b6a37cf269beb6de2537d68215f616910562e547c1688c6b0dcdecc1179bef`.
+
+| Request | File Hit@10 | MRR@10 | NDCG@10 | Native status |
+| --- | ---: | ---: | ---: | --- |
+| Quanta ordinary input | 4,137/4,206 | 0.8739 | 0.8996 | 3,978 success; 228 capped |
+| Semble lexical-file | 3,053/4,206 | 0.5051 | 0.5551 | 3,769 success; 437 abstained |
+| Quanta explicit `typo:` | 4,146/4,206 | separate capture | separate capture | separate request policy |
+
+Quanta ordinary input and explicit typo both hit 4,135 tasks; ordinary input
+alone hit two, explicit typo alone hit eleven, and both missed 58. Of the 69
+ordinary-input misses, 58 were `capped` and eleven `success`. Those 69 variant
+tasks belong to 29 repository/name families, not 69 independent examples. The earlier
+112/4,206 ordinary-input observation used the pre-fallback source and must not
+be mixed with this capture. The new default route falls back to bounded OSA1
+only when a folded, unscoped, bare identifier produces no literal file result;
+existing literal matches retain their rank and can still crowd out the
+intended declaration. These exposed examples are diagnosis, not tuning gold.
+
+The sequential pair wall sum was 13,634.471 seconds excluding the separately
+preverified `lo` row; `zellij` alone took 3,304.835 seconds. This includes
+indexing, capture and source replay, and is not per-query latency. The frozen
+source used an unanchored one-edit textual-exclusion regex during source
+validation. Commit `5b1cf2f2` later bounded that search to possible start
+positions; its focused parity tests and source-bound 1,336-exclusion audit
+passed, but this frozen pair did not execute that later code.
+
+**VERIFIED:** 12/12 pair receipts and independent joined counts.
+**NOT_RUN:** fresh C5 product capture, subjective relevance review, matched
+five-product index attestation, and qualified product-default decision.
+
+## Fresh C5 gold and Sourcegraph projection boundary (2026-10-03)
+
+The corrected twelve-repository C5 release (`sha256:2ec04aa3…`) produced
+12/12 source-derived gold capsules at
+`/private/tmp/qi-c5-fresh-20261003-v6/gold-v6`. The exact clean producer was
+`dd86ec99`; the receipt is `gold-capture-receipt.json` in the same external
+root. It records a 1,152.116-second wall and binds the unchanged sampling
+ledger, split manifest, both releases and producer file hashes. The prior v5
+attempt failed at the generic 16 MiB control-document limit because
+`rust-analyzer/gold.json` was 28,375,487 bytes. The role-scoped 32 MiB gold
+bound in `4301e3cc` admits that document without raising the limit for other
+control JSON; the published v6 document is 28,375,781 bytes. C4 suite
+admission is running under that same frozen source and has not published an
+output or result yet.
+
+An independent count of the twelve published `gold.json` task arrays gives
+6,628 distinct IDs: 5,262 `mechanical_unreviewed` and 1,366 `unjudged`.
+Unsupported source coverage caused all 1,366 unjudged rows; 821 task rows
+contain `other_language_possible_declaration`, 692 contain `census_refused`,
+and 147 contain both. These are exclusion candidates for C4 admission, not
+search misses. The final selected denominator awaits C4's source replay.
+
+The frozen release's 11,695 `code_only` files were independently projected into
+twelve new Git repositories at
+`/private/tmp/qi-c5-comparators-20261003-v1/repos`. The projection receipt
+`projections.json` has SHA-256
+`d837b25e4baa93c965ee151386395e720ed8a48b12ef9a96b199d3be1fe05380`.
+Each repository's tracked path and SHA-256 set matches its release manifest;
+the projection commits are distinct from the original repository commits.
+The same exact-file views were copied to an isolated OpenGrok source root at
+`/private/tmp/qi-c5-comparators-20261003-v1/opengrok-src`; its source receipt
+has SHA-256
+`66421616d5d6f5112ded029b00dbc46ecdf9977167763d312d774de42aaf1ca9`.
+Sourcegraph capture previously submitted the original `rev:` even for a
+projection, which cannot identify that projection commit. Commits `7c7c66c6`,
+`d99ee9c6` and `a6370967` add separate source/service revision binding,
+replay checks, and committed-blob validation. The Sourcegraph adapter's 37
+focused tests pass, including a Git `skip-worktree` counterexample.
+
+**VERIFIED:** 12 gold capsules and both exact-file input projections; Sourcegraph
+revision contract and focused tests. **NOT_RUN:** a new Sourcegraph or
+OpenGrok service index, request-time indexed-universe attestation, fresh C5
+product queries, independent relevance approval, qualified product comparison
+and performance measurement. A Git projection is input evidence, not proof
+that a service indexed every file.
