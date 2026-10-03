@@ -228,6 +228,7 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
     gold_path = write(tmp_path / "gold.json", {
         "status": "captured", "capsule_count": 12, "source_head": "driver",
         "dependency_versions": {"parser": "pinned"},
+        "python_executable": "/pinned/python",
         "pyproject_sha256": "project", "uv_lock_sha256": "lock",
         "identity_sha256": {repo: row["identity_sha256"] for repo, row in sources.items()},
     })
@@ -250,11 +251,12 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
     })
     prepared = {
         "source_commit": "driver", "driver_source_sha": "driver",
+        "driver_python": "/pinned/python",
         "parser_dependency_versions": {"parser": "pinned"},
         "pyproject_sha256": "project", "uv_lock_sha256": "lock",
         "gold_receipt_sha256": fresh.sha(gold_path),
         "projection_receipt_sha256": fresh.sha(projection_path),
-        "projector_overlay_sha256": "overlay",
+        "projector_overlay_sha256": "overlay", "projector_source_commit": "projector",
         "binary_build_source_sha": "binary", "driver_python_sha256": "python",
     }
     manifest = {
@@ -268,6 +270,8 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         "gold_producer_runtime": {
             "receipt_sha256": fresh.sha(gold_path), "source_head": "driver",
             "dependency_versions": {"parser": "pinned"},
+            "python_executable": "/pinned/python", "python_executable_sha256": "python",
+            "pyproject_sha256": "project", "uv_lock_sha256": "lock",
         },
         "suite_projector_source": {
             "base_head": "driver", "commit": "projector", "overlay_sha256": "overlay",

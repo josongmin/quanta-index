@@ -302,7 +302,7 @@ pub struct ScopedFile {
 
 /// Planted query token unique to one generated source repository.
 pub fn repo_query_token(repo_index: u32) -> String {
-    format!("scalereponeedle{repo_index}")
+    format!("scalereponeedle{repo_index:03}")
 }
 
 /// Reuse the seeded file generator while assigning real source-repository
@@ -361,10 +361,11 @@ impl ScopedOracle {
                 .and_then(|suffix| suffix.parse::<u32>().ok())
                 .filter(|index| *index < params.repo_count)
                 .ok_or_else(|| anyhow::anyhow!("scale: invalid source repo ID"))?;
+            let repo_anchor = format!("// {} anchor", repo_query_token(repo_index));
             if !file.repo_relative_path.starts_with("src/")
                 || file.repo_relative_path.contains("..")
                 || !file.content.contains(SCALE_QUERY_TOKEN)
-                || !file.content.contains(&repo_query_token(repo_index))
+                || !file.content.lines().any(|line| line == repo_anchor)
             {
                 return Err(anyhow::anyhow!(
                     "scale: invalid planted source for {}/{}",
@@ -384,10 +385,13 @@ impl ScopedOracle {
             }
         }
         let expected_files_per_repo = usize::try_from(params.files_per_repo)?;
+        let expected_paths = (0..params.files_per_repo)
+            .map(|index| format!("src/file_{index}.rs"))
+            .collect::<BTreeSet<_>>();
         if paths_by_repo.len() != usize::try_from(params.repo_count)?
             || paths_by_repo
                 .values()
-                .any(|paths| paths.len() != expected_files_per_repo)
+                .any(|paths| paths.len() != expected_files_per_repo || paths != &expected_paths)
         {
             return Err(anyhow::anyhow!(
                 "scale: source repository/file counts differ from the tier manifest"
@@ -831,6 +835,22 @@ fn validate_scoped_response(
     oracle.verify_page(source_repo_id, &result.candidates)
 }
 
+fn verify_scoped_repositories(rt: &mut E2eRuntime, oracle: &ScopedOracle) -> AnyResult<()> {
+    for source_repo_id in oracle.paths_by_repo.keys() {
+        let repo_index = source_repo_id
+            .strip_prefix("repo")
+            .and_then(|suffix| suffix.parse::<u32>().ok())
+            .ok_or_else(|| anyhow::anyhow!("scale: malformed source repo oracle"))?;
+        let response = rt.query_text(
+            TextQuerySyntax::Native,
+            &repo_query_token(repo_index),
+            SCALE_TOP_K,
+        );
+        validate_scoped_response(oracle, Some(source_repo_id), &response)?;
+    }
+    Ok(())
+}
+
 /// Open the sealed generation the daemon serves through the lexical
 /// adapter in-process and time open, plan and execute on their own.
 fn measure_adapter_phases(
@@ -1129,24 +1149,16 @@ pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
 
     // The global top-10 can be dominated by one source repo. These independent
     // probes prove that every declared repo's source files reached the index.
-    for source_repo_id in oracle.paths_by_repo.keys() {
-        let repo_index = source_repo_id
-            .strip_prefix("repo")
-            .and_then(|suffix| suffix.parse::<u32>().ok())
-            .ok_or_else(|| anyhow::anyhow!("scale: malformed source repo oracle"))?;
-        let response = rt.query_text(
-            TextQuerySyntax::Native,
-            &repo_query_token(repo_index),
-            SCALE_TOP_K,
-        );
-        validate_scoped_response(&oracle, Some(source_repo_id), &response)?;
-    }
+    verify_scoped_repositories(&mut rt, &oracle)?;
 
     let adapter = measure_adapter_phases(&rt, Some(&oracle))?;
     let delta_file = files
         .first()
         .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
     let delta = measure_scoped_delta(&mut rt, delta_file)?;
+    let after_delta = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
+    validate_scoped_response(&oracle, None, &after_delta)?;
+    verify_scoped_repositories(&mut rt, &oracle)?;
     Ok(TierMeasurement {
         tier,
         seed,
@@ -1556,6 +1568,10 @@ mod tests {
         let mut absent = files;
         let _removed = absent.pop();
         assert!(ScopedOracle::from_source(&absent, ScaleTier::Medium).is_err());
+
+        let mut wrong_path = generate_scoped_corpus(ScaleTier::Medium, 7).expect("seeded fixture");
+        wrong_path[0].repo_relative_path = "src/other.rs".to_string();
+        assert!(ScopedOracle::from_source(&wrong_path, ScaleTier::Medium).is_err());
     }
 
     #[test]

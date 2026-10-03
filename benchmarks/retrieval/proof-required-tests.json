@@ -202,6 +202,8 @@
     "tools.ci.tests.test_retrieval_benchmark.test_current_same_candidates_identical_scores_regardless_of_runner",
     "tools.ci.tests.test_retrieval_benchmark.test_current_typed_failures_score_zero_and_are_counted",
     "tools.ci.tests.test_retrieval_benchmark.test_current_unsafe_candidate_path_rejected",
+    "tools.ci.tests.test_retrieval_benchmark.test_current_v7_diagnostic_replays_native_file_or_chunk_projection[None]",
+    "tools.ci.tests.test_retrieval_benchmark.test_current_v7_diagnostic_replays_native_file_or_chunk_projection[distinct_file]",
     "tools.ci.tests.test_retrieval_benchmark.test_current_v7_pair_replays_nested_indexing_stages_and_phase_contract",
     "tools.ci.tests.test_retrieval_benchmark.test_darwin_power_fingerprint_excludes_battery_observation",
     "tools.ci.tests.test_retrieval_benchmark.test_darwin_thermal_limits_and_frequency_fail_closed",

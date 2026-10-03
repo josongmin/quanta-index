@@ -216,6 +216,15 @@ def _source_admission(
         == gold.get("source_head")
         and manifest.get("gold_producer_runtime", {}).get("dependency_versions")
         == gold.get("dependency_versions")
+        and manifest.get("gold_producer_runtime", {}).get("python_executable")
+        == gold.get("python_executable")
+        == prepared.get("driver_python")
+        and manifest.get("gold_producer_runtime", {}).get("python_executable_sha256")
+        == prepared.get("driver_python_sha256")
+        and manifest.get("gold_producer_runtime", {}).get("pyproject_sha256")
+        == gold.get("pyproject_sha256")
+        and manifest.get("gold_producer_runtime", {}).get("uv_lock_sha256")
+        == gold.get("uv_lock_sha256")
         and manifest.get("suite_projector_source", {}).get("base_head")
         == projection.get("source_base_head")
         and manifest.get("suite_projector_source", {}).get("commit")
@@ -234,7 +243,9 @@ def _source_admission(
         and prepared.get("gold_receipt_sha256") == sha(gold_receipt_path)
         and prepared.get("projection_receipt_sha256") == sha(projection_receipt_path)
         and prepared.get("projector_overlay_sha256")
-        == projection.get("projector_overlay_sha256"),
+        == projection.get("projector_overlay_sha256")
+        and prepared.get("projector_source_commit")
+        == projection.get("projector_source_commit"),
         "global gold, matrix, projection, or native preparation differs",
     )
     selected = [row for row in authority["cells"] if row["intent"] == INTENT]

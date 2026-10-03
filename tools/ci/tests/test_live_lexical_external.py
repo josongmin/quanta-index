@@ -1150,14 +1150,16 @@ class SearchHandler(BaseHTTPRequestHandler):
         "backend_changes_during_queries",
         "use_bound_release",
         "use_index_scope",
+        "scope_changes_during_queries",
     ),
     [
-        (False, False, False, False, False),
-        (False, False, False, True, False),
-        (True, False, False, False, False),
-        (False, True, False, False, False),
-        (False, False, True, False, False),
-        (False, False, False, True, True),
+        (False, False, False, False, False, False),
+        (False, False, False, True, False, False),
+        (True, False, False, False, False, False),
+        (False, True, False, False, False, False),
+        (False, False, True, False, False, False),
+        (False, False, False, True, True, False),
+        (False, False, False, False, True, True),
     ],
 )
 def test_live_capture_makes_three_product_requests_and_retains_raw(
@@ -1168,6 +1170,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     backend_changes_during_queries,
     use_bound_release,
     use_index_scope,
+    scope_changes_during_queries,
     monkeypatch,
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
@@ -1307,6 +1310,10 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
                 release_digest=json.loads((release / "release.json").read_bytes())["digest"],
             )
             spec["sourcegraph"]["indexed_scope_receipt"] = str(receipt)
+            if scope_changes_during_queries:
+                SearchHandler.backend_mutation_path = (
+                    tmp_path / "native-audit/native-file-bodies/fixture/src/0.go"
+                )
         spec_path = tmp_path / "live-spec.json"
         spec_path.write_text(json.dumps(spec))
         if index_changes_during_queries:
@@ -1316,6 +1323,9 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
                 live.capture(spec_path)
         elif backend_changes_during_queries:
             with pytest.raises(ValueError, match="backend process, mount or index changed"):
+                live.capture(spec_path)
+        elif scope_changes_during_queries:
+            with pytest.raises(ValueError, match="stored bytes differ"):
                 live.capture(spec_path)
         else:
             if use_bound_release:
@@ -1352,6 +1362,10 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         before = json.loads((stage / "backend/sourcegraph-before.json").read_bytes())
         after = json.loads((stage / "backend/sourcegraph-after.json").read_bytes())
         assert before["tree_sha256"] != after["tree_sha256"]
+        return
+    if scope_changes_during_queries:
+        assert not Path(spec["output_root"]).exists()
+        assert Path(spec["output_root"] + ".staging/sourcegraph-index-scope.json").exists()
         return
     assert result["indexed_universe_attested"] is False
     assert result["opengrok_indexed_universe_attested"] is False
