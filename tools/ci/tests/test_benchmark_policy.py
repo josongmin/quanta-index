@@ -133,6 +133,7 @@ def test_execution_regressions_are_registered_to_the_real_owner_scope():
         ("test_clarc_adapter.py", "retrieval/clarc_adapter.py", True),
         ("test_external_snippet_benchmark.py", "retrieval/external_snippet_benchmark.py", True),
         ("test_holdout_c4_projection.py", "retrieval/holdout_c4.py", True),
+        ("test_identifier_robustness_fresh_join.py", "retrieval/identifier_robustness_fresh_join.py", True),
         (
             "test_identifier_robustness_multiproduct_report.py",
             "retrieval/identifier_robustness_multiproduct_report.py",
@@ -168,6 +169,7 @@ def test_execution_regression_owners_have_nonempty_live_collection(tmp_path):
         "test_clarc_adapter.py",
         "test_external_snippet_benchmark.py",
         "test_holdout_c4_projection.py",
+        "test_identifier_robustness_fresh_join.py",
         "test_identifier_robustness_multiproduct_report.py",
         "test_identifier_robustness_strata.py",
     )

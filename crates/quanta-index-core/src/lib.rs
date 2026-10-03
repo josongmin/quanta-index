@@ -15,7 +15,8 @@ pub mod request_budget;
 pub mod timeref;
 
 pub use domains::lexical::{
-    CodeSearchExecutionStatsV1, CodeSearchRankStudyV1, CodeSearchScoreComponentsV1,
+    CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, CodeSearchRankStudyV1,
+    CodeSearchScoreComponentsV1,
     LexicalCollectionBudget, LexicalEndpoint, LexicalMemoryReservation, LexicalPlanKind,
     ValidatedLexicalPlan, require_complete_symbol_coverage,
 };

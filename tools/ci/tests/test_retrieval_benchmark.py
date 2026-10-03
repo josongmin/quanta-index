@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +35,60 @@ from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci import source_closure
 from tools.ci.tests.test_portable_proof import proof_actor_environment as proof_actor_environment
+
+
+def _clean_host_timeline_fixture():
+    host = {
+        "system": "Darwin", "release": "test", "machine": "arm64",
+        "processor": "cpu", "cpu_count": 8, "python": "3.11", "rustc": "test",
+        "concurrent_processes": {"none": []}, "contention_override": False,
+        "thermal": {"status": "clean"}, "frequency": {"status": "bounded"},
+        "power": {"status": "bounded", "digest": "a" * 64},
+    }
+    profile = {"fingerprint": pairrun._host_fingerprint(host)}
+    payload = {
+        "schema_version": 1, "interval_ns": 5_000_000_000,
+        "started_ns": 100, "finished_ns": 10_000_000_100,
+        "samples": [
+            {"started_ns": ns, "finished_ns": ns + 10, "probe": copy.deepcopy(host)}
+            for ns in (100, 5_000_000_100, 10_000_000_090)
+        ],
+        "errors": [],
+    }
+    return payload, profile
+
+
+def test_host_timeline_rejects_middle_contention_and_identity_drift():
+    payload, profile = _clean_host_timeline_fixture()
+    pairrun.validate_host_timeline(payload, profile)
+    for field, value in (
+        ("concurrent_processes", {"rustc": [123]}),
+        ("thermal", {"status": "unavailable"}),
+        ("machine", "different-host"),
+    ):
+        changed = copy.deepcopy(payload)
+        changed["samples"][1]["probe"][field] = value
+        with pytest.raises(pairrun.RunError, match="host timeline.*unclean"):
+            pairrun.validate_host_timeline(changed, profile)
+
+
+@pytest.mark.parametrize("mutation", ["gap", "error", "empty", "unordered", "bool", "unknown"])
+def test_host_timeline_rejects_missing_or_malformed_observations(mutation):
+    payload, profile = _clean_host_timeline_fixture()
+    if mutation == "gap":
+        payload["finished_ns"] = 50_000_000_100
+    elif mutation == "error":
+        payload["errors"] = ["probe failed"]
+    elif mutation == "empty":
+        payload["samples"] = []
+    elif mutation == "unordered":
+        payload["samples"].reverse()
+    elif mutation == "bool":
+        payload["samples"][1]["started_ns"] = True
+    else:
+        payload["unsupported"] = True
+    with pytest.raises(pairrun.RunError, match="host timeline"):
+        pairrun.validate_host_timeline(payload, profile)
 
 
 def _current_symbol_metrics(metrics):

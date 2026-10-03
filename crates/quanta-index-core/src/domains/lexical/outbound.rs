@@ -224,12 +224,24 @@ pub struct LexicalSearchPageV1<Candidate = LexicalCandidate> {
     pub code_search_stats: Option<CodeSearchExecutionStatsV1>,
 }
 
-/// Counts from one successful exhaustive ordinary `CodeSearch` page.
+/// Execution mode of one successful CodeSearch file page.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CodeSearchExecutionModeV1 {
+    #[default]
+    Ordinary,
+    TypoExplicit,
+    TypoFallback,
+    Components,
+}
+
+/// Work and monotonic stage durations from one successful CodeSearch page.
 ///
 /// Verification attempts may revisit a rejected file through content/path
-/// postings. They are work counts, not the size of a distinct candidate set.
+/// postings. These are work counts, not the size of a distinct candidate set.
+/// Failed/cancelled requests do not return a page and have no success stats.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CodeSearchExecutionStatsV1 {
+    pub mode: CodeSearchExecutionModeV1,
     /// False for exact-path and regex-only plans; their zero literal counts
     /// describe no prefilter work, not a proof of no literal matches.
     pub literal_prefilter_executed: bool,
@@ -239,6 +251,23 @@ pub struct CodeSearchExecutionStatsV1 {
     pub verified_matching_files: u64,
     pub cursor_eligible_files: u64,
     pub fetched_files: u64,
+    /// Seed posting IDs examined before source verification. The value is
+    /// zero when no posting prefilter ran; it is not a distinct-file count.
+    pub posting_seed_docs_examined: u64,
+    /// Total surface lengths passed to source verification, including repeat
+    /// attempts and term multiplicity. This is an input-size proxy, not bytes
+    /// actually read by the CPU or storage layer.
+    pub source_surface_bytes_considered: u64,
+    /// Distinct OSA token distance calculations after request-local memoization.
+    pub typo_token_comparisons: u64,
+    pub materialized_files: u64,
+    pub preview_attempted_files: u64,
+    /// Candidate generation and verification through building unsorted rows.
+    pub candidate_ns: u64,
+    /// Sorting, cursor filtering, and page truncation.
+    pub sort_page_ns: u64,
+    /// Selected-page preview construction only.
+    pub preview_ns: u64,
 }
 
 /// Symbol pages carry the same count authority as text pages.

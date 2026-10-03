@@ -493,6 +493,58 @@ fn served_query(rt: &mut E2eRuntime) -> AnyResult<usize> {
     Ok(result.candidates.len())
 }
 
+/// Every generated small-tier file carries the planted term. The expected
+/// bounded result count comes from those source bytes, not a prior search.
+fn expected_small_result_count(corpus: &[(String, String)]) -> AnyResult<usize> {
+    if corpus.is_empty()
+        || corpus
+            .iter()
+            .any(|(_, content)| !content.contains(SCALE_QUERY_TOKEN))
+    {
+        return Err(anyhow::anyhow!(
+            "scale: the small-tier source fixture lacks its planted query in a file"
+        ));
+    }
+    Ok(corpus.len().min(usize::try_from(SCALE_TOP_K)?))
+}
+
+fn require_result_count(observed: usize, expected: usize, phase: &str) -> AnyResult<()> {
+    if observed != expected {
+        return Err(anyhow::anyhow!(
+            "scale: {phase} returned {observed} candidates, source oracle requires {expected}"
+        ));
+    }
+    Ok(())
+}
+
+/// Keep the socket-query clock free of validation work while refusing any
+/// measured response whose count differs from the planted source oracle.
+fn collect_warm_samples(
+    expected: usize,
+    sample_count: usize,
+    mut query: impl FnMut() -> AnyResult<usize>,
+) -> AnyResult<Vec<f64>> {
+    let mut samples_ms = Vec::with_capacity(sample_count);
+    for sample_index in 0..sample_count {
+        let started = Instant::now();
+        let observed = query().map_err(|err| {
+            anyhow::anyhow!(
+                "scale: warm query sample {}/{} failed: {err}",
+                sample_index + 1,
+                sample_count
+            )
+        })?;
+        let elapsed = elapsed_ms(started);
+        require_result_count(
+            observed,
+            expected,
+            &format!("warm query sample {}/{}", sample_index + 1, sample_count),
+        )?;
+        samples_ms.push(elapsed);
+    }
+    Ok(samples_ms)
+}
+
 /// Open the sealed generation the daemon serves through the lexical
 /// adapter in-process and time open, plan and execute on their own.
 fn measure_adapter_phases(rt: &E2eRuntime) -> AnyResult<AdapterPhaseTimingV1> {
@@ -581,6 +633,7 @@ fn measure_delta(rt: &mut E2eRuntime, seed: u64) -> AnyResult<DeltaMeasurementV1
 /// fabricated phase time.
 pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
     let corpus = generate_corpus(ScaleTier::Small, seed);
+    let expected_results = expected_small_result_count(&corpus)?;
     let file_count = corpus.len();
     let corpus_bytes = corpus
         .iter()
@@ -609,6 +662,7 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
     let first_started = Instant::now();
     let result_count = served_query(&mut rt)?;
     let first_query_ms = elapsed_ms(first_started);
+    require_result_count(result_count, expected_results, "first query")?;
     let scrape_after_first = rt.metrics_snapshot()?;
     let cold_open_ms = histogram_window(
         &scrape_before_first,
@@ -623,12 +677,9 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
         1,
     )?;
 
-    let mut warm_samples = Vec::with_capacity(WARM_QUERY_SAMPLES);
-    for _ in 0..WARM_QUERY_SAMPLES {
-        let started = Instant::now();
-        let _count = served_query(&mut rt)?;
-        warm_samples.push(elapsed_ms(started));
-    }
+    let warm_samples = collect_warm_samples(expected_results, WARM_QUERY_SAMPLES, || {
+        served_query(&mut rt)
+    })?;
     let scrape_after_warm = rt.metrics_snapshot()?;
     let warm_route_total_ms = histogram_window(
         &scrape_after_first,
@@ -971,6 +1022,43 @@ mod tests {
         let count_before = paths.len();
         paths.dedup();
         assert_eq!(count_before, paths.len(), "generated paths must be unique");
+    }
+
+    #[test]
+    fn small_tier_count_is_source_derived_and_every_measured_response_must_match() {
+        let corpus = generate_corpus(ScaleTier::Small, 5);
+        let expected =
+            expected_small_result_count(&corpus).expect("all source files have the term");
+        assert_eq!(
+            expected, 10,
+            "16 matching source files are capped by top_k=10"
+        );
+        let mut invalid_corpus = corpus;
+        invalid_corpus[0].1 = invalid_corpus[0].1.replace(SCALE_QUERY_TOKEN, "absent");
+        assert!(
+            expected_small_result_count(&invalid_corpus).is_err(),
+            "an incomplete planted source fixture must be rejected"
+        );
+
+        let mut calls = 0;
+        let samples = collect_warm_samples(expected, 2, || {
+            calls += 1;
+            Ok(expected)
+        })
+        .expect("two complete pages");
+        assert_eq!(samples.len(), 2);
+        assert_eq!(calls, 2);
+
+        calls = 0;
+        let error = collect_warm_samples(expected, 3, || {
+            calls += 1;
+            Ok(if calls == 2 { expected - 1 } else { expected })
+        })
+        .expect_err("a partial second page must stop aggregation");
+        assert_eq!(calls, 2, "the third query must not be measured");
+        let message = error.to_string();
+        assert!(message.contains("warm query sample 2/3"), "{message}");
+        assert!(message.contains("returned 9 candidates"), "{message}");
     }
 
     #[test]

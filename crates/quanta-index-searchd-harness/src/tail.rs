@@ -15,9 +15,9 @@
 //!   off it. Each row carries route-local diagnostic metadata (sample count,
 //!   candidate count, scenario id) sufficient to explain a tail cliff;
 //! - a **two-layer verdict** that keeps the blocking and advisory signals
-//!   separate. The BLOCKING layer is correctness: every measured route must
-//!   golden-validate (correct shape / count / typed-error) before it is timed —
-//!   a route that errors or returns the wrong result is a rail failure, never a
+//!   separate. The BLOCKING layer is correctness: every measured response must
+//!   golden-validate (correct shape / count / typed-error) after its timer stops.
+//!   A route that errors or returns the wrong result is a rail failure, never a
 //!   fast-but-wrong "pass". The latency layer is, in this first increment,
 //!   ADVISORY on this host: the macbook wall-clock is variance-prone, so p50 is
 //!   compared as the blocking-candidate signal and p95/p99 as explicit advisory
@@ -172,6 +172,34 @@ fn representative_scenario(route: RouteFamily) -> Option<&'static DslBenchScenar
         .find(|scenario| scenario.route_family == route)
 }
 
+/// Measure only responses that satisfy the scenario's independent golden truth.
+/// Validation runs after the timer stops so the latency boundary stays unchanged.
+fn collect_timed_samples(
+    scenario: &DslBenchScenario,
+    route: RouteFamily,
+    sample_count: usize,
+    mut query: impl FnMut() -> QueryOutcome,
+) -> AnyResult<Vec<f64>> {
+    let mut samples_ms = Vec::with_capacity(sample_count);
+    for sample_index in 0..sample_count {
+        let started = Instant::now();
+        let outcome = query();
+        let latency_ms = elapsed_ms(started);
+        validate_scenario_outcome(scenario, ScenarioTruthMode::SharedWarmFixture, &outcome)
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "tail: route `{}` scenario `{}` measured sample {}/{} failed golden validation: {err}",
+                    route.as_str(),
+                    scenario.id,
+                    sample_index + 1,
+                    sample_count
+                )
+            })?;
+        samples_ms.push(latency_ms);
+    }
+    Ok(samples_ms)
+}
+
 /// Boot one warm runtime and measure each budgeted route's tail.
 ///
 /// Fail-closed: a route with no representative scenario, or whose representative
@@ -197,12 +225,9 @@ pub fn measure_route_tails(rt: &mut E2eRuntime) -> AnyResult<Vec<RouteTailMeasur
                 )
             },
         )?;
-        let mut samples_ms: Vec<f64> = Vec::with_capacity(TAIL_SAMPLES);
-        for _ in 0..TAIL_SAMPLES {
-            let started = Instant::now();
-            let _outcome = run_scenario_query(rt, scenario);
-            samples_ms.push(elapsed_ms(started));
-        }
+        let samples_ms = collect_timed_samples(scenario, budget.route, TAIL_SAMPLES, || {
+            run_scenario_query(rt, scenario)
+        })?;
         let latency = LatencySummary::from_samples_ms(&samples_ms).ok_or_else(|| {
             anyhow::anyhow!(
                 "tail: route `{}` collected no samples",
@@ -395,6 +420,44 @@ mod tests {
     //! pure percentile reader. The seeded end-to-end measurement is exercised by
     //! the `tail_matrix` rail under the daemon lane.
     use super::*;
+
+    #[test]
+    fn measured_sample_failure_cannot_be_aggregated_as_latency() {
+        let scenario = &SCENARIOS[0];
+        assert_eq!(scenario.id, "lexical.keyword.native");
+        let valid = || QueryOutcome {
+            result_shape: crate::artifact::ResultShape::Candidates,
+            result_count: Some(4),
+            typed_error_code: None,
+            engine_touched: vec!["Lexical".to_string()],
+            early_stop_reason: None,
+        };
+        let passed = collect_timed_samples(scenario, RouteFamily::Lexical, 2, valid)
+            .expect("two source-golden responses");
+        assert_eq!(passed.len(), 2);
+
+        let mut calls = 0;
+        let error = collect_timed_samples(scenario, RouteFamily::Lexical, 3, || {
+            calls += 1;
+            if calls == 2 {
+                QueryOutcome {
+                    result_shape: crate::artifact::ResultShape::Empty,
+                    result_count: Some(0),
+                    typed_error_code: None,
+                    engine_touched: vec!["Lexical".to_string()],
+                    early_stop_reason: None,
+                }
+            } else {
+                valid()
+            }
+        })
+        .expect_err("the second, fast but empty response must fail the whole sample set");
+        assert_eq!(calls, 2, "sampling must stop before the third response");
+        let message = error.to_string();
+        assert!(message.contains("route `lexical`"), "{message}");
+        assert!(message.contains("lexical.keyword.native"), "{message}");
+        assert!(message.contains("sample 2/3"), "{message}");
+    }
 
     #[test]
     fn budget_manifest_has_one_row_per_route() {

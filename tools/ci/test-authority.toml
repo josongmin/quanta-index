@@ -361,6 +361,7 @@ targets = [
   "benchmark-external-snippet-python-owner",
   "benchmark-identifier-robustness-multiproduct-python-owner",
   "benchmark-holdout-c4-fixed-cohort-python-owner",
+  "benchmark-identifier-robustness-fresh-join-python-owner",
   "benchmark-code-search-rank-study-python-owner",
   "benchmark-portable-proof-python-owner",
   "benchmark-pair-capture-python-owner",
@@ -1905,4 +1906,10 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-holdout-c4-fixed-cohort-python-owner"
 path = "tools/ci/tests/test_holdout_c4_projection.py"
 owner = "tools/benchmark/retrieval/holdout_c4.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-identifier-robustness-fresh-join-python-owner"
+path = "tools/ci/tests/test_identifier_robustness_fresh_join.py"
+owner = "tools/benchmark/retrieval/identifier_robustness_fresh_join.py"
 rail = "pr-benchmark-control-python"
