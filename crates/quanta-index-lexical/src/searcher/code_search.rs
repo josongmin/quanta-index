@@ -12,8 +12,8 @@ use quanta_index_contract::{
     CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, HighlightSpan,
     LexicalCandidate, LqExpr, LqFilter, LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
     MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, PreviewByteRange, PreviewKind,
-    PreviewMetadata, PreviewUnavailableReason, QueryConstraintSetV1,
-    valid_code_search_typo_identifier,
+    PreviewMetadata, PreviewUnavailableReason, QueryConstraintSetV1, SymbolCoverage,
+    SymbolNameSourcePolicyV1, valid_code_search_typo_identifier,
 };
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
 use quanta_index_lq_regex::RegexExecutor;
@@ -1615,6 +1615,29 @@ fn file_candidate(
     Ok(candidate)
 }
 
+/// Under `RawAsciiLocalName`, every requested component of a matching ASCII
+/// name must appear in the immutable source bytes. One absent component is a
+/// sufficient exclusion proof for an uncensused file.
+fn source_proves_component_absence(
+    raw: &[u8],
+    components: &[String],
+    budget: &RequestBudgetV1,
+) -> Result<bool, CoreError> {
+    budget.checkpoint("lexical:component-coverage-source-proof")?;
+    let mut folded = Vec::with_capacity(raw.len());
+    for chunk in raw.chunks(64 * 1024) {
+        budget.checkpoint("lexical:component-coverage-source-proof")?;
+        folded.extend(chunk.iter().map(u8::to_ascii_lowercase));
+    }
+    for component in components.iter().collect::<BTreeSet<_>>() {
+        if memchr::memmem::find(&folded, component.as_bytes()).is_none() {
+            return Ok(true);
+        }
+        budget.checkpoint("lexical:component-coverage-source-proof")?;
+    }
+    Ok(false)
+}
+
 impl TantivySearcher {
     /// Match ordered components in one stored symbol name before projecting
     /// the result to its immutable source file. The posting conjunction is a
@@ -1629,16 +1652,38 @@ impl TantivySearcher {
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         // CodeSearch has a file result domain, so the ordinary lexical plan
-        // does not infer symbol authority. Source-byte absence cannot prove
-        // an incomplete symbol census safe: the producer contract does not
-        // require local_name to be a literal source-byte slice.
+        // does not infer symbol authority. An incomplete census may be
+        // excluded only under an explicit raw-name producer attestation and
+        // a source-byte proof for this exact query.
         quanta_index_core::domains::lexical::require_complete_symbol_coverage(
             self.source_coverage.as_ref(),
             |entry| {
                 let path = entry.source.file.repo_relative_path.as_str();
-                Ok(Self::manual_exact_path_allows(path, constraints)
-                    && (constraints.language_any_of.is_empty()
-                        || constraints.language_any_of.contains(&entry.language)))
+                if !Self::manual_exact_path_allows(path, constraints)
+                    || (!constraints.language_any_of.is_empty()
+                        && !constraints.language_any_of.contains(&entry.language))
+                {
+                    return Ok(false);
+                }
+                if matches!(entry.symbols, SymbolCoverage::Complete { .. }) {
+                    return Ok(true);
+                }
+                if entry.symbol_name_source_policy != SymbolNameSourcePolicyV1::RawAsciiLocalName {
+                    return Ok(true);
+                }
+                let file = authority.files.get(&entry.source.file).ok_or_else(|| {
+                    CoreError::Storage("lexical: component coverage source is absent".into())
+                })?;
+                if file.source != entry.source {
+                    return Err(CoreError::Storage(
+                        "lexical: component coverage source revision differs".into(),
+                    ));
+                }
+                Ok(!source_proves_component_absence(
+                    &file.bytes,
+                    components,
+                    budget,
+                )?)
             },
             budget,
         )?;

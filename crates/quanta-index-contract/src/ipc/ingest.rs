@@ -269,9 +269,8 @@ impl fmt::Display for SearchCorpusSurfaceMutationConflictV1 {
             Self::ChunkSourceMismatch => {
                 formatter.write_str("chunk text disagrees with its source-file byte span")
             }
-            Self::SymbolNameSourceMismatch => {
-                formatter.write_str("attested ASCII symbol local name is absent from its source span")
-            }
+            Self::SymbolNameSourceMismatch => formatter
+                .write_str("attested ASCII symbol local name is absent from its source span"),
             Self::DuplicateClear(surface) => {
                 write!(formatter, "duplicate clear for search surface {surface:?}")
             }
@@ -1084,12 +1083,19 @@ pub fn validate_lexical_file_mutations_v1(
                 == crate::SymbolNameSourcePolicyV1::RawAsciiLocalName
                 && symbol.local_name.is_ascii()
             {
-                let start = usize::try_from(symbol.definition_span.byte_start)
-                    .map_err(|_overflow| SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange)?;
-                let end = usize::try_from(symbol.definition_span.byte_end)
-                    .map_err(|_overflow| SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange)?;
-                if memchr::memmem::find(&scope.source_bytes[start..end], symbol.local_name.as_bytes())
-                    .is_none()
+                let start =
+                    usize::try_from(symbol.definition_span.byte_start).map_err(|_overflow| {
+                        SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange
+                    })?;
+                let end =
+                    usize::try_from(symbol.definition_span.byte_end).map_err(|_overflow| {
+                        SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange
+                    })?;
+                if memchr::memmem::find(
+                    &scope.source_bytes[start..end],
+                    symbol.local_name.as_bytes(),
+                )
+                .is_none()
                 {
                     return Err(SearchCorpusSurfaceMutationConflictV1::SymbolNameSourceMismatch);
                 }
