@@ -662,7 +662,10 @@ def verify_and_score_capture(
 def _bind_external_execution_profile(sidecar: dict[str, Any], record: dict[str, Any]) -> None:
     """Tie the validated capture to the signed external admission policy."""
     admission = sidecar.get("admission")
-    if not isinstance(admission, dict) or admission.get("request_policy") != "natural_language_file":
+    if (
+        not isinstance(admission, dict)
+        or admission.get("request_policy") != "natural_language_file"
+    ):
         raise ExternalSnippetError("external admission policy differs")
     try:
         expected_quanta = query_plan.execution_profile(

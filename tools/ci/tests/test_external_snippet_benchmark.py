@@ -23,8 +23,6 @@ from tools.benchmark.retrieval import (
 )
 from tools.benchmark.retrieval import (
     query_plan,
-)
-from tools.benchmark.retrieval import (
     retrieval_contract,
 )
 

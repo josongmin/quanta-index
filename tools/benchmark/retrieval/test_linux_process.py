@@ -13,6 +13,12 @@ import pytest
 
 from tools.benchmark.retrieval import linux_process
 
+LINUX_PIDFD_AVAILABLE = (
+    sys.platform == "linux"
+    and hasattr(os, "pidfd_open")
+    and hasattr(signal, "pidfd_send_signal")
+)
+
 
 def stat(pid, *, ppid=1, pgid=None, start=100, user=0, kernel=0, rss=1, state="S"):
     # Fields after comm begin at field 3 (state). Indices 11, 12, 19, 21
@@ -290,6 +296,27 @@ def test_qualified_run_rejects_unavailable_delegation_before_workload(
     assert not marker.exists()
 
 
+def test_run_rejects_missing_pidfd_apis_before_launch(tmp_path, monkeypatch):
+    marker = tmp_path / "workload-ran"
+    monkeypatch.setattr(linux_process.sys, "platform", "linux")
+    monkeypatch.delattr(linux_process.os, "pidfd_open", raising=False)
+    monkeypatch.delattr(linux_process.signal, "pidfd_send_signal", raising=False)
+    monkeypatch.setattr(
+        linux_process.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("workload launched without pidfd support"),
+    )
+    with pytest.raises(
+        linux_process.ProcessError,
+        match="Linux pidfd_open and pidfd_send_signal required",
+    ):
+        linux_process.run(
+            [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],
+            timeout_secs=1,
+        )
+    assert not marker.exists()
+
+
 def test_child_shim_cannot_run_workload_before_parent_ack(tmp_path):
     marker = tmp_path / "ran"
     reader, writer = os.pipe()
@@ -497,7 +524,7 @@ def test_cgroup_remove_stays_under_unique_child(tmp_path, monkeypatch):
     assert sibling.is_dir()
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="native Linux process test")
+@pytest.mark.skipif(not LINUX_PIDFD_AVAILABLE, reason="native Linux pidfd test")
 def test_timeout_cleans_live_descendant_on_linux(tmp_path):
     script = "import subprocess,time; subprocess.Popen(['sleep','30']); time.sleep(30)"
     result = linux_process.run(
@@ -516,7 +543,7 @@ def test_timeout_cleans_live_descendant_on_linux(tmp_path):
     assert not result.ownership_complete
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="native Linux process test")
+@pytest.mark.skipif(not LINUX_PIDFD_AVAILABLE, reason="native Linux pidfd test")
 def test_diagnostic_run_forwards_only_attestation_fd(tmp_path):
     attest_read, attest_write = os.pipe()
     unrelated_read, unrelated_write = os.pipe()
@@ -555,7 +582,7 @@ os.write(attestation_fd, b"nonce")
                 os.close(fd)
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="native Linux process test")
+@pytest.mark.skipif(not LINUX_PIDFD_AVAILABLE, reason="native Linux pidfd test")
 def test_native_detects_process_group_escape_on_linux(tmp_path):
     script = (
         "import os,subprocess,time; "
@@ -574,7 +601,7 @@ def test_native_detects_process_group_escape_on_linux(tmp_path):
     assert result.cleanup_complete
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="native Linux process test")
+@pytest.mark.skipif(not LINUX_PIDFD_AVAILABLE, reason="native Linux pidfd test")
 def test_root_exit_does_not_release_descendant_on_linux():
     script = "import subprocess; subprocess.Popen(['sleep','30'])"
     result = linux_process.run(
@@ -586,7 +613,7 @@ def test_root_exit_does_not_release_descendant_on_linux():
     assert len(result.processes) >= 2
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="native Linux process test")
+@pytest.mark.skipif(not LINUX_PIDFD_AVAILABLE, reason="native Linux pidfd test")
 def test_cleanup_escalates_past_ignored_sigterm_on_linux():
     script = "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"
     result = linux_process.run(
