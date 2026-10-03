@@ -9162,6 +9162,7 @@ def run_pair(spec: dict) -> int:
     tree (manifest + verdict) is atomically renamed onto the output
     root. Partial output is never resumed: rerun from a fresh root.
     """
+    driver_started_ns = time.monotonic_ns()
     scope = spec.get("scope", "exploratory")
     _validate_file_pair_contract(spec, paired=True)
     if spec.get("embedder") == "potion-code-full-v2" and (
@@ -9228,6 +9229,7 @@ def run_pair(spec: dict) -> int:
             _linux_cgroup_parent_identity=_linux_parent_identity(spec["linux_cgroup_parent"]),
         )
     out_root = preflight_capture(spec)
+    preflight_finished_ns = time.monotonic_ns()
     stage = out_root.parent / (out_root.name + ".staging")
     if out_root.exists() or stage.exists():
         raise RunError("output root or staging dir already exists (refusing reuse)")
@@ -9241,6 +9243,7 @@ def run_pair(spec: dict) -> int:
     stage.mkdir(parents=True)
     closure_path = stage / "driver-source-closure.json"
     _source_closure(Path(__file__).resolve().parents[3], "capture", closure_path)
+    closure_capture_finished_ns = time.monotonic_ns()
     spec = dict(spec, _driver_source_closure=str(closure_path))
     try:
         summary = _run_pair_staged(spec, stage)
@@ -9248,16 +9251,28 @@ def run_pair(spec: dict) -> int:
         # The stage is left for forensics, but the authoritative output
         # root is never promoted from a failed run.
         raise
+    staged_finished_ns = time.monotonic_ns()
     _source_closure(Path(__file__).resolve().parents[3], "verify", closure_path)
+    closure_verify_finished_ns = time.monotonic_ns()
     if out_root.exists():
         raise RunError("output root appeared during capture (refusing promotion)")
     os.rename(stage, out_root)
+    promoted_ns = time.monotonic_ns()
     summary["output_root"] = str(out_root)
+    summary["driver_outer_ms"] = {
+        "preflight": (preflight_finished_ns - driver_started_ns) / 1_000_000,
+        "source_closure_capture": (closure_capture_finished_ns - preflight_finished_ns) / 1_000_000,
+        "staged": (staged_finished_ns - closure_capture_finished_ns) / 1_000_000,
+        "source_closure_verify": (closure_verify_finished_ns - staged_finished_ns) / 1_000_000,
+        "promotion": (promoted_ns - closure_verify_finished_ns) / 1_000_000,
+        "total": (promoted_ns - driver_started_ns) / 1_000_000,
+    }
     print(json.dumps(summary, indent=2))
     return 0
 
 
 def _run_pair_staged(spec: dict, stage: Path) -> dict:
+    stage_started_ns = time.monotonic_ns()
     if "semble" not in spec["execution_profiles"]:
         raise RunError("pair requires spec.execution_profiles.semble")
     scope = spec.get("scope", "exploratory")
@@ -9302,6 +9317,8 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     )
     rep_layouts: list[dict] = []
     semble_spec = dict(spec)
+    setup_finished_ns = time.monotonic_ns()
+    product_ns = {"quanta": 0, "semble": 0}
     # One pinned model cache across reps; each rep still rebuilds its index.
     monitor = (
         HostTimeline(
@@ -9354,6 +9371,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
                 "semble": "",
             }
             for system in rep_order:
+                product_started_ns = time.monotonic_ns()
                 if system == "quanta":
                     quanta_out = rep_dir / "quanta"
                     quanta_spec = dict(spec)
@@ -9381,12 +9399,14 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
                     layout["semble"] = str(semble_out / "record.json")
                     layout["semble_phase_metrics"] = semble_metrics["phase_metrics"]
                     layout["semble_resource_metrics"] = semble_metrics["resource_metrics"]
+                product_ns[system] += time.monotonic_ns() - product_started_ns
             rep_layouts.append(layout)
     host_end = host_probe()
     host_end["contention_override"] = override
     (stage / "host-end.json").write_text(
         json.dumps(host_end, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    product_envelope_finished_ns = time.monotonic_ns()
     # Every rep's records validate through the evaluator before any use:
     # each (strategy, semble) pair merges exactly like the scored join,
     # and each capture echoes the strategy it was invoked with.
@@ -9394,6 +9414,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     repo = source_repo
     suite_path = Path(spec["suite"])
     suite, pack, source = validate_suite(repo, read_json(suite_path))
+    suite_validation_finished_ns = time.monotonic_ns()
     for rep_index, layout in enumerate(rep_layouts):
         for strategy, record in sorted(layout["quanta"].items()):
             payload = read_json(Path(record))
@@ -9432,6 +9453,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
                 json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
             reports.append(name)
+    report_scoring_finished_ns = time.monotonic_ns()
     latency_path = stage / "latency-matrix.json"
     latency_path.write_text(
         json.dumps(build_latency_matrix(rep_layouts), indent=2, sort_keys=True) + "\n",
@@ -9503,6 +9525,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     (stage / "protocol-lock.json").write_text(
         json.dumps(protocol_lock, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    protocol_lock_finished_ns = time.monotonic_ns()
     manifest = build_run_manifest(
         spec,
         stage,
@@ -9517,15 +9540,42 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    manifest_finished_ns = time.monotonic_ns()
     verdict = build_verdict(source_repo, suite_path, manifest_path)
-    (stage / "verdict.json").write_text(
-        json.dumps(verdict, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    verdict_path = stage / "verdict.json"
+    verdict_path.write_text(json.dumps(verdict, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    verdict_finished_ns = time.monotonic_ns()
+    boundaries = (
+        ("source_setup", stage_started_ns, setup_finished_ns),
+        ("product_envelope", setup_finished_ns, product_envelope_finished_ns),
+        ("suite_validation", product_envelope_finished_ns, suite_validation_finished_ns),
+        ("report_scoring", suite_validation_finished_ns, report_scoring_finished_ns),
+        ("protocol_lock", report_scoring_finished_ns, protocol_lock_finished_ns),
+        ("manifest", protocol_lock_finished_ns, manifest_finished_ns),
+        ("verdict", manifest_finished_ns, verdict_finished_ns),
+    )
+    phases_ms = {name: (finished - started) / 1_000_000 for name, started, finished in boundaries}
+    stage_wall_ms = (verdict_finished_ns - stage_started_ns) / 1_000_000
+    driver_timings = {
+        "schema_version": 1,
+        "authority": "diagnostic_only",
+        "stage_wall_ms": stage_wall_ms,
+        "phases_ms": phases_ms,
+        "product_subphases_ms": {
+            system: elapsed / 1_000_000 for system, elapsed in product_ns.items()
+        },
+        "manifest_sha256": sha_file(manifest_path),
+        "verdict_sha256": sha_file(verdict_path),
+    }
+    (stage / "driver-stage-timings.json").write_text(
+        json.dumps(driver_timings, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return {
         "reports": reports,
         "repetitions": repetitions,
         "states": verdict["states"],
         "output_root": str(stage),
+        "driver_stage_timings": driver_timings,
     }
 
 

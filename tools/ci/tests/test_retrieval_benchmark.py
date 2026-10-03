@@ -9908,7 +9908,21 @@ def test_run_pair_promotes_complete_stage_and_public_verdict_replays(tmp_path, m
         )
         == 0
     )
-    assert json.loads(capsys.readouterr().out)["output_root"] == str(output_root)
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["output_root"] == str(output_root)
+    outer = summary["driver_outer_ms"]
+    assert set(outer) == {
+        "preflight",
+        "source_closure_capture",
+        "staged",
+        "source_closure_verify",
+        "promotion",
+        "total",
+    }
+    assert all(value >= 0 for value in outer.values())
+    assert sum(value for name, value in outer.items() if name != "total") == pytest.approx(
+        outer["total"]
+    )
     assert not output_root.with_name(output_root.name + ".staging").exists()
     public = subprocess.run(
         [
@@ -10007,6 +10021,7 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
     stage = tmp_path / "out.staging"
     assert stage.is_dir()
     assert list(stage.rglob("verdict.json")) == []
+    assert not (stage / "driver-stage-timings.json").exists()
 
 
 def test_matrix_floor_no_cross_strategy_inflation():
