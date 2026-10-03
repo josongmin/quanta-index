@@ -465,18 +465,20 @@ def test_nl_projection_preserves_labels_and_blinds_only_selected_queries(tmp_pat
 
 
 @pytest.mark.parametrize(
-    "fault",
+    ("fault", "message"),
     [
-        "no_nl",
-        "unreviewed",
-        "partial_grade",
-        "wrong_hash",
-        "bad_excluded_gold",
-        "over_limit",
-        "same_id",
+        ("no_nl", "no semantic_intent tasks"),
+        ("unreviewed", "require reviewed label evidence"),
+        ("partial_grade", "grade must be an integer 0-3"),
+        ("wrong_hash", "file hash mismatch"),
+        ("bad_excluded_gold", "block hash mismatch"),
+        ("over_limit", "33 tokens"),
+        ("same_id", "requires a new suite ID"),
     ],
 )
-def test_nl_projection_refuses_invalid_input_without_silently_dropping_tasks(tmp_path, fault):
+def test_nl_projection_refuses_invalid_input_without_silently_dropping_tasks(
+    tmp_path, fault, message
+):
     checkout, suite = _reviewed_suite_fixture(tmp_path)
     suite_id = "new-nl-file-diagnostic"
     task = suite["tasks"][0]
@@ -495,7 +497,7 @@ def test_nl_projection_refuses_invalid_input_without_silently_dropping_tasks(tmp
         task["query_sha256"] = evaluator.digest(task["query"].encode())
     else:
         suite_id = suite["suite_id"]
-    with pytest.raises((evaluator.EvidenceError, query_plan.QueryPlanError)):
+    with pytest.raises((evaluator.EvidenceError, query_plan.QueryPlanError), match=message):
         holdout_review.project_natural_language_file_diagnostic(
             checkout, evaluator.canonical(suite), suite_id=suite_id
         )
