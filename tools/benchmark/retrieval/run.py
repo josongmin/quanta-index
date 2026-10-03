@@ -3019,13 +3019,15 @@ def load_spec(path: Path) -> dict:
         file_qualified = spec.get("scope", "exploratory") == "qualified"
         if file_qualified:
             if (
+                quanta_profile["policy"] != "code_search_file"
+                or
                 spec.get("claims", {}).get("quality") is not True
                 or "admission" not in spec
                 or _admission_keys(spec["admission"]) != ADMISSION_DISJOINT_KEYS
             ):
                 raise RunError(
-                    "qualified code-search file pair requires a quality claim "
-                    "and repository-disjoint admission"
+                    "qualified code-search file pair requires code_search_file, "
+                    "a quality claim and repository-disjoint admission"
                 )
         elif any(spec.get("claims", {}).values()):
             raise RunError("exploratory code-search file pair cannot carry claims")
@@ -8467,6 +8469,8 @@ def run_pair(spec: dict) -> int:
     if code_search_file:
         if scope == "qualified":
             if (
+                quanta_profile.get("policy") != "code_search_file"
+                or
                 spec.get("claims", {}).get("quality") is not True
                 or not isinstance(spec.get("admission"), dict)
                 or _admission_keys(spec["admission"]) != ADMISSION_DISJOINT_KEYS

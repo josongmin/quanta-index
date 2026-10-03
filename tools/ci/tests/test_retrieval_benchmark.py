@@ -11438,16 +11438,20 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
     }
     jsonschema.validate(qualified, _load_schema("pair-spec.schema.json"))
     spec_path.write_text(json.dumps(qualified), encoding="utf-8")
-    assert pairrun.load_spec(spec_path) == qualified
-    local_admission = copy.deepcopy(qualified)
-    del local_admission["admission"]["split_manifest"]
-    del local_admission["admission"]["split_releases"]
-    local_admission["admission"].update(
-        development_suite="/tmp/development.json", experiment_custody="/tmp/custody.json"
-    )
-    spec_path.write_text(json.dumps(local_admission), encoding="utf-8")
-    with pytest.raises(pairrun.RunError, match="repository-disjoint admission"):
-        pairrun.load_spec(spec_path)
+    if policy == "code_search_file":
+        assert pairrun.load_spec(spec_path) == qualified
+        local_admission = copy.deepcopy(qualified)
+        del local_admission["admission"]["split_manifest"]
+        del local_admission["admission"]["split_releases"]
+        local_admission["admission"].update(
+            development_suite="/tmp/development.json", experiment_custody="/tmp/custody.json"
+        )
+        spec_path.write_text(json.dumps(local_admission), encoding="utf-8")
+        with pytest.raises(pairrun.RunError, match="repository-disjoint admission"):
+            pairrun.load_spec(spec_path)
+    else:
+        with pytest.raises(pairrun.RunError, match="requires code_search_file"):
+            pairrun.load_spec(spec_path)
 
 
 def test_verdict_quality_refuses_diagnostic_rank_profile(tmp_path, monkeypatch):
