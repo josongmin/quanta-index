@@ -50,7 +50,7 @@ use crate::artifact::{
     GitHeadV1, HostV1, LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily,
     config_digest, corpus_digest, directory_bytes, model_revision_of, saturating_u64,
 };
-use crate::harness::E2eRuntime;
+use crate::harness::{E2eRuntime, E2eTextChunkSpec};
 
 /// The artifact dimension this rail writes.
 pub const DIMENSION: &str = "scale";
@@ -114,12 +114,10 @@ impl ScaleTier {
         }
     }
 
-    /// Whether this tier is measured end-to-end in this rail.
-    ///
-    /// Only `small` is measured here; the larger tiers are declared-advisory and
-    /// owned by the canonical Linux perf runner.
+    /// The default invocation selects small; every tier is separately
+    /// selectable and must pass its own source and wire admission checks.
     #[must_use]
-    pub fn is_measured_here(self) -> bool {
+    pub fn is_default_tier(self) -> bool {
         matches!(self, Self::Small)
     }
 }
@@ -636,6 +634,7 @@ pub struct TierMeasurement {
     pub tier: ScaleTier,
     pub seed: u64,
     pub file_count: usize,
+    pub corpus_digest: String,
     /// Distinct source repositories inside one serving owner/generation.
     pub source_repo_count: usize,
     /// Bytes of every generated file.
@@ -919,6 +918,7 @@ fn measure_delta(rt: &mut E2eRuntime, seed: u64) -> AnyResult<DeltaMeasurementV1
 /// fabricated phase time.
 pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
     let corpus = generate_corpus(ScaleTier::Small, seed);
+    let corpus_digest = corpus_digest(DIMENSION, &corpus);
     let expected_results = expected_small_result_count(&corpus)?;
     let file_count = corpus.len();
     let corpus_bytes = corpus
@@ -983,10 +983,175 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
         tier: ScaleTier::Small,
         seed,
         file_count,
+        corpus_digest,
         source_repo_count: 1,
         corpus_bytes,
         ingest_decoded_bytes: None,
         ingest_wire_bytes: None,
+        build_ms,
+        build_bytes_written,
+        activation_ms,
+        first_query_ms,
+        warm_query,
+        daemon: DaemonPhaseTimingV1 {
+            cold_open_ms,
+            first_route_ms,
+            warm_route_mean_ms: warm_route_total_ms / f64::from(u32::try_from(WARM_QUERY_SAMPLES)?),
+        },
+        adapter,
+        delta,
+        result_count,
+        model_revision,
+    })
+}
+
+fn measure_scoped_delta(
+    rt: &mut E2eRuntime,
+    file: &ScopedFile,
+) -> AnyResult<DeltaMeasurementV1> {
+    let changed = format!("{}// delta {SCALE_QUERY_TOKEN} touched\n", file.content);
+    let changed_bytes = u64::try_from(changed.len())?;
+    let before_build = directory_bytes(rt.state_root())?;
+    let update_started = Instant::now();
+    let _ids = rt.ingest_text_chunks(
+        SCALE_REPO,
+        &file.repo_relative_path,
+        &[E2eTextChunkSpec {
+            content: &changed,
+            start_line: 1,
+            end_line: 2,
+            source_repo_id: Some(&file.source_repo_id),
+        }],
+    )?;
+    let _generation = rt.seal()?;
+    let update_ms = elapsed_ms(update_started);
+    let after_build = directory_bytes(rt.state_root())?;
+    let activation_started = Instant::now();
+    rt.activate_last_sealed_generation()?;
+    let activation_with_reclaim_ms = elapsed_ms(activation_started);
+    let after_activation = directory_bytes(rt.state_root())?;
+    Ok(DeltaMeasurementV1 {
+        update_ms,
+        changed_bytes,
+        bytes_written: after_build.saturating_sub(before_build),
+        activation_with_reclaim_ms,
+        reclaimed_bytes: after_build.saturating_sub(after_activation),
+    })
+}
+
+/// Measure one declared tier. Small retains its existing one-repository
+/// fixture; larger tiers publish distinct source-repository identities into
+/// one serving owner and independently probe every source repository.
+pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
+    if tier == ScaleTier::Small {
+        return measure_small_tier(seed);
+    }
+    let files = generate_scoped_corpus(tier, seed)?;
+    let scoped_files_for_digest = scoped_digest_files(&files);
+    let corpus_digest = corpus_digest(DIMENSION, &scoped_files_for_digest);
+    let oracle = ScopedOracle::from_source(&files, tier)?;
+    let _admission = preflight_scoped_corpus(&files)?;
+    let file_count = files.len();
+    let corpus_bytes = files.iter().try_fold(0_u64, |total, file| -> AnyResult<u64> {
+        total
+            .checked_add(u64::try_from(file.content.len())?)
+            .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
+    })?;
+
+    let mut rt = E2eRuntime::boot_with_history_max_generations(1)?;
+    let model_revision = model_revision_of(rt.embedder_profile());
+    let before_build = directory_bytes(rt.state_root())?;
+    let chunks = files
+        .iter()
+        .map(|file| {
+            [E2eTextChunkSpec {
+                content: &file.content,
+                start_line: 1,
+                end_line: 2,
+                source_repo_id: Some(&file.source_repo_id),
+            }]
+        })
+        .collect::<Vec<_>>();
+    let batch_files = files
+        .iter()
+        .zip(&chunks)
+        .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
+        .collect::<Vec<_>>();
+    let ingest_started = Instant::now();
+    let _ids = rt.ingest_text_files_one_batch(&batch_files)?;
+    let ingest_ms = elapsed_ms(ingest_started);
+    let (ingest_decoded_bytes, ingest_wire_bytes) =
+        rt.preview_pending_search_corpus_wire_bytes()?;
+    let seal_started = Instant::now();
+    let _generation = rt.seal()?;
+    let build_ms = ingest_ms + elapsed_ms(seal_started);
+    let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
+    let activation_started = Instant::now();
+    rt.activate_last_sealed_generation()?;
+    let activation_ms = elapsed_ms(activation_started);
+
+    let scrape_before_first = rt.metrics_snapshot()?;
+    let first_started = Instant::now();
+    let first = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
+    let first_query_ms = elapsed_ms(first_started);
+    let result_count = validate_scoped_response(&oracle, None, &first)?;
+    let scrape_after_first = rt.metrics_snapshot()?;
+    let cold_open_ms = histogram_window(
+        &scrape_before_first,
+        &scrape_after_first,
+        "lq_snapshot_lexical_cold_open_ms",
+        1,
+    )?;
+    let first_route_ms = histogram_window(
+        &scrape_before_first,
+        &scrape_after_first,
+        "lq_route_lexical_latency_ms",
+        1,
+    )?;
+    let warm_samples = collect_validated_samples(
+        WARM_QUERY_SAMPLES,
+        || rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K),
+        |response| validate_scoped_response(&oracle, None, response).map(|_| ()),
+    )?;
+    let scrape_after_warm = rt.metrics_snapshot()?;
+    let warm_route_total_ms = histogram_window(
+        &scrape_after_first,
+        &scrape_after_warm,
+        "lq_route_lexical_latency_ms",
+        u64::try_from(WARM_QUERY_SAMPLES)?,
+    )?;
+    let warm_query = LatencySummary::from_samples_ms(&warm_samples)
+        .ok_or_else(|| anyhow::anyhow!("scale: no warm samples"))?;
+
+    // The global top-10 can be dominated by one source repo. These independent
+    // probes prove that every declared repo's source files reached the index.
+    for source_repo_id in oracle.paths_by_repo.keys() {
+        let repo_index = source_repo_id
+            .strip_prefix("repo")
+            .and_then(|suffix| suffix.parse::<u32>().ok())
+            .ok_or_else(|| anyhow::anyhow!("scale: malformed source repo oracle"))?;
+        let response = rt.query_text(
+            TextQuerySyntax::Native,
+            &repo_query_token(repo_index),
+            SCALE_TOP_K,
+        );
+        validate_scoped_response(&oracle, Some(source_repo_id), &response)?;
+    }
+
+    let adapter = measure_adapter_phases(&rt, Some(&oracle))?;
+    let delta_file = files
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
+    let delta = measure_scoped_delta(&mut rt, delta_file)?;
+    Ok(TierMeasurement {
+        tier,
+        seed,
+        file_count,
+        corpus_digest,
+        source_repo_count: oracle.paths_by_repo.len(),
+        corpus_bytes,
+        ingest_decoded_bytes: Some(ingest_decoded_bytes),
+        ingest_wire_bytes: Some(ingest_wire_bytes),
         build_ms,
         build_bytes_written,
         activation_ms,
@@ -1017,12 +1182,11 @@ fn tier_params_json(params: &TierParams) -> Value {
         "hit_density_per_mille": params.hit_density_per_mille,
         "symbol_density_per_mille": params.symbol_density_per_mille,
         "total_files": params.total_files(),
-        "measured_here": params.tier.is_measured_here(),
-        "measurement_owner": if params.tier.is_measured_here() {
-            "this-host-and-linux-blocking"
-        } else {
-            "linux-perf-runner-blocking"
-        },
+        "default_run": params.tier.is_default_tier(),
+        "selectable": true,
+        "serving_owner_count": 1,
+        "source_repo_count": params.repo_count,
+        "qualification_owner": "canonical-quiet-host-run",
     })
 }
 
@@ -1031,7 +1195,7 @@ fn tier_params_json(params: &TierParams) -> Value {
 pub fn tier_manifest_json() -> Value {
     json!({
         "kind": "quanta-index-scale-tier-manifest",
-        "manifest_schema_version": 1,
+        "manifest_schema_version": 2,
         "dimension": "scale",
         "query_token": SCALE_QUERY_TOKEN,
         "tiers": TIER_MANIFEST.iter().map(tier_params_json).collect::<Vec<_>>(),
@@ -1045,11 +1209,18 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
         "tier": measurement.tier.as_str(),
         "seed": measurement.seed,
         "file_count": measurement.file_count,
+        "serving_owner_count": 1,
+        "source_repo_count": measurement.source_repo_count,
         "corpus_bytes": measurement.corpus_bytes,
+        "ingest_envelope_bytes": {
+            "decoded": measurement.ingest_decoded_bytes,
+            "wire": measurement.ingest_wire_bytes,
+        },
         "status": "measured",
         "build": {
             "build_ms": measurement.build_ms,
             "bytes_written": measurement.build_bytes_written,
+            "timer_excludes_wire_preflight": measurement.ingest_wire_bytes.is_some(),
         },
         "activation_ms": measurement.activation_ms,
         "wall_across_socket": {
@@ -1085,7 +1256,7 @@ fn declared_advisory_json(params: &TierParams) -> Value {
         "tier": params.tier.as_str(),
         "total_files": params.total_files(),
         "status": "declared-advisory",
-        "note": "blocking timing owned by the canonical Linux perf runner; not measured on this host",
+        "note": "selectable tier; not measured in this artifact",
     })
 }
 
@@ -1095,7 +1266,7 @@ fn declared_advisory_json(params: &TierParams) -> Value {
 pub fn detail_json(measurement: &TierMeasurement) -> Value {
     let advisory: Vec<Value> = TIER_MANIFEST
         .iter()
-        .filter(|p| !p.tier.is_measured_here())
+        .filter(|p| p.tier != measurement.tier)
         .map(declared_advisory_json)
         .collect();
     json!({
@@ -1106,7 +1277,7 @@ pub fn detail_json(measurement: &TierMeasurement) -> Value {
         "passed": measurement.result_count > 0,
         "measured_tiers": [measurement_json(measurement)],
         "declared_advisory_tiers": advisory,
-        "blocking_note": "only the small tier is measured end-to-end here; medium/large/xlarge blocking latency is owned by the Linux perf runner",
+        "blocking_note": "this artifact covers one selected tier; performance qualification requires a canonical quiet-host run",
     })
 }
 
@@ -1145,16 +1316,19 @@ pub fn artifact(
         concurrency: 1,
         provenance: BenchProvenanceV1 {
             git_head,
-            corpus_digest: corpus_digest(
-                DIMENSION,
-                &generate_corpus(measurement.tier, measurement.seed),
-            ),
+            corpus_digest: measurement.corpus_digest.clone(),
             config_digest: config_digest(
                 DIMENSION,
                 &[
                     ("tier", params.tier.as_str().to_string()),
                     ("seed", measurement.seed.to_string()),
                     ("repo_count", params.repo_count.to_string()),
+                    ("serving_owner_count", "1".to_string()),
+                    ("source_identity", if measurement.tier == ScaleTier::Small {
+                        "legacy-prefixed-path"
+                    } else {
+                        "scoped-source-repo-v1"
+                    }.to_string()),
                     ("files_per_repo", params.files_per_repo.to_string()),
                     ("avg_file_lines", params.avg_file_lines.to_string()),
                     (
@@ -1464,7 +1638,7 @@ mod tests {
     fn manifest_json_schema_is_well_formed() {
         let value = tier_manifest_json();
         assert_eq!(value["kind"], "quanta-index-scale-tier-manifest");
-        assert_eq!(value["manifest_schema_version"], 1);
+        assert_eq!(value["manifest_schema_version"], 2);
         assert_eq!(value["dimension"], "scale");
         assert_eq!(value["query_token"], SCALE_QUERY_TOKEN);
         let tiers = value["tiers"].as_array().expect("tiers is an array");
@@ -1477,12 +1651,15 @@ mod tests {
             assert!(row["hit_density_per_mille"].is_u64());
             assert!(row["symbol_density_per_mille"].is_u64());
             assert!(row["total_files"].is_u64());
-            assert!(row["measured_here"].is_boolean());
+            assert!(row["default_run"].is_boolean());
+            assert_eq!(row["selectable"], true);
+            assert_eq!(row["serving_owner_count"], 1);
+            assert_eq!(row["source_repo_count"], row["repo_count"]);
         }
         // Exactly the small tier is measured here.
         let measured: Vec<&Value> = tiers
             .iter()
-            .filter(|r| r["measured_here"] == Value::Bool(true))
+            .filter(|r| r["default_run"] == Value::Bool(true))
             .collect();
         assert_eq!(measured.len(), 1, "only the small tier is measured here");
         assert_eq!(measured[0]["tier"], "small");
@@ -1493,7 +1670,11 @@ mod tests {
             tier: ScaleTier::Small,
             seed: 3,
             file_count: 16,
+            corpus_digest: corpus_digest(DIMENSION, &generate_corpus(ScaleTier::Small, 3)),
+            source_repo_count: 1,
             corpus_bytes: 4_096,
+            ingest_decoded_bytes: None,
+            ingest_wire_bytes: None,
             build_ms: 1.5,
             build_bytes_written: 8_192,
             activation_ms: 0.5,

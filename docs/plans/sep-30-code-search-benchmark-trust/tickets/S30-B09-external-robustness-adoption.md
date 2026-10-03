@@ -294,3 +294,25 @@ original component of length>=3, intended-file hits are Quanta356, Semble25,
 Sourcegraph27, cs26 and OpenGrok0. These input strata do not prove each engine's
 matching implementation. Repository-cluster confidence intervals are
 NOT_APPLICABLE:8 repositories are below the existing12-repository threshold.
+
+### Sourcegraph UI capability control
+
+The actual Sourcegraph6.8.0 Fuzzy Finder was exercised with Chrome154 and
+Playwright1.62.1 in isolated browser contexts. Its Symbols panel sent
+`patterntype:keyword type:symbol count:50`, rather than the regexp request
+inferred from a static bundle. Repositories and Files sent separate `type:repo`
+and `type:path` requests; their result units are not declaration results.
+
+Independent CPython `ast` over the commit-bound Sympy source located
+`sdm_irref` in `sympy/polys/matrices/sdm.py`, line1675. The prefix control
+returned that declaration. Insertion, deletion, substitution and transposition
+inputs each produced HTTP200 with zero candidates, both as cold pasted input
+and after actual prefix/suffix keypresses in a separate warm context.
+These are8 correlated controls for one symbol family and one deployed version.
+They establish neither a population score nor behavior of the latest release.
+The response exposes name/location, but no stable symbol ID.
+
+Receipt, exact requests, source/file/script hashes and screenshots are outside
+the checkout: `/private/tmp/qsgui-fIADFv/ui-receipt.json` and the adjacent
+`ui-osa1-*-{cold,warm}.json` files. This UI diagnostic is separate from ordinary
+Stream file-search scores; a regex expansion must not be labeled Fuzzy Finder.

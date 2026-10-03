@@ -2,9 +2,11 @@
 
 import hashlib
 import json
+import os
 import selectors
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -19,6 +21,22 @@ from tools.benchmark.retrieval import live_lexical_external as live
 from tools.ci.tests.test_lexical_capture import inputs
 
 pytest_plugins = ["tools.ci.tests.test_lexical_capture"]
+
+
+def test_standalone_cli_bootstraps_its_source_package_from_external_cwd(tmp_path):
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    completed = subprocess.run(
+        [sys.executable, str(Path(live.__file__).resolve()), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "--spec" in completed.stdout
+    assert "--verify" in completed.stdout
 
 
 def test_bound_release_reuses_one_full_validation_and_refuses_changed_bytes(

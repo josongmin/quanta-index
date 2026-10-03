@@ -21,7 +21,9 @@ use std::process::ExitCode;
 
 use anyhow::Result as AnyResult;
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
-use quanta_index_searchd_harness::scale::{TierMeasurement, measure_small_tier, write_artifacts};
+use quanta_index_searchd_harness::scale::{
+    ScaleTier, TierMeasurement, measure_tier, write_artifacts,
+};
 
 /// Deterministic default seed so the rail is reproducible run-to-run unless an
 /// operator overrides it via `--seed`.
@@ -30,15 +32,19 @@ const DEFAULT_SEED: u64 = 0x5161_5343_414c_4531;
 struct CliArgs {
     out_dir: PathBuf,
     seed: u64,
+    tiers: Vec<ScaleTier>,
 }
 
 fn parse_args() -> AnyResult<CliArgs> {
     let mut out_dir = PathBuf::from("artifacts/search-quality/scale/latest");
     let mut seed = DEFAULT_SEED;
+    let mut tiers = vec![ScaleTier::Small];
+    let mut out_dir_explicit = false;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--out-dir" => {
+                out_dir_explicit = true;
                 out_dir = PathBuf::from(
                     args.next()
                         .ok_or_else(|| anyhow::anyhow!("--out-dir requires a path"))?,
@@ -52,19 +58,55 @@ fn parse_args() -> AnyResult<CliArgs> {
                     .parse::<u64>()
                     .map_err(|err| anyhow::anyhow!("--seed {raw:?}: {err}"))?;
             }
+            "--tier" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--tier requires a tier"))?;
+                tiers = vec![match raw.as_str() {
+                    "small" => ScaleTier::Small,
+                    "medium" => ScaleTier::Medium,
+                    "large" => ScaleTier::Large,
+                    "xlarge" => ScaleTier::Xlarge,
+                    _ => anyhow::bail!("--tier must be small, medium, large or xlarge"),
+                }];
+            }
+            "--all-tiers" => {
+                tiers = vec![
+                    ScaleTier::Small,
+                    ScaleTier::Medium,
+                    ScaleTier::Large,
+                    ScaleTier::Xlarge,
+                ];
+            }
             other => return Err(anyhow::anyhow!("unknown argument {other:?}")),
         }
     }
-    Ok(CliArgs { out_dir, seed })
+    if !out_dir_explicit && (tiers.len() != 1 || tiers[0] != ScaleTier::Small) {
+        anyhow::bail!("--out-dir is required for a non-default scale tier");
+    }
+    Ok(CliArgs {
+        out_dir,
+        seed,
+        tiers,
+    })
 }
 
-fn run(cli: &CliArgs) -> AnyResult<TierMeasurement> {
+fn run(cli: &CliArgs) -> AnyResult<Vec<TierMeasurement>> {
     // Provenance first: a run that cannot be attributed is not started.
     let git_head = GitHeadV1::resolve(Path::new("."))?;
     let host = HostV1::observe()?;
-    let measurement = measure_small_tier(cli.seed)?;
-    write_artifacts(&measurement, &cli.out_dir, git_head, host)?;
-    Ok(measurement)
+    let mut measurements = Vec::with_capacity(cli.tiers.len());
+    for tier in &cli.tiers {
+        let measurement = measure_tier(*tier, cli.seed)?;
+        let out_dir = if cli.tiers.len() == 1 {
+            cli.out_dir.clone()
+        } else {
+            cli.out_dir.join(tier.as_str())
+        };
+        write_artifacts(&measurement, &out_dir, git_head.clone(), host.clone())?;
+        measurements.push(measurement);
+    }
+    Ok(measurements)
 }
 
 #[expect(
@@ -80,29 +122,33 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let measurement = match run(&cli) {
-        Ok(measurement) => measurement,
+    let measurements = match run(&cli) {
+        Ok(measurements) => measurements,
         Err(err) => {
             eprintln!("scale_matrix: {err:#}");
             return ExitCode::FAILURE;
         }
     };
-    println!(
-        "scale[small]: seed={} files={} build_ms={:.3} activation_ms={:.3} first_query_ms={:.3} warm_p50_ms={:.3} daemon_cold_open_ms={:.0} adapter_open_ms={:.3} plan_ms={:.3} execute_ms={:.3} update_ms={:.3} reclaimed_bytes={} results={}",
-        measurement.seed,
-        measurement.file_count,
-        measurement.build_ms,
-        measurement.activation_ms,
-        measurement.first_query_ms,
-        measurement.warm_query.p50_ms,
-        measurement.daemon.cold_open_ms,
-        measurement.adapter.open_ms,
-        measurement.adapter.plan_ms,
-        measurement.adapter.execute_ms,
-        measurement.delta.update_ms,
-        measurement.delta.reclaimed_bytes,
-        measurement.result_count,
-    );
-    println!("scale rail green (small measured; medium/large/xlarge declared-advisory)");
+    for measurement in &measurements {
+        println!(
+            "scale[{}]: seed={} serving_owners=1 source_repos={} files={} build_ms={:.3} activation_ms={:.3} first_query_ms={:.3} warm_p50_ms={:.3} daemon_cold_open_ms={:.0} adapter_open_ms={:.3} plan_ms={:.3} execute_ms={:.3} update_ms={:.3} reclaimed_bytes={} results={}",
+            measurement.tier.as_str(),
+            measurement.seed,
+            measurement.source_repo_count,
+            measurement.file_count,
+            measurement.build_ms,
+            measurement.activation_ms,
+            measurement.first_query_ms,
+            measurement.warm_query.p50_ms,
+            measurement.daemon.cold_open_ms,
+            measurement.adapter.open_ms,
+            measurement.adapter.plan_ms,
+            measurement.adapter.execute_ms,
+            measurement.delta.update_ms,
+            measurement.delta.reclaimed_bytes,
+            measurement.result_count,
+        );
+    }
+    println!("scale rail green (selected tiers measured; canonical performance qualification separate)");
     ExitCode::SUCCESS
 }

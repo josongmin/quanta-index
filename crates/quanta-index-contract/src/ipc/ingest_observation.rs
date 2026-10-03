@@ -868,23 +868,23 @@ mod tests {
         for mutation in [
             LexicalBuildStageDurationsV1 {
                 preparation_ns: 2,
-                ..stages.clone()
+                ..stages
             },
             LexicalBuildStageDurationsV1 {
                 seal_writer_commit_ns: Some(1),
-                ..stages.clone()
+                ..stages
             },
             LexicalBuildStageDurationsV1 {
                 seal_file_admission_ns: Some(2),
-                ..stages.clone()
+                ..stages
             },
             LexicalBuildStageDurationsV1 {
                 seal_merge_wait_ns: None,
-                ..stages.clone()
+                ..stages
             },
             LexicalBuildStageDurationsV1 {
                 seal_ns: None,
-                ..stages.clone()
+                ..stages
             },
         ] {
             observation.lexical_stages = Some(mutation);

@@ -112,6 +112,38 @@ def test_gold_producer_identity_changes_if_source_pinfile_changes(tmp_path, monk
     assert {key for key in before if before[key] != after[key]} == {"uv_lock"}
 
 
+def test_gold_capsule_validation_refuses_changed_source_pinfile(inputs, tmp_path, monkeypatch):
+    root, selection, _, _ = inputs
+    source_root = binding.GOLD_RUNTIME_SOURCE_ROOT
+    pins = tmp_path / "pins"
+    pins.mkdir()
+    for relative in ("pyproject.toml", "uv.lock"):
+        (pins / relative).write_bytes((source_root / relative).read_bytes())
+    monkeypatch.setattr(binding, "GOLD_RUNTIME_SOURCE_ROOT", pins)
+
+    def gold_material(*_args):
+        return {
+            "selection.json": canonical(selection) + b"\n",
+            "recipe.json": b"{}\n",
+            "gold.json": b"{}\n",
+            "blind.json": b"{}\n",
+            "identity.json": canonical(
+                {"producer_source_digests": binding._gold_producer_source_digests()}
+            )
+            + b"\n",
+        }
+
+    monkeypatch.setattr(binding, "_gold_material", gold_material)
+    target = tmp_path / "gold"
+    binding.capture_gold(root, selection, b"{}", target)
+    binding.validate_gold(target)
+    (pins / "uv.lock").write_bytes((pins / "uv.lock").read_bytes() + b"\n# tampered\n")
+    with pytest.raises(
+        EvidenceError, match="gold capsule differs from source-derived oracle: identity.json"
+    ):
+        binding.validate_gold(target)
+
+
 def test_gold_runtime_requires_source_locked_parser_versions():
     assert binding.require_gold_runtime() == {
         "regex": "2025.10.23",
