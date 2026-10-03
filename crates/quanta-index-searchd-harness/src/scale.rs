@@ -1616,6 +1616,63 @@ mod tests {
     }
 
     #[test]
+    fn same_relative_path_in_two_source_repos_survives_publish_and_delta() -> AnyResult<()> {
+        let mut rt = E2eRuntime::boot_with_history_max_generations(1)?;
+        let shared_path = "src/shared.rs";
+        let content0 = format!("// {SCALE_QUERY_TOKEN}\n// {} anchor\n", repo_query_token(0));
+        let content1 = format!("// {SCALE_QUERY_TOKEN}\n// {} anchor\n", repo_query_token(1));
+        let specs0 = [E2eTextChunkSpec {
+            content: &content0,
+            start_line: 1,
+            end_line: 2,
+            source_repo_id: Some("repo0"),
+        }];
+        let specs1 = [E2eTextChunkSpec {
+            content: &content1,
+            start_line: 1,
+            end_line: 2,
+            source_repo_id: Some("repo1"),
+        }];
+        let _ids = rt.ingest_text_files_one_batch(&[
+            (shared_path, &specs0),
+            (shared_path, &specs1),
+        ])?;
+        let _wire = rt.preview_pending_search_corpus_wire_bytes()?;
+        let _base = rt.seal()?;
+        rt.activate_last_sealed_generation()?;
+        for repo_index in 0..2 {
+            let response = rt.query_text(TextQuerySyntax::Native, &repo_query_token(repo_index), 10);
+            assert!(response.typed_error.is_none());
+            assert_eq!(response.candidates.len(), 1);
+            assert_eq!(
+                response.candidates[0].source_repo_id.as_str(),
+                format!("repo{repo_index}")
+            );
+            assert_eq!(response.candidates[0].repo_relative_path.as_str(), shared_path);
+        }
+
+        let changed0 = format!("{content0}// changed\n");
+        let _ids = rt.ingest_text_chunks(
+            SCALE_REPO,
+            shared_path,
+            &[E2eTextChunkSpec {
+                content: &changed0,
+                start_line: 1,
+                end_line: 2,
+                source_repo_id: Some("repo0"),
+            }],
+        )?;
+        let _delta = rt.seal()?;
+        rt.activate_last_sealed_generation()?;
+        let unaffected = rt.query_text(TextQuerySyntax::Native, &repo_query_token(1), 10);
+        assert!(unaffected.typed_error.is_none());
+        assert_eq!(unaffected.candidates.len(), 1);
+        assert_eq!(unaffected.candidates[0].source_repo_id.as_str(), "repo1");
+        assert_eq!(unaffected.candidates[0].repo_relative_path.as_str(), shared_path);
+        Ok(())
+    }
+
+    #[test]
     fn small_tier_count_is_source_derived_and_every_measured_response_must_match() {
         let corpus = generate_corpus(ScaleTier::Small, 5);
         let expected =

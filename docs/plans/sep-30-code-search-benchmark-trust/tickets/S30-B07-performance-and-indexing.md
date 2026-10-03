@@ -33,7 +33,7 @@ and searchd SHA
 | Priority | Owner and exact change | Acceptance |
 | --- | --- | --- |
 | P0 done | `run.py`: phase timer, v7 ingest stage contract in direct capture, one final closure verification, and Python >=3.10 admission before product execution | Focused positive/negative tests; one complete source-bound pair with `PAIR_VALID=pass`; final source-drift refusal retained |
-| P1 | C5 quality batch in `holdout_c4.py`, `run.py`, Rust retrieval runner and `semble.py`: run the four intent packs against one immutable index per repository, with separate sealed packs, records, reports and replay per intent | Same per-intent rows, statuses and judgments as four fresh runs; a changed corpus/model/strategy/generation refuses reuse; indexing phase reported once, never charged to individual query latency |
+| P1 | C5 quality batch in `holdout_c4.py`, `run.py`, Rust retrieval runner and `semble.py`: run compatible intent packs against one immutable index per repository, with separate sealed packs, records, reports and replay per intent | Same per-intent rows, statuses and judgments as fresh runs; a changed corpus/model/strategy/generation refuses reuse; indexing phase reported once, never charged to individual query latency |
 | P1 | `source_closure.py` and pair driver: benchmark batch reuse of one captured closure for identical source revision, then verify each cell before promotion; keep qualified capture policy explicit | Mutated file, changed root set, revision drift and altered closure digest all refuse; measured capture cost per cell falls without losing final custody check |
 | P2 | Profile SymPy verifier under the current source. Optimize repeated parsing only inside one independent validation pass, keyed by source bytes and parser identity; keep verdict re-derivation independent | Report and verdict bytes unchanged; tampered source and parser identity rejected; representative large-cell wall and CPU reported |
 
@@ -42,6 +42,15 @@ the observed bottleneck. Do not remove qualified admission or reuse indexes in
 fresh-root speed samples. The old 48-cell ledger had repeated per-repository
 Quanta/Semble indexing across four intents, but its summed wall times overlap
 concurrent cells and are not an estimate of achievable batch savings.
+
+The four observed C5 intents cannot be concatenated into one evaluator suite.
+The explicit OSA1 typo tasks use a different request mode from exact/prefix/
+infix; even the three default-mode suites contain cross-intent near-duplicate
+queries that the suite validator correctly rejects. Batch execution must keep
+each original suite and blind pack independently valid. A multi-pack product
+session may share the immutable index, but must emit one native, pack-bound
+record per intent and an explicit shared-index receipt; derived synthetic
+per-intent native records are not acceptable evidence.
 
 ## Work and boundaries
 
