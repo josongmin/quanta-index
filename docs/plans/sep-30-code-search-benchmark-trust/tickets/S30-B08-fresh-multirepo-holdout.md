@@ -1764,3 +1764,49 @@ The v6 C4 result is therefore superseded for C5 admission. A fresh source-bound
 gold capture at clean `9397c1b1` is running under
 `/private/tmp/qi-c5-fresh-20261003-v7`; its C4 wrapper is prepared but must
 wait for the matching gold receipt. No v6 labels or counts are merged with v7.
+
+## C5 checker-identity closure and native OpenGrok index (2026-10-03)
+
+The v7 gold capture failed after 1,896.417 seconds, before publishing any
+capsule. Its receipt is
+`/private/tmp/qi-c5-fresh-20261003-v7/gold-capture-receipt.json`
+(`2b003c1007a583b3fdd20f1dba75c5572081b0776347fccc502bd6b7f9ff5c53`).
+The failure was `gold checker identity differs from frozen recipe`: the v5
+sampling recipes bound only each repository's primary language, while the
+corrected gold oracle audits every supported source language in the unscoped
+file-search universe. For example, `chartjs` has JavaScript and TypeScript
+sources but its frozen recipe binds only the JavaScript checker. The current
+per-language checker binary identities themselves still match the recorded
+values. A new sampling run from clean `4bd35d39`, the same release and seed,
+was preregistered at
+`/private/tmp/qi-c5-fresh-20261003-v8/sampling-precommit.json`
+(`ee1897ebf0667aec3f48e139f62f355d8a93b509c308cc4228ec815e673d73fe`)
+and is running. Its task IDs, split, checker closure and gold must be inspected
+before any C4 replay or product query. The v7 failed output is not a score.
+
+The official OpenGrok `1.14.18` AMD64 image made an incomplete local index
+under emulation. Reducing its project workers from sixteen to two did not
+complete the three lagging projects. Both attempts and their volumes remain
+preserved. The official `1.14.18` source tag `74f9e21e` was then built for
+Linux ARM64 in a separate image and data volume. The new service indexed all
+12 projects. A full native UID inventory and served-byte probe verified
+11,695/11,695 paths and file SHA-256s before/after each repository probe.
+Its receipt is
+`/private/tmp/qi-c5-comparators-20261003-v1/opengrok-v3-full-probe-v2/summary.json`
+(`ae459adbdc11bfaea68ebc5df4f24916e89f9dc6bb83f2d903a9953c255bbf8b`);
+the observed wall time was 371.346 seconds, not a qualified indexing or query
+latency measure. Raw replay independently checked 23,439 captured files and
+the twelve manifests. The architecture/build change explains the successful
+operational workaround; it does not by itself isolate the root cause of the
+AMD64 stalls.
+
+The prior `text/plain` content probe returned HTTP 404 for a Chart.js path
+present in OpenGrok's Lucene UID inventory. In the official source, that route
+performs a separate `getDocument(path)` query; the octet route reads the source
+file. The capture now requires exact Lucene UID inventories around the probe
+and compares octet-source bytes against the release manifest. The previously
+failing Chart.js file returned HTTP 200 and its expected SHA-256. A focused
+positive/negative probe passed 4/4, and the live three-product capture/replay
+fixture passed. This proves indexed path membership and served source bytes,
+not equality of every Lucene content posting. Fresh C5 product queries remain
+`NOT_RUN`.
