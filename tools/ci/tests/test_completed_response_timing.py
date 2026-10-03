@@ -92,7 +92,7 @@ def _add_timing(stage):
     stage["manifest_path"].write_text(json.dumps(run_manifest))
 
 
-def test_paired_completed_response_clocks_allow_qualified_fixture(tmp_path):
+def test_paired_completed_response_clocks_require_binary_source_attestation(tmp_path):
     stage = fixtures._pair_stage(
         tmp_path,
         repetitions=5,
@@ -103,12 +103,12 @@ def test_paired_completed_response_clocks_allow_qualified_fixture(tmp_path):
     _add_timing(stage)
     verdict = fixtures._stage_verdict(stage)
     assert verdict["states"]["PAIR_VALID"] == "pass"
-    assert verdict["states"]["PERF_QUALIFIED"] == "pass"
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert (
         verdict["state_evidence"]["PERF_QUALIFIED"]["reason"]
-        == "completed_response_and_resources_verified"
+        == "binary_build_source_unattested"
     )
-    assert verdict["state_evidence"]["PERF_QUALIFIED"]["proof_digest"] is not None
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["proof_digest"] is None
 
 
 @pytest.mark.parametrize("system", ["quanta", "semble"])

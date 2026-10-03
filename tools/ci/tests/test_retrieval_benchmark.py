@@ -8502,11 +8502,11 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
         tmp_path / "iso", blinding="isolated", scope="qualified", claims={"quality": True}
     )
     verdict = _stage_verdict(st)
-    assert verdict["states"]["QUALITY_DELTA"] == "pass"
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
     assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == (
-        "blinded_graded_context_density_delta"
+        "binary_build_source_unattested"
     )
-    assert verdict["failure_class"] == "none"
+    assert verdict["failure_class"] == "provenance"
     proof_path = st["stage"] / "isolation-proof.json"
     proof = json.loads(proof_path.read_text(encoding="utf-8"))
     proof["policy_sha256"] = _fake_sha("forged-profile")
@@ -8544,8 +8544,11 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
     )
     assert st["manifest"]["provenance"]["quanta"]["embedder"] == "hash-dev"
     verdict = _stage_verdict(st)
-    assert verdict["states"]["QUALITY_DELTA"] == "pass"
-    assert verdict["failure_class"] == "none"
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == (
+        "binary_build_source_unattested"
+    )
+    assert verdict["failure_class"] == "provenance"
     assert verdict["provenance"]["quanta"]["embedder"] == "hash-dev"
 
 
@@ -8571,11 +8574,11 @@ def test_context_density_rubric_independent_oracles(tmp_path, monkeypatch):
     monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
     st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
     verdict = _stage_verdict(st)
-    assert verdict["states"]["QUALITY_DELTA"] == "pass"
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
     assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == (
-        "blinded_graded_context_density_delta"
+        "binary_build_source_unattested"
     )
-    assert verdict["failure_class"] == "none"
+    assert verdict["failure_class"] == "provenance"
 
 
 @pytest.mark.parametrize("claim", ["quality", "speed"])
@@ -8596,7 +8599,8 @@ def test_qualified_claims_require_pair_contract_and_sdk_states(tmp_path, monkeyp
     assert baseline["states"]["PAIR_VALID"] == "pass"
     assert baseline["states"]["CONTRACT_GREEN"] == "pass"
     assert baseline["states"]["SDK_PATH_GREEN"] == "pass"
-    assert baseline["states"][target] == "pass", baseline["state_evidence"][target]
+    assert baseline["states"][target] == "fail", baseline["state_evidence"][target]
+    assert baseline["state_evidence"][target]["reason"] == "binary_build_source_unattested"
 
     manifest = st["manifest"]
     mutations = (
@@ -8621,6 +8625,17 @@ def test_qualified_claims_require_pair_contract_and_sdk_states(tmp_path, monkeyp
             assert verdict["states"][target] == "fail"
         finally:
             path.write_bytes(original)
+
+    _rewrite_manifest(
+        st,
+        lambda manifest: manifest["provenance"]["quanta"].pop(
+            "binary_build_source_revision"
+        ),
+    )
+    legacy = _stage_verdict(st)
+    assert legacy["states"]["PAIR_VALID"] == "pass"
+    assert legacy["states"][target] == "fail"
+    assert legacy["state_evidence"][target]["reason"] == "binary_build_source_unattested"
 
 
 def test_validated_report_penalizes_whole_file_containing_exact_gold(tmp_path):

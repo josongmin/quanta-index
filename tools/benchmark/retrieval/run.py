@@ -8828,6 +8828,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     raise RunError("completed-response output units differ across paired products")
             except (RunError, KeyError, TypeError, ValueError) as exc:
                 perf_fail = (f"completed_response_timing_unverified: {exc}", "provenance")
+        if perf_fail is None and provenance_claims["quanta"].get("binary_build_source_revision") is None:
+            perf_fail = ("binary_build_source_unattested", "provenance")
         if perf_fail is None:
             set_state(
                 "PERF_QUALIFIED",
@@ -8983,6 +8985,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             f"qualification_dependency_unverified:{qualification_dependency}",
             None,
         )
+        classes.append("provenance")
+    elif provenance_claims["quanta"].get("binary_build_source_revision") is None:
+        set_state("QUALITY_DELTA", "fail", "binary_build_source_unattested", None)
         classes.append("provenance")
     else:
         set_state(
