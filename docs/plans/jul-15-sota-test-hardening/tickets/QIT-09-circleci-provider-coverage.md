@@ -34,6 +34,18 @@ The [public CircleCI status page](https://status.circleci.com/) listed no
 Linux Machine incident for that window when checked on 2026-10-03; its
 absence cannot exclude an account-specific or unposted provider failure.
 
+The same organization also ran `quanta-memory-platform` at 2026-10-03
+06:29 UTC (`5c560712`): its `full-extraction` job ended in one second with
+an unset start time and the same `Task information unavailable` step. Its
+2026-09-26 run `0f2a0855` succeeded with the same
+`ubuntu-2404:2026.05.1` machine image and `large` resource class. The
+quanta-index PR head `c90d32d0` repeated the pre-start failure at 06:29 UTC
+(`3bb3ed25`), with both GitHub contexts still `pending`. A repository-only
+source or config fault does not explain the cross-project symptom; organization
+credit/entitlement, shared machine execution and provider scheduling remain
+unresolved candidates. The inspected CircleCI run and job API responses do
+not expose the billing balance or a more specific task rejection reason.
+
 Separately, `just rust-module-cycles` failed on two IPC cycles at that commit.
 Local `just rust-policy` replay also exposed stale ingest enum inventory paths,
 two manifest-format inventory versions, an ignored-test exception path and a
