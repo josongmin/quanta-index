@@ -14,9 +14,10 @@ use std::error::Error;
 
 use crate::e2e_harness;
 use quanta_index_contract::{
-    CandidatePresenceV1, HybridLaneV1, LexicalCandidate, PlannerStage, SearchExplanation,
-    TextQuerySyntax,
+    CandidatePresenceV1, HybridLaneV1, LexicalCandidate, PlannerStage, QueryConstraintSetV1,
+    SearchExplanation, TextQueryRequest, TextQuerySyntax,
 };
+use quanta_index_sdk::{ConnectOptions, QuantaIndex};
 
 use e2e_harness::{E2eRoutePage, E2eRuntime};
 
@@ -83,10 +84,31 @@ fn contribution_sum(explanation: &SearchExplanation) -> f32 {
 }
 
 fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
-    let result = match rt.query_text_page(TextQuerySyntax::CodeSearch, PLAIN_QUERY, 10, None, None)? {
-        E2eRoutePage::Served(page) => page,
-        E2eRoutePage::Refused(error) => return Err(format!("CodeSearch refused: {error}").into()),
-    };
+    let native_page =
+        match rt.query_text_page(TextQuerySyntax::CodeSearch, PLAIN_QUERY, 10, None, None)? {
+            E2eRoutePage::Served(page) => page,
+            E2eRoutePage::Refused(error) => {
+                return Err(format!("CodeSearch refused: {error}").into());
+            }
+        };
+    let pin = native_page.generation;
+    let (query, control, ingest) = rt.socket_paths().ok_or("started runtime sockets")?;
+    let client = QuantaIndex::connect(
+        ConnectOptions::from_state_root(rt.state_root())
+            .with_query_socket(query.to_path_buf())
+            .with_control_socket(control.to_path_buf())
+            .with_ingest_socket(ingest.to_path_buf()),
+    )?;
+    let result = client
+        .lexical()
+        .query()
+        .code_search(PLAIN_QUERY)
+        .pinned(pin.clone())
+        .top_k(10)
+        .execute()?;
+    if result.generation != pin || result.results != native_page.results {
+        return Err("SDK must preserve the pinned native file page".into());
+    }
     let request_trace = &result.explanation;
     for expected in [
         "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true",
@@ -121,22 +143,25 @@ fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
     let (_, bm25) = explained(rt, bm25_top, PLAIN_QUERY)?;
     for candidate in result.results {
         let carried = candidate.score;
-        let presence = rt.explain_candidate(candidate.clone());
-        if let Some(error) = presence.typed_error {
-            return Err(format!("file candidate exact presence failed: {error}").into());
-        }
-        if presence.presence != Some(CandidatePresenceV1::Indexed) {
+        let presence = client.search().explain(pin.clone(), candidate.clone())?;
+        if presence.presence != CandidatePresenceV1::Indexed {
             return Err("file candidate exact presence must be Indexed".into());
         }
-        let explained =
-            rt.explain_candidate_under_query(candidate, TextQuerySyntax::CodeSearch, PLAIN_QUERY);
-        if let Some(error) = explained.typed_error {
-            return Err(format!("CodeSearch explanation refused: {error}").into());
-        }
-        let trace = explained
-            .explanation
-            .ok_or("CodeSearch explanation missing")?;
-        if explained.presence != Some(CandidatePresenceV1::Indexed)
+        let explained = client.search().explain_under_query(
+            pin.clone(),
+            candidate,
+            TextQueryRequest {
+                syntax: TextQuerySyntax::CodeSearch,
+                query_text: PLAIN_QUERY.into(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: None,
+                generation_selector: None,
+                top_k: 1,
+                cursor: None,
+            },
+        )?;
+        let trace = explained.explanation;
+        if explained.presence != CandidatePresenceV1::Indexed
             || trace.contributions.len() != 1
             || trace.contributions[0].signal_name.as_ref() != "lexical.code_search_file"
             || contribution_sum(&trace) != carried
