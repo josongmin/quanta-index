@@ -226,6 +226,8 @@ class _SourceFrame:
         self.directories: set[str] = {"."}
         self.bytes: dict[str, bytes] = {}
         self.observations: dict[str, tuple[int, int, int, int]] = {}
+        self.python_import_roots: set[str] | None = None
+        self.absent_import_candidates: set[tuple[Path, str]] = set()
         for record in output.split(b"\0"):
             if not record:
                 continue
@@ -452,8 +454,31 @@ def resolve_roots(
         if not candidate.exists() and not candidate.is_symlink():
             raise ClosureError(f"source root does not exist: {relative}")
         normalized.add(relative)
-    normalized.update(_python_import_roots(repo, sorted(normalized), frame=frame))
+    imports = _python_import_roots(repo, sorted(normalized), frame=frame)
+    normalized.update(imports)
+    if frame is not None:
+        frame.python_import_roots = {path for path in imports if path.endswith(".py")}
     return sorted(normalized)
+
+
+def _require_closed_python_inventory(paths: list[str], frame: _SourceFrame) -> None:
+    """Refuse Python files added after import traversal without parsing twice."""
+    visited = frame.python_import_roots
+    if visited is None:
+        raise ClosureError("source closure omitted Python import traversal")
+    missing = sorted(path for path in paths if path.endswith(".py") and path not in visited)
+    if missing:
+        raise ClosureError(f"source closure Python inventory changed: {', '.join(missing[:8])}")
+    for path, wanted in sorted(frame.absent_import_candidates):
+        try:
+            mode = path.stat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise ClosureError(f"cannot recheck Python import candidate {path}: {error}") from error
+        appeared = stat.S_ISREG(mode) if wanted == "file" else stat.S_ISDIR(mode)
+        if appeared:
+            raise ClosureError(f"source closure imports changed: {path}")
 
 
 def _python_import_roots(
@@ -480,12 +505,17 @@ def _python_import_roots(
         try:
             mode = path.stat().st_mode
         except FileNotFoundError:
+            if frame is not None:
+                frame.absent_import_candidates.add((path, wanted))
             return False
         except OSError as error:
             raise ClosureError(
                 f"cannot inspect Python source dependency {path}: {error}"
             ) from error
-        return stat.S_ISREG(mode) if wanted == "file" else stat.S_ISDIR(mode)
+        present = stat.S_ISREG(mode) if wanted == "file" else stat.S_ISDIR(mode)
+        if not present and frame is not None:
+            frame.absent_import_candidates.add((path, wanted))
+        return present
 
     def local_files(base: Path, parts: tuple[str, ...]) -> set[Path]:
         candidates: set[Path] = set()
@@ -635,6 +665,7 @@ def build_manifest(repo: Path, profile: str) -> dict:
     roots = resolve_roots(repo, profile, frame=frame)
     _assert_clean(repo, roots)
     paths = _files(repo, roots)
+    _require_closed_python_inventory(paths, frame)
     entries = [
         {"path": path, "sha256": hashlib.sha256(frame.read(repo / path)).hexdigest()}
         for path in paths
@@ -644,8 +675,6 @@ def build_manifest(repo: Path, profile: str) -> dict:
         raise ClosureError("source closure revision changed during capture")
     if _files(repo, roots) != paths:
         raise ClosureError("source closure file set changed during capture")
-    if not _python_import_roots(repo, roots, frame=frame) <= set(roots):
-        raise ClosureError("source closure imports changed during capture")
     frame.recheck()
     core = {
         "schema_version": SCHEMA_VERSION,
@@ -716,6 +745,7 @@ def verify_manifest(repo: Path, payload: object) -> dict:
         raise ClosureError("source closure roots changed")
     _assert_clean(repo, current_roots)
     current_paths = _files(repo, current_roots)
+    _require_closed_python_inventory(current_paths, frame)
     expected_paths = [entry["path"] for entry in manifest["files"]]
     if current_paths != expected_paths:
         raise ClosureError("source closure file set changed")
@@ -728,8 +758,6 @@ def verify_manifest(repo: Path, payload: object) -> dict:
         raise ClosureError("source closure revision changed during verification")
     if _files(repo, current_roots) != current_paths:
         raise ClosureError("source closure file set changed during verification")
-    if not _python_import_roots(repo, current_roots, frame=frame) <= set(current_roots):
-        raise ClosureError("source closure imports changed during verification")
     frame.recheck()
     return manifest
 

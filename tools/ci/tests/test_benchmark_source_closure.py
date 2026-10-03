@@ -187,6 +187,40 @@ def test_changed_file_invalidates_the_closure(tmp_path: Path) -> None:
         raise AssertionError("a changed normative file was captured into a closure")
 
 
+def test_incomplete_import_traversal_refuses_python_inventory(tmp_path, monkeypatch):
+    repo, module = _synthetic_repo(tmp_path)
+    entry = repo / "tools/benchmark/entry.py"
+    entry.write_text("VALUE = 1\n", encoding="utf-8")
+    module.PROFILES["bm-synthetic"]["paths"] = ("tools/benchmark/entry.py",)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "add Python entry")
+    monkeypatch.setattr(module, "_python_import_roots", lambda *_args, **_kwargs: set())
+    with pytest.raises(
+        module.ClosureError, match="Python inventory changed: tools/benchmark/entry.py"
+    ):
+        module.build_manifest(repo, "bm-synthetic")
+
+
+def test_import_appearing_outside_roots_during_capture_is_rejected(tmp_path, monkeypatch):
+    repo, module = _synthetic_repo(tmp_path)
+    entry = repo / "tools/benchmark/entry.py"
+    entry.write_text("import late_module\n", encoding="utf-8")
+    module.PROFILES["bm-synthetic"]["paths"] = ("tools/benchmark/entry.py",)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "add Python entry")
+    original_clean = module._assert_clean
+    late = repo / "late_module.py"
+
+    def appear_after_traversal(source, roots):
+        if not late.exists():
+            late.write_text("VALUE = 1\n", encoding="utf-8")
+        original_clean(source, roots)
+
+    monkeypatch.setattr(module, "_assert_clean", appear_after_traversal)
+    with pytest.raises(module.ClosureError, match="source closure imports changed"):
+        module.build_manifest(repo, "bm-synthetic")
+
+
 @pytest.mark.parametrize(
     "filename",
     [
