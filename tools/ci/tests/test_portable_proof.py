@@ -244,8 +244,8 @@ def test_paired_verification_rechecks_committed_inputs(fake_execution, monkeypat
     }[mutation]
     verify = pairrun._verify_context_commands
 
-    def changed(*args):
-        verify(*args)
+    def changed(*args, **kwargs):
+        verify(*args, **kwargs)
         target.write_bytes(b"mutated after inspection")
 
     monkeypatch.setattr(pairrun, "_verify_context_commands", changed)

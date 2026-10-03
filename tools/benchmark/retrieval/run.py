@@ -8529,6 +8529,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         try:
             if any(key not in resolved for key in SDK_EVIDENCE_KEYS):
                 raise RunError("SDK execution context or receipt artifacts missing")
+            sdk_build_revisions: list[str] = []
             sdk_closure = _verify_execution_context(
                 resolved["sdk_execution_context"],
                 resolved["sdk_source_closure"],
@@ -8541,6 +8542,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 },
                 runner_sha=binary_digest,
                 searchd_sha=protocol_payload.get("searchd_expected_sha256"),
+                build_source_revisions=sdk_build_revisions,
             )
             if "sdk_receipt" not in resolved or "sdk_results" not in resolved:
                 raise RunError("sdk artifacts missing")
@@ -8555,7 +8557,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("sdk receipt digest mismatch")
             if sdk_actual != evidence["sdk_path"]["test_result_digest"]:
                 raise RunError("sdk manifest digest mismatch")
-            sdk_command = "just retrieval-sdk-proof"
+            sdk_command = (
+                "just retrieval-sdk-proof-fresh" if sdk_build_revisions
+                else "just retrieval-sdk-proof"
+            )
             if (
                 sdk_receipt["rail"] != "retrieval-sdk-proof"
                 or sdk_receipt["command"] != sdk_command
@@ -8591,6 +8596,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     resolved["sdk_nextest_raw"],
                     binary_digest,
                     resolved["sdk_inventory"],
+                    command=sdk_command,
                 )
             except SystemExit as exc:
                 raise RunError(f"sdk raw evidence refused: {exc}") from exc
@@ -8628,9 +8634,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             missing.extend(sdk_ids)
             classes.append("provenance")
         else:
-            sdk_context = _proof_control(resolved["sdk_execution_context"])
-            if sdk_context["schema_version"] == portable_proof.FRESH_EXECUTION_CONTEXT_VERSION:
-                binary_build_source_revision = sdk_closure["revision"]
+            if sdk_build_revisions:
+                binary_build_source_revision = sdk_build_revisions[0]
             set_state(
                 "SDK_PATH_GREEN", "pass", "sdk_proof_verified", digest(canonical(sdk_results))
             )
@@ -10098,6 +10103,7 @@ def _verify_execution_context(
     raw: dict[str, Path],
     runner_sha: str | None = None,
     searchd_sha: str | None = None,
+    build_source_revisions: list[str] | None = None,
 ) -> dict:
     """Check frozen bytes and prescribed syntax; OS/tool execution remains unattested."""
     where = f"{rail} execution context"
@@ -10229,6 +10235,12 @@ def _verify_execution_context(
     if len(commands) != len(expected):
         raise RunError(f"{where} command count mismatch")
     with _frozen_context_logs(logs_file, rail) as logs:
+        try:
+            portable_proof.validate_fresh_binary_paths(
+                context, original_out, _proof_control(logs["metadata.stdout"])
+            )
+        except ValueError as exc:
+            raise RunError(f"{where} fresh binary paths refused: {exc}") from exc
         _verify_context_commands(
             commands, expected, logs, raw_files, collection_name, rail,
             build_profile=build_profile,
@@ -10241,6 +10253,8 @@ def _verify_execution_context(
             raise RunError(f"{where} frozen binary inventory changed during verification")
     except OSError as exc:
         raise RunError(f"{where} frozen binary inventory refused: {exc}") from exc
+    if build_profile is not None and build_source_revisions is not None:
+        build_source_revisions.append(closure["revision"])
     return closure
 
 

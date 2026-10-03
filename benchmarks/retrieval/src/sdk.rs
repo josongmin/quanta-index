@@ -1312,6 +1312,43 @@ pub fn query_route_with_policy(
     query: &RouteQuery<'_>,
     policy: crate::query_plan::QueryInputPolicy,
 ) -> QueryOutcome {
+    query_route_with_policy_timed(query, policy).0
+}
+
+/// Runner-only children of one SDK query. `sdk_execute` is the opaque product
+/// builder `.execute()` call (including any SDK transport/decode work), while
+/// `post_execute` covers benchmark response checks and hit normalization.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RouteExecutionTiming {
+    pub sdk_execute: Duration,
+    pub post_execute: Duration,
+}
+
+fn time_route_execution<T>(
+    execute: impl FnOnce() -> Result<T, SdkError>,
+    adapt: impl FnOnce(Result<T, SdkError>) -> QueryOutcome,
+) -> (QueryOutcome, RouteExecutionTiming) {
+    let execute_started = Instant::now();
+    let response = execute();
+    let sdk_execute = execute_started.elapsed();
+    let adapt_started = Instant::now();
+    let outcome = adapt(response);
+    let post_execute = adapt_started.elapsed();
+    (
+        outcome,
+        RouteExecutionTiming {
+            sdk_execute,
+            post_execute,
+        },
+    )
+}
+
+/// Return the same outcome plus internal timing children for the benchmark
+/// phase record. No extra product SDK operation is performed.
+pub fn query_route_with_policy_timed(
+    query: &RouteQuery<'_>,
+    policy: crate::query_plan::QueryInputPolicy,
+) -> (QueryOutcome, RouteExecutionTiming) {
     let expected_pin = GenerationPin::new(
         query.repo_id.clone(),
         query.revision_id.clone(),
@@ -1332,11 +1369,10 @@ pub fn query_route_with_policy(
             } else {
                 builder.native(query.lexical_request)
             };
-            match builder
+            let builder = builder
                 .active(query.repo_id.clone(), query.revision_id.clone())
-                .top_k(query.top_k)
-                .execute()
-            {
+                .top_k(query.top_k);
+            time_route_execution(|| builder.execute(), |response| match response {
                 Ok(response) => {
                     let expected_unit = expected_lexical_rank_unit(policy);
                     if response.rank_unit != expected_unit {
@@ -1386,7 +1422,7 @@ pub fn query_route_with_policy(
                     )
                 }
                 Err(err) => failed_outcome(&err, start),
-            }
+            })
         }
         "semantic" => {
             match query

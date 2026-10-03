@@ -18,14 +18,21 @@ from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
 
 def _without_code_search_work_clocks(planner_trace: list, *, allow_clocks: bool = True) -> list:
-    """Ignore only the three policy-controlled CodeSearch response clocks."""
-    clock_prefixes = (
+    """Remove validated observation clocks, preserving every non-clock fact."""
+    parent_prefixes = (
         "code_search.execution.candidate_ns=",
         "code_search.execution.sort_page_ns=",
         "code_search.execution.preview_ns=",
     )
+    child_prefixes = (
+        "code_search.execution.typo_shortlist_admission_ns=",
+        "code_search.execution.typo_source_token_scan_ns=",
+        "code_search.execution.typo_materialize_ns=",
+    )
+    clock_prefixes = parent_prefixes + child_prefixes
     result = []
     seen: set[str] = set()
+    clocks: dict[str, int] = {}
     for entry in planner_trace:
         detail = entry.get("detail") if isinstance(entry, dict) else None
         prefix = next(
@@ -42,9 +49,25 @@ def _without_code_search_work_clocks(planner_trace: list, *, allow_clocks: bool 
         value = detail[len(prefix) :]
         if not allow_clocks:
             raise ValueError("disabled query observation emitted a CodeSearch work clock")
-        if prefix in seen or not value.isascii() or not value.isdecimal():
+        if (
+            prefix in seen or not value.isascii() or not value.isdecimal()
+            or len(value) > 20 or int(value) > (1 << 64) - 1
+        ):
             raise ValueError("on/off CodeSearch work clock is malformed or duplicated")
         seen.add(prefix)
+        clocks[prefix] = int(value)
+    if seen.intersection(child_prefixes):
+        modes = [
+            entry["detail"] for entry in planner_trace
+            if isinstance(entry, dict) and isinstance(entry.get("detail"), str)
+            and entry["detail"].startswith("code_search.execution.mode=")
+        ]
+        if (
+            not set(clock_prefixes).issubset(seen)
+            or modes != ["code_search.execution.mode=typo_fallback"]
+            or sum(clocks[key] for key in child_prefixes) > clocks[parent_prefixes[0]]
+        ):
+            raise ValueError("on/off CodeSearch typo work clock hierarchy is invalid")
     return result
 
 
