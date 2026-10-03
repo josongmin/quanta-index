@@ -775,6 +775,8 @@ pub struct DeleteReopenMeasurementV1 {
     /// Stops and restarts the daemon thread in the same OS process, then
     /// waits for readiness. This is not a cold process or cold page cache.
     pub same_process_reopen_ms: f64,
+    /// First served positive file query after the daemon thread is ready.
+    pub reopened_first_query_ms: f64,
 }
 
 /// Captured measurements for one measured tier run.
@@ -1184,10 +1186,12 @@ fn measure_scoped_delete_reopen(
     rt.try_reopen_in_place()?;
     rt.start()?;
     let same_process_reopen_ms = elapsed_ms(reopen_started);
+    let first_query_started = Instant::now();
+    let retained_reopened = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
+    let reopened_first_query_ms = elapsed_ms(first_query_started);
+    require_single_source_file(&retained_reopened, "repo1", &file.repo_relative_path)?;
     let deleted_reopened = rt.query_text(TextQuerySyntax::Native, &deleted_token, SCALE_TOP_K);
     require_no_source_file(&deleted_reopened)?;
-    let retained_reopened = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
-    require_single_source_file(&retained_reopened, "repo1", &file.repo_relative_path)?;
     let global_reopened = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
     let _count = validate_scoped_response(&successor, None, &global_reopened)?;
     verify_scoped_repositories(rt, &successor)?;
@@ -1195,6 +1199,7 @@ fn measure_scoped_delete_reopen(
         delete_seal_ms,
         delete_activation_ms,
         same_process_reopen_ms,
+        reopened_first_query_ms,
     })
 }
 
@@ -1808,6 +1813,7 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
             "delete_seal_ms": timing.delete_seal_ms,
             "delete_activation_ms": timing.delete_activation_ms,
             "same_process_reopen_ms": timing.same_process_reopen_ms,
+            "reopened_first_query_ms": timing.reopened_first_query_ms,
             "scope": "same OS process and state root; daemon thread restarted; page cache not cleared",
         })),
         "result_count": measurement.result_count,
