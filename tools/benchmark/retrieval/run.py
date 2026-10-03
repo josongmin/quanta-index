@@ -2967,6 +2967,33 @@ def _spec_int(spec: dict, key: str, minimum: int) -> int:
     return value
 
 
+def _validate_file_pair_contract(spec: dict, *, paired: bool) -> bool:
+    """One admission boundary for loading, direct capture and staged capture."""
+    profiles = spec.get("execution_profiles")
+    quanta = profiles.get("quanta") if isinstance(profiles, dict) else None
+    if not isinstance(quanta, dict) or quanta.get("policy") not in qp.FILE_PAIR_POLICIES:
+        return False
+    if spec.get("scope", "exploratory") == "qualified":
+        if (
+            quanta["policy"] not in qp.QUALIFIED_FILE_PAIR_POLICIES
+            or spec.get("claims", {}).get("quality") is not True
+            or not isinstance(spec.get("admission"), dict)
+            or _admission_keys(spec["admission"]) != ADMISSION_DISJOINT_KEYS
+        ):
+            raise RunError(
+                "qualified file scoring requires code_search_file or natural_language_file, "
+                "repository-disjoint admission and a quality claim"
+            )
+    elif any(spec.get("claims", {}).values()):
+        raise RunError("exploratory code-search file pair cannot carry claims")
+    if spec.get("routes", ["lexical", "semantic", "hybrid"]) != ["lexical"]:
+        raise RunError("code-search file pair requires lexical-only Quanta route")
+    semble = profiles.get("semble")
+    if paired and (not isinstance(semble, dict) or semble.get("mode") != "lexical-file"):
+        raise RunError("code-search file pair requires Semble lexical-file rank unit")
+    return True
+
+
 def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
     """Load a capture spec with pair-only policies unless Quanta runs alone."""
     spec = read_json(path)
@@ -3027,9 +3054,14 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
     if (
         policy in ("natural_language", "natural_language_file")
         and quanta_profile["config"]["max_tokens"] != qp.DEFAULT_NL_CONFIG["max_tokens"]
-        and (spec.get("scope", "exploratory") != "exploratory" or any(spec.get("claims", {}).values()))
+        and (
+            spec.get("scope", "exploratory") != "exploratory"
+            or any(spec.get("claims", {}).values())
+        )
     ):
-        raise RunError("custom natural-language token budget requires exploratory scope without claims")
+        raise RunError(
+            "custom natural-language token budget requires exploratory scope without claims"
+        )
     if quanta_profile["policy"] not in PAIR_QUANTA_POLICIES:
         if not standalone_quanta:
             raise RunError(
@@ -3051,25 +3083,7 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
             )
     if "semble" in profiles:
         _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
-    if quanta_profile["policy"] in qp.FILE_PAIR_POLICIES:
-        file_qualified = spec.get("scope", "exploratory") == "qualified"
-        if file_qualified:
-            if (
-                quanta_profile["policy"] != "code_search_file"
-                or spec.get("claims", {}).get("quality") is not True
-                or "admission" not in spec
-                or _admission_keys(spec["admission"]) != ADMISSION_DISJOINT_KEYS
-            ):
-                raise RunError(
-                    "qualified code-search file pair requires code_search_file, "
-                    "a quality claim and repository-disjoint admission"
-                )
-        elif any(spec.get("claims", {}).values()):
-            raise RunError("exploratory code-search file pair cannot carry claims")
-        if spec.get("routes", ["lexical", "semantic", "hybrid"]) != ["lexical"]:
-            raise RunError("code-search file pair requires lexical-only Quanta route")
-        if "semble" in profiles and profiles["semble"].get("mode") != "lexical-file":
-            raise RunError("code-search file pair requires Semble lexical-file rank unit")
+    _validate_file_pair_contract(spec, paired="semble" in profiles)
     _spec_int(spec, "top_k", 1)
     server_observation_configuration(spec.get("query_stage_observation", "enabled"))
     hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100"))
@@ -3220,8 +3234,12 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
     return spec
 
 
-def require_reviewable_default_file_positives(suite: dict) -> None:
-    """Keep mechanical declaration targets out of qualified general-file quality."""
+def require_reviewed_file_labels(suite: dict, policy: str) -> None:
+    """Bind qualified file quality to its request mode and independent labels."""
+    if policy not in qp.QUALIFIED_FILE_PAIR_POLICIES:
+        raise RunError("unsupported qualified file policy")
+    natural_language = policy == "natural_language_file"
+    mode = qp.NATURAL_LANGUAGE_FILE_SEARCH if natural_language else qp.DEFAULT_FILE_SEARCH
     tasks = suite.get("tasks")
     if not isinstance(tasks, list):
         raise RunError("qualified default file suite lacks tasks")
@@ -3231,9 +3249,16 @@ def require_reviewable_default_file_positives(suite: dict) -> None:
         if task.get("split") != "eval":
             continue
         contract = task.get("evaluation_contract")
-        if not isinstance(contract, dict) or contract.get("request_mode") != "default_file_search":
+        if not isinstance(contract, dict) or contract.get("request_mode") != mode:
             raise RunError("qualified default file suite requires a declared file request mode")
-        if task.get("answerable") is not True:
+        if (
+            contract.get("gold_unit") != "distinct_file"
+            or contract.get("result_unit") != "distinct_file"
+        ):
+            raise RunError("qualified file suite requires distinct_file gold and results")
+        if natural_language and task.get("query_intent") != "semantic_intent":
+            raise RunError("qualified natural-language file suite requires semantic_intent")
+        if not natural_language and task.get("answerable") is not True:
             continue
         if "source_oracle" in task or task.get("judgment_policy") != COMPLETE_JUDGMENT_POLICY:
             raise RunError(
@@ -3266,9 +3291,9 @@ def preflight_capture(spec: dict) -> Path:
     if (
         spec.get("scope") == "qualified"
         and isinstance(quanta_profile, dict)
-        and quanta_profile.get("policy") == "code_search_file"
+        and quanta_profile.get("policy") in qp.QUALIFIED_FILE_PAIR_POLICIES
     ):
-        require_reviewable_default_file_positives(suite_payload)
+        require_reviewed_file_labels(suite_payload, quanta_profile["policy"])
     try:
         contract = validate_comparison_contract(
             suite_payload.get("comparison_contract"), "suite.comparison_contract"
@@ -6946,9 +6971,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     if (
         manifest["scope"] == "qualified"
         and isinstance(quanta_profile, dict)
-        and quanta_profile.get("policy") == "code_search_file"
+        and quanta_profile.get("policy") in qp.QUALIFIED_FILE_PAIR_POLICIES
     ):
-        require_reviewable_default_file_positives(suite)
+        require_reviewed_file_labels(suite, quanta_profile["policy"])
     protocol_keys = {
         "lock_version",
         "suite_digest",
@@ -7081,7 +7106,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     and quanta["config"]["max_tokens"] != qp.DEFAULT_NL_CONFIG["max_tokens"]
                     and manifest["scope"] != "exploratory"
                 ):
-                    raise RunError("custom natural-language token budget cannot carry qualified scope")
+                    raise RunError(
+                        "custom natural-language token budget cannot carry qualified scope"
+                    )
                 _validate_semble_profile(profiles["semble"], "protocol execution profile")
             except (AttributeError, KeyError, RunError, ValueError):
                 protocol_shape_valid = False
@@ -8391,7 +8418,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     # QUALITY_DELTA: blinded, graded, in-scope quality only.
     file_quality_policy = (
         protocol_payload.get("execution_profiles", {}).get("quanta", {}).get("policy")
-        == "code_search_file"
+        in qp.QUALIFIED_FILE_PAIR_POLICIES
     )
     isolation_claimed = manifest["blinding"] == "isolated"
     all_isolated = isolation_claimed
@@ -8712,29 +8739,7 @@ def run_pair(spec: dict) -> int:
     profiles = spec.get("execution_profiles")
     quanta_profile = profiles.get("quanta") if isinstance(profiles, dict) else None
     semble_profile = profiles.get("semble") if isinstance(profiles, dict) else None
-    code_search_file = isinstance(quanta_profile, dict) and (
-        quanta_profile.get("policy") in qp.FILE_PAIR_POLICIES
-    )
-    if code_search_file and (
-        spec.get("routes") != ["lexical"]
-        or not isinstance(semble_profile, dict)
-        or semble_profile.get("mode") != "lexical-file"
-    ):
-        raise RunError("code_search_file pair requires lexical/file profiles")
-    if code_search_file:
-        if scope == "qualified":
-            if (
-                quanta_profile.get("policy") != "code_search_file"
-                or spec.get("claims", {}).get("quality") is not True
-                or not isinstance(spec.get("admission"), dict)
-                or _admission_keys(spec["admission"]) != ADMISSION_DISJOINT_KEYS
-            ):
-                raise RunError(
-                    "qualified code_search_file pair requires repository-disjoint "
-                    "admission and a quality claim"
-                )
-        elif any(spec.get("claims", {}).values()):
-            raise RunError("exploratory code_search_file pair cannot carry claims")
+    _validate_file_pair_contract(spec, paired=True)
     if spec.get("embedder") == "potion-code-full-v2" and (
         scope != "exploratory" or any(spec.get("claims", {}).values())
     ):
@@ -8832,13 +8837,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     if "semble" not in spec["execution_profiles"]:
         raise RunError("pair requires spec.execution_profiles.semble")
     scope = spec.get("scope", "exploratory")
-    code_search_file = spec["execution_profiles"]["quanta"]["policy"] in qp.FILE_PAIR_POLICIES
-    if (
-        code_search_file
-        and scope == "qualified"
-        and spec["execution_profiles"]["quanta"]["policy"] != "code_search_file"
-    ):
-        raise RunError("qualified file scoring requires code_search_file")
+    file_pair = _validate_file_pair_contract(spec, paired=True)
     order = spec.get("order", ["quanta", "semble"])
     if sorted(order) != ["quanta", "semble"]:
         raise RunError("spec.order must list quanta and semble exactly once")
@@ -8978,11 +8977,11 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         )
         candidate_routes = sorted({row["route"] for row in payload["results"]})
         for candidate in candidate_routes:
-            if code_search_file and scope == "qualified":
+            if file_pair and scope == "qualified":
                 report = evaluate_complete_scored_file_evidence(
                     suite, pack, combined, baseline, candidate
                 )
-            elif code_search_file:
+            elif file_pair:
                 report = evaluate_paired_file_diagnostic(suite, pack, combined, baseline, candidate)
             else:
                 report = evaluate(suite, pack, combined, baseline, candidate, strict_k=True)

@@ -71,6 +71,10 @@ CODE_SEARCH_FILE_POLICIES = frozenset(
     )
 )
 FILE_PAIR_POLICIES = CODE_SEARCH_FILE_POLICIES | frozenset(("natural_language_file",))
+# Qualification applies to reviewed file retrieval, not diagnostic symbol
+# transformations. Natural-language file retrieval is lexical token OR with
+# native distinct-file ranking; this does not admit semantic or hybrid routes.
+QUALIFIED_FILE_PAIR_POLICIES = frozenset(("code_search_file", "natural_language_file"))
 # Evaluation meaning is separate from the product's execution profile. These
 # names describe the request submitted, not the relevance labels it may score.
 DEFAULT_FILE_SEARCH = "default_file_search"

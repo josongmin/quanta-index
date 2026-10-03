@@ -2668,7 +2668,8 @@ def test_pair_capture_preflight_requires_external_root_and_clean_pin(tmp_path):
         pairrun.preflight_capture(spec)
 
 
-def test_qualified_default_file_preflight_refuses_mechanical_positive(tmp_path):
+@pytest.mark.parametrize("policy", ["code_search_file", "natural_language_file"])
+def test_qualified_default_file_preflight_refuses_mechanical_positive(tmp_path, policy):
     repo, suite, _run, _sp, _rp, _files = fixture_v3(tmp_path)
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"repository_commit": suite["repository_commit"]}))
@@ -2684,15 +2685,21 @@ def test_qualified_default_file_preflight_refuses_mechanical_positive(tmp_path):
         "searchd_binary": str(searchd),
         "searchd_expected_sha256": ev.digest(b"searchd-binary"),
         "scope": "qualified",
-        "execution_profiles": {"quanta": {"policy": "code_search_file"}},
+        "execution_profiles": {"quanta": {"policy": policy}},
     }
     positive = suite["tasks"][0]
     positive["evaluation_contract"] = {
-        "request_mode": "default_file_search",
+        "request_mode": (
+            "natural_language_file_search"
+            if policy == "natural_language_file"
+            else "default_file_search"
+        ),
         "gold_unit": "distinct_file",
         "result_unit": "distinct_file",
     }
     positive["judgment_policy"] = ev.SOURCE_ORACLE_JUDGMENT_POLICY
+    if policy == "natural_language_file":
+        positive["query_intent"] = "semantic_intent"
     positive["source_oracle"] = {
         "contract": "go_declaration_name_components_v1",
         "unit": "distinct_file",
@@ -2710,8 +2717,28 @@ def test_qualified_default_file_preflight_refuses_mechanical_positive(tmp_path):
         "contract": "go_declaration_name_components_v1",
         "unit": "distinct_file",
     }
+    if policy == "natural_language_file":
+        negative["query_intent"] = "semantic_intent"
+        suite_file.write_text(json.dumps(suite))
+        with pytest.raises(pairrun.RunError, match="independently reviewed complete relevance"):
+            pairrun.preflight_capture(spec)
+        negative.pop("source_oracle")
+        negative["judgment_policy"] = ev.COMPLETE_JUDGMENT_POLICY
     suite_file.write_text(json.dumps(suite))
     assert pairrun.preflight_capture(spec) == tmp_path / "capture"
+
+    for field in ("gold_unit", "result_unit"):
+        positive["evaluation_contract"][field] = "symbol"
+        suite_file.write_text(json.dumps(suite))
+        with pytest.raises(pairrun.RunError, match="distinct_file gold and results"):
+            pairrun.preflight_capture(spec)
+        positive["evaluation_contract"][field] = "distinct_file"
+    if policy == "natural_language_file":
+        positive["query_intent"] = "bare_symbol"
+        suite_file.write_text(json.dumps(suite))
+        with pytest.raises(pairrun.RunError, match="requires semantic_intent"):
+            pairrun.preflight_capture(spec)
+        positive["query_intent"] = "semantic_intent"
 
     negative.pop("evaluation_contract")
     suite_file.write_text(json.dumps(suite))
@@ -9323,11 +9350,12 @@ def test_runtime_manifest_requires_qualified_source_closure_artifact(tmp_path):
         _stage_verdict(st)
 
 
-def test_qualified_default_file_verdict_requires_request_contract(tmp_path):
+@pytest.mark.parametrize("policy", ["code_search_file", "natural_language_file"])
+def test_qualified_default_file_verdict_requires_request_contract(tmp_path, policy):
     st = _pair_stage(tmp_path, scope="qualified")
     protocol = st["stage"] / "protocol-lock.json"
     payload = json.loads(protocol.read_text(encoding="utf-8"))
-    payload["execution_profiles"]["quanta"]["policy"] = "code_search_file"
+    payload["execution_profiles"]["quanta"]["policy"] = policy
     protocol.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(pairrun.RunError, match="declared file request mode"):
         _stage_verdict(st)
@@ -11818,8 +11846,9 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
     }
     jsonschema.validate(qualified, _load_schema("pair-spec.schema.json"))
     spec_path.write_text(json.dumps(qualified), encoding="utf-8")
-    if policy == "code_search_file":
+    if policy in ("code_search_file", "natural_language_file"):
         assert pairrun.load_spec(spec_path) == qualified
+        assert pairrun._validate_file_pair_contract(qualified, paired=True) is True
         local_admission = copy.deepcopy(qualified)
         del local_admission["admission"]["split_manifest"]
         del local_admission["admission"]["split_releases"]
@@ -11829,9 +11858,23 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
         spec_path.write_text(json.dumps(local_admission), encoding="utf-8")
         with pytest.raises(pairrun.RunError, match="repository-disjoint admission"):
             pairrun.load_spec(spec_path)
+        for entry in (
+            pairrun.run_pair,
+            lambda spec: pairrun._run_pair_staged(spec, tmp_path / "stage"),
+        ):
+            with pytest.raises(pairrun.RunError, match="repository-disjoint admission"):
+                entry(local_admission)
+        assert not (tmp_path / "stage").exists()
     else:
         with pytest.raises(pairrun.RunError, match="requires code_search_file"):
             pairrun.load_spec(spec_path)
+        for entry in (
+            pairrun.run_pair,
+            lambda spec: pairrun._run_pair_staged(spec, tmp_path / "stage"),
+        ):
+            with pytest.raises(pairrun.RunError, match="requires code_search_file"):
+                entry(qualified)
+        assert not (tmp_path / "stage").exists()
 
 
 def test_natural_language_file_planner_has_distinct_scored_file_contract():
