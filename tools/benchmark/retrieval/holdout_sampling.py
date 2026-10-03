@@ -200,9 +200,7 @@ def _task(
         "query": query,
         "scope_prefix": "",
         "language": None if intent == "literal_utf8_exact" else repository.language,
-        "case_semantics": (
-            "casefold" if intent == "declaration_name_osa1_casefold" else "sensitive"
-        ),
+        "case_semantics": ("casefold" if intent in gold_oracle.CASEFOLD_INTENTS else "sensitive"),
         "normalization": "none_raw_utf8",
     }
     if intended_name is not None:

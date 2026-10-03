@@ -339,7 +339,8 @@ def _derive_prepared(
             or task.get("unsupported") != []
             or type(task.get("answerable")) is not bool
             or task.get("language") != language
-            or task.get("case_semantics") != ("casefold" if intended_typo else "sensitive")
+            or task.get("case_semantics")
+            != ("casefold" if intent in gold_oracle.CASEFOLD_INTENTS else "sensitive")
             or task.get("normalization") != "none_raw_utf8"
             or task.get("scope_prefix") != ""
         ):

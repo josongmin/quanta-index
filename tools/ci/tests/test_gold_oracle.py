@@ -63,6 +63,30 @@ def test_casefold_osa1_recipe_requires_explicit_case_semantics():
         gold_oracle.validate_recipe(bad)
 
 
+def test_component_recipe_requires_folded_name_semantics():
+    row = {
+        "task_id": "component-1",
+        "query_family_id": "family-1",
+        "intent": "declaration_name_components",
+        "query": "clean up",
+        "scope_prefix": "",
+        "language": "go",
+        "case_semantics": "casefold",
+        "normalization": "none_raw_utf8",
+    }
+    recipe = {
+        "schema_version": 2,
+        "split": "holdout",
+        "split_manifest_sha256": "a" * 64,
+        "tasks": [row],
+    }
+    assert gold_oracle.validate_recipe(recipe) == recipe
+    bad = copy.deepcopy(recipe)
+    bad["tasks"][0]["case_semantics"] = "sensitive"
+    with pytest.raises(EvidenceError, match="query semantics"):
+        gold_oracle.validate_recipe(bad)
+
+
 def test_casefold_typo_gold_keeps_intended_and_near_declarations_separate(tmp_path):
     view = tmp_path / "view"
     view.mkdir()
@@ -629,6 +653,7 @@ def declaration_task(task_id, intent, query, language, split="holdout"):
     return {
         **task(task_id, split, query, "", intent, language),
         "query_family_id": task_id,
+        "case_semantics": ("casefold" if intent in gold_oracle.CASEFOLD_INTENTS else "sensitive"),
     }
 
 

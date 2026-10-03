@@ -67,6 +67,7 @@ DECLARATION_INTENTS = {
     "declaration_name_osa1": "osa1",
     "declaration_name_osa1_casefold": "osa1_casefold",
 }
+CASEFOLD_INTENTS = frozenset({"declaration_name_components", "declaration_name_osa1_casefold"})
 INTENTS = frozenset({"literal_utf8_exact", "named_function_declaration", *DECLARATION_INTENTS})
 ID = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\Z")
 SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
@@ -222,8 +223,7 @@ def validate_recipe(recipe: object) -> dict:
             or (intent == "literal_utf8_exact" and language is not None)
             or (intent in DECLARATION_INTENTS and language not in source_oracle.DECLARATION_CENSUS)
             or not _path(task["scope_prefix"], allow_empty=True)
-            or task["case_semantics"]
-            != ("casefold" if intent == "declaration_name_osa1_casefold" else "sensitive")
+            or task["case_semantics"] != ("casefold" if intent in CASEFOLD_INTENTS else "sensitive")
             or task["normalization"] != "none_raw_utf8"
         ):
             raise EvidenceError("gold task has unsupported or ambiguous query semantics")

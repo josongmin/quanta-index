@@ -1214,4 +1214,15 @@ release digests and preflight limitations are in
 `/private/tmp/qi-c5-fresh-20261003/candidate-status.json`
 (SHA-256 `839bb8dd898a6dd72ed4d2f874025741ec7a8a44df7c13b0eb3a6bb7d2753903`).
 This does not discharge near-duplicate checks or admit any of the four.
-The other eight cells have no frozen release yet.
+The original three Go/medium reserves measured 258, 89 and 181 `code_only`
+files, below the preregistered 301-file lower bound. Before checking any
+replacement source, an ordered public-metadata amendment was frozen at
+`/private/tmp/qi-c5-fresh-20261003/selection-amendment-go-medium-1.json`
+(SHA-256 `ee5510f713e32b58583459f9632d1b5f26c1c484c89e2f4eab80775b8dd90a2c`).
+Its first candidate, `grpc/grpc-go@de4775bffabedc6674c131d88212a510c32e1ab1`,
+replayed to a provisional release with 1,081 `code_only` files and no
+identical code blob or shared root commit against the 22 prior views. The
+five frozen candidates total 1,300 code files; their digests and the three
+size refusals are in `/private/tmp/qi-c5-fresh-20261003/candidate-status-v2.json`
+(SHA-256 `0fe6a3231fd4e92a8d213791f1c401852e967afe67b7331d9e25d2de35044e61`).
+Near-duplicate audit and the other seven cells remain **NOT_RUN**.

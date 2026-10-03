@@ -243,6 +243,8 @@ def test_c4_independent_name_variants(tmp_path, monkeypatch, intent, query, name
     blind = holdout_c4._read(capsule / "blind.json")
     for payload in (gold, blind):
         payload["tasks"][0].update(intent=intent, query=query)
+        if intent == "declaration_name_components":
+            payload["tasks"][0]["case_semantics"] = "casefold"
     label = gold["tasks"][0]["labels"][0]
     gold["tasks"][0]["labels"] = [
         {
