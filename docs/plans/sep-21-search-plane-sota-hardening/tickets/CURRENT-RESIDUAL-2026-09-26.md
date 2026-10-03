@@ -1,11 +1,21 @@
-# SEP-21 remaining implementation and qualification
+# SEP-21 remaining qualification
 
-Status: `ACTIVE`. This is a residual ledger, not a current-source receipt.
-Completed recovery/supervision/proof decisions are in
+Status: `ACTIVE` **qualification ledger**, not an implementation gap list.
+Code audit 2026-10-03: ingest → index → CAS activate → UDS
+lexical/semantic/hybrid query is **live** in this tree. See
+[engine status](../../../ssot/engine-status-v1.md).
+
+This file remains a residual ledger for **host/release/evidence**. It is not
+a current-source code receipt. Completed recovery/supervision/proof decisions
+are in
 [SEP-27-005](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
 Historical owner counts, source snapshots and temporary logs are removed from
 live status; recover original bodies through the [plan archive](../../ARCHIVE-INDEX.md).
 Recheck each open condition against the source selected for its execution.
+
+Do not read a row below as “handler unimplemented” unless engine-status names
+a typed refusal (`structural_block_leaf`, selected `LqFilter`, default hash
+embed vs real-provider identity).
 
 ## Remaining root-cause union
 
