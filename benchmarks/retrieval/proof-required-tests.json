@@ -571,8 +571,12 @@
     "tools.ci.tests.test_source_oracle_suite.test_source_oracle_validator_rejects_a_later_matching_gold_line",
     "tools.ci.tests.test_source_oracle_suite.test_stress_typo_generators_are_deterministic_one_edit_and_boundary_scoped",
     "tools.ci.tests.test_source_oracle_suite.test_two_substitution_probe_is_two_edits_and_not_a_product_osa1_request",
+    "tools.ci.tests.test_source_oracle_suite.test_typescript_oracles_use_the_producer_compatibility_grammar[ts]",
+    "tools.ci.tests.test_source_oracle_suite.test_typescript_oracles_use_the_producer_compatibility_grammar[tsx]",
     "tools.ci.tests.test_source_oracle_suite.test_typo_gold_partition_separates_intent_from_near_names_and_content",
-    "tools.ci.tests.test_source_oracle_suite.test_typo_partition_accepts_query_proven_parser_refusal"
+    "tools.ci.tests.test_source_oracle_suite.test_typo_partition_accepts_query_proven_parser_refusal",
+    "tools.ci.tests.test_source_oracle_suite.test_vendored_parser_cache_refuses_identity_and_binary_tampering",
+    "tools.ci.tests.test_source_oracle_suite.test_vendored_parser_has_no_unpatched_fallback_when_compiler_is_missing"
   ],
   "rust": [
     "quanta-index-retrieval-bench::chunking_contract$bom_flows_through_as_plain_utf8_bytes",
