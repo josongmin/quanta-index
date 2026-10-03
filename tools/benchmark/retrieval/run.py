@@ -3012,8 +3012,24 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
         or quanta_profile.get("policy") not in qp.SUPPORTED_POLICIES
     ):
         raise RunError("spec.execution_profiles.quanta is invalid")
-    if quanta_profile != qp.execution_profile(quanta_profile["policy"]):
+    policy = quanta_profile["policy"]
+    try:
+        expected_quanta_profile = qp.execution_profile(
+            policy,
+            quanta_profile.get("config")
+            if policy in ("natural_language", "natural_language_file")
+            else None,
+        )
+    except qp.QueryPlanError as exc:
+        raise RunError(f"spec.execution_profiles.quanta config is invalid: {exc}") from exc
+    if quanta_profile != expected_quanta_profile:
         raise RunError("spec.execution_profiles.quanta differs from the frozen profile")
+    if (
+        policy in ("natural_language", "natural_language_file")
+        and quanta_profile["config"]["max_tokens"] != qp.DEFAULT_NL_CONFIG["max_tokens"]
+        and (spec.get("scope", "exploratory") != "exploratory" or any(spec.get("claims", {}).values()))
+    ):
+        raise RunError("custom natural-language token budget requires exploratory scope without claims")
     if quanta_profile["policy"] not in PAIR_QUANTA_POLICIES:
         if not standalone_quanta:
             raise RunError(
@@ -4725,6 +4741,12 @@ def run_quanta_strategy(
         "--out",
         str(record_path),
     ]
+    quanta_profile = spec["execution_profiles"]["quanta"]
+    if (
+        quanta_profile["policy"] in ("natural_language", "natural_language_file")
+        and quanta_profile["config"]["max_tokens"] != qp.DEFAULT_NL_CONFIG["max_tokens"]
+    ):
+        command += ["--nl-max-tokens", str(quanta_profile["config"]["max_tokens"])]
     if "_query_protocol" in spec:
         command += ["--query-protocol", spec["_query_protocol"]]
     if "code_search_rank_study" in spec:
@@ -7045,8 +7067,21 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 if set(profiles) != {"quanta", "semble"}:
                     raise RunError("protocol execution profile systems are incomplete")
                 quanta = profiles["quanta"]
-                if quanta != qp.execution_profile(quanta.get("policy")):
+                policy = quanta.get("policy")
+                expected_quanta = qp.execution_profile(
+                    policy,
+                    quanta.get("config")
+                    if policy in ("natural_language", "natural_language_file")
+                    else None,
+                )
+                if quanta != expected_quanta:
                     raise RunError("protocol Quanta execution profile is invalid")
+                if (
+                    policy in ("natural_language", "natural_language_file")
+                    and quanta["config"]["max_tokens"] != qp.DEFAULT_NL_CONFIG["max_tokens"]
+                    and manifest["scope"] != "exploratory"
+                ):
+                    raise RunError("custom natural-language token budget cannot carry qualified scope")
                 _validate_semble_profile(profiles["semble"], "protocol execution profile")
             except (AttributeError, KeyError, RunError, ValueError):
                 protocol_shape_valid = False

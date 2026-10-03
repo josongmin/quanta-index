@@ -30,6 +30,7 @@ MAX_INPUT_BYTES = 16 * 1024
 
 #: Pinned natural-language plan profile (Rust ``NlPlanConfig::default()``).
 DEFAULT_NL_CONFIG = {"max_token_chars": 96, "max_tokens": 32, "min_token_chars": 1}
+MAX_EXPLORATORY_NL_TOKENS = 128
 
 #: Current policies and the immutable v4 policy inventory (RBR-02).
 V4_SUPPORTED_POLICIES = ("native", "literal", "natural_language")
@@ -135,12 +136,36 @@ class QueryPlanError(ValueError):
     """Typed refusal while re-deriving a query plan."""
 
 
+def validated_execution_config(policy: str, config: dict[str, int] | None = None) -> dict:
+    """Admit the one bounded v5 natural-language setting carried by a profile."""
+    if policy not in SUPPORTED_POLICIES:
+        raise QueryPlanError(f"unsupported query input policy: {policy}")
+    if policy not in ("natural_language", "natural_language_file"):
+        if config is not None:
+            raise QueryPlanError(f"{policy} policy does not accept natural-language config")
+        return {}
+    if config is None:
+        return dict(DEFAULT_NL_CONFIG)
+    if not isinstance(config, dict) or set(config) != set(DEFAULT_NL_CONFIG):
+        raise QueryPlanError("natural-language config fields differ from the frozen profile")
+    if any(type(value) is not int for value in config.values()):
+        raise QueryPlanError("natural-language config fields must be integers")
+    if (
+        config["max_token_chars"] != DEFAULT_NL_CONFIG["max_token_chars"]
+        or config["min_token_chars"] != DEFAULT_NL_CONFIG["min_token_chars"]
+        or not 1 <= config["max_tokens"] <= MAX_EXPLORATORY_NL_TOKENS
+    ):
+        raise QueryPlanError("natural-language config exceeds the bounded experimental profile")
+    return dict(config)
+
+
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
 def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -> str:
     """Canonical policy-config JSON (byte-identical to the Rust planner)."""
+    resolved = validated_execution_config(policy, config)
     if policy == "native":
         return '{"policy":"native"}'
     if policy == "exact_symbol_name":
@@ -190,7 +215,6 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
             '"projection":"file","scope":"symbol_local_name","syntax":"code_search"}'
         )
     if policy in ("natural_language", "natural_language_file"):
-        resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
         projection = (
             f'"ordering":"{ORDERING_SCORE_DESC}","policy":"natural_language_file","projection":"file",'
             if policy == "natural_language_file"
@@ -212,17 +236,7 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
 
 
 def execution_profile(policy: str, config: dict[str, int] | None = None) -> dict:
-    if policy not in SUPPORTED_POLICIES:
-        raise QueryPlanError(f"unsupported query input policy: {policy}")
-    resolved = (
-        dict(DEFAULT_NL_CONFIG)
-        if policy in ("natural_language", "natural_language_file") and config is None
-        else (
-            dict(config)
-            if policy in ("natural_language", "natural_language_file") and config is not None
-            else {}
-        )
-    )
+    resolved = validated_execution_config(policy, config)
     return {
         "profile_id": PROFILE_IDS[policy],
         "policy": policy,
@@ -385,6 +399,7 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
     Raises ``QueryPlanError`` for an unsupported policy or an empty /
     over-limit natural-language plan — mirroring the Rust typed refusals.
     """
+    resolved = validated_execution_config(policy, config)
     if policy == "native":
         request = raw
         if len(request.encode()) > MAX_INPUT_BYTES:
@@ -473,7 +488,6 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
             )
         return f'components:"{raw}"'
     if policy in ("natural_language", "natural_language_file"):
-        resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
         distinct: list[str] = []
         for token in tokenize_nl(raw):
             if len(token) > resolved["max_token_chars"]:

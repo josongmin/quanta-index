@@ -105,6 +105,7 @@ def _validate_pair(
     original = _parse_rows(original_raw, "original", expected_pairs)
     neutral = _parse_rows(neutral_raw, "neutral_renamed", expected_pairs)
     paired = []
+    query_texts: set[str] = set()
     for index in range(expected_pairs):
         source, changed = original[index], neutral[index]
         if (
@@ -114,6 +115,9 @@ def _validate_pair(
             or source["relevance"] != changed["relevance"]
         ):
             raise ClarcAdmissionError(f"paired source identity differs at ID {index}")
+        if source["query_text"] in query_texts:
+            raise ClarcAdmissionError("duplicate query text has more than one positive target")
+        query_texts.add(source["query_text"])
         paired.append({"original": source, "neutral_renamed": changed})
     return paired
 
@@ -239,16 +243,26 @@ def materialize(
     files: dict[str, list[dict[str, Any]]] = {"original": [], "neutral_renamed": []}
     tasks: dict[str, list[dict[str, Any]]] = {"original": [], "neutral_renamed": []}
     admitted = set(metadata["admission"]["admitted_query_ids"])
+    seen_task_suffixes: set[str] = set()
     qrels = []
     for pair in rows:
         source = pair["original"]
+        query_sha256 = _sha256(source["query_text"].encode("utf-8"))
+        task_suffix = query_sha256[:24]
+        if task_suffix in seen_task_suffixes:
+            raise ClarcAdmissionError("query digest task ID collision")
+        seen_task_suffixes.add(task_suffix)
         filename = source["code_id"] + ".cpp"
         relative = "snippets/" + filename
         qrels.append(
             {
                 "query_id": source["query_id"],
                 "query_text": source["query_text"],
-                "query_sha256": _sha256(source["query_text"].encode("utf-8")),
+                "query_sha256": query_sha256,
+                "task_ids": {
+                    "original": "CLARC-G1-ORG-" + task_suffix,
+                    "neutral_renamed": "CLARC-G1-NEU-" + task_suffix,
+                },
                 "positive_code_id": source["code_id"],
                 "positive_file": relative,
                 "relevance": 2,
@@ -256,15 +270,12 @@ def materialize(
         )
         for variant in files:
             row = pair[variant]
-            task_id = ("CLARC-G1-ORG-" if variant == "original" else "CLARC-G1-NEU-") + source[
-                "query_id"
-            ].rsplit("_", 1)[1].zfill(4)
+            task_id = qrels[-1]["task_ids"][variant]
             tasks[variant].append(
                 {
                     "task_id": task_id,
-                    "query_id": source["query_id"],
                     "query": source["query_text"],
-                    "query_sha256": _sha256(source["query_text"].encode("utf-8")),
+                    "query_sha256": query_sha256,
                     "request_status": "admitted" if source["query_id"] in admitted else "refused",
                 }
             )
@@ -285,6 +296,20 @@ def materialize(
     with (output_root / "manifest.json").open("x", encoding="utf-8") as handle:
         json.dump(manifest, handle, sort_keys=True, ensure_ascii=False, indent=2)
         handle.write("\n")
+    for variant in tasks:
+        blind = {
+            "kind": "clarc_group1_gold_blind_input_v1",
+            "variant": variant,
+            "corpus_root": str(output_root / variant),
+            "request_policy": metadata["admission"]["request_policy"],
+            "requested": EXPECTED_PAIRS,
+            "admitted": metadata["admission"]["admitted"],
+            "file_universe": files[variant],
+            "tasks": tasks[variant],
+        }
+        with (output_root / f"blindpack-{variant}.json").open("x", encoding="utf-8") as handle:
+            json.dump(blind, handle, sort_keys=True, ensure_ascii=False, indent=2)
+            handle.write("\n")
     return manifest
 
 

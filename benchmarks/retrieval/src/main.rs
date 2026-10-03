@@ -75,6 +75,7 @@ fn print_help() -> BenchResult<()> {
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
          [--query-protocol PATH] [--query-input-policy native|literal|literal_file|keyword_file|substring_file|code_search_file|code_search_exact_content_file|code_search_components_file|code_search_typo_file|natural_language|natural_language_file|exact_symbol_name]\n\
+         [--nl-max-tokens N] (natural_language* only; 1..128, default 32; exploratory)\n\
          [--query-stage-observation enabled|disabled] (default enabled; server query stages only)\n\
          [--experimental-hybrid-fetch-floor 25|50|100] (default 100; explicit experimental startup policy)\n\
          --repo-id ID --revision-id ID --generation N\n\
@@ -392,7 +393,7 @@ fn plan_query_pack(
             return Err(BenchError::Config(format!("--query-input-policy: {error}")));
         }
     };
-    let config = NlPlanConfig::default();
+    let config = nl_plan_config(args, policy)?;
     let execution_profile_sha256 = execution_profile_sha256(policy, &config);
     let mut plans = BTreeMap::new();
     for task in &pack.tasks {
@@ -421,6 +422,35 @@ fn plan_query_pack(
         }
     }
     Ok((policy, config, plans))
+}
+
+fn nl_plan_config(args: &Args, policy: QueryInputPolicy) -> BenchResult<NlPlanConfig> {
+    let mut config = NlPlanConfig::default();
+    if let Some(raw) = args.flags.get("nl-max-tokens") {
+        if !matches!(
+            policy,
+            QueryInputPolicy::NaturalLanguage | QueryInputPolicy::NaturalLanguageFile
+        ) {
+            return Err(usage_error(
+                "--nl-max-tokens requires a natural_language policy".to_string(),
+            ));
+        }
+        if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(usage_error(
+                "--nl-max-tokens must be a decimal integer from 1 to 128".to_string(),
+            ));
+        }
+        let value = raw.parse::<usize>().map_err(|_| {
+            usage_error("--nl-max-tokens must be a decimal integer from 1 to 128".to_string())
+        })?;
+        if !(1..=128).contains(&value) {
+            return Err(usage_error(
+                "--nl-max-tokens must be a decimal integer from 1 to 128".to_string(),
+            ));
+        }
+        config.max_tokens = value;
+    }
+    Ok(config)
 }
 
 fn validate_policy_routes(policy: QueryInputPolicy, routes: &BTreeSet<&str>) -> BenchResult<()> {
@@ -701,6 +731,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "query-pack",
             "query-protocol",
             "query-input-policy",
+            "nl-max-tokens",
             "refusal-out",
             "routes",
             "top-k",

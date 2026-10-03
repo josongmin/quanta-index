@@ -347,7 +347,13 @@ def validate_execution_profile(value: Any, system: str, where: str) -> dict[str,
         require(policy in query_plan_contract.SUPPORTED_POLICIES, f"{where}.policy is unknown")
         config = profile["config"]
         require(isinstance(config, dict), f"{where}.config must be an object")
-        expected = query_plan_contract.execution_profile(policy)
+        try:
+            expected = query_plan_contract.execution_profile(
+                policy,
+                config if policy in ("natural_language", "natural_language_file") else None,
+            )
+        except query_plan_contract.QueryPlanError as exc:
+            raise EvidenceError(f"{where}.config is invalid: {exc}") from exc
         require(profile == expected, f"{where} differs from the frozen Quanta profile")
         return profile
     profile = object_keys(value, ["profile_id", "mode", "alpha", "rerank"], where)

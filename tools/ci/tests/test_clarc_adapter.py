@@ -85,18 +85,24 @@ def test_paired_ids_and_unchanged_queries_create_two_synthetic_file_universes(
         "snippets/c_group_1_id_1.cpp",
     ]
     assert [row["task_id"] for row in manifest["tasks"]["original"]] == [
-        "CLARC-G1-ORG-0000",
-        "CLARC-G1-ORG-0001",
+        "CLARC-G1-ORG-0ef37cdc0b1f1dad0acceb23",
+        "CLARC-G1-ORG-bf38ca4d1ec1861cdaaea0b1",
     ]
     assert [row["task_id"] for row in manifest["tasks"]["neutral_renamed"]] == [
-        "CLARC-G1-NEU-0000",
-        "CLARC-G1-NEU-0001",
+        "CLARC-G1-NEU-0ef37cdc0b1f1dad0acceb23",
+        "CLARC-G1-NEU-bf38ca4d1ec1861cdaaea0b1",
     ]
     assert [row["query"] for row in manifest["tasks"]["original"]] == [
         row["query"] for row in manifest["tasks"]["neutral_renamed"]
     ]
     assert manifest["tasks"]["original"][1]["request_status"] == "refused"
     assert len(manifest["admission"]["ledger"]) == 2
+    blind = json.loads((root / "blindpack-original.json").read_text())
+    assert blind["tasks"] == manifest["tasks"]["original"]
+    assert blind["file_universe"] == manifest["file_universes"]["original"]
+    assert "qrels" not in blind and "query_id" not in blind["tasks"][0]
+    assert "positive_file" not in json.dumps(blind)
+    assert "c_group_1_id_0.cpp" not in blind["tasks"][0]["task_id"]
     assert (root / "original/snippets/c_group_1_id_0.cpp").read_text() == _rows()[0][0]["code_text"]
     assert (root / "neutral_renamed/snippets/c_group_1_id_0.cpp").read_text() == _rows()[1][1][
         "code_text"
@@ -134,6 +140,12 @@ def test_pair_rejects_missing_extra_and_noncontiguous_ids():
         rows[1]["query_id"] = "q_group_1_id_2"
         rows[1]["code_id"] = "c_group_1_id_2"
     with pytest.raises(clarc.ClarcAdmissionError, match="contiguous"):
+        clarc._validate_pair(_bytes(original), _bytes(neutral), 2)
+    original, neutral = _rows()
+    for rows in (original, neutral):
+        for row in rows:
+            row["query_text"] = "same query"
+    with pytest.raises(clarc.ClarcAdmissionError, match="duplicate query text"):
         clarc._validate_pair(_bytes(original), _bytes(neutral), 2)
 
 

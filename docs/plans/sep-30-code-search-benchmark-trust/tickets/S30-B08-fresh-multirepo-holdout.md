@@ -2353,3 +2353,62 @@ proof inventory/local selectors passed 7 (2.01s). Rustfmt, Ruff format,
 `git diff --check` and the then-current repository test-authority check passed.
 Earlier broad authority failures occurred during concurrent CI edits; they are
 not a remaining failure in this observed current source.
+
+### C3 track reissuance and live comparator catalog audit
+
+The next canonical producer execution is pinned to clean Git archive
+`36970d9fc3315096a35f233933381e72c6e56ed1` at the external root's
+`pinned-src-36970d9f/`. Shared-main edits after this revision are not part of
+that execution. The main working tree remains the implementation location;
+this archive is an evidence boundary, not another implementation worktree.
+
+Two additional seams are confirmed:
+
+1. **Old exclusions are no longer valid.** Executing `evaluator.validate_suite`
+   on the old C3 zustand mixed suite fails because the current parser admits
+   `src/middleware/subscribeWithSelector.ts`, which the old suite excluded.
+   Do not remove the validator or retain these old labels. Reissue the full
+   mechanical capsule and C4 suites with the canonical current producer.
+2. **One suite has one request mode.** `declared_evaluation_contract` rejects
+   mixed request modes. Exact identifier file search and independently reviewed
+   NL file search therefore receive separate suites, score denominators and
+   track split commitments. Repository-disjoint corpus/leakage authority is
+   retained for both tracks; family equality is not weakened. The existing
+   `c3-split-preparation/` manifest matches the old authored mixed suites and
+   is preparation proof, not the final NL or newly admitted C4 family binding.
+
+`reissue_mechanical_capsules.py` starts canonical `capture_gold_batch` for
+12 original v6 recipes / **6,612 candidate tasks**, followed by canonical C4
+matrix emission. Candidate count is not a scored/product-executed denominator.
+Every original query remains in the new recipe; old checker assertions are
+removed so that fresh actual reference identities enter the issued gold.
+The isolated Python 3.14.5 environment keeps CPython t-string reference parsing
+and pinned retrieval dependencies outside the shared venv. Two startup attempts
+failed for missing dependencies before any capsule execution; their logs are
+retained. Attempt 3 passed dependency preflight and is running. Its session is
+`48760`; no completed capsule/matrix is claimed yet.
+
+Actual C3 judgments continue under the existing three-model amendment. Fresh
+`issue_reviewed_labels.py` invokes the canonical issuer only after all actual
+completed forms exist. `issue_reviewed_nl_suite.py` then issues NL-only suite,
+blind pack, two annotation receipts and adjudication receipt, preserves query
+bytes, uses sufficient-answer threshold 2 and validates the resulting source
+and receipts. These scripts are prepared/syntax checked; actual issuance is
+pending. New records are required; old captured records cannot be rebound.
+
+**VERIFIED, live catalog scope:** authenticated API reads from the current
+Sourcegraph (`127.0.0.1:17080`) and OpenGrok (`127.0.0.1:17083`) return the
+12 C5 comparator repositories (`attrs`, `svelte`, etc.). Neither authorized
+catalog exposes any of the 12 C3 holdout repositories. OpenGrok's zustand
+file inventory is empty. Complete raw catalog responses and missing-name sets
+are in `current-external-catalog/result.json` under the external root. This is
+an observed API availability boundary, not a content-postings attestation.
+These current services cannot support a C3 holdout comparison as configured;
+prepare dedicated source-bound holdout indexes, then verify paths, bytes,
+native index authority and query execution. Do not relabel the C5 development
+batch as C3 holdout proof or mutate a concurrently captured backend.
+
+Concurrent C5 pair processing was observed alive (runner and daemon processes),
+with 27/48 cells recorded at observation. The old external ledger's `running`
+string does not prove a live process. Qualified performance remains **NOT_RUN**
+while builds, indexing and these diagnostic jobs contend on this host.
