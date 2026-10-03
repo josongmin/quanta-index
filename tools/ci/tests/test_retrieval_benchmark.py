@@ -3928,6 +3928,22 @@ def test_symbol_total_timeout_rejects_invalid_spec(tmp_path, budget):
         jsonschema.validate(spec, _load_schema("pair-spec.schema.json"))
 
 
+def test_symbol_query_cache_source_is_bound_to_producer_policy(tmp_path, monkeypatch):
+    st = _pair_stage(tmp_path)
+    phase_path = Path(st["rep_layouts"][0]["quanta_phase_metrics"]["whole_file"])
+    artifact = phase_path.with_name("symbol-preflight.json")
+    policy = json.loads(artifact.read_text())["preflight"]["policy"]
+    baseline = pairrun.symbol_coverage.policy_digest(policy)
+    read = pairrun.symbol_coverage.regular_bytes
+
+    def changed_cache_source(path, **kwargs):
+        raw = read(path, **kwargs)
+        return raw + b"\n// changed cache\n" if path.name == "definition_query.rs" else raw
+
+    monkeypatch.setattr(pairrun.symbol_coverage, "regular_bytes", changed_cache_source)
+    assert pairrun.symbol_coverage.policy_digest(policy) != baseline
+
+
 def test_symbol_total_timeout_binds_requested_preflight_and_replay(tmp_path):
     spec = {**_g0_spec(), "symbol_total_timeout_ms": 600_000}
     path = tmp_path / "spec.json"

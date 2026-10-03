@@ -17,10 +17,11 @@ use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{RepoRelativePath, SymbolId};
-use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
+use tree_sitter::{Language, Node, Parser, QueryCursor, StreamingIterator};
 
 use crate::sha256_hex;
 
+mod definition_query;
 mod preflight;
 use preflight::ExtractionControl;
 pub use preflight::{
@@ -597,20 +598,19 @@ fn query_definitions(
     source: &str,
     control: Option<&ExtractionControl<'_>>,
 ) -> Result<Vec<RawDefinition>, SymbolExtractError> {
-    let grammar = language.grammar();
-    let query = Query::new(&grammar, language.query()).map_err(|error| {
-        // Query construction fails only when the pinned grammar and the
-        // shipped query drift: a producer defect, never a file failure.
-        SymbolExtractError::ProducerDefect {
-            detail: format!("grammar query construction failed: {error}"),
-        }
-    })?;
+    if let Some(control) = control {
+        control.check()?;
+    }
+    let query = definition_query::compiled(language)?;
+    if let Some(control) = control {
+        control.check()?;
+    }
     let mut cursor = QueryCursor::new();
     let mut definitions: Vec<RawDefinition> = Vec::new();
     let mut progress =
         |_: &tree_sitter::QueryCursorState| control.is_some_and(|control| control.check().is_err());
     let mut stream = cursor.matches_with_options(
-        &query,
+        query,
         tree.root_node(),
         source.as_bytes(),
         tree_sitter::QueryCursorOptions::new().progress_callback(&mut progress),

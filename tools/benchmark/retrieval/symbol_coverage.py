@@ -156,6 +156,7 @@ def policy_digest(policy: dict, root: Path = ROOT) -> str:
             "Cargo.lock",
             "benchmarks/retrieval/src/symbols.rs",
             "benchmarks/retrieval/src/symbols/preflight.rs",
+            "benchmarks/retrieval/src/symbols/definition_query.rs",
             "benchmarks/retrieval/build.rs",
         )
     ]

@@ -413,6 +413,7 @@ fn producer_policy(options: &SymbolPreflightOptions<'_>) -> [u8; 32] {
         include_bytes!("../../../../Cargo.lock").as_slice(),
         include_bytes!("../symbols.rs").as_slice(),
         include_bytes!("preflight.rs").as_slice(),
+        include_bytes!("definition_query.rs").as_slice(),
         include_bytes!("../../build.rs").as_slice(),
     ] {
         hash.update(part.len().to_string().as_bytes());
