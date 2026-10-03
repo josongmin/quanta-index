@@ -15188,7 +15188,6 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
     repo, suite, run, _suite_path, _runner_path = _file_projection_run(
         tmp_path, policy, queries=queries
     )
-    del repo
     suite["routes"] = ["lexical", "semble-lexical-file"]
     run["captures"]["s0"] = {
         "system": "semble",
@@ -15253,6 +15252,61 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
             row["score_evidence"] = None
     with pytest.raises(ev.EvidenceError, match="ordered, judged"):
         ev.complete_scored_file_rows(suite, {}, unscored, "semble-lexical-file", "lexical")
+    absent_query = "missingzz"
+    suite["tasks"].append(
+        {
+            "task_id": "T3",
+            "split": "eval",
+            "query": absent_query,
+            "query_sha256": ev.digest(absent_query.encode()),
+            "query_family_id": "fam-missingzz",
+            "query_intent": "bare_symbol",
+            "answerable": False,
+            "category": "no_answer",
+            "gold": [],
+            "judgment_policy": ev.SOURCE_ORACLE_JUDGMENT_POLICY,
+            "source_oracle": {
+                "contract": "ascii_content_absent_casefold_v1",
+                "unit": "distinct_file",
+            },
+            "file_judgments": [],
+        }
+    )
+    for route in ("lexical", "semble-lexical-file"):
+        absent_row = copy.deepcopy(next(row for row in run["results"] if row["route"] == route))
+        absent_row.update(task_id="T3", status="abstained", candidates=[])
+        run["results"].append(absent_row)
+    _validated_suite, pack, _source = ev.validate_suite(repo, suite)
+    file_evidence = ev.evaluate_complete_scored_file_evidence(
+        suite, pack, run, "semble-lexical-file", "lexical"
+    )
+    assert file_evidence["status"] == "diagnostic_unqualified"
+    assert file_evidence["rank_metric_version"] == "file-judgments-complete-v1"
+    assert file_evidence["rank_metrics"]["comparison"]["sample_count"] == 2
+    assert file_evidence["rank_metrics"]["comparison"]["no_answer_abstention_delta"] == {
+        "sample_count": 1,
+        "mean_delta": 0.0,
+    }
+    assert (
+        len(ev.paired_query_family_rows(suite, file_evidence, "semble-lexical-file", "lexical"))
+        == 2
+    )
+    failed_negative = copy.deepcopy(run)
+    next(
+        row
+        for row in failed_negative["results"]
+        if row["task_id"] == "T3" and row["route"] == "lexical"
+    )["status"] = "error"
+    with pytest.raises(ev.EvidenceError, match="failed no-answer observations"):
+        ev.evaluate_complete_scored_file_evidence(
+            suite, pack, failed_negative, "semble-lexical-file", "lexical"
+        )
+    without_negative = copy.deepcopy(suite)
+    without_negative["tasks"].pop()
+    with pytest.raises(ev.EvidenceError, match="needs no-answer controls"):
+        ev.evaluate_complete_scored_file_evidence(
+            without_negative, pack, run, "semble-lexical-file", "lexical"
+        )
     run["results"][0]["rank_unit"] = "symbol"
     with pytest.raises(ev.EvidenceError, match="distinct-file results"):
         ev.evaluate_paired_file_diagnostic(suite, {}, run, "semble-lexical-file", "lexical")

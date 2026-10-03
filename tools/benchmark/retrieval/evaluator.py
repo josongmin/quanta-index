@@ -3153,8 +3153,7 @@ def paired_query_family_rows(
     require(isinstance(comparison, dict), "cluster comparison is missing")
     primary = comparison.get("primary_metric")
     require(
-        isinstance(primary, str)
-        and primary in {"ndcg_at_10", "recall_at_10", "file_ndcg_at_10"},
+        isinstance(primary, str) and primary in {"ndcg_at_10", "recall_at_10", "file_ndcg_at_10"},
         "unsupported cluster primary metric",
     )
     require(
@@ -4007,11 +4006,32 @@ def evaluate_complete_scored_file_evidence(
     deltas = [after - before for _task_id, before, after in rows]
     negative_ids = sorted(task_id for task_id, task in eval_tasks.items() if not task["answerable"])
     require(bool(negative_ids), "complete scored file evidence needs no-answer controls")
-    negative_delta = math.fsum(
-        float(results[task_id, candidate]["status"] == "abstained")
-        - float(results[task_id, baseline]["status"] == "abstained")
+    negative_status = {
+        (task_id, route): _result_status(results[task_id, route])
         for task_id in negative_ids
-    ) / len(negative_ids)
+        for route in (baseline, candidate)
+    }
+    require(
+        all(status in (*SCORED_STATUSES, "abstained") for status in negative_status.values()),
+        "complete scored file evidence has failed no-answer observations",
+    )
+    negative_rows = [
+        (
+            task_id,
+            eval_tasks[task_id],
+            float(negative_status[task_id, candidate] == "abstained")
+            - float(negative_status[task_id, baseline] == "abstained"),
+        )
+        for task_id in negative_ids
+    ]
+    negative_evidence = no_answer_delta_summary(negative_rows, suite["repository_commit"])
+    positive_rows = [
+        (task_id, eval_tasks[task_id], delta)
+        for (task_id, _before, _after), delta in zip(rows, deltas, strict=True)
+    ]
+    primary_delta = math.fsum(deltas) / len(deltas)
+    wins = sum(delta > 0 for delta in deltas)
+    losses = sum(delta < 0 for delta in deltas)
     per_query = []
     for task_id, before, after in rows:
         per_query.extend(
@@ -4025,7 +4045,7 @@ def evaluate_complete_scored_file_evidence(
             {
                 "task_id": task_id,
                 "route": route,
-                "status": results[task_id, route]["status"],
+                "status": negative_status[task_id, route],
             }
             for route in (baseline, candidate)
         )
@@ -4046,11 +4066,21 @@ def evaluate_complete_scored_file_evidence(
                 "candidate": candidate,
                 "primary_metric": "file_ndcg_at_10",
                 "sample_count": len(rows),
-                "primary_delta": math.fsum(deltas) / len(deltas),
-                "no_answer_abstention_delta": {
-                    "sample_count": len(negative_ids),
-                    "mean_delta": negative_delta,
-                },
+                "primary_delta": primary_delta,
+                "paired_wins": wins,
+                "paired_losses": losses,
+                "paired_ties": len(rows) - wins - losses,
+                "primary_delta_ci_95": mean_ci(
+                    deltas,
+                    [
+                        (task_id, str(eval_tasks[task_id].get("category", "uncategorized")))
+                        for task_id, _before, _after in rows
+                    ],
+                ),
+                "stratified_primary_delta": stratified_delta_summary(
+                    positive_rows, suite["repository_commit"]
+                ),
+                "no_answer_abstention_delta": negative_evidence,
             }
         },
         "per_query": sorted(per_query, key=lambda row: (row["task_id"], row["route"])),
