@@ -9594,6 +9594,23 @@ def test_source_closure_driver_fails_closed_on_tool_refusal(tmp_path, monkeypatc
         pairrun._source_closure(tmp_path, "check", None)
 
 
+def test_source_closure_driver_reuse_invokes_bound_preflight(tmp_path, monkeypatch):
+    observed = []
+
+    def completed(args, **kwargs):
+        observed.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, stdout="source closure reuse ok", stderr="")
+
+    monkeypatch.setattr(pairrun.subprocess, "run", completed)
+    reused = tmp_path / "prior.json"
+    staged = tmp_path / "staged.json"
+    pairrun._source_closure(tmp_path, "reuse", staged, reuse_from=reused)
+    assert observed[0][0][-5:] == [
+        "reuse", "--manifest", str(reused), "--out", str(staged)
+    ]
+    assert observed[0][1]["cwd"] == tmp_path
+
+
 def test_verdict_cannot_upgrade_qualified_warm_cache(tmp_path, monkeypatch):
     _allow_minimal_speed_fixture(monkeypatch)
     st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True}, cache_regime="warm_cache")
@@ -9703,6 +9720,49 @@ def test_exploratory_pair_requires_source_closure_capture_and_final_verify(tmp_p
         pairrun.run_pair(spec)
     assert calls == ["capture", "verify"]
     assert not (tmp_path / "pair").exists()
+
+
+def test_exploratory_pair_reuses_closure_but_keeps_final_verification(tmp_path, monkeypatch):
+    cache, revision = _pinned_semble_cache(tmp_path)
+    prior = tmp_path / "prior-closure.json"
+    prior.write_text("{}\n", encoding="utf-8")
+    spec = {
+        "execution_profiles": {
+            "quanta": qp.execution_profile("native"),
+            "semble": semble_adapter.execution_profile("native-default", None),
+        },
+        "semble_lockfile_sha256": _fake_sha("lock"),
+        "semble_python": "/pinned/python",
+        "semble_lockfile": "/pinned/lock",
+        "semble_cache_root": str(cache),
+        "semble_model_revision": revision,
+        "host_profile": "/pinned/host",
+        "output_root": str(tmp_path / "pair"),
+        "strategies": [{"name": "whole_file"}],
+        "source_closure_reuse": str(prior),
+    }
+    monkeypatch.setattr(pairrun, "preflight_capture", lambda _spec: tmp_path / "pair")
+    monkeypatch.setattr(pairrun, "preflight_daemon_socket_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pairrun, "_run_pair_staged", lambda *_args: {"states": {}})
+    calls = []
+
+    def closure(_root, command, path, *, reuse_from=None):
+        calls.append((command, reuse_from))
+        if command == "reuse":
+            path.write_bytes(prior.read_bytes())
+        else:
+            assert command == "verify"
+            raise pairrun.RunError("source closure changed")
+
+    monkeypatch.setattr(pairrun, "_source_closure", closure)
+    with pytest.raises(pairrun.RunError, match="source closure changed"):
+        pairrun.run_pair(spec)
+    assert calls == [("reuse", prior), ("verify", None)]
+    assert not (tmp_path / "pair").exists()
+
+    spec["claims"] = {"quality": True}
+    with pytest.raises(pairrun.RunError, match="reuse is only valid"):
+        pairrun.run_pair(spec)
 
 
 def test_qualified_verdict_refuses_valid_but_unbound_driver_source_closure(tmp_path):

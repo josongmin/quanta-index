@@ -20,6 +20,11 @@
     "searchd_expected_sha256"
   ],
   "properties": {
+    "source_closure_reuse": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exploratory quality-only: external prior retrieval source closure. The driver checks revision, clean source and file inventory before execution, then fully re-verifies it before promotion. Never use for a fresh-root speed claim."
+    },
     "symbol_coverage_policy": {
       "enum": [
         "require-complete",

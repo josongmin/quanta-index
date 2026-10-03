@@ -2606,6 +2606,7 @@ SPEC_REQUIRED = (
     "searchd_expected_sha256",
 )
 SPEC_OPTIONAL = (
+    "source_closure_reuse",
     "symbol_coverage_policy",
     "symbol_total_timeout_ms",
     "routes",
@@ -3458,6 +3459,14 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
         for key, value in claims.items():
             if type(value) is not bool:
                 raise RunError(f"spec.claims.{key} must be a strict boolean")
+    if "source_closure_reuse" in spec:
+        value = spec["source_closure_reuse"]
+        if not isinstance(value, str) or not Path(value).is_absolute() or not value:
+            raise RunError("spec.source_closure_reuse must be an absolute path")
+        if spec.get("scope", "exploratory") != "exploratory" or any(
+            spec.get("claims", {}).values()
+        ):
+            raise RunError("source closure reuse is only valid for exploratory captures without claims")
     if spec.get("embedder") == "potion-code-full-v2" and (
         spec.get("scope", "exploratory") != "exploratory" or any(spec.get("claims", {}).values())
     ):
@@ -9135,12 +9144,16 @@ def cmd_pair(args: argparse.Namespace) -> int:
         return 2
 
 
-def _source_closure(repo_root: Path, command: str, path: Path | None = None) -> None:
+def _source_closure(
+    repo_root: Path, command: str, path: Path | None = None, *, reuse_from: Path | None = None
+) -> None:
     args = [sys.executable, str(repo_root / "tools/ci/source_closure.py"), command]
     if command == "capture":
         args.extend(("--profile", "retrieval", "--out", str(path)))
     elif command == "verify":
         args.extend(("--manifest", str(path)))
+    elif command == "reuse" and reuse_from is not None:
+        args.extend(("--manifest", str(reuse_from), "--out", str(path)))
     else:
         raise RunError(f"unsupported source-closure command: {command}")
     try:
@@ -9167,6 +9180,14 @@ def run_pair(spec: dict) -> int:
     driver_started_ns = time.monotonic_ns()
     scope = spec.get("scope", "exploratory")
     _validate_file_pair_contract(spec, paired=True)
+    closure_source = spec.get("source_closure_reuse")
+    if closure_source is not None and (
+        not isinstance(closure_source, str)
+        or not Path(closure_source).is_absolute()
+        or scope != "exploratory"
+        or any(spec.get("claims", {}).values())
+    ):
+        raise RunError("source closure reuse is only valid for exploratory captures without claims")
     if spec.get("embedder") == "potion-code-full-v2" and (
         scope != "exploratory" or any(spec.get("claims", {}).values())
     ):
@@ -9244,7 +9265,15 @@ def run_pair(spec: dict) -> int:
         )
     stage.mkdir(parents=True)
     closure_path = stage / "driver-source-closure.json"
-    _source_closure(Path(__file__).resolve().parents[3], "capture", closure_path)
+    if closure_source is None:
+        _source_closure(Path(__file__).resolve().parents[3], "capture", closure_path)
+    else:
+        _source_closure(
+            Path(__file__).resolve().parents[3],
+            "reuse",
+            closure_path,
+            reuse_from=Path(closure_source),
+        )
     closure_capture_finished_ns = time.monotonic_ns()
     spec = dict(spec, _driver_source_closure=str(closure_path))
     try:

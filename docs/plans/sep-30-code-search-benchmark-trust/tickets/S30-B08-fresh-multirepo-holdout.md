@@ -3077,3 +3077,30 @@ on main and pushed through `f5b3b55e`; unrelated dirty owner work is preserved.
   workflow versus matched semantics before adapting queries; do not silently
   quote whole questions, synthesize OR rewrites, or count adapter refusal as
   an observed native zero-result search. Existing C3 labels/captures are intact.
+
+### 2026-10-04: current pinned admission-input prerequisites
+
+- **VERIFIED**, the clean exported `08549763cda5daed3d6e95cdf0b1315f22fad917`
+  source validated all 240 original query/family/repository assignments, the
+  issued mocha/zustand suites and blind packs, their two actual AI annotation
+  receipts and separate adjudication receipts, 12 scoped license decisions,
+  and the retained Semble revision/actual model bytes. Four forged suite or
+  annotation commitments refused. The prerequisite check took **2.975s**.
+- It confirms **40 issued tasks / 871 expanded-pool file judgments** and **200
+  pending tasks**. Expanded-pool judgments are not the original 1,324 returned
+  pairs; original-pair coverage remains 167 issued / 1,157 unissued.
+- Artifacts: `nl-admission-input-preflight-wex9_qy3/` under the external closeout
+  root. `input-readiness.json` is explicitly `input_prerequisites_verified_not_admitted`,
+  not a qualification manifest. No missing proof digest or review was invented.
+  Runtime pins are regex 2025.10.23, tree-sitter 0.23.2, language-pack 0.9.1 and
+  unicodedata2 17.0.0. The complete 22-repository canonical split/leakage check
+  is running in the same pinned source; its terminal result is still pending.
+- Command: `PYTHONPATH=/Users/songmin/Documents/code-new/quanta-index
+  .venv/bin/python <external-root>/validate.py`. Initial archive extraction
+  used unsupported system-Python-3.9 `filter`; workspace Python 3.12 completed
+  extraction. The archive source commit was independently recovered with
+  `git get-tar-commit-id`, rather than inferred from subsequently moving main.
+- **NOT_RUN**, full final admission and product/performance comparison. Existing
+  `9e27b8ba` proofs are recorded as a different source, not rebound to `08549763`.
+  Remaining actual reviews, final matching proofs, host/cache/lockfile profile
+  and declared NL comparator semantics are required before capture qualification.

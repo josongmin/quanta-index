@@ -36,6 +36,7 @@ ALLOWED_EXTERNAL_LEDGER_STATUSES = {
 }
 PAIR_CUSTODY_FIELDS = (
     "cohort_contract",
+    "admission_authority_sha256",
     "release_digest",
     "native_source_commit",
     "native_runner_sha256",
@@ -180,6 +181,7 @@ def _source_admission(
     if isinstance(authority, list):
         return authority, {
             "cohort_contract": "c5_fixed_original_source_eligibility_v1",
+            "admission_authority_sha256": sha(authority_path),
             "source_eligibility_kind": "independent_original_source_audit",
         }
     require(
@@ -337,6 +339,15 @@ def _source_admission(
         admission.append({"repository": repo, "status": "VALID", "tasks": len(selected_ids)})
     return admission, {
         "cohort_contract": "c5_global_c4_ordinary_osa1_v1",
+        "admission_authority_sha256": canonical_sha(
+            {
+                "gold_receipt": sha(gold_receipt_path),
+                "matrix": sha(authority_path),
+                "matrix_receipt": sha(matrix_receipt_path),
+                "projection_receipt": sha(projection_receipt_path),
+                "runtime_four_pin_binding": sha(runtime_binding_path),
+            }
+        ),
         "source_eligibility_kind": "pinned_global_matrix_and_ordinary_projection",
         "gold_receipt_sha256": sha(gold_receipt_path),
         "matrix_receipt_sha256": sha(matrix_receipt_path),

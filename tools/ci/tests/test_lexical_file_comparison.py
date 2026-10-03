@@ -125,7 +125,10 @@ def test_external_join_replays_each_root_before_and_after_existing_scorer(tmp_pa
         assert set(paths) == set(owner.INPUT_ROLES)
         for name, root in roots.items():
             assert paths[name + "_rows"] == root / (name + "_rows.jsonl")
-        return {"status": "diagnostic_unqualified"}
+        return {
+            "status": "diagnostic_unqualified",
+            "products": {name: {"raw_sha256": "b" * 64} for name in roots},
+        }
 
     monkeypatch.setattr(live, "verify", replay)
     monkeypatch.setattr(owner, "evaluate_capture", score)
@@ -162,7 +165,7 @@ def test_external_join_refuses_independent_coverage_and_binding_faults(tmp_path,
         owner.evaluate_external_captures(native, roots)
 
 
-@pytest.mark.parametrize("fault", ["metadata", "capture_bytes", "native_pack"])
+@pytest.mark.parametrize("fault", ["metadata", "capture_bytes", "native_pack", "scored_rows"])
 def test_external_join_refuses_mutation_during_scoring(tmp_path, monkeypatch, fault):
     from tools.benchmark.retrieval import lexical_file_comparison as owner
     from tools.benchmark.retrieval import live_lexical_external as live
@@ -175,12 +178,18 @@ def test_external_join_refuses_mutation_during_scoring(tmp_path, monkeypatch, fa
             summaries[roots["cs"]] = {**summaries[roots["cs"]], "tasks": 99}
         elif fault == "capture_bytes":
             (roots["cs"] / "capture.json").write_bytes(b"changed capture bytes")
-        else:
+        elif fault == "native_pack":
             native["query_pack"].write_bytes(b"changed native pack")
-        return {"status": "diagnostic_unqualified"}
+        return {
+            "status": "diagnostic_unqualified",
+            "products": {
+                name: {"raw_sha256": ("c" if fault == "scored_rows" and name == "cs" else "b") * 64}
+                for name in roots
+            },
+        }
 
     monkeypatch.setattr(owner, "evaluate_capture", score)
-    with pytest.raises(ValueError, match="changed during"):
+    with pytest.raises(ValueError, match="changed during|scored external rows differ"):
         owner.evaluate_external_captures(native, roots)
 
 

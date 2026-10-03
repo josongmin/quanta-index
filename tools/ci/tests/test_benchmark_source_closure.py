@@ -187,6 +187,30 @@ def test_changed_file_invalidates_the_closure(tmp_path: Path) -> None:
         raise AssertionError("a changed normative file was captured into a closure")
 
 
+def test_reused_closure_preflight_requires_same_clean_revision_and_inventory(tmp_path: Path) -> None:
+    repo, module = _synthetic_repo(tmp_path)
+    manifest = module.build_manifest(repo, "bm-synthetic")
+    assert module.preflight_reused_manifest(repo, manifest) == manifest
+
+    source = repo / "tools/benchmark/registry.toml"
+    source.write_text("changed\n", encoding="utf-8")
+    with pytest.raises(module.ClosureError, match="dirty relevant source"):
+        module.preflight_reused_manifest(repo, manifest)
+    source.write_text("x\n", encoding="utf-8")
+
+    added = repo / "tools/benchmark/new.toml"
+    added.write_text("new\n", encoding="utf-8")
+    with pytest.raises(module.ClosureError, match="dirty relevant source|file set changed"):
+        module.preflight_reused_manifest(repo, manifest)
+    added.unlink()
+
+    source.write_text("new committed content\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "new revision")
+    with pytest.raises(module.ClosureError, match="revision changed"):
+        module.preflight_reused_manifest(repo, manifest)
+
+
 def test_incomplete_import_traversal_refuses_python_inventory(tmp_path, monkeypatch):
     repo, module = _synthetic_repo(tmp_path)
     entry = repo / "tools/benchmark/entry.py"

@@ -1695,9 +1695,12 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
 
     summary_path = root / "capture.json"
     summary_raw = summary_path.read_bytes()
-    summary_path.write_text(json.dumps({**summary, "products": list(live.PRODUCTS)}))
-    with pytest.raises(ValueError, match="unsupported capture metadata"):
-        live.verify(root)
+    for selected in ([], [product, product], ["unknown"], list(live.PRODUCTS)):
+        if selected == [product]:
+            continue
+        summary_path.write_text(json.dumps({**summary, "products": selected}))
+        with pytest.raises(ValueError, match="unsupported capture metadata"):
+            live.verify(root)
     summary_path.write_bytes(summary_raw)
     summary_path.write_text(json.dumps({**summary, "binding": {}}))
     with pytest.raises(ValueError, match="capture binding differs"):
@@ -1710,6 +1713,15 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
     with pytest.raises(ValueError, match="native bytes differ"):
         live.verify(root)
     native.write_bytes(native_raw)
+    native.unlink()
+    with pytest.raises(ValueError, match="raw inventory differs"):
+        live.verify(root)
+    native.write_bytes(native_raw)
+    unexpected = root / f"{other}_rows.jsonl"
+    unexpected.write_bytes(b"[]\n")
+    with pytest.raises(ValueError, match="raw inventory differs"):
+        live.verify(root)
+    unexpected.unlink()
     row = root / f"{product}_rows.jsonl"
     row_raw = row.read_bytes()
     row.write_bytes(row_raw + b"\n")

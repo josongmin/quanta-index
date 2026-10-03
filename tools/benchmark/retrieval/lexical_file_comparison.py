@@ -1311,6 +1311,9 @@ def evaluate_external_captures(
         {name + "_rows": root / (name + "_rows.jsonl") for name, root in resolved_roots.items()}
     )
     result = evaluate_capture(paths)
+    for name, root in resolved_roots.items():
+        if result["products"][name]["raw_sha256"] != summaries[root]["rows_sha256"][name]:
+            raise ValueError("scored external rows differ from the independently replayed capture")
     for root, before in summaries.items():
         after = live.verify(root)
         if after != before or _sha(root / "capture.json") != evidence[str(root)]["capture_sha256"]:

@@ -422,7 +422,7 @@ impl ScopedOracle {
         candidates: impl IntoIterator<Item = (&'a str, &'a str)>,
     ) -> AnyResult<usize> {
         let mut seen = BTreeSet::new();
-        let mut count = 0;
+        let mut count: usize = 0;
         for (repo, path) in candidates {
             if source_repo_id.is_some_and(|expected| expected != repo)
                 || !self
