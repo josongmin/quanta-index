@@ -991,6 +991,25 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::UnsafeUnpin for quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::RuntimeQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub struct quanta_index_sdk::SdkPublishActivateDurationsV1
+pub quanta_index_sdk::SdkPublishActivateDurationsV1::activation_ns: u64
+pub quanta_index_sdk::SdkPublishActivateDurationsV1::publish_ns: u64
+impl core::clone::Clone for quanta_index_sdk::SdkPublishActivateDurationsV1
+pub fn quanta_index_sdk::SdkPublishActivateDurationsV1::clone(&self) -> quanta_index_sdk::SdkPublishActivateDurationsV1
+impl core::cmp::Eq for quanta_index_sdk::SdkPublishActivateDurationsV1
+impl core::cmp::PartialEq for quanta_index_sdk::SdkPublishActivateDurationsV1
+pub fn quanta_index_sdk::SdkPublishActivateDurationsV1::eq(&self, other: &quanta_index_sdk::SdkPublishActivateDurationsV1) -> bool
+impl core::fmt::Debug for quanta_index_sdk::SdkPublishActivateDurationsV1
+pub fn quanta_index_sdk::SdkPublishActivateDurationsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::SdkPublishActivateDurationsV1
+impl core::marker::StructuralPartialEq for quanta_index_sdk::SdkPublishActivateDurationsV1
+impl core::marker::Freeze for quanta_index_sdk::SdkPublishActivateDurationsV1
+impl core::marker::Send for quanta_index_sdk::SdkPublishActivateDurationsV1
+impl core::marker::Sync for quanta_index_sdk::SdkPublishActivateDurationsV1
+impl core::marker::Unpin for quanta_index_sdk::SdkPublishActivateDurationsV1
+impl core::marker::UnsafeUnpin for quanta_index_sdk::SdkPublishActivateDurationsV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::SdkPublishActivateDurationsV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::SdkPublishActivateDurationsV1
 pub struct quanta_index_sdk::SdkWireRouteV1
 pub quanta_index_sdk::SdkWireRouteV1::bound_axes: &'static [&'static str]
 pub quanta_index_sdk::SdkWireRouteV1::expected_kind: &'static str
@@ -1052,7 +1071,7 @@ pub struct quanta_index_sdk::SearchCorpusNamespace<'a>
 impl<'a> quanta_index_sdk::SearchCorpusNamespace<'a>
 pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::publish<const SEALED: bool>(&self, batch: &quanta_index_sdk::SearchCorpusBatch<SEALED>) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::publish_and_activate(&self, batch: &quanta_index_sdk::SearchCorpusBatch, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>) -> core::result::Result<(quanta_index_sdk::BatchReceipt, quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck), quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::publish_and_activate_observed(&self, batch: &quanta_index_sdk::SearchCorpusBatch, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>) -> core::result::Result<(quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome, quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck), quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::SearchCorpusNamespace<'a>::publish_and_activate_observed(&self, batch: &quanta_index_sdk::SearchCorpusBatch, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>) -> core::result::Result<(quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome, quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck, quanta_index_sdk::SdkPublishActivateDurationsV1), quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::SearchCorpusNamespace<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::SearchCorpusNamespace<'a>
 impl<'a> core::marker::Sync for quanta_index_sdk::SearchCorpusNamespace<'a>

@@ -2375,6 +2375,37 @@ impl core::marker::Unpin for quanta_index_contract::IngestStageReport
 impl core::marker::UnsafeUnpin for quanta_index_contract::IngestStageReport
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::IngestStageReport
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::IngestStageReport
+pub struct quanta_index_contract::ipc::LexicalBuildStageDurationsV1
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::file_authority_ns: u64
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::preparation_ns: u64
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::seal_commitment_ns: core::option::Option<u64>
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::seal_file_admission_ns: core::option::Option<u64>
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::seal_merge_wait_ns: core::option::Option<u64>
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::seal_ns: core::option::Option<u64>
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::seal_writer_commit_ns: core::option::Option<u64>
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::text_authority_ns: u64
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::writer_mutation_ns: u64
+impl core::clone::Clone for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::clone(&self) -> quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::cmp::Eq for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::cmp::PartialEq for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::eq(&self, other: &quanta_index_contract::LexicalBuildStageDurationsV1) -> bool
+impl core::default::Default for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::default() -> quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::fmt::Debug for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::LexicalBuildStageDurationsV1
+impl serde_core::ser::Serialize for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::marker::Send for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::marker::Sync for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::marker::Unpin for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::LexicalBuildStageDurationsV1
 pub struct quanta_index_contract::ipc::MetricBucketV1
 pub quanta_index_contract::ipc::MetricBucketV1::count: u64
 pub quanta_index_contract::ipc::MetricBucketV1::le: f64
@@ -3319,6 +3350,7 @@ pub quanta_index_contract::ipc::SearchCorpusIngestObservation::batch_digest: all
 pub quanta_index_contract::ipc::SearchCorpusIngestObservation::finalize_ns: core::option::Option<u64>
 pub quanta_index_contract::ipc::SearchCorpusIngestObservation::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::ipc::SearchCorpusIngestObservation::lexical_build_ns: core::option::Option<u64>
+pub quanta_index_contract::ipc::SearchCorpusIngestObservation::lexical_stages: core::option::Option<quanta_index_contract::LexicalBuildStageDurationsV1>
 pub quanta_index_contract::ipc::SearchCorpusIngestObservation::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_contract::ipc::SearchCorpusIngestObservation::request_id: u64
 pub quanta_index_contract::ipc::SearchCorpusIngestObservation::revision_id: quanta_index_contract_base::ids::RevisionId
@@ -12499,6 +12531,37 @@ impl core::marker::Unpin for quanta_index_contract::IngestStageReport
 impl core::marker::UnsafeUnpin for quanta_index_contract::IngestStageReport
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::IngestStageReport
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::IngestStageReport
+pub struct quanta_index_contract::LexicalBuildStageDurationsV1
+pub quanta_index_contract::LexicalBuildStageDurationsV1::file_authority_ns: u64
+pub quanta_index_contract::LexicalBuildStageDurationsV1::preparation_ns: u64
+pub quanta_index_contract::LexicalBuildStageDurationsV1::seal_commitment_ns: core::option::Option<u64>
+pub quanta_index_contract::LexicalBuildStageDurationsV1::seal_file_admission_ns: core::option::Option<u64>
+pub quanta_index_contract::LexicalBuildStageDurationsV1::seal_merge_wait_ns: core::option::Option<u64>
+pub quanta_index_contract::LexicalBuildStageDurationsV1::seal_ns: core::option::Option<u64>
+pub quanta_index_contract::LexicalBuildStageDurationsV1::seal_writer_commit_ns: core::option::Option<u64>
+pub quanta_index_contract::LexicalBuildStageDurationsV1::text_authority_ns: u64
+pub quanta_index_contract::LexicalBuildStageDurationsV1::writer_mutation_ns: u64
+impl core::clone::Clone for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::clone(&self) -> quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::cmp::Eq for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::cmp::PartialEq for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::eq(&self, other: &quanta_index_contract::LexicalBuildStageDurationsV1) -> bool
+impl core::default::Default for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::default() -> quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::fmt::Debug for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::LexicalBuildStageDurationsV1
+impl serde_core::ser::Serialize for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::LexicalBuildStageDurationsV1
+pub fn quanta_index_contract::LexicalBuildStageDurationsV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::marker::Send for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::marker::Sync for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::marker::Unpin for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::LexicalBuildStageDurationsV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::LexicalBuildStageDurationsV1
 pub struct quanta_index_contract::LexicalFullBundle
 pub quanta_index_contract::LexicalFullBundle::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::LexicalFullBundle::payload: alloc::vec::Vec<u8>
@@ -14531,6 +14594,7 @@ pub quanta_index_contract::SearchCorpusIngestObservation::batch_digest: alloc::s
 pub quanta_index_contract::SearchCorpusIngestObservation::finalize_ns: core::option::Option<u64>
 pub quanta_index_contract::SearchCorpusIngestObservation::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_contract::SearchCorpusIngestObservation::lexical_build_ns: core::option::Option<u64>
+pub quanta_index_contract::SearchCorpusIngestObservation::lexical_stages: core::option::Option<quanta_index_contract::LexicalBuildStageDurationsV1>
 pub quanta_index_contract::SearchCorpusIngestObservation::repo_id: quanta_index_contract_base::ids::RepoId
 pub quanta_index_contract::SearchCorpusIngestObservation::request_id: u64
 pub quanta_index_contract::SearchCorpusIngestObservation::revision_id: quanta_index_contract_base::ids::RevisionId

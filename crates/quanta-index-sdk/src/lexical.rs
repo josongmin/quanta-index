@@ -32,7 +32,7 @@ pub struct SdkPublishActivateDurationsV1 {
 
 fn sdk_elapsed_ns(started: Instant) -> Result<u64, SdkError> {
     u64::try_from(started.elapsed().as_nanos())
-        .map_err(|_| SdkError::Protocol("SDK phase nanoseconds exceed u64".into()))
+        .map_err(|error| SdkError::Protocol(format!("SDK phase nanoseconds exceed u64: {error}")))
 }
 
 /// A search-corpus publish under construction.

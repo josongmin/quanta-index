@@ -31,12 +31,14 @@
 //! rail error (typed error -> `Err`), never a zero-latency "pass"; a phase the
 //! daemon did not record is a rail error, never a fabricated time.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{
-    ManifestGeneration, MetricsSnapshotV1, QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
+    LexicalCandidate, ManifestGeneration, MetricsSnapshotV1, QueryConstraintSetV1,
+    TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1};
 use quanta_index_lexical::LexicalAdapter;
@@ -289,6 +291,159 @@ pub fn generate_corpus(tier: ScaleTier, seed: u64) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// A source file's identity inside one serving owner. The path is relative to
+/// `source_repo_id`; two source repositories may own the same relative path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScopedFile {
+    pub source_repo_id: String,
+    pub repo_relative_path: String,
+    pub content: String,
+}
+
+fn repo_query_token(repo_index: u32) -> String {
+    format!("scalereponeedle{repo_index}")
+}
+
+/// Reuse the seeded file generator while assigning real source-repository
+/// identities. The extra repo-specific anchor makes each source repo
+/// independently observable through lexical queries.
+pub fn generate_scoped_corpus(tier: ScaleTier, seed: u64) -> AnyResult<Vec<ScopedFile>> {
+    let params = params_for(tier);
+    let mut files = Vec::with_capacity(usize::try_from(params.total_files())?);
+    for repo_index in 0..params.repo_count {
+        for file_index in 0..params.files_per_repo {
+            let mut content = generate_file(tier, &params, repo_index, file_index, seed);
+            content.push_str(&format!("// {} anchor\n", repo_query_token(repo_index)));
+            files.push(ScopedFile {
+                source_repo_id: format!("repo{repo_index}"),
+                repo_relative_path: format!("src/file_{file_index}.rs"),
+                content,
+            });
+        }
+    }
+    Ok(files)
+}
+
+/// Bind the existing corpus digest to both parts of the source identity. The
+/// generator reserves `repoN` as a single path component, so this canonical
+/// projection is injective over this fixture and matches the old path shape.
+fn scoped_digest_files(files: &[ScopedFile]) -> Vec<(String, String)> {
+    files
+        .iter()
+        .map(|file| {
+            (
+                format!("{}/{}", file.source_repo_id, file.repo_relative_path),
+                file.content.clone(),
+            )
+        })
+        .collect()
+}
+
+/// Source-derived identities and expected result counts, independent of the
+/// engine's candidate list or ranking.
+#[derive(Clone, Debug)]
+pub struct ScopedOracle {
+    paths_by_repo: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl ScopedOracle {
+    pub fn from_source(files: &[ScopedFile], tier: ScaleTier) -> AnyResult<Self> {
+        let params = params_for(tier);
+        let mut paths_by_repo = BTreeMap::<String, BTreeSet<String>>::new();
+        for file in files {
+            let repo_index = file
+                .source_repo_id
+                .strip_prefix("repo")
+                .and_then(|suffix| suffix.parse::<u32>().ok())
+                .filter(|index| *index < params.repo_count)
+                .ok_or_else(|| anyhow::anyhow!("scale: invalid source repo ID"))?;
+            if !file.repo_relative_path.starts_with("src/")
+                || file.repo_relative_path.contains("..")
+                || !file.content.contains(SCALE_QUERY_TOKEN)
+                || !file.content.contains(&repo_query_token(repo_index))
+            {
+                return Err(anyhow::anyhow!(
+                    "scale: invalid planted source for {}/{}",
+                    file.source_repo_id,
+                    file.repo_relative_path
+                ));
+            }
+            let paths = paths_by_repo
+                .entry(file.source_repo_id.clone())
+                .or_default();
+            if !paths.insert(file.repo_relative_path.clone()) {
+                return Err(anyhow::anyhow!(
+                    "scale: duplicate source identity {}/{}",
+                    file.source_repo_id,
+                    file.repo_relative_path
+                ));
+            }
+        }
+        let expected_files_per_repo = usize::try_from(params.files_per_repo)?;
+        if paths_by_repo.len() != usize::try_from(params.repo_count)?
+            || paths_by_repo
+                .values()
+                .any(|paths| paths.len() != expected_files_per_repo)
+        {
+            return Err(anyhow::anyhow!(
+                "scale: source repository/file counts differ from the tier manifest"
+            ));
+        }
+        Ok(Self { paths_by_repo })
+    }
+
+    fn expected_count(&self, source_repo_id: Option<&str>) -> usize {
+        let files = source_repo_id.map_or_else(
+            || self.paths_by_repo.values().map(BTreeSet::len).sum(),
+            |repo| self.paths_by_repo.get(repo).map_or(0, BTreeSet::len),
+        );
+        files.min(usize::try_from(SCALE_TOP_K).unwrap_or(usize::MAX))
+    }
+
+    /// Verify one observed page without deriving the expected set from a
+    /// previous query. A source-repo probe must contain only that repo's rows.
+    fn verify_identities<'a>(
+        &self,
+        source_repo_id: Option<&str>,
+        candidates: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> AnyResult<usize> {
+        let mut seen = BTreeSet::new();
+        let mut count = 0;
+        for (repo, path) in candidates {
+            if source_repo_id.is_some_and(|expected| expected != repo)
+                || !self
+                    .paths_by_repo
+                    .get(repo)
+                    .is_some_and(|paths| paths.contains(path))
+                || !seen.insert((repo, path))
+            {
+                return Err(anyhow::anyhow!(
+                    "scale: response has a foreign or duplicate source identity {repo}/{path}"
+                ));
+            }
+            count += 1;
+        }
+        require_result_count(count, self.expected_count(source_repo_id), "scoped query")?;
+        Ok(count)
+    }
+
+    fn verify_page(
+        &self,
+        source_repo_id: Option<&str>,
+        candidates: &[LexicalCandidate],
+    ) -> AnyResult<usize> {
+        self.verify_identities(
+            source_repo_id,
+            candidates.iter().map(|candidate| {
+                (
+                    candidate.source_repo_id.as_str(),
+                    candidate.repo_relative_path.as_str(),
+                )
+            }),
+        )
+    }
 }
 
 /// Build one file's content deterministically.
@@ -1026,6 +1181,87 @@ mod tests {
         let count_before = paths.len();
         paths.dedup();
         assert_eq!(count_before, paths.len(), "generated paths must be unique");
+    }
+
+    #[test]
+    fn medium_source_repositories_keep_the_same_relative_path_distinct() {
+        let files = generate_scoped_corpus(ScaleTier::Medium, 7).expect("seeded fixture");
+        let oracle = ScopedOracle::from_source(&files, ScaleTier::Medium).expect("source oracle");
+        assert_eq!(files.len(), 256);
+        assert_eq!(oracle.paths_by_repo.len(), 4);
+        let shared_path = "src/file_0.rs";
+        assert!(oracle.paths_by_repo["repo0"].contains(shared_path));
+        assert!(oracle.paths_by_repo["repo1"].contains(shared_path));
+        assert_ne!(files[0].content, files[64].content);
+        assert_eq!(oracle.expected_count(Some("repo0")), 10);
+        assert_eq!(oracle.expected_count(None), 10);
+        let repo1_rows = files
+            .iter()
+            .filter(|file| file.source_repo_id == "repo1")
+            .take(10)
+            .map(|file| {
+                (
+                    file.source_repo_id.as_str(),
+                    file.repo_relative_path.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            oracle
+                .verify_identities(Some("repo1"), repo1_rows.iter().copied())
+                .expect("ten source-derived repo1 rows"),
+            10
+        );
+        assert!(
+            oracle
+                .verify_identities(Some("repo0"), repo1_rows.iter().copied())
+                .is_err(),
+            "repo1 rows cannot satisfy the repo0 probe"
+        );
+        let mut duplicated = repo1_rows;
+        duplicated[9] = duplicated[0];
+        assert!(
+            oracle
+                .verify_identities(Some("repo1"), duplicated.iter().copied())
+                .is_err(),
+            "duplicate returned identity cannot satisfy top 10"
+        );
+    }
+
+    #[test]
+    fn scoped_fixture_rejects_missing_repo_anchor_duplicate_identity_and_wrong_shape() {
+        let files = generate_scoped_corpus(ScaleTier::Medium, 7).expect("seeded fixture");
+        let mut missing_anchor = files.clone();
+        missing_anchor[0].content = missing_anchor[0]
+            .content
+            .replace(&repo_query_token(0), "removed");
+        assert!(ScopedOracle::from_source(&missing_anchor, ScaleTier::Medium).is_err());
+
+        let mut duplicate = files.clone();
+        duplicate[64].source_repo_id = "repo0".to_string();
+        assert!(ScopedOracle::from_source(&duplicate, ScaleTier::Medium).is_err());
+
+        let mut absent = files;
+        let _removed = absent.pop();
+        assert!(ScopedOracle::from_source(&absent, ScaleTier::Medium).is_err());
+    }
+
+    #[test]
+    fn scoped_digest_binds_source_repo_identity_and_source_bytes() {
+        let files = generate_scoped_corpus(ScaleTier::Medium, 11).expect("seeded fixture");
+        let original = corpus_digest(DIMENSION, &scoped_digest_files(&files));
+        let mut changed_repo = files.clone();
+        changed_repo[0].source_repo_id = "repo2".to_string();
+        assert_ne!(
+            original,
+            corpus_digest(DIMENSION, &scoped_digest_files(&changed_repo))
+        );
+        let mut changed_content = files;
+        changed_content[0].content.push_str("// changed\n");
+        assert_ne!(
+            original,
+            corpus_digest(DIMENSION, &scoped_digest_files(&changed_content))
+        );
     }
 
     #[test]
