@@ -226,6 +226,13 @@ results; that is feasibility evidence from a different binary, not a causal
 effect estimate for merging candidate sets. Native ranks beyond ten remain
 unobserved.
 
+The frozen census flags 25 of those 75 typo-lane misses as having another
+declaration name within the declared OSA1 distance, and 63 as short/common
+names. For example, `Paramt` is derived from `Param`, while `Params` is also
+nearby. These flags are source-generation facts, not reviewed user intent;
+counting only the intended original declaration as relevant can penalize a
+reasonable alternative on such queries.
+
 A separate source-checked Gin absence suite contained 99 casefold-substring
 absent queries. The new default route abstained on all 99 without error;
 the receipt is

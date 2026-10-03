@@ -1,11 +1,11 @@
 //! Lexical text and symbol query routes.
 
 use quanta_index_contract::{
-    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CursorRouteV2, EngineTouched, GenerationPin,
-    LexicalCursor, LexicalRowOrderKey, LqExpr, LqLeaf, LqPatternType, LqQuery, QueryResultWindowV1,
-    QueryResultWindowV2, QueryStageKindV1, QueryStageTimingV1, SearchExplanation,
-    SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
-    TextQueryResponse, validate_lexical_page_v1,
+    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, CursorRouteV2,
+    EngineTouched, GenerationPin, LexicalCursor, LexicalRowOrderKey, LqExpr, LqLeaf, LqPatternType,
+    LqQuery, QueryResultWindowV1, QueryResultWindowV2, QueryStageKindV1, QueryStageTimingV1,
+    SearchExplanation, SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse,
+    TextQueryRequest, TextQueryResponse, validate_lexical_page_v1,
 };
 use quanta_index_core::{
     CoreError, LexicalEndpoint, LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1,
@@ -37,6 +37,8 @@ const CODE_SEARCH_CURSOR_ORDER: &str =
     "code_search_file_overlap_score_v1_desc_source_repo_path_line_candidate";
 const CODE_SEARCH_TYPO_CURSOR_ORDER: &str =
     "code_search_identifier_typo_osa1_v1_desc_source_repo_path_line_candidate";
+const CODE_SEARCH_COMPONENT_CURSOR_ORDER: &str =
+    "code_search_symbol_components_v1_desc_source_repo_path_line_candidate";
 
 fn is_code_search_typo(query: &LqQuery) -> bool {
     if query.options.pattern_type != LqPatternType::CodeSearch {
@@ -51,6 +53,21 @@ fn is_code_search_typo(query: &LqQuery) -> bool {
         LqExpr::Empty | LqExpr::Not(_) | LqExpr::Any(_) => None,
     };
     matches!(leaf, Some(LqLeaf::Predicate { name, .. }) if name == CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE)
+}
+
+fn is_code_search_components(query: &LqQuery) -> bool {
+    if query.options.pattern_type != LqPatternType::CodeSearch {
+        return false;
+    }
+    let leaf = match &query.expr {
+        LqExpr::Leaf(leaf) => Some(leaf),
+        LqExpr::All(parts) => match parts.as_slice() {
+            [LqExpr::Leaf(leaf)] => Some(leaf),
+            _ => None,
+        },
+        LqExpr::Empty | LqExpr::Not(_) | LqExpr::Any(_) => None,
+    };
+    matches!(leaf, Some(LqLeaf::Predicate { name, .. }) if name == CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE)
 }
 
 fn lexical_explanation(
@@ -120,6 +137,8 @@ impl SearchPlaneDispatcher {
             constraints: &planned.constraints,
             order: if is_code_search_typo(&planned.query) {
                 CODE_SEARCH_TYPO_CURSOR_ORDER
+            } else if is_code_search_components(&planned.query) {
+                CODE_SEARCH_COMPONENT_CURSOR_ORDER
             } else if planned.query.options.pattern_type == LqPatternType::CodeSearch {
                 CODE_SEARCH_CURSOR_ORDER
             } else {

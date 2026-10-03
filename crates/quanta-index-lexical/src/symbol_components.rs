@@ -65,7 +65,10 @@ mod tests {
             ("cleanUp", vec!["clean", "up"]),
             ("VersionInfo", vec!["version", "info"]),
             ("home_unix", vec!["home", "unix"]),
-            ("TestUpdateAvailable_NoCurrentVersion", vec!["test", "update", "available", "no", "current", "version"]),
+            (
+                "TestUpdateAvailable_NoCurrentVersion",
+                vec!["test", "update", "available", "no", "current", "version"],
+            ),
             ("URLParser2", vec!["url", "parser", "2"]),
             ("r#match", vec!["r", "match"]),
             ("Méthode", vec![]),
@@ -73,13 +76,24 @@ mod tests {
             assert_eq!(name_components(name), expected, "{name}");
         }
         let wanted = query_components("update available no").expect("valid query");
-        assert!(contains_ordered_components("TestUpdateAvailable_NoCurrentVersion", &wanted));
+        assert!(contains_ordered_components(
+            "TestUpdateAvailable_NoCurrentVersion",
+            &wanted
+        ));
         assert!(!contains_ordered_components("UpdateNoAvailable", &wanted));
     }
 
     #[test]
     fn rejects_noncanonical_and_ambiguous_component_requests() {
-        for invalid in ["clean", "clean  up", "Clean up", "clean_up", "clean up ", "clean\tup", "café up"] {
+        for invalid in [
+            "clean",
+            "clean  up",
+            "Clean up",
+            "clean_up",
+            "clean up ",
+            "clean\tup",
+            "café up",
+        ] {
             assert!(query_components(invalid).is_none(), "{invalid:?}");
         }
     }

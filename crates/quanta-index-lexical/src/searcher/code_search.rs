@@ -9,11 +9,11 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::ops::Range;
 
 use quanta_index_contract::{
-    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE,
-    HighlightSpan, LexicalCandidate, LqExpr, LqFilter,
-    LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqSelect, MAX_CODE_SEARCH_TERM_BYTES,
-    MAX_CODE_SEARCH_TERMS, PreviewByteRange, PreviewKind, PreviewMetadata,
-    PreviewUnavailableReason, QueryConstraintSetV1, valid_code_search_typo_identifier,
+    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, HighlightSpan,
+    LexicalCandidate, LqExpr, LqFilter, LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
+    MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, PreviewByteRange, PreviewKind,
+    PreviewMetadata, PreviewUnavailableReason, QueryConstraintSetV1,
+    valid_code_search_typo_identifier,
 };
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
 use quanta_index_lq_regex::RegexExecutor;
@@ -21,9 +21,9 @@ use quanta_index_lq_trigram::{
     DocId, MAX_CANDIDATE_PRE_VERIFY, Trigram, TrigramIndex, TrigramIntersectionError, trigrams_of,
 };
 use sha2::{Digest as _, Sha256};
+use tantivy::Term;
 use tantivy::query::{BooleanQuery, Occur, TermQuery};
 use tantivy::schema::{IndexRecordOption, TantivyDocument, Value as _};
-use tantivy::Term;
 
 use crate::TantivySearcher;
 use crate::file_authority::{FileAuthority, SourceFile};
@@ -171,7 +171,9 @@ impl CodeSearchPlan {
             && name == CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE
         {
             let [LqPredicateArg::RawString(value)] = args.as_slice() else {
-                return Err(unsupported("components: requires one raw component sequence"));
+                return Err(unsupported(
+                    "components: requires one raw component sequence",
+                ));
             };
             if query.options.case_mode() != CaseMode::Folded {
                 return Err(unsupported("components: accepts folded case only"));
@@ -1635,10 +1637,8 @@ impl TantivySearcher {
                     as Box<dyn tantivy::query::Query>,
             ));
         }
-        let compiled = self.with_doc_kind(
-            Box::new(BooleanQuery::new(clauses)),
-            crate::SYMBOL_DOC_KIND,
-        );
+        let compiled =
+            self.with_doc_kind(Box::new(BooleanQuery::new(clauses)), crate::SYMBOL_DOC_KIND);
         let searcher = self.reader.searcher();
         let rows = self.collect_whole_set(
             &searcher,
@@ -1651,21 +1651,28 @@ impl TantivySearcher {
             BTreeMap::new();
         for row in rows.iter() {
             budget.checkpoint("lexical:code-search-symbol-component-verify")?;
-            let doc = searcher.doc::<TantivyDocument>(row.address).map_err(|error| {
-                CoreError::Storage(format!("lexical: read component symbol: {error}"))
-            })?;
+            let doc = searcher
+                .doc::<TantivyDocument>(row.address)
+                .map_err(|error| {
+                    CoreError::Storage(format!("lexical: read component symbol: {error}"))
+                })?;
             let mut names = doc.get_all(self.fields.symbol_local_name);
             let name = names
                 .next()
                 .and_then(|value| value.as_str())
-                .ok_or_else(|| CoreError::Storage("lexical: component symbol lacks local name".into()))?;
+                .ok_or_else(|| {
+                    CoreError::Storage("lexical: component symbol lacks local name".into())
+                })?;
             if names.next().is_some() {
                 return Err(CoreError::Storage(
                     "lexical: component symbol has duplicate local names".into(),
                 ));
             }
             let have = crate::symbol_components::name_components(name);
-            if !have.windows(components.len()).any(|window| window == components) {
+            if !have
+                .windows(components.len())
+                .any(|window| window == components)
+            {
                 continue;
             }
             let symbol = self.document_to_symbol_candidate_identity(&doc, 0.0)?;
@@ -1673,7 +1680,9 @@ impl TantivySearcher {
                 CoreError::Storage("lexical: component symbol lacks source identity".into())
             })?;
             let file = authority.files.get(&source.file).ok_or_else(|| {
-                CoreError::Storage("lexical: component symbol file is absent from source authority".into())
+                CoreError::Storage(
+                    "lexical: component symbol file is absent from source authority".into(),
+                )
             })?;
             if file.source != source {
                 return Err(CoreError::Storage(
@@ -1713,7 +1722,15 @@ impl TantivySearcher {
             let witness = file
                 .folded_text
                 .as_deref()
-                .map(|text| best_in(text, &name.to_ascii_lowercase(), HitSurface::Content, CaseMode::Folded, budget))
+                .map(|text| {
+                    best_in(
+                        text,
+                        &name.to_ascii_lowercase(),
+                        HitSurface::Content,
+                        CaseMode::Folded,
+                        budget,
+                    )
+                })
                 .transpose()?
                 .flatten();
             ranked.push((
@@ -1742,14 +1759,8 @@ impl TantivySearcher {
             let file = authority.files.get(&source.file).ok_or_else(|| {
                 CoreError::Storage("lexical: component preview file disappeared".into())
             })?;
-            *candidate = file_candidate(
-                self,
-                file,
-                candidate.score,
-                witness.as_ref(),
-                true,
-                budget,
-            )?;
+            *candidate =
+                file_candidate(self, file, candidate.score, witness.as_ref(), true, budget)?;
         }
         Ok(LexicalSearchPageV1 {
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
@@ -1894,7 +1905,12 @@ impl TantivySearcher {
         }
         if let Some(components) = parsed.components.as_deref() {
             return self.search_code_files_components(
-                authority, query, components, constraints, page, budget,
+                authority,
+                query,
+                components,
+                constraints,
+                page,
+                budget,
             );
         }
         let eligible = language_eligible_ids(authority, constraints, budget)?;

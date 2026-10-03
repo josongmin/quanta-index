@@ -1,13 +1,13 @@
 use std::collections::BTreeSet;
 
 use quanta_index_contract::{
-    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, LqCase,
-    LqExpr, LqFilter, LqLeaf, LqMetaVar,
-    LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqStructuralBlock, LqStructuralConstraint,
-    LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleMultiplicity,
-    LqStructuralHoleRef, LqStructuralNode, MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS,
-    MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1, TextQueryRequest, TextQuerySyntax,
-    valid_code_search_component_query, valid_code_search_typo_identifier,
+    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, LqCase, LqExpr,
+    LqFilter, LqLeaf, LqMetaVar, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
+    LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
+    LqStructuralHoleMultiplicity, LqStructuralHoleRef, LqStructuralNode,
+    MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1,
+    TextQueryRequest, TextQuerySyntax, valid_code_search_component_query,
+    valid_code_search_typo_identifier,
 };
 use quanta_index_lq_bridge::{
     BridgeError, BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag, parse_sourcegraph,
