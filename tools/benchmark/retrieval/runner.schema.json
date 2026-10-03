@@ -305,7 +305,7 @@
               "required": ["max_token_chars", "max_tokens", "min_token_chars"],
               "properties": {
                 "max_token_chars": {"const": 96},
-                "max_tokens": {"const": 32},
+                "max_tokens": {"type": "integer", "minimum": 1, "maximum": 128},
                 "min_token_chars": {"const": 1}
               }
             },
@@ -323,7 +323,7 @@
               "required": ["max_token_chars", "max_tokens", "min_token_chars"],
               "properties": {
                 "max_token_chars": {"const": 96},
-                "max_tokens": {"const": 32},
+                "max_tokens": {"type": "integer", "minimum": 1, "maximum": 128},
                 "min_token_chars": {"const": 1}
               }
             },
