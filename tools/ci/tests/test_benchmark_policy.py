@@ -132,7 +132,11 @@ def test_execution_regressions_are_registered_to_the_real_owner_scope():
         ("test_codesearchnet_materialize.py", "retrieval/codesearchnet_materialize.py", True),
         ("test_clarc_adapter.py", "retrieval/clarc_adapter.py", True),
         ("test_external_snippet_benchmark.py", "retrieval/external_snippet_benchmark.py", True),
-        ("test_identifier_robustness_multiproduct_report.py", "retrieval/identifier_robustness_multiproduct_report.py", True),
+        (
+            "test_identifier_robustness_multiproduct_report.py",
+            "retrieval/identifier_robustness_multiproduct_report.py",
+            True,
+        ),
         ("test_identifier_robustness_strata.py", "retrieval/identifier_robustness_suite.py", True),
     ):
         path = f"tools/ci/tests/{filename}"

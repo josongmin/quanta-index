@@ -249,15 +249,12 @@ def _scores(candidate: dict, response: dict, pin: dict) -> tuple[dict[str, int],
             coverage = match[2] == "true"
             boundary = _uint(int(match[3]), "boundary bonus")
     require(
-        set(components) == {"boundary_and_path", "occurrence", "exact_case", "proximity"}
-        and set(study) == set(POLICIES)
-        and boundary is not None
-        and coverage is not None,
-        "incomplete native ordinary score study",
+        set(components) == {"boundary_and_path", "occurrence", "exact_case", "proximity"},
+        "incomplete selected score decomposition",
     )
     baseline = sum(components.values())
     require(
-        baseline == candidate["score"] == study["baseline"],
+        baseline == candidate["score"],
         "native baseline contradicts selected score",
     )
     contributions = explanation["contributions"]
@@ -270,6 +267,29 @@ def _scores(candidate: dict, response: dict, pin: dict) -> tuple[dict[str, int],
         and _number(contributions[0]["contribution"], "native contribution") == baseline,
         "native total contribution mismatch",
     )
+    refusals = [
+        detail
+        for detail in details
+        if detail.startswith("explain.code_search_rank_study_v1.refused=")
+    ]
+    if refusals:
+        require(
+            refusals
+            == ["explain.code_search_rank_study_v1.refused=LEXICAL_COLLECTION_BUDGET_EXCEEDED"]
+            and not study
+            and boundary is None
+            and coverage is None
+            and sum("code_search_rank_study_v1." in detail for detail in details) == 1,
+            "invalid or contradictory native diagnostic refusal",
+        )
+        # The native selected score is proven, but no experimental score exists.
+        # Keep the task excluded rather than substituting neutral/zero features.
+        return {}, False
+    require(
+        set(study) == set(POLICIES) and boundary is not None and coverage is not None,
+        "incomplete native ordinary score study",
+    )
+    require(study["baseline"] == baseline, "native baseline contradicts selected score")
     require(
         not coverage or declaration is not None, "complete declaration census cannot be unknown"
     )
