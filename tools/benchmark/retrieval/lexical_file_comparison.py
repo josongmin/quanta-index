@@ -1083,7 +1083,7 @@ def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) 
         "runner_record_sha256": digest(canonical(merged)),
         "source_provenance": provenance,
         "qualification": "not_applicable",
-        "source_scope": "retained_corpus_bundle_and_declared_original_binary_source_provenance",
+        "source_scope": "retained_corpus_bundle_and_driver_source_plus_binary_digest",
     }
 
 

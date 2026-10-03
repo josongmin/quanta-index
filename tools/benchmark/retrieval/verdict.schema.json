@@ -64,8 +64,9 @@
           "type": "object", "additionalProperties": false,
           "required": ["source_sha", "binary_digest", "embedder"],
           "properties": {
-            "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$", "description": "Benchmark driver checkout revision, not an attestation of the Rust binary build source."},
             "binary_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "binary_build_source_revision": {"type": "null", "description": "Binary build source is not independently attested; historical v2 verdicts may omit this field."},
             "embedder": {"enum": ["potion-code", "potion-code-full-v2", "hash-dev", "undeclared"]}
           }
         },

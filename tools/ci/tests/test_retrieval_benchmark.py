@@ -9649,6 +9649,34 @@ def test_exploratory_pair_binds_clean_source_closure_without_quality_claim(tmp_p
     assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
 
 
+def test_pair_provenance_keeps_driver_revision_distinct_from_unattested_binary_source(
+    tmp_path,
+):
+    st = _pair_stage(tmp_path)
+    manifest = st["manifest"]
+    quanta = manifest["provenance"]["quanta"]
+    closure = json.loads((st["stage"] / "driver-source-closure.json").read_text())
+    assert quanta["source_sha"] == closure["revision"]
+    assert quanta["binary_build_source_revision"] is None
+    jsonschema.validate(manifest, _load_schema("run-manifest.schema.json"))
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PAIR_VALID"] == "pass"
+    assert verdict["provenance"]["quanta"]["binary_build_source_revision"] is None
+    jsonschema.validate(verdict, _load_schema("verdict.schema.json"))
+
+    _rewrite_manifest(
+        st,
+        lambda value: value["provenance"]["quanta"].update(
+            binary_build_source_revision="e" * 40
+        ),
+    )
+    with pytest.raises(pairrun.RunError, match="binary build source revision is not attested"):
+        _stage_verdict(st)
+
+    _rewrite_manifest(st, lambda value: value["provenance"]["quanta"].pop("binary_build_source_revision"))
+    assert "binary_build_source_revision" not in _stage_verdict(st)["provenance"]["quanta"]
+
+
 def test_exploratory_pair_refuses_unbound_or_tampered_source_closure(tmp_path):
     st = _pair_stage(tmp_path)
     closure_path = st["stage"] / "driver-source-closure.json"
