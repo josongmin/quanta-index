@@ -2191,8 +2191,11 @@ in about 140s and **passed all 21 symbol units in 0.18s** (94 other library test
 filtered). `rust-symbol-unit-result.json` binds relevant sources and test binary.
 Actual nextest collection contains 167 tests across the library, chunking and L5
 parser owners. The required authority was missing 15 existing test identities;
-it is now synchronized to the actual collected list. Collection alone does not
-prove those tests passed. Actual cache speed and current-main Rust E2E remain
+it is now synchronized to the actual collected list. The same owner scope then
+ran through canonical nextest: **167 passed, 0 skipped, 5.213s** across three
+test binaries, with one test thread. `rust-contract-owner-result.json` records
+the command and outcome; this is the Rust contract owner, not workspace CI.
+Actual cache speed and current-main Rust E2E remain
 unrun; the frozen control does not measure the repaired producer.
 
 All 12 repositories now have new threshold-2, source-bound blank review forms,
