@@ -3125,3 +3125,12 @@ on main and pushed through `f5b3b55e`; unrelated dirty owner work is preserved.
   root. Command: `PYTHONPATH=/Users/songmin/Documents/code-new/quanta-index
   .venv/bin/python <external-root>/replay.py`. **NOT_RUN**, fresh full body fetch,
   posting decoding, product search and performance qualification.
+
+Follow-up: the same pinned `08549763` full split producer exited zero.
+`nl-admission-input-preflight-wex9_qy3/split-validation.json` reports **22
+repositories / 240 NL families**, complete release/source/exact-and-near-copy
+validation, **651.663s** split time (**654.644s** including prerequisite checks).
+Independent post-exit replay matched all **50 input hashes and 5 owner hashes**.
+This closes the selected split/source prerequisite; **200 actual task reviews,
+final matching proofs and complete admission remain incomplete**. No qualified
+product/performance result or missing label is inferred from split success.
