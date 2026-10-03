@@ -246,9 +246,10 @@ def derive(native: Path, corpus: Path, timeout: int = 300) -> tuple[dict, dict]:
     """Re-run the existing native verdict, including its report re-scoring."""
     manifest = owner._validate_manifest_shape(owner.read_json(native / "run-manifest.json"))
     suite = owner._resolve_artifact(native, manifest["artifacts"]["suite"], "pair suite")
-    with tempfile.TemporaryDirectory(prefix="quanta-pair-verdict-") as scratch, transient_log_dir(
-        "quanta-pair-verdict-execution-"
-    ) as log_dir:
+    with (
+        tempfile.TemporaryDirectory(prefix="quanta-pair-verdict-") as scratch,
+        transient_log_dir("quanta-pair-verdict-execution-") as log_dir,
+    ):
         out = Path(scratch).resolve() / "verdict.json"
         execute(
             [

@@ -1074,6 +1074,38 @@ mod tests {
     }
 
     #[test]
+    fn code_search_components_lower_to_one_folded_typed_leaf() -> TestResult {
+        let query = lower_code_search_query_text(r#"components:"update available no" case:no"#)?;
+        expect_equal!(query.options.pattern_type, LqPatternType::CodeSearch);
+        expect_equal!(query.options.case, Some(LqCase::Insensitive));
+        expect_equal!(
+            query.filters,
+            vec![LqFilter::Select {
+                dim: LqSelect::File
+            }],
+        );
+        expect_equal!(
+            query.expr,
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "code_search.symbol_components".to_string(),
+                args: vec![LqPredicateArg::RawString("update available no".to_string())],
+            }),
+        );
+        for invalid in [
+            "components:update available no",
+            "components:\"Update available no\"",
+            "components:\"update available no\" extra",
+            "extra components:\"update available no\"",
+            "components:\"update available no\" typo:updtae",
+        ] {
+            if lower_code_search_query_text(invalid).is_ok() {
+                return Err(format!("must refuse {invalid:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn code_search_refuses_ambiguous_or_unimplemented_syntax() -> TestResult {
         for text in [
             "",

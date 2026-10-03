@@ -33,7 +33,6 @@ class ExecutionResult(NamedTuple):
     command: dict
 
 
-
 @contextmanager
 def transient_log_dir(prefix: str):
     """Yield a fresh external log directory retained only for failures.

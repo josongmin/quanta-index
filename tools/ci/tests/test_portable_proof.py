@@ -484,7 +484,6 @@ def test_tool_and_sdk_entrypoints_share_finite_execution_owner(tmp_path, monkeyp
     assert commands[0]["exit_code"] == 0
 
 
-
 def test_git_probe_logs_are_removed_on_success_and_retained_on_failure(tmp_path, monkeypatch):
     import tempfile
 
@@ -509,6 +508,7 @@ def test_git_probe_logs_are_removed_on_success_and_retained_on_failure(tmp_path,
     [retained] = scratch.iterdir()
     assert retained.name.startswith("quanta-proof-git-")
     assert (retained / "stdout").read_bytes() == b"fixture-version"
+
 
 def test_collected_pytest_identity_normalizes_windows_separator() -> None:
     nodeid = r"tools\ci\tests\test_retrieval_benchmark.py::test_one"

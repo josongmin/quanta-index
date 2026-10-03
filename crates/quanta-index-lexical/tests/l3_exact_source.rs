@@ -466,6 +466,17 @@ fn symbol_components_match_one_ordered_name_and_page_distinct_files() -> TestRes
         next.candidates[0].candidate_id,
         first.candidates[1].candidate_id
     );
+    let mut sensitive = query;
+    sensitive.options.case = Some(LqCase::Sensitive);
+    assert!(matches!(
+        searcher.search_constrained(
+            &sensitive,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &budget,
+        ),
+        Err(CoreError::Typed { .. })
+    ));
     Ok(())
 }
 

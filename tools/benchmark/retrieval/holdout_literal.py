@@ -19,13 +19,13 @@ for path in (Path(__file__).resolve().parents[3], Path(__file__).resolve().paren
 
 from tools.benchmark import corpus_binding  # noqa: E402
 from tools.benchmark.evidence import digest_bytes  # noqa: E402
-from tools.benchmark.retrieval import (
+from tools.benchmark.retrieval import (  # noqa: E402
     evaluator,
     gold_oracle,
     holdout_c4,
     literal_source_oracle,
     query_plan,
-)  # noqa: E402
+)
 
 INTENT = "literal_utf8_exact"
 POLICY = "code_search_exact_content_file"

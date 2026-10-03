@@ -25,7 +25,12 @@ for path in (Path(__file__).resolve().parents[3], Path(__file__).resolve().paren
 
 from tools.benchmark import corpus_binding  # noqa: E402
 from tools.benchmark.evidence import _read_control_file, digest_bytes, parse_json  # noqa: E402
-from tools.benchmark.retrieval import evaluator, gold_oracle, query_plan, source_oracle  # noqa: E402
+from tools.benchmark.retrieval import (  # noqa: E402
+    evaluator,
+    gold_oracle,
+    query_plan,
+    source_oracle,
+)
 
 MATRIX_INTENTS = tuple(sorted(gold_oracle.DECLARATION_INTENTS))
 
