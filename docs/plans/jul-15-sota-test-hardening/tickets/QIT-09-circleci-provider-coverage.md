@@ -67,6 +67,28 @@ repairs those source gates; local policy passing does not replace a hosted run.
 `verify-python` reaches them through `just rust-policy` once its job starts.
 The source failures and pre-start hosted failure require separate closure.
 
+## First PR run on the integration branch
+
+The PR-open event triggered exactly one regular pipeline on
+`ea4c52f9bafcafc22fc9fabb1c158ea4edae1611`:
+[pipeline 435 workflow](https://app.circleci.com/workflow/59afd36b-3c98-4684-a4ae-2cbd52bba0e7).
+It started on 2026-10-03 at 18:42 UTC and ended `failed` after 10m46s. Both
+Ubuntu Machine jobs checked out that SHA and ran commands; both GitHub
+`ci/circleci` contexts reached terminal `failure`. `verify` failed Clippy
+after 6m11s on six source lints. `verify-python` failed after 10m37s in
+the tooling suite's Linux pidfd/cgroup preflight expectation, after 33 passing
+tests. The Rust job did not reach nextest or emit its test-authority artifact.
+
+The Cargo dependency cache restored 199 MiB and the uv cache restored 114 MiB;
+the pinned cargo-machete and cargo-modules binary caches missed on this run.
+The cargo-modules installation occupied about eight minutes of the Python job.
+The jobs starting establishes that pipeline 435 was not rejected before
+checkout for unavailable Free-plan credits. It does not establish the current
+credit balance or the cause of older pre-start runs. The exact balance and
+reset date remain unobserved in the Plan Usage UI. Source fixes and new main
+commits after this SHA require a distinct passing run before hosted
+qualification.
+
 ## Execution and status repair
 
 1. Inspect [CircleCI Plan Overview/Usage](https://circleci.com/docs/guides/plans-pricing/credits/)
@@ -91,12 +113,14 @@ The source failures and pre-start hosted failure require separate closure.
 
 ## Interim local regular replay
 
-The maintainer deferred hosted CircleCI/GitHub qualification on 2026-10-03
-because of GitHub private-repository plan cost. Local regular replay is the
-current development gate. Earlier passing focused checks and full nextest runs
-do not establish GREEN on the final source. Record the final commit and both
-job command results in the PR after all edits and reruns are complete. Hosted
-job/status and release evidence remain `NOT_RUN` while execution is deferred.
+The earlier 2026-10-03 decision deferred hosted CircleCI/GitHub qualification
+because of GitHub private-repository plan cost. The subsequent PR-open run
+executed and failed as recorded above. Local regular replay is the current
+development gate while those failures are repaired. Earlier passing focused
+checks and full nextest runs do not establish GREEN on the final source.
+Record the final commit and both job command results in the PR after all edits
+and reruns are complete. Hosted success and the test-authority artifact remain
+`NOT_RUN` on the repaired SHA.
 
 While hosted jobs fail before checkout or remain pending, replay the command
 blocks of both `.circleci/config.yml` regular jobs on one clean, fixed HEAD.
@@ -111,10 +135,11 @@ The hosted and release gates above remain open until their own evidence exists.
 
 ## Former Actions-only coverage
 
-The current CircleCI regular job defines format, clippy, full-workspace nextest,
+The current CircleCI regular jobs define format, clippy, full-workspace nextest,
 MSRV no-run, Rustdoc, cargo-deny, cargo-machete, bench compile, pre-commit,
-and policy/tooling checks. These additions still need an exact-source hosted
-run; static configuration is not execution proof. Its explicit heavy job covers
+policy/tooling checks, a PR-only 90% changed-line coverage gate, and a P00
+manifest producer. These additions still need an exact-source hosted run;
+static configuration is not execution proof. Its explicit heavy job covers
 nextest and four bounded fuzz targets. The following are **not** inherited from disabled GitHub
 Actions. Each owner must either port a reachable CircleCI rail with exact-source
 output or run the registered local/qualified-host rail and state its narrower
@@ -122,12 +147,13 @@ authority. A local result must not be labeled hosted CI.
 
 | Coverage | Owner | Requirement and closure |
 | --- | --- | --- |
-| Proof-bundle dispatch and P00 hosted manifest | release-proof / tools CI | **Required for S21-13 release aggregate.** CircleCI's P00 owner tests do not emit the former hosted manifest. Port the exact-pair bundle gate or keep the hosted slot `NOT_RUN` and execute the registered proof on its selected qualified host. |
+| Proof-bundle dispatch | release-proof / tools CI | **Required for S21-13 release aggregate.** The P00 manifest producer is now configured but unverified on the final hosted source. Port the exact-pair bundle gate or keep that release slot `NOT_RUN` and execute the registered proof on its selected qualified host. |
 | Native race detector | semantic/searchd owner | **Required by QIT-04.** Select the affected concurrent owner targets and native host; TSan can supply detector evidence but does not replace the deterministic linearization oracle. |
 | Mutation and fuzz coverage | QIT-07 / query and correctness owners | **Required for selected risk owners.** Record target selection, thresholds, survivor decisions and minimized inputs. The four CircleCI heavy fuzz targets alone do not close the QIT-07 mutation/fuzz matrix. |
-| Guarded public API and changed-line coverage | contract/SDK and correctness owners | **Required when the respective public-surface or selected production-line policy applies.** `rust-public-api` and the former PR 90% changed-line coverage job are absent from CircleCI; select exact-source local/qualified-host rails or port them before claiming those gates. |
+| Guarded public API | contract/SDK owner | **Required when the public-surface policy applies.** `rust-public-api` is absent from CircleCI; select an exact-source local/qualified-host rail or port it before claiming that gate. The former PR 90% changed-line coverage gate is now configured in `verify-pr-coverage`, subject to a passing hosted run. |
 | Miri, cargo-careful and ASan | contract/core and IPC owners | **Conditional diagnostic evidence.** Select a bounded target, platform and claim explicitly; their absence is `NOT_RUN` when selected, not a general release failure by itself. |
 | LLVM lines and cargo-udeps | tools CI and affected crate owners | **Unassigned as mandatory CI gates.** Decide each gate's owner and promotion scope; retain the command as local diagnostics until a selected release or PR contract makes it required. Rustdoc, bench build, cargo-machete and the exact Rust 1.92 `--all-targets` MSRV no-run command are now in the regular CircleCI definition but require a passing hosted run. |
+| DSL and systems benchmark | benchmark owner | **Required for a selected latency or load claim.** The former job required a dedicated `[self-hosted, linux, quanta-bench]` runner and registered `benchctl` evidence. A shared CircleCI Machine executor does not meet that host contract. Keep these runs explicit on a qualified host and record them as `NOT_RUN` until selected and observed; there is no schedule or implicit benchmark run. |
 | Pinned model parity | embedding owner | **Required before an encoder-parity claim** under SEP-26-002. Run the exact pinned model/reference pair; bind artifact bytes and model identity. |
 
 Closure requires observed terminal runs and artifacts on the selected final

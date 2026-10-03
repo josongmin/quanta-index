@@ -283,6 +283,7 @@ crate quanta_index_contract
 │   │   ├── enum IngestObservationStatus: pub
 │   │   ├── struct IngestStageDurations: pub
 │   │   ├── struct IngestStageReport: pub
+│   │   ├── struct LexicalBuildStageDurationsV1: pub
 │   │   ├── struct SearchCorpusIngestObservation: pub
 │   │   ├── struct SearchCorpusPublishOutcome: pub
 │   │   └── struct SourcePublicationBinding: pub

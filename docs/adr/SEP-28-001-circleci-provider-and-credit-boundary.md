@@ -14,19 +14,23 @@ default `regular` workflow runs tooling contracts, guarded module snapshots,
 prompt-manager and Rust policy checks, benchmark-control contracts, Semgrep,
 tracked agent-output validation, pre-commit hooks, fmt, clippy, cargo-deny,
 cargo-machete, exact-toolchain MSRV compilation, Rustdoc, benchmark compilation,
-and full-workspace nextest. It emits a legacy
-test-authority receipt only for an observed PR or `main` run. The `run_heavy`
+and full-workspace nextest. The PR-only coverage job retains the 90% changed
+production Rust line gate and starts only after `verify` succeeds. The Python
+job produces a source-bound P00 proof manifest after its owner tests pass.
+The Rust job emits a test-authority receipt only for an observed PR or `main`
+run. The `run_heavy`
 pipeline parameter defaults to false; setting it true selects the manual
 full-workspace nextest and four bounded fuzz targets. No heavy schedule is
 declared. `tools/ci/test-authority.toml` binds the selected commands to the
 CircleCI config, while the guard checks that the jobs and fail-closed steps are
 reachable. Static binding alone does not prove that a hosted run passed.
 
-`quanta-index` is private. The CircleCI Free plan has a finite monthly credit
-pool for private builds; keep the heavy workflow manual, and review actual
-credit usage before adding more automatic jobs. Credit exhaustion blocks runs
-on the Free plan and must be reported as missing hosted verification, not a
-passing check.
+`quanta-index` was private when this decision was recorded; GitHub's repository
+API reports `visibility: public` on 2026-10-03. Keep the heavy workflow manual
+and review the actual CircleCI Plan Usage before adding automatic jobs. The
+API v2 rejection on a prior run explicitly reported unavailable Free-plan
+credits; repository visibility alone does not establish the current balance
+or billing treatment. A blocked run is missing hosted verification, not a pass.
 
 ## Activation and limits
 
@@ -53,10 +57,11 @@ commit. Verify a run on the exact commit and its emitted test-authority artifact
 before calling hosted CI active. A merge queue or scheduled
 correctness claim additionally requires its own observed trigger and run.
 
-The former GitHub-only proof bundle dispatch, P00 hosted manifest, sanitizer,
-Miri, mutation and parity jobs are not reproduced by this CircleCI
-config. Their local commands remain available. Their absence from hosted
-CircleCI is an explicit coverage gap, not an implied pass.
+The former GitHub-only proof bundle dispatch, sanitizer, Miri, mutation and
+parity jobs are not reproduced by this CircleCI config. Their local commands
+remain available. Their absence from hosted CircleCI is an explicit coverage
+gap, not an implied pass. The new P00 manifest and PR coverage definitions
+still require a passing hosted run on the final source.
 
 [QIT-09](../plans/jul-15-sota-test-hardening/tickets/QIT-09-circleci-provider-coverage.md)
 tracks provider execution, terminal GitHub status, the exact-commit promotion
