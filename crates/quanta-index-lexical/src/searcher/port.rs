@@ -54,6 +54,7 @@ impl LexicalSearcher for TantivySearcher {
         let _accepted_fetch = validate_internal_fetch_size(page.fetch)?;
         let after = self.page_boundary(page)?;
         let empty_page = || LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: Vec::new(),
             exact_total: Self::wants_exact_total(&effective_query).then_some(0),
         };
@@ -134,6 +135,7 @@ impl LexicalSearcher for TantivySearcher {
             budget,
         )?;
         Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: self.rows_to_candidates(
                 &searcher,
                 rows,

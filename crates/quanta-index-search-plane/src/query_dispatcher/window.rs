@@ -451,11 +451,13 @@ mod l1_page_facts_tests {
     #[test]
     fn missing_count_fact_cannot_turn_a_capped_page_into_exact_exhaustion() {
         let mut page = LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: vec![1_u8],
             exact_total: None,
         };
         assert!(lexical_page_window_v1(&mut page, 3, 3).is_err());
         let mut counted = LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: vec![1_u8],
             exact_total: Some(5),
         };
@@ -467,6 +469,7 @@ mod l1_page_facts_tests {
     #[test]
     fn clipping_cannot_hide_an_exact_count_below_observed_rows() {
         let mut page = LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: vec![1_u8, 2],
             exact_total: Some(1),
         };

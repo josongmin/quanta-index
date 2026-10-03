@@ -220,6 +220,21 @@ pub trait FileContributorIngestPort: Send + Sync {
 pub struct LexicalSearchPageV1<Candidate = LexicalCandidate> {
     pub candidates: Vec<Candidate>,
     pub exact_total: Option<u64>,
+    /// Ordinary file-search work only; absent for unobserved/recovery paths.
+    pub code_search_stats: Option<CodeSearchExecutionStatsV1>,
+}
+
+/// Counts observed during one successful exhaustive ordinary CodeSearch page.
+/// Verification attempts may revisit a rejected file through content/path
+/// postings. They are work counts, not the size of a distinct candidate set.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CodeSearchExecutionStatsV1 {
+    pub literal_source_verification_attempts: u64,
+    pub literal_verified_files: u64,
+    pub final_candidate_visits: u64,
+    pub verified_matching_files: u64,
+    pub cursor_eligible_files: u64,
+    pub fetched_files: u64,
 }
 
 /// Symbol pages carry the same count authority as text pages.

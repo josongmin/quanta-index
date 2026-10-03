@@ -165,6 +165,12 @@ queries are rejected instead of silently removed. Existing split admission and
 review receipts remain bound to the original suite. AI review identities remain
 AI identities, and the new artifacts are `diagnostic_unqualified`.
 
+Native `select:file` ranks distinct files while retaining a representative
+published chunk as its source witness. `natural_language_file` records that
+chunk identity and exact indexed span; it does not manufacture a `file:` ID or
+replace the witness with a whole-file span. The separate CodeSearch profiles
+return source-bound `file:` identities. The recorder and independent evaluator
+check each identity contract separately from `rank_unit`.
 
 Every file-projection result records `rank_unit: distinct_file` (the unit) and
 `ordering` (how the units are ordered, derived from the policy). The evaluator

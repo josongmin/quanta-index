@@ -98,6 +98,7 @@ impl LexicalSearcher for StubLexicalSearcher {
         _budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: ranked_page(&self.results, page),
             exact_total: None,
         })
@@ -344,6 +345,7 @@ impl LexicalSearcher for RecordingLexicalSearcher {
             budget.checkpoint("stub:collect")?;
         }
         Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: ranked_page(&self.results, page),
             exact_total: None,
         })

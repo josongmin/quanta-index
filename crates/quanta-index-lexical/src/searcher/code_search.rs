@@ -18,7 +18,7 @@ use quanta_index_contract::{
     SymbolNameSourcePolicyV1, valid_code_search_typo_identifier,
 };
 use quanta_index_core::{
-    CodeSearchScoreComponentsV1, LexicalCandidateExplanationV1, LexicalScoreEngineV1,
+    CodeSearchExecutionStatsV1, CodeSearchScoreComponentsV1, LexicalCandidateExplanationV1, LexicalScoreEngineV1,
     LexicalScoreTraceV1,
 };
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
@@ -1019,12 +1019,25 @@ fn file_for_id(authority: &FileAuthority, id: DocId) -> Result<&SourceFile, Core
 
 /// Generate one file-level AND set. A broad individual posting is never
 /// charged as a completed candidate before the remaining terms filter it.
+#[cfg(test)]
 fn candidate_ids(
     authority: &FileAuthority,
     terms: &[CodeSearchTerm],
     case: CaseMode,
     eligible: Option<&BTreeSet<u64>>,
     budget: &RequestBudgetV1,
+) -> Result<BTreeMap<u64, ScoredMatch>, CoreError> {
+    candidate_ids_observed(authority, terms, case, eligible, budget,
+        &mut CodeSearchExecutionStatsV1::default())
+}
+
+fn candidate_ids_observed(
+    authority: &FileAuthority,
+    terms: &[CodeSearchTerm],
+    case: CaseMode,
+    eligible: Option<&BTreeSet<u64>>,
+    budget: &RequestBudgetV1,
+    stats: &mut CodeSearchExecutionStatsV1,
 ) -> Result<BTreeMap<u64, ScoredMatch>, CoreError> {
     let literals: Vec<_> = terms.iter().filter(|term| term.regex.is_none()).collect();
     let mut indexed = Vec::new();
@@ -1086,6 +1099,8 @@ fn candidate_ids(
                             }
                         }
                         let file = file_for_id(authority, id)?;
+                        stats.literal_source_verification_attempts = stats.literal_source_verification_attempts.checked_add(1)
+                            .ok_or_else(|| CoreError::Storage("lexical: verification work count overflow".into()))?;
                         let Some(scored) =
                             score_terms(file, terms, case, None, TermsToScore::Literals, budget)?
                         else {
@@ -1135,6 +1150,8 @@ fn candidate_ids(
             .files
             .get(key)
             .ok_or_else(|| CoreError::Storage("lexical: file authority id has no source".into()))?;
+        stats.literal_source_verification_attempts = stats.literal_source_verification_attempts.checked_add(1)
+            .ok_or_else(|| CoreError::Storage("lexical: verification work count overflow".into()))?;
         if let Some(scored) = score_terms(file, terms, case, None, TermsToScore::Literals, budget)?
         {
             let _previous = hits.insert(id, scored);
@@ -1951,6 +1968,7 @@ impl TantivySearcher {
                 file_candidate(self, file, candidate.score, witness.as_ref(), true, budget)?;
         }
         Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
             exact_total,
         })
@@ -2063,6 +2081,7 @@ impl TantivySearcher {
             *candidate = file_candidate(self, file, candidate.score, Some(witness), true, budget)?;
         }
         Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
             exact_total,
         })
@@ -2103,6 +2122,7 @@ impl TantivySearcher {
         }
         let eligible = language_eligible_ids(authority, constraints, budget)?;
         let eligible = eligible.as_ref();
+        let mut stats = CodeSearchExecutionStatsV1::default();
         let ids: Option<BTreeMap<u64, Option<ScoredMatch>>> =
             if let Some(path) = &constraints.repo_relative_path_exact {
                 let mut matching = BTreeMap::new();
@@ -2122,7 +2142,7 @@ impl TantivySearcher {
                 // first, then verify regex over the admitted file set.
                 budget.checkpoint("lexical:code-search-terms")?;
                 Some(
-                    candidate_ids(authority, &parsed.terms, parsed.case, eligible, budget)?
+                    candidate_ids_observed(authority, &parsed.terms, parsed.case, eligible, budget, &mut stats)?
                         .into_iter()
                         .map(|(id, scored)| (id, Some(scored)))
                         .collect(),
@@ -2173,9 +2193,17 @@ impl TantivySearcher {
         if let Some(scope) = regex_scope {
             admit_regex_scan(authority, ids.keys().copied(), scope, budget)?;
         }
+        // Exact-path and regex-only plans have no literal prefilter pass.
+        if constraints.repo_relative_path_exact.is_none()
+            && parsed.terms.iter().any(|term| term.regex.is_none()) {
+            stats.literal_verified_files = u64::try_from(ids.len()).map_err(|error|
+                CoreError::Storage(format!("lexical: literal match count overflow: {error}")))?;
+        }
         let mut ranked = Vec::new();
         for (id, preverified) in ids {
             budget.checkpoint("lexical:code-search-file")?;
+            stats.final_candidate_visits = stats.final_candidate_visits.checked_add(1)
+                .ok_or_else(|| CoreError::Storage("lexical: final work count overflow".into()))?;
             let position = usize::try_from(id.saturating_sub(1)).map_err(|error| {
                 CoreError::Storage(format!("lexical: file id overflow: {error}"))
             })?;
@@ -2224,6 +2252,8 @@ impl TantivySearcher {
                 budget,
             );
         }
+        stats.verified_matching_files = u64::try_from(ranked.len()).map_err(|error|
+            CoreError::Storage(format!("lexical: verified match count overflow: {error}")))?;
         ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
         let after = self.page_boundary(page)?;
         if let Some(after) = after {
@@ -2232,12 +2262,16 @@ impl TantivySearcher {
         let exact_total = Some(u64::try_from(ranked.len()).map_err(|error| {
             CoreError::Storage(format!("lexical: file count overflow: {error}"))
         })?);
+        stats.cursor_eligible_files = exact_total.ok_or_else(||
+            CoreError::Storage("lexical: observed file total disappeared".into()))?;
         ranked.truncate(Self::page_limit(
             query,
             usize::try_from(page.fetch).map_err(|error| {
                 CoreError::Storage(format!("lexical: file fetch overflow: {error}"))
             })?,
         ));
+        stats.fetched_files = u64::try_from(ranked.len()).map_err(|error|
+            CoreError::Storage(format!("lexical: fetched file count overflow: {error}")))?;
         for (candidate, witness) in &mut ranked {
             budget.checkpoint("lexical:code-search-selected-preview")?;
             let source = candidate
@@ -2250,6 +2284,7 @@ impl TantivySearcher {
             *candidate = file_candidate(self, file, candidate.score, Some(witness), true, budget)?;
         }
         Ok(LexicalSearchPageV1 {
+            code_search_stats: Some(stats),
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
             exact_total,
         })

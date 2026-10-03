@@ -944,6 +944,7 @@ impl TantivySearcher {
         }
         if doc_limit == 0 {
             return Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
                 candidates: Vec::new(),
                 exact_total: Some(0),
             });
@@ -995,6 +996,7 @@ impl TantivySearcher {
         out.truncate(page.limit);
         let mut preview = self.selected_preview_context(query, &prepared.predicate_plan, budget)?;
         Ok(LexicalSearchPageV1 {
+            code_search_stats: None,
             candidates: self.render_manual_candidates(
                 out,
                 &mut preview,

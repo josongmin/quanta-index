@@ -4,11 +4,11 @@ use quanta_index_contract::{
     CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, CursorRouteV2,
     EngineTouched, GenerationPin, LexicalCursor, LexicalRowOrderKey, LqExpr, LqLeaf, LqPatternType,
     LqQuery, QueryResultWindowV1, QueryResultWindowV2, QueryStageKindV1, QueryStageTimingV1,
-    SearchExplanation, SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse,
+    SearchExplanation, SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse, PlannerStage, PlannerTraceEntry,
     TextQueryRequest, TextQueryResponse, validate_lexical_page_v1,
 };
 use quanta_index_core::{
-    CoreError, LexicalEndpoint, LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1,
+    CodeSearchExecutionStatsV1, CoreError, LexicalEndpoint, LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1,
     RequestBudgetV1, validate_query_top_k,
 };
 
@@ -82,6 +82,38 @@ fn lexical_explanation(
     explanation.strategy = "lexical".to_string();
     explanation.stage_timings = stage_timings;
     explanation
+}
+
+fn code_search_execution_trace(
+    stats: CodeSearchExecutionStatsV1,
+    fetched: usize,
+    exact_total: Option<u64>,
+) -> Result<Vec<PlannerTraceEntry>, CoreError> {
+    if Some(stats.cursor_eligible_files) != exact_total
+        || u64::try_from(fetched).ok() != Some(stats.fetched_files)
+        || stats.cursor_eligible_files > stats.verified_matching_files
+        || stats.fetched_files > stats.cursor_eligible_files
+        || stats.verified_matching_files > stats.final_candidate_visits
+        || stats.literal_verified_files > stats.literal_source_verification_attempts
+    {
+        return Err(CoreError::InvalidContract("lexical: contradictory code-search work counts".into()));
+    }
+    let mut entries = vec![PlannerTraceEntry {
+        stage: PlannerStage::Merge,
+        detail: "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true".into(),
+    }];
+    entries.extend([
+        ("literal_source_verification_attempts", stats.literal_source_verification_attempts),
+        ("literal_verified_files", stats.literal_verified_files),
+        ("final_candidate_visits", stats.final_candidate_visits),
+        ("verified_matching_files", stats.verified_matching_files),
+        ("cursor_eligible_files", stats.cursor_eligible_files),
+        ("fetched_files", stats.fetched_files),
+    ].into_iter().map(|(name, value)| PlannerTraceEntry {
+        stage: PlannerStage::Merge,
+        detail: format!("code_search.execution.{name}={value}"),
+    }));
+    Ok(entries)
 }
 
 impl SearchPlaneDispatcher {
@@ -206,6 +238,8 @@ impl SearchPlaneDispatcher {
         );
         budget.checkpoint("lexical:project")?;
         let project_started = self.query_stage_observation.start();
+        let code_search_trace = page.code_search_stats.map(|stats|
+            code_search_execution_trace(stats, page.candidates.len(), page.exact_total)).transpose()?;
         let window = lexical_page_window_v1(&mut page, request.top_k, fetch_top_k)?;
         let results = page.candidates;
         let next_boundary = next_cursor(
@@ -233,6 +267,15 @@ impl SearchPlaneDispatcher {
         );
         let mut explanation =
             lexical_explanation(budget, &execution.summary(), stage_timings.finish());
+        if let Some(trace) = code_search_trace {
+            explanation.planner_trace.extend(trace);
+            // Reserve before fitting. Updating to a shorter returned prefix
+            // cannot enlarge the serialized explanation after fitting.
+            explanation.planner_trace.push(PlannerTraceEntry {
+                stage: PlannerStage::Merge,
+                detail: format!("code_search.execution.returned_files={}", results.len()),
+            });
+        }
         if !results.is_empty() {
             // Reserve the maximal explanation shape before response-budget
             // fitting. A truncated page can only remove this contribution.
@@ -256,6 +299,10 @@ impl SearchPlaneDispatcher {
         }
         let summary = execution.summary();
         response.explanation.engines_touched = summary.touched_engines();
+        if let Some(entry) = response.explanation.planner_trace.iter_mut().find(|entry|
+            entry.detail.starts_with("code_search.execution.returned_files=")) {
+            entry.detail = format!("code_search.execution.returned_files={}", response.results.len());
+        }
         if let Some(stages) = response.explanation.stage_timings.as_mut() {
             let final_stage = stages.last_mut().ok_or_else(|| {
                 CoreError::InvalidContract("lexical project stage missing".to_string())
