@@ -240,3 +240,33 @@ the receipt is
 (SHA-256 `45b200ac6f8e9abc87841d6f324776ba65b184de137539a37a106eb27534a262`).
 Five-product matching, human relevance review, fresh holdout and qualified
 performance remain **NOT_RUN** for this diagnostic.
+
+## Same-source-lineage default fallback control (2026-10-03)
+
+**VERIFIED, diagnostic only:** the clean `442a7f82` control and clean
+`12fe7d9f` treatment were each built with `--release --all-features` and
+ran the same five frozen Gin ordinary-input suites. The commit diff contains
+only `code_search.rs`, its focused test and the contract ADR. Both paired
+verdict sets passed. An independent native-row checker rederived file Hit@10,
+MRR and NDCG from suite `(path, file_sha256)` gold and checked the treatment
+metrics against the prior independent summary. Its full receipt is
+`/private/tmp/qi-default-control-442a-20261003/gin-causal-summary.json`
+(SHA-256 `1e70a3bc7e896039c1cf4a4e7c53e797194b4ef02d73c9e5461f6ac5adaeb851`).
+
+| Ordinary-input lane | Control Hit@10 | Treatment Hit@10 | Gained / lost |
+| --- | ---: | ---: | ---: |
+| Clean | 1,187 / 1,196 | 1,187 / 1,196 | 0 / 0 |
+| Insertion | 1 / 1,192 | 1,176 / 1,192 | 1,175 / 0 |
+| Deletion | 181 / 1,178 | 1,158 / 1,178 | 977 / 0 |
+| Substitution | 7 / 1,192 | 1,174 / 1,192 | 1,167 / 0 |
+| Transposition | 1 / 1,192 | 1,171 / 1,192 | 1,170 / 0 |
+
+All 226 previously nonempty typo results retained their status and complete
+candidate order (6, 194, 14 and 12 by lane); all clean results were identical.
+Semble's five lane results were also identical between captures. The separate
+99-query source-proved absence control had 99 abstentions and zero candidates
+in both Quanta binaries. This isolates the large gain to entering the new
+empty-result fallback under these requests; it does not prove optimal ranking
+of ambiguous names or general file relevance. External service index attestation,
+independent reviewed labels, five-product parity and quiet-host latency remain
+**NOT_RUN**. The wall times include concurrent work and are not a speed claim.
