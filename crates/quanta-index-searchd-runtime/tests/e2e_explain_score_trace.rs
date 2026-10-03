@@ -173,8 +173,11 @@ fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
         let trace = explained.explanation;
         if explained.presence != CandidatePresenceV1::Indexed
             || trace.contributions.len() != 1
-            || trace.contributions[0].signal_name.as_ref() != "lexical.code_search_file"
-            || contribution_sum(&trace) != carried
+            || !matches!(
+                trace.contributions.first(),
+                Some(row) if row.signal_name.as_ref() == "lexical.code_search_file"
+            )
+            || contribution_sum(&trace).to_bits() != carried.to_bits()
             || !trace_says(&trace, "explain.code_search_score.boundary_and_path=100")
             || !trace_says(&trace, "explain.code_search_score.exact_case=5")
             || !trace_says(&trace, "explain.code_search_score.proximity=0")
