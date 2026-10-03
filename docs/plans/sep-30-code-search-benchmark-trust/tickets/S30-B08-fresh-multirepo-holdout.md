@@ -1973,3 +1973,65 @@ It is not a five-product result or a human-reviewed relevance judgment. The
 first gold-compatible C4 rerun was interrupted with no receipt or matrix. Its
 replacement is active under `/private/tmp/qi-c5-c4-goldbound-20261003-v2/`;
 C4 matrix validation and scored declaration-product capture remain `NOT_RUN`.
+
+
+## C3 structural RCA and Native file capture repair (2026-10-03)
+
+The original mixed C3 suites remain invalid for qualification. Recomputed raw
+family sets confirm that all 12 omit 20 NL families from their split authority;
+20–42 split families are absent from the suites, depending on repository. The
+split equality gate is correct and was not relaxed. These C3 repositories are
+disjoint from fresh C5; their AI qrels cannot qualify C5.
+
+The existing `holdout_review.py` now reissues reviewed `semantic_intent` tasks
+under `natural_language_file_search` to a fresh diagnostic suite/pack. It first
+validates the complete original suite, preserves all task data except the
+request contract, rejects malformed excluded tasks and over-limit queries, and
+checks input/tool drift. Original receipts and split authority are not carried
+forward; AI identities remain AI identities. All 240 tasks in 12 repositories
+were reissued and validated without modifying the original capture.
+
+An actual uvicorn public capture reproduced a recorder defect: Native
+`select:file` ranks distinct files but preserves a representative published
+chunk. The recorder and Python evaluator wrongly required a CodeSearch `file:`
+identity, while the synthetic fixture fabricated one. The fix separates ranked
+file units from published source witnesses, preserving source/generation proof,
+native scores/order and duplicate-file rejection. The unit negative refuses a
+source-valid CodeSearch identity substituted into Native output.
+
+**VERIFIED:** `test_holdout_review.py` 47 passed; focused Python file contract
+selector 25 passed (438 deselected); retrieval-bench unit binary 112 passed;
+registered `sdk_roundtrip::native_file_public_routes_group_order_scope_and_case`
+1 passed, 24 filtered (2.87s). The SDK fixture uses >=15 matching chunks in one
+file plus nine others, proves token-OR/folded content semantics, excludes a
+path-only match, preserves source identity and score order, and walks cursors.
+The required-test inventory follows its renamed selector. Recorder, evaluator,
+SDK fixture and inventory bytes on main match the pinned proof source.
+
+**VERIFIED, diagnostic capture/replay:** corrected uvicorn and zustand each
+executed 20 tasks; all 40 rows are `capped` with ten distinct files and finite
+native scores. Capture wall times were 66.826s and 48.042s, respectively, using
+debug/hash-dev lexical-only on a contended host. These are execution observations,
+not speed measurements. The failed baseline remains preserved separately.
+
+**BLOCKED, relevance completeness:** 134 returned task/file pairs are absent
+from the existing AI qrels (uvicorn 64, zustand 70). Complete-ranked-pool scoring
+excludes 38/40 tasks; only 2/40 are eligible. No product ranking is reported.
+Two new source-bound unjudged packets include paths, hashes and frozen full text.
+Reissue the review pool/forms and adjudication with new suite/receipt digests;
+post-result diagnostic labels must not become pre-result qualification.
+
+**NOT_RUN:** remaining C3 200 live tasks, multi-product captures for this NL
+contract, and the independent v5 106-task mechanical audit. The old 106 packet
+binds v1 capsules and cannot be filled as v5 proof. C5 still needs its own fresh
+NL relevance data, family/split issuance and source-bound admission. A qualified
+semantic/hybrid ten-file comparison requires its own declared product contract;
+this repair establishes a lexical NL file diagnostic only. Full quality, speed,
+release and deployment qualification remain unclaimed.
+
+Evidence and commands:
+[structural RCA](/Users/songmin/Documents/code-new/qi-b08-structural-rca-20261003-j489jdg8/RCA.md),
+`projection-summary.json`, `original-family-audit.json`, `runtime-binding-fixed.json`,
+`runtime-summary-fixed.json`, `scoring-summary.json`, source archives and the
+per-repository missing-review packets in that fresh external root. Original
+path bindings remain in preserved copies; no old result or aggregate was changed.
