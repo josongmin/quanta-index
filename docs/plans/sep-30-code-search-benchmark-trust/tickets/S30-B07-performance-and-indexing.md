@@ -34,7 +34,7 @@ and searchd SHA
 | --- | --- | --- |
 | P0 done | `run.py`: phase timer, v7 ingest stage contract in direct capture, one final closure verification, and Python >=3.10 admission before product execution | Focused positive/negative tests; one complete source-bound pair with `PAIR_VALID=pass`; final source-drift refusal retained |
 | P1 | C5 quality batch in `holdout_c4.py`, `run.py`, Rust retrieval runner and `semble.py`: run compatible intent packs against one immutable index per repository, with separate sealed packs, records, reports and replay per intent | Same per-intent rows, statuses and judgments as fresh runs; a changed corpus/model/strategy/generation refuses reuse; indexing phase reported once, never charged to individual query latency |
-| P1 | `source_closure.py` and pair driver: benchmark batch reuse of one captured closure for identical source revision, then verify each cell before promotion; keep qualified capture policy explicit | Mutated file, changed root set, revision drift and altered closure digest all refuse; measured capture cost per cell falls without losing final custody check |
+| P1 partial | `source_closure.py` and pair driver now accept an external prior closure for exploratory captures without claims. Reuse checks revision, clean source and file inventory; every cell still fully verifies before promotion. The C5 batch caller is not connected yet | Focused refusal tests and a clean-HEAD source-closure A/B passed. Full pair and C5 batch proof remain open |
 | P2 | Profile SymPy verifier under the current source. Optimize repeated parsing only inside one independent validation pass, keyed by source bytes and parser identity; keep verdict re-derivation independent | Report and verdict bytes unchanged; tampered source and parser identity rejected; representative large-cell wall and CPU reported |
 
 Exploratory C5 specs had no qualified admission bundle, so admission was not
@@ -51,6 +51,15 @@ each original suite and blind pack independently valid. A multi-pack product
 session may share the immutable index, but must emit one native, pack-bound
 record per intent and an explicit shared-index receipt; derived synthetic
 per-intent native records are not acceptable evidence.
+
+At clean `934eb012`, a single local closure-only A/B over 1,124 files measured
+`capture` 5.744 s, `reuse` 0.377 s, and the mandatory final `verify` 5.495 s.
+The first and reused payloads/digests were identical. The output is under
+`/private/tmp/qi-closure-reuse-mpjzrq0j`. These are diagnostic single-run
+times; they do not show whole-pair savings or batch product-index reuse.
+`test_benchmark_source_closure.py` passed 69/69 and the selected pair-driver
+tests passed 6/6 at this HEAD. The remaining high-cost work is one native
+product index session per repository with separate pack-bound executions.
 
 ## Work and boundaries
 
