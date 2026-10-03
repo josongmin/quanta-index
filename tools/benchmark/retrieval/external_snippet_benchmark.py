@@ -634,9 +634,7 @@ def verify_and_score_capture(
             "comparison_contract": pack["comparison_contract"],
             "routes": pack["routes"],
             "file_universe": pack["file_universe"],
-            "tasks": [
-                {"task_id": task["task_id"], "split": "eval"} for task in pack["tasks"]
-            ],
+            "tasks": [{"task_id": task["task_id"], "split": "eval"} for task in pack["tasks"]],
         }
         evaluator._validate_run(record, pack, context, source)
     except (ValueError, OSError, evaluator.EvidenceError) as exc:

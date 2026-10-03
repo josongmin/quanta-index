@@ -6,8 +6,9 @@ declaration census of `source_oracle` and are labelled only for files where an
 independent parser agrees with that census (`declaration_census_audit`). A
 parser-refused file can be excluded from one query's labels only when its raw
 text proves that the queried name is absent. Disagreements remain unjudged.
-For an unscoped file-search request, a matching declaration or unresolved
-census in another supported language also leaves the task unjudged.
+An unscoped file-search request labels matching declarations in every supported
+language. Its authoring language is not a result filter. An unresolved census
+remains unjudged unless the query is provably absent from the raw source.
 All labels remain unreviewed.
 
 Schema v1 recipes carry development and holdout tasks for one repository and
@@ -316,34 +317,6 @@ def _declaration_spans(
     return spans
 
 
-def _other_language_declaration_conflict(
-    raw: bytes,
-    path: str,
-    scoring_query: str,
-    scoring_intent: str,
-    language: str,
-    census: dict,
-    typo_query: str | None,
-) -> bool:
-    if path not in census:
-        census[path] = source_oracle.declaration_census(language, path, raw)
-    variant = DECLARATION_INTENTS[scoring_intent]
-    for start, end, *_rest in census[path]:
-        name = source_oracle._name_text(raw[start:end])
-        if (
-            name == scoring_query
-            if variant == "exact"
-            else source_oracle._variant_matches(variant, scoring_query, name)
-        ):
-            return True
-        if typo_query is not None and (
-            name.casefold() == typo_query.casefold()
-            or source_oracle._variant_matches("osa1_casefold", typo_query, name)
-        ):
-            return True
-    return False
-
-
 def _textually_excluded(raw: bytes, query: str, variant: str) -> bool:
     """Use the source oracle's conservative name-absence predicate."""
     try:
@@ -447,41 +420,17 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
                 continue
             if task["intent"] in DECLARATION_INTENTS:
                 source_language = source_oracle.declaration_language(path)
-                if source_language != task["language"]:
-                    # The request has no language filter. Only an independently
-                    # audited census can prove that text in another language
-                    # is a use rather than a relevant declaration.
-                    if source_language in audits:
-                        audit = audits[source_language]
-                        if path in audit["refused_paths"] or path in audit["disagreement_paths"]:
-                            if not _textually_excluded(
-                                raw, scoring_query, DECLARATION_INTENTS[scoring_intent]
-                            ) or (
-                                intended_typo
-                                and not _textually_excluded(raw, task["query"], "osa1_casefold")
-                            ):
-                                unsupported.append(
-                                    {"path": path, "reason": "other_language_possible_declaration"}
-                                )
-                        elif _other_language_declaration_conflict(
-                            raw,
-                            path,
-                            scoring_query,
-                            scoring_intent,
-                            source_language,
-                            censuses[source_language],
-                            task["query"] if intended_typo else None,
-                        ):
-                            unsupported.append(
-                                {"path": path, "reason": "other_language_matching_declaration"}
-                            )
+                # Language identifies the query's authoring grammar, not a
+                # request filter. Unscoped file search uses the agreed census
+                # of every supported source language.
+                if source_language not in audits:
                     continue
             selected += 1
             if task["intent"] == "literal_utf8_exact":
                 spans = _literal_spans(raw, query)
                 reason = None
             elif task["intent"] in DECLARATION_INTENTS:
-                audit = audits[task["language"]]
+                audit = audits[source_language]
                 reason = (
                     "census_refused"
                     if path in audit["refused_paths"]
@@ -503,9 +452,9 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
                         raw,
                         path,
                         scoring_query,
-                        task["language"],
+                        source_language,
                         scoring_intent,
-                        censuses[task["language"]],
+                        censuses[source_language],
                     )
                 )
             else:
@@ -541,7 +490,11 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
         if intended_typo:
             near: dict[str, set[str]] = defaultdict(set)
             exact_collision: dict[str, set[str]] = defaultdict(set)
-            for path, declarations in censuses[task["language"]].items():
+            for path, declarations in (
+                (path, declarations)
+                for census in censuses.values()
+                for path, declarations in census.items()
+            ):
                 if prefix and not (path == prefix or path.startswith(prefix + "/")):
                     continue
                 raw = sources[path][0]

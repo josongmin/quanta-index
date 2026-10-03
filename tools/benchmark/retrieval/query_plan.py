@@ -147,7 +147,7 @@ def validated_execution_config(policy: str, config: dict[str, int] | None = None
     if config is None:
         return dict(DEFAULT_NL_CONFIG)
     if not isinstance(config, dict) or set(config) != set(DEFAULT_NL_CONFIG):
-        raise QueryPlanError("natural-language config fields differ from the frozen profile")
+        raise QueryPlanError("natural-language config fields differ from frozen Quanta profile")
     if any(type(value) is not int for value in config.values()):
         raise QueryPlanError("natural-language config fields must be integers")
     if (

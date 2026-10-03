@@ -10503,7 +10503,7 @@ def test_v5_capture_schema_rejects_zero_generation_and_cross_system_profiles(tmp
             lambda s, r, f: r["captures"]["q0"]["execution_profile"].update(
                 policy="natural_language"
             ),
-            "config is invalid",
+            "frozen Quanta profile",
         ),
         (
             lambda s, r, f: r["captures"]["q0"]["execution_profile"].update(policy="telepathy"),

@@ -101,7 +101,7 @@ fn code_search_execution_trace(
     exact_total: Option<u64>,
 ) -> Result<Vec<PlannerTraceEntry>, CoreError> {
     if Some(stats.cursor_eligible_files) != exact_total
-        || u64::try_from(fetched).ok() != Some(stats.fetched_files)
+        || !u64::try_from(fetched).is_ok_and(|count| count == stats.fetched_files)
         || stats.cursor_eligible_files > stats.verified_matching_files
         || stats.fetched_files > stats.cursor_eligible_files
         || stats.verified_matching_files > stats.final_candidate_visits

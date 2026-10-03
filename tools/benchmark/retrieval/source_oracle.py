@@ -45,6 +45,7 @@ GO_NAME_OSA1_CASEFOLD = "go_declaration_name_osa1_casefold_v1"
 # census; the other languages use declaration_census_v1 kinds below. A name is
 # the declared token as written (`r#match`, `#private`), never a normalized form.
 NAME_VARIANTS = ("exact", "prefix", "infix", "components", "osa1", "osa1_casefold")
+ALL_DECLARATION_LANGUAGES = "all_supported"
 NAME_CONTRACTS: dict[str, tuple[str, str]] = {
     GO_EXACT_LOCAL_NAME: ("go", "exact"),
     GO_NAME_PREFIX: ("go", "prefix"),
@@ -57,6 +58,8 @@ for _language in ("rust", "python", "typescript", "javascript"):
     NAME_CONTRACTS[f"{_language}_exact_local_name_v1"] = (_language, "exact")
     for _variant in NAME_VARIANTS[1:]:
         NAME_CONTRACTS[f"{_language}_declaration_name_{_variant}_v1"] = (_language, _variant)
+for _variant in NAME_VARIANTS:
+    NAME_CONTRACTS[f"declaration_name_{_variant}"] = (ALL_DECLARATION_LANGUAGES, _variant)
 DECLARATION_NAME_CONTRACTS = frozenset(NAME_CONTRACTS)
 # Suffix -> Tree-sitter grammar. TSX needs its own grammar; JSX parses as JavaScript.
 DECLARATION_GRAMMARS = {
@@ -455,7 +458,15 @@ class SourceOracleIndex:
             contract, query = key
             _require_query(contract, query)
             language, _variant = NAME_CONTRACTS[contract]
-            if any(path not in files or declaration_language(path) != language for path in paths):
+            if any(
+                path not in files
+                or declaration_language(path) is None
+                or (
+                    language != ALL_DECLARATION_LANGUAGES
+                    and declaration_language(path) != language
+                )
+                for path in paths
+            ):
                 raise SourceOracleError("declaration exclusion path is outside its source language")
             self.declaration_exclusions[key] = frozenset(paths)
             self._excluded_declaration_paths[language].update(paths)
@@ -526,11 +537,15 @@ class SourceOracleIndex:
         if key not in self._declarations:
             declarations: dict[bytes, list[tuple[str, int, int, int, int]]] = defaultdict(list)
             for path, (raw, _digest) in self.files.items():
-                if declaration_language(path) != language:
+                source_language = declaration_language(path)
+                if source_language is None or language not in (
+                    source_language,
+                    ALL_DECLARATION_LANGUAGES,
+                ):
                     continue
                 if path in excluded:
                     try:
-                        declaration_census(language, path, raw)
+                        declaration_census(source_language, path, raw)
                     except SourceOracleError as exc:
                         if not _excludable_census_refusal(exc):
                             raise
@@ -542,7 +557,7 @@ class SourceOracleIndex:
                 # Every declaration is kept: variant contracts match names that
                 # differ from the submitted query bytes.
                 try:
-                    census = declaration_census(language, path, raw)
+                    census = declaration_census(source_language, path, raw)
                 except SourceOracleError as exc:
                     if path in self._excluded_declaration_paths[
                         language
@@ -567,9 +582,13 @@ class SourceOracleIndex:
         """Files whose declaration census refuses, for visible unsupported strata."""
         failures = []
         for path, (raw, _digest) in sorted(self.files.items()):
-            if declaration_language(path) == language:
+            source_language = declaration_language(path)
+            if source_language is not None and language in (
+                source_language,
+                ALL_DECLARATION_LANGUAGES,
+            ):
                 try:
-                    declaration_census(language, path, raw)
+                    declaration_census(source_language, path, raw)
                 except SourceOracleError as exc:
                     failures.append({"path": path, "reason": str(exc)})
         return failures

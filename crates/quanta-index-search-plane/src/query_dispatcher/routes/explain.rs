@@ -614,25 +614,28 @@ fn lexical_trace_row_v1(
             ))
         })?;
         if trace.engine != LexicalScoreEngineV1::CodeSearchFile
-            || f32::from(total) != trace.engine_score
-            || trace.boost_factor != 1.0
-            || trace.emitted_score != trace.engine_score
+            || f32::from(total).to_bits() != trace.engine_score.to_bits()
+            || trace.boost_factor.to_bits() != 1.0_f32.to_bits()
+            || trace.emitted_score.to_bits() != trace.engine_score.to_bits()
         {
             return Err(CoreError::Storage(
                 "explain: file score differs from its decomposition".into(),
             ));
         }
     }
-    if let Some(study) = trace.code_search_rank_study {
-        if trace.code_search_components.is_none()
+    if let Some(study) = trace.code_search_rank_study
+        && (trace.code_search_components.is_none()
             || trace.engine != LexicalScoreEngineV1::CodeSearchFile
-            || u16::try_from(study.baseline).map(f32::from).ok() != Some(trace.engine_score)
-            || (study.declaration_coverage_complete && study.declaration_bonus.is_none())
-        {
-            return Err(CoreError::Storage(
-                "explain: rank study disagrees with the selected file scorer".into(),
-            ));
-        }
+            || !matches!(
+                u16::try_from(study.baseline),
+                Ok(baseline)
+                    if f32::from(baseline).to_bits() == trace.engine_score.to_bits()
+            )
+            || (study.declaration_coverage_complete && study.declaration_bonus.is_none()))
+    {
+        return Err(CoreError::Storage(
+            "explain: rank study disagrees with the selected file scorer".into(),
+        ));
     }
     Ok(ExplanationRow {
         signal_name: format!("lexical.{}", trace.engine.as_str()).into_boxed_str(),
