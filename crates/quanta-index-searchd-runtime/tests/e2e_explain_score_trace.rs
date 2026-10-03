@@ -18,7 +18,7 @@ use quanta_index_contract::{
     TextQuerySyntax,
 };
 
-use e2e_harness::E2eRuntime;
+use e2e_harness::{E2eRoutePage, E2eRuntime};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -83,14 +83,11 @@ fn contribution_sum(explanation: &SearchExplanation) -> f32 {
 }
 
 fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
-    let result = rt.query_text(TextQuerySyntax::CodeSearch, PLAIN_QUERY, 10);
-    if let Some(error) = result.typed_error {
-        return Err(format!("CodeSearch refused: {error}").into());
-    }
-    let request_trace = result
-        .explanation
-        .as_ref()
-        .ok_or("native CodeSearch execution trace")?;
+    let result = match rt.query_text_page(TextQuerySyntax::CodeSearch, PLAIN_QUERY, 10, None, None)? {
+        E2eRoutePage::Served(page) => page,
+        E2eRoutePage::Refused(error) => return Err(format!("CodeSearch refused: {error}").into()),
+    };
+    let request_trace = &result.explanation;
     for expected in [
         "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true",
         "code_search.execution.verified_matching_files=3",
@@ -103,7 +100,7 @@ fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
         }
     }
     let actual: Vec<_> = result
-        .candidates
+        .results
         .iter()
         .map(|row| (row.repo_relative_path.as_str(), row.score))
         .collect();
@@ -122,7 +119,7 @@ fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
         .next()
         .ok_or("BM25 fixture hit")?;
     let (_, bm25) = explained(rt, bm25_top, PLAIN_QUERY)?;
-    for candidate in result.candidates {
+    for candidate in result.results {
         let carried = candidate.score;
         let presence = rt.explain_candidate(candidate.clone());
         if let Some(error) = presence.typed_error {
