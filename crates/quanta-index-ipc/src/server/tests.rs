@@ -51,9 +51,59 @@ fn ingress_reader_rejects_an_elapsed_request_deadline() {
         deadline: Instant::now()
             .checked_sub(Duration::from_millis(1))
             .expect("current instant has a preceding millisecond"),
+        saw_frame_bytes: false,
+        first_read: true,
     };
     let error = reader.read(&mut [0]).expect_err("deadline precedes input");
     assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[test]
+fn ingress_reader_uses_existing_first_timeout_and_tightens_fragment_timeout() {
+    fn expect_timeout(
+        socket_timeout: Duration,
+        deadline_after: Duration,
+        first_read: bool,
+    ) -> TestRes {
+        let (mut stream, peer) = UnixStream::pair().map_err(|err| err.to_string())?;
+        stream
+            .set_read_timeout(Some(socket_timeout))
+            .map_err(|err| err.to_string())?;
+        let (release_tx, release_rx) = mpsc::channel();
+        let hold_peer = thread::spawn(move || {
+            let _released = release_rx.recv_timeout(Duration::from_secs(5));
+            drop(peer);
+        });
+        let mut reader = super::IngressDeadlineReader {
+            stream: &mut stream,
+            deadline: Instant::now() + deadline_after,
+            saw_frame_bytes: !first_read,
+            first_read,
+        };
+        let observed = reader.read(&mut [0_u8; 1]);
+        let _released = release_tx.send(());
+        hold_peer
+            .join()
+            .map_err(|panic| format!("peer hold thread panicked: {panic:?}"))?;
+        if matches!(
+            &observed,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                )
+        ) {
+            Ok(())
+        } else {
+            Err(format!(
+                "read must time out before peer closes (socket={socket_timeout:?}, deadline={deadline_after:?}, first={first_read}): {observed:?}"
+            ))
+        }
+    }
+
+    let result = expect_timeout(Duration::from_millis(50), Duration::from_secs(30), true)
+        .and_then(|()| expect_timeout(Duration::from_secs(30), Duration::from_millis(50), false));
+    assert_test_ok(&result);
 }
 
 /// Failure-containment bound for watch-event waits: the test fails
@@ -1125,6 +1175,12 @@ fn handle_connection_returns_peer_closed_after_successful_round_trip() {
         if !matches!(reason, ConnectionCloseReason::PeerClosed) {
             return Err(format!("unexpected close reason: {reason:?}"));
         }
+        if counters.snapshot().request_decode_failures != 0 {
+            return Err(format!(
+                "clean peer close counted as a decode failure: {:?}",
+                counters.snapshot()
+            ));
+        }
         let events = counters
             .recent_request_events_v1()
             .map_err(|error| error.to_string())?;
@@ -1145,6 +1201,76 @@ fn handle_connection_returns_peer_closed_after_successful_round_trip() {
             .any(|event| event.request_id.get() != 41 || event.connection_id != 1)
         {
             return Err(format!("round-trip event identity drift: {events:?}"));
+        }
+        Ok(())
+    })();
+    assert_test_ok(&result);
+}
+
+#[test]
+fn a_connection_reset_is_a_close_only_before_the_next_frame() {
+    let reset = || IpcError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+    assert!(super::peer_closed_before_frame(&reset(), false));
+    assert!(!super::peer_closed_before_frame(&reset(), true));
+    assert!(super::peer_closed_before_frame(&IpcError::Truncated, false));
+    assert!(!super::peer_closed_before_frame(&IpcError::Truncated, true));
+    assert!(!super::peer_closed_before_frame(
+        &IpcError::EmptyFrame,
+        false
+    ));
+}
+
+#[test]
+fn a_partial_second_frame_after_a_response_counts_as_a_decode_failure() {
+    let result = (|| -> TestRes {
+        let (mut client, server) = UnixStream::pair().map_err(|err| err.to_string())?;
+        client
+            .write_all(&encode_test_frame(51, 8)?)
+            .map_err(|err| err.to_string())?;
+
+        let counters = test_counters();
+        let worker_counters = Arc::clone(&counters);
+        let handle = thread::spawn(move || {
+            handle_connection::<TestRequestEnvelope, u64, TestResponseEnvelope, u64, TestDispatcher>(
+                server,
+                &TestDispatcher,
+                &test_slots(),
+                test_policy(),
+                IpcPlane::Query,
+                PeerCredentials {
+                    uid: 0,
+                    gid: 0,
+                    pid: None,
+                },
+                0,
+                1,
+                &AtomicBool::new(false),
+                &worker_counters,
+            )
+        });
+
+        let response = decode_response::<TestResponseEnvelope, _>(&mut client)
+            .map_err(|err| format!("first request must receive a response: {err}"))?;
+        if response.request_id != 51 || response.payload != 9 {
+            return Err(format!("unexpected first response: {response:?}"));
+        }
+        client.write_all(&[4]).map_err(|err| err.to_string())?;
+        client
+            .shutdown(Shutdown::Write)
+            .map_err(|err| err.to_string())?;
+
+        let reason = handle
+            .join()
+            .map_err(|join_err| format!("server thread panicked: {join_err:?}"))?;
+        if !matches!(
+            reason,
+            ConnectionCloseReason::RequestDecodeFailed(IpcError::Truncated)
+        ) {
+            return Err(format!("partial second frame was not refused: {reason:?}"));
+        }
+        let observed = counters.snapshot();
+        if observed.request_decode_failures != 1 || observed.requests_dispatched != 1 {
+            return Err(format!("partial frame accounting drifted: {observed:?}"));
         }
         Ok(())
     })();

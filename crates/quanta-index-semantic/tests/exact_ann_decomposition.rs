@@ -6,8 +6,9 @@
 //!
 //! - the 255/256 row floor (`VECTOR_INDEX_MIN_ROWS`): 255 rows seal an
 //!   exact lane, 256 an approximate `ivf_hnsw_sq` one with the sealed
-//!   effort, and the exact lane's served ranking equals an exhaustive
-//!   cosine oracle computed in this file;
+//!   effort; the exact lane's ranking equals an exhaustive cosine oracle,
+//!   while the approximate lane is checked for bounded recall and exact
+//!   scores of the candidates it actually returns;
 //! - the exact-completion contract of `run_vector_query`: an approximate
 //!   pass that returns `top_k` rows is served as ranked, with no exact
 //!   completion — observed through the
@@ -62,6 +63,8 @@ const QUERIES: u64 = 40;
 const QUERY_SEED_BASE: u64 = 9_000_000;
 /// The served score is `1 - cosine distance`; float error stays far below.
 const SCORE_TOLERANCE: f64 = 1e-4;
+/// The production ANN quality rail uses the same minimum recall@10.
+const ANN_RECALL_FLOOR: f64 = 0.95;
 
 fn repo() -> Result<RepoId, Box<dyn Error>> {
     RepoId::new("rbr-07-repo")
@@ -282,17 +285,12 @@ fn work_bounded_search_admits_exact_scan_once_on_an_ann_generation() -> TestResu
 
 /// Ticket item (a): the documented 255/256 row boundary.
 ///
-/// 255 rows must seal an exact lane and 256 an approximate one, and the
-/// served top-k ranking must equal the exhaustive cosine oracle in both
-/// cases — through the actual query path (`SemanticSearcher::search`),
-/// not through any test-only seam.
-///
-/// Measured behavior pinned here for the 256-row approximate lane: its
-/// served top-10 equaled the exhaustive oracle's top-10 *as an ordered
-/// list* on every measured query (the index re-ranks its candidates by
-/// exact distance, `refine_factor = 2`), which is why ordered equality is
-/// asserted rather than set overlap. A library bump that breaks it fails
-/// this pin loudly.
+/// 255 rows must seal an exact lane and 256 an approximate one, through
+/// the actual query path (`SemanticSearcher::search`). The exact lane must
+/// equal the exhaustive cosine oracle. The approximate lane re-ranks its
+/// candidates by exact distance, but graph search need not admit every
+/// oracle top-k row. Repeated seals on the same fixture have demonstrated
+/// this distinction, so its recall is checked against the production floor.
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
@@ -329,6 +327,7 @@ fn the_255_256_row_boundary_serves_the_exhaustive_oracle_through_both_lanes() ->
     assert_eq!(effort.ef_per_candidate, 2);
     assert_eq!(effort.refine_factor, 2);
 
+    let mut ann_overlap = 0_usize;
     for query_seed in 0..QUERIES {
         let query = unit_vector(QUERY_SEED_BASE.saturating_add(query_seed));
         let expected_exact =
@@ -353,19 +352,45 @@ fn the_255_256_row_boundary_serves_the_exhaustive_oracle_through_both_lanes() ->
         }
 
         let ann_hits = ann_searcher.search(&query, TOP_K, &RequestBudgetV1::unbounded())?;
+        assert_eq!(ann_hits.len(), usize::try_from(TOP_K)?);
+        let ann_ids = hit_ids(&ann_hits);
         assert_eq!(
-            hit_ids(&ann_hits),
-            oracle_ids(&expected_ann),
-            "query {query_seed}: the approximate lane must serve the exhaustive oracle's ordered top-k"
+            ann_ids.iter().collect::<BTreeSet<_>>().len(),
+            ann_ids.len(),
+            "query {query_seed}: approximate lane returned a duplicate row"
         );
-        for (hit, (_id, expected_score)) in ann_hits.iter().zip(&expected_ann) {
+        let expected_ids: BTreeSet<_> = oracle_ids(&expected_ann).into_iter().collect();
+        ann_overlap += ann_ids
+            .iter()
+            .filter(|id| expected_ids.contains(*id))
+            .count();
+        let all_scores: std::collections::BTreeMap<_, _> =
+            exhaustive_cosine_oracle(&query, &ann_records, None, usize::try_from(ANN_ROWS)?)
+                .into_iter()
+                .collect();
+        for hit in &ann_hits {
+            let expected_score = all_scores
+                .get(hit.candidate_id.as_str())
+                .ok_or("approximate lane returned a row outside the generation")?;
             assert!(
                 (f64::from(hit.score) - expected_score).abs() < SCORE_TOLERANCE,
                 "query {query_seed}: approximate-lane score {} vs oracle cosine {expected_score}",
                 hit.score
             );
         }
+        assert!(
+            ann_hits
+                .windows(2)
+                .all(|pair| pair[0].score >= pair[1].score),
+            "query {query_seed}: refined candidates must be ordered by exact score"
+        );
     }
+    let ann_total = usize::try_from(QUERIES)? * usize::try_from(TOP_K)?;
+    let ann_recall = f64::from(u32::try_from(ann_overlap)?) / f64::from(u32::try_from(ann_total)?);
+    assert!(
+        ann_recall >= ANN_RECALL_FLOOR,
+        "approximate lane recall@{TOP_K} {ann_overlap}/{ann_total} fell below {ANN_RECALL_FLOOR}"
+    );
     Ok(())
 }
 
@@ -448,11 +473,9 @@ fn a_full_length_approximate_pass_is_served_as_ranked_without_exact_completion()
 /// Ticket item (c): exact-vs-approximate top-k agreement.
 ///
 /// Recall of the exhaustive oracle's top-k inside the approximate lane's
-/// served top-k, over `QUERIES` deterministic query directions. Measured
-/// 400/400 on this row set (the index's refine step re-ranks candidates
-/// by exact distance and the graph walk at this scale reaches the true
-/// neighbours), so recall == 1.0 is asserted as the pinned value; the
-/// line the run log carries is printed for the ledger.
+/// served top-k, over `QUERIES` deterministic query directions. The graph
+/// build and walk can miss an exact top-k row on this fixture; the measured
+/// value is recorded and checked against the ANN quality floor.
 #[test]
 #[expect(
     clippy::print_stdout,
@@ -462,8 +485,7 @@ fn a_full_length_approximate_pass_is_served_as_ranked_without_exact_completion()
     clippy::panic_in_result_fn,
     reason = "the test asserts the pinned recall via assert macros; a violated pin is a test failure, not a propagatable error"
 )]
-fn approximate_top_k_recall_against_the_exhaustive_oracle_is_pinned_at_the_measured_value()
--> TestResult {
+fn approximate_top_k_recall_against_the_exhaustive_oracle_meets_the_quality_floor() -> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(1);
@@ -507,10 +529,10 @@ fn approximate_top_k_recall_against_the_exhaustive_oracle_is_pinned_at_the_measu
     println!(
         "RBR-07-RECALL rows={ANN_ROWS} dim={DIMENSION} queries={QUERIES} k={TOP_K} recall_at_k={recall:.4}"
     );
-    // RBR-07 finding: measured recall at this scale is exactly 1.0 (every
-    // exact top-k member served by the approximate lane), so equality is
-    // the pinned value — not an assumption borrowed from the ticket.
-    assert_eq!(found, total, "pinned recall@{TOP_K} is 1.0 at this scale");
+    assert!(
+        recall >= ANN_RECALL_FLOOR,
+        "recall@{TOP_K} {found}/{total} fell below {ANN_RECALL_FLOOR}"
+    );
     Ok(())
 }
 

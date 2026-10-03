@@ -78,6 +78,13 @@ The source failures and pre-start hosted failure require separate closure.
 
 ## Interim local regular replay
 
+The maintainer deferred hosted CircleCI/GitHub qualification on 2026-10-03
+because of GitHub private-repository plan cost. Local regular replay is the
+current development gate. Earlier passing focused checks and full nextest runs
+do not establish GREEN on the final source. Record the final commit and both
+job command results in the PR after all edits and reruns are complete. Hosted
+job/status and release evidence remain `NOT_RUN` while execution is deferred.
+
 While hosted jobs fail before checkout or remain pending, replay the command
 blocks of both `.circleci/config.yml` regular jobs on one clean, fixed HEAD.
 Run `verify`'s format, full-workspace Clippy, nextest inventory and nextest

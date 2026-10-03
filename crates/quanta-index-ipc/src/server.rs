@@ -1353,6 +1353,8 @@ where
         let mut ingress_reader = IngressDeadlineReader {
             stream: &mut stream,
             deadline,
+            saw_frame_bytes: false,
+            first_read: true,
         };
         let (request, _decode_permit) = match decode_request_guarded::<RequestEnvelopeT, _, _>(
             &mut ingress_reader,
@@ -1360,12 +1362,14 @@ where
             DecodePermit::reserve,
         ) {
             Ok(request) => request,
-            Err(IpcError::Truncated) => return ConnectionCloseReason::PeerClosed,
             Err(err @ IpcError::IngressSaturated { .. }) => {
                 counters.ingress_admission_refused();
                 return ConnectionCloseReason::RequestDecodeFailed(err);
             }
             Err(err) => {
+                if peer_closed_before_frame(&err, ingress_reader.saw_frame_bytes) {
+                    return ConnectionCloseReason::PeerClosed;
+                }
                 counters.request_decode_failed();
                 return ConnectionCloseReason::RequestDecodeFailed(err);
             }
@@ -1555,6 +1559,8 @@ where
 struct IngressDeadlineReader<'a> {
     stream: &'a mut UnixStream,
     deadline: Instant,
+    saw_frame_bytes: bool,
+    first_read: bool,
 }
 
 impl Read for IngressDeadlineReader<'_> {
@@ -1563,9 +1569,30 @@ impl Read for IngressDeadlineReader<'_> {
         if remaining.is_zero() {
             return Err(deadline_elapsed_error());
         }
-        self.stream.set_read_timeout(Some(remaining))?;
-        self.stream.read(buffer)
+        if self.first_read {
+            // The connection already has the full policy timeout from setup
+            // or the previous decoded request. Reconfiguring it here is
+            // redundant and can fail on a peer that just closed on Darwin.
+            self.first_read = false;
+        } else {
+            self.stream.set_read_timeout(Some(remaining))?;
+        }
+        let read = self.stream.read(buffer)?;
+        if read != 0 {
+            self.saw_frame_bytes = true;
+        }
+        Ok(read)
     }
+}
+
+/// A close before any bytes of the next frame is not a malformed request.
+/// A truncated or reset connection after even one byte is a failed decode.
+fn peer_closed_before_frame(error: &IpcError, saw_frame_bytes: bool) -> bool {
+    if saw_frame_bytes {
+        return false;
+    }
+    matches!(error, IpcError::Truncated)
+        || matches!(error, IpcError::Io(io_error) if io_error.kind() == ErrorKind::ConnectionReset)
 }
 
 /// A frame's length as the byte count the scrape reports.

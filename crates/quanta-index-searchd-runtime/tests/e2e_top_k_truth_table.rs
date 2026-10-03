@@ -9,11 +9,10 @@
 //! The refusal is one policy applied at three gates that share
 //! `validate_public_top_k` and the `QUERY_TOP_K_OUT_OF_RANGE` code: the SDK
 //! builder refuses before any round trip (pinned in the SDK crate against a
-//! stub transport), the wire codec refuses on encode and on decode (pinned
-//! here: a typed request does not encode, and raw bytes carrying the value
-//! are refused at the daemon's decode — counted as a decode failure and
-//! never dispatched to a route), and the dispatcher refuses an in-process
-//! caller typed (pinned in the search-plane crate).
+//! stub transport), the wire codec refuses on encode (pinned here: a typed
+//! request does not encode), and the dispatcher refuses raw bytes carrying
+//! the value with a typed response after decode and dispatch (also pinned
+//! here and in the search-plane crate for in-process callers).
 //!
 //! All eight routes are driven through the harness's route-agnostic raw IPC
 //! probe so the assertion is on wire behavior and no route gets a private
@@ -29,6 +28,7 @@
 #![forbid(unsafe_code)]
 
 use std::error::Error;
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
     CandidateCountV1, ContinuationTokenV2, GenerationPin, HistoryOrderV1, HistoryQueryRequest,
@@ -504,10 +504,30 @@ fn patch_every_top_k(value: &mut ciborium::Value, top_k: u32) -> usize {
 }
 
 /// The daemon's query-plane decode-failure and dispatch counters, from the
-/// control scrape: the oracle that a request was refused at decode and
-/// never reached a route.
+/// control scrape. Wait for all query connections to close before reading:
+/// one-shot clients receive the answer before the server finishes its next
+/// read and decrements its live-connection gauge, so a previous connection's
+/// close may otherwise land inside the next request's counter interval.
 fn ipc_query_counters(rt: &mut E2eRuntime) -> Result<(u64, u64), Box<dyn Error>> {
-    let snapshot = rt.metrics_snapshot()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let snapshot = loop {
+        let snapshot = rt.metrics_snapshot()?;
+        let live = snapshot
+            .gauges
+            .iter()
+            .find(|gauge| gauge.name == "ipc_query_connections_live")
+            .ok_or("gauge `ipc_query_connections_live` is in the scrape")?
+            .value;
+        if live == 0.0 {
+            // The first scrape may have sampled counters before the gauge
+            // reached zero. Read counters again after observing quiescence.
+            break rt.metrics_snapshot()?;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("query connections did not quiesce: {live} live").into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     let counter = |name: &str| -> Result<u64, Box<dyn Error>> {
         snapshot
             .counters
