@@ -15,8 +15,12 @@ import math
 import re
 from pathlib import Path
 
-from tools.benchmark.retrieval import evaluator as ev
-from tools.benchmark.retrieval import query_plan as qp
+try:
+    from tools.benchmark.retrieval import evaluator as ev
+    from tools.benchmark.retrieval import query_plan as qp
+except ImportError:  # Sibling import from the existing direct-script driver.
+    import evaluator as ev
+    import query_plan as qp
 
 POLICIES = ("baseline", "declaration_only", "boundary_only", "occurrence_half", "occurrence_none", "combined")
 ORDINARY_SCOPE = "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true"
@@ -212,14 +216,21 @@ def validate_artifact(artifact: dict, record: dict, record_sha256: str, pack: di
                 "effective request mismatch")
         collection = row["collection"]
         require(collection["status"] in ("returned", "partial", "not_run"), "invalid collection status")
+        if collection["status"] != "returned":
+            require(isinstance(collection["reason"], str) and bool(collection["reason"]), "incomplete study needs a reason")
+            require(type(collection["pool_complete"]) is bool, "pool completeness must be a boolean")
+            require(len(collection["pages"]) <= artifact["limits"]["max_pages"], "page limit exceeded")
+            _number(collection["diagnostic_ms"], "diagnostic_ms")
+            # Incomplete evidence is retained for inspection, never normalized
+            # into a scoreable pool. Unsupported recovery can lack ordinary
+            # count/feature traces even when its original quality row is valid.
+            validated[task_id] = {"collection": collection, "candidates": [], "explained": {}}
+            continue
         candidates = _pool(row, original)
         for candidate in candidates:
             require(universe.get(candidate["repo_relative_path"]) == bytes(candidate["source"]["source_sha256"]).hex(),
                     "complete pool contains a file outside the source-bound universe")
-        if collection["status"] != "returned":
-            require(isinstance(collection["reason"], str) and bool(collection["reason"]), "incomplete study needs a reason")
-        else:
-            require(collection["reason"] is None and collection["pool_complete"], "returned study lacks complete pool")
+        require(collection["reason"] is None and collection["pool_complete"], "returned study lacks complete pool")
         require(len(collection["pages"]) <= artifact["limits"]["max_pages"], "page limit exceeded")
         require(len(candidates) <= artifact["limits"]["max_files"], "file limit exceeded")
         explained: dict[str, tuple[dict, bool]] = {}
@@ -278,7 +289,10 @@ def compose(suite: dict, rows: dict[str, dict]) -> dict:
             samples.append({"task_id": task_id, "baseline": metrics(baseline), "candidate": metrics(candidate),
                             "baseline_top_k": [item["repo_relative_path"] for item in baseline[:k]],
                             "candidate_top_k": [item["repo_relative_path"] for item in candidate[:k]]})
-        comparisons[policy] = {"eligible_task_ids": admitted, "excluded": excluded,
+        mean = {side: {name: sum(sample[side][name] for sample in samples) / len(samples)
+                       if samples else None for name in ("file_ndcg", "file_hit", "file_mrr")}
+                for side in ("baseline", "candidate")}
+        comparisons[policy] = {"eligible_task_ids": admitted, "excluded": excluded, "paired_means": mean,
                                "coverage": len(admitted) / len(rows) if rows else 0.0,
                                "samples": samples}
     return {"kind": "code_search_complete_pool_ablation_report", "qualification": "diagnostic_unqualified",

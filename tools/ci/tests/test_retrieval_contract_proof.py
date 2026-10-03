@@ -58,6 +58,27 @@ def test_required_python_inventory_matches_live_collection(tmp_path: Path) -> No
     assert inventory.is_file()
 
 
+def test_local_and_formal_contract_rails_include_holdout_review() -> None:
+    """The local owner rail and portable proof must exercise review admission."""
+    completed = subprocess.run(
+        ["just", "--dry-run", "retrieval-contract-local"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    commands = completed.stdout + completed.stderr
+    python_line = next(line for line in commands.splitlines() if "-m pytest " in line)
+    arguments = shlex.split(python_line)
+    expected = {
+        "tools/ci/tests/test_retrieval_benchmark.py",
+        "tools/ci/tests/test_source_oracle_suite.py",
+        "tools/ci/tests/test_holdout_review.py",
+    }
+    assert {arg for arg in arguments if arg.endswith(".py")} == expected
+    assert set(portable_proof.proof_inventory.PYTHON_SELECTORS) == expected
+
+
 def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> None:
     for name in ("retrieval-contract-proof", "retrieval-sdk-proof"):
         completed = subprocess.run(

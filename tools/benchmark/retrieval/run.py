@@ -35,6 +35,7 @@ from pathlib import Path
 
 try:
     from tools.benchmark.retrieval import (
+        code_search_rank_study,
         linux_isolation,
         linux_process,
         portable_proof,
@@ -69,6 +70,7 @@ try:
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import linux_isolation  # noqa: E402
+    import code_search_rank_study  # noqa: E402
     import linux_process  # noqa: E402
     import portable_proof  # noqa: E402
     import query_plan as qp  # noqa: E402
@@ -2370,6 +2372,7 @@ SPEC_OPTIONAL = (
     "query_repetitions_per_root",
     "query_warmup_passes",
     "query_stage_observation",
+    "code_search_rank_study",
     "experimental_hybrid_fetch_floor",
     "baseline_route",
     "candidate_route",
@@ -3053,6 +3056,8 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
     _spec_int(spec, "top_k", 1)
     server_observation_configuration(spec.get("query_stage_observation", "enabled"))
     hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100"))
+    if "code_search_rank_study" in spec:
+        rank_study_configuration(spec["code_search_rank_study"], quanta_profile["policy"], spec.get("routes", []))
     if not _is_hex(spec["searchd_expected_sha256"], 64):
         raise RunError("spec.searchd_expected_sha256 must be a lowercase sha256")
     strategies = spec["strategies"]
@@ -3999,6 +4004,17 @@ def _validate_hybrid_fetch_policy(payload: object) -> dict:
     return config
 
 
+def rank_study_configuration(payload: object, policy: str, routes: list[str]) -> dict:
+    """Explicit diagnostic limits; no inherited env or ranking policy override."""
+    config = _exact_keys(payload, {"max_files", "max_pages", "timeout_ms"}, "code_search_rank_study")
+    if policy not in ("code_search_file", "code_search_exact_content_file") or routes != ["lexical"]:
+        raise RunError("rank study requires lexical-only ordinary CodeSearch file policy")
+    for key, maximum in (("max_files", 100_000), ("max_pages", 10_000), ("timeout_ms", 300_000)):
+        if type(config[key]) is not int or not 1 <= config[key] <= maximum:
+            raise RunError(f"rank study {key} must be an integer in 1..{maximum}")
+    return config
+
+
 def _validate_hybrid_initial_fetch(trace: list[dict], top_k: int, policy: dict) -> None:
     # Independent public-cap/probe invariant, not the producer's self-reported count.
     effective = max(min(max(top_k, policy["floor"]), 10_000), top_k + 1)
@@ -4570,6 +4586,7 @@ def run_quanta_strategy(
     record_path = (run_dir / "record.json").resolve()
     phase_path = (run_dir / "phase-metrics.json").resolve()
     diagnostic_path = (run_dir / "retrieval-diagnostic.json").resolve()
+    rank_study_path = (run_dir / "code-search-rank-study.json").resolve()
     resource_path = (run_dir / "resource-metrics.json").resolve()
     refusal_path = (run_dir / "query-plan-refusal.json").resolve()
     preflight_path = (run_dir / "symbol-preflight.json").resolve()
@@ -4640,6 +4657,11 @@ def run_quanta_strategy(
     ]
     if "_query_protocol" in spec:
         command += ["--query-protocol", spec["_query_protocol"]]
+    if "code_search_rank_study" in spec:
+        study_limits = rank_study_configuration(spec["code_search_rank_study"], spec["execution_profiles"]["quanta"]["policy"], routes)
+        command += ["--rank-study-out", str(rank_study_path)]
+        for key, flag in (("max_files", "max-files"), ("max_pages", "max-pages"), ("timeout_ms", "timeout-ms")):
+            command += [f"--rank-study-{flag}", str(study_limits[key])]
     command += ["--searchd-bin", spec["searchd_binary"]]
     command += ["--searchd-expected-sha256", spec["searchd_expected_sha256"]]
     if "io_timeout_secs" in spec:
@@ -4757,7 +4779,7 @@ def run_quanta_strategy(
             "index_measurement": "filesystem_tree_v1",
         },
     )
-    return {
+    result = {
         "strategy": name,
         "strategy_config": strategy,
         # Rename-safe: paths stay relative to the quanta output root so a
@@ -4777,6 +4799,21 @@ def run_quanta_strategy(
         "resource_metrics_digest": sha_file(resource_path),
         "state_root": state_root.relative_to(out_abs).as_posix(),
     }
+    if "code_search_rank_study" in spec:
+        # Optional diagnostics cannot discard the valid original quality record.
+        # Failed validation stays explicit and the original artifact is retained.
+        study_summary = {"status": "failed", "qualification": "diagnostic_unqualified"}
+        if rank_study_path.is_file():
+            study_summary.update({"artifact": rank_study_path.relative_to(out_abs).as_posix(), "sha256": sha_file(rank_study_path)})
+            try:
+                rows = code_search_rank_study.validate_artifact(read_json(rank_study_path), read_json(record_path), sha_file(record_path), read_json(pack_path))
+                study_summary.update({"status": "verified", "complete_pools": sum(row["collection"]["status"] == "returned" for row in rows.values()), "task_count": len(rows)})
+            except (ValueError, KeyError, TypeError) as error:
+                study_summary["reason"] = f"rank_study_validation: {error}"
+        else:
+            study_summary["reason"] = "rank_study_artifact_missing"
+        result["code_search_rank_study"] = study_summary
+    return result
 
 
 def cmd_verdict(args: argparse.Namespace) -> int:
