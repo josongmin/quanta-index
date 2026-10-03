@@ -1628,6 +1628,19 @@ impl TantivySearcher {
         page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
+        // CodeSearch has a file result domain, so the ordinary lexical plan
+        // does not infer symbol authority. This mode still depends on the
+        // complete symbol producer for every file the request may inspect.
+        quanta_index_core::domains::lexical::require_complete_symbol_coverage(
+            self.source_coverage.as_ref(),
+            |entry| {
+                let path = entry.source.file.repo_relative_path.as_str();
+                Ok(Self::manual_exact_path_allows(path, constraints)
+                    && (constraints.language_any_of.is_empty()
+                        || constraints.language_any_of.contains(&entry.language)))
+            },
+            budget,
+        )?;
         let mut clauses = Vec::with_capacity(components.len());
         for component in components.iter().collect::<BTreeSet<_>>() {
             let term = Term::from_field_text(self.fields.symbol_component_folded, component);
