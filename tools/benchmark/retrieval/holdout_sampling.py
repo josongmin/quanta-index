@@ -27,6 +27,7 @@ try:
         declaration_census_audit,
         gold_oracle,
         identifier_robustness_suite,
+        literal_source_oracle,
         source_oracle,
     )
 except ModuleNotFoundError:  # direct script invocation
@@ -35,6 +36,7 @@ except ModuleNotFoundError:  # direct script invocation
         declaration_census_audit,
         gold_oracle,
         identifier_robustness_suite,
+        literal_source_oracle,
         source_oracle,
     )
 
@@ -228,6 +230,11 @@ def _literals(
     for query in _ranked(list(candidates), seed, repository.name, "exact_content"):
         if len(tasks) == quotas["exact_content"]:
             break
+        try:
+            literal_source_oracle.require_literal(query)
+        except literal_source_oracle.LiteralOracleError:
+            skipped["outside_literal_query_contract"] += 1
+            continue
         encoded = query.encode("utf-8")
         occurrences = sum(raw.count(encoded) for raw in repository.files.values())
         if occurrences > MAX_TASK_LABELS:

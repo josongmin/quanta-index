@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -974,3 +975,21 @@ def test_scale_negative_excludes_literal_path_and_near_content_token(split_relea
     assert not repository.default_file_search_absent("core.py")  # indexed path
     assert not repository.default_file_search_absent("worker_0")  # indexed content
     assert repository.default_file_search_absent("zzzzzzzzz")
+
+
+def test_literal_sampling_excludes_queries_outside_product_contract():
+    from tools.benchmark.retrieval import holdout_sampling
+
+    repository = SimpleNamespace(
+        name="toy",
+        files={
+            "main.go": (
+                b"validIdentifierContent\n"
+                b"tab\tinsideIdentifier\n" + "cafe\u0301 IdentifierContent\n".encode("utf-8")
+            )
+        },
+    )
+    ledger = {}
+    tasks = holdout_sampling._literals(repository, 11, ledger, {"exact_content": 3})
+    assert [task["query"] for task in tasks] == ["validIdentifierContent"]
+    assert ledger["exact_content"]["skipped"]["outside_literal_query_contract"] == 2

@@ -36,7 +36,7 @@ def test_literal_oracle_counts_overlaps_case_utf8_and_ignores_paths():
     )
 
 
-@pytest.mark.parametrize("query", ["", "e\u0301", "a\n", "a\x00", "x" * 257, "\ud800"])
+@pytest.mark.parametrize("query", ["", "e\u0301", "a\n", "a\tb", "a\x00", "x" * 257, "\ud800"])
 def test_literal_oracle_rejects_non_product_query_forms(query):
     with pytest.raises(literal_source_oracle.LiteralOracleError):
         literal_source_oracle.LiteralSourceOracleIndex({"a": (b"body", "a" * 64)}, {query})
@@ -183,6 +183,40 @@ def test_literal_adapter_derives_source_bound_suite(tmp_path, monkeypatch):
         }
     ]
     assert "gold" not in pack["tasks"][0]
+
+
+def test_literal_adapter_excludes_invalid_query_without_backfilling(tmp_path, monkeypatch):
+    release, capsule, checkout = _literal_fixture(tmp_path, monkeypatch)
+    gold = holdout_c4._read(capsule / "gold.json")
+    blind = holdout_c4._read(capsule / "blind.json")
+    query = "Alpha() {}\nfunc AlphaBeta"
+    raw = (checkout / "main.go").read_bytes()
+    start = raw.index(query.encode())
+    invalid = copy.deepcopy(gold["tasks"][0])
+    invalid.update(task_id="toy.lit.002", query_family_id="toy.lit.002", query=query)
+    invalid["labels"] = [
+        {
+            "path": "main.go",
+            "file_sha256": hashlib.sha256(raw).hexdigest(),
+            "start_byte": start,
+            "end_byte": start + len(query.encode()),
+            "kind": "literal_occurrence",
+            "local_name": None,
+        }
+    ]
+    gold["tasks"].append(invalid)
+    public = copy.deepcopy(blind["tasks"][0])
+    public.update(task_id="toy.lit.002", query_family_id="toy.lit.002", query=query)
+    blind["tasks"].append(public)
+    _resign(capsule, "gold.json", gold)
+    _resign(capsule, "blind.json", blind)
+
+    suite, pack, report = holdout_literal.derive(release, capsule, checkout)
+    assert report["selected"] == 1
+    assert report["excluded"] == [
+        {"task_id": "toy.lit.002", "reason": "outside_literal_query_contract"}
+    ]
+    assert len(suite["tasks"]) == len(pack["tasks"]) == 1
 
 
 def test_literal_adapter_rejects_producer_span_drift(tmp_path, monkeypatch):
