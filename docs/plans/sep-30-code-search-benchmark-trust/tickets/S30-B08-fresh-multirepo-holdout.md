@@ -926,3 +926,26 @@ Sourcegraph/OpenGrok localhost endpoints 7080/7081 refused connection during
 this diagnostic. Existing `lo` exact-name paired capture at `/tmp/qx` passed
 native pair replay with both Quanta and Semble at 98/98 file Hit@10; it remains
 `diagnostic_unqualified`.
+
+## Twelve-repository exact-name paired diagnostic (2026-10-03)
+
+**VERIFIED, diagnostic only:** clean `9d38b69d` completed all twelve
+`declaration_name_exact` Quanta/Semble native pair captures and replays from
+the frozen C4 v6 matrix. The matrix selected 1,252 requests; 1,132 have paired
+file judgments. The other 120 requests are separate no-answer/other tasks and
+must not enter the file Hit@10 denominator. An initial offline summarizer
+assertion exposed that denominator distinction; after correcting the
+summarizer, each route's per-query task IDs matched the report's eligible IDs
+and the selected matrix IDs. The result is
+`/private/tmp/qi-b08-product-8e8592f4-20261003/exact-pair-summary.json`
+(SHA-256 `39dab0f3810acae3fff98205c90e67eda26e6ed9f3ea6286a3bb83fb5bd7c96a`).
+
+| Route | File Hit@10 | MRR@10 | NDCG@10 |
+| --- | ---: | ---: | ---: |
+| Quanta lexical | 1,108 / 1,132 | 0.8723 | 0.8971 |
+| Semble lexical-file | 1,111 / 1,132 | 0.8688 | 0.8945 |
+
+The sequential sum of run-plus-replay wall times is 1,945.258s excluding the
+previously reused `lo` capture; it is not query latency or a performance
+comparison. These source-exposed mechanical labels lack human relevance review
+and no product ranking or qualified file decision follows from this diagnostic.
