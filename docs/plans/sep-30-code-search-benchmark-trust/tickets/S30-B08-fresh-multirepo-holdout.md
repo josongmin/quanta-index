@@ -1242,3 +1242,64 @@ One 26-byte Celery example stub still matches a Django file below that floor;
 it remains visible in the preflight and is not counted as a policy violation.
 Three cells, independent relevance labels, index attestation and product
 captures remain **NOT_RUN**. None of these candidates is C5-admitted yet.
+
+## C3 natural-language relevance review, multi-model AI (2026-10-03)
+
+**Policy amendment (owner decision):** the human-reviewer requirement for this
+C3 NL lane was replaced by multi-model AI review. Identities are
+`ai:claude-opus-5-5:pass-A`, `ai:claude-sonnet-5-5:pass-B` and adjudicator
+`ai:claude-fable-5-1:adjudicator`; no AI decision is recorded as a human
+reviewer or human receipt. These labels are **multi-model AI-reviewed, not
+human-reviewed, and not qualified**. External root:
+`/Users/songmin/Documents/code-new/qi-b08-c3-nl-review-20261003-OmZWCc`
+([RESULTS.md](/Users/songmin/Documents/code-new/qi-b08-c3-nl-review-20261003-OmZWCc/RESULTS.md),
+SHA-256 `b332021b58aff850b9da6b46d98f7deebc45efc446c1a5af5fbde9f7b2535361`;
+file inventory `SHA256SUMS-root` SHA-256
+`a144fbf13dd3a457719685f41c98cd53346c2ca259f0261f5813cbc3979e3673`).
+
+- Start binding: `12fe7d9f` clean; 12 frozen checkouts clean; release
+  `sha256:cb896b12…`, code_only manifests and v5 gold identities recorded.
+  The 106-task mechanical packet was neither used nor changed; it stays a
+  separate denominator.
+- Relevance rubric (0–3, examples, boundary rules) and area taxonomy were
+  frozen before pooling. 240/240 NL/workflow tasks were authored (20 per
+  repository; 48/48/48/36/36/24 across six areas; underfill 0).
+- Blind packets: BM25 and path/declaration pools, author source anchors and
+  two seeded random controls per task, deduplicated by path; every candidate's
+  full text and SHA-256 matched the frozen manifest. `holdout_review.write`
+  produced two forms per pack (13 packs; zellij split by the 64 MiB export cap).
+  Missing-candidate proposals re-issued all 13 packs (+638 files) and tailscale
+  once more (+1); both passes graded every added file. Final judged task/file
+  pairs: 4,346.
+- Pass agreement: exact grade 94.3%, quadratic-weighted κ 0.966,
+  answerability 240/240 (same-family models; not evidence of correctness).
+  Adjudication: 246 items, 0 unjudged. Final qrels: 240 answerable tasks,
+  grades 0/1/2/3 = 2,258/1,246/574/268; 240 included, 0 excluded.
+- Final per-repository mixed suites keep the v6 C4 `declaration_name_exact`
+  source-oracle tasks unchanged and add 20 reviewed NL tasks
+  (`complete_ranked_pool_v1`, `label_review` bound to an evidence SHA over both
+  passes and the adjudication). Two schema-v2 annotation receipts and one
+  adjudication receipt cover only the subjective tasks in suite order and bind
+  the suite SHA and annotation receipt SHAs.
+
+**VERIFIED** at a pinned export of `d1bb1438` (12/12 repositories):
+`evaluator.validate_suite`, `holdout_review.validate_completed_forms` (13
+packs) and `run._validate_gold_review_receipt` for all three receipts;
+`test_holdout_review.py` 38/38 in that export.
+
+**BLOCKED, qualification admission (12/12):**
+`run._validate_disjoint_admission_source` requires the suite family set to
+equal the split row (130 families including 20 literal). The NL families are
+absent from the frozen split, and literal tasks cannot share a file-search
+suite. Separately, `fd13216e` changed `tools/benchmark/corpus_release.py`;
+release-v4's `generator_digest` matches that file only through `d1bb1438`, so
+at current main release-v4 validation fails before the admission comparison.
+
+**BLOCKED, product capture:** the frozen NL queries pass the
+`natural_language` request policy (240/240) but only 9/240 pass
+`code_search_file`. `natural_language` has no evaluation request mode and
+returns chunk units, which file judgments exclude. Queries were not rewritten,
+and no product ranking is reported.
+
+**NOT_RUN:** human identity verification (superseded by the amendment), the
+full `verify_admission_bundle`, and live index attestation.
