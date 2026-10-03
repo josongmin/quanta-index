@@ -3016,10 +3016,19 @@ def load_spec(path: Path) -> dict:
     if "semble" in profiles:
         _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
     if quanta_profile["policy"] in qp.CODE_SEARCH_FILE_POLICIES:
-        if spec.get("scope", "exploratory") != "exploratory" or any(
-            spec.get("claims", {}).values()
-        ):
-            raise RunError("code-search file pair is exploratory diagnostic only")
+        file_qualified = spec.get("scope", "exploratory") == "qualified"
+        if file_qualified:
+            if (
+                spec.get("claims", {}).get("quality") is not True
+                or "admission" not in spec
+                or _admission_keys(spec["admission"]) != ADMISSION_DISJOINT_KEYS
+            ):
+                raise RunError(
+                    "qualified code-search file pair requires a quality claim "
+                    "and repository-disjoint admission"
+                )
+        elif any(spec.get("claims", {}).values()):
+            raise RunError("exploratory code-search file pair cannot carry claims")
         if spec.get("routes", ["lexical", "semantic", "hybrid"]) != ["lexical"]:
             raise RunError("code-search file pair requires lexical-only Quanta route")
         if "semble" in profiles and profiles["semble"].get("mode") != "lexical-file":
@@ -8423,15 +8432,24 @@ def run_pair(spec: dict) -> int:
         quanta_profile.get("policy") in qp.CODE_SEARCH_FILE_POLICIES
     )
     if code_search_file and (
-        scope != "exploratory"
-        or any(spec.get("claims", {}).values())
-        or spec.get("routes") != ["lexical"]
+        spec.get("routes") != ["lexical"]
         or not isinstance(semble_profile, dict)
         or semble_profile.get("mode") != "lexical-file"
     ):
-        raise RunError(
-            "code_search_file pair requires exploratory lexical/file profiles without claims"
-        )
+        raise RunError("code_search_file pair requires lexical/file profiles")
+    if code_search_file:
+        if scope == "qualified":
+            if (
+                spec.get("claims", {}).get("quality") is not True
+                or not isinstance(spec.get("admission"), dict)
+                or _admission_keys(spec["admission"]) != ADMISSION_DISJOINT_KEYS
+            ):
+                raise RunError(
+                    "qualified code_search_file pair requires repository-disjoint "
+                    "admission and a quality claim"
+                )
+        elif any(spec.get("claims", {}).values()):
+            raise RunError("exploratory code_search_file pair cannot carry claims")
     if spec.get("embedder") == "potion-code-full-v2" and (
         scope != "exploratory" or any(spec.get("claims", {}).values())
     ):
@@ -8671,7 +8689,9 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         candidate_routes = sorted({row["route"] for row in payload["results"]})
         for candidate in candidate_routes:
             report = (
-                evaluate_paired_file_diagnostic(suite, pack, combined, baseline, candidate)
+                evaluate_complete_scored_file_evidence(suite, pack, combined, baseline, candidate)
+                if code_search_file and scope == "qualified"
+                else evaluate_paired_file_diagnostic(suite, pack, combined, baseline, candidate)
                 if code_search_file
                 else evaluate(suite, pack, combined, baseline, candidate, strict_k=True)
             )
