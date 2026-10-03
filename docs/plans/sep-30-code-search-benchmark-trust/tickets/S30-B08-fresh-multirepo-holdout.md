@@ -3047,3 +3047,33 @@ longer reproduce on this pinned source. The overall producer remains live for
 the Rust stage and final canonical receipts; Python success is not whole
 contract success. The index-scope changes and this ticket update are present
 on main and pushed through `f5b3b55e`; unrelated dirty owner work is preserved.
+
+### 2026-10-04: NL comparator admission and native parser probe
+
+- **VERIFIED**, reapplying the original 240 unchanged NL queries to current
+  planners admits 240/240 through Quanta `natural_language_file`, but only
+  3/240 through the conservative Sourcegraph adapter. The other 237 refusals
+  are 229 query-shape guards and 8 reserved-word guards; they occur before HTTP
+  submission and do not prove an engine parser or retrieval failure.
+- **VERIFIED**, the first issued task in each of mocha and zustand was submitted
+  unchanged through the scoped native keyword endpoint. Both returned HTTP 200,
+  completed progress, no skipped scopes, and zero matches. Independent positive
+  controls (`retry`, `createStore`) returned native matches in the respective
+  repositories. Query text was not rewritten or selected using gold. This
+  establishes native acceptance for these two queries, not acceptance of all
+  240 or a quality comparison. Native keyword behavior and Quanta token-OR NL
+  planning have different semantics; equal HTTP/SDK timing alone cannot make
+  them equivalent-work performance rows.
+- Artifacts: `nl-sourcegraph-auth-probe-tg8c0wk7/` under the external closeout
+  root, including the 240-task census, raw requests/streams, completed progress,
+  scoped stored-body/path verification, and unchanged before/after backend.
+  The command was `PYTHONPATH=/Users/songmin/Documents/code-new/quanta-index
+  .venv/bin/python <external-root>/probe.py`; total wall time was **10.380s**.
+  The earlier unauthenticated attempt returned four HTTP 401s and is retained
+  separately with a BLOCKED parser-acceptance interpretation. No credential
+  values were emitted or copied into request artifacts.
+- **NOT_RUN**, safe general NL query construction for Sourcegraph, controlled
+  common-predicate NL comparison, and final C3 comparison. Declare native
+  workflow versus matched semantics before adapting queries; do not silently
+  quote whole questions, synthesize OR rewrites, or count adapter refusal as
+  an observed native zero-result search. Existing C3 labels/captures are intact.
