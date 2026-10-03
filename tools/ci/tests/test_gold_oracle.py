@@ -970,10 +970,14 @@ def test_census_disagreement_requires_query_specific_text_absence(tmp_path, monk
         },
     )
     gold, _blind = gold_oracle.derive(value, manifest, view)
-    target = gold["tasks"][0]
-    assert target["unsupported"] == [{"path": "disputed.py", "reason": "census_refused"}]
-    assert target["census_text_excluded"] == []
-    assert target["answerable"] is None
+    target, other = gold["tasks"]
+    assert target["unsupported"] == []
+    assert target["census_text_excluded"] == [
+        {"path": "disputed.py", "reason": "census_refused"}
+    ]
+    assert target["answerable"] is True
+    assert other["unsupported"] == [{"path": "disputed.py", "reason": "census_refused"}]
+    assert other["answerable"] is None
 
 
 def test_holdout_sampling_freezes_seeded_ledger_recipes_and_split(split_releases, tmp_path):  # noqa: F811

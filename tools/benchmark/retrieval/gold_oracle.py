@@ -40,7 +40,7 @@ try:
 except ModuleNotFoundError:  # package import outside the benchmark script path
     from tools.benchmark.evidence import IO_CHUNK_BYTES, EvidenceError, _consume_regular_file
 
-ORACLE_VERSION = 4
+ORACLE_VERSION = 5
 MAX_TASKS = 2000
 MAX_FILES = 4096
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
@@ -352,16 +352,6 @@ def _textually_excluded(raw: bytes, query: str, variant: str) -> bool:
         return False
 
 
-def _source_census_refused(language: str, path: str, raw: bytes) -> bool:
-    """An independent checker refusal alone cannot authorize an exclusion."""
-    try:
-        source_oracle.declaration_census(language, path, raw)
-    except source_oracle.SourceOracleError as error:
-        message = str(error)
-        return "parse error:" in message or "declaration lacks name:" in message
-    return False
-
-
 def _literal_spans(raw: bytes, query: bytes) -> list[tuple[int, int, str]]:
     spans = []
     offset = 0
@@ -430,7 +420,6 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
     }:
         raise EvidenceError("gold checker identity differs from frozen recipe")
     censuses: dict[str, dict] = {language: {} for language in audits}
-    source_refusals: dict[tuple[str, str], bool] = {}
     gold_tasks, blind_tasks = [], []
     label_count = 0
     paths_by_split: dict[str, set[str]] = {"development": set(), "holdout": set()}
@@ -496,17 +485,12 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
                     if path in audit["disagreement_paths"]
                     else None
                 )
-                refusal_key = (task["language"], path)
-                if reason == "census_refused" and refusal_key not in source_refusals:
-                    source_refusals[refusal_key] = _source_census_refused(
-                        task["language"], path, raw
-                    )
                 if (
                     reason in ("census_refused", "census_disagreement")
-                    and (reason == "census_disagreement" or source_refusals[refusal_key])
                     and _textually_excluded(raw, scoring_query, DECLARATION_INTENTS[scoring_intent])
                 ):
-                    # The query cannot match any name written in this file.
+                    # Name absence is sufficient even when the independent
+                    # checker refused a source that the primary parser accepts.
                     text_excluded.append({"path": path, "reason": reason})
                     continue
                 spans = (
