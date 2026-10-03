@@ -11472,6 +11472,8 @@ def run_quality_batch(batch: dict) -> int:
         "corpus_repository_commit": execution_pack["repository_commit"],
         "file_universe_digest": execution_pack["file_universe_digest"],
         "model_asset_sha256": model["model_asset_sha256"],
+        "runner_binary_sha256": runner_digest,
+        "searchd_binary_sha256": sha_file(Path(run_spec["searchd_binary"])),
         "execution_pack_sha256": membership["execution_pack_sha256"],
         "membership_sha256": sha_file(stage / "membership.json"),
         "native_records": [
@@ -11508,6 +11510,8 @@ def verify_quality_batch(batch: dict) -> int:
             "corpus_repository_commit",
             "file_universe_digest",
             "model_asset_sha256",
+            "runner_binary_sha256",
+            "searchd_binary_sha256",
             "execution_pack_sha256",
             "membership_sha256",
             "native_records",
@@ -11547,6 +11551,10 @@ def verify_quality_batch(batch: dict) -> int:
     ):
         raise RunError("quality batch execution inputs changed")
     first_spec = members[0][1]
+    if manifest["runner_binary_sha256"] != sha_file(Path(first_spec["runner_binary"])) or manifest[
+        "searchd_binary_sha256"
+    ] != sha_file(Path(first_spec["searchd_binary"])):
+        raise RunError("quality batch product binary changed")
     expected_paths = [
         (
             root
