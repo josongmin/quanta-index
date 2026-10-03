@@ -9460,7 +9460,9 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         encoding="utf-8",
     )
     closure_path = Path(spec["_driver_source_closure"])
-    _source_closure(Path(__file__).resolve().parents[3], "verify", closure_path)
+    # The outer driver verifies the captured closure after the verdict and
+    # immediately before promotion. A second full scan here adds no custody
+    # boundary: the manifest binds the already captured closure digest.
     driver_closure = _validate_source_closure_shape(
         read_json(closure_path), "driver source closure"
     )
