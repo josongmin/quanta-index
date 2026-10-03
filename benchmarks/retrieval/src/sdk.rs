@@ -492,6 +492,38 @@ mod empty_status_tests {
     use super::*;
 
     #[test]
+    fn timed_route_separates_execute_from_post_execute_without_changing_outcome() {
+        use std::cell::Cell;
+
+        let step = Cell::new(0);
+        let (outcome, timing) = time_route_execution(
+            || {
+                assert_eq!(step.replace(1), 0);
+                Ok::<_, SdkError>(17_u32)
+            },
+            |response| {
+                assert_eq!(step.replace(2), 1);
+                assert_eq!(response.expect("SDK response"), 17);
+                QueryOutcome::SdkFailure {
+                    status: "error",
+                    code: "fixture".to_string(),
+                    message: "fixture".to_string(),
+                    latency: Duration::ZERO,
+                }
+            },
+        );
+        assert_eq!(step.get(), 2);
+        assert!(matches!(outcome, QueryOutcome::SdkFailure { code, .. } if code == "fixture"));
+        assert!(timing.sdk_execute <= timing.sdk_execute + timing.post_execute);
+
+        let (failure, _timing) = time_route_execution(
+            || Err::<u32, _>(SdkError::PlaneUnavailable { plane: "search" }),
+            |response| failed_outcome(&response.expect_err("SDK failure"), Instant::now()),
+        );
+        assert!(matches!(failure, QueryOutcome::SdkFailure { status: "unavailable", .. }));
+    }
+
+    #[test]
     fn lexical_rank_unit_tracks_the_bound_request_policy() {
         use crate::query_plan::QueryInputPolicy as Policy;
 
@@ -1372,142 +1404,159 @@ pub fn query_route_with_policy_timed(
             let builder = builder
                 .active(query.repo_id.clone(), query.revision_id.clone())
                 .top_k(query.top_k);
-            time_route_execution(|| builder.execute(), |response| match response {
-                Ok(response) => {
-                    let expected_unit = expected_lexical_rank_unit(policy);
-                    if response.rank_unit != expected_unit {
-                        return QueryOutcome::SdkFailure {
-                            status: "error",
-                            code: "lexical_rank_unit_mismatch".to_string(),
-                            message: format!(
-                                "lexical response rank unit {} differs from requested {}",
-                                response.rank_unit.as_str(),
-                                expected_unit.as_str(),
-                            ),
-                            latency: start.elapsed(),
-                        };
+            time_route_execution(
+                || builder.execute(),
+                |response| match response {
+                    Ok(response) => {
+                        let expected_unit = expected_lexical_rank_unit(policy);
+                        if response.rank_unit != expected_unit {
+                            return QueryOutcome::SdkFailure {
+                                status: "error",
+                                code: "lexical_rank_unit_mismatch".to_string(),
+                                message: format!(
+                                    "lexical response rank unit {} differs from requested {}",
+                                    response.rank_unit.as_str(),
+                                    expected_unit.as_str(),
+                                ),
+                                latency: start.elapsed(),
+                            };
+                        }
+                        if matches!(
+                            policy,
+                            crate::query_plan::QueryInputPolicy::CodeSearchFile
+                                | crate::query_plan::QueryInputPolicy::CodeSearchExactContentFile
+                                | crate::query_plan::QueryInputPolicy::CodeSearchTypoFile
+                                | crate::query_plan::QueryInputPolicy::CodeSearchComponentsFile
+                                | crate::query_plan::QueryInputPolicy::NaturalLanguageFile
+                        ) && response.results.iter().any(|candidate| {
+                            let pin_matches = candidate.repo_id == expected_pin.repo_id
+                                && candidate.revision_id == expected_pin.revision_id
+                                && candidate.manifest_generation
+                                    == expected_pin.manifest_generation;
+                            let source_matches = candidate.source_repo_id == candidate.repo_id;
+                            !pin_matches || !source_matches
+                        }) {
+                            return QueryOutcome::SdkFailure {
+                                status: "error",
+                                code: "file_candidate_generation_mismatch".to_string(),
+                                message: "file candidate differs from pinned source/generation"
+                                    .to_string(),
+                                latency: start.elapsed(),
+                            };
+                        }
+                        let hits: Vec<RankedHit> =
+                            response.results.iter().map(lexical_hit).collect();
+                        let explanation = route_explanation(&response.explanation);
+                        observed_response(
+                            query.route,
+                            hits,
+                            response.window,
+                            Some(explanation),
+                            response.generation,
+                            expected_pin,
+                            start,
+                        )
                     }
-                    if matches!(
-                        policy,
-                        crate::query_plan::QueryInputPolicy::CodeSearchFile
-                            | crate::query_plan::QueryInputPolicy::CodeSearchExactContentFile
-                            | crate::query_plan::QueryInputPolicy::CodeSearchTypoFile
-                            | crate::query_plan::QueryInputPolicy::CodeSearchComponentsFile
-                            | crate::query_plan::QueryInputPolicy::NaturalLanguageFile
-                    ) && response.results.iter().any(|candidate| {
-                        let pin_matches = candidate.repo_id == expected_pin.repo_id
-                            && candidate.revision_id == expected_pin.revision_id
-                            && candidate.manifest_generation == expected_pin.manifest_generation;
-                        let source_matches = candidate.source_repo_id == candidate.repo_id;
-                        !pin_matches || !source_matches
-                    }) {
-                        return QueryOutcome::SdkFailure {
-                            status: "error",
-                            code: "file_candidate_generation_mismatch".to_string(),
-                            message: "file candidate differs from pinned source/generation"
-                                .to_string(),
-                            latency: start.elapsed(),
-                        };
-                    }
-                    let hits: Vec<RankedHit> = response.results.iter().map(lexical_hit).collect();
-                    let explanation = route_explanation(&response.explanation);
-                    observed_response(
-                        query.route,
-                        hits,
-                        response.window,
-                        Some(explanation),
-                        response.generation,
-                        expected_pin,
-                        start,
-                    )
-                }
-                Err(err) => failed_outcome(&err, start),
-            })
+                    Err(err) => failed_outcome(&err, start),
+                },
+            )
         }
         "semantic" => {
-            match query
+            let builder = query
                 .client
                 .semantic()
                 .query()
                 .text(query.semantic_text)
                 .active(query.repo_id.clone(), query.revision_id.clone())
-                .top_k(query.top_k)
-                .execute()
-            {
-                Ok(response) => {
-                    let hits: Vec<RankedHit> = response.results.iter().map(lexical_hit).collect();
-                    let explanation = route_explanation(&response.explanation);
-                    observed_response(
-                        query.route,
-                        hits,
-                        response.window,
-                        Some(explanation),
-                        response.generation,
-                        expected_pin,
-                        start,
-                    )
-                }
-                Err(err) => failed_outcome(&err, start),
-            }
+                .top_k(query.top_k);
+            time_route_execution(
+                || builder.execute(),
+                |response| match response {
+                    Ok(response) => {
+                        let hits: Vec<RankedHit> =
+                            response.results.iter().map(lexical_hit).collect();
+                        let explanation = route_explanation(&response.explanation);
+                        observed_response(
+                            query.route,
+                            hits,
+                            response.window,
+                            Some(explanation),
+                            response.generation,
+                            expected_pin,
+                            start,
+                        )
+                    }
+                    Err(err) => failed_outcome(&err, start),
+                },
+            )
         }
         "hybrid" => {
-            match query
+            let builder = query
                 .client
                 .search()
                 .hybrid()
                 .native(query.lexical_request)
                 .semantic_text(query.semantic_text)
                 .active(query.repo_id.clone(), query.revision_id.clone())
-                .top_k(query.top_k)
-                .execute()
-            {
-                Ok(response) => {
-                    let hits: Vec<RankedHit> = response.results.iter().map(hybrid_hit).collect();
-                    let explanation = route_explanation(&response.explanation);
-                    observed_response(
-                        query.route,
-                        hits,
-                        response.window,
-                        Some(explanation),
-                        response.generation,
-                        expected_pin,
-                        start,
-                    )
-                }
-                Err(err) => failed_outcome(&err, start),
-            }
+                .top_k(query.top_k);
+            time_route_execution(
+                || builder.execute(),
+                |response| match response {
+                    Ok(response) => {
+                        let hits: Vec<RankedHit> =
+                            response.results.iter().map(hybrid_hit).collect();
+                        let explanation = route_explanation(&response.explanation);
+                        observed_response(
+                            query.route,
+                            hits,
+                            response.window,
+                            Some(explanation),
+                            response.generation,
+                            expected_pin,
+                            start,
+                        )
+                    }
+                    Err(err) => failed_outcome(&err, start),
+                },
+            )
         }
         "symbol" => {
-            match query
+            let builder = query
                 .client
                 .symbol()
                 .query()
                 .native(query.lexical_request)
                 .active(query.repo_id.clone(), query.revision_id.clone())
-                .top_k(query.top_k)
-                .execute()
-            {
-                Ok(response) => {
-                    let hits: Vec<RankedHit> = response.results.iter().map(symbol_hit).collect();
-                    observed_response(
-                        query.route,
-                        hits,
-                        response.window,
-                        None,
-                        response.generation,
-                        expected_pin,
-                        start,
-                    )
-                }
-                Err(err) => failed_outcome(&err, start),
-            }
+                .top_k(query.top_k);
+            time_route_execution(
+                || builder.execute(),
+                |response| match response {
+                    Ok(response) => {
+                        let hits: Vec<RankedHit> =
+                            response.results.iter().map(symbol_hit).collect();
+                        observed_response(
+                            query.route,
+                            hits,
+                            response.window,
+                            None,
+                            response.generation,
+                            expected_pin,
+                            start,
+                        )
+                    }
+                    Err(err) => failed_outcome(&err, start),
+                },
+            )
         }
-        other => QueryOutcome::SdkFailure {
-            status: "error",
-            code: "unknown_route".to_string(),
-            message: format!("unknown SDK route: {other}"),
-            latency: start.elapsed(),
-        },
+        other => (
+            QueryOutcome::SdkFailure {
+                status: "error",
+                code: "unknown_route".to_string(),
+                message: format!("unknown SDK route: {other}"),
+                latency: start.elapsed(),
+            },
+            RouteExecutionTiming::default(),
+        ),
     }
 }
 

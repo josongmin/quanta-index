@@ -15776,6 +15776,37 @@ def test_query_clock_comparator_excludes_only_policy_controlled_code_search_cloc
             overhead._without_code_search_work_clocks(malformed)
 
 
+def test_query_clock_comparator_validates_nested_typo_clocks_without_erasing_counts():
+    trace = [
+        {"stage": "merge", "detail": "code_search.execution.mode=typo_fallback"},
+        {"stage": "merge", "detail": "code_search.execution.candidate_ns=100"},
+        {"stage": "merge", "detail": "code_search.execution.sort_page_ns=10"},
+        {"stage": "merge", "detail": "code_search.execution.preview_ns=20"},
+        {"stage": "merge", "detail": "code_search.execution.typo_shortlist_admission_ns=10"},
+        {"stage": "merge", "detail": "code_search.execution.typo_source_token_scan_ns=60"},
+        {"stage": "merge", "detail": "code_search.execution.typo_materialize_ns=20"},
+        {"stage": "merge", "detail": "code_search.execution.typo_token_comparisons=17"},
+    ]
+    assert overhead._without_code_search_work_clocks(trace) == [trace[0], trace[-1]]
+    # The remaining 10 ns can contain the preceding ordinary pass and clock overhead.
+    with pytest.raises(ValueError, match="disabled query observation"):
+        overhead._without_code_search_work_clocks(trace, allow_clocks=False)
+    for mutant in (
+        trace[:6] + trace[7:],
+        trace[:1] + trace[2:],
+        [{"stage": "merge", "detail": "code_search.execution.mode=ordinary"}, *trace[1:]],
+        [trace[0], *trace],
+        [*trace[:5], {"stage": "merge", "detail": "code_search.execution.typo_source_token_scan_ns=71"}, *trace[6:]],
+    ):
+        with pytest.raises(ValueError, match="clock hierarchy"):
+            overhead._without_code_search_work_clocks(mutant)
+    for value in ("-1", "True", str(1 << 64), "0" * 21):
+        with pytest.raises(ValueError, match="work clock"):
+            overhead._without_code_search_work_clocks([
+                {"stage": "merge", "detail": f"code_search.execution.candidate_ns={value}"}
+            ])
+
+
 @pytest.mark.parametrize("parameter", ["timeout_secs", "cleanup_timeout_secs"])
 @pytest.mark.parametrize(
     "invalid", [10**400, -(10**400), float("inf"), float("nan"), True, 0, -1, None]

@@ -111,6 +111,39 @@ def test_paired_completed_response_clocks_require_binary_source_attestation(tmp_
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["proof_digest"] is None
 
 
+def test_sdk_timing_children_preserve_outer_clock_and_reject_false_attribution():
+    metrics = {
+        "schema_version": 4, "system": "quanta", "route_count": 1,
+        "query_schedule": ["T1"], "warmup_passes": 0, "measurement_repetitions": 1,
+        "query_timing": {
+            "boundary": semble.QUERY_TIMING_BOUNDARY,
+            "clock": semble.QUERY_TIMING_CLOCK,
+            "observations": [{
+                "task_id": "T1", "route": "lexical", "phase": "measured", "iteration": 0,
+                "start_ns": 10, "end_ns": 110, "status": "success", "output_bytes": 1,
+                "sdk_execute_ns": 30, "sdk_post_execute_ns": 20,
+                "runner_result_materialize_ns": 10,
+            }],
+        },
+    }
+    pairrun.validate_completed_query_timing(metrics)
+    for key in ("sdk_execute_ns", "sdk_post_execute_ns", "runner_result_materialize_ns"):
+        for value in (-1, True, 1 << 64, 101):
+            mutant = copy.deepcopy(metrics)
+            mutant["query_timing"]["observations"][0][key] = value
+            with pytest.raises(pairrun.RunError, match="SDK child clocks"):
+                pairrun.validate_completed_query_timing(mutant)
+        mutant = copy.deepcopy(metrics)
+        del mutant["query_timing"]["observations"][0][key]
+        with pytest.raises(pairrun.RunError, match="observation is malformed"):
+            pairrun.validate_completed_query_timing(mutant)
+    # Historical phase contracts cannot silently acquire new attribution fields.
+    historical = copy.deepcopy(metrics)
+    historical["schema_version"] = 3
+    with pytest.raises(pairrun.RunError, match="observation is malformed"):
+        pairrun.validate_completed_query_timing(historical)
+
+
 @pytest.mark.parametrize("system", ["quanta", "semble"])
 @pytest.mark.parametrize("scope", ["exploratory", "qualified"])
 def test_phase_digest_rejects_byte_tamper_with_identical_parsed_metrics(tmp_path, system, scope):

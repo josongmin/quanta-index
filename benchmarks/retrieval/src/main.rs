@@ -41,7 +41,7 @@ use quanta_index_retrieval_bench::record::{
 use quanta_index_retrieval_bench::schedule::QueryProtocol;
 use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
-    RouteQuery, publish_and_activate, query_route_with_policy, resolve_searchd_binary,
+    RouteQuery, publish_and_activate, query_route_with_policy_timed, resolve_searchd_binary,
     verify_searchd_digest,
 };
 use quanta_index_retrieval_bench::symbols::{
@@ -1242,7 +1242,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             generation: identity.generation,
             top_k,
         };
-        let mut outcome = query_route_with_policy(&query, plan.policy);
+        let (mut outcome, route_timing) = query_route_with_policy_timed(&query, plan.policy);
+        let result_materialize_started = Instant::now();
         let mut row = result_value(
             task_id,
             query.route,
@@ -1264,6 +1265,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         let output = serde_json::to_vec(&row).map_err(|error| {
             BenchError::Protocol(format!("completed response cannot serialize: {error}"))
         })?;
+        let runner_result_materialize = result_materialize_started.elapsed();
         let end = overall.elapsed();
         let elapsed = end.saturating_sub(start);
         match &mut outcome {
@@ -1276,10 +1278,34 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         })?;
         let end_ns = u64::try_from(end.as_nanos())
             .map_err(|error| BenchError::Protocol(format!("query end clock overflow: {error}")))?;
+        let sdk_execute_ns =
+            u64::try_from(route_timing.sdk_execute.as_nanos()).map_err(|error| {
+                BenchError::Protocol(format!("SDK execute clock overflow: {error}"))
+            })?;
+        let sdk_post_execute_ns =
+            u64::try_from(route_timing.post_execute.as_nanos()).map_err(|error| {
+                BenchError::Protocol(format!("SDK post-execute clock overflow: {error}"))
+            })?;
+        let runner_result_materialize_ns = u64::try_from(runner_result_materialize.as_nanos())
+            .map_err(|error| {
+                BenchError::Protocol(format!("result materialize clock overflow: {error}"))
+            })?;
+        let children_ns = sdk_execute_ns
+            .checked_add(sdk_post_execute_ns)
+            .and_then(|total| total.checked_add(runner_result_materialize_ns))
+            .ok_or_else(|| BenchError::Protocol("query child clocks overflow".to_string()))?;
+        if children_ns > end_ns.saturating_sub(start_ns) {
+            return Err(BenchError::Protocol(
+                "query child clocks exceed outer query wall clock".to_string(),
+            ));
+        }
         query_observations.push(serde_json::json!({
             "task_id": task_id, "route": query.route, "phase": phase,
             "iteration": iteration, "start_ns": start_ns, "end_ns": end_ns,
             "status": status, "output_bytes": output.len(),
+            "sdk_execute_ns": sdk_execute_ns,
+            "sdk_post_execute_ns": sdk_post_execute_ns,
+            "runner_result_materialize_ns": runner_result_materialize_ns,
         }));
         if phase == "measured" && iteration == 0 {
             let _previous_timing = row
@@ -1520,7 +1546,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         None
     };
     let mut phase_metrics = serde_json::json!({
-        "schema_version": 3,
+        "schema_version": 4,
         "system": "quanta",
         "timing_layer": "runner_monotonic_wall_v1",
         "query_timing": {

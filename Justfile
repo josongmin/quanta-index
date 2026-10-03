@@ -419,6 +419,10 @@ retrieval-contract-local:
 retrieval-sdk-proof $out:
     uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py run --rail sdk --out "$out"
 
+# Fresh isolated release build with bound source closure and executable digests.
+retrieval-sdk-proof-fresh $out:
+    uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py run --rail sdk --build-profile release-fresh --out "$out"
+
 # Public canonical route: context-bound Python and Rust schema-v2 receipts.
 # Pass a fresh artifact root outside the checkout.
 # pair-spec.receipts maps contract_execution_context/source_closure to this root;

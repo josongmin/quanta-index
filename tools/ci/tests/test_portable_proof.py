@@ -968,6 +968,12 @@ def test_fresh_release_sdk_proof_binds_source_and_binaries(fake_execution) -> No
     assert context["schema_version"] == 3
     assert context["build_profile"] == "release-fresh"
     assert context["revision"] == "b" * 40
+    assert json.loads((out / "sdk_results.json").read_text())["command"] == (
+        "just retrieval-sdk-proof-fresh"
+    )
+    assert json.loads((out / "sdk_receipt.json").read_text())["command"] == (
+        "just retrieval-sdk-proof-fresh"
+    )
     assert context["binaries"]["runner"]["path"] == str(
         out / "target" / "release" / portable_proof.PACKAGE
     )
@@ -979,6 +985,21 @@ def test_fresh_release_sdk_proof_binds_source_and_binaries(fake_execution) -> No
     assert all("--release" in row["argv"] for row in build_commands)
     assert all(row["environment"]["CARGO_TARGET_DIR"] == str(out / "target") for row in build_commands)
     assert any("--all-features" in argv for argv, _ in calls if "quanta-index-searchd-runtime" in argv)
+
+
+def test_fresh_binary_paths_bind_original_target(fake_execution) -> None:
+    out, _legacy_runner, _calls = fake_execution
+    receipt = portable_proof.produce("sdk", out, build_profile="release-fresh")
+    context = json.loads(receipt.read_text())
+    metadata = json.loads((out / "metadata.stdout").read_text())
+    portable_proof.validate_fresh_binary_paths(context, out, metadata)
+    with pytest.raises(ValueError, match="metadata target"):
+        portable_proof.validate_fresh_binary_paths(
+            context, out, {**metadata, "target_directory": str(out / "other-target")}
+        )
+    context["binaries"]["searchd"]["path"] = str(out / "other-target" / "searchd")
+    with pytest.raises(ValueError, match="searchd binary"):
+        portable_proof.validate_fresh_binary_paths(context, out, metadata)
 
 
 @pytest.mark.parametrize("occupied", ["directory", "symlink"])

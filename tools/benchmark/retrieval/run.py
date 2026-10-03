@@ -5973,6 +5973,9 @@ def validate_completed_query_timing(metrics: dict, record: dict | None = None) -
         )
     observed_keys = []
     previous_end = 0
+    sdk_child_keys = {
+        "sdk_execute_ns", "sdk_post_execute_ns", "runner_result_materialize_ns"
+    } if metrics.get("system") == "quanta" and metrics.get("schema_version") == 4 else set()
     record_rows = (
         {(row["task_id"], row["route"]): row for row in record["results"]} if record else {}
     )
@@ -5986,12 +5989,18 @@ def validate_completed_query_timing(metrics: dict, record: dict | None = None) -
             "end_ns",
             "status",
             "output_bytes",
-        }:
+        } | sdk_child_keys:
             raise RunError("completed-response timing observation is malformed")
         start, end = entry["start_ns"], entry["end_ns"]
         if type(start) is not int or type(end) is not int or start < previous_end or end < start:
             raise RunError("completed-response timing clock is not monotonic and serial")
         previous_end = end
+        if sdk_child_keys and (
+            any(type(entry[key]) is not int or not 0 <= entry[key] <= (1 << 64) - 1
+                for key in sdk_child_keys)
+            or sum(entry[key] for key in sdk_child_keys) > end - start
+        ):
+            raise RunError("completed-response SDK child clocks are invalid or exceed outer interval")
         if type(entry["iteration"]) is not int or entry["iteration"] < 0:
             raise RunError("completed-response timing iteration is invalid")
         if type(entry["output_bytes"]) is not int or entry["output_bytes"] <= 0:
@@ -6051,15 +6060,15 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         expected_phases = {
             "discovery",
             "chunk",
-            "daemon_boot_and_readiness" if schema_version == 3 else "model_provider_prepare",
+            "daemon_boot_and_readiness" if schema_version in (3, 4) else "model_provider_prepare",
             "embed_publish_seal_activate",
             "cold_query" if protocol_mode else "first_query",
             "warm_query",
             "unattributed",
         }
-        if schema_version in (2, 3):
+        if schema_version in (2, 3, 4):
             expected_phases.add("symbol_preflight")
-        if schema_version == 3:
+        if schema_version in (3, 4):
             expected_phases.update({"sdk_publish", "sdk_activate"})
         if protocol_mode:
             expected_phases.add("warmup")
@@ -6092,6 +6101,8 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     }
     if "query_timing" in payload:
         metric_keys.add("query_timing")
+    if system == "quanta" and schema_version == 4:
+        metric_keys.add("query_timing")
     if system == "semble":
         metric_keys.add("phase_boundaries_ns")
         if schema_version == 2:
@@ -6106,7 +6117,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
                     "observed_wrapped_call_ns",
                 }
             )
-    elif schema_version in (2, 3):
+    elif schema_version in (2, 3, 4):
         metric_keys.update(
             {
                 "symbol_count",
@@ -6135,7 +6146,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         type(schema_version) is not int
         or system not in ("quanta", "semble")
         or (system == "semble" and schema_version not in (1, 2))
-        or (system == "quanta" and schema_version not in (1, 2, 3))
+        or (system == "quanta" and schema_version not in (1, 2, 3, 4))
     ):
         raise RunError(f"{where} has unknown schema/system")
     if system == "semble" and schema_version == 2:
@@ -6212,7 +6223,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             or metrics["observed_wrapped_call_ns"] < 0
         ):
             raise RunError(f"{where} has invalid observed wrapped-call duration")
-    if system == "quanta" and schema_version in (2, 3):
+    if system == "quanta" and schema_version in (2, 3, 4):
         try:
             symbol_coverage.validate_metrics(metrics, QUANTA_SYMBOL_GRAMMARS)
         except (ValueError, KeyError, TypeError) as exc:
@@ -6287,7 +6298,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     if not is_finite_json_number(total) or total <= 0:
         raise RunError(f"{where}.total_ms must be finite and positive")
     nested_keys = (
-        {"sdk_publish", "sdk_activate"} if system == "quanta" and schema_version == 3 else set()
+        {"sdk_publish", "sdk_activate"} if system == "quanta" and schema_version in (3, 4) else set()
     )
     if (
         nested_keys
@@ -7843,14 +7854,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             if sha_file(Path(path)) != artifacts["phase_metrics_digests"][ref]:
                 raise RunError("phase metrics digest differs from the capture manifest")
             metrics = _validate_phase_metrics(read_json(Path(path)), f"phase metrics {path}")
-            if metrics["schema_version"] not in ((2, 3) if metrics["system"] == "quanta" else (2,)):
-                raise RunError("current pair replay requires Quanta phase v2/v3 or Semble v2")
+            if metrics["schema_version"] not in ((2, 3, 4) if metrics["system"] == "quanta" else (2,)):
+                raise RunError("current pair replay requires Quanta phase v2/v3/v4 or Semble v2")
             if (
                 metrics["system"] == "quanta"
                 and protocol_payload.get("lock_version") == 5
-                and metrics["schema_version"] != 3
+                and metrics["schema_version"] not in (3, 4)
             ):
-                raise RunError("protocol v5 requires measured Quanta phase schema v3")
+                raise RunError("protocol v5 requires measured Quanta phase schema v3/v4")
             if metrics["system"] == "quanta":
                 _verify_symbol_coverage_corpus(metrics, corpus_payload)
                 bound_preflights.append(
@@ -9816,8 +9827,8 @@ def build_latency_matrix(rep_layouts: list[dict]) -> dict:
                     read_json(Path(layout["quanta_phase_metrics"][strategy])),
                     f"rep {layout['rep']} quanta {strategy} phase metrics",
                 )
-                if phase["schema_version"] not in (2, 3):
-                    raise RunError("current Quanta latency matrix requires phase metrics v2/v3")
+                if phase["schema_version"] not in (2, 3, 4):
+                    raise RunError("current Quanta latency matrix requires phase metrics v2/v3/v4")
                 if phase.get("query_protocol") != protocol:
                     raise RunError("Quanta phase metrics do not echo the shared query protocol")
                 cell["warm_latencies"] = phase["warm_latencies_ms"]

@@ -58,6 +58,7 @@ RUST_COMMAND = (
     "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked"
 )
 SDK_COMMAND = "just retrieval-sdk-proof"
+SDK_FRESH_COMMAND = "just retrieval-sdk-proof-fresh"
 _ACTIVE_CUSTODY: contextvars.ContextVar[tuple[ToolCustody, dict[str, str]] | None] = (
     contextvars.ContextVar("portable_tool_custody", default=None)
 )
@@ -653,7 +654,12 @@ def _artifact(out: Path, name: str, evidence: dict[str, str]) -> Path:
 
 
 def _receipt_argv(
-    side: str, out: Path, python: str, *, context_path: Path | None = None
+    side: str,
+    out: Path,
+    python: str,
+    *,
+    context_path: Path | None = None,
+    build_profile: str | None = None,
 ) -> list[str]:
     common = [
         python,
@@ -705,7 +711,7 @@ def _receipt_argv(
             "--rail",
             "retrieval-sdk-proof",
             "--command",
-            SDK_COMMAND,
+            SDK_FRESH_COMMAND if build_profile == FRESH_BUILD_PROFILE else SDK_COMMAND,
             "--evidence",
             str(out / "sdk_results.json"),
             "--input-evidence",
@@ -916,6 +922,26 @@ def validated_build_profile(context: object, execution_root: Path) -> str | None
     if inherited.get("QUANTA_INDEX_SCCACHE") not in (None, "0"):
         raise ValueError("fresh build used a compiler cache")
     return FRESH_BUILD_PROFILE
+
+
+def validate_fresh_binary_paths(
+    context: dict[str, object], execution_root: Path, metadata: object
+) -> None:
+    """Bind release binaries to the original fresh target named by Cargo metadata."""
+    if validated_build_profile(context, execution_root) != FRESH_BUILD_PROFILE:
+        return
+    target = str(execution_root / "target")
+    if not isinstance(metadata, dict) or metadata.get("target_directory") != target:
+        raise ValueError("fresh build metadata target differs from original output root")
+    binaries = context.get("binaries")
+    if not isinstance(binaries, dict):
+        raise ValueError("fresh build lacks binary identities")
+    suffix = ".exe" if os.name == "nt" else ""
+    for role, name in (("runner", PACKAGE), ("searchd", "quanta-index-searchd")):
+        binary = binaries.get(role)
+        expected = str(execution_root / "target" / "release" / f"{name}{suffix}")
+        if not isinstance(binary, dict) or binary.get("path") != expected:
+            raise ValueError(f"fresh build {role} binary differs from original release target")
 
 
 def produce(rail: str, out: Path, *, build_profile: str | None = None) -> Path:
@@ -1164,7 +1190,12 @@ def _produce(
         _artifact(out, "nextest.jsonl", raw_evidence)
         record = _artifact(out, "actual-runner-record.json", raw_evidence)
         summary = sdk_proof.build_summary(
-            record, out / "nextest.jsonl", runner, inventory, searchd_path=searchd
+            record,
+            out / "nextest.jsonl",
+            runner,
+            inventory,
+            searchd_path=searchd,
+            command=SDK_FRESH_COMMAND if build_profile == FRESH_BUILD_PROFILE else SDK_COMMAND,
         )
         _write_json(out / "sdk_results.json", summary)
     context = {
@@ -1190,7 +1221,12 @@ def _produce(
             if not (out / f"contract_{side}_receipt.json").is_file():
                 raise ValueError(f"contract {side} receipt writer omitted its output")
     else:
-        _run("sdk-bound-receipt", _receipt_argv("sdk", out, python, context_path=path), out, [])
+        _run(
+            "sdk-bound-receipt",
+            _receipt_argv("sdk", out, python, context_path=path, build_profile=build_profile),
+            out,
+            [],
+        )
         if not (out / "sdk_receipt.json").is_file():
             raise ValueError("SDK receipt writer omitted its bound output")
     validate(path, _allow_pending=True)
@@ -1530,6 +1566,7 @@ def validate(
         ):
             raise ValueError("SDK collection/test output differs from raw evidence")
         metadata = _json_bytes(capture("metadata.stdout"))
+        validate_fresh_binary_paths(context, execution_root, metadata)
         target = metadata.get("target_directory") if isinstance(metadata, dict) else None
         suffix = ".exe" if os.name == "nt" else ""
         if (
@@ -1555,6 +1592,7 @@ def validate(
                 binary_digests["runner"],
                 capture("nextest-inventory.json"),
                 searchd_digest=binary_digests["searchd"],
+                command=SDK_FRESH_COMMAND if build_profile == FRESH_BUILD_PROFILE else SDK_COMMAND,
             )
         }
         capture("sdk_receipt.json")
@@ -1562,7 +1600,7 @@ def validate(
         _canonical_receipt(
             out / "sdk_receipt.json",
             rail="retrieval-sdk-proof",
-            command=SDK_COMMAND,
+            command=SDK_FRESH_COMMAND if build_profile == FRESH_BUILD_PROFILE else SDK_COMMAND,
             summary=out / "sdk_results.json",
             inputs={
                 "nextest-jsonl": out / "nextest.jsonl",

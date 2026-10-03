@@ -29,6 +29,15 @@ except ModuleNotFoundError:  # direct script invocation
 
 from tools.benchmark.evidence import RawFile, file_digest, read_control
 
+SDK_COMMAND = "just retrieval-sdk-proof"
+SDK_FRESH_COMMAND = "just retrieval-sdk-proof-fresh"
+
+
+def _checked_command(command: str) -> str:
+    if command not in (SDK_COMMAND, SDK_FRESH_COMMAND):
+        raise ValueError("unsupported SDK proof command")
+    return command
+
 
 def _evidence_bytes(value: Path | RawFile | bytes) -> bytes:
     return read_control(value)
@@ -90,7 +99,9 @@ def build_summary_from_evidence(
     inventory_path: Path | RawFile | bytes | None = None,
     *,
     searchd_digest: str | None = None,
+    command: str = SDK_COMMAND,
 ) -> dict[str, object]:
+    command = _checked_command(command)
     try:
         record = json.loads(
             _evidence_bytes(record_path),
@@ -152,7 +163,7 @@ def build_summary_from_evidence(
             raise SystemExit(f"route {route} refers to an absent capture")
     selected, executed, passed, failed = _nextest_counts(nextest_path, inventory_path)
     return {
-        "command": "just retrieval-sdk-proof",
+        "command": command,
         "separate_process": True,
         "sealed_receipt_digest": next(iter(receipt_digests)),
         "activation_ack_digest": next(iter(activation_digests)),
@@ -173,6 +184,7 @@ def build_summary(
     inventory_path: Path | None = None,
     *,
     searchd_path: Path | None = None,
+    command: str = SDK_COMMAND,
 ) -> dict[str, object]:
     binary_digest = file_digest(runner_path)[0].removeprefix("sha256:")
     return build_summary_from_evidence(
@@ -183,6 +195,7 @@ def build_summary(
         searchd_digest=file_digest(searchd_path)[0].removeprefix("sha256:")
         if searchd_path is not None
         else None,
+        command=command,
     )
 
 
