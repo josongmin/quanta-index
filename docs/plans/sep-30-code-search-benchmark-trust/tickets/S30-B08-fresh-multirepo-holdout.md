@@ -2910,3 +2910,56 @@ Follow-up at 05:29 KST supersedes the SDK-live observation above:
   bound before launch. Sessions **42229** (SDK) and **44800** (contract) are
   confirmed live; resource admission serializes Rust work. The previous source
   is not silently upgraded and cross-source receipts are not composed.
+
+### 2026-10-04: native Sourcegraph contents and scoped license decisions
+
+- **VERIFIED**, all **13,347** manifest files across **12** repositories were
+  read from the actual deployed Zoekt binary through its native
+  `/print?format=raw` API. Every returned document body matches its frozen
+  manifest SHA-256. This reads indexed document payloads, not Git-server source
+  content. The native shard inventory and container identity remain unchanged
+  before/after the **22.935-second** probe. The copied and deployed reader binary
+  hashes match. Only the temporary read-only probe process was stopped; the
+  existing Sourcegraph service and index were preserved. The earlier unsupported
+  JSON API attempt remains recorded and was not relabeled as successful.
+  `sourcegraph-native-content-8l9gxy35/` under the external closeout root retains
+  every body, request worker, input binding and result. Independent full replay
+  passed, with **8** receipt mutations refused, and **12** bounded index-scope
+  receipts were issued. Posting-level correctness, query-capture integration,
+  qrels and fair performance are separate requirements, not asserted here.
+- **VERIFIED**, actual primary-agent AI review issued **12** license decisions
+  scoped to local source-bound benchmark ingestion and internal evaluation,
+  covering the exact **13,347-file** manifests. Root and applicable nested terms
+  were inspected, explicit SPDX headers were checked, and all tracked notice
+  objects plus resolved symlink content were preserved. Bat's selected Go
+  fixture uses Apache-2.0; selected TypeScript/TSX fixtures use MIT. Django's
+  Python and vendored notices, Nushell crate notices, Tailscale's distinct
+  notices and Zellij termwiz notices were included. These are actual AI
+  decisions, never human-review or legal-counsel attestations. Public code-only
+  dataset redistribution and deployment clearance are outside their scope.
+  `license-scoped-review-xuozw4ln/` retains the decisions and sidecars. Canonical
+  receipt validation on the pinned `32fbdb2d` helper accepts all **12** inputs
+  and refuses **84** independent field mutations. New admission manifests must
+  consume these exact receipts; no old release or capture was overwritten.
+- **FAILED**, the pinned `32fbdb2d` portable contract Python rail executed
+  **661** tests in **710.682 seconds**, with **655 passed / 6 failed**. Each
+  failure reaches the host-monitor digest mismatch: the canonical `RawFile`
+  digest includes `sha256:` while this driver compared it with bare hex. Main
+  already contains the producing/consuming boundary repair from another worker;
+  the failed receipt is retained. The old failed cases plus the new monitor
+  refusal cases pass on the current working tree: **13 passed**, 522 deselected,
+  **114.68 seconds**. The current diagnostic-v7 pair and clock-overhead fixtures
+  each pass separately (**3.56** and **2.99 seconds**). These focused results do
+  not substitute for fresh portable proofs on one complete pinned source.
+- Required-test reconciliation found **5** committed host-monitor refusal IDs
+  plus **2** committed diagnostic-v7 replay IDs missing from the Python proof
+  authority. They were added without removing existing requirements. Canonical
+  collection now matches **671** identities. Its external reconciliation root
+  is `proof-inventory-reconcile-cwq0a2s8/`. The SDK `32fbdb2d` process remains
+  live under resource admission; it has not supplied a passing SDK receipt.
+
+**Remaining:** complete the actual C3 judgments/issuance after the reported
+08:40 KST quota reset; connect scoped license/index receipts to fresh admission
+and query captures; freeze the integrated source and produce complete matching
+contract/SDK proofs; finish C4 and the reviewed five-product comparison with
+equal public API timing. No qualified ranking or final performance claim is made.

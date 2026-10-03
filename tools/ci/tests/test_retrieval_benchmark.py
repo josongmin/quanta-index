@@ -15363,14 +15363,22 @@ def test_query_clock_overhead_v7_preserves_current_diagnostic_and_hybrid_policy(
         for row in record["results"]
     }
     phases["phases_ms"]["warm_query"] = 10.0 * len(record["results"])
-    phases["total_ms"] = sum(phases["phases_ms"].values())
+    phases["total_ms"] = sum(
+        value
+        for key, value in phases["phases_ms"].items()
+        if key not in ("sdk_publish", "sdk_activate")
+    )
     off_phases = json.loads(json.dumps(phases))
     off_phases["warm_latencies_ms"] = {
         route: {task_id: [2.0, 3.0] for task_id in rows}
         for route, rows in phases["warm_latencies_ms"].items()
     }
     off_phases["phases_ms"]["warm_query"] = 5.0 * len(record["results"])
-    off_phases["total_ms"] = sum(off_phases["phases_ms"].values())
+    off_phases["total_ms"] = sum(
+        value
+        for key, value in off_phases["phases_ms"].items()
+        if key not in ("sdk_publish", "sdk_activate")
+    )
     assert overhead.compare(record, record, phases, off_phases, on, off, pack)["rows"]
     forged = json.loads(json.dumps(off))
     forged["hybrid_fetch_policy"] = pairrun.hybrid_fetch_policy_configuration("25")
