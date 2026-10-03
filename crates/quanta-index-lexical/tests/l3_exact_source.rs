@@ -768,6 +768,64 @@ fn code_search_matches_file_across_chunk_boundaries_and_maps_unicode_source_span
 }
 
 #[test]
+fn code_search_work_counts_separate_gram_collision_verification_rank_and_paging() -> TestResult {
+    use quanta_index_core::CodeSearchExecutionStatsV1;
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("a_usage.rs", "abcd", 2)?,
+        code_scope("collision.rs", "abc bcd", 3)?,
+        code_scope("z_late.rs", "abcd abcd abcd", 3)?,
+    ])?;
+    let query = code_query(&["abcd"], false);
+    let first = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(1),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(first.exact_total, Some(2));
+    assert_eq!(
+        first.candidates[0].repo_relative_path.as_str(),
+        "z_late.rs",
+        "a later high-score source must survive the one-file page cap"
+    );
+    let stats = first.code_search_stats.expect("ordinary exhaustive work");
+    assert_eq!(
+        stats,
+        CodeSearchExecutionStatsV1 {
+            literal_source_verification_attempts: 3,
+            literal_verified_files: 2,
+            final_candidate_visits: 2,
+            verified_matching_files: 2,
+            cursor_eligible_files: 2,
+            fetched_files: 1,
+        }
+    );
+    let boundary = quanta_index_contract::LexicalCursor::at(
+        first.candidates[0].manifest_generation,
+        first.candidates[0].order_key(),
+    );
+    let next = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec {
+            fetch: 1,
+            after: Some(boundary),
+        },
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(next.candidates[0].repo_relative_path.as_str(), "a_usage.rs");
+    assert_eq!(next.exact_total, Some(1));
+    assert_eq!(
+        next.code_search_stats.expect("continued exhaustive page"),
+        CodeSearchExecutionStatsV1 {
+            cursor_eligible_files: 1,
+            ..stats
+        }
+    );
+    Ok(())
+}
+
+#[test]
 fn code_search_explanation_uses_the_same_file_score_outside_top_k() -> TestResult {
     use quanta_index_core::LexicalCandidateExplanationV1;
 

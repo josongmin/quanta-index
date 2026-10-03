@@ -87,6 +87,21 @@ fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
     if let Some(error) = result.typed_error {
         return Err(format!("CodeSearch refused: {error}").into());
     }
+    let request_trace = result
+        .explanation
+        .as_ref()
+        .ok_or("native CodeSearch execution trace")?;
+    for expected in [
+        "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true",
+        "code_search.execution.verified_matching_files=3",
+        "code_search.execution.cursor_eligible_files=3",
+        "code_search.execution.fetched_files=3",
+        "code_search.execution.returned_files=3",
+    ] {
+        if !trace_says(request_trace, expected) {
+            return Err(format!("CodeSearch public count missing: {expected}").into());
+        }
+    }
     let actual: Vec<_> = result
         .candidates
         .iter()

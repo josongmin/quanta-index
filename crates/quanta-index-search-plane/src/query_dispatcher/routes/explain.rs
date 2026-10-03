@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     CandidatePresenceV1, ExplainCandidateV1, ExplanationRow, HybridCandidateV1, HybridLaneV1,
-    LexicalCandidate, LqOptions, LqYesNoOnly, PlannerStage, PlannerTraceEntry, SearchExplanation,
+    LexicalCandidate, LqYesNoOnly, PlannerStage, PlannerTraceEntry, SearchExplanation,
     SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse, TextQueryRequest,
 };
 use quanta_index_core::{
@@ -511,8 +511,12 @@ enum RankerFusionV1 {
 /// The digest covers the engine the lexical plan runs on, the boost it
 /// applies, and the fusion over it. Two explanations with equal hashes
 /// were scored under the same weights.
-fn ranker_weights_hash_v1(options: &LqOptions, fusion: RankerFusionV1) -> [u8; 32] {
+fn ranker_weights_hash_v1(
+    query: &quanta_index_contract::LqQuery,
+    fusion: RankerFusionV1,
+) -> [u8; 32] {
     use sha2::Digest as _;
+    let options = &query.options;
     let engine = if options.pattern_type == quanta_index_contract::LqPatternType::CodeSearch {
         LexicalScoreEngineV1::CodeSearchFile
     } else if matches!(options.index_mode, Some(LqYesNoOnly::No)) {
@@ -526,7 +530,7 @@ fn ranker_weights_hash_v1(options: &LqOptions, fusion: RankerFusionV1) -> [u8; 3
     hasher.update(engine.as_str().as_bytes());
     if engine == LexicalScoreEngineV1::CodeSearchFile {
         hasher.update(b"\ncode_search_rank=");
-        hasher.update(super::lexical::CODE_SEARCH_CURSOR_ORDER.as_bytes());
+        hasher.update(super::lexical::code_search_rank_order(query).as_bytes());
     }
     hasher.update(b"\nboost_millis=");
     match options.boost_millis {
@@ -745,7 +749,7 @@ fn build_lexical_score_explanation(
         stage_timings: None,
         early_stop_reason: None,
         contributions,
-        ranker_weights_hash: ranker_weights_hash_v1(&query.options, RankerFusionV1::None),
+        ranker_weights_hash: ranker_weights_hash_v1(query, RankerFusionV1::None),
         strategy: "lexical_score_trace".to_string(),
         summary,
     })
@@ -875,7 +879,7 @@ fn build_hybrid_score_explanation(
     report.lexical_lane(hybrid, query, explained)?;
     report.dense_lane(hybrid, derived);
     report.fusion(hybrid, derived.ranks);
-    Ok(report.close(&query.options, execution, request_id))
+    Ok(report.close(query, execution, request_id))
 }
 
 /// The hybrid explanation under assembly: one method per lane, then the
@@ -1033,7 +1037,7 @@ impl HybridTraceReportV1 {
 
     fn close(
         self,
-        options: &LqOptions,
+        query: &quanta_index_contract::LqQuery,
         execution: &LaneExecutionSummaryV1,
         request_id: u64,
     ) -> SearchExplanation {
@@ -1048,7 +1052,7 @@ impl HybridTraceReportV1 {
             stage_timings: None,
             early_stop_reason: None,
             contributions: self.contributions,
-            ranker_weights_hash: ranker_weights_hash_v1(options, RankerFusionV1::Rrf),
+            ranker_weights_hash: ranker_weights_hash_v1(query, RankerFusionV1::Rrf),
             strategy: "hybrid_score_trace".to_string(),
             summary: self.summary.concat(),
         }
@@ -1159,9 +1163,8 @@ mod code_search_score_tests {
 
     #[test]
     fn code_search_ranker_hash_tracks_engine_without_selecting_experimental_weights() {
-        let plain = LqOptions::defaults();
-        let mut code = plain.clone();
-        code.pattern_type = quanta_index_contract::LqPatternType::CodeSearch;
+        let plain = crate::lower_sourcegraph_query_text("needle").expect("BM25 query");
+        let code = crate::lowering::lower_code_search_query_text("needle").expect("file query");
         let code_hash = ranker_weights_hash_v1(&code, RankerFusionV1::None);
         assert_ne!(code_hash, [0; 32]);
         assert_ne!(
@@ -1172,5 +1175,12 @@ mod code_search_score_tests {
             code_hash,
             ranker_weights_hash_v1(&code, RankerFusionV1::None)
         );
+        for text in ["typo:needel", "components:\"needle helper\""] {
+            let query = crate::lowering::lower_code_search_query_text(text).expect("typed query");
+            assert_ne!(
+                code_hash,
+                ranker_weights_hash_v1(&query, RankerFusionV1::None)
+            );
+        }
     }
 }

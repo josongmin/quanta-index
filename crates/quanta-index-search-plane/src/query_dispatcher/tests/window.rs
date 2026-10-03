@@ -95,7 +95,7 @@ fn count_options_take_an_exact_window_from_the_adapter_and_never_widen_the_page_
 
     // The adapter proved three matches but the page is one row.
     let mut page = LexicalSearchPageV1 {
-            code_search_stats: None,
+        code_search_stats: None,
         candidates: vec![candidate("alpha", 1.0)],
         exact_total: Some(3),
     };
@@ -107,7 +107,7 @@ fn count_options_take_an_exact_window_from_the_adapter_and_never_widen_the_page_
     // A projection fetched with a probe row still cuts to the page and
     // keeps the exact total.
     let mut projected = LexicalSearchPageV1 {
-            code_search_stats: None,
+        code_search_stats: None,
         candidates: vec![candidate("alpha", 1.0), candidate("beta", 0.5)],
         exact_total: Some(5),
     };
@@ -118,7 +118,7 @@ fn count_options_take_an_exact_window_from_the_adapter_and_never_widen_the_page_
 
     // An adapter that returns more rows than it was asked for is a contract defect.
     let mut oversized = LexicalSearchPageV1 {
-            code_search_stats: None,
+        code_search_stats: None,
         candidates: vec![candidate("alpha", 1.0), candidate("beta", 0.5)],
         exact_total: Some(2),
     };
@@ -126,7 +126,7 @@ fn count_options_take_an_exact_window_from_the_adapter_and_never_widen_the_page_
 
     // An exact total below the returned rows is a contract defect.
     let mut contradictory = LexicalSearchPageV1 {
-            code_search_stats: None,
+        code_search_stats: None,
         candidates: vec![candidate("alpha", 1.0), candidate("beta", 0.5)],
         exact_total: Some(1),
     };
@@ -134,7 +134,7 @@ fn count_options_take_an_exact_window_from_the_adapter_and_never_widen_the_page_
 
     // Without an exact total the probe row is consumed into `has_more`.
     let mut probed = LexicalSearchPageV1 {
-            code_search_stats: None,
+        code_search_stats: None,
         candidates: vec![candidate("alpha", 1.0), candidate("beta", 0.5)],
         exact_total: None,
     };

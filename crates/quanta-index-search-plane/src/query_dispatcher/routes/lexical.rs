@@ -3,13 +3,14 @@
 use quanta_index_contract::{
     CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, CursorRouteV2,
     EngineTouched, GenerationPin, LexicalCursor, LexicalRowOrderKey, LqExpr, LqLeaf, LqPatternType,
-    LqQuery, QueryResultWindowV1, QueryResultWindowV2, QueryStageKindV1, QueryStageTimingV1,
-    SearchExplanation, SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse, PlannerStage, PlannerTraceEntry,
-    TextQueryRequest, TextQueryResponse, validate_lexical_page_v1,
+    LqQuery, PlannerStage, PlannerTraceEntry, QueryResultWindowV1, QueryResultWindowV2,
+    QueryStageKindV1, QueryStageTimingV1, SearchExplanation, SearchPlaneTrackKind,
+    SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
+    validate_lexical_page_v1,
 };
 use quanta_index_core::{
-    CodeSearchExecutionStatsV1, CoreError, LexicalEndpoint, LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1,
-    RequestBudgetV1, validate_query_top_k,
+    CodeSearchExecutionStatsV1, CoreError, LexicalEndpoint, LexicalPageSpec, LexicalPolicy,
+    LexicalQueryPort, QueryRouteV1, RequestBudgetV1, validate_query_top_k,
 };
 
 use crate::lower_lexical_text_query;
@@ -39,6 +40,16 @@ const CODE_SEARCH_TYPO_CURSOR_ORDER: &str =
     "code_search_identifier_typo_osa1_v1_desc_source_repo_path_line_candidate";
 const CODE_SEARCH_COMPONENT_CURSOR_ORDER: &str =
     "code_search_symbol_components_v1_desc_source_repo_path_line_candidate";
+
+pub(super) fn code_search_rank_order(query: &LqQuery) -> &'static str {
+    if is_code_search_typo(query) {
+        CODE_SEARCH_TYPO_CURSOR_ORDER
+    } else if is_code_search_components(query) {
+        CODE_SEARCH_COMPONENT_CURSOR_ORDER
+    } else {
+        CODE_SEARCH_CURSOR_ORDER
+    }
+}
 
 fn is_code_search_typo(query: &LqQuery) -> bool {
     if query.options.pattern_type != LqPatternType::CodeSearch {
@@ -96,23 +107,33 @@ fn code_search_execution_trace(
         || stats.verified_matching_files > stats.final_candidate_visits
         || stats.literal_verified_files > stats.literal_source_verification_attempts
     {
-        return Err(CoreError::InvalidContract("lexical: contradictory code-search work counts".into()));
+        return Err(CoreError::InvalidContract(
+            "lexical: contradictory code-search work counts".into(),
+        ));
     }
     let mut entries = vec![PlannerTraceEntry {
         stage: PlannerStage::Merge,
-        detail: "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true".into(),
+        detail: "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true"
+            .into(),
     }];
-    entries.extend([
-        ("literal_source_verification_attempts", stats.literal_source_verification_attempts),
-        ("literal_verified_files", stats.literal_verified_files),
-        ("final_candidate_visits", stats.final_candidate_visits),
-        ("verified_matching_files", stats.verified_matching_files),
-        ("cursor_eligible_files", stats.cursor_eligible_files),
-        ("fetched_files", stats.fetched_files),
-    ].into_iter().map(|(name, value)| PlannerTraceEntry {
-        stage: PlannerStage::Merge,
-        detail: format!("code_search.execution.{name}={value}"),
-    }));
+    entries.extend(
+        [
+            (
+                "literal_source_verification_attempts",
+                stats.literal_source_verification_attempts,
+            ),
+            ("literal_verified_files", stats.literal_verified_files),
+            ("final_candidate_visits", stats.final_candidate_visits),
+            ("verified_matching_files", stats.verified_matching_files),
+            ("cursor_eligible_files", stats.cursor_eligible_files),
+            ("fetched_files", stats.fetched_files),
+        ]
+        .into_iter()
+        .map(|(name, value)| PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: format!("code_search.execution.{name}={value}"),
+        }),
+    );
     Ok(entries)
 }
 
@@ -167,12 +188,8 @@ impl SearchPlaneDispatcher {
             pin: &planned.pin,
             query: &planned.query,
             constraints: &planned.constraints,
-            order: if is_code_search_typo(&planned.query) {
-                CODE_SEARCH_TYPO_CURSOR_ORDER
-            } else if is_code_search_components(&planned.query) {
-                CODE_SEARCH_COMPONENT_CURSOR_ORDER
-            } else if planned.query.options.pattern_type == LqPatternType::CodeSearch {
-                CODE_SEARCH_CURSOR_ORDER
+            order: if planned.query.options.pattern_type == LqPatternType::CodeSearch {
+                code_search_rank_order(&planned.query)
             } else {
                 LEXICAL_CURSOR_ORDER_V2
             },
@@ -238,8 +255,19 @@ impl SearchPlaneDispatcher {
         );
         budget.checkpoint("lexical:project")?;
         let project_started = self.query_stage_observation.start();
-        let code_search_trace = page.code_search_stats.map(|stats|
-            code_search_execution_trace(stats, page.candidates.len(), page.exact_total)).transpose()?;
+        if page.code_search_stats.is_some()
+            && planned.query.options.pattern_type != LqPatternType::CodeSearch
+        {
+            return Err(CoreError::InvalidContract(
+                "lexical: code-search counts on a different engine".into(),
+            ));
+        }
+        let code_search_trace = page
+            .code_search_stats
+            .map(|stats| {
+                code_search_execution_trace(stats, page.candidates.len(), page.exact_total)
+            })
+            .transpose()?;
         let window = lexical_page_window_v1(&mut page, request.top_k, fetch_top_k)?;
         let results = page.candidates;
         let next_boundary = next_cursor(
@@ -299,9 +327,15 @@ impl SearchPlaneDispatcher {
         }
         let summary = execution.summary();
         response.explanation.engines_touched = summary.touched_engines();
-        if let Some(entry) = response.explanation.planner_trace.iter_mut().find(|entry|
-            entry.detail.starts_with("code_search.execution.returned_files=")) {
-            entry.detail = format!("code_search.execution.returned_files={}", response.results.len());
+        if let Some(entry) = response.explanation.planner_trace.iter_mut().find(|entry| {
+            entry
+                .detail
+                .starts_with("code_search.execution.returned_files=")
+        }) {
+            entry.detail = format!(
+                "code_search.execution.returned_files={}",
+                response.results.len()
+            );
         }
         if let Some(stages) = response.explanation.stage_timings.as_mut() {
             let final_stage = stages.last_mut().ok_or_else(|| {
@@ -502,6 +536,33 @@ mod typed_cursor_tests {
         CODE_SEARCH_TYPO_CURSOR_ORDER, is_code_search_components, is_code_search_typo,
     };
     use crate::lowering::lower_code_search_query_text;
+
+    #[test]
+    fn code_search_execution_counts_reject_contradictory_page_provenance() {
+        use super::{CodeSearchExecutionStatsV1, code_search_execution_trace};
+        let stats = CodeSearchExecutionStatsV1 {
+            literal_source_verification_attempts: 3,
+            literal_verified_files: 2,
+            final_candidate_visits: 2,
+            verified_matching_files: 2,
+            cursor_eligible_files: 1,
+            fetched_files: 1,
+        };
+        assert_eq!(
+            code_search_execution_trace(stats, 1, Some(1))
+                .expect("fixed counts")
+                .len(),
+            7
+        );
+        assert!(code_search_execution_trace(stats, 2, Some(1)).is_err());
+        assert!(code_search_execution_trace(stats, 1, Some(2)).is_err());
+        assert!(code_search_execution_trace(stats, 1, None).is_err());
+        let invalid = CodeSearchExecutionStatsV1 {
+            verified_matching_files: 3,
+            ..stats
+        };
+        assert!(code_search_execution_trace(invalid, 1, Some(1)).is_err());
+    }
 
     #[test]
     fn typo_cursor_order_is_distinct_from_exact_code_search() {

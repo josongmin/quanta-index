@@ -15,9 +15,9 @@ pub mod request_budget;
 pub mod timeref;
 
 pub use domains::lexical::{
-    CodeSearchExecutionStatsV1, CodeSearchRankStudyV1, CodeSearchScoreComponentsV1, LexicalCollectionBudget, LexicalEndpoint,
-    LexicalMemoryReservation, LexicalPlanKind, ValidatedLexicalPlan,
-    require_complete_symbol_coverage,
+    CodeSearchExecutionStatsV1, CodeSearchRankStudyV1, CodeSearchScoreComponentsV1,
+    LexicalCollectionBudget, LexicalEndpoint, LexicalMemoryReservation, LexicalPlanKind,
+    ValidatedLexicalPlan, require_complete_symbol_coverage,
 };
 pub use error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
 pub use ingest_resource::{

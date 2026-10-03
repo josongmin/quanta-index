@@ -944,7 +944,7 @@ impl TantivySearcher {
         }
         if doc_limit == 0 {
             return Ok(LexicalSearchPageV1 {
-            code_search_stats: None,
+                code_search_stats: None,
                 candidates: Vec::new(),
                 exact_total: Some(0),
             });
