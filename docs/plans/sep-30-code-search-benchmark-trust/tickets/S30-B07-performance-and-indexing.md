@@ -257,6 +257,34 @@ observation, competing build or inconclusive repeated improvement prevents an
 optimization from being promoted as a performance win. Numeric product SLOs
 remain an explicit operational decision rather than an invented test threshold.
 
+### Joined external capture implementation update
+
+`lexical_file_comparison.py` now has an `--external-spec` entry point within the
+existing scorer. The closed spec contains `schema_version: 1`, `native_inputs`
+(the existing native input roles without the three external row roles), and
+`external_captures` (exactly `sourcegraph`, `opengrok`, `cs` mapped to retained
+capture roots). A legacy complete root may be shared by all three products;
+product-scoped roots must declare exactly the products assigned to that root.
+Every root is independently replayed before and after the existing scorer.
+Native/external suite and pack bytes, release binding and complete product
+coverage must agree. The report retains capture hashes and explicitly limits
+the result to descriptive independent observations, not a paired speed claim.
+Latency summaries now include an observed-call `sum_ms`; a non-finite total is
+rejected rather than emitted as a valid statistic.
+
+Focused join guards passed 14 tests. The full scorer and common capture tests
+(`test_lexical_file_comparison.py`, `test_lexical_capture.py`) passed 82 tests in
+121.70 seconds. The product-scoped live collector and its actual HTTP/process
+join fixture are still being implemented/tested; those focused guards alone
+do not prove a new five-product capture.
+
+The isolated Gin Sourcegraph projection's native path inventory and stored
+source verification both matched 99/99 files, with unchanged before/after index
+bytes. Its owned Sourcegraph/src containers were stopped and their data retained
+before collector changes; existing C3/C5 services were not modified. Evidence
+is outside the checkout under
+`/private/tmp/qi-five-product-gin-services-20261004-6ZY8VW/`.
+
 ## Execution receipt (2026-09-30)
 
 `NOT_RUN`: host not quiet (load ~26 on 16 cores, concurrent builds). Producer `quanta-index@0d21914e` (clean worktree);

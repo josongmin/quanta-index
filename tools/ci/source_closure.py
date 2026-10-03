@@ -770,7 +770,31 @@ def verify_manifest(repo: Path, payload: object) -> dict:
     return manifest
 
 
-def load_and_verify(path: Path, repo: Path | None = None) -> dict:
+def preflight_reused_manifest(repo: Path, payload: object) -> dict:
+    """Admit a prior closure for a quality cell; final verification still hashes it.
+
+    A matching commit and a clean, identical file inventory make the captured
+    bytes reusable at the start of a cell. The caller must run verify_manifest
+    after the cell and before promoting its output.
+    """
+    manifest = validate_manifest_shape(payload)
+    revision = _git(repo, "rev-parse", "HEAD")
+    if revision != manifest["revision"]:
+        raise ClosureError("reused source closure revision changed")
+    roots = manifest["roots"]
+    _assert_clean(repo, roots)
+    current_paths = _files(repo, roots)
+    if current_paths != [entry["path"] for entry in manifest["files"]]:
+        raise ClosureError("reused source closure file set changed")
+    _assert_clean(repo, roots)
+    if _git(repo, "rev-parse", "HEAD") != revision:
+        raise ClosureError("reused source closure revision changed during preflight")
+    if _files(repo, roots) != current_paths:
+        raise ClosureError("reused source closure file set changed during preflight")
+    return manifest
+
+
+def load_manifest(path: Path) -> dict:
     def object_pairs(pairs: list[tuple[str, object]]) -> dict:
         result = {}
         for key, value in pairs:
@@ -788,7 +812,11 @@ def load_and_verify(path: Path, repo: Path | None = None) -> dict:
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ClosureError(f"cannot read source closure {path}: {error}") from error
-    return verify_manifest(repo or _repo_root(), payload)
+    return validate_manifest_shape(payload)
+
+
+def load_and_verify(path: Path, repo: Path | None = None) -> dict:
+    return verify_manifest(repo or _repo_root(), load_manifest(path))
 
 
 def _write_exclusive(path: Path, payload: dict) -> None:
@@ -813,11 +841,21 @@ def main() -> int:
             child.add_argument("--out", required=True, type=Path)
     verify = subparsers.add_parser("verify")
     verify.add_argument("--manifest", required=True, type=Path)
+    reuse = subparsers.add_parser("reuse")
+    reuse.add_argument("--manifest", required=True, type=Path)
+    reuse.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     try:
         repo = _repo_root()
         if args.command == "verify":
             manifest = load_and_verify(args.manifest, repo)
+        elif args.command == "reuse":
+            source = args.manifest.resolve()
+            if source == repo or repo in source.parents or args.manifest.is_symlink():
+                raise ClosureError("reused source closure must be a regular external file")
+            payload = load_manifest(args.manifest)
+            manifest = preflight_reused_manifest(repo, payload)
+            _write_exclusive(args.out, manifest)
         else:
             manifest = build_manifest(repo, args.profile)
             if args.command == "capture":
