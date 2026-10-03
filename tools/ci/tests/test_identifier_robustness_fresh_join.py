@@ -401,3 +401,19 @@ def test_fresh_join_refuses_dirty_producer_at_unchanged_head(tmp_path, monkeypat
     owner.write_text("frozen = False\n")
     with pytest.raises(fresh.FreshJoinError, match="differs from frozen HEAD"):
         fresh._external_producer_sources(tmp_path, head)
+
+
+def test_fresh_join_rejects_evidence_change_between_parse_digest_and_completion(tmp_path):
+    evidence = tmp_path / "input.json"
+    evidence.write_text('{"value": 1}\n')
+    with fresh._evidence_session():
+        assert fresh.read(evidence) == {"value": 1}
+        evidence.write_text('{"value": 1}  \n')
+        with pytest.raises(fresh.FreshJoinError, match="evidence bytes changed during"):
+            fresh.sha(evidence)
+        evidence.write_text('{"value": 1}\n')
+    evidence.write_text('{"value": 1}\n')
+    with pytest.raises(fresh.FreshJoinError, match="before fresh join completion"):
+        with fresh._evidence_session():
+            assert fresh.read(evidence) == {"value": 1}
+            evidence.write_text('{"value": 2}\n')

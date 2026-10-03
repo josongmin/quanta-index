@@ -15,6 +15,8 @@ import json
 import subprocess
 import sys
 from collections import defaultdict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -63,16 +65,57 @@ def require(condition: bool, message: str) -> None:
         raise FreshJoinError(message)
 
 
+_BOUND_EVIDENCE: ContextVar[dict[str, str] | None] = ContextVar(
+    "fresh_join_bound_evidence", default=None
+)
+
+
+def _bound_bytes(path: Path) -> bytes:
+    raw = path.read_bytes()
+    bound = _BOUND_EVIDENCE.get()
+    if bound is not None:
+        key = str(path.absolute())
+        digest = hashlib.sha256(raw).hexdigest()
+        require(
+            key not in bound or bound[key] == digest,
+            "evidence bytes changed during fresh join: " + key,
+        )
+        bound[key] = digest
+    return raw
+
+
+@contextmanager
+def _evidence_session():
+    """Keep all scored input bytes stable through the final report computation."""
+    bound: dict[str, str] = {}
+    token = _BOUND_EVIDENCE.set(bound)
+    try:
+        yield
+        for path, digest in bound.items():
+            require(
+                hashlib.sha256(Path(path).read_bytes()).hexdigest() == digest,
+                "evidence bytes changed before fresh join completion: " + path,
+            )
+    finally:
+        _BOUND_EVIDENCE.reset(token)
+
+
 def read(path: Path) -> Any:
-    return json.loads(path.read_bytes())
+    return json.loads(_bound_bytes(path))
 
 
 def sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(_bound_bytes(path)).hexdigest()
 
 
 def canonical_sha(value: Any) -> str:
     return hashlib.sha256(evaluator.canonical(value)).hexdigest()
+
+
+def _bound_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows = [json.loads(line) for line in _bound_bytes(path).splitlines() if line.strip()]
+    require(all(isinstance(row, dict) for row in rows), "malformed external JSONL: " + str(path))
+    return rows
 
 
 def _external_producer_sources(source_checkout: Path, source_head: str) -> dict[str, str]:
@@ -91,7 +134,7 @@ def _external_producer_sources(source_checkout: Path, source_head: str) -> dict[
             check=True,
             capture_output=True,
         ).stdout
-        current = (source_checkout / relative).read_bytes()
+        current = _bound_bytes(source_checkout / relative)
         require(current == blob, "external producer source differs from frozen HEAD: " + relative)
         hashes[name] = hashlib.sha256(current).hexdigest()
     return hashes
@@ -546,7 +589,7 @@ def _external_records(
             == sha(rows_path),
             "external raw row hash differs: " + repo + "/" + product,
         )
-        rows = scoring._unique(scoring._jsonl(rows_path), "task_id", repo + "/" + product)
+        rows = scoring._unique(_bound_jsonl(rows_path), "task_id", repo + "/" + product)
         require(set(rows) == set(tasks), "external task coverage differs: " + repo + "/" + product)
         product_rows: dict[str, dict[str, Any]] = {}
         for task_id, raw in rows.items():
@@ -794,6 +837,11 @@ def _macro(rows: list[dict[str, Any]], product: str, label: str) -> dict[str, An
 
 
 def build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
+    with _evidence_session():
+        return _build(pairs)
+
+
+def _build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
     require(bool(pairs), "at least one fresh pair is required")
     per_query: list[dict[str, Any]] = []
     bindings: list[dict[str, Any]] = []
