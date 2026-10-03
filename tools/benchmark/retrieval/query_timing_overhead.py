@@ -17,7 +17,7 @@ from tools.benchmark.retrieval.conditional_proof import load, sha
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
 
-def _without_code_search_work_clocks(planner_trace: list) -> list:
+def _without_code_search_work_clocks(planner_trace: list, *, allow_clocks: bool = True) -> list:
     """Ignore only the three policy-controlled CodeSearch response clocks."""
     clock_prefixes = (
         "code_search.execution.candidate_ns=",
@@ -40,6 +40,8 @@ def _without_code_search_work_clocks(planner_trace: list) -> list:
             result.append(entry)
             continue
         value = detail[len(prefix) :]
+        if not allow_clocks:
+            raise ValueError("disabled query observation emitted a CodeSearch work clock")
         if prefix in seen or not value.isascii() or not value.isdecimal():
             raise ValueError("on/off CodeSearch work clock is malformed or duplicated")
         seen.add(prefix)
@@ -137,7 +139,7 @@ def compare(
     ):
         raise ValueError("on/off answer or ranking differs, or execution failed")
 
-    def observable_rows(record, diagnostic):
+    def observable_rows(record, diagnostic, *, allow_work_clocks):
         expected_order = [(row["route"], row["task_id"]) for row in record["results"]]
         rows = diagnostic["results"]
         if [(row["route"], row["task_id"]) for row in rows] != expected_order:
@@ -155,7 +157,9 @@ def compare(
                     # and other planner entry in the equality check.
                     planner_trace = explanation.get("planner_trace")
                     if isinstance(planner_trace, list):
-                        planner_trace = _without_code_search_work_clocks(planner_trace)
+                        planner_trace = _without_code_search_work_clocks(
+                            planner_trace, allow_clocks=allow_work_clocks
+                        )
                     response = {
                         **response,
                         "explanation": {
@@ -167,7 +171,9 @@ def compare(
             projected.append({**row, "response": response})
         return projected
 
-    if observable_rows(on, on_diagnostic) != observable_rows(off, off_diagnostic):
+    if observable_rows(on, on_diagnostic, allow_work_clocks=True) != observable_rows(
+        off, off_diagnostic, allow_work_clocks=False
+    ):
         raise ValueError("on/off observable diagnostic response or page differs")
     summaries = []
     for route, tasks in on_phases["warm_latencies_ms"].items():

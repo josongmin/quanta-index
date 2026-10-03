@@ -63,6 +63,8 @@ def _clean_host_timeline_fixture():
             for ns in (100, 5_000_000_100, 10_000_000_090)
         ],
         "errors": [],
+        "reservation_id": "a" * 32,
+        "monitor_sha256": "b" * 64,
     }
     return payload, profile
 
@@ -845,16 +847,25 @@ def test_ingest_lexical_stage_intervals_reject_overcount_and_missing_measurement
     raw = _diagnostic_ingest_fixture(record)
     raw["observation"]["lexical_build_ns"] = 100
     stages = {
-        "preparation_ns": 10, "writer_mutation_ns": 20, "text_authority_ns": 10,
-        "file_authority_ns": 10, "seal_ns": 40, "seal_writer_commit_ns": 10,
-        "seal_merge_wait_ns": 10, "seal_commitment_ns": 15, "seal_file_admission_ns": 5,
+        "preparation_ns": 10,
+        "writer_mutation_ns": 20,
+        "text_authority_ns": 10,
+        "file_authority_ns": 10,
+        "seal_ns": 40,
+        "seal_writer_commit_ns": 10,
+        "seal_merge_wait_ns": 10,
+        "seal_commitment_ns": 15,
+        "seal_file_admission_ns": 5,
     }
     raw["observation"]["lexical_stages"] = stages
     pairrun._validate_ingest_diagnostic(raw, record, lexical_stage_contract=True)
     for field, value in (
-        ("preparation_ns", 101), ("seal_writer_commit_ns", 40),
-        ("seal_file_admission_ns", 16), ("seal_ns", None),
-        ("writer_mutation_ns", True), ("file_authority_ns", 2**64),
+        ("preparation_ns", 101),
+        ("seal_writer_commit_ns", 40),
+        ("seal_file_admission_ns", 16),
+        ("seal_ns", None),
+        ("writer_mutation_ns", True),
+        ("file_authority_ns", 2**64),
     ):
         changed = copy.deepcopy(raw)
         changed["observation"]["lexical_stages"][field] = value
@@ -6039,6 +6050,8 @@ def _pair_stage(
         capture = _v3_capture(system, current=True)
         if system == "quanta":
             capture["runner_binary"]["digest"] = binary_digest
+            # Match the public producer: lexical execution exercises no model.
+            capture.update(model="none:lexical", model_revision="not-applicable")
         else:
             capture["receipt_digest"] = mapping["diff_digest"]
         rows = json.loads(json.dumps(route_rows))
@@ -6591,6 +6604,44 @@ def _pair_stage(
     timeline, _profile = _clean_host_timeline_fixture()
     for sample in timeline["samples"]:
         sample["probe"] = copy.deepcopy(host)
+    monitor_header = {
+        "kind": "cooperative-host-observations",
+        "schema_version": 1,
+        "capture_id": "retrieval-host",
+        "profile": "qualified-speed",
+        "reservation_id": timeline["reservation_id"],
+        "lock_identity": [1, 2, 3, stat.S_IFREG | 0o600, 1],
+        "interval_ns": 1_000_000_000,
+        "max_gap_ns": 10_000_000_000,
+        "clock_tolerance_ns": 1_000_000_000,
+        "host": {"os": "macos", "arch": "arm64", "cpu_count": 8, "hostname_hash": "c" * 64},
+    }
+    monitor_rows = [monitor_header]
+    for index, sample in enumerate(timeline["samples"]):
+        monitor_rows.append(
+            {
+                "sequence": index,
+                "event": "start" if index == 0 else "end" if index == 2 else "sample",
+                "phase": "preparation",
+                "capture_id": "retrieval-host",
+                "reservation_id": timeline["reservation_id"],
+                "monotonic_ns": sample["finished_ns"],
+                "wall_ns": sample["finished_ns"],
+                "facts": {
+                    "load_average": [0.0, 0.0, 0.0],
+                    "disk_available_bytes": 100,
+                    "process_count": 1,
+                    "process_snapshot_sha256": "d" * 64,
+                    "foreign_rust": [],
+                },
+                "status": "completed" if index == 2 else "active",
+            }
+        )
+    monitor_raw = stage / "host-timeline.jsonl"
+    monitor_raw.write_text(
+        "".join(json.dumps(row) + "\n" for row in monitor_rows), encoding="utf-8"
+    )
+    timeline["monitor_sha256"] = pairrun.sha_file(monitor_raw)
     (stage / "host-timeline.json").write_text(json.dumps(timeline), encoding="utf-8")
     host_profile = stage / "host-profile.json"
     host_profile.write_text(
@@ -6802,7 +6853,7 @@ def _pair_stage(
                 "adjudication_receipt_sha256": pairrun.sha_file(adjudication_path),
             },
             "models": {
-                "quanta_model_revision": "r1",
+                "quanta_model_revision": "not-applicable",
                 "semble_model_revision": "b" * 40,
                 "semble_model_asset_sha256": _fake_sha("model"),
             },
@@ -8071,6 +8122,7 @@ def test_qualified_speed_requires_bound_host_timeline(tmp_path, monkeypatch, fau
         def remove_binding(manifest):
             manifest["host"].pop("timeline_digest")
             manifest["artifacts"].pop("host_timeline")
+            manifest["artifacts"].pop("host_timeline_raw")
 
         _rewrite_manifest(st, remove_binding)
     else:
@@ -8347,8 +8399,8 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
     _rewrite_manifest(st, lambda m: m.update(blinding="isolated"))
     with pytest.raises(pairrun.RunError, match="current tagged backend proof binding"):
         _stage_verdict(st)
-    # T10: a quality claim over the hash-dev diagnostic control fails even
-    # when every other quality gate would pass.
+    # A lexical-only capture must not claim or require an embedding model.
+    # The configured unused encoder is not evidence of model execution.
     st = _pair_stage(
         tmp_path / "hashdev",
         blinding="isolated",
@@ -8358,9 +8410,8 @@ def test_verdict_quality_gates(tmp_path, monkeypatch):
     )
     assert st["manifest"]["provenance"]["quanta"]["embedder"] == "hash-dev"
     verdict = _stage_verdict(st)
-    assert verdict["states"]["QUALITY_DELTA"] == "fail"
-    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == "model_quality_embedder"
-    assert verdict["failure_class"] == "model"
+    assert verdict["states"]["QUALITY_DELTA"] == "pass"
+    assert verdict["failure_class"] == "none"
     assert verdict["provenance"]["quanta"]["embedder"] == "hash-dev"
 
 
@@ -11318,6 +11369,41 @@ def test_quanta_encoder_selector_binds_semantic_capture_revision():
     )
     with pytest.raises(pairrun.RunError, match="exploratory diagnostic only"):
         pairrun.run_pair({"embedder": "potion-code-full-v2", "scope": "qualified"})
+
+    def record(route, model, revision):
+        return {
+            "route_provenance": {route: {"capture_id": route}},
+            "captures": {route: {"model": model, "model_revision": revision}},
+        }
+
+    lexical = record("lexical", "none:lexical", "not-applicable")
+    symbol = record("symbol", "none:symbol", "not-applicable")
+    semantic = record("semantic", model, v1)
+    assert pairrun._quanta_admission_model_revision([lexical]) == "not-applicable"
+    assert pairrun._quanta_admission_model_revision([lexical, symbol]) == "not-applicable"
+    assert pairrun._quanta_admission_model_revision([lexical, semantic]) == v1
+    assert pairrun._quanta_admission_model_revision([semantic, copy.deepcopy(semantic)]) == v1
+    invalid = [
+        [],
+        [{}],
+        [record("unknown", model, v1)],
+        [record("lexical", model, "not-applicable")],
+        [record("lexical", "none:lexical", v1)],
+        [record("semantic", "none:lexical", "not-applicable")],
+        [record("semantic", model, None)],
+        [record("semantic", model, " ")],
+        [semantic, record("hybrid", model, v2)],
+        [semantic, record("hybrid", "other-model", v1)],
+    ]
+    unrouted = copy.deepcopy(lexical)
+    unrouted["captures"]["unused"] = {"model": model, "model_revision": v1}
+    invalid.append([unrouted])
+    missing = copy.deepcopy(lexical)
+    missing["route_provenance"]["lexical"]["capture_id"] = "absent"
+    invalid.append([missing])
+    for records in invalid:
+        with pytest.raises(pairrun.RunError, match="Quanta.*model"):
+            pairrun._quanta_admission_model_revision(records)
 
 
 def test_retrieval_recipes_download_nothing():
@@ -15120,6 +15206,8 @@ def test_query_clock_comparator_excludes_only_policy_controlled_code_search_cloc
     observed = overhead._without_code_search_work_clocks(trace)
     assert observed == [trace[0], *trace[4:]]
     assert trace[1:4] != observed[1:4]
+    with pytest.raises(ValueError, match="disabled query observation"):
+        overhead._without_code_search_work_clocks(trace, allow_clocks=False)
     for malformed in (
         [*trace, trace[1]],
         [{**trace[1], "detail": "code_search.execution.candidate_ns=bad"}],
@@ -16592,7 +16680,10 @@ def test_host_process_probe_does_not_exempt_reused_pid_or_wrong_adapter(monkeypa
     def fake_run(command, **_kwargs):
         if command[0] == "ps":
             return SimpleNamespace(returncode=0, stdout=ps_rows)
-        return SimpleNamespace(returncode=0 if command[2] == "semble" else 1, stdout="101\n" if command[2] == "semble" else "")
+        return SimpleNamespace(
+            returncode=0 if command[2] == "semble" else 1,
+            stdout="101\n" if command[2] == "semble" else "",
+        )
 
     monkeypatch.setattr(pairrun.shutil, "which", lambda name: "/usr/bin/pgrep")
     monkeypatch.setattr(pairrun.subprocess, "run", fake_run)

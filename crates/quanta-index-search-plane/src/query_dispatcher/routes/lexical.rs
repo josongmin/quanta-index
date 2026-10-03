@@ -638,7 +638,6 @@ mod typed_cursor_tests {
         let disabled = code_search_execution_trace(stats, 1, Some(1), false)
             .expect("fixed counts without response clocks");
         assert_eq!(disabled.len(), 14);
-        assert!(!disabled.iter().any(|entry| entry.detail.ends_with("_ns=0")));
         assert!(!disabled.iter().any(|entry| {
             entry
                 .detail

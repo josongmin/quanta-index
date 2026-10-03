@@ -928,7 +928,8 @@ fn a_generation_sealed_on_one_track_only_is_named_at_boot() -> TestResult {
     let mut rt = rt.reopen();
     let half = ManifestGeneration::new(7);
     let lexical_root = std::fs::canonicalize(rt.state_root())?.join("indexes/lexical");
-    LexicalAdapter::with_state_root(lexical_root).build_batch(&lexical_half(&rt, half)?)?;
+    let _stages =
+        LexicalAdapter::with_state_root(lexical_root).build_batch(&lexical_half(&rt, half)?)?;
     let half_dir = generation_dir(&rt, "indexes/lexical", half)?;
     if !half_dir.is_dir() || generation_dir(&rt, "indexes/semantic", half)?.exists() {
         return Err("the fixture seals the lexical half only".into());

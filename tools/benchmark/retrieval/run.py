@@ -1742,7 +1742,14 @@ class HostTimeline:
     This remains sampled evidence, not continuous OS attestation.
     """
 
-    def __init__(self, path: Path, identity: dict, override: bool, *, owned_semble_adapter: Path | None = None):
+    def __init__(
+        self,
+        path: Path,
+        identity: dict,
+        override: bool,
+        *,
+        owned_semble_adapter: Path | None = None,
+    ):
         self.path, self.identity, self.override = path, identity, override
         self.owned_semble_adapter = owned_semble_adapter
         self.samples: list[dict] = []
@@ -1758,8 +1765,11 @@ class HostTimeline:
         started = time.monotonic_ns()
         # HostMonitor captures and propagates this exception; no clean default.
         probe = (
-            _host_dynamic_probe(self.identity, self.override, owned_semble_adapter=self.owned_semble_adapter)
-            if self.owned_semble_adapter is not None else _host_dynamic_probe(self.identity, self.override)
+            _host_dynamic_probe(
+                self.identity, self.override, owned_semble_adapter=self.owned_semble_adapter
+            )
+            if self.owned_semble_adapter is not None
+            else _host_dynamic_probe(self.identity, self.override)
         )
         self.samples.append(
             {
@@ -1789,6 +1799,8 @@ class HostTimeline:
             "finished_ns": time.monotonic_ns(),
             "samples": [] if live else self.samples,
             "errors": self.errors,
+            "reservation_id": self.monitor.reservation_id,
+            "monitor_sha256": sha_file(self.path.with_suffix(".jsonl")),
         }
         self.path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -1797,11 +1809,22 @@ def validate_host_timeline(payload: object, profile: dict) -> None:
     """Re-derive interval coverage and host validity from every captured sample."""
     timeline = _exact_keys(
         payload,
-        {"schema_version", "interval_ns", "started_ns", "finished_ns", "samples", "errors"},
+        {
+            "schema_version",
+            "interval_ns",
+            "started_ns",
+            "finished_ns",
+            "samples",
+            "errors",
+            "reservation_id",
+            "monitor_sha256",
+        },
         "host timeline",
     )
     if type(timeline["schema_version"]) is not int or timeline["schema_version"] != 1:
         raise RunError("host timeline schema is unsupported")
+    if not _is_hex(timeline["reservation_id"], 32) or not _is_hex(timeline["monitor_sha256"], 64):
+        raise RunError("host timeline monitor binding is malformed")
     if (
         type(timeline["interval_ns"]) is not int
         or timeline["interval_ns"] != HOST_SAMPLE_INTERVAL_NS
@@ -1833,6 +1856,27 @@ def validate_host_timeline(payload: object, profile: dict) -> None:
         previous_start, previous_end = begin, end
     if finished - previous_start > HOST_SAMPLE_MAX_GAP_NS:
         raise RunError("host timeline trailing coverage gap")
+
+
+def validate_host_timeline_monitor(payload: dict, path: Path) -> None:
+    """Bind qualified samples to the canonical reservation transcript on replay."""
+    raw = host_monitor.RawFile.capture(path)
+    if raw.sha256 != payload["monitor_sha256"]:
+        raise RunError("host timeline monitor digest mismatch")
+    host_monitor.validate(raw, capture_id="retrieval-host", profile="qualified-speed")
+    rows: list[dict] = []
+    raw.consume_lines(lambda lines: rows.extend(json.loads(line) for line in lines))
+    header, observations = rows[0], rows[1:]
+    if header["reservation_id"] != payload["reservation_id"] or len(observations) != len(
+        payload["samples"]
+    ):
+        raise RunError("host timeline monitor reservation or sample count differs")
+    if any(
+        not sample["finished_ns"] <= observation["monotonic_ns"] <= payload["finished_ns"]
+        or observation["monotonic_ns"] - sample["started_ns"] > HOST_SAMPLE_MAX_GAP_NS
+        for sample, observation in zip(payload["samples"], observations, strict=True)
+    ):
+        raise RunError("host timeline monitor interval differs from qualified samples")
 
 
 def _darwin_power_source(text: str) -> str | None:
@@ -5404,8 +5448,12 @@ def _validate_manifest_shape(payload: object) -> dict:
     disjoint_admission = admission_common | {"split_manifest", "split_releases"}
     admission_artifacts = local_admission | disjoint_admission
     optional_artifacts = (
-        set(RECEIPT_KEYS) | {"isolation_proof", "host_timeline"} | admission_artifacts
+        set(RECEIPT_KEYS)
+        | {"isolation_proof", "host_timeline", "host_timeline_raw"}
+        | admission_artifacts
     )
+    if ("host_timeline" in artifacts) != ("host_timeline_raw" in artifacts):
+        raise RunError("manifest host timeline must bind the canonical monitor raw")
     if ("host_timeline" in artifacts) != ("timeline_digest" in host):
         raise RunError("manifest host timeline artifact and digest must be paired")
     if "driver_source_closure" not in artifacts:
@@ -7121,6 +7169,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         if key in artifacts:
             resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
     if "host_timeline" in artifacts:
+        resolved["host_timeline_raw"] = _resolve_artifact(
+            root, artifacts["host_timeline_raw"], "artifacts.host_timeline_raw"
+        )
         resolved["host_timeline"] = _resolve_artifact(
             root, artifacts["host_timeline"], "artifacts.host_timeline"
         )
@@ -7461,7 +7512,15 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         else:
             try:
                 validate_host_timeline(host_timeline_payload, host_profile)
-            except (RunError, KeyError, TypeError, ValueError) as exc:
+                validate_host_timeline_monitor(host_timeline_payload, resolved["host_timeline_raw"])
+            except (
+                RunError,
+                KeyError,
+                TypeError,
+                ValueError,
+                OSError,
+                host_monitor.EvidenceError,
+            ) as exc:
                 host_timeline_error = f"host_timeline_unverified: {exc}"
             else:
                 host_timeline_error = None
@@ -7693,7 +7752,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             metrics = _validate_phase_metrics(read_json(Path(path)), f"phase metrics {path}")
             if metrics["schema_version"] not in ((2, 3) if metrics["system"] == "quanta" else (2,)):
                 raise RunError("current pair replay requires Quanta phase v2/v3 or Semble v2")
-            if metrics["system"] == "quanta" and protocol_payload.get("lock_version") == 5 and metrics["schema_version"] != 3:
+            if (
+                metrics["system"] == "quanta"
+                and protocol_payload.get("lock_version") == 5
+                and metrics["schema_version"] != 3
+            ):
                 raise RunError("protocol v5 requires measured Quanta phase schema v3")
             if metrics["system"] == "quanta":
                 _verify_symbol_coverage_corpus(metrics, corpus_payload)
@@ -9171,8 +9234,12 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     # One pinned model cache across reps; each rep still rebuilds its index.
     monitor = (
         HostTimeline(
-            stage / "host-timeline.json", host_start, override,
-            owned_semble_adapter=Path(spec.get("_semble_adapter", Path(__file__).resolve().parent / "semble.py")),
+            stage / "host-timeline.json",
+            host_start,
+            override,
+            owned_semble_adapter=Path(
+                spec.get("_semble_adapter", Path(__file__).resolve().parent / "semble.py")
+            ),
         )
         if spec.get("claims", {}).get("speed")
         else nullcontext()
@@ -10844,6 +10911,7 @@ def build_run_manifest(
     }
     if host_timeline_path.is_file():
         artifacts["host_timeline"] = relative(host_timeline_path)
+        artifacts["host_timeline_raw"] = relative(host_timeline_path.with_suffix(".jsonl"))
     closure_path = Path(spec["_driver_source_closure"])
     closure = _validate_source_closure_shape(read_json(closure_path), "driver source closure")
     if closure["revision"] != source_sha:

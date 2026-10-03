@@ -101,6 +101,7 @@
         "host_start": {"type": "string", "minLength": 1},
         "host_end": {"type": "string", "minLength": 1},
         "host_timeline": {"type": "string", "minLength": 1},
+        "host_timeline_raw": {"type": "string", "minLength": 1},
         "host_profile": {"type": "string", "minLength": 1},
         "admission_manifest": {"type": "string", "minLength": 1},
         "experiment_custody": {"type": "string", "minLength": 1},

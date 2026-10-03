@@ -297,8 +297,7 @@ fn delta_keeps_its_proved_base_from_reclaim_until_seal() -> TestResult {
     let root = dir.path().to_path_buf();
     let base = ManifestGeneration::new(1);
     let target = ManifestGeneration::new(2);
-    let _stages = LexicalAdapter::with_state_root(root.clone())
-        .build_batch(&base_batch(base)?)?;
+    let _stages = LexicalAdapter::with_state_root(root.clone()).build_batch(&base_batch(base)?)?;
 
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
