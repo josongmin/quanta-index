@@ -1788,9 +1788,18 @@ All twelve recipe files and the split manifest are byte-identical to a separate
 clean `9397c1b1` run. Only the ledger differs: it records the changed source hash
 of a formatting-only `gold_oracle.py` edit. The 6,628 task IDs and complete task
 records are unchanged from v5. Seven recipes now bind additional supported
-language checkers. A source-current 22-repository split replay and corrected
-gold capture are still running; neither has a final verdict yet. The v7 failed
-output is not a score.
+language checkers. The current `corpus_binding.py` replay validated the
+22-repository split and 6,628 tasks in 435.302 seconds; receipt:
+`/private/tmp/qi-c5-fresh-20261003-v8/split-validation.json`. Corrected gold
+at clean `9397c1b1` completed in 2,401.944 seconds with twelve capsules;
+receipt `/private/tmp/qi-c5-corrected-9397c1b1-20261003/gold-capture-receipt.json`
+(`3be3af2d7502b320179bac83ac864fb46589abbef5d9d0ae3914cfee930b8fa9`).
+Independent raw capsule comparison found 6,114 `mechanical_unreviewed` and 514
+`unjudged` tasks. The 496 state changes from v7 are `unjudged` to
+`mechanical_unreviewed`, with identical task IDs, queries and labels. This is
+source-eligibility evidence, not human relevance review or a product score.
+The v7 failed output remains excluded. Corrected C4 and literal admissions are
+running from this gold under separate external roots.
 
 The official OpenGrok `1.14.18` AMD64 image made an incomplete local index
 under emulation. Reducing its project workers from sixteen to two did not
@@ -1838,3 +1847,22 @@ the path queries; receipt:
 (`5ebc0c436af8d3b09102cf24cf80cdb755ace62d9b342f6fdd1c01fde9d11b56`).
 This brackets the path probe, not the future product queries. Their capture
 must take its own before/after backend snapshots.
+
+The first C5 external precommit omitted the ordinary-input OSA1 lane: all
+twelve `declaration_name_osa1` C4 cells in the previous matrix were
+`no_admission_diagnostic`, while the case-folded OSA1 cells used the explicit
+typo request. It was superseded before product queries by
+`/private/tmp/qi-c5-external-20261003-v2/precommit.json`
+(`b41d02d81881dde6da2a2ecc524cb247a8ecfe07f29c402f15ff6af98327b73a`).
+The replacement freezes a source-validated projection of each selected
+case-folded OSA1 suite to `default_file_search`: only request mode and suite ID
+change; query, task ID, gold, and original C4 admission remain bound. A
+386-task `attrs` projection passed `evaluator.validate_suite` for both suite
+and blind pack. A single unscored `attrs` `convert` preflight returned ten
+in-manifest files each from Sourcegraph, OpenGrok and cs, with HTTP 200, HTTP
+200 and exit 0. Its first wrapper failed in summary formatting after the
+native requests; independent replay of the preserved responses passed, and
+Sourcegraph's backend snapshot matched its pre-query snapshot. Receipt:
+`/private/tmp/qi-c5-external-20261003-v2/preflight-attrs-convert/summary.json`
+(`3c9c078a5db85cefe5b1808c8bf615bfc53c035e951920f71484e03a0b5e5eea`).
+This preflight is not a relevance score or full C5 capture.
