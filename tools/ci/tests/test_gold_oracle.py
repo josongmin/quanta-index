@@ -936,3 +936,16 @@ def test_holdout_sampling_freezes_seeded_ledger_recipes_and_split(split_releases
     assert identity["split_binding"]["split"] == "holdout"
     assert all(row["label_state"] == "mechanical_unreviewed" for row in gold["tasks"])
     assert all(row["answerable"] for row in gold["tasks"])
+
+
+def test_scale_negative_excludes_literal_path_and_near_content_token(split_releases):  # noqa: F811
+    from tools.benchmark.retrieval import holdout_sampling
+
+    release, document = split_releases["hold_only"]
+    row = next(row for row in document["repositories"] if row["recipe"]["name"] == "beta")
+    repository = holdout_sampling.Repository(release, document, row)
+    assert repository.content_absent("worker_O")
+    assert not repository.default_file_search_absent("worker_O")  # OSA1 of worker_0
+    assert not repository.default_file_search_absent("core.py")  # indexed path
+    assert not repository.default_file_search_absent("worker_0")  # indexed content
+    assert repository.default_file_search_absent("zzzzzzzzz")

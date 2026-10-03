@@ -126,6 +126,12 @@ class Repository:
             self.files[entry["path"]] = raw
         self.folded = [raw.decode("utf-8").casefold() for raw in self.files.values()]
         self.folded_words = {word for text in self.folded for word in re.findall(r"[^\W]+", text)}
+        self.folded_paths = [path.casefold() for path in self.files]
+        self.ascii_tokens_by_length: dict[int, set[str]] = defaultdict(set)
+        for raw in self.files.values():
+            for match in source_oracle.ASCII_TOKEN_SUPERSET.finditer(raw):
+                token = match.group().decode("ascii").lower()
+                self.ascii_tokens_by_length[len(token)].add(token)
         self.audit: dict[str, Any] | None = None
         self.names: dict[str, int] = {}
 
@@ -149,6 +155,23 @@ class Repository:
     def content_absent(self, query: str) -> bool:
         folded = query.casefold()
         return not any(folded in text for text in self.folded)
+
+    def default_file_search_absent(self, query: str) -> bool:
+        """Prove that neither literal search nor its empty-result OSA1 fallback can match."""
+        folded = query.casefold()
+        if not self.content_absent(query) or any(folded in path for path in self.folded_paths):
+            return False
+        if not (
+            query.isascii() and source_oracle.IDENTIFIER.fullmatch(query) and 3 <= len(query) <= 64
+        ):
+            return True
+        for length in range(max(1, len(folded) - 1), len(folded) + 2):
+            if any(
+                source_oracle.osa_distance_at_most_one(folded, token)
+                for token in self.ascii_tokens_by_length.get(length, ())
+            ):
+                return False
+        return True
 
     def variant_rows(self, variant: str, query: str) -> int:
         if variant == "exact":
@@ -423,6 +446,7 @@ def _no_answer(
     seed: int,
     ledger: dict,
     quotas: dict[str, int],
+    require_default_absence: bool,
 ) -> list[dict]:
     tasks: list[dict] = []
     if repository.audit is None:
@@ -450,7 +474,11 @@ def _no_answer(
             first == second
             or probe.casefold() in declared_folded
             or any(task["query"] == probe for task in tasks)
-            or not repository.content_absent(probe)
+            or not (
+                repository.default_file_search_absent(probe)
+                if require_default_absence
+                else repository.content_absent(probe)
+            )
         ):
             continue
         tasks.append(
@@ -467,7 +495,11 @@ def _no_answer(
         "population": "unbounded_component_recombinations",
         "vocabulary": len(vocabulary),
         "attempts": attempts,
-        "rule": "two declared components, absent as a declaration and as case-folded content",
+        "rule": (
+            "two declared components, absent from folded content/path and OSA1 content tokens"
+            if require_default_absence
+            else "two declared components, absent as a declaration and as case-folded content"
+        ),
     }
     sources = {
         name: other.name
@@ -486,7 +518,11 @@ def _no_answer(
     for name in candidates:
         if len(wrong) == quotas["no_answer_wrong_repository"]:
             break
-        if repository.content_absent(name):
+        if (
+            repository.default_file_search_absent(name)
+            if require_default_absence
+            else repository.content_absent(name)
+        ):
             wrong.append(name)
         else:
             substring_present += 1
@@ -505,9 +541,18 @@ def _no_answer(
     ledger["no_answer_wrong_repository"] = {
         "population": population,
         "negative_corpus": "other repositories of the same holdout release",
-        "rule": "declared elsewhere in the release, absent here as a declaration and as a "
-        "case-folded word; admitted names are also absent as a case-folded substring",
-        "skipped_substring_present": substring_present,
+        "rule": (
+            "declared elsewhere; absent here as a declaration, folded content/path substring "
+            "and OSA1 content token"
+            if require_default_absence
+            else "declared elsewhere in the release, absent here as a declaration and as a "
+            "case-folded word; admitted names are also absent as a case-folded substring"
+        ),
+        (
+            "skipped_default_search_present"
+            if require_default_absence
+            else "skipped_substring_present"
+        ): substring_present,
         "sources": {name: sources[name] for name in wrong},
     }
     return tasks
@@ -549,7 +594,12 @@ def build(
             _literals(repository, seed, ledger, quotas)
             + _declarations(repository, seed, ledger, quotas)
             + _no_answer(
-                repository, [r for r in repositories if r is not repository], seed, ledger, quotas
+                repository,
+                [r for r in repositories if r is not repository],
+                seed,
+                ledger,
+                quotas,
+                profile == "scale_diagnostic_v1",
             )
         )
         ledger["natural_language_workflow"] = {
