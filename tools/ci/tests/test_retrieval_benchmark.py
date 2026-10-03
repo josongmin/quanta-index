@@ -12277,17 +12277,24 @@ def test_complete_ranked_pool_excludes_unjudged_file_and_declaration_results():
     assert file_report["file_judgments"]["routes"]["lexical"]["excluded"] == [
         {"task_id": "F", "reason": "unjudged_ranked_file"}
     ]
+    assert set(file_report["file_judgments"]["routes"]["lexical"]["operational_mean"].values()) == {
+        ev.NOT_APPLICABLE
+    }
     file_task["file_judgments"].append({"path": "unknown.go", "grade": 0})
     file_report = ev.judgment_diagnostics(
         file_suite, file_run, file_result, {"F": file_task}, "lexical", None
     )
     assert file_report["file_judgments"]["routes"]["lexical"]["eligible_task_ids"] == ["F"]
+    assert (
+        file_report["file_judgments"]["routes"]["lexical"]["operational_mean"]["ndcg_at_10"] == 1.0
+    )
     file_task["file_judgments"].pop()
     file_task["judgment_policy"] = ev.UNJUDGED_POLICY
     legacy = ev.judgment_diagnostics(
         file_suite, file_run, file_result, {"F": file_task}, "lexical", None
     )
     assert legacy["file_judgments"]["routes"]["lexical"]["eligible_task_ids"] == ["F"]
+    assert legacy["file_judgments"]["routes"]["lexical"]["operational_mean"]["ndcg_at_10"] == 1.0
 
     symbol_suite = {"comparison_contract": {"top_k": 10}, "routes": ["symbol"]}
     symbol_run = {
@@ -12331,6 +12338,9 @@ def test_complete_ranked_pool_excludes_unjudged_file_and_declaration_results():
     assert symbol_report["declaration_judgments"]["routes"]["symbol"]["excluded"] == [
         {"task_id": "D", "reason": "unjudged_ranked_declaration"}
     ]
+    assert set(
+        symbol_report["declaration_judgments"]["routes"]["symbol"]["operational_mean"].values()
+    ) == {ev.NOT_APPLICABLE}
     symbol_task["declaration_judgments"].append(
         {"path": "other.go", "start_byte": 30, "end_byte": 40, "grade": 0}
     )
@@ -12338,6 +12348,56 @@ def test_complete_ranked_pool_excludes_unjudged_file_and_declaration_results():
         symbol_suite, symbol_run, symbol_result, {"D": symbol_task}, "symbol", None
     )
     assert symbol_report["declaration_judgments"]["routes"]["symbol"]["eligible_task_ids"] == ["D"]
+
+
+def test_incomplete_judgments_do_not_become_operational_search_failures():
+    tasks = {
+        task_id: {
+            "answerable": True,
+            "judgment_policy": ev.COMPLETE_JUDGMENT_POLICY,
+            "file_judgments": [{"path": "answer.go", "grade": 3}],
+        }
+        for task_id in ("judged", "unknown")
+    }
+    suite = {"comparison_contract": {"top_k": 10}, "routes": ["lexical"]}
+    run = {
+        "route_provenance": {"lexical": {"capture_id": "q0"}},
+        "captures": {"q0": {"system": "quanta"}},
+    }
+    results = {
+        (task_id, "lexical"): {
+            "status": "success",
+            "rank_unit": "distinct_file",
+            "candidates": [{"path": path, "rank": 1}],
+        }
+        for task_id, path in (("judged", "answer.go"), ("unknown", "unknown.go"))
+    }
+
+    def scores():
+        return ev.judgment_diagnostics(suite, run, results, tasks, "lexical", None)[
+            "file_judgments"
+        ]["routes"]["lexical"]
+
+    report = scores()
+    assert report["eligible_task_ids"] == ["judged"]
+    assert report["coverage"] == 0.5
+    assert report["conditional_mean"]["ndcg_at_10"] == 1.0
+    assert set(report["operational_mean"].values()) == {ev.NOT_APPLICABLE}
+    assert report["operational_unavailable_reason"] == "incomplete_ranked_judgments"
+
+    tasks["unknown"]["file_judgments"].append({"path": "unknown.go", "grade": 0})
+    judged = scores()
+    assert judged["operational_mean"]["ndcg_at_10"] == 0.5
+    assert judged["conditional_mean"]["ndcg_at_10"] == 0.5
+    assert "operational_unavailable_reason" not in judged
+
+    tasks["unknown"]["file_judgments"].pop()
+    results[("unknown", "lexical")].update(status="timeout", candidates=[])
+    failed = scores()
+    assert failed["operational_mean"]["ndcg_at_10"] == 0.5
+    assert failed["conditional_mean"]["ndcg_at_10"] == 1.0
+    assert failed["excluded"] == [{"task_id": "unknown", "reason": "execution_status_timeout"}]
+    assert "operational_unavailable_reason" not in failed
 
 
 def test_independent_file_quality_uses_common_eligible_cohort():
