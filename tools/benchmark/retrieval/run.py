@@ -2682,13 +2682,22 @@ def _validate_gold_review_receipt(
     suite: dict,
     repo: Path,
     annotation_digests: list[str] | None = None,
+    allow_mixed_source_oracle: bool = False,
 ) -> None:
-    """Require complete, source-valid task decisions in each frozen review receipt."""
+    """Require source-valid decisions for every human-reviewed task.
+
+    Version 2 receipts cover only subjective tasks in a disjoint mixed suite.
+    Mechanical tasks stay bound to the full suite hash and source validation.
+    """
     keys = {"schema_version", "reviewer_id", "suite_sha256", "reviews"}
     if annotation_digests is not None:
         keys.add("annotation_receipt_sha256")
     receipt = _exact_keys(payload, keys, f"qualification {role} receipt")
-    if type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1:
+    tasks = suite["tasks"]
+    has_mechanical = any("source_oracle" in task for task in tasks)
+    mixed = allow_mixed_source_oracle and has_mechanical
+    expected_version = 2 if mixed else 1
+    if type(receipt["schema_version"]) is not int or receipt["schema_version"] != expected_version:
         raise RunError(f"qualification {role} receipt schema version mismatch")
     if receipt["reviewer_id"] != reviewer_id:
         raise RunError(f"qualification {role} receipt identity mismatch")
@@ -2699,12 +2708,14 @@ def _validate_gold_review_receipt(
         and receipt["annotation_receipt_sha256"] != annotation_digests
     ):
         raise RunError("qualification adjudication receipt annotation binding mismatch")
-    tasks = suite["tasks"]
+    receipt_tasks = [task for task in tasks if "source_oracle" not in task] if mixed else tasks
+    if mixed and not receipt_tasks:
+        raise RunError("qualification mixed suite lacks human-reviewed tasks")
     reviews = receipt["reviews"]
-    if not isinstance(reviews, list) or len(reviews) != len(tasks):
+    if not isinstance(reviews, list) or len(reviews) != len(receipt_tasks):
         raise RunError(f"qualification {role} receipt task coverage mismatch")
     reviewed_tasks = []
-    for index, (task, raw_review) in enumerate(zip(tasks, reviews, strict=True)):
+    for index, (task, raw_review) in enumerate(zip(receipt_tasks, reviews, strict=True)):
         review = _exact_keys(
             raw_review,
             {"task_id", "query_sha256", "labels", "rationale"},
@@ -2734,7 +2745,14 @@ def _validate_gold_review_receipt(
         reviewed_task.update(labels)
         reviewed_tasks.append(reviewed_task)
     reviewed_suite = dict(suite)
-    reviewed_suite["tasks"] = reviewed_tasks
+    if mixed:
+        reviewed_by_id = {task["task_id"]: task for task in reviewed_tasks}
+        reviewed_suite["tasks"] = [
+            task if "source_oracle" in task else reviewed_by_id[task["task_id"]]
+            for task in tasks
+        ]
+    else:
+        reviewed_suite["tasks"] = reviewed_tasks
     try:
         validate_suite(repo, reviewed_suite)
     except (ValueError, TypeError, KeyError) as exc:
@@ -2898,6 +2916,7 @@ def verify_admission_bundle(
             suite_sha256=admission["suite_sha256"],
             suite=suite_payload,
             repo=repo,
+            allow_mixed_source_oracle=admission["schema_version"] == 3,
         )
     _validate_gold_review_receipt(
         read_json(adjudication_path),
@@ -2907,6 +2926,7 @@ def verify_admission_bundle(
         suite=suite_payload,
         repo=repo,
         annotation_digests=observed_annotations,
+        allow_mixed_source_oracle=admission["schema_version"] == 3,
     )
     required_receipts = {
         "contract_python_receipt": "contract_python_receipt_sha256",
