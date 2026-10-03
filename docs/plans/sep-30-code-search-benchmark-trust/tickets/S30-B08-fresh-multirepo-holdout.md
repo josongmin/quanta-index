@@ -1781,8 +1781,16 @@ values. A new sampling run from clean `4bd35d39`, the same release and seed,
 was preregistered at
 `/private/tmp/qi-c5-fresh-20261003-v8/sampling-precommit.json`
 (`ee1897ebf0667aec3f48e139f62f355d8a93b509c308cc4228ec815e673d73fe`)
-and is running. Its task IDs, split, checker closure and gold must be inspected
-before any C4 replay or product query. The v7 failed output is not a score.
+and completed in 313.966 seconds. Its receipt is
+`/private/tmp/qi-c5-fresh-20261003-v8/sampling-receipt.json`; the split SHA-256
+is `8adc09ad9fdbf1d0684389ff84f38774ae828999b1080e3bf5097c3b682d5f94`.
+All twelve recipe files and the split manifest are byte-identical to a separate
+clean `9397c1b1` run. Only the ledger differs: it records the changed source hash
+of a formatting-only `gold_oracle.py` edit. The 6,628 task IDs and complete task
+records are unchanged from v5. Seven recipes now bind additional supported
+language checkers. A source-current 22-repository split replay and corrected
+gold capture are still running; neither has a final verdict yet. The v7 failed
+output is not a score.
 
 The official OpenGrok `1.14.18` AMD64 image made an incomplete local index
 under emulation. Reducing its project workers from sixteen to two did not
@@ -1810,3 +1818,23 @@ positive/negative probe passed 4/4, and the live three-product capture/replay
 fixture passed. This proves indexed path membership and served source bytes,
 not equality of every Lucene content posting. Fresh C5 product queries remain
 `NOT_RUN`.
+
+Sourcegraph's first restart failed twice because its migrator contacted the
+PostgreSQL database during crash recovery. A one-off container using the same
+official image opened the preserved database, completed recovery and shut it
+down cleanly. The service then started normally. Its second container mounts
+the exact Zoekt index directory a second time, read-only, for backend snapshots.
+The capture adapter now permits only empty `.indexserver.tmp` and `.trash`
+directories and the `indexserver.sock` Unix socket as Zoekt runtime entries;
+an active staging file and other special files remain rejected. The focused
+positive/negative tests passed 3/3 and the full live-external adapter test file
+passed 40/40. After service restart, native Sourcegraph path search again
+matched all 11,695 manifest paths in twelve repositories. The v2 path summary
+is `/private/tmp/qi-c5-comparators-20261003-v1/sourcegraph-paths-v2/summary.json`
+(`0c9dee6621b349808e7dfd2192a3ad5eed209f976abb4bd66617eeb01bca5822`).
+Its 13-file, 246,805,099-byte backend snapshot was identical before and after
+the path queries; receipt:
+`/private/tmp/qi-c5-comparators-20261003-v1/sourcegraph-v2-backend-pre.json`
+(`5ebc0c436af8d3b09102cf24cf80cdb755ace62d9b342f6fdd1c01fde9d11b56`).
+This brackets the path probe, not the future product queries. Their capture
+must take its own before/after backend snapshots.
