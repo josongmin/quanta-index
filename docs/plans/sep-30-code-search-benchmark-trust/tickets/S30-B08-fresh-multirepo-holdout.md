@@ -2143,7 +2143,12 @@ cleanly in isolation. The existing Rust timeout option is now exposed through
 the Python spec, verified against the actual preflight policy, and frozen in
 paired protocol locks. A controlled retry uses a fresh root, the same frozen
 Rust source/binaries and a 600-second budget; its state is recorded separately
-in `typeorm-budget-control-result.json`. Original per-repository state is in
+in `typeorm-budget-control-result.json`: **VERIFIED**, 802.210 seconds wall,
+3,608/3,608 complete symbol files and 20 validated distinct-file query responses.
+The original batch plus this separately bound control cover all 240 unique C3
+tasks; original failed TypeORM evidence is retained. New qrels missing from the
+old labels total **1,324 task/file pairs**; only **2/240** tasks are presently
+eligible for scoring. Original per-repository state is in
 `capture-summary.json`. Process wall and contained publish/seal/activate times
 are reported separately from call sums and compile/admission waits. These
 contended debug/hash-dev runs do not qualify speed or semantic/hybrid quality.
@@ -2167,6 +2172,30 @@ Evidence: [follow-up results](/Users/songmin/Documents/code-new/qi-b08-nl-comple
 `verification-parser-contract.json`, `single-capture-schedule-rca.json` and
 `direct-protocol-control-v3/RESULT.json` in the same fresh external root. Original
 captures, frozen sources and original review forms are preserved.
+
+**C3 Query compilation RCA (2026-10-04):** a one-second native stack sample from
+the frozen TypeORM control reached per-file `Query::new` in 68 of 70 samples.
+The source compiled the same grammar/query for every admitted file. The producer
+now keeps one immutable compiled Query per grammar, separates TS and TSX, uses
+fresh cursors, and retains deadline/cancellation checks. Both Rust and Python
+producer policy digests include the new cache module. This is a benchmark symbol
+producer repair, not a lexical search ranking change. The stack sample does not
+quantify whole-run cost, and the frozen control does not measure this repair.
+
+Current Python checks: review owner **79 passed (26.71s)**; requested timeout,
+CLI/replay and cache-source tamper selectors **15 passed (16.49s)**; proof inventory
+and local rail selectors **7 passed (1.04s)**. These are separate scopes. The Rust
+symbols unit rail was not admitted within its first 300-second bound (exit 124,
+zero tests executed); retry retains the same resource lock with a 1,200-second
+wait budget. Rust unit completion, actual cache speed and current-main Rust E2E
+must be recorded after execution, not inferred from the Python checks.
+
+All 12 repositories now have new threshold-2, source-bound blank review forms,
+including the new TypeORM, tailscale, uvicorn and zustand pools. Their fields
+remain unjudged; no reviewer identity, grade or adjudication was synthesized.
+See `execution-completion.json`, `typeorm-budget-control-replay-summary.json`,
+`review-preparation-index.json`, `verification-budget-label-contract.json` and
+`rust-symbol-unit-admission.json` in the follow-up external root.
 
 ## C5 Sourcegraph typo score contract and full recapture (2026-10-04)
 
