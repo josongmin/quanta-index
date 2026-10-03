@@ -178,6 +178,9 @@ repositories and 32 original suites in **29.446 s** on a contended host. The
 fixed OSA cases and full source-oracle/declaration-census tests passed 90/90.
 Do not remove per-suite gold checks, final source verification or independent
 replay to save this remaining time; their proof boundaries are distinct.
+The gold-oracle and C4 caller tests subsequently passed **130/130** in 190.18 s.
+A separate SymPy four-suite preflight observed **263.9 MiB** process peak RSS;
+both are busy-host diagnostics, not memory or speed qualification.
 
 ## Work and boundaries
 
