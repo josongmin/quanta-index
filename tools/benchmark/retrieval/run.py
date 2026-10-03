@@ -42,6 +42,7 @@ try:
         portable_proof,
         symbol_coverage,
     )
+    from tools.benchmark.retrieval import execution_batch as eb
     from tools.benchmark.retrieval import query_plan as qp
     from tools.benchmark.retrieval import semble as semble_adapter
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
@@ -72,6 +73,7 @@ try:
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import code_search_rank_study  # noqa: E402
+    import execution_batch as eb  # noqa: E402
     import linux_isolation  # noqa: E402
     import linux_process  # noqa: E402
     import portable_proof  # noqa: E402
@@ -11300,6 +11302,201 @@ def run_semble_capture(
     return {"phase_metrics": str(phase_path), "resource_metrics": str(resource_path)}
 
 
+def load_quality_batch_spec(path: Path) -> dict:
+    batch = _exact_keys(
+        read_json(path), {"schema_version", "member_specs", "output_root"}, "quality batch spec"
+    )
+    members = batch["member_specs"]
+    if batch["schema_version"] != 1 or not isinstance(members, list) or len(members) < 2:
+        raise RunError("quality batch requires version 1 and at least two member specs")
+    if any(not isinstance(value, str) or not Path(value).is_absolute() for value in members):
+        raise RunError("quality batch member specs must be absolute paths")
+    if len(set(members)) != len(members):
+        raise RunError("quality batch member specs must be distinct")
+    output = batch["output_root"]
+    if not isinstance(output, str) or not Path(output).is_absolute():
+        raise RunError("quality batch output root must be an absolute path")
+    return batch
+
+
+def _quality_batch_members(
+    batch: dict,
+) -> tuple[list[tuple[Path, dict, dict, dict, SourceSnapshot]], dict]:
+    excluded = {"suite", "query_pack", "output_root", "run_id", "semble_cache_root"}
+    members = []
+    shared = None
+    model_asset = None
+    for name in batch["member_specs"]:
+        path = Path(name)
+        spec = load_spec(path)
+        if spec.get("scope", "exploratory") != "exploratory" or any(
+            spec.get("claims", {}).values()
+        ):
+            raise RunError("quality batch is exploratory only and cannot carry claims")
+        if "source_closure_reuse" in spec:
+            raise RunError(
+                "quality batch captures one new source closure for its complete execution"
+            )
+        if spec.get("repetitions", 1) != 1 or len(spec["strategies"]) != 1:
+            raise RunError("quality batch requires one fresh index and one strategy per repository")
+        current = {key: value for key, value in spec.items() if key not in excluded}
+        if shared is None:
+            shared = current
+        elif current != shared:
+            differing = sorted(
+                set(current) ^ set(shared) | {k for k in current if current.get(k) != shared.get(k)}
+            )
+            raise RunError(f"quality batch product/source contract differs: {differing}")
+        cache = Path(spec["semble_cache_root"])
+        if not cache.is_absolute() or not cache.is_dir():
+            raise RunError("quality batch Semble cache root is missing")
+        try:
+            _, observed_asset = semble_adapter.resolve_model_revision(
+                cache / "hf", semble_adapter.DEFAULT_MODEL_ID, spec["semble_model_revision"]
+            )
+        except semble_adapter.AdapterError as exc:
+            raise RunError(f"quality batch Semble model cache refused: {exc}") from exc
+        if model_asset is None:
+            model_asset = observed_asset
+        elif observed_asset != model_asset:
+            raise RunError("quality batch Semble model assets differ")
+        suite, pack, source = validate_suite(Path(spec["repo"]), read_json(Path(spec["suite"])))
+        if pack != read_json(Path(spec["query_pack"])):
+            raise RunError(f"quality batch blind pack differs from its suite: {path}")
+        members.append((path, spec, suite, pack, source))
+    return members, {"model_asset_sha256": model_asset}
+
+
+def run_quality_batch(batch: dict) -> int:
+    """Run compatible blind packs through one index per product, then score separately.
+
+    Native records remain union records. Each per-intent scoring view is
+    revalidated against its original suite/pack; no projected view is saved
+    or represented as a native capture.
+    """
+    members, model = _quality_batch_members(batch)
+    first_spec = members[0][1]
+    out_root = Path(batch["output_root"]).resolve()
+    source_repo = Path(first_spec["repo"]).resolve()
+    driver_repo = Path(__file__).resolve().parents[3]
+    if (
+        out_root in (source_repo, driver_repo)
+        or source_repo in out_root.parents
+        or driver_repo in out_root.parents
+    ):
+        raise RunError("quality batch output root must be outside source and driver repositories")
+    if out_root.exists():
+        raise RunError("quality batch output root already exists")
+    preflight_capture(first_spec)
+    execution_pack, membership = eb.build_execution_pack([row[3] for row in members])
+    execution_view = eb.execution_validation_view(execution_pack)
+    stage = out_root.parent / (out_root.name + ".staging")
+    if stage.exists():
+        raise RunError("quality batch staging root already exists")
+    preflight_daemon_socket_paths(stage / "quanta", first_spec["strategies"])
+    stage.mkdir(parents=True)
+    closure_path = stage / "driver-source-closure.json"
+    _source_closure(driver_repo, "capture", closure_path)
+    (stage / "execution-pack.json").write_bytes(canonical_bytes(execution_pack))
+    (stage / "membership.json").write_bytes(canonical_bytes(membership))
+    task_ids = [task["task_id"] for task in execution_pack["tasks"]]
+    protocol = build_query_protocol(
+        task_ids,
+        _int(first_spec.get("seed", 0), "spec.seed"),
+        _int(first_spec.get("query_warmup_passes", 1), "spec.query_warmup_passes"),
+        _int(first_spec.get("query_repetitions_per_root", 1), "spec.query_repetitions_per_root"),
+    )
+    protocol_path = stage / "query-protocol.json"
+    protocol_path.write_bytes(canonical_bytes(protocol))
+    run_spec = dict(first_spec)
+    run_spec["run_id"] = "quality-batch-" + membership["execution_pack_sha256"][:16]
+    run_spec["output_root"] = str(out_root)
+    run_spec["_query_protocol"] = str(protocol_path)
+    runner_digest = sha_file(Path(run_spec["runner_binary"]))
+    product_records = []
+    for system, routes in (("quanta", ["lexical"]), ("semble", ["semble-lexical-file"])):
+        product_pack, _ = project_pack_and_suite(execution_pack, execution_view, routes)
+        pack_path = stage / f"{system}-execution-pack.json"
+        pack_path.write_bytes(canonical_bytes(product_pack))
+        if system == "quanta":
+            result = run_quanta_strategy(
+                run_spec,
+                run_spec["strategies"][0],
+                0,
+                stage / "quanta",
+                routes,
+                pack_path,
+                runner_digest,
+            )
+            record_path = stage / "quanta" / result["record"]
+        else:
+            run_semble_capture(run_spec, stage / "semble", pack_path, routes[0])
+            record_path = stage / "semble" / "record.json"
+        product_records.append(record_path)
+    repo = Path(first_spec["repo"])
+    _, _, combined = _merge_validated_records(
+        repo, execution_view, execution_pack, members[0][4], product_records
+    )
+    report_rows = []
+    for index, (spec_path, spec, suite, pack, source) in enumerate(members):
+        view = eb.project_scoring_view(execution_pack, membership, pack, combined)
+        validate_evidence_against_suite(repo, suite, pack, source, view)
+        report = evaluate_paired_file_diagnostic(
+            suite, pack, view, "semble-lexical-file", "lexical"
+        )
+        report_path = stage / f"member-{index:02d}-report.json"
+        report_path.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        report_rows.append(
+            {
+                "suite_id": suite["suite_id"],
+                "member_spec_sha256": sha_file(spec_path),
+                "suite_sha256": sha_file(Path(spec["suite"])),
+                "blind_pack_sha256": digest(canonical(pack)),
+                "scoring_view_sha256": digest(canonical(view)),
+                "report": report_path.name,
+                "report_sha256": sha_file(report_path),
+            }
+        )
+    manifest = {
+        "schema_version": 1,
+        "kind": "retrieval_quality_execution_batch_v1",
+        "qualification": "diagnostic_unqualified",
+        "source_revision": git_head_sha(driver_repo),
+        "driver_source_closure_digest": _validate_source_closure_shape(
+            read_json(closure_path), "batch driver source closure"
+        )["digest"],
+        "corpus_repository_commit": execution_pack["repository_commit"],
+        "file_universe_digest": execution_pack["file_universe_digest"],
+        "model_asset_sha256": model["model_asset_sha256"],
+        "execution_pack_sha256": membership["execution_pack_sha256"],
+        "membership_sha256": sha_file(stage / "membership.json"),
+        "native_records": [
+            {"path": path.relative_to(stage).as_posix(), "sha256": sha_file(path)}
+            for path in product_records
+        ],
+        "members": report_rows,
+    }
+    (stage / "batch-manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    _source_closure(driver_repo, "verify", closure_path)
+    if out_root.exists():
+        raise RunError("quality batch output root appeared before promotion")
+    os.rename(stage, out_root)
+    print(json.dumps({"output_root": str(out_root), "members": len(members), "native_records": 2}))
+    return 0
+
+
+def cmd_quality_batch(args: argparse.Namespace) -> int:
+    try:
+        return run_quality_batch(load_quality_batch_spec(Path(args.spec)))
+    except (RunError, eb.BatchError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -11307,6 +11504,10 @@ def build_parser() -> argparse.ArgumentParser:
     quanta.add_argument("--spec", required=True)
     pair = sub.add_parser("pair", help="sequential paired capture + scoring")
     pair.add_argument("--spec", required=True)
+    quality_batch = sub.add_parser(
+        "quality-batch", help="one native index per product, separate diagnostic suite reports"
+    )
+    quality_batch.add_argument("--spec", required=True)
     merge = sub.add_parser("merge", help="merge per-system records")
     merge.add_argument("--repo", required=True)
     merge.add_argument("--suite", required=True)
@@ -11331,7 +11532,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command in ("pair", "quanta", "merge", "verdict") and sys.version_info < (3, 10):
+    if args.command in (
+        "pair",
+        "quanta",
+        "merge",
+        "verdict",
+        "quality-batch",
+    ) and sys.version_info < (3, 10):
         print("ERROR: retrieval benchmark requires Python 3.10 or newer", file=sys.stderr)
         return 2
     if args.command == "merge":
@@ -11342,6 +11549,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_host_profile(args)
     if args.command == "quanta":
         return cmd_quanta(args)
+    if args.command == "quality-batch":
+        return cmd_quality_batch(args)
     if args.command == "verdict":
         return cmd_verdict(args)
     return cmd_pair(args)

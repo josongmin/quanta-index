@@ -27,6 +27,7 @@ import pytest
 
 from tools.benchmark.retrieval import conditional_proof as cp
 from tools.benchmark.retrieval import evaluator as ev
+from tools.benchmark.retrieval import execution_batch as eb
 from tools.benchmark.retrieval import parity_reference, portable_proof
 from tools.benchmark.retrieval import query_plan as qp
 from tools.benchmark.retrieval import query_pool_guard as pool_guard
@@ -35,6 +36,152 @@ from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci import source_closure
 from tools.ci.tests.test_portable_proof import proof_actor_environment as proof_actor_environment
+
+
+def test_execution_batch_preserves_member_packs_and_names_shared_query() -> None:
+    shared = {
+        "schema_version": 3,
+        "repository_commit": "a" * 40,
+        "tokenizer": ev.TOKENIZER,
+        "tokenizer_budget_version": ev.TOKENIZER_BUDGET_VERSION,
+        "routes": ["lexical"],
+        "file_universe": [{"path": "source.py", "file_sha256": "b" * 64}],
+        "file_universe_digest": "c" * 64,
+        "comparison_contract": {"top_k": 10},
+    }
+
+    def task(task_id: str, query: str) -> dict:
+        return {
+            "task_id": task_id,
+            "query": query,
+            "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
+        }
+
+    first = {
+        **shared,
+        "suite_id": "exact",
+        "suite_commitment_sha256": "d" * 64,
+        "tasks": [task("e1", "parseThing"), task("e2", "writeThing")],
+    }
+    second = {
+        **shared,
+        "suite_id": "typo",
+        "suite_commitment_sha256": "e" * 64,
+        "tasks": [task("t1", "parseThing"), task("t2", "parseThng")],
+    }
+    before = copy.deepcopy([first, second])
+    union, membership = eb.build_execution_pack([second, first])
+    assert [row["task_id"] for row in union["tasks"]] == ["e1", "e2", "t2"]
+    assert membership["members"][1]["tasks"][0]["execution_task_id"] == "e1"
+    assert (union, membership) == eb.build_execution_pack([first, second])
+    assert [first, second] == before
+    eb.verify_execution_membership([second, first], union, membership)
+    assert eb.execution_validation_view(union)["tasks"] == [
+        {"task_id": row["task_id"], "query": row["query"], "split": "eval"}
+        for row in union["tasks"]
+    ]
+
+    native = {
+        "query_pack_sha256": membership["execution_pack_sha256"],
+        "results": [
+            {"task_id": row["task_id"], "route": "lexical", "candidates": [row["query"]]}
+            for row in union["tasks"]
+        ],
+    }
+    view = eb.project_scoring_view(union, membership, second, native)
+    assert [row["task_id"] for row in view["results"]] == ["t1", "t2"]
+    assert view["results"][0]["candidates"] == ["parseThing"]
+    assert native["results"][0]["task_id"] == "e1"
+    assert view["query_pack_sha256"] == ev.digest(ev.canonical(second))
+    duplicate = copy.deepcopy(native)
+    duplicate["results"].append(copy.deepcopy(duplicate["results"][0]))
+    with pytest.raises(eb.BatchError, match="incomplete or duplicated"):
+        eb.project_scoring_view(union, membership, second, duplicate)
+
+    altered = copy.deepcopy(membership)
+    altered["members"][1]["tasks"][0]["execution_task_id"] = "e2"
+    with pytest.raises(eb.BatchError, match="differs"):
+        eb.verify_execution_membership([first, second], union, altered)
+    with pytest.raises(eb.BatchError, match="query does not match"):
+        eb.project_scoring_view(union, altered, second, native)
+    changed = copy.deepcopy(second)
+    changed["file_universe_digest"] = "f" * 64
+    with pytest.raises(eb.BatchError, match="file_universe_digest"):
+        eb.build_execution_pack([first, changed])
+    changed = copy.deepcopy(second)
+    changed["tasks"][0]["task_id"] = "e1"
+    with pytest.raises(eb.BatchError, match="repeats task ID"):
+        eb.build_execution_pack([first, changed])
+    changed = copy.deepcopy(second)
+    changed["tasks"][0]["query_sha256"] = "0" * 64
+    with pytest.raises(eb.BatchError, match="identity is invalid"):
+        eb.build_execution_pack([first, changed])
+
+
+def test_quality_batch_spec_and_product_contract_refuse_drift(tmp_path, monkeypatch) -> None:
+    batch_path = tmp_path / "batch.json"
+    member_paths = [tmp_path / "first.json", tmp_path / "second.json"]
+    batch = {
+        "schema_version": 1,
+        "member_specs": [str(path) for path in member_paths],
+        "output_root": str(tmp_path / "output"),
+    }
+    batch_path.write_text(json.dumps(batch), encoding="utf-8")
+    assert pairrun.load_quality_batch_spec(batch_path) == batch
+    for bad in (
+        {**batch, "member_specs": [str(member_paths[0])]},
+        {**batch, "member_specs": [str(member_paths[0])] * 2},
+        {**batch, "output_root": "relative/output"},
+        {**batch, "unknown": True},
+    ):
+        batch_path.write_text(json.dumps(bad), encoding="utf-8")
+        with pytest.raises(pairrun.RunError):
+            pairrun.load_quality_batch_spec(batch_path)
+
+    cache = tmp_path / "model-cache"
+    cache.mkdir()
+    suites = []
+    packs = []
+    specs = {}
+    for index, path in enumerate(member_paths):
+        suite = tmp_path / f"suite-{index}.json"
+        pack = tmp_path / f"pack-{index}.json"
+        suite.write_text(json.dumps({"id": index}), encoding="utf-8")
+        pack.write_text(json.dumps({"id": index}), encoding="utf-8")
+        suites.append(suite)
+        packs.append(pack)
+        specs[str(path)] = {
+            "scope": "exploratory",
+            "claims": {},
+            "repetitions": 1,
+            "strategies": [{"name": "fixed_window_strict"}],
+            "repo": str(tmp_path),
+            "suite": str(suite),
+            "query_pack": str(pack),
+            "output_root": str(tmp_path / f"old-{index}"),
+            "run_id": f"old-{index}",
+            "semble_cache_root": str(cache),
+            "semble_model_revision": "a" * 40,
+        }
+    monkeypatch.setattr(pairrun, "load_spec", lambda path: specs[str(path)])
+    monkeypatch.setattr(
+        pairrun.semble_adapter, "resolve_model_revision", lambda *_args: ("a" * 40, "b" * 64)
+    )
+    monkeypatch.setattr(
+        pairrun,
+        "validate_suite",
+        lambda _repo, payload: (payload, payload, object()),
+    )
+    valid, model = pairrun._quality_batch_members(batch)
+    assert len(valid) == 2 and model["model_asset_sha256"] == "b" * 64
+
+    specs[str(member_paths[1])]["strategies"] = [{"name": "whole_file"}]
+    with pytest.raises(pairrun.RunError, match="product/source contract differs"):
+        pairrun._quality_batch_members(batch)
+    specs[str(member_paths[1])]["strategies"] = [{"name": "fixed_window_strict"}]
+    specs[str(member_paths[1])]["claims"] = {"speed": True}
+    with pytest.raises(pairrun.RunError, match="exploratory only"):
+        pairrun._quality_batch_members(batch)
 
 
 def _clean_host_timeline_fixture():
