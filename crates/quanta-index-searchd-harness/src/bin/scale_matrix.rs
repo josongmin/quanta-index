@@ -21,12 +21,12 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Result as AnyResult;
+use quanta_index_ipc::DEFAULT_CLIENT_IO_TIMEOUT;
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::scale::{
     ScaleTier, TierMeasurement, measure_tier_with_client_timeout, source_binding_for_failure,
     write_artifacts, write_refusal_artifact_with_context,
 };
-use quanta_index_ipc::DEFAULT_CLIENT_IO_TIMEOUT;
 use serde_json::json;
 
 /// Deterministic default seed so the rail is reproducible run-to-run unless an

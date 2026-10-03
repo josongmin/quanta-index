@@ -83,3 +83,43 @@ The scoped-tier Rust owner tests, real medium/large/XL runs, canonical-host
 capacity and portability remain `NOT_RUN` at this code stage. A source limit or
 wire admission refusal must be recorded with its exact tier and must not be
 converted into a throughput result.
+
+## 2026-10-04 bounded diagnostic execution
+
+These observations are from detached clean source
+`108873c0e08b3249c8c314ac451637ee4fc1ef08`, built in its own
+`scale-proof-lane` with `--all-features --locked`. The `scale_matrix` binary
+SHA-256 was
+`36451c49a6ff1e5122c1f347f6d26800e3cdea3e9567203e5571eee38c2b7652`.
+The host was busy, so these are correctness/capacity diagnostics, not a
+quiet-host performance qualification.
+
+- `--tier medium`: 256 files across four distinct source repos under one
+  serving owner, exit 0. Build 9.634 s, activation 0.545 s, first query
+  42.765 ms, warm p50 42.643 ms. The query cold-open histogram had zero
+  samples and was correctly recorded as unavailable. Evidence:
+  `/private/tmp/qi-scale-medium-20261004-108873c0-r2/summary.json`.
+- `--tier large`: 4,096 files across sixteen source repos, exit 101 after
+  approximately three minutes. The runtime reported a hard shutdown deadline
+  with `ingest-accept` unfinished. `E2eRuntime::Drop` panicked and masked the
+  original measurement error, so this attempt produced no refusal file and
+  proves neither a typed source limit nor successful large-tier capacity.
+- `--tier xlarge`: 32,768 files across 64 source repos, exit 1 before daemon
+  start. Typed source admission refused 4,000,107 posting memberships against
+  a 4,000,000 maximum. Evidence:
+  `/private/tmp/qi-scale-xlarge-20261004-108873c0-r1/refusal.json`. This is a
+  supported-limit observation, not measured XL throughput.
+- The same immutable source's open-loop medium QPS 10 diagnostic served
+  10/10, with p50 49.719 ms and p95 183.103 ms, zero errors and drops.
+  Evidence: `/private/tmp/qi-open-loop-medium-20261004-108873c0-r1/`.
+
+The large failure exposed an error-custody defect in the harness. Current
+unverified owner changes explicitly stop the driver and preserve measurement
+and cleanup errors separately in a failure artifact. They also add a bounded
+`--client-timeout-ms` override while keeping the 30 s default, process-wide
+user/system CPU deltas (`RUSAGE_SELF` covers harness plus daemon thread), exact
+file deletion, and same-process daemon-thread reopen measurement. The latter
+does not prove OS-process restart or cold page-cache recovery. Focused owner
+tests and fresh medium/large/XL runs against one new frozen source are still
+`NOT_RUN` for these changes. The large primary failure and whether a longer
+explicit client deadline suffices remain unconfirmed.

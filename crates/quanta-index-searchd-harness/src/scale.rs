@@ -42,8 +42,8 @@ use quanta_index_contract::{
     TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1};
-use quanta_index_lexical::LexicalAdapter;
 use quanta_index_ipc::DEFAULT_CLIENT_IO_TIMEOUT;
+use quanta_index_lexical::LexicalAdapter;
 use quanta_index_search_plane::lower_lexical_text_query;
 use serde_json::{Value, json};
 
@@ -385,10 +385,7 @@ impl ScopedOracle {
                 .and_then(|suffix| suffix.strip_suffix(".rs"))
                 .and_then(|digits| digits.parse::<u32>().ok())
                 .ok_or_else(|| anyhow::anyhow!("scale: invalid scoped file path"))?;
-            let file_anchor = format!(
-                "// {} anchor",
-                file_query_token(repo_index, file_index)
-            );
+            let file_anchor = format!("// {} anchor", file_query_token(repo_index, file_index));
             if !file.repo_relative_path.starts_with("src/")
                 || file.repo_relative_path.contains("..")
                 || !file.content.contains(SCALE_QUERY_TOKEN)
@@ -435,7 +432,9 @@ impl ScopedOracle {
             .get_mut(source_repo_id)
             .ok_or_else(|| anyhow::anyhow!("scale: source repo absent from deletion oracle"))?;
         if !paths.remove(path) {
-            return Err(anyhow::anyhow!("scale: source file absent from deletion oracle"));
+            return Err(anyhow::anyhow!(
+                "scale: source file absent from deletion oracle"
+            ));
         }
         Ok(successor)
     }
@@ -857,15 +856,21 @@ impl CpuSnapshot {
 
 fn scale_runtime(client_timeout: Option<Duration>) -> AnyResult<E2eRuntime> {
     match client_timeout {
-        Some(timeout) => Ok(E2eRuntime::boot_with_client_request_timeout(timeout)?
-            .with_history_max_generations(2)),
+        Some(timeout) => {
+            Ok(E2eRuntime::boot_with_client_request_timeout(timeout)?
+                .with_history_max_generations(2))
+        }
         None => E2eRuntime::boot_with_history_max_generations(2),
     }
 }
 
 fn timeout_ms(client_timeout: Option<Duration>) -> AnyResult<u64> {
-    u64::try_from(client_timeout.unwrap_or(DEFAULT_CLIENT_IO_TIMEOUT).as_millis())
-        .map_err(Into::into)
+    u64::try_from(
+        client_timeout
+            .unwrap_or(DEFAULT_CLIENT_IO_TIMEOUT)
+            .as_millis(),
+    )
+    .map_err(Into::into)
 }
 
 /// Keep the measurement error and daemon teardown error separately. A failed
@@ -1112,11 +1117,16 @@ fn require_single_source_file(
     path: &str,
 ) -> AnyResult<()> {
     if let Some(error) = &result.typed_error {
-        anyhow::bail!("scale: file query returned typed error {}: {}", error.code, error.message);
+        anyhow::bail!(
+            "scale: file query returned typed error {}: {}",
+            error.code,
+            error.message
+        );
     }
     if result.candidates.len() != 1
-        || result.candidates[0].source_repo_id != source_repo_id
-        || result.candidates[0].repo_relative_path != path
+        || !result.candidates.first().is_some_and(|candidate| {
+            candidate.source_repo_id == source_repo_id && candidate.repo_relative_path == path
+        })
     {
         anyhow::bail!("scale: file query did not return exactly {source_repo_id}/{path}");
     }
@@ -1125,7 +1135,11 @@ fn require_single_source_file(
 
 fn require_no_source_file(result: &crate::harness::E2eQueryResult) -> AnyResult<()> {
     if let Some(error) = &result.typed_error {
-        anyhow::bail!("scale: deleted-file query returned typed error {}: {}", error.code, error.message);
+        anyhow::bail!(
+            "scale: deleted-file query returned typed error {}: {}",
+            error.code,
+            error.message
+        );
     }
     if !result.candidates.is_empty() {
         anyhow::bail!("scale: deleted-file query still returned candidates");
@@ -1365,12 +1379,12 @@ fn measure_small_tier_with_timeout(
             },
             adapter,
             delta,
-        result_count,
-        model_revision,
-        client_request_timeout_ms: timeout_ms(client_timeout)?,
-        cpu: None,
-        delete_reopen: None,
-    })
+            result_count,
+            model_revision,
+            client_request_timeout_ms: timeout_ms(client_timeout)?,
+            cpu: None,
+            delete_reopen: None,
+        })
     })();
     let mut measurement = finish_runtime_measurement(measurement, rt.stop())?;
     measurement.cpu = Some(CpuSnapshot::observe()?.elapsed_since(cpu_started)?);
@@ -1512,10 +1526,10 @@ pub fn measure_tier_with_client_timeout(
             .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
         let delta = measure_scoped_delta(&mut rt, delta_file)?;
         let after_delta = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
-    let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)?;
-    verify_scoped_repositories(&mut rt, &oracle)?;
-    let delete_reopen = measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)?;
-    Ok(TierMeasurement {
+        let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)?;
+        verify_scoped_repositories(&mut rt, &oracle)?;
+        let delete_reopen = measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)?;
+        Ok(TierMeasurement {
             tier,
             seed,
             file_count,
@@ -1537,12 +1551,12 @@ pub fn measure_tier_with_client_timeout(
             },
             adapter,
             delta,
-        result_count,
-        model_revision,
-        client_request_timeout_ms: timeout_ms(client_timeout)?,
-        cpu: None,
-        delete_reopen: Some(delete_reopen),
-    })
+            result_count,
+            model_revision,
+            client_request_timeout_ms: timeout_ms(client_timeout)?,
+            cpu: None,
+            delete_reopen: Some(delete_reopen),
+        })
     })();
     let mut measurement = finish_runtime_measurement(measurement, rt.stop())?;
     measurement.cpu = Some(CpuSnapshot::observe()?.elapsed_since(cpu_started)?);
@@ -2142,6 +2156,37 @@ mod tests {
     }
 
     #[test]
+    fn deletion_oracle_excludes_only_one_source_identity_and_cpu_deltas_are_exact() -> AnyResult<()>
+    {
+        let files = generate_scoped_corpus(ScaleTier::Medium, 11)?;
+        let oracle = ScopedOracle::from_source(&files, ScaleTier::Medium)?;
+        let after = oracle.without_file("repo0", "src/file_0.rs")?;
+        assert_eq!(after.paths_by_repo["repo0"].len(), 63);
+        assert_eq!(after.paths_by_repo["repo1"].len(), 64);
+        assert!(!after.paths_by_repo["repo0"].contains("src/file_0.rs"));
+        assert!(after.paths_by_repo["repo1"].contains("src/file_0.rs"));
+        assert!(after.without_file("repo0", "src/file_0.rs").is_err());
+
+        let before = CpuSnapshot {
+            user_us: 1_000,
+            system_us: 2_000,
+        };
+        let later = CpuSnapshot {
+            user_us: 3_500,
+            system_us: 2_750,
+        };
+        assert_eq!(
+            later.elapsed_since(before)?,
+            CpuUsageV1 {
+                user_ms: 2.5,
+                system_ms: 0.75,
+            }
+        );
+        assert!(before.elapsed_since(later).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn refusal_record_binds_the_source_and_only_names_typed_limits() -> AnyResult<()> {
         let binding = source_binding_for_failure(ScaleTier::Medium, 13)?;
         assert_eq!(binding.source_repo_count, 4);
@@ -2204,7 +2249,8 @@ mod tests {
     }
 
     #[test]
-    fn measurement_and_cleanup_failures_are_both_preserved_without_a_latency_row() -> AnyResult<()> {
+    fn measurement_and_cleanup_failures_are_both_preserved_without_a_latency_row() -> AnyResult<()>
+    {
         let failure = finish_runtime_measurement::<()>(
             Err(anyhow::anyhow!("primary measurement marker")),
             Err(anyhow::anyhow!("driver cleanup marker")),
@@ -2222,8 +2268,14 @@ mod tests {
         let record = refusal_json(&binding, &head, &host, &failure);
         assert_eq!(record["status"], "failed");
         assert_eq!(record["failure"]["message"], "primary measurement marker");
-        assert_eq!(record["failure"]["primary"]["message"], "primary measurement marker");
-        assert_eq!(record["failure"]["cleanup"]["message"], "driver cleanup marker");
+        assert_eq!(
+            record["failure"]["primary"]["message"],
+            "primary measurement marker"
+        );
+        assert_eq!(
+            record["failure"]["cleanup"]["message"],
+            "driver cleanup marker"
+        );
         assert!(record["failure"]["limit"].is_null());
         assert!(record.get("latency").is_none());
         assert!(finish_runtime_measurement(Ok(()), Err(anyhow::anyhow!("cleanup only"))).is_err());
@@ -2279,12 +2331,14 @@ mod tests {
         let mut rt = E2eRuntime::boot_with_history_max_generations(2)?;
         let shared_path = "src/shared.rs";
         let content0 = format!(
-            "// {SCALE_QUERY_TOKEN}\n// {} anchor\n",
-            repo_query_token(0)
+            "// {SCALE_QUERY_TOKEN}\n// {} anchor\n// {} anchor\n",
+            repo_query_token(0),
+            file_query_token(0, 0)
         );
         let content1 = format!(
-            "// {SCALE_QUERY_TOKEN}\n// {} anchor\n",
-            repo_query_token(1)
+            "// {SCALE_QUERY_TOKEN}\n// {} anchor\n// {} anchor\n",
+            repo_query_token(1),
+            file_query_token(1, 0)
         );
         let specs0 = [E2eTextChunkSpec {
             content: &content0,
@@ -2317,6 +2371,16 @@ mod tests {
                 shared_path
             );
         }
+        require_single_source_file(
+            &rt.query_text(TextQuerySyntax::Native, &file_query_token(0, 0), 10),
+            "repo0",
+            shared_path,
+        )?;
+        require_single_source_file(
+            &rt.query_text(TextQuerySyntax::Native, &file_query_token(1, 0), 10),
+            "repo1",
+            shared_path,
+        )?;
 
         let changed0 = format!("{content0}// changed\n");
         let serving_owner = rt.repo();
@@ -2351,6 +2415,16 @@ mod tests {
         assert!(retained.typed_error.is_none());
         assert_eq!(retained.candidates.len(), 1);
         assert_eq!(retained.candidates[0].source_repo_id.as_str(), "repo1");
+        require_no_source_file(&rt.query_text(
+            TextQuerySyntax::Native,
+            &file_query_token(0, 0),
+            10,
+        ))?;
+        require_single_source_file(
+            &rt.query_text(TextQuerySyntax::Native, &file_query_token(1, 0), 10),
+            "repo1",
+            shared_path,
+        )?;
 
         rt.try_reopen_in_place()?;
         rt.start()?;
@@ -2364,6 +2438,16 @@ mod tests {
             still_retained.candidates[0].source_repo_id.as_str(),
             "repo1"
         );
+        require_no_source_file(&rt.query_text(
+            TextQuerySyntax::Native,
+            &file_query_token(0, 0),
+            10,
+        ))?;
+        require_single_source_file(
+            &rt.query_text(TextQuerySyntax::Native, &file_query_token(1, 0), 10),
+            "repo1",
+            shared_path,
+        )?;
         Ok(())
     }
 
