@@ -580,6 +580,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_v5_query_identity_tampering_is_rejected[<lambda>-policy is unknown]",
     "tools.ci.tests.test_retrieval_benchmark.test_v5_runner_schema_binds_query_identity_and_keeps_v3_v4_historical",
     "tools.ci.tests.test_retrieval_benchmark.test_v5_same_line_distinct_symbol_units_survive_record_validation",
+    "tools.ci.tests.test_retrieval_benchmark.test_v8_authority_stage_replay_preserves_nullable_children_and_phase_contract",
     "tools.ci.tests.test_retrieval_benchmark.test_validated_report_penalizes_whole_file_containing_exact_gold",
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_cannot_qualify_cold_only_latency_as_warm_performance",
     "tools.ci.tests.test_retrieval_benchmark.test_verdict_cannot_upgrade_qualified_warm_cache",

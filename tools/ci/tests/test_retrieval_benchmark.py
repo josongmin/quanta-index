@@ -15912,7 +15912,7 @@ def test_v8_authority_stage_replay_preserves_nullable_children_and_phase_contrac
             )
     missing = copy.deepcopy(base)
     del missing["observation"]["lexical_stages"]["text_authority_publish_ns"]
-    with pytest.raises(pairrun.RunError, match="keys mismatch"):
+    with pytest.raises(pairrun.RunError, match="ingest lexical stages must hold exactly"):
         pairrun._validate_ingest_diagnostic(
             missing, record, lexical_stage_contract=True, detailed_authority=True
         )

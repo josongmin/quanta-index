@@ -210,6 +210,23 @@ Resolved defects:
    and JSONL replay to the same bytes, with a final unchanged-input check.
    Mutations after parsing and before completion are rejected. This does not
    claim an operating-system lock against transient mutation and reversal.
+7. Native fresh-join eligibility used a broader status predicate than the
+   official evaluator. It now reuses `evaluator.judgment_diagnostics`, binds
+   the published `file_judgments` branch, and preserves excluded partial
+   paths/status with zero-filled operational scores and separate observed
+   prefix scores. Timeout/unavailable, short capped, capped10, exhausted
+   success and native/complete-file-collection abstention have fixed fixtures.
+   The completed records checked so far retain their official eligibility.
+8. Global external preflight and typed raw-row fields are now checked against
+   the actual bound preflight, producer bytes, source/profile, release and
+   gold receipts. Missing or malformed query/path/status/timing fields and
+   a drifted preflight are rejected before aggregation.
+
+The fresh join also reports insertion/deletion/substitution/transposition
+separately using the same per-query scoring IR. A separate full-DP OSA input
+check imports no producer code: all4,363 submitted pairs have exactly distance1
+(insertion1114/deletion1073/substitution1087/transposition1089). This checks
+the perturbations, not independent human relevance.
 
 Observed source materialization: 2,739 distinct source files, 2,613 fetched,
 126 HTTP404, 2,746 admitted spans and 2,781 admitted qrels. A separate GitHub
@@ -225,6 +242,7 @@ not admitted for a qualified comparison.
 | Final snippet/projection/fresh-join/enrollment/closure slice | VERIFIED | 91 passed,71.02s |
 | Final fresh-join/projection/snippet owner units | VERIFIED | 27 passed,20.73s after four-pin runtime, actual payload commitment, and relocatable gold-path guards; test-authority check and owned diff hygiene passed |
 | Final input-custody/path-hardening owner units | VERIFIED | 28 passed,12.48s across fresh-join, C4 projection and external snippet owners; canonical test-authority check passed. Existing CSN six-language source validation passed separately. |
+| Final eligibility/typed-row/operation owner units | VERIFIED | 39 passed,10.10s across fresh-join, C4 projection and external snippet owners; canonical test-authority and Ruff check/format passed. Counts from overlapping test runs are not summed. |
 | Gold-runtime/capsule/C4 owner suite | VERIFIED | 199 passed,585.89s; two subsequently added pinfile binding/tamper tests passed separately |
 | Pinned-source/adapters/strata focused tests | VERIFIED | 46 passed, 20.76s before final profile negative fixture; profile wrapper separately 6 passed |
 | Affected runner/planner Python file | FAILED, then focused repair VERIFIED | Initial full execution499 passed/1 expected-error-text assertion failed in1331.49s; error contract preserved and affected19 passed. The full file was not repeated. |
@@ -249,6 +267,17 @@ phrase authority uses constant scorers, and the final collector orders score
 descending then path. These are native score-ranked results whose score mainly
 counts matching phrases, rather than BM25 relevance. Low target recovery is
 an observed product behavior, not evidence of a missing benchmark wire.
+
+Existing six-language CSN records also passed a read-only label-sensitivity
+replay in29.235s. With mean grade>=1, the same408 positive-defined tasks
+produce Quanta305/408 and Semble387/408. Mean grade>=1.5 defines a different
+307-task denominator (Quanta220/Semble288); it is not a paired delta against
+the408-task population. Returned file coverage is951/4253 judged for Quanta
+and1677/4379 for Semble; all other returns remain unknown. Of2162 selected
+URL judgments with2958 raw annotations,418 have annotator disagreement
+(416 Python,2 Ruby), so a language-independent disagreement effect is not
+established. Report:
+`/Users/songmin/Documents/code-new/qi-b09-final-20261004-SQoHAA/csn-label-sensitivity/REPORT.md`.
 
 Per-run artifacts (outside the checkout):
 
