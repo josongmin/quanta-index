@@ -298,7 +298,11 @@ def test_source_guard_failure_does_not_publish_or_leave_staging(source, tmp_path
     assert not list(tmp_path.glob(".corpus-stage-*"))
 
 
-def test_git_calls_share_bounded_group_executor(source, monkeypatch):
+def test_git_calls_share_bounded_group_executor(source, tmp_path, monkeypatch):
+    import tempfile
+
+    # A failed call retains its log directory by design; keep it in tmp_path.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     observed = []
 
     def failed(argv, **kwargs):
@@ -311,6 +315,22 @@ def test_git_calls_share_bounded_group_executor(source, monkeypatch):
     assert observed[0][1]["timeout"] == 300
     assert observed[0][1]["cwd"] == source[1]
     assert observed[0][1]["env"]["GIT_ALLOW_PROTOCOL"] == "file"
+
+
+def test_git_logs_are_removed_on_success_and_retained_on_failure(source, tmp_path, monkeypatch):
+    import tempfile
+
+    scratch = tmp_path / "system-tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    assert corpus.git(source[1], "rev-parse", "--is-shallow-repository").strip() == b"false"
+    assert not list(scratch.iterdir())
+    with pytest.raises(EvidenceError, match="corpus Git action failed"):
+        corpus.git(source[1], "rev-parse", "--verify", "refs/heads/absent-ref")
+    [retained] = scratch.iterdir()
+    assert retained.name.startswith("quanta-corpus-git-")
+    assert {path.name for path in retained.iterdir()} == {"execution.json", "stdout", "stderr"}
+    assert json.loads((retained / "execution.json").read_text())["status"] == "failed"
 
 
 def test_environment_excludes_service_secrets(monkeypatch):

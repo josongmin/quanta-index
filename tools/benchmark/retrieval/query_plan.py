@@ -42,6 +42,7 @@ SUPPORTED_POLICIES = (
     "code_search_file",
     "code_search_exact_content_file",
     "code_search_typo_file",
+    "code_search_components_file",
 )
 #: File-projection policies and how each orders its distinct files. A phrase or
 #: raw substring is a match-only restriction (constant score, path order); a
@@ -55,22 +56,30 @@ FILE_PROJECTION_ORDERING = {
     "code_search_file": ORDERING_SCORE_DESC,
     "code_search_exact_content_file": ORDERING_SCORE_DESC,
     "code_search_typo_file": ORDERING_SCORE_DESC,
+    "code_search_components_file": ORDERING_SCORE_DESC,
 }
 CODE_SEARCH_FILE_POLICIES = frozenset(
-    ("code_search_file", "code_search_exact_content_file", "code_search_typo_file")
+    (
+        "code_search_file",
+        "code_search_exact_content_file",
+        "code_search_typo_file",
+        "code_search_components_file",
+    )
 )
 # Evaluation meaning is separate from the product's execution profile. These
 # names describe the request submitted, not the relevance labels it may score.
 DEFAULT_FILE_SEARCH = "default_file_search"
 EXPLICIT_OSA1_TYPO = "explicit_osa1_typo"
+EXPLICIT_SYMBOL_COMPONENTS = "explicit_symbol_components"
 DECLARATION_NAVIGATION = "declaration_navigation"
 EVALUATION_REQUEST_MODES = frozenset(
-    (DEFAULT_FILE_SEARCH, EXPLICIT_OSA1_TYPO, DECLARATION_NAVIGATION)
+    (DEFAULT_FILE_SEARCH, EXPLICIT_OSA1_TYPO, EXPLICIT_SYMBOL_COMPONENTS, DECLARATION_NAVIGATION)
 )
 EVALUATION_UNITS = frozenset(("distinct_file", "symbol"))
 QUANTA_EVALUATION_POLICIES = {
     DEFAULT_FILE_SEARCH: frozenset(("code_search_file",)),
     EXPLICIT_OSA1_TYPO: frozenset(("code_search_typo_file",)),
+    EXPLICIT_SYMBOL_COMPONENTS: frozenset(("code_search_components_file",)),
     DECLARATION_NAVIGATION: frozenset(("exact_symbol_name",)),
 }
 SCORED_QUANTA_FILE_POLICIES = frozenset((*CODE_SEARCH_FILE_POLICIES, "keyword_file"))
@@ -92,6 +101,7 @@ PROFILE_IDS = {
     "code_search_file": "quanta-code-search-file-v1",
     "code_search_exact_content_file": "quanta-code-search-exact-content-file-v1",
     "code_search_typo_file": "quanta-code-search-typo-file-v1",
+    "code_search_components_file": "quanta-code-search-components-file-v1",
 }
 _BARE_SYMBOL_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 _BARE_CODE_SEARCH_ATOM = re.compile(r"[A-Za-z_0-9]+\Z")
@@ -160,6 +170,12 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
             f'"max_bytes":{MAX_CODE_SEARCH_TYPO_BYTES},"min_bytes":{MIN_CODE_SEARCH_TYPO_BYTES},'
             f'"ordering":"{ORDERING_SCORE_DESC}","policy":"code_search_typo_file",'
             '"projection":"file","scope":"identifier","syntax":"code_search"}'
+        )
+    if policy == "code_search_components_file":
+        return (
+            '{"case":"folded","match":"ordered_symbol_components_v1",'
+            f'"ordering":"{ORDERING_SCORE_DESC}","policy":"code_search_components_file",'
+            '"projection":"file","scope":"symbol_local_name","syntax":"code_search"}'
         )
     if policy == "natural_language":
         resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
@@ -421,6 +437,17 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
                 "code-search-typo-file policy requires one bare ASCII identifier of 3..=64 bytes"
             )
         return f"typo:{raw}"
+    if policy == "code_search_components_file":
+        parts = raw.split(" ")
+        if not 2 <= len(parts) <= MAX_CODE_SEARCH_TERMS or any(
+            not 1 <= len(part) <= MAX_CODE_SEARCH_TERM_BYTES
+            or re.fullmatch(r"[a-z0-9]+", part) is None
+            for part in parts
+        ):
+            raise QueryPlanError(
+                "code-search-components-file policy requires 2..=32 canonical lower-case ASCII words"
+            )
+        return f'components:"{raw}"'
     if policy == "natural_language":
         resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
         distinct: list[str] = []

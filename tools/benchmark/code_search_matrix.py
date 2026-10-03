@@ -34,7 +34,12 @@ PAIR_MODES = {
     "hybrid": ("hybrid", "hybrid-no-rerank"),
 }
 LEXICAL_ONLY_FILE_POLICIES = frozenset(
-    {"code_search_file", "code_search_exact_content_file", "code_search_typo_file"}
+    {
+        "code_search_file",
+        "code_search_exact_content_file",
+        "code_search_typo_file",
+        "code_search_components_file",
+    }
 )
 QUERY_POLICIES = frozenset({"native", "natural_language", *LEXICAL_ONLY_FILE_POLICIES})
 UNSUPPORTED_REASON = "query_policy_not_supported_for_mode"

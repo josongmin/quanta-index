@@ -15,6 +15,12 @@ install-hooks:
 cache-root:
     @bash scripts/quanta-index-env.sh
 
+# Prune idle/orphan Cargo target lanes and stale test executables.
+# Examples: `just target-gc --dry-run`, `just target-gc --dry-run --json`,
+# `just target-gc --idle-hours 48 --max-total-gb 200`.
+target-gc *args:
+    python3 tools/ci/target_gc.py {{args}}
+
 rust-sccache-stats:
     @source scripts/quanta-index-env.sh && if [[ -n "${RUSTC_WRAPPER:-}" && "${RUSTC_WRAPPER:t}" == "sccache" ]]; then sccache --show-stats; else echo 'sccache is disabled or unavailable'; fi
 

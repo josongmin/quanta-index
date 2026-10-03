@@ -46,7 +46,8 @@
 use crate::sha256_hex;
 use quanta_index_contract::{
     MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, MAX_CODE_SEARCH_TYPO_BYTES,
-    MIN_CODE_SEARCH_TYPO_BYTES, valid_code_search_typo_identifier,
+    MIN_CODE_SEARCH_TYPO_BYTES, valid_code_search_component_query,
+    valid_code_search_typo_identifier,
 };
 use quanta_index_lq_norm::ast::{
     LqCase, LqExpr, LqFilter, LqLeaf, LqNormalizedQuery, LqOptions, LqSelect, LqType,
@@ -86,7 +87,8 @@ pub const fn ordering_contract(policy: QueryInputPolicy) -> Option<&'static str>
         QueryInputPolicy::KeywordFile
         | QueryInputPolicy::CodeSearchFile
         | QueryInputPolicy::CodeSearchExactContentFile
-        | QueryInputPolicy::CodeSearchTypoFile => Some(ORDERING_SCORE_DESC),
+        | QueryInputPolicy::CodeSearchTypoFile
+        | QueryInputPolicy::CodeSearchComponentsFile => Some(ORDERING_SCORE_DESC),
         QueryInputPolicy::LiteralFile | QueryInputPolicy::SubstringFile => {
             Some(ORDERING_PATH_ORDER)
         }
@@ -108,6 +110,7 @@ pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
         QueryInputPolicy::CodeSearchFile => "quanta-code-search-file-v1",
         QueryInputPolicy::CodeSearchExactContentFile => "quanta-code-search-exact-content-file-v1",
         QueryInputPolicy::CodeSearchTypoFile => "quanta-code-search-typo-file-v1",
+        QueryInputPolicy::CodeSearchComponentsFile => "quanta-code-search-components-file-v1",
         QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v2",
         QueryInputPolicy::ExactSymbolName => "quanta-exact-symbol-name-v1",
     }
@@ -132,6 +135,8 @@ pub enum QueryInputPolicy {
     CodeSearchExactContentFile,
     /// Explicit code-search typo mode, scored as distinct files.
     CodeSearchTypoFile,
+    /// Ordered, folded symbol-local-name components projected to files.
+    CodeSearchComponentsFile,
     /// Keep the raw query for the semantic lane and derive a deterministic
     /// token-OR lexical plan from it.
     NaturalLanguage,
@@ -156,6 +161,7 @@ impl QueryInputPolicy {
             "code_search_file" => Ok(Self::CodeSearchFile),
             "code_search_exact_content_file" => Ok(Self::CodeSearchExactContentFile),
             "code_search_typo_file" => Ok(Self::CodeSearchTypoFile),
+            "code_search_components_file" => Ok(Self::CodeSearchComponentsFile),
             "natural_language" => Ok(Self::NaturalLanguage),
             "exact_symbol_name" => Ok(Self::ExactSymbolName),
             other => Err(QueryPlanError::UnsupportedPolicy(other.to_string())),
@@ -174,6 +180,7 @@ impl QueryInputPolicy {
             Self::CodeSearchFile => "code_search_file",
             Self::CodeSearchExactContentFile => "code_search_exact_content_file",
             Self::CodeSearchTypoFile => "code_search_typo_file",
+            Self::CodeSearchComponentsFile => "code_search_components_file",
             Self::NaturalLanguage => "natural_language",
             Self::ExactSymbolName => "exact_symbol_name",
         }
@@ -271,6 +278,8 @@ pub enum QueryPlanError {
     InvalidCodeSearchExactContent,
     /// The typo profile requires a bare ASCII identifier of 3..=64 bytes.
     InvalidCodeSearchTypo,
+    /// Components must be a canonical space-separated sequence.
+    InvalidCodeSearchComponents,
 }
 
 impl QueryPlanError {
@@ -291,6 +300,7 @@ impl QueryPlanError {
             Self::InvalidCodeSearch => "RBR_QUERY_CODE_SEARCH_INVALID",
             Self::InvalidCodeSearchExactContent => "RBR_QUERY_CODE_SEARCH_EXACT_CONTENT_INVALID",
             Self::InvalidCodeSearchTypo => "RBR_QUERY_CODE_SEARCH_TYPO_INVALID",
+            Self::InvalidCodeSearchComponents => "RBR_QUERY_CODE_SEARCH_COMPONENTS_INVALID",
         }
     }
 }
@@ -351,6 +361,10 @@ impl std::fmt::Display for QueryPlanError {
             Self::InvalidCodeSearchTypo => write!(
                 f,
                 "code-search-typo-file policy requires one bare ASCII identifier of 3..=64 bytes"
+            ),
+            Self::InvalidCodeSearchComponents => write!(
+                f,
+                "code-search-components-file policy requires 2..=32 canonical lower-case ASCII words"
             ),
         }
     }
@@ -426,6 +440,11 @@ pub fn policy_config_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) 
              \"policy\":\"code_search_typo_file\",\"projection\":\"file\",\"scope\":\"identifier\",\
              \"syntax\":\"{CODE_SEARCH_SYNTAX}\"}}"
         ),
+        QueryInputPolicy::CodeSearchComponentsFile => format!(
+            "{{\"case\":\"folded\",\"match\":\"ordered_symbol_components_v1\",\"ordering\":\"{ORDERING_SCORE_DESC}\",\
+             \"policy\":\"code_search_components_file\",\"projection\":\"file\",\"scope\":\"symbol_local_name\",\
+             \"syntax\":\"{CODE_SEARCH_SYNTAX}\"}}"
+        ),
         QueryInputPolicy::NaturalLanguage => format!(
             "{{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"natural_language\",{}}}",
             config.canonical_fields()
@@ -456,6 +475,7 @@ pub fn execution_profile_canonical(policy: QueryInputPolicy, config: &NlPlanConf
         | QueryInputPolicy::CodeSearchFile
         | QueryInputPolicy::CodeSearchExactContentFile
         | QueryInputPolicy::CodeSearchTypoFile
+        | QueryInputPolicy::CodeSearchComponentsFile
         | QueryInputPolicy::ExactSymbolName => format!(
             "{{\"config\":{{}},\"planning_cost_in_latency\":false,\"policy\":\"{}\",\
              \"profile_id\":\"{}\"}}",
@@ -484,6 +504,7 @@ pub fn execution_profile_value(
         | QueryInputPolicy::CodeSearchFile
         | QueryInputPolicy::CodeSearchExactContentFile
         | QueryInputPolicy::CodeSearchTypoFile
+        | QueryInputPolicy::CodeSearchComponentsFile
         | QueryInputPolicy::ExactSymbolName => serde_json::json!({}),
     };
     serde_json::json!({
@@ -531,6 +552,7 @@ pub fn effective_request_sha256(policy: QueryInputPolicy, lexical_request: &str)
         QueryInputPolicy::CodeSearchFile
             | QueryInputPolicy::CodeSearchExactContentFile
             | QueryInputPolicy::CodeSearchTypoFile
+            | QueryInputPolicy::CodeSearchComponentsFile
     ) {
         let wire = serde_json::json!({
             "query_text": lexical_request,
@@ -677,6 +699,12 @@ pub fn plan_query(
             }
             format!("typo:{raw}")
         }
+        QueryInputPolicy::CodeSearchComponentsFile => {
+            if !valid_code_search_component_query(raw) {
+                return Err(QueryPlanError::InvalidCodeSearchComponents);
+            }
+            format!("components:\"{raw}\"")
+        }
         QueryInputPolicy::NaturalLanguage => {
             let mut distinct: Vec<String> = Vec::new();
             for token in tokenize_nl(raw) {
@@ -727,6 +755,7 @@ pub fn plan_query(
         QueryInputPolicy::CodeSearchFile
             | QueryInputPolicy::CodeSearchExactContentFile
             | QueryInputPolicy::CodeSearchTypoFile
+            | QueryInputPolicy::CodeSearchComponentsFile
     ) {
         let parsed = validate_lexical_request(&lexical_request)?;
         // The request must parse back to exactly the one leaf the policy built:
@@ -771,6 +800,7 @@ pub fn plan_query(
             | QueryInputPolicy::CodeSearchFile
             | QueryInputPolicy::CodeSearchExactContentFile
             | QueryInputPolicy::CodeSearchTypoFile
+            | QueryInputPolicy::CodeSearchComponentsFile
             | QueryInputPolicy::NaturalLanguage
             | QueryInputPolicy::ExactSymbolName => {}
         }
@@ -1216,6 +1246,47 @@ mod tests {
                 .unwrap_err()
                 .code(),
                 "RBR_QUERY_CODE_SEARCH_EXACT_CONTENT_INVALID"
+            );
+        }
+    }
+
+    #[test]
+    fn code_search_components_file_binds_canonical_product_request() {
+        let config = NlPlanConfig::default();
+        let plan = plan_query(
+            QueryInputPolicy::CodeSearchComponentsFile,
+            "clean up",
+            &config,
+        )
+        .expect("canonical component sequence");
+        assert_eq!(plan.lexical_request, "components:\"clean up\"");
+        assert_eq!(plan.semantic_text, "clean up");
+        assert_eq!(
+            plan.policy_config_sha256,
+            "c15829640e8564f0cb30ea919d1f05f421e77d48f3f05587ac9b312ce0842f9f"
+        );
+        assert_eq!(
+            execution_profile_sha256(plan.policy, &config),
+            "e89fb0df5b3f22a019c913757d51f9139dd41ea28971254bf8235514f47ec384"
+        );
+        assert_eq!(
+            plan.effective_lexical_request_sha256,
+            "ba42e472195c0801cd3ce2b17b1727060392e4241b081045b9c903e49dcae19d"
+        );
+        assert_eq!(ordering_contract(plan.policy), Some(ORDERING_SCORE_DESC));
+        for invalid in [
+            "clean",
+            "clean  up",
+            "Clean up",
+            "clean_up",
+            "clean\tup",
+            "café up",
+        ] {
+            assert_eq!(
+                plan_query(QueryInputPolicy::CodeSearchComponentsFile, invalid, &config)
+                    .unwrap_err()
+                    .code(),
+                "RBR_QUERY_CODE_SEARCH_COMPONENTS_INVALID"
             );
         }
     }

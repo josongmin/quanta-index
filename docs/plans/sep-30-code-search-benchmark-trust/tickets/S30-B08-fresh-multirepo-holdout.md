@@ -1104,3 +1104,371 @@ capture-boundary test in a focused **2/2** run (16.77s); a new full-file
 449-test run is `NOT_RUN`. `ruff check`, `ruff format --check`, `git diff
 --check` and `pm.py lint` passed. These are code checks, not a qualified
 product capture or a completed relevance review.
+
+### Component misses: source-bound scoring RCA (2026-10-03)
+
+The original `retrieval-diagnostic.json` responses at `/tmp/{v03,v12,v30}`
+retain an exact candidate count, even though the merged `record.json` shows
+only the top ten. The frozen `release-v4/views/{cli,mocha,zellij}/code_only`
+files match all 1,909 suite file hashes. A read-only source-level scorer
+reimplemented the current CodeSearch literal boundary, capped occurrence,
+case-exact and proximity terms. Its top-ten paths and scores matched all
+40 original Quanta rows; its matching-file counts equaled the native exact
+candidate counts. No native off-page cursor was fetched, so the gold ranks
+below are **offline reconstructed ranks**, not captured product ranks.
+
+| Task | Native exact candidates | Gold score | Native rank-10 score | Offline gold rank | Semble gold rank |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `cli.com.002` | 14 | 457 | 533 | 12 | 3 |
+| `mocha.com.006` | 22 | 165 | 197 | 14 | 1 |
+| `zellij.com.004` | 43 | 185 | 222 | 27 | 4 |
+| `zellij.com.005` | 13 | 185 | 211 | 12 | 6 |
+
+All four gold sources are ASCII and match their suite SHA-256 values. The
+native windows report `capped` with ten distinct files, exact candidate and
+examined counts, and continuation. The gold scores are below the observed
+tenth-place scores by 76, 32, 37 and 26 points. Thus the current scoring and
+top-ten truncation suffice to explain each miss; an index omission is not
+required. Index-universe attestation is still absent, and native ranks beyond
+ten remain unobserved.
+
+The query generator splits declaration names into lowercase camel/snake
+components, while `code_search_file` submits those words unchanged to the
+public general file search. `code_search.rs` then requires each substring
+somewhere in a file and sums each term's best content/path boundary score;
+the proximity contribution is at most 32. It neither joins terms at one
+declaration nor consults the indexed symbol local name. Embedded terms in
+`cleanUp`, `VersionInfo` and `home_unix` receive weaker boundary scores than
+standalone words elsewhere. `zellij.com.005` additionally labels the module
+declaration file although the implementation file is already Quanta rank 2.
+This is a confirmed query-intent/ranking-contract mismatch; whether a given
+top-ten alternative is irrelevant requires independent source-backed grades.
+
+Resolve it on two separate contracts. For declaration-component lookup,
+introduce an explicit typed symbol-name component route with bounded
+component postings, ordered-component verification, symbol identity and a
+defined file projection. Test exact adjacency, case, duplicate names,
+module declarations, no-answer, posting cap and cursor order against fixed
+source oracles. For default general file search, retain file-level content
+and path matching; test any bounded declaration feature or fielded reranker
+only on independently reviewed graded file relevance. Do not turn these four
+source-exposed cases into a qualified improvement claim or silently apply a
+symbol-only preference to every file query.
+
+## Twelve-repository ordinary-input OSA1 baseline (2026-10-03)
+
+**VERIFIED, diagnostic only:** the frozen `9d38b69d` runner completed all 12
+projected ordinary-input OSA1 cells. Every pair verdict passed. An external
+checker independently joined `(path, file_sha256)` gold to both native
+distinct-file records and checked 4,206 task IDs, report scores and binary,
+suite, pack, manifest and verdict digests. Its output is
+`/private/tmp/qi-b08-default-osa1-20261003/default-pair-summary.json`
+(SHA-256 `e41a00d8196ea5490821a4aa8fb9f0c7048c9238adfb032b0e5065ebd5195a50`).
+
+| Route | File Hit@10 | Statuses |
+| --- | ---: | --- |
+| Quanta ordinary input | 112 / 4,206 | 4,077 abstained; 115 success; 14 capped |
+| Semble lexical-file | 3,053 / 4,206 | 3,769 success; 437 abstained |
+| Quanta explicit OSA1, separate request | 4,146 / 4,206 | Separate source-bound capture |
+
+The explicit OSA1 capture hit 4,025 of Quanta ordinary-input abstentions.
+This measures a request-policy gap in the old default route, not an index
+omission or a qualified product ranking. The serialized run walls summed
+11,202.907 seconds excluding the preverified `bat` row, under concurrent
+workload and repeated setup; they do not support a speed comparison. The
+mechanical intended-declaration targets have no human file-relevance review.
+The later `12fe7d9f` empty-result fallback is being captured separately;
+its results must not be merged with this older baseline as if source and
+binary identities were unchanged.
+
+## Next unseen holdout preparation (2026-10-03)
+
+The twelve repositories above have now been exposed to tuning diagnostics,
+so a later C5 decision needs a new roster. Before querying the reserve
+repositories, the original C0 candidate order was filtered against its
+selected/rejected ledger, the development release and the exposed release.
+The resulting twelve-cell ordered reserve list is frozen at
+`/private/tmp/qi-c5-fresh-20261003/selection-precommit.json`
+(SHA-256 `b31c8a5198221585b3c536f7a2d87be79ae471b903243e424fa951e325ed2a70`).
+It is a selection rule, not twelve accepted repositories. Each candidate
+still needs current license, size, complete-history, overlap and view checks.
+
+The first Go/small reserve, `rs/zerolog@56591163bce358abdb860d3dad599d3ab440621a`,
+has a complete Git checkout and a source-replayed candidate release at
+`/private/tmp/qi-c5-fresh-20261003/zerolog-release` (release digest
+`sha256:b35ff03b121ec5dce0d8051a85ca56e272fcbfb3ce2d72af7e770eee482a1c48`).
+Its frozen views contain 82 `code_only` and 99 `developer_search` files.
+Preflight found zero identical code blobs and zero shared root commits across
+the ten development and twelve exposed evaluation views; the external
+preflight is `/private/tmp/qi-c5-fresh-20261003/zerolog-preflight.json`
+(SHA-256 `1fd8fa1019035af44cbba2ae946e7940f31bb3a7923f2afd2efb5089bfaf915c`).
+Near-duplicate source audit, labels and product captures are **NOT_RUN**.
+This candidate is not yet C5-admitted.
+
+The same frozen candidate order has since produced source-replayed releases
+for the remaining three small cells: `zoxide` (26 code files), `attrs` (56)
+and `immer` (55). Together with `zerolog` (82), these four candidates have
+219 `code_only` files and zero identical code blobs or shared root commits
+against the 22 prior development/evaluation views. The per-candidate commits,
+release digests and preflight limitations are in
+`/private/tmp/qi-c5-fresh-20261003/candidate-status.json`
+(SHA-256 `839bb8dd898a6dd72ed4d2f874025741ec7a8a44df7c13b0eb3a6bb7d2753903`).
+This does not discharge near-duplicate checks or admit any of the four.
+The original three Go/medium reserves measured 258, 89 and 181 `code_only`
+files, below the preregistered 301-file lower bound. Before checking any
+replacement source, an ordered public-metadata amendment was frozen at
+`/private/tmp/qi-c5-fresh-20261003/selection-amendment-go-medium-1.json`
+(SHA-256 `ee5510f713e32b58583459f9632d1b5f26c1c484c89e2f4eab80775b8dd90a2c`).
+Its first candidate, `grpc/grpc-go@de4775bffabedc6674c131d88212a510c32e1ab1`,
+replayed to a provisional release with 1,081 `code_only` files and no
+identical code blob or shared root commit against the 22 prior views. The
+five frozen candidates total 1,300 code files; their digests and the three
+size refusals are in `/private/tmp/qi-c5-fresh-20261003/candidate-status-v2.json`
+(SHA-256 `0fe6a3231fd4e92a8d213791f1c401852e967afe67b7331d9e25d2de35044e61`).
+Near-duplicate audit and the other seven cells remain **NOT_RUN**.
+
+Nine of the twelve fresh candidate cells now have complete-history checkouts
+and source-replayed provisional releases. They contain 6,264 `code_only`
+files. The source/manifest/release bindings, commits and per-cell counts are
+in `/private/tmp/qi-c5-fresh-20261003/candidate-status-v4.json` (SHA-256
+`aff99bea5eb2e3be46bd21e6903a73f0980171a2e7ec0d19470f0d340ab7f7ae`).
+The existing split-leakage winnowing policy was run over all nine candidates
+against the ten development and twelve exposed evaluation repositories, plus
+all cross-candidate pairs. It found zero exact copies above the policy's
+256-byte floor and zero near-duplicate pairs. The complete census is
+`/private/tmp/qi-c5-fresh-20261003/near-audit-v1.json` (SHA-256
+`5c75f136e2cab8447cd960fc0a8dbec4c4f2824e4e9b7ee5e2cba1e25be76afd`).
+One 26-byte Celery example stub still matches a Django file below that floor;
+it remains visible in the preflight and is not counted as a policy violation.
+Three cells, independent relevance labels, index attestation and product
+captures remain **NOT_RUN**. None of these candidates is C5-admitted yet.
+
+## C3 natural-language relevance review, multi-model AI (2026-10-03)
+
+**Policy amendment (owner decision):** the human-reviewer requirement for this
+C3 NL lane was replaced by multi-model AI review. Identities are
+`ai:claude-opus-5-5:pass-A`, `ai:claude-sonnet-5-5:pass-B` and adjudicator
+`ai:claude-fable-5-1:adjudicator`; no AI decision is recorded as a human
+reviewer or human receipt. These labels are **multi-model AI-reviewed, not
+human-reviewed, and not qualified**. External root:
+`/Users/songmin/Documents/code-new/qi-b08-c3-nl-review-20261003-OmZWCc`
+([RESULTS.md](/Users/songmin/Documents/code-new/qi-b08-c3-nl-review-20261003-OmZWCc/RESULTS.md),
+SHA-256 `b332021b58aff850b9da6b46d98f7deebc45efc446c1a5af5fbde9f7b2535361`;
+file inventory `SHA256SUMS-root` SHA-256
+`a144fbf13dd3a457719685f41c98cd53346c2ca259f0261f5813cbc3979e3673`).
+
+- Start binding: `12fe7d9f` clean; 12 frozen checkouts clean; release
+  `sha256:cb896b12…`, code_only manifests and v5 gold identities recorded.
+  The 106-task mechanical packet was neither used nor changed; it stays a
+  separate denominator.
+- Relevance rubric (0–3, examples, boundary rules) and area taxonomy were
+  frozen before pooling. 240/240 NL/workflow tasks were authored (20 per
+  repository; 48/48/48/36/36/24 across six areas; underfill 0).
+- Blind packets: BM25 and path/declaration pools, author source anchors and
+  two seeded random controls per task, deduplicated by path; every candidate's
+  full text and SHA-256 matched the frozen manifest. `holdout_review.write`
+  produced two forms per pack (13 packs; zellij split by the 64 MiB export cap).
+  Missing-candidate proposals re-issued all 13 packs (+638 files) and tailscale
+  once more (+1); both passes graded every added file. Final judged task/file
+  pairs: 4,346.
+- Pass agreement: exact grade 94.3%, quadratic-weighted κ 0.966,
+  answerability 240/240 (same-family models; not evidence of correctness).
+  Adjudication: 246 items, 0 unjudged. Final qrels: 240 answerable tasks,
+  grades 0/1/2/3 = 2,258/1,246/574/268; 240 included, 0 excluded.
+- Final per-repository mixed suites keep the v6 C4 `declaration_name_exact`
+  source-oracle tasks unchanged and add 20 reviewed NL tasks
+  (`complete_ranked_pool_v1`, `label_review` bound to an evidence SHA over both
+  passes and the adjudication). Two schema-v2 annotation receipts and one
+  adjudication receipt cover only the subjective tasks in suite order and bind
+  the suite SHA and annotation receipt SHAs.
+
+**VERIFIED** at a pinned export of `d1bb1438` (12/12 repositories):
+`evaluator.validate_suite`, `holdout_review.validate_completed_forms` (13
+packs) and `run._validate_gold_review_receipt` for all three receipts;
+`test_holdout_review.py` 38/38 in that export.
+
+**BLOCKED, qualification admission (12/12):**
+`run._validate_disjoint_admission_source` requires the suite family set to
+equal the split row (130 families including 20 literal). The NL families are
+absent from the frozen split, and literal tasks cannot share a file-search
+suite. Separately, `fd13216e` changed `tools/benchmark/corpus_release.py`;
+release-v4's `generator_digest` matches that file only through `d1bb1438`, so
+at current main release-v4 validation fails before the admission comparison.
+
+**BLOCKED, product capture:** the frozen NL queries pass the
+`natural_language` request policy (240/240) but only 9/240 pass
+`code_search_file`. `natural_language` has no evaluation request mode and
+returns chunk units, which file judgments exclude. Queries were not rewritten,
+and no product ranking is reported.
+
+**NOT_RUN:** human identity verification (superseded by the amendment), the
+full `verify_admission_bundle`, and live index attestation.
+
+## Component route verification and coverage limit (2026-10-03)
+
+At clean `main@19e5fa55`, the explicit `components:"word word"` route and
+`code_search_components_file` benchmark policy are wired. A follow-up audit
+removed a query-specific source-byte absence exemption: the product's
+`SymbolRecord.local_name` contract does not require the name to be a literal
+source-byte slice, so raw-byte absence cannot prove that a file with an
+incomplete symbol census has no matching declaration. The route now requires
+complete symbol coverage for every in-scope file and returns
+`SymbolCoverageIncomplete` otherwise. Exact path and language constraints may
+exclude an incomplete file before that check. A focused regression proves
+that a parse-failed file with no literal query component still causes refusal.
+
+**VERIFIED:** `./scripts/cargow --lane component-check-lane check -p
+quanta-index-search-plane -p quanta-index-lexical -p
+quanta-index-retrieval-bench --locked`; lexical `l3_exact_source` 22/22;
+search-plane component tests 2/2; retrieval-bench component request test 1/1;
+live-driver `runtime_risk_suite` component E2E 1/1 under `--all-features`;
+`test_holdout_c4.py` 48/48; Rust format check and `git diff --check`.
+The E2E publishes four source files, searches through CodeSearch syntax,
+checks exact-name precedence and distinct-file order, rejects terms split
+across separate symbols, and checks an empty answer. These checks prove the
+synthetic product route and benchmark request binding, not a twelve-repository
+quality improvement.
+
+**Remaining product limitation:** the frozen diagnostic preflight reports
+eleven `parse_failed` Go files in `cli`, two intentionally syntax-error
+JavaScript fixtures in `mocha`, and none in `zellij`. If those coverage states
+recur, the current unscoped component route refuses the first two repositories;
+the old four misses
+cannot be declared fixed from the synthetic E2E. Three inspected `cli` Go
+parse errors occur at `new(expression)` calls in its Go 1.27 source (for
+example `pkg/cmd/codespace/create_test.go:107`); this establishes a parser
+compatibility symptom, not the cause of all eleven failures. The separately
+frozen release-v4 also fails current-source generator-digest validation after
+`fd13216e`, so an actual current-source four-query or full C4 capture
+requires a new release/capsule/output root. **NOT_RUN:** that recapture,
+parser remediation, partial-coverage response design, independently reviewed
+file relevance, and C5 qualification. Do not score a typed coverage refusal
+as a top-ten miss or merge any future recapture into the frozen C4 totals.
+
+## Exposed twelve-repository scale diagnostic (2026-10-03)
+
+**VERIFIED for source-bound preparation and admission; `diagnostic_unqualified` for
+quality.** Clean `a867f47b8dd4ca5efa36b0cca671c84d258c204a` sampled the
+already exposed release-v4 with `scale_diagnostic_v1`, seed `3797249375`.
+The frozen ledger is
+`/private/tmp/qi-scale-diagnostic-20261003-a/ledger.json` (SHA-256
+`bfb5f9fa63c0e675d102dc7af46c645e6e9397ad315685fb485c50e2e6ab1980`).
+Its 12 recipes contain 13,823 task rows: 1,200 exact content, 1,200 exact
+positive declarations, 1,428 prefix, 1,422 infix, 1,397 components, 4,776
+case-folded OSA1, and 1,200 each synthetic and wrong-repository negatives.
+The source replay published 12/12 gold capsules at
+`/private/tmp/qi-scale-gold-a867-20261003`; all bind the same release digest
+`sha256:cb896b12a8faf9569a829469bc39fe8c8bd9869ce908494722c0bf8f829bf1df`.
+
+The C4 matrix at `/private/tmp/qi-scale-c4-a867-20261003/admission-matrix.json`
+(SHA-256 `22a23fb51505e172dff4c45d2eb05d09749dbfb65f864ac9ae80f111e667a0ed`)
+contains 72 cells, 60 admitted suites and 12 empty case-sensitive OSA1 cells;
+the latter intent was not sampled. Exact-file literal admission is separate.
+
+| Mechanical lane | Source candidates | Admitted | Excluded |
+| --- | ---: | ---: | ---: |
+| Exact declaration, positive | 1,200 | 1,132 | 68 |
+| Prefix | 1,428 | 1,215 | 213 |
+| Infix | 1,422 | 1,056 | 366 |
+| Components | 1,397 | 1,115 | 282 |
+| Case-folded OSA1 | 4,776 | 4,206 | 570 |
+| Synthetic no-answer | 1,200 | 1,200 | 0 |
+| Wrong-repository no-answer | 1,200 | 1,200 | 0 |
+| Exact content literal | 1,200 | 1,196 | 4 |
+
+The exact-content matrix is
+`/private/tmp/qi-scale-literal-fixed2-a867-20261003/literal-matrix.json`
+(SHA-256 `a47dd48e1dd1f87ff14f64a37361ccfb26c8932a9570de379fbc36868f10befa`).
+It uses the frozen `a867f47b` producer plus only the current literal adapter
+patch (file SHA-256
+`4f3ecca0b476d3ee70a7186c535ae4ab38c29f2ab633b8ab2ef8375050f255cd`;
+patch SHA-256
+`389405ed0f8d209dddc14e202cd7e3b6aec0c52b6a6921b8e2b1625c28293fa0`).
+The initial literal admission **FAILED** because `cli.lit.077` and
+`cli.lit.099` contain tabs: the sampler accepted stripped lines with internal
+control characters, while the independent literal oracle refuses them.
+`lo.lit.042` and `zellij.lit.056` were also near-duplicates. The sampler now
+checks the literal query contract before selection; the adapter records these
+four exclusions without post-score backfill. The superseded second attempt
+was intentionally interrupted before admission. Fixed tests passed:
+`test_gold_oracle.py` plus `test_holdout_literal.py` 90/90 on the first fix;
+the final literal file 22/22 and four focused boundary tests passed after the
+duplicate fix. Ruff and format checks passed.
+
+Independent accounting matched every C4 candidate ID to exactly one selected
+or excluded ID, verified 60 suite/blind-pack hashes, and split the exact lane
+into 1,132 positive plus 1,200+1,200 negatives. The same check matched all
+1,200 literal IDs to 1,196 selected plus four excluded, verified 12 suites and
+their pack hashes. No task was scored as failed merely because its source
+census was unsupported or its query contract was invalid. The global counts
+exceed 1,000 for the sampled mechanical lanes; per-repository cells remain
+uneven, including small `zustand` and parser-limited `tailscale`. Natural
+language and case-sensitive OSA1 remain unsampled.
+
+Execution commands, from the frozen source root unless otherwise noted:
+
+```text
+python tools/benchmark/retrieval/holdout_sampling.py --holdout-release RELEASE_V4 --development-release DEV_RELEASE_V3 --seed 3797249375 --profile scale_diagnostic_v1 --output /private/tmp/qi-scale-diagnostic-20261003-a
+python tools/benchmark/retrieval/gold_capture_batch.py --release RELEASE_V4 --other-release DEV_RELEASE_V3 --sampling /private/tmp/qi-scale-diagnostic-20261003-a --output /private/tmp/qi-scale-gold-a867-20261003
+PYTHONPATH=FROZEN_ROOT python tools/benchmark/retrieval/holdout_c4.py --release RELEASE_V4 --capsules /private/tmp/qi-scale-gold-a867-20261003 --checkouts CHECKOUT_ROOT --output /private/tmp/qi-scale-c4-a867-20261003 --expected-repositories 12 --emit-suites
+python tools/benchmark/retrieval/holdout_literal.py --release RELEASE_V4 --capsules /private/tmp/qi-scale-gold-a867-20261003 --checkouts CHECKOUT_ROOT --output /private/tmp/qi-scale-literal-fixed2-a867-20261003 --expected-repositories 12
+```
+
+`RELEASE_V4`, `DEV_RELEASE_V3`, `CHECKOUT_ROOT` and `FROZEN_ROOT` are respectively
+`/Users/songmin/Documents/code-new/qi-s30-b08-holdout-20261002/{release-v4,dev-release-v3,checkouts}`
+and `/private/tmp/qi-scale-src-a867f47b`; the final literal command ran from
+`/private/tmp/qi-scale-literal-fix-a867-20261003`. Observed walls were about
+64 minutes for gold, 79 minutes for C4, and 44 minutes for fixed literal
+admission on a host with load average roughly 30–70. These are preparation
+costs, not search latency. The separate large-inventory census stdin/stdout
+pipe deadlock was fixed with a file-backed stdin and a large-input test.
+
+**NOT_RUN:** product captures on these newly admitted suites, human relevance
+review, fresh post-tuning holdout qualification, C5 decision and deployment.
+Sourcegraph/OpenGrok local endpoints on ports 7080/7081 refused connections
+at this audit; their full indexed universes are unattested. Do not combine
+these source-exposed mechanical cases with an independent holdout, infer a
+five-product ranking, or promote this admission matrix to a product decision.
+
+## Fresh C5 source preparation (2026-10-03)
+
+**VERIFIED for roster, source release, sampling and split validation;
+`diagnostic_unqualified` for quality.** Before any C5 product output, the
+selection ledger froze twelve additional complete-history repositories:
+zerolog/grpc-go/telegraf, zoxide/tauri/rust-analyzer, attrs/celery/sympy,
+and immer/chartjs/svelte. These have 11,695 `code_only` files. The provisional
+holdout release is
+`/private/tmp/qi-c5-fresh-20261003/combined-release`, digest
+`sha256:3ce648056f1e6fc6e927eb5fdcadfacbee69d3aab8d6444fdb59be302c094b56`.
+An exact/near-file audit against the ten development and twelve previously
+exposed repositories found no overlap above the declared 256-byte exact-file
+threshold or near-duplicate threshold. Small identical stubs below that
+threshold remain visible in the audit. License source files are pinned but
+approval is not attested.
+
+The old ten-repository development release used an earlier generator digest,
+so the current split validator correctly refused it. Clean source snapshot
+`40fbb710` rebuilt the same ten commits with the current generator into
+`/private/tmp/qi-c5-fresh-20261003/development-release-current`, digest
+`sha256:179f1f885e2c4f8104903d8624fec52e7f9c0f5148d048bcac32bac664ac1c70`.
+All 6,477 development `code_only` files and both release views matched the
+older release by repository. The predeclared `baseline_v3` sample was rerun
+with the same seed into `sampling-v4`; all 6,628 task rows, census summaries
+and lane counts match `sampling-v3`. The 22-repository source-replayed split
+validator passed in 337.324 seconds. Binding receipt:
+`/private/tmp/qi-c5-fresh-20261003/split-validation-v4.json`.
+
+The sampled tasks are 240 exact content, 1,200 exact declarations, 96 prefix,
+96 infix, 84 components, 4,792 OSA1 variants, and 60 each synthetic and
+wrong-repository negatives. Eight OSA1 proposals underfilled. Natural-language
+and workflow tasks underfilled 240/240. The independent declaration census
+refused 298 of rust-analyzer's 1,462 Rust files; those files are unsupported,
+not empty gold. Source gold capture and review remain separate admission gates.
+The retained first sampling attempt exited with a process crash before output;
+two later runs under the same seed produced byte-identical output. The current
+source-matched run used a new output root and changed only the split digest.
+
+**NOT_RUN for C5:** product retrieval, human relevance review, five-product
+index-universe attestation, repository-cluster decision, quiet-host timing,
+and deployment. The separate exposed twelve-repository diagnostics above
+cannot be folded into this fresh set.

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -241,6 +243,8 @@ def test_c4_independent_name_variants(tmp_path, monkeypatch, intent, query, name
     blind = holdout_c4._read(capsule / "blind.json")
     for payload in (gold, blind):
         payload["tasks"][0].update(intent=intent, query=query)
+        if intent == "declaration_name_components":
+            payload["tasks"][0]["case_semantics"] = "casefold"
     label = gold["tasks"][0]["labels"][0]
     gold["tasks"][0]["labels"] = [
         {
@@ -257,15 +261,25 @@ def test_c4_independent_name_variants(tmp_path, monkeypatch, intent, query, name
     assert report["selected"] == 1
     assert source_oracle.NAME_CONTRACTS[report["relevance_contract"]] == ("go", variant)
     assert suite["tasks"][0]["query"] == pack["tasks"][0]["query"] == query
-    expected_policy = "code_search_file"
+    expected_policy = (
+        "code_search_components_file"
+        if intent == "declaration_name_components"
+        else "code_search_file"
+    )
     assert report["execution_policy"] == expected_policy
     assert suite["tasks"][0]["evaluation_contract"] == {
-        "request_mode": "default_file_search",
+        "request_mode": (
+            "explicit_symbol_components"
+            if intent == "declaration_name_components"
+            else "default_file_search"
+        ),
         "gold_unit": "distinct_file",
         "result_unit": "distinct_file",
     }
     assert suite["suite_id"].endswith(expected_policy.replace("_", "-"))
-    assert query_plan.plan_lexical_request(expected_policy, query) == query
+    assert query_plan.plan_lexical_request(expected_policy, query) == (
+        f'components:"{query}"' if intent == "declaration_name_components" else query
+    )
 
 
 def test_c4_casefold_typo_binds_intended_name_and_request_mode(tmp_path, monkeypatch):
@@ -351,9 +365,7 @@ def test_c4_excludes_true_alternative_near_name(tmp_path, monkeypatch):
     )
     assert suite is pack is None
     assert report["selected"] == 0
-    assert report["excluded"] == [
-        {"task_id": "toy.def.001", "reason": "ambiguous_typo_target"}
-    ]
+    assert report["excluded"] == [{"task_id": "toy.def.001", "reason": "ambiguous_typo_target"}]
 
 
 def test_c4_partial_typo_excludes_before_parsing_refused_file(tmp_path, monkeypatch):
@@ -995,3 +1007,22 @@ def test_c4_matrix_optimized_replay_matches_canonical_validator(
     assert {cell["repository"] for cell in matrix["cells"]} == {"beta"}
     exact = next(cell for cell in matrix["cells"] if cell["intent"] == "declaration_name_exact")
     assert {row["reason"] for row in exact["excluded"]} >= {"query_near_duplicate"}
+
+
+@pytest.mark.parametrize("name", ["holdout_c4.py", "holdout_literal.py"])
+def test_holdout_cli_help_runs_from_external_cwd_without_pythonpath(tmp_path, name):
+    repository = Path(__file__).resolve().parents[3]
+    command = repository / "tools" / "benchmark" / "retrieval" / name
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [sys.executable, str(command), "--help"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--capsules" in result.stdout

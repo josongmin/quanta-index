@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 import selectors
+import shutil
 import signal
 import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import ExitStack, contextmanager
@@ -29,6 +31,19 @@ class ExecutionResult(NamedTuple):
     stdout: RawFile
     stderr: RawFile
     command: dict
+
+
+@contextmanager
+def transient_log_dir(prefix: str):
+    """Yield a fresh external log directory retained only for failures.
+
+    Successful executions are fully consumed inside the block, so their raw
+    files are removed on exit. Any exception (execution or consumption)
+    retains the directory because failure notes cite its path as evidence.
+    """
+    log_dir = Path(tempfile.mkdtemp(prefix=prefix)).resolve()
+    yield log_dir
+    shutil.rmtree(log_dir)
 
 
 @contextmanager

@@ -17,12 +17,20 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# corpus_binding still imports corpus_release as a top-level benchmark module.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Support direct execution from an external working directory. corpus_binding
+# also imports corpus_release as a top-level benchmark module.
+for path in (Path(__file__).resolve().parents[3], Path(__file__).resolve().parents[1]):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
-from tools.benchmark import corpus_binding
-from tools.benchmark.evidence import _read_control_file, digest_bytes, parse_json
-from tools.benchmark.retrieval import evaluator, gold_oracle, query_plan, source_oracle
+from tools.benchmark import corpus_binding  # noqa: E402
+from tools.benchmark.evidence import _read_control_file, digest_bytes, parse_json  # noqa: E402
+from tools.benchmark.retrieval import (  # noqa: E402
+    evaluator,
+    gold_oracle,
+    query_plan,
+    source_oracle,
+)
 
 MATRIX_INTENTS = tuple(sorted(gold_oracle.DECLARATION_INTENTS))
 
@@ -32,6 +40,8 @@ def _execution_policy(intent: str) -> str:
     return (
         "code_search_typo_file"
         if intent == "declaration_name_osa1_casefold"
+        else "code_search_components_file"
+        if intent == "declaration_name_components"
         else "code_search_file"
     )
 
@@ -329,7 +339,8 @@ def _derive_prepared(
             or task.get("unsupported") != []
             or type(task.get("answerable")) is not bool
             or task.get("language") != language
-            or task.get("case_semantics") != ("casefold" if intended_typo else "sensitive")
+            or task.get("case_semantics")
+            != ("casefold" if intent in gold_oracle.CASEFOLD_INTENTS else "sensitive")
             or task.get("normalization") != "none_raw_utf8"
             or task.get("scope_prefix") != ""
         ):
@@ -486,11 +497,15 @@ def _derive_prepared(
             "query_family_id": task["query_family_id"],
             "split": "eval",
             "category": task["intent"],
-            "query_intent": "bare_symbol",
+            "query_intent": (
+                "symbol_components" if intent == "declaration_name_components" else "bare_symbol"
+            ),
             "evaluation_contract": {
                 "request_mode": (
                     query_plan.EXPLICIT_OSA1_TYPO
                     if intended_typo
+                    else query_plan.EXPLICIT_SYMBOL_COMPONENTS
+                    if intent == "declaration_name_components"
                     else query_plan.DEFAULT_FILE_SEARCH
                 ),
                 "gold_unit": "distinct_file",

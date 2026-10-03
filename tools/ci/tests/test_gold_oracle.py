@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -60,6 +61,30 @@ def test_casefold_osa1_recipe_requires_explicit_case_semantics():
     bad = copy.deepcopy(recipe)
     bad["tasks"][0]["intended_name"] = "Unrelated"
     with pytest.raises(EvidenceError, match="one casefolded edit"):
+        gold_oracle.validate_recipe(bad)
+
+
+def test_component_recipe_requires_folded_name_semantics():
+    row = {
+        "task_id": "component-1",
+        "query_family_id": "family-1",
+        "intent": "declaration_name_components",
+        "query": "clean up",
+        "scope_prefix": "",
+        "language": "go",
+        "case_semantics": "casefold",
+        "normalization": "none_raw_utf8",
+    }
+    recipe = {
+        "schema_version": 2,
+        "split": "holdout",
+        "split_manifest_sha256": "a" * 64,
+        "tasks": [row],
+    }
+    assert gold_oracle.validate_recipe(recipe) == recipe
+    bad = copy.deepcopy(recipe)
+    bad["tasks"][0]["case_semantics"] = "sensitive"
+    with pytest.raises(EvidenceError, match="query semantics"):
         gold_oracle.validate_recipe(bad)
 
 
@@ -629,6 +654,7 @@ def declaration_task(task_id, intent, query, language, split="holdout"):
     return {
         **task(task_id, split, query, "", intent, language),
         "query_family_id": task_id,
+        "case_semantics": ("casefold" if intent in gold_oracle.CASEFOLD_INTENTS else "sensitive"),
     }
 
 
@@ -949,3 +975,21 @@ def test_scale_negative_excludes_literal_path_and_near_content_token(split_relea
     assert not repository.default_file_search_absent("core.py")  # indexed path
     assert not repository.default_file_search_absent("worker_0")  # indexed content
     assert repository.default_file_search_absent("zzzzzzzzz")
+
+
+def test_literal_sampling_excludes_queries_outside_product_contract():
+    from tools.benchmark.retrieval import holdout_sampling
+
+    repository = SimpleNamespace(
+        name="toy",
+        files={
+            "main.go": (
+                b"validIdentifierContent\n"
+                b"tab\tinsideIdentifier\n" + "cafe\u0301 IdentifierContent\n".encode("utf-8")
+            )
+        },
+    )
+    ledger = {}
+    tasks = holdout_sampling._literals(repository, 11, ledger, {"exact_content": 3})
+    assert [task["query"] for task in tasks] == ["validIdentifierContent"]
+    assert ledger["exact_content"]["skipped"]["outside_literal_query_contract"] == 2

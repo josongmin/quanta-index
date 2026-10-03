@@ -96,6 +96,7 @@ observations do not qualify benchmark-host idleness or performance.
 | `QUANTA_INDEX_RESOURCE_ADMISSION` | `auto`: local admission, diagnostic bypass in CI; `1` enables in CI; `0` disables; other values refuse. |
 | `QUANTA_INDEX_RESOURCE_WAIT_SECONDS` | 300, positive integer; admission timeout exits 124. |
 | `QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS` | 7200, positive integer; command timeout exits 124. |
+| `QUANTA_INDEX_TARGET_GC` | `1`: a build-like wrapper call starts `tools/ci/target_gc.py --auto` detached, at most every 6h (log: `<cache-root>/target-gc/auto.log`); `0` disables. Skipped when `CI=true`. Run manually with `just target-gc --dry-run`. |
 
 Use one shared `QUANTA_INDEX_CACHE_ROOT` when coordinating checkout/lane work.
 Do not wrap a whole orchestrator in the leaf lock: nested wrapper calls acquire it.

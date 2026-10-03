@@ -279,6 +279,32 @@ prepare_searchd_pin() {
   export QUANTA_INDEX_SEARCHD_BIN="$binary"
 }
 
+# Record lane use for tools/ci/target_gc.py and opportunistically start it.
+# The GC runs detached with all streams redirected, is rate-limited by a stamp
+# file (fast path here, authoritative under its own lock), and can never change
+# this command's exit status. Disable with QUANTA_INDEX_TARGET_GC=0.
+mark_lane_used_and_maybe_gc() {
+  if [[ "${CARGO_TARGET_DIR}" == "${QUANTA_INDEX_CACHE_ROOT}/target/"* ]]; then
+    mkdir -p "${CARGO_TARGET_DIR}" && touch "${CARGO_TARGET_DIR}/.quanta-lane-last-used"
+  fi
+  if [[ "${QUANTA_INDEX_TARGET_GC:-1}" == "0" || "${CI:-}" == "true" ]]; then
+    return 0
+  fi
+  local state_dir="${QUANTA_INDEX_CACHE_ROOT}/target-gc"
+  if [[ -n "$(find "${state_dir}/last-run" -mmin -360 2>/dev/null)" ]]; then
+    return 0
+  fi
+  mkdir -p "${state_dir}"
+  (
+    nohup python3 "${SCRIPT_DIR}/../tools/ci/target_gc.py" --auto --protect-lane "${lane}" \
+      </dev/null >"${state_dir}/auto.log" 2>&1 &
+  )
+}
+
+if needs_resource_admission "$@"; then
+  mark_lane_used_and_maybe_gc 2>/dev/null || true
+fi
+
 if requires_searchd_pin "$@"; then
   prepare_searchd_pin
 fi

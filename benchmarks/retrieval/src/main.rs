@@ -317,7 +317,8 @@ fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
         | QueryPlanError::InvalidKeyword
         | QueryPlanError::InvalidCodeSearch
         | QueryPlanError::InvalidCodeSearchExactContent
-        | QueryPlanError::InvalidCodeSearchTypo => serde_json::json!({}),
+        | QueryPlanError::InvalidCodeSearchTypo
+        | QueryPlanError::InvalidCodeSearchComponents => serde_json::json!({}),
         QueryPlanError::InvalidSubstring { reason } => serde_json::json!({"reason": reason}),
         QueryPlanError::TokenLimitExceeded { tokens, max_tokens } => {
             serde_json::json!({"tokens": tokens, "max_tokens": max_tokens})
@@ -424,6 +425,7 @@ fn validate_policy_routes(policy: QueryInputPolicy, routes: &BTreeSet<&str>) -> 
             | QueryInputPolicy::CodeSearchFile
             | QueryInputPolicy::CodeSearchExactContentFile
             | QueryInputPolicy::CodeSearchTypoFile
+            | QueryInputPolicy::CodeSearchComponentsFile
     ) && routes != &BTreeSet::from(["lexical"])
     {
         return Err(BenchError::Config(format!(

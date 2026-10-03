@@ -10,11 +10,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import shutil
+import sys
 from pathlib import Path
 
-from tools.benchmark import corpus_binding
-from tools.benchmark.evidence import digest_bytes
-from tools.benchmark.retrieval import (
+for path in (Path(__file__).resolve().parents[3], Path(__file__).resolve().parents[1]):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+from tools.benchmark import corpus_binding  # noqa: E402
+from tools.benchmark.evidence import digest_bytes  # noqa: E402
+from tools.benchmark.retrieval import (  # noqa: E402
     evaluator,
     gold_oracle,
     holdout_c4,
@@ -30,11 +35,23 @@ def _derive_prepared(prepared: holdout_c4._Prepared) -> tuple[dict, dict, dict]:
     gold_tasks = prepared.gold["tasks"]
     blind_tasks = prepared.blind["tasks"]
     name = prepared.selection["repository"]
+    eligible_queries = set()
+    for task in gold_tasks:
+        if task["intent"] != INTENT:
+            continue
+        try:
+            literal_source_oracle.require_literal(task["query"])
+        except literal_source_oracle.LiteralOracleError:
+            continue
+        eligible_queries.add(task["query"])
+    if not eligible_queries:
+        raise ValueError("literal capsule has no admitted exact-content task")
     oracle = literal_source_oracle.LiteralSourceOracleIndex(
         {path: (raw, prepared.source.file(path)[2]) for path, raw in prepared.files.items()},
-        {task["query"] for task in gold_tasks if task["intent"] == INTENT},
+        eligible_queries,
     )
     selected = []
+    excluded = []
     for task, public in zip(gold_tasks, blind_tasks, strict=True):
         if not isinstance(task, dict) or not isinstance(public, dict):
             raise ValueError("literal capsule task is malformed")
@@ -54,7 +71,16 @@ def _derive_prepared(prepared: holdout_c4._Prepared) -> tuple[dict, dict, dict]:
             or task.get("answerable") is not True
         ):
             raise ValueError(f"literal task is unjudged or unsupported: {task['task_id']}")
-        query_plan.plan_lexical_request(POLICY, task["query"])
+        if task["query"] not in eligible_queries:
+            excluded.append(
+                {"task_id": task["task_id"], "reason": "outside_literal_query_contract"}
+            )
+            continue
+        try:
+            query_plan.plan_lexical_request(POLICY, task["query"])
+        except query_plan.QueryPlanError:
+            excluded.append({"task_id": task["task_id"], "reason": "query_not_admitted"})
+            continue
         spans = oracle.spans(task["query"])
         observed = [
             (label["path"], label["start_byte"], label["end_byte"]) for label in task["labels"]
@@ -70,11 +96,24 @@ def _derive_prepared(prepared: holdout_c4._Prepared) -> tuple[dict, dict, dict]:
             ):
                 raise ValueError(f"literal label kind or file hash differs: {task['task_id']}")
         if not oracle.indexed_nfc_membership_matches(task["query"]):
-            raise ValueError(f"literal raw/indexed NFC file membership differs: {task['task_id']}")
+            excluded.append(
+                {"task_id": task["task_id"], "reason": "raw_indexed_file_membership_differs"}
+            )
+            continue
+        try:
+            for prior in selected:
+                evaluator.check_query_near_duplicates(
+                    [
+                        (prior["task_id"], prior["query"]),
+                        (task["task_id"], task["query"]),
+                    ]
+                )
+        except evaluator.EvidenceError:
+            excluded.append({"task_id": task["task_id"], "reason": "query_near_duplicate"})
+            continue
         selected.append(task)
     if not selected:
         raise ValueError("literal capsule has no admitted exact-content task")
-    evaluator.check_query_near_duplicates([(task["task_id"], task["query"]) for task in selected])
     rows = []
     for task in selected:
         query = task["query"]
@@ -138,6 +177,7 @@ def _derive_prepared(prepared: holdout_c4._Prepared) -> tuple[dict, dict, dict]:
         "repository": name,
         "selected": len(selected),
         "selected_task_ids": [task["task_id"] for task in selected],
+        "excluded": excluded,
         "relevance_contract": literal_source_oracle.CONTENT_LITERAL_UTF8_EXACT,
         "execution_policy": POLICY,
         "routes": ["lexical"],
@@ -181,6 +221,7 @@ def derive_batch(
                 "repository": name,
                 "selected_task_ids": admission["selected_task_ids"],
                 "selected": admission["selected"],
+                "excluded": admission["excluded"],
                 "gold_capsule_identity_sha256": prepared.identity_sha256,
                 "suite_sha256": hashlib.sha256(evaluator.canonical(suite)).hexdigest(),
                 "blind_pack_sha256": hashlib.sha256(evaluator.canonical(pack)).hexdigest(),

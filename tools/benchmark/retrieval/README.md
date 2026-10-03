@@ -126,6 +126,17 @@ golden, re-derived independently by `query_plan.py`:
   query and effective request have separate digests. This profile is a
   diagnostic intent, and its declaration-derived positive gold is not an
   exhaustive judgment of every returned file.
+- `code_search_components_file` (`quanta-code-search-components-file-v1`):
+  submit 2–32 canonical lowercase ASCII components as
+  `components:"word word"` through SDK `.code_search(...)`. Ordered adjacent
+  components must occur in one indexed symbol local name. The engine projects
+  matched symbols to scored distinct files. The independent replay derives
+  the effective request and digest from the raw component sequence. This is
+  a separate diagnostic request mode; it is not default content/path search.
+  The product refuses an in-scope file with incomplete symbol coverage;
+  a source-oracle exclusion in a diagnostic suite does not override that
+  product requirement. Preserve such a refusal as an execution failure;
+  do not score it as a retrieval miss.
 
 Every file-projection result records `rank_unit: distinct_file` (the unit) and
 `ordering` (how the units are ordered, derived from the policy). The evaluator
@@ -182,8 +193,9 @@ requires schema-v3 repository-disjoint admission, a complete source-bound
 file-judgment suite, scored native file ordering, and the other qualified
 controls. Its separate `file-judgments-complete-v1` report uses
 `file_ndcg_at_10`; the verdict replays it from the merged record. This code
-path has no qualified native capture yet. `code_search_typo_file` and
-`code_search_exact_content_file` remain diagnostic. Run the exact-name and
+path has no qualified native capture yet. `code_search_typo_file`,
+`code_search_components_file`, and `code_search_exact_content_file` remain
+diagnostic. Run the exact-name and
 each identifier-robustness lane in separate fresh output roots; never
 aggregate their scores into one denominator.
 Use `judgment_policy: complete_ranked_pool_v1` for newly reviewed file or

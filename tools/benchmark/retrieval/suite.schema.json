@@ -140,7 +140,7 @@
         "answerable": {"type": "boolean"},
         "category": {"type": "string", "minLength": 1},
         "query_intent": {
-          "enum": ["bare_symbol", "semantic_intent", "exact_content"],
+          "enum": ["bare_symbol", "symbol_components", "semantic_intent", "exact_content"],
           "description": "Suite-author declaration. This is omitted from the blinded runner pack."
         },
         "intended_name": {
@@ -164,14 +164,16 @@
          "then": {
            "required": ["query_intent", "judgment_policy"],
            "properties": {
-             "query_intent": {"enum": ["bare_symbol", "exact_content"]},
+             "query_intent": {"enum": ["bare_symbol", "symbol_components", "exact_content"]},
              "judgment_policy": {"const": "source_oracle_complete_v1"}
            },
            "not": {"required": ["label_review"]},
            "allOf": [
              {"if": {"properties": {"source_oracle": {"properties": {"contract": {"const": "content_literal_utf8_exact_v1"}}}}},
               "then": {"properties": {"query_intent": {"const": "exact_content"}}},
-              "else": {"properties": {"query_intent": {"const": "bare_symbol"}}}},
+              "else": {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "explicit_symbol_components"}}}}, "required": ["evaluation_contract"]},
+                       "then": {"properties": {"query_intent": {"const": "symbol_components"}}},
+                       "else": {"properties": {"query_intent": {"const": "bare_symbol"}}}}},
              {"if": {"properties": {"source_oracle": {"properties": {"unit": {"const": "symbol"}}}}},
               "then": {"required": ["declaration_judgments"], "not": {"required": ["file_judgments"]}}},
              {"if": {"properties": {"source_oracle": {"properties": {"unit": {"const": "distinct_file"}}}}},
@@ -191,7 +193,9 @@
               "else": {"required": ["file_judgments"], "not": {"required": ["declaration_judgments"]},
                        "properties": {"source_oracle": {"properties": {"unit": {"const": "distinct_file"}}}}}},
              {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "explicit_osa1_typo"}}}}},
-              "then": {"properties": {"query_intent": {"const": "bare_symbol"}}}}
+              "then": {"properties": {"query_intent": {"const": "bare_symbol"}}}},
+             {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "explicit_symbol_components"}}}}},
+              "then": {"properties": {"query_intent": {"const": "symbol_components"}}}}
            ]
          }},
         {"if": {"required": ["intended_name"]},
@@ -199,7 +203,7 @@
            "required": ["evaluation_contract", "source_oracle"],
            "properties": {
              "query_intent": {"const": "bare_symbol"},
-             "evaluation_contract": {"properties": {"request_mode": {"enum": ["default_file_search", "explicit_osa1_typo"]}}},
+             "evaluation_contract": {"properties": {"request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "explicit_symbol_components"]}}},
              "source_oracle": {"properties": {"contract": {"enum": [
                "go_exact_local_name_v3", "rust_exact_local_name_v1", "python_exact_local_name_v1",
                "typescript_exact_local_name_v1", "javascript_exact_local_name_v1"
@@ -214,7 +218,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["request_mode", "gold_unit", "result_unit"],
       "properties": {
-        "request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "declaration_navigation"]},
+        "request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "explicit_symbol_components", "declaration_navigation"]},
         "gold_unit": {"enum": ["distinct_file", "symbol"]},
         "result_unit": {"enum": ["distinct_file", "symbol"]}
       },

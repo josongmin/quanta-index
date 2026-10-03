@@ -11459,7 +11459,9 @@ def test_pair_spec_refuses_diagnostic_rank_profiles_before_quality_gate(tmp_path
             pairrun.load_spec(spec_path)
 
 
-@pytest.mark.parametrize("policy", ["code_search_file", "code_search_typo_file"])
+@pytest.mark.parametrize(
+    "policy", ["code_search_file", "code_search_typo_file", "code_search_components_file"]
+)
 def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, policy):
     spec_path = tmp_path / "pair-spec.json"
     spec = _g0_spec()
@@ -11515,7 +11517,10 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
             pairrun.load_spec(spec_path)
 
 
-@pytest.mark.parametrize("policy", ["code_search_exact_content_file", "code_search_typo_file"])
+@pytest.mark.parametrize(
+    "policy",
+    ["code_search_exact_content_file", "code_search_typo_file", "code_search_components_file"],
+)
 def test_qualified_file_stage_refuses_nondefault_mode_before_capture(tmp_path, policy):
     spec = {
         "scope": "qualified",
@@ -11529,7 +11534,10 @@ def test_qualified_file_stage_refuses_nondefault_mode_before_capture(tmp_path, p
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize("policy", ["code_search_exact_content_file", "code_search_typo_file"])
+@pytest.mark.parametrize(
+    "policy",
+    ["code_search_exact_content_file", "code_search_typo_file", "code_search_components_file"],
+)
 def test_verdict_never_qualifies_nondefault_file_policy(tmp_path, policy):
     st = _pair_stage(tmp_path, claims={"quality": True})
     lock_path = st["stage"] / "protocol-lock.json"
@@ -14390,6 +14398,7 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
         "code_search_file",
         "code_search_exact_content_file",
         "code_search_typo_file",
+        "code_search_components_file",
     ):
         run["span_accounting_version"] = 1
     for task, row in zip(suite["tasks"], run["results"], strict=True):
@@ -14406,6 +14415,7 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
             "code_search_file",
             "code_search_exact_content_file",
             "code_search_typo_file",
+            "code_search_components_file",
         ):
             repo_bytes = b"bench-repo"
             for path, item in by_file.items():
@@ -14653,6 +14663,21 @@ def test_keyword_file_native_score_evidence_is_complete_and_ordered(tmp_path):
         record_v3(repo, suite, mixed, suite_path, runner_path)
 
 
+def test_component_file_policy_rederives_request_and_refuses_noncanonical_input():
+    policy = "code_search_components_file"
+    request = qp.plan_lexical_request(policy, "clean up")
+    assert request == 'components:"clean up"'
+    assert qp.execution_profile(policy)["profile_id"] == "quanta-code-search-components-file-v1"
+    assert qp.FILE_PROJECTION_ORDERING[policy] == qp.ORDERING_SCORE_DESC
+    assert qp.derive_query_identity(policy, "clean up") != qp.derive_query_identity(
+        "code_search_file", "clean up"
+    )
+    assert qp.QUANTA_EVALUATION_POLICIES["explicit_symbol_components"] == frozenset((policy,))
+    for raw in ("clean", "clean  up", "Clean up", "clean_up", "clean\tup", "clean up ", "café up"):
+        with pytest.raises(qp.QueryPlanError):
+            qp.plan_lexical_request(policy, raw)
+
+
 def test_code_search_file_policy_binds_syntax_scores_and_file_unit(tmp_path):
     assert qp.plan_lexical_request("code_search_file", "writeContentType") == "writeContentType"
     assert qp.plan_lexical_request("code_search_file", "Go To") == "Go To"
@@ -14736,14 +14761,22 @@ def test_code_search_file_policy_binds_syntax_scores_and_file_unit(tmp_path):
     [
         ("code_search_file", "default_file_search"),
         ("code_search_typo_file", "explicit_osa1_typo"),
+        ("code_search_components_file", "explicit_symbol_components"),
     ],
 )
 def test_evaluation_contract_binds_file_request_gold_result_and_mrr(tmp_path, policy, mode):
+    queries = (
+        ["alpha two", "alpha three"]
+        if policy == "code_search_components_file"
+        else ["alphaTwo", "alphaThree"]
+    )
     repo, suite, run, suite_path, runner_path = _file_projection_run(
-        tmp_path, policy, reverse=True, queries=["alphaTwo", "alphaThree"]
+        tmp_path, policy, reverse=True, queries=queries
     )
     for task in suite["tasks"]:
-        task["query_intent"] = "bare_symbol"
+        task["query_intent"] = (
+            "symbol_components" if mode == "explicit_symbol_components" else "bare_symbol"
+        )
         task["evaluation_contract"] = {
             "request_mode": mode,
             "gold_unit": "distinct_file",

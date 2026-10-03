@@ -9,10 +9,11 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::ops::Range;
 
 use quanta_index_contract::{
-    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, HighlightSpan, LexicalCandidate, LqExpr, LqFilter,
-    LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqSelect, MAX_CODE_SEARCH_TERM_BYTES,
-    MAX_CODE_SEARCH_TERMS, PreviewByteRange, PreviewKind, PreviewMetadata,
-    PreviewUnavailableReason, QueryConstraintSetV1, valid_code_search_typo_identifier,
+    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, HighlightSpan,
+    LexicalCandidate, LqExpr, LqFilter, LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
+    MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, PreviewByteRange, PreviewKind,
+    PreviewMetadata, PreviewUnavailableReason, QueryConstraintSetV1,
+    valid_code_search_typo_identifier,
 };
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
 use quanta_index_lq_regex::RegexExecutor;
@@ -20,6 +21,9 @@ use quanta_index_lq_trigram::{
     DocId, MAX_CANDIDATE_PRE_VERIFY, Trigram, TrigramIndex, TrigramIntersectionError, trigrams_of,
 };
 use sha2::{Digest as _, Sha256};
+use tantivy::Term;
+use tantivy::query::{BooleanQuery, Occur, TermQuery};
+use tantivy::schema::{IndexRecordOption, TantivyDocument, Value as _};
 
 use crate::TantivySearcher;
 use crate::file_authority::{FileAuthority, SourceFile};
@@ -57,6 +61,7 @@ pub(crate) struct CodeSearchPlan {
     terms: Vec<CodeSearchTerm>,
     case: CaseMode,
     typo: Option<String>,
+    components: Option<Vec<String>>,
 }
 
 fn unsupported(reason: &str) -> CoreError {
@@ -159,6 +164,27 @@ impl CodeSearchPlan {
                 terms: Vec::new(),
                 case: query.options.case_mode(),
                 typo: Some(identifier.clone()),
+                components: None,
+            });
+        }
+        if let [LqExpr::Leaf(LqLeaf::Predicate { name, args })] = parts
+            && name == CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE
+        {
+            let [LqPredicateArg::RawString(value)] = args.as_slice() else {
+                return Err(unsupported(
+                    "components: requires one raw component sequence",
+                ));
+            };
+            if query.options.case_mode() != CaseMode::Folded {
+                return Err(unsupported("components: accepts folded case only"));
+            }
+            let components = crate::symbol_components::query_components(value)
+                .ok_or_else(|| unsupported("components: requires canonical lower-case words"))?;
+            return Ok(Self {
+                terms: Vec::new(),
+                case: CaseMode::Folded,
+                typo: None,
+                components: Some(components),
             });
         }
         let regex_terms = parts
@@ -268,6 +294,7 @@ impl CodeSearchPlan {
             terms,
             case,
             typo: None,
+            components: None,
         })
     }
 
@@ -1437,14 +1464,17 @@ fn file_candidate(
         snippet_hit_offset: None,
         highlights: Vec::new(),
     };
-    let Some(witness) = focus else {
-        return Err(CoreError::Storage(
-            "lexical: matched file has no positive witness".into(),
-        ));
-    };
     if !materialize_preview {
         return Ok(candidate);
     }
+    let Some(witness) = focus else {
+        candidate.preview = Some(PreviewMetadata::unavailable(
+            PreviewKind::SourceFile,
+            PreviewUnavailableReason::NoPositiveWitness,
+            Some(source),
+        ));
+        return Ok(candidate);
+    };
     // Each file has one row. Score/repo/path already give distinct order
     // keys, so line lookup can stay on the selected page without changing
     // sort or cursor order.
@@ -1586,6 +1616,169 @@ fn file_candidate(
 }
 
 impl TantivySearcher {
+    /// Match ordered components in one stored symbol name before projecting
+    /// the result to its immutable source file. The posting conjunction is a
+    /// bounded superset; only the stored name decides membership.
+    fn search_code_files_components(
+        &self,
+        authority: &FileAuthority,
+        query: &LqQuery,
+        components: &[String],
+        constraints: &QueryConstraintSetV1,
+        page: &LexicalPageSpec,
+        budget: &RequestBudgetV1,
+    ) -> Result<LexicalSearchPageV1, CoreError> {
+        // CodeSearch has a file result domain, so the ordinary lexical plan
+        // does not infer symbol authority. Source-byte absence cannot prove
+        // an incomplete symbol census safe: the producer contract does not
+        // require local_name to be a literal source-byte slice.
+        quanta_index_core::domains::lexical::require_complete_symbol_coverage(
+            self.source_coverage.as_ref(),
+            |entry| {
+                let path = entry.source.file.repo_relative_path.as_str();
+                Ok(Self::manual_exact_path_allows(path, constraints)
+                    && (constraints.language_any_of.is_empty()
+                        || constraints.language_any_of.contains(&entry.language)))
+            },
+            budget,
+        )?;
+        let mut clauses = Vec::with_capacity(components.len());
+        for component in components.iter().collect::<BTreeSet<_>>() {
+            let term = Term::from_field_text(self.fields.symbol_component_folded, component);
+            clauses.push((
+                Occur::Must,
+                Box::new(TermQuery::new(term, IndexRecordOption::Basic))
+                    as Box<dyn tantivy::query::Query>,
+            ));
+        }
+        let compiled =
+            self.with_doc_kind(Box::new(BooleanQuery::new(clauses)), crate::SYMBOL_DOC_KIND);
+        let searcher = self.reader.searcher();
+        let rows = self.collect_whole_set(
+            &searcher,
+            &*compiled,
+            1.0,
+            "code search symbol components",
+            budget,
+        )?;
+        let mut files: BTreeMap<quanta_index_contract::SourceFileKey, (u32, String)> =
+            BTreeMap::new();
+        for row in rows.iter() {
+            budget.checkpoint("lexical:code-search-symbol-component-verify")?;
+            let doc = searcher
+                .doc::<TantivyDocument>(row.address)
+                .map_err(|error| {
+                    CoreError::Storage(format!("lexical: read component symbol: {error}"))
+                })?;
+            let mut names = doc.get_all(self.fields.symbol_local_name);
+            let name = names
+                .next()
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    CoreError::Storage("lexical: component symbol lacks local name".into())
+                })?;
+            if names.next().is_some() {
+                return Err(CoreError::Storage(
+                    "lexical: component symbol has duplicate local names".into(),
+                ));
+            }
+            let have = crate::symbol_components::name_components(name);
+            if !crate::symbol_components::contains_ordered_components(&have, components) {
+                continue;
+            }
+            let symbol = self.document_to_symbol_candidate_identity(&doc, 0.0)?;
+            let source = symbol.source.ok_or_else(|| {
+                CoreError::Storage("lexical: component symbol lacks source identity".into())
+            })?;
+            let file = authority.files.get(&source.file).ok_or_else(|| {
+                CoreError::Storage(
+                    "lexical: component symbol file is absent from source authority".into(),
+                )
+            })?;
+            if file.source != source {
+                return Err(CoreError::Storage(
+                    "lexical: component symbol source revision differs from file authority".into(),
+                ));
+            }
+            if constraints
+                .repo_relative_path_exact
+                .as_ref()
+                .is_some_and(|path| path.as_str() != source.file.repo_relative_path.as_str())
+                || (!constraints.language_any_of.is_empty()
+                    && !constraints.language_any_of.contains(&file.language))
+            {
+                continue;
+            }
+            // An exact local-name component sequence precedes a subrun in a
+            // longer name. No body-frequency score enters this typed mode.
+            let score = if have == components { 200 } else { 100 };
+            match files.entry(source.file) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let _inserted = entry.insert((score, name.to_owned()));
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let prior = entry.get();
+                    if score > prior.0 || (score == prior.0 && name < prior.1.as_str()) {
+                        let _replaced = entry.insert((score, name.to_owned()));
+                    }
+                }
+            }
+        }
+        let mut ranked = Vec::with_capacity(files.len());
+        for (key, (score, name)) in files {
+            budget.checkpoint("lexical:code-search-symbol-component-file")?;
+            let file = authority.files.get(&key).ok_or_else(|| {
+                CoreError::Storage("lexical: component result file disappeared".into())
+            })?;
+            let witness = file
+                .folded_text
+                .as_deref()
+                .map(|text| {
+                    best_in(
+                        text,
+                        &name.to_ascii_lowercase(),
+                        HitSurface::Content,
+                        CaseMode::Folded,
+                        budget,
+                    )
+                })
+                .transpose()?
+                .flatten();
+            ranked.push((
+                file_candidate(self, file, score as f32, witness.as_ref(), false, budget)?,
+                witness,
+            ));
+        }
+        ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
+        if let Some(after) = self.page_boundary(page)? {
+            ranked.retain(|(candidate, _)| after.admits(&candidate.order_key()));
+        }
+        let exact_total = Some(u64::try_from(ranked.len()).map_err(|error| {
+            CoreError::Storage(format!("lexical: component file count overflow: {error}"))
+        })?);
+        ranked.truncate(Self::page_limit(
+            query,
+            usize::try_from(page.fetch).map_err(|error| {
+                CoreError::Storage(format!("lexical: component fetch overflow: {error}"))
+            })?,
+        ));
+        for (candidate, witness) in &mut ranked {
+            budget.checkpoint("lexical:code-search-symbol-component-preview")?;
+            let source = candidate.source.as_ref().ok_or_else(|| {
+                CoreError::Storage("lexical: component result lacks source".into())
+            })?;
+            let file = authority.files.get(&source.file).ok_or_else(|| {
+                CoreError::Storage("lexical: component preview file disappeared".into())
+            })?;
+            *candidate =
+                file_candidate(self, file, candidate.score, witness.as_ref(), true, budget)?;
+        }
+        Ok(LexicalSearchPageV1 {
+            candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
+            exact_total,
+        })
+    }
+
     fn search_code_files_typo(
         &self,
         authority: &FileAuthority,
@@ -1716,6 +1909,16 @@ impl TantivySearcher {
                 query,
                 identifier,
                 parsed.case,
+                constraints,
+                page,
+                budget,
+            );
+        }
+        if let Some(components) = parsed.components.as_deref() {
+            return self.search_code_files_components(
+                authority,
+                query,
+                components,
                 constraints,
                 page,
                 budget,

@@ -32,15 +32,16 @@ pub use ids::{
     ManifestGeneration, RepoId, RepoRelativePath, RepositoryRevisionIdentityV1, RevisionId,
 };
 pub use query::{
-    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, ExactRepoRelativePathV1, GenerationPin,
-    GenerationSelector, INTERNAL_FETCH_CEILING, INTERNAL_FETCH_OUT_OF_RANGE_CODE,
-    InternalFetchOutOfRangeV1, LanguageCode, LexicalCursor, LexicalRowOrderKey,
-    MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, MAX_CODE_SEARCH_TYPO_BYTES,
-    MIN_CODE_SEARCH_TYPO_BYTES, PUBLIC_TOP_K_MAX, PUBLIC_TOP_K_MIN,
+    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE,
+    ExactRepoRelativePathV1, GenerationPin, GenerationSelector, INTERNAL_FETCH_CEILING,
+    INTERNAL_FETCH_OUT_OF_RANGE_CODE, InternalFetchOutOfRangeV1, LanguageCode, LexicalCursor,
+    LexicalRowOrderKey, MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS,
+    MAX_CODE_SEARCH_TYPO_BYTES, MIN_CODE_SEARCH_TYPO_BYTES, PUBLIC_TOP_K_MAX, PUBLIC_TOP_K_MIN,
     QUERY_CURSOR_GENERATION_MISMATCH_CODE, QUERY_CURSOR_UNSUPPORTED_CODE,
     QueryConstraintIntersectionV1, QueryConstraintSetV1, TOP_K_OUT_OF_RANGE_CODE, TextQueryRequest,
-    TextQuerySyntax, TopKOutOfRangeV1, continuation_fetch_size, valid_code_search_typo_identifier,
-    validate_internal_fetch_size, validate_lexical_page_v1, validate_public_top_k,
+    TextQuerySyntax, TopKOutOfRangeV1, continuation_fetch_size, valid_code_search_component_query,
+    valid_code_search_typo_identifier, validate_internal_fetch_size, validate_lexical_page_v1,
+    validate_public_top_k,
 };
 pub use results::{
     ApproximateMethodV2, ApproximateQualityContractV2, CURSOR_ENVELOPE_V2_VERSION,

@@ -379,6 +379,183 @@ fn explicit_typo_search_uses_source_tokens_and_valid_spans() -> TestResult {
 }
 
 #[test]
+fn symbol_components_match_one_ordered_name_and_page_distinct_files() -> TestResult {
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        scope(
+            "source-a",
+            "exact.rs",
+            &[("exact", "UpdateAvailableNo", "A::UpdateAvailableNo", None)],
+        )?,
+        scope(
+            "source-a",
+            "longer.rs",
+            &[(
+                "longer",
+                "UpdateAvailableNoCurrentVersion",
+                "B::UpdateAvailableNoCurrentVersion",
+                None,
+            )],
+        )?,
+        scope(
+            "source-a",
+            "reversed.rs",
+            &[(
+                "reversed",
+                "UpdateNoAvailable",
+                "C::UpdateNoAvailable",
+                None,
+            )],
+        )?,
+        scope(
+            "source-a",
+            "split.rs",
+            &[
+                ("update", "Update", "D::Update", None),
+                ("available", "AvailableNo", "D::AvailableNo", None),
+            ],
+        )?,
+    ])?;
+    let mut query = code_query(&["update available no"], false);
+    query.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.symbol_components".into(),
+        args: vec![LqPredicateArg::RawString("update available no".into())],
+    });
+    let budget = RequestBudgetV1::unbounded();
+    let first = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
+        &budget,
+    )?;
+    assert_eq!(first.exact_total, Some(2));
+    assert_eq!(
+        first
+            .candidates
+            .iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["exact.rs", "longer.rs"]
+    );
+    assert!(first.candidates[0].score > first.candidates[1].score);
+
+    let one = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(1),
+        &budget,
+    )?;
+    assert_eq!(one.candidates.len(), 1);
+    assert_eq!(
+        one.candidates[0].candidate_id,
+        first.candidates[0].candidate_id
+    );
+    let next = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec {
+            fetch: 1,
+            after: Some(LexicalCursor::at(
+                ManifestGeneration::new(1),
+                one.candidates[0].order_key(),
+            )),
+        },
+        &budget,
+    )?;
+    assert_eq!(next.candidates.len(), 1);
+    assert_eq!(
+        next.candidates[0].candidate_id,
+        first.candidates[1].candidate_id
+    );
+    let mut sensitive = query;
+    sensitive.options.case = Some(LqCase::Sensitive);
+    assert!(matches!(
+        searcher.search_constrained(
+            &sensitive,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &budget,
+        ),
+        Err(CoreError::Typed { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn symbol_components_refuse_incomplete_in_scope_source() -> TestResult {
+    let complete = scope(
+        "source-a",
+        "complete.rs",
+        &[("clean", "cleanUp", "C::cleanUp", None)],
+    )?;
+    let mut incomplete = scope("source-a", "CLEAN-UP.rs", &[])?;
+    incomplete.coverage.symbols = SymbolCoverage::ParseFailed;
+    let (_dir, searcher) = fixture_with_scopes(vec![complete, incomplete])?;
+    let mut query = code_query(&["clean up"], false);
+    query.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.symbol_components".into(),
+        args: vec![LqPredicateArg::RawString("clean up".into())],
+    });
+    let error = searcher
+        .search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )
+        .expect_err("incomplete symbol authority must not look like complete search");
+    assert!(matches!(
+        error,
+        CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SymbolCoverageIncomplete,
+            ..
+        }
+    ));
+    let constraints = QueryConstraintSetV1 {
+        language_any_of: BTreeSet::new(),
+        repo_relative_path_exact: Some(
+            quanta_index_contract::ExactRepoRelativePathV1::new("complete.rs")
+                .map_err(str::to_string)?,
+        ),
+    };
+    let page = searcher.search_constrained(
+        &query,
+        &constraints,
+        &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(page.exact_total, Some(1));
+    assert_eq!(
+        page.candidates[0].repo_relative_path.as_str(),
+        "complete.rs"
+    );
+
+    let complete = scope(
+        "source-a",
+        "complete.rs",
+        &[("clean", "cleanUp", "C::cleanUp", None)],
+    )?;
+    let mut no_literal_component = scope("source-a", "unparsed.rs", &[])?;
+    no_literal_component.coverage.symbols = SymbolCoverage::ParseFailed;
+    let (_dir, searcher) = fixture_with_scopes(vec![complete, no_literal_component])?;
+    let error = searcher
+        .search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )
+        .expect_err("source-byte absence does not establish a complete symbol census");
+    assert!(matches!(
+        error,
+        CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SymbolCoverageIncomplete,
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[test]
 fn default_bare_identifier_uses_osa1_only_after_empty_literal_search() -> TestResult {
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("near.rs", "load_json", 4)?,

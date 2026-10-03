@@ -416,3 +416,53 @@ fn lexical_full_fidelity_matrix() -> AnyResult<()> {
     }
     Err(anyhow::anyhow!("{buf}"))
 }
+
+#[test]
+fn code_search_components_use_symbol_names_through_live_driver() -> AnyResult<()> {
+    let mut rt = E2eRuntime::boot()?;
+    for (path, content, symbols) in [
+        ("components/exact.rs", "fn cleanUp() {}", &["cleanUp"][..]),
+        (
+            "components/longer.rs",
+            "fn cleanUpNow() {}",
+            &["cleanUpNow"][..],
+        ),
+        (
+            "components/split.rs",
+            "fn clean() {} fn up() {}",
+            &["clean", "up"][..],
+        ),
+        (
+            "components/reversed.rs",
+            "fn upClean() {}",
+            &["upClean"][..],
+        ),
+    ] {
+        rt.ingest_text("repo-e2e", path, content)?;
+        for (index, name) in symbols.iter().enumerate() {
+            rt.ingest_symbol("repo-e2e", path, &format!("{path}-{index}"), name)?;
+        }
+    }
+    _ = rt.seal()?;
+    let mut rt = rt.reopen();
+    let result = rt.query_text(TextQuerySyntax::CodeSearch, "components:\"clean up\"", 10);
+    assert!(result.typed_error.is_none());
+    assert_eq!(
+        result
+            .candidates
+            .iter()
+            .map(|candidate| candidate.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["components/exact.rs", "components/longer.rs"]
+    );
+    assert!(result.candidates[0].score > result.candidates[1].score);
+
+    let absent = rt.query_text(
+        TextQuerySyntax::CodeSearch,
+        "components:\"clean missing\"",
+        10,
+    );
+    assert!(absent.typed_error.is_none());
+    assert!(absent.candidates.is_empty());
+    Ok(())
+}

@@ -555,6 +555,7 @@ def test_matrix_admits_frozen_queries_and_rejects_label_leakage():
     matrix._admit_queries({"tasks": [{"query": "read request body"}]}, "natural_language")
     matrix._admit_queries({"tasks": [{"query": "Handler123"}]}, "code_search_file")
     matrix._admit_queries({"tasks": [{"query": "Handler123"}]}, "code_search_typo_file")
+    matrix._admit_queries({"tasks": [{"query": "read request"}]}, "code_search_components_file")
     matrix._admit_queries(
         {"tasks": [{"query": "read request body"}]}, "code_search_exact_content_file"
     )
@@ -563,6 +564,7 @@ def test_matrix_admits_frozen_queries_and_rejects_label_leakage():
         ({"tasks": [{"query": "x" * 97}]}, "natural_language"),
         ({"tasks": [{"query": "word!"}]}, "code_search_file"),
         ({"tasks": [{"query": "ab"}]}, "code_search_typo_file"),
+        ({"tasks": [{"query": "Read request"}]}, "code_search_components_file"),
         ({"tasks": [{"query": "x" * 257}]}, "code_search_exact_content_file"),
         ({"tasks": [{"query": "word", "gold": []}]}, "native"),
         ({"tasks": [{"query": "word"}], "gold": []}, "native"),
