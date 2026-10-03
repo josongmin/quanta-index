@@ -1150,7 +1150,7 @@ mod code_search_score_tests {
     fn code_search_score_decomposition_rejects_cross_engine_overflow_and_mismatches() {
         let valid = fixed_trace();
         let row = lexical_trace_row_v1("file:fixture", &valid).expect("valid trace");
-        assert_eq!(row.contribution, 109.0);
+        assert_eq!(row.contribution.to_bits(), 109.0_f64.to_bits());
         assert_eq!(row.signal_name.as_ref(), "lexical.code_search_file");
         let mut refused = valid.clone();
         refused.code_search_rank_study = None;
@@ -1166,18 +1166,19 @@ mod code_search_score_tests {
         assert_eq!(
             lexical_trace_row_v1("file:fixture", &refused)
                 .expect("selected score survives optional refusal")
-                .contribution,
-            109.0
+                .contribution
+                .to_bits(),
+            109.0_f64.to_bits()
         );
         for mutate in [
             |trace: &mut LexicalScoreTraceV1| {
-                trace.code_search_rank_study = fixed_trace().code_search_rank_study
+                trace.code_search_rank_study = fixed_trace().code_search_rank_study;
             },
             |trace: &mut LexicalScoreTraceV1| trace.code_search_components = None,
             |trace: &mut LexicalScoreTraceV1| trace.engine = LexicalScoreEngineV1::Bm25,
             |trace: &mut LexicalScoreTraceV1| {
                 trace.code_search_rank_study_refusal =
-                    Some(quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled)
+                    Some(quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled);
             },
         ] {
             let mut invalid = refused.clone();
@@ -1194,14 +1195,14 @@ mod code_search_score_tests {
                     .code_search_components
                     .as_mut()
                     .expect("components")
-                    .occurrence = u32::MAX
+                    .occurrence = u32::MAX;
             },
             |trace: &mut LexicalScoreTraceV1| {
                 trace
                     .code_search_rank_study
                     .as_mut()
                     .expect("study")
-                    .baseline = 108
+                    .baseline = 108;
             },
             |trace: &mut LexicalScoreTraceV1| trace.code_search_components = None,
             |trace: &mut LexicalScoreTraceV1| {
@@ -1209,7 +1210,7 @@ mod code_search_score_tests {
                     .code_search_rank_study
                     .as_mut()
                     .expect("study")
-                    .declaration_coverage_complete = true
+                    .declaration_coverage_complete = true;
             },
         ] {
             let mut invalid = valid.clone();

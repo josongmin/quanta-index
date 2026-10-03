@@ -660,7 +660,7 @@ def verify_and_score_capture(
 
 
 def _bind_external_execution_profile(sidecar: dict[str, Any], record: dict[str, Any]) -> None:
-    """Tie the validated capture to the signed external admission policy."""
+    """Tie the validated capture to the commitment-bound external admission policy."""
     admission = sidecar.get("admission")
     if (
         not isinstance(admission, dict)
@@ -836,7 +836,7 @@ def prepare_external_lanes(
         clarc_raw_inputs["project_license_info"],
         clarc_data_root,
     )
-    config = {"max_tokens": 128, "max_token_chars": 96, "min_token_chars": 1}
+    config = {"max_tokens": 64, "max_token_chars": 96, "min_token_chars": 1}
     profile = query_plan.execution_profile("natural_language_file", config)
     lanes = {}
     for variant in ("original", "neutral_renamed"):
@@ -849,7 +849,7 @@ def prepare_external_lanes(
             repo,
             commit,
             clarc_raw_inputs,
-            suite_id=name + "-nl128-diagnostic",
+            suite_id=name + "-nl64-diagnostic",
             config=config,
         )
         written = write_freeze(pack, sidecar, freezes_root / name)
@@ -892,7 +892,7 @@ def prepare_external_lanes(
             repo,
             commit,
             language=language,
-            suite_id=name + "-nl128-pool-diagnostic",
+            suite_id=name + "-nl64-pool-diagnostic",
             config=config,
         )
         written = write_freeze(pack, sidecar, freezes_root / name)

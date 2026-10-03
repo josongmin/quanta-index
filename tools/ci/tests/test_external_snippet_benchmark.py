@@ -119,13 +119,13 @@ def test_clarc_native_pack_is_blind_source_bound_and_preserves_default_refusals(
     )
     with pytest.raises(ext.ExternalSnippetError, match="new absolute root"):
         ext.write_freeze(pack, gold, tmp_path / "frozen")
-    explicit = {"max_tokens": 128, "max_token_chars": 96, "min_token_chars": 1}
-    pack128, gold128 = ext.freeze_clarc(
-        data_root, "original", repo, commit, raws, suite_id="clarc-fixture-128", config=explicit
+    explicit = {"max_tokens": 64, "max_token_chars": 96, "min_token_chars": 1}
+    pack64, gold64 = ext.freeze_clarc(
+        data_root, "original", repo, commit, raws, suite_id="clarc-fixture-64", config=explicit
     )
-    assert len(pack128["tasks"]) == 2
-    assert gold128["admission"]["admitted"] == 2
-    assert gold128["default_32_admission"]["refused_count"] == 1
+    assert len(pack64["tasks"]) == 2
+    assert gold64["admission"]["admitted"] == 2
+    assert gold64["default_32_admission"]["refused_count"] == 1
 
     task_id = pack["tasks"][0]["task_id"]
     record = {
@@ -155,11 +155,11 @@ def test_clarc_native_pack_is_blind_source_bound_and_preserves_default_refusals(
     assert report["operational_population_yield_lower_bound_hit_at_10"] == 0.5
     assert "pool_estimated_ndcg_at_10" not in report
 
-    first, second = pack128["tasks"]
+    first, second = pack64["tasks"]
     mixed = {
         "schema_version": 5,
-        "query_pack_sha256": hashlib.sha256(retrieval_contract.canonical(pack128)).hexdigest(),
-        "comparison_contract": pack128["comparison_contract"],
+        "query_pack_sha256": hashlib.sha256(retrieval_contract.canonical(pack64)).hexdigest(),
+        "comparison_contract": pack64["comparison_contract"],
         "results": [
             {
                 "task_id": first["task_id"],
@@ -179,7 +179,7 @@ def test_clarc_native_pack_is_blind_source_bound_and_preserves_default_refusals(
             },
         ],
     }
-    mixed_report = ext.score_capture(pack128, gold128, mixed)
+    mixed_report = ext.score_capture(pack64, gold64, mixed)
     assert mixed_report["hit_at_10"] == 1.0
     assert mixed_report["execution_failed"] == 1
     assert mixed_report["operational_submitted_yield_lower_bound_hit_at_10"] == 0.5
@@ -254,7 +254,7 @@ def test_external_record_replay_binds_actual_profile_and_closed_shape(tmp_path, 
 
     wrong = json.loads(json.dumps(record))
     wrong["captures"]["capture"]["execution_profile"] = query_plan.execution_profile(
-        "natural_language_file", {"max_tokens": 128, "max_token_chars": 96, "min_token_chars": 1}
+        "natural_language_file", {"max_tokens": 64, "max_token_chars": 96, "min_token_chars": 1}
     )
     with pytest.raises(ext.ExternalSnippetError, match="Quanta capture differs"):
         ext.verify_and_score_capture(repo, pack, gold, wrong)
@@ -381,6 +381,7 @@ def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_
         clarc_raws, b"mock CSV", root, prepared_root, languages=("python",)
     )
     assert set(prepared["lanes"]) == {"clarc-original", "clarc-neutral_renamed", "csn-python"}
+    assert prepared["execution_profile"]["config"]["max_tokens"] == 64
     assert prepared["codesearchnet_selected_population"] == 2
     assert prepared["codesearchnet_selected_complete"] == 1
     assert prepared["lanes"]["csn-python"]["source_blocked_tasks"] == 1
