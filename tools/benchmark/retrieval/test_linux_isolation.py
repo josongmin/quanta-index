@@ -230,6 +230,8 @@ def test_linux_policy_never_grants_stage_or_denied_source(tmp_path):
     source.mkdir()
     secret = tmp_path / "secret"
     secret.mkdir()
+    cache = tmp_path / "semble-cache"
+    cache.mkdir()
     evaluator = stage / "evaluator-only"
     evaluator.mkdir()
     files = {}
@@ -244,10 +246,16 @@ def test_linux_policy_never_grants_stage_or_denied_source(tmp_path):
         path = tmp_path / name
         path.write_text(name, encoding="utf-8")
         files[name] = str(path)
-    spec = {**files, "repo": str(corpus), "repetitions": 2}
+    spec = {
+        **files,
+        "repo": str(corpus),
+        "semble_cache_root": str(cache),
+        "repetitions": 2,
+    }
     spec["semble_python"] = str(Path(sys.executable).resolve())
     policy = pairrun._linux_policy(spec, stage, [str(source), str(secret), str(evaluator)])
     assert str(stage / "runner-tools.pyz") in policy["readonly"]
+    assert str(cache) in policy["readonly"]
     assert str(stage) not in policy["readonly"] + policy["writable"]
     assert str(evaluator) not in policy["readonly"] + policy["writable"]
     assert str(stage / "rep-00") in policy["writable"]
@@ -268,6 +276,8 @@ def test_linux_prepare_writes_tagged_policy_proof(tmp_path, monkeypatch):
     original.write_bytes(suite.read_bytes())
     source = tmp_path / "source"
     source.mkdir()
+    cache = tmp_path / "semble-cache"
+    cache.mkdir()
     corpus = stage / "runner-corpus"
     corpus.mkdir()
     admitted = corpus / "a.txt"
@@ -297,6 +307,7 @@ def test_linux_prepare_writes_tagged_policy_proof(tmp_path, monkeypatch):
         "runner_binary": files["runner_binary"],
         "searchd_binary": files["searchd_binary"],
         "semble_python": str(Path(sys.executable).resolve()),
+        "semble_cache_root": str(cache),
         "suite": str(suite),
         "output_root": str(tmp_path / "final"),
         "blinding": "isolated",
@@ -325,6 +336,7 @@ def test_linux_prepare_writes_tagged_policy_proof(tmp_path, monkeypatch):
     assert proof["landlock"]["threat_model"] == "filesystem-path-read-v1"
     assert prepared["isolation_method"] == isolation.BACKEND
     policy = pairrun.read_json(stage / "runner-input" / "landlock-policy.json")
+    assert str(cache) in policy["readonly"]
     assert str(stage) not in policy["readonly"] + policy["writable"]
     isolation.validate_policy(policy)
     proof_path = stage / "isolation-proof.json"

@@ -268,12 +268,11 @@ pub fn validate_lexical_file_mutations_v1(
                     usize::try_from(symbol.definition_span.byte_end).map_err(|_overflow| {
                         SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange
                     })?;
-                if memchr::memmem::find(
-                    &scope.source_bytes[start..end],
-                    symbol.local_name.as_bytes(),
-                )
-                .is_none()
-                {
+                let span_bytes = scope
+                    .source_bytes
+                    .get(start..end)
+                    .ok_or(SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange)?;
+                if memchr::memmem::find(span_bytes, symbol.local_name.as_bytes()).is_none() {
                     return Err(SearchCorpusSurfaceMutationConflictV1::SymbolNameSourceMismatch);
                 }
             }

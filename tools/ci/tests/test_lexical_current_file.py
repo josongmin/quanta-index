@@ -455,8 +455,11 @@ def test_completed_response_diagnostic_preserves_capped_status(current_inputs):
         result["routes"]["quanta_lexical"]["latency_ms"]["timing_layer"]
         == "request_construction_to_normalized_response"
     )
+    run.validate_completed_query_timing(phase, q)
+    incomplete = copy.deepcopy(phase)
+    incomplete["query_timing"]["observations"][0]["status"] = "timeout"
     with pytest.raises(run.RunError, match="incomplete or failed"):
-        run.validate_completed_query_timing(phase, q)
+        run.validate_completed_query_timing(incomplete, q)
 
 
 @pytest.mark.parametrize("current_inputs", ["no_answer"], indirect=True)

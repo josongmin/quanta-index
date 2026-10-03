@@ -281,7 +281,8 @@ def test_a_wrong_file_for_an_enum_fails(tmp_path: Path):
     inventory["ipc"][2]["file"] = "crates/quanta-index-contract/src/ipc/split.rs"
     found = messages(MODULE.check(inventory, root))
     assert any(
-        "the enum lives in 'crates/quanta-index-contract/src/ipc/ingest/envelope.rs'" in m for m in found
+        "the enum lives in 'crates/quanta-index-contract/src/ipc/ingest/envelope.rs'" in m
+        for m in found
     )
 
 
