@@ -296,6 +296,10 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
             "python_executable": "/pinned/python", "python_executable_sha256": "python",
             "pyproject_sha256": "project", "uv_lock_sha256": "lock",
         },
+        "external_collector_runtime": {
+            "parser_runtime_versions": prepared["parser_runtime_versions"],
+            "python_executable_sha256": "python",
+        },
         "suite_projector_source": {
             "base_head": "driver", "commit": "projector", "overlay_sha256": "overlay",
         },

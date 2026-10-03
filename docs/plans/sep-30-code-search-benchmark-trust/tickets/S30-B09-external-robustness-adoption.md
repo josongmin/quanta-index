@@ -208,6 +208,7 @@ not admitted for a qualified comparison.
 | Integrated new-owner/policy/closure tests | VERIFIED | 99 passed, 201.73s |
 | Fresh-join/projection/enrollment/closure integration | VERIFIED | 80 passed,98.37s |
 | Final snippet/projection/fresh-join/enrollment/closure slice | VERIFIED | 91 passed,71.02s |
+| Final fresh-join/projection/snippet owner units | VERIFIED | 27 passed,20.73s after four-pin runtime, actual payload commitment, and relocatable gold-path guards; test-authority check and owned diff hygiene passed |
 | Gold-runtime/capsule/C4 owner suite | VERIFIED | 199 passed,585.89s; two subsequently added pinfile binding/tamper tests passed separately |
 | Pinned-source/adapters/strata focused tests | VERIFIED | 46 passed, 20.76s before final profile negative fixture; profile wrapper separately 6 passed |
 | Affected runner/planner Python file | FAILED, then focused repair VERIFIED | Initial full execution499 passed/1 expected-error-text assertion failed in1331.49s; error contract preserved and affected19 passed. The full file was not repeated. |
@@ -272,6 +273,9 @@ accepted source-truth change. Its artifacts are preserved and the matrix was
 stopped. Official gold generation with the source-defined parser/tokenizer
 pins completed12/12 capsules in1996.263s. The receipt is
 `/private/tmp/qi-c5-oracle-pinned-TgLgCP/gold-batch-receipt.json`.
+Supplementary `runtime-four-pin-binding.json` in the same root verifies the
+underlying tree-sitter lock/runtime as well as the three direct parser/tokenizer
+pins. It binds all12 existing capsule identities without rewriting them.
 The public72-cell C4 matrix is now running in that same environment; the new
 cohort is not scored until matrix/projection admission passes.
 

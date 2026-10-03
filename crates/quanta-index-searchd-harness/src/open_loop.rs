@@ -659,20 +659,22 @@ impl Report {
 
 pub(crate) fn run(config: Config) -> AnyResult<Report> {
     config.validate()?;
-    let mut runtime = E2eRuntime::boot()?;
-    let model_revision = model_revision_of(runtime.embedder_profile());
-    let (source_paths, corpus_digest, scoped_oracle) = if config.tier == ScaleTier::Small {
-        let corpus = generate_corpus(ScaleTier::Small, config.seed);
-        let source_paths = source_fixture_paths(&corpus)?;
-        let serving_owner = runtime.repo();
-        for (path, content) in &corpus {
-            runtime.ingest_text(serving_owner.as_str(), path, content)?;
-        }
-        (source_paths, corpus_digest(DIMENSION, &corpus), None)
+    let legacy =
+        (config.tier == ScaleTier::Small).then(|| generate_corpus(ScaleTier::Small, config.seed));
+    let scoped = if config.tier == ScaleTier::Small {
+        None
     } else {
         let files = generate_scoped_corpus(config.tier, config.seed)?;
         let oracle = ScopedOracle::from_source(&files, config.tier)?;
         let _admission = preflight_scoped_corpus(&files)?;
+        Some((files, oracle))
+    };
+    let (source_paths, corpus_digest) = if let Some(corpus) = &legacy {
+        (
+            source_fixture_paths(corpus)?,
+            corpus_digest(DIMENSION, corpus),
+        )
+    } else if let Some((files, _)) = &scoped {
         let source_paths = files
             .iter()
             .map(|file| format!("{}/{}", file.source_repo_id, file.repo_relative_path))
@@ -681,7 +683,20 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
             source_paths.len() == files.len(),
             "open-loop scoped source identity repeats"
         );
-        let digest = scoped_corpus_digest(DIMENSION, &files);
+        let digest = scoped_corpus_digest(DIMENSION, files);
+        (source_paths, digest)
+    } else {
+        anyhow::bail!("open-loop has no prepared source fixture");
+    };
+
+    let mut runtime = E2eRuntime::boot()?;
+    let model_revision = model_revision_of(runtime.embedder_profile());
+    if let Some(corpus) = &legacy {
+        let serving_owner = runtime.repo();
+        for (path, content) in corpus {
+            runtime.ingest_text(serving_owner.as_str(), path, content)?;
+        }
+    } else if let Some((files, _)) = &scoped {
         let chunks = files
             .iter()
             .map(|file| {
@@ -700,8 +715,7 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
             .collect::<Vec<_>>();
         let _ids = runtime.ingest_text_files_one_batch(&batch_files)?;
         let _wire = runtime.preview_pending_search_corpus_wire_bytes()?;
-        (source_paths, digest, Some(oracle))
-    };
+    }
     let sealed = runtime.seal()?;
     runtime.activate_last_sealed_generation()?;
     let pin = GenerationPin::new(runtime.repo(), runtime.revision(), sealed);
@@ -710,7 +724,7 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
         primed.typed_error.is_none() && !primed.candidates.is_empty(),
         "fixture must serve a nonempty lexical answer before timing"
     );
-    if let Some(oracle) = &scoped_oracle {
+    if let Some((_, oracle)) = &scoped {
         for repo_index in 0..params_for(config.tier).repo_count {
             let source_repo_id = format!("repo{repo_index}");
             let response = runtime.query_text(

@@ -224,6 +224,10 @@ def _source_admission(
             "regex": "2025.10.23",
             "unicodedata2": "17.0.0",
         }
+        and manifest.get("external_collector_runtime", {}).get("parser_runtime_versions")
+        == prepared.get("parser_runtime_versions")
+        and manifest.get("external_collector_runtime", {}).get("python_executable_sha256")
+        == prepared.get("driver_python_sha256")
         and manifest.get("gold_producer_runtime", {}).get("python_executable")
         == gold.get("python_executable")
         == prepared.get("driver_python")
