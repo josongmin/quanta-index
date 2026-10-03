@@ -641,7 +641,7 @@ def _opengrok_indexed_view_response(
         or _sha(_read_control_file(view / row["path"])) != row["file_sha256"]
     ):
         raise ValueError(
-            f"OpenGrok indexed document {row['path']} source bytes differ from release"
+            f"OpenGrok indexed source {row['path']} bytes differ from release"
         )
 
 
