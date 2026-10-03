@@ -244,7 +244,7 @@ def _derive_prepared(
     if set(audits) != languages:
         raise ValueError("C4 independent census language inventory differs from source")
     refused_paths, disagreement_paths = [], []
-    for audit in audits.values():
+    for source_language, audit in audits.items():
         refused = audit.get("refused_paths")
         disagreements = audit.get("disagreement_paths")
         if (
@@ -254,6 +254,10 @@ def _derive_prepared(
             or refused != sorted(set(refused))
             or disagreements != sorted(set(disagreements))
             or set(refused) & set(disagreements)
+            or any(
+                source_oracle.declaration_language(path) != source_language
+                for path in (*refused, *disagreements)
+            )
             or (audit["status"] == "admitted" and (refused or disagreements))
             or (audit["status"] == "unsupported" and not (refused or disagreements))
         ):

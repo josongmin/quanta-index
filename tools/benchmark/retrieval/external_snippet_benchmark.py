@@ -623,6 +623,20 @@ def verify_and_score_capture(
     if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
         raise ExternalSnippetError("native pack repository commit invalid")
     try:
+        record = evaluator.object_keys_optional(
+            record,
+            [
+                "schema_version",
+                "query_pack_sha256",
+                "comparison_contract",
+                "runner",
+                "captures",
+                "route_provenance",
+                "results",
+            ],
+            ["span_accounting_version"],
+            "external native record",
+        )
         source = evaluator.SourceSnapshot(repo, commit)
         if source.tracked != {row["path"] for row in pack["file_universe"]}:
             raise ExternalSnippetError("native pack file universe differs from Git source")
@@ -637,11 +651,40 @@ def verify_and_score_capture(
             "tasks": [{"task_id": task["task_id"], "split": "eval"} for task in pack["tasks"]],
         }
         evaluator._validate_run(record, pack, context, source)
+        _bind_external_execution_profile(sidecar, record)
     except (ValueError, OSError, evaluator.EvidenceError) as exc:
         raise ExternalSnippetError(f"native record source replay failed: {exc}") from exc
     report = score_capture(pack, sidecar, record)
     report["record_validation_scope"] = "full_evaluator_record_source_replay_without_label_suite"
     return report
+
+
+def _bind_external_execution_profile(sidecar: dict[str, Any], record: dict[str, Any]) -> None:
+    """Tie the validated capture to the signed external admission policy."""
+    admission = sidecar.get("admission")
+    if not isinstance(admission, dict) or admission.get("request_policy") != "natural_language_file":
+        raise ExternalSnippetError("external admission policy differs")
+    try:
+        expected_quanta = query_plan.execution_profile(
+            "natural_language_file", admission.get("config")
+        )
+    except query_plan.QueryPlanError as exc:
+        raise ExternalSnippetError("external admission configuration invalid") from exc
+    provenance = record["route_provenance"]["lexical"]
+    capture = record["captures"][provenance["capture_id"]]
+    if capture["system"] == "quanta":
+        if capture["execution_profile"] != expected_quanta:
+            raise ExternalSnippetError("Quanta capture differs from external admission profile")
+    elif capture["system"] == "semble":
+        if capture["execution_profile"] != {
+            "profile_id": "semble-lexical-file-v1",
+            "mode": "lexical-file",
+            "alpha": None,
+            "rerank": "not_applicable",
+        }:
+            raise ExternalSnippetError("Semble capture is not lexical-file")
+    else:
+        raise ExternalSnippetError("external capture system unsupported")
 
 
 def write_freeze(

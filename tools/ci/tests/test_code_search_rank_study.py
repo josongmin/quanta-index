@@ -235,14 +235,14 @@ def test_native_diagnostic_budget_refusal_preserves_baseline_and_excludes_ablati
     # interruption/source error, nor coexist with completed study scores.
     for replacement in (
         "explain.code_search_score.occurrence=1",
-        "explain.code_search_rank_study_v1.refused=QUERY_CANCELLED",
+        "explain.code_search_rank_study_v1.refused=REQUEST_CANCELLED",
         "explain.code_search_rank_study_v1.baseline=105;selected=true",
     ):
         invalid = copy.deepcopy(artifact)
         details = invalid["results"][0]["collection"]["explanations"][1]["response"][
             "explanation"
         ]["planner_trace"]
-        if replacement.endswith("QUERY_CANCELLED"):
+        if replacement.endswith("REQUEST_CANCELLED"):
             details[-1]["detail"] = replacement
         elif "occurrence=" in replacement:
             next(row for row in details if "score.occurrence=" in row["detail"])[

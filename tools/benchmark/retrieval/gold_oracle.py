@@ -230,7 +230,12 @@ def validate_recipe(recipe: object) -> dict:
             or task["normalization"] != "none_raw_utf8"
         ):
             raise EvidenceError("gold task has unsupported or ambiguous query semantics")
-        query_key = (intent, query, task["scope_prefix"], language)
+        query_key = (
+            intent,
+            query,
+            task["scope_prefix"],
+            None if intent in DECLARATION_INTENTS else language,
+        )
         if query_key in queries:
             raise EvidenceError("duplicate gold query/scope across tasks")
         queries.add(query_key)

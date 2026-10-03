@@ -1120,6 +1120,7 @@ def test_c4_unscoped_file_gold_and_evaluator_include_foreign_declarations(
     tmp_path, monkeypatch, omit_foreign_gold
 ):
     import json
+
     import jsonschema
 
     release, capsule, checkout = _fixture(

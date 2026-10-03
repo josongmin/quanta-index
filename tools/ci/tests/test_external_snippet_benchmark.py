@@ -22,6 +22,9 @@ from tools.benchmark.retrieval import (
     external_snippet_benchmark as ext,
 )
 from tools.benchmark.retrieval import (
+    query_plan,
+)
+from tools.benchmark.retrieval import (
     retrieval_contract,
 )
 
@@ -211,6 +214,72 @@ def test_clarc_rejects_git_drift_and_blindpack_tamper(tmp_path, monkeypatch):
     blind.write_text(json.dumps(payload))
     with pytest.raises(ext.ExternalSnippetError, match="blindpack query"):
         ext.freeze_clarc(data_root, "original", repo, commit, raws, suite_id="fixture")
+
+
+def test_external_record_replay_binds_actual_profile_and_closed_shape(tmp_path, monkeypatch):
+    data_root, repo, commit, raws = _clarc(tmp_path, monkeypatch)
+    pack, gold = ext.freeze_clarc(
+        data_root, "original", repo, commit, raws, suite_id="profile-fixture"
+    )
+    task = pack["tasks"][0]
+    profile = query_plan.execution_profile(
+        gold["admission"]["request_policy"], gold["admission"]["config"]
+    )
+    record = {
+        "schema_version": 5,
+        "query_pack_sha256": hashlib.sha256(retrieval_contract.canonical(pack)).hexdigest(),
+        "comparison_contract": pack["comparison_contract"],
+        "runner": {},
+        "captures": {"capture": {"system": "quanta", "execution_profile": profile}},
+        "route_provenance": {"lexical": {"capture_id": "capture"}},
+        "results": [
+            {
+                "task_id": task["task_id"],
+                "route": "lexical",
+                "rank_unit": "distinct_file",
+                "query_identity": {"original_query_sha256": task["query_sha256"]},
+                "status": "success",
+                "candidates": [{"rank": 1, "path": "snippets/c_group_1_id_0.cpp"}],
+            }
+        ],
+    }
+    # Profile binding is tested here; native record invariants have their own evaluator tests.
+    monkeypatch.setattr(ext.evaluator, "_validate_run", lambda *_: None)
+    assert ext.verify_and_score_capture(repo, pack, gold, record)["hit_at_10"] == 1
+
+    wrong = json.loads(json.dumps(record))
+    wrong["captures"]["capture"]["execution_profile"] = query_plan.execution_profile(
+        "code_search_file"
+    )
+    with pytest.raises(ext.ExternalSnippetError, match="Quanta capture differs"):
+        ext.verify_and_score_capture(repo, pack, gold, wrong)
+
+    wrong = json.loads(json.dumps(record))
+    wrong["captures"]["capture"]["execution_profile"] = query_plan.execution_profile(
+        "natural_language_file", {"max_tokens": 128, "max_token_chars": 96, "min_token_chars": 1}
+    )
+    with pytest.raises(ext.ExternalSnippetError, match="Quanta capture differs"):
+        ext.verify_and_score_capture(repo, pack, gold, wrong)
+
+    wrong = json.loads(json.dumps(record))
+    wrong["captures"]["capture"] = {
+        "system": "semble",
+        "execution_profile": {
+            "profile_id": "semble-lexical-only-v1",
+            "mode": "lexical-only",
+            "alpha": None,
+            "rerank": "not_applicable",
+        },
+    }
+    with pytest.raises(ext.ExternalSnippetError, match="Semble capture is not lexical-file"):
+        ext.verify_and_score_capture(repo, pack, gold, wrong)
+
+    wrong = {**record, "unknown": True}
+    with pytest.raises(ext.ExternalSnippetError, match="missing/unknown fields"):
+        ext.verify_and_score_capture(repo, pack, gold, wrong)
+    wrong = {key: value for key, value in record.items() if key != "runner"}
+    with pytest.raises(ext.ExternalSnippetError, match="missing fields"):
+        ext.verify_and_score_capture(repo, pack, gold, wrong)
 
 
 def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_path, monkeypatch):

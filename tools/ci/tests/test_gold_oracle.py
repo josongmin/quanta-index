@@ -1168,3 +1168,14 @@ def test_literal_sampling_excludes_queries_outside_product_contract():
     tasks = holdout_sampling._literals(repository, 11, ledger, {"exact_content": 3})
     assert [task["query"] for task in tasks] == ["validIdentifierContent"]
     assert ledger["exact_content"]["skipped"]["outside_literal_query_contract"] == 2
+
+
+def test_unscoped_recipe_refuses_duplicate_query_with_different_authoring_languages():
+    recipe = v2_recipe(
+        "holdout",
+        b"{}",
+        declaration_task("rust-name", "declaration_name_exact", "LoadJson", "rust"),
+        declaration_task("python-name", "declaration_name_exact", "LoadJson", "python"),
+    )
+    with pytest.raises(EvidenceError, match="duplicate gold query/scope"):
+        gold_oracle.validate_recipe(recipe)

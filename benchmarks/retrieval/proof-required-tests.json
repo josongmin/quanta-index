@@ -624,6 +624,13 @@
     "tools.ci.tests.test_source_oracle_suite.test_typescript_oracles_use_the_producer_compatibility_grammar[tsx]",
     "tools.ci.tests.test_source_oracle_suite.test_typo_gold_partition_separates_intent_from_near_names_and_content",
     "tools.ci.tests.test_source_oracle_suite.test_typo_partition_accepts_query_proven_parser_refusal",
+    "tools.ci.tests.test_source_oracle_suite.test_unscoped_census_exclusion_needs_each_queries_own_absence_proof",
+    "tools.ci.tests.test_source_oracle_suite.test_unscoped_declaration_oracle_matches_all_supported_languages[components-load json]",
+    "tools.ci.tests.test_source_oracle_suite.test_unscoped_declaration_oracle_matches_all_supported_languages[exact-LoadJson]",
+    "tools.ci.tests.test_source_oracle_suite.test_unscoped_declaration_oracle_matches_all_supported_languages[infix-oad]",
+    "tools.ci.tests.test_source_oracle_suite.test_unscoped_declaration_oracle_matches_all_supported_languages[osa1-LoadJsn]",
+    "tools.ci.tests.test_source_oracle_suite.test_unscoped_declaration_oracle_matches_all_supported_languages[osa1_casefold-loadjsn]",
+    "tools.ci.tests.test_source_oracle_suite.test_unscoped_declaration_oracle_matches_all_supported_languages[prefix-Load]",
     "tools.ci.tests.test_source_oracle_suite.test_vendored_parser_cache_refuses_identity_and_binary_tampering",
     "tools.ci.tests.test_source_oracle_suite.test_vendored_parser_has_no_unpatched_fallback_when_compiler_is_missing",
     "tools.ci.tests.test_source_oracle_suite.test_vendored_parser_source_binding_rejects_linked_directories"
