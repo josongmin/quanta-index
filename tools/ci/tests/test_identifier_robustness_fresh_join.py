@@ -2,6 +2,7 @@
 
 import copy
 import json
+import subprocess
 
 import pytest
 
@@ -21,6 +22,7 @@ def _profiles():
             },
             "semble": {"mode": "lexical-file"},
         },
+        "top_k": 10,
     }
     external = {
         key: {}
@@ -35,6 +37,15 @@ def _profiles():
             "suite",
         )
     }
+    native["execution_profiles"]["semble"] = {
+        "alpha": None,
+        "mode": "lexical-file",
+        "profile_id": "semble-lexical-file-v1",
+        "rerank": "not_applicable",
+    }
+    external["sourcegraph"] = {"repository": "benchmark/fixture"}
+    external["opengrok"] = {"project": "fixture", "indexed_view_probe": "full"}
+    external["cs"] = {"binary": "cs"}
     return native, external
 
 
@@ -49,6 +60,14 @@ def test_fresh_join_accepts_only_default_file_request_profiles():
     fuzzy["capability"] = "cs_fuzzy_osa1_file"
     with pytest.raises(fresh.FreshJoinError, match="not default file search"):
         fresh._require_default_profiles(native, fuzzy, "fixture")
+    truncated = copy.deepcopy(native)
+    truncated["top_k"] = 100
+    with pytest.raises(fresh.FreshJoinError, match="not default file search"):
+        fresh._require_default_profiles(truncated, external, "fixture")
+    wrong_field = copy.deepcopy(external)
+    wrong_field["opengrok"]["indexed_view_probe"] = "none"
+    with pytest.raises(fresh.FreshJoinError, match="not default file search"):
+        fresh._require_default_profiles(native, wrong_field, "fixture")
 
 
 def test_fresh_join_repaired_cell_preserves_original_cohort():
@@ -141,3 +160,44 @@ def test_fresh_join_selects_successful_retry_without_hiding_failed_attempts(tmp_
     (tmp_path / "l-attempt-3.status.json").write_text(json.dumps(success))
     with pytest.raises(fresh.FreshJoinError, match="absent or ambiguous"):
         fresh._select_native_status(cell, prepared)
+
+
+def test_fresh_join_refuses_cross_pair_producer_or_evaluator_drift():
+    original = {field: field + "-frozen" for field in fresh.PAIR_CUSTODY_FIELDS}
+    fresh._require_pair_custody_consistency([original, copy.deepcopy(original)])
+    for field in fresh.PAIR_CUSTODY_FIELDS:
+        changed = {**original, field: field + "-new"}
+        with pytest.raises(fresh.FreshJoinError, match="different source, binary"):
+            fresh._require_pair_custody_consistency([original, changed])
+    with pytest.raises(fresh.FreshJoinError, match="custody incomplete"):
+        fresh._require_pair_custody_consistency([{**original, "native_runner_sha256": None}])
+
+
+def test_fresh_join_refuses_dirty_producer_at_unchanged_head(tmp_path, monkeypatch):
+    owner = tmp_path / "owner.py"
+    owner.write_text("frozen = True\n")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "owner.py"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "freeze",
+        ],
+        check=True,
+    )
+    head = (
+        subprocess.check_output(["git", "-C", str(tmp_path), "rev-parse", "HEAD"]).decode().strip()
+    )
+    monkeypatch.setattr(fresh, "EXTERNAL_PRODUCER_FILES", {"producer": "owner.py"})
+    assert fresh._external_producer_sources(tmp_path, head) == {"producer": fresh.sha(owner)}
+    owner.write_text("frozen = False\n")
+    with pytest.raises(fresh.FreshJoinError, match="differs from frozen HEAD"):
+        fresh._external_producer_sources(tmp_path, head)

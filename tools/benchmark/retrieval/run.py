@@ -105,7 +105,13 @@ except ImportError:  # direct script invocation: import the sibling module
     from sdk_proof import build_summary_from_evidence  # noqa: E402
 
 from tools.benchmark import host_monitor, raw_archive
-from tools.benchmark.evidence import RawFile, parse_json, read_control, write_raw_file
+from tools.benchmark.evidence import (
+    CONTROL_DOCUMENT_BYTES,
+    RawFile,
+    parse_json,
+    read_control,
+    write_raw_file,
+)
 
 VERDICT_VERSION = 2
 MANIFEST_VERSION = 2
@@ -1755,6 +1761,7 @@ class HostTimeline:
         self.owned_semble_adapter = owned_semble_adapter
         self.samples: list[dict] = []
         self.errors: list[str] = []
+        self.sample_bytes = 0
         self.monitor = host_monitor.HostMonitor(
             path.with_suffix(".jsonl"),
             "retrieval-host",
@@ -1772,13 +1779,15 @@ class HostTimeline:
             if self.owned_semble_adapter is not None
             else _host_dynamic_probe(self.identity, self.override)
         )
-        self.samples.append(
-            {
-                "started_ns": started,
-                "finished_ns": time.monotonic_ns(),
-                "probe": probe,
-            }
-        )
+        sample = {"started_ns": started, "finished_ns": time.monotonic_ns(), "probe": probe}
+        # Include indentation inside the outer array and reserve the control
+        # envelope; long runs refuse before accumulating an unreadable artifact.
+        encoded = json.dumps(sample, indent=2, sort_keys=True).encode("utf-8")
+        cost = len(encoded) + 4 * (encoded.count(b"\n") + 1) + 2
+        if self.sample_bytes + cost > CONTROL_DOCUMENT_BYTES - 4096:
+            raise RunError("host timeline exceeds the control-document byte budget")
+        self.sample_bytes += cost
+        self.samples.append(sample)
 
     def __enter__(self):
         self.started_ns = time.monotonic_ns()
@@ -1838,7 +1847,7 @@ def validate_host_timeline(payload: object, profile: dict) -> None:
     if finished <= started or timeline["errors"] != []:
         raise RunError("host timeline has invalid coverage or probe errors")
     samples = timeline["samples"]
-    if not isinstance(samples, list) or len(samples) < 2:
+    if not isinstance(samples, list) or not 2 <= len(samples) <= host_monitor.MAX_SAMPLES:
         raise RunError("host timeline lacks boundary observations")
     previous_start, previous_end = started, started
     for index, item in enumerate(samples):
@@ -1865,28 +1874,36 @@ def validate_host_timeline_monitor(payload: dict, path: Path) -> None:
     if raw.sha256 != payload["monitor_sha256"]:
         raise RunError("host timeline monitor digest mismatch")
     host_monitor.validate(raw, capture_id="retrieval-host", profile="qualified-speed")
-    rows: list[dict] = []
-    raw.consume_lines(lambda lines: rows.extend(json.loads(line) for line in lines))
-    header, observations = rows[0], rows[1:]
-    probe = payload["samples"][0]["probe"]
-    if (
-        header["host"]["os"]
-        != ("macos" if probe["system"] == "Darwin" else probe["system"].lower())
-        or header["host"]["arch"] != probe["machine"]
-        or header["host"]["cpu_count"] != probe["cpu_count"]
-        or any(observation["facts"]["foreign_rust"] for observation in observations)
-    ):
-        raise RunError("host timeline monitor host differs or contains foreign Rust contention")
-    if header["reservation_id"] != payload["reservation_id"] or len(observations) != len(
-        payload["samples"]
-    ):
-        raise RunError("host timeline monitor reservation or sample count differs")
-    if any(
-        not sample["finished_ns"] <= observation["monotonic_ns"] <= payload["finished_ns"]
-        or observation["monotonic_ns"] - sample["started_ns"] > HOST_SAMPLE_MAX_GAP_NS
-        for sample, observation in zip(payload["samples"], observations, strict=True)
-    ):
-        raise RunError("host timeline monitor interval differs from qualified samples")
+
+    def consume(lines):
+        header = json.loads(next(lines))
+        probe = payload["samples"][0]["probe"]
+        if (
+            header["reservation_id"] != payload["reservation_id"]
+            or header["host"]["os"]
+            != ("macos" if probe["system"] == "Darwin" else probe["system"].lower())
+            or header["host"]["arch"] != probe["machine"]
+            or header["host"]["cpu_count"] != probe["cpu_count"]
+        ):
+            raise RunError("host timeline monitor host or reservation differs")
+        count = 0
+        for line in lines:
+            observation = json.loads(line)
+            if count >= len(payload["samples"]):
+                raise RunError("host timeline monitor sample count differs")
+            sample = payload["samples"][count]
+            count += 1
+            if observation["facts"]["foreign_rust"]:
+                raise RunError("host timeline monitor contains foreign Rust contention")
+            if (
+                not sample["finished_ns"] <= observation["monotonic_ns"] <= payload["finished_ns"]
+                or observation["monotonic_ns"] - sample["started_ns"] > HOST_SAMPLE_MAX_GAP_NS
+            ):
+                raise RunError("host timeline monitor interval differs from qualified samples")
+        if count != len(payload["samples"]):
+            raise RunError("host timeline monitor sample count differs")
+
+    raw.consume_lines(consume)
 
 
 def _darwin_power_source(text: str) -> str | None:

@@ -152,6 +152,17 @@ def test_host_timeline_capture_keeps_probe_failure(tmp_path, monkeypatch):
         pairrun.validate_host_timeline(captured, profile)
 
 
+def test_host_timeline_bounds_collector_memory_before_appending(tmp_path, monkeypatch):
+    payload, _profile = _clean_host_timeline_fixture()
+    host = payload["samples"][0]["probe"]
+    monkeypatch.setattr(pairrun, "_host_dynamic_probe", lambda *_args: host)
+    monitor = pairrun.HostTimeline(tmp_path / "timeline.json", host, False)
+    monitor.sample_bytes = pairrun.CONTROL_DOCUMENT_BYTES - 4096
+    with pytest.raises(pairrun.RunError, match="byte budget"):
+        monitor._sample()
+    assert monitor.samples == []
+
+
 def _current_symbol_metrics(metrics):
     """Handwritten complete-state fixtures, separate from producer execution."""
     metrics.update(
@@ -8178,6 +8189,18 @@ def test_qualified_speed_requires_bound_host_timeline(tmp_path, monkeypatch, fau
     assert "host_timeline" in verdict["state_evidence"]["PERF_QUALIFIED"]["reason"]
     if fault != "tamper":
         assert verdict["states"]["PAIR_VALID"] == "pass"
+
+
+def test_host_timeline_replays_complete_bound_monitor(tmp_path):
+    st = _pair_stage(tmp_path)
+    timeline = json.loads((st["stage"] / "host-timeline.json").read_text())
+    profile = json.loads((st["stage"] / "host-profile.json").read_text())
+    pairrun.validate_host_timeline(timeline, profile)
+    pairrun.validate_host_timeline_monitor(timeline, st["stage"] / "host-timeline.jsonl")
+    changed = copy.deepcopy(timeline)
+    changed["reservation_id"] = "e" * 32
+    with pytest.raises(pairrun.RunError, match="reservation"):
+        pairrun.validate_host_timeline_monitor(changed, st["stage"] / "host-timeline.jsonl")
 
 
 def test_qualified_speed_verdict_rejects_incomplete_response_timer_boundary(tmp_path):

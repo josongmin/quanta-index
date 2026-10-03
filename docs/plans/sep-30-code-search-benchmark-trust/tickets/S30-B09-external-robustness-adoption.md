@@ -145,10 +145,15 @@ Additional reusable owners:
 - `identifier_robustness_multiproduct_report.py`: source-derived input strata
   with independently replayed historical native/external rows; this offline
   historical report is not a fresh five-product run.
+- `identifier_robustness_fresh_join.py`: matching suite/pack/source admission,
+  actual merged-record/report binding, raw external replay, retry identity and
+  separate intended-original-file versus near-name-file scoring.
+- `holdout_c4.py`: source-validated ordinary-file projection and strict
+  fixed-cohort projection; neither can repair a changed gold contract silently.
 - `query_plan.py`, `run.py`, `evaluator.py`, native `main.rs` and pair/runner
   schemas: explicit bounded NL token configuration (1..64, default32),
   effective request/profile binding and exploratory-only nondefault admission.
-- Four new Python owners are enrolled in the control scope, Justfile, closure
+- Six new Python owners are enrolled in the control scope, Justfile, closure
   profiles and policy collection checks. The required Python inventory adds
   observed NL test identities; SDK identities were sorted without deletion.
   Current exact required inventories are Python634/Rust168/SDK25.
@@ -185,14 +190,16 @@ not admitted for a qualified comparison.
 | Executed scope | Verdict | Result |
 | --- | --- | --- |
 | Integrated new-owner/policy/closure tests | VERIFIED | 99 passed, 201.73s |
+| Fresh-join/projection/enrollment/closure integration | VERIFIED | 80 passed,98.37s |
 | Pinned-source/adapters/strata focused tests | VERIFIED | 46 passed, 20.76s before final profile negative fixture; profile wrapper separately 6 passed |
 | Affected runner/planner Python file | FAILED, then focused repair VERIFIED | Initial full execution499 passed/1 expected-error-text assertion failed in1331.49s; error contract preserved and affected19 passed. The full file was not repeated. |
 | Final profile/query-identity slice | VERIFIED | 14 passed,493 deselected,11.65s |
 | Rust NL CLI and planner owner units | VERIFIED | 1 lib +1 bin test passed; canonical nextest list observed168 tests; initial admission timeout retained as historical failure |
 | Semble external snippet captures | VERIFIED | Fresh NL64 8/8 captures/full source-record replays;1312/1312 execution success |
 | Quanta external snippet captures | VERIFIED | Fresh NL64 8/8 captures/full source-record replays;1312/1312 executed/scored,0 execution failures; capped included |
-| Fresh three-external-product C5 typo | NOT_RUN for full4149 | Capture batch running; completed cells remain separate from the historical offline report |
-| Fresh native C5 typo pair | NOT_RUN for full4149 | Valid cells executing; four stale-oracle cells require newly generated bound gold; no old record rebind |
+| Fresh three-external-product original C5 typo | VERIFIED for2767; BLOCKED for1382 | Eight source-valid cells completed8301 calls; four stale-oracle cells excluded before capture |
+| Fresh native original C5 typo pair | VERIFIED for2767; BLOCKED for1382 | Eight source-valid cells completed5534 responses; four stale-oracle cells excluded before capture |
+| Fresh five-product join | VERIFIED for2767 | Full native merged-record/report binding, external raw-row replay and common eligibility agree; source-blocked1382 remain outside the scored cohort |
 | Qualified performance / full upstream CSN / human local adjudication | NOT_RUN | Not established by these diagnostic runs |
 
 Fresh common NL64 target results: CLARC original Quanta63/425 versus
@@ -228,8 +235,50 @@ wall boundaries remain separate.
 
 Current vendored parsers resolve21 files that old oracle recipes excluded.
 Four old C5 suites (1382/4149 tasks) therefore fail current public validation.
-These are source-eligibility blocks, not product misses. Newly derived selected
-1382 task rows preserve query/gold truth, but other candidate rows change.
-Official fresh gold capsules/C4 matrix and a commitment-bound fixed-cohort
-projection are being produced externally. New full cohort and old fixed cohort
-remain separate; old record rebinding is prohibited.
+These are source-eligibility blocks, not product misses. The current C4 producer
+also changes the declaration authority from language-specific contracts to the
+all-language `declaration_name_exact` contract. A fixed-cohort projection must
+reject that change even when selected query bytes happen to be identical.
+The reusable projector preserves source truth and rejects contract drift;
+ordinary-file projection changes only the declared request mode.
+
+The first fresh gold/matrix attempt used tree-sitter-language-pack0.13.0,
+whereas the frozen source requires0.9.1. On the same Svelte JavaScript bytes,
+0.13.0 rejects the parse and0.9.1 admits it. The observed59 answerability changes
+and11 span-set changes in that attempt are invalid-run diagnostics, not an
+accepted source-truth change. Its artifacts are preserved and the matrix was
+stopped. Official full gold/matrix generation is restarting with the exact
+source-defined dependency pins; the new cohort is not scored until it passes.
+
+Frozen runtime boundaries are explicit: Quanta binaries were built from
+clean `d7063ac755916d48867416d4f970b6aebc360abd`; the proposed new Python
+driver/gold producer is clean `6f3e04856a03291098497c58c9a240ad217d9ee8`.
+The harness `provenance.quanta.source_sha` identifies its driver checkout,
+not the binary's build source. Separate binary build binding, executable hashes
+and dependency checks are required; no engine6f3 or current-main claim follows
+from driver6f3. Old records are never rebound to a new suite or source.
+
+### Original-cohort fresh results
+
+`/private/tmp/qi-c5-osa1-fresh-join-20261004/five-product-8-valid.json`
+joins exactly the original source-valid8 repositories and2767 tasks. Every
+product has the same2767 eligible tasks. These are default file-search requests,
+with product-specific matching behavior, rather than a Fuzzy Finder comparison.
+
+| Product | Intended-original-file Hit@10 | Near-name-file Hit@10 | Calls total seconds | Call p50 / p95 milliseconds |
+| --- | ---: | ---: | ---: | ---: |
+| Quanta |2734/2767|2734/2767|46.377|6.357 /65.242|
+| Semble |1962/2767|1984/2767|85.852|5.578 /174.775|
+| Sourcegraph |89/2767|89/2767|442.802|136.583 /296.711|
+| cs |87/2767|87/2767|419.426|99.461 /451.979|
+| OpenGrok |0/2767|0/2767|56.705|14.335 /51.845|
+
+No speed ranking: host contention and measurement boundaries differ. Native
+pair wall total3182.463s includes indexing and validation; it is not the query
+sum. Quanta123 `capped` and Semble366 `abstained` responses remain eligible.
+Sourcegraph85 of89 and cs83 of87 hits occur among85 queries that are literal
+proper substrings of their intended names. In the380 tasks without any intact
+original component of length>=3, intended-file hits are Quanta356, Semble25,
+Sourcegraph27, cs26 and OpenGrok0. These input strata do not prove each engine's
+matching implementation. Repository-cluster confidence intervals are
+NOT_APPLICABLE:8 repositories are below the existing12-repository threshold.

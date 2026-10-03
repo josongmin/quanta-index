@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -32,6 +33,22 @@ PAIR_REPORT = "report-semble-lexical-file-vs-lexical-fixed_window_strict.json"
 ALLOWED_EXTERNAL_LEDGER_STATUSES = {
     "verified",
     "verified_eligible_cells_source_blocked_4",
+}
+PAIR_CUSTODY_FIELDS = (
+    "release_digest",
+    "native_source_commit",
+    "native_runner_sha256",
+    "native_searchd_sha256",
+    "native_merge_validator_sha256",
+    "external_source_commit",
+)
+EXTERNAL_PRODUCER_FILES = {
+    "producer": "tools/benchmark/retrieval/live_lexical_external.py",
+    "sourcegraph_adapter": "tools/benchmark/retrieval/sourcegraph.py",
+    "lexical_scorer": "tools/benchmark/retrieval/lexical_file_comparison.py",
+    "corpus_binding": "tools/benchmark/corpus_binding.py",
+    "corpus_release": "tools/benchmark/corpus_release.py",
+    "query_planner": "tools/benchmark/retrieval/query_plan.py",
 }
 
 
@@ -56,6 +73,28 @@ def canonical_sha(value: Any) -> str:
     return hashlib.sha256(evaluator.canonical(value)).hexdigest()
 
 
+def _external_producer_sources(source_checkout: Path, source_head: str) -> dict[str, str]:
+    """Bind live producer bytes to tracked blobs at the claimed frozen HEAD."""
+    head = subprocess.run(
+        ["git", "-C", str(source_checkout), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    require(head == source_head, "external producer checkout HEAD changed")
+    hashes = {}
+    for name, relative in EXTERNAL_PRODUCER_FILES.items():
+        blob = subprocess.run(
+            ["git", "-C", str(source_checkout), "show", "HEAD:" + relative],
+            check=True,
+            capture_output=True,
+        ).stdout
+        current = (source_checkout / relative).read_bytes()
+        require(current == blob, "external producer source differs from frozen HEAD: " + relative)
+        hashes[name] = hashlib.sha256(current).hexdigest()
+    return hashes
+
+
 def _require_default_profiles(
     native_spec: dict[str, Any], external_spec: dict[str, Any], repo: str
 ) -> None:
@@ -67,9 +106,16 @@ def _require_default_profiles(
             "policy": "code_search_file",
             "profile_id": "quanta-code-search-file-v1",
         }
-        and native_spec["execution_profiles"]["semble"]["mode"] == "lexical-file"
+        and native_spec["execution_profiles"]["semble"]
+        == {
+            "alpha": None,
+            "mode": "lexical-file",
+            "profile_id": "semble-lexical-file-v1",
+            "rerank": "not_applicable",
+        }
         and native_spec["candidate_route"] == "lexical"
         and native_spec["baseline_route"] == "semble-lexical-file"
+        and native_spec["top_k"] == 10
         and set(external_spec)
         == {
             "corpus",
@@ -80,7 +126,11 @@ def _require_default_profiles(
             "schema_version",
             "sourcegraph",
             "suite",
-        },
+        }
+        and external_spec["sourcegraph"]["repository"] == "benchmark/" + repo
+        and external_spec["opengrok"]["project"] == repo
+        and external_spec["opengrok"]["indexed_view_probe"] == "full"
+        and set(external_spec["cs"]) == {"binary"},
         "paired request profile is not default file search: " + repo,
     )
 
@@ -107,6 +157,18 @@ def _reconcile_blocked(
         [row for row in blocked if row["repository"] not in resolved],
         [row for row in blocked if row["repository"] in resolved],
     )
+
+
+def _require_pair_custody_consistency(custody: list[dict[str, Any]]) -> None:
+    """Different producer or evaluator contracts cannot share a score denominator."""
+    require(bool(custody), "fresh pair custody is empty")
+    first = tuple(custody[0].get(field) for field in PAIR_CUSTODY_FIELDS)
+    require(all(isinstance(value, str) and value for value in first), "pair custody incomplete")
+    for row in custody[1:]:
+        require(
+            tuple(row.get(field) for field in PAIR_CUSTODY_FIELDS) == first,
+            "fresh pairs use different source, binary, evaluator, or corpus contracts",
+        )
 
 
 def _native_records(
@@ -253,6 +315,7 @@ def _external_records(
     receipt: dict[str, Any],
     tasks: dict[str, Any],
     universe: set[str],
+    expected_sources: dict[str, str],
 ) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, str]]:
     repo, root = cell["repository"], Path(cell["output_root"])
     require(
@@ -270,7 +333,8 @@ def _external_records(
         capture["status"] == "diagnostic_unqualified"
         and capture["tasks"] == len(tasks)
         and capture["opengrok_indexed_view_probe"]
-        == "exact_indexed_inventory_and_served_bytes_bracketing_queries",
+        == "exact_indexed_inventory_and_served_bytes_bracketing_queries"
+        and capture["producer_sources_sha256"] == expected_sources,
         "external capture incomplete or missing full probe: " + repo,
     )
     records: dict[str, dict[str, dict[str, Any]]] = {}
@@ -289,10 +353,21 @@ def _external_records(
             task = tasks[task_id]
             require(
                 raw["submitted_query"] == task["query"]
+                and raw["lane"] == "symbol_only"
                 and set(raw["gold_paths"])
                 == {row["path"] for row in task["gold"] if row["grade"] > 0},
                 "external query/gold differs: " + repo + "/" + product + "/" + task_id,
             )
+            if product == "sourcegraph":
+                request = raw["request_query"]
+                require(
+                    request.startswith(task["query"] + " ")
+                    and request.endswith(" type:file patternType:keyword count:all")
+                    and raw["out_of_manifest_match_count"] == 0,
+                    "Sourcegraph default keyword file request differs: " + repo + "/" + task_id,
+                )
+            if product == "opengrok":
+                require(raw["field"] == "full", "OpenGrok default full field differs")
             paths = scoring._top10(
                 raw["paths"] if product == "cs" else raw["file_paths_top_10"],
                 universe,
@@ -336,6 +411,9 @@ def _pair_rows(
         ledger["manifest_sha256"] == sha(external_manifest_path)
         and ledger["status"] in ALLOWED_EXTERNAL_LEDGER_STATUSES,
         "external ledger is not fully verified",
+    )
+    expected_external_sources = _external_producer_sources(
+        Path(manifest["source_checkout"]), manifest["source_head"]
     )
     if "continuation" in ledger:
         require(
@@ -441,7 +519,9 @@ def _pair_rows(
         native, native_hashes, native_report_sha, native_status = _native_records(
             native_cell, prepared, native_spec, suite, tasks, universe
         )
-        external, external_hashes = _external_records(external_cell, receipt, tasks, universe)
+        external, external_hashes = _external_records(
+            external_cell, receipt, tasks, universe, expected_external_sources
+        )
         bindings.append(
             {
                 "repository": repo,
@@ -487,6 +567,7 @@ def _pair_rows(
         "external_manifest_sha256": sha(external_manifest_path),
         "external_ledger_sha256": sha(external_ledger_path),
         "external_source_commit": manifest["source_head"],
+        "external_producer_sources_sha256": expected_external_sources,
         "source_eligibility_sha256": sha(eligibility_path),
         "release_digest": manifest["release_digest"],
         "source_blocked_task_count": sum(row["tasks"] for row in blocked),
@@ -525,10 +606,7 @@ def build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
         len(repos) == len(set(repos)) and len(ids) == len(set(ids)),
         "fresh pair repositories or tasks overlap",
     )
-    require(
-        len({row["release_digest"] for row in custody}) == 1,
-        "fresh pairs use different corpus releases",
-    )
+    _require_pair_custody_consistency(custody)
     paired = [
         row
         for row in per_query

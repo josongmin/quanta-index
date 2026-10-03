@@ -15,6 +15,26 @@ from tools.benchmark.retrieval import evaluator, gold_oracle, holdout_c4, query_
 from tools.ci.tests.test_corpus_binding import split_releases  # noqa: F401
 
 
+def test_c4_public_derive_refuses_runtime_before_source_replay(tmp_path, monkeypatch):
+    def reject_runtime():
+        raise holdout_c4.corpus_binding.EvidenceError(
+            "gold runtime dependency differs from source pin"
+        )
+
+    monkeypatch.setattr(holdout_c4.corpus_binding, "require_gold_runtime", reject_runtime)
+    with pytest.raises(holdout_c4.corpus_binding.EvidenceError, match="runtime dependency differs"):
+        holdout_c4.derive(
+            tmp_path / "missing-release",
+            tmp_path / "missing-capsule",
+            tmp_path,
+            "declaration_name_exact",
+        )
+    with pytest.raises(holdout_c4.corpus_binding.EvidenceError, match="runtime dependency differs"):
+        holdout_c4.derive_matrix(
+            tmp_path / "missing-release", tmp_path / "missing-capsules", tmp_path
+        )
+
+
 def _fixture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

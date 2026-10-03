@@ -370,6 +370,7 @@ fn dispatch(
         Ok(response) => match response.payload {
             SearchPlaneQueryIpcResponse::Text(page)
                 if page.generation == *pin
+                    && page.rank_unit == TextRankUnit::Chunk
                     && page
                         .results
                         .iter()
@@ -872,7 +873,7 @@ mod tests {
 
         let admitted = Config {
             rates_qps: vec![3],
-            duration: Duration::from_secs(1),
+            duration: Duration::from_secs(10),
             ..empty
         };
         admitted.validate()?;

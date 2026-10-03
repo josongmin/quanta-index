@@ -447,6 +447,14 @@ bytes. Source changes require fresh capsules; frozen capsule identities are
 never rewritten. Other languages retain the pinned language-pack grammar and
 their independent census checks.
 
+Gold and C4 admission check active parser/tokenizer distributions against
+the exact `pyproject.toml` and `uv.lock` pins before full corpus replay.
+Both pin files are part of the gold producer identity. An arbitrary external
+Python environment is not interchangeable with `uv run --frozen --extra dev`:
+a dependency mismatch is an admission failure, and its changed parse/gold
+results must not enter an accepted score cohort. Keep old captures intact
+and generate new source-bound capsules after producer or dependency changes.
+
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.declaration_census_audit \
   --release /absolute/release --repository NAME --language rust \

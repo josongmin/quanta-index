@@ -14,8 +14,13 @@ import sys
 import tempfile
 import unicodedata
 from collections import defaultdict
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 support
+    import tomli as tomllib
 
 import corpus_release as corpus
 from evidence import (
@@ -38,6 +43,13 @@ MAX_CAPSULE_BYTES = 256 * 1024 * 1024
 GOLD_DOCUMENT_BYTES = 32 * 1024 * 1024
 MAX_SPLIT_REPOSITORIES = 64
 MAX_SPLIT_FAMILIES = 100_000
+GOLD_RUNTIME_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+GOLD_RUNTIME_PACKAGES = (
+    "regex",
+    "tree-sitter",
+    "tree-sitter-language-pack",
+    "unicodedata2",
+)
 # Cross-split source leakage is checked over code_only bytes. Exact copies are
 # refused from a byte floor that skips empty package stubs; near duplicates use
 # winnowed token k-gram fingerprints (Schleimer et al., SIGMOD 2003) and refuse
@@ -559,11 +571,69 @@ def _gold_producer_source_digests() -> dict[str, str]:
     }
     return {
         **{name: digest_bytes(_read_regular_file(path)) for name, path in sorted(owners.items())},
+        "pyproject_toml": digest_bytes(
+            _read_regular_file(GOLD_RUNTIME_SOURCE_ROOT / "pyproject.toml")
+        ),
+        "uv_lock": digest_bytes(_read_regular_file(GOLD_RUNTIME_SOURCE_ROOT / "uv.lock")),
         **{
             name: "sha256:" + digest
             for name, digest in declaration_parsers.component_source_digests().items()
         },
     }
+
+
+def require_gold_runtime() -> dict[str, str]:
+    """Fail before source replay if the active parser differs from source pins."""
+    try:
+        project = tomllib.loads(
+            _read_regular_file(GOLD_RUNTIME_SOURCE_ROOT / "pyproject.toml").decode("utf-8")
+        )
+        locked = tomllib.loads(
+            _read_regular_file(GOLD_RUNTIME_SOURCE_ROOT / "uv.lock").decode("utf-8")
+        )
+    except (OSError, UnicodeError, ValueError) as error:
+        raise EvidenceError("gold runtime source pins are unreadable or malformed") from error
+    dependencies = project.get("project", {}).get("dependencies")
+    optional = project.get("project", {}).get("optional-dependencies", {}).get("dev")
+    packages = locked.get("package")
+    if (
+        not isinstance(dependencies, list)
+        or not isinstance(optional, list)
+        or not isinstance(packages, list)
+    ):
+        raise EvidenceError("gold runtime source pins are malformed")
+    requirements = dependencies + optional
+    locked_versions: dict[str, list[str]] = {name: [] for name in GOLD_RUNTIME_PACKAGES}
+    for package in packages:
+        if isinstance(package, dict) and package.get("name") in locked_versions:
+            locked_versions[package["name"]].append(package.get("version"))
+    expected: dict[str, str] = {}
+    for name in GOLD_RUNTIME_PACKAGES:
+        versions = locked_versions[name]
+        if len(versions) != 1 or not isinstance(versions[0], str):
+            raise EvidenceError(f"gold runtime lock has no unique exact pin: {name}")
+        pinned = versions[0]
+        if name != "tree-sitter":
+            direct = [
+                match.group(1)
+                for requirement in requirements
+                if isinstance(requirement, str)
+                and (
+                    match := re.fullmatch(
+                        rf"{re.escape(name)}==([A-Za-z0-9][A-Za-z0-9._+-]*)", requirement
+                    )
+                )
+            ]
+            if direct != [pinned]:
+                raise EvidenceError(f"gold runtime project/lock pin differs: {name}")
+        try:
+            active = version(name)
+        except PackageNotFoundError as error:
+            raise EvidenceError(f"gold runtime dependency missing: {name}") from error
+        if active != pinned:
+            raise EvidenceError(f"gold runtime dependency differs from source pin: {name}")
+        expected[name] = pinned
+    return expected
 
 
 def _read_gold_capsule_file(path: Path) -> bytes:
@@ -591,6 +661,7 @@ def _gold_material(
     """Re-derive labels from a validated release, never captured product rows."""
     from tools.benchmark.retrieval import gold_oracle
 
+    runtime = require_gold_runtime()
     producer_sources = _gold_producer_source_digests()
     _selection(selection)
     if root.absolute() != Path(selection["release_path"]):
@@ -643,8 +714,8 @@ def _gold_material(
         "parser_runtime": {
             "python": sys.version.split()[0],
             "unicode": unicodedata.unidata_version,
-            "tree_sitter": version("tree-sitter"),
-            "tree_sitter_language_pack": version("tree-sitter-language-pack"),
+            "tree_sitter": runtime["tree-sitter"],
+            "tree_sitter_language_pack": runtime["tree-sitter-language-pack"],
         },
         "files": {name: digest_bytes(raw) for name, raw in sorted(material.items())},
     }
@@ -729,6 +800,7 @@ def capture_gold_batch(
     stage = target.with_name(target.name + ".staging")
     if stage.exists() or stage.is_symlink():
         raise EvidenceError("gold staging target already exists")
+    require_gold_runtime()
     # Refuse every recipe before restoring Git bundles and comparing the
     # corpus-wide source fingerprints. Invalid later recipes must not make
     # an otherwise valid batch pay for a full split replay.

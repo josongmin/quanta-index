@@ -629,6 +629,7 @@ def _derive_prepared(
 
 def derive(release: Path, capsule: Path, checkout: Path, intent: str) -> tuple[dict, dict, dict]:
     """Validate capsule/source and derive one diagnostic suite without writing."""
+    corpus_binding.require_gold_runtime()
     if intent not in gold_oracle.DECLARATION_INTENTS:
         raise ValueError("C4 requires one supported declaration-name intent")
     suite, pack, report = _derive_prepared(_prepare(release, capsule, checkout), intent)
@@ -816,6 +817,7 @@ def _batch_preflight(
     release: Path, capsule_root: Path, checkout_root: Path, expected_repositories: int
 ) -> _Batch:
     """Validate the shared release roster and global split once per batch."""
+    corpus_binding.require_gold_runtime()
     document_raw = _read_control_file(release / "release.json")
     document = parse_json(document_raw.decode("utf-8"))
     if not isinstance(document, dict) or not isinstance(document.get("repositories"), list):

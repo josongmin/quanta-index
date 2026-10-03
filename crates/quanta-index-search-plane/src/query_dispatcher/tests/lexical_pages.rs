@@ -536,6 +536,15 @@ fn code_search_clock_policy_keeps_tight_page_and_continuation_identical() -> Tes
     if duplicate.budget_encoded_len().is_ok() {
         return Err("duplicated CodeSearch clock passed the budget contract".into());
     }
+    let mut unknown = fitted_off;
+    let original_budget = unknown.budget_encoded_len()?;
+    unknown.explanation.planner_trace.push(PlannerTraceEntry {
+        stage: PlannerStage::Merge,
+        detail: "code_search.execution.unknown_ns=1".into(),
+    });
+    if unknown.budget_encoded_len()? <= original_budget {
+        return Err("unknown telemetry was stripped from the page budget".into());
+    }
     Ok(())
 }
 

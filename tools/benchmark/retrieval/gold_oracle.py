@@ -369,6 +369,9 @@ def _definition_spans(
 
 
 def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
+    from tools.benchmark import corpus_binding
+
+    corpus_binding.require_gold_runtime()
     validate_recipe(recipe)
     if (
         not isinstance(manifest, dict)

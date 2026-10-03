@@ -2889,3 +2889,24 @@ never joined by local task ID alone.
 receipts; actual scoped license decisions; full admission; external indexed
 content attestation integration; reviewed holdout capture and equal-API timing.
 The new v5 sample disposition does not satisfy these separate qualification gates.
+
+Follow-up at 05:29 KST supersedes the SDK-live observation above:
+
+- **FAILED**, the clean `8d499543` SDK run executed **25** tests: **24 passed,
+  1 failed**. The actual public NL-file OR fixture passed. The failure was the
+  SDK test's obsolete flat sum of schema-3 phase values, which counted both
+  the publish parent and its `sdk_publish`/`sdk_activate` children. Producer
+  timings and the Python verifier already distinguish nested children; no
+  evidence of producer double-counting is asserted.
+- Commit **`32fbdb2d`**, pushed to `origin/main`, repairs that existing SDK
+  assertion. It independently requires finite nonnegative measurements,
+  child sum within the publish parent, and the disjoint partition equal to
+  total. Existing Python phase golden/refusal tests passed **2/2** (4.06 seconds),
+  and `cargow fmt -p quanta-index-retrieval-bench --check` passed. Actual repaired
+  SDK RED-to-GREEN execution is still pending, not inferred from those tests.
+- The old SDK/contract failures are preserved. Both fresh portable rails now
+  use the same clean **`32fbdb2d`** worktree and new output root
+  `current-portable-proof-nested-sdk-fj8nngov/`, with commands/source/environment
+  bound before launch. Sessions **42229** (SDK) and **44800** (contract) are
+  confirmed live; resource admission serializes Rust work. The previous source
+  is not silently upgraded and cross-source receipts are not composed.

@@ -96,6 +96,56 @@ def test_gold_producer_binds_the_actual_vendored_parser_sources():
         )
 
 
+def test_gold_runtime_requires_source_locked_parser_versions():
+    assert binding.require_gold_runtime() == {
+        "regex": "2025.10.23",
+        "tree-sitter": "0.23.2",
+        "tree-sitter-language-pack": "0.9.1",
+        "unicodedata2": "17.0.0",
+    }
+
+
+def test_gold_runtime_rejects_changed_js_parser_before_batch_replay(tmp_path, monkeypatch):
+    from tools.benchmark import corpus_binding as package_binding
+    from tools.benchmark.retrieval import gold_oracle
+
+    actual_version = binding.version
+    monkeypatch.setattr(
+        binding,
+        "version",
+        lambda name: "0.13.0" if name == "tree-sitter-language-pack" else actual_version(name),
+    )
+    monkeypatch.setattr(package_binding, "version", binding.version)
+    target = tmp_path / "gold"
+    with pytest.raises(
+        EvidenceError, match="dependency differs from source pin: tree-sitter-language-pack"
+    ):
+        binding.capture_gold_batch(tmp_path, {"toy": b"{}"}, target, (b"{}", {}))
+    assert not target.exists()
+    with pytest.raises(
+        EvidenceError, match="dependency differs from source pin: tree-sitter-language-pack"
+    ):
+        gold_oracle.derive({}, {}, tmp_path)
+
+
+def test_gold_runtime_rejects_project_lock_disagreement(tmp_path, monkeypatch):
+    source_root = Path(__file__).resolve().parents[3]
+    project = (source_root / "pyproject.toml").read_bytes()
+    lock = (source_root / "uv.lock").read_bytes()
+    assert b'name = "tree-sitter-language-pack"\nversion = "0.9.1"' in lock
+    (tmp_path / "pyproject.toml").write_bytes(project)
+    (tmp_path / "uv.lock").write_bytes(
+        lock.replace(
+            b'name = "tree-sitter-language-pack"\nversion = "0.9.1"',
+            b'name = "tree-sitter-language-pack"\nversion = "0.13.0"',
+            1,
+        )
+    )
+    monkeypatch.setattr(binding, "GOLD_RUNTIME_SOURCE_ROOT", tmp_path)
+    with pytest.raises(EvidenceError, match="project/lock pin differs: tree-sitter-language-pack"):
+        binding.require_gold_runtime()
+
+
 @pytest.mark.parametrize("view", ["code_only", "developer_search"])
 def test_capsule_replays_after_original_sources_are_unavailable(source, tmp_path, view):  # noqa: F811
     # This oracle must remove the actual producer checkout, not a spare seed copy.
