@@ -340,6 +340,15 @@ fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
     }
 }
 
+fn validated_protocol_latency(outcome: &QueryOutcome, phase: &str) -> BenchResult<Duration> {
+    // A typed refusal is a measured execution outcome. The record and verdict
+    // decide quality and qualification; the protocol must still reach later tasks.
+    outcome.classification().map_err(|message| {
+        BenchError::Protocol(format!("invalid {phase} outcome: {message}"))
+    })?;
+    Ok(outcome.latency())
+}
+
 fn write_query_plan_refusal(
     path: &Path,
     policy: &str,
@@ -1246,19 +1255,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                     .ok_or_else(|| BenchError::Protocol("warmup task disappeared".to_string()))?;
                 for route in routes.iter().copied() {
                     let outcome = completed_query(task_id, route, plan, "warmup", iteration)?;
-                    if !matches!(outcome, QueryOutcome::ReturnedWindow { .. }) {
-                        let classification = outcome.classification().map_err(|message| {
-                            BenchError::Protocol(format!("invalid warmup outcome: {message}"))
-                        })?;
-                        return Err(BenchError::Protocol(format!(
-                            "warmup query failed for {task_id}/{route}: {}/{}",
-                            classification.status,
-                            classification
-                                .error_code
-                                .as_deref()
-                                .unwrap_or("missing_error_code")
-                        )));
-                    }
+                    let _latency = validated_protocol_latency(&outcome, "warmup")?;
                 }
             }
         }
@@ -1272,25 +1269,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                 })?;
                 for route in routes.iter().copied() {
                     let outcome = completed_query(task_id, route, plan, "measured", repetition)?;
-                    let latency = match &outcome {
-                        QueryOutcome::ReturnedWindow { latency, .. } => *latency,
-                        failed @ (QueryOutcome::RejectedResponse { .. }
-                        | QueryOutcome::SdkFailure { .. }) => {
-                            let classification = failed.classification().map_err(|message| {
-                                BenchError::Protocol(format!(
-                                    "invalid measurement outcome: {message}"
-                                ))
-                            })?;
-                            return Err(BenchError::Protocol(format!(
-                                "measurement query failed for {task_id}/{route}: {}/{}",
-                                classification.status,
-                                classification
-                                    .error_code
-                                    .as_deref()
-                                    .unwrap_or("missing_error_code")
-                            )));
-                        }
-                    };
+                    let latency = validated_protocol_latency(&outcome, "measurement")?;
                     warm_latencies_ms
                         .entry(route.to_string())
                         .or_default()
@@ -1689,6 +1668,33 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protocol_preserves_typed_query_refusal_and_rejects_malformed_failure() {
+        let latency = Duration::from_millis(7);
+        let refused = QueryOutcome::SdkFailure {
+            status: "error",
+            code: "LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED".into(),
+            message: "candidate plan exceeded limit".into(),
+            latency,
+        };
+        assert_eq!(
+            validated_protocol_latency(&refused, "warmup").expect("typed warmup refusal"),
+            latency
+        );
+        assert_eq!(
+            validated_protocol_latency(&refused, "measurement")
+                .expect("typed measurement refusal"),
+            latency
+        );
+        let malformed = QueryOutcome::SdkFailure {
+            status: "success",
+            code: String::new(),
+            message: String::new(),
+            latency,
+        };
+        assert!(validated_protocol_latency(&malformed, "warmup").is_err());
+    }
 
     #[test]
     fn exact_content_source_revision_must_match_manifest_commit() {

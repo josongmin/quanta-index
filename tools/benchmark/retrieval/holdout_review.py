@@ -133,6 +133,48 @@ def _digest(value: object) -> str:
     return evaluator.digest(evaluator.canonical(value))
 
 
+def capture_review_pool(
+    checkout: Path, suite_path: Path, record_path: Path, *, pool_id: str
+) -> tuple[dict, dict, dict]:
+    """Harvest a checked file capture for reissuing unjudged review forms.
+
+    One pool represents one recorded route. Ranks, scores and capture identity
+    stay out of reviewer input; this never carries existing grades forward or
+    attests full external index coverage or independent reviewer provenance.
+    """
+    evaluator.string(pool_id, "review pool ID")
+    before = {p: _read_control_file(p) for p in (suite_path, record_path)}
+    suite, pack, record = evaluator.load_evidence(checkout, suite_path, record_path)
+    evaluator.require(len(suite["routes"]) == 1, "review pool requires one recorded route")
+    tasks = {task["task_id"]: [] for task in pack["tasks"]}
+    for row in record["results"]:
+        evaluator.require(
+            row.get("rank_unit") == "distinct_file",
+            "review pool requires native distinct_file results",
+        )
+        tasks[row["task_id"]] = sorted(
+            [{key: item[key] for key in ("path", "file_sha256")} for item in row["candidates"]],
+            key=lambda item: item["path"],
+        )
+    evaluator.require(
+        all(before[p] == _read_control_file(p) for p in before),
+        "review pool capture input changed during validation",
+    )
+    pool = {"pool_id": pool_id, "kind": "retrieval", "tasks": tasks}
+    custody = {
+        "status": "unjudged_preparation",
+        "qualified": False,
+        "pool_execution_attested": False,
+        "human_provenance_attested": False,
+        "suite_bytes_sha256": evaluator.digest(before[suite_path]),
+        "record_bytes_sha256": evaluator.digest(before[record_path]),
+        "query_pack_sha256": _digest(pack),
+        "pool_sha256": _digest(pool),
+        "route": suite["routes"][0],
+    }
+    return pack, pool, custody
+
+
 def prepare(
     checkout: Path, pack: dict, contexts: dict, pools: list[dict], *, seed: int
 ) -> tuple[list[dict], dict]:

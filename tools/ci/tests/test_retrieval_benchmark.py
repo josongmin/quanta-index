@@ -14616,6 +14616,87 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
     return repo, suite, run, suite_path, runner_path
 
 
+def _file_review_capture_fixture(tmp_path):
+    fixture = _file_projection_run(
+        tmp_path, "natural_language_file", queries=["find alphaTwo", "find alphaThree"]
+    )
+    for row in fixture[2]["results"]:
+        row["score_evidence"] = "native_sdk_score_v1"
+        for rank, candidate in enumerate(row["candidates"]):
+            candidate["score"] = float(len(row["candidates"]) - rank)
+    return fixture
+
+
+def test_capture_review_pool_blinds_native_files_and_preserves_empty_results(tmp_path):
+    from tools.benchmark.retrieval import holdout_review
+
+    repo, suite, run, suite_path, record_path = _file_review_capture_fixture(tmp_path)
+    run["results"][1]["status"] = "abstained"
+    run["results"][1]["candidates"] = []
+    _checked, original_pack, _record = record_v3(repo, suite, run, suite_path, record_path)
+    raw = record_path.read_bytes()
+    pack, pool, custody = holdout_review.capture_review_pool(
+        repo, suite_path, record_path, pool_id="observed-native-file-route"
+    )
+    assert pack == original_pack
+    assert pool == {
+        "pool_id": "observed-native-file-route",
+        "kind": "retrieval",
+        "tasks": {
+            suite["tasks"][0]["task_id"]: [
+                {"path": path, "file_sha256": ev.digest((repo / path).read_bytes())}
+                for path in ("a.txt", "b.txt")
+            ],
+            suite["tasks"][1]["task_id"]: [],
+        },
+    }
+    assert custody["record_bytes_sha256"] == ev.digest(raw)
+    assert custody["qualified"] is custody["pool_execution_attested"] is False
+    assert record_path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("fault", ["record_commitment", "source_digest", "input_race"])
+def test_capture_review_pool_refuses_unbound_inputs(tmp_path, monkeypatch, fault):
+    from tools.benchmark.retrieval import holdout_review
+
+    repo, suite, run, suite_path, record_path = _file_review_capture_fixture(tmp_path)
+    record_v3(repo, suite, run, suite_path, record_path)
+    if fault == "input_race":
+        original = ev.load_evidence
+
+        def raced(*args):
+            loaded = original(*args)
+            record_path.write_bytes(record_path.read_bytes() + b"\n")
+            return loaded
+
+        monkeypatch.setattr(ev, "load_evidence", raced)
+    else:
+        payload = json.loads(record_path.read_text())
+        if fault == "record_commitment":
+            payload["query_pack_sha256"] = "0" * 64
+        else:
+            payload["results"][0]["candidates"][0]["file_sha256"] = "0" * 64
+        record_path.write_bytes(ev.canonical(payload))
+    with pytest.raises(ev.EvidenceError):
+        holdout_review.capture_review_pool(repo, suite_path, record_path, pool_id="captured")
+
+
+def test_capture_review_pool_refuses_chunk_collapse_or_multi_route_pool(tmp_path):
+    from tools.benchmark.retrieval import holdout_review
+
+    repo, suite, run, suite_path, record_path, _files = fixture_v3(tmp_path)
+    record_v3(repo, suite, run, suite_path, record_path)
+    with pytest.raises(ev.EvidenceError, match="one recorded route"):
+        holdout_review.capture_review_pool(repo, suite_path, record_path, pool_id="captured")
+    suite["routes"] = ["lexical"]
+    run["route_provenance"] = {"lexical": {"capture_id": "q0"}}
+    run["results"] = [row for row in run["results"] if row["route"] == "lexical"]
+    _pack, run = _repack(repo, suite, run)
+    record_v3(repo, suite, run, suite_path, record_path)
+    with pytest.raises(ev.EvidenceError, match="native distinct_file"):
+        holdout_review.capture_review_pool(repo, suite_path, record_path, pool_id="captured")
+
+
 def test_file_projection_policies_bind_ordering_and_interpret_metrics(tmp_path):
     keyword = ["alphaTwo", "alphaThree"]
     repo, suite, run, suite_path, runner_path = _file_projection_run(

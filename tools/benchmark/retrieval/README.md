@@ -252,6 +252,15 @@ Hit/MRR definition (grade > 0). Reports expose each declared answerability
 threshold separately. Omission retains the historical threshold of 1;
 mechanical source-oracle tasks retain their own answerability contract.
 
+Use `holdout_review.capture_review_pool(checkout, suite_path, record_path,
+pool_id=...)` to extend a review pool from an actual single-route file capture.
+It runs the existing source/pack/record validation, retains abstentions as empty
+candidate lists, rejects chunk collapse and changed inputs, and exports only
+paths and file hashes. Add this retrieval pool to the existing diverse pools
+and call `holdout_review.prepare`/`write` again; both forms remain unjudged.
+Keep its capture custody in the owner area. Revised labels require a new suite
+commitment and capture; never rebind an old runner record to new qrels.
+
 For objective lexical checks, a task may instead declare `source_oracle` with
 `contract: go_exact_local_name_v3` and `unit: symbol` or `distinct_file`, or
 `contract: ascii_identifier_word_v1` and `unit: distinct_file`. Set
