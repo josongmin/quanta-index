@@ -18,7 +18,6 @@ from typing import Any
 
 from tools.benchmark.retrieval import query_plan
 
-
 DATASET_REPOSITORY = "https://huggingface.co/datasets/ClarcTeam/CLARC"
 DATASET_COMMIT = "6c87a91da92bc0d06890efb19509db104da22ecb"
 SOURCES = {

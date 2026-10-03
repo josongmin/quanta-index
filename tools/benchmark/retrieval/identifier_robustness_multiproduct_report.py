@@ -12,11 +12,16 @@ import hashlib
 import json
 import math
 import statistics
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from tools.benchmark.retrieval import evaluator, identifier_robustness_suite, source_oracle
+try:
+    from tools.benchmark.retrieval import evaluator, identifier_robustness_suite, source_oracle
+except ModuleNotFoundError:  # direct script invocation
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from tools.benchmark.retrieval import evaluator, identifier_robustness_suite, source_oracle
 
 PRODUCTS = ("quanta", "semble", "sourcegraph", "cs", "opengrok")
 INTENT = "declaration_name_osa1_casefold"
@@ -230,14 +235,13 @@ def build(
     pair, pair_ledger = _read(pair_root / "manifest.json"), _read(pair_root / "ledger.json")
     continuation = _read(continuation_root / "manifest.json")
     continuation_ledger = _read(continuation_root / "ledger.json")
-    external, external_ledger = _read(external_root / "manifest.json"), _read(
-        external_root / "ledger.json"
+    external, external_ledger = (
+        _read(external_root / "manifest.json"),
+        _read(external_root / "ledger.json"),
     )
     pair["_path"] = str(pair_root / "manifest.json")
     continuation["_path"] = str(continuation_root / "manifest.json")
-    paired = _paired_receipts(
-        pair, pair_ledger, continuation, continuation_ledger, split_root
-    )
+    paired = _paired_receipts(pair, pair_ledger, continuation, continuation_ledger, split_root)
     _require(
         external_ledger["precommit_sha256"] == _sha(external_root / "manifest.json")
         and external_ledger["status"] == "diagnostic_unqualified"
@@ -282,21 +286,21 @@ def build(
         ext_root = Path(ext_cell["output_root"])
         _require(
             ext_cell["spec_sha256"] == _sha(Path(ext_cell["spec_path"]))
-            and external_receipts[repo]["capture_summary_sha256"] == _sha(ext_root / "capture.json"),
+            and external_receipts[repo]["capture_summary_sha256"]
+            == _sha(ext_root / "capture.json"),
             "external capture receipt differs: " + repo,
         )
         capture = _read(ext_root / "capture.json")
         _require(
-            capture["status"] == "diagnostic_unqualified"
-            and capture["tasks"] == len(tasks),
+            capture["status"] == "diagnostic_unqualified" and capture["tasks"] == len(tasks),
             "external capture incomplete: " + repo,
         )
         by_product: dict[str, dict[str, dict[str, Any]]] = {}
         pair_output = Path(cell["output_root"])
         for product, route in (("quanta", "lexical"), ("semble", "semble-lexical-file")):
             record_root = (
-                split_quanta_root if product == "quanta" else split_root
-            ) if split else pair_output
+                (split_quanta_root if product == "quanta" else split_root) if split else pair_output
+            )
             record_path = record_root / (
                 "strategy-00-fixed_window_strict/record.json"
                 if split and product == "quanta"
@@ -307,7 +311,9 @@ def build(
                 else "rep-00/semble/record.json"
             )
             pack_path = record_root / (
-                "quanta-pack.json" if split and product == "quanta" else "semble-pack.json"
+                "quanta-pack.json"
+                if split and product == "quanta"
+                else "semble-pack.json"
                 if split
                 else "rep-00/quanta/quanta-pack.json"
                 if product == "quanta"
@@ -335,7 +341,10 @@ def build(
                 _require(status in evaluator.RESULT_STATUSES, "unknown native status")
                 latency = None if split else native["timings"].get("query_latency_ms")
                 product_rows[task_id] = _result(
-                    tasks[task_id], paths, eligible=status != "error", status=status,
+                    tasks[task_id],
+                    paths,
+                    eligible=status != "error",
+                    status=status,
                     latency_ms=latency,
                 )
             by_product[product] = product_rows
@@ -359,7 +368,8 @@ def build(
                     repo + "/" + product + "/" + task_id,
                 )
                 eligible = (
-                    raw["exit_code"] == 0 if product == "cs"
+                    raw["exit_code"] == 0
+                    if product == "cs"
                     else raw["http_status"] == 200 and raw["error"] is None
                 )
                 observed_hit = _score(paths, task["gold"])["hit_at_10"]
@@ -368,7 +378,9 @@ def build(
                     "external recorded hit differs",
                 )
                 product_rows[task_id] = _result(
-                    task, paths, eligible=eligible,
+                    task,
+                    paths,
+                    eligible=eligible,
                     status="success" if eligible else "failed_or_unsupported",
                     latency_ms=raw["elapsed_ms"],
                 )
@@ -402,7 +414,9 @@ def build(
             "overall",
             "literal_relation/" + row["source_strata"]["literal_relation"],
             "surviving_components/" + row["source_strata"]["surviving_components"],
-            "joint/" + row["source_strata"]["literal_relation"] + "/"
+            "joint/"
+            + row["source_strata"]["literal_relation"]
+            + "/"
             + row["source_strata"]["surviving_components"],
         ):
             for product in PRODUCTS:
@@ -437,7 +451,14 @@ def build(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    for name in ("pair_root", "continuation_root", "split_root", "split_quanta_root", "external_root", "output"):
+    for name in (
+        "pair_root",
+        "continuation_root",
+        "split_root",
+        "split_quanta_root",
+        "external_root",
+        "output",
+    ):
         parser.add_argument("--" + name.replace("_", "-"), required=True, type=Path)
     args = parser.parse_args()
     output = args.output.resolve()
@@ -445,13 +466,21 @@ def main() -> int:
     _require(output.is_absolute() and not output.exists(), "output must be a new absolute file")
     _require(not output.is_relative_to(checkout), "output must be outside source checkout")
     result = build(
-        args.pair_root, args.continuation_root, args.split_root,
-        args.split_quanta_root, args.external_root,
+        args.pair_root,
+        args.continuation_root,
+        args.split_root,
+        args.split_quanta_root,
+        args.external_root,
     )
     with output.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False)
         stream.write("\n")
-    print(json.dumps({"status": result["status"], "tasks": result["task_count"], "sha256": _sha(output)}, sort_keys=True))
+    print(
+        json.dumps(
+            {"status": result["status"], "tasks": result["task_count"], "sha256": _sha(output)},
+            sort_keys=True,
+        )
+    )
     return 0
 
 
