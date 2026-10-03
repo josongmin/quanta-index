@@ -149,6 +149,8 @@ fn main() -> ExitCode {
             measurement.result_count,
         );
     }
-    println!("scale rail green (selected tiers measured; canonical performance qualification separate)");
+    println!(
+        "scale rail green (selected tiers measured; canonical performance qualification separate)"
+    );
     ExitCode::SUCCESS
 }

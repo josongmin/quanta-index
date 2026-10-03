@@ -28,7 +28,10 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
-BENCH_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = Path(__file__).resolve().parents[3]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+BENCH_ROOT = SOURCE_ROOT / "tools" / "benchmark"
 if str(BENCH_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCH_ROOT))
 

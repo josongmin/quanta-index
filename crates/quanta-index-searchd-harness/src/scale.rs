@@ -339,6 +339,11 @@ fn scoped_digest_files(files: &[ScopedFile]) -> Vec<(String, String)> {
         .collect()
 }
 
+#[must_use]
+pub fn scoped_corpus_digest(dimension: &str, files: &[ScopedFile]) -> String {
+    corpus_digest(dimension, &scoped_digest_files(files))
+}
+
 /// Source-derived identities and expected result counts, independent of the
 /// engine's candidate list or ranking.
 #[derive(Clone, Debug)]
@@ -1005,10 +1010,7 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
     })
 }
 
-fn measure_scoped_delta(
-    rt: &mut E2eRuntime,
-    file: &ScopedFile,
-) -> AnyResult<DeltaMeasurementV1> {
+fn measure_scoped_delta(rt: &mut E2eRuntime, file: &ScopedFile) -> AnyResult<DeltaMeasurementV1> {
     let changed = format!("{}// delta {SCALE_QUERY_TOKEN} touched\n", file.content);
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
@@ -1047,16 +1049,17 @@ pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
         return measure_small_tier(seed);
     }
     let files = generate_scoped_corpus(tier, seed)?;
-    let scoped_files_for_digest = scoped_digest_files(&files);
-    let corpus_digest = corpus_digest(DIMENSION, &scoped_files_for_digest);
+    let corpus_digest = scoped_corpus_digest(DIMENSION, &files);
     let oracle = ScopedOracle::from_source(&files, tier)?;
     let _admission = preflight_scoped_corpus(&files)?;
     let file_count = files.len();
-    let corpus_bytes = files.iter().try_fold(0_u64, |total, file| -> AnyResult<u64> {
-        total
-            .checked_add(u64::try_from(file.content.len())?)
-            .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
-    })?;
+    let corpus_bytes = files
+        .iter()
+        .try_fold(0_u64, |total, file| -> AnyResult<u64> {
+            total
+                .checked_add(u64::try_from(file.content.len())?)
+                .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
+        })?;
 
     let mut rt = E2eRuntime::boot_with_history_max_generations(1)?;
     let model_revision = model_revision_of(rt.embedder_profile());
@@ -1324,11 +1327,15 @@ pub fn artifact(
                     ("seed", measurement.seed.to_string()),
                     ("repo_count", params.repo_count.to_string()),
                     ("serving_owner_count", "1".to_string()),
-                    ("source_identity", if measurement.tier == ScaleTier::Small {
-                        "legacy-prefixed-path"
-                    } else {
-                        "scoped-source-repo-v1"
-                    }.to_string()),
+                    (
+                        "source_identity",
+                        if measurement.tier == ScaleTier::Small {
+                            "legacy-prefixed-path"
+                        } else {
+                            "scoped-source-repo-v1"
+                        }
+                        .to_string(),
+                    ),
                     ("files_per_repo", params.files_per_repo.to_string()),
                     ("avg_file_lines", params.avg_file_lines.to_string()),
                     (

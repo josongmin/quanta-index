@@ -17,13 +17,16 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax, TextRankUnit,
 };
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_searchd_harness::{E2eRuntime, E2eTextChunkSpec};
 use quanta_index_searchd_harness::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
     LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest,
     corpus_digest, model_revision_of,
 };
-use quanta_index_searchd_harness::scale::{ScaleTier, generate_corpus};
+use quanta_index_searchd_harness::scale::{
+    ScaleTier, ScopedOracle, generate_corpus, generate_scoped_corpus, preflight_scoped_corpus,
+    scoped_corpus_digest,
+};
 use serde_json::{Value, json};
 
 pub(crate) const DIMENSION: &str = "open-loop";
@@ -54,6 +57,7 @@ impl ArrivalModel {
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
     pub seed: u64,
+    pub tier: ScaleTier,
     pub arrival_model: ArrivalModel,
     pub rates_qps: Vec<u32>,
     pub duration: Duration,
@@ -656,14 +660,48 @@ impl Report {
 
 pub(crate) fn run(config: Config) -> AnyResult<Report> {
     config.validate()?;
-    let corpus = generate_corpus(ScaleTier::Small, config.seed);
-    let source_paths = source_fixture_paths(&corpus)?;
-    let corpus_digest = corpus_digest(DIMENSION, &corpus);
     let mut runtime = E2eRuntime::boot()?;
     let model_revision = model_revision_of(runtime.embedder_profile());
-    for (path, content) in &corpus {
-        runtime.ingest_text(REPO, path, content)?;
-    }
+    let (source_paths, corpus_digest) = if config.tier == ScaleTier::Small {
+        let corpus = generate_corpus(ScaleTier::Small, config.seed);
+        let source_paths = source_fixture_paths(&corpus)?;
+        for (path, content) in &corpus {
+            runtime.ingest_text(REPO, path, content)?;
+        }
+        (source_paths, corpus_digest(DIMENSION, &corpus))
+    } else {
+        let files = generate_scoped_corpus(config.tier, config.seed)?;
+        let _oracle = ScopedOracle::from_source(&files, config.tier)?;
+        let _admission = preflight_scoped_corpus(&files)?;
+        let source_paths = files
+            .iter()
+            .map(|file| format!("{}/{}", file.source_repo_id, file.repo_relative_path))
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            source_paths.len() == files.len(),
+            "open-loop scoped source identity repeats"
+        );
+        let digest = scoped_corpus_digest(DIMENSION, &files);
+        let chunks = files
+            .iter()
+            .map(|file| {
+                [E2eTextChunkSpec {
+                    content: &file.content,
+                    start_line: 1,
+                    end_line: 2,
+                    source_repo_id: Some(&file.source_repo_id),
+                }]
+            })
+            .collect::<Vec<_>>();
+        let batch_files = files
+            .iter()
+            .zip(&chunks)
+            .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
+            .collect::<Vec<_>>();
+        let _ids = runtime.ingest_text_files_one_batch(&batch_files)?;
+        let _wire = runtime.preview_pending_search_corpus_wire_bytes()?;
+        (source_paths, digest)
+    };
     let sealed = runtime.seal()?;
     runtime.activate_last_sealed_generation()?;
     let pin = GenerationPin::new(runtime.repo(), runtime.revision(), sealed);
@@ -677,11 +715,21 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
         SearchPlaneQueryIpcResponse::Text(page)
             if page.generation == pin && page.rank_unit == TextRankUnit::Chunk =>
         {
+            let observed = page
+                .results
+                .iter()
+                .map(|row| {
+                    let path = if config.tier == ScaleTier::Small {
+                        row.repo_relative_path.as_str().to_string()
+                    } else {
+                        format!("{}/{}", row.source_repo_id, row.repo_relative_path)
+                    };
+                    (row.candidate_id.clone(), path)
+                })
+                .collect::<Vec<_>>();
             fixture_candidate_ids(
                 &source_paths,
-                page.results
-                    .iter()
-                    .map(|row| (row.candidate_id.as_str(), row.repo_relative_path.as_str())),
+                observed.iter().map(|(id, path)| (id.as_str(), path.as_str())),
             )?
         }
         SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
@@ -781,7 +829,7 @@ pub(crate) fn artifact(
                         "request_timeout_ms",
                         config.request_timeout.as_millis().to_string(),
                     ),
-                    ("tier", ScaleTier::Small.as_str().to_string()),
+                    ("tier", config.tier.as_str().to_string()),
                     ("query", QUERY.to_string()),
                     ("top_k", TOP_K.to_string()),
                 ],
@@ -802,6 +850,9 @@ pub(crate) fn artifact(
             "request_timeout_ms": config.request_timeout.as_millis(),
             "queue_capacity": config.queue_capacity,
             "workers": config.workers,
+            "tier": config.tier.as_str(),
+            "serving_owner_count": 1,
+            "source_repo_count": quanta_index_searchd_harness::scale::params_for(config.tier).repo_count,
             "saturation_onset_qps": report.saturation_onset_qps(),
             "points": report.points.iter().map(LoadPoint::detail).collect::<Vec<_>>(),
         }),
@@ -833,6 +884,7 @@ mod tests {
     fn seeded_poisson_schedule_is_replayable_and_not_fixed_spacing() -> AnyResult<()> {
         let config = Config {
             seed: 7,
+            tier: ScaleTier::Small,
             arrival_model: ArrivalModel::SeededPoisson,
             rates_qps: vec![10],
             duration: Duration::from_secs(1),
@@ -860,6 +912,7 @@ mod tests {
     fn empty_seeded_arrivals_cannot_be_a_healthy_load_point() -> AnyResult<()> {
         let empty = Config {
             seed: 0,
+            tier: ScaleTier::Small,
             arrival_model: ArrivalModel::SeededPoisson,
             rates_qps: vec![1],
             duration: Duration::from_millis(100),
@@ -1088,6 +1141,7 @@ mod tests {
             !Report {
                 config: Config {
                     seed: 1,
+                    tier: ScaleTier::Small,
                     arrival_model: ArrivalModel::SeededPoisson,
                     rates_qps: vec![1],
                     duration: Duration::from_secs(1),
@@ -1144,6 +1198,7 @@ mod tests {
         let report = Report {
             config: Config {
                 seed: 1,
+                tier: ScaleTier::Small,
                 arrival_model: ArrivalModel::SeededPoisson,
                 rates_qps: vec![1, 2],
                 duration: Duration::from_secs(1),
@@ -1173,6 +1228,7 @@ mod tests {
     fn bounded_real_runtime_smoke() -> AnyResult<()> {
         let report = run(Config {
             seed: 1,
+            tier: ScaleTier::Small,
             // This smoke test verifies the bounded executor. Keep its offered
             // count deterministic; qualification runs use SeededPoisson.
             arrival_model: ArrivalModel::DeterministicPeriodic,

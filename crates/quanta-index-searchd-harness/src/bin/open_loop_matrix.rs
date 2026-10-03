@@ -9,10 +9,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result as AnyResult};
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
+use quanta_index_searchd_harness::scale::ScaleTier;
 
 fn parse_args() -> AnyResult<(open_loop::Config, PathBuf)> {
     let mut config = open_loop::Config {
         seed: 0x4f50_454e_4c4f_4f50,
+        tier: ScaleTier::Small,
         arrival_model: open_loop::ArrivalModel::SeededPoisson,
         rates_qps: vec![25, 50, 100, 200],
         duration: Duration::from_secs(10),
@@ -21,6 +23,7 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf)> {
         request_timeout: Duration::from_secs(2),
     };
     let mut out_dir = PathBuf::from("artifacts/search-quality/open-loop/latest");
+    let mut out_dir_explicit = false;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let raw = args
@@ -28,6 +31,15 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf)> {
             .with_context(|| format!("{flag} requires a value"))?;
         match flag.as_str() {
             "--seed" => config.seed = raw.parse()?,
+            "--tier" => {
+                config.tier = match raw.as_str() {
+                    "small" => ScaleTier::Small,
+                    "medium" => ScaleTier::Medium,
+                    "large" => ScaleTier::Large,
+                    "xlarge" => ScaleTier::Xlarge,
+                    _ => anyhow::bail!("--tier must be small, medium, large or xlarge"),
+                }
+            }
             "--arrival-model" => {
                 config.arrival_model = match raw.as_str() {
                     "seeded-poisson" => open_loop::ArrivalModel::SeededPoisson,
@@ -47,9 +59,15 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf)> {
             "--workers" => config.workers = raw.parse()?,
             "--queue-capacity" => config.queue_capacity = raw.parse()?,
             "--request-timeout-ms" => config.request_timeout = Duration::from_millis(raw.parse()?),
-            "--out-dir" => out_dir = PathBuf::from(raw),
+            "--out-dir" => {
+                out_dir = PathBuf::from(raw);
+                out_dir_explicit = true;
+            }
             _ => anyhow::bail!("unknown argument {flag:?}"),
         }
+    }
+    if config.tier != ScaleTier::Small && !out_dir_explicit {
+        anyhow::bail!("--out-dir is required for a non-default open-loop tier");
     }
     config.validate()?;
     Ok((config, out_dir))
