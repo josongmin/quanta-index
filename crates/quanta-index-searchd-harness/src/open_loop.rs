@@ -23,7 +23,7 @@ use quanta_index_searchd_harness::artifact::{
     corpus_digest, model_revision_of,
 };
 use quanta_index_searchd_harness::scale::{
-    ScaleTier, ScopedOracle, generate_corpus, generate_scoped_corpus, params_for,
+    ScaleStageError, ScaleTier, ScopedOracle, generate_corpus, generate_scoped_corpus, params_for,
     preflight_scoped_corpus, repo_query_token, scoped_corpus_digest,
 };
 use quanta_index_searchd_harness::{E2eRuntime, E2eTextChunkSpec};
@@ -695,7 +695,8 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
     } else {
         let files = generate_scoped_corpus(config.tier, config.seed)?;
         let oracle = ScopedOracle::from_source(&files, config.tier)?;
-        let _admission = preflight_scoped_corpus(&files)?;
+        let _admission = preflight_scoped_corpus(&files)
+            .map_err(ScaleStageError::source_admission)?;
         Some((files, oracle))
     };
     let (source_paths, corpus_digest) = if let Some(corpus) = &legacy {
@@ -743,7 +744,9 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
             .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
             .collect::<Vec<_>>();
         let _ids = runtime.ingest_text_files_one_batch(&batch_files)?;
-        let _wire = runtime.preview_pending_search_corpus_wire_bytes()?;
+        let _wire = runtime
+            .preview_pending_search_corpus_wire_bytes()
+            .map_err(ScaleStageError::wire_admission)?;
     }
     let sealed = runtime.seal()?;
     runtime.activate_last_sealed_generation()?;

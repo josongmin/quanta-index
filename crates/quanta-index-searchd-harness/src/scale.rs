@@ -526,7 +526,7 @@ impl std::fmt::Display for ScaleStageError {
 impl std::error::Error for ScaleStageError {}
 
 impl ScaleStageError {
-    fn source_admission(error: anyhow::Error) -> Self {
+    pub fn source_admission(error: anyhow::Error) -> Self {
         let refusal = error.downcast_ref::<ScaleAdmissionRefusal>();
         Self {
             stage: "source_preflight",
@@ -537,7 +537,7 @@ impl ScaleStageError {
         }
     }
 
-    fn wire_admission(error: anyhow::Error) -> Self {
+    pub fn wire_admission(error: anyhow::Error) -> Self {
         Self {
             stage: "wire_preflight",
             limit: None,
@@ -1308,6 +1308,16 @@ pub struct ScaleSourceBinding {
 }
 
 pub fn source_binding_for_failure(tier: ScaleTier, seed: u64) -> AnyResult<ScaleSourceBinding> {
+    source_binding_for_failure_in_dimension(DIMENSION, tier, seed)
+}
+
+/// Reuse the scale fixture identity for another rail without reusing its
+/// domain-separated digest as if it were the same measurement.
+pub fn source_binding_for_failure_in_dimension(
+    dimension: &str,
+    tier: ScaleTier,
+    seed: u64,
+) -> AnyResult<ScaleSourceBinding> {
     let params = params_for(tier);
     let (corpus_digest, file_count, corpus_bytes) = if tier == ScaleTier::Small {
         let corpus = generate_corpus(tier, seed);
@@ -1316,7 +1326,7 @@ pub fn source_binding_for_failure(tier: ScaleTier, seed: u64) -> AnyResult<Scale
                 .checked_add(u64::try_from(content.len())?)
                 .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
         })?;
-        (corpus_digest(DIMENSION, &corpus), corpus.len(), bytes)
+        (corpus_digest(dimension, &corpus), corpus.len(), bytes)
     } else {
         let files = generate_scoped_corpus(tier, seed)?;
         let bytes = files.iter().try_fold(0_u64, |total, file| {
@@ -1324,7 +1334,7 @@ pub fn source_binding_for_failure(tier: ScaleTier, seed: u64) -> AnyResult<Scale
                 .checked_add(u64::try_from(file.content.len())?)
                 .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
         })?;
-        (scoped_corpus_digest(DIMENSION, &files), files.len(), bytes)
+        (scoped_corpus_digest(dimension, &files), files.len(), bytes)
     };
     let source_bytes = corpus_bytes
         .checked_add(u64::try_from(file_count)?)
@@ -1347,9 +1357,23 @@ pub fn refusal_json(
     host: &HostV1,
     error: &anyhow::Error,
 ) -> Value {
+    refusal_json_with_context(binding, git_head, host, error, DIMENSION, None)
+}
+
+/// Common failure record for rails sharing the scale source fixture. The
+/// execution context names the request schedule without changing scale's
+/// existing refusal schema when it is absent.
+pub fn refusal_json_with_context(
+    binding: &ScaleSourceBinding,
+    git_head: &GitHeadV1,
+    host: &HostV1,
+    error: &anyhow::Error,
+    dimension: &str,
+    execution: Option<&Value>,
+) -> Value {
     let stage = error.downcast_ref::<ScaleStageError>();
-    json!({
-        "kind": "quanta-index-scale-failure",
+    let mut value = json!({
+        "kind": format!("quanta-index-{dimension}-failure"),
         "schema_version": 1,
         "status": if stage.and_then(|failure| failure.limit).is_some() { "refused" } else { "failed" },
         "source": {
@@ -1378,7 +1402,11 @@ pub fn refusal_json(
             "maximum": stage.and_then(|failure| failure.maximum),
             "message": format!("{error:#}"),
         },
-    })
+    });
+    if let Some(execution) = execution {
+        value["execution"] = execution.clone();
+    }
+    value
 }
 
 pub fn write_refusal_artifact(
@@ -1388,9 +1416,21 @@ pub fn write_refusal_artifact(
     host: &HostV1,
     error: &anyhow::Error,
 ) -> AnyResult<()> {
+    write_refusal_artifact_with_context(binding, dir, git_head, host, error, DIMENSION, None)
+}
+
+pub fn write_refusal_artifact_with_context(
+    binding: &ScaleSourceBinding,
+    dir: &Path,
+    git_head: &GitHeadV1,
+    host: &HostV1,
+    error: &anyhow::Error,
+    dimension: &str,
+    execution: Option<&Value>,
+) -> AnyResult<()> {
     crate::artifact::write_json_pretty_noclobber(
         &dir.join("refusal.json"),
-        &refusal_json(binding, git_head, host, error),
+        &refusal_json_with_context(binding, git_head, host, error, dimension, execution),
     )
 }
 
