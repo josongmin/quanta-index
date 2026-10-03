@@ -7939,6 +7939,20 @@ def test_repository_disjoint_admission_contract_uses_split_paths(tmp_path):
         spec["admission"], _load_schema("pair-spec.schema.json")["properties"]["admission"]
     )
     assert pairrun._admission_keys(spec["admission"]) == pairrun.ADMISSION_DISJOINT_KEYS
+    spec["suite_secret_root"] = str(st["stage"] / "evaluator-only")
+    spec.pop("isolation_method")
+    spec.pop("access_block_log")
+    spec.update(
+        top_k=10,
+        output_root=str(tmp_path / "capture"),
+        strategies=[{"name": "whole_file"}],
+        searchd_binary=str(tmp_path / "searchd"),
+        searchd_expected_sha256=_fake_sha("searchd"),
+    )
+    jsonschema.validate(spec, _load_schema("pair-spec.schema.json"))
+    spec_path = tmp_path / "disjoint-pair-spec.json"
+    spec_path.write_text(json.dumps(spec))
+    assert pairrun.load_spec(spec_path)["admission"] == spec["admission"]
 
     manifest = copy.deepcopy(st["manifest"])
     manifest["artifacts"].pop("experiment_custody")
