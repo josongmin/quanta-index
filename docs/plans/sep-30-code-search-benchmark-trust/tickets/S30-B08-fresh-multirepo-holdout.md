@@ -1180,3 +1180,27 @@ mechanical intended-declaration targets have no human file-relevance review.
 The later `12fe7d9f` empty-result fallback is being captured separately;
 its results must not be merged with this older baseline as if source and
 binary identities were unchanged.
+
+## Next unseen holdout preparation (2026-10-03)
+
+The twelve repositories above have now been exposed to tuning diagnostics,
+so a later C5 decision needs a new roster. Before querying the reserve
+repositories, the original C0 candidate order was filtered against its
+selected/rejected ledger, the development release and the exposed release.
+The resulting twelve-cell ordered reserve list is frozen at
+`/private/tmp/qi-c5-fresh-20261003/selection-precommit.json`
+(SHA-256 `b31c8a5198221585b3c536f7a2d87be79ae471b903243e424fa951e325ed2a70`).
+It is a selection rule, not twelve accepted repositories. Each candidate
+still needs current license, size, complete-history, overlap and view checks.
+
+The first Go/small reserve, `rs/zerolog@56591163bce358abdb860d3dad599d3ab440621a`,
+has a complete Git checkout and a source-replayed candidate release at
+`/private/tmp/qi-c5-fresh-20261003/zerolog-release` (release digest
+`sha256:b35ff03b121ec5dce0d8051a85ca56e272fcbfb3ce2d72af7e770eee482a1c48`).
+Its frozen views contain 82 `code_only` and 99 `developer_search` files.
+Preflight found zero identical code blobs and zero shared root commits across
+the ten development and twelve exposed evaluation views; the external
+preflight is `/private/tmp/qi-c5-fresh-20261003/zerolog-preflight.json`
+(SHA-256 `1fd8fa1019035af44cbba2ae946e7940f31bb3a7923f2afd2efb5089bfaf915c`).
+Near-duplicate source audit, the other eleven releases, labels and product
+captures are **NOT_RUN**. This one candidate is not yet C5-admitted.

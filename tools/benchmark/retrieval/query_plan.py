@@ -59,7 +59,12 @@ FILE_PROJECTION_ORDERING = {
     "code_search_components_file": ORDERING_SCORE_DESC,
 }
 CODE_SEARCH_FILE_POLICIES = frozenset(
-    ("code_search_file", "code_search_exact_content_file", "code_search_typo_file", "code_search_components_file")
+    (
+        "code_search_file",
+        "code_search_exact_content_file",
+        "code_search_typo_file",
+        "code_search_components_file",
+    )
 )
 # Evaluation meaning is separate from the product's execution profile. These
 # names describe the request submitted, not the relevance labels it may score.

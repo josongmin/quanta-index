@@ -280,6 +280,15 @@ the current guards are not proof of a physical heap ceiling.
   Posting, file, source-byte and token-comparison limits return a typed error;
   no partial result is reported as complete. This explicit request has its own
   cursor order.
+- Explicit `components:"word word"` searches ordered, adjacent, folded ASCII
+  camel/snake components within one indexed symbol local name, then projects
+  matches to distinct source files. It accepts 2–32 canonical lowercase words
+  and rejects mixed terms and `case:yes`. An exact whole-name sequence ranks
+  before a subsequence; ties use the stable file order. It has a separate
+  cursor order and an examined-candidate budget. This mode requires indexed
+  symbols. The added `symbol_component_folded` Tantivy field changes the
+  sealed lexical schema, so older generations must be rebuilt before this
+  binary can open them; startup must not silently serve an old schema.
 - Ordinary CodeSearch first evaluates and ranks literal source/path matches.
   When that verified file set is empty, a single unscoped ASCII identifier of
   3–64 bytes under folded case uses the same bounded OSA1 content search as a

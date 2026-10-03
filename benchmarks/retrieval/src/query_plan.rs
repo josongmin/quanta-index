@@ -1251,6 +1251,47 @@ mod tests {
     }
 
     #[test]
+    fn code_search_components_file_binds_canonical_product_request() {
+        let config = NlPlanConfig::default();
+        let plan = plan_query(
+            QueryInputPolicy::CodeSearchComponentsFile,
+            "clean up",
+            &config,
+        )
+        .expect("canonical component sequence");
+        assert_eq!(plan.lexical_request, "components:\"clean up\"");
+        assert_eq!(plan.semantic_text, "clean up");
+        assert_eq!(
+            plan.policy_config_sha256,
+            "c15829640e8564f0cb30ea919d1f05f421e77d48f3f05587ac9b312ce0842f9f"
+        );
+        assert_eq!(
+            execution_profile_sha256(plan.policy, &config),
+            "e89fb0df5b3f22a019c913757d51f9139dd41ea28971254bf8235514f47ec384"
+        );
+        assert_eq!(
+            plan.effective_lexical_request_sha256,
+            "ba42e472195c0801cd3ce2b17b1727060392e4241b081045b9c903e49dcae19d"
+        );
+        assert_eq!(ordering_contract(plan.policy), Some(ORDERING_SCORE_DESC));
+        for invalid in [
+            "clean",
+            "clean  up",
+            "Clean up",
+            "clean_up",
+            "clean\tup",
+            "café up",
+        ] {
+            assert_eq!(
+                plan_query(QueryInputPolicy::CodeSearchComponentsFile, invalid, &config)
+                    .unwrap_err()
+                    .code(),
+                "RBR_QUERY_CODE_SEARCH_COMPONENTS_INVALID"
+            );
+        }
+    }
+
+    #[test]
     fn code_search_typo_file_binds_distinct_product_request() {
         let config = NlPlanConfig::default();
         let raw = "load_jsom";

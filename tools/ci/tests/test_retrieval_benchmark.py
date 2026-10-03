@@ -14390,6 +14390,7 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
         "code_search_file",
         "code_search_exact_content_file",
         "code_search_typo_file",
+        "code_search_components_file",
     ):
         run["span_accounting_version"] = 1
     for task, row in zip(suite["tasks"], run["results"], strict=True):
@@ -14406,6 +14407,7 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
             "code_search_file",
             "code_search_exact_content_file",
             "code_search_typo_file",
+            "code_search_components_file",
         ):
             repo_bytes = b"bench-repo"
             for path, item in by_file.items():
@@ -14751,11 +14753,17 @@ def test_code_search_file_policy_binds_syntax_scores_and_file_unit(tmp_path):
     [
         ("code_search_file", "default_file_search"),
         ("code_search_typo_file", "explicit_osa1_typo"),
+        ("code_search_components_file", "explicit_symbol_components"),
     ],
 )
 def test_evaluation_contract_binds_file_request_gold_result_and_mrr(tmp_path, policy, mode):
+    queries = (
+        ["alpha two", "alpha three"]
+        if policy == "code_search_components_file"
+        else ["alphaTwo", "alphaThree"]
+    )
     repo, suite, run, suite_path, runner_path = _file_projection_run(
-        tmp_path, policy, reverse=True, queries=["alphaTwo", "alphaThree"]
+        tmp_path, policy, reverse=True, queries=queries
     )
     for task in suite["tasks"]:
         task["query_intent"] = "bare_symbol"

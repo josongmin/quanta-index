@@ -298,7 +298,11 @@ def test_source_guard_failure_does_not_publish_or_leave_staging(source, tmp_path
     assert not list(tmp_path.glob(".corpus-stage-*"))
 
 
-def test_git_calls_share_bounded_group_executor(source, monkeypatch):
+def test_git_calls_share_bounded_group_executor(source, tmp_path, monkeypatch):
+    import tempfile
+
+    # A failed call retains its log directory by design; keep it in tmp_path.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     observed = []
 
     def failed(argv, **kwargs):
