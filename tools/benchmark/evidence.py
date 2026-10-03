@@ -920,24 +920,28 @@ def _read_regular_file(path: Path) -> bytes:
     return _consume_regular_file(path, lambda handle: handle.read())
 
 
-def _read_control_file(path: Path) -> bytes:
+def _read_control_file(path: Path, *, max_bytes: int | None = None) -> bytes:
     """Materialize only bounded control JSON, never arbitrary raw payloads."""
+    limit = CONTROL_DOCUMENT_BYTES if max_bytes is None else max_bytes
+    if type(limit) is not int or limit <= 0:
+        raise EvidenceError("control document byte limit must be a positive integer")
 
     def read(handle: BinaryIO) -> bytes:
-        _check_control_size(os.fstat(handle.fileno()).st_size, path)
+        _check_control_size(os.fstat(handle.fileno()).st_size, path, limit)
         parts, count = [], 0
         while block := handle.read(IO_CHUNK_BYTES):
             count += len(block)
-            _check_control_size(count, path)
+            _check_control_size(count, path, limit)
             parts.append(block)
         return b"".join(parts)
 
     return _consume_regular_file(path, read)
 
 
-def _check_control_size(size: int, path: Path) -> None:
-    if size > CONTROL_DOCUMENT_BYTES:
-        raise EvidenceError(f"control document exceeds {CONTROL_DOCUMENT_BYTES}-byte limit: {path}")
+def _check_control_size(size: int, path: Path, limit: int | None = None) -> None:
+    bound = CONTROL_DOCUMENT_BYTES if limit is None else limit
+    if size > bound:
+        raise EvidenceError(f"control document exceeds {bound}-byte limit: {path}")
 
 
 def file_digest(path: Path) -> tuple[str, int]:

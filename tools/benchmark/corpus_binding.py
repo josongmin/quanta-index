@@ -19,6 +19,7 @@ from pathlib import Path
 
 import corpus_release as corpus
 from evidence import (
+    CONTROL_DOCUMENT_BYTES,
     EvidenceError,
     RawFile,
     _read_control_file,
@@ -34,6 +35,7 @@ from raw_archive import unpack as unpack_archive
 from tools.benchmark.retrieval.retrieval_contract import canonical
 
 MAX_CAPSULE_BYTES = 256 * 1024 * 1024
+GOLD_DOCUMENT_BYTES = 32 * 1024 * 1024
 MAX_SPLIT_REPOSITORIES = 64
 MAX_SPLIT_FAMILIES = 100_000
 # Cross-split source leakage is checked over code_only bytes. Exact copies are
@@ -552,6 +554,19 @@ def _gold_producer_source_digests() -> dict[str, str]:
     return {name: digest_bytes(_read_regular_file(path)) for name, path in sorted(owners.items())}
 
 
+def _read_gold_capsule_file(path: Path) -> bytes:
+    """Allow the source-derived label payload a larger explicit bound."""
+    limit = GOLD_DOCUMENT_BYTES if path.name == "gold.json" else CONTROL_DOCUMENT_BYTES
+    return _read_control_file(path, max_bytes=limit)
+
+
+def _require_gold_material_bounds(material: dict[str, bytes]) -> None:
+    for name, raw in material.items():
+        limit = GOLD_DOCUMENT_BYTES if name == "gold.json" else CONTROL_DOCUMENT_BYTES
+        if len(raw) > limit:
+            raise EvidenceError(f"gold capsule {name} exceeds {limit}-byte limit")
+
+
 def _gold_material(
     root: Path,
     selection: dict,
@@ -603,8 +618,7 @@ def _gold_material(
         "blind.json": canonical_json(blind).encode() + b"\n",
         **split_material,
     }
-    if any(len(raw) > 16 * 1024 * 1024 for raw in material.values()):
-        raise EvidenceError("gold control document exceeds 16 MiB")
+    _require_gold_material_bounds(material)
     identity = {
         "schema_version": 2,
         "kind": "source_derived_gold_capsule",
@@ -767,7 +781,7 @@ def _verify_gold_material(
     if observed != set(material):
         raise EvidenceError("gold capsule inventory differs from its recipe schema")
     for name, raw in material.items():
-        if _read_control_file(target / name) != raw:
+        if _read_gold_capsule_file(target / name) != raw:
             raise EvidenceError("gold capsule differs from source-derived oracle: " + name)
     return _json(material["identity.json"])
 
