@@ -2823,3 +2823,69 @@ neither closes the original unjudged v5 task. The independently bound
 this distinction. The original v5 exclusion denominator and new C4 denominator
 must remain separate, keyed by their suite/gold bytes and query commitments,
 never joined by local task ID alone.
+
+### 2026-10-04: routed no-model admission and original v5 sample closeout
+
+- **VERIFIED**, the reachable lexical-only qualification defect is repaired on
+  main (`3a22dfa9`, `d73292f8`). Both manifest issuance and verdict replay use
+  `_quanta_admission_model_revision` across every repetition. Lexical/symbol
+  routes require their exact `none:<route>` / `not-applicable` identity;
+  semantic/hybrid require one real consistent model identity. Missing routes,
+  unrouted captures, sentinel misuse, mixed models/revisions and whitespace
+  revisions are refused. The quality embedder restriction now applies only
+  when semantic/hybrid execution is actually declared. The paired fixture
+  matches the public producer's lexical no-model tuple. The focused command
+  `.venv/bin/python -m pytest -q tools/ci/tests/test_retrieval_benchmark.py -k
+  'quanta_encoder_selector_binds_semantic_capture_revision or
+  verdict_quality_gates or qualified_verdict or model_parity or strategy_model'`
+  passed **7** tests (520 deselected, 43.02 seconds). Ruff check/format passed.
+  This is focused behavior proof, not final admission qualification.
+- **VERIFIED**, all **240** unchanged authored NL queries and the exact family
+  split passed canonical validation over **22 repositories** on clean pinned
+  `09d8a843` in **841.495 seconds**. See
+  `nl-split-current-am26ey_3/result.json` in the external closeout root.
+  Only **40** tasks have issued reviewed suites; full C3 issuance is unchanged.
+- **VERIFIED**, the original v5 **106 query identities** were retained in
+  `v5-independent-final-ca0jiwoh/`. The original 20 unjudged tasks have separate
+  rederivation bindings: **18** pass independent repository-wide AST/name/span
+  completeness checks and **2** have proven fixture exclusions. The audit
+  denominator is **104 eligible / 2 excluded**. Original gold and product
+  captures remain unchanged; rederived labels are not human relevance labels.
+  `final-sample-audit.json` and `sample-exclusion-receipt.json` bind the exact
+  original/revised packets, gold, manifests and fixture evidence. The retained
+  86 tasks keep their frozen contracts; the repaired 18 have repository-wide
+  declaration labels. No historical benchmark aggregate is rescored.
+- The first Rust-only replay for `zellij.inf.003` was **FAILED** because its
+  checker omitted **48 JavaScript declarations** from a repository-wide gold
+  set. That raw failure is retained. `audit_cross_language_completion.py`
+  verifies all **18** repaired tasks with the union of supported languages;
+  it does not silently scope gold to Rust. Go/Python/TypeScript use independent
+  standard frontends; Rust syn remains the original guard's reference frontend,
+  not an invented third parser. `finalize_sample_audit.py` then verifies source
+  and byte bindings and integrates both exclusions into the sample denominator.
+- **VERIFIED**, offline retained Semble model revision and asset replay in
+  `model-binding-verified-sw50i89d/result.json`: revision
+  `e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b`, asset digest
+  `ea909b7defe7804ce18bf003ef60a437b54782541819ab6b7004c36fd9eea5d0`.
+  An independent logical-path/raw-byte hash matches the adapter. The cache was
+  read-only; a new C3 capture/admission is not claimed.
+- **VERIFIED**, 12 repositories' **14 license source files** and tracked notice
+  identities are bound in `license-review-inputs-kfyhcv1f/result.json`.
+  Symlink Git blobs are distinguished from resolved license content. No approval
+  reviewer or decision is fabricated; actual scoped approval receipts remain
+  absent.
+- **FAILED**, portable contract production on clean `8d499543` refused its
+  Python collection because the source-controlled proof inventory lacked newly
+  added tests. Main `38f73d3a` subsequently includes the inventory update; that
+  newer commit still needs its own complete proof. The failed root is retained
+  as `current-portable-proof-model-fix-0eybjt42/contract/`.
+- **VERIFIED**, the older pinned `f3d2ae29` mechanical run completed its **72**
+  C4 cells in **3,783.660 seconds** after **2,391.114 seconds** capsule production.
+  It remains diagnostic and bound to that older producer. The unscoped producer's
+  separate C4 process and the `8d499543` SDK proof are live at this observation.
+
+**Remaining:** full actual C3 model review/issuance (quota reset reported as
+08:40 KST); current-source C4 completion; final same-source contract and SDK
+receipts; actual scoped license decisions; full admission; external indexed
+content attestation integration; reviewed holdout capture and equal-API timing.
+The new v5 sample disposition does not satisfy these separate qualification gates.

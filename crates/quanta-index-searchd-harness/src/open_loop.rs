@@ -4,7 +4,7 @@
 //! fixed before dispatch; queueing and scheduler lag remain in end-to-end
 //! latency, so a slow daemon cannot silently reduce the offered load.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -14,7 +14,7 @@ use anyhow::{Context, Result as AnyResult, ensure};
 use quanta_index_contract::{
     GenerationPin, QueryConstraintSetV1, SearchPlaneErrorCodeV2, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax,
+    SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax, TextRankUnit,
 };
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
 use quanta_index_searchd_harness::E2eRuntime;
@@ -93,11 +93,15 @@ impl Config {
             total = total
                 .checked_add(scheduled_count(self.duration, *rate)?)
                 .context("total offered requests overflow")?;
+            ensure!(
+                total <= MAX_TOTAL_REQUESTS,
+                "at most {MAX_TOTAL_REQUESTS} requests may be offered"
+            );
+            ensure!(
+                !scheduled_offsets(self, *rate)?.is_empty(),
+                "open-loop schedule offers no requests at {rate} QPS"
+            );
         }
-        ensure!(
-            total <= MAX_TOTAL_REQUESTS,
-            "at most {MAX_TOTAL_REQUESTS} requests may be offered"
-        );
         Ok(())
     }
 }
@@ -175,6 +179,53 @@ fn scheduled_offsets(config: &Config, rate: u32) -> AnyResult<Vec<Duration>> {
         }
         ArrivalModel::SeededPoisson => poisson_offsets(config.duration, rate, config.seed),
     }
+}
+
+/// One generated chunk per source file carries the planted exact query.
+/// The source fixture, rather than an earlier engine response, defines which
+/// paths may appear in a correct baseline page.
+fn source_fixture_paths(corpus: &[(String, String)]) -> AnyResult<BTreeSet<String>> {
+    ensure!(!corpus.is_empty(), "open-loop source fixture is empty");
+    ensure!(
+        corpus.iter().all(|(_, content)| content.contains(QUERY)),
+        "open-loop source fixture lacks the planted query"
+    );
+    let paths: BTreeSet<String> = corpus.iter().map(|(path, _)| path.clone()).collect();
+    ensure!(
+        paths.len() == corpus.len(),
+        "open-loop source fixture repeats a file path"
+    );
+    Ok(paths)
+}
+
+fn fixture_candidate_ids<'a>(
+    paths: &BTreeSet<String>,
+    rows: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> AnyResult<Vec<String>> {
+    let rows: Vec<_> = rows.into_iter().collect();
+    let expected = paths.len().min(usize::try_from(TOP_K)?);
+    ensure!(
+        rows.len() == expected,
+        "open-loop baseline returned {} candidates; source fixture requires {expected}",
+        rows.len()
+    );
+    let mut ids = BTreeSet::new();
+    let mut seen_paths = BTreeSet::new();
+    for (candidate_id, path) in &rows {
+        ensure!(
+            paths.contains(*path),
+            "open-loop baseline contains a foreign source path"
+        );
+        ensure!(
+            seen_paths.insert(*path),
+            "open-loop baseline repeats a source file"
+        );
+        ensure!(
+            !candidate_id.is_empty() && ids.insert(*candidate_id),
+            "open-loop baseline has an empty or repeated candidate ID"
+        );
+    }
+    Ok(rows.into_iter().map(|(id, _)| id.to_string()).collect())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -373,7 +424,11 @@ fn summarize(
     completions: Vec<Completion>,
     drain_secs: f64,
 ) -> AnyResult<LoadPoint> {
-    ensure!(drain_secs > 0.0, "measurement window must be positive");
+    ensure!(offered > 0, "open-loop load point offered no requests");
+    ensure!(
+        drain_secs.is_finite() && drain_secs > 0.0,
+        "measurement window must be finite and positive"
+    );
     let accounted = u64::try_from(completions.len())?
         .checked_add(dropped_queue_full)
         .and_then(|count| count.checked_add(dropped_scheduler_late))
@@ -395,8 +450,16 @@ fn summarize(
     let mut elapsed = Vec::new();
     let mut max_dispatch_lag_ms = 0.0_f64;
     for completion in completions {
+        ensure!(
+            completion.dispatch_lag_ms.is_finite() && completion.dispatch_lag_ms >= 0.0,
+            "dispatch lag must be finite and nonnegative"
+        );
         max_dispatch_lag_ms = max_dispatch_lag_ms.max(completion.dispatch_lag_ms);
         if let Some(ms) = completion.elapsed_ms {
+            ensure!(
+                ms.is_finite() && ms >= 0.0,
+                "completion latency must be finite and nonnegative"
+            );
             elapsed.push(ms);
         }
         match completion.outcome {
@@ -431,6 +494,10 @@ fn summarize(
     codes.dedup();
     let offered_qps = f64::from(u32::try_from(offered)?) / duration.as_secs_f64();
     let achieved_qps = f64::from(u32::try_from(served)?) / drain_secs.max(duration.as_secs_f64());
+    ensure!(
+        offered_qps.is_finite() && offered_qps > 0.0 && achieved_qps.is_finite(),
+        "open-loop throughput is not finite"
+    );
     let saturated = dropped_queue_full > 0
         || dropped_scheduler_late > 0
         || dropped_deadline > 0
@@ -472,6 +539,10 @@ fn measure_point(
 ) -> AnyResult<LoadPoint> {
     let offsets = scheduled_offsets(config, rate)?;
     let offered = u64::try_from(offsets.len())?;
+    ensure!(
+        offered > 0,
+        "open-loop schedule offered no requests at {rate} QPS"
+    );
     let (sender, receiver) = mpsc::sync_channel::<OfferedRequest>(config.queue_capacity);
     let shared_receiver = Arc::new(Mutex::new(receiver));
     let (results_sender, results_receiver) = mpsc::channel::<Completion>();
@@ -585,6 +656,7 @@ impl Report {
 pub(crate) fn run(config: Config) -> AnyResult<Report> {
     config.validate()?;
     let corpus = generate_corpus(ScaleTier::Small, config.seed);
+    let source_paths = source_fixture_paths(&corpus)?;
     let corpus_digest = corpus_digest(DIMENSION, &corpus);
     let mut runtime = E2eRuntime::boot()?;
     let model_revision = model_revision_of(runtime.embedder_profile());
@@ -602,12 +674,14 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
     let preflight = runtime.query_once(|_| request(&pin))?;
     let expected_ids = match preflight {
         SearchPlaneQueryIpcResponse::Text(page)
-            if page.generation == pin && !page.results.is_empty() =>
+            if page.generation == pin && page.rank_unit == TextRankUnit::Chunk =>
         {
-            page.results
-                .into_iter()
-                .map(|row| row.candidate_id)
-                .collect::<Vec<_>>()
+            fixture_candidate_ids(
+                &source_paths,
+                page.results
+                    .iter()
+                    .map(|row| (row.candidate_id.as_str(), row.repo_relative_path.as_str())),
+            )?
         }
         SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
@@ -779,6 +853,128 @@ mod tests {
                     }))
         );
         Ok(())
+    }
+
+    #[test]
+    fn empty_seeded_arrivals_cannot_be_a_healthy_load_point() -> AnyResult<()> {
+        let empty = Config {
+            seed: 0,
+            arrival_model: ArrivalModel::SeededPoisson,
+            rates_qps: vec![1],
+            duration: Duration::from_millis(100),
+            workers: 1,
+            queue_capacity: 1,
+            request_timeout: Duration::from_secs(1),
+        };
+        assert!(scheduled_offsets(&empty, 1)?.is_empty());
+        assert!(empty.validate().is_err());
+        assert!(summarize(1, empty.duration, 0, 0, 0, Vec::new(), 0.1).is_err());
+
+        let admitted = Config {
+            rates_qps: vec![3],
+            duration: Duration::from_secs(1),
+            ..empty
+        };
+        admitted.validate()?;
+        assert!(!scheduled_offsets(&admitted, 3)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn source_fixture_is_independent_of_the_engine_baseline() -> AnyResult<()> {
+        let corpus = generate_corpus(ScaleTier::Small, 0);
+        let paths = source_fixture_paths(&corpus)?;
+        assert_eq!(paths.len(), 16);
+        let rows = paths
+            .iter()
+            .take(10)
+            .enumerate()
+            .map(|(index, path)| (format!("id-{index}"), path.clone()))
+            .collect::<Vec<_>>();
+        let observed = rows.iter().map(|(id, path)| (id.as_str(), path.as_str()));
+        assert_eq!(fixture_candidate_ids(&paths, observed)?.len(), 10);
+        assert!(
+            fixture_candidate_ids(
+                &paths,
+                rows.iter()
+                    .take(9)
+                    .map(|(id, path)| (id.as_str(), path.as_str()))
+            )
+            .is_err()
+        );
+        let mut wrong_path = rows.clone();
+        wrong_path[0].1 = "foreign.rs".to_string();
+        assert!(
+            fixture_candidate_ids(
+                &paths,
+                wrong_path
+                    .iter()
+                    .map(|(id, path)| (id.as_str(), path.as_str()))
+            )
+            .is_err()
+        );
+        let mut duplicate_id = rows.clone();
+        duplicate_id[1].0 = duplicate_id[0].0.clone();
+        assert!(
+            fixture_candidate_ids(
+                &paths,
+                duplicate_id
+                    .iter()
+                    .map(|(id, path)| (id.as_str(), path.as_str()))
+            )
+            .is_err()
+        );
+        let mut duplicate_path = rows.clone();
+        duplicate_path[1].1 = duplicate_path[0].1.clone();
+        assert!(
+            fixture_candidate_ids(
+                &paths,
+                duplicate_path
+                    .iter()
+                    .map(|(id, path)| (id.as_str(), path.as_str()))
+            )
+            .is_err()
+        );
+        let mut missing_needle = corpus.clone();
+        missing_needle[0].1 = missing_needle[0].1.replace(QUERY, "absent");
+        assert!(source_fixture_paths(&missing_needle).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn nonfinite_completed_samples_cannot_enter_latency_summary() {
+        assert!(
+            summarize(
+                1,
+                Duration::from_secs(1),
+                1,
+                0,
+                0,
+                vec![Completion {
+                    outcome: Outcome::Served { result_count: 1 },
+                    elapsed_ms: Some(f64::NAN),
+                    dispatch_lag_ms: 0.0,
+                }],
+                1.0,
+            )
+            .is_err()
+        );
+        assert!(
+            summarize(
+                1,
+                Duration::from_secs(1),
+                1,
+                0,
+                0,
+                vec![Completion {
+                    outcome: Outcome::Served { result_count: 1 },
+                    elapsed_ms: Some(1.0),
+                    dispatch_lag_ms: f64::INFINITY,
+                }],
+                1.0,
+            )
+            .is_err()
+        );
     }
 
     #[test]

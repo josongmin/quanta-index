@@ -37,3 +37,15 @@ scenario's expected `PARSE_FAIL` remains a valid measured response.
 Focused Rust owner execution and the real `tail_matrix` rail remain `NOT_RUN`
 for this source change. Canonical-host tail evidence and any new p95/p99
 blocking decision remain `NOT_RUN`.
+
+## 2026-10-04 offered-load correctness
+
+The existing `open_loop_matrix` already schedules seeded Poisson arrivals
+independently of completions over the public query socket. Its owner now rejects
+a zero-arrival load point before measurement or aggregation, and rejects
+nonfinite completion timing. The baseline page is checked against the generated
+one-chunk-per-file source fixture (ten distinct admitted paths from sixteen
+files), rather than treating a prior engine response as relevance gold. The
+existing response-ID comparison still detects under-load order/identity drift.
+Focused `open_loop_matrix` tests and the real offered-load rail remain `NOT_RUN`
+for this source change. No capacity limit is qualified from these unit checks.
