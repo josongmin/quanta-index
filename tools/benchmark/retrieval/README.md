@@ -127,23 +127,6 @@ golden, re-derived independently by `query_plan.py`:
   `semantic_intent` file labels. This is diagnostic only; it does not qualify
   a product comparison or relabel an existing frozen suite.
 
-To reissue the reviewed natural-language tasks of a mixed suite, use a fresh
-external output root and a new suite ID:
-
-```sh
-python -m tools.benchmark.retrieval.holdout_review \
-  --repo /absolute/frozen-checkout --suite /absolute/original-suite.json \
-  --suite-id new-nl-file-diagnostic --output /absolute/new-external-root
-```
-
-This validates the complete original suite before selecting `semantic_intent`
-tasks. Every selected query, family, label and review identity stays unchanged;
-only the request contract changes to `natural_language_file_search`. It writes
-`suite.json`, a blinded query pack and source/input lineage. Invalid or oversized
-queries are rejected instead of silently removed. Existing split admission and
-review receipts remain bound to the original suite. AI review identities remain
-AI identities, and the new artifacts are `diagnostic_unqualified`.
-
 - `code_search_typo_file` (`quanta-code-search-typo-file-v1`): submit one ASCII
   identifier of 3–64 bytes as `typo:<identifier>` through SDK
   `.code_search(...)`. This is the product's explicit content-identifier
@@ -164,6 +147,24 @@ AI identities, and the new artifacts are `diagnostic_unqualified`.
   bytes lack at least one requested component. A source-oracle exclusion in a
   diagnostic suite does not override this product check. Preserve a typed
   refusal as an execution failure; do not score it as a retrieval miss.
+
+To reissue the reviewed natural-language tasks of a mixed suite, use a fresh
+external output root and a new suite ID:
+
+```sh
+python -m tools.benchmark.retrieval.holdout_review \
+  --repo /absolute/frozen-checkout --suite /absolute/original-suite.json \
+  --suite-id new-nl-file-diagnostic --output /absolute/new-external-root
+```
+
+This validates the complete original suite before selecting `semantic_intent`
+tasks. Every selected query, family, label and review identity stays unchanged;
+only the request contract changes to `natural_language_file_search`. It writes
+`suite.json`, a blinded query pack and source/input lineage. Invalid or oversized
+queries are rejected instead of silently removed. Existing split admission and
+review receipts remain bound to the original suite. AI review identities remain
+AI identities, and the new artifacts are `diagnostic_unqualified`.
+
 
 Every file-projection result records `rank_unit: distinct_file` (the unit) and
 `ordering` (how the units are ordered, derived from the policy). The evaluator
