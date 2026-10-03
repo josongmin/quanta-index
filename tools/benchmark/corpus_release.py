@@ -26,7 +26,7 @@ from evidence import (
     digest_bytes,
     parse_json,
 )
-from producer_execution import execute
+from producer_execution import execute, transient_log_dir
 
 ROOT = Path(__file__).resolve().parents[2]
 VIEWS = ("code_only", "developer_search")
@@ -69,17 +69,19 @@ def environment() -> dict:
 
 
 def git(root: Path, *argv: str) -> bytes:
-    try:
-        stdout, _stderr, _command = execute(
-            ["git", "-C", str(root), *argv],
-            cwd=root,
-            env=environment(),
-            timeout=300,
-            log_dir=Path(tempfile.mkdtemp(prefix="quanta-corpus-git-")).resolve(),
-        )
-    except (OSError, ValueError) as exc:
-        raise EvidenceError(f"corpus Git action failed: {exc}") from exc
-    return stdout.read_control()
+    # Logs are retained only when execution or consumption fails.
+    with transient_log_dir("quanta-corpus-git-") as log_dir:
+        try:
+            stdout, _stderr, _command = execute(
+                ["git", "-C", str(root), *argv],
+                cwd=root,
+                env=environment(),
+                timeout=300,
+                log_dir=log_dir,
+            )
+        except (OSError, ValueError) as exc:
+            raise EvidenceError(f"corpus Git action failed: {exc}") from exc
+        return stdout.read_control()
 
 
 def require_complete_git(root: Path) -> None:

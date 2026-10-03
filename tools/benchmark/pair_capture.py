@@ -32,7 +32,7 @@ from evidence import (
     write_raw_file,
 )
 from evidence_bridge import host_identity, source_identity
-from producer_execution import execute
+from producer_execution import execute, transient_log_dir
 from profile_capture import (
     _directories,
     capture_entrypoint,
@@ -246,7 +246,9 @@ def derive(native: Path, corpus: Path, timeout: int = 300) -> tuple[dict, dict]:
     """Re-run the existing native verdict, including its report re-scoring."""
     manifest = owner._validate_manifest_shape(owner.read_json(native / "run-manifest.json"))
     suite = owner._resolve_artifact(native, manifest["artifacts"]["suite"], "pair suite")
-    with tempfile.TemporaryDirectory(prefix="quanta-pair-verdict-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="quanta-pair-verdict-") as scratch, transient_log_dir(
+        "quanta-pair-verdict-execution-"
+    ) as log_dir:
         out = Path(scratch).resolve() / "verdict.json"
         execute(
             [
@@ -266,7 +268,7 @@ def derive(native: Path, corpus: Path, timeout: int = 300) -> tuple[dict, dict]:
             cwd=ROOT,
             env={**os.environ, **GIT_ENV},
             timeout=timeout,
-            log_dir=Path(tempfile.mkdtemp(prefix="quanta-pair-verdict-execution-")).resolve(),
+            log_dir=log_dir,
         )
         verdict = parse_json(_read_regular_file(out).decode())
     recorded = parse_json(_read_regular_file(native / "verdict.json").decode())

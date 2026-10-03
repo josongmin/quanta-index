@@ -313,6 +313,22 @@ def test_git_calls_share_bounded_group_executor(source, monkeypatch):
     assert observed[0][1]["env"]["GIT_ALLOW_PROTOCOL"] == "file"
 
 
+
+def test_git_logs_are_removed_on_success_and_retained_on_failure(source, tmp_path, monkeypatch):
+    import tempfile
+
+    scratch = tmp_path / "system-tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    assert corpus.git(source[1], "rev-parse", "--is-shallow-repository").strip() == b"false"
+    assert not list(scratch.iterdir())
+    with pytest.raises(EvidenceError, match="corpus Git action failed"):
+        corpus.git(source[1], "rev-parse", "--verify", "refs/heads/absent-ref")
+    [retained] = scratch.iterdir()
+    assert retained.name.startswith("quanta-corpus-git-")
+    assert {path.name for path in retained.iterdir()} == {"execution.json", "stdout", "stderr"}
+    assert json.loads((retained / "execution.json").read_text())["status"] == "failed"
+
 def test_environment_excludes_service_secrets(monkeypatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "not-a-real-key")
     monkeypatch.setenv("GITHUB_TOKEN", "not-a-real-token")

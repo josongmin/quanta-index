@@ -452,3 +452,19 @@ def test_log_custody_refuses_unsafe_output_before_launch(tmp_path, unsafe):
     assert not marker.exists()
     if unsafe == "existing":
         assert (root / "stdout").read_bytes() == b"retained"
+
+
+def test_transient_log_dir_is_removed_on_success_and_retained_on_failure(tmp_path, monkeypatch):
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    with execution.transient_log_dir("quanta-fixture-") as log_dir:
+        assert log_dir.parent == tmp_path.resolve()
+        (log_dir / "stdout").write_bytes(b"consumed")
+    assert not list(tmp_path.iterdir())
+    with pytest.raises(RuntimeError, match="consumer failed"):
+        with execution.transient_log_dir("quanta-fixture-") as log_dir:
+            (log_dir / "stdout").write_bytes(b"evidence")
+            raise RuntimeError("consumer failed")
+    assert [path.name for path in tmp_path.iterdir()] == [log_dir.name]
+    assert (log_dir / "stdout").read_bytes() == b"evidence"

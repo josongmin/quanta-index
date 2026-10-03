@@ -484,6 +484,32 @@ def test_tool_and_sdk_entrypoints_share_finite_execution_owner(tmp_path, monkeyp
     assert commands[0]["exit_code"] == 0
 
 
+
+def test_git_probe_logs_are_removed_on_success_and_retained_on_failure(tmp_path, monkeypatch):
+    import tempfile
+
+    scratch = tmp_path / "system-tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    failing = []
+
+    def execute(argv, **kwargs):
+        stdout = write_raw_file(kwargs["log_dir"] / "stdout", [b"fixture-version"])
+        stderr = write_raw_file(kwargs["log_dir"] / "stderr", [b""])
+        if failing:
+            raise ValueError("fixture probe failed")
+        return stdout, stderr, {"exit_code": 0}
+
+    monkeypatch.setattr(portable_proof, "execute", execute)
+    assert portable_proof._git("rev-parse", "HEAD") == "fixture-version"
+    assert not list(scratch.iterdir())
+    failing.append(True)
+    with pytest.raises(ValueError, match="fixture probe failed"):
+        portable_proof._git("rev-parse", "HEAD")
+    [retained] = scratch.iterdir()
+    assert retained.name.startswith("quanta-proof-git-")
+    assert (retained / "stdout").read_bytes() == b"fixture-version"
+
 def test_collected_pytest_identity_normalizes_windows_separator() -> None:
     nodeid = r"tools\ci\tests\test_retrieval_benchmark.py::test_one"
     assert portable_proof.proof_inventory.junit_identity(nodeid) == (

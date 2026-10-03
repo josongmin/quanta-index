@@ -29,7 +29,7 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.ci import source_closure
 
 from tools.benchmark.evidence import RawFile, file_digest, read_control
-from tools.benchmark.producer_execution import execute
+from tools.benchmark.producer_execution import execute, transient_log_dir
 from tools.benchmark.retrieval.tool_custody import (
     ToolCustody,
     capture_executable,
@@ -320,18 +320,19 @@ def _git(*args: str) -> str:
     executable = "git" if active is None else active[0].tools()["git"]["path"]
     if active is not None:
         active[0].check()
-    try:
-        stdout, _, _ = execute(
-            [executable, *args],
-            cwd=ROOT,
-            env=environment,
-            timeout=TOOL_TIMEOUT_SECONDS,
-            log_dir=Path(tempfile.mkdtemp(prefix="quanta-proof-git-")).resolve(),
-        )
-    finally:
-        if active is not None:
-            active[0].check()
-    return stdout.read_control().decode("utf-8").strip()
+    with transient_log_dir("quanta-proof-git-") as log_dir:
+        try:
+            stdout, _, _ = execute(
+                [executable, *args],
+                cwd=ROOT,
+                env=environment,
+                timeout=TOOL_TIMEOUT_SECONDS,
+                log_dir=log_dir,
+            )
+        finally:
+            if active is not None:
+                active[0].check()
+        return stdout.read_control().decode("utf-8").strip()
 
 
 def _source_revision() -> str:
@@ -363,14 +364,15 @@ def _tools() -> dict[str, dict[str, str]]:
         if name == "cargow":
             version = "source-controlled wrapper"
         else:
-            stdout, _, _ = execute(
-                [str(invocation), "-Vv" if name == "rustc" else "--version"],
-                cwd=ROOT,
-                env=dict(os.environ),
-                timeout=TOOL_TIMEOUT_SECONDS,
-                log_dir=Path(tempfile.mkdtemp(prefix="quanta-proof-tool-")).resolve(),
-            )
-            version = stdout.read_control().decode("utf-8").strip()
+            with transient_log_dir("quanta-proof-tool-") as log_dir:
+                stdout, _, _ = execute(
+                    [str(invocation), "-Vv" if name == "rustc" else "--version"],
+                    cwd=ROOT,
+                    env=dict(os.environ),
+                    timeout=TOOL_TIMEOUT_SECONDS,
+                    log_dir=log_dir,
+                )
+                version = stdout.read_control().decode("utf-8").strip()
             if not version:
                 raise ValueError(f"required executable has no version identity: {name}")
         if capture_executable(invocation) != before:

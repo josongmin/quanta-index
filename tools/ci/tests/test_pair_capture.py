@@ -153,6 +153,8 @@ def test_owned_temporary_alias_is_canonicalized(tmp_path, monkeypatch):
     monkeypatch.setattr(tempfile, "tempdir", str(alias))
     _, verdict = bridge.derive(stage["stage"], stage["repo"])
     assert verdict["states"]["PAIR_VALID"] == "pass"
+    # Successful derivation leaves neither its scratch nor execution logs behind.
+    assert not list(target.iterdir())
 
 
 def test_untrusted_native_root_alias_is_not_canonicalized(tmp_path):
