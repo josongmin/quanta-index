@@ -237,9 +237,16 @@ change follows from these captures.
   positive misses are Rust constants or a macro in `zoxide` absent from the
   captured producer. `benchmarks/retrieval/src/symbols.rs` now extracts these
   Rust node kinds; a source-bound recapture has not yet verified the fix.
-- The repaired Quanta/Semble ordinary-search pair and cs native fuzzy search
-  are still running or preparing. Do not combine partial cells or the earlier
-  failed pair batch with completed 48-cell results.
+- The repaired Quanta/Semble ordinary-search pair is still preparing. Do not
+  combine partial cells or the earlier failed pair batch with completed
+  48-cell results. The cs native `~1` OSA1-wide batch was stopped after one
+  completed `attrs` cell (386 tasks); the next cell's staging data remains
+  incomplete. Of 4,149 OSA1 tasks, only 1,033 one-character substitutions
+  match the verified cs edit class; whole-identifier versus content-window
+  matching and ranking still differ. The other 3,116 are outside the shared
+  operation class. Preserve the partial native capture and stop receipt at
+  `/private/tmp/qi-c5-cs-fuzzy-20261003-v5`; do not report a 12-repository cs
+  fuzzy score from it. A new substitution-only frozen suite is required.
 
 ## Execution receipt (2026-09-30)
 

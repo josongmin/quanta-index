@@ -322,6 +322,17 @@ written). Pass `--language`; a non-Go language is admitted only when
 (name start byte, name bytes) set for every file. Any refusal or disagreement
 keeps the language unsupported instead of producing empty gold:
 
+TypeScript and TSX census and named-definition gold use the same vendored
+grammar sources as the producer (`vendor/tree-sitter-typescript`), including its
+syntax compatibility fixes. On Darwin or Linux, the first use requires `cc` and
+compiles into a source/platform-keyed cache outside the checkout; set
+`QUANTA_CENSUS_PARSER_CACHE` to choose that root. Missing compilers, changed cache
+identities and binary tampering fail explicitly; no unpatched grammar fallback
+is used. Gold capsule producer bindings include the factory and actual C/header
+bytes. Source changes require fresh capsules; frozen capsule identities are
+never rewritten. Other languages retain the pinned language-pack grammar and
+their independent census checks.
+
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.declaration_census_audit \
   --release /absolute/release --repository NAME --language rust \

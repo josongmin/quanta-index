@@ -32,12 +32,6 @@ def component_source_digests() -> dict[str, str]:
     }
 
 
-def component_digest() -> str:
-    return hashlib.sha256(
-        json.dumps(component_source_digests(), sort_keys=True).encode()
-    ).hexdigest()
-
-
 def _checked_library(directory: Path, expected: dict) -> Path:
     marker = directory / "ready.json"
     library = directory / "parser.so"
