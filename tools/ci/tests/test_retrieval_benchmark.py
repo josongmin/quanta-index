@@ -19,6 +19,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import jsonschema
 import pytest
@@ -11469,6 +11470,46 @@ def test_pair_spec_refuses_diagnostic_rank_profiles_before_quality_gate(tmp_path
         spec_path.write_text(json.dumps(spec), encoding="utf-8")
         with pytest.raises(pairrun.RunError, match="diagnostic rank profile"):
             pairrun.load_spec(spec_path)
+
+
+def test_exact_symbol_profile_admits_only_standalone_symbol_capture(tmp_path, monkeypatch):
+    spec_path = tmp_path / "symbol-spec.json"
+    spec = _g0_spec()
+    spec["execution_profiles"] = {"quanta": qp.execution_profile("exact_symbol_name")}
+    spec["routes"] = ["symbol"]
+    spec["candidate_route"] = "symbol"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    assert pairrun.load_spec(spec_path, standalone_quanta=True)["routes"] == ["symbol"]
+    observed = []
+    monkeypatch.setattr(
+        pairrun,
+        "run_quanta",
+        lambda loaded, _spec_dir: observed.append(loaded["execution_profiles"]["quanta"]["policy"]) or 0,
+    )
+    assert pairrun.cmd_quanta(SimpleNamespace(spec=str(spec_path))) == 0
+    assert observed == ["exact_symbol_name"]
+    with pytest.raises(pairrun.RunError, match="diagnostic rank profile"):
+        pairrun.load_spec(spec_path)
+
+    invalid = copy.deepcopy(spec)
+    invalid["routes"] = ["lexical"]
+    spec_path.write_text(json.dumps(invalid), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match=r"requires \['symbol'\] route"):
+        pairrun.load_spec(spec_path, standalone_quanta=True)
+
+    invalid = copy.deepcopy(spec)
+    invalid["execution_profiles"]["semble"] = semble_adapter.execution_profile(
+        "lexical-file", None
+    )
+    spec_path.write_text(json.dumps(invalid), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="cannot include Semble"):
+        pairrun.load_spec(spec_path, standalone_quanta=True)
+
+    invalid = copy.deepcopy(spec)
+    invalid["claims"]["quality"] = True
+    spec_path.write_text(json.dumps(invalid), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="cannot carry qualified claims"):
+        pairrun.load_spec(spec_path, standalone_quanta=True)
 
 
 @pytest.mark.parametrize(

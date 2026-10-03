@@ -2963,8 +2963,8 @@ def _spec_int(spec: dict, key: str, minimum: int) -> int:
     return value
 
 
-def load_spec(path: Path) -> dict:
-    """Load a capture spec under the pair-spec contract (closed keys, typed)."""
+def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
+    """Load a capture spec with pair-only policies unless Quanta runs alone."""
     spec = read_json(path)
     if not isinstance(spec, dict):
         raise RunError("spec must be an object")
@@ -3011,10 +3011,24 @@ def load_spec(path: Path) -> dict:
     if quanta_profile != qp.execution_profile(quanta_profile["policy"]):
         raise RunError("spec.execution_profiles.quanta differs from the frozen profile")
     if quanta_profile["policy"] not in PAIR_QUANTA_POLICIES:
-        raise RunError(
-            "spec.execution_profiles.quanta uses a diagnostic rank profile; "
-            "run it as a standalone Quanta capture"
+        if not standalone_quanta:
+            raise RunError(
+                "spec.execution_profiles.quanta uses a diagnostic rank profile; "
+                "run it as a standalone Quanta capture"
+            )
+        if "semble" in profiles:
+            raise RunError("standalone diagnostic rank profile cannot include Semble")
+        if spec.get("scope", "exploratory") != "exploratory" or any(
+            spec.get("claims", {}).values()
+        ):
+            raise RunError("standalone diagnostic rank profile cannot carry qualified claims")
+        required_routes = (
+            ["symbol"] if quanta_profile["policy"] == "exact_symbol_name" else ["lexical"]
         )
+        if spec.get("routes") != required_routes:
+            raise RunError(
+                f"{quanta_profile['policy']} standalone capture requires {required_routes} route"
+            )
     if "semble" in profiles:
         _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
     if quanta_profile["policy"] in qp.FILE_PAIR_POLICIES:
@@ -3289,7 +3303,9 @@ def preflight_daemon_socket_paths(
 
 def cmd_quanta(args: argparse.Namespace) -> int:
     try:
-        return run_quanta(load_spec(Path(args.spec)), Path(args.spec).parent)
+        return run_quanta(
+            load_spec(Path(args.spec), standalone_quanta=True), Path(args.spec).parent
+        )
     except (RunError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
