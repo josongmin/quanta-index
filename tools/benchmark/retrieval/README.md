@@ -392,7 +392,7 @@ runtime isolation. Attested diagnostics must not claim an enforced access block.
 The prepared manifest records source commitments, raw and canonical hashes,
 the selected profile, and submitted/source-blocked task counts. Use its bound
 profile without truncating or rewriting queries. The native CLI accepts
-`--nl-max-tokens N` only for natural-language policies, with `1 <= N <= 128`;
+`--nl-max-tokens N` only for natural-language policies, with `1 <= N <= 64`;
 the default remains 32. Nondefault budgets are exploratory, carry no qualified
 claim, and are preserved in the execution profile and effective-request digest.
 

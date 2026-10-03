@@ -11912,7 +11912,21 @@ def test_bounded_natural_language_budget_refuses_non_nl_profile_and_qualified_sc
     }
     path = tmp_path / "spec.json"
     path.write_text(json.dumps(spec), encoding="utf-8")
+    jsonschema.validate(spec, _load_schema("pair-spec.schema.json"))
+    jsonschema.validate(
+        spec["execution_profiles"]["quanta"],
+        _load_schema("runner.schema.json")["$defs"]["execution_profile"],
+    )
     assert pairrun.load_spec(path)["execution_profiles"]["quanta"]["config"]["max_tokens"] == 64
+    invalid = copy.deepcopy(spec)
+    invalid["execution_profiles"]["quanta"]["config"]["max_tokens"] = 65
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(invalid, _load_schema("pair-spec.schema.json"))
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            invalid["execution_profiles"]["quanta"],
+            _load_schema("runner.schema.json")["$defs"]["execution_profile"],
+        )
     spec["scope"] = "qualified"
     path.write_text(json.dumps(spec), encoding="utf-8")
     with pytest.raises(pairrun.RunError, match="requires exploratory scope"):

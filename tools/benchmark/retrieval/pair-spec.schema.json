@@ -5,136 +5,466 @@
   "description": "Structural contract for the JSON spec consumed by run.py quanta/pair. Claims are strict booleans (the string \"false\" is never a claim). runner_revision is derived, never supplied. searchd pin is mandatory: an unpinned capture cannot produce a qualified verdict. Semble keys are optional here because quanta uses this schema too; run_pair requires the pinned Semble interpreter, lockfile, existing model cache root and model revision and verifies the offline snapshot before creating a stage.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["spec_version", "repo", "manifest", "suite", "query_pack", "execution_profiles", "top_k", "output_root", "runner_binary", "strategies", "searchd_binary", "searchd_expected_sha256"],
+  "required": [
+    "spec_version",
+    "repo",
+    "manifest",
+    "suite",
+    "query_pack",
+    "execution_profiles",
+    "top_k",
+    "output_root",
+    "runner_binary",
+    "strategies",
+    "searchd_binary",
+    "searchd_expected_sha256"
+  ],
   "properties": {
-    "symbol_coverage_policy": {"enum": ["require-complete", "allow-incomplete"], "default": "require-complete", "description": "Frozen capability policy; incomplete text admission never claims complete symbol coverage."},
-    "symbol_total_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615, "description": "Corpus-wide symbol preflight budget in milliseconds (runner default 120000). Forwarded to the existing runner option and verified against its source-bound preflight policy. Producer failures remain fatal."},
-    "spec_version": {"const": 2},
-    "repo": {"type": "string", "minLength": 1},
-    "manifest": {"type": "string", "minLength": 1},
-    "suite": {"type": "string", "minLength": 1},
-    "query_pack": {"type": "string", "minLength": 1},
-    "execution_profiles": {"$ref": "#/$defs/execution_profiles"},
+    "symbol_coverage_policy": {
+      "enum": [
+        "require-complete",
+        "allow-incomplete"
+      ],
+      "default": "require-complete",
+      "description": "Frozen capability policy; incomplete text admission never claims complete symbol coverage."
+    },
+    "symbol_total_timeout_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615,
+      "description": "Corpus-wide symbol preflight budget in milliseconds (runner default 120000). Forwarded to the existing runner option and verified against its source-bound preflight policy. Producer failures remain fatal."
+    },
+    "spec_version": {
+      "const": 2
+    },
+    "repo": {
+      "type": "string",
+      "minLength": 1
+    },
+    "manifest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "suite": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query_pack": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_profiles": {
+      "$ref": "#/$defs/execution_profiles"
+    },
     "top_k": {
-      "type": "integer", "minimum": 1,
+      "type": "integer",
+      "minimum": 1,
       "description": "Must equal suite comparison_contract.top_k; the driver checks this before any capture."
     },
-    "output_root": {"type": "string", "minLength": 1},
-    "runner_binary": {"type": "string", "minLength": 1},
+    "output_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runner_binary": {
+      "type": "string",
+      "minLength": 1
+    },
     "strategies": {
-      "type": "array", "minItems": 1,
-      "items": {"$ref": "#/$defs/strategy"}
-    },
-    "searchd_binary": {"type": "string", "minLength": 1},
-    "searchd_expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "routes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-    "blinding": {"enum": ["isolated", "attested"]},
-    "suite_secret_root": {
-      "type": "string", "minLength": 1,
-      "description": "Required when blinding=isolated. The suite must be a regular file below this external evaluator-only root; the root must contain no runner-readable input. The driver checks actual runner-child deny/allow access with the current tagged macOS Seatbelt or Linux Landlock backend."
-    },
-    "isolation_method": {"type": "string", "minLength": 1},
-    "access_block_log": {"type": "string", "minLength": 1},
-    "scope": {"enum": ["exploratory", "qualified"]},
-    "run_id": {"type": "string", "minLength": 1},
-    "runner_name": {"type": "string", "minLength": 1},
-    "repo_id": {"type": "string", "minLength": 1},
-    "revision_id": {"type": "string", "minLength": 1},
-    "generation": {"type": "integer", "minimum": 0},
-    "embedder": {"enum": ["potion-code", "potion-code-full-v2", "hash-dev"]},
-    "query_stage_observation": {"enum": ["enabled", "disabled"], "default": "enabled", "description": "Actual daemon server-query-stage observation policy, explicitly passed by the runner and bound in diagnostic v5/protocol. Does not disable request/deadline or operational metrics. Sidecar serialization is separate."},
-    "experimental_hybrid_fetch_floor": {"enum": ["25", "50", "100"], "default": "100", "description": "Bounded experimental startup selector. Production default remains 100. Explicit daemon env and diagnostic v6/protocol4 config digest bind the selected floor; top-k, probe and ceiling rules still apply."},
-    "code_search_rank_study": {
-      "type": "object", "additionalProperties": false,
-      "description": "Optional post-measurement native paging and explanation diagnostics. Never selects a rank policy; incompatible with speed claims because process resource metrics include diagnostic work.",
-      "required": ["max_files", "max_pages", "timeout_ms"],
-      "properties": {
-        "max_files": {"type": "integer", "minimum": 1, "maximum": 100000},
-        "max_pages": {"type": "integer", "minimum": 1, "maximum": 10000},
-        "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000}
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/strategy"
       }
     },
-    "cache_regime": {"enum": ["true_process_cold", "warm_cache", "undeclared"]},
-    "seed": {"type": "integer", "minimum": 0},
-    "timeout_secs": {"type": "integer", "minimum": 1},
-    "io_timeout_secs": {"type": "integer", "minimum": 1, "description": "Explicit per-request Quanta SDK I/O timeout in seconds; frozen in the pair spec and passed to the Rust runner."},
-    "repetitions": {"type": "integer", "minimum": 1},
+    "searchd_binary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "searchd_expected_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "blinding": {
+      "enum": [
+        "isolated",
+        "attested"
+      ]
+    },
+    "suite_secret_root": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Required when blinding=isolated. The suite must be a regular file below this external evaluator-only root; the root must contain no runner-readable input. The driver checks actual runner-child deny/allow access with the current tagged macOS Seatbelt or Linux Landlock backend."
+    },
+    "isolation_method": {
+      "type": "string",
+      "minLength": 1
+    },
+    "access_block_log": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope": {
+      "enum": [
+        "exploratory",
+        "qualified"
+      ]
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runner_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repo_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "embedder": {
+      "enum": [
+        "potion-code",
+        "potion-code-full-v2",
+        "hash-dev"
+      ]
+    },
+    "query_stage_observation": {
+      "enum": [
+        "enabled",
+        "disabled"
+      ],
+      "default": "enabled",
+      "description": "Actual daemon server-query-stage observation policy, explicitly passed by the runner and bound in diagnostic v5/protocol. Does not disable request/deadline or operational metrics. Sidecar serialization is separate."
+    },
+    "experimental_hybrid_fetch_floor": {
+      "enum": [
+        "25",
+        "50",
+        "100"
+      ],
+      "default": "100",
+      "description": "Bounded experimental startup selector. Production default remains 100. Explicit daemon env and diagnostic v6/protocol4 config digest bind the selected floor; top-k, probe and ceiling rules still apply."
+    },
+    "code_search_rank_study": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional post-measurement native paging and explanation diagnostics. Never selects a rank policy; incompatible with speed claims because process resource metrics include diagnostic work.",
+      "required": [
+        "max_files",
+        "max_pages",
+        "timeout_ms"
+      ],
+      "properties": {
+        "max_files": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "max_pages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      }
+    },
+    "cache_regime": {
+      "enum": [
+        "true_process_cold",
+        "warm_cache",
+        "undeclared"
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timeout_secs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "io_timeout_secs": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Explicit per-request Quanta SDK I/O timeout in seconds; frozen in the pair spec and passed to the Rust runner."
+    },
+    "repetitions": {
+      "type": "integer",
+      "minimum": 1
+    },
     "query_repetitions_per_root": {
-      "type": "integer", "minimum": 1,
+      "type": "integer",
+      "minimum": 1,
       "description": "Shared warm-query measurement repetitions per fresh root. Required by qualified speed; task_count * this value * repetitions must be at least 1000."
     },
     "query_warmup_passes": {
-      "type": "integer", "minimum": 0,
+      "type": "integer",
+      "minimum": 0,
       "description": "Warmup passes consumed from the digest-bound schedule. Exploratory captures may request zero; qualified speed requires at least one."
     },
-    "alternate_order": {"type": "boolean"},
-    "order": {
-      "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
-      "items": {"enum": ["quanta", "semble"]}
+    "alternate_order": {
+      "type": "boolean"
     },
-    "semble_route": {"type": "string", "minLength": 1, "description": "Must match the Semble execution profile: lexical-only => semble-lexical-only, semantic-only => semble-semantic-only, and hybrid/default => semble-hybrid. The runtime enforces this cross-field contract."},
-    "semble_python": {"type": "string", "minLength": 1},
-    "semble_lockfile": {"type": "string", "minLength": 1},
-    "semble_lockfile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "semble_cache_root": {"type": "string", "minLength": 1, "description": "Required by run_pair: existing absolute directory containing hf/hub with the pinned Semble model snapshot. Checked before stage creation."},
-    "semble_model_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$", "description": "Required by run_pair: exact cached Semble model revision. The adapter validates the matching offline snapshot and records its observed asset digest."},
-    "quanta_model_dir": {"type": "string", "minLength": 1},
-    "baseline_route": {"type": "string", "minLength": 1, "description": "Must equal the Semble route selected by execution_profiles.semble.mode; the runtime enforces this cross-field contract."},
-    "candidate_route": {"type": "string", "minLength": 1, "description": "Must name one of the configured Quanta routes; the runtime enforces this cross-field contract."},
+    "order": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "quanta",
+          "semble"
+        ]
+      }
+    },
+    "semble_route": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Must match the Semble execution profile: lexical-only => semble-lexical-only, semantic-only => semble-semantic-only, and hybrid/default => semble-hybrid. The runtime enforces this cross-field contract."
+    },
+    "semble_python": {
+      "type": "string",
+      "minLength": 1
+    },
+    "semble_lockfile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "semble_lockfile_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "semble_cache_root": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Required by run_pair: existing absolute directory containing hf/hub with the pinned Semble model snapshot. Checked before stage creation."
+    },
+    "semble_model_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Required by run_pair: exact cached Semble model revision. The adapter validates the matching offline snapshot and records its observed asset digest."
+    },
+    "quanta_model_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "baseline_route": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Must equal the Semble route selected by execution_profiles.semble.mode; the runtime enforces this cross-field contract."
+    },
+    "candidate_route": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Must name one of the configured Quanta routes; the runtime enforces this cross-field contract."
+    },
     "host_profile": {
-      "type": "string", "minLength": 1,
+      "type": "string",
+      "minLength": 1,
       "description": "Path to a canonical host-profile JSON artifact. Optional in the schema; run_pair refuses a pair spec without it."
     },
     "linux_cgroup_parent": {
-      "type": "string", "pattern": "^/[^\\n]+$",
+      "type": "string",
+      "pattern": "^/[^\\n]+$",
       "description": "Explicit delegated cgroup v2 parent for qualified Linux capture. The owner creates and removes only a unique child subgroup. Exploratory process-group fallback must omit this key."
     },
     "admission": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "description": "Required when scope=qualified. Paths to the W0-B authority manifest and the independently produced evidence bytes it binds.",
-      "required": ["manifest", "license_receipt", "annotation_receipts", "adjudication_receipt"],
+      "required": [
+        "manifest",
+        "license_receipt",
+        "annotation_receipts",
+        "adjudication_receipt"
+      ],
       "oneOf": [
-        {"required": ["experiment_custody", "development_suite"], "not": {"anyOf": [{"required": ["split_manifest"]}, {"required": ["split_releases"]}]}},
-        {"required": ["split_manifest", "split_releases"], "not": {"anyOf": [{"required": ["experiment_custody"]}, {"required": ["development_suite"]}]}}
+        {
+          "required": [
+            "experiment_custody",
+            "development_suite"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "split_manifest"
+                ]
+              },
+              {
+                "required": [
+                  "split_releases"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "required": [
+            "split_manifest",
+            "split_releases"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "experiment_custody"
+                ]
+              },
+              {
+                "required": [
+                  "development_suite"
+                ]
+              }
+            ]
+          }
+        }
       ],
       "properties": {
-        "manifest": {"type": "string", "minLength": 1},
-        "experiment_custody": {"type": "string", "minLength": 1},
-        "development_suite": {"type": "string", "minLength": 1},
-        "split_manifest": {"type": "string", "minLength": 1},
-        "split_releases": {"type": "string", "minLength": 1},
-        "license_receipt": {"type": "string", "minLength": 1},
-        "annotation_receipts": {
-          "type": "array", "minItems": 2, "maxItems": 2,
-          "items": {"type": "string", "minLength": 1}
+        "manifest": {
+          "type": "string",
+          "minLength": 1
         },
-        "adjudication_receipt": {"type": "string", "minLength": 1}
+        "experiment_custody": {
+          "type": "string",
+          "minLength": 1
+        },
+        "development_suite": {
+          "type": "string",
+          "minLength": 1
+        },
+        "split_manifest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "split_releases": {
+          "type": "string",
+          "minLength": 1
+        },
+        "license_receipt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "annotation_receipts": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "adjudication_receipt": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
-    "claims": {"$ref": "#/$defs/claims"},
+    "claims": {
+      "$ref": "#/$defs/claims"
+    },
     "receipts": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "description": "Paths to externally produced receipt/result artifacts. The driver freezes them by copying into the stage; the verdict re-verifies the frozen bytes. No evidence content travels through the spec.",
       "properties": {
-        "contract_execution_context": {"type": "string", "minLength": 1},
-        "contract_source_closure": {"type": "string", "minLength": 1},
-        "contract_python_receipt": {"type": "string", "minLength": 1},
-        "contract_python_results": {"type": "string", "minLength": 1},
-        "contract_python_raw": {"type": "string", "minLength": 1},
-        "contract_python_inventory": {"type": "string", "minLength": 1},
-        "contract_rust_receipt": {"type": "string", "minLength": 1},
-        "contract_rust_results": {"type": "string", "minLength": 1},
-        "contract_rust_raw": {"type": "string", "minLength": 1},
-        "contract_rust_inventory": {"type": "string", "minLength": 1},
-        "sdk_execution_context": {"type": "string", "minLength": 1},
-        "sdk_source_closure": {"type": "string", "minLength": 1},
-        "sdk_receipt": {"type": "string", "minLength": 1},
-        "sdk_results": {"type": "string", "minLength": 1},
-        "sdk_nextest_raw": {"type": "string", "minLength": 1},
-        "sdk_record_raw": {"type": "string", "minLength": 1},
-        "sdk_inventory": {"type": "string", "minLength": 1},
-        "model_parity_results": {"type": "string", "minLength": 1},
-        "incremental_results": {"type": "string", "minLength": 1}
+        "contract_execution_context": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_source_closure": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_python_receipt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_python_results": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_python_raw": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_python_inventory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_rust_receipt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_rust_results": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_rust_raw": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_rust_inventory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sdk_execution_context": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sdk_source_closure": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sdk_receipt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sdk_results": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sdk_nextest_raw": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sdk_record_raw": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sdk_inventory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_parity_results": {
+          "type": "string",
+          "minLength": 1
+        },
+        "incremental_results": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "contention_override": {
@@ -144,107 +474,604 @@
   },
   "allOf": [
     {
-      "if": {"required": ["code_search_rank_study"]},
+      "if": {
+        "required": [
+          "code_search_rank_study"
+        ]
+      },
       "then": {
-        "required": ["routes"],
+        "required": [
+          "routes"
+        ],
         "properties": {
-          "routes": {"const": ["lexical"]},
-          "execution_profiles": {"properties": {"quanta": {"properties": {"policy": {"enum": ["code_search_file", "code_search_exact_content_file"]}}}}},
-          "claims": {"properties": {"speed": {"const": false}}}
+          "routes": {
+            "const": [
+              "lexical"
+            ]
+          },
+          "execution_profiles": {
+            "properties": {
+              "quanta": {
+                "properties": {
+                  "policy": {
+                    "enum": [
+                      "code_search_file",
+                      "code_search_exact_content_file"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "claims": {
+            "properties": {
+              "speed": {
+                "const": false
+              }
+            }
+          }
         }
       }
-    },
-    {
-      "if": {"properties": {"blinding": {"const": "isolated"}}, "required": ["blinding"]},
-      "then": {
-        "required": ["suite_secret_root"],
-        "not": {"anyOf": [{"required": ["isolation_method"]}, {"required": ["access_block_log"]}]}
-      }
-    },
-    {
-      "if": {"properties": {"scope": {"const": "qualified"}}, "required": ["scope"]},
-      "then": {"required": ["admission"]}
     },
     {
       "if": {
         "properties": {
-          "scope": {"const": "qualified"},
-          "claims": {
-            "properties": {"speed": {"const": true}},
-            "required": ["speed"]
+          "blinding": {
+            "const": "isolated"
           }
         },
-        "required": ["scope", "claims"]
+        "required": [
+          "blinding"
+        ]
       },
       "then": {
-        "required": ["repetitions", "query_repetitions_per_root", "query_warmup_passes", "routes"],
-        "properties": {
-          "repetitions": {"minimum": 5},
-          "query_warmup_passes": {"minimum": 1},
-          "routes": {"maxItems": 1}
+        "required": [
+          "suite_secret_root"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "isolation_method"
+              ]
+            },
+            {
+              "required": [
+                "access_block_log"
+              ]
+            }
+          ]
         }
       }
     },
     {
-      "if": {"properties": {"embedder": {"const": "potion-code-full-v2"}}, "required": ["embedder"]},
+      "if": {
+        "properties": {
+          "scope": {
+            "const": "qualified"
+          }
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "then": {
+        "required": [
+          "admission"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "scope": {
+            "const": "qualified"
+          },
+          "claims": {
+            "properties": {
+              "speed": {
+                "const": true
+              }
+            },
+            "required": [
+              "speed"
+            ]
+          }
+        },
+        "required": [
+          "scope",
+          "claims"
+        ]
+      },
+      "then": {
+        "required": [
+          "repetitions",
+          "query_repetitions_per_root",
+          "query_warmup_passes",
+          "routes"
+        ],
+        "properties": {
+          "repetitions": {
+            "minimum": 5
+          },
+          "query_warmup_passes": {
+            "minimum": 1
+          },
+          "routes": {
+            "maxItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "embedder": {
+            "const": "potion-code-full-v2"
+          }
+        },
+        "required": [
+          "embedder"
+        ]
+      },
       "then": {
         "properties": {
-          "scope": {"const": "exploratory"},
-          "claims": {"properties": {
-            "quality": {"const": false}, "speed": {"const": false},
-            "same_model": {"const": false}, "incremental": {"const": false}
-          }}
+          "scope": {
+            "const": "exploratory"
+          },
+          "claims": {
+            "properties": {
+              "quality": {
+                "const": false
+              },
+              "speed": {
+                "const": false
+              },
+              "same_model": {
+                "const": false
+              },
+              "incremental": {
+                "const": false
+              }
+            }
+          }
         }
       }
     }
   ],
   "$defs": {
     "execution_profiles": {
-      "type": "object", "additionalProperties": false,
-      "required": ["quanta"],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quanta"
+      ],
       "properties": {
-        "quanta": {"$ref": "#/$defs/quanta_profile"},
-        "semble": {"$ref": "#/$defs/semble_profile"}
+        "quanta": {
+          "$ref": "#/$defs/quanta_profile"
+        },
+        "semble": {
+          "$ref": "#/$defs/semble_profile"
+        }
       }
     },
     "quanta_profile": {
       "oneOf": [
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-native-v1"}, "policy": {"const": "native"}, "config": {"type": "object", "additionalProperties": false, "maxProperties": 0}, "planning_cost_in_latency": {"const": false}}},
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-literal-v1"}, "policy": {"const": "literal"}, "config": {"type": "object", "additionalProperties": false, "maxProperties": 0}, "planning_cost_in_latency": {"const": false}}},
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-natural-language-ucd17-v2"}, "policy": {"const": "natural_language"}, "config": {"type": "object", "additionalProperties": false, "required": ["max_token_chars", "max_tokens", "min_token_chars"], "properties": {"max_token_chars": {"const": 96}, "max_tokens": {"type": "integer", "minimum": 1, "maximum": 128}, "min_token_chars": {"const": 1}}}, "planning_cost_in_latency": {"const": false}}},
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-natural-language-file-ucd17-v1"}, "policy": {"const": "natural_language_file"}, "config": {"type": "object", "additionalProperties": false, "required": ["max_token_chars", "max_tokens", "min_token_chars"], "properties": {"max_token_chars": {"const": 96}, "max_tokens": {"type": "integer", "minimum": 1, "maximum": 128}, "min_token_chars": {"const": 1}}}, "planning_cost_in_latency": {"const": false}}},
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-code-search-file-v1"}, "policy": {"const": "code_search_file"}, "config": {"type": "object", "additionalProperties": false, "maxProperties": 0}, "planning_cost_in_latency": {"const": false}}},
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-code-search-exact-content-file-v1"}, "policy": {"const": "code_search_exact_content_file"}, "config": {"type": "object", "additionalProperties": false, "maxProperties": 0}, "planning_cost_in_latency": {"const": false}}},
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-code-search-typo-file-v1"}, "policy": {"const": "code_search_typo_file"}, "config": {"type": "object", "additionalProperties": false, "maxProperties": 0}, "planning_cost_in_latency": {"const": false}}},
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-code-search-components-file-v1"}, "policy": {"const": "code_search_components_file"}, "config": {"type": "object", "additionalProperties": false, "maxProperties": 0}, "planning_cost_in_latency": {"const": false}}}
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "policy",
+            "config",
+            "planning_cost_in_latency"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "quanta-native-v1"
+            },
+            "policy": {
+              "const": "native"
+            },
+            "config": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0
+            },
+            "planning_cost_in_latency": {
+              "const": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "policy",
+            "config",
+            "planning_cost_in_latency"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "quanta-literal-v1"
+            },
+            "policy": {
+              "const": "literal"
+            },
+            "config": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0
+            },
+            "planning_cost_in_latency": {
+              "const": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "policy",
+            "config",
+            "planning_cost_in_latency"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "quanta-natural-language-ucd17-v2"
+            },
+            "policy": {
+              "const": "natural_language"
+            },
+            "config": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "max_token_chars",
+                "max_tokens",
+                "min_token_chars"
+              ],
+              "properties": {
+                "max_token_chars": {
+                  "const": 96
+                },
+                "max_tokens": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 64
+                },
+                "min_token_chars": {
+                  "const": 1
+                }
+              }
+            },
+            "planning_cost_in_latency": {
+              "const": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "policy",
+            "config",
+            "planning_cost_in_latency"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "quanta-natural-language-file-ucd17-v1"
+            },
+            "policy": {
+              "const": "natural_language_file"
+            },
+            "config": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "max_token_chars",
+                "max_tokens",
+                "min_token_chars"
+              ],
+              "properties": {
+                "max_token_chars": {
+                  "const": 96
+                },
+                "max_tokens": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 64
+                },
+                "min_token_chars": {
+                  "const": 1
+                }
+              }
+            },
+            "planning_cost_in_latency": {
+              "const": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "policy",
+            "config",
+            "planning_cost_in_latency"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "quanta-code-search-file-v1"
+            },
+            "policy": {
+              "const": "code_search_file"
+            },
+            "config": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0
+            },
+            "planning_cost_in_latency": {
+              "const": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "policy",
+            "config",
+            "planning_cost_in_latency"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "quanta-code-search-exact-content-file-v1"
+            },
+            "policy": {
+              "const": "code_search_exact_content_file"
+            },
+            "config": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0
+            },
+            "planning_cost_in_latency": {
+              "const": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "policy",
+            "config",
+            "planning_cost_in_latency"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "quanta-code-search-typo-file-v1"
+            },
+            "policy": {
+              "const": "code_search_typo_file"
+            },
+            "config": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0
+            },
+            "planning_cost_in_latency": {
+              "const": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "policy",
+            "config",
+            "planning_cost_in_latency"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "quanta-code-search-components-file-v1"
+            },
+            "policy": {
+              "const": "code_search_components_file"
+            },
+            "config": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 0
+            },
+            "planning_cost_in_latency": {
+              "const": false
+            }
+          }
+        }
       ]
     },
     "semble_profile": {
       "oneOf": [
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "mode", "alpha", "rerank"], "properties": {"profile_id": {"const": "semble-native-default-v1"}, "mode": {"const": "native-default"}, "alpha": {"type": "null"}, "rerank": {"const": "upstream-content-default"}}},
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "mode", "alpha", "rerank"], "properties": {"profile_id": {"const": "semble-hybrid-no-rerank-v1"}, "mode": {"const": "hybrid-no-rerank"}, "alpha": {"type": "number", "minimum": 0, "maximum": 1}, "rerank": {"const": false}}},
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "mode", "alpha", "rerank"], "properties": {"profile_id": {"const": "semble-lexical-only-v1"}, "mode": {"const": "lexical-only"}, "alpha": {"type": "null"}, "rerank": {"const": "not_applicable"}}},
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "mode", "alpha", "rerank"], "properties": {"profile_id": {"const": "semble-semantic-only-v1"}, "mode": {"const": "semantic-only"}, "alpha": {"type": "null"}, "rerank": {"const": "not_applicable"}}},
-        {"type": "object", "additionalProperties": false, "required": ["profile_id", "mode", "alpha", "rerank"], "properties": {"profile_id": {"const": "semble-lexical-file-v1"}, "mode": {"const": "lexical-file"}, "alpha": {"type": "null"}, "rerank": {"const": "not_applicable"}}}
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "mode",
+            "alpha",
+            "rerank"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "semble-native-default-v1"
+            },
+            "mode": {
+              "const": "native-default"
+            },
+            "alpha": {
+              "type": "null"
+            },
+            "rerank": {
+              "const": "upstream-content-default"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "mode",
+            "alpha",
+            "rerank"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "semble-hybrid-no-rerank-v1"
+            },
+            "mode": {
+              "const": "hybrid-no-rerank"
+            },
+            "alpha": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "rerank": {
+              "const": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "mode",
+            "alpha",
+            "rerank"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "semble-lexical-only-v1"
+            },
+            "mode": {
+              "const": "lexical-only"
+            },
+            "alpha": {
+              "type": "null"
+            },
+            "rerank": {
+              "const": "not_applicable"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "mode",
+            "alpha",
+            "rerank"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "semble-semantic-only-v1"
+            },
+            "mode": {
+              "const": "semantic-only"
+            },
+            "alpha": {
+              "type": "null"
+            },
+            "rerank": {
+              "const": "not_applicable"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile_id",
+            "mode",
+            "alpha",
+            "rerank"
+          ],
+          "properties": {
+            "profile_id": {
+              "const": "semble-lexical-file-v1"
+            },
+            "mode": {
+              "const": "lexical-file"
+            },
+            "alpha": {
+              "type": "null"
+            },
+            "rerank": {
+              "const": "not_applicable"
+            }
+          }
+        }
       ]
     },
     "strategy": {
-      "type": "object", "additionalProperties": false,
-      "required": ["name"],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
       "properties": {
-        "name": {"enum": ["whole_file", "fixed_window_strict", "fixed_window_line_aligned", "brace_heuristic"]},
-        "window_bytes": {"type": "integer", "minimum": 1},
-        "overlap_bytes": {"type": "integer", "minimum": 0},
-        "max_item_bytes": {"type": "integer", "minimum": 1}
+        "name": {
+          "enum": [
+            "whole_file",
+            "fixed_window_strict",
+            "fixed_window_line_aligned",
+            "brace_heuristic"
+          ]
+        },
+        "window_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "overlap_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_item_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "claims": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "quality": {"type": "boolean"},
-        "speed": {"type": "boolean"},
-        "same_model": {"type": "boolean"},
-        "incremental": {"type": "boolean"}
+        "quality": {
+          "type": "boolean"
+        },
+        "speed": {
+          "type": "boolean"
+        },
+        "same_model": {
+          "type": "boolean"
+        },
+        "incremental": {
+          "type": "boolean"
+        }
       }
     }
   }

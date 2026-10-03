@@ -2717,3 +2717,21 @@ call. Full C3 issuance and admission remain incomplete.
 All AI judgments remain explicitly nonhuman and unqualified. The current
 source capsule, complete C3 issuance, full admission and final comparison
 remain outstanding; this update does not convert pending rows into success.
+
+Follow-up observation at 04:17 KST supersedes the live-review claims above:
+all three actual reviewer processes are **terminal FAILED**, and the live
+registry watcher correctly terminated before incomplete forms could be issued.
+All three raw responses have `is_error=true`, `terminal_reason=api_error`, no
+model usage, and the exact service message `You've hit your session limit ·
+resets 8:40am (Asia/Seoul)`. Failed calls are lo task 18 second assessor,
+sqlalchemy task 3 adjudicator, and zellij task 3 first assessor. This is a
+**BLOCKED C3 external-model execution scope**, not an engine search failure or
+a relevance grade. `c3-review-session-quota-20261004.json` binds those raw hashes.
+No retries are submitted before the service-reported reset. At termination,
+additional complete three-role assessments are lo 17 tasks, sqlalchemy 2,
+zellij 2; issued suites still total 40 tasks / 871 pairs. Other completed
+partial-role calls remain preserved for verified resume. The old f3 C4 job
+(PID 52644) and latest-contract capsule job (PID 8999) remain live. Source,
+split/admission, invalid-fixture dispositions and fair timing are separate
+remaining scopes; the overall objective is not complete or blocked by this
+single external-model quota while mechanical work can still progress.
