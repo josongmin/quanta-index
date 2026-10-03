@@ -11,8 +11,8 @@
 //! continuation keep the transport's typed refusal as their bound.
 
 use quanta_index_contract::{
-    ContinuationTokenV2, LexicalCursor, LexicalRowOrderKey, QueryResultWindowV2, SymbolCandidate,
-    SymbolQueryResponse, TextQueryResponse,
+    ContinuationTokenV2, LexicalCursor, LexicalRowOrderKey, PlannerStage, PlannerTraceEntry,
+    QueryResultWindowV2, SymbolCandidate, SymbolQueryResponse, TextQueryResponse,
 };
 use quanta_index_core::CoreError;
 use quanta_index_ipc::{MAX_FRAME_BODY_BYTES, cbor_payload_len};
@@ -93,6 +93,65 @@ pub(super) trait RankedPage: Serialize + Sized {
 fn encoded_len<T: Serialize>(value: &T, what: &str) -> Result<u64, CoreError> {
     cbor_payload_len(value)
         .map_err(|err| CoreError::InvalidContract(format!("measure {what}: {err}")))
+}
+
+/// Normalize the three policy-controlled CodeSearch clocks to their maximum
+/// `u64` wire shape. Both observation policies then reserve the same bytes
+/// before selecting a prefix or minting its continuation cursor.
+fn code_search_clock_reserve_delta(trace: &[PlannerTraceEntry]) -> Result<u64, CoreError> {
+    const CLOCKS: [&str; 3] = ["candidate_ns", "sort_page_ns", "preview_ns"];
+    let has_code_search = trace
+        .iter()
+        .any(|entry| entry.detail.starts_with("code_search.execution.scope="));
+    if !has_code_search {
+        if trace
+            .iter()
+            .any(|entry| entry.detail.starts_with("code_search.execution."))
+        {
+            return Err(CoreError::InvalidContract(
+                "code-search work trace lacks execution scope".into(),
+            ));
+        }
+        return Ok(0);
+    }
+    let mut canonical = Vec::with_capacity(trace.len().saturating_add(CLOCKS.len()));
+    let mut seen = [false; CLOCKS.len()];
+    for entry in trace {
+        let clock = CLOCKS.iter().enumerate().find_map(|(index, name)| {
+            entry
+                .detail
+                .strip_prefix("code_search.execution.")
+                .and_then(|detail| detail.strip_prefix(name))
+                .and_then(|value| value.strip_prefix('='))
+                .map(|value| (index, value))
+        });
+        if let Some((index, value)) = clock {
+            let parsed = value.parse::<u64>().map_err(|_| {
+                CoreError::InvalidContract("code-search work clock is malformed".into())
+            })?;
+            let duplicate = seen.get(index).copied().unwrap_or(true);
+            if entry.stage != PlannerStage::Merge || duplicate || parsed.to_string() != value {
+                return Err(CoreError::InvalidContract(
+                    "code-search work clock is duplicated or malformed".into(),
+                ));
+            }
+            if let Some(clock_seen) = seen.get_mut(index) {
+                *clock_seen = true;
+            }
+        } else {
+            canonical.push(entry.clone());
+        }
+    }
+    for name in CLOCKS {
+        canonical.push(PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: format!("code_search.execution.{name}={}", u64::MAX),
+        });
+    }
+    let observed = encoded_len(&trace, "code-search planner trace")?;
+    encoded_len(&canonical, "reserved code-search planner trace")?
+        .checked_sub(observed)
+        .ok_or_else(|| CoreError::InvalidContract("code-search clock reserve underflow".into()))
 }
 
 /// The window of a page cut to `returned` rows.
@@ -195,6 +254,8 @@ impl RankedPage for TextQueryResponse {
         // even at every scalar maximum (covered by the reserve test).
         let whole = encoded_len(self, "ranked page")?;
         let measured_slot = encoded_len(&self.explanation.stage_timings, "lexical stage slot")?;
+        let code_search_clock_delta =
+            code_search_clock_reserve_delta(&self.explanation.planner_trace)?;
         if measured_slot > LEXICAL_STAGE_RESERVE_BYTES {
             return Err(CoreError::InvalidContract(
                 "lexical stages exceed reserved shape".to_string(),
@@ -208,6 +269,7 @@ impl RankedPage for TextQueryResponse {
             .checked_sub(measured_slot)
             .and_then(|bytes| bytes.checked_add(empty_slot_bytes))
             .and_then(|bytes| bytes.checked_add(LEXICAL_STAGE_RESERVE_BYTES))
+            .and_then(|bytes| bytes.checked_add(code_search_clock_delta))
             .ok_or_else(|| CoreError::InvalidContract("lexical stage reserve overflow".to_string()))
     }
 

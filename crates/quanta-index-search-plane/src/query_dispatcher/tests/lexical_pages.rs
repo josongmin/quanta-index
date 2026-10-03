@@ -11,9 +11,10 @@ use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
     CandidateCountV1, ContinuationTokenV2, ERR_RESULT_TOO_LARGE, FileOwnerProjectionRow,
-    LexicalCandidate, LexicalCursor, ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV2,
-    RepoRelativePath, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SymbolQueryResponse,
-    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    LexicalCandidate, LexicalCursor, ManifestGeneration, PlannerStage, PlannerTraceEntry,
+    QueryConstraintSetV1, QueryResultWindowV2, RepoRelativePath, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcResponse, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax,
 };
 use quanta_index_core::{QueryRouteV1, RequestBudgetV1};
 
@@ -458,6 +459,82 @@ fn a_fitting_first_row_is_not_refused_by_cursor_reservation() -> TestResult {
     let encoded = quanta_index_ipc::cbor_payload_len(&first)?;
     if encoded > budget.max_payload_bytes() {
         return Err(format!("the prefix encodes to {encoded} bytes").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn code_search_clock_policy_keeps_tight_page_and_continuation_identical() -> TestResult {
+    let results = rows(3, 400);
+    let mut explanation = quanta_index_contract::SearchExplanation::empty();
+    explanation.planner_trace = [
+        "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true",
+        "code_search.execution.mode=ordinary",
+        "code_search.execution.posting_probes=3",
+    ]
+    .into_iter()
+    .map(|detail| PlannerTraceEntry {
+        stage: PlannerStage::Merge,
+        detail: detail.to_string(),
+    })
+    .collect();
+    let off = TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
+        explanation,
+        generation: ready_pin(),
+        results,
+        window: QueryResultWindowV2::pageable(3, CandidateCountV1::Exact(3), false, vec![])?,
+        file_owner_rows: None,
+        next_cursor: None,
+    };
+    let mut on = off.clone();
+    for (name, value) in [
+        ("candidate_ns", 1_u64),
+        ("sort_page_ns", u64::MAX),
+        ("preview_ns", 42_u64),
+    ] {
+        on.explanation.planner_trace.push(PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: format!("code_search.execution.{name}={value}"),
+        });
+    }
+    if on.budget_encoded_len()? != off.budget_encoded_len()? {
+        return Err("CodeSearch on/off clocks changed the page budget".into());
+    }
+    let token = ContinuationTokenV2::new("same-cursor")?;
+    let mut one = off.clone();
+    one.cut(
+        1,
+        crate::query_dispatcher::window::cut_pageable_window_v2(&off.window, 1)?,
+        token.clone(),
+    );
+    let limit = one.budget_encoded_len()?;
+    if off.budget_encoded_len()? <= limit {
+        return Err("the uncut fixture must exceed its one-row budget".into());
+    }
+    let budget = ResponsePayloadBudget::new(limit)?;
+    let fitted_on = fit_ranked_page(on, budget, |_cursor| Ok(token.clone()))?;
+    let fitted_off = fit_ranked_page(off, budget, |_cursor| Ok(token.clone()))?;
+    if ids(&fitted_on.results) != ids(&fitted_off.results)
+        || fitted_on.results.len() != 1
+        || fitted_on.window != fitted_off.window
+        || fitted_on.next_cursor != fitted_off.next_cursor
+        || fitted_on.next_cursor != Some(token)
+        || quanta_index_ipc::cbor_payload_len(&fitted_on)? > limit
+        || quanta_index_ipc::cbor_payload_len(&fitted_off)? > limit
+    {
+        return Err("CodeSearch clocks changed a tight page or continuation".into());
+    }
+    let mut duplicate = fitted_on;
+    let clock = duplicate
+        .explanation
+        .planner_trace
+        .last()
+        .ok_or("clock trace disappeared")?
+        .clone();
+    duplicate.explanation.planner_trace.push(clock);
+    if duplicate.budget_encoded_len().is_ok() {
+        return Err("duplicated CodeSearch clock passed the budget contract".into());
     }
     Ok(())
 }

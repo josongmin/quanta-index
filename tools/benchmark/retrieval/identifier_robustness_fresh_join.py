@@ -116,19 +116,9 @@ def _native_records(
     suite: dict[str, Any],
     tasks: dict[str, Any],
     universe: set[str],
-) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, str], str]:
+) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, str], str, dict[str, Any]]:
     repo, output = cell["repository"], Path(cell["output_root"])
-    status_path = output.parent / (cell["cell_id"] + ".status.json")
-    status = read(status_path)
-    require(
-        status["returncode"] == 0
-        and status["source_commit"] == prepared["source_commit"]
-        and status["runner_sha256"] == prepared["runner_sha256"]
-        and status["searchd_sha256"] == prepared["searchd_sha256"]
-        and status["spec_sha256"] == cell["spec_sha256"]
-        and status["output_root"] == str(output),
-        "native status/source/binary differs: " + repo,
-    )
+    status_binding = _select_native_status(cell, prepared)
     verdict = read(output / "verdict.json")
     require(
         verdict["counts"]["selected"] == verdict["counts"]["executed"] == 2 * len(tasks)
@@ -196,7 +186,36 @@ def _native_records(
     _require_native_report_binding(
         read(report_path), verdict, suite, checked_pack, merged, report_sha, repo
     )
-    return records, hashes, report_sha
+    return records, hashes, report_sha, status_binding
+
+
+def _select_native_status(cell: dict[str, Any], prepared: dict[str, Any]) -> dict[str, Any]:
+    """Select the one successful bound attempt; retain earlier failed attempts."""
+    output = Path(cell["output_root"])
+    paths = sorted(output.parent.glob(cell["cell_id"] + "*.status.json"))
+    bound: list[Path] = []
+    for path in paths:
+        status = read(path)
+        if (
+            status.get("returncode") == 0
+            and status.get("source_commit") == prepared["source_commit"]
+            and status.get("runner_sha256") == prepared["runner_sha256"]
+            and status.get("searchd_sha256") == prepared["searchd_sha256"]
+            and status.get("spec_sha256") == cell["spec_sha256"]
+            and status.get("output_root") == str(output)
+        ):
+            bound.append(path)
+    require(
+        len(bound) == 1,
+        "native successful status/source/binary is absent or ambiguous: " + cell["repository"],
+    )
+    return {
+        "successful_attempt_path": str(bound[0]),
+        "successful_attempt_sha256": sha(bound[0]),
+        "other_attempts": [
+            {"path": str(path), "sha256": sha(path)} for path in paths if path != bound[0]
+        ],
+    }
 
 
 def _require_native_report_binding(
@@ -419,7 +438,7 @@ def _pair_rows(
             sha(native_manifest) == sha(external_manifest),
             "paired corpus file universe differs: " + repo,
         )
-        native, native_hashes, native_report_sha = _native_records(
+        native, native_hashes, native_report_sha, native_status = _native_records(
             native_cell, prepared, native_spec, suite, tasks, universe
         )
         external, external_hashes = _external_records(external_cell, receipt, tasks, universe)
@@ -439,6 +458,7 @@ def _pair_rows(
                 "task_count": len(tasks),
                 "native_record_sha256": native_hashes,
                 "native_pair_report_sha256": native_report_sha,
+                "native_execution_status": native_status,
                 "external_rows_sha256": external_hashes,
             }
         )

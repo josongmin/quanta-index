@@ -1,6 +1,7 @@
 """Fixed input and route guards for the fresh OSA1 five-product join."""
 
 import copy
+import json
 
 import pytest
 
@@ -106,3 +107,37 @@ def test_fresh_join_binds_raw_record_to_scored_pair_report():
         fresh._require_native_report_binding(
             report, changed_verdict, suite, pack, merged, report_sha, "r"
         )
+
+
+def test_fresh_join_selects_successful_retry_without_hiding_failed_attempts(tmp_path):
+    cell = {
+        "cell_id": "l",
+        "repository": "chartjs",
+        "output_root": str(tmp_path / "l"),
+        "spec_sha256": "new-spec",
+    }
+    prepared = {
+        "source_commit": "source",
+        "runner_sha256": "runner",
+        "searchd_sha256": "searchd",
+    }
+    failure = {
+        **prepared,
+        "returncode": 2,
+        "spec_sha256": "old-spec",
+        "output_root": str(tmp_path / "out/l"),
+    }
+    success = {
+        **prepared,
+        "returncode": 0,
+        "spec_sha256": "new-spec",
+        "output_root": str(tmp_path / "l"),
+    }
+    (tmp_path / "l.status.json").write_text(json.dumps(failure))
+    (tmp_path / "l-attempt-2.status.json").write_text(json.dumps(success))
+    bound = fresh._select_native_status(cell, prepared)
+    assert bound["successful_attempt_path"] == str(tmp_path / "l-attempt-2.status.json")
+    assert [row["path"] for row in bound["other_attempts"]] == [str(tmp_path / "l.status.json")]
+    (tmp_path / "l-attempt-3.status.json").write_text(json.dumps(success))
+    with pytest.raises(fresh.FreshJoinError, match="absent or ambiguous"):
+        fresh._select_native_status(cell, prepared)
