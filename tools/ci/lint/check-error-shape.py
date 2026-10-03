@@ -141,7 +141,17 @@ def manual_impls(source: bytes, declaration: Any, name: str) -> tuple[bool, bool
             continue
         target = sibling.child_by_field_name("type")
         trait = sibling.child_by_field_name("trait")
-        if target is None or trait is None or node_text(source, target).removeprefix("r#") != name:
+        if target is None or trait is None:
+            continue
+        if target.type == "generic_type":
+            target_name = next(
+                (child for child in target.named_children if child.type == "type_identifier"),
+                None,
+            )
+            if target_name is None:
+                continue
+            target = target_name
+        if node_text(source, target).removeprefix("r#") != name:
             continue
         trait_name = node_text(source, trait).removeprefix("::")
         if trait_name in {"std::error::Error", "core::error::Error"}:

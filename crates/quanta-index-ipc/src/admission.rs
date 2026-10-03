@@ -29,8 +29,8 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::{ERR_SERVER_OVERLOADED, SearchPlaneIpcError};
 
-use crate::codec::IpcError;
-use crate::server::IpcPlane;
+use crate::error::IpcError;
+use crate::plane::IpcPlane;
 
 /// Ingress and dispatch limits for one server.
 ///
@@ -618,7 +618,7 @@ mod tests {
     use super::{
         DECODE_BYTE_CAPACITY, DispatchSlots, IngressBudget, ServerAdmissionPolicy, SlotRefusal,
     };
-    use crate::server::IpcPlane;
+    use crate::plane::IpcPlane;
 
     #[test]
     fn a_policy_refuses_zero_limits_and_more_slots_than_connections() {
@@ -655,14 +655,14 @@ mod tests {
             .expect("upgrade fits");
         assert!(matches!(
             slots.try_acquire_decode(1, IpcPlane::Query),
-            Err(crate::codec::IpcError::IngressSaturated {
+            Err(crate::error::IpcError::IngressSaturated {
                 bytes: DECODE_BYTE_CAPACITY,
                 requests: 64,
             })
         ));
         assert!(matches!(
             first.reserve(1),
-            Err(crate::codec::IpcError::IngressSaturated {
+            Err(crate::error::IpcError::IngressSaturated {
                 bytes: DECODE_BYTE_CAPACITY,
                 requests: 64,
             })
@@ -696,7 +696,7 @@ mod tests {
             .collect();
         assert!(matches!(
             slots.try_acquire_decode(1, IpcPlane::Query),
-            Err(crate::codec::IpcError::IngressSaturated { requests: 64, .. })
+            Err(crate::error::IpcError::IngressSaturated { requests: 64, .. })
         ));
         drop(permits);
         assert!(slots.try_acquire_decode(1, IpcPlane::Query).is_ok());
@@ -718,7 +718,7 @@ mod tests {
             .expect("query fills shared budget");
         assert!(matches!(
             ingest.try_acquire_decode(2, IpcPlane::Ingest),
-            Err(crate::codec::IpcError::IngressSaturated { requests: 128, .. })
+            Err(crate::error::IpcError::IngressSaturated { requests: 128, .. })
         ));
         let control =
             DispatchSlots::with_shared_ingress(ServerAdmissionPolicy::SERIAL_DISPATCH, ingress);

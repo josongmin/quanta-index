@@ -206,6 +206,47 @@ def test_inventory_bound_ignored_start_without_terminal_in_mixed_suite():
     assert (parsed.selected, parsed.executed, parsed.passed, parsed.failed) == (2, 2, 2, 0)
 
 
+def test_mixed_suite_can_close_after_ignored_start_before_selected_outcome():
+    rows = [
+        start(),
+        event_row("external", "started"),
+        event_row("a", "started"),
+        event_row("b", "started"),
+        finish(0, 1),
+        start(),
+        event_row("external", "ignored"),
+        event_row("a", "ok"),
+        event_row("b", "ok"),
+        finish(2),
+    ]
+    parsed = replay(rows)
+    assert (parsed.selected, parsed.executed, parsed.passed, parsed.failed) == (2, 2, 2, 0)
+
+
+@pytest.mark.parametrize("mutation", ["missing_required", "wrong_filter", "no_ignored_start"])
+def test_empty_mixed_fragment_cannot_hide_missing_or_forged_evidence(mutation):
+    rows = [
+        start(),
+        event_row("external", "started"),
+        event_row("a", "started"),
+        event_row("b", "started"),
+        finish(0, 1),
+        start(),
+        event_row("external", "ignored"),
+        event_row("a", "ok"),
+        event_row("b", "ok"),
+        finish(2),
+    ]
+    if mutation == "missing_required":
+        del rows[8]
+    elif mutation == "wrong_filter":
+        rows[4]["filtered_out"] = 0
+    elif mutation == "no_ignored_start":
+        del rows[1]
+    with pytest.raises(NextestEvidenceError):
+        replay(rows)
+
+
 def test_inventory_bound_ignored_only_suite_with_unsigned_filtered_count():
     collected, rows = ignored_only_fixture()
     parsed = replay(rows, collected)

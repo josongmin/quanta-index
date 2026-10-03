@@ -117,7 +117,8 @@ fn batch(
                     |err| -> Box<dyn std::error::Error> { format!("language: {err}").into() },
                 )?,
                 producer_policy_sha256: Sha256::digest(b"ingest-resource-policy-fixture-v1").into(),
-                symbol_name_source_policy: quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
+                symbol_name_source_policy:
+                    quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
                 unit_set_sha256: source_file_unit_set_sha256(&chunks, &[])?,
                 text_admitted: true,
                 symbols: SymbolCoverage::NotRequested,

@@ -83,14 +83,14 @@ INVENTORY_OK = """
 
     [[ipc]]
     enum = "SearchPlaneIngestIpcRequest"
-    file = "crates/quanta-index-contract/src/ipc/ingest.rs"
+    file = "crates/quanta-index-contract/src/ipc/ingest/envelope.rs"
     plane = "ingest"
     direction = "request"
     variants = ["PublishSearchCorpusBatch"]
 
     [[ipc]]
     enum = "SearchPlaneIngestIpcResponse"
-    file = "crates/quanta-index-contract/src/ipc/ingest.rs"
+    file = "crates/quanta-index-contract/src/ipc/ingest/envelope.rs"
     plane = "ingest"
     direction = "response"
     variants = ["SearchCorpusReceipt", "Error"]
@@ -136,7 +136,7 @@ def make_workspace(tmp_path: Path) -> Path:
     _write(root / "crates/quanta-index-contract/Cargo.toml", "[package]\nname = 'c'\n")
     _write(root / "crates/quanta-index-lexical/Cargo.toml", "[package]\nname = 'l'\n")
     _write(root / "crates/quanta-index-contract/src/ipc/split.rs", SPLIT_RS)
-    _write(root / "crates/quanta-index-contract/src/ipc/ingest.rs", INGEST_RS)
+    _write(root / "crates/quanta-index-contract/src/ipc/ingest/envelope.rs", INGEST_RS)
     _write(root / "crates/quanta-index-lexical/src/lib.rs", LEXICAL_LIB_RS)
     # A tests/ tree must be ignored even when it declares a format constant.
     _write(
@@ -281,7 +281,8 @@ def test_a_wrong_file_for_an_enum_fails(tmp_path: Path):
     inventory["ipc"][2]["file"] = "crates/quanta-index-contract/src/ipc/split.rs"
     found = messages(MODULE.check(inventory, root))
     assert any(
-        "the enum lives in 'crates/quanta-index-contract/src/ipc/ingest.rs'" in m for m in found
+        "the enum lives in 'crates/quanta-index-contract/src/ipc/ingest/envelope.rs'" in m
+        for m in found
     )
 
 

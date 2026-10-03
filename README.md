@@ -7,10 +7,14 @@ activation and lexical/semantic/hybrid serving over Unix sockets.
 ## Usage
 
 - [Search CLI](crates/quanta-index-searchctl/README.md): query, diagnose and scrape the daemon.
+- [Rust SDK](crates/quanta-index-sdk/README.md): connect, query and publish through the typed client.
+- [Contract](crates/quanta-index-contract/README.md) and [search plane](crates/quanta-index-search-plane/README.md): wire authority and daemon state ownership.
+- [CI authority](docs/adr/SEP-28-001-circleci-provider-and-credit-boundary.md): hosted qualification and coverage gaps.
 - [Code-search benchmark results and reading guide](tools/benchmark/CODE_SEARCH_RUNBOOK.md#required-result-table): five products in one table, with mode input scope and the current diagnostic snapshot.
 - [Other benchmark profiles](tools/benchmark/README.md): corpus releases, Criterion, DSL gates and recording imports.
 - [State operations](docs/operator/state-cutover-runbook.md): verify, backup, restore and rebuild.
 - [Embedding provider](docs/potion-code-embedder.md): local model preparation.
+- [Crate ownership index](docs/ssot/crate-ownership.md): all 25 workspace crates and their source entry points.
 
 Build and start the daemon against an external current-format state root:
 
@@ -31,7 +35,6 @@ model; PotionCode/OpenAI are opt-in profiles. Residual tickets below are
 [engine status](docs/ssot/engine-status-v1.md).
 
 ## Build and verification
-
 
 - use `./scripts/cargow ...` for raw Cargo commands
 - use `just ...` for repo recipes

@@ -119,7 +119,9 @@ class SourcegraphCaptureTests(unittest.TestCase):
         self.assert_refused(request, good_stream(), manifest, universe)
 
     def test_live_projection_requires_exact_clean_git_file_universe(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory(
+            dir=Path(tempfile.gettempdir()).resolve(strict=True)
+        ) as temporary:
             root = Path(temporary)
             (root / "a.py").write_text("a = 1\n")
             manifest = {
@@ -168,7 +170,9 @@ class SourcegraphCaptureTests(unittest.TestCase):
                 live_lexical_external._projection_binding(config, manifest)
 
     def test_projection_refuses_clean_looking_worktree_with_different_commit_blob(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory(
+            dir=Path(tempfile.gettempdir()).resolve(strict=True)
+        ) as temporary:
             root = Path(temporary)
             (root / "a.py").write_text("committed = 1\n")
             subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
@@ -212,7 +216,9 @@ class SourcegraphCaptureTests(unittest.TestCase):
                 )
 
     def test_live_response_uses_projection_revision_and_source_manifest(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory(
+            dir=Path(tempfile.gettempdir()).resolve(strict=True)
+        ) as temporary:
             view = Path(temporary)
             for name in ("a.py", "b.py"):
                 (view / name).write_text(QUERY + "\n")

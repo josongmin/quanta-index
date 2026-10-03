@@ -2,7 +2,7 @@
 
 use ciborium_ll::{Decoder, Header};
 
-use crate::codec::IpcError;
+use crate::error::IpcError;
 
 // A retained String occupies its inline header. During Vec growth, the old
 // allocation and a double-capacity replacement can briefly coexist. CBOR

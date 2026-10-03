@@ -11,43 +11,46 @@ pub(crate) fn name_components(name: &str) -> Vec<String> {
     let mut index = 0;
     while index < bytes.len() {
         let start = index;
-        if bytes[index].is_ascii_uppercase() {
-            while index < bytes.len() && bytes[index].is_ascii_uppercase() {
-                index += 1;
+        if bytes.get(index).is_some_and(u8::is_ascii_uppercase) {
+            while bytes.get(index).is_some_and(u8::is_ascii_uppercase) {
+                index = index.saturating_add(1);
             }
-            if index < bytes.len() && bytes[index].is_ascii_lowercase() {
-                if index - start > 1 {
-                    index -= 1;
+            if bytes.get(index).is_some_and(u8::is_ascii_lowercase) {
+                if index.saturating_sub(start) > 1 {
+                    index = index.saturating_sub(1);
                 } else {
-                    while index < bytes.len() && bytes[index].is_ascii_lowercase() {
-                        index += 1;
+                    while bytes.get(index).is_some_and(u8::is_ascii_lowercase) {
+                        index = index.saturating_add(1);
                     }
                 }
             }
-        } else if bytes[index].is_ascii_lowercase() {
-            while index < bytes.len() && bytes[index].is_ascii_lowercase() {
-                index += 1;
+        } else if bytes.get(index).is_some_and(u8::is_ascii_lowercase) {
+            while bytes.get(index).is_some_and(u8::is_ascii_lowercase) {
+                index = index.saturating_add(1);
             }
-        } else if bytes[index].is_ascii_digit() {
-            while index < bytes.len() && bytes[index].is_ascii_digit() {
-                index += 1;
+        } else if bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+                index = index.saturating_add(1);
             }
         } else {
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
-        result.push(name[start..index].to_ascii_lowercase());
+        // The ASCII gate makes every byte boundary a character boundary.
+        let Some(component) = name.get(start..index) else {
+            return Vec::new();
+        };
+        result.push(component.to_ascii_lowercase());
     }
     result
 }
 
 /// Query components must already be canonical lower-case words.
 pub(crate) fn query_components(query: &str) -> Option<Vec<String>> {
-    let parts: Vec<_> = query.split(' ').collect();
     if !quanta_index_contract::valid_code_search_component_query(query) {
         return None;
     }
-    Some(parts.into_iter().map(str::to_owned).collect())
+    Some(query.split(' ').map(str::to_owned).collect())
 }
 
 pub(crate) fn contains_ordered_components(have: &[String], wanted: &[String]) -> bool {

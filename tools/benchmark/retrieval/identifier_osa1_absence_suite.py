@@ -40,8 +40,7 @@ def derive(repo: Path, source_suite: dict) -> tuple[dict, dict, dict]:
     evaluator.require(bool(source_suite.get("tasks")), "source suite has no tasks")
     evaluator.require(isinstance(source_suite["tasks"], list), "source suite tasks must be a list")
     evaluator.require(
-        isinstance(source_suite.get("routes"), list)
-        and "lexical" in source_suite["routes"],
+        isinstance(source_suite.get("routes"), list) and "lexical" in source_suite["routes"],
         "source suite must contain the lexical route",
     )
     evaluator.require(
