@@ -3027,9 +3027,14 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
     if (
         policy in ("natural_language", "natural_language_file")
         and quanta_profile["config"]["max_tokens"] != qp.DEFAULT_NL_CONFIG["max_tokens"]
-        and (spec.get("scope", "exploratory") != "exploratory" or any(spec.get("claims", {}).values()))
+        and (
+            spec.get("scope", "exploratory") != "exploratory"
+            or any(spec.get("claims", {}).values())
+        )
     ):
-        raise RunError("custom natural-language token budget requires exploratory scope without claims")
+        raise RunError(
+            "custom natural-language token budget requires exploratory scope without claims"
+        )
     if quanta_profile["policy"] not in PAIR_QUANTA_POLICIES:
         if not standalone_quanta:
             raise RunError(
@@ -7081,7 +7086,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     and quanta["config"]["max_tokens"] != qp.DEFAULT_NL_CONFIG["max_tokens"]
                     and manifest["scope"] != "exploratory"
                 ):
-                    raise RunError("custom natural-language token budget cannot carry qualified scope")
+                    raise RunError(
+                        "custom natural-language token budget cannot carry qualified scope"
+                    )
                 _validate_semble_profile(profiles["semble"], "protocol execution profile")
             except (AttributeError, KeyError, RunError, ValueError):
                 protocol_shape_valid = False
