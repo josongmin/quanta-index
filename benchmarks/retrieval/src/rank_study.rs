@@ -1,4 +1,4 @@
-//! Optional, non-scoring CodeSearch diagnostics collected after measured queries.
+//! Optional, non-scoring `CodeSearch` diagnostics collected after measured queries.
 //!
 //! Every page and explanation is obtained through the public SDK at the capture's
 //! generation. Limits and refusals retain partial evidence; they never turn a
@@ -48,9 +48,13 @@ impl PoolProgress {
         total: u64,
         eligible: u64,
     ) -> Result<(), String> {
+        let observed = u64::try_from(self.ids.len())
+            .map_err(|error| format!("observed file count exceeds u64: {error}"))?;
+        let page_len = u64::try_from(rows.len())
+            .map_err(|error| format!("page file count exceeds u64: {error}"))?;
         if self.total.is_some_and(|old| old != total)
-            || total.checked_sub(self.ids.len() as u64) != Some(eligible)
-            || eligible < rows.len() as u64
+            || total.checked_sub(observed) != Some(eligible)
+            || eligible < page_len
         {
             return Err("page work counts contradict the complete file pool".into());
         }
@@ -74,7 +78,9 @@ impl PoolProgress {
     }
 
     fn exhausted(&self) -> bool {
-        self.total == Some(self.ids.len() as u64)
+        self.total.is_some_and(|total| {
+            u64::try_from(self.ids.len()).is_ok_and(|observed| total == observed)
+        })
     }
 }
 
@@ -93,9 +99,12 @@ fn trace_count(
             "ordinary CodeSearch count {name} is absent or duplicated"
         ));
     }
-    values[0]
+    let value = values
+        .first()
+        .ok_or_else(|| format!("ordinary CodeSearch count {name} is absent or duplicated"))?;
+    value
         .parse()
-        .map_err(|_| format!("invalid count {name}"))
+        .map_err(|error| format!("invalid count {name}: {error}"))
 }
 
 fn same_original_hit(row: &LexicalCandidate, hit: &RankedHit) -> bool {
@@ -104,7 +113,7 @@ fn same_original_hit(row: &LexicalCandidate, hit: &RankedHit) -> bool {
     };
     row.candidate_id == hit.candidate_id
         && row.repo_relative_path.as_str() == hit.path
-        && f64::from(row.score) == hit.score
+        && f64::from(row.score).to_bits() == hit.score.to_bits()
         && row.start_line == hit.start_line
         && row.end_line == hit.end_line
         && row.snippet == hit.snippet
@@ -182,7 +191,7 @@ fn collect_one(
             }
             for row in &page.results {
                 if row.repo_id != pin.repo_id
-                    || row.source_repo_id != pin.repo_id
+                    || row.source_repo_id != pin.source_repo_id
                     || row.revision_id != pin.revision_id
                     || row.manifest_generation != pin.manifest_generation
                     || !row.candidate_id.starts_with("file:")
@@ -194,7 +203,9 @@ fn collect_one(
             }
             let total = trace_count(&page.explanation, "verified_matching_files")?;
             let eligible = trace_count(&page.explanation, "cursor_eligible_files")?;
-            if trace_count(&page.explanation, "returned_files")? != page.results.len() as u64 {
+            let returned = u64::try_from(page.results.len())
+                .map_err(|error| format!("returned file count exceeds u64: {error}"))?;
+            if trace_count(&page.explanation, "returned_files")? != returned {
                 return Err("public returned count differs from native page".into());
             }
             Ok((total, eligible))
@@ -297,9 +308,12 @@ pub(super) fn collect(
         let request = TextQueryRequest { syntax:TextQuerySyntax::CodeSearch,
             query_text:plan.lexical_request.clone(),constraints:QueryConstraintSetV1::unconstrained(),
             generation:Some(pin.clone()),generation_selector:None,top_k,cursor:None };
-        let result = outcomes.get(&(task.task_id.clone(), "lexical".into()))
-            .map(|original| collect_one(client, pin, &request, original, limits))
-            .unwrap_or_else(|| json!({"status":"not_run","reason":"missing_original_outcome"}));
+        let result = outcomes
+            .get(&(task.task_id.clone(), "lexical".into()))
+            .map_or_else(
+                || json!({"status":"not_run","reason":"missing_original_outcome"}),
+                |original| collect_one(client, pin, &request, original, limits),
+            );
         json!({"task_id":task.task_id,"route":"lexical", "generation":pin,
             "effective_request":request,"query_identity":{
                 "original_query_sha256":plan.original_query_sha256,

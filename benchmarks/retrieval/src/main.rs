@@ -440,7 +440,7 @@ fn nl_plan_config(args: &Args, policy: QueryInputPolicy) -> BenchResult<NlPlanCo
                 "--nl-max-tokens must be a decimal integer from 1 to 128".to_string(),
             ));
         }
-        let value = raw.parse::<usize>().map_err(|_| {
+        let value = raw.parse::<usize>().map_err(|_parse_error| {
             usage_error("--nl-max-tokens must be a decimal integer from 1 to 128".to_string())
         })?;
         if !(1..=128).contains(&value) {

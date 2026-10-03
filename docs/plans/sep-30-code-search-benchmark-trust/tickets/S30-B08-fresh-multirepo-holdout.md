@@ -2598,3 +2598,73 @@ are unchanged; the original artifacts are not relabeled as newly issued.
 `reviewed-nl-revalidation-f3d2ae29.json` records the precise revalidation scope.
 Both development and holdout release generator identities match this source.
 This does not supply full split/admission custody or product execution proof.
+
+### 2026-10-04: Current-source gold audit and actual-review recovery
+
+This observation supersedes the preceding live-process and residual-v5 counts.
+All run artifacts remain under the existing external root
+`/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`.
+
+- The unscoped declaration-gold repair is in main (`ee17986a`). An unfiltered
+  file-search query needs the independently agreeing declaration census of all
+  supported source languages, not just the query author's language. The source
+  oracle, gold producer, C4 consumer and suite schema share this domain. The
+  eight frozen owned-overlay file digests still match main at this audit.
+  `pinned-src-unscoped-declarations/` is explicitly base `78085865` plus the
+  owned overlay, not an unmodified archive of that commit.
+- All 20 previously unjudged v5 tasks were rederived with that same source:
+  **18 mechanical_unreviewed / 2 unjudged**. The latter are `bat.pre.002`
+  (ANSI-highlighted output fixtures) and `mocha.pre.007` (intentional JS syntax
+  error). No guessed empty gold or silent corpus deletion is admitted.
+  `v5-rederived-unscoped-current/progress.json` is authoritative. Mechanical
+  derivation is not independent relevance review or full split admission.
+- **VERIFIED**, dedicated OpenGrok UID/served-byte scope: all **13,347 files**
+  across 12 repositories passed in **936.615 seconds**. The before/after native
+  index digest is `38971d8ec7e83a17d3a32b2bd9fe7e8fe4087a82f8bcd7d38759b95c3ab76d6e`.
+  See `c3-comparators/opengrok-full-probe-retry-1/summary.json`. Content terms
+  remain independently unproved; this does not qualify product comparisons.
+- Both original blind-review input sets passed frozen source-byte, query/rubric
+  and candidate-set checks: **240 tasks / 5,670 task-file pairs per pass**.
+  `actual-review-both-inputs-source-validation.json` proves input custody only.
+- Actual C3 suite issuance remains **40 tasks / 871 file pairs**, zustand and
+  mocha. The old rest reviewer and then cohorts 2/3 failed on invalid model
+  evidence. Failed inputs/raw responses are retained. The sqlalchemy failed
+  call passed a fresh validated retry; zellij's retry again invented an exact
+  source quotation and was rejected. This is review-output failure, not a
+  product search failure. No manual quote or grade repair was made.
+- A new external review launcher, `run_ai_review_source_anchors.py`, asks the
+  actual assessor to select a numbered original source line. The exact quote
+  is materialized from that line; grades and rationale remain model-authored.
+  Raw output, original input, numbered full-source input and normalized
+  decisions are separately bound. Cached anchored decisions are rederived
+  from the raw line selection. Tools remain disabled and AI provenance remains
+  explicit. Focused positive checks and six rejecting mutations passed;
+  `source-anchor-focused-verification.json` records their narrow scope. The
+  actual Sonnet zellij retry (four files, 15.391 seconds) also passed independent
+  raw-response replay in `source-anchor-actual-call-replay.json`.
+- At observation, live review PIDs are 58431 (lo/cli/uvicorn), 77835
+  (sqlalchemy/bat/nushell) and 87534 (zellij/tailscale/typeorm/django). The idle
+  old watcher was stopped only after verifying that it owned no live issuer
+  child. `continue_actual_review_issuance_cohorts_retry_1.py` binds exact worker
+  commands, avoiding stale PID reuse. Original scripts/logs are preserved.
+  The original f3 mechanical capsule PID 52644 is also live; its older gold
+  semantics must not be relabeled as the new unscoped contract.
+
+**Remaining:** complete actual reviews/issuance; explicit disposition of the two
+invalid-fixture tasks; current-contract mechanical capsule/C4 reissue; canonical
+NL split and full admission validation; actual license/model/contract/SDK
+custody; fresh five-product holdout capture and equal-API, quiet-host timing.
+Current `run.py` explicitly permits qualified file pairs only with
+`code_search_file`; `natural_language_file` is available for exploratory file
+capture but is not thereby admitted for qualified comparison. Do not bypass
+that gate or treat the old grammar blockage as a still-missing NL file route.
+
+Follow-up observation at 04:05 KST: canonical f3 `capture_gold_batch` completed
+all 12 capsules in **2,391.114 seconds**; their actual identity-file hashes
+match `mechanical-capsule-result-amended-f3d2ae29.json`. The same live launcher
+has entered canonical C4 matrix validation. This is f3 source-bound capsule
+generation, not current unscoped-contract qualification. C3 has 40 issued tasks
+plus 13 completed lo task reviews and one completed sqlalchemy task review;
+the zellij first-task adjudication is live. The actual source-anchor response
+also passed the launcher's cached-response rederivation without another model
+call. Full C3 issuance and admission remain incomplete.
