@@ -1473,6 +1473,56 @@ index-universe attestation, repository-cluster decision, quiet-host timing,
 and deployment. The separate exposed twelve-repository diagnostics above
 cannot be folded into this fresh set.
 
+## Fresh C5 mixed-language correction (2026-10-03)
+
+**VERIFIED for source-only amendment and split; still unqualified for quality.**
+The first C5 release used TypeScript declaration gold for all three JS/TS
+repositories, while `chartjs` has 659 JavaScript versus 85 TypeScript files
+and `svelte` has 3,447 JavaScript versus 86 TypeScript files in `code_only`.
+For example, `chartjs.def.020` names a TypeScript declaration in
+`src/types/index.d.ts` and JavaScript method implementations in two `src`
+files. An unscoped file-search request cannot treat those implementations as
+known irrelevant files. The benchmark owner now marks a declaration task
+`unjudged` when another supported language could contain a matching name;
+the mixed-language fixture and affected gold/C4 tests passed 117/117.
+
+Before C5 product capture, a source-only amendment at
+`/private/tmp/qi-c5-fresh-20261003-v5/amendment.json` froze the rule: choose
+each JS/TS repository's declaration language by the larger admitted extension
+count, with a deterministic tie break. This changes `chartjs` and `svelte` to
+JavaScript and leaves `immer` as TypeScript. The twelve repositories, commits,
+11,695 `code_only` files, and both materialized views remain unchanged. Clean
+`7e942bb0` produced the replacement release at
+`/private/tmp/qi-c5-fresh-20261003-v5/combined-release`, digest
+`sha256:2ec04aa364c573854dfeb7545144b658219f66b44e64ba05f42198dac32a58f2`.
+Its release creation and independent replay passed. The old release and
+terminated pre-amendment gold attempt remain separate evidence; no old values
+were overwritten.
+
+The same seed/profile generated 6,628 tasks in `sampling-v5`, with the same
+lane totals and the prior eight OSA1 and 240 natural-language/workflow
+underfills. The ten repositories whose language did not change retained all
+non-wrong-repository tasks. The negative candidate pool depends on the other
+repositories' declared names; only `immer` changed five such task queries.
+The 22-repository split, release identity, source bytes and leakage policy
+replayed successfully in 807.031 seconds. Receipt:
+`/private/tmp/qi-c5-fresh-20261003-v5/split-validation.json`.
+
+An independent Rust census refusal audit found that 287 of the 298 refused
+`rust-analyzer` files are under parser `test_data`; eleven are other source or
+utility files. Both checker and tree-sitter refuse some intentionally invalid
+fixtures. Ten non-`test_data` files were refused only by tree-sitter; observed
+error sites include `dyn` lifetime ordering and macro token patterns. The
+exact grammar-version cause is unverified. These remain explicit `unsupported` source
+coverage, never negative gold. Details:
+`/private/tmp/qi-c5-fresh-20261003-v5/rust-census-refusal-classes.json`.
+
+**IN_PROGRESS:** source gold capture from the replacement release and exact
+source. **NOT_RUN:** C5 product search, human review, external index-universe
+attestation, repository-cluster decision and quiet-host performance. Source
+text overlap in the three JS/TS repositories is a conservative unjudged bound,
+not a count of independently reviewed relevant files.
+
 ## Scale admission receipt audit and literal split digest correction (2026-10-03)
 
 An independent read-only join of the exposed scale ledger, all twelve recipes,
