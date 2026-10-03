@@ -1074,7 +1074,13 @@ fn code_search_rank_study_recovers_original_boundaries_after_unicode_normalizati
     // is insufficient. The same source has fixed sensitive/folded score goldens.
     let body = format!("İ{}fooBar", " ".repeat(120_000));
     let (_dir, searcher) = fixture_with_scopes(vec![code_scope("large.rs", &body, 0)?])?;
-    for (needle, sensitive, expected_score) in [("bar", false, 40.0), ("Bar", true, 45.0)] {
+    // Exact-case preference is the existing folded-query bonus; sensitive
+    // matching already requires case and carries no additional preference.
+    for (needle, sensitive, expected_score) in [
+        ("bar", false, 40.0),
+        ("Bar", false, 45.0),
+        ("Bar", true, 40.0),
+    ] {
         let query = code_query(&[needle], sensitive);
         let rows = searcher
             .search_constrained(
