@@ -11420,10 +11420,12 @@ def run_quality_batch(batch: dict) -> int:
     run_spec["_query_protocol"] = str(protocol_path)
     runner_digest = sha_file(Path(run_spec["runner_binary"]))
     product_records = []
+    product_packs = []
     for system, routes in (("quanta", ["lexical"]), ("semble", ["semble-lexical-file"])):
         product_pack, _ = project_pack_and_suite(execution_pack, execution_view, routes)
         pack_path = stage / f"{system}-execution-pack.json"
         pack_path.write_bytes(canonical_bytes(product_pack))
+        product_packs.append({"path": pack_path.name, "sha256": sha_file(pack_path)})
         if system == "quanta":
             result = run_quanta_strategy(
                 run_spec,
@@ -11482,6 +11484,7 @@ def run_quality_batch(batch: dict) -> int:
         "searchd_binary_sha256": sha_file(Path(run_spec["searchd_binary"])),
         "execution_pack_sha256": membership["execution_pack_sha256"],
         "membership_sha256": sha_file(stage / "membership.json"),
+        "product_packs": product_packs,
         "native_records": [
             {"path": path.relative_to(stage).as_posix(), "sha256": sha_file(path)}
             for path in product_records
@@ -11520,6 +11523,7 @@ def verify_quality_batch(batch: dict) -> int:
             "searchd_binary_sha256",
             "execution_pack_sha256",
             "membership_sha256",
+            "product_packs",
             "native_records",
             "members",
         },
@@ -11571,6 +11575,16 @@ def verify_quality_batch(batch: dict) -> int:
         ),
         root / "semble" / "record.json",
     ]
+    validation_view = eb.execution_validation_view(execution_pack)
+    expected_product_packs = []
+    for system, routes in (("quanta", ["lexical"]), ("semble", ["semble-lexical-file"])):
+        projected_pack, _ = project_pack_and_suite(execution_pack, validation_view, routes)
+        path = root / f"{system}-execution-pack.json"
+        if read_json(path) != projected_pack:
+            raise RunError(f"quality batch {system} product pack changed")
+        expected_product_packs.append({"path": path.name, "sha256": sha_file(path)})
+    if manifest["product_packs"] != expected_product_packs:
+        raise RunError("quality batch product pack custody changed")
     actual_records = manifest["native_records"]
     if not isinstance(actual_records, list) or len(actual_records) != 2:
         raise RunError("quality batch requires two native product records")
@@ -11580,7 +11594,7 @@ def verify_quality_batch(batch: dict) -> int:
     repo = Path(first_spec["repo"])
     _, _, combined = _merge_validated_records(
         repo,
-        eb.execution_validation_view(execution_pack),
+        validation_view,
         execution_pack,
         members[0][4],
         expected_paths,
