@@ -2735,3 +2735,74 @@ partial-role calls remain preserved for verified resume. The old f3 C4 job
 split/admission, invalid-fixture dispositions and fair timing are separate
 remaining scopes; the overall objective is not complete or blocked by this
 single external-model quota while mechanical work can still progress.
+
+### 2026-10-04: Go syntax regression closure and reviewed NL file admission
+
+This section supersedes the earlier statement that qualified file pairs admit
+only `code_search_file`. It does not qualify any pending capture or AI review.
+
+- **VERIFIED**, Go grammar repair: builtin names may be shadowed, so syntax
+  parsing must accept user-defined `new(a, b)`, `make(a, b)` and variadic
+  `new(values...)`. Operand types and builtin arity belong to Go type checking.
+  The shared vendor grammar now uses one argument rule rather than a separate
+  single-operand `new` rule. The independent isolated audit retained eight
+  parser fixtures and three actual Go compiler acceptances under
+  `/private/tmp/qi-go-call-grammar-fix-20261004-q6q_73wj/`. Main Python grammar
+  tests passed **3/3**; the actual Rust producer owner test passed **1/1** with
+  `./scripts/cargow --lane code-search-rank-lane test -p
+  quanta-index-retrieval-bench --lib symbols::tests::go_functions_methods_and_types
+  -- --exact`. An earlier `--bin` selector selected zero tests and is not proof.
+- **VERIFIED**, reviewed natural-language file admission: commit `589719ad`
+  evolves the existing planner/driver contract. Loading, direct pair capture
+  and staged capture now share `_validate_file_pair_contract`; reviewed
+  `code_search_file` and `natural_language_file` require repository-disjoint
+  admission, a quality claim, lexical-only Quanta and Semble lexical-file.
+  Explicit typo/components/exact-content modes remain diagnostic. Qualified
+  NL file labels require the declared NL request mode, semantic intent,
+  distinct-file gold/results, and independent complete labels for both
+  answerable and no-answer tasks. Preflight and verdict enforce the same label
+  boundary; complete-file reporting and QUALITY_DELTA use the admitted policy
+  set. No semantic/hybrid qualification or relaxed model/isolation/receipt gate
+  was introduced. Non-default NL token budgets remain exploratory.
+- **VERIFIED**, focused driver checks: the first selected pytest rail passed
+  **24** cases; the broader file/profile/qualification rail passed **25** cases.
+  These selections overlap and must not be summed as unique test coverage.
+  The rails reject wrong rank units, mechanical NL labels including no-answer,
+  wrong intent, non-disjoint admission and direct/staged bypass attempts.
+  Ruff and owned diff checks passed. Full portable contract/SDK receipts are
+  still outstanding.
+- **VERIFIED**, unchanged issued labels under the current driver: zustand and
+  mocha remain **40 tasks / 871 pairs**. Suite, blind pack, two annotation
+  receipts and adjudication receipts pass current validation, and default
+  `natural_language_file` planning accepts every query. No original artifact
+  or grade was changed. The source-hash-bound result is
+  `nl-file-contract-revalidation-xw1nflrz/result.json` under the external
+  closeout root, with a 3.011-second validation scope. AI provenance remains
+  explicitly nonhuman and unqualified.
+- **VERIFIED**, independent fixture classification: bat's three remaining
+  blocking paths are generated ANSI terminal-output snapshots, verified
+  against the frozen generator's AST/source and actual escape bytes. Mocha's
+  remaining file explicitly declares an intentional syntax error and an
+  independent `node --check` refuses it. See
+  `v5-invalid-fixture-audit-gdvb0241/result.json`. The two gold tasks remain
+  `unjudged`; no empty gold, corpus deletion or ANSI-stripped scoring input
+  was fabricated. Canonical exclusion/denominator reconciliation remains
+  outstanding. This audit is not an engine-quality verdict.
+- **VERIFIED**, NL input preflight: all **240 unchanged authored queries** pass
+  the default current NL-file planner and match their NL-only split families;
+  both issued suites preserve those commitments. A clean `git archive` of
+  `09d8a843f5143cb082eda1ee653e1517b2b46cd1` starts canonical full split validation
+  for all **22 repositories** in `nl-split-current-am26ey_3/`; its source,
+  script and inputs are bound in `precommit.json`. Session **37492** is live
+  at this observation. Full split completion is not yet claimed.
+- **BLOCKED**, fresh public SDK execution: the canonical daemon build request
+  was not admitted after its 300-second wait on the shared build/test lock.
+  No compiler or SDK test ran from that request. Existing public SDK fixtures
+  already include the NL-file projection, but their source presence is not
+  execution proof. Do not bypass admission or call this an engine failure.
+
+**Still required:** remaining actual C3 reviews/issuance; canonical current-source
+C4 and NL split completion; the two fixture exclusions in the final denominator;
+full license/model/contract/SDK admission; fresh eligible five-product holdout
+capture and equal-API timing. Older live mechanical jobs retain their own frozen
+source bindings and do not prove this newer Go/driver source.
