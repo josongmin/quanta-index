@@ -101,7 +101,8 @@ def test_capture_contracts_have_one_local_and_ci_entrypoint() -> None:
     workflow = yaml.safe_load((REPO_ROOT / ".circleci/config.yml").read_text())
     commands = [
         step.get("run", {}).get("command", "")
-        for job in workflow["workflows"]["regular"]["jobs"]
+        for job_entry in workflow["workflows"]["regular"]["jobs"]
+        for job in (job_entry if isinstance(job_entry, str) else next(iter(job_entry)),)
         for step in workflow["jobs"][job]["steps"]
         if isinstance(step, dict)
     ]

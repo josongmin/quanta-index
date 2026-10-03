@@ -365,6 +365,7 @@ enum TermsToScore {
     All,
 }
 
+#[derive(Clone, Copy)]
 struct CodeSearchTypoRequest<'a> {
     query: &'a LqQuery,
     constraints: &'a QueryConstraintSetV1,
