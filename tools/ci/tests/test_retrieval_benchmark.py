@@ -15295,6 +15295,17 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
         len(ev.paired_query_family_rows(suite, file_evidence, "semble-lexical-file", "lexical"))
         == 2
     )
+    file_replay = pairrun.replay_complete_scored_file_report(
+        suite, pack, run, file_evidence, "whole_file", "a" * 64
+    )
+    assert file_replay["primary_metric"] == "file_ndcg_at_10"
+    assert file_replay["sample_count"] == 2
+    forged_file_evidence = copy.deepcopy(file_evidence)
+    forged_file_evidence["per_query"][0]["file_ndcg_at_10"] = 0.0
+    with pytest.raises(pairrun.RunError, match="differs from independent replay"):
+        pairrun.replay_complete_scored_file_report(
+            suite, pack, run, forged_file_evidence, "whole_file", "a" * 64
+        )
     reversed_baseline = copy.deepcopy(run)
     baseline_t1 = next(
         row
