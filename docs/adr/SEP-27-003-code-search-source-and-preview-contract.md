@@ -285,8 +285,11 @@ the current guards are not proof of a physical heap ceiling.
   matches to distinct source files. It accepts 2–32 canonical lowercase words
   and rejects mixed terms and `case:yes`. An exact whole-name sequence ranks
   before a subsequence; ties use the stable file order. It has a separate
-  cursor order and an examined-candidate budget. This mode requires indexed
-  symbols. The added `symbol_component_folded` Tantivy field changes the
+  cursor order and an examined-candidate budget. It checks symbol coverage
+  across the request's source scope before ranking. An incomplete file is
+  excluded only when its authenticated source bytes lack at least one query
+  component under ASCII casefold; otherwise the request returns a typed
+  coverage error. The added `symbol_component_folded` Tantivy field changes the
   sealed lexical schema, so older generations must be rebuilt before this
   binary can open them; startup must not silently serve an old schema.
 - Ordinary CodeSearch first evaluates and ranks literal source/path matches.
