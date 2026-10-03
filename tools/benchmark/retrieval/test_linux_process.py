@@ -14,9 +14,7 @@ import pytest
 from tools.benchmark.retrieval import linux_process
 
 LINUX_PIDFD_AVAILABLE = (
-    sys.platform == "linux"
-    and hasattr(os, "pidfd_open")
-    and hasattr(signal, "pidfd_send_signal")
+    sys.platform == "linux" and hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")
 )
 
 
@@ -262,9 +260,7 @@ def test_cgroup_setup_failure_removes_only_new_subgroup(tmp_path, monkeypatch):
     assert list(parent.iterdir()) == [sibling]
 
 
-def test_qualified_run_rejects_unavailable_delegation_before_workload(
-    tmp_path, monkeypatch
-):
+def test_qualified_run_rejects_unavailable_delegation_before_workload(tmp_path, monkeypatch):
     parent = tmp_path / "ordinary-directory"
     parent.mkdir()
     marker = tmp_path / "workload-ran"

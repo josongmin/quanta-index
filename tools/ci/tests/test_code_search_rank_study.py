@@ -239,15 +239,15 @@ def test_native_diagnostic_budget_refusal_preserves_baseline_and_excludes_ablati
         "explain.code_search_rank_study_v1.baseline=105;selected=true",
     ):
         invalid = copy.deepcopy(artifact)
-        details = invalid["results"][0]["collection"]["explanations"][1]["response"][
-            "explanation"
-        ]["planner_trace"]
+        details = invalid["results"][0]["collection"]["explanations"][1]["response"]["explanation"][
+            "planner_trace"
+        ]
         if replacement.endswith("REQUEST_CANCELLED"):
             details[-1]["detail"] = replacement
         elif "occurrence=" in replacement:
-            next(row for row in details if "score.occurrence=" in row["detail"])[
-                "detail"
-            ] = replacement
+            next(row for row in details if "score.occurrence=" in row["detail"])["detail"] = (
+                replacement
+            )
         else:
             details.append({"stage": "merge", "detail": replacement})
         with pytest.raises(ValueError):
