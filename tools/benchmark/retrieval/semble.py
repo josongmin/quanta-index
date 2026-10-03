@@ -1395,10 +1395,13 @@ def normalize_results(
         for hit in hits:
             # Per-hit content failures become error rows (pair-incomplete at
             # verdict) instead of silently clamped spans or fabricated bytes.
-            path = hit.get("file_path") if isinstance(hit, dict) else None
-            start = hit.get("start_line") if isinstance(hit, dict) else None
-            end = hit.get("end_line") if isinstance(hit, dict) else None
-            score = hit.get("score") if isinstance(hit, dict) else None
+            if isinstance(hit, dict):
+                path = hit.get("file_path")
+                start = hit.get("start_line")
+                end = hit.get("end_line")
+                score = hit.get("score")
+            else:
+                path = start = end = score = None
             if file_mode:
                 if not is_finite_json_number(score) or score <= 0:
                     raise AdapterError(f"Semble file collection has invalid BM25 score: {task_id}")
@@ -1413,29 +1416,22 @@ def normalize_results(
                     "message": f"Semble hit outside admitted universe: {path!r}",
                 }
                 break
-            if (
-                not isinstance(start, int)
-                or not isinstance(end, int)
-                or isinstance(start, bool)
-                or isinstance(end, bool)
-                or start < 1
-                or end < start
-            ):
+            if type(start) is not int or type(end) is not int or start < 1 or end < start:
                 hit_error = {
                     "code": "semble_hit_bad_span",
                     "message": f"Semble hit has a bad span: {path}:{start}-{end}",
                 }
                 break
-            lines = file_lines[path]
-            if end > len(lines):
-                hit_error = {
-                    "code": "semble_hit_beyond_eof",
-                    "message": f"Semble hit spans beyond EOF: {path}:{start}-{end}",
-                }
-                break
             cache_key = (path, start, end)
             verified = verified_blocks.get(cache_key)
             if verified is None:
+                lines = file_lines[path]
+                if end > len(lines):
+                    hit_error = {
+                        "code": "semble_hit_beyond_eof",
+                        "message": f"Semble hit spans beyond EOF: {path}:{start}-{end}",
+                    }
+                    break
                 block = b"".join(lines[start - 1 : end])
                 try:
                     text = block.decode("utf-8")
