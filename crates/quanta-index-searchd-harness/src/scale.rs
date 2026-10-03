@@ -865,12 +865,12 @@ fn scale_runtime(client_timeout: Option<Duration>) -> AnyResult<E2eRuntime> {
 }
 
 fn timeout_ms(client_timeout: Option<Duration>) -> AnyResult<u64> {
-    u64::try_from(
-        client_timeout
-            .unwrap_or(DEFAULT_CLIENT_IO_TIMEOUT)
-            .as_millis(),
-    )
-    .map_err(Into::into)
+    let duration = client_timeout.unwrap_or(DEFAULT_CLIENT_IO_TIMEOUT);
+    let millis = u64::try_from(duration.as_millis())?;
+    if !(1..=600_000).contains(&millis) || Duration::from_millis(millis) != duration {
+        anyhow::bail!("scale: client request timeout must be whole milliseconds in 1..=600000");
+    }
+    Ok(millis)
 }
 
 /// Keep the measurement error and daemon teardown error separately. A failed
@@ -1298,6 +1298,7 @@ fn measure_small_tier_with_timeout(
     seed: u64,
     client_timeout: Option<Duration>,
 ) -> AnyResult<TierMeasurement> {
+    let effective_timeout_ms = timeout_ms(client_timeout)?;
     let corpus = generate_corpus(ScaleTier::Small, seed);
     let corpus_digest = corpus_digest(DIMENSION, &corpus);
     let expected_results = expected_small_result_count(&corpus)?;
@@ -1382,7 +1383,7 @@ fn measure_small_tier_with_timeout(
             delta,
             result_count,
             model_revision,
-            client_request_timeout_ms: timeout_ms(client_timeout)?,
+            client_request_timeout_ms: effective_timeout_ms,
             cpu: None,
             delete_reopen: None,
         })
@@ -1438,6 +1439,7 @@ pub fn measure_tier_with_client_timeout(
     seed: u64,
     client_timeout: Option<Duration>,
 ) -> AnyResult<TierMeasurement> {
+    let effective_timeout_ms = timeout_ms(client_timeout)?;
     if tier == ScaleTier::Small {
         return measure_small_tier_with_timeout(seed, client_timeout);
     }
@@ -1554,7 +1556,7 @@ pub fn measure_tier_with_client_timeout(
             delta,
             result_count,
             model_revision,
-            client_request_timeout_ms: timeout_ms(client_timeout)?,
+            client_request_timeout_ms: effective_timeout_ms,
             cpu: None,
             delete_reopen: Some(delete_reopen),
         })
@@ -1977,6 +1979,21 @@ mod tests {
         assert_eq!(optional_cold_open_window(&before, &after)?, Some(3.0));
         after.histograms[0].count = 2;
         assert!(optional_cold_open_window(&before, &after).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn client_timeout_contract_requires_bounded_whole_milliseconds() -> AnyResult<()> {
+        assert_eq!(timeout_ms(None)?, 30_000);
+        assert_eq!(timeout_ms(Some(Duration::from_secs(300)))?, 300_000);
+        for invalid in [
+            Duration::ZERO,
+            Duration::from_micros(1),
+            Duration::from_micros(1_001),
+            Duration::from_millis(600_001),
+        ] {
+            assert!(timeout_ms(Some(invalid)).is_err());
+        }
         Ok(())
     }
 

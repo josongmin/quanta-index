@@ -31,6 +31,7 @@ PYTHON_SELECTORS = (
     "tools/ci/tests/test_retrieval_benchmark.py",
     "tools/ci/tests/test_source_oracle_suite.py",
     "tools/ci/tests/test_holdout_review.py",
+    "tools/ci/tests/test_completed_response_timing.py",
 )
 PYTHON_SELECTOR = " ".join(PYTHON_SELECTORS)
 DEFAULT_AUTHORITY = (

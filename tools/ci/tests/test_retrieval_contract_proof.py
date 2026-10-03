@@ -91,7 +91,7 @@ def test_sourcegraph_junit_matches_each_required_case(tmp_path: Path) -> None:
 
 
 def test_local_and_formal_contract_rails_include_holdout_review() -> None:
-    """The local owner rail and portable proof must exercise review admission."""
+    """Local and formal rails must exercise review and completed-clock admission."""
     completed = subprocess.run(
         ["just", "--dry-run", "retrieval-contract-local"],
         cwd=ROOT,
@@ -106,6 +106,7 @@ def test_local_and_formal_contract_rails_include_holdout_review() -> None:
         "tools/ci/tests/test_retrieval_benchmark.py",
         "tools/ci/tests/test_source_oracle_suite.py",
         "tools/ci/tests/test_holdout_review.py",
+        "tools/ci/tests/test_completed_response_timing.py",
     }
     assert {arg for arg in arguments if arg.endswith(".py")} == expected
     assert set(portable_proof.proof_inventory.PYTHON_SELECTORS) == expected
