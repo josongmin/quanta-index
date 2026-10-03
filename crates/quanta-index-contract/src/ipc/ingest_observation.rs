@@ -47,6 +47,10 @@ pub struct IngestStageReport {
 /// Non-overlapping lexical build stages. Nested seal measurements are subsets
 /// of `seal_ns`; file admission is a subset of `seal_commitment_ns`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the `_ns` suffix is part of the versioned wire contract and keeps the duration unit explicit"
+)]
 pub struct LexicalBuildStageDurationsV1 {
     pub preparation_ns: u64,
     pub writer_mutation_ns: u64,
