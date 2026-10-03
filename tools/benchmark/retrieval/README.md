@@ -133,10 +133,11 @@ golden, re-derived independently by `query_plan.py`:
   matched symbols to scored distinct files. The independent replay derives
   the effective request and digest from the raw component sequence. This is
   a separate diagnostic request mode; it is not default content/path search.
-  The product refuses an in-scope file with incomplete symbol coverage;
-  a source-oracle exclusion in a diagnostic suite does not override that
-  product requirement. Preserve such a refusal as an execution failure;
-  do not score it as a retrieval miss.
+  The product refuses an in-scope file with incomplete symbol coverage unless
+  its producer attests literal ASCII local names and the committed source
+  bytes lack at least one requested component. A source-oracle exclusion in a
+  diagnostic suite does not override this product check. Preserve a typed
+  refusal as an execution failure; do not score it as a retrieval miss.
 
 Every file-projection result records `rank_unit: distinct_file` (the unit) and
 `ordering` (how the units are ordered, derived from the policy). The evaluator

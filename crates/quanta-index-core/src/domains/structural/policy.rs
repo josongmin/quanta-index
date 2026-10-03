@@ -1,7 +1,9 @@
 //! LXE-09 structural policy.
 //!
-//! Placeholder knobs the service consults before dispatching to the producer.
-//! Kept minimal; LXE-10+ will expand these as real producer adapters land.
+//! Service knobs consulted before dispatching to the live structural producer
+//! (`DirectStructuralMaterializer` / `TruthfulSubsetAuthorityMatcher`). The
+//! binding cap is conservative; lexical `structural_block_leaf` remains a
+//! typed refusal (`LexicalPlannerError::Unimplemented`).
 
 /// Policy knobs for structural queries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,7 +20,7 @@ pub struct StructuralPolicy {
 impl StructuralPolicy {
     /// Default policy: 256 bindings per match, readiness check on.
     ///
-    /// The value is conservative; once real producers land it will be re-tuned.
+    /// Conservative binding cap for the live subset matcher.
     #[must_use]
     pub const fn defaults() -> Self {
         Self {
