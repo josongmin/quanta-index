@@ -1073,6 +1073,52 @@ def test_scale_negative_excludes_literal_path_and_near_content_token(split_relea
     assert repository.default_file_search_absent("zzzzzzzzz")
 
 
+def test_sampler_binds_all_supported_language_checkers_without_sampling_other_names(tmp_path):
+    from tools.benchmark.retrieval import holdout_sampling
+
+    release = tmp_path / "release"
+    view = release / "views" / "mixed" / "code_only"
+    view.mkdir(parents=True)
+    files = {
+        "core.py": b"def primary():\n    pass\n",
+        "util.js": b"export function secondary() {}\n",
+    }
+    for path, raw in files.items():
+        (view / path).write_bytes(raw)
+    manifest_path = release / "manifests" / "mixed" / "code_only.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "repository_commit": "a" * 40,
+                "files": [
+                    {"path": path, "file_sha256": gold_oracle._sha(raw)}
+                    for path, raw in sorted(files.items())
+                ],
+            }
+        )
+    )
+    row = {
+        "recipe": {"name": "mixed", "language": "python", "revision": "a" * 40},
+        "views": {
+            "code_only": {
+                "manifest": "manifests/mixed/code_only.json",
+                "file_universe_digest": "sha256:" + "b" * 64,
+            }
+        },
+    }
+    repository = holdout_sampling.Repository(
+        release, {"digest": "sha256:" + "c" * 64}, row
+    )
+    repository.run_census()
+    assert set(repository.all_audits) == {"python", "javascript"}
+    assert repository.names == {"primary": 1}
+    assert repository.audit == repository.all_audits["python"]
+    assert {
+        language: audit["checker"]["id"] for language, audit in repository.all_audits.items()
+    } == {"python": "cpython_ast", "javascript": "typescript_compiler"}
+
+
 def test_literal_sampling_excludes_queries_outside_product_contract():
     from tools.benchmark.retrieval import holdout_sampling
 
