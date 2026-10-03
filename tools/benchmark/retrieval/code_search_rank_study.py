@@ -527,6 +527,7 @@ def _intent_comparisons(tasks: dict, samples: list[dict], excluded: list[dict]) 
 def compose(suite: dict, rows: dict[str, dict]) -> dict:
     """Use common eligible tasks for each baseline/candidate comparison."""
     tasks = {task["task_id"]: task for task in suite["tasks"]}
+    require(set(tasks) == set(rows), "rank study task roster differs from suite")
     comparisons = {}
     k = suite["comparison_contract"]["top_k"]
     for policy in POLICIES[1:]:

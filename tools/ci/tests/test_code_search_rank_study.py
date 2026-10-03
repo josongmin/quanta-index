@@ -217,6 +217,7 @@ def test_intent_breakdown_exposes_content_regression_hidden_by_declaration_gains
     rows = {task_id: copy.deepcopy(original) for task_id in ("D1", "D2", "C1", "C2")}
     tasks = []
     for task_id in rows:
+        rows[task_id]["task_id"] = task_id
         task = copy.deepcopy(suite["tasks"][0])
         task["task_id"] = task_id
         declaration = task_id.startswith("D")
@@ -265,6 +266,12 @@ def test_fully_excluded_intent_has_no_fabricated_quality_mean():
         "status": "not_available",
         "reason": "query_family_identity_absent",
     }
+
+
+def test_comparison_refuses_a_silently_omitted_task():
+    _artifact, _record, _pack, suite = fixture()
+    with pytest.raises(ValueError, match="task roster differs"):
+        study.compose(suite, {})
 
 
 def test_complete_pool_promotes_outside_original_top_k_with_fixed_file_goldens():

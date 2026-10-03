@@ -128,6 +128,8 @@ def test_execution_regressions_are_registered_to_the_real_owner_scope():
         ("test_proof_command_timings.py", "retrieval/portable_proof.py", True),
         ("test_pair_replay_workspace.py", "pair_capture.py", False),
         ("test_cargo_preparation.py", "retrieval/portable_proof.py", True),
+        ("test_codesearchnet_qrels.py", "retrieval/codesearchnet_qrels.py", True),
+        ("test_identifier_robustness_strata.py", "retrieval/identifier_robustness_suite.py", True),
     ):
         path = f"tools/ci/tests/{filename}"
         registered = [entry for entry in authority["python_targets"] if entry["path"] == path]
@@ -152,6 +154,8 @@ def test_execution_regression_owners_have_nonempty_live_collection(tmp_path):
         "test_proof_command_timings.py",
         "test_pair_replay_workspace.py",
         "test_cargo_preparation.py",
+        "test_codesearchnet_qrels.py",
+        "test_identifier_robustness_strata.py",
     )
     inventory = tmp_path / "inventory.json"
     result = subprocess.run(
