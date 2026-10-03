@@ -16,6 +16,8 @@ use quanta_index_contract::{
     SymbolNameSourcePolicyV1, valid_code_search_typo_identifier,
 };
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
+use quanta_index_core::{CodeSearchScoreComponentsV1, LexicalCandidateExplanationV1,
+    LexicalScoreEngineV1, LexicalScoreTraceV1};
 use quanta_index_lq_regex::RegexExecutor;
 use quanta_index_lq_trigram::{
     DocId, MAX_CANDIDATE_PRE_VERIFY, Trigram, TrigramIndex, TrigramIntersectionError, trigrams_of,
@@ -325,7 +327,7 @@ struct Witness {
 }
 
 struct ScoredMatch {
-    score: u32,
+    components: CodeSearchScoreComponentsV1,
     primary: Witness,
     primary_term: usize,
 }
@@ -356,13 +358,17 @@ fn add_witness_score(
             HitSurface::Path => file.indexed_path.contains(&term.text),
         }
     };
-    let increment = witness
-        .score
-        .saturating_add(u32::from(witness.occurrences.saturating_sub(1)).saturating_mul(2))
-        .saturating_add(if case_exact { 5 } else { 0 });
+    let components = CodeSearchScoreComponentsV1 {
+        boundary_and_path: witness.score,
+        occurrence: u32::from(witness.occurrences.saturating_sub(1)).saturating_mul(2),
+        exact_case: if case_exact { 5 } else { 0 },
+        proximity: 0,
+    };
     match scored {
         Some(prior) => {
-            prior.score = prior.score.saturating_add(increment);
+            prior.components.boundary_and_path = prior.components.boundary_and_path.saturating_add(components.boundary_and_path);
+            prior.components.occurrence = prior.components.occurrence.saturating_add(components.occurrence);
+            prior.components.exact_case = prior.components.exact_case.saturating_add(components.exact_case);
             if witness.score > prior.primary.score
                 || (witness.score == prior.primary.score && term_index < prior.primary_term)
             {
@@ -372,7 +378,7 @@ fn add_witness_score(
         }
         None => {
             *scored = Some(ScoredMatch {
-                score: increment,
+                components,
                 primary: witness,
                 primary_term: term_index,
             });
@@ -400,6 +406,20 @@ fn score_terms(
         add_witness_score(&mut scored, file, term, case, index, witness);
     }
     Ok(scored)
+}
+
+fn finish_score(
+    file: &SourceFile,
+    terms: &[CodeSearchTerm],
+    case: CaseMode,
+    scored: &mut ScoredMatch,
+    budget: &RequestBudgetV1,
+) -> Result<(f32, CodeSearchScoreComponentsV1), CoreError> {
+    scored.components.proximity = proximity_bonus(file, terms, case, budget)?;
+    let score = u16::try_from(scored.components.total()).map_err(|error| {
+        CoreError::Storage(format!("lexical: code search score overflow: {error}"))
+    })?;
+    Ok((f32::from(score), scored.components))
 }
 
 fn boundary_score(text: &str, span: Range<usize>, path: bool) -> u32 {
@@ -1639,6 +1659,73 @@ fn source_proves_component_absence(
 }
 
 impl TantivySearcher {
+    /// File candidates are source identities, not stored chunk document IDs.
+    pub(crate) fn code_search_file_by_id(
+        &self,
+        candidate_id: &str,
+        budget: &RequestBudgetV1,
+    ) -> Result<Option<&SourceFile>, CoreError> {
+        let Some(authority) = &self.file_authority else { return Ok(None) };
+        for file in authority.files.values() {
+            budget.checkpoint("lexical:code-search-file-presence")?;
+            if file_candidate_id(file.source.file.source_repo_id.as_str(),
+                file.source.file.repo_relative_path.as_str())? == candidate_id {
+                return Ok(Some(file));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn explain_code_file(
+        &self,
+        query: &LqQuery,
+        constraints: &QueryConstraintSetV1,
+        candidate_id: &str,
+        budget: &RequestBudgetV1,
+    ) -> Result<LexicalCandidateExplanationV1, CoreError> {
+        budget.checkpoint("lexical:code-search-explain-start")?;
+        let parsed = CodeSearchPlan::parse(query, &self.regex_policy)?;
+        let Some(file) = self.code_search_file_by_id(candidate_id, budget)? else {
+            return Ok(LexicalCandidateExplanationV1::NotIndexed);
+        };
+        let not_matched = || LexicalCandidateExplanationV1::NotMatched {
+            reason: "the source file does not match the code-search request".into(),
+        };
+        if constraints.repo_relative_path_exact.as_ref().is_some_and(|path|
+            file.source.file.repo_relative_path.as_str() != path.as_str())
+            || (!constraints.language_any_of.is_empty()
+                && !constraints.language_any_of.contains(&file.language)) {
+            return Ok(not_matched());
+        }
+        if parsed.typo.is_none() && parsed.components.is_none()
+            && let Some(mut scored) = score_terms(file, &parsed.terms, parsed.case,
+                None, TermsToScore::All, budget)? {
+            let (score, components) = finish_score(file, &parsed.terms, parsed.case,
+                &mut scored, budget)?;
+            return Ok(LexicalCandidateExplanationV1::Matched(LexicalScoreTraceV1 {
+                engine: LexicalScoreEngineV1::CodeSearchFile,
+                engine_score: score, boost_factor: 1.0, emitted_score: score,
+                code_search_components: Some(components),
+            }));
+        }
+        // Auto-typo eligibility depends on the original scoped literal set.
+        // Reuse that executor for recovery/components, without a top-k cap or
+        // narrowing the scope to this file (which could create a false fallback).
+        let authority = self.file_authority.as_ref().ok_or_else(||
+            CoreError::Storage("lexical: file authority disappeared".into()))?;
+        let fetch = u32::try_from(authority.files.len().max(1)).map_err(|error|
+            CoreError::Storage(format!("lexical: explain file cardinality: {error}")))?;
+        let result = self.search_code_files(query, constraints,
+            &LexicalPageSpec::first(fetch), budget)?;
+        Ok(result.candidates.into_iter().find(|row| row.candidate_id == candidate_id)
+            .map_or_else(not_matched, |row|
+                LexicalCandidateExplanationV1::Matched(LexicalScoreTraceV1 {
+                    engine: LexicalScoreEngineV1::CodeSearchFile,
+                    engine_score: row.score, boost_factor: 1.0, emitted_score: row.score,
+                    code_search_components: None,
+                })))
+    }
+
     /// Match ordered components in one stored symbol name before projecting
     /// the result to its immutable source file. The posting conjunction is a
     /// bounded superset; only the stored name decides membership.
@@ -2060,7 +2147,7 @@ impl TantivySearcher {
             } else {
                 TermsToScore::All
             };
-            let Some(scored) = score_terms(
+            let Some(mut scored) = score_terms(
                 file,
                 &parsed.terms,
                 parsed.case,
@@ -2071,21 +2158,11 @@ impl TantivySearcher {
             else {
                 continue;
             };
-            let score = scored.score.saturating_add(proximity_bonus(
-                file,
-                &parsed.terms,
-                parsed.case,
-                budget,
-            )?);
-            // At most 32 terms contribute <= 146 points each, plus a 32 point
-            // proximity bonus. This fits u16 and converts to f32 exactly.
-            let score = u16::try_from(score).map_err(|error| {
-                CoreError::Storage(format!("lexical: code search score overflow: {error}"))
-            })?;
+            let score = finish_score(file, &parsed.terms, parsed.case, &mut scored, budget)?.0;
             let candidate = file_candidate(
                 self,
                 file,
-                f32::from(score),
+                score,
                 Some(&scored.primary),
                 false,
                 budget,
@@ -2667,7 +2744,7 @@ mod tests {
         )
         .expect("fresh score")
         .expect("complete match");
-        assert_eq!(reused.score, fresh.score);
+        assert_eq!(reused.components, fresh.components);
         assert_eq!(reused.primary_term, 0);
         assert_eq!(reused.primary.normalized, fresh.primary.normalized);
 

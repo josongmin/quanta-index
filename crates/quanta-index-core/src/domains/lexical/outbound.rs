@@ -273,6 +273,28 @@ pub struct LexicalScoreTraceV1 {
     pub engine_score: f32,
     pub boost_factor: f32,
     pub emitted_score: f32,
+    /// Present only for full-source file scoring; values come from the scorer.
+    pub code_search_components: Option<CodeSearchScoreComponentsV1>,
+}
+
+/// Additive signals of the selected full-source file ranker. This is internal
+/// application-port data, not an independently recomputed explanation formula.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CodeSearchScoreComponentsV1 {
+    pub boundary_and_path: u32,
+    pub occurrence: u32,
+    pub exact_case: u32,
+    pub proximity: u32,
+}
+
+impl CodeSearchScoreComponentsV1 {
+    #[must_use]
+    pub const fn total(self) -> u32 {
+        self.boundary_and_path
+            .saturating_add(self.occurrence)
+            .saturating_add(self.exact_case)
+            .saturating_add(self.proximity)
+    }
 }
 
 /// Which scoring path produced a lexical engine score.
@@ -282,6 +304,8 @@ pub enum LexicalScoreEngineV1 {
     Bm25,
     /// An unindexed scan, where every match scores 1.
     UnindexedScan,
+    /// Source-verified, distinct-file CodeSearch scoring.
+    CodeSearchFile,
 }
 
 impl LexicalScoreEngineV1 {
@@ -290,6 +314,7 @@ impl LexicalScoreEngineV1 {
         match self {
             Self::Bm25 => "bm25",
             Self::UnindexedScan => "unindexed_scan",
+            Self::CodeSearchFile => "code_search_file",
         }
     }
 }
