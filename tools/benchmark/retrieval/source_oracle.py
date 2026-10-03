@@ -512,6 +512,14 @@ class SourceOracleIndex:
         self._declarations: dict[
             tuple[str, frozenset[str]], dict[bytes, list[tuple[str, int, int, int, int]]]
         ] = {}
+        self._indexed_names: dict[
+            tuple[str, frozenset[str]],
+            list[tuple[str, list[tuple[str, int, int, int, int]]]],
+        ] = {}
+        self._name_lengths: dict[tuple[str, frozenset[str]], dict[int, list[int]]] = {}
+        self._name_match_cache: dict[
+            tuple[str, str], tuple[tuple[str, int, int, int, int], ...]
+        ] = {}
         # Explicit per-contract/query qrel eligibility for files whose census refuses.
         # Files stay in self.files and in the caller's full source universe.
         self.declaration_exclusions: dict[tuple[str, str], frozenset[str]] = {}
@@ -672,6 +680,9 @@ class SourceOracleIndex:
 
     def _name_matches(self, contract: str, query: str) -> list[tuple[str, int, int, int, int]]:
         _require_query(contract, query)
+        cached = self._name_match_cache.get((contract, query))
+        if cached is not None:
+            return list(cached)
         language, variant = NAME_CONTRACTS[contract]
         excluded = self.declaration_exclusions.get((contract, query), frozenset())
         for path in sorted(excluded):
@@ -681,13 +692,37 @@ class SourceOracleIndex:
                 )
         declarations = self._index_declarations(language, excluded)
         if variant == "exact":
-            return list(declarations.get(query.encode("ascii"), []))
-        return [
+            matches = list(declarations.get(query.encode("ascii"), []))
+            self._name_match_cache[(contract, query)] = tuple(matches)
+            return matches
+        index_key = (language, excluded)
+        if index_key not in self._indexed_names:
+            indexed_names = []
+            by_length: dict[int, list[int]] = defaultdict(list)
+            for token, rows in declarations.items():
+                name = _name_text(token)
+                by_length[len(name)].append(len(indexed_names))
+                indexed_names.append((name, rows))
+            self._indexed_names[index_key] = indexed_names
+            self._name_lengths[index_key] = by_length
+        indexed_names = self._indexed_names[index_key]
+        if variant in ("osa1", "osa1_casefold"):
+            candidate_indices = sorted(
+                index
+                for length in (len(query) - 1, len(query), len(query) + 1)
+                for index in self._name_lengths[index_key].get(length, ())
+            )
+            candidates = (indexed_names[index] for index in candidate_indices)
+        else:
+            candidates = iter(indexed_names)
+        matches = [
             match
-            for token, rows in declarations.items()
-            if _variant_matches(variant, query, _name_text(token))
+            for name, rows in candidates
+            if _variant_matches(variant, query, name)
             for match in rows
         ]
+        self._name_match_cache[(contract, query)] = tuple(matches)
+        return matches
 
     def expected_rows(self, contract: str, query: str, unit: str) -> list[dict[str, Any]]:
         if contract in DECLARATION_NAME_CONTRACTS and unit in ("symbol", "distinct_file"):

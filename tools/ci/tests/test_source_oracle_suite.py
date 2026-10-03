@@ -1029,6 +1029,26 @@ def test_typo_gold_partition_separates_intent_from_near_names_and_content():
         oracle.typo_gold_partition("go", "rendar", "unrelated")
 
 
+def test_osa_name_length_filter_preserves_exhaustive_source_order():
+    from tools.benchmark.retrieval import source_oracle as so
+
+    names = ["render", "rendor", "Render", "rendar", "rendarx", "rendarxy", "réndar", "rednar"]
+    raw = ("package p\n" + "".join(f"func {name}() {{}}\n" for name in names)).encode()
+    oracle = so.SourceOracleIndex({"names.go": (raw, ev.digest(raw))}, {"rendar"})
+
+    def observed(contract):
+        return [
+            raw[start:end].decode()
+            for _path, start, end, *_ in oracle._name_matches(contract, "rendar")
+        ]
+
+    assert observed(so.GO_NAME_OSA1) == ["render", "rendor", "rendarx", "réndar", "rednar"]
+    assert observed(so.GO_NAME_OSA1_CASEFOLD) == ["render", "rendor", "Render", "rendarx", "rednar"]
+    cached = oracle._name_matches(so.GO_NAME_OSA1, "rendar")
+    cached.clear()
+    assert observed(so.GO_NAME_OSA1) == ["render", "rendor", "rendarx", "réndar", "rednar"]
+
+
 def test_typo_partition_accepts_query_proven_parser_refusal():
     from tools.benchmark.retrieval import source_oracle as so
 
