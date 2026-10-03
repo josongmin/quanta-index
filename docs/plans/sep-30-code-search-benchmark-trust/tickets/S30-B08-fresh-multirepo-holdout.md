@@ -2335,3 +2335,21 @@ complete external indexed-universe proof, same application-facing API boundary
 performance qualification and a qualified five-product ranking. The concurrent
 C5 pair batch remains bound to its own older source and corpus; its results
 cannot be composed with this C3 source/data cutover.
+
+**Follow-up completion:** `c3-split-preparation/result.json` reports
+**VERIFIED** source/split validation in **1004.73s** across all 22 repositories,
+including full release replay, code-only source binding and cross-split
+near-duplicate checks. Split manifest SHA-256 is
+`4ef1d4d4b56c5236bc73ead14263b057ca57511b67d201def253d0e07255a00d`;
+release-map SHA-256 is
+`8f00c18e960ddec2d722bb60f0896f18c77c2d309ab7f8522734454e68186462`.
+This clears preparation's family/release/source gate, not the complete
+qualification bundle or the pending reviewed suite commitments.
+
+After formatting the checker, its actual signature test passed again
+(1 passed, 58.79s, including the new source-keyed checker build). The existing
+declaration/refusal/disagreement selectors passed 7 tests (1.10s), and final
+proof inventory/local selectors passed 7 (2.01s). Rustfmt, Ruff format,
+`git diff --check` and the then-current repository test-authority check passed.
+Earlier broad authority failures occurred during concurrent CI edits; they are
+not a remaining failure in this observed current source.
