@@ -1055,6 +1055,27 @@ def test_sourcegraph_request_target_preflight_is_independent_of_corpus_size():
         )
 
 
+@pytest.mark.parametrize(
+    "query", ["", " ", "foo\nbar", "foo\tbar", "foo\x00bar", "foo\x7fbar", "foo\ud800"]
+)
+def test_sourcegraph_invalid_keyword_data_refuses_before_http(tmp_path, monkeypatch, query):
+    def unexpected_http(*args, **kwargs):
+        raise AssertionError("invalid keyword data reached HTTP submission")
+
+    monkeypatch.setattr(live, "_http", unexpected_http)
+    target = tmp_path / "invalid.stream"
+    row = live._sourcegraph(
+        {}, {"task_id": "invalid", "query": query}, [], {}, tmp_path, {}, target
+    )
+    assert row["status"] == "unsupported"
+    assert row["capability_reason"] == "sourcegraph_invalid_keyword_data"
+    assert row["submitted_query"] == query
+    assert not target.exists()
+    assert "elapsed_ms" not in row
+    assert "http_status" not in row
+    assert json.loads(target.with_suffix(".capability.json").read_bytes()) == row
+
+
 class SearchHandler(BaseHTTPRequestHandler):
     calls = []
     commit = ""
@@ -1146,7 +1167,7 @@ class SearchHandler(BaseHTTPRequestHandler):
 @pytest.mark.parametrize(
     (
         "index_changes_during_queries",
-        "unsupported_query",
+        "reserved_query",
         "backend_changes_during_queries",
         "use_bound_release",
         "use_index_scope",
@@ -1166,7 +1187,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     tmp_path,
     lexical_release_seed,
     index_changes_during_queries,
-    unsupported_query,
+    reserved_query,
     backend_changes_during_queries,
     use_bound_release,
     use_index_scope,
@@ -1174,7 +1195,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     monkeypatch,
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
-    if unsupported_query:
+    if reserved_query:
         suite = json.loads(paths["suite"].read_bytes())
         pack = json.loads(paths["query_pack"].read_bytes())
         for value in (suite, pack):
@@ -1227,7 +1248,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             "cs": {"binary": str(binary)},
             "output_root": str(tmp_path / "live"),
         }
-        if not index_changes_during_queries and not unsupported_query:
+        if not index_changes_during_queries and not reserved_query:
             for name, container_port in (("sourcegraph", "7080/tcp"), ("opengrok", "8080/tcp")):
                 backend_root = tmp_path / f"{name}-index"
                 backend_root.mkdir()
@@ -1369,7 +1390,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         return
     assert result["indexed_universe_attested"] is False
     assert result["opengrok_indexed_universe_attested"] is False
-    if not unsupported_query:
+    if not reserved_query:
         assert set(result["backend_snapshot_sha256"]) == {"sourcegraph", "opengrok"}
     else:
         assert result["backend_snapshot_sha256"] == {}
@@ -1386,8 +1407,8 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         == "exact_indexed_inventory_and_served_bytes_bracketing_queries"
     )
     assert result["opengrok_indexed_view_files"] == file_count
-    assert len(SearchHandler.calls) == 44 + 2 * file_count - int(unsupported_query)
-    assert SearchHandler.calls.count("/.api/search/stream") == 20 - int(unsupported_query)
+    assert len(SearchHandler.calls) == 44 + 2 * file_count
+    assert SearchHandler.calls.count("/.api/search/stream") == 20
     assert SearchHandler.calls.count("/api/v1/search") == 20
     assert SearchHandler.calls.count("/api/v1/file/content") == 2 * file_count
     assert SearchHandler.calls.count("/api/v1/projects/fixture/files") == 4
@@ -1396,11 +1417,13 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         rows = (root / f"{name}_rows.jsonl").read_text().splitlines()
         assert len(rows) == 20
         assert sum(json.loads(row).get("file_hit_at_10", False) for row in rows) == 1
-    if unsupported_query:
+    if reserved_query:
         rows = [
             json.loads(row) for row in (root / "sourcegraph_rows.jsonl").read_text().splitlines()
         ]
-        assert rows[-1]["status"] == "unsupported"
+        assert rows[-1]["http_status"] == 200
+        assert rows[-1]["request_query"].startswith('content:"not" repo:')
+        assert (root / "sourcegraph" / "S19.stream").exists()
         assert rows[-1]["submitted_query"] == "not"
         scored = live.lexical.product_result(
             "sourcegraph",
@@ -1408,8 +1431,8 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             live.lexical._tasks(suite, pack),
             {row["path"] for row in suite["file_universe"]},
         )
-        assert scored["capability_coverage"]["supported"] == 19
-        assert scored["latency_ms"]["count"] == 19
+        assert scored["capability_coverage"]["supported"] == 20
+        assert scored["latency_ms"]["count"] == 20
     original_read = live._read_control_file
 
     def control_only(path):
@@ -1421,15 +1444,23 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         patch.setattr(live, "_read_control_file", control_only)
         assert live.verify(root) == result
     if not any(
-        (index_changes_during_queries, unsupported_query, backend_changes_during_queries,
-         use_bound_release, use_index_scope, scope_changes_during_queries)
+        (
+            index_changes_during_queries,
+            reserved_query,
+            backend_changes_during_queries,
+            use_bound_release,
+            use_index_scope,
+            scope_changes_during_queries,
+        )
     ):
         native_paths = {name: path for name, path in paths.items() if not name.endswith("_rows")}
         joined = live.lexical.evaluate_external_captures(
             native_paths, {name: root for name in live.PRODUCTS}
         )
         assert set(joined["external_capture_binding"]["captures"]) == {str(root)}
-        assert joined["external_capture_binding"]["captures"][str(root)]["products"] == list(live.PRODUCTS)
+        assert joined["external_capture_binding"]["captures"][str(root)]["products"] == list(
+            live.PRODUCTS
+        )
     assert (root / "sourcegraph" / "S00.stream").exists()
     assert (root / "opengrok" / "S00.json").exists()
     assert (root / "cs" / "S00.json").exists()
@@ -1450,7 +1481,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         with pytest.raises(ValueError, match="stored bytes differ"):
             live.verify(root)
         body.write_bytes(original_body)
-    if not unsupported_query:
+    if not reserved_query:
         backend_path = root / "backend" / "sourcegraph-after.json"
         original_backend = backend_path.read_bytes()
         tampered = json.loads(original_backend)
@@ -1523,7 +1554,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         {"indexed_universe_attested": True},
         {"rows_sha256": {**result["rows_sha256"], "forged-product": "0" * 64}},
     ]
-    if not unsupported_query:
+    if not reserved_query:
         mutations.append({"backend_snapshot_sha256": {}})
     for mutation in mutations:
         summary_path.write_text(json.dumps({**result, **mutation}))
@@ -1677,7 +1708,10 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
     retained_spec = root / "spec.json"
     retained_spec_raw = retained_spec.read_bytes()
     other = next(name for name in live.PRODUCTS if name != product)
-    for changed in ({**spec, other: configs[other]}, {key: value for key, value in spec.items() if key != product}):
+    for changed in (
+        {**spec, other: configs[other]},
+        {key: value for key, value in spec.items() if key != product},
+    ):
         retained_spec.write_text(json.dumps(changed))
         with pytest.raises(ValueError, match="spec keys differ"):
             live.verify(root)

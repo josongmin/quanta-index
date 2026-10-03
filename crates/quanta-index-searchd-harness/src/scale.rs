@@ -1442,6 +1442,7 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
             "wire": measurement.ingest_wire_bytes,
         },
         "status": "measured",
+        "disk_measurement": "logical_directory_size_delta; hard links may be counted more than once; not physical write I/O",
         "build": {
             "build_ms": measurement.build_ms,
             "bytes_written": measurement.build_bytes_written,

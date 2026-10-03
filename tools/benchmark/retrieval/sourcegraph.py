@@ -23,7 +23,7 @@ from typing import Any
 
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
-SAFE_QUERY = re.compile(r"[\w][\w .-]*\Z", re.UNICODE)
+BARE_KEYWORD_PATTERN = re.compile(r"[\w][\w .-]*\Z", re.UNICODE)
 BOOLEAN_OPERATORS = frozenset({"and", "or", "not"})
 EVENT_TYPES = frozenset({"matches", "progress", "filters", "alert", "done"})
 
@@ -116,6 +116,23 @@ def file_extensions(paths: list[str]) -> list[str]:
     return extensions
 
 
+def keyword_pattern(query: str) -> str:
+    """Compile plain query data into an AND of literal content terms.
+
+    Retain the existing wire expression for safe bare terms. Otherwise quote
+    each whitespace-delimited term through ``content:`` so caller data cannot
+    become a filter, boolean operator, negation, regex or phrase expression.
+    """
+    if not isinstance(query, str) or not query.isprintable() or not query.strip():
+        raise CaptureError("query must be nonempty printable single-line keyword data")
+    terms = query.split()
+    if BARE_KEYWORD_PATTERN.fullmatch(query) and not any(
+        term.casefold() in BOOLEAN_OPERATORS or term.startswith("-") for term in terms
+    ):
+        return query
+    return " ".join("content:" + json.dumps(term, ensure_ascii=False) for term in terms)
+
+
 def query_expression(
     query: str,
     repository: str,
@@ -123,15 +140,8 @@ def query_expression(
     file_paths: list[str] | None = None,
     file_extensions_filter: list[str] | None = None,
 ) -> str:
-    """Conservative keyword-term lane, with no caller-provided query syntax."""
-    if (
-        not isinstance(query, str)
-        or not SAFE_QUERY.fullmatch(query)
-        or any(
-            term.casefold() in BOOLEAN_OPERATORS or term.startswith("-") for term in query.split()
-        )
-    ):
-        raise CaptureError("query is outside the conservative keyword lane")
+    """Literal keyword AND lane, with no caller-provided query syntax."""
+    pattern = keyword_pattern(query)
     if not isinstance(repository, str) or not re.fullmatch(
         r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", repository
     ):
@@ -159,7 +169,7 @@ def query_expression(
         suffixes = "|".join(re.escape(extension[1:]) for extension in file_extensions_filter)
         expression = "^(?:.*\\.(?:" + suffixes + "))$"
         file_filter = " file:" + json.dumps(expression, ensure_ascii=False)
-    return f"{query} repo:{repo_regex} rev:{revision}{file_filter} type:file patternType:keyword count:all"
+    return f"{pattern} repo:{repo_regex} rev:{revision}{file_filter} type:file patternType:keyword count:all"
 
 
 def _events(raw: bytes) -> list[tuple[str, Any]]:

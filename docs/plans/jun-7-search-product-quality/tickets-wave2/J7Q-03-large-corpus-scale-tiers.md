@@ -59,6 +59,15 @@ That result does not verify the later scoped-tier implementation.
   separate planted query for every source repository require source-backed
   top-10 identities. Timers stop before response validation. The recorded build
   time sums ingest and seal and excludes the wire preflight cost.
+- Activation proves and promotes an already opened lexical snapshot. The first
+  query can therefore have no `lq_snapshot_lexical_cold_open_ms` sample; its
+  query cold-open field is `null`/`unavailable` in that case, while the required
+  route histogram still has one sample. Physical opening is included in
+  activation timing. The valid retention minimum is two generations; one delta
+  may have no reclaim, so `gc_ms` is absent when no directory bytes shrink.
+- `directory_bytes` differences used by `bytes_written` and disk amplification
+  are logical directory-size deltas, not measured physical write I/O; hard
+  links may be counted more than once.
 - `--out-dir` is required for non-default tiers. Each selected run records one
   measured tier; unselected tiers remain declarations in that artifact.
 - Explicit output roots must be new absolute paths outside the checkout. A

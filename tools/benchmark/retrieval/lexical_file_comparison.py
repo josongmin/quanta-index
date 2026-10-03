@@ -95,16 +95,11 @@ def _file_policy_from_lock(lock: dict) -> str:
 def sourcegraph_capability(query: str) -> dict:
     from tools.benchmark.retrieval import sourcegraph
 
-    if sourcegraph.SAFE_QUERY.fullmatch(query) is None:
-        reason = "sourcegraph_conservative_keyword_shape"
-    elif any(
-        term.casefold() in sourcegraph.BOOLEAN_OPERATORS or term.startswith("-")
-        for term in query.split()
-    ):
-        reason = "sourcegraph_reserved_keyword_token"
-    else:
-        return {"status": "supported", "reason": None}
-    return {"status": "unsupported", "reason": reason}
+    try:
+        sourcegraph.keyword_pattern(query)
+    except sourcegraph.CaptureError:
+        return {"status": "unsupported", "reason": "sourcegraph_invalid_keyword_data"}
+    return {"status": "supported", "reason": None}
 
 
 def latency_summary(values: list[object], expected_count: int, layer: str) -> dict:

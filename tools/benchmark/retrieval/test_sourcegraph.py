@@ -583,11 +583,21 @@ class SourcegraphCaptureTests(unittest.TestCase):
             self.assert_refused(*inputs(raw))
 
     def test_query_filter_injection_refused(self) -> None:
-        with self.assertRaises(CaptureError):
-            query_expression("foo repo:other", REPOSITORY, REVISION)
-        with self.assertRaises(CaptureError):
-            query_expression("foo\nbar", REPOSITORY, REVISION)
-        self.assertIn("type:file", query_expression("foo bar", REPOSITORY, REVISION))
+        self.assertEqual(
+            query_expression("foo repo:other", REPOSITORY, REVISION),
+            'content:"foo" content:"repo:other" repo:^bench/example$ rev:'
+            + REVISION
+            + " type:file patternType:keyword count:all",
+        )
+        for invalid in ("", " ", "foo\nbar", "foo\tbar", "foo\x00bar", "foo\x7fbar", "foo\ud800"):
+            with self.subTest(query=repr(invalid)), self.assertRaises(CaptureError):
+                query_expression(invalid, REPOSITORY, REVISION)
+        self.assertEqual(
+            query_expression("foo bar", REPOSITORY, REVISION),
+            "foo bar repo:^bench/example$ rev:"
+            + REVISION
+            + " type:file patternType:keyword count:all",
+        )
 
     def test_extension_query_filter_is_short_and_closed(self) -> None:
         extensions = file_extensions([row["path"] for row in FILES])
@@ -605,24 +615,45 @@ class SourcegraphCaptureTests(unittest.TestCase):
             query_expression(QUERY, REPOSITORY, REVISION, file_extensions_filter=[".py", ".py"])
 
     def test_query_or_injection_refused(self) -> None:
-        with self.assertRaises(CaptureError):
-            query_expression("foo OR bar", REPOSITORY, REVISION)
+        for operator in ("or", "OR", "Or"):
+            self.assertTrue(
+                query_expression(f"foo {operator} bar", REPOSITORY, REVISION).startswith(
+                    f'content:"foo" content:"{operator}" content:"bar" repo:'
+                )
+            )
 
     def test_query_and_injection_refused(self) -> None:
-        with self.assertRaises(CaptureError):
-            query_expression("foo and bar", REPOSITORY, REVISION)
+        self.assertTrue(
+            query_expression("foo and bar", REPOSITORY, REVISION).startswith(
+                'content:"foo" content:"and" content:"bar" repo:'
+            )
+        )
 
     def test_query_not_injection_refused(self) -> None:
-        with self.assertRaises(CaptureError):
-            query_expression("foo NOT bar", REPOSITORY, REVISION)
+        self.assertTrue(
+            query_expression("foo NOT bar", REPOSITORY, REVISION).startswith(
+                'content:"foo" content:"NOT" content:"bar" repo:'
+            )
+        )
 
     def test_query_negation_injection_refused(self) -> None:
-        with self.assertRaises(CaptureError):
-            query_expression("foo -bar", REPOSITORY, REVISION)
+        self.assertTrue(
+            query_expression("foo -bar", REPOSITORY, REVISION).startswith(
+                'content:"foo" content:"-bar" repo:'
+            )
+        )
 
     def test_query_regex_injection_refused(self) -> None:
-        with self.assertRaises(CaptureError):
-            query_expression("foo /bar/", REPOSITORY, REVISION)
+        self.assertTrue(
+            query_expression("foo /bar/", REPOSITORY, REVISION).startswith(
+                'content:"foo" content:"/bar/" repo:'
+            )
+        )
+        self.assertTrue(
+            query_expression('foo "bar" \\baz?', REPOSITORY, REVISION).startswith(
+                'content:"foo" content:"\\"bar\\"" content:"\\\\baz?" repo:'
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -144,6 +144,10 @@ fn run(cli: &CliArgs) -> AnyResult<Vec<TierMeasurement>> {
     Ok(measurements)
 }
 
+fn format_cold_open_ms(value: Option<f64>) -> String {
+    value.map_or_else(|| "unavailable".to_string(), |ms| format!("{ms:.0}"))
+}
+
 #[expect(
     clippy::print_stderr,
     clippy::print_stdout,
@@ -166,7 +170,7 @@ fn main() -> ExitCode {
     };
     for measurement in &measurements {
         println!(
-            "scale[{}]: seed={} serving_owners=1 source_repos={} files={} build_ms={:.3} activation_ms={:.3} first_query_ms={:.3} warm_p50_ms={:.3} daemon_cold_open_ms={:.0} adapter_open_ms={:.3} plan_ms={:.3} execute_ms={:.3} update_ms={:.3} reclaimed_bytes={} results={}",
+            "scale[{}]: seed={} serving_owners=1 source_repos={} files={} build_ms={:.3} activation_ms={:.3} first_query_ms={:.3} warm_p50_ms={:.3} daemon_cold_open_ms={} adapter_open_ms={:.3} plan_ms={:.3} execute_ms={:.3} update_ms={:.3} reclaimed_bytes={} results={}",
             measurement.tier.as_str(),
             measurement.seed,
             measurement.source_repo_count,
@@ -175,7 +179,7 @@ fn main() -> ExitCode {
             measurement.activation_ms,
             measurement.first_query_ms,
             measurement.warm_query.p50_ms,
-            measurement.daemon.cold_open_ms,
+            format_cold_open_ms(measurement.daemon.cold_open_ms),
             measurement.adapter.open_ms,
             measurement.adapter.plan_ms,
             measurement.adapter.execute_ms,
@@ -188,4 +192,15 @@ fn main() -> ExitCode {
         "scale rail green (selected tiers measured; canonical performance qualification separate)"
     );
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_cold_open_ms;
+
+    #[test]
+    fn absent_query_cold_open_is_not_printed_as_zero() {
+        assert_eq!(format_cold_open_ms(None), "unavailable");
+        assert_eq!(format_cold_open_ms(Some(0.0)), "0");
+    }
 }

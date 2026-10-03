@@ -13,6 +13,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 from collections import defaultdict
 from pathlib import Path
@@ -71,6 +72,32 @@ def _source_checkout(repo: Path, commit: str, expected: dict[str, bytes]) -> lis
             raise ExternalSnippetError(f"synthetic source bytes differ: {path}")
         universe.append({"path": path, "file_sha256": digest})
     return universe
+
+
+def _materialized_bytes(root: Path, declared: object, expected: str) -> bytes:
+    """Read only the materializer's deterministic regular path inside its root."""
+    if declared != expected or root.is_symlink():
+        raise ExternalSnippetError("CodeSearchNet materialized path differs from pinned URL")
+    relative = Path(expected)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ExternalSnippetError("CodeSearchNet materialized path escapes root")
+    target = root / relative
+    try:
+        base = root.resolve(strict=True)
+        if any((root / Path(*relative.parts[:index])).is_symlink() for index in range(1, len(relative.parts) + 1)):
+            raise ExternalSnippetError("CodeSearchNet materialized path is a symlink")
+        if not target.resolve(strict=True).is_relative_to(base):
+            raise ExternalSnippetError("CodeSearchNet materialized path escapes root")
+        fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ExternalSnippetError("CodeSearchNet materialized path is not a regular file")
+            raw = handle.read(codesearchnet_materialize.MAX_FILE_BYTES + 1)
+    except (OSError, ValueError) as exc:
+        raise ExternalSnippetError("CodeSearchNet materialized source path is unreadable") from exc
+    if len(raw) > codesearchnet_materialize.MAX_FILE_BYTES:
+        raise ExternalSnippetError("CodeSearchNet materialized source exceeds byte cap")
+    return raw
 
 
 def _admission(tasks: list[dict[str, str]], config: dict[str, int] | None) -> dict[str, Any]:
@@ -300,6 +327,19 @@ def freeze_codesearchnet(
     by_url = {row["github_url"]: row for row in spans}
     if len(by_url) != len(spans):
         raise ExternalSnippetError("duplicate CodeSearchNet source span")
+    languages_by_url: dict[str, set[str]] = defaultdict(set)
+    locations = {}
+    for row in seed["qrels"]:
+        url = row["github_url"]
+        locations[url] = codesearchnet_materialize._source_location(url)
+        languages_by_url[url].add(row["language"])
+    if (
+        set(by_url) != set(locations)
+        or set(sources) != {location["source_url"] for location in locations.values()}
+        or materialized.get("source_fetch_count") != len(sources)
+        or materialized.get("span_count") != len(spans)
+    ):
+        raise ExternalSnippetError("CodeSearchNet source/span inventory differs from pinned CSV")
     expected_files: dict[str, bytes] = {}
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for original, row in zip(seed["qrels"], qrels):
@@ -308,22 +348,48 @@ def freeze_codesearchnet(
         span = by_url.get(row["github_url"])
         if span is None or row.get("materialization_status") != span.get("status"):
             raise ExternalSnippetError("CodeSearchNet qrel/span ledger differs")
+        location = locations[row["github_url"]]
+        if (
+            any(span.get(key) != value for key, value in location.items())
+            or span.get("languages") != sorted(languages_by_url[row["github_url"]])
+        ):
+            raise ExternalSnippetError("CodeSearchNet source span differs from pinned URL")
         path = row.get("snippet_path")
         if span["status"] == "admitted":
+            expected_path = (
+                "snippets/"
+                + row["language"]
+                + "/"
+                + codesearchnet_materialize._digest(row["github_url"].encode())
+                + codesearchnet_materialize.EXTENSIONS[row["language"]]
+            )
             if path != span.get("relative_paths", {}).get(row["language"]):
                 raise ExternalSnippetError("CodeSearchNet snippet path differs from span ledger")
             source = sources.get(span["source_url"])
             if not isinstance(source, dict) or source.get("status") != "fetched":
                 raise ExternalSnippetError("CodeSearchNet admitted span lacks fetched source")
-            raw = (materialized_root / source["relative_path"]).read_bytes()
-            if _sha(raw) != source["sha256"] or _sha(raw) != span["source_sha256"]:
+            expected_source_path = (
+                "sources/"
+                + codesearchnet_materialize._digest(location["source_url"].encode())
+                + ".blob"
+            )
+            raw = _materialized_bytes(
+                materialized_root, source.get("relative_path"), expected_source_path
+            )
+            if (
+                _sha(raw) != source.get("sha256")
+                or _sha(raw) != span.get("source_sha256")
+                or len(raw) != source.get("bytes")
+            ):
                 raise ExternalSnippetError("CodeSearchNet fetched source digest differs")
             snippet = codesearchnet_materialize._extract_span(
                 raw, span["start_line"], span["end_line"]
             )
-            if _sha(snippet) != span["snippet_sha256"]:
+            if _sha(snippet) != span.get("snippet_sha256") or len(snippet) != span.get(
+                "snippet_bytes"
+            ):
                 raise ExternalSnippetError("CodeSearchNet source span digest differs")
-            if (materialized_root / path).read_bytes() != snippet:
+            if _materialized_bytes(materialized_root, path, expected_path) != snippet:
                 raise ExternalSnippetError("CodeSearchNet snippet bytes differ from pinned source")
             if row["language"] == language:
                 previous = expected_files.setdefault(path, snippet)
