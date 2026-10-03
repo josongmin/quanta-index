@@ -497,6 +497,110 @@ def validate_completed_forms(
     }
 
 
+def finalize_file_review_labels(
+    checkout: Path,
+    pack: dict,
+    contexts: dict,
+    pools: list[dict],
+    completed: list[dict],
+    adjudicated: dict,
+    task_contracts: dict,
+    *,
+    seed: int,
+) -> dict:
+    """Issue existing file-label IR from two reviews and a source-bound decision.
+
+    The adjudicator fills the slot-1 form with a third actual identity. Whole-file
+    gold blocks are file witnesses, never declaration/context-span judgments.
+    This does not attest human provenance, reviewer independence, pool execution
+    or qualification, and cannot rebind a captured record to the issued labels.
+    """
+    checked = validate_completed_forms(checkout, pack, contexts, pools, completed, seed=seed)
+    evaluator.require(isinstance(adjudicated, dict), "adjudication form must be an object")
+    adjudicator = evaluator.string(adjudicated.get("reviewer_id"), "adjudicator identity")
+    evaluator.require(
+        adjudicator not in checked["reviewer_ids"], "adjudicator must differ from both reviewers"
+    )
+    # Reuse the frozen form/source checks on the actual adjudication form;
+    # neither its identity nor any original review is synthesized.
+    validate_completed_forms(
+        checkout, pack, contexts, pools, [adjudicated, completed[1]], seed=seed
+    )
+    evaluator.require(
+        isinstance(task_contracts, dict)
+        and set(task_contracts) == {task["task_id"] for task in pack["tasks"]},
+        "file review evaluation contract coverage differs",
+    )
+    source = evaluator.SourceSnapshot(
+        checkout, pack["repository_commit"], max_total_bytes=source_oracle.MAX_SOURCE_BYTES
+    )
+    disputed = {row["task_id"] for row in checked["disagreements"]}
+    evidence = {
+        "query_pack_sha256": checked["query_pack_sha256"],
+        "completed_form_sha256": checked["completed_form_sha256"],
+        "adjudicated_form_sha256": _digest(adjudicated),
+    }
+    labels = {}
+    for row in adjudicated["reviews"]:
+        task_id = row["task_id"]
+        threshold = evaluator.answerability_min_grade(row, "adjudicated task")
+        judgments = [
+            {key: file[key] for key in ("path", "file_sha256", "grade")}
+            for file in sorted(row["files"], key=lambda file: file["path"])
+        ]
+        contract = evaluator.validate_evaluation_contract(
+            {"evaluation_contract": task_contracts[task_id], "file_judgments": judgments},
+            task_id,
+        )
+        evaluator.require(
+            contract["gold_unit"] == "distinct_file", "file review requires file unit"
+        )
+        sufficient = [file for file in judgments if file["grade"] >= threshold]
+        evaluator.require(
+            row["answerable"] == bool(sufficient),
+            "adjudicated answerability requires a sufficient pooled file: " + task_id,
+        )
+        gold = []
+        for file in sufficient:
+            raw, lines, digest = source.file(file["path"])
+            evaluator.require(raw and digest == file["file_sha256"], "file gold source differs")
+            gold.append(
+                {
+                    **file,
+                    "block_sha256": digest,
+                    "start_byte": 0,
+                    "end_byte": len(raw),
+                    "start_line": 1,
+                    "end_line": len(lines),
+                }
+            )
+        labels[task_id] = {
+            "answerable": row["answerable"],
+            "answerability_min_grade": threshold,
+            "gold": gold,
+            "file_judgments": judgments,
+            "judgment_policy": "complete_ranked_pool_v1",
+            "evaluation_contract": dict(contract),
+            "label_review": {
+                "assessment": "reviewed_ambiguous"
+                if task_id in disputed
+                else "reviewed_unambiguous",
+                "reviewer_id": adjudicator,
+                "evidence_sha256": _digest({**evidence, "task_id": task_id}),
+            },
+        }
+    return {
+        "status": "adjudicated_file_labels_unqualified",
+        "qualified": False,
+        "human_provenance_attested": False,
+        "pool_execution_attested": False,
+        "reviewer_ids": checked["reviewer_ids"],
+        "adjudicator_id": adjudicator,
+        **evidence,
+        "task_labels": labels,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Project reviewed NL tasks to a file diagnostic")
     parser.add_argument("--repo", required=True, type=Path)

@@ -100,6 +100,122 @@ def _fixture(tmp_path: Path):
     return checkout, pack, contexts, pools
 
 
+def _completed_file_review_fixture(tmp_path):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    contexts["toy.001"]["answerability_min_grade"] = 2
+    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+    for index, form in enumerate(forms):
+        form["reviewer_id"] = f"ai:fixture-reviewer-{index}"
+        row = form["reviews"][0]
+        row.update(answerable=True, rationale="The alpha definition answers this source fixture.")
+        for file in row["files"]:
+            file.update(
+                grade=3 if file["path"] == "answer.py" else 0, rationale="Fixed source fixture."
+            )
+    adjudicated = copy.deepcopy(forms[0])
+    adjudicated["reviewer_id"] = "ai:fixture-adjudicator"
+    contracts = {
+        "toy.001": {
+            "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+    }
+    return checkout, pack, contexts, pools, forms, adjudicated, contracts
+
+
+@pytest.mark.parametrize("answerable", [False, True])
+def test_file_review_issuer_preserves_sufficient_answer_threshold(tmp_path, answerable):
+    checkout, pack, contexts, pools, forms, adjudicated, contracts = _completed_file_review_fixture(
+        tmp_path
+    )
+    for form in [*forms, adjudicated]:
+        form["reviews"][0]["answerable"] = answerable
+        for file in form["reviews"][0]["files"]:
+            if file["path"] == "answer.py":
+                file["grade"] = 2 if answerable else 1
+    before = copy.deepcopy((pack, contexts, pools, forms, adjudicated, contracts))
+    result = holdout_review.finalize_file_review_labels(
+        checkout, pack, contexts, pools, forms, adjudicated, contracts, seed=42
+    )
+    labels = result["task_labels"]["toy.001"]
+    assert labels["answerability_min_grade"] == 2
+    assert labels["answerable"] is answerable
+    assert labels["evaluation_contract"] == contracts["toy.001"]
+    assert next(file for file in labels["file_judgments"] if file["path"] == "answer.py")[
+        "grade"
+    ] == (2 if answerable else 1)
+    if answerable:
+        raw = (checkout / "answer.py").read_bytes()
+        assert labels["gold"] == [
+            {
+                "path": "answer.py",
+                "file_sha256": evaluator.digest(raw),
+                "grade": 2,
+                "block_sha256": evaluator.digest(raw),
+                "start_byte": 0,
+                "end_byte": len(raw),
+                "start_line": 1,
+                "end_line": 2,
+            }
+        ]
+    else:
+        assert labels["gold"] == []
+    assert (
+        result["qualified"]
+        is result["human_provenance_attested"]
+        is result["pool_execution_attested"]
+        is False
+    )
+    assert (pack, contexts, pools, forms, adjudicated, contracts) == before
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_review",
+        "same_adjudicator",
+        "missing_decision",
+        "changed_threshold",
+        "changed_hash",
+        "changed_source",
+        "unjudged",
+        "unsupported_answer",
+        "wrong_unit",
+        "missing_contract",
+    ],
+)
+def test_file_review_issuer_rejects_incomplete_or_unbound_decisions(tmp_path, fault):
+    checkout, pack, contexts, pools, forms, adjudicated, contracts = _completed_file_review_fixture(
+        tmp_path
+    )
+    if fault == "missing_review":
+        forms.pop()
+    elif fault == "same_adjudicator":
+        adjudicated["reviewer_id"] = forms[0]["reviewer_id"]
+    elif fault == "missing_decision":
+        adjudicated["reviews"] = []
+    elif fault == "changed_threshold":
+        adjudicated["reviews"][0]["answerability_min_grade"] = 1
+    elif fault == "changed_hash":
+        adjudicated["reviews"][0]["files"][0]["file_sha256"] = "f" * 64
+    elif fault == "changed_source":
+        adjudicated["reviews"][0]["files"][0]["source_text"] += "unbound source"
+    elif fault == "unjudged":
+        adjudicated["reviews"][0]["files"][0]["grade"] = None
+    elif fault == "unsupported_answer":
+        for file in adjudicated["reviews"][0]["files"]:
+            file["grade"] = 1
+    elif fault == "wrong_unit":
+        contracts["toy.001"].update(gold_unit="symbol", result_unit="symbol")
+    elif fault == "missing_contract":
+        contracts = {}
+    with pytest.raises(evaluator.EvidenceError):
+        holdout_review.finalize_file_review_labels(
+            checkout, pack, contexts, pools, forms, adjudicated, contracts, seed=42
+        )
+
+
 def test_prepare_deduplicates_blinds_and_retains_unjudged(tmp_path):
     checkout, pack, contexts, pools = _fixture(tmp_path)
     forms, custody = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
