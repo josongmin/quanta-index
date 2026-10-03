@@ -31,8 +31,8 @@ use quanta_index_retrieval_bench::diagnostics::diagnostic_value;
 use quanta_index_retrieval_bench::profile::EmbedderProfile;
 use quanta_index_retrieval_bench::published_units::PublishedUnitRegistry;
 use quanta_index_retrieval_bench::query_plan::{
-    NlPlanConfig, QueryInputPolicy, QueryPlan, QueryPlanError, execution_profile_sha256,
-    execution_profile_value, plan_query,
+    MAX_NL_PLAN_TOKENS, NlPlanConfig, QueryInputPolicy, QueryPlan, QueryPlanError,
+    execution_profile_sha256, execution_profile_value, plan_query,
 };
 use quanta_index_retrieval_bench::record::{
     CaptureProvenance, QueryPack, RouteProvenance, RunnerIdentity, RunnerRecordInput,
@@ -75,7 +75,7 @@ fn print_help() -> BenchResult<()> {
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
          [--query-protocol PATH] [--query-input-policy native|literal|literal_file|keyword_file|substring_file|code_search_file|code_search_exact_content_file|code_search_components_file|code_search_typo_file|natural_language|natural_language_file|exact_symbol_name]\n\
-         [--nl-max-tokens N] (natural_language* only; 1..128, default 32; exploratory)\n\
+         [--nl-max-tokens N] (natural_language* only; 1..64, default 32; exploratory)\n\
          [--query-stage-observation enabled|disabled] (default enabled; server query stages only)\n\
          [--experimental-hybrid-fetch-floor 25|50|100] (default 100; explicit experimental startup policy)\n\
          --repo-id ID --revision-id ID --generation N\n\
@@ -327,6 +327,12 @@ fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
         QueryPlanError::TokenLimitExceeded { tokens, max_tokens } => {
             serde_json::json!({"tokens": tokens, "max_tokens": max_tokens})
         }
+        QueryPlanError::InvalidNlConfig {
+            max_tokens,
+            supported_max_tokens,
+        } => {
+            serde_json::json!({"max_tokens": max_tokens, "supported_max_tokens": supported_max_tokens})
+        }
         QueryPlanError::TokenCharacterLimitExceeded {
             chars,
             max_token_chars,
@@ -437,15 +443,15 @@ fn nl_plan_config(args: &Args, policy: QueryInputPolicy) -> BenchResult<NlPlanCo
         }
         if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(usage_error(
-                "--nl-max-tokens must be a decimal integer from 1 to 128".to_string(),
+                "--nl-max-tokens must be a decimal integer from 1 to 64".to_string(),
             ));
         }
         let value = raw.parse::<usize>().map_err(|_parse_error| {
-            usage_error("--nl-max-tokens must be a decimal integer from 1 to 128".to_string())
+            usage_error("--nl-max-tokens must be a decimal integer from 1 to 64".to_string())
         })?;
-        if !(1..=128).contains(&value) {
+        if !(1..=MAX_NL_PLAN_TOKENS).contains(&value) {
             return Err(usage_error(
-                "--nl-max-tokens must be a decimal integer from 1 to 128".to_string(),
+                "--nl-max-tokens must be a decimal integer from 1 to 64".to_string(),
             ));
         }
         config.max_tokens = value;
@@ -1976,11 +1982,11 @@ mod tests {
         assert!(plan_query_pack(&args, &pack, &refusal).is_err());
         let _previous_token_limit = args
             .flags
-            .insert("nl-max-tokens".to_string(), "128".to_string());
+            .insert("nl-max-tokens".to_string(), "64".to_string());
         let (planned_policy, config, plans) =
             plan_query_pack(&args, &pack, &refusal).expect("bounded exploratory plan");
         assert_eq!(planned_policy, policy);
-        assert_eq!(config.max_tokens, 128);
+        assert_eq!(config.max_tokens, 64);
         let plan = plans.get("T48").expect("planned task");
         assert_eq!(plan.lexical_request.matches(" OR ").count(), 47);
         assert_eq!(
@@ -1991,7 +1997,7 @@ mod tests {
             execution_profile_sha256(policy, &config),
             execution_profile_sha256(policy, &NlPlanConfig::default())
         );
-        for invalid in ["0", "129", "-1", "1.5", "true", " 48", ""] {
+        for invalid in ["0", "65", "128", "-1", "1.5", "true", " 48", ""] {
             let _previous_token_limit = args
                 .flags
                 .insert("nl-max-tokens".to_string(), invalid.to_string());

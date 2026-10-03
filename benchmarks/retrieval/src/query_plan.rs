@@ -54,6 +54,7 @@ use quanta_index_contract::{
 use quanta_index_lq_norm::ast::{
     LqCase, LqExpr, LqFilter, LqLeaf, LqNormalizedQuery, LqOptions, LqSelect, LqType,
 };
+use quanta_index_lq_norm::limits::MAX_FANOUT_PER_NODE;
 use quanta_index_lq_norm::{parser::parse as parse_lq, tokenizer::tokenize as tokenize_lq};
 use quanta_index_lq_text_normalizer::{
     CaseMode, TEXT_NORMALIZER_VERSION, TextQueryError, is_token_char, nfc, query_tokens,
@@ -62,6 +63,8 @@ use quanta_index_lq_text_normalizer::{
 /// Fixed natural-language plan profile identifier (part of the policy
 /// config identity).
 pub const NL_PLAN_PROFILE: &str = "nl-token-or-v2";
+/// A flat OR plan must fit the public parser and normalizer fanout guard.
+pub const MAX_NL_PLAN_TOKENS: usize = MAX_FANOUT_PER_NODE;
 
 /// Whether the one-time planning cost is included in measured query
 /// latency. Planning happens once per task before the cold probe, so the
@@ -249,6 +252,13 @@ pub enum QueryPlanError {
         /// Configured maximum.
         max_tokens: usize,
     },
+    /// A requested token budget cannot be represented by the public parser.
+    InvalidNlConfig {
+        /// Requested maximum distinct tokens.
+        max_tokens: usize,
+        /// Public parser and normalizer maximum fanout.
+        supported_max_tokens: usize,
+    },
     /// A single planned token exceeded the profile's character maximum.
     TokenCharacterLimitExceeded {
         /// Observed token character length.
@@ -298,6 +308,7 @@ impl QueryPlanError {
             Self::InvalidSymbolName => "RBR_QUERY_SYMBOL_NAME_INVALID",
             Self::EmptyTokenPlan => "RBR_QUERY_NO_INDEXABLE_TOKENS",
             Self::TokenLimitExceeded { .. } => "RBR_QUERY_TOKEN_LIMIT_EXCEEDED",
+            Self::InvalidNlConfig { .. } => "RBR_QUERY_NL_CONFIG_INVALID",
             Self::TokenCharacterLimitExceeded { .. } => "RBR_QUERY_TOKEN_CHAR_LIMIT_EXCEEDED",
             Self::IndexTokenTooLong { .. } => "RBR_QUERY_TOKEN_TOO_LONG",
             Self::InvalidLexicalRequest { .. } => "RBR_QUERY_LEXICAL_INVALID",
@@ -331,6 +342,13 @@ impl std::fmt::Display for QueryPlanError {
                     "natural-language plan has {tokens} tokens (max {max_tokens})"
                 )
             }
+            Self::InvalidNlConfig {
+                max_tokens,
+                supported_max_tokens,
+            } => write!(
+                f,
+                "natural-language token budget {max_tokens} exceeds public fanout {supported_max_tokens}"
+            ),
             Self::TokenCharacterLimitExceeded {
                 chars,
                 max_token_chars,
@@ -636,6 +654,16 @@ pub fn plan_query(
     raw: &str,
     config: &NlPlanConfig,
 ) -> Result<QueryPlan, QueryPlanError> {
+    if matches!(
+        policy,
+        QueryInputPolicy::NaturalLanguage | QueryInputPolicy::NaturalLanguageFile
+    ) && !(1..=MAX_NL_PLAN_TOKENS).contains(&config.max_tokens)
+    {
+        return Err(QueryPlanError::InvalidNlConfig {
+            max_tokens: config.max_tokens,
+            supported_max_tokens: MAX_NL_PLAN_TOKENS,
+        });
+    }
     let lexical_request = match policy {
         QueryInputPolicy::Native => raw.to_string(),
         QueryInputPolicy::ExactSymbolName => {
@@ -1398,6 +1426,44 @@ mod tests {
         let again = plan_query(QueryInputPolicy::NaturalLanguage, raw, &config)
             .expect("nonempty query plans");
         assert_eq!(plan, again);
+    }
+
+    #[test]
+    fn natural_language_plan_respects_public_or_fanout() {
+        assert_eq!(MAX_NL_PLAN_TOKENS, MAX_FANOUT_PER_NODE);
+        let config = NlPlanConfig {
+            max_tokens: MAX_NL_PLAN_TOKENS,
+            ..NlPlanConfig::default()
+        };
+        let raw = (0..64)
+            .map(|index| format!("w{index:02}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let plan = plan_query(QueryInputPolicy::NaturalLanguageFile, &raw, &config)
+            .expect("64-term public OR plan");
+        assert_eq!(plan.lexical_request.matches(" OR ").count(), 63);
+        assert_eq!(
+            plan_query(
+                QueryInputPolicy::NaturalLanguageFile,
+                &format!("{raw} w64"),
+                &config,
+            ),
+            Err(QueryPlanError::TokenLimitExceeded {
+                tokens: 65,
+                max_tokens: 64,
+            })
+        );
+        let invalid = NlPlanConfig {
+            max_tokens: 65,
+            ..NlPlanConfig::default()
+        };
+        assert_eq!(
+            plan_query(QueryInputPolicy::NaturalLanguageFile, "one", &invalid),
+            Err(QueryPlanError::InvalidNlConfig {
+                max_tokens: 65,
+                supported_max_tokens: 64,
+            })
+        );
     }
 
     #[test]

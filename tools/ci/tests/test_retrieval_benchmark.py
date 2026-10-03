@@ -11852,7 +11852,7 @@ def test_natural_language_file_planner_has_distinct_scored_file_contract():
 
 def test_bounded_natural_language_budget_binds_request_profile_and_replay():
     query = " ".join(f"w{i:02}" for i in range(48))
-    config = {**qp.DEFAULT_NL_CONFIG, "max_tokens": 128}
+    config = {**qp.DEFAULT_NL_CONFIG, "max_tokens": 64}
     with pytest.raises(qp.QueryPlanError, match="48 tokens.*max 32"):
         qp.plan_lexical_request("natural_language_file", query)
     request = qp.plan_lexical_request("natural_language_file", query, config)
@@ -11869,8 +11869,12 @@ def test_bounded_natural_language_budget_binds_request_profile_and_replay():
     assert qp.execution_profile_sha256("natural_language_file", config) != (
         qp.execution_profile_sha256("natural_language_file")
     )
+    boundary = " ".join(f"w{i:02}" for i in range(64))
+    assert qp.plan_lexical_request("natural_language_file", boundary, config).count(" OR ") == 63
+    with pytest.raises(qp.QueryPlanError, match="65 tokens.*max 64"):
+        qp.plan_lexical_request("natural_language_file", boundary + " w64", config)
     altered = copy.deepcopy(profile)
-    altered["config"]["max_tokens"] = 129
+    altered["config"]["max_tokens"] = 65
     with pytest.raises(ev.EvidenceError, match="config is invalid"):
         ev.validate_execution_profile(altered, "quanta", "profile")
 
@@ -11880,7 +11884,7 @@ def test_bounded_natural_language_budget_binds_request_profile_and_replay():
     [
         {"max_token_chars": 96, "max_tokens": True, "min_token_chars": 1},
         {"max_token_chars": 96, "max_tokens": 0, "min_token_chars": 1},
-        {"max_token_chars": 96, "max_tokens": 129, "min_token_chars": 1},
+        {"max_token_chars": 96, "max_tokens": 65, "min_token_chars": 1},
         {"max_token_chars": 97, "max_tokens": 48, "min_token_chars": 1},
         {"max_token_chars": 96, "max_tokens": 48},
         {"max_token_chars": 96, "max_tokens": 48, "min_token_chars": 1, "extra": 1},
@@ -11902,13 +11906,13 @@ def test_bounded_natural_language_budget_refuses_non_nl_profile_and_qualified_sc
     spec["routes"] = ["lexical"]
     spec["execution_profiles"] = {
         "quanta": qp.execution_profile(
-            "natural_language_file", {**qp.DEFAULT_NL_CONFIG, "max_tokens": 128}
+            "natural_language_file", {**qp.DEFAULT_NL_CONFIG, "max_tokens": 64}
         ),
         "semble": semble_adapter.execution_profile("lexical-file", None),
     }
     path = tmp_path / "spec.json"
     path.write_text(json.dumps(spec), encoding="utf-8")
-    assert pairrun.load_spec(path)["execution_profiles"]["quanta"]["config"]["max_tokens"] == 128
+    assert pairrun.load_spec(path)["execution_profiles"]["quanta"]["config"]["max_tokens"] == 64
     spec["scope"] = "qualified"
     path.write_text(json.dumps(spec), encoding="utf-8")
     with pytest.raises(pairrun.RunError, match="requires exploratory scope"):

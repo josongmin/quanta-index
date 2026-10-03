@@ -30,7 +30,8 @@ MAX_INPUT_BYTES = 16 * 1024
 
 #: Pinned natural-language plan profile (Rust ``NlPlanConfig::default()``).
 DEFAULT_NL_CONFIG = {"max_token_chars": 96, "max_tokens": 32, "min_token_chars": 1}
-MAX_EXPLORATORY_NL_TOKENS = 128
+# A flat token-OR must fit quanta-index-lq-norm::limits::MAX_FANOUT_PER_NODE.
+MAX_EXPLORATORY_NL_TOKENS = 64
 
 #: Current policies and the immutable v4 policy inventory (RBR-02).
 V4_SUPPORTED_POLICIES = ("native", "literal", "natural_language")
