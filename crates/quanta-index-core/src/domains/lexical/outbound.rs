@@ -229,7 +229,7 @@ pub struct LexicalSearchPageV1<Candidate = LexicalCandidate> {
     pub code_search_stats: Option<CodeSearchExecutionStatsV1>,
 }
 
-/// Execution mode of one successful CodeSearch file page.
+/// Execution mode of one successful `CodeSearch` file page.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CodeSearchExecutionModeV1 {
     #[default]
@@ -239,7 +239,7 @@ pub enum CodeSearchExecutionModeV1 {
     Components,
 }
 
-/// Work and monotonic stage durations from one successful CodeSearch page.
+/// Work and monotonic stage durations from one successful `CodeSearch` page.
 ///
 /// Verification attempts may revisit a rejected file through content/path
 /// postings. These are work counts, not the size of a distinct candidate set.
