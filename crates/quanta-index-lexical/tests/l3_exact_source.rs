@@ -342,6 +342,16 @@ fn explicit_typo_search_uses_source_tokens_and_valid_spans() -> TestResult {
     assert_eq!(stats.preview_attempted_files, 2);
     assert!(stats.typo_token_comparisons > 0);
     assert!(stats.source_surface_bytes_considered > 0);
+    assert!(stats.typo_shortlist_admission_ns > 0);
+    assert!(stats.typo_source_token_scan_ns > 0);
+    assert!(stats.typo_materialize_ns > 0);
+    assert!(
+        stats
+            .typo_shortlist_admission_ns
+            .checked_add(stats.typo_source_token_scan_ns)
+            .and_then(|sum| sum.checked_add(stats.typo_materialize_ns))
+            .is_some_and(|sum| sum <= stats.candidate_ns)
+    );
     let rows = page.candidates;
     assert_eq!(
         rows.iter()
@@ -382,6 +392,14 @@ fn explicit_typo_search_uses_source_tokens_and_valid_spans() -> TestResult {
     assert_eq!(fallback_stats.verified_matching_files, 1);
     assert_eq!(fallback_stats.materialized_files, 1);
     assert_eq!(fallback_stats.preview_attempted_files, 1);
+    assert!(fallback_stats.typo_source_token_scan_ns > 0);
+    assert!(
+        fallback_stats
+            .typo_shortlist_admission_ns
+            .checked_add(fallback_stats.typo_source_token_scan_ns)
+            .and_then(|sum| sum.checked_add(fallback_stats.typo_materialize_ns))
+            .is_some_and(|sum| sum <= fallback_stats.candidate_ns)
+    );
     assert_eq!(
         fallback.candidates[0].repo_relative_path.as_str(),
         "exact.rs"
@@ -830,6 +848,9 @@ fn code_search_work_counts_separate_gram_collision_verification_rank_and_paging(
     assert_eq!(stats.materialized_files, 2);
     assert_eq!(stats.preview_attempted_files, 1);
     assert_eq!(stats.typo_token_comparisons, 0);
+    assert_eq!(stats.typo_shortlist_admission_ns, 0);
+    assert_eq!(stats.typo_source_token_scan_ns, 0);
+    assert_eq!(stats.typo_materialize_ns, 0);
     assert!(stats.posting_probes >= 3);
     assert!(stats.source_surface_bytes_considered >= 3 * 4);
     let boundary = quanta_index_contract::LexicalCursor::at(

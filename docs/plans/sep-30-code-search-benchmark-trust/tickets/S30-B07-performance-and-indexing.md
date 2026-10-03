@@ -478,6 +478,54 @@ across the fresh indexing/state roots, excluding compilation from indexing
 and query time. These implementation/proof items are not completed by the
 current diagnostic captures.
 
+## Parallel improvement order (2026-10-04)
+
+This is an implementation plan, not a speedup receipt. The frozen five-lane
+diagnostic shows typo candidate generation consuming 94–96% of fallback
+backend time. Ordinary candidate/preview sums are 132.334/119.973 ms, while
+sort/page is 7.813 ms across 1,196 requests. Do not prioritize a bounded-top-k
+rewrite from these observations. Preview is already built after page
+selection; proposing that existing behavior as a new optimization is redundant.
+
+1. **Search owner:** add nested shortlist/admission, token scan/distance-cache
+   and candidate-materialization clocks to existing typed stats and trace.
+   Require child sums no greater than their parent and unchanged results,
+   scores, totals, cursor and response-budget behavior with observation on/off.
+   Only if token scanning dominates, compare a generation/source-bound token
+   dictionary or conservative one-edit candidate filter with exhaustive OSA1.
+   Length-based rejection alone is not a complete one-edit candidate algorithm.
+2. **Index owner:** split text-authority committed-document collection from
+   shard serialization/write/sync, and preparation validation from coverage
+   persistence/base reuse. In the observed 7.038 s build, text authority is
+   2.510 s, preparation 1.814 s and file authority 1.436 s; commit/merge is
+   not established as the dominant cost. Reuse existing touched-shard/delta
+   paths. Compare fresh, no-op, one-file update and scoped delete against a
+   fresh rebuild; retain manifest, digest, fsync and seal checks.
+3. **Integration owner:** identify SDK execution, normalization and daemon
+   total/backend intervals for the same request. Keep the completed-response
+   boundary unchanged. SDK minus backend remains unattributed until these
+   intervals are observed; connection reuse or resolve/search fusion is
+   conditional on attributable cost and activation-race/pinning tests.
+4. **Scale owner:** finish current scoped-delete/refusal tests, then run real
+   256, 4,096 and 32,768-file synthetic tiers in separate roots. Add per-phase
+   process aggregate user/system CPU, scoped delete and same-process runtime
+   reopen with independent source gold. OS process restart/cold cache requires
+   separate execution. A bound capacity refusal is a supported-limit result,
+   never a successful tier or a zero latency measurement.
+5. **Proof owner:** extend existing portable SDK proof with a fresh release
+   target, fixed feature/tool/command environment and frozen binary digests.
+   Positive source attribution requires actual fresh-build SDK execution and
+   verified matching pair binaries. Historical debug receipts or a caller's
+   source SHA cannot supply this proof.
+
+Search, indexing/proof and scale implementation can proceed concurrently with
+exclusive file ownership. Cargo/build and performance runs are serialized.
+After focused independent-oracle tests, freeze one accepted baseline/candidate
+tuple and run randomized paired repetitions on an admitted host. Report each
+root's distribution, tail, coverage and refusals; do not pool host-contended
+diagnostics into qualified timing. Prefix/infix/components/no-answer remain
+separate follow-up suites from the completed exact/four-typo matrix.
+
 ## Execution receipt (2026-09-30)
 
 `NOT_RUN`: host not quiet (load ~26 on 16 cores, concurrent builds). Producer `quanta-index@0d21914e` (clean worktree);

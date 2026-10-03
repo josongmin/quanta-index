@@ -873,9 +873,11 @@ def _expected_commands(
     ]
 
 
-def produce(rail: str, out: Path) -> Path:
+def produce(rail: str, out: Path, *, build_profile: str | None = None) -> Path:
     if rail not in {"contract", "sdk"}:
         raise ValueError(f"unknown rail: {rail}")
+    if build_profile not in (None, FRESH_BUILD_PROFILE) or (build_profile and rail != "sdk"):
+        raise ValueError("fresh release build profile is valid only for the SDK rail")
     out = out.absolute()
     if out == ROOT or ROOT in out.parents:
         raise ValueError("portable proof output must be outside the source worktree")
@@ -883,7 +885,7 @@ def produce(rail: str, out: Path) -> Path:
         raise ValueError("Windows canonical proof is blocked by Bash-only cargow/source_closure")
     with controlled_execution() as custody:
         revision = _source_revision()
-        result = _produce(rail, out, revision, custody.tools())
+        result = _produce(rail, out, revision, custody.tools(), build_profile=build_profile)
         custody.check()
         if _source_revision() != revision:
             raise ValueError("portable proof source revision changed during production")
@@ -905,7 +907,14 @@ def produce(rail: str, out: Path) -> Path:
         return published
 
 
-def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str]]) -> Path:
+def _produce(
+    rail: str,
+    out: Path,
+    revision: str,
+    tools: dict[str, dict[str, str]],
+    *,
+    build_profile: str | None = None,
+) -> Path:
     commands: list[dict[str, object]] = []
     raw_evidence: dict[str, str] = {}
     python = tools["python"]["path"]
@@ -1000,6 +1009,7 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         _write_json(out / "contract_rust_results.json", rust_summary)
     else:
         out.mkdir(parents=True, exist_ok=False)
+        build_env = _fresh_build_environment(out) if build_profile == FRESH_BUILD_PROFILE else {}
         _run(
             "source-closure",
             [
@@ -1024,14 +1034,18 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
                 "quanta-index-searchd-runtime",
                 "--bin",
                 "quanta-index-searchd",
+                *(["--all-features", "--release"] if build_profile == FRESH_BUILD_PROFILE else []),
                 "--locked",
             ),
             out,
             commands,
+            env_overrides=build_env,
         )
         # The integration test's CARGO_BIN_EXE reference makes this preparation
         # compile the runner; bind the resulting binary after collection.
         selector = ["-p", PACKAGE, "--test", "sdk_roundtrip", *FLAGS]
+        if build_profile == FRESH_BUILD_PROFILE:
+            selector.append("--release")
         build_raw = _run(
             "rust-build",
             _cargo(
@@ -1046,23 +1060,34 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
             ),
             out,
             commands,
+            env_overrides=build_env,
         )
-        target = _target_dir(wrapper, out, commands)
+        target = _target_dir(wrapper, out, commands, env_overrides=build_env)
+        if build_profile == FRESH_BUILD_PROFILE and target != out / "target":
+            raise ValueError("fresh Cargo target differs from the reserved proof target")
         metadata_raw = RawFile.capture(out / "metadata.stdout")
         collected = _run_reused_nextest(
-            wrapper, out, commands, build_raw, metadata_raw, env_overrides={}, operation="list"
+            wrapper,
+            out,
+            commands,
+            build_raw,
+            metadata_raw,
+            env_overrides=build_env,
+            operation="list",
         )
         collected.copy_to(out / "nextest-inventory.json")
 
         suffix = ".exe" if os.name == "nt" else ""
-        searchd = target / "debug" / f"quanta-index-searchd{suffix}"
-        runner = target / "debug" / f"{PACKAGE}{suffix}"
+        binary_dir = "release" if build_profile == FRESH_BUILD_PROFILE else "debug"
+        searchd = target / binary_dir / f"quanta-index-searchd{suffix}"
+        runner = target / binary_dir / f"{PACKAGE}{suffix}"
         verify_reused_build(
             build_raw,
             metadata_raw,
             collected,
             workspace_root=ROOT,
             required_non_test_binary=runner,
+            build_profile=build_profile,
         )
         binaries = {}
         for name, path in (("searchd", searchd), ("runner", runner)):
@@ -1085,6 +1110,7 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
             metadata_raw,
             env_overrides={
                 **environment,
+                **build_env,
                 "QUANTA_BENCH_SDK_EVIDENCE_DIR": str(out),
                 "QUANTA_INDEX_SEARCHD_BIN": str(searchd),
             },
@@ -1097,7 +1123,11 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         )
         _write_json(out / "sdk_results.json", summary)
     context = {
-        "schema_version": EXECUTION_CONTEXT_VERSION,
+        "schema_version": (
+            FRESH_EXECUTION_CONTEXT_VERSION
+            if build_profile == FRESH_BUILD_PROFILE
+            else EXECUTION_CONTEXT_VERSION
+        ),
         "rail": rail,
         "revision": revision,
         "os": _os_identity(),
@@ -1105,6 +1135,7 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         "binaries": binaries,
         "commands": commands,
         "raw_evidence": raw_evidence,
+        **({"build_profile": build_profile} if build_profile == FRESH_BUILD_PROFILE else {}),
     }
     path = out / "execution-context.pending.json"
     _write_json(path, context)
@@ -1234,22 +1265,28 @@ def validate(
     if not execution_root.is_absolute() or ".." in execution_root.parts:
         raise ValueError("execution root must be an absolute canonical recorded path")
     context = _json_bytes(capture(receipt_path.name))
+    base_context_keys = {
+        "schema_version",
+        "rail",
+        "revision",
+        "os",
+        "tools",
+        "binaries",
+        "commands",
+        "raw_evidence",
+    }
+    version = context.get("schema_version") if isinstance(context, dict) else None
+    build_profile = context.get("build_profile") if version == FRESH_EXECUTION_CONTEXT_VERSION else None
     if (
         not isinstance(context, dict)
+        or type(version) is not int
+        or version not in (EXECUTION_CONTEXT_VERSION, FRESH_EXECUTION_CONTEXT_VERSION)
         or set(context)
-        != {
-            "schema_version",
-            "rail",
-            "revision",
-            "os",
-            "tools",
-            "binaries",
-            "commands",
-            "raw_evidence",
-        }
-        or type(context["schema_version"]) is not int
-        or context["schema_version"] != EXECUTION_CONTEXT_VERSION
+        != (base_context_keys | ({"build_profile"} if version == FRESH_EXECUTION_CONTEXT_VERSION else set()))
         or context["rail"] not in {"contract", "sdk"}
+        or (version == FRESH_EXECUTION_CONTEXT_VERSION and (
+            context["rail"] != "sdk" or build_profile != FRESH_BUILD_PROFILE
+        ))
     ):
         raise ValueError("invalid execution context shape")
     closure = source_closure.validate_manifest_shape(_json_bytes(capture("source-closure.json")))
@@ -1301,6 +1338,7 @@ def validate(
             and isinstance(binaries["runner"].get("path"), str)
             else None
         ),
+        build_profile=build_profile,
     )
     if any(
         not isinstance(binaries[name], dict) or binaries[name].get("path") != str(path)
@@ -1334,12 +1372,21 @@ def validate(
         or not isinstance(commands[0].get("inherited_environment"), dict)
     ):
         raise ValueError("missing or malformed proof commands")
+    if build_profile == FRESH_BUILD_PROFILE:
+        inherited = commands[0]["inherited_environment"]
+        if any(inherited.get(key) for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")):
+            raise ValueError("fresh build used an unbound compiler wrapper")
+        if inherited.get("QUANTA_INDEX_SCCACHE") not in (None, "0"):
+            raise ValueError("fresh build used a compiler cache")
+        if execution_root != execution_root.resolve():
+            raise ValueError("fresh proof execution root is not canonical")
     expected_commands = _expected_commands(
         context["rail"],
         execution_root,
         tools,
         binaries,
         inherited_environment=commands[0]["inherited_environment"],
+        build_profile=build_profile,
     )
     expected_names = [name for name, _, _ in expected_commands]
     if (
@@ -1474,11 +1521,16 @@ def validate(
         if (
             not isinstance(target, str)
             or not Path(target).is_absolute()
+            or (build_profile == FRESH_BUILD_PROFILE and target != str(execution_root / "target"))
             or (
                 binaries["searchd"]["path"]
-                != str(Path(target).resolve() / "debug" / f"quanta-index-searchd{suffix}")
+                != str(Path(target).resolve() / (
+                    "release" if build_profile == FRESH_BUILD_PROFILE else "debug"
+                ) / f"quanta-index-searchd{suffix}")
                 or binaries["runner"]["path"]
-                != str(Path(target).resolve() / "debug" / f"{PACKAGE}{suffix}")
+                != str(Path(target).resolve() / (
+                    "release" if build_profile == FRESH_BUILD_PROFILE else "debug"
+                ) / f"{PACKAGE}{suffix}")
             )
         ):
             raise ValueError("SDK binary paths differ from cargo metadata")
@@ -1523,11 +1575,16 @@ def main() -> int:
     run = sub.add_parser("run")
     run.add_argument("--rail", choices=("contract", "sdk"), required=True)
     run.add_argument("--out", required=True, type=Path)
+    run.add_argument("--build-profile", choices=(FRESH_BUILD_PROFILE,))
     verify = sub.add_parser("verify")
     verify.add_argument("--receipt", required=True, type=Path)
     args = parser.parse_args()
     try:
-        path = produce(args.rail, args.out.resolve()) if args.action == "run" else args.receipt
+        path = (
+            produce(args.rail, args.out.resolve(), build_profile=args.build_profile)
+            if args.action == "run"
+            else args.receipt
+        )
         validate(path)
     except (OSError, ValueError, SystemExit) as error:
         raise SystemExit(f"portable proof refused: {error}") from error

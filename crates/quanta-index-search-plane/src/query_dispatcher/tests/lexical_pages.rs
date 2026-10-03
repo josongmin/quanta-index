@@ -549,6 +549,89 @@ fn code_search_clock_policy_keeps_tight_page_and_continuation_identical() -> Tes
 }
 
 #[test]
+fn typo_child_clocks_keep_tight_page_and_continuation_identical() -> TestResult {
+    let mut explanation = quanta_index_contract::SearchExplanation::empty();
+    explanation.planner_trace = [
+        "code_search.execution.scope=typo_fallback_exhaustive_page_v1;exploration_complete=true",
+        "code_search.execution.mode=typo_fallback",
+        "code_search.execution.typo_token_comparisons=7",
+    ]
+    .into_iter()
+    .map(|detail| PlannerTraceEntry {
+        stage: PlannerStage::Merge,
+        detail: detail.to_string(),
+    })
+    .collect();
+    let off = TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
+        explanation,
+        generation: ready_pin(),
+        results: rows(3, 400),
+        window: QueryResultWindowV2::pageable(3, CandidateCountV1::Exact(3), false, vec![])?,
+        file_owner_rows: None,
+        next_cursor: None,
+    };
+    let mut on = off.clone();
+    for (name, value) in [
+        ("candidate_ns", u64::MAX),
+        ("sort_page_ns", 1),
+        ("preview_ns", 2),
+        ("typo_shortlist_admission_ns", 3),
+        ("typo_source_token_scan_ns", 4),
+        ("typo_materialize_ns", 5),
+    ] {
+        on.explanation.planner_trace.push(PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: format!("code_search.execution.{name}={value}"),
+        });
+    }
+    if on.budget_encoded_len()? != off.budget_encoded_len()? {
+        return Err("typo child clocks changed the page budget".into());
+    }
+    let token = ContinuationTokenV2::new("same-typo-cursor")?;
+    let mut one = off.clone();
+    one.cut(
+        1,
+        crate::query_dispatcher::window::cut_pageable_window_v2(&off.window, 1)?,
+        token.clone(),
+    );
+    let limit = one.budget_encoded_len()?;
+    if off.budget_encoded_len()? <= limit {
+        return Err("the uncut typo fixture must exceed its one-row budget".into());
+    }
+    let budget = ResponsePayloadBudget::new(limit)?;
+    let fitted_on = fit_ranked_page(on, budget, |_cursor| Ok(token.clone()))?;
+    let fitted_off = fit_ranked_page(off, budget, |_cursor| Ok(token.clone()))?;
+    if ids(&fitted_on.results) != ids(&fitted_off.results)
+        || fitted_on.results.len() != 1
+        || fitted_on.window != fitted_off.window
+        || fitted_on.next_cursor != fitted_off.next_cursor
+        || fitted_on.next_cursor != Some(token)
+        || quanta_index_ipc::cbor_payload_len(&fitted_on)? > limit
+        || quanta_index_ipc::cbor_payload_len(&fitted_off)? > limit
+    {
+        return Err("typo clocks changed a tight page or continuation".into());
+    }
+    let mut wrong_mode = fitted_off;
+    for entry in &mut wrong_mode.explanation.planner_trace {
+        if entry.detail == "code_search.execution.mode=typo_fallback" {
+            entry.detail = "code_search.execution.mode=ordinary".into();
+        }
+    }
+    wrong_mode
+        .explanation
+        .planner_trace
+        .push(PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: "code_search.execution.typo_source_token_scan_ns=1".into(),
+        });
+    if wrong_mode.budget_encoded_len().is_ok() {
+        return Err("non-typo response admitted a typo child clock".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn a_shorter_prefix_can_exceed_the_budget_when_its_cursor_is_larger() -> TestResult {
     let results = rows(4, 8);
     let large_token = ContinuationTokenV2::new("L".repeat(3_000))?;

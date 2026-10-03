@@ -100,7 +100,20 @@ fn encoded_len<T: Serialize>(value: &T, what: &str) -> Result<u64, CoreError> {
 /// Both observation policies reserve the same bytes before selecting a prefix
 /// or minting its continuation cursor.
 fn code_search_clock_reserve_delta(trace: &[PlannerTraceEntry]) -> Result<u64, CoreError> {
-    const CLOCKS: [&str; 3] = ["candidate_ns", "sort_page_ns", "preview_ns"];
+    const ORDINARY_CLOCKS: [&str; 3] = ["candidate_ns", "sort_page_ns", "preview_ns"];
+    const TYPO_CLOCKS: [&str; 6] = [
+        "candidate_ns",
+        "sort_page_ns",
+        "preview_ns",
+        "typo_shortlist_admission_ns",
+        "typo_source_token_scan_ns",
+        "typo_materialize_ns",
+    ];
+    const TYPO_CLOCK_PREFIXES: [&str; 3] = [
+        "code_search.execution.typo_shortlist_admission_ns=",
+        "code_search.execution.typo_source_token_scan_ns=",
+        "code_search.execution.typo_materialize_ns=",
+    ];
     let has_code_search = trace
         .iter()
         .any(|entry| entry.detail.starts_with("code_search.execution.scope="));
@@ -115,10 +128,23 @@ fn code_search_clock_reserve_delta(trace: &[PlannerTraceEntry]) -> Result<u64, C
         }
         return Ok(0);
     }
-    let mut canonical = Vec::with_capacity(trace.len().saturating_add(CLOCKS.len()));
-    let mut seen = [false; CLOCKS.len()];
+    let modes: Vec<_> = trace
+        .iter()
+        .filter_map(|entry| entry.detail.strip_prefix("code_search.execution.mode="))
+        .collect();
+    let clocks: &[&str] = match modes.as_slice() {
+        ["ordinary" | "components"] => &ORDINARY_CLOCKS,
+        ["typo_explicit" | "typo_fallback"] => &TYPO_CLOCKS,
+        _ => {
+            return Err(CoreError::InvalidContract(
+                "code-search clock reserve requires one known execution mode".into(),
+            ));
+        }
+    };
+    let mut canonical = Vec::with_capacity(trace.len().saturating_add(clocks.len()));
+    let mut seen = vec![false; clocks.len()];
     for entry in trace {
-        let clock = CLOCKS.iter().enumerate().find_map(|(index, name)| {
+        let clock = clocks.iter().enumerate().find_map(|(index, name)| {
             entry
                 .detail
                 .strip_prefix("code_search.execution.")
@@ -140,10 +166,19 @@ fn code_search_clock_reserve_delta(trace: &[PlannerTraceEntry]) -> Result<u64, C
                 *clock_seen = true;
             }
         } else {
+            if clocks.len() == ORDINARY_CLOCKS.len()
+                && TYPO_CLOCK_PREFIXES
+                    .iter()
+                    .any(|prefix| entry.detail.starts_with(*prefix))
+            {
+                return Err(CoreError::InvalidContract(
+                    "non-typo code-search trace carries typo clock".into(),
+                ));
+            }
             canonical.push(entry.clone());
         }
     }
-    for name in CLOCKS {
+    for name in clocks {
         canonical.push(PlannerTraceEntry {
             stage: PlannerStage::Merge,
             detail: format!("code_search.execution.{name}={}", u64::MAX),

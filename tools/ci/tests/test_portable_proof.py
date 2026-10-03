@@ -715,6 +715,13 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
     compiled_test.parent.mkdir(parents=True)
     compiled_test.write_bytes(b"compiled-test-marker")
     compiled_test.chmod(0o755)
+    built = {
+        "target": target,
+        "runner": runner,
+        "searchd": searchd,
+        "compiled_test": compiled_test,
+        "profile_dir": "debug",
+    }
     tools = {
         name: {
             "path": f"/fake/{name}",
@@ -794,7 +801,7 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
         Path(option("--out")).write_text(json.dumps(canonical), encoding="utf-8")
 
     def write_sdk_record() -> None:
-        digest = hashlib.sha256(runner.read_bytes()).hexdigest()
+        digest = hashlib.sha256(built["runner"].read_bytes()).hexdigest()
         (out / "actual-runner-record.json").write_text(
             json.dumps(
                 {
@@ -804,7 +811,7 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
                         "run": {
                             "runner_binary": {"name": "runner", "digest": digest},
                             "searchd_binary": {
-                                "binary_digest": hashlib.sha256(searchd.read_bytes()).hexdigest()
+                                "binary_digest": hashlib.sha256(built["searchd"].read_bytes()).hexdigest()
                             },
                             "receipt_digest": "c" * 64,
                             "activation_digest": "d" * 64,
@@ -820,6 +827,20 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
         assert kwargs["cwd"] == portable_proof.ROOT
         assert kwargs["timeout"] == 7200
         calls.append((argv, kwargs["env"]))
+        fresh_target = kwargs["env"].get("CARGO_TARGET_DIR")
+        if fresh_target is not None:
+            profile_dir = "release" if "--release" in argv or built["profile_dir"] == "release" else "debug"
+            active_target = Path(fresh_target)
+            built.update(
+                target=active_target,
+                runner=active_target / profile_dir / portable_proof.PACKAGE,
+                searchd=active_target / profile_dir / "quanta-index-searchd",
+                compiled_test=active_target / profile_dir / "deps" / "compiled-test-fixture",
+                profile_dir=profile_dir,
+            )
+            built["compiled_test"].parent.mkdir(parents=True, exist_ok=True)
+            built["compiled_test"].write_bytes(b"compiled-test-marker")
+            built["compiled_test"].chmod(0o755)
         if argv[1] == str(portable_proof.SOURCE_CLOSURE_SCRIPT):
             if argv[2] == "capture":
                 write_closure()
@@ -852,11 +873,11 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
             else:
                 binary = "sdk_roundtrip" if "sdk_roundtrip" in argv else "chunking_contract"
             test = portable_proof.sdk_proof.PROOF_TEST if binary == "sdk_roundtrip" else "one"
-            raw = _rust_inventory(binary, test, compiled_test)
+            raw = _rust_inventory(binary, test, built["compiled_test"])
             if "--list-type" in argv:
                 if binary == "sdk_roundtrip":
-                    runner.parent.mkdir(parents=True, exist_ok=True)
-                    runner.write_bytes(b"runner")
+                    built["runner"].parent.mkdir(parents=True, exist_ok=True)
+                    built["runner"].write_bytes(b"runner")
                 full = json.loads(raw)
                 fields = {
                     "binary-id",
@@ -866,14 +887,14 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
                     "binary-path",
                     "build-platform",
                 }
-                build_meta = {"target-directory": str(target)}
+                build_meta = {"target-directory": str(built["target"])}
                 if binary == "sdk_roundtrip":
                     build_meta["non-test-binaries"] = {
                         "fixture-retrieval-package": [
                             {
                                 "name": portable_proof.PACKAGE,
                                 "kind": "bin-exe",
-                                "path": f"debug/{portable_proof.PACKAGE}",
+                                "path": f"{built['profile_dir']}/{portable_proof.PACKAGE}",
                             }
                         ]
                     }
@@ -908,13 +929,13 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
             raw = b""
         elif argv[3] == "build":
             assert "quanta-index-searchd-runtime" in argv
-            searchd.parent.mkdir(parents=True, exist_ok=True)
-            searchd.write_bytes(b"searchd")
+            built["searchd"].parent.mkdir(parents=True, exist_ok=True)
+            built["searchd"].write_bytes(b"searchd")
             raw = b""
         elif argv[3] == "metadata":
             raw = json.dumps(
                 {
-                    "target_directory": str(target),
+                    "target_directory": str(built["target"]),
                     "workspace_root": str(portable_proof.ROOT),
                     "packages": [
                         {
@@ -937,6 +958,26 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
 
     monkeypatch.setattr(portable_proof, "execute", run)
     return out, runner, calls
+
+
+def test_fresh_release_sdk_proof_binds_source_and_binaries(fake_execution) -> None:
+    out, _legacy_runner, calls = fake_execution
+    receipt = portable_proof.produce("sdk", out, build_profile="release-fresh")
+    context = portable_proof.validate(receipt)
+    assert context["schema_version"] == 3
+    assert context["build_profile"] == "release-fresh"
+    assert context["revision"] == "b" * 40
+    assert context["binaries"]["runner"]["path"] == str(
+        out / "target" / "release" / portable_proof.PACKAGE
+    )
+    assert context["binaries"]["searchd"]["path"] == str(
+        out / "target" / "release" / "quanta-index-searchd"
+    )
+    build_commands = [row for row in context["commands"] if row["name"] in {"build-searchd", "rust-build"}]
+    assert len(build_commands) == 2
+    assert all("--release" in row["argv"] for row in build_commands)
+    assert all(row["environment"]["CARGO_TARGET_DIR"] == str(out / "target") for row in build_commands)
+    assert any("--all-features" in argv for argv, _ in calls if "quanta-index-searchd-runtime" in argv)
 
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])

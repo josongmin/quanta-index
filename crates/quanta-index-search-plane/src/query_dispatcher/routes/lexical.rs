@@ -684,21 +684,48 @@ mod typed_cursor_tests {
             literal_source_verification_attempts: 0,
             literal_verified_files: 0,
             typo_token_comparisons: 1,
+            candidate_ns: 100,
+            typo_shortlist_admission_ns: 10,
+            typo_source_token_scan_ns: 20,
+            typo_materialize_ns: 30,
             ..stats
         };
         let typo_trace =
             code_search_execution_trace(typo, 1, Some(1), true).expect("typed typo counts");
+        assert_eq!(typo_trace.len(), 20);
         assert!(
             typo_trace
                 .iter()
                 .any(|entry| entry.detail == "code_search.execution.mode=typo_explicit")
         );
+        for (name, value) in [
+            ("typo_shortlist_admission_ns", 10),
+            ("typo_source_token_scan_ns", 20),
+            ("typo_materialize_ns", 30),
+        ] {
+            assert!(
+                typo_trace.iter().any(|entry| {
+                    entry.detail == format!("code_search.execution.{name}={value}")
+                })
+            );
+        }
+        let unobserved_typo = code_search_execution_trace(typo, 1, Some(1), false)
+            .expect("typed typo counts without clocks");
+        assert_eq!(unobserved_typo.len(), 14);
+        assert!(!unobserved_typo.iter().any(|entry| {
+            entry.detail.starts_with("code_search.execution.typo_") && entry.detail.contains("_ns=")
+        }));
         assert!(typo_trace.iter().any(|entry| entry.detail == "code_search.execution.scope=typo_explicit_exhaustive_page_v1;exploration_complete=true"));
         let invalid_mode = CodeSearchExecutionStatsV1 {
             mode: CodeSearchExecutionModeV1::Components,
             ..typo
         };
         assert!(code_search_execution_trace(invalid_mode, 1, Some(1), true).is_err());
+        let overlapping_clocks = CodeSearchExecutionStatsV1 {
+            typo_source_token_scan_ns: 80,
+            ..typo
+        };
+        assert!(code_search_execution_trace(overlapping_clocks, 1, Some(1), true).is_err());
     }
 
     #[test]
