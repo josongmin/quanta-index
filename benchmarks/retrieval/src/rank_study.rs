@@ -24,6 +24,15 @@ pub(super) struct Limits {
     pub timeout: Duration,
 }
 
+impl Limits {
+    pub(super) fn valid(self) -> bool {
+        (1..=100_000).contains(&self.max_files)
+            && (1..=10_000).contains(&self.max_pages)
+            && !self.timeout.is_zero()
+            && self.timeout <= Duration::from_secs(300)
+    }
+}
+
 #[derive(Default)]
 struct PoolProgress {
     total: Option<u64>,
@@ -363,6 +372,32 @@ mod tests {
             QueryInputPolicy::KeywordFile,
         ] {
             assert!(!allowed(policy));
+        }
+    }
+
+    #[test]
+    fn diagnostic_limits_refuse_zero_and_unbounded_work() {
+        let limits = Limits {
+            max_files: 100,
+            max_pages: 10,
+            timeout: Duration::from_secs(30),
+        };
+        assert!(limits.valid());
+        for invalid in [
+            Limits {
+                max_files: 0,
+                ..limits
+            },
+            Limits {
+                max_pages: 10_001,
+                ..limits
+            },
+            Limits {
+                timeout: Duration::from_secs(301),
+                ..limits
+            },
+        ] {
+            assert!(!invalid.valid());
         }
     }
 }

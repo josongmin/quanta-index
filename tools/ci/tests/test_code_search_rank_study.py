@@ -328,6 +328,8 @@ def test_unknown_declaration_excludes_only_declaration_policies_with_paired_deno
 def test_rank_study_limits_require_ordinary_file_policy_and_lexical_only():
     limits = {"max_files": 100, "max_pages": 10, "timeout_ms": 1000}
     assert driver.rank_study_configuration(limits, "code_search_file", ["lexical"]) == limits
+    with pytest.raises(driver.RunError, match="whole-process resource"):
+        driver.rank_study_configuration(limits, "code_search_file", ["lexical"], speed_claim=True)
     for bad in [
         {**limits, "max_files": True},
         {**limits, "max_pages": 0},

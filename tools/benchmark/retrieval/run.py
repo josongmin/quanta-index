@@ -3058,7 +3058,10 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
     hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100"))
     if "code_search_rank_study" in spec:
         rank_study_configuration(
-            spec["code_search_rank_study"], quanta_profile["policy"], spec.get("routes", [])
+            spec["code_search_rank_study"],
+            quanta_profile["policy"],
+            spec.get("routes", []),
+            speed_claim=spec.get("claims", {}).get("speed") is True,
         )
     if not _is_hex(spec["searchd_expected_sha256"], 64):
         raise RunError("spec.searchd_expected_sha256 must be a lowercase sha256")
@@ -4006,7 +4009,9 @@ def _validate_hybrid_fetch_policy(payload: object) -> dict:
     return config
 
 
-def rank_study_configuration(payload: object, policy: str, routes: list[str]) -> dict:
+def rank_study_configuration(
+    payload: object, policy: str, routes: list[str], *, speed_claim: bool = False
+) -> dict:
     """Explicit diagnostic limits; no inherited env or ranking policy override."""
     config = _exact_keys(
         payload, {"max_files", "max_pages", "timeout_ms"}, "code_search_rank_study"
@@ -4015,6 +4020,10 @@ def rank_study_configuration(payload: object, policy: str, routes: list[str]) ->
         "lexical"
     ]:
         raise RunError("rank study requires lexical-only ordinary CodeSearch file policy")
+    if speed_claim:
+        raise RunError(
+            "rank-study paging/explanations contaminate whole-process resource measurements; use a separate performance capture"
+        )
     for key, maximum in (("max_files", 100_000), ("max_pages", 10_000), ("timeout_ms", 300_000)):
         if type(config[key]) is not int or not 1 <= config[key] <= maximum:
             raise RunError(f"rank study {key} must be an integer in 1..{maximum}")
@@ -4665,7 +4674,10 @@ def run_quanta_strategy(
         command += ["--query-protocol", spec["_query_protocol"]]
     if "code_search_rank_study" in spec:
         study_limits = rank_study_configuration(
-            spec["code_search_rank_study"], spec["execution_profiles"]["quanta"]["policy"], routes
+            spec["code_search_rank_study"],
+            spec["execution_profiles"]["quanta"]["policy"],
+            routes,
+            speed_claim=spec.get("claims", {}).get("speed") is True,
         )
         command += ["--rank-study-out", str(rank_study_path)]
         for key, flag in (

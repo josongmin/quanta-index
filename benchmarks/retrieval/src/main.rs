@@ -831,12 +831,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         max_pages: optional_usize(args, "rank-study-max-pages", 1_000)?,
         timeout: Duration::from_millis(optional_u64(args, "rank-study-timeout-ms", 30_000)?),
     };
-    if rank_study_limits.max_files == 0
-        || rank_study_limits.max_pages == 0
-        || rank_study_limits.timeout.is_zero()
-    {
+    if !rank_study_limits.valid() {
         return Err(BenchError::Config(
-            "rank-study limits must be positive".into(),
+            "rank-study limits require 1..100000 files, 1..10000 pages and 1..300000 ms".into(),
         ));
     }
     let refusal_out = PathBuf::from(required(args, "refusal-out")?);
