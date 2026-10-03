@@ -387,9 +387,10 @@ an authorization to replace the candidate algorithm.
 Five diagnostic query lanes contain 1,196/1,192/1,178/1,192/1,192 tasks, or
 5,950 total, over the unchanged Gin 99-file corpus. OpenGrok captured and
 replayed every lane under clean external driver
-`45dd36a492b882000f7063aa52fd583427808c05`; Sourcegraph and the native pair
-also completed every lane. cs collection is running and the five-product join
-is not yet executed. Native index
+`45dd36a492b882000f7063aa52fd583427808c05`; Sourcegraph, cs and the native pair
+also completed every lane. The exact lane's five-product join passed; the
+remaining joins are running. Capture/replay completion does not establish
+comparison qualification. Native index
 evidence proves Sourcegraph's 99 stored bodies and OpenGrok's served 99 bodies;
 OpenGrok backend index attestation remains unavailable. Its zero typo hits are
 successful empty HTTP results, not execution errors. Exact versus typo scores
@@ -429,6 +430,28 @@ Evidence roots: `/private/tmp/qi-code-search-cost-20261004-guAWNESy/`,
 `/private/tmp/qi-five-product-scoped-20261004-5ke6oh_h/` and the preserved
 medium failure `/private/tmp/qi-scale-medium-20261004-06aac8cc-r1/refusal.json`.
 No optimization speedup or qualified performance ranking is established.
+
+### Remaining implementation and proof ownership
+
+| Owner | Next concrete change | Independent acceptance |
+| --- | --- | --- |
+| Search | Nested clocks for typo shortlist, token scan/distance cache and candidate construction in `searcher/code_search.rs`; SDK execute/normalization and daemon-total boundaries before interpreting residuals | Same request identity and result/status/cursor/budget equivalence; independent OSA1 and full-sort goldens. A lossless short-name index/filter is conditional on the finer attribution, with source/generation and resident-memory admission retained |
+| Indexing | Split the dominant observed authority/preparation stages in existing `text_docs.rs`, `text_authority/writer.rs`, `file_authority.rs`, `adapter_ingest.rs`; preserve touched-shard and base reuse | Fixed fresh, one-file delta and no-op authority/query equality; source/base corruption refuses; no fsync or sealing omission |
+| Scale/load | Finish current CLI/refusal tests, execute corrected medium then large/XL, use exact `SourceFileKey` for scoped delete, distinguish same-process reopen from process restart, collect clearly labeled aggregate CPU deltas | Two source repositories sharing one path: deleting repo0 leaves repo1 searchable, including reopen. Missing timings remain missing; actual typed capacity refusal retains its stage and binding |
+| Integration/proof | Finish the existing scorer's five joined reports and adopt a versioned fresh-output mode in the existing `portable_proof.py` SDK rail for positive build-source binding | Source closure before/after, pinned compiler/tool/flags and runner/daemon digests agree with the pair; dirty/preexisting/symlink output, unbound wrappers/cache, source drift, swapped binaries and debug/release mismatch refuse |
+
+`portable_proof.py` already owns source closure, tool/command custody, SDK
+roundtrip and frozen binary digests. Extend that authority; do not add another
+build receipt harness. An empty target alone is insufficient when an unbound
+compiler wrapper or external compiler cache may supply artifacts. Preserve
+historical replay parsing, derive a positive build-source revision only from
+the new independently verified context, and keep the source-specific
+qualification gate closed until its actual positive E2E exists. Match the
+requested benchmark profile/features; do not silently substitute a debug
+proof for release performance. Build each accepted artifact once and reuse it
+across the fresh indexing/state roots, excluding compilation from indexing
+and query time. These implementation/proof items are not completed by the
+current diagnostic captures.
 
 ## Execution receipt (2026-09-30)
 
