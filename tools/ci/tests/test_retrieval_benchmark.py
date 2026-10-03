@@ -9882,6 +9882,15 @@ def test_successful_promotion_replays_identically_in_new_process(tmp_path):
     assert after["state_evidence"]["PAIR_VALID"] == before["state_evidence"]["PAIR_VALID"]
 
 
+def test_pair_refuses_unsupported_python_before_capture(monkeypatch):
+    stderr = io.StringIO()
+    monkeypatch.setattr(pairrun, "sys", SimpleNamespace(version_info=(3, 9), stderr=stderr))
+    assert pairrun.main(["pair", "--spec", "/missing/spec.json"]) == 2
+    assert "Python 3.10 or newer" in stderr.getvalue()
+    with pytest.raises(pairrun.RunError, match="Python 3.10 or newer"):
+        pairrun.run_pair({})
+
+
 def test_run_pair_promotes_complete_stage_and_public_verdict_replays(tmp_path, monkeypatch, capsys):
     cache, revision = _pinned_semble_cache(tmp_path)
     st = _pair_stage(tmp_path / "fixture")

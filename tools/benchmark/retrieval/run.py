@@ -9162,6 +9162,8 @@ def run_pair(spec: dict) -> int:
     tree (manifest + verdict) is atomically renamed onto the output
     root. Partial output is never resumed: rerun from a fresh root.
     """
+    if sys.version_info < (3, 10):
+        raise RunError("retrieval pair requires Python 3.10 or newer")
     driver_started_ns = time.monotonic_ns()
     scope = spec.get("scope", "exploratory")
     _validate_file_pair_contract(spec, paired=True)
@@ -11281,6 +11283,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in ("pair", "quanta", "merge", "verdict") and sys.version_info < (3, 10):
+        print("ERROR: retrieval benchmark requires Python 3.10 or newer", file=sys.stderr)
+        return 2
     if args.command == "merge":
         return cmd_merge(args)
     if args.command == "host-probe":
