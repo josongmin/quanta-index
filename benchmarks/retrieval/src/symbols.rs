@@ -1093,9 +1093,18 @@ mod tests {
             .expect("interface");
         assert_eq!(interface.symbol_kind.as_str(), "interface");
         for (callee, shadowed) in [
-            ("new", "package p\nfunc new(a, b int) int { return a+b }\nfunc Locate() { _ = new(1, 2) }\n"),
-            ("make", "package p\nfunc make(a, b int) int { return a+b }\nfunc Locate() { _ = make(1, 2) }\n"),
-            ("new", "package p\nfunc new(a ...int) int { return len(a) }\nfunc Locate() { values:=[]int{1,2}; _=new(values...) }\n"),
+            (
+                "new",
+                "package p\nfunc new(a, b int) int { return a+b }\nfunc Locate() { _ = new(1, 2) }\n",
+            ),
+            (
+                "make",
+                "package p\nfunc make(a, b int) int { return a+b }\nfunc Locate() { _ = make(1, 2) }\n",
+            ),
+            (
+                "new",
+                "package p\nfunc new(a ...int) int { return len(a) }\nfunc Locate() { values:=[]int{1,2}; _=new(values...) }\n",
+            ),
         ] {
             let records = extract_symbols("shadowed.go", shadowed).expect("valid Go shadowing");
             assert_eq!(records.len(), 2);
@@ -1104,13 +1113,14 @@ mod tests {
             }
         }
         // Symbol extraction is syntax-based, not Go operand type checking.
-        let syntax_only = extract_symbols(
-            "arity.go",
-            "package p\nfunc Locate() { _ = new(1, 2) }\n",
-        )
-        .expect("syntactically valid call");
+        let syntax_only =
+            extract_symbols("arity.go", "package p\nfunc Locate() { _ = new(1, 2) }\n")
+                .expect("syntactically valid call");
         assert_eq!(syntax_only.len(), 1);
-        assert_eq!(find(&syntax_only, "Locate").symbol_kind.as_str(), "function");
+        assert_eq!(
+            find(&syntax_only, "Locate").symbol_kind.as_str(),
+            "function"
+        );
         for malformed in [
             "package p\nfunc Broken() { _ = new(, 2) }",
             "package p\nfunc Broken() { _ = new(i +) }",
