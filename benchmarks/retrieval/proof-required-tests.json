@@ -219,6 +219,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_exploratory_pair_binds_clean_source_closure_without_quality_claim",
     "tools.ci.tests.test_retrieval_benchmark.test_exploratory_pair_refuses_unbound_or_tampered_source_closure",
     "tools.ci.tests.test_retrieval_benchmark.test_exploratory_pair_requires_source_closure_capture_and_final_verify",
+    "tools.ci.tests.test_retrieval_benchmark.test_exploratory_query_protocol_accepts_explicit_zero_warmups",
     "tools.ci.tests.test_retrieval_benchmark.test_file_projection_policies_bind_ordering_and_interpret_metrics",
     "tools.ci.tests.test_retrieval_benchmark.test_file_projection_policies_have_independent_python_request_goldens",
     "tools.ci.tests.test_retrieval_benchmark.test_file_projection_refuses_forged_or_missing_ordering[keyword_file-queries2-False-path_order_constant_score-ordering must be]",

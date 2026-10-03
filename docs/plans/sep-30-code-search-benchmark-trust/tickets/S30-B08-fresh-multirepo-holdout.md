@@ -2077,3 +2077,85 @@ Evidence and commands:
 `runtime-summary-fixed.json`, `scoring-summary.json`, source archives and the
 per-repository missing-review packets in that fresh external root. Original
 path bindings remain in preserved copies; no old result or aggregate was changed.
+
+## C3 benchmark contract and parser follow-up (2026-10-04)
+
+The existing IR now carries an optional `answerability_min_grade` (integer 1–3,
+ default 1). The C3 rubric's grade-1 clue / grade-2 sufficient-answer distinction
+must explicitly use 2 in both review context and suite task. No-answer validation
+and sufficient-answer gold follow this threshold; graded relevance metrics remain
+based on positive grades. Orphan/source-oracle fields and threshold changes in
+completed forms are refused. This does not fabricate human review or independent
+AI identities.
+
+`capture_review_pool` exports source-validated distinct-file captures as rankless,
+scoreless review candidates, including tasks with empty/abstained output. Under
+`complete_ranked_pool_v1`, missing returned-file/declaration judgments now make
+operational means `not_applicable` with `incomplete_ranked_judgments`; they cannot
+become search failure zeros. Explicit grade zero and execution failures keep
+applicable operational treatment. Common eligible cohorts are still required.
+
+The dedicated local/formal retrieval rails now include `test_holdout_review.py`;
+the required Python identities are regenerated from actual collection. TypeScript
+and TSX census/named-definition gold use the producer vendored compatibility
+grammars, rather than an unpatched language-pack parser. Capsule producer bindings
+include the parser factory and actual C/header bytes. Linked source directories,
+wrong cache identity/binary and absent compilers fail explicitly. Frozen v5
+capsules were not rewritten. TypeORM's pinned index source parses with the repair;
+Go `new(expr)` and zustand overload syntax remain unsupported boundaries.
+
+An additional live-receipt RCA confirmed that the old direct driver accepted
+`query_warmup_passes: 1` but executed zero warmups. Direct `quanta` now forwards
+explicit warmup/measurement counts through the existing shared query protocol and
+checks the returned protocol/pass counts. It refuses silently ignored multiple
+fresh roots; `pair` owns those repetitions. Exploratory specs can explicitly
+request zero warmups; qualified speed still requires at least one. Existing pinned captures retain their
+actual zero-warmup observations. A two-file probe executed cold 1, warmup 2 and
+measured 6 calls, returning both fixed expected files. Complete current-driver
+capture failed the compiled symbol policy guard because its runner was from
+`f9454987` while current producer inputs had changed; the guard was not weakened.
+This is partial schedule proof, not current-main Rust/product qualification.
+
+**VERIFIED, focused local:** holdout owner 63 passed (16.11s); judgment/cohort
+selector 17 passed (8.56s); capture pool selector 5 passed (15.35s); parser/gold/
+corpus owners 165 passed (291.38s), followed by six focused parser checks (1.55s)
+covering subsequent compiler/link/source additions; direct/pair schedule selector
+16 passed (2.62s), including the explicit-zero spec/schema case; proof rail owner
+36 passed, later inventory/local selector seven passed (3.11s). Ruff,
+test-authority lint and diff checks passed. Repeated selectors
+are not summed into a whole-suite claim.
+
+**VERIFIED / BLOCKED, frozen v5 sample:** all 106 raw manifest/source bindings
+and 89 present label byte spans matched. Merged independent literal/AST/name-
+relation checks verified 86 tasks; 20 originally unjudged tasks remain blocked.
+Python, Go and TypeScript checks use their compiler/stdlib ASTs. The Rust replay
+uses the same pinned syn frontend as the original gold guard, independently
+replaying raw byte spans/name relations; it is not a third parser. A separate
+Rust build attempt was not admitted within its 1,200s bound; that attempt was
+not reported as compilation success.
+
+**Diagnostic capture progress:** 200/240 C3 rows have completed source-bound
+capture and replay, including Django (1,355.276s wall); all completed rows are
+`capped` with ten distinct files. At this checkpoint 1,063 returned task/file
+pairs are missing from the old qrels. Tailscale and TypeORM captures remain active
+under the original pinned source/binary batch; final per-repository state is in
+`capture-summary.json`. Process wall and contained publish/seal/activate times
+are reported separately from call sums and compile/admission waits. These
+contended debug/hash-dev runs do not qualify speed or semantic/hybrid quality.
+
+**Remaining data/admission work:** source-bound blank forms/batches include the
+new candidates and threshold 2; no completed independent reviews are invented.
+The old external `scripts/finalize_repo.py` uses `grade > 0` and drops the new
+threshold, so it must not be reused unchanged for this rubric. Final issue must
+preserve threshold, actual reviewer/adjudicator identities and new hashes. Missing
+qrels, original C3 family/split mismatch, full admission bundle, current-source
+binary proof and other-product NL/index-universe evidence remain open. C3 labels
+cannot qualify the repository-disjoint C5 corpus. Full CI/release/deployment
+qualification and product rankings remain unclaimed.
+
+Evidence: [follow-up results](/Users/songmin/Documents/code-new/qi-b08-nl-completion-20261003-p8hky9bm/RESULTS.md),
+`execution-observations.json`, `reports-complete-label-contract/`,
+`v5-sample-final/merged-summary.json`, `verification-current-score-contract.json`,
+`verification-parser-contract.json`, `single-capture-schedule-rca.json` and
+`direct-protocol-control-v3/RESULT.json` in the same fresh external root. Original
+captures, frozen sources and original review forms are preserved.

@@ -53,8 +53,8 @@
       "description": "Shared warm-query measurement repetitions per fresh root. Required by qualified speed; task_count * this value * repetitions must be at least 1000."
     },
     "query_warmup_passes": {
-      "type": "integer", "minimum": 1,
-      "description": "Shared warmup passes consumed from the same digest-bound schedule by both runners. Required by qualified speed."
+      "type": "integer", "minimum": 0,
+      "description": "Warmup passes consumed from the digest-bound schedule. Exploratory captures may request zero; qualified speed requires at least one."
     },
     "alternate_order": {"type": "boolean"},
     "order": {

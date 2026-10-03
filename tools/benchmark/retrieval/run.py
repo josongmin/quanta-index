@@ -3114,7 +3114,7 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
         ("io_timeout_secs", 1),
         ("repetitions", 1),
         ("query_repetitions_per_root", 1),
-        ("query_warmup_passes", 1),
+        ("query_warmup_passes", 0),
     ):
         if key in spec:
             _spec_int(spec, key, minimum)

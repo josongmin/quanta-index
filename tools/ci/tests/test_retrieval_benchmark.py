@@ -3829,6 +3829,23 @@ def test_direct_quanta_capture_does_not_silently_drop_fresh_root_repetitions(tmp
         pairrun.run_quanta({"repetitions": 2}, tmp_path)
 
 
+def test_exploratory_query_protocol_accepts_explicit_zero_warmups(tmp_path):
+    spec = _g0_spec()
+    spec["query_warmup_passes"] = 0
+    schema = json.loads((Path(pairrun.__file__).parent / "pair-spec.schema.json").read_text())
+    jsonschema.validate(spec, schema)
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec))
+    assert pairrun.load_spec(path)["query_warmup_passes"] == 0
+    for invalid in (-1, True, 0.5):
+        changed = {**spec, "query_warmup_passes": invalid}
+        path.write_text(json.dumps(changed))
+        with pytest.raises(pairrun.RunError, match="query_warmup_passes"):
+            pairrun.load_spec(path)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(changed, schema)
+
+
 def test_quanta_capture_refuses_protocol_that_contradicts_requested_counts(tmp_path):
     protocol_path = tmp_path / "protocol.json"
     protocol_path.write_text(json.dumps(pairrun.build_query_protocol(["T1", "T2"], 8, 0, 1)))
