@@ -689,6 +689,37 @@ summarized in
 (SHA-256 `9d08605718e0842f2bdf53d329cc813cc82b268e7c51b96f9c8e3a89ce6544a7`).
 No old raw capture was replaced and no optimization speedup is established.
 
+#### Contract coverage and owner verification follow-up
+
+The completed-response timing module's 22 tests were absent from the local and
+formal Python contract selectors. Both existing selectors now include that
+module, and the source-controlled authority was regenerated from actual
+collection (718 identities at collection time). No separate proof rail was
+introduced. Collection is not execution of all 718 tests.
+
+`python -m pytest -q tools/ci/tests/test_completed_response_timing.py
+tools/ci/tests/test_retrieval_contract_proof.py
+tools/ci/tests/test_portable_proof.py
+tools/ci/tests/test_retrieval_benchmark.py::test_benchmark_prep_does_not_repeat_retrieval_contracts`
+passed 183 tests in 43.01 s. A separate four-test check passed in 4.43 s for
+on/off equality, SDK child/outer u64 bounds and a protocol-6 capture refusing
+a correctly rebound historical phase-3 artifact. Fixtures establish these
+validator paths, not an actual fresh release SDK execution.
+
+The on/off scorer emits version 2 with explicit plane-stage/response-trace
+scope and states that backend clock reads execute in both arms. Its deltas do
+not measure total instrumentation overhead or IPC cost. Original version-1
+reports remain unchanged.
+
+Index owner checks passed: child-clock availability/bounds 1/1, fresh/delta
+shard reuse 1/1, empty/no-op admission 1/1, public API baseline verification,
+and `just rust-fuzz-smoke 10` covering request, response, ingest and parser
+targets. An earlier incorrect `seconds=10` invocation was interrupted and is
+not success evidence. Scale owner library checks passed 22/22, including
+primary/cleanup failure fields, CPU arithmetic and actual scoped delete plus
+same-process reopen. CLI, current plane/runner execution and new scale runs
+retain their separate gates.
+
 ## Execution receipt (2026-09-30)
 
 `NOT_RUN`: host not quiet (load ~26 on 16 cores, concurrent builds). Producer `quanta-index@0d21914e` (clean worktree);
