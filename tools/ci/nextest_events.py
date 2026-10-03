@@ -334,8 +334,22 @@ def _parse_nextest_stream(
                                 and _nonnegative(event["filtered_out"], "filtered")
                                 == (1 << 64) - collected_ignored
                             )
+                            # The reporter can close a mixed suite after
+                            # ignored starts, before any selected test ends.
+                            # Bind that empty fragment to observed ignored
+                            # starts; a bare empty suite cannot pass.
+                            ignored_start_fragment = (
+                                selected > 0
+                                and suite_state["terminal"] == 0
+                                and suite_state["ignored_started"] > 0
+                                and collected_ignored > 0
+                            )
                             if (
-                                (not suite_state["terminal"] and not ignored_only)
+                                (
+                                    not suite_state["terminal"]
+                                    and not ignored_only
+                                    and not ignored_start_fragment
+                                )
                                 or passed != suite_state["passed"]
                                 or ignored != collected_ignored
                             ):
