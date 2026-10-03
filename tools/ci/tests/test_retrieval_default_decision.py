@@ -23,8 +23,8 @@ def repository_disjoint_policy(tmp_path: Path, split_sha: str) -> dict:
             "release_digest": "sha256:" + "a" * 64,
             "stratum": f"language-{index // 3}",
             "suite_sha256": "b" * 64,
-            "query_family_ids": [f"repo-{index:02d}.family"],
-            "categories": ["objective"],
+            "query_family_ids": [f"repo-{index:02d}.objective", f"repo-{index:02d}.reviewed"],
+            "categories": ["objective", "reviewed"],
         }
         for index in range(12)
     ]
@@ -44,10 +44,12 @@ def repository_disjoint_policy(tmp_path: Path, split_sha: str) -> dict:
         },
         "min_useful_delta": 0.05,
         "min_cluster_lower_95": 0.0,
+        "track_min_delta": {"objective": 0.0, "reviewed": 0.0},
         "confidence_method": "paired_stratified_repository_cluster_bootstrap_percentile_v1",
         "critical_strata": [
             {"axis": "no_answer", "name": "all", "min_delta": 0.0},
             {"axis": "category", "name": "objective", "min_delta": 0.0},
+            {"axis": "category", "name": "reviewed", "min_delta": 0.0},
             {"axis": "language", "name": "go", "min_delta": 0.0},
             *(
                 {"axis": "repository", "name": row["repository"], "min_delta": -0.01}
@@ -76,6 +78,10 @@ def test_repository_disjoint_policy_requires_full_frozen_roster(tmp_path):
     policy["repository_scope"]["holdout"][-1]["stratum"] = "singleton"
     with pytest.raises(decision.DecisionError, match="strata are invalid"):
         decision.validate_repository_disjoint_policy(policy)
+    policy = repository_disjoint_policy(tmp_path, "c" * 64)
+    del policy["track_min_delta"]["reviewed"]
+    with pytest.raises(decision.DecisionError, match="repository-disjoint tracks"):
+        decision.validate_repository_disjoint_policy(policy)
 
 
 def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, tmp_path):
@@ -99,6 +105,8 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
                     "gold": [{"path": "file.go"}],
                     "query_family_id": row["query_family_ids"][0],
                     "category": "objective",
+                    "judgment_policy": ev.SOURCE_ORACLE_JUDGMENT_POLICY,
+                    "source_oracle": {},
                 },
                 {
                     "task_id": "T2",
@@ -106,6 +114,16 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
                     "gold": [],
                     "query_family_id": row["query_family_ids"][0],
                     "category": "objective",
+                },
+                {
+                    "task_id": "T3",
+                    "split": "eval",
+                    "gold": [{"path": "file.go"}],
+                    "query_family_id": row["query_family_ids"][1],
+                    "category": "reviewed",
+                    "judgment_policy": ev.COMPLETE_JUDGMENT_POLICY,
+                    "file_judgments": [{"path": "file.go", "relevance": 1}],
+                    "label_review": {"assessment": "reviewed_unambiguous"},
                 },
             ],
         }
@@ -122,7 +140,7 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
                     "baseline": "semble-hybrid",
                     "candidate": "hybrid",
                     "primary_metric": "ndcg_at_10",
-                    "sample_count": 1,
+                    "sample_count": 2,
                     "primary_delta": 0.5,
                     "no_answer_abstention_delta": {"sample_count": 1, "mean_delta": 0.0},
                 }
@@ -132,6 +150,8 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
                 {"task_id": "T1", "route": "hybrid", "ndcg_at_10": 0.75},
                 {"task_id": "T2", "route": "semble-hybrid", "status": "ok"},
                 {"task_id": "T2", "route": "hybrid", "status": "ok"},
+                {"task_id": "T3", "route": "semble-hybrid", "ndcg_at_10": 0.25},
+                {"task_id": "T3", "route": "hybrid", "ndcg_at_10": 0.75},
             ],
         }
         (root / "report.json").write_bytes(ev.canonical(report))
@@ -149,8 +169,11 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
         (root / "latency.json").write_text(
             json.dumps(
                 {
-                    "samples": {"quanta:whole_file:hybrid:T1": [5.0]},
-                    "floors": {"quanta:whole_file:hybrid": 1},
+                    "samples": {
+                        "quanta:whole_file:hybrid:T1": [5.0],
+                        "quanta:whole_file:hybrid:T3": [5.0],
+                    },
+                    "floors": {"quanta:whole_file:hybrid": 2},
                 }
             )
         )
@@ -258,7 +281,7 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
                 {
                     **policy["comparison"],
                     "graded": True,
-                    "sample_count": 1,
+                    "sample_count": 2,
                     "primary_delta": 0.5,
                     "report_digest": hashlib.sha256(report_path.read_bytes()).hexdigest(),
                 }
@@ -269,7 +292,7 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
     result = decision.replay_repository_disjoint_bundle(bundle_path)
     assert result["status"] == "replayed_no_default_decision"
     assert result["product_default_decision"] is False
-    assert (result["repository_count"], result["paired_sample_count"]) == (12, 12)
+    assert (result["repository_count"], result["paired_sample_count"]) == (12, 24)
     assert result["repository_cluster_ci"]["mean"] == 0.5
     assert result["metric_gate"] == {
         "status": "eligible_for_human_review",
@@ -280,6 +303,10 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
             "query_p95_ms": 5.0,
             "peak_rss_bytes": 1_000,
             "index_bytes": 2_000,
+        },
+        "tracks": {
+            "objective": {"repository_count": 12, "mean_delta": 0.5},
+            "reviewed": {"repository_count": 12, "mean_delta": 0.5},
         },
     }
     names = [row["repository"] for row in policy["repository_scope"]["holdout"]]
@@ -294,6 +321,34 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
         result["captures"],
     )["reasons"] == ["primary_effect_below_minimum"]
     policy["min_useful_delta"] = 0.05
+    policy["track_min_delta"]["reviewed"] = 0.6
+    assert decision._repository_disjoint_metric_gate(
+        policy, suites, reports, result["repository_cluster_ci"], result["captures"]
+    )["reasons"] == ["track_regression:reviewed"]
+    policy["track_min_delta"]["reviewed"] = 0.0
+    suites["repo-00"]["tasks"][2]["label_review"]["assessment"] = "unreviewed"
+    reports["repo-00"]["suite_commitment_sha256"] = ev.digest(ev.canonical(suites["repo-00"]))
+    with pytest.raises(decision.DecisionError, match="lacks objective or reviewed labels"):
+        decision._repository_disjoint_metric_gate(
+            policy, suites, reports, result["repository_cluster_ci"], result["captures"]
+        )
+    suites["repo-00"]["tasks"][2]["label_review"]["assessment"] = "reviewed_unambiguous"
+    reports["repo-00"]["suite_commitment_sha256"] = ev.digest(ev.canonical(suites["repo-00"]))
+    reviewed_task = suites["repo-00"]["tasks"][2]
+    review = reviewed_task.pop("label_review")
+    judgments = reviewed_task.pop("file_judgments")
+    reviewed_task["judgment_policy"] = ev.SOURCE_ORACLE_JUDGMENT_POLICY
+    reviewed_task["source_oracle"] = {}
+    reports["repo-00"]["suite_commitment_sha256"] = ev.digest(ev.canonical(suites["repo-00"]))
+    with pytest.raises(decision.DecisionError, match="objective or reviewed track is missing"):
+        decision._repository_disjoint_metric_gate(
+            policy, suites, reports, result["repository_cluster_ci"], result["captures"]
+        )
+    del reviewed_task["source_oracle"]
+    reviewed_task["judgment_policy"] = ev.COMPLETE_JUDGMENT_POLICY
+    reviewed_task["file_judgments"] = judgments
+    reviewed_task["label_review"] = review
+    reports["repo-00"]["suite_commitment_sha256"] = ev.digest(ev.canonical(suites["repo-00"]))
     policy["resource_limits"]["max_query_p95_ms"] = 4.0
     assert decision._repository_disjoint_metric_gate(
         policy, suites, reports, result["repository_cluster_ci"], result["captures"]

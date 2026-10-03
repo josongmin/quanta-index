@@ -782,3 +782,23 @@ C5 decision and benchctl Python set passed 528 tests in 415.10 seconds;
 capture followed by unmocked `run.build_verdict()` and 12-repository C5 replay
 is still `NOT_RUN`. These changes do not establish human reviewer identity or
 an externally indexed file universe.
+
+## Objective and reviewed C5 track gate (2026-10-03)
+
+The schema-v2 repository-disjoint policy now requires separate predeclared
+minimum deltas for `objective` and `reviewed`. Each holdout repository must
+contribute at least one positive, paired task in both tracks. Track membership
+comes from the validated suite's `source_oracle` and judgment policy, or from
+reviewed `label_review` plus complete judgments, rather than the task's
+self-declared category. The gate reports repository-equal track means and
+refuses a below-threshold track. It rejects missing or unreviewed labels.
+This is a code-level guard; a review receipt alone cannot establish that the
+named reviewer was a human or that the judgments are correct.
+
+**VERIFIED, focused code rail:**
+`env -u PYTHONPATH .venv/bin/python -m pytest -q
+tools/ci/tests/test_retrieval_default_decision.py tools/ci/tests/test_benchctl.py`
+passed 86 tests; Ruff and `git diff --check` passed. The full 528-test Python
+set was run before this track-gate change, so it is not current proof for this
+new code. The actual 12-repository capture, reviewed qrels and separate scale
+qualification remain `NOT_RUN`.
