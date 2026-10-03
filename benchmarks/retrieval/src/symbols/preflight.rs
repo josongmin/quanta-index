@@ -380,6 +380,8 @@ impl SymbolPreflight {
             source,
             language,
             producer_policy_sha256: self.producer_policy,
+            symbol_name_source_policy:
+                quanta_index_contract::SymbolNameSourcePolicyV1::RawAsciiLocalName,
             unit_set_sha256,
             // A source-only symbol scope does not publish a text surface.
             // An empty source is the explicit zero-unit text case.

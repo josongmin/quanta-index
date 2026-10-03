@@ -242,6 +242,7 @@ pub enum SearchCorpusSurfaceMutationConflictV1 {
     InvalidRecordRange,
     SourceBytesDigestMismatch,
     ChunkSourceMismatch,
+    SymbolNameSourceMismatch,
 }
 
 impl fmt::Display for SearchCorpusSurfaceMutationConflictV1 {
@@ -267,6 +268,9 @@ impl fmt::Display for SearchCorpusSurfaceMutationConflictV1 {
             }
             Self::ChunkSourceMismatch => {
                 formatter.write_str("chunk text disagrees with its source-file byte span")
+            }
+            Self::SymbolNameSourceMismatch => {
+                formatter.write_str("attested ASCII symbol local name is absent from its source span")
             }
             Self::DuplicateClear(surface) => {
                 write!(formatter, "duplicate clear for search surface {surface:?}")
@@ -1075,6 +1079,20 @@ pub fn validate_lexical_file_mutations_v1(
                 || symbol.definition_span.line_end < symbol.definition_span.line_start
             {
                 return Err(SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange);
+            }
+            if scope.coverage.symbol_name_source_policy
+                == crate::SymbolNameSourcePolicyV1::RawAsciiLocalName
+                && symbol.local_name.is_ascii()
+            {
+                let start = usize::try_from(symbol.definition_span.byte_start)
+                    .map_err(|_overflow| SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange)?;
+                let end = usize::try_from(symbol.definition_span.byte_end)
+                    .map_err(|_overflow| SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange)?;
+                if memchr::memmem::find(&scope.source_bytes[start..end], symbol.local_name.as_bytes())
+                    .is_none()
+                {
+                    return Err(SearchCorpusSurfaceMutationConflictV1::SymbolNameSourceMismatch);
+                }
             }
             if !candidate_ids.insert(symbol.symbol_id.as_str()) {
                 return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateCandidateId);
@@ -5207,6 +5225,7 @@ mod tests {
             },
             language: chunks[0].language.clone(),
             producer_policy_sha256: [2; 32],
+            symbol_name_source_policy: crate::SymbolNameSourcePolicyV1::Unspecified,
             unit_set_sha256: crate::source_file_unit_set_sha256(&chunks, &[])
                 .expect("fixture units encode"),
             text_admitted: true,

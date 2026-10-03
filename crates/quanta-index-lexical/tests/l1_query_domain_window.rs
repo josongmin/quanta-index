@@ -100,6 +100,7 @@ fn scope(
             },
             language,
             producer_policy_sha256: [3; 32],
+            symbol_name_source_policy: quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
             unit_set_sha256: source_file_unit_set_sha256(&chunks, &symbols)?,
             text_admitted: surface != SearchScopeSurface::Symbol,
             symbols: SymbolCoverage::Complete {

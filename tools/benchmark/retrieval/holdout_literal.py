@@ -236,7 +236,7 @@ def derive_batch(
         "product_capture": False,
         "qualified_default_search_conformance": False,
         "release_digest": batch.document["digest"],
-        "split_manifest_sha256": digest_bytes(batch.split_raw),
+        "split_manifest_sha256": hashlib.sha256(batch.split_raw).hexdigest(),
         "tool_source_sha256": source_digests,
         "cells": cells,
     }

@@ -51,6 +51,7 @@ pub(crate) fn text_scope(
             },
             language,
             producer_policy_sha256: Sha256::digest(b"lexical-test-source-fixture-v1").into(),
+            symbol_name_source_policy: quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
             unit_set_sha256,
             text_admitted: !chunks.is_empty(),
             symbols: SymbolCoverage::NotRequested,

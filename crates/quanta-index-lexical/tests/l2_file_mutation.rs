@@ -45,6 +45,7 @@ fn file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScope, Box<
             },
             language: LanguageCode::new("rust")?,
             producer_policy_sha256: [8; 32],
+            symbol_name_source_policy: quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
             unit_set_sha256: [0; 32],
             text_admitted: true,
             symbols: SymbolCoverage::Complete { symbol_count: 1 },

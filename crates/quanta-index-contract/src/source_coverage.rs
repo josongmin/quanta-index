@@ -24,6 +24,17 @@ pub enum SymbolCoverage {
     ProducerFailed,
 }
 
+/// Producer promise needed to rule out a symbol match from complete source
+/// bytes when that file's symbol census is incomplete.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SymbolNameSourcePolicyV1 {
+    /// No source-spelling guarantee; incomplete coverage must be refused.
+    Unspecified,
+    /// Every ASCII local name the producer can emit occurs verbatim in its
+    /// definition's source-byte span. Ingest checks every emitted record.
+    RawAsciiLocalName,
+}
+
 /// Producer-attested source revision and policy, bound to the exact unit set.
 /// The source hash is not independent verification of bytes absent from ingress.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,9 +42,50 @@ pub struct SourceFileCoverage {
     pub source: SourceFileRevision,
     pub language: LanguageCode,
     pub producer_policy_sha256: [u8; 32],
+    pub symbol_name_source_policy: SymbolNameSourcePolicyV1,
     pub unit_set_sha256: [u8; 32],
     pub text_admitted: bool,
     pub symbols: SymbolCoverage,
+}
+
+impl Serialize for SymbolNameSourcePolicyV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Unspecified => "unspecified",
+            Self::RawAsciiLocalName => "raw_ascii_local_name_v1",
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SymbolNameSourcePolicyV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct PolicyVisitor;
+        impl Visitor<'_> for PolicyVisitor {
+            type Value = SymbolNameSourcePolicyV1;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a symbol name source policy")
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                match value {
+                    "unspecified" => Ok(SymbolNameSourcePolicyV1::Unspecified),
+                    "raw_ascii_local_name_v1" => Ok(SymbolNameSourcePolicyV1::RawAsciiLocalName),
+                    _ => Err(E::unknown_variant(
+                        value,
+                        &["unspecified", "raw_ascii_local_name_v1"],
+                    )),
+                }
+            }
+        }
+        deserializer.deserialize_str(PolicyVisitor)
+    }
 }
 
 #[path = "coverage_snapshot.rs"]
@@ -263,6 +315,7 @@ coverage_record_serde!(SourceFileCoverage {
     source: SourceFileRevision,
     language: LanguageCode,
     producer_policy_sha256: [u8; 32],
+    symbol_name_source_policy: SymbolNameSourcePolicyV1,
     unit_set_sha256: [u8; 32],
     text_admitted: bool,
     symbols: SymbolCoverage,
@@ -351,6 +404,7 @@ mod tests {
             },
             language: LanguageCode::new("rust")?,
             producer_policy_sha256: [1; 32],
+            symbol_name_source_policy: SymbolNameSourcePolicyV1::Unspecified,
             unit_set_sha256: source_file_unit_set_sha256(&[], &[])?,
             text_admitted: true,
             symbols: SymbolCoverage::Complete { symbol_count: 0 },
