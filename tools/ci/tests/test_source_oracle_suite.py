@@ -811,6 +811,7 @@ def test_paired_typo_builder_emits_operation_and_stress_suites(tmp_path):
     assert set(first) == {
         "clean",
         *(f"typo-{op}" for op in (*irs.TYPO_OPERATIONS, *irs.STRESS_TYPO_LANES)),
+        *(f"default-typo-{op}" for op in irs.TYPO_OPERATIONS),
     }
     assert len(first["clean"][0]["tasks"]) == 6
     assert first["clean"][0]["routes"] == ["lexical", "semble-lexical-file"]
@@ -855,6 +856,25 @@ def test_paired_typo_builder_emits_operation_and_stress_suites(tmp_path):
             for row in census["lanes"][lane]["records"]
             if row["status"] == "admitted"
         )
+        if operation in irs.TYPO_OPERATIONS:
+            default_lane = "default-" + lane
+            default_suite = first[default_lane][0]
+            assert default_suite["routes"] == ["lexical", "semble-lexical-file"]
+            assert [row["query"] for row in default_suite["tasks"]] == [
+                row["query"] for row in suite["tasks"]
+            ]
+            assert [row["file_judgments"] for row in default_suite["tasks"]] == [
+                row["file_judgments"] for row in suite["tasks"]
+            ]
+            assert all(
+                row["evaluation_contract"]["request_mode"] == "default_file_search"
+                for row in default_suite["tasks"]
+            )
+            assert census["lanes"][default_lane] == {
+                "derived_from": lane,
+                "product_request_mode": "default_file_search",
+                "admitted": len(default_suite["tasks"]),
+            }
 
 
 def test_paired_typo_oracle_limit_counts_intended_names_once(tmp_path, monkeypatch):

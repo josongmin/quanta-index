@@ -38,6 +38,32 @@ def _unique(rows: list[dict], where: str) -> dict[str, dict]:
     return dict(zip(keys, rows))
 
 
+def _lane_data(census: dict[str, Any], lane: str) -> dict[str, Any]:
+    """Resolve a mode projection to its single source-backed query census."""
+    lanes = census.get("lanes")
+    _require(isinstance(lanes, dict) and lane in lanes, "unknown robustness lane")
+    selected = lanes[lane]
+    _require(isinstance(selected, dict), "malformed robustness lane")
+    if not lane.startswith("default-typo-"):
+        return selected
+    _require(
+        set(selected) == {"derived_from", "product_request_mode", "admitted"}
+        and selected["product_request_mode"] == "default_file_search"
+        and lane == "default-" + selected["derived_from"]
+        and selected["derived_from"] in lanes,
+        "invalid default robustness projection",
+    )
+    source = lanes[selected["derived_from"]]
+    _require(
+        isinstance(source, dict)
+        and "derived_from" not in source
+        and source.get("gold_kind") == "intended_original_name"
+        and selected["admitted"] == source.get("admitted"),
+        "default robustness projection source mismatch",
+    )
+    return source
+
+
 def _category_breakdown(
     admitted: dict[str, dict],
     scored: dict[str, dict],
@@ -373,7 +399,7 @@ def compose(
     capture = record["captures"][record["route_provenance"][route]["capture_id"]]
     policy = _policy(capture)
 
-    lane_data = census["lanes"][lane]
+    lane_data = _lane_data(census, lane)
     tasks = _unique([t for t in suite["tasks"] if t["split"] == "eval"], "suite")
     _require(len(tasks) == len(suite["tasks"]), "non-eval task in diagnostic suite")
     declared_contracts = [task.get("evaluation_contract") for task in tasks.values()]
@@ -384,6 +410,18 @@ def compose(
             "mixed or missing evaluation contract",
         )
     declared_contract = declared_contracts[0] if declared_contracts else None
+    if lane.startswith("default-typo-"):
+        _require(
+            declared_contract
+            == {
+                "request_mode": "default_file_search",
+                "gold_unit": "distinct_file",
+                "result_unit": "distinct_file",
+            }
+            and paired
+            and policy["policy"] in {"code_search_file", "semble:lexical-file"},
+            "default robustness projection request or route mismatch",
+        )
     if policy["policy"] == "code_search_typo_file" and any(
         not task["answerable"] for task in tasks.values()
     ):
@@ -761,7 +799,7 @@ def compare_paired_clean_typo(
     typo_route: str,
 ) -> dict[str, Any]:
     """Compare source-paired intended-file judgments; callers replay both diagnostics first."""
-    lane_data = census["lanes"][lane]
+    lane_data = _lane_data(census, lane)
     _require(
         lane_data.get("gold_kind") == "intended_original_name",
         "paired robustness requires intended original-name gold",
@@ -946,7 +984,7 @@ def verify_census_against_source(
             "typo absence excluded source mismatch",
         )
         return
-    lane_data = census["lanes"][lane]
+    lane_data = _lane_data(census, lane)
     contract = lane_data.get("contract", lane_data.get("scoring_contract"))
     _require(
         contract in source_oracle.DECLARATION_NAME_CONTRACTS,

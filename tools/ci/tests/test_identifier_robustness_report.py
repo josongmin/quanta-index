@@ -187,6 +187,34 @@ def test_paired_clean_to_typo_uses_intended_gold_and_common_eligible_families():
         "typo_mean": 0.5,
         "delta_typo_minus_clean": -0.25,
     }
+    census["lanes"]["typo-transposition"]["admitted"] = 3
+    census["lanes"]["default-typo-transposition"] = {
+        "derived_from": "typo-transposition",
+        "product_request_mode": "default_file_search",
+        "admitted": 3,
+    }
+    assert compare_paired_clean_typo(
+        clean,
+        clean_report,
+        noisy,
+        noisy_report,
+        census,
+        "default-typo-transposition",
+        clean_route="lexical",
+        typo_route="lexical",
+    ) == {**result, "lane": "default-typo-transposition"}
+    census["lanes"]["default-typo-transposition"]["admitted"] = 2
+    with pytest.raises(ValueError, match="projection source mismatch"):
+        compare_paired_clean_typo(
+            clean,
+            clean_report,
+            noisy,
+            noisy_report,
+            census,
+            "default-typo-transposition",
+            clean_route="lexical",
+            typo_route="lexical",
+        )
     noisy["tasks"][0]["file_judgments"] = [{"path": "wrong.go", "grade": 3}]
     with pytest.raises(ValueError, match="paired family or intended gold mismatch"):
         compare_paired_clean_typo(

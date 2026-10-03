@@ -980,6 +980,24 @@ def derive_paired_full(
             ),
             "records": records,
         }
+        if operation in TYPO_OPERATIONS:
+            # Keep the ordinary user-input route distinct from the explicit
+            # OSA1 feature. Both use the same frozen queries and intended gold.
+            default_lane = "default-" + lane
+            default_suite = copy.deepcopy(suite)
+            default_suite["suite_id"] = (
+                baseline["suite_id"] + f"-robustness-{default_lane}-v1-seed{seed}"
+            )
+            default_suite["routes"] = ["lexical", "semble-lexical-file"]
+            for task in default_suite["tasks"]:
+                task["evaluation_contract"]["request_mode"] = "default_file_search"
+            _checked, default_pack, _source = evaluator.validate_suite(repo, default_suite)
+            outputs[default_lane] = default_suite, default_pack
+            census["lanes"][default_lane] = {
+                "derived_from": lane,
+                "product_request_mode": "default_file_search",
+                "admitted": len(rows),
+            }
     return outputs, census
 
 
