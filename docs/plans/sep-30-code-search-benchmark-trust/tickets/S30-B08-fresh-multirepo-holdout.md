@@ -856,3 +856,8 @@ policy/report/record binding, no-answer behavior and per-repository coverage.
 Changing `graded` or adding file policies to the context allowlist alone would
 mislabel a diagnostic report as qualified. This implementation and the real
 multi-repository file capture are `NOT_RUN`.
+
+The existing context C5 replay now requires the exact
+`rb-rank-context-density-first-coverage` report version and emits
+`metric_scope: context_span_density`. A forged file metric version is rejected
+before metric gating. The decision/benchctl focused rail passed 86 tests.

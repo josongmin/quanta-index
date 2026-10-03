@@ -135,6 +135,7 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
             "suite_commitment_sha256": ev.digest(ev.canonical(suite)),
             "repository_commit": row["repository_commit"],
             "graded": True,
+            "rank_metric_version": "rb-rank-context-density-first-coverage",
             "rank_metrics": {
                 "comparison": {
                     "baseline": "semble-hybrid",
@@ -292,6 +293,7 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
     result = decision.replay_repository_disjoint_bundle(bundle_path)
     assert result["status"] == "replayed_no_default_decision"
     assert result["product_default_decision"] is False
+    assert result["metric_scope"] == "context_span_density"
     assert (result["repository_count"], result["paired_sample_count"]) == (12, 24)
     assert result["repository_cluster_ci"]["mean"] == 0.5
     assert result["metric_gate"] == {
@@ -397,6 +399,12 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
     ungraded["graded"] = False
     report_path.write_text(json.dumps(ungraded))
     with pytest.raises(ev.EvidenceError, match="not graded"):
+        decision.replay_repository_disjoint_bundle(bundle_path)
+    report_path.write_bytes(original_report)
+    wrong_metric = json.loads(original_report)
+    wrong_metric["rank_metric_version"] = "file-ranked-v1"
+    report_path.write_text(json.dumps(wrong_metric))
+    with pytest.raises(decision.DecisionError, match="report metric differs from policy"):
         decision.replay_repository_disjoint_bundle(bundle_path)
     report_path.write_bytes(original_report)
 
