@@ -977,7 +977,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             }
         )
     )
-    with pytest.raises(ValueError, match="source bytes differ from release"):
+    with pytest.raises(ValueError, match="bytes differ from release"):
         live.verify(root)
     probe_path.write_bytes(original_probe)
     summary_path.write_text(json.dumps(result))
