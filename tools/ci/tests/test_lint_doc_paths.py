@@ -19,3 +19,7 @@ def test_local_heading_fragments_are_checked(tmp_path: Path) -> None:
     assert LINK_ISSUE(source, "target.md#remaining-work", tmp_path) == "broken doc anchor"
     assert LINK_ISSUE(source, "missing.md#source", tmp_path) == "broken doc path"
     assert LINK_ISSUE(source, "https://example.com/doc#remote", tmp_path) is None
+    assert LINK_ISSUE(source, "/external/evidence/record.json", tmp_path) is None
+    assert LINK_ISSUE(source, str(target), tmp_path) is None
+    assert LINK_ISSUE(source, str(tmp_path / "missing.md"), tmp_path) == "broken doc path"
+    assert LINK_ISSUE(source, "../external.md", tmp_path) == "broken doc path"

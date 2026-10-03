@@ -12,7 +12,9 @@ They remain as historical manual definitions and are not current CI authority.
 `.circleci/config.yml` owns the replacement verification definition. The
 default `regular` workflow runs tooling contracts, guarded module snapshots,
 prompt-manager and Rust policy checks, benchmark-control contracts, Semgrep,
-tracked agent-output validation, fmt, clippy, and full-workspace nextest. It emits a legacy
+tracked agent-output validation, pre-commit hooks, fmt, clippy, cargo-deny,
+cargo-machete, exact-toolchain MSRV compilation, Rustdoc, benchmark compilation,
+and full-workspace nextest. It emits a legacy
 test-authority receipt only for an observed PR or `main` run. The `run_heavy`
 pipeline parameter defaults to false; setting it true selects the manual
 full-workspace nextest and four bounded fuzz targets. No heavy schedule is
@@ -52,7 +54,7 @@ before calling hosted CI active. A merge queue or scheduled
 correctness claim additionally requires its own observed trigger and run.
 
 The former GitHub-only proof bundle dispatch, P00 hosted manifest, sanitizer,
-Miri, mutation, dependency and parity jobs are not reproduced by this CircleCI
+Miri, mutation and parity jobs are not reproduced by this CircleCI
 config. Their local commands remain available. Their absence from hosted
 CircleCI is an explicit coverage gap, not an implied pass.
 

@@ -467,9 +467,7 @@ def validate_artifact(
 def _paired_means(samples: list[dict]) -> dict:
     return {
         side: {
-            name: sum(sample[side][name] for sample in samples) / len(samples)
-            if samples
-            else None
+            name: sum(sample[side][name] for sample in samples) / len(samples) if samples else None
             for name in ("file_ndcg", "file_hit", "file_mrr")
         }
         for side in ("baseline", "candidate")

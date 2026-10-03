@@ -115,6 +115,15 @@ def test_heavy_work_is_off_by_default():
     assert config["workflows"]["manual-heavy"]["when"] == "<< pipeline.parameters.run_heavy >>"
 
 
+def test_all_job_commands_propagate_failures():
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    for job in config["jobs"].values():
+        for step in job["steps"]:
+            run = step.get("run") if isinstance(step, dict) else None
+            if run is not None:
+                assert run["command"].lstrip().startswith("set -euo pipefail\n")
+
+
 def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     assert config["workflows"]["regular"]["jobs"] == ["verify", "verify-python"]
@@ -122,6 +131,7 @@ def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
     python_steps = config["jobs"]["verify-python"]["steps"]
     assert rust_steps[0] == python_steps[0] == "checkout"
     assert rust_steps[1:3] == python_steps[1:3]
+    assert '"$HOME/.zprofile"' in rust_steps[1]["run"]["command"]
     assert 'test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"' in rust_steps[2]["run"]["command"]
     rust_names = {step["run"]["name"] for step in rust_steps if "run" in step}
     python_names = {step["run"]["name"] for step in python_steps if "run" in step}
@@ -133,10 +143,51 @@ def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
         and step.get("run", {}).get("name") == "Verify guarded module snapshots"
     )
     assert "cargo install cargo-modules --version 0.26.0 --locked" in module_step["command"]
-    assert "python3 tools/ci/lint/check-cargo-modules-snapshot.py" in module_step["command"]
+    assert (
+        "uv run --frozen --extra dev python tools/ci/lint/check-cargo-modules-snapshot.py"
+        in module_step["command"]
+    )
+    python_install = next(
+        step["run"]
+        for step in python_steps
+        if isinstance(step, dict)
+        and step.get("run", {}).get("name") == "Install locked Python dependencies"
+    )
+    assert '"$HOME/.zprofile"' in python_install["command"]
+    assert "zsh -lc 'python3 --version'" in python_install["command"]
     assert "Python policy and tooling tests" in python_names
     assert "P00 authority owner tests" in python_names
     assert "Python policy and tooling tests" not in rust_names
+
+
+def test_regular_workflow_keeps_standard_rust_and_precommit_gates():
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    rust_steps = config["jobs"]["verify"]["steps"]
+    python_steps = config["jobs"]["verify-python"]["steps"]
+    rust_runs = {
+        step["run"]["name"]: step["run"]["command"] for step in rust_steps if "run" in step
+    }
+    python_runs = {
+        step["run"]["name"]: step["run"]["command"] for step in python_steps if "run" in step
+    }
+    for name, commands in {
+        "Rust dependency and MSRV checks": (
+            "just rust-machete",
+            "just rust-msrv",
+        ),
+        "Rust docs and benchmark compilation": ("just rust-doc", "just rust-bench-build"),
+    }.items():
+        script = rust_runs[name]
+        assert script.startswith("set -euo pipefail\n")
+        assert "unset BASH_ENV ENV\n" in script
+        assert all(f"\n{command}\n" in script for command in commands)
+    precommit = python_runs["Pre-commit hooks"]
+    assert "just rust-policy" in python_runs["Python policy and tooling tests"]
+    assert precommit.startswith("set -euo pipefail\n")
+    assert (
+        "uv run --frozen --extra dev pre-commit run --all-files --show-diff-on-failure" in precommit
+    )
+    assert "git diff --exit-code" in precommit
 
 
 def test_circleci_explicit_test_selector_must_be_registered(tmp_path: Path):
