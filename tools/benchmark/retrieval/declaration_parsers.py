@@ -1,4 +1,4 @@
-"""Use the producer's vendored Go and TypeScript grammars in benchmark oracles.
+"""Use the producer's canonical vendored grammars in benchmark oracles.
 
 Other languages retain their existing pinned language-pack parser. Vendored
 C sources are compiled once outside the checkout; no downloaded grammar or
@@ -21,11 +21,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 VENDOR = ROOT / "vendor/tree-sitter-typescript"
 GO_VENDOR = ROOT / "vendor/tree-sitter-go"
+RUST_VENDOR = ROOT / "vendor/tree-sitter-rust"
+PYTHON_VENDOR = ROOT / "vendor/tree-sitter-python"
+
+
+def _grammar_sources() -> dict[str, Path]:
+    return {
+        "go": GO_VENDOR / "src",
+        "rust": RUST_VENDOR / "src",
+        "python": PYTHON_VENDOR / "src",
+        "typescript": VENDOR / "typescript/src",
+        "tsx": VENDOR / "tsx/src",
+    }
 
 
 def component_source_digests() -> dict[str, str]:
     paths = []
-    for vendor in (VENDOR, GO_VENDOR):
+    for vendor in (VENDOR, GO_VENDOR, RUST_VENDOR, PYTHON_VENDOR):
         if vendor.is_symlink() or vendor.parent.is_symlink() or not vendor.is_dir():
             raise ValueError("vendored parser sources missing or linked")
         entries = sorted(vendor.rglob("*"))
@@ -65,7 +77,7 @@ def _checked_library(directory: Path, expected: dict) -> Path:
 
 
 def _library(grammar: str) -> Path:
-    if grammar not in ("go", "typescript", "tsx"):
+    if grammar not in _grammar_sources():
         raise ValueError("unsupported vendored grammar")
     before = component_source_digests()
     system = platform.system()
@@ -93,7 +105,7 @@ def _library(grammar: str) -> Path:
     cache.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".parser-", dir=cache))
     try:
-        source = GO_VENDOR / "src" if grammar == "go" else VENDOR / grammar / "src"
+        source = _grammar_sources()[grammar]
         command = [
             compiler,
             "-dynamiclib" if system == "Darwin" else "-shared",
@@ -131,7 +143,7 @@ def _library(grammar: str) -> Path:
             shutil.rmtree(stage)
 
 
-@lru_cache(maxsize=3)
+@lru_cache(maxsize=5)
 def _language(grammar: str):
     from tree_sitter import Language
 
@@ -147,7 +159,7 @@ def _language(grammar: str):
 
 
 def get_parser(grammar: str):
-    if grammar not in ("go", "typescript", "tsx"):
+    if grammar not in _grammar_sources():
         from tree_sitter_language_pack import get_parser as language_pack_parser
 
         return language_pack_parser(grammar)

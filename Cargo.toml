@@ -28,7 +28,7 @@ members = [
     "benchmarks/retrieval",
     "benchmarks/bench-protocol",
 ]
-exclude = ["vendor/tree-sitter-typescript", "vendor/tree-sitter-go"]
+exclude = ["vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python"]
 resolver = "2"
 
 [workspace.package]
@@ -178,8 +178,8 @@ zstd = { version = "0.13.3", default-features = false }
 tree-sitter = "0.25"
 tree-sitter-go = { version = "=0.25.0", path = "vendor/tree-sitter-go" }
 tree-sitter-javascript = "0.25"
-tree-sitter-python = "0.25"
-tree-sitter-rust = "0.24"
+tree-sitter-python = { version = "=0.25.0", path = "vendor/tree-sitter-python" }
+tree-sitter-rust = { version = "=0.24.2", path = "vendor/tree-sitter-rust" }
 tree-sitter-typescript = { version = "=0.23.2", path = "vendor/tree-sitter-typescript" }
 unicode-normalization = "0.1"
 

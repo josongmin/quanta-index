@@ -60,6 +60,37 @@ def test_go_126_expression_operands_preserve_declaration_spans_and_refuse_malfor
             source_oracle.declaration_census("go", "broken.go", invalid)
 
 
+@pytest.mark.parametrize(
+    "grammar,path,raw,invalid",
+    [
+        (
+            "rust",
+            "input.rs",
+            b"fn Locate() { let value = 1; let _p = &raw const value; }\n",
+            b"fn Broken() { let _p = &raw const; }",
+        ),
+        (
+            "python",
+            "input.py",
+            b'def Locate():\n    return t"value {1 + 2}"\n',
+            b'def Broken():\n    return t"unterminated\n',
+        ),
+    ],
+)
+def test_producer_grammar_raw_references_and_template_strings_have_exact_spans(
+    grammar, path, raw, invalid
+):
+    from tools.benchmark.retrieval import gold_oracle, source_oracle
+
+    rows = source_oracle.declaration_census(grammar, path, raw)
+    assert [raw[start:end] for start, end, *_ in rows] == [b"Locate"]
+    spans, refusal = gold_oracle._definition_spans(raw, b"Locate", grammar, path=path)
+    assert refusal is None
+    assert spans == [(raw.index(b"Locate"), raw.index(b"Locate") + len(b"Locate"))]
+    with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
+        source_oracle.declaration_census(grammar, path, invalid)
+
+
 def test_vendored_parser_cache_refuses_identity_and_binary_tampering(tmp_path):
     from hashlib import sha256
 

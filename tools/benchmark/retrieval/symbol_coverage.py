@@ -99,22 +99,34 @@ def grammar_identity(root: Path = ROOT) -> str:
         rows = [p for p in lock["package"] if p["name"] == name]
         if len(rows) != 1 or rows[0]["version"] != version:
             raise ValueError(f"grammar lock identity differs: {name}")
-        if name in {"tree-sitter-go", "tree-sitter-typescript"} and (
-            "source" in rows[0] or "checksum" in rows[0]
-        ):
+        if name in {
+            "tree-sitter-go",
+            "tree-sitter-typescript",
+            "tree-sitter-rust",
+            "tree-sitter-python",
+        } and ("source" in rows[0] or "checksum" in rows[0]):
             raise ValueError(f"{name} grammar must resolve to the source-bound path dependency")
     manifest = tomllib.loads(regular_bytes(root / "Cargo.toml").decode())
-    for tag, version in [("typescript", "0.23.2"), ("go", "0.25.0")]:
+    for tag, version in [
+        ("typescript", "0.23.2"),
+        ("go", "0.25.0"),
+        ("rust", "0.24.2"),
+        ("python", "0.25.0"),
+    ]:
         if manifest["workspace"]["dependencies"]["tree-sitter-" + tag] != {
             "version": "=" + version,
             "path": "vendor/tree-sitter-" + tag,
         }:
             raise ValueError(f"{tag} grammar path dependency differs")
     return (
-        "tree-sitter@0.25.10;rust@0.24.2;"
+        "tree-sitter@0.25.10;rust@0.24.2+quanta-abi14-1;vendored-source-sha256="
+        + _vendor_digest(root / "vendor/tree-sitter-rust", "rust")
+        + ";"
         "go@0.25.0+quanta-go-compatibility-1;vendored-source-sha256="
         + _vendor_digest(root / "vendor/tree-sitter-go", "go")
-        + ";javascript@0.25.0;python@0.25.0;"
+        + ";javascript@0.25.0;python@0.25.0+quanta-abi14-1;vendored-source-sha256="
+        + _vendor_digest(root / "vendor/tree-sitter-python", "python")
+        + ";"
         "typescript@0.23.2+quanta-typescript-compatibility-2;vendored-source-sha256="
         + _vendor_digest(root / "vendor/tree-sitter-typescript", "typescript")
     )

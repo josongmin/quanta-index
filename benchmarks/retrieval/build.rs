@@ -72,6 +72,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (tag, environment_key) in [
         ("typescript", "QI_TYPESCRIPT_GRAMMAR_SHA256"),
         ("go", "QI_GO_GRAMMAR_SHA256"),
+        ("rust", "QI_RUST_GRAMMAR_SHA256"),
+        ("python", "QI_PYTHON_GRAMMAR_SHA256"),
     ] {
         bind_grammar(
             &manifest.join(format!("../../vendor/tree-sitter-{tag}")),

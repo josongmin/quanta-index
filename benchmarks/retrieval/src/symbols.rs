@@ -34,12 +34,16 @@ pub use preflight::{
 /// digest and invalidates frozen evidence.
 pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
     "tree-sitter@0.25.10;",
-    "rust@0.24.2;",
+    "rust@0.24.2+quanta-abi14-1;vendored-source-sha256=",
+    env!("QI_RUST_GRAMMAR_SHA256"),
+    ";",
     "go@0.25.0+quanta-go-compatibility-1;vendored-source-sha256=",
     env!("QI_GO_GRAMMAR_SHA256"),
     ";",
     "javascript@0.25.0;",
-    "python@0.25.0;",
+    "python@0.25.0+quanta-abi14-1;vendored-source-sha256=",
+    env!("QI_PYTHON_GRAMMAR_SHA256"),
+    ";",
     "typescript@0.23.2+quanta-typescript-compatibility-2;vendored-source-sha256=",
     env!("QI_TYPESCRIPT_GRAMMAR_SHA256"),
 );
@@ -48,6 +52,8 @@ pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
 // vendor directory alone must not claim that those bytes were linked.
 const _: &str = tree_sitter_typescript::QUANTA_COMPATIBILITY_PATCH_ID;
 const _: &str = tree_sitter_go::QUANTA_COMPATIBILITY_PATCH_ID;
+const _: &str = tree_sitter_rust::QUANTA_GRAMMAR_BUILD_ID;
+const _: &str = tree_sitter_python::QUANTA_GRAMMAR_BUILD_ID;
 
 /// Producer identity for batch digests.
 pub const SYMBOL_PRODUCER_IDENTITY: &str = "source-bound-symbols-v2";
@@ -983,7 +989,7 @@ mod tests {
                       pub fn start(&self) {}\n    \
                       fn secret_helper(&self) {}\n\
                       }\n\
-                      fn main() {}\n\
+                      fn main() { let value = 1; let _p = &raw const value; }\n\
                       mod inner {\n    \
                       pub fn nested() {}\n\
                       }\n";
@@ -1012,6 +1018,10 @@ mod tests {
             records.first().expect("first symbol").local_name.as_ref(),
             "Engine"
         );
+        assert!(matches!(
+            extract_symbols("broken.rs", "fn Broken() { let p = &raw const; }"),
+            Err(SymbolExtractError::ParseFailure { .. })
+        ));
     }
 
     #[test]
@@ -1122,7 +1132,7 @@ mod tests {
                       def start(self):\n        pass\n\n    \
                       @staticmethod\n    \
                       def build():\n        return Service()\n\n\
-                      def standalone():\n    pass\n";
+                      def standalone():\n    return t\"value {1 + 2}\"\n";
         let records = extract_symbols("svc/service.py", source).expect("python parses");
         let method = find(&records, "start");
         assert_eq!(method.symbol_kind.as_str(), "method");
@@ -1139,6 +1149,10 @@ mod tests {
         let free = find(&records, "standalone");
         assert_eq!(free.symbol_kind.as_str(), "function");
         assert!(free.container_qualified_name.is_none());
+        assert!(matches!(
+            extract_symbols("broken.py", "def Broken():\n    return t\"unterminated\n"),
+            Err(SymbolExtractError::ParseFailure { .. })
+        ));
     }
 
     #[test]
