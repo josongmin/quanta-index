@@ -440,6 +440,13 @@ No optimization speedup or qualified performance ranking is established.
 | Scale/load | Finish current CLI/refusal tests, execute corrected medium then large/XL, use exact `SourceFileKey` for scoped delete, distinguish same-process reopen from process restart, collect clearly labeled aggregate CPU deltas | Two source repositories sharing one path: deleting repo0 leaves repo1 searchable, including reopen. Missing timings remain missing; actual typed capacity refusal retains its stage and binding |
 | Integration/proof | Finish the existing scorer's five joined reports and adopt a versioned fresh-output mode in the existing `portable_proof.py` SDK rail for positive build-source binding | Source closure before/after, pinned compiler/tool/flags and runner/daemon digests agree with the pair; dirty/preexisting/symlink output, unbound wrappers/cache, source drift, swapped binaries and debug/release mismatch refuse |
 
+The fresh 5,950-query matrix above covers exact plus four typo transformations.
+It does not cover prefix, infix, components, no-answer, natural-language or ARB
+lanes. Reuse their separately admitted source-bound suites in subsequent
+captures and publish separate tables; never merge their denominators with this
+matrix or inflate unique sample counts by duplicate transformations. Synthetic
+multi-source scale fixtures are also separate from real holdout repositories.
+
 `portable_proof.py` already owns source closure, tool/command custody, SDK
 roundtrip and frozen binary digests. Extend that authority; do not add another
 build receipt harness. An empty target alone is insufficient when an unbound
