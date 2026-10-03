@@ -848,8 +848,8 @@ impl CpuSnapshot {
             .filter(|elapsed| *elapsed >= 0)
             .ok_or_else(|| anyhow::anyhow!("scale: CPU system time decreased"))?;
         Ok(CpuUsageV1 {
-            user_ms: user as f64 / 1_000.0,
-            system_ms: system as f64 / 1_000.0,
+            user_ms: Duration::from_micros(u64::try_from(user)?).as_secs_f64() * 1_000.0,
+            system_ms: Duration::from_micros(u64::try_from(system)?).as_secs_f64() * 1_000.0,
         })
     }
 }
@@ -1911,6 +1911,10 @@ pub fn artifact(
                     ("top_k", SCALE_TOP_K.to_string()),
                     ("warm_query_samples", WARM_QUERY_SAMPLES.to_string()),
                     ("history_max_generations", "2".to_string()),
+                    (
+                        "client_request_timeout_ms",
+                        measurement.client_request_timeout_ms.to_string(),
+                    ),
                 ],
             ),
             model_revision: measurement.model_revision.clone(),
@@ -2581,6 +2585,10 @@ mod tests {
         assert_eq!(tier["daemon_phases_ms"]["cold_open_ms"], 1.0);
         assert_eq!(tier["adapter_only_phases_ms"]["execute_ms"], 0.05);
         assert_eq!(tier["delta"]["reclaimed_bytes"], 8_000);
+        assert_eq!(tier["client_request_timeout_ms"], 30_000);
+        assert_eq!(tier["cpu_process"]["user_ms"], 3.0);
+        assert_eq!(tier["cpu_process"]["system_ms"], 2.0);
+        assert!(tier["delete_reopen"].is_null());
         assert!(
             tier.get("open_ms").is_none(),
             "the misnamed activation field is gone"
@@ -2604,8 +2612,9 @@ mod tests {
             mem_bytes: 1 << 30,
             hostname_hash: "sha256:host".to_string(),
         };
-        let artifact = artifact(&sample_measurement(), head, host).expect("observable");
-        let value = artifact.to_json().expect("serializes");
+        let report =
+            artifact(&sample_measurement(), head.clone(), host.clone()).expect("observable");
+        let value = report.to_json().expect("serializes");
         assert_eq!(value["dimension"], "scale");
         assert_eq!(value["phases"]["build_ms"], 1.5);
         assert_eq!(value["phases"]["update_ms"], 0.9);
@@ -2624,5 +2633,18 @@ mod tests {
         );
         assert_eq!(value["rows"][0]["scenario_id"], "scale.small.warm_query");
         assert_eq!(value["rows"][0]["latency"]["samples"], 3);
+        let mut longer_timeout = sample_measurement();
+        longer_timeout.client_request_timeout_ms = 300_000;
+        let changed = artifact(&longer_timeout, head.clone(), host.clone())
+            .expect("observable")
+            .to_json()
+            .expect("serializes");
+        assert_ne!(
+            value["provenance"]["config_digest"],
+            changed["provenance"]["config_digest"]
+        );
+        let mut missing_cpu = sample_measurement();
+        missing_cpu.cpu = None;
+        assert!(artifact(&missing_cpu, head, host).is_err());
     }
 }

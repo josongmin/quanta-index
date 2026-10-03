@@ -146,6 +146,13 @@ def test_sdk_timing_children_preserve_outer_clock_and_reject_false_attribution()
         },
     }
     pairrun.validate_completed_query_timing(metrics)
+    # Own-clock observations have the same u64 wire domain as their children.
+    # Reject fabricated enormous intervals before converting them to floats.
+    for start, end in ((0, 1 << 64), (10**400, 10**400 + 100), (True, 110)):
+        mutant = copy.deepcopy(metrics)
+        mutant["query_timing"]["observations"][0].update(start_ns=start, end_ns=end)
+        with pytest.raises(pairrun.RunError, match="clock is not monotonic and serial"):
+            pairrun.validate_completed_query_timing(mutant)
     for key in ("sdk_execute_ns", "sdk_post_execute_ns", "runner_result_materialize_ns"):
         for value in (-1, True, 1 << 64, 101):
             mutant = copy.deepcopy(metrics)

@@ -893,6 +893,10 @@ PYTHONPATH=. uv run --frozen --extra dev python -m tools.benchmark.retrieval.que
 
 The output is `diagnostic_unqualified`; inspect per-route/task deltas and sample
 coverage. Capture the two modes with identical frozen inputs and fresh state roots.
+The v2 report names its scope as plane stage and response trace observation.
+Lexical backend clock reads execute in both modes; this control does not measure
+total instrumentation overhead or attribute IPC cost. Historical v1 output is
+retained as its original diagnostic, not upgraded by replay metadata.
 
 ## Edit-loop checks
 

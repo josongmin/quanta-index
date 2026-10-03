@@ -6043,7 +6043,13 @@ def validate_completed_query_timing(metrics: dict, record: dict | None = None) -
         ):
             raise RunError("completed-response timing observation is malformed")
         start, end = entry["start_ns"], entry["end_ns"]
-        if type(start) is not int or type(end) is not int or start < previous_end or end < start:
+        if (
+            type(start) is not int
+            or type(end) is not int
+            or start < previous_end
+            or end < start
+            or end > (1 << 64) - 1
+        ):
             raise RunError("completed-response timing clock is not monotonic and serial")
         previous_end = end
         if sdk_child_keys and (

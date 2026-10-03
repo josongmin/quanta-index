@@ -4,6 +4,8 @@ Run identical frozen runner inputs with --query-stage-observation enabled/disabl
 state root for each, and the same query protocol. This replay refuses differing
 results, model/input identities or repetition coverage. Values describe these
 samples only; host quietness and interleaved repetitions remain separate gates.
+The control toggles plane stage/trace collection. Backend clock reads execute
+in both arms, so this is not an instrumentation-free backend comparison.
 """
 
 from __future__ import annotations
@@ -241,9 +243,16 @@ def compare(
     if len(on_keys) != len(summaries) or on_keys != off_keys or on_keys != expected:
         raise ValueError("on/off task inventory differs from actual executed rows")
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "diagnostic_unqualified",
-        "scorer_identity": "query-stage-clock-overhead-v1",
+        "scorer_identity": "query-stage-clock-overhead-v2",
+        "measurement_scope": "plane_stage_and_response_trace_observation",
+        "backend_clock_reads": "enabled_in_both_arms",
+        "qualification_limits": [
+            "not_total_instrumentation_overhead",
+            "not_ipc_attribution",
+            "host_and_repetition_qualification_not_established",
+        ],
         "rows": summaries,
     }
 

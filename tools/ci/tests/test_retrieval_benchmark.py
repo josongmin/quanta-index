@@ -15662,7 +15662,16 @@ def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp
         )
         value["total_ms"] = sum(value["phases_ms"].values())
     result = overhead.compare(record, record, phases, off_phases, diagnostic, off, pack)
+    assert result["schema_version"] == 2
+    assert result["scorer_identity"] == "query-stage-clock-overhead-v2"
     assert result["status"] == "diagnostic_unqualified"
+    assert result["measurement_scope"] == "plane_stage_and_response_trace_observation"
+    assert result["backend_clock_reads"] == "enabled_in_both_arms"
+    assert result["qualification_limits"] == [
+        "not_total_instrumentation_overhead",
+        "not_ipc_attribution",
+        "host_and_repetition_qualification_not_established",
+    ]
     assert all(
         row["on_median_ms"] == 5.0
         and row["off_median_ms"] == 2.5
@@ -15978,6 +15987,27 @@ def test_v8_authority_stage_replay_preserves_nullable_children_and_phase_contrac
         )
     with pytest.raises(pairrun.RunError):
         pairrun._validate_ingest_diagnostic(base, record, lexical_stage_contract=True)
+
+    # A valid historical phase cannot satisfy a current producer's SDK timing
+    # contract, even when all capture byte bindings are updated consistently.
+    phase_path = path.with_name("phase-metrics.json")
+    phase = json.loads(phase_path.read_text())
+    phase["schema_version"] = 3
+    for observation in phase["query_timing"]["observations"]:
+        for key in ("sdk_execute_ns", "sdk_post_execute_ns", "runner_result_materialize_ns"):
+            del observation[key]
+    pairrun._validate_phase_metrics(phase, "historical phase fixture")
+    phase_path.write_text(json.dumps(phase))
+    manifest_path = path.parent.parent / "quanta-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["runs"][0]["phase_metrics_digest"] = pairrun.sha_file(phase_path)
+    manifest_path.write_text(json.dumps(manifest))
+    _rebind_phase_metrics_digests(stage, phase_path)
+    verdict = _stage_verdict(stage)
+    assert verdict["states"]["PAIR_VALID"] == "fail"
+    assert "protocol v6 requires measured Quanta phase schema v4" in str(
+        verdict["state_evidence"]["PAIR_VALID"]
+    )
 
 
 @pytest.mark.parametrize("parameter", ["timeout_secs", "cleanup_timeout_secs"])

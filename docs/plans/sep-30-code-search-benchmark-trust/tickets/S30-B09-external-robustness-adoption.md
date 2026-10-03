@@ -349,6 +349,16 @@ not the binary's build source. Separate binary build binding, executable hashes
 and dependency checks are required; no engine6f3 or current-main claim follows
 from driver6f3. Old records are never rebound to a new suite or source.
 
+The current main Sourcegraph scope consumer validates exact manifest paths,
+complete `count:all` path replies and native stored-byte hashes before/after
+query capture. Frozen6f8 did not contain this receipt path, so its global12
+captures cannot be promoted retroactively by adding a spec flag. A new
+after-only sidecar would need the exact12 projection refs/11,695 code files
+and captured index-tree/runtime identities; even a passing after-only probe
+would not supply the missing query-bracketed path/native witnesses. The
+other chat's C3 receipt covers13,347 different files and is not reused here.
+Native path inventory/extraction for this supplementary scope is NOT_RUN.
+
 ### Original-cohort fresh results
 
 `/private/tmp/qi-c5-osa1-fresh-join-20261004/five-product-8-valid-v3.json`
