@@ -861,3 +861,58 @@ The existing context C5 replay now requires the exact
 `rb-rank-context-density-first-coverage` report version and emits
 `metric_scope: context_span_density`. A forged file metric version is rejected
 before metric gating. The decision/benchctl focused rail passed 86 tests.
+
+## Frozen C4 v6 and native typo diagnostics (2026-10-03)
+
+**VERIFIED, diagnostic only:** clean `9d38b69d` rebuilt all twelve source-oracle
+capsules at `/private/tmp/qi-b08-capsules-v6-anchor-9d38b69d-20261003`.
+Their decoded `gold.json` payloads equal the previous twelve capsules. The
+source-bound C4 output is
+`/private/tmp/qi-b08-c4-bundle-9d38b69d-20261003`; its matrix SHA-256 is
+`73c99401d44b98b4f04c5aa2e871775da3a0c30a04c12dae91daf0eeba1edfd7`.
+It declares 72 repository/intent cells: 60 admitted diagnostic cells, twelve
+no-admission cells, 5,680 selected and 692 excluded tasks. All emitted input
+hashes and selected/excluded task partitions matched matrix replay. This is
+mechanical declaration-target evidence, not reviewed file relevance.
+
+The frozen Quanta `code_search_typo_file` run used the release/all-features
+searchd and runner bound in
+`/private/tmp/qi-b08-product-8e8592f4-20261003/build-binding.json`.
+All twelve repositories' 4,206 admitted typo queries completed with 4,146
+file Hit@10, MRR@10 0.8750 and NDCG@10 0.9009; 60 misses were all `capped`,
+and 21 of 1,093 query families had at least one miss. There were no query
+execution failures. Per-repository status, native record/report hashes, and
+the 17m52s sum of run-plus-evaluator wall time excluding the reused `lo` run
+are in
+`/private/tmp/qi-b08-product-8e8592f4-20261003/quanta-typo-summary.json`.
+The wall sum is not a search-latency benchmark.
+
+The two original `lo` misses had gold files at ranks 14/18 and 15/23/25 in
+a top-50 continuation. New controls kept their frozen top-ten `(path,score)`
+prefixes unchanged: `bat.osa.182` found its declaration file at rank 11
+(`/tmp/u0`), and `typeorm.osa.209` found five declaration files at ranks
+11/12/13/26/27 (`/tmp/u1`). These four cases establish ranking and result
+limit as their failure stage; they do not prove that every capped miss has the
+same cause. The TypeORM first page ranks usages, tests, and fixture files ahead
+of declarations with tied scores. A content-file search and a declaration
+navigation judgment remain distinct contracts.
+
+**VERIFIED, separately scoped native cs diagnostic:** the exact same `lo`
+358-task typo suite was submitted as `cs 3.2.0` native `~1` under
+`/private/tmp/qi-b08-product-8e8592f4-20261003/cs-fuzzy-lo-9d38`.
+Its implementation checks only same-length content windows, so the shared
+edit-class report admits 91 ASCII single substitutions: Quanta 91/91 versus
+cs 90/91 file Hit@10. The other 267 submitted rows stay visible by operation
+but are excluded from this shared class. The source-bound replayed report is
+`/private/tmp/qi-b08-product-8e8592f4-20261003/cs-fuzzy-lo-final-report.json`;
+its scorer/source binding is adjacent. Source correction commits `ba9cf4c9`
+and `239d1907` have focused tests. The cs capture explicitly lacks indexed
+universe attestation, so these numbers do not establish a product ranking.
+
+**NOT_RUN:** twelve-repository matched default-file product capture, current
+five-product external service capture, independently reviewed subjective
+labels, qualified file-ranking C5 contract/capture, and a release decision.
+Sourcegraph/OpenGrok localhost endpoints 7080/7081 refused connection during
+this diagnostic. Existing `lo` exact-name paired capture at `/tmp/qx` passed
+native pair replay with both Quanta and Semble at 98/98 file Hit@10; it remains
+`diagnostic_unqualified`.
