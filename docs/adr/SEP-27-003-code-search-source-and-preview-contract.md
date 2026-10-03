@@ -279,7 +279,14 @@ the current guards are not proof of a physical heap ceiling.
   preview span are verified before ranking. Short queries use a bounded scan.
   Posting, file, source-byte and token-comparison limits return a typed error;
   no partial result is reported as complete. This explicit request has its own
-  cursor order. Ordinary CodeSearch terms retain their literal semantics.
+  cursor order.
+- Ordinary CodeSearch first evaluates and ranks literal source/path matches.
+  When that verified file set is empty, a single unscoped ASCII identifier of
+  3–64 bytes under folded case uses the same bounded OSA1 content search as a
+  fallback. An exact result, including a path match, retains literal ranking
+  and cursor order. Scoped, regex, multi-term and `case:yes` requests stay
+  literal. The fallback reports its own complete file count and cursor order;
+  a budget refusal is typed rather than converted into an empty result.
 - The request budget reaches cold generation open and file-index construction.
   Trigram construction checks between 64 KiB overlapping slices. One source
   read or normalization call can still process an admitted 8 MiB file before

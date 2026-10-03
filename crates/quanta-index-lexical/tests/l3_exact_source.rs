@@ -379,6 +379,94 @@ fn explicit_typo_search_uses_source_tokens_and_valid_spans() -> TestResult {
 }
 
 #[test]
+fn default_bare_identifier_uses_osa1_only_after_empty_literal_search() -> TestResult {
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        code_scope("near.rs", "load_json", 4)?,
+        code_scope("far.rs", "load_jsxx", 4)?,
+        code_scope("load_json.rs", "other stuff", 5)?,
+    ])?;
+    let request = code_query(&["load_jsom"], false);
+    let rows = searcher
+        .search_constrained(
+            &request,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].repo_relative_path.as_str(), "near.rs");
+    assert_eq!(
+        rows[0]
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.original_focus)
+            .map(|span| (span.start, span.end)),
+        Some((0, 9))
+    );
+
+    let mut content_only = request.clone();
+    content_only.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.content".into(),
+        args: vec![LqPredicateArg::RawString("load_jsom".into())],
+    });
+    let mut path_only = request.clone();
+    path_only.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.path".into(),
+        args: vec![LqPredicateArg::RawString("load_jsom".into())],
+    });
+    for exact_request in [
+        content_only,
+        path_only,
+        code_query(&["load_jsom"], true),
+        code_query(&["load_jsom", "other"], false),
+        code_query(&["zzzxxxx"], false),
+    ] {
+        assert!(
+            searcher
+                .search_constrained(
+                    &exact_request,
+                    &QueryConstraintSetV1::default(),
+                    &LexicalPageSpec::first(10),
+                    &RequestBudgetV1::unbounded(),
+                )?
+                .candidates
+                .is_empty()
+        );
+    }
+
+    let (_dir, exact_searcher) = fixture_with_scopes(vec![
+        code_scope("exact.rs", "load_jsom", 4)?,
+        code_scope("near.rs", "load_json", 4)?,
+    ])?;
+    let first = exact_searcher.search_constrained(
+        &request,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(1),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(first.exact_total, Some(1));
+    assert_eq!(first.candidates.len(), 1);
+    assert_eq!(first.candidates[0].repo_relative_path.as_str(), "exact.rs");
+    let after = LexicalCursor::at(ManifestGeneration::new(1), first.candidates[0].order_key());
+    assert!(
+        exact_searcher
+            .search_constrained(
+                &request,
+                &QueryConstraintSetV1::default(),
+                &LexicalPageSpec {
+                    fetch: 1,
+                    after: Some(after),
+                },
+                &RequestBudgetV1::unbounded(),
+            )?
+            .candidates
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[test]
 fn code_search_matches_file_across_chunk_boundaries_and_maps_unicode_source_span() -> TestResult {
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("cross.rs", "alphaBeta İ", 5)?,
