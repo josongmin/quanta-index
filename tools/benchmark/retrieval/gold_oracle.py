@@ -25,7 +25,6 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from tree_sitter_language_pack import get_parser
 
 try:
     from tools.benchmark.retrieval import declaration_census_audit, source_oracle
@@ -34,6 +33,8 @@ except ModuleNotFoundError:  # benchmark script path without the repository root
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.benchmark.retrieval import declaration_census_audit, source_oracle
+
+from tools.benchmark.retrieval.declaration_parsers import get_parser
 
 try:
     from evidence import IO_CHUNK_BYTES, EvidenceError, _consume_regular_file

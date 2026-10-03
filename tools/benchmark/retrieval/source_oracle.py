@@ -351,7 +351,7 @@ def declaration_census(
     if grammar is None:
         raise SourceOracleError(f"{language} census does not admit file suffix: {path}")
     try:
-        from tree_sitter_language_pack import get_parser
+        from tools.benchmark.retrieval.declaration_parsers import get_parser
 
         parser = get_parser(grammar)
     except (ImportError, LookupError, ValueError) as exc:

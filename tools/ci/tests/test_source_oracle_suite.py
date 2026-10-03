@@ -14,6 +14,48 @@ from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import source_oracle_suite
 
 
+@pytest.mark.parametrize("suffix", ["ts", "tsx"])
+def test_typescript_oracles_use_the_producer_compatibility_grammar(suffix):
+    from tools.benchmark.retrieval import gold_oracle, source_oracle
+
+    raw = (
+        b'export type * from "./other";\n'
+        b'export type * as Other from "./other";\n'
+        b"export function Locate() {\n"
+        b"  return runnerImport<typeof import('./basic')>(fixture('cjs.js'),);\n"
+        b"}\n"
+    )
+    rows = source_oracle.declaration_census("typescript", "input." + suffix, raw)
+    assert [raw[start:end] for start, end, *_ in rows] == [b"Locate"]
+    spans, refusal = gold_oracle._definition_spans(raw, b"Locate", "typescript")
+    assert refusal is None
+    assert len(spans) == 1
+    assert raw[spans[0][0] : spans[0][1]] == b"Locate"
+    with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
+        source_oracle.declaration_census(
+            "typescript", "broken." + suffix, raw + b"function Broken( {"
+        )
+
+
+def test_vendored_parser_cache_refuses_identity_and_binary_tampering(tmp_path):
+    from tools.benchmark.retrieval import declaration_parsers
+    from hashlib import sha256
+
+    binary = tmp_path / "parser.so"
+    binary.write_bytes(b"fixed parser bytes")
+    marker = tmp_path / "ready.json"
+    identity = {"grammar": "typescript"}
+    marker.write_text(
+        json.dumps({"identity": identity, "binary_sha256": sha256(binary.read_bytes()).hexdigest()})
+    )
+    assert declaration_parsers._checked_library(tmp_path, identity) == binary
+    with pytest.raises(ValueError, match="identity differs"):
+        declaration_parsers._checked_library(tmp_path, {"grammar": "tsx"})
+    binary.write_bytes(b"changed parser bytes")
+    with pytest.raises(ValueError, match="binary differs"):
+        declaration_parsers._checked_library(tmp_path, identity)
+
+
 def _source_repo(
     tmp_path: Path, extra_files: dict[str, bytes] | None = None
 ) -> tuple[Path, str, dict[str, bytes]]:
@@ -665,14 +707,20 @@ def test_default_code_search_absence_rejects_one_edit_fallback():
     so = ev.source_oracle
     raw = b"def test_init(): pass\n"
     oracle = so.SourceOracleIndex({"tests.py": (raw, ev.digest(raw))}, {"test_unit", "Absent"})
-    assert oracle.expected_rows(so.ASCII_CODE_SEARCH_ABSENT_CASEFOLD, "test_unit", "distinct_file") == []
+    assert (
+        oracle.expected_rows(so.ASCII_CODE_SEARCH_ABSENT_CASEFOLD, "test_unit", "distinct_file")
+        == []
+    )
     with pytest.raises(so.SourceOracleError, match="identifier osa1 absent"):
         oracle.expected_rows(
             so.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD, "test_unit", "distinct_file"
         )
-    assert oracle.expected_rows(
-        so.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD, "Absent", "distinct_file"
-    ) == []
+    assert (
+        oracle.expected_rows(
+            so.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD, "Absent", "distinct_file"
+        )
+        == []
+    )
 
 
 @pytest.mark.parametrize(
