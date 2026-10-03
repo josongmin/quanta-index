@@ -1472,3 +1472,35 @@ source-matched run used a new output root and changed only the split digest.
 index-universe attestation, repository-cluster decision, quiet-host timing,
 and deployment. The separate exposed twelve-repository diagnostics above
 cannot be folded into this fresh set.
+
+## Scale admission receipt audit and literal split digest correction (2026-10-03)
+
+An independent read-only join of the exposed scale ledger, all twelve recipes,
+the twelve gold capsules, the 72 C4 cells, and the twelve literal cells matched
+13,823 unique task IDs. Every candidate ID is selected or excluded exactly
+once. All 60 emitted C4 suite, blind-pack, and admission hashes and all twelve
+literal suite and blind-pack hashes matched their matrix entries. Final selected
+counts are 1,132 positive exact declarations, 1,215 prefix, 1,056 infix,
+1,115 components, 4,206 case-folded OSA1, 1,196 exact-content literals, and
+2,400 exact-declaration negatives. Each sampled mechanical lane therefore
+still exceeds 1,000 after source and query admission. This verifies input
+accounting, not retrieval quality or an independent holdout.
+
+The same join found a serialization defect: the frozen literal matrix records
+`split_manifest_sha256` as `sha256:<64 hex>`, while its sampling ledger and C4
+matrix use `<64 hex>`. The underlying 32-byte digest agrees. Commit
+`aa5bccfe` makes the literal adapter emit the shared 64-hex form, with a
+focused regression against the prefixed form. The original literal matrix and
+its hash remain unchanged. Its field is a legacy-format receipt and cannot
+pass a strict cross-matrix equality check without a fresh source-bound
+admission run.
+
+**VERIFIED:** `.venv/bin/python -m pytest -q
+tools/ci/tests/test_holdout_literal.py` (23/23); independent read-only ID,
+hash, release and split join over the above three frozen roots (12/12 recipes,
+72/72 C4 cells and 12/12 literal cells). **NOT_RUN:** a fresh literal matrix,
+product capture, relevance review and scale quality decision. The initial
+`python3 -m pytest` attempt used macOS Python 3.9 and failed because
+`zip(strict=True)` is unsupported there; the subsequent `python -m pytest`
+attempt encountered a host pytest plugin mismatch. Neither failure is a
+product-test result; the project `.venv` uses Python 3.12 and passed.
