@@ -1685,7 +1685,11 @@ impl TantivySearcher {
                         "lexical: component coverage source revision differs".into(),
                     ));
                 }
-                Ok(!source_proves_component_absence(&file.bytes, components, budget)?)
+                Ok(!source_proves_component_absence(
+                    &file.bytes,
+                    components,
+                    budget,
+                )?)
             },
             budget,
         )?;

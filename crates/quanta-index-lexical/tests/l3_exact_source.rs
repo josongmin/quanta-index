@@ -487,7 +487,7 @@ fn symbol_components_refuse_incomplete_in_scope_source() -> TestResult {
         "complete.rs",
         &[("clean", "cleanUp", "C::cleanUp", None)],
     )?;
-    let mut incomplete = scope("source-a", "unparsed.rs", &[])?;
+    let mut incomplete = scope("source-a", "CLEAN-UP.rs", &[])?;
     incomplete.coverage.symbols = SymbolCoverage::ParseFailed;
     let (_dir, searcher) = fixture_with_scopes(vec![complete, incomplete])?;
     let mut query = code_query(&["clean up"], false);
@@ -524,7 +524,30 @@ fn symbol_components_refuse_incomplete_in_scope_source() -> TestResult {
         &RequestBudgetV1::unbounded(),
     )?;
     assert_eq!(page.exact_total, Some(1));
-    assert_eq!(page.candidates[0].repo_relative_path.as_str(), "complete.rs");
+    assert_eq!(
+        page.candidates[0].repo_relative_path.as_str(),
+        "complete.rs"
+    );
+
+    let complete = scope(
+        "source-a",
+        "complete.rs",
+        &[("clean", "cleanUp", "C::cleanUp", None)],
+    )?;
+    let mut provably_absent = scope("source-a", "unparsed.rs", &[])?;
+    provably_absent.coverage.symbols = SymbolCoverage::ParseFailed;
+    let (_dir, searcher) = fixture_with_scopes(vec![complete, provably_absent])?;
+    let page = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(page.exact_total, Some(1));
+    assert_eq!(
+        page.candidates[0].repo_relative_path.as_str(),
+        "complete.rs"
+    );
     Ok(())
 }
 
