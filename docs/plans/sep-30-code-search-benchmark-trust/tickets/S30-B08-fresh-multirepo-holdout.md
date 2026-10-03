@@ -1509,7 +1509,7 @@ product-test result; the project `.venv` uses Python 3.12 and passed.
 
 The exposed twelve-repository pair receipts were rejoined read-only from each
 source-bound suite's `(path, file_sha256)` judgments and both native records.
-All task-level Hit@10 bits reproduce the frozen summaries:
+The independently recomputed task-level Hit@10 bits sum to the frozen counts:
 
 | Request and intent | Paired positive tasks | Quanta Hit@10 | Semble Hit@10 |
 | --- | ---: | ---: | ---: |
