@@ -4390,6 +4390,7 @@ version = "0.1.0"
 dependencies = [
  "ciborium",
  "imbl",
+ "memchr",
  "proptest",
  "quanta-index-contract-base",
  "quanta-index-lq-norm",

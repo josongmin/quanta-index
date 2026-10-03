@@ -5274,6 +5274,51 @@ mod tests {
         batch
     }
 
+    #[test]
+    fn raw_ascii_symbol_name_policy_checks_definition_bytes() {
+        let mut batch = fixture_search_corpus_batch();
+        let scope = &mut batch.replace_scopes[0];
+        scope.coverage.symbol_name_source_policy = crate::SymbolNameSourcePolicyV1::RawAsciiLocalName;
+        scope.coverage.symbols = crate::SymbolCoverage::Complete { symbol_count: 1 };
+        scope.symbols.push(SymbolRecord {
+            symbol_id: crate::SymbolId::new("symbol-main"),
+            repo_relative_path: RepoRelativePath::new("src/main.rs"),
+            language: scope.coverage.language.clone(),
+            symbol_kind: crate::lex::SymbolKindCode::new("function").expect("valid kind"),
+            symbol_kind_family: None,
+            local_name: "main".into(),
+            qualified_name: "main".into(),
+            signature: None,
+            visibility: None,
+            definition_span: crate::lex::SymbolSpan {
+                path: "src/main.rs".into(),
+                byte_start: 0,
+                byte_end: 9,
+                line_start: 1,
+                line_end: 1,
+            },
+            container_qualified_name: None,
+            relationship: crate::lex::SymbolRelationship::Def,
+        });
+        scope.coverage.unit_set_sha256 =
+            crate::source_file_unit_set_sha256(&scope.chunks, &scope.symbols)
+                .expect("fixture units encode");
+        assert_eq!(batch.validate_surface_mutations_v1(), Ok(()));
+
+        // A name elsewhere in the file cannot justify a mismatched span.
+        batch.replace_scopes[0].symbols[0].definition_span.byte_end = 2;
+        assert_eq!(
+            batch.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::SymbolNameSourceMismatch)
+        );
+        batch.replace_scopes[0].symbols[0].definition_span.byte_end = 9;
+        batch.replace_scopes[0].symbols[0].local_name = "other".into();
+        assert_eq!(
+            batch.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::SymbolNameSourceMismatch)
+        );
+    }
+
     fn fixture_semantic_batch() -> SemanticIngestBatch {
         SemanticIngestBatch {
             repo_id: fixture_repo_id(),
