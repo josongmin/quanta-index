@@ -399,7 +399,14 @@ def validate_capture(
         and isinstance(value.get("execution_profile"), dict)
         and value["execution_profile"].get("policy") == "code_search_exact_content_file"
     )
-    if exact_content:
+    source_bound = exact_content or (
+        version == 5
+        and isinstance(value, dict)
+        and isinstance(value.get("execution_profile"), dict)
+        and value["execution_profile"].get("policy") == "code_search_file"
+        and ("source_repo_id" in value or "source_revision_id" in value)
+    )
+    if source_bound:
         fields.extend(["source_repo_id", "source_revision_id"])
     capture = object_keys(
         value,
@@ -408,8 +415,8 @@ def validate_capture(
     )
     system = capture["system"]
     require(system in CAPTURE_SYSTEMS, f"{where}.system must be quanta or semble")
-    if exact_content:
-        require(system == "quanta", f"{where}.exact-content capture must be Quanta")
+    if source_bound:
+        require(system == "quanta", f"{where}.source-bound capture must be Quanta")
         string(capture["source_repo_id"], where + ".source_repo_id")
         string(capture["source_revision_id"], where + ".source_revision_id")
     require(
@@ -2142,12 +2149,12 @@ def _validate_run(
                 allow_span_accounting=version == 5 and capture["system"] == "quanta",
                 allow_score=score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1"),
             )
-            if profile_policy == "code_search_exact_content_file":
+            if profile_policy in ("code_search_file", "code_search_exact_content_file") and "source_repo_id" in capture:
                 accounting = candidate["span_accounting"]
                 require(
                     accounting["source_repo_id"] == capture["source_repo_id"]
                     and accounting["source_revision_id"] == capture["source_revision_id"],
-                    f"exact-content candidate source pin differs from capture: {key}",
+                    f"file candidate source pin differs from capture: {key}",
                 )
             if score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1"):
                 require("score" in candidate, f"missing native SDK score for {key}")

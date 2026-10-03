@@ -315,6 +315,10 @@ def validate_artifact(
     )
     capture = record["captures"][record["route_provenance"]["lexical"]["capture_id"]]
     require(
+        "source_repo_id" in capture and "source_revision_id" in capture,
+        "rank study requires original capture source identity, including zero-hit tasks",
+    )
+    require(
         capture["execution_profile"] == qp.execution_profile(policy)
         and artifact["execution_profile_sha256"]
         == capture["execution_profile_sha256"]
