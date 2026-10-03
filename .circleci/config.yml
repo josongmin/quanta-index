@@ -227,12 +227,28 @@ jobs:
                 uv run --frozen --extra dev python tools/ci/agent/validate_agent_output.py "$file"
               done
       - run:
-          name: P00 authority owner tests
+          name: Produce and validate P00 authority manifest
           no_output_timeout: 20m
           command: |
             set -euo pipefail
             unset BASH_ENV ENV
-            uv run --frozen --extra dev just proof-p00-authority-freeze
+            mkdir -p artifacts/proof-authority/raw
+            started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            uv run --frozen --extra dev just proof-p00-authority-freeze | tee artifacts/proof-authority/raw/p00-authority.log
+            ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            uv run --frozen --extra dev python tools/ci/write-circleci-p00-terminal.py \
+              --started-at "$started_at" --ended-at "$ended_at" \
+              --out artifacts/proof-authority/raw/p00-terminal-input.json
+            uv run --frozen --extra dev python tools/ci/write-proof-manifest.py \
+              --proof-id p00-authority-freeze \
+              --terminal-input artifacts/proof-authority/raw/p00-terminal-input.json
+            uv run --frozen --extra dev just proof-authority-current-gate
+      - store_artifacts:
+          path: artifacts/proof-authority
+          destination: proof-authority
+      - store_artifacts:
+          path: artifacts/sep-21/p00/error-authority-inventory.json
+          destination: proof-authority/error-authority-inventory.json
       - restore_cache:
           keys:
             - quanta-index-v2-linux-amd64-uv0.9.11-python3.12.12-precommit-{{ checksum ".pre-commit-config.yaml" }}-{{ checksum "uv.lock" }}
@@ -259,6 +275,87 @@ jobs:
             unset BASH_ENV ENV
             uv run --frozen --extra dev pre-commit run --all-files --show-diff-on-failure
             git diff --exit-code
+
+  verify-pr-coverage:
+    machine:
+      image: ubuntu-2404:2026.05.1
+    resource_class: medium
+    environment:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TERM_COLOR: always
+      UV_PYTHON: "3.12.12"
+    steps:
+      - checkout
+      - run: *install_verification_tools
+      - run: *verify_tool_versions
+      - restore_cache:
+          keys:
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-{{ checksum "Cargo.lock" }}
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-
+      - run:
+          name: Fetch locked Cargo dependencies
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            ./scripts/cargow fetch --locked
+            test -d "$HOME/.cargo/registry/src" || test -d "$HOME/.cargo/git/checkouts"
+      - save_cache:
+          key: quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+      - restore_cache:
+          keys:
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-llvm-cov0.8.5-{{ checksum "Cargo.lock" }}
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-llvm-cov0.8.5-
+      - run:
+          name: Install pinned coverage tooling
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            rustup component add llvm-tools-preview --toolchain 1.92.0
+            if [[ "$(cargo llvm-cov --version 2>/dev/null || true)" != "cargo-llvm-cov 0.8.5" ]]; then
+              cargo install cargo-llvm-cov --version 0.8.5 --locked
+            fi
+            [[ "$(cargo llvm-cov --version)" == "cargo-llvm-cov 0.8.5" ]]
+      - save_cache:
+          key: quanta-index-v2-linux-amd64-rust1.92.0-cargo-llvm-cov0.8.5-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/bin/cargo-llvm-cov
+      - restore_cache:
+          keys:
+            - quanta-index-v2-linux-amd64-uv0.9.11-python3.12.12-{{ checksum "uv.lock" }}
+            - quanta-index-v2-linux-amd64-uv0.9.11-python3.12.12-
+      - run:
+          name: Install locked coverage policy dependencies
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            uv sync --locked --extra dev
+            test -n "$(find "$HOME/.cache/uv" -mindepth 1 -print -quit)"
+      - save_cache:
+          key: quanta-index-v2-linux-amd64-uv0.9.11-python3.12.12-{{ checksum "uv.lock" }}
+          paths:
+            - ~/.cache/uv
+      - run:
+          name: Changed production Rust line coverage
+          no_output_timeout: 30m
+          environment:
+            CI_PR_BASE_SHA: << pipeline.event.github.pull_request.base.sha >>
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            [[ "$CI_PR_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git fetch --no-tags origin "$CI_PR_BASE_SHA"
+            git cat-file -e "${CI_PR_BASE_SHA}^{commit}"
+            uv run --frozen --extra dev python -m pytest tools/ci/tests/test_check_changed_line_coverage.py -q
+            ./scripts/cargow --lane coverage-lane llvm-cov nextest \
+              --workspace --all-features --locked --lcov \
+              --output-path /tmp/quanta-index-coverage.lcov
+            uv run --frozen --extra dev python tools/ci/lint/check-changed-line-coverage.py \
+              --lcov /tmp/quanta-index-coverage.lcov \
+              --base "$CI_PR_BASE_SHA" --minimum-percent 90
 
   heavy-correctness:
     machine:
@@ -362,6 +459,10 @@ workflows:
     jobs:
       - verify
       - verify-python
+      - verify-pr-coverage:
+          requires:
+            - verify
+          filters: pipeline.event.name == "pull_request"
   manual-heavy:
     when: << pipeline.parameters.run_heavy >>
     jobs:

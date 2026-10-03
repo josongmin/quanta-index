@@ -126,7 +126,16 @@ def test_all_job_commands_propagate_failures():
 
 def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
-    assert config["workflows"]["regular"]["jobs"] == ["verify", "verify-python"]
+    assert config["workflows"]["regular"]["jobs"] == [
+        "verify",
+        "verify-python",
+        {
+            "verify-pr-coverage": {
+                "requires": ["verify"],
+                "filters": 'pipeline.event.name == "pull_request"',
+            }
+        },
+    ]
     rust_steps = config["jobs"]["verify"]["steps"]
     python_steps = config["jobs"]["verify-python"]["steps"]
     assert rust_steps[0] == python_steps[0] == "checkout"
@@ -156,8 +165,32 @@ def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
     assert '"$HOME/.zprofile"' in python_install["command"]
     assert "zsh -lc 'python3 --version'" in python_install["command"]
     assert "Python policy and tooling tests" in python_names
-    assert "P00 authority owner tests" in python_names
+    assert "Produce and validate P00 authority manifest" in python_names
     assert "Python policy and tooling tests" not in rust_names
+
+
+def test_pr_coverage_uses_exact_base_and_fails_closed():
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    steps = config["jobs"]["verify-pr-coverage"]["steps"]
+    coverage = next(
+        step["run"]
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("run", {}).get("name") == "Changed production Rust line coverage"
+    )
+    assert coverage["environment"]["CI_PR_BASE_SHA"] == (
+        "<< pipeline.event.github.pull_request.base.sha >>"
+    )
+    command = coverage["command"]
+    assert "git cat-file -e" in command
+    assert "--minimum-percent 90" in command
+    assert "llvm-cov nextest" in command
+    assert "cargo install cargo-llvm-cov --version 0.8.5 --locked" in next(
+        step["run"]["command"]
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("run", {}).get("name") == "Install pinned coverage tooling"
+    )
 
 
 def test_regular_workflow_keeps_standard_rust_and_precommit_gates():

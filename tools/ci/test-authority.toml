@@ -38,7 +38,7 @@ command = "uv run --frozen --extra dev just proof-p00-authority-freeze"
 target_kind = "python"
 workflow = ".circleci/config.yml"
 job = "verify-python"
-step = "P00 authority owner tests"
+step = "Produce and validate P00 authority manifest"
 
 [rails.pr-benchmark-control-python]
 tier = "pr"
