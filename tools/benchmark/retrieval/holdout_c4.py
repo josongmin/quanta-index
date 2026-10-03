@@ -252,6 +252,19 @@ def _derive_prepared(
         [(path, "census_refused") for path in refused_paths]
         + [(path, "census_disagreement") for path in disagreement_paths]
     )
+    # The independent checker can refuse a file that the primary parser
+    # censuses completely. Only primary parser refusals need an oracle
+    # exclusion; checker-only refusals remain visible in required_rows.
+    parser_refused_paths = set()
+    for path in refused_paths:
+        if path not in files:
+            raise ValueError("C4 refused declaration file is outside the universe")
+        try:
+            source_oracle.declaration_census(language, path, files[path])
+        except source_oracle.SourceOracleError as exc:
+            if not source_oracle._excludable_census_refusal(exc):
+                raise ValueError("C4 primary declaration census is unavailable") from exc
+            parser_refused_paths.add(path)
     gold_tasks, blind_tasks = gold["tasks"], blind["tasks"]
     selected, excluded = [], []
     declaration_exclusions: dict[tuple[str, str], set[str]] = {}
@@ -318,10 +331,10 @@ def _derive_prepared(
                     files[path], task["query"], "osa1_casefold"
                 ):
                     raise ValueError("C4 typo near-census exclusion is not query-proven")
-                if reason == "census_refused":
+                if path in parser_refused_paths and reason == "census_refused":
                     typo_exclusions.setdefault((near_contract, task["query"]), set()).add(path)
             for path, reason in expected:
-                if reason == "census_refused":
+                if path in parser_refused_paths and reason == "census_refused":
                     typo_exclusions.setdefault((contract, task["intended_name"]), set()).add(path)
     typo_oracle = (
         source_oracle.SourceOracleIndex(
@@ -396,7 +409,9 @@ def _derive_prepared(
             excluded.append({"task_id": task["task_id"], "reason": "incomplete_census_exclusion"})
             continue
         refused_selected_paths = [
-            path for path, reason in excluded_rows if reason == "census_refused"
+            path
+            for path, reason in excluded_rows
+            if reason == "census_refused" and path in parser_refused_paths
         ]
         if not task["answerable"]:
             try:
@@ -494,6 +509,7 @@ def _derive_prepared(
                 row["path"]
                 for row in task.get("near_census_text_excluded", [])
                 if row["reason"] == "census_refused"
+                and row["path"] in parser_refused_paths
             )
             if near_paths:
                 source_contract["near_declaration_exclusions"] = near_paths
