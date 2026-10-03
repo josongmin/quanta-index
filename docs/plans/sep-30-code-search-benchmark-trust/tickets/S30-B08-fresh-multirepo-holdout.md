@@ -3307,3 +3307,34 @@ final 200 reviews and admission are still incomplete.
   `refs`, product query ranking, relevance labels, public content-API freshness
   for every file, or final quality/performance qualification. **NOT_RUN**, final
   reviewed comparison; **200 C3 task reviews and final admission remain**.
+
+### 2026-10-04: native JUnit producer repair and SDK terminal result
+
+- **FAILED**, Contract production at clean `89058da8` terminated because native
+  pytest JUnit declared 688 tests but emitted only 677 testcases. Its XML has
+  zero failure/error/skip outcomes; this is an evidence-contract failure, not a
+  successful Contract receipt or a demonstrated search-engine failure. Retain
+  the original XML in `integrated-portable-proof-89058da8-8d6s3e1w/contract/`.
+- **VERIFIED**, focused reproduction on main `80f2084f`: Sourcegraph adapter
+  tests passed 37 methods and 11 subtests in 1.03 seconds, but native XML declared
+  48 tests and emitted 37 cases. The unchanged strict JUnit parser rejected it.
+  Raw XML remains in `/private/tmp/qi-b08-current-junit-audit-t7pf4F/`.
+- Replace both subtest loops with 11 independently collected unittest methods;
+  preserve all four literal-request forgery cases and seven invalid-query cases.
+  Register these identities and three previously added batch/timing proof tests
+  that were missing from the current Python authority. Live collection now has
+  693 required identities. A native-pytest regression executes the registered
+  Sourcegraph class and verifies every required identity with the strict parser.
+  Do not rewrite old XML or weaken count/identity/hidden-outcome checks.
+- **VERIFIED**, `.venv/bin/python -m pytest -q
+  tools/ci/tests/test_retrieval_contract_proof.py
+  tools/ci/tests/test_proof_execution_result.py
+  tools/benchmark/retrieval/test_sourcegraph.py`: **131 passed / 4.73s**.
+  Ruff check/format and owned-path diff hygiene pass. This proves the producer
+  repair and focused evidence rejection rails, not complete admission.
+- **VERIFIED**, SDK production from `89058da8` exited zero with 25 selected,
+  executed and passed, failed 0. Independent `portable_proof.py verify --receipt
+  <external-root>/integrated-portable-proof-89058da8-8d6s3e1w/sdk/execution-context.json`
+  also exited zero from that pinned source. It does not include later main
+  batching, timing or evidence changes. Fresh matching Contract/SDK evidence,
+  remaining 200 C3 reviews and final comparison remain incomplete.

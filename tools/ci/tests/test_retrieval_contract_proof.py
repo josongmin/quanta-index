@@ -15,6 +15,7 @@ import pytest
 from tools.benchmark.retrieval import portable_proof
 from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
 from tools.ci import source_closure
+from tools.ci.junit_events import parse_pytest_junit_bytes
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "tools" / "benchmark" / "retrieval" / "contract_proof.py"
@@ -56,6 +57,37 @@ def test_required_python_inventory_matches_live_collection(tmp_path: Path) -> No
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert inventory.is_file()
+
+
+def test_sourcegraph_junit_matches_each_required_case(tmp_path: Path) -> None:
+    """Native pytest evidence must retain independently collected rejection cases."""
+    junit = tmp_path / "sourcegraph-junit.xml"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "tools/ci/tests/test_retrieval_benchmark.py::TestSourcegraphComparator",
+            f"--junitxml={junit}",
+        ],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    authority = json.loads((ROOT / "benchmarks/retrieval/proof-required-tests.json").read_text())
+    expected = {
+        identity
+        for identity in authority["python"]
+        if identity.startswith("tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.")
+    }
+    assert expected
+    result, passed_names = parse_pytest_junit_bytes(junit.read_bytes(), expected)
+    assert result["passed"] == len(expected)
+    assert passed_names == expected
 
 
 def test_local_and_formal_contract_rails_include_holdout_review() -> None:

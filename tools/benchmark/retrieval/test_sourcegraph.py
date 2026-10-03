@@ -499,15 +499,30 @@ class SourcegraphCaptureTests(unittest.TestCase):
         )
         request["request_query"] = 'content:"foo" content:"OR" content:"bar"' + suffix
         self.assertEqual(validate_capture(request, raw, manifest, universe)["file_order"], [])
-        for altered in (
-            "foo OR bar",
-            'content:"foo OR bar"',
-            'content:"foo" OR content:"bar"',
-            'content:"foo" content:"OR" content:"bar" repo:other',
-        ):
-            with self.subTest(request_pattern=altered):
-                request["request_query"] = altered + suffix
-                self.assert_refused(request, raw, manifest, universe)
+
+    def assert_literal_request_refused(self, altered: str) -> None:
+        raw = event("progress", {"done": True, "skipped": [], "matchCount": 0, "durationMs": 1})
+        raw += event("done", {})
+        request, _, manifest, universe = inputs(raw)
+        request["query"] = "foo OR bar"
+        request["query_sha256"] = sha256(b"foo OR bar")
+        suffix = (
+            " repo:^bench/example$ rev:" + REVISION + " type:file patternType:keyword count:all"
+        )
+        request["request_query"] = altered + suffix
+        self.assert_refused(request, raw, manifest, universe)
+
+    def test_literal_request_refuses_query_operator(self) -> None:
+        self.assert_literal_request_refused("foo OR bar")
+
+    def test_literal_request_refuses_joined_phrase(self) -> None:
+        self.assert_literal_request_refused('content:"foo OR bar"')
+
+    def test_literal_request_refuses_content_disjunction(self) -> None:
+        self.assert_literal_request_refused('content:"foo" OR content:"bar"')
+
+    def test_literal_request_refuses_injected_repository(self) -> None:
+        self.assert_literal_request_refused('content:"foo" content:"OR" content:"bar" repo:other')
 
     def test_missing_or_mismatched_indexed_universe_refused(self) -> None:
         request, raw, manifest, universe = inputs()
@@ -608,15 +623,37 @@ class SourcegraphCaptureTests(unittest.TestCase):
             + REVISION
             + " type:file patternType:keyword count:all",
         )
-        for invalid in ("", " ", "foo\nbar", "foo\tbar", "foo\x00bar", "foo\x7fbar", "foo\ud800"):
-            with self.subTest(query=repr(invalid)), self.assertRaises(CaptureError):
-                query_expression(invalid, REPOSITORY, REVISION)
         self.assertEqual(
             query_expression("foo bar", REPOSITORY, REVISION),
             "foo bar repo:^bench/example$ rev:"
             + REVISION
             + " type:file patternType:keyword count:all",
         )
+
+    def assert_invalid_query_refused(self, query: str) -> None:
+        with self.assertRaises(CaptureError):
+            query_expression(query, REPOSITORY, REVISION)
+
+    def test_query_refuses_empty_text(self) -> None:
+        self.assert_invalid_query_refused("")
+
+    def test_query_refuses_blank_text(self) -> None:
+        self.assert_invalid_query_refused(" ")
+
+    def test_query_refuses_newline(self) -> None:
+        self.assert_invalid_query_refused("foo\nbar")
+
+    def test_query_refuses_tab(self) -> None:
+        self.assert_invalid_query_refused("foo\tbar")
+
+    def test_query_refuses_nul(self) -> None:
+        self.assert_invalid_query_refused("foo\x00bar")
+
+    def test_query_refuses_del(self) -> None:
+        self.assert_invalid_query_refused("foo\x7fbar")
+
+    def test_query_refuses_surrogate(self) -> None:
+        self.assert_invalid_query_refused("foo\ud800")
 
     def test_extension_query_filter_is_short_and_closed(self) -> None:
         extensions = file_extensions([row["path"] for row in FILES])
