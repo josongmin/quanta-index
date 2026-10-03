@@ -58,7 +58,7 @@ package ownership. Nested fuzz manifests are tooling, not root packages.
 For current serving behavior, see [engine status](engine-status-v1.md).
 For verification status, follow the [active residual ledger](../plans/sep-21-search-plane-sota-hardening/tickets/CURRENT-RESIDUAL-2026-09-26.md) and the selected gate.
 
-## Boundary triage (2026-10-03 working tree)
+## Boundary triage (2026-10-03 post-merge source tree)
 
 | Crate | `src/**/*.rs` files / lines | Normal dependencies / reverse dependents |
 | --- | ---: | ---: |
@@ -67,8 +67,8 @@ For verification status, follow the [active residual ledger](../plans/sep-21-sea
 
 `search-plane` has no normal dependency on `lexical`; its lexical dependency
 is test-only. The current local splits reduced `ipc/server.rs` from 4,243 to
-1,811 lines and `searchctl/src/lib.rs` from 5,057 to 578 lines, moving
-behavior to named sibling modules. These numbers describe a concurrent dirty
-worktree, not a qualified build measurement; remeasure after integration.
+1,811 lines and `searchctl/src/lib.rs` from 5,057 to 564 lines, moving
+behavior to named sibling modules. These numbers describe source size and
+dependency shape, not a qualified build measurement.
 Further crate splits need evidence of change coupling and build cost at the
 candidate boundary. Line count alone does not establish one.

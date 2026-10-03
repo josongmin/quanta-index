@@ -1,8 +1,7 @@
 # `expect` reachability
 
-Audit scope: the current Rust worktree on 2026-10-03. Counts below are
+Audit scope: the post-merge Rust source tree on 2026-10-03. Counts below are
 **matching source lines** from `rg -n '\.expect\('`, not call-expression counts.
-The worktree includes concurrent source edits, so remeasure after integration.
 A raw match count includes test modules, integration tests and benchmark
 harnesses; it does not measure process-serving panic risk.
 
