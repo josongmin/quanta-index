@@ -85,6 +85,7 @@ fn seal(adapter: &LexicalAdapter, ops: &[LexicalChannelOp]) -> Result<(), CoreEr
         adapter,
         &op_fixture::batch(&repo(), &revision(), generation(), ops)?,
     )
+    .map(|_stages| ())
 }
 
 fn keyword_query(terms: &[&str]) -> LqQuery {

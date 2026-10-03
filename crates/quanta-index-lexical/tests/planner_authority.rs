@@ -77,6 +77,7 @@ impl SealedFixtureBuildPort for LexicalAdapter {
             self,
             &op_fixture::batch(repo, revision, generation, ops)?,
         )
+        .map(|_stages| ())
     }
 }
 

@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -178,6 +179,34 @@ def test_host_monitor_failure_retains_partial_raw_and_refuses_success(tmp_path, 
         monitor.finish(failed=True)
     assert (tmp_path / "partial.jsonl").is_file()
     assert monitor.fd is None
+
+
+def test_host_monitor_sample_observer_failure_rejects_periodic_capture(tmp_path, monkeypatch):
+    fixture = _host_transcript(tmp_path)
+    rows = [json.loads(line) for line in fixture.path.read_text().splitlines()]
+    host, facts = rows[0]["host"], rows[1]["facts"]
+    monkeypatch.setattr(host_monitor, "lock_path", lambda: tmp_path / "lock")
+    monkeypatch.setattr(host_monitor, "observe", lambda: (host, facts))
+    monkeypatch.setattr(host_monitor, "INTERVAL_NS", 1_000_000)
+    failed = threading.Event()
+    calls = 0
+
+    def observer():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            failed.set()
+            raise RuntimeError("callback oracle")
+
+    monitor = host_monitor.HostMonitor(
+        tmp_path / "callback.jsonl", "capture", "profile", sample_observer=observer
+    ).start()
+    assert failed.wait(timeout=5), "periodic observer callback did not run"
+    with pytest.raises(evidence.EvidenceError, match="callback oracle"):
+        monitor.finish()
+    assert calls == 2
+    assert monitor.fd is None
+    assert (tmp_path / "callback.jsonl").is_file()
 
 
 def test_host_monitor_join_timeout_retains_live_custody_until_observer_stops(tmp_path, monkeypatch):

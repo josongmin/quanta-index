@@ -821,6 +821,24 @@ def test_retrieval_diagnostic_v5_ingest_rejects_unbound_partial_replayed_or_forg
         with pytest.raises(pairrun.RunError):
             pairrun._validate_ingest_diagnostic(forged, record)
 
+    forged = json.loads(json.dumps(raw))
+    forged["activation_ack"]["active"]["activation_token"]["activation_sequence"] = 2
+    rebound = json.loads(json.dumps(record))
+    rebound["captures"]["capture"]["activation_digest"] = pairrun.digest(
+        pairrun.canonical_bytes(forged["activation_ack"]["active"])
+    )
+    with pytest.raises(pairrun.RunError, match="sequence must be one"):
+        pairrun._validate_ingest_diagnostic(forged, rebound)
+    for lane in ("lexical", "semantic"):
+        forged = json.loads(json.dumps(raw))
+        forged["activation_ack"]["active"]["generation"][lane]["track"] = lane
+        rebound = json.loads(json.dumps(record))
+        rebound["captures"]["capture"]["activation_digest"] = pairrun.digest(
+            pairrun.canonical_bytes(forged["activation_ack"]["active"])
+        )
+        with pytest.raises(pairrun.RunError, match="identity/fresh receipt/activation"):
+            pairrun._validate_ingest_diagnostic(forged, rebound)
+
 
 def test_ingest_lexical_stage_intervals_reject_overcount_and_missing_measurements():
     record = {"captures": {"capture": {}}}
@@ -847,23 +865,6 @@ def test_ingest_lexical_stage_intervals_reject_overcount_and_missing_measurement
         changed["observation"]["lexical_stages"] = value
         with pytest.raises(pairrun.RunError):
             pairrun._validate_ingest_diagnostic(changed, record, lexical_stage_contract=True)
-    forged = json.loads(json.dumps(raw))
-    forged["activation_ack"]["active"]["activation_token"]["activation_sequence"] = 2
-    rebound = json.loads(json.dumps(record))
-    rebound["captures"]["capture"]["activation_digest"] = pairrun.digest(
-        pairrun.canonical_bytes(forged["activation_ack"]["active"])
-    )
-    with pytest.raises(pairrun.RunError, match="sequence must be one"):
-        pairrun._validate_ingest_diagnostic(forged, rebound)
-    for lane in ("lexical", "semantic"):
-        forged = json.loads(json.dumps(raw))
-        forged["activation_ack"]["active"]["generation"][lane]["track"] = lane
-        rebound = json.loads(json.dumps(record))
-        rebound["captures"]["capture"]["activation_digest"] = pairrun.digest(
-            pairrun.canonical_bytes(forged["activation_ack"]["active"])
-        )
-        with pytest.raises(pairrun.RunError, match="identity/fresh receipt/activation"):
-            pairrun._validate_ingest_diagnostic(forged, rebound)
 
 
 def test_query_plan_oracle_uses_nfc_and_rejects_unindexable_runs():
@@ -9072,6 +9073,20 @@ def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
     )
     _current_symbol_metrics(current)
     assert pairrun._validate_phase_metrics(current, "phase") == current
+    measured = copy.deepcopy(current)
+    measured["schema_version"] = 3
+    measured["phases_ms"].update(sdk_publish=0.6, sdk_activate=0.3)
+    # Nested SDK clocks do not increase the 16 ms outer phase partition.
+    assert pairrun._validate_phase_metrics(measured, "phase") == measured
+    for value in (True, None, float("nan"), float("inf"), -1.0, 0.5):
+        forged = copy.deepcopy(measured)
+        forged["phases_ms"]["sdk_activate"] = value
+        with pytest.raises(pairrun.RunError):
+            pairrun._validate_phase_metrics(forged, "phase")
+    missing = copy.deepcopy(measured)
+    del missing["phases_ms"]["sdk_publish"]
+    with pytest.raises(pairrun.RunError, match="exactly"):
+        pairrun._validate_phase_metrics(missing, "phase")
     stale_producer = json.loads(json.dumps(current))
     stale_producer["symbol_producer_identity"] = "source-bound-symbols-v1"
     with pytest.raises(pairrun.RunError, match="symbol producer evidence"):
