@@ -208,10 +208,12 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
     rows, external_cells, cohorts, sources = [], [], {}, {}
     for index in range(12):
         repo = f"repo{index}"
+        suite = {"repository_commit": "commit", "tasks": [{"task_id": repo + ".q1"}]}
+        pack = {"tasks": [{"task_id": repo + ".q1"}]}
+        suite_path = write(tmp_path / repo / "suite.json", suite)
+        pack_path = write(tmp_path / repo / "pack.json", pack)
         spec_path = write(tmp_path / repo / "spec.json", {
-            "suite": str(write(tmp_path / repo / "suite.json", {
-                "repository_commit": "commit", "tasks": [{"task_id": repo + ".q1"}],
-            })),
+            "suite": str(suite_path), "query_pack": str(pack_path),
         })
         parser_runtime = {
             "tree_sitter": "0.23.2", "tree_sitter_language_pack": "0.9.1",
@@ -227,13 +229,14 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         })
         external_cells.append({
             "repository": repo, "spec_path": str(spec_path), "tasks": 1,
-            "projected_suite_commitment_sha256": repo + "-suite",
-            "blind_pack_commitment_sha256": repo + "-pack",
+            "gold_identity_path": str(identity),
+            "projected_suite_commitment_sha256": fresh.canonical_sha(suite),
+            "blind_pack_commitment_sha256": fresh.canonical_sha(pack),
         })
         cohorts[repo] = {
             "selected_task_ids": [repo + ".q1"], "selected": 1,
-            "projected_suite_sha256": repo + "-suite",
-            "blind_pack_sha256": repo + "-pack",
+            "projected_suite_sha256": fresh.canonical_sha(suite),
+            "blind_pack_sha256": fresh.canonical_sha(pack),
         }
         sources[repo] = {
             "identity_sha256": fresh.sha(identity),
@@ -285,6 +288,7 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         "ordinary_projection_receipt_path": str(projection_path),
         "ordinary_projection_receipt_sha256": fresh.sha(projection_path),
         "gold_receipt_path": str(gold_path),
+        "gold_capsule_root": str(tmp_path / "gold-v10"),
         "gold_producer_runtime": {
             "receipt_sha256": fresh.sha(gold_path), "source_head": "driver",
             "dependency_versions": {"parser": "pinned"},
@@ -305,6 +309,25 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
     changed["cells"][0]["blind_pack_commitment_sha256"] = "wrong"
     with pytest.raises(fresh.FreshJoinError, match="global source admission task"):
         fresh._source_admission(matrix_path, prepared, changed)
+    # A body edit cannot be hidden behind unchanged cohort commitment metadata.
+    write(tmp_path / "repo0" / "suite.json", {
+        "repository_commit": "commit", "tasks": [{"task_id": "repo0.q1"}],
+        "unscored_payload": "tampered",
+    })
+    with pytest.raises(fresh.FreshJoinError, match="global source admission task"):
+        fresh._source_admission(matrix_path, prepared, manifest)
+    write(tmp_path / "repo0" / "suite.json", {
+        "repository_commit": "commit", "tasks": [{"task_id": "repo0.q1"}],
+    })
+    # Capsule directory names have no authority; the declared root and identity paths do.
+    (tmp_path / "gold-v10").rename(tmp_path / "renamed-capsules")
+    renamed = copy.deepcopy(manifest)
+    renamed["gold_capsule_root"] = str(tmp_path / "renamed-capsules")
+    for cell in renamed["cells"]:
+        cell["gold_identity_path"] = str(
+            tmp_path / "renamed-capsules" / cell["repository"] / "identity.json"
+        )
+    assert len(fresh._source_admission(matrix_path, prepared, renamed)[0]) == 12
     changed = {**prepared, "binary_build_source_sha": ""}
     with pytest.raises(fresh.FreshJoinError, match="global gold, matrix, projection"):
         fresh._source_admission(matrix_path, changed, manifest)

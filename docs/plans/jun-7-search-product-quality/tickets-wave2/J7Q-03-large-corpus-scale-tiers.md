@@ -56,6 +56,14 @@ That result does not verify the later scoped-tier implementation.
   time sums ingest and seal and excludes the wire preflight cost.
 - `--out-dir` is required for non-default tiers. Each selected run records one
   measured tier; unselected tiers remain declarations in that artifact.
+- Explicit output roots must be new absolute paths outside the checkout. A
+  rejected selected tier writes `refusal.json` with seed, tier, one serving
+  owner, source repo/file/byte counts, source digest, head, host, failed stage,
+  original error, and a limit only when a typed source admission check proves
+  it. It writes no latency zero or successful summary. The refusal writer uses
+  atomic no-replace publication; an all-tier failure writes no earlier tier
+  success summary from that run. IPC encoder errors retain their original text
+  with `limit: null` until the IPC owner has a typed cap error.
 
 The scoped-tier Rust owner tests, real medium/large/XL runs, canonical-host
 capacity and portability remain `NOT_RUN` at this code stage. A source limit or

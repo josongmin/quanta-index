@@ -1193,9 +1193,9 @@ pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
     let ingest_started = Instant::now();
     let _ids = rt.ingest_text_files_one_batch(&batch_files)?;
     let ingest_ms = elapsed_ms(ingest_started);
-    let (ingest_decoded_bytes, ingest_wire_bytes) =
-        rt.preview_pending_search_corpus_wire_bytes()
-            .map_err(ScaleStageError::wire_admission)?;
+    let (ingest_decoded_bytes, ingest_wire_bytes) = rt
+        .preview_pending_search_corpus_wire_bytes()
+        .map_err(ScaleStageError::wire_admission)?;
     let seal_started = Instant::now();
     let _generation = rt.seal()?;
     let build_ms = ingest_ms + elapsed_ms(seal_started);
@@ -1790,13 +1790,18 @@ mod tests {
             mem_bytes: 1 << 30,
             hostname_hash: "sha256:host".to_string(),
         };
-        let capacity = check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1)
-            .expect_err("source bound");
-        let typed = anyhow::Error::new(ScaleStageError::source_admission(anyhow::Error::new(capacity)));
+        let capacity =
+            check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1).expect_err("source bound");
+        let typed = anyhow::Error::new(ScaleStageError::source_admission(anyhow::Error::new(
+            capacity,
+        )));
         let refused = refusal_json(&binding, &head, &host, &typed);
         assert_eq!(refused["status"], "refused");
         assert_eq!(refused["failure"]["stage"], "source_preflight");
-        assert_eq!(refused["failure"]["limit"], "lexical_total_source_bytes_128m");
+        assert_eq!(
+            refused["failure"]["limit"],
+            "lexical_total_source_bytes_128m"
+        );
         assert_eq!(refused["failure"]["observed"], MAX_SCALE_SOURCE_BYTES + 1);
         assert_eq!(refused["source"]["corpus_digest"], binding.corpus_digest);
         assert!(refused.get("latency").is_none());
@@ -1856,8 +1861,14 @@ mod tests {
     fn same_relative_path_in_two_source_repos_survives_publish_and_delta() -> AnyResult<()> {
         let mut rt = E2eRuntime::boot_with_history_max_generations(1)?;
         let shared_path = "src/shared.rs";
-        let content0 = format!("// {SCALE_QUERY_TOKEN}\n// {} anchor\n", repo_query_token(0));
-        let content1 = format!("// {SCALE_QUERY_TOKEN}\n// {} anchor\n", repo_query_token(1));
+        let content0 = format!(
+            "// {SCALE_QUERY_TOKEN}\n// {} anchor\n",
+            repo_query_token(0)
+        );
+        let content1 = format!(
+            "// {SCALE_QUERY_TOKEN}\n// {} anchor\n",
+            repo_query_token(1)
+        );
         let specs0 = [E2eTextChunkSpec {
             content: &content0,
             start_line: 1,
@@ -1870,22 +1881,24 @@ mod tests {
             end_line: 2,
             source_repo_id: Some("repo1"),
         }];
-        let _ids = rt.ingest_text_files_one_batch(&[
-            (shared_path, &specs0),
-            (shared_path, &specs1),
-        ])?;
+        let _ids =
+            rt.ingest_text_files_one_batch(&[(shared_path, &specs0), (shared_path, &specs1)])?;
         let _wire = rt.preview_pending_search_corpus_wire_bytes()?;
         let _base = rt.seal()?;
         rt.activate_last_sealed_generation()?;
         for repo_index in 0..2 {
-            let response = rt.query_text(TextQuerySyntax::Native, &repo_query_token(repo_index), 10);
+            let response =
+                rt.query_text(TextQuerySyntax::Native, &repo_query_token(repo_index), 10);
             assert!(response.typed_error.is_none());
             assert_eq!(response.candidates.len(), 1);
             assert_eq!(
                 response.candidates[0].source_repo_id.as_str(),
                 format!("repo{repo_index}")
             );
-            assert_eq!(response.candidates[0].repo_relative_path.as_str(), shared_path);
+            assert_eq!(
+                response.candidates[0].repo_relative_path.as_str(),
+                shared_path
+            );
         }
 
         let changed0 = format!("{content0}// changed\n");
@@ -1905,7 +1918,10 @@ mod tests {
         assert!(unaffected.typed_error.is_none());
         assert_eq!(unaffected.candidates.len(), 1);
         assert_eq!(unaffected.candidates[0].source_repo_id.as_str(), "repo1");
-        assert_eq!(unaffected.candidates[0].repo_relative_path.as_str(), shared_path);
+        assert_eq!(
+            unaffected.candidates[0].repo_relative_path.as_str(),
+            shared_path
+        );
         Ok(())
     }
 

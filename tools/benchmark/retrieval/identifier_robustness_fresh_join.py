@@ -319,7 +319,7 @@ def _source_admission(
         "gold_receipt_sha256": sha(gold_receipt_path),
         "matrix_receipt_sha256": sha(matrix_receipt_path),
         "projection_receipt_sha256": sha(projection_receipt_path),
-        "native_binary_build_source_sha256": prepared["binary_build_source_sha"],
+        "native_binary_build_source_commit": prepared["binary_build_source_sha"],
         "native_driver_python_sha256": prepared["driver_python_sha256"],
     }
 

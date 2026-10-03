@@ -89,6 +89,19 @@ fn parse_args() -> AnyResult<CliArgs> {
     if out_dir_explicit && out_dir.exists() {
         anyhow::bail!("--out-dir must name a new output root; refusing to overwrite artifacts");
     }
+    if out_dir_explicit {
+        if !out_dir.is_absolute() {
+            anyhow::bail!("--out-dir must be an absolute external path");
+        }
+        let parent = out_dir
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("--out-dir has no parent"))?;
+        let parent = std::fs::canonicalize(parent)?;
+        let checkout = std::fs::canonicalize(".")?;
+        if parent.starts_with(checkout) {
+            anyhow::bail!("--out-dir must be outside the checkout");
+        }
+    }
     Ok(CliArgs {
         out_dir,
         seed,
