@@ -106,8 +106,12 @@ def test_clarc_native_pack_is_blind_source_bound_and_preserves_default_refusals(
     assert "gold" not in json.dumps(pack).lower()
     assert "c_group_1_id_0.cpp" not in json.dumps(pack["tasks"])
     frozen = ext.write_freeze(pack, gold, tmp_path / "frozen")
-    assert json.loads((tmp_path / "frozen/query-pack.json").read_text()) == pack
-    assert json.loads((tmp_path / "frozen/gold-sidecar.json").read_text()) == gold
+    assert json.loads((tmp_path / "frozen/runner/query-pack.json").read_text()) == pack
+    assert json.loads((tmp_path / "frozen/owner-only/gold-sidecar.json").read_text()) == gold
+    assert list((tmp_path / "frozen/runner").iterdir()) == [
+        tmp_path / "frozen/runner/query-pack.json"
+    ]
+    assert (tmp_path / "frozen/owner-only/gold-sidecar.json").stat().st_mode & 0o777 == 0o600
     assert (
         frozen["query_pack_canonical_sha256"]
         == hashlib.sha256(retrieval_contract.canonical(pack)).hexdigest()

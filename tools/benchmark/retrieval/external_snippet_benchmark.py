@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -546,13 +547,17 @@ def write_freeze(
     if pack.get("suite_commitment_sha256") != _sha(_canonical(sidecar)):
         raise ExternalSnippetError("pack does not bind external score sidecar")
     output_root.mkdir(mode=0o700)
-    pack_path = output_root / "query-pack.json"
-    gold_path = output_root / "gold-sidecar.json"
+    runner_root = output_root / "runner"
+    owner_root = output_root / "owner-only"
+    runner_root.mkdir(mode=0o700)
+    owner_root.mkdir(mode=0o700)
+    pack_path = runner_root / "query-pack.json"
+    gold_path = owner_root / "gold-sidecar.json"
     pack_raw = _canonical(pack) + b"\n"
     gold_raw = _canonical(sidecar) + b"\n"
-    with pack_path.open("xb") as handle:
+    with os.fdopen(os.open(pack_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as handle:
         handle.write(pack_raw)
-    with gold_path.open("xb") as handle:
+    with os.fdopen(os.open(gold_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as handle:
         handle.write(gold_raw)
     return {
         "query_pack": str(pack_path),
