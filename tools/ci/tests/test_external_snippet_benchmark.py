@@ -234,6 +234,39 @@ def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_
     ]
     assert len(pack["tasks"]) == 1
     assert "grade" not in json.dumps(pack)
+    task_id = pack["tasks"][0]["task_id"]
+    judged = {row["grade"]: row["path"] for row in gold["judgments"][task_id]}
+    unjudged = next(
+        row["path"] for row in pack["file_universe"] if row["path"] not in set(judged.values())
+    )
+    record = {
+        "schema_version": 5,
+        "query_pack_sha256": hashlib.sha256(retrieval_contract.canonical(pack)).hexdigest(),
+        "comparison_contract": pack["comparison_contract"],
+        "results": [
+            {
+                "task_id": task_id,
+                "route": "lexical",
+                "rank_unit": "distinct_file",
+                "query_identity": {"original_query_sha256": pack["tasks"][0]["query_sha256"]},
+                "status": "success",
+                "candidates": [
+                    {"rank": 1, "path": unjudged},
+                    {"rank": 2, "path": judged[0.5]},
+                    {"rank": 3, "path": judged[2.5]},
+                ],
+            }
+        ],
+    }
+    score = ext.score_capture(pack, gold, record)
+    numerator = (2**0.5 - 1) / math.log2(3) + (2**2.5 - 1) / math.log2(4)
+    denominator = (2**2.5 - 1) / math.log2(2) + (2**0.5 - 1) / math.log2(3)
+    assert score["pool_estimated_ndcg_at_10"] == pytest.approx(numerator / denominator)
+    assert score["hit_at_10"] == 1
+    assert score["mrr_at_10"] == 0.5
+    assert score["unjudged_returned"] == 1
+    assert score["judged_returned_fraction"] == pytest.approx(2 / 3)
+    assert score["population_tasks"] == 2 and score["materialized_complete_tasks"] == 1
     with pytest.raises(ext.ExternalSnippetError, match="supported language"):
         ext.freeze_codesearchnet(
             b"mock CSV", root, repo, commit, language="unknown", suite_id="fixture"
