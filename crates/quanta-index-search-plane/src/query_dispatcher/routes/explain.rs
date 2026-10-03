@@ -513,7 +513,9 @@ enum RankerFusionV1 {
 /// were scored under the same weights.
 fn ranker_weights_hash_v1(options: &LqOptions, fusion: RankerFusionV1) -> [u8; 32] {
     use sha2::Digest as _;
-    let engine = if matches!(options.index_mode, Some(LqYesNoOnly::No)) {
+    let engine = if options.pattern_type == quanta_index_contract::LqPatternType::CodeSearch {
+        LexicalScoreEngineV1::CodeSearchFile
+    } else if matches!(options.index_mode, Some(LqYesNoOnly::No)) {
         LexicalScoreEngineV1::UnindexedScan
     } else {
         LexicalScoreEngineV1::Bm25
@@ -522,6 +524,9 @@ fn ranker_weights_hash_v1(options: &LqOptions, fusion: RankerFusionV1) -> [u8; 3
     hasher.update(b"quanta-index lexical ranker weights v1\n");
     hasher.update(b"engine=");
     hasher.update(engine.as_str().as_bytes());
+    if engine == LexicalScoreEngineV1::CodeSearchFile {
+        hasher.update(b"\ncode_search_rank=overlap_score_v1");
+    }
     hasher.update(b"\nboost_millis=");
     match options.boost_millis {
         Some(millis) => hasher.update(millis.to_string().as_bytes()),
@@ -597,6 +602,16 @@ fn lexical_trace_row_v1(
             "explain: the lexical engine emitted a non-finite score for {candidate_id}"
         )));
     }
+    if let Some(components) = trace.code_search_components {
+        let total = u16::try_from(components.total()).map_err(|error|
+            CoreError::Storage(format!("explain: file score decomposition overflow: {error}")))?;
+        if trace.engine != LexicalScoreEngineV1::CodeSearchFile
+            || f32::from(total) != trace.engine_score
+            || trace.boost_factor != 1.0
+            || trace.emitted_score != trace.engine_score {
+            return Err(CoreError::Storage("explain: file score differs from its decomposition".into()));
+        }
+    }
     Ok(ExplanationRow {
         signal_name: format!("lexical.{}", trace.engine.as_str()).into_boxed_str(),
         signal_value: trace.engine_score,
@@ -651,6 +666,19 @@ fn build_lexical_score_explanation(
                 stage: PlannerStage::Merge,
                 detail: format!("explain.score_reconciled={reconciled}"),
             });
+            if let Some(components) = trace.code_search_components {
+                for (name, value) in [
+                    ("boundary_and_path", components.boundary_and_path),
+                    ("occurrence", components.occurrence),
+                    ("exact_case", components.exact_case),
+                    ("proximity", components.proximity),
+                ] {
+                    planner_trace.push(PlannerTraceEntry {
+                        stage: PlannerStage::Merge,
+                        detail: format!("explain.code_search_score.{name}={value}"),
+                    });
+                }
+            }
             let prose = lexical_trace_prose_v1(trace);
             let summary = if reconciled {
                 format!(
