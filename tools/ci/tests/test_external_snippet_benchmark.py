@@ -107,11 +107,11 @@ def test_clarc_native_pack_is_blind_source_bound_and_preserves_default_refusals(
     assert "c_group_1_id_0.cpp" not in json.dumps(pack["tasks"])
     frozen = ext.write_freeze(pack, gold, tmp_path / "frozen")
     assert json.loads((tmp_path / "frozen/runner/query-pack.json").read_text()) == pack
-    assert json.loads((tmp_path / "frozen/owner-only/gold-sidecar.json").read_text()) == gold
+    assert json.loads((tmp_path / "frozen/scorer-input/gold-sidecar.json").read_text()) == gold
     assert list((tmp_path / "frozen/runner").iterdir()) == [
         tmp_path / "frozen/runner/query-pack.json"
     ]
-    assert (tmp_path / "frozen/owner-only/gold-sidecar.json").stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "frozen/scorer-input/gold-sidecar.json").stat().st_mode & 0o777 == 0o600
     assert (
         frozen["query_pack_canonical_sha256"]
         == hashlib.sha256(retrieval_contract.canonical(pack)).hexdigest()
@@ -232,6 +232,10 @@ def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_
     assert gold["qrels_materialized"] == 3
     assert gold["population_task_count"] == 2
     assert gold["materialized_complete_tasks"] == 1
+    assert {row["status"] for row in gold["full_population_ledger"]} == {
+        "admitted",
+        "blocked_source_unavailable",
+    }
     assert sorted(row["grade"] for row in gold["judgments"][pack["tasks"][0]["task_id"]]) == [
         0.5,
         2.5,
@@ -271,6 +275,17 @@ def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_
     assert score["unjudged_returned"] == 1
     assert score["judged_returned_fraction"] == pytest.approx(2 / 3)
     assert score["population_tasks"] == 2 and score["materialized_complete_tasks"] == 1
+    _, _, _, clarc_raws = _clarc(tmp_path, monkeypatch)
+    prepared_root = tmp_path / "prepared"
+    prepared = ext.prepare_external_lanes(
+        clarc_raws, b"mock CSV", root, prepared_root, languages=("python",)
+    )
+    assert set(prepared["lanes"]) == {"clarc-original", "clarc-neutral_renamed", "csn-python"}
+    assert prepared["codesearchnet_selected_population"] == 2
+    assert prepared["codesearchnet_selected_complete"] == 1
+    assert prepared["lanes"]["csn-python"]["source_blocked_tasks"] == 1
+    assert prepared["runtime_gold_isolation"] == "not_verified_static_path_separation_only"
+    assert json.loads((prepared_root / "manifest.json").read_text()) == prepared
     with pytest.raises(ext.ExternalSnippetError, match="supported language"):
         ext.freeze_codesearchnet(
             b"mock CSV", root, repo, commit, language="unknown", suite_id="fixture"

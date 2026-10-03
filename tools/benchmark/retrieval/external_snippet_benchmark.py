@@ -12,6 +12,8 @@ import json
 import math
 import os
 import re
+import shutil
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -335,6 +337,7 @@ def freeze_codesearchnet(
     tasks = []
     judgments = {}
     incomplete = []
+    full_population_ledger = []
     for (task_language, query), rows in sorted(groups.items()):
         if task_language != language:
             continue
@@ -350,8 +353,32 @@ def freeze_codesearchnet(
             judgments[task_id] = [
                 {"path": row["snippet_path"], "grade": row["mean_grade"]} for row in rows
             ]
+            try:
+                query_plan.plan_lexical_request("natural_language_file", query, config)
+            except query_plan.QueryPlanError as exc:
+                full_population_ledger.append(
+                    {"task_id": task_id, "status": "refused_query_plan", "reason": str(exc)}
+                )
+            else:
+                full_population_ledger.append({"task_id": task_id, "status": "admitted"})
         else:
             incomplete.append(task_id)
+            full_population_ledger.append(
+                {
+                    "task_id": task_id,
+                    "status": "blocked_source_unavailable",
+                    "source_statuses": sorted(
+                        {
+                            row["materialization_status"]
+                            for row in rows
+                            if row["materialization_status"] != "admitted"
+                        }
+                    ),
+                    "unavailable_qrels": sum(
+                        row["materialization_status"] != "admitted" for row in rows
+                    ),
+                }
+            )
     if not tasks:
         raise ExternalSnippetError("CodeSearchNet has no fully materialized query pools")
     pack, sidecar = _freeze(
@@ -373,6 +400,7 @@ def freeze_codesearchnet(
             "language_population_tasks": sum(
                 task_language == language for task_language, _ in groups
             ),
+            "full_population_ledger": full_population_ledger,
             "incomplete_task_ids": incomplete,
             "qrels_total": sum(row["language"] == language for row in qrels),
             "qrels_materialized": sum(
@@ -548,7 +576,7 @@ def write_freeze(
         raise ExternalSnippetError("pack does not bind external score sidecar")
     output_root.mkdir(mode=0o700)
     runner_root = output_root / "runner"
-    owner_root = output_root / "owner-only"
+    owner_root = output_root / "scorer-input"
     runner_root.mkdir(mode=0o700)
     owner_root.mkdir(mode=0o700)
     pack_path = runner_root / "query-pack.json"
@@ -566,3 +594,210 @@ def write_freeze(
         "gold_sidecar": str(gold_path),
         "gold_sidecar_bytes_sha256": _sha(gold_raw),
     }
+
+
+def _commit_synthetic_repo(repo: Path, message: str) -> str:
+    """Give a verified synthetic file universe a stable Git source identity."""
+    commands = (
+        ["git", "init", "-q", "-b", "main", str(repo)],
+        ["git", "-C", str(repo), "-c", "core.autocrlf=false", "add", "-A"],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=External Benchmark Fixture",
+            "-c",
+            "user.email=external-benchmark@example.invalid",
+            "commit",
+            "-qm",
+            message,
+        ],
+    )
+    environment = dict(os.environ)
+    environment["GIT_AUTHOR_DATE"] = "2000-01-01T00:00:00+0000"
+    environment["GIT_COMMITTER_DATE"] = environment["GIT_AUTHOR_DATE"]
+    for command in commands:
+        try:
+            subprocess.run(command, check=True, capture_output=True, env=environment)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise ExternalSnippetError("synthetic Git corpus commit failed") from exc
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ExternalSnippetError("synthetic Git corpus commit unavailable") from exc
+
+
+def prepare_external_lanes(
+    clarc_raw_inputs: dict[str, bytes],
+    codesearchnet_csv_raw: bytes,
+    codesearchnet_materialized_root: Path,
+    output_root: Path,
+    *,
+    languages: tuple[str, ...] = tuple(sorted(codesearchnet_materialize.EXTENSIONS)),
+) -> dict[str, Any]:
+    """Prepare self-contained static inputs for paired CLARC and six CSN lanes.
+
+    This only separates native pack and owner gold paths. It provides no
+    runtime access-block or search-result proof; the caller must capture both.
+    """
+    if (
+        not output_root.is_absolute()
+        or not output_root.parent.is_dir()
+        or output_root.exists()
+        or output_root.is_symlink()
+        or output_root.resolve(strict=False).is_relative_to(Path(__file__).resolve().parents[3])
+        or not languages
+        or len(set(languages)) != len(languages)
+        or set(languages) - set(codesearchnet_materialize.EXTENSIONS)
+    ):
+        raise ExternalSnippetError(
+            "preparation requires a new external root and distinct languages"
+        )
+    if set(clarc_raw_inputs) != set(clarc_adapter.SOURCES):
+        raise ExternalSnippetError("CLARC pinned source input set differs")
+    # Admit all external bytes before creating a potentially expensive output.
+    clarc_adapter.admit_pinned_pair(
+        clarc_raw_inputs["original"],
+        clarc_raw_inputs["neutral_renamed"],
+        clarc_raw_inputs["dataset_card"],
+        clarc_raw_inputs["project_license_info"],
+    )
+    codesearchnet_qrels.diagnostic_seed(codesearchnet_csv_raw)
+    materialized = _json(codesearchnet_materialized_root / "manifest.json")
+    if materialized.get("kind") != "codesearchnet_snippet_materialization_diagnostic_v1":
+        raise ExternalSnippetError("CodeSearchNet materialization kind differs")
+    output_root.mkdir(mode=0o700)
+    upstream_root = output_root / "upstream"
+    corpora_root = output_root / "corpora"
+    freezes_root = output_root / "freezes"
+    for path in (upstream_root, corpora_root, freezes_root):
+        path.mkdir(mode=0o700)
+    clarc_inputs_root = upstream_root / "clarc-pinned"
+    clarc_inputs_root.mkdir(mode=0o700)
+    input_bindings = {}
+    for name, raw in sorted(clarc_raw_inputs.items()):
+        destination = clarc_inputs_root / name
+        destination.write_bytes(raw)
+        input_bindings[name] = {"path": str(destination), "sha256": _sha(raw), "bytes": len(raw)}
+    csv_path = upstream_root / "codesearchnet-annotationStore.csv"
+    csv_path.write_bytes(codesearchnet_csv_raw)
+    input_bindings["codesearchnet_csv"] = {
+        "path": str(csv_path),
+        "sha256": _sha(codesearchnet_csv_raw),
+        "bytes": len(codesearchnet_csv_raw),
+    }
+    csn_copy = upstream_root / "codesearchnet-materialized"
+    shutil.copytree(codesearchnet_materialized_root, csn_copy, symlinks=False)
+    for filename in ("manifest.json", "source-fetches.json", "spans.json", "qrels.json"):
+        raw = (csn_copy / filename).read_bytes()
+        input_bindings["codesearchnet_materialized_" + filename] = {
+            "path": str(csn_copy / filename),
+            "sha256": _sha(raw),
+            "bytes": len(raw),
+        }
+    clarc_data_root = corpora_root / "clarc"
+    clarc_adapter.materialize(
+        clarc_raw_inputs["original"],
+        clarc_raw_inputs["neutral_renamed"],
+        clarc_raw_inputs["dataset_card"],
+        clarc_raw_inputs["project_license_info"],
+        clarc_data_root,
+    )
+    config = {"max_tokens": 128, "max_token_chars": 96, "min_token_chars": 1}
+    profile = query_plan.execution_profile("natural_language_file", config)
+    lanes = {}
+    for variant in ("original", "neutral_renamed"):
+        name = "clarc-" + variant
+        repo = clarc_data_root / variant
+        commit = _commit_synthetic_repo(repo, f"Freeze {name} synthetic snippets")
+        pack, sidecar = freeze_clarc(
+            clarc_data_root,
+            variant,
+            repo,
+            commit,
+            clarc_raw_inputs,
+            suite_id=name + "-nl128-diagnostic",
+            config=config,
+        )
+        written = write_freeze(pack, sidecar, freezes_root / name)
+        lanes[name] = {
+            "corpus_repo": str(repo),
+            "repository_commit": commit,
+            "population_tasks": sidecar["population_task_count"],
+            "complete_tasks": sidecar["materialized_complete_tasks"],
+            "submitted_tasks": len(pack["tasks"]),
+            "source_blocked_tasks": 0,
+            "profile_refused_tasks": sidecar["admission"]["refused"],
+            "file_count": len(pack["file_universe"]),
+            **written,
+        }
+    csn_qrels = _json(csn_copy / "qrels.json")
+    for language in languages:
+        name = "csn-" + language
+        repo = corpora_root / name
+        repo.mkdir(mode=0o700)
+        paths = sorted(
+            {
+                row["snippet_path"]
+                for row in csn_qrels
+                if row["language"] == language and row.get("snippet_path") is not None
+            }
+        )
+        if not paths:
+            raise ExternalSnippetError(f"CodeSearchNet {language} has no materialized snippets")
+        for path in paths:
+            source = csn_copy / path
+            if source.is_symlink() or not source.resolve().is_relative_to(csn_copy.resolve()):
+                raise ExternalSnippetError("CodeSearchNet snippet source escapes materialization")
+            destination = repo / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+        commit = _commit_synthetic_repo(repo, f"Freeze {name} synthetic snippets")
+        pack, sidecar = freeze_codesearchnet(
+            codesearchnet_csv_raw,
+            csn_copy,
+            repo,
+            commit,
+            language=language,
+            suite_id=name + "-nl128-pool-diagnostic",
+            config=config,
+        )
+        written = write_freeze(pack, sidecar, freezes_root / name)
+        lanes[name] = {
+            "corpus_repo": str(repo),
+            "repository_commit": commit,
+            "population_tasks": sidecar["population_task_count"],
+            "complete_tasks": sidecar["materialized_complete_tasks"],
+            "submitted_tasks": len(pack["tasks"]),
+            "source_blocked_tasks": len(sidecar["incomplete_task_ids"]),
+            "profile_refused_tasks": sidecar["admission"]["refused"],
+            "file_count": len(pack["file_universe"]),
+            "qrels_total": sidecar["qrels_total"],
+            "qrels_materialized": sidecar["qrels_materialized"],
+            **written,
+        }
+    summary = {
+        "kind": "external_snippet_static_preparation_v1",
+        "qualification": "diagnostic_unqualified",
+        "runtime_gold_isolation": "not_verified_static_path_separation_only",
+        "runtime_search_execution": "not_run",
+        "execution_profile": profile,
+        "execution_profile_sha256": query_plan.execution_profile_sha256(
+            "natural_language_file", config
+        ),
+        "inputs": input_bindings,
+        "lanes": lanes,
+        "codesearchnet_total_query_language_pairs": materialized["task_count"],
+        "codesearchnet_selected_languages": list(languages),
+        "codesearchnet_selected_population": sum(
+            lanes["csn-" + language]["population_tasks"] for language in languages
+        ),
+        "codesearchnet_selected_complete": sum(
+            lanes["csn-" + language]["complete_tasks"] for language in languages
+        ),
+    }
+    (output_root / "manifest.json").write_bytes(_canonical(summary) + b"\n")
+    return summary
