@@ -27,6 +27,9 @@
 //!   universe and producer event, both decoded from the same proved bytes.
 //!   Absence means unavailable capability, not complete coverage.
 //!
+//! Format 12 binds source coverage to the explicit symbol-name source policy.
+//! Format 11 coverage lacks this field and must be rebuilt before component
+//! queries can use an incomplete-census exclusion proof.
 //! Format 11 binds file-authority posting counts to the folded content and path
 //! surfaces only. Format 10 counted four sensitive/folded surfaces; even though
 //! its row shape is unchanged, those counts require rebuilding the generation.
@@ -36,7 +39,7 @@
 //! may exceed the current admission ceiling; it requires an explicit rebuild
 //! rather than being classified as corrupt.
 //! Format 8 added ranked-key tables; format 7 added flat source-file coverage.
-//! Formats 10 and earlier require an explicit rebuild for the current layout.
+//! Formats 11 and earlier require an explicit rebuild for the current layout.
 //! The index's text documents carry their
 //! text-authority doc id indexed and as a fast column, so a derived match
 //! set restricts a query as one bitmap (QI-BB-024), and whose documents
@@ -69,7 +72,7 @@ pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-genera
 const MAX_SEALED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 11;
+pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 12;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -247,7 +250,7 @@ impl LexicalSealedManifest {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
-                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: folded-only file posting counts, ranked keys and bounded committed coverage pages); the generation must be rebuilt",
+                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: explicit symbol-name source policy, folded-only file posting counts and bounded committed coverage pages); the generation must be rebuilt",
                     path.display()
                 ),
             });
@@ -772,6 +775,7 @@ mod tests {
             8,
             9,
             10,
+            11,
             LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1,
         ] {
             let other_format: SealedManifestRow = (
