@@ -2491,6 +2491,149 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
                 std::fs::copy(source, destination.join(name)).expect("evidence artifact copies");
         }
     }
+    verify_rank_study_runner(&command, &pack_path, &evidence);
+}
+
+/// Exercise the same separately pinned runner/daemon boundary with a top-one
+/// ordinary file request. The fixture's three `pub` occurrences require three
+/// pages; a one-page diagnostic cap must retain the original capped record.
+fn verify_rank_study_runner(original_command: &Command, original_pack: &Path, evidence: &Path) {
+    let mut pack: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(original_pack).expect("original blind pack"))
+            .expect("pack JSON");
+    pack["routes"] = serde_json::json!(["lexical"]);
+    pack["comparison_contract"]["top_k"] = serde_json::json!(1);
+    pack["tasks"][0]["query"] = serde_json::json!("pub");
+    pack["tasks"][0]["query_sha256"] = serde_json::json!(sha256_hex(b"pub"));
+    let pack_path = evidence.join("rank-study-pack.json");
+    std::fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&pack).expect("blind pack JSON"),
+    )
+    .expect("rank pack");
+    let original_args: Vec<_> = original_command
+        .get_args()
+        .map(|arg| arg.to_str().expect("fixture UTF-8 argument").to_string())
+        .collect();
+    for (name, max_pages, complete) in [("complete", "10", true), ("limited", "1", false)] {
+        let root = evidence.join(format!("rank-study-{name}"));
+        std::fs::create_dir(&root).expect("fresh diagnostic root");
+        let replacements = BTreeMap::from([
+            ("--query-pack", pack_path.display().to_string()),
+            ("--routes", "lexical".into()),
+            ("--query-input-policy", "code_search_file".into()),
+            ("--top-k", "1".into()),
+            ("--state-root", root.join("state").display().to_string()),
+            ("--out", root.join("record.json").display().to_string()),
+            (
+                "--diagnostics-out",
+                root.join("diagnostic.json").display().to_string(),
+            ),
+            (
+                "--metrics-out",
+                root.join("phase.json").display().to_string(),
+            ),
+            (
+                "--refusal-out",
+                root.join("refusal.json").display().to_string(),
+            ),
+        ]);
+        let mut args = vec![original_args[0].clone()];
+        for pair in original_args[1..].chunks_exact(2) {
+            args.push(pair[0].clone());
+            args.push(
+                replacements
+                    .get(pair[0].as_str())
+                    .cloned()
+                    .unwrap_or_else(|| pair[1].clone()),
+            );
+        }
+        let artifact_path = root.join("rank-study.json");
+        let output = Command::new(original_command.get_program())
+            .args(args)
+            .arg("--rank-study-out")
+            .arg(&artifact_path)
+            .arg("--rank-study-max-pages")
+            .arg(max_pages)
+            .output()
+            .expect("actual study runner");
+        assert!(
+            output.status.success(),
+            "study failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let record_bytes =
+            std::fs::read(root.join("record.json")).expect("original quality record");
+        let record: serde_json::Value = serde_json::from_slice(&record_bytes).expect("record");
+        assert_eq!(record["results"][0]["status"], "capped");
+        assert_eq!(
+            record["results"][0]["candidates"]
+                .as_array()
+                .expect("top-one")
+                .len(),
+            1
+        );
+        let artifact: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&artifact_path).expect("study artifact"))
+                .expect("study JSON");
+        assert_eq!(artifact["record_sha256"], sha256_hex(&record_bytes));
+        assert_eq!(artifact["qualification"], "diagnostic_unqualified");
+        let row = &artifact["results"][0];
+        assert_eq!(row["effective_request"]["generation"], row["generation"]);
+        let collection = &row["collection"];
+        assert_eq!(collection["pool_complete"], complete);
+        assert_eq!(
+            collection["pages"].as_array().expect("native pages").len(),
+            if complete { 3 } else { 1 }
+        );
+        if complete {
+            assert_eq!(collection["status"], "returned");
+            let paths: Vec<_> = collection["explanations"]
+                .as_array()
+                .expect("native explanations")
+                .iter()
+                .map(|item| {
+                    assert_eq!(item["status"], "returned");
+                    let response: quanta_index_contract::SearchPlaneExplainQueryResponse =
+                        serde_json::from_value(item["response"].clone())
+                            .expect("strict native explain DTO");
+                    assert_eq!(
+                        response.presence,
+                        quanta_index_contract::CandidatePresenceV1::Indexed
+                    );
+                    assert_eq!(response.explanation.contributions.len(), 1);
+                    assert_eq!(
+                        f64::from(response.explanation.contributions[0].contribution),
+                        item["candidate"]["score"]
+                            .as_f64()
+                            .expect("native candidate score")
+                    );
+                    item["candidate"]["repo_relative_path"]
+                        .as_str()
+                        .expect("native path")
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(paths, ["src/alpha.rs", "src/beta.rs", "src/lib.rs"]);
+        } else {
+            assert_eq!(collection["status"], "partial");
+            assert_eq!(collection["reason"], "diagnostic_page_limit");
+        }
+        if let Some(dir) = std::env::var_os("QUANTA_BENCH_SDK_EVIDENCE_DIR") {
+            let destination = PathBuf::from(dir);
+            for (source, suffix) in [
+                (root.join("record.json"), "record"),
+                (artifact_path, "study"),
+                (pack_path.clone(), "pack"),
+            ] {
+                let _copied = std::fs::copy(
+                    source,
+                    destination.join(format!("rank-study-{name}-{suffix}.json")),
+                )
+                .expect("external diagnostic copy");
+            }
+        }
+    }
 }
 
 #[test]
