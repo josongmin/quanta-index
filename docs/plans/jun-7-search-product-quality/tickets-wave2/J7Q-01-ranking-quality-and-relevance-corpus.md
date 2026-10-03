@@ -810,7 +810,12 @@ Verification on current main:
 | Source-validated `code_search_rank_study` replay of the existing 1,196 declaration and 1,000 literal captures | `VERIFIED`: all comparison structures unchanged; new outputs and equality check in `/private/tmp/qi-nfd-explain-green-20261004-163xq3sz/`, original artifacts untouched |
 | Ruff, test-authority inventory and `git diff --check` | `VERIFIED` |
 | System Python 3.9 / mistaken test path attempts | `FAILED`: unsupported `zip(strict=True)` runtime / absent paths; not the project test verdict; superseded by the frozen environment command above |
-| Native sealed Unicode test, dispatcher score tests and rebuilt one-query SDK control | PENDING_NATIVE_DIAGNOSTIC_REPAIR_CHECKS |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical --test l3_exact_source code_search_rank_study_recovers_original_boundaries_after_unicode_normalization -- --exact` | `VERIFIED`: 1 passed; compile 21.97 s, test 5.65 s; resource admission waited 2,600.19 s separately |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-search-plane --lib code_search_score` | `VERIFIED`: 2 passed; compile 64 s, test below 0.01 s |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical --test l3_exact_source code_search_explanation_preserves_constraints_cancellation_and_global_auto_typo_gate -- --exact` | `VERIFIED`: 1 passed; compile 1.72 s, test 0.78 s |
+| `./scripts/cargow --lane code-search-rank-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench --locked` | Initial `FAILED`: runner referenced nonexistent `GenerationPin.source_repo_id`; repaired single-repository binding; rerun `VERIFIED`, build 20.28 s |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench` | Initial test build `FAILED`: three `let-underscore-drop` violations in the NL token-limit fixture; named previous-value bindings repaired it. Final `VERIFIED`: all 11 passed, compile 6.61 s, tests 0.06 s |
+| `uv run --frozen --extra dev python /private/tmp/qi-nfd-explain-green-20261004-163xq3sz/run_control.py` | `VERIFIED`: fresh-state SDK control plus independent source-bound Python reader; runner wall 22.243 s. Selected candidates, score and source span equal to RED; Explain returned with explicit diagnostic refusal; all ablation coverage 0, no fabricated quality mean |
 
 Independent holdout/externals are concurrent work, not duplicated here. The
 current Sourcegraph path-inventory receipt observes 12 repositories and 13,347
@@ -818,3 +823,19 @@ files but explicitly does not prove content postings. Actual AI relevance review
 remains partial and unqualified; it is not human review. These observations do
 not authorize production ranking selection, a fresh five-product ranking or a
 performance comparison. Selected ranking remains baseline.
+
+The build failure was introduced in shared main commit `62b4f2d0`, after the
+original Explain repair. `GenerationPin` has only repo/revision/generation;
+this benchmark's existing record authority requires the producer source repo
+to equal the search repo. The runner now checks those real fields, retaining
+revision/generation and first-page source/preview equality checks. This repair
+does not introduce an unimplemented multi-source pin contract.
+
+Final focused verification totals: 83 Python + 4 lexical/dispatcher + 11 runner
+unit tests = 98 passing tests, plus the actual SDK RED-to-GREEN control and
+unchanged 2,196-query artifact replays. Compilation and admission waits are
+separate from test time. The Green artifact's `binding.json`, `execution.json`
+and `red-green-verification.json` record the development binary/input binding,
+22.243-second runner wall time and observable assertions. This is still
+`diagnostic_unqualified`; no full benchmark, default-policy promotion or
+repository-wide/release qualification is claimed.
