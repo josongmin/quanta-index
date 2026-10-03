@@ -484,7 +484,7 @@ fn read_manifest_with(
             code:
                 quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
             message: format!(
-                "lexical: sealed generation manifest {} has {encoded_bytes} encoded bytes, exceeding the current {MAX_SEALED_MANIFEST_BYTES}-byte admission ceiling; an older format-9 generation with this size requires an explicit rebuild",
+                "lexical: sealed generation manifest {} has {encoded_bytes} encoded bytes, exceeding the current {MAX_SEALED_MANIFEST_BYTES}-byte admission ceiling; the generation requires an explicit rebuild",
                 path.display()
             ),
         });
