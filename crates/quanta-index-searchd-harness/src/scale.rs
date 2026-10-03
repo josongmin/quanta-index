@@ -636,8 +636,13 @@ pub struct TierMeasurement {
     pub tier: ScaleTier,
     pub seed: u64,
     pub file_count: usize,
+    /// Distinct source repositories inside one serving owner/generation.
+    pub source_repo_count: usize,
     /// Bytes of every generated file.
     pub corpus_bytes: u64,
+    /// Actual encoded pending IPC envelope, before the timed seal.
+    pub ingest_decoded_bytes: Option<u64>,
+    pub ingest_wire_bytes: Option<u64>,
     /// Ingest of every file through seal.
     pub build_ms: f64,
     /// Bytes the state root grew by during the full build.
@@ -784,9 +789,49 @@ fn collect_warm_samples(
     Ok(samples_ms)
 }
 
+fn collect_validated_samples<T>(
+    sample_count: usize,
+    mut query: impl FnMut() -> T,
+    mut validate: impl FnMut(&T) -> AnyResult<()>,
+) -> AnyResult<Vec<f64>> {
+    let mut samples_ms = Vec::with_capacity(sample_count);
+    for sample_index in 0..sample_count {
+        let started = Instant::now();
+        let response = query();
+        let elapsed = elapsed_ms(started);
+        validate(&response).map_err(|error| {
+            anyhow::anyhow!(
+                "scale: warm query sample {}/{} failed: {error}",
+                sample_index.saturating_add(1),
+                sample_count
+            )
+        })?;
+        samples_ms.push(elapsed);
+    }
+    Ok(samples_ms)
+}
+
+fn validate_scoped_response(
+    oracle: &ScopedOracle,
+    source_repo_id: Option<&str>,
+    result: &crate::harness::E2eQueryResult,
+) -> AnyResult<usize> {
+    if let Some(error) = &result.typed_error {
+        return Err(anyhow::anyhow!(
+            "scale: scoped query returned typed error {}: {}",
+            error.code,
+            error.message
+        ));
+    }
+    oracle.verify_page(source_repo_id, &result.candidates)
+}
+
 /// Open the sealed generation the daemon serves through the lexical
 /// adapter in-process and time open, plan and execute on their own.
-fn measure_adapter_phases(rt: &E2eRuntime) -> AnyResult<AdapterPhaseTimingV1> {
+fn measure_adapter_phases(
+    rt: &E2eRuntime,
+    scoped_oracle: Option<&ScopedOracle>,
+) -> AnyResult<AdapterPhaseTimingV1> {
     let adapter = LexicalAdapter::with_state_root(rt.state_root().join("indexes/lexical"));
     let sealed = ManifestGeneration::new(rt.current_generation().get().saturating_sub(1));
     let open_started = Instant::now();
@@ -819,7 +864,9 @@ fn measure_adapter_phases(rt: &E2eRuntime) -> AnyResult<AdapterPhaseTimingV1> {
             &RequestBudgetV1::unbounded(),
         )?;
         execute_samples.push(elapsed_ms(started));
-        if page.candidates.is_empty() {
+        if let Some(oracle) = scoped_oracle {
+            oracle.verify_page(None, &page.candidates)?;
+        } else if page.candidates.is_empty() {
             return Err(anyhow::anyhow!(
                 "scale: the adapter-only query returned an empty page"
             ));
@@ -929,14 +976,17 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
     let warm_query = LatencySummary::from_samples_ms(&warm_samples)
         .ok_or_else(|| anyhow::anyhow!("scale: no warm samples"))?;
 
-    let adapter = measure_adapter_phases(&rt)?;
+    let adapter = measure_adapter_phases(&rt, None)?;
     let delta = measure_delta(&mut rt, seed)?;
 
     Ok(TierMeasurement {
         tier: ScaleTier::Small,
         seed,
         file_count,
+        source_repo_count: 1,
         corpus_bytes,
+        ingest_decoded_bytes: None,
+        ingest_wire_bytes: None,
         build_ms,
         build_bytes_written,
         activation_ms,
