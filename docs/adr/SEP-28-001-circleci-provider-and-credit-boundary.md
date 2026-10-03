@@ -62,3 +62,14 @@ gate and the decision for each former Actions-only rail. A registered trigger,
 valid config, queued or failed-before-checkout job, or pending GitHub context
 does not establish hosted qualification. The current source must have passing
 regular jobs and the declared test-authority artifact before a GREEN claim.
+
+## Interim local regular verification
+
+When hosted execution is unavailable, run the regular `verify` and
+`verify-python` command blocks from `.circleci/config.yml` against one clean,
+fixed HEAD on the local host. Record the SHA, host/toolchain, selected commands,
+terminal results, and nextest inventory and event output outside the checkout.
+The local run may be used as a manual development gate after reviewing any
+platform-specific omissions. It does not create terminal CircleCI/GitHub
+statuses or a hosted test-authority artifact, and does not change the release
+qualification contract above. Re-run affected commands after source changes.

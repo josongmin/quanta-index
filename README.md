@@ -14,6 +14,7 @@ activation and lexical/semantic/hybrid serving over Unix sockets.
 - [Other benchmark profiles](tools/benchmark/README.md): corpus releases, Criterion, DSL gates and recording imports.
 - [State operations](docs/operator/state-cutover-runbook.md): verify, backup, restore and rebuild.
 - [Embedding provider](docs/potion-code-embedder.md): local model preparation.
+- [Crate ownership index](docs/ssot/crate-ownership.md): all 25 workspace crates and their source entry points.
 
 Build and start the daemon against an external current-format state root:
 
@@ -34,7 +35,6 @@ model; PotionCode/OpenAI are opt-in profiles. Residual tickets below are
 [engine status](docs/ssot/engine-status-v1.md).
 
 ## Build and verification
-
 
 - use `./scripts/cargow ...` for raw Cargo commands
 - use `just ...` for repo recipes

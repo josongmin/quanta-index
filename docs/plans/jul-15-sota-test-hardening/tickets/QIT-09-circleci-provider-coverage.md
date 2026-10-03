@@ -76,6 +76,19 @@ The source failures and pre-start hosted failure require separate closure.
    artifact before calling `main` qualified or promoting a release. A direct
    push to `main` is publication, not qualification.
 
+## Interim local regular replay
+
+While hosted jobs fail before checkout or remain pending, replay the command
+blocks of both `.circleci/config.yml` regular jobs on one clean, fixed HEAD.
+Run `verify`'s format, full-workspace Clippy, nextest inventory and nextest
+execution, then `verify-python`'s module snapshot, tooling tests, prompt and
+Python lints, Rust/benchmark policies, Semgrep, tracked agent-output
+validation and P00 owner tests. Keep disposable nextest events and inventory
+outside the checkout and report the exact command, host, selected/executed
+count and exit status in the PR. A macOS replay does not establish Linux
+Machine behavior, terminal GitHub checks or a hosted test-authority artifact.
+The hosted and release gates above remain open until their own evidence exists.
+
 ## Former Actions-only coverage
 
 The current CircleCI regular job covers format, clippy, full-workspace nextest
