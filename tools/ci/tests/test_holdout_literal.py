@@ -210,9 +210,7 @@ def test_literal_adapter_excludes_invalid_query_without_backfilling(tmp_path, mo
     blind["tasks"].append(public)
     duplicate_query = "Alpha() {}"
     duplicate = copy.deepcopy(gold["tasks"][0])
-    duplicate.update(
-        task_id="toy.lit.003", query_family_id="toy.lit.003", query=duplicate_query
-    )
+    duplicate.update(task_id="toy.lit.003", query_family_id="toy.lit.003", query=duplicate_query)
     duplicate_start = raw.index(duplicate_query.encode())
     duplicate["labels"] = [
         {
