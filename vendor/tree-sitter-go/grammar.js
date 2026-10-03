@@ -691,12 +691,8 @@ module.exports = grammar({
 
     call_expression: $ => prec(PREC.primary, choice(
       seq(
-        field('function', alias('make', $.identifier)),
+        field('function', alias(choice('new', 'make'), $.identifier)),
         field('arguments', alias($.special_argument_list, $.argument_list)),
-      ),
-      seq(
-        field('function', alias('new', $.identifier)),
-        field('arguments', alias($.new_argument_list, $.argument_list)),
       ),
       seq(
         field('function', $._expression),
@@ -710,18 +706,13 @@ module.exports = grammar({
       '...',
     )),
 
-    // Go 1.26 accepts either a type or an expression as new's operand.
-    new_argument_list: $ => seq(
-      '(',
-      optional(seq(choice($._type, $._expression), optional(','))),
-      ')',
-    ),
-
+    // Built-in names can be shadowed. Parse syntax here; arity and operand
+    // types belong to Go type checking. Retain type operands for make/new.
     special_argument_list: $ => seq(
       '(',
       optional(seq(
-        $._type,
-        repeat(seq(',', $._expression)),
+        choice($._type, $._expression, $.variadic_argument),
+        repeat(seq(',', choice($._expression, $.variadic_argument))),
         optional(','),
       )),
       ')',

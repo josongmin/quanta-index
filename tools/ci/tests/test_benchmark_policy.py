@@ -132,6 +132,7 @@ def test_execution_regressions_are_registered_to_the_real_owner_scope():
         ("test_codesearchnet_materialize.py", "retrieval/codesearchnet_materialize.py", True),
         ("test_clarc_adapter.py", "retrieval/clarc_adapter.py", True),
         ("test_external_snippet_benchmark.py", "retrieval/external_snippet_benchmark.py", True),
+        ("test_holdout_c4_projection.py", "retrieval/holdout_c4.py", True),
         (
             "test_identifier_robustness_multiproduct_report.py",
             "retrieval/identifier_robustness_multiproduct_report.py",
@@ -166,6 +167,7 @@ def test_execution_regression_owners_have_nonempty_live_collection(tmp_path):
         "test_codesearchnet_materialize.py",
         "test_clarc_adapter.py",
         "test_external_snippet_benchmark.py",
+        "test_holdout_c4_projection.py",
         "test_identifier_robustness_multiproduct_report.py",
         "test_identifier_robustness_strata.py",
     )

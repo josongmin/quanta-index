@@ -391,10 +391,18 @@ runtime isolation. Attested diagnostics must not claim an enforced access block.
 
 The prepared manifest records source commitments, raw and canonical hashes,
 the selected profile, and submitted/source-blocked task counts. Use its bound
-profile without truncating or rewriting queries. The native CLI accepts
+profile without truncating or rewriting queries. The CLARC group1 freeze retains all526 population rows:425 are submitted
+and101 are refused by the explicit64-token profile. These101 remain in the
+admission ledger, without query truncation. CSN retains573 query-language
+population rows, with462 source-complete submissions and111 source-blocked.
+The native CLI accepts
 `--nl-max-tokens N` only for natural-language policies, with `1 <= N <= 64`;
 the default remains 32. Nondefault budgets are exploratory, carry no qualified
 claim, and are preserved in the execution profile and effective-request digest.
+
+If an admitted source exceeds the native1MiB per-file default, explicitly
+set the existing `--max-file-bytes` to the largest admitted file size and record
+that bound. Do not discard a source file or change the frozen universe.
 
 Run `natural_language_file` and Semble `lexical-file` on the frozen packs for
 an explicit lexical baseline. This does not measure semantic or hybrid search.

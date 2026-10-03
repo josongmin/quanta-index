@@ -360,6 +360,7 @@ targets = [
   "benchmark-clarc-adapter-python-owner",
   "benchmark-external-snippet-python-owner",
   "benchmark-identifier-robustness-multiproduct-python-owner",
+  "benchmark-holdout-c4-fixed-cohort-python-owner",
   "benchmark-code-search-rank-study-python-owner",
   "benchmark-portable-proof-python-owner",
   "benchmark-pair-capture-python-owner",
@@ -1898,4 +1899,10 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-identifier-robustness-multiproduct-python-owner"
 path = "tools/ci/tests/test_identifier_robustness_multiproduct_report.py"
 owner = "tools/benchmark/retrieval/identifier_robustness_multiproduct_report.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-holdout-c4-fixed-cohort-python-owner"
+path = "tools/ci/tests/test_holdout_c4_projection.py"
+owner = "tools/benchmark/retrieval/holdout_c4.py"
 rail = "pr-benchmark-control-python"

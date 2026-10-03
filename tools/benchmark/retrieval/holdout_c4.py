@@ -10,6 +10,7 @@ from default CodeSearch semantics; this is not a qualified default-search score.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import shutil
@@ -633,6 +634,132 @@ def derive(release: Path, capsule: Path, checkout: Path, intent: str) -> tuple[d
     suite, pack, report = _derive_prepared(_prepare(release, capsule, checkout), intent)
     assert suite is not None and pack is not None
     return suite, pack, report
+
+
+def project_fixed_cohort(
+    checkout: Path,
+    fresh_suite: dict,
+    legacy_suite_raw: bytes,
+    legacy_suite_sha256: str,
+    *,
+    suite_id: str,
+    default_file_typo: bool = False,
+) -> tuple[dict, dict, dict]:
+    """Project a current C4 suite onto an SHA-pinned earlier task cohort.
+
+    The legacy suite is a selector only: its old source-oracle annotations are
+    never copied into the result. Every selected query and relevance field must
+    agree with the newly validated source-derived suite. This deliberately
+    creates a new suite and blind pack; old product records cannot be rebound.
+    """
+    if (
+        not isinstance(legacy_suite_raw, bytes)
+        or not isinstance(legacy_suite_sha256, str)
+        or len(legacy_suite_sha256) != 64
+        or hashlib.sha256(legacy_suite_raw).hexdigest() != legacy_suite_sha256
+    ):
+        raise ValueError("C4 legacy suite byte commitment differs")
+    legacy = parse_json(legacy_suite_raw.decode("utf-8"))
+    if not isinstance(legacy, dict) or not isinstance(legacy.get("tasks"), list):
+        raise ValueError("C4 legacy suite selector is malformed")
+    checked, _full_pack, _ = evaluator.validate_suite(checkout, fresh_suite)
+    if checked != fresh_suite:
+        raise ValueError("C4 fresh suite differs after validation")
+    for field in (
+        "schema_version",
+        "repository_commit",
+        "comparison_contract",
+        "file_universe",
+        "file_universe_digest",
+        "diagnostic_policy",
+        "leakage_allowlist",
+    ):
+        if legacy.get(field) != checked.get(field):
+            raise ValueError(f"C4 fixed-cohort source or contract differs: {field}")
+    if (
+        not isinstance(suite_id, str)
+        or not suite_id
+        or suite_id
+        in (
+            legacy.get("suite_id"),
+            checked["suite_id"],
+        )
+    ):
+        raise ValueError("C4 fixed-cohort requires a new suite_id")
+    routes = legacy.get("routes")
+    if (
+        not isinstance(routes, list)
+        or not routes
+        or any(not isinstance(route, str) for route in routes)
+        or len(set(routes)) != len(routes)
+    ):
+        raise ValueError("C4 legacy routes are malformed")
+    fresh_rows = checked["tasks"]
+    fresh_by_id = {row["task_id"]: row for row in fresh_rows}
+    legacy_rows = legacy["tasks"]
+    legacy_ids = [row.get("task_id") for row in legacy_rows if isinstance(row, dict)]
+    if (
+        not legacy_ids
+        or len(legacy_ids) != len(legacy_rows)
+        or len(set(legacy_ids)) != len(legacy_ids)
+        or legacy_ids != [row["task_id"] for row in fresh_rows if row["task_id"] in set(legacy_ids)]
+    ):
+        raise ValueError("C4 legacy task cohort is unknown, duplicated, or reordered")
+    for old in legacy_rows:
+        fresh = fresh_by_id[old["task_id"]]
+        old_truth = copy.deepcopy({key: value for key, value in old.items() if key != "source_oracle"})
+        fresh_truth = {key: value for key, value in fresh.items() if key != "source_oracle"}
+        if default_file_typo:
+            if (
+                old.get("category") != "declaration_name_osa1_casefold"
+                or old.get("evaluation_contract", {}).get("request_mode")
+                != query_plan.DEFAULT_FILE_SEARCH
+                or fresh.get("evaluation_contract", {}).get("request_mode")
+                != query_plan.EXPLICIT_OSA1_TYPO
+            ):
+                raise ValueError("C4 legacy ordinary-file typo mode differs")
+            old_truth["evaluation_contract"]["request_mode"] = query_plan.EXPLICIT_OSA1_TYPO
+        if old_truth != fresh_truth:
+            raise ValueError(f"C4 selected query or truth changed: {old['task_id']}")
+        old_oracle, fresh_oracle = old.get("source_oracle"), fresh.get("source_oracle")
+        if (
+            not isinstance(old_oracle, dict)
+            or not isinstance(fresh_oracle, dict)
+            or {key: old_oracle.get(key) for key in ("contract", "unit")}
+            != {key: fresh_oracle.get(key) for key in ("contract", "unit")}
+            or set(old_oracle)
+            - {"contract", "unit", "declaration_exclusions", "near_declaration_exclusions"}
+        ):
+            raise ValueError(f"C4 selected source-oracle contract changed: {old['task_id']}")
+    selected = [copy.deepcopy(fresh_by_id[task_id]) for task_id in legacy_ids]
+    if default_file_typo:
+        if any(
+            row.get("category") != "declaration_name_osa1_casefold"
+            or row.get("evaluation_contract", {}).get("request_mode")
+            != query_plan.EXPLICIT_OSA1_TYPO
+            for row in selected
+        ):
+            raise ValueError("C4 ordinary-file projection requires explicit OSA1 tasks")
+        for row in selected:
+            row["evaluation_contract"]["request_mode"] = query_plan.DEFAULT_FILE_SEARCH
+    projected = copy.deepcopy(checked)
+    projected["suite_id"] = suite_id
+    projected["routes"] = routes
+    projected["tasks"] = selected
+    validated, pack, _ = evaluator.validate_suite(checkout, projected)
+    if validated != projected or [row["task_id"] for row in pack["tasks"]] != legacy_ids:
+        raise ValueError("C4 fixed-cohort projection did not validate")
+    lineage = {
+        "status": "diagnostic_unqualified",
+        "legacy_suite_sha256": legacy_suite_sha256,
+        "fresh_suite_sha256": hashlib.sha256(evaluator.canonical(checked)).hexdigest(),
+        "projected_suite_sha256": hashlib.sha256(evaluator.canonical(validated)).hexdigest(),
+        "blind_pack_sha256": hashlib.sha256(evaluator.canonical(pack)).hexdigest(),
+        "fresh_selected": len(fresh_rows),
+        "fixed_selected": len(selected),
+        "default_file_typo": default_file_typo,
+    }
+    return validated, pack, lineage
 
 
 def _batch_preflight(

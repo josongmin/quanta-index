@@ -1,18 +1,10 @@
 --- a/grammar.js
 +++ b/grammar.js
-@@ -694 +694 @@
--        field('function', alias(choice('new', 'make'), $.identifier)),
-+        field('function', alias('make', $.identifier)),
-@@ -695,0 +696,4 @@
-+      ),
-+      seq(
-+        field('function', alias('new', $.identifier)),
-+        field('arguments', alias($.new_argument_list, $.argument_list)),
-@@ -707,0 +712,7 @@
-+
-+    // Go 1.26 accepts either a type or an expression as new's operand.
-+    new_argument_list: $ => seq(
-+      '(',
-+      optional(seq(choice($._type, $._expression), optional(','))),
-+      ')',
-+    ),
+@@ -708,0 +709,2 @@
++    // Built-in names can be shadowed. Parse syntax here; arity and operand
++    // types belong to Go type checking. Retain type operands for make/new.
+@@ -712,2 +714,2 @@
+-        $._type,
+-        repeat(seq(',', $._expression)),
++        choice($._type, $._expression, $.variadic_argument),
++        repeat(seq(',', choice($._expression, $.variadic_argument))),

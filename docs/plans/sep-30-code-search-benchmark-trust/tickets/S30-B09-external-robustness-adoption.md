@@ -146,20 +146,26 @@ Additional reusable owners:
   with independently replayed historical native/external rows; this offline
   historical report is not a fresh five-product run.
 - `query_plan.py`, `run.py`, `evaluator.py`, native `main.rs` and pair/runner
-  schemas: explicit bounded NL token configuration (1..128, default32),
+  schemas: explicit bounded NL token configuration (1..64, default32),
   effective request/profile binding and exploratory-only nondefault admission.
 - Four new Python owners are enrolled in the control scope, Justfile, closure
   profiles and policy collection checks. The required Python inventory adds
-  nine observed NL test identities; SDK identities were sorted without deletion.
+  observed NL test identities; SDK identities were sorted without deletion.
+  Current exact required inventories are Python634/Rust168/SDK25.
 
 Resolved defects:
 
 1. Unsorted SDK inventory rejected otherwise valid SDK receipts. Sorting the
    canonical 25 identities preserves their membership; seven owner tests and
    eleven affected SDK-path tests passed.
-2. Long CLARC queries were refused by the default32 profile (483/526). The
-   explicit128 profile submits all526 without shortening query text, and is
-   bound through the native CLI, profile, effective request and record replay.
+2. Long CLARC queries were refused by the default32 profile (483/526).
+   Actual native execution rejected the initial128-token experiment at the
+   engine OR-fanout64 boundary before any query. The planner/CLI/schema now
+   bound the token budget to64 (Rust imports the engine constant). The fresh
+   freeze submits425/526 and preserves101 profile refusals, without truncation.
+   Rust/Python tests exercise64 success and65 refusal.
+   JavaScript source1308798 bytes is admitted through the existing explicit
+   max-file-bytes option, preserving the full frozen file universe.
 3. A partial external qrel pool was liable to hide source and denominator
    loss. Full CSN573 = submitted462 + source-blocked111; submitted462 =
    positive-known408 + no-positive-judged54. Those54 have undefined target
@@ -182,15 +188,17 @@ not admitted for a qualified comparison.
 | Pinned-source/adapters/strata focused tests | VERIFIED | 46 passed, 20.76s before final profile negative fixture; profile wrapper separately 6 passed |
 | Affected runner/planner Python file | FAILED, then focused repair VERIFIED | Initial full execution499 passed/1 expected-error-text assertion failed in1331.49s; error contract preserved and affected19 passed. The full file was not repeated. |
 | Final profile/query-identity slice | VERIFIED | 14 passed,493 deselected,11.65s |
-| Rust NL CLI owner unit | BLOCKED | Resource admission timed out; release build and real native captures are separate proof scopes |
-| Semble external snippet captures | VERIFIED | 8/8 captures and full source/record replays;1514/1514 success,0 execution failures |
-| Quanta external snippet captures | NOT_RUN | Release build in progress; not yet scoreable |
+| Rust NL CLI and planner owner units | VERIFIED | 1 lib +1 bin test passed; canonical nextest list observed168 tests; initial admission timeout retained as historical failure |
+| Semble external snippet captures | VERIFIED | Fresh NL64 8/8 captures/full source-record replays;1312/1312 execution success |
+| Quanta external snippet captures | VERIFIED | Fresh NL64 8/8 captures/full source-record replays;1312/1312 executed/scored,0 execution failures; capped included |
 | Fresh three-external-product C5 typo | NOT_RUN for full4149 | Capture batch running; completed cells remain separate from the historical offline report |
-| Fresh native C5 typo pair | NOT_RUN | 12cells/4149 bound inputs prepared, awaiting release daemon |
+| Fresh native C5 typo pair | NOT_RUN for full4149 | Valid cells executing; four stale-oracle cells require newly generated bound gold; no old record rebind |
 | Qualified performance / full upstream CSN / human local adjudication | NOT_RUN | Not established by these diagnostic runs |
 
-Semble lexical-file target results: CLARC original161/526, neutral91/526;
-CSN positive-known387/408. CLARC is positive-only, and neutralized identical
+Fresh common NL64 target results: CLARC original Quanta63/425 versus
+Semble121/425; neutral Quanta41/425 versus Semble62/425. CSN positive-known
+Quanta307/408 versus Semble387/408. Each CLARC full population remains526.
+Historical NL128 Semble results161/526 and91/526 remain separate receipts. CLARC is positive-only, and neutralized identical
 code groups retain the original labels. CSN NDCG is pool-estimated. These are
 synthetic snippet/file diagnostics, not whole-repository or semantic rankings.
 
@@ -202,7 +210,9 @@ Per-run artifacts (outside the checkout):
   and `score-summary.json` (commands and wall times in adjacent execution ledger).
 - Historical strata replay: `/private/tmp/qi-c5-source-strata-offline-20261004-v3.json`.
 - Fresh external C5 batch: `/private/tmp/qi-c5-external-source-strata-fresh-20261004-v2/ledger.json`.
-- Native snippet execution root: `/private/tmp/qi-b09-native-snippets-20261004-v1/`.
+- Fresh matched NL64 runs/replay/timings: `/private/tmp/qi-b09-snippet64-20261004-v2/RESULTS.md`
+  and `score-summary.json` (valid native-v3 and semble outputs).
+- Historical native rejected attempts: `/private/tmp/qi-b09-native-snippets-20261004-v1/`.
 - Native C5 batch preparation: `/private/tmp/qc5t-azl3zc/`.
 
 Capture cost audit: the 58,562-file/1.02GiB release is fully rehashed four
@@ -213,3 +223,13 @@ produced identical digests but bounded4-worker hashing was slower on this host
 performance patch was made. Host load and about24GiB swap invalidate any
 qualified speed ranking; preparation, compile, validation, index and call
 wall boundaries remain separate.
+
+### Oracle freshness repair
+
+Current vendored parsers resolve21 files that old oracle recipes excluded.
+Four old C5 suites (1382/4149 tasks) therefore fail current public validation.
+These are source-eligibility blocks, not product misses. Newly derived selected
+1382 task rows preserve query/gold truth, but other candidate rows change.
+Official fresh gold capsules/C4 matrix and a commitment-bound fixed-cohort
+projection are being produced externally. New full cohort and old fixed cohort
+remain separate; old record rebinding is prohibited.

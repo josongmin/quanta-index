@@ -54,7 +54,26 @@ def test_go_126_expression_operands_preserve_declaration_spans_and_refuse_malfor
     assert refusal is None
     assert len(spans) == 1
     assert raw[spans[0][0] : spans[0][1]] == b"Locate"
-    for call in [b"new(1, 2)", b"new(i +)"]:
+    # Go's parser accepts calls independently of built-in arity/type checking.
+    # These fixed declarations are also accepted by the independent go/ast
+    # checker; shadowed new/make and variadic new compile with Go 1.25.
+    for name, body in [
+        (b"new", b"func new(a, b int) int { return a+b }\nfunc Locate() { _ = new(1, 2) }\n"),
+        (b"make", b"func make(a, b int) int { return a+b }\nfunc Locate() { _ = make(1, 2) }\n"),
+        (
+            b"new",
+            b"func new(a ...int) int { return len(a) }\nfunc Locate() { values:=[]int{1,2}; _=new(values...) }\n",
+        ),
+    ]:
+        shadowed = b"package p\n" + body
+        declarations = source_oracle.declaration_census("go", "shadowed.go", shadowed)
+        assert [shadowed[start:end] for start, end, *_ in declarations] == [name, b"Locate"]
+    syntax_only = b"package p\nfunc Locate() { _ = new(1, 2) }\n"
+    assert [
+        syntax_only[start:end]
+        for start, end, *_ in source_oracle.declaration_census("go", "arity.go", syntax_only)
+    ] == [b"Locate"]
+    for call in [b"new(, 2)", b"new(i +)", b"make(, 2)"]:
         invalid = b"package p\nfunc Broken() { _ = " + call + b" }"
         with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
             source_oracle.declaration_census("go", "broken.go", invalid)
