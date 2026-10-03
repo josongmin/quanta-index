@@ -339,7 +339,7 @@ fn delta_keeps_its_proved_base_from_reclaim_until_seal() -> TestResult {
     if !matches!(early, Err(mpsc::RecvTimeoutError::Timeout)) {
         return Err(format!("base reclaim was not blocked by delta seal: {early:?}").into());
     }
-    build_result?;
+    let _stages = build_result?;
     if !matches!(
         reclaim_result?,
         SealedGenerationReclaimOutcomeV1::Reclaimed { .. }

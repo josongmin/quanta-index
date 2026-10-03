@@ -15105,6 +15105,13 @@ def test_query_clock_comparator_excludes_only_policy_controlled_code_search_cloc
     observed = overhead._without_code_search_work_clocks(trace)
     assert observed == [trace[0], *trace[4:]]
     assert trace[1:4] != observed[1:4]
+    for malformed in (
+        [*trace, trace[1]],
+        [{**trace[1], "detail": "code_search.execution.candidate_ns=bad"}],
+        [{**trace[1], "detail": "code_search.execution.candidate_ns="}],
+    ):
+        with pytest.raises(ValueError, match="work clock"):
+            overhead._without_code_search_work_clocks(malformed)
 
 
 @pytest.mark.parametrize("parameter", ["timeout_secs", "cleanup_timeout_secs"])

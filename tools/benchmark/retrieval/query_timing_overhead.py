@@ -29,7 +29,11 @@ def _without_code_search_work_clocks(planner_trace: list) -> list:
     for entry in planner_trace:
         detail = entry.get("detail") if isinstance(entry, dict) else None
         prefix = next(
-            (candidate for candidate in clock_prefixes if isinstance(detail, str) and detail.startswith(candidate)),
+            (
+                candidate
+                for candidate in clock_prefixes
+                if isinstance(detail, str) and detail.startswith(candidate)
+            ),
             None,
         )
         if prefix is None:
