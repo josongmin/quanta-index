@@ -591,7 +591,9 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
         rank = report.get("rank_metrics")
         observed = rank.get("comparison") if isinstance(rank, dict) else None
         if (
-            not isinstance(observed, dict)
+            report.get("rank_metric_version") != "rb-rank-context-density-first-coverage"
+            or report.get("report_scope") == "paired_independent_file_judgment_diagnostic_v1"
+            or not isinstance(observed, dict)
             or observed.get("primary_metric") != comparison["primary_metric"]
             or observed.get("primary_delta") != selected[0].get("primary_delta")
             or observed.get("sample_count") != selected[0].get("sample_count")
@@ -652,6 +654,7 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
         "repository_count": len(expected),
         "paired_sample_count": ci["sample_count"],
         "repository_cluster_ci": ci,
+        "metric_scope": "context_span_density",
         "metric_gate": metric_gate,
         "captures": receipts,
     }

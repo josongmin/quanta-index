@@ -829,3 +829,30 @@ seconds. The decision, benchctl and review preparation set passed 124 tests
 in 13.77 seconds. Ruff check/format and `git diff --check` passed. A complete
 v3 mixed-suite capture followed by unmocked verdict and C5 replay is still
 `NOT_RUN`.
+
+## C5 file-ranking qualification boundary (2026-10-03)
+
+**Confirmed code limit:** the C5 decision replay currently selects only
+`graded: true` context reports with `rank_metrics.comparison`. The pair spec
+rejects `scope: qualified` and `claims.quality: true` for
+`code_search_file`/`code_search_typo_file`. Their evaluator produces
+`paired_independent_file_judgment_diagnostic_v1`; verdict replay labels its
+metric `diagnostic_file_ndcg_at_10` with `graded: false`, and `QUALITY_DELTA`
+rejects the file execution policy. Existing tests intentionally assert these
+refusals. A 12-repository C5 context decision therefore cannot qualify ranked
+file retrieval or the C4 multi-mode matrix. The earlier mixed-label repair
+does not change this boundary.
+
+To qualify a **separately preregistered file-ranking track**, add a versioned
+file comparison/report contract in `evaluator.py`, `run.py` and `decision.py`.
+It must use source-bound `file_judgments`, require complete paired top-10
+judgment coverage and scored distinct-file ordering, replay per-query deltas,
+bind each selected request mode and capture, and apply repository-cluster and
+resource gates to those same cells. `code_search_file` and typo requests need
+separate modes/strata; the current one-suite/one-policy C5 input cannot claim
+coverage of all C4 modes. Positive and negative source-backed fixtures must
+prove candidate order, unjudged result refusal, missing mode/cell refusal,
+policy/report/record binding, no-answer behavior and per-repository coverage.
+Changing `graded` or adding file policies to the context allowlist alone would
+mislabel a diagnostic report as qualified. This implementation and the real
+multi-repository file capture are `NOT_RUN`.
