@@ -20,7 +20,8 @@ delta. A selectable rail is not measured capacity until its actual run succeeds.
   retain route-local budgets and actual storage/RSS methods. Current
   `ResourceUsageV1::observe_self` reads process-high-water RSS with
   `getrusage(RUSAGE_SELF)`: the E2E daemon runs in a thread in the same
-  process, so this includes both daemon and harness allocations. It cannot
+  process, so this includes daemon, harness and generated fixture allocations
+  retained in the same process. It cannot
   isolate daemon RSS or per-phase peaks. CPU time, reopen/restart and delete
   behavior are not measured by the current selected-tier runner.
 - Report the supported limit and any failure per tier. Do not infer restart,
@@ -81,9 +82,8 @@ That result does not verify the later scoped-tier implementation.
 
 At the scoped-tier implementation stage, actual tier runs and canonical-host
 capacity/portability were `NOT_RUN`; the later diagnostic attempts are listed
-below. A source limit or
-wire admission refusal must be recorded with its exact tier and must not be
-converted into a throughput result.
+below. A source or wire admission refusal must be recorded with its exact tier
+and must not be converted into a throughput result.
 
 ## 2026-10-04 bounded diagnostic execution
 
@@ -114,13 +114,17 @@ quiet-host performance qualification.
   10/10, with p50 49.719 ms and p95 183.103 ms, zero errors and drops.
   Evidence: `/private/tmp/qi-open-loop-medium-20261004-108873c0-r1/`.
 
-The large failure exposed an error-custody defect in the harness. Current
-unverified owner changes explicitly stop the driver and preserve measurement
-and cleanup errors separately in a failure artifact. They also add a bounded
+The large failure exposed an error-custody defect in the harness. Source
+`582cb7a5b91cc72ffa8b833c0382cd2ef4b062ca` explicitly stops the driver
+and preserves measurement and cleanup errors separately in a failure artifact.
+It also adds a bounded
 `--client-timeout-ms` override while keeping the 30 s default, process-wide
-user/system CPU deltas (`RUSAGE_SELF` covers harness plus daemon thread), exact
+user/system CPU deltas (`RUSAGE_SELF` covers harness plus daemon thread from
+runtime boot through cleanup, excluding source generation/preflight), exact
 file deletion, and same-process daemon-thread reopen measurement. The latter
 does not prove OS-process restart or cold page-cache recovery. Focused owner
-tests and fresh medium/large/XL runs against one new frozen source are still
-`NOT_RUN` for these changes. The large primary failure and whether a longer
+tests passed (`scale::` 22/22, `open_loop_matrix` 16/16,
+`scale_matrix` 2/2; `--all-features --locked`). Fresh medium/large/XL runs
+against detached clean source `582cb7a5` remain `NOT_RUN` while its binary
+build is in progress. The large primary failure and whether a longer
 explicit client deadline suffices remain unconfirmed.
