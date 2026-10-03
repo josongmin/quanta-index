@@ -599,6 +599,8 @@
     "tools.ci.tests.test_source_oracle_suite.test_osa1_text_exclusion_trigram_filter_preserves_regex_witnesses",
     "tools.ci.tests.test_source_oracle_suite.test_paired_typo_builder_emits_operation_and_stress_suites",
     "tools.ci.tests.test_source_oracle_suite.test_paired_typo_oracle_limit_counts_intended_names_once",
+    "tools.ci.tests.test_source_oracle_suite.test_producer_grammar_raw_references_and_template_strings_have_exact_spans[python]",
+    "tools.ci.tests.test_source_oracle_suite.test_producer_grammar_raw_references_and_template_strings_have_exact_spans[rust]",
     "tools.ci.tests.test_source_oracle_suite.test_source_oracle_builder_emits_single_route_blind_suites_and_bound_manifest",
     "tools.ci.tests.test_source_oracle_suite.test_source_oracle_builder_rebinds_answerability_and_gold_per_mode",
     "tools.ci.tests.test_source_oracle_suite.test_source_oracle_builder_refuses_claims_and_replaces_baseline_gold",

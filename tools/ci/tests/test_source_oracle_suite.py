@@ -76,6 +76,7 @@ def test_go_126_expression_operands_preserve_declaration_spans_and_refuse_malfor
             b'def Broken():\n    return t"unterminated\n',
         ),
     ],
+    ids=["rust", "python"],
 )
 def test_producer_grammar_raw_references_and_template_strings_have_exact_spans(
     grammar, path, raw, invalid
@@ -86,7 +87,8 @@ def test_producer_grammar_raw_references_and_template_strings_have_exact_spans(
     assert [raw[start:end] for start, end, *_ in rows] == [b"Locate"]
     spans, refusal = gold_oracle._definition_spans(raw, b"Locate", grammar, path=path)
     assert refusal is None
-    assert spans == [(raw.index(b"Locate"), raw.index(b"Locate") + len(b"Locate"))]
+    kind = "function_item" if grammar == "rust" else "function_definition"
+    assert spans == [(raw.index(b"Locate"), raw.index(b"Locate") + len(b"Locate"), kind)]
     with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
         source_oracle.declaration_census(grammar, path, invalid)
 
