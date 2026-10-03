@@ -675,3 +675,94 @@ retrieval rows after repair.
 qualification, unexposed holdout, comparable performance, release/deployment
 and scale optimizations. No production default relevance improvement has been
 established by this execution.
+
+## 2026-10-04 follow-up: intent reporting and literal conformance
+
+Status: `VERIFIED` for the scoped diagnostic code and execution below. Production
+ranking/default selection remains unchanged and is not qualified by this work.
+
+### Reporting repair
+
+Owner: `tools/benchmark/retrieval/code_search_rank_study.py`; tests:
+`tools/ci/tests/test_code_search_rank_study.py`.
+
+- Paired file means now include intent/source-oracle-contract breakdowns with
+  attempted counts, admitted IDs, exclusions, coverage and explicit regression
+  IDs for Hit, MRR and NDCG. A fully excluded group has no quality mean.
+- The report also computes an equal-family macro mean on admitted families.
+  Missing family identity is explicit `not_available`; no artificial family
+  assignment or repository-level inference is made.
+- A study missing a suite task is refused, rather than shrinking its denominator.
+- An independent four-task golden has two related declaration successes, a
+  content regression and a refused content task. Overall candidate Hit is 2/3;
+  equal-family Hit is 1/2; content candidate Hit is zero with 1/2 coverage. This
+  proves that a declaration gain cannot conceal the content regression.
+
+`VERIFIED`: `uv run --frozen --extra dev python -m pytest -q
+tools/ci/tests/test_code_search_rank_study.py
+tools/ci/tests/test_identifier_robustness_report.py` passed 67 tests on live main
+and its overlay. Ruff, `git diff --check` and test-authority registration passed.
+The original 1,196 raw artifacts were replayed with the new reader to the new
+`ablation-report-intent-family.json` in their external output root; historical
+reports were not overwritten. Original metrics and task coverage are unchanged.
+
+### Additional 1,000 exact-content tasks
+
+External output:
+`/private/tmp/qi-rank-study-content-1000-dedup-20261004-z3_o0cua/`.
+This remains a Gin development diagnostic, not a new independent holdout.
+
+- Same immutable 99-file universe and Git commit as the declaration diagnostic.
+- Sampling froze seed `content-lines-20261004-v1` and hash-ranked printable
+  12..80-byte source lines, excluding bare names, function/type headers and
+  comment/import/package headers. Population: 6,797 distinct lines. The first
+  1,000 eligible normalized/near-deduplicated queries were selected before
+  product execution; 11 near and eight normalized duplicates were skipped.
+- An initial unfiltered preparation was correctly refused by the existing
+  near-duplicate gate. The accepted preparation applied that same threshold;
+  no evaluator admission rule was weakened.
+- Gold is every file with a raw, case-sensitive literal occurrence. Existing
+  `LiteralSourceOracleIndex` and `source_oracle_gold` generated the suite; a
+  separate repeated-byte-find scanner matched all query occurrence sets.
+  All tasks passed raw-versus-indexed-NFC file-membership validation.
+- 64 queries have multiple positive files; maximum 21. This intentionally does
+  not grade which matching file contains the most useful example.
+- Public request policy is `code_search_exact_content_file`, with original
+  top-k 10, native paging and generation/source-bound explanations. A new state
+  root was used. Binary hashes, inputs and exact argv are in
+  `capture-binding.json`; the previous verified development binary is reused
+  and no frozen compiled-source snapshot or speed claim is made.
+- Native execution: exit zero, 133.214 s runner wall time, 17.416 s additional
+  diagnostics. Records: 999 `success`, one `capped`, no execution errors.
+- All 1,000 pools exhausted. All 1,148 explanations returned. The entire native
+  candidate file sets match independently derived oracle sets with zero missing
+  or extra files (`literal-conformance.json`). The source-validated ablation
+  reader admits all tasks with zero exclusions.
+
+All policies have file Hit/MRR/NDCG of one on this literal contract because every
+matching file is equally positive. This is a conformance result, **not evidence
+of improved content/use-example ranking**. Meaningful graded relevance and
+declaration-role retrieval need distinct reviewed judgments. Do not combine
+these 1,000 tasks with the declaration score to inflate a quality claim.
+
+### Remaining input and operational boundaries
+
+- Existing B08 work already prepared ten development and twelve additional
+  repositories. The current holdout release has 13,347 `code_only` files.
+  Reuse that pipeline rather than constructing another release manager.
+- At inspection, `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/c3-split-preparation/result.json`
+  reports `split_source_verified_review_labels_not_admitted`. A verified source
+  split does not supply admitted relevance labels or current C4 product inputs.
+  Genuine independent review and a release/source-bound C4 handoff remain gates
+  for production-selection evidence. Automated reviewers are not human review.
+- One symbol query per explained file is the current diagnostic mechanism.
+  Production request-wide batching remains necessary **if** a declaration policy
+  is selected; this experiment does not introduce an unused production ranker
+  or change ordinary search's latency path.
+- Host load averages were approximately 60 on the shared execution host. Fair
+  performance qualification is `NOT_RUN`; diagnostic wall times above must not
+  become product-speed comparisons.
+- Fresh five-product qualification remains `NOT_RUN`: the active release's
+  indexed universes, supported lane requests and served versions still require
+  their own binding. Historical external rows and a legacy OpenGrok index dump
+  do not establish that proof for the new release.
