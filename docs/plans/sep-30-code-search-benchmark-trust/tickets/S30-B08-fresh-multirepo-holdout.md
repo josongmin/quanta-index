@@ -1104,3 +1104,53 @@ capture-boundary test in a focused **2/2** run (16.77s); a new full-file
 449-test run is `NOT_RUN`. `ruff check`, `ruff format --check`, `git diff
 --check` and `pm.py lint` passed. These are code checks, not a qualified
 product capture or a completed relevance review.
+
+### Component misses: source-bound scoring RCA (2026-10-03)
+
+The original `retrieval-diagnostic.json` responses at `/tmp/{v03,v12,v30}`
+retain an exact candidate count, even though the merged `record.json` shows
+only the top ten. The frozen `release-v4/views/{cli,mocha,zellij}/code_only`
+files match all 1,909 suite file hashes. A read-only source-level scorer
+reimplemented the current CodeSearch literal boundary, capped occurrence,
+case-exact and proximity terms. Its top-ten paths and scores matched all
+40 original Quanta rows; its matching-file counts equaled the native exact
+candidate counts. No native off-page cursor was fetched, so the gold ranks
+below are **offline reconstructed ranks**, not captured product ranks.
+
+| Task | Native exact candidates | Gold score | Native rank-10 score | Offline gold rank | Semble gold rank |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `cli.com.002` | 14 | 457 | 533 | 12 | 3 |
+| `mocha.com.006` | 22 | 165 | 197 | 14 | 1 |
+| `zellij.com.004` | 43 | 185 | 222 | 27 | 4 |
+| `zellij.com.005` | 13 | 185 | 211 | 12 | 6 |
+
+All four gold sources are ASCII and match their suite SHA-256 values. The
+native windows report `capped` with ten distinct files, exact candidate and
+examined counts, and continuation. The gold scores are below the observed
+tenth-place scores by 76, 32, 37 and 26 points. Thus the current scoring and
+top-ten truncation suffice to explain each miss; an index omission is not
+required. Index-universe attestation is still absent, and native ranks beyond
+ten remain unobserved.
+
+The query generator splits declaration names into lowercase camel/snake
+components, while `code_search_file` submits those words unchanged to the
+public general file search. `code_search.rs` then requires each substring
+somewhere in a file and sums each term's best content/path boundary score;
+the proximity contribution is at most 32. It neither joins terms at one
+declaration nor consults the indexed symbol local name. Embedded terms in
+`cleanUp`, `VersionInfo` and `home_unix` receive weaker boundary scores than
+standalone words elsewhere. `zellij.com.005` additionally labels the module
+declaration file although the implementation file is already Quanta rank 2.
+This is a confirmed query-intent/ranking-contract mismatch; whether a given
+top-ten alternative is irrelevant requires independent source-backed grades.
+
+Resolve it on two separate contracts. For declaration-component lookup,
+introduce an explicit typed symbol-name component route with bounded
+component postings, ordered-component verification, symbol identity and a
+defined file projection. Test exact adjacency, case, duplicate names,
+module declarations, no-answer, posting cap and cursor order against fixed
+source oracles. For default general file search, retain file-level content
+and path matching; test any bounded declaration feature or fielded reranker
+only on independently reviewed graded file relevance. Do not turn these four
+source-exposed cases into a qualified improvement claim or silently apply a
+symbol-only preference to every file query.
