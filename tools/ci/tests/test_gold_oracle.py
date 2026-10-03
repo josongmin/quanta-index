@@ -1107,9 +1107,7 @@ def test_sampler_binds_all_supported_language_checkers_without_sampling_other_na
             }
         },
     }
-    repository = holdout_sampling.Repository(
-        release, {"digest": "sha256:" + "c" * 64}, row
-    )
+    repository = holdout_sampling.Repository(release, {"digest": "sha256:" + "c" * 64}, row)
     repository.run_census()
     assert set(repository.all_audits) == {"python", "javascript"}
     assert repository.names == {"primary": 1}
