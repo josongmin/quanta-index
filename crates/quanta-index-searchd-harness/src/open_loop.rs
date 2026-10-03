@@ -17,16 +17,16 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax, TextRankUnit,
 };
 use quanta_index_ipc::{ClientIoPolicy, IpcError, send_request};
-use quanta_index_searchd_harness::{E2eRuntime, E2eTextChunkSpec};
 use quanta_index_searchd_harness::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
     LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest,
     corpus_digest, model_revision_of,
 };
 use quanta_index_searchd_harness::scale::{
-    ScaleTier, ScopedOracle, generate_corpus, generate_scoped_corpus, preflight_scoped_corpus,
-    scoped_corpus_digest,
+    ScaleTier, ScopedOracle, generate_corpus, generate_scoped_corpus, params_for,
+    preflight_scoped_corpus, repo_query_token, scoped_corpus_digest,
 };
+use quanta_index_searchd_harness::{E2eRuntime, E2eTextChunkSpec};
 use serde_json::{Value, json};
 
 pub(crate) const DIMENSION: &str = "open-loop";
@@ -662,16 +662,16 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
     config.validate()?;
     let mut runtime = E2eRuntime::boot()?;
     let model_revision = model_revision_of(runtime.embedder_profile());
-    let (source_paths, corpus_digest) = if config.tier == ScaleTier::Small {
+    let (source_paths, corpus_digest, scoped_oracle) = if config.tier == ScaleTier::Small {
         let corpus = generate_corpus(ScaleTier::Small, config.seed);
         let source_paths = source_fixture_paths(&corpus)?;
         for (path, content) in &corpus {
             runtime.ingest_text(REPO, path, content)?;
         }
-        (source_paths, corpus_digest(DIMENSION, &corpus))
+        (source_paths, corpus_digest(DIMENSION, &corpus), None)
     } else {
         let files = generate_scoped_corpus(config.tier, config.seed)?;
-        let _oracle = ScopedOracle::from_source(&files, config.tier)?;
+        let oracle = ScopedOracle::from_source(&files, config.tier)?;
         let _admission = preflight_scoped_corpus(&files)?;
         let source_paths = files
             .iter()
@@ -700,7 +700,7 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
             .collect::<Vec<_>>();
         let _ids = runtime.ingest_text_files_one_batch(&batch_files)?;
         let _wire = runtime.preview_pending_search_corpus_wire_bytes()?;
-        (source_paths, digest)
+        (source_paths, digest, Some(oracle))
     };
     let sealed = runtime.seal()?;
     runtime.activate_last_sealed_generation()?;
@@ -710,6 +710,21 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
         primed.typed_error.is_none() && !primed.candidates.is_empty(),
         "fixture must serve a nonempty lexical answer before timing"
     );
+    if let Some(oracle) = &scoped_oracle {
+        for repo_index in 0..params_for(config.tier).repo_count {
+            let source_repo_id = format!("repo{repo_index}");
+            let response = runtime.query_text(
+                TextQuerySyntax::Native,
+                &repo_query_token(repo_index),
+                TOP_K,
+            );
+            ensure!(
+                response.typed_error.is_none(),
+                "open-loop source-repository probe returned a typed error: {source_repo_id}"
+            );
+            oracle.verify_page(Some(&source_repo_id), &response.candidates)?;
+        }
+    }
     let preflight = runtime.query_once(|_| request(&pin))?;
     let expected_ids = match preflight {
         SearchPlaneQueryIpcResponse::Text(page)
@@ -729,7 +744,9 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
                 .collect::<Vec<_>>();
             fixture_candidate_ids(
                 &source_paths,
-                observed.iter().map(|(id, path)| (id.as_str(), path.as_str())),
+                observed
+                    .iter()
+                    .map(|(id, path)| (id.as_str(), path.as_str())),
             )?
         }
         SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
@@ -992,6 +1009,46 @@ mod tests {
         let mut missing_needle = corpus.clone();
         missing_needle[0].1 = missing_needle[0].1.replace(QUERY, "absent");
         assert!(source_fixture_paths(&missing_needle).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn medium_preflight_preserves_source_repo_identity_for_same_relative_path() -> AnyResult<()> {
+        let files = generate_scoped_corpus(ScaleTier::Medium, 7)?;
+        let _oracle = ScopedOracle::from_source(&files, ScaleTier::Medium)?;
+        let _admission = preflight_scoped_corpus(&files)?;
+        let paths = files
+            .iter()
+            .map(|file| format!("{}/{}", file.source_repo_id, file.repo_relative_path))
+            .collect::<BTreeSet<_>>();
+        assert!(paths.contains("repo0/src/file_0.rs"));
+        assert!(paths.contains("repo1/src/file_0.rs"));
+        assert_eq!(paths.len(), 256);
+        let rows = paths
+            .iter()
+            .take(10)
+            .enumerate()
+            .map(|(index, path)| (format!("id-{index}"), path.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            fixture_candidate_ids(
+                &paths,
+                rows.iter().map(|(id, path)| (id.as_str(), path.as_str()))
+            )?
+            .len(),
+            10
+        );
+        let mut wrong_repo = rows;
+        wrong_repo[0].1 = "repo4/src/file_0.rs".to_string();
+        assert!(
+            fixture_candidate_ids(
+                &paths,
+                wrong_repo
+                    .iter()
+                    .map(|(id, path)| (id.as_str(), path.as_str()))
+            )
+            .is_err()
+        );
         Ok(())
     }
 

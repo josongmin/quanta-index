@@ -1,5 +1,6 @@
 """Local fake services prove that live rows come from HTTP/process responses."""
 
+import copy
 import hashlib
 import json
 import os
@@ -21,6 +22,323 @@ from tools.benchmark.retrieval import live_lexical_external as live
 from tools.ci.tests.test_lexical_capture import inputs
 
 pytest_plugins = ["tools.ci.tests.test_lexical_capture"]
+
+
+def index_scope_fixture(
+    tmp_path, *, manifest_raw=None, config=None, projection=None, snapshot=None, view=None
+):
+    """Fixed two-file oracle, or source-bound inputs from the HTTP fixture."""
+    scope = live.sourcegraph_index_scope
+    root = tmp_path / "native-audit"
+    root.mkdir()
+    paths_root = tmp_path / "path-audit"
+    paths_root.mkdir()
+    release_digest = "sha256:" + "e" * 64
+    contents = {"a.go": b"func A() {}\n", "b.go": b"func B() {}\n"}
+    if manifest_raw is None:
+        manifest_raw = json.dumps(
+            {
+                "repository_commit": "f" * 40,
+                "files": [
+                    {"path": name, "file_sha256": live._sha(body)}
+                    for name, body in contents.items()
+                ],
+            }
+        ).encode()
+    manifest = json.loads(manifest_raw)
+    files = manifest["files"]
+    if config is None:
+        config = {
+            "repository": "benchmark/fixture",
+            "server_image_digest": "a" * 64,
+            "backend_snapshot": {
+                "root": str(tmp_path / "index"),
+                "container_id": "c" * 64,
+                "mount_destination": "/index",
+                "container_port": "7080/tcp",
+            },
+        }
+    if projection is None:
+        projection = {
+            "source_revision": manifest["repository_commit"],
+            "projection_revision": "d" * 40,
+        }
+    if snapshot is None:
+        rows = [{"path": "fixture.zoekt", "sha256": live._sha(b"fixed-index"), "bytes": 11}]
+        snapshot = {
+            "runtime": {
+                "container_id": "c" * 64,
+                "image_sha256": "a" * 64,
+                "pid": 123,
+                "started_at": "2026-10-04T00:00:00Z",
+                "restart_count": 0,
+                "mount_source": config["backend_snapshot"]["root"],
+                "mount_destination": "/index",
+                "container_port": "7080/tcp",
+                "service_port": 18080,
+            },
+            "files": rows,
+            "tree_sha256": live._sha(live.canonical_json(rows).encode()),
+        }
+    repo = config["repository"].removeprefix("benchmark/")
+    runtime = snapshot["runtime"]
+    native_runtime = {
+        "container_id": runtime["container_id"],
+        "image_id": "sha256:" + runtime["image_sha256"],
+        "pid": runtime["pid"],
+        "started_at": runtime["started_at"],
+        "restart_count": runtime["restart_count"],
+        "mounts": [
+            {
+                "Type": "bind",
+                "Source": runtime["mount_source"],
+                "Destination": runtime["mount_destination"],
+                "RW": False,
+            }
+        ],
+    }
+
+    def write(path, value):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value, sort_keys=True))
+
+    native_index = {"runtime": native_runtime, "files": snapshot["files"]}
+    for phase in ("before", "after"):
+        write(root / f"native-index-{phase}.json", native_index)
+        write(paths_root / f"native-index-{phase}.json", snapshot)
+    native_rows = []
+    for file in files:
+        body = (view / file["path"]).read_bytes() if view else contents[file["path"]]
+        path = root / "native-file-bodies" / repo / file["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        native_rows.append(
+            {
+                "repository": repo,
+                "path": file["path"],
+                "file_sha256": file["file_sha256"],
+                "actual_sha256": live._sha(body),
+                "bytes": len(body),
+                "http_status": 200,
+                "matches": True,
+                "seconds": 0.01,
+            }
+        )
+    (root / "native-rows.jsonl").write_text("".join(json.dumps(row) + "\n" for row in native_rows))
+    for name in ("zoekt-webserver", "native-worker.py", "probe_native_contents.py"):
+        (root / name).write_bytes(name.encode())
+    manifest_path = tmp_path / "manifests" / repo / "code_only.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_bytes(manifest_raw)
+    write(
+        root / "precommit.json",
+        {
+            "native_runtime": native_runtime,
+            "native_binary_sha256": live._sha_file(root / "zoekt-webserver"),
+            "worker_sha256": live._sha_file(root / "native-worker.py"),
+            "script_sha256": live._sha_file(root / "probe_native_contents.py"),
+            "tasks": len(files),
+            "manifest_sha256": {str(manifest_path): live._sha(manifest_raw)},
+        },
+    )
+    write(
+        root / "owned-probe-cleanup.json",
+        {
+            "deployed_binary_sha256": live._sha_file(root / "zoekt-webserver"),
+            "only_owned_reader_stopped": True,
+        },
+    )
+    write(
+        root / "result.json",
+        {
+            "status": "VERIFIED",
+            "qualified": False,
+            "bindings_unchanged": True,
+            "failures": [],
+            "worker_exit": 0,
+            "release_digest": release_digest,
+            "rows_sha256": live._sha_file(root / "native-rows.jsonl"),
+            "expected_files": len(files),
+            "observed_files": len(files),
+            "matched_files": len(files),
+        },
+    )
+    revision = projection["projection_revision"]
+    hits = [
+        {
+            "type": "path",
+            "repository": config["repository"],
+            "commit": revision,
+            "path": row["path"],
+        }
+        for row in files
+    ]
+    stream = b"".join(
+        b"event: " + kind.encode() + b"\ndata: " + json.dumps(data).encode() + b"\n\n"
+        for kind, data in [
+            ("matches", hits),
+            ("progress", {"done": True, "matchCount": len(hits), "skipped": []}),
+            ("done", {}),
+        ]
+    )
+    (paths_root / f"{repo}.stream").write_bytes(stream)
+    write(
+        paths_root / "summary.json",
+        {
+            "qualified": False,
+            "status": "path_index_observed",
+            "release_digest": release_digest,
+            "server_image_digest": config["server_image_digest"],
+            "native_index_sha256": snapshot["tree_sha256"],
+            "repositories": [
+                {
+                    "repository": repo,
+                    "source_commit": manifest["repository_commit"],
+                    "projection_commit": revision,
+                    "files": len(files),
+                    "native_match_count": len(files),
+                    "raw_stream_sha256": live._sha(stream),
+                    "query": f".* repo:^benchmark/{repo}$ rev:{revision} type:path patternType:regexp count:all",
+                }
+            ],
+        },
+    )
+    receipt = {
+        "schema": "external_index_scope_v1",
+        "backend": "sourcegraph_zoekt",
+        "scope": scope.SCOPE,
+        "qualified_comparison": False,
+        "release_digest": release_digest,
+        "repository": repo,
+        "repository_commit": manifest["repository_commit"],
+        "corpus_manifest_sha256": live._sha(manifest_raw),
+        "files": files,
+        "native_index_inventory_sha256": live._sha_file(root / "native-index-before.json"),
+        "native_runtime": native_runtime,
+        "native_binary_sha256": live._sha_file(root / "zoekt-webserver"),
+        "native_capture_root": str(root),
+        "native_rows_sha256": live._sha_file(root / "native-rows.jsonl"),
+        "path_inventory_proof": str(paths_root / "summary.json"),
+        "limitations": [
+            "No assertion of every posting's correctness",
+            "No human qrels claim",
+            "No speed qualification",
+        ],
+    }
+    receipt_path = root / "receipt.json"
+    write(receipt_path, receipt)
+    return receipt_path, dict(
+        manifest_raw=manifest_raw,
+        release_digest=release_digest,
+        config=config,
+        projection=projection,
+        snapshot=snapshot,
+    )
+
+
+def test_native_index_scope_replays_exact_paths_and_stored_bytes(tmp_path):
+    receipt, args = index_scope_fixture(tmp_path)
+    result = live.sourcegraph_index_scope.verify(receipt, **args)
+    assert result["files"] == 2
+    assert result["scope"] == "indexed_path_inventory_and_native_stored_document_bytes"
+    assert result["projection_revision"] == "d" * 40
+    assert result["receipt_sha256"] == "sha256:" + live._sha_file(receipt)
+    assert "qualified" not in result
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "body",
+        "missing_body",
+        "binary",
+        "worker",
+        "source",
+        "qualified",
+        "other_repository",
+        "index",
+        "process",
+        "restart",
+        "writable_mount",
+        "http_boolean",
+        "row_duplicate",
+        "row_missing",
+        "path_commit",
+        "path_extra",
+        "path_partial",
+        "path_skipped",
+        "manifest_input",
+    ],
+)
+def test_native_index_scope_refuses_independent_binding_faults(tmp_path, fault):
+    receipt_path, args = index_scope_fixture(tmp_path)
+    root = receipt_path.parent
+    receipt = json.loads(receipt_path.read_bytes())
+    paths = Path(receipt["path_inventory_proof"])
+    if fault in {"body", "missing_body"}:
+        p = root / "native-file-bodies/fixture/a.go"
+        p.write_bytes(b"different") if fault == "body" else p.unlink()
+    elif fault in {"binary", "worker"}:
+        (root / ("zoekt-webserver" if fault == "binary" else "native-worker.py")).write_bytes(
+            b"different"
+        )
+    elif fault == "source":
+        receipt["repository_commit"] = "0" * 40
+    elif fault == "qualified":
+        receipt["qualified_comparison"] = True
+    elif fault == "other_repository":
+        args["config"]["repository"] = "benchmark/other"
+    elif fault == "index":
+        args["snapshot"]["files"][0]["sha256"] = "0" * 64
+    elif fault in {"process", "restart"}:
+        args["snapshot"]["runtime"]["pid" if fault == "process" else "restart_count"] += 1
+    elif fault == "writable_mount":
+        for phase in ("before", "after"):
+            p = root / f"native-index-{phase}.json"
+            value = json.loads(p.read_bytes())
+            value["runtime"]["mounts"][0]["RW"] = True
+            p.write_text(json.dumps(value))
+        receipt["native_runtime"]["mounts"][0]["RW"] = True
+        receipt["native_index_inventory_sha256"] = live._sha_file(root / "native-index-before.json")
+    elif fault in {"http_boolean", "row_duplicate", "row_missing"}:
+        p = root / "native-rows.jsonl"
+        rows = [json.loads(line) for line in p.read_text().splitlines()]
+        if fault == "http_boolean":
+            rows[0]["http_status"] = True
+        elif fault == "row_duplicate":
+            rows[1] = copy.deepcopy(rows[0])
+        else:
+            rows.pop()
+        p.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        receipt["native_rows_sha256"] = live._sha_file(p)
+        result = json.loads((root / "result.json").read_bytes())
+        result["rows_sha256"] = receipt["native_rows_sha256"]
+        (root / "result.json").write_text(json.dumps(result))
+    elif fault.startswith("path_"):
+        p = paths.parent / "fixture.stream"
+        events = live.sourcegraph._events(p.read_bytes())
+        if fault == "path_commit":
+            events[0][1][0]["commit"] = "0" * 40
+        elif fault == "path_extra":
+            events[0][1][0]["path"] = "other.go"
+        elif fault == "path_skipped":
+            events[1][1]["skipped"] = [{"reason": "limit"}]
+        else:
+            events.pop()
+        p.write_bytes(
+            b"".join(
+                b"event: " + kind.encode() + b"\ndata: " + json.dumps(data).encode() + b"\n\n"
+                for kind, data in events
+            )
+        )
+        value = json.loads(paths.read_bytes())
+        value["repositories"][0]["raw_stream_sha256"] = live._sha_file(p)
+        paths.write_text(json.dumps(value))
+    else:
+        (tmp_path / "manifests/fixture/code_only.json").write_bytes(b"{}")
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises((ValueError, OSError)):
+        live.sourcegraph_index_scope.verify(receipt_path, **args)
 
 
 def test_standalone_cli_bootstraps_its_source_package_from_external_cwd(tmp_path):

@@ -40,7 +40,7 @@ import corpus_release  # noqa: E402
 from evidence import RawFile, _read_control_file, canonical_json, file_digest  # noqa: E402
 
 from tools.benchmark.retrieval import lexical_file_comparison as lexical  # noqa: E402
-from tools.benchmark.retrieval import query_plan, sourcegraph  # noqa: E402
+from tools.benchmark.retrieval import query_plan, sourcegraph, sourcegraph_index_scope  # noqa: E402
 
 MAX_HTTP_BYTES = 16 * 1024 * 1024
 MAX_PROCESS_BYTES = 16 * 1024 * 1024
@@ -124,6 +124,7 @@ def _source_hashes() -> dict[str, str]:
     sources = {
         "producer": Path(__file__),
         "sourcegraph_adapter": Path(sourcegraph.__file__),
+        "sourcegraph_index_scope": Path(sourcegraph_index_scope.__file__),
         "lexical_scorer": Path(lexical.__file__),
         "corpus_binding": Path(corpus_binding.__file__),
         "corpus_release": Path(corpus_release.__file__),
@@ -189,6 +190,10 @@ def _service(value: object, keys: set[str], optional: set[str] = frozenset()) ->
             or ".." in Path(projection).parts
         ):
             raise ValueError("projection Git root must be canonical absolute")
+    if "indexed_scope_receipt" in value:
+        sourcegraph_index_scope._absolute(value["indexed_scope_receipt"])
+        if not {"backend_snapshot", "projection_git_root"} <= set(value):
+            raise ValueError("indexed scope receipt requires backend and projection binding")
     if "backend_snapshot" in value:
         snapshot = value["backend_snapshot"]
         if not isinstance(snapshot, dict) or set(snapshot) != {
@@ -247,7 +252,7 @@ def _spec(path: Path) -> dict:
     value["sourcegraph"] = _service(
         value["sourcegraph"],
         {"base_url", "repository", "server_image_digest"},
-        {"backend_snapshot", "projection_git_root"},
+        {"backend_snapshot", "projection_git_root", "indexed_scope_receipt"},
     )
     value["opengrok"] = _service(
         value["opengrok"],
@@ -1480,6 +1485,11 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         Path(spec["query_pack"]),
         Path(spec["cs"]["binary"]),
         *(
+            (Path(spec["sourcegraph"]["indexed_scope_receipt"]),)
+            if "indexed_scope_receipt" in spec["sourcegraph"]
+            else ()
+        ),
+        *(
             (Path(spec["sourcegraph"]["projection_git_root"]),)
             if "projection_git_root" in spec["sourcegraph"]
             else ()
@@ -1582,6 +1592,17 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         _validate_backend_snapshot(spec[name], snapshot)
         backend_before[name] = snapshot
         _write(stage / "backend" / f"{name}-before.json", canonical_json(snapshot).encode() + b"\n")
+    index_scope = None
+    if "indexed_scope_receipt" in spec["sourcegraph"]:
+        index_scope = sourcegraph_index_scope.verify(
+            Path(spec["sourcegraph"]["indexed_scope_receipt"]),
+            manifest_raw=manifest_raw,
+            release_digest=document["digest"],
+            config=spec["sourcegraph"],
+            projection=projection,
+            snapshot=backend_before["sourcegraph"],
+        )
+        _write(stage / "sourcegraph-index-scope.json", canonical_json(index_scope).encode() + b"\n")
     probe_indexed_view = spec["opengrok"].get("indexed_view_probe") == "full"
     if probe_indexed_view:
         _opengrok_indexed_view(spec["opengrok"], manifest, view, stage / "opengrok-view")
@@ -1625,6 +1646,19 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         _write(stage / "backend" / f"{name}-after.json", canonical_json(snapshot).encode() + b"\n")
         if canonical_json(snapshot) != canonical_json(backend_before[name]):
             raise ValueError(f"{name} backend process, mount or index changed during capture")
+    if (
+        index_scope is not None
+        and sourcegraph_index_scope.verify(
+            Path(spec["sourcegraph"]["indexed_scope_receipt"]),
+            manifest_raw=manifest_raw,
+            release_digest=document["digest"],
+            config=spec["sourcegraph"],
+            projection=projection,
+            snapshot=backend_before["sourcegraph"],
+        )
+        != index_scope
+    ):
+        raise ValueError("Sourcegraph index scope evidence changed during queries")
     for name in products:
         destination = stage / f"{name}_rows.jsonl"
         lexical.product_result(name, destination, tasks, admitted)
@@ -1652,6 +1686,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         "binding": binding,
         "tasks": len(tasks),
         "indexed_universe_attested": False,
+        "sourcegraph_index_scope": index_scope,
         # The API inventory and served bytes do not attest Lucene postings.
         # Backend artifact/process binding is required for that stronger claim.
         "opengrok_indexed_universe_attested": False,
@@ -1721,6 +1756,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         "binding",
         "tasks",
         "indexed_universe_attested",
+        "sourcegraph_index_scope",
         "opengrok_indexed_universe_attested",
         "opengrok_indexed_view_probe",
         "opengrok_indexed_view_files",
@@ -1857,6 +1893,11 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         "query-pack.json",
         "manifest.json",
         *(("sourcegraph-projection.json",) if projection is not None else ()),
+        *(
+            ("sourcegraph-index-scope.json",)
+            if "indexed_scope_receipt" in spec["sourcegraph"]
+            else ()
+        ),
         *(f"{name}_rows.jsonl" for name in lexical.PRODUCTS),
     }
     if (
@@ -1876,6 +1917,20 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         _validate_backend_snapshot(spec[name], after)
         if digest != _sha_file(before_path) or canonical_json(before) != canonical_json(after):
             raise ValueError("backend snapshot changed during capture or replay")
+    index_scope = None
+    if "indexed_scope_receipt" in spec["sourcegraph"]:
+        index_scope = sourcegraph_index_scope.verify(
+            Path(spec["sourcegraph"]["indexed_scope_receipt"]),
+            manifest_raw=manifest_raw,
+            release_digest=document["digest"],
+            config=spec["sourcegraph"],
+            projection=projection,
+            snapshot=_json(_read_control_file(root / "backend/sourcegraph-before.json")),
+        )
+        if _json(_read_control_file(root / "sourcegraph-index-scope.json")) != index_scope:
+            raise ValueError("retained Sourcegraph index scope differs from evidence replay")
+    if summary["sourcegraph_index_scope"] != index_scope:
+        raise ValueError("Sourcegraph index scope claim differs from evidence replay")
     if probe_indexed_view:
         endpoint = (
             "/api/v1/projects/"

@@ -300,7 +300,8 @@ pub struct ScopedFile {
     pub content: String,
 }
 
-fn repo_query_token(repo_index: u32) -> String {
+/// Planted query token unique to one generated source repository.
+pub fn repo_query_token(repo_index: u32) -> String {
     format!("scalereponeedle{repo_index}")
 }
 
@@ -432,7 +433,9 @@ impl ScopedOracle {
         Ok(count)
     }
 
-    fn verify_page(
+    /// Require a full, distinct page of source-backed candidates. Set
+    /// `source_repo_id` to prove one repository independently of global rank.
+    pub fn verify_page(
         &self,
         source_repo_id: Option<&str>,
         candidates: &[LexicalCandidate],
