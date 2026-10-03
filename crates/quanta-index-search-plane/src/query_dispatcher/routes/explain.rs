@@ -637,6 +637,17 @@ fn lexical_trace_row_v1(
             "explain: rank study disagrees with the selected file scorer".into(),
         ));
     }
+    if let Some(refusal) = trace.code_search_rank_study_refusal
+        && (refusal
+            != quanta_index_contract::SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded
+            || trace.code_search_rank_study.is_some()
+            || trace.code_search_components.is_none()
+            || trace.engine != LexicalScoreEngineV1::CodeSearchFile)
+    {
+        return Err(CoreError::Storage(
+            "explain: invalid optional rank study refusal".into(),
+        ));
+    }
     Ok(ExplanationRow {
         signal_name: format!("lexical.{}", trace.engine.as_str()).into_boxed_str(),
         signal_value: trace.engine_score,
@@ -654,6 +665,18 @@ fn lexical_trace_prose_v1(trace: &LexicalScoreTraceV1) -> String {
         trace.engine_score,
         trace.boost_factor
     )
+}
+
+fn rank_study_refusal_trace(trace: &LexicalScoreTraceV1) -> Option<PlannerTraceEntry> {
+    trace
+        .code_search_rank_study_refusal
+        .map(|refusal| PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: format!(
+                "explain.code_search_rank_study_v1.refused={}",
+                refusal.as_wire_str()
+            ),
+        })
 }
 
 /// The explanation of a scored explain: one contribution row per signal,
@@ -704,6 +727,7 @@ fn build_lexical_score_explanation(
                     });
                 }
             }
+            planner_trace.extend(rank_study_refusal_trace(trace));
             if let Some(study) = trace.code_search_rank_study {
                 planner_trace.push(PlannerTraceEntry {
                     stage: PlannerStage::Merge,
@@ -1118,6 +1142,7 @@ mod code_search_score_tests {
                 occurrence_none: 105,
                 combined: 105,
             }),
+            code_search_rank_study_refusal: None,
         }
     }
 
@@ -1127,6 +1152,38 @@ mod code_search_score_tests {
         let row = lexical_trace_row_v1("file:fixture", &valid).expect("valid trace");
         assert_eq!(row.contribution, 109.0);
         assert_eq!(row.signal_name.as_ref(), "lexical.code_search_file");
+        let mut refused = valid.clone();
+        refused.code_search_rank_study = None;
+        refused.code_search_rank_study_refusal =
+            Some(quanta_index_contract::SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded);
+        assert_eq!(
+            rank_study_refusal_trace(&refused)
+                .expect("explicit refusal trace")
+                .detail,
+            "explain.code_search_rank_study_v1.refused=LEXICAL_COLLECTION_BUDGET_EXCEEDED"
+        );
+        assert!(rank_study_refusal_trace(&valid).is_none());
+        assert_eq!(
+            lexical_trace_row_v1("file:fixture", &refused)
+                .expect("selected score survives optional refusal")
+                .contribution,
+            109.0
+        );
+        for mutate in [
+            |trace: &mut LexicalScoreTraceV1| {
+                trace.code_search_rank_study = fixed_trace().code_search_rank_study
+            },
+            |trace: &mut LexicalScoreTraceV1| trace.code_search_components = None,
+            |trace: &mut LexicalScoreTraceV1| trace.engine = LexicalScoreEngineV1::Bm25,
+            |trace: &mut LexicalScoreTraceV1| {
+                trace.code_search_rank_study_refusal =
+                    Some(quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled)
+            },
+        ] {
+            let mut invalid = refused.clone();
+            mutate(&mut invalid);
+            assert!(lexical_trace_row_v1("file:fixture", &invalid).is_err());
+        }
         for mutate in [
             |trace: &mut LexicalScoreTraceV1| trace.engine = LexicalScoreEngineV1::Bm25,
             |trace: &mut LexicalScoreTraceV1| trace.engine_score = 108.0,

@@ -462,8 +462,7 @@ class SourceOracleIndex:
                 path not in files
                 or declaration_language(path) is None
                 or (
-                    language != ALL_DECLARATION_LANGUAGES
-                    and declaration_language(path) != language
+                    language != ALL_DECLARATION_LANGUAGES and declaration_language(path) != language
                 )
                 for path in paths
             ):

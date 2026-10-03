@@ -230,24 +230,36 @@ def _derive_prepared(
     intended_typo = intent == "declaration_name_osa1_casefold"
     try:
         contract = gold_oracle._name_contract(
-            language, "declaration_name_exact" if intended_typo else intent
+            source_oracle.ALL_DECLARATION_LANGUAGES,
+            "declaration_name_exact" if intended_typo else intent,
         )
     except source_oracle.SourceOracleError as exc:
         raise ValueError("C4 has no declaration oracle for selected language") from exc
-    audit = gold.get("census_audits", {}).get(language, {})
-    refused_paths = audit.get("refused_paths")
-    disagreement_paths = audit.get("disagreement_paths")
-    if (
-        audit.get("status") not in ("admitted", "unsupported")
-        or not isinstance(refused_paths, list)
-        or not isinstance(disagreement_paths, list)
-        or refused_paths != sorted(set(refused_paths))
-        or disagreement_paths != sorted(set(disagreement_paths))
-        or set(refused_paths) & set(disagreement_paths)
-        or (audit["status"] == "admitted" and (refused_paths or disagreement_paths))
-        or (audit["status"] == "unsupported" and not (refused_paths or disagreement_paths))
-    ):
-        raise ValueError("C4 independent census is not admitted or query-provable")
+    audits = gold.get("census_audits", {})
+    languages = {
+        source_language
+        for path in files
+        if (source_language := source_oracle.declaration_language(path)) is not None
+    }
+    if set(audits) != languages:
+        raise ValueError("C4 independent census language inventory differs from source")
+    refused_paths, disagreement_paths = [], []
+    for audit in audits.values():
+        refused = audit.get("refused_paths")
+        disagreements = audit.get("disagreement_paths")
+        if (
+            audit.get("status") not in ("admitted", "unsupported")
+            or not isinstance(refused, list)
+            or not isinstance(disagreements, list)
+            or refused != sorted(set(refused))
+            or disagreements != sorted(set(disagreements))
+            or set(refused) & set(disagreements)
+            or (audit["status"] == "admitted" and (refused or disagreements))
+            or (audit["status"] == "unsupported" and not (refused or disagreements))
+        ):
+            raise ValueError("C4 independent census is not admitted or query-provable")
+        refused_paths.extend(refused)
+        disagreement_paths.extend(disagreements)
     required_rows = sorted(
         [(path, "census_refused") for path in refused_paths]
         + [(path, "census_disagreement") for path in disagreement_paths]
@@ -260,7 +272,9 @@ def _derive_prepared(
         if path not in files:
             raise ValueError("C4 refused declaration file is outside the universe")
         try:
-            source_oracle.declaration_census(language, path, files[path])
+            source_oracle.declaration_census(
+                source_oracle.declaration_language(path), path, files[path]
+            )
         except source_oracle.SourceOracleError as exc:
             if not source_oracle._excludable_census_refusal(exc):
                 raise ValueError("C4 primary declaration census is unavailable") from exc
@@ -295,7 +309,7 @@ def _derive_prepared(
     }
     typo_exclusions: dict[tuple[str, str], set[str]] = {}
     if intended_typo:
-        near_contract = gold_oracle._name_contract(language, intent)
+        near_contract = gold_oracle._name_contract(source_oracle.ALL_DECLARATION_LANGUAGES, intent)
         for task in gold_tasks:
             if (
                 not isinstance(task, dict)
@@ -377,7 +391,7 @@ def _derive_prepared(
                 continue
             try:
                 partition = typo_oracle.typo_gold_partition(
-                    language, task["query"], task["intended_name"]
+                    source_oracle.ALL_DECLARATION_LANGUAGES, task["query"], task["intended_name"]
                 )
             except source_oracle.SourceOracleError as exc:
                 raise ValueError("C4 typo target differs from source oracle") from exc

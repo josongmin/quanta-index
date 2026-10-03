@@ -24,6 +24,7 @@ def _fixture(
     checker_disagreement: bool = False,
     disputed_name: str = "Other",
     near_alternative: bool = False,
+    additional_files: dict[str, str] | None = None,
 ):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -47,6 +48,8 @@ def _fixture(
         (checkout / "disputed.go").write_text(
             f"package demo\nfunc {disputed_name}() {{}}\n", encoding="utf-8"
         )
+    for path, body in (additional_files or {}).items():
+        (checkout / path).write_text(body, encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
     subprocess.run(
@@ -84,6 +87,10 @@ def _fixture(
                 "file_sha256": hashlib.sha256((checkout / "disputed.go").read_bytes()).hexdigest(),
             }
         )
+    universe.extend(
+        {"path": path, "file_sha256": hashlib.sha256((checkout / path).read_bytes()).hexdigest()}
+        for path in (additional_files or {})
+    )
     universe.sort(key=lambda row: row["path"])
     manifest = {"repository_commit": commit, "files": universe}
     release = tmp_path / "release"
@@ -238,7 +245,10 @@ def test_c4_derives_existing_suite_and_blind_pack(tmp_path, monkeypatch):
 def test_c4_uses_existing_language_contract(tmp_path, monkeypatch, language):
     release, capsule, checkout = _fixture(tmp_path, monkeypatch, language)
     suite, pack, report = holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
-    assert source_oracle.NAME_CONTRACTS[report["relevance_contract"]] == (language, "exact")
+    assert source_oracle.NAME_CONTRACTS[report["relevance_contract"]] == (
+        source_oracle.ALL_DECLARATION_LANGUAGES,
+        "exact",
+    )
     assert len(suite["tasks"]) == len(pack["tasks"]) == 1
     assert report["semantic_relation"] == "declaration_target_file_diagnostic_only"
 
@@ -276,7 +286,10 @@ def test_c4_independent_name_variants(tmp_path, monkeypatch, intent, query, name
     _resign(capsule, "blind.json", blind)
     suite, pack, report = holdout_c4.derive(release, capsule, checkout, intent)
     assert report["selected"] == 1
-    assert source_oracle.NAME_CONTRACTS[report["relevance_contract"]] == ("go", variant)
+    assert source_oracle.NAME_CONTRACTS[report["relevance_contract"]] == (
+        source_oracle.ALL_DECLARATION_LANGUAGES,
+        variant,
+    )
     assert suite["tasks"][0]["query"] == pack["tasks"][0]["query"] == query
     expected_policy = (
         "code_search_components_file"
@@ -330,7 +343,7 @@ def test_c4_casefold_typo_binds_intended_name_and_request_mode(tmp_path, monkeyp
     task = suite["tasks"][0]
     assert task["query"] == pack["tasks"][0]["query"] == "Alphb"
     assert task["intended_name"] == "Alpha"
-    assert task["source_oracle"]["contract"] == "go_exact_local_name_v3"
+    assert task["source_oracle"]["contract"] == "declaration_name_exact"
     assert task["evaluation_contract"]["request_mode"] == "explicit_osa1_typo"
     assert suite["routes"] == ["lexical"]
     assert report["execution_policy"] == "code_search_typo_file"
@@ -1100,3 +1113,50 @@ def test_holdout_cli_help_runs_from_external_cwd_without_pythonpath(tmp_path, na
     )
     assert result.returncode == 0, result.stderr
     assert "--capsules" in result.stdout
+
+
+@pytest.mark.parametrize("omit_foreign_gold", [False, True])
+def test_c4_unscoped_file_gold_and_evaluator_include_foreign_declarations(
+    tmp_path, monkeypatch, omit_foreign_gold
+):
+    import json
+    import jsonschema
+
+    release, capsule, checkout = _fixture(
+        tmp_path,
+        monkeypatch,
+        "typescript",
+        additional_files={
+            "same.js": "function Alpha() {}\n",
+            "usage.js": "// Alpha\nconsole.log(Alpha);\n",
+        },
+    )
+    gold = holdout_c4._read(capsule / "gold.json")
+    gold["census_audits"]["javascript"] = {
+        "status": "admitted",
+        "refused_paths": [],
+        "disagreement_paths": [],
+    }
+    if not omit_foreign_gold:
+        raw = (checkout / "same.js").read_bytes()
+        gold["tasks"][0]["labels"].append(
+            {
+                "path": "same.js",
+                "file_sha256": hashlib.sha256(raw).hexdigest(),
+                "start_byte": 9,
+                "end_byte": 14,
+                "kind": "function_declaration",
+                "local_name": "Alpha",
+            }
+        )
+    _resign(capsule, "gold.json", gold)
+    if omit_foreign_gold:
+        with pytest.raises(ValueError, match="labels differ from source oracle"):
+            holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
+        return
+    suite, pack, _report = holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
+    assert [row["path"] for row in suite["tasks"][0]["file_judgments"]] == ["main.ts", "same.js"]
+    schema = json.loads((Path(evaluator.__file__).parent / "suite.schema.json").read_bytes())
+    jsonschema.validate(suite, schema)
+    checked, blind, _ = evaluator.validate_suite(checkout, suite)
+    assert checked == suite and blind == pack

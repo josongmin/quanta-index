@@ -196,7 +196,7 @@
              {"if": {"properties": {"evaluation_contract": {"properties": {"request_mode": {"const": "declaration_navigation"}}}}},
               "then": {"required": ["declaration_judgments"], "not": {"required": ["file_judgments"]},
                         "properties": {"query_intent": {"const": "bare_symbol"}, "source_oracle": {"properties": {"unit": {"const": "symbol"}, "contract": {"enum": [
-                          "go_exact_local_name_v3", "rust_exact_local_name_v1", "python_exact_local_name_v1",
+                          "declaration_name_exact", "go_exact_local_name_v3", "rust_exact_local_name_v1", "python_exact_local_name_v1",
                           "typescript_exact_local_name_v1", "javascript_exact_local_name_v1"
                         ]}}}}},
               "else": {"required": ["file_judgments"], "not": {"required": ["declaration_judgments"]},
@@ -216,7 +216,7 @@
              "query_intent": {"const": "bare_symbol"},
              "evaluation_contract": {"properties": {"request_mode": {"enum": ["default_file_search", "explicit_osa1_typo", "explicit_symbol_components"]}}},
              "source_oracle": {"properties": {"contract": {"enum": [
-               "go_exact_local_name_v3", "rust_exact_local_name_v1", "python_exact_local_name_v1",
+               "declaration_name_exact", "go_exact_local_name_v3", "rust_exact_local_name_v1", "python_exact_local_name_v1",
                "typescript_exact_local_name_v1", "javascript_exact_local_name_v1"
              ]}, "unit": {"const": "distinct_file"}}}
            }
@@ -245,6 +245,8 @@
       "required": ["contract", "unit"],
       "properties": {
         "contract": {"enum": [
+          "declaration_name_exact", "declaration_name_prefix", "declaration_name_infix",
+          "declaration_name_components", "declaration_name_osa1", "declaration_name_osa1_casefold",
           "go_exact_local_name_v3", "ascii_identifier_word_v1", "content_literal_utf8_exact_v1",
           "ascii_content_absent_casefold_v1", "ascii_code_search_absent_casefold_v1",
           "ascii_code_search_default_absent_casefold_v1",
@@ -283,12 +285,14 @@
          "then": {"properties": {"unit": {"const": "distinct_file"}}}},
         {"if": {"required": ["near_declaration_exclusions"]},
          "then": {"properties": {"contract": {"enum": [
-           "go_exact_local_name_v3", "rust_exact_local_name_v1", "python_exact_local_name_v1",
+           "declaration_name_exact", "go_exact_local_name_v3", "rust_exact_local_name_v1", "python_exact_local_name_v1",
            "typescript_exact_local_name_v1", "javascript_exact_local_name_v1"
          ]}}}},
         {"if": {"required": ["declaration_exclusions"]},
          "then": {"properties": {"contract": {"enum": [
-           "go_exact_local_name_v3", "go_declaration_name_prefix_v1", "go_declaration_name_infix_v1", "go_declaration_name_components_v1", "go_declaration_name_osa1_v1", "go_declaration_name_osa1_casefold_v1",
+           "declaration_name_exact", "declaration_name_prefix", "declaration_name_infix",
+          "declaration_name_components", "declaration_name_osa1", "declaration_name_osa1_casefold",
+          "go_exact_local_name_v3", "go_declaration_name_prefix_v1", "go_declaration_name_infix_v1", "go_declaration_name_components_v1", "go_declaration_name_osa1_v1", "go_declaration_name_osa1_casefold_v1",
            "rust_exact_local_name_v1", "rust_declaration_name_prefix_v1", "rust_declaration_name_infix_v1", "rust_declaration_name_components_v1", "rust_declaration_name_osa1_v1", "rust_declaration_name_osa1_casefold_v1",
            "python_exact_local_name_v1", "python_declaration_name_prefix_v1", "python_declaration_name_infix_v1", "python_declaration_name_components_v1", "python_declaration_name_osa1_v1", "python_declaration_name_osa1_casefold_v1",
            "typescript_exact_local_name_v1", "typescript_declaration_name_prefix_v1", "typescript_declaration_name_infix_v1", "typescript_declaration_name_components_v1", "typescript_declaration_name_osa1_v1", "typescript_declaration_name_osa1_casefold_v1",

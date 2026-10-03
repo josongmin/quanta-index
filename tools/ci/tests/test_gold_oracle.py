@@ -725,14 +725,16 @@ def test_declaration_intents_label_audited_census_and_unjudge_refused_files(tmp_
         ("pkg/lib.rs", "loader", "function_item")
     ]
     assert rust["label_state"] == "mechanical_unreviewed" and rust["answerable"] is True
-    assert [r["local_name"] for r in rows["hold-typo"]["labels"]] == ["load_json"]
+    assert [(r["path"], r["local_name"]) for r in rows["hold-typo"]["labels"]] == [
+        ("pkg/core.py", "load_json"),
+        ("pkg/lib.rs", "load_json"),
+    ]
     # Both parsers refuse the broken file. A task whose query text occurs there is
     # unjudged, never negative; the others are proven absent from its bytes.
     exact = rows["hold-exact"]
     assert exact["label_state"] == "unjudged" and exact["answerable"] is None
     assert exact["unsupported"] == [
         {"path": "pkg/legacy.py", "reason": "census_refused"},
-        {"path": "pkg/lib.rs", "reason": "other_language_matching_declaration"},
     ]
     for task_id in ("hold-prefix", "hold-components"):
         row = rows[task_id]
@@ -782,21 +784,22 @@ def test_unscoped_declaration_gold_audits_other_language_files(tmp_path):
     gold, _blind = gold_oracle.derive(recipe, manifest, view)
     rows = {row["task_id"]: row for row in gold["tasks"]}
     assert [(r["path"], r["local_name"]) for r in rows["same"]["labels"]] == [
-        ("target.ts", "hello")
+        ("same.js", "hello"),
+        ("target.ts", "hello"),
     ]
-    assert rows["same"]["label_state"] == "unjudged"
-    assert rows["same"]["unsupported"] == [
-        {"path": "same.js", "reason": "other_language_matching_declaration"}
-    ]
+    assert rows["same"]["label_state"] == "mechanical_unreviewed"
+    assert rows["same"]["unsupported"] == []
     assert rows["only"]["label_state"] == "mechanical_unreviewed"
     assert rows["only"]["unsupported"] == []
     assert set(gold["census_audits"]) == {"typescript", "javascript"}
-    assert rows["typo"]["label_state"] == "unjudged"
-    assert rows["typo"]["near_declaration_state"] == "partial"
-    assert rows["typo"]["unsupported"] == [
-        {"path": "collision.js", "reason": "other_language_matching_declaration"},
-        {"path": "near.js", "reason": "other_language_matching_declaration"},
-        {"path": "same.js", "reason": "other_language_matching_declaration"},
+    assert rows["typo"]["label_state"] == "mechanical_unreviewed"
+    assert rows["typo"]["near_declaration_state"] == "complete"
+    assert rows["typo"]["unsupported"] == []
+    assert rows["typo"]["near_declaration_names"] == ["hello", "help"]
+    assert rows["typo"]["exact_collision_names"] == ["HELLP"]
+    assert [(r["path"], r["local_name"]) for r in rows["typo"]["labels"]] == [
+        ("same.js", "hello"),
+        ("target.ts", "hello"),
     ]
     bound = {
         **recipe,
@@ -835,9 +838,7 @@ def test_other_language_refusal_remains_unjudged_when_name_may_occur(tmp_path):
     gold, _blind = gold_oracle.derive(recipe, manifest, view)
     target, other = gold["tasks"]
     assert target["label_state"] == "unjudged"
-    assert target["unsupported"] == [
-        {"path": "broken.rs", "reason": "other_language_possible_declaration"}
-    ]
+    assert target["unsupported"] == [{"path": "broken.rs", "reason": "census_refused"}]
     assert other["label_state"] == "mechanical_unreviewed"
     assert other["unsupported"] == []
 

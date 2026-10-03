@@ -1136,6 +1136,10 @@ fn code_search_rank_study_recovers_original_boundaries_after_unicode_normalizati
     };
     assert_eq!(trace.emitted_score, 40.0);
     assert!(trace.code_search_rank_study.is_none());
+    assert_eq!(
+        trace.code_search_rank_study_refusal,
+        Some(quanta_index_contract::SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded)
+    );
     Ok(())
 }
 

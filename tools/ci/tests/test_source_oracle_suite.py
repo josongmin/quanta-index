@@ -1442,3 +1442,52 @@ def test_content_no_answer_replay_refuses_content_positive_query(tmp_path, monke
         altered["tasks"][0]["query_sha256"] = ev.digest(query.encode())
         with pytest.raises(ev.EvidenceError, match="content absent"):
             ev.validate_suite(repo, altered)
+
+
+@pytest.mark.parametrize(
+    "variant,query",
+    [
+        ("exact", "LoadJson"),
+        ("prefix", "Load"),
+        ("infix", "oad"),
+        ("components", "load json"),
+        ("osa1", "LoadJsn"),
+        ("osa1_casefold", "loadjsn"),
+    ],
+)
+def test_unscoped_declaration_oracle_matches_all_supported_languages(variant, query):
+    from tools.benchmark.retrieval import source_oracle as so
+
+    raw_files = {
+        "a.go": b"package demo\nfunc LoadJson() {}\n",
+        "b.rs": b"fn LoadJson() {}\n",
+        "c.py": b"def LoadJson():\n    pass\n",
+        "d.ts": b"function LoadJson() {}\n",
+        "e.js": b"function LoadJson() {}\n",
+        "use.js": b"// LoadJson\nconsole.log(LoadJson);\n",
+    }
+    files = {path: (raw, ev.digest(raw)) for path, raw in raw_files.items()}
+    oracle = so.SourceOracleIndex(files, {query})
+    rows = oracle.expected_rows("declaration_name_" + variant, query, "distinct_file")
+    assert [row["path"] for row in rows] == ["a.go", "b.rs", "c.py", "d.ts", "e.js"]
+
+
+def test_unscoped_census_exclusion_needs_each_queries_own_absence_proof():
+    from tools.benchmark.retrieval import source_oracle as so
+
+    raw_files = {"a.rs": b"fn Other() {}", "broken.js": b"function target("}
+    files = {path: (raw, ev.digest(raw)) for path, raw in raw_files.items()}
+    oracle = so.SourceOracleIndex(
+        files,
+        {"Missing", "target"},
+        declaration_exclusions={("declaration_name_exact", "Missing"): {"broken.js"}},
+    )
+    assert oracle.expected_rows("declaration_name_exact", "Missing", "distinct_file") == []
+    with pytest.raises(so.SourceOracleError):
+        oracle.expected_rows("declaration_name_exact", "target", "distinct_file")
+    with pytest.raises(so.SourceOracleError, match="may contain a query match"):
+        so.SourceOracleIndex(
+            files,
+            {"target"},
+            declaration_exclusions={("declaration_name_exact", "target"): {"broken.js"}},
+        ).expected_rows("declaration_name_exact", "target", "distinct_file")

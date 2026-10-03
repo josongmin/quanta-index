@@ -1801,7 +1801,25 @@ impl TantivySearcher {
         {
             let (score, components) =
                 finish_score(file, &parsed.terms, parsed.case, &mut scored, budget)?;
-            let study = ranking::study(self, file, &parsed.terms, parsed.case, components, budget)?;
+            let (study, study_refusal) = match ranking::study(
+                self,
+                file,
+                &parsed.terms,
+                parsed.case,
+                components,
+                budget,
+            ) {
+                Ok(study) => (Some(study), None),
+                Err(CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
+                    ..
+                }) => {
+                    budget.checkpoint("lexical:code-search-explain-diagnostics")?;
+                    (None, Some(quanta_index_contract::SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded))
+                }
+                Err(error) => return Err(error),
+            };
             return Ok(LexicalCandidateExplanationV1::Matched(
                 LexicalScoreTraceV1 {
                     engine: LexicalScoreEngineV1::CodeSearchFile,
@@ -1809,7 +1827,8 @@ impl TantivySearcher {
                     boost_factor: 1.0,
                     emitted_score: score,
                     code_search_components: Some(components),
-                    code_search_rank_study: Some(study),
+                    code_search_rank_study: study,
+                    code_search_rank_study_refusal: study_refusal,
                 },
             ));
         }
@@ -1833,6 +1852,7 @@ impl TantivySearcher {
                     emitted_score: row.score,
                     code_search_components: None,
                     code_search_rank_study: None,
+                    code_search_rank_study_refusal: None,
                 })
             }))
     }

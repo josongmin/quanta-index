@@ -296,6 +296,9 @@ pub struct LexicalScoreTraceV1 {
     pub code_search_components: Option<CodeSearchScoreComponentsV1>,
     /// Diagnostic ablations, not the selected production policy or score.
     pub code_search_rank_study: Option<CodeSearchRankStudyV1>,
+    /// Optional diagnostic collection refusal; mutually exclusive with a study.
+    /// Selected scoring, identity failures and cancellation remain authoritative.
+    pub code_search_rank_study_refusal: Option<quanta_index_contract::SearchPlaneErrorCodeV2>,
 }
 
 /// Native-scored experimental policies over the same verified file match.
