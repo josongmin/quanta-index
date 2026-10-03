@@ -2668,3 +2668,52 @@ plus 13 completed lo task reviews and one completed sqlalchemy task review;
 the zellij first-task adjudication is live. The actual source-anchor response
 also passed the launcher's cached-response rederivation without another model
 call. Full C3 issuance and admission remain incomplete.
+
+### 2026-10-04: Latest-contract capsule execution and chunk-status RCA
+
+- **VERIFIED**, cheap current-contract admission: all 12 amended recipes and
+  6,612 tasks pass the frozen unscoped producer's validator. The eight owned
+  source digests match main; both actual release `generator_digest` fields
+  match the source generator. `mechanical-unscoped-precommit.json` and
+  `mechanical-unscoped-release-binding.json` retain the exact bindings.
+  `reissue_mechanical_capsules_unscoped.py` has started canonical generation
+  into new `mechanical-capsules-unscoped-current/` and then
+  `mechanical-c4-unscoped-current/`. Session 9848 is live at observation;
+  neither capsule completion nor C4 success is inferred. The previous f3
+  capsule/C4 execution is retained as separate source-bound evidence.
+- **VERIFIED**, original missing-return coverage: all **1,324 task-file pairs**
+  from the 12 original missing-review packets occur with the same task/path/SHA
+  in both current blind assessor input sets. Exactly **167** have canonically
+  issued grades from the two issued repositories; **1,157** are not yet issued.
+  `returned-pair-coverage-20261004.json` counts original returned pairs, not the
+  larger 5,670-pair candidate pool. Input inclusion is not completed relevance.
+- Cohort 2's next terminal condition was not another invalid quotation:
+  sqlalchemy task 3 reviewer 1 explicitly reported confidence in all six file
+  grades, but set `unresolved=true` because that *chunk* lacked an answering
+  file. Its rationale explicitly identified a candidate-set gap rather than
+  uncertain grades. Task answerability is calculated only after all chunks.
+  The previous launcher correctly withheld forms/qrels on the unresolved flag.
+- New external `run_ai_review_chunk_assessment.py` clarifies the existing
+  assessment contract: `unresolved` reports uncertainty about a candidate
+  grade, not absence of an answer in one chunk. A retained unresolved response
+  is never reused as resolved; a fresh actual `.followup-1` call is required.
+  Default cache reuse still rejects unresolved responses. If the follow-up
+  remains genuinely unresolved, execution stops rather than retrying to force
+  a verdict. `chunk-assessment-focused-verification.json` checks the rejecting
+  default, required fresh-call dispatch and unchanged prior artifacts.
+- **VERIFIED**, actual follow-up replay: Opus produced a fresh resolved task-3
+  response over the identical original input. Its raw model-selected source
+  lines regenerate the recorded decisions; the original unresolved response
+  remains unchanged. `chunk-assessment-actual-followup-replay.json` records
+  both raw hashes and observed grade equality. Cohort 2 has continued to the
+  independent second assessor; no flag/grade was manually changed.
+- The watcher now reads `review-live-workers.json` and checks exact live
+  PID/command identities, so an authorized retry can be recorded atomically
+  without stale PID reuse. `continue_actual_review_issuance_live_registry.py`
+  replaced the idle prior watcher only after checking no issuer child was
+  live. Current reviewer PIDs at handoff: 58431, 31383 and 87534. The registry
+  and watcher binding is in `review-live-registry-precommit.json`.
+
+All AI judgments remain explicitly nonhuman and unqualified. The current
+source capsule, complete C3 issuance, full admission and final comparison
+remain outstanding; this update does not convert pending rows into success.
