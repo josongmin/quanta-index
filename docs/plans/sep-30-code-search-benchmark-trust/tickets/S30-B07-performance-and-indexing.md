@@ -283,9 +283,13 @@ rejected rather than emitted as a valid statistic.
 
 Focused join guards passed 14 tests. The full scorer and common capture tests
 (`test_lexical_file_comparison.py`, `test_lexical_capture.py`) passed 82 tests in
-121.70 seconds. The product-scoped live collector and its actual HTTP/process
-join fixture are still being implemented/tested; those focused guards alone
-do not prove a new five-product capture.
+121.70 seconds. The product-scoped collector's complete owner-local test file
+passed 78/78 in 179.57 seconds, including actual HTTP/process capture, replay
+and a joined legacy capture. Selected-product inventories, raw mutations and
+changed summary bindings are rejected. The join additionally checks that rows
+consumed by scoring match the independently replayed row digests; its latest
+join/latency-focused check passed 16 tests in 1.96 seconds. These fixtures do
+not prove a new five-product capture.
 
 The isolated Gin Sourcegraph projection's native path inventory and stored
 source verification both matched 99/99 files, with unchanged before/after index
@@ -293,6 +297,57 @@ bytes. Its owned Sourcegraph/src containers were stopped and their data retained
 before collector changes; existing C3/C5 services were not modified. Evidence
 is outside the checkout under
 `/private/tmp/qi-five-product-gin-services-20261004-6ZY8VW/`.
+
+### Fresh execution update (2026-10-04)
+
+The release search daemon and retrieval runner were built from clean
+`e5701efda6eb8a6c8efe51af97b25812a8e12503` in 44 minutes 16 seconds. This is
+cold compilation time, not corpus indexing time. The subsequent clean Python
+driver is `e1cc8a8471ace43fea67a127c4d978ff9a73db60`; its source revision is
+not evidence of the binaries' build source. Binary digests and the distinct
+source identities are retained outside captures. Existing `source_sha` fields
+bind the driver closure. Their description must not promote that closure to a
+Rust binary/source attestation.
+
+The exact lane's fresh pair `/private/tmp/qf4a` passed capture and independent
+verdict replay: selected/executed/passed 2,392/2,392/2,392, failed 0. Its
+1,196 ordinary requests measured aggregate candidate work of 132.33 ms,
+selected preview work of 119.97 ms and sort/page work of 7.81 ms. These are
+contended-host diagnostic observations. The earlier single `writeContentType`
+sample cannot establish a general candidate bottleneck: across this lane,
+preview and candidate costs are comparable, while sorting is small. Do not
+implement a bounded-sort optimization based on these observations alone.
+The complete SDK call minus server search remains an unattributed residual;
+it is not a measured IPC cost.
+
+Fresh indexing stage observations, repeated typo attribution, capacity runs
+and equal-boundary five-product comparison remain separate completion scopes.
+Five diagnostic query lanes contain 1,196/1,192/1,178/1,192/1,192 tasks, or
+5,950 total, over the unchanged Gin 99-file corpus. OpenGrok captured and
+replayed every lane under clean external driver
+`45dd36a492b882000f7063aa52fd583427808c05`; Sourcegraph and the native pair's
+remaining lanes are running. cs is prepared but not executed. Native index
+evidence proves Sourcegraph's 99 stored bodies and OpenGrok's served 99 bodies;
+OpenGrok backend index attestation remains unavailable. Its zero typo hits are
+successful empty HTTP results, not execution errors. Exact versus typo scores
+and file versus declaration recovery must stay separate.
+
+Actual medium execution at `06aac8cc` failed after publication because the
+harness expected a first-query cold-open increment. Activation already proves,
+opens and promotes the generation, so zero additional cold opens is valid.
+The corrected harness represents absent cold-open/GC observations as missing,
+not zero, and retains the first-route count check; `scale::` passed 19 tests.
+The fresh medium rerun, large and XL executions are still pending. Another
+thread's live release build holds the canonical build/test admission lock;
+it was not killed or bypassed. Logical directory growth is not physical write
+I/O, and harness-plus-daemon-thread RSS is not daemon-only RSS. CPU, explicit
+reopen/restart and delete performance are not yet proven.
+
+Evidence roots: `/private/tmp/qi-code-search-cost-20261004-guAWNESy/`,
+`/private/tmp/qi-code-search-full-pair-20261004-ZQtbie/`,
+`/private/tmp/qi-five-product-scoped-20261004-5ke6oh_h/` and the preserved
+medium failure `/private/tmp/qi-scale-medium-20261004-06aac8cc-r1/refusal.json`.
+No optimization speedup or qualified performance ranking is established.
 
 ## Execution receipt (2026-09-30)
 

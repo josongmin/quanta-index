@@ -354,6 +354,22 @@ def freeze_codesearchnet(
         or materialized.get("span_count") != len(spans)
     ):
         raise ExternalSnippetError("CodeSearchNet source/span inventory differs from pinned CSV")
+    source_bytes = {}
+    for url, source in sources.items():
+        if not isinstance(source, dict):
+            raise ExternalSnippetError("CodeSearchNet source ledger is malformed")
+        if source.get("status") == "fetched":
+            expected_source_path = (
+                "sources/" + codesearchnet_materialize._digest(url.encode()) + ".blob"
+            )
+            raw = _materialized_bytes(
+                materialized_root, source.get("relative_path"), expected_source_path
+            )
+            if _sha(raw) != source.get("sha256") or len(raw) != source.get("bytes"):
+                raise ExternalSnippetError("CodeSearchNet fetched source digest differs")
+            source_bytes[url] = raw
+        elif any(key in source for key in ("relative_path", "sha256", "bytes")):
+            raise ExternalSnippetError("unavailable CodeSearchNet source has file bytes")
     expected_files: dict[str, bytes] = {}
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for original, row in zip(seed["qrels"], qrels):
@@ -369,31 +385,24 @@ def freeze_codesearchnet(
             raise ExternalSnippetError("CodeSearchNet source span differs from pinned URL")
         path = row.get("snippet_path")
         if span["status"] == "admitted":
-            expected_path = (
-                "snippets/"
-                + row["language"]
+            expected_paths = {
+                lang: "snippets/"
+                + lang
                 + "/"
                 + codesearchnet_materialize._digest(row["github_url"].encode())
-                + codesearchnet_materialize.EXTENSIONS[row["language"]]
-            )
+                + codesearchnet_materialize.EXTENSIONS[lang]
+                for lang in languages_by_url[row["github_url"]]
+            }
+            if span.get("relative_paths") != expected_paths:
+                raise ExternalSnippetError("CodeSearchNet snippet paths differ from pinned URL")
+            expected_path = expected_paths[row["language"]]
             if path != span.get("relative_paths", {}).get(row["language"]):
                 raise ExternalSnippetError("CodeSearchNet snippet path differs from span ledger")
             source = sources.get(span["source_url"])
             if not isinstance(source, dict) or source.get("status") != "fetched":
                 raise ExternalSnippetError("CodeSearchNet admitted span lacks fetched source")
-            expected_source_path = (
-                "sources/"
-                + codesearchnet_materialize._digest(location["source_url"].encode())
-                + ".blob"
-            )
-            raw = _materialized_bytes(
-                materialized_root, source.get("relative_path"), expected_source_path
-            )
-            if (
-                _sha(raw) != source.get("sha256")
-                or _sha(raw) != span.get("source_sha256")
-                or len(raw) != source.get("bytes")
-            ):
+            raw = source_bytes[location["source_url"]]
+            if _sha(raw) != span.get("source_sha256"):
                 raise ExternalSnippetError("CodeSearchNet fetched source digest differs")
             snippet = codesearchnet_materialize._extract_span(
                 raw, span["start_line"], span["end_line"]
@@ -408,7 +417,7 @@ def freeze_codesearchnet(
                 previous = expected_files.setdefault(path, snippet)
                 if previous != snippet:
                     raise ExternalSnippetError("CodeSearchNet snippet path has conflicting source")
-        elif path is not None:
+        elif path is not None or "relative_paths" in span:
             raise ExternalSnippetError("unavailable CodeSearchNet span has snippet path")
         groups[(row["language"], row["query"])].append(row)
     if not expected_files or materialized.get("task_count") != len(groups):

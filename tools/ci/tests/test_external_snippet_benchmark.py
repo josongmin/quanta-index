@@ -403,6 +403,28 @@ def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_
             )
     source_rows[source_url]["relative_path"] = source_path.relative_to(root).as_posix()
     sources_path.write_text(json.dumps(source_rows))
+    unavailable_url = next(
+        url for url, value in source_rows.items() if value["status"] != "fetched"
+    )
+    source_rows[unavailable_url]["relative_path"] = str(outside)
+    sources_path.write_text(json.dumps(source_rows))
+    with pytest.raises(ext.ExternalSnippetError, match="unavailable CodeSearchNet source"):
+        ext.freeze_codesearchnet(
+            b"mock CSV", root, repo, commit, language="python", suite_id="fixture"
+        )
+    del source_rows[unavailable_url]["relative_path"]
+    sources_path.write_text(json.dumps(source_rows))
+    spans_path = root / "spans.json"
+    spans = json.loads(spans_path.read_text())
+    admitted_span = next(row for row in spans if row["status"] == "admitted")
+    admitted_span["relative_paths"]["unlisted"] = str(outside)
+    spans_path.write_text(json.dumps(spans))
+    with pytest.raises(ext.ExternalSnippetError, match="snippet paths differ from pinned URL"):
+        ext.freeze_codesearchnet(
+            b"mock CSV", root, repo, commit, language="python", suite_id="fixture"
+        )
+    del admitted_span["relative_paths"]["unlisted"]
+    spans_path.write_text(json.dumps(spans))
     source_path.unlink()
     source_path.symlink_to(outside)
     with pytest.raises(ext.ExternalSnippetError, match="symlink"):
