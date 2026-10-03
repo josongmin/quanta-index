@@ -99,6 +99,59 @@ non-timing rows per product and four reports matched the old captures. The
 remaining proof is same-host controlled timing and the other repositories.
 Do not bypass qualified admission to improve this exploratory workload.
 
+### 2026-10-04 repository-batch matrix result
+
+The `quality-matrix` driver now groups compatible intent suites by pinned
+repository, prevalidates every group before product execution, and runs one
+fresh Quanta index and one fresh Semble index per repository. Each original
+suite, blind pack, scoring view and report stays separate. The matrix manifest
+is published only after every child batch succeeds; `quality-matrix-verify`
+independently replays all child records and reports. Main contains the matrix
+driver at `9a3412c6` and batch-scoped source-snapshot reuse at `fca3cd9e`.
+
+The 12-repository frozen C5 matrix was refused before creating an output root:
+current declaration census can completely parse one formerly excluded file in
+each of immer, rust-analyzer, tauri and telegraf. Standalone validation of the
+immer suite refused identically, so this is stale mechanical gold/exclusion
+metadata rather than the census cache. Reissue and independently check those
+four suites under a new external root; never weaken the exclusion check or
+merge newly issued results into the old C5 ledger.
+
+The eight currently valid repositories (attrs, celery, chartjs, grpc-go,
+svelte, sympy, zerolog, zoxide) ran 32 original suites and 3,699 union queries
+per product under `/private/tmp/qm3`. The native records contain 7,398 union
+result rows; task membership projects them to 7,400 old per-suite/product
+rows because one query was shared by two suites. After excluding only timing
+fields, all **7,400/7,400** projected rows matched the frozen separate C5
+records. All **32/32** reports matched on judgment metrics, no-answer and
+status. `quality-matrix-verify` passed **8/8** groups. The driver was a clean
+isolated `ff940010` checkout with runner SHA256
+`d2329da833292a3225369d5535c74c0253429cc6d2833110e4ca53b6c36128a6`
+and searchd SHA256
+`0304217033965e1bd4d91622aa19082974e5aede127ba019232fdc0f22c6bb58`.
+The new source-snapshot reuse on main has focused positive/drift tests, but is
+not part of that pinned product capture.
+
+On this busy host, summed product-process elapsed time across the eight
+sequential groups was Quanta **447.35 s** and Semble **199.83 s**. Their own
+recorded index envelopes were **352.44 s** and **37.26 s**, respectively.
+For SymPy's 1,526 source files, Quanta's process took **94.16 s**, including
+**67.04 s** in publish/index/activate; Semble's took **57.59 s**, including
+**9.59 s** in its index phase. The products indexed different numbers of chunks
+(8,072 versus 43,557 for SymPy), and their process and phase boundaries are
+not equal-work timing comparisons. The full driver wall time was not captured
+by an authoritative timer. These values locate substantial product work; they
+do not qualify a speedup or a product ranking.
+
+Next narrow checks: run a same-source A/B of cached versus uncached batch
+validation on a quiet host, recording source snapshot bytes, declaration parse
+count and per-stage wall time; then compare separate four-intent runs with one
+repository batch using identical release binaries and fixed query protocol.
+Retain independent final source verification and full replay outside the
+capture timer. Admission was absent from these exploratory C5 specs and cannot
+explain their cost. No fresh multi-repository performance qualification has
+been run.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
