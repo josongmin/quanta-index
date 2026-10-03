@@ -11867,6 +11867,22 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
             suite=suite,
             repo=repo,
         )
+    mechanical_only_receipt = {
+        "schema_version": 2,
+        "reviewer_id": "fixture-reviewer",
+        "suite_sha256": review_receipt["suite_sha256"],
+        "reviews": [],
+    }
+    with pytest.raises(pairrun.RunError, match="lacks human-reviewed tasks"):
+        pairrun._validate_gold_review_receipt(
+            mechanical_only_receipt,
+            role="annotation 1",
+            reviewer_id="fixture-reviewer",
+            suite_sha256=mechanical_only_receipt["suite_sha256"],
+            suite=suite,
+            repo=repo,
+            allow_mixed_source_oracle=True,
+        )
 
     subjective = task(
         "Next",
