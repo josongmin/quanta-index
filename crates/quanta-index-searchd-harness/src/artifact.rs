@@ -383,9 +383,24 @@ pub fn framed_digest(domain: &str, parts: &[&[u8]]) -> String {
 /// ingested.
 #[must_use]
 pub fn corpus_digest(dimension: &str, files: &[(String, String)]) -> String {
+    corpus_digest_refs(
+        dimension,
+        files
+            .iter()
+            .map(|(path, content)| (path.as_str(), content.as_str())),
+    )
+}
+
+/// The same framed corpus digest over borrowed file bytes. Large scale rails
+/// use this to avoid cloning every source file solely for provenance.
+#[must_use]
+pub fn corpus_digest_refs<'a>(
+    dimension: &str,
+    files: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> String {
     let domain = format!("quanta-index:bench:{dimension}:corpus:v1");
     let parts: Vec<&[u8]> = files
-        .iter()
+        .into_iter()
         .flat_map(|(path, content)| [path.as_bytes(), content.as_bytes()])
         .collect();
     framed_digest(&domain, &parts)
@@ -1017,6 +1032,16 @@ mod tests {
         let split_late = corpus_digest("scale", &[("a".to_string(), "bc".to_string())]);
         let split_early = corpus_digest("scale", &[("ab".to_string(), "c".to_string())]);
         let other_dimension = corpus_digest("tail", &[("a".to_string(), "bc".to_string())]);
+        assert_eq!(
+            split_late,
+            corpus_digest_refs("scale", [("a", "bc")]),
+            "borrowed source bytes retain the exact existing digest"
+        );
+        assert_eq!(
+            split_late,
+            "sha256:165f3d3e494e609f64259037eabd576ce3c6bae091c1d751311491bc2f4a7a04",
+            "independent SHA-256 of domain-NUL, framed path, and framed content"
+        );
         assert_ne!(split_late, split_early, "part boundaries are framed");
         assert_ne!(
             split_late, other_dimension,

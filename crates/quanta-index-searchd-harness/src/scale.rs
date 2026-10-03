@@ -13,8 +13,8 @@
 //!   `(tier, seed)` always yields byte-identical output, and a different seed
 //!   yields different output. That reproducibility is what lets a perf number be
 //!   attributed to a known corpus instead of a one-off random draw;
-//! - a **measured run of the SMALL tier only** — `measure_small_tier` boots one
-//!   [`E2eRuntime`], ingests the seeded small corpus, seals, activates, queries
+//! - a **measured run of a selected tier** — `measure_tier` boots one
+//!   [`E2eRuntime`], ingests the seeded corpus, seals, activates, queries
 //!   cold and warm across the socket, opens the same sealed generation through
 //!   the lexical adapter in-process, then applies a one-file delta and
 //!   reclaims the predecessor — capturing every phase on its own into a
@@ -22,12 +22,11 @@
 //!   cold-open and route timings from its metrics scrape, the adapter-only
 //!   open / plan / execute, the delta update and the reclaim, each against
 //!   the state root's byte count where bytes are what is measured.
-//!   Medium/large/xlarge are emitted as `declared-advisory`: the canonical
-//!   Linux perf runner owns the *blocking* timing; a number from a
-//!   contended host would be advisory noise, so the rail records the
-//!   declared shape without fabricating a latency for those tiers.
+//!   Medium/large/xlarge use distinct source-repository IDs and per-repo
+//!   probes inside one serving owner. Each selected run measures one tier;
+//!   canonical performance qualification still requires a quiet host.
 //!
-//! Fail-closed posture: a query that the runtime rejects on the small tier is a
+//! Fail-closed posture: a query that the runtime rejects on any selected tier is a
 //! rail error (typed error -> `Err`), never a zero-latency "pass"; a phase the
 //! daemon did not record is a rail error, never a fabricated time.
 
@@ -48,7 +47,8 @@ use serde_json::{Value, json};
 use crate::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, DiskAmplificationV1,
     GitHeadV1, HostV1, LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily,
-    config_digest, corpus_digest, directory_bytes, model_revision_of, saturating_u64,
+    config_digest, corpus_digest, corpus_digest_refs, directory_bytes, model_revision_of,
+    saturating_u64,
 };
 use crate::harness::{E2eRuntime, E2eTextChunkSpec};
 
@@ -328,21 +328,19 @@ pub fn generate_scoped_corpus(tier: ScaleTier, seed: u64) -> AnyResult<Vec<Scope
 /// Bind the existing corpus digest to both parts of the source identity. The
 /// generator reserves `repoN` as a single path component, so this canonical
 /// projection is injective over this fixture and matches the old path shape.
-fn scoped_digest_files(files: &[ScopedFile]) -> Vec<(String, String)> {
-    files
-        .iter()
-        .map(|file| {
-            (
-                format!("{}/{}", file.source_repo_id, file.repo_relative_path),
-                file.content.clone(),
-            )
-        })
-        .collect()
-}
-
 #[must_use]
 pub fn scoped_corpus_digest(dimension: &str, files: &[ScopedFile]) -> String {
-    corpus_digest(dimension, &scoped_digest_files(files))
+    let paths = files
+        .iter()
+        .map(|file| format!("{}/{}", file.source_repo_id, file.repo_relative_path))
+        .collect::<Vec<_>>();
+    corpus_digest_refs(
+        dimension,
+        paths
+            .iter()
+            .zip(files)
+            .map(|(path, file)| (path.as_str(), file.content.as_str())),
+    )
 }
 
 /// Source-derived identities and expected result counts, independent of the
@@ -1563,18 +1561,18 @@ mod tests {
     #[test]
     fn scoped_digest_binds_source_repo_identity_and_source_bytes() {
         let files = generate_scoped_corpus(ScaleTier::Medium, 11).expect("seeded fixture");
-        let original = corpus_digest(DIMENSION, &scoped_digest_files(&files));
+        let original = scoped_corpus_digest(DIMENSION, &files);
         let mut changed_repo = files.clone();
         changed_repo[0].source_repo_id = "repo2".to_string();
         assert_ne!(
             original,
-            corpus_digest(DIMENSION, &scoped_digest_files(&changed_repo))
+            scoped_corpus_digest(DIMENSION, &changed_repo)
         );
         let mut changed_content = files;
         changed_content[0].content.push_str("// changed\n");
         assert_ne!(
             original,
-            corpus_digest(DIMENSION, &scoped_digest_files(&changed_content))
+            scoped_corpus_digest(DIMENSION, &changed_content)
         );
     }
 

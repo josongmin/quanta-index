@@ -1,18 +1,18 @@
 //! `scale_matrix` — scale-tier rail artifact producer + gate (J7Q-03).
 //!
-//! Emits the checked-in tier manifest, measures the SMALL tier end-to-end
+//! Emits the checked-in tier manifest and measures the selected tier end-to-end
 //! (build -> activate -> cold and warm queries -> adapter-only open / plan /
 //! execute -> one-file delta -> reclaim) via the real `E2eRuntime`, and writes
 //! the canonical artifacts under `artifacts/search-quality/scale/latest/`:
 //! `tier_manifest.json` and `summary.json`, the `BenchArtifactV1` (QI-BB-010)
 //! naming the exact head of a clean worktree, the generated corpus digest, the
 //! tier parameters, the host, the process's peak RSS, the build / update /
-//! reclaim phases and the build's disk amplification. Medium/large/xlarge are
-//! emitted as `declared-advisory`: their blocking latency is owned by the
-//! canonical Linux perf runner, not this host. Authority behind
+//! reclaim phases and the build's disk amplification. The default is small;
+//! `--tier` or `--all-tiers` selects larger scoped source-repository fixtures.
+//! Unselected tiers are advisory in each artifact. Authority behind
 //! `just rust-verify-quality-scale`.
 //!
-//! Fail-closed: an empty or typed-error small-tier query is a non-zero exit,
+//! Fail-closed: an empty or typed-error selected-tier query is a non-zero exit,
 //! not a fabricated zero-latency pass; a dirty tree or an unresolvable head
 //! refuses to write.
 

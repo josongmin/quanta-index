@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Join fresh native and external OSA1 captures on identical source-bound inputs.
 
-Each pair consists of a native prepared-v2 root, a fresh external root, and an
-independent source-eligibility audit. Only admitted, fully replayed cells enter
+Each pair consists of a native prepared root, a fresh external root, and a
+source-admission authority. Only admitted, fully replayed cells enter
 the score denominator. This is a diagnostic report, never a qualified speed or
 product-ranking claim.
 """
@@ -35,6 +35,7 @@ ALLOWED_EXTERNAL_LEDGER_STATUSES = {
     "verified_eligible_cells_source_blocked_4",
 }
 PAIR_CUSTODY_FIELDS = (
+    "cohort_contract",
     "release_digest",
     "native_source_commit",
     "native_runner_sha256",
@@ -171,6 +172,94 @@ def _require_pair_custody_consistency(custody: list[dict[str, Any]]) -> None:
         )
 
 
+def _source_admission(
+    authority_path: Path, prepared: dict[str, Any], manifest: dict[str, Any]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read the original audit or the pinned global matrix into one admission shape."""
+    authority = read(authority_path)
+    if isinstance(authority, list):
+        return authority, {
+            "cohort_contract": "c5_fixed_original_source_eligibility_v1",
+            "source_eligibility_kind": "independent_original_source_audit",
+        }
+    require(
+        isinstance(authority, dict)
+        and manifest.get("schema") == "c5_osa1_external_global12_fresh_v1"
+        and authority.get("schema_version") == 1
+        and authority.get("status") == "diagnostic_unqualified"
+        and authority.get("repository_count") == 12
+        and authority.get("intent_count") == 6
+        and authority.get("release_digest") == manifest.get("release_digest")
+        and manifest.get("matrix_path") == str(authority_path)
+        and manifest.get("matrix_sha256") == sha(authority_path),
+        "global source admission matrix or capture binding differs",
+    )
+    matrix_receipt_path = Path(manifest["matrix_receipt_path"])
+    projection_receipt_path = Path(manifest["ordinary_projection_receipt_path"])
+    gold_receipt_path = Path(manifest["gold_receipt_path"])
+    matrix_receipt = read(matrix_receipt_path)
+    projection = read(projection_receipt_path)
+    gold = read(gold_receipt_path)
+    require(
+        matrix_receipt.get("status") == "factory_derived_diagnostic_unqualified"
+        and matrix_receipt.get("matrix_sha256") == sha(authority_path)
+        and matrix_receipt.get("gold_receipt_sha256") == sha(gold_receipt_path)
+        and projection.get("status") == "global_ordinary_diagnostic_unqualified"
+        and projection.get("source_matrix_sha256") == sha(authority_path)
+        and projection.get("repository_count") == 12
+        and manifest.get("ordinary_projection_receipt_sha256") == sha(projection_receipt_path)
+        and gold.get("status") == "captured"
+        and gold.get("capsule_count") == 12
+        and manifest.get("gold_producer_runtime", {}).get("receipt_sha256")
+        == sha(gold_receipt_path)
+        and prepared.get("source_commit") == gold.get("source_head")
+        and prepared.get("gold_receipt_sha256") == sha(gold_receipt_path)
+        and prepared.get("projection_receipt_sha256") == sha(projection_receipt_path)
+        and prepared.get("projector_overlay_sha256")
+        == projection.get("projector_overlay_sha256"),
+        "global gold, matrix, projection, or native preparation differs",
+    )
+    selected = [row for row in authority["cells"] if row["intent"] == INTENT]
+    by_repo = {row["repository"]: row for row in selected}
+    cohorts = projection["cohorts"]
+    require(
+        len(selected) == len(by_repo) == 12
+        and set(by_repo) == set(cohorts) == {row["repository"] for row in manifest["cells"]}
+        and sum(row["selected"] for row in cohorts.values()) == projection["selected_total"]
+        and projection["selected_total"] == manifest["total_tasks"],
+        "global source admission repository or task denominator differs",
+    )
+    admission = []
+    for cell in manifest["cells"]:
+        repo = cell["repository"]
+        row, cohort = by_repo[repo], cohorts[repo]
+        suite_path = Path(cell["spec_path"])
+        suite = read(Path(read(suite_path)["suite"]))
+        selected_ids = [task["task_id"] for task in suite["tasks"]]
+        require(
+            row["status"] == "diagnostic_unqualified"
+            and row["selected_task_ids"] == cohort["selected_task_ids"] == selected_ids
+            and row["repository_commit"] == suite["repository_commit"]
+            and row["gold_capsule_identity_sha256"]
+            == manifest["gold_producer_sources"][repo]["identity_sha256"]
+            and row["release_digest"] == authority["release_digest"]
+            and cell["tasks"] == cohort["selected"] == len(selected_ids)
+            and cell["projected_suite_commitment_sha256"] == cohort["projected_suite_sha256"]
+            and cell["blind_pack_commitment_sha256"] == cohort["blind_pack_sha256"],
+            "global source admission task, gold, or projected suite differs: " + repo,
+        )
+        admission.append({"repository": repo, "status": "VALID", "tasks": len(selected_ids)})
+    return admission, {
+        "cohort_contract": "c5_global_c4_ordinary_osa1_v1",
+        "source_eligibility_kind": "pinned_global_matrix_and_ordinary_projection",
+        "gold_receipt_sha256": sha(gold_receipt_path),
+        "matrix_receipt_sha256": sha(matrix_receipt_path),
+        "projection_receipt_sha256": sha(projection_receipt_path),
+        "native_binary_build_source_sha256": prepared["binary_build_source_sha"],
+        "native_driver_python_sha256": prepared["driver_python_sha256"],
+    }
+
+
 def _native_records(
     cell: dict[str, Any],
     prepared: dict[str, Any],
@@ -265,6 +354,18 @@ def _select_native_status(cell: dict[str, Any], prepared: dict[str, Any]) -> dic
             and status.get("searchd_sha256") == prepared["searchd_sha256"]
             and status.get("spec_sha256") == cell["spec_sha256"]
             and status.get("output_root") == str(output)
+            and (
+                "driver_source_sha" not in prepared
+                or (
+                    status.get("driver_source_sha") == prepared["driver_source_sha"]
+                    and status.get("binary_build_source_sha")
+                    == prepared["binary_build_source_sha"]
+                    and status.get("driver_python_sha256") == prepared["driver_python_sha256"]
+                    and status.get("postrun_verification", {}).get("pair_valid") is True
+                    and status.get("postrun_verification", {}).get("selected")
+                    == 2 * cell["tasks"]
+                )
+            )
         ):
             bound.append(path)
     require(
@@ -398,15 +499,19 @@ def _pair_rows(
     external_root: Path,
     eligibility_path: Path,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    prepared_path = native_root / "prepared-v2.json"
+    prepared_path = (
+        native_root / "prepared.json"
+        if (native_root / "prepared.json").is_file()
+        else native_root / "prepared-v2.json"
+    )
     external_manifest_path = external_root / "manifest.json"
     external_ledger_path = external_root / "ledger.json"
-    prepared, manifest, ledger, eligibility = (
+    prepared, manifest, ledger = (
         read(prepared_path),
         read(external_manifest_path),
         read(external_ledger_path),
-        read(eligibility_path),
     )
+    eligibility, admission_custody = _source_admission(eligibility_path, prepared, manifest)
     require(
         ledger["manifest_sha256"] == sha(external_manifest_path)
         and ledger["status"] in ALLOWED_EXTERNAL_LEDGER_STATUSES,
@@ -559,6 +664,7 @@ def _pair_rows(
                 }
             )
     custody = {
+        **admission_custody,
         "native_prepared_sha256": sha(prepared_path),
         "native_source_commit": prepared["source_commit"],
         "native_runner_sha256": prepared["runner_sha256"],

@@ -25,7 +25,14 @@ pytest_plugins = ["tools.ci.tests.test_lexical_capture"]
 
 
 def index_scope_fixture(
-    tmp_path, *, manifest_raw=None, config=None, projection=None, snapshot=None, view=None
+    tmp_path,
+    *,
+    manifest_raw=None,
+    config=None,
+    projection=None,
+    snapshot=None,
+    view=None,
+    release_digest=None,
 ):
     """Fixed two-file oracle, or source-bound inputs from the HTTP fixture."""
     scope = live.sourcegraph_index_scope
@@ -33,7 +40,7 @@ def index_scope_fixture(
     root.mkdir()
     paths_root = tmp_path / "path-audit"
     paths_root.mkdir()
-    release_digest = "sha256:" + "e" * 64
+    release_digest = release_digest or "sha256:" + "e" * 64
     contents = {"a.go": b"func A() {}\n", "b.go": b"func B() {}\n"}
     if manifest_raw is None:
         manifest_raw = json.dumps(
@@ -1104,13 +1111,15 @@ class SearchHandler(BaseHTTPRequestHandler):
         "unsupported_query",
         "backend_changes_during_queries",
         "use_bound_release",
+        "use_index_scope",
     ),
     [
-        (False, False, False, False),
-        (False, False, False, True),
-        (True, False, False, False),
-        (False, True, False, False),
-        (False, False, True, False),
+        (False, False, False, False, False),
+        (False, False, False, True, False),
+        (True, False, False, False, False),
+        (False, True, False, False, False),
+        (False, False, True, False, False),
+        (False, False, False, True, True),
     ],
 )
 def test_live_capture_makes_three_product_requests_and_retains_raw(
@@ -1120,6 +1129,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     unsupported_query,
     backend_changes_during_queries,
     use_bound_release,
+    use_index_scope,
     monkeypatch,
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
@@ -1224,6 +1234,41 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
                 return 0, json.dumps(inspect).encode(), b"", 1.0
 
             monkeypatch.setattr(live, "_process", local_backend_process)
+        if use_index_scope:
+            projection_root = tmp_path / "projection"
+            shutil.copytree(SearchHandler.view, projection_root)
+            for argv in (
+                ["git", "init", "-q"],
+                ["git", "add", "-A"],
+                [
+                    "git",
+                    "-c",
+                    "user.name=Scope Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "commit",
+                    "-qm",
+                    "Fixed projection",
+                ],
+            ):
+                subprocess.run(argv, cwd=projection_root, check=True, capture_output=True)
+            spec["sourcegraph"]["projection_git_root"] = str(projection_root)
+            release = Path(corpus["release_path"])
+            manifest_raw = (
+                release / "manifests" / corpus["repository"] / "code_only.json"
+            ).read_bytes()
+            projection = live._projection_binding(spec["sourcegraph"], json.loads(manifest_raw))
+            SearchHandler.commit = projection["projection_revision"]
+            receipt, _ = index_scope_fixture(
+                tmp_path,
+                manifest_raw=manifest_raw,
+                config=spec["sourcegraph"],
+                projection=projection,
+                snapshot=live._backend_snapshot(spec["sourcegraph"]),
+                view=SearchHandler.view,
+                release_digest=json.loads((release / "release.json").read_bytes())["digest"],
+            )
+            spec["sourcegraph"]["indexed_scope_receipt"] = str(receipt)
         spec_path = tmp_path / "live-spec.json"
         spec_path.write_text(json.dumps(spec))
         if index_changes_during_queries:
@@ -1277,6 +1322,13 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     else:
         assert result["backend_snapshot_sha256"] == {}
     file_count = len(json.loads(paths["suite"].read_text())["file_universe"])
+    assert (
+        result["sourcegraph_index_scope"] is not None
+        if use_index_scope
+        else result["sourcegraph_index_scope"] is None
+    )
+    if use_index_scope:
+        assert result["sourcegraph_index_scope"]["files"] == file_count
     assert (
         result["opengrok_indexed_view_probe"]
         == "exact_indexed_inventory_and_served_bytes_bracketing_queries"
