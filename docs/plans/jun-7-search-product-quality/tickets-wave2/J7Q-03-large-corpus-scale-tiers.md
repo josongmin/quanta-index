@@ -17,7 +17,12 @@ delta. A selectable rail is not measured capacity until its actual run succeeds.
   Record repo count, file-size distribution, hit/symbol density, seed, route mix,
   total bytes, model/index ownership and tier manifest.
 - Measure ingest, open/reopen, query, restart recovery and memory independently;
-  retain route-local budgets and actual storage/RSS methods.
+  retain route-local budgets and actual storage/RSS methods. Current
+  `ResourceUsageV1::observe_self` reads process-high-water RSS with
+  `getrusage(RUSAGE_SELF)`: the E2E daemon runs in a thread in the same
+  process, so this includes both daemon and harness allocations. It cannot
+  isolate daemon RSS or per-phase peaks. CPU time, reopen/restart and delete
+  behavior are not measured by the current selected-tier runner.
 - Report the supported limit and any failure per tier. Do not infer restart,
   memory or large-corpus behavior from small-tier query latency or scan-vs-index.
 - Re-run another host with matching input/configuration where portability is

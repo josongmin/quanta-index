@@ -1521,6 +1521,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             live.verify(root)
     summary_path.write_text(json.dumps(result))
     assert live.verify(root) == result
+
     for mutation in ({"schema_version": True}, {"index_universe_attested": 0}):
         summary_path.write_text(
             json.dumps({**result, "binding": {**result["binding"], **mutation}})
@@ -1590,3 +1591,119 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     raw_path.write_bytes(raw_path.read_bytes().replace(b"src/0.go", b"src/1.go"))
     with pytest.raises(ValueError, match="native bytes differ"):
         live.verify(root)
+
+
+@pytest.mark.parametrize("product", live.PRODUCTS)
+def test_v2_single_product_capture_replays_only_selected_native_evidence(
+    tmp_path, lexical_release_seed, product
+):
+    lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
+    suite = json.loads(paths["suite"].read_bytes())
+    pack = json.loads(paths["query_pack"].read_bytes())
+    suite["tasks"] = suite["tasks"][:1]
+    pack["tasks"] = pack["tasks"][:1]
+    pack["suite_commitment_sha256"] = live._sha(live.lexical.canonical(suite))
+    paths["suite"].write_bytes(live.lexical.canonical(suite))
+    paths["query_pack"].write_bytes(live.lexical.canonical(pack))
+    corpus = json.loads(lexical_spec.read_text())["corpus"]
+    SearchHandler.commit = suite["repository_commit"]
+    SearchHandler.view = (
+        Path(corpus["release_path"]) / "views" / corpus["repository"] / corpus["view"]
+    )
+    SearchHandler.calls = []
+    SearchHandler.query_seen = False
+    SearchHandler.inventory_extra_after_query = False
+    SearchHandler.backend_mutation_path = None
+    binary = tmp_path / "cs"
+    binary.write_text(
+        f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+        "if '--version' in sys.argv:\n"
+        "    print('cs-test')\n"
+        "else:\n"
+        "    root = Path(sys.argv[sys.argv.index('--dir') + 1])\n"
+        "    print(json.dumps([{'location': str(root / 'src/0.go')}]))\n"
+    )
+    binary.chmod(0o755)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SearchHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        configs = {
+            "sourcegraph": {
+                "base_url": base,
+                "repository": "benchmark/fixture",
+                "server_image_digest": "a" * 64,
+            },
+            "opengrok": {
+                "base_url": base,
+                "project": "fixture",
+                "server_image_digest": "b" * 64,
+                "indexed_view_probe": "full",
+            },
+            "cs": {"binary": str(binary)},
+        }
+        spec = {
+            "schema_version": 2,
+            "products": [product],
+            "corpus": corpus,
+            "suite": str(paths["suite"]),
+            "query_pack": str(paths["query_pack"]),
+            product: configs[product],
+            "output_root": str(tmp_path / "live"),
+        }
+        spec_path = tmp_path / "live-spec.json"
+        spec_path.write_text(json.dumps(spec))
+        summary = live.capture(spec_path)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+    root = Path(spec["output_root"])
+    assert summary["schema_version"] == 2
+    assert summary["products"] == [product]
+    assert set(summary["rows_sha256"]) == {product}
+    assert live.verify(root) == summary
+    for other in set(live.PRODUCTS) - {product}:
+        assert not (root / other).exists()
+        assert not (root / f"{other}_rows.jsonl").exists()
+    expected_calls = {
+        "sourcegraph": ["/.api/search/stream"],
+        "opengrok": ["/api/v1/search"],
+        "cs": [],
+    }
+    assert all(path in SearchHandler.calls for path in expected_calls[product])
+    assert (not SearchHandler.calls) == (product == "cs")
+
+    summary_path = root / "capture.json"
+    summary_raw = summary_path.read_bytes()
+    summary_path.write_text(json.dumps({**summary, "products": list(live.PRODUCTS)}))
+    with pytest.raises(ValueError, match="unsupported capture metadata"):
+        live.verify(root)
+    summary_path.write_bytes(summary_raw)
+    raw_name = next(iter(summary["raw_capture_sha256"]))
+    native = root / raw_name
+    native_raw = native.read_bytes()
+    native.write_bytes(native_raw + b" ")
+    with pytest.raises(ValueError, match="native bytes differ"):
+        live.verify(root)
+    native.write_bytes(native_raw)
+    row = root / f"{product}_rows.jsonl"
+    row_raw = row.read_bytes()
+    row.write_bytes(row_raw + b"\n")
+    with pytest.raises(ValueError, match="external rows differ"):
+        live.verify(root)
+    row.write_bytes(row_raw)
+    assert live.verify(root) == summary
+
+
+@pytest.mark.parametrize(
+    "products",
+    [[], ["sourcegraph", "sourcegraph"], ["cs", "sourcegraph"], ["unknown"]],
+)
+def test_v2_spec_rejects_noncanonical_products(tmp_path, products):
+    spec = {"schema_version": 2, "products": products}
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec))
+    with pytest.raises(ValueError, match="canonical subset"):
+        live._spec(path)

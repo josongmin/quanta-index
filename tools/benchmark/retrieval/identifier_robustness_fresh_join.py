@@ -197,9 +197,11 @@ def _source_admission(
     matrix_receipt_path = Path(manifest["matrix_receipt_path"])
     projection_receipt_path = Path(manifest["ordinary_projection_receipt_path"])
     gold_receipt_path = Path(manifest["gold_receipt_path"])
+    runtime_binding_path = Path(manifest["runtime_four_pin_binding_path"])
     matrix_receipt = read(matrix_receipt_path)
     projection = read(projection_receipt_path)
     gold = read(gold_receipt_path)
+    runtime_binding = read(runtime_binding_path)
     require(
         matrix_receipt.get("status") == "factory_derived_diagnostic_unqualified"
         and matrix_receipt.get("matrix_sha256") == sha(authority_path)
@@ -212,6 +214,22 @@ def _source_admission(
         and gold.get("capsule_count") == 12
         and manifest.get("gold_producer_runtime", {}).get("receipt_sha256")
         == sha(gold_receipt_path)
+        and runtime_binding_path.parent == gold_receipt_path.parent
+        and manifest.get("runtime_four_pin_binding_sha256") == sha(runtime_binding_path)
+        and prepared.get("runtime_four_pin_binding_path") == str(runtime_binding_path)
+        and prepared.get("runtime_four_pin_binding_sha256") == sha(runtime_binding_path)
+        and runtime_binding.get("status") == "supplementary_runtime_binding"
+        and runtime_binding.get("gold_receipt_sha256") == sha(gold_receipt_path)
+        and runtime_binding.get("source_head") == gold.get("source_head")
+        and runtime_binding.get("capsule_identity_sha256") == gold.get("identity_sha256")
+        and runtime_binding.get("active_distribution_versions")
+        == runtime_binding.get("source_lock_pins")
+        == prepared.get("parser_runtime_versions")
+        and runtime_binding.get("pin_files_sha256")
+        == {
+            "pyproject.toml": gold.get("pyproject_sha256"),
+            "uv.lock": gold.get("uv_lock_sha256"),
+        }
         and manifest.get("gold_producer_runtime", {}).get("source_head")
         == gold.get("source_head")
         and manifest.get("gold_producer_runtime", {}).get("dependency_versions")

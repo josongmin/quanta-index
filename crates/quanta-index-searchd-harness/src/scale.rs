@@ -667,7 +667,7 @@ fn generate_file(
 }
 
 // ---------------------------------------------------------------------------
-// Small-tier measurement (the only end-to-end timed tier here).
+// Small-tier measurement; scoped tiers use measure_tier below.
 // ---------------------------------------------------------------------------
 
 /// Result cap and repetition of the warm and adapter-only query loops.

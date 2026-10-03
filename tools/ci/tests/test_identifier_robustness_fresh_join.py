@@ -280,6 +280,17 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         "projector_overlay_sha256": "overlay", "projector_source_commit": "projector",
         "binary_build_source_sha": "binary", "driver_python_sha256": "python",
     }
+    runtime_binding_path = write(tmp_path / "runtime-four-pin-binding.json", {
+        "status": "supplementary_runtime_binding", "gold_receipt_sha256": fresh.sha(gold_path),
+        "source_head": "driver", "capsule_identity_sha256": {
+            repo: row["identity_sha256"] for repo, row in sources.items()
+        },
+        "active_distribution_versions": prepared["parser_runtime_versions"],
+        "source_lock_pins": prepared["parser_runtime_versions"],
+        "pin_files_sha256": {"pyproject.toml": "project", "uv.lock": "lock"},
+    })
+    prepared["runtime_four_pin_binding_path"] = str(runtime_binding_path)
+    prepared["runtime_four_pin_binding_sha256"] = fresh.sha(runtime_binding_path)
     manifest = {
         "schema": "c5_osa1_external_global12_fresh_v1",
         "release_digest": "release", "matrix_path": str(matrix_path),
@@ -288,6 +299,8 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         "ordinary_projection_receipt_path": str(projection_path),
         "ordinary_projection_receipt_sha256": fresh.sha(projection_path),
         "gold_receipt_path": str(gold_path),
+        "runtime_four_pin_binding_path": str(runtime_binding_path),
+        "runtime_four_pin_binding_sha256": fresh.sha(runtime_binding_path),
         "gold_capsule_root": str(tmp_path / "gold-v10"),
         "gold_producer_runtime": {
             "receipt_sha256": fresh.sha(gold_path), "source_head": "driver",
