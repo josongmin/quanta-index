@@ -879,6 +879,14 @@ verify a reversed file ordering against an independent NDCG value and reject
 failed or absent no-answer controls. The qualified runner and C5 decision do
 not yet accept this report.
 
+The file evidence now includes the same within-repository bootstrap and
+stratified/no-answer summaries as the context comparison, under the distinct
+`file_ndcg_at_10` metric. `run.py` can independently re-score a supplied
+file evidence report and reject per-query tampering. The native pair command
+still emits only the exploratory file diagnostic; this replay helper does not
+promote a quality state or product decision. The two-policy focused fixture
+passed 2/2.
+
 ## Frozen C4 v6 and native typo diagnostics (2026-10-03)
 
 **VERIFIED, diagnostic only:** clean `9d38b69d` rebuilt all twelve source-oracle
