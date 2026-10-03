@@ -182,6 +182,20 @@ def test_quality_batch_spec_and_product_contract_refuse_drift(tmp_path, monkeypa
     specs[str(member_paths[1])]["claims"] = {"speed": True}
     with pytest.raises(pairrun.RunError, match="exploratory only"):
         pairrun._quality_batch_members(batch)
+    specs[str(member_paths[1])]["claims"] = {}
+    original_resolver = pairrun.semble_adapter.resolve_model_revision
+    calls = iter([("a" * 40, "b" * 64), ("a" * 40, "c" * 64)])
+    monkeypatch.setattr(
+        pairrun.semble_adapter,
+        "resolve_model_revision",
+        lambda *_args: next(calls),
+    )
+    with pytest.raises(pairrun.RunError, match="model assets differ"):
+        pairrun._quality_batch_members(batch)
+    monkeypatch.setattr(pairrun.semble_adapter, "resolve_model_revision", original_resolver)
+    packs[1].write_text(json.dumps({"id": "wrong"}), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="blind pack differs"):
+        pairrun._quality_batch_members(batch)
 
 
 def _clean_host_timeline_fixture():
