@@ -485,9 +485,8 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
                     if path in audit["disagreement_paths"]
                     else None
                 )
-                if (
-                    reason in ("census_refused", "census_disagreement")
-                    and _textually_excluded(raw, scoring_query, DECLARATION_INTENTS[scoring_intent])
+                if reason in ("census_refused", "census_disagreement") and _textually_excluded(
+                    raw, scoring_query, DECLARATION_INTENTS[scoring_intent]
                 ):
                     # Name absence is sufficient even when the independent
                     # checker refused a source that the primary parser accepts.

@@ -972,9 +972,7 @@ def test_census_disagreement_requires_query_specific_text_absence(tmp_path, monk
     gold, _blind = gold_oracle.derive(value, manifest, view)
     target, other = gold["tasks"]
     assert target["unsupported"] == []
-    assert target["census_text_excluded"] == [
-        {"path": "disputed.py", "reason": "census_refused"}
-    ]
+    assert target["census_text_excluded"] == [{"path": "disputed.py", "reason": "census_refused"}]
     assert target["answerable"] is True
     assert other["unsupported"] == [{"path": "disputed.py", "reason": "census_refused"}]
     assert other["answerable"] is None
