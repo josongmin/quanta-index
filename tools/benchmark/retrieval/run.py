@@ -8136,7 +8136,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     # QUALITY_DELTA: blinded, graded, in-scope quality only.
     file_quality_policy = (
         protocol_payload.get("execution_profiles", {}).get("quanta", {}).get("policy")
-        in qp.CODE_SEARCH_FILE_POLICIES
+        == "code_search_file"
     )
     isolation_claimed = manifest["blinding"] == "isolated"
     all_isolated = isolation_claimed
@@ -8581,6 +8581,12 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     code_search_file = (
         spec["execution_profiles"]["quanta"]["policy"] in qp.CODE_SEARCH_FILE_POLICIES
     )
+    if (
+        code_search_file
+        and scope == "qualified"
+        and spec["execution_profiles"]["quanta"]["policy"] != "code_search_file"
+    ):
+        raise RunError("qualified file scoring requires code_search_file")
     order = spec.get("order", ["quanta", "semble"])
     if sorted(order) != ["quanta", "semble"]:
         raise RunError("spec.order must list quanta and semble exactly once")

@@ -11454,6 +11454,33 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
             pairrun.load_spec(spec_path)
 
 
+@pytest.mark.parametrize("policy", ["code_search_exact_content_file", "code_search_typo_file"])
+def test_qualified_file_stage_refuses_nondefault_mode_before_capture(tmp_path, policy):
+    spec = {
+        "scope": "qualified",
+        "execution_profiles": {
+            "quanta": qp.execution_profile(policy),
+            "semble": semble_adapter.execution_profile("lexical-file", None),
+        },
+    }
+    with pytest.raises(pairrun.RunError, match="requires code_search_file"):
+        pairrun._run_pair_staged(spec, tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("policy", ["code_search_exact_content_file", "code_search_typo_file"])
+def test_verdict_never_qualifies_nondefault_file_policy(tmp_path, policy):
+    st = _pair_stage(tmp_path, claims={"quality": True})
+    lock_path = st["stage"] / "protocol-lock.json"
+    lock = json.loads(lock_path.read_text())
+    lock["execution_profiles"]["quanta"]["policy"] = policy
+    lock["execution_profiles_sha256"] = ev.digest(ev.canonical(lock["execution_profiles"]))
+    lock_path.write_text(json.dumps(lock))
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == "diagnostic_rank_profile"
+
+
 def test_verdict_quality_refuses_diagnostic_rank_profile(tmp_path, monkeypatch):
     st = _pair_stage(tmp_path, claims={"quality": True})
     monkeypatch.setattr(pairrun, "PAIR_CONTEXT_QUALITY_POLICIES", frozenset())
