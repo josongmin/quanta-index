@@ -62,9 +62,14 @@ class BoundRelease:
     @classmethod
     def begin(cls, root: Path) -> BoundRelease:
         root = root.resolve(strict=True)
-        document = corpus_release.validate(root)
         files = {name: _sha_file(root / name) for name in sorted(corpus_release.regular_tree(root))}
-        return cls(root, document, files, _sha_file(Path(corpus_release.__file__)))
+        owner_sha256 = _sha_file(Path(corpus_release.__file__))
+        document = corpus_release.validate(root)
+        if files != {
+            name: _sha_file(root / name) for name in sorted(corpus_release.regular_tree(root))
+        } or owner_sha256 != _sha_file(Path(corpus_release.__file__)):
+            raise ValueError("batch-bound release or validator changed during full validation")
+        return cls(root, document, files, owner_sha256)
 
     def recheck(self, root: Path) -> dict:
         if (
@@ -668,9 +673,7 @@ def _opengrok_indexed_view_response(
         _sha(raw) != row["file_sha256"]
         or _sha(_read_control_file(view / row["path"])) != row["file_sha256"]
     ):
-        raise ValueError(
-            f"OpenGrok indexed source {row['path']} bytes differ from release"
-        )
+        raise ValueError(f"OpenGrok indexed source {row['path']} bytes differ from release")
 
 
 def _opengrok_indexed_inventory_response(
@@ -1606,7 +1609,11 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         destination = stage / f"{name}_rows.jsonl"
         lexical.product_result(name, destination, tasks, admitted)
     if (
-        (corpus_release.validate(release) if bound_release is None else bound_release.recheck(release))
+        (
+            corpus_release.validate(release)
+            if bound_release is None
+            else bound_release.recheck(release)
+        )
         != document
         or _read_control_file(spec_path) != _read_control_file(stage / "spec.json")
         or _read_control_file(Path(spec["suite"])) != suite_raw
@@ -1969,6 +1976,8 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                 raise ValueError("external row disagrees with retained native response")
 
         _replay_rows(row_path, pack["tasks"], replay_row)
+    if bound_release is not None:
+        bound_release.recheck(release)
     return summary
 
 

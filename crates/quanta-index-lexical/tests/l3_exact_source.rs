@@ -880,7 +880,8 @@ fn code_search_rank_study_recovers_original_boundaries_after_unicode_normalizati
 
 #[test]
 fn code_search_explanation_preserves_constraints_cancellation_and_global_auto_typo_gate() -> TestResult {
-    use quanta_index_core::{CandidatePresenceV1, LexicalCandidateExplanationV1};
+    use quanta_index_contract::CandidatePresenceV1;
+    use quanta_index_core::LexicalCandidateExplanationV1;
 
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("literal.rs", "needle", 0)?, code_scope("neighbor.rs", "needl", 0)?,
@@ -896,7 +897,7 @@ fn code_search_explanation_preserves_constraints_cancellation_and_global_auto_ty
         &neighbor.candidate_id, &RequestBudgetV1::unbounded())?,
         LexicalCandidateExplanationV1::NotMatched { .. }), "another file's literal match disables automatic typo recovery");
     let constrained = QueryConstraintSetV1 {
-        repo_relative_path_exact: Some(RepoRelativePath::new("neighbor.rs")),
+        repo_relative_path_exact: Some(quanta_index_contract::ExactRepoRelativePathV1::new("neighbor.rs")?),
         ..QueryConstraintSetV1::default()
     };
     let recovered = searcher.search_constrained(&literal_query, &constrained,

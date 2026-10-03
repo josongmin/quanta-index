@@ -3,6 +3,7 @@
 import hashlib
 import json
 import selectors
+import shutil
 import socket
 import sys
 import tempfile
@@ -18,6 +19,72 @@ from tools.benchmark.retrieval import live_lexical_external as live
 from tools.ci.tests.test_lexical_capture import inputs
 
 pytest_plugins = ["tools.ci.tests.test_lexical_capture"]
+
+
+def test_bound_release_reuses_one_full_validation_and_refuses_changed_bytes(
+    tmp_path, lexical_release_seed, monkeypatch
+):
+    release = tmp_path / "release"
+    shutil.copytree(lexical_release_seed, release)
+    original_validate = live.corpus_release.validate
+    calls = []
+
+    def validate_once(root):
+        calls.append(root)
+        return original_validate(root)
+
+    monkeypatch.setattr(live.corpus_release, "validate", validate_once)
+    bound = live.BoundRelease.begin(release)
+    assert calls == [release]
+    assert bound.recheck(release) == bound.document
+    assert calls == [release]
+
+    (release / "untracked.txt").write_text("extra")
+    with pytest.raises(ValueError, match="complete file bytes changed"):
+        bound.recheck(release)
+    (release / "untracked.txt").unlink()
+    (release / "release.json").write_bytes((release / "release.json").read_bytes() + b" ")
+    with pytest.raises(ValueError, match="complete file bytes changed"):
+        bound.recheck(release)
+
+
+def test_bound_release_refuses_swapped_root_and_validator_identity(
+    tmp_path, lexical_release_seed, monkeypatch
+):
+    release = tmp_path / "release"
+    shutil.copytree(lexical_release_seed, release)
+    bound = live.BoundRelease.begin(release)
+    other = tmp_path / "other"
+    shutil.copytree(release, other)
+    with pytest.raises(ValueError, match="root, owner or complete file bytes changed"):
+        bound.recheck(other)
+
+    original_hash = live._sha_file
+    owner = Path(live.corpus_release.__file__)
+    monkeypatch.setattr(
+        live,
+        "_sha_file",
+        lambda path: "0" * 64 if path == owner else original_hash(path),
+    )
+    with pytest.raises(ValueError, match="root, owner or complete file bytes changed"):
+        bound.recheck(release)
+
+
+def test_bound_release_refuses_mutation_during_full_validation(
+    tmp_path, lexical_release_seed, monkeypatch
+):
+    release = tmp_path / "release"
+    shutil.copytree(lexical_release_seed, release)
+    original_validate = live.corpus_release.validate
+
+    def mutate_after_validation(root):
+        document = original_validate(root)
+        (root / "release.json").write_bytes((root / "release.json").read_bytes() + b" ")
+        return document
+
+    monkeypatch.setattr(live.corpus_release, "validate", mutate_after_validation)
+    with pytest.raises(ValueError, match="changed during full validation"):
+        live.BoundRelease.begin(release)
 
 
 def test_external_row_replay_streams_large_jsonl_and_refuses_invalid_order(tmp_path):
