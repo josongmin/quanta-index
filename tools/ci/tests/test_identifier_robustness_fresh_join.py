@@ -319,6 +319,12 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
     write(tmp_path / "repo0" / "suite.json", {
         "repository_commit": "commit", "tasks": [{"task_id": "repo0.q1"}],
     })
+    write(tmp_path / "repo0" / "pack.json", {
+        "tasks": [{"task_id": "repo0.q1"}], "unscored_payload": "tampered",
+    })
+    with pytest.raises(fresh.FreshJoinError, match="global source admission task"):
+        fresh._source_admission(matrix_path, prepared, manifest)
+    write(tmp_path / "repo0" / "pack.json", {"tasks": [{"task_id": "repo0.q1"}]})
     # Capsule directory names have no authority; the declared root and identity paths do.
     (tmp_path / "gold-v10").rename(tmp_path / "renamed-capsules")
     renamed = copy.deepcopy(manifest)

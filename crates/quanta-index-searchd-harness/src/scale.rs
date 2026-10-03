@@ -55,9 +55,6 @@ use crate::harness::{E2eRuntime, E2eTextChunkSpec};
 /// The artifact dimension this rail writes.
 pub const DIMENSION: &str = "scale";
 
-/// Repo id used for every generated scale corpus.
-const SCALE_REPO: &str = "repo-scale";
-
 /// The deterministic query the small-tier measurement issues.
 ///
 /// Every generated file embeds this token at the configured hit density, so a
@@ -1004,7 +1001,8 @@ fn measure_delta(rt: &mut E2eRuntime, seed: u64) -> AnyResult<DeltaMeasurementV1
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let update_started = Instant::now();
-    rt.ingest_text(SCALE_REPO, path, &changed)?;
+    let serving_owner = rt.repo();
+    rt.ingest_text(serving_owner.as_str(), path, &changed)?;
     let _generation = rt.seal()?;
     let update_ms = elapsed_ms(update_started);
     let after_build = directory_bytes(rt.state_root())?;
@@ -1048,8 +1046,9 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
 
     let before_build = directory_bytes(rt.state_root())?;
     let build_started = Instant::now();
+    let serving_owner = rt.repo();
     for (path, content) in &corpus {
-        rt.ingest_text(SCALE_REPO, path, content)?;
+        rt.ingest_text(serving_owner.as_str(), path, content)?;
     }
     let _generation = rt.seal()?;
     let build_ms = elapsed_ms(build_started);
@@ -1125,8 +1124,9 @@ fn measure_scoped_delta(rt: &mut E2eRuntime, file: &ScopedFile) -> AnyResult<Del
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let update_started = Instant::now();
+    let serving_owner = rt.repo();
     let _ids = rt.ingest_text_chunks(
-        SCALE_REPO,
+        serving_owner.as_str(),
         &file.repo_relative_path,
         &[E2eTextChunkSpec {
             content: &changed,
@@ -1343,6 +1343,11 @@ pub fn refusal_json(
             "corpus_bytes": binding.corpus_bytes,
             "source_bytes": binding.source_bytes,
             "corpus_digest": binding.corpus_digest,
+            "corpus_digest_kind": if binding.tier == ScaleTier::Small {
+                "generated_chunk_content_prefixed_path_v1"
+            } else {
+                "generated_chunk_content_source_repo_path_v1"
+            },
         },
         "provenance": {
             "git_head": git_head.as_str(),
@@ -1902,8 +1907,9 @@ mod tests {
         }
 
         let changed0 = format!("{content0}// changed\n");
+        let serving_owner = rt.repo();
         let _ids = rt.ingest_text_chunks(
-            SCALE_REPO,
+            serving_owner.as_str(),
             shared_path,
             &[E2eTextChunkSpec {
                 content: &changed0,

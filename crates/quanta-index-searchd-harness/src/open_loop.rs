@@ -30,7 +30,6 @@ use quanta_index_searchd_harness::{E2eRuntime, E2eTextChunkSpec};
 use serde_json::{Value, json};
 
 pub(crate) const DIMENSION: &str = "open-loop";
-const REPO: &str = "repo-open-loop";
 const QUERY: &str = "scale_needle_token";
 const TOP_K: u32 = 10;
 const MAX_TOTAL_REQUESTS: u128 = 100_000;
@@ -665,8 +664,9 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
     let (source_paths, corpus_digest, scoped_oracle) = if config.tier == ScaleTier::Small {
         let corpus = generate_corpus(ScaleTier::Small, config.seed);
         let source_paths = source_fixture_paths(&corpus)?;
+        let serving_owner = runtime.repo();
         for (path, content) in &corpus {
-            runtime.ingest_text(REPO, path, content)?;
+            runtime.ingest_text(serving_owner.as_str(), path, content)?;
         }
         (source_paths, corpus_digest(DIMENSION, &corpus), None)
     } else {

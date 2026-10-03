@@ -186,9 +186,12 @@ SLO, improvement factor or product ranking before obtaining these observations.
 Search worker reports lexical `l3_exact_source` 28/28 and two focused plane
 tests passing. Indexing worker reports contract 171/171 and SDK 120/120 unit
 tests passing, plus lexical test-target compilation. These are owner-local
-checks, not whole-repository or performance qualification. Harness executable
-tests and public daemon boundary checks are still being scheduled through the
-shared resource admission queue.
+checks, not whole-repository or performance qualification. The public API
+baseline and `just rust-public-api` passed. The real
+`sdk_roundtrip::real_daemon_roundtrip_publishes_and_queries` passed 1/1 against
+the same-lane daemon; it crosses publication, activation, query and the nested
+stage response boundary. New scoped scale/open-loop tests and actual medium
+execution are still pending shared resource admission.
 
 Fresh stage attribution, optimization A/B, actual medium/large/XL execution,
 quiet-host performance qualification and fresh five-product comparison remain
@@ -202,8 +205,57 @@ in 13.42 seconds. The new positive monitor replay first exposed a digest-prefix
 mismatch; the corrected reader admits the valid canonical transcript and
 rejects a changed reservation. The phase golden accepts the actual v3 daemon
 boot label, rejects the misleading old label, and excludes nested SDK timings
-from the outer partition. The canonical Python inventory collects 664
+from the outer partition. The canonical Python inventory now collects 673
 identities; collection is not execution. Ruff and `git diff --check` passed.
+
+### Concrete remediation and stopping rules
+
+Code ownership remains three parallel workers plus one integration owner.
+Ordinary search and typo changes share one `searcher/code_search.rs` owner;
+common contracts and capture readers have one integration owner. Performance
+runs are sequential; a cold release compilation is not corpus indexing time.
+
+| Work item | Existing files and smallest change | Independent proof and stop condition |
+| --- | --- | --- |
+| Ordinary search | `crates/quanta-index-lexical/src/searcher/code_search.rs`, core lexical outbound stats, plane `query_dispatcher/routes/lexical.rs` and response budget: use the implemented counters/clocks before changing candidate intersection, row creation, sort/page or preview | Byte-scan/full-sort goldens, last-candidate winner, ties, all cursor pages, exact totals, budget/cancel and response truncation. Optimize the repeatedly dominant stage only; stop on changed identity, order, score, span or status |
+| Typo search | Same lexical owner: compare ordinary miss plus fallback with explicit OSA1 on the same typo input. Existing exact-first behavior and bounded source admission remain authoritative | Independent exhaustive OSA1 insertion/deletion/substitution/transposition oracle, short names, Unicode/case, path filters and no-answer; generation/digest faults refuse. A candidate filter must not drop any valid oracle match. Report file recovery and declaration recovery separately |
+| Indexing | `adapter_ingest.rs`, `writer_cache.rs`, `file_authority.rs`, `sealed_generation/seal.rs`, SDK `lexical.rs` and the registered retrieval runner: attribute full/delta stages already emitted, then change only the dominant stage | Fresh rebuild versus update/delete equality, untouched source-repository survival, replay/restart and interrupted seal behavior; preserve fsync/directory sync and immutable generation identity. Existing hard links, touched shards and commitment reuse are verified before proposing new caches |
+| Scale/load | Existing harness `scale.rs`, `harness.rs`, `artifact.rs`, `open_loop.rs` and their binaries: typed `(source_repo_id, relative_path)` fixtures, source/IPC preflight, nonzero finite offered work and every measured response verified after its timer | Same path in two repositories plus one-repository delta, fixed framed digest, missing/duplicate/foreign identity rejection; capacity refusal records its source/stage instead of a zero latency. First execute medium 4 x 64 = 256 files, then large 16 x 256 = 4,096, then XL 64 x 512 = 32,768 without shrinking inputs or raising product limits |
+| SDK/IPC | Existing SDK and IPC owners, conditional on measured complete-call cost beyond server search | Attribute request construction, active resolution, serialization and transport first. Any connection or resolve/search change preserves generation pin, activation races, deadlines and request identity. SDK minus server time is a residual, not an IPC attribution |
+| Five-product integration | `live_lexical_external.py`, its replay validator, `lexical_file_comparison.py`, existing tests and schemas: product-scoped capture/replay within the existing collector, followed by a checked join on input/source/timer contracts | A missing product/row, changed pack, duplicate task, backend drift or failed probe cannot produce a complete comparison. Each product retains native raw rows and its before/after scope checks; sequential collection must not claim a simultaneous paired speed experiment |
+
+The scoped scale tiers describe multiple source repositories under **one**
+serving owner. They do not prove multi-owner publish/CAS concurrency. Seeded
+synthetic scale and real multi-repository retrieval are separate workloads.
+
+Current external preparation binds exact 1,196 and typo insertion 1,192,
+deletion 1,178, substitution 1,192 and transposition 1,192 tasks to Gin's same
+99 files. These are query expansions, not source-corpus expansion. Prefix,
+infix, components and no-answer retain their independently admitted suites;
+do not manufacture 1,000 independent tasks from insufficient unique sources.
+
+A fresh external attempt failed before query execution on an OpenGrok HTTP
+401 probe. Read-only inspection also found the current C5 services contain a
+12-repository holdout rather than Gin. Preserve that attempt and existing
+services. Prepare new isolated Gin roots and validate served source/revision.
+The Docker VM has about 8.2 GB total memory with existing comparator processes
+using about 4.4 GB; do not start both additional servers concurrently merely
+to satisfy the collector's current interleaved loop. Product-scoped collection
+is a prerequisite for sequential isolated services.
+
+The standalone external CLI import failure was reproduced from an external
+working directory and repaired in the existing CLI bootstrap. The subprocess
+test removes `PYTHONPATH` and invokes the actual script; its focused run passed
+4 tests. Current diagnostic-v7 on/off comparison, native chunk/file projection,
+nested indexing replay and independent host-binding fault cases also passed
+focused checks. These do not qualify host performance or new product rankings.
+
+For performance acceptance, freeze the source/binary/input tuple, finish warmup,
+use the existing five-fresh-root and 1,000-warm-observation floors, randomize
+paired order and report uncertainty. A quality/identity difference, unknown host
+observation, competing build or inconclusive repeated improvement prevents an
+optimization from being promoted as a performance win. Numeric product SLOs
+remain an explicit operational decision rather than an invented test threshold.
 
 ## Execution receipt (2026-09-30)
 
