@@ -590,7 +590,7 @@
     "quanta-index-retrieval-bench::sdk_roundtrip$homonymous_symbols_stay_distinct_units_on_the_symbol_route",
     "quanta-index-retrieval-bench::sdk_roundtrip$incomplete_symbol_profile_publishes_malformed_text_and_refuses_symbol_authority",
     "quanta-index-retrieval-bench::sdk_roundtrip$keyword_and_substring_file_public_routes_enforce_execution_and_response_budgets",
-    "quanta-index-retrieval-bench::sdk_roundtrip$keyword_and_substring_file_public_routes_group_order_scope_and_case",
+    "quanta-index-retrieval-bench::sdk_roundtrip$native_file_public_routes_group_order_scope_and_case",
     "quanta-index-retrieval-bench::sdk_roundtrip$literal_file_public_route_enforces_execution_and_response_budgets",
     "quanta-index-retrieval-bench::sdk_roundtrip$literal_file_public_route_groups_before_top_k_and_records_distinct_files",
     "quanta-index-retrieval-bench::sdk_roundtrip$missing_pinned_model_fails_boot_without_a_scored_record",

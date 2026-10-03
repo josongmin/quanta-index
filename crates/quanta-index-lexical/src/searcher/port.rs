@@ -206,6 +206,7 @@ impl LexicalSearcher for TantivySearcher {
         let after = self.page_boundary(page)?;
         let Some(prepared_query) = self.prepare_executable_query(&plan, budget)? else {
             return Ok(SymbolSearchPageV1 {
+                code_search_stats: None,
                 candidates: Vec::new(),
                 exact_total: Some(0),
             });
@@ -217,6 +218,7 @@ impl LexicalSearcher for TantivySearcher {
         )?;
         if !self.repo_filters_allow(&effective_query)? {
             return Ok(SymbolSearchPageV1 {
+                code_search_stats: None,
                 candidates: Vec::new(),
                 exact_total: Some(0),
             });
@@ -238,6 +240,7 @@ impl LexicalSearcher for TantivySearcher {
                 budget,
             )?;
             return Ok(SymbolSearchPageV1 {
+                code_search_stats: None,
                 candidates: self.render_manual_candidates(
                     rows,
                     &mut preview,
@@ -254,6 +257,7 @@ impl LexicalSearcher for TantivySearcher {
         )?
         else {
             return Ok(SymbolSearchPageV1 {
+                code_search_stats: None,
                 candidates: Vec::new(),
                 exact_total: Some(0),
             });
@@ -277,6 +281,7 @@ impl LexicalSearcher for TantivySearcher {
             budget,
         )?;
         Ok(SymbolSearchPageV1 {
+            code_search_stats: None,
             candidates: self.rows_to_candidates(
                 &searcher,
                 fruit.rows,

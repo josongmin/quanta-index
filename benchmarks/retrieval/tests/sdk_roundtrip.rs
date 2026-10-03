@@ -641,7 +641,7 @@ fn literal_file_public_route_groups_before_top_k_and_records_distinct_files() {
 }
 
 #[test]
-fn keyword_and_substring_file_public_routes_group_order_scope_and_case() {
+fn native_file_public_routes_group_order_scope_and_case() {
     let repo = tempfile::tempdir().expect("repo");
     let repeated = format!(
         "package fixture\n{}",
@@ -729,6 +729,11 @@ fn keyword_and_substring_file_public_routes_group_order_scope_and_case() {
             "eedl",
             "path_order_constant_score",
         ),
+        (
+            QueryInputPolicy::NaturalLanguageFile,
+            "needle",
+            "score_desc_path_tiebreak",
+        ),
     ] {
         // Ten distinct files: the 40-chunk file keeps one representative
         // chosen before truncation, so the nine other files still fit.
@@ -767,6 +772,13 @@ fn keyword_and_substring_file_public_routes_group_order_scope_and_case() {
             assert_eq!(
                 returned, content_files,
                 "content-only matches, grouped before top_k"
+            );
+        } else if policy == QueryInputPolicy::NaturalLanguageFile {
+            let mut candidates = content_files.clone();
+            let _inserted = candidates.insert("src/upper.go");
+            assert!(
+                returned.is_subset(&candidates),
+                "folded phrase tokens match content, not path-only text"
             );
         } else {
             // Eleven files match content or path; the scored top ten is a subset.
@@ -815,7 +827,7 @@ fn keyword_and_substring_file_public_routes_group_order_scope_and_case() {
         .expect("source-proven result");
         assert_eq!(recorded["rank_unit"], "distinct_file");
         assert_eq!(recorded["ordering"], ordering);
-        if policy == QueryInputPolicy::KeywordFile {
+        if policy != QueryInputPolicy::SubstringFile {
             assert_eq!(recorded["score_evidence"], "native_sdk_score_v1");
             for (candidate, hit) in recorded["candidates"]
                 .as_array()
@@ -824,6 +836,8 @@ fn keyword_and_substring_file_public_routes_group_order_scope_and_case() {
                 .zip(hits)
             {
                 assert_eq!(candidate["score"].as_f64(), Some(hit.score));
+                assert_eq!(candidate["span_accounting"]["unit_kind"], "chunk");
+                assert_eq!(candidate["span_accounting"]["unit_id"], hit.candidate_id);
             }
         } else {
             assert!(recorded.get("score_evidence").is_none());

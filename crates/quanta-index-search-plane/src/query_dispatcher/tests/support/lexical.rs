@@ -620,6 +620,7 @@ fn symbol_fixture_page(
         usize::try_from(limit).map_err(|err| CoreError::InvalidContract(err.to_string()))?,
     );
     Ok(quanta_index_core::SymbolSearchPageV1 {
+        code_search_stats: None,
         candidates: rows,
         exact_total,
     })

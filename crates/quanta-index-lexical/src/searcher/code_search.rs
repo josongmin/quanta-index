@@ -1730,6 +1730,10 @@ impl TantivySearcher {
     ) -> Result<LexicalCandidateExplanationV1, CoreError> {
         budget.checkpoint("lexical:code-search-explain-start")?;
         let parsed = CodeSearchPlan::parse(query, &self.regex_policy)?;
+        let authority = self.file_authority.as_ref().ok_or_else(|| CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+            message: "lexical code search requires rebuilt full-file source authority".into(),
+        })?;
         let Some(file) = self.code_search_file_by_id(candidate_id, budget)? else {
             return Ok(LexicalCandidateExplanationV1::NotIndexed);
         };
@@ -1773,10 +1777,6 @@ impl TantivySearcher {
         // Auto-typo eligibility depends on the original scoped literal set.
         // Reuse that executor for recovery/components, without a top-k cap or
         // narrowing the scope to this file (which could create a false fallback).
-        let authority = self
-            .file_authority
-            .as_ref()
-            .ok_or_else(|| CoreError::Storage("lexical: file authority disappeared".into()))?;
         let fetch = u32::try_from(authority.files.len().max(1)).map_err(|error| {
             CoreError::Storage(format!("lexical: explain file cardinality: {error}"))
         })?;
