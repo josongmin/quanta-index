@@ -220,10 +220,7 @@ def verify_generation_manifest(
         if name == f"{lane}-suite.json" and observed != paths[name]:
             generated_path = manifest_path.parent / name
             generated = evaluator.read_json(generated_path)
-            if (
-                evaluator.digest(generated_path.read_bytes()) == paths[name]
-                and generated == suite
-            ):
+            if evaluator.digest(generated_path.read_bytes()) == paths[name] and generated == suite:
                 # The runner may reserialize an unchanged suite canonically.
                 observed = paths[name]
             # The pair runner adds exactly one external route. Bind all other

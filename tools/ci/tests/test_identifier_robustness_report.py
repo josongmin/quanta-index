@@ -42,7 +42,9 @@ def test_paired_capture_requires_same_binary_and_valid_separate_activations():
             record("a" * 64), record("b" * 64, binary="changed"), "lexical", "lexical"
         )
     with pytest.raises(ValueError, match="invalid activation digest"):
-        _verify_paired_capture_identity(record("a" * 64), record("not-a-digest"), "lexical", "lexical")
+        _verify_paired_capture_identity(
+            record("a" * 64), record("not-a-digest"), "lexical", "lexical"
+        )
 
 
 def test_paired_clean_to_typo_uses_intended_gold_and_common_eligible_families():
@@ -1057,9 +1059,7 @@ def test_generation_manifest_accepts_quanta_projection_of_generated_pair(tmp_pat
             }
         )
     )
-    verify_generation_manifest(
-        manifest_path, census_path, projected_path, suite, census, "prefix"
-    )
+    verify_generation_manifest(manifest_path, census_path, projected_path, suite, census, "prefix")
     suite["suite_id"] = "different"
     projected_path.write_bytes(_json_bytes(suite))
     with pytest.raises(ValueError, match="generation artifact mismatch: prefix-suite.json"):
@@ -1096,9 +1096,7 @@ def test_generation_manifest_accepts_only_identical_suite_reserialization(tmp_pa
             }
         )
     )
-    verify_generation_manifest(
-        manifest_path, census_path, submitted_path, suite, census, "prefix"
-    )
+    verify_generation_manifest(manifest_path, census_path, submitted_path, suite, census, "prefix")
     suite["tasks"][0]["query"] = "tampered"
     submitted_path.write_bytes(evaluator.canonical(suite))
     with pytest.raises(ValueError, match="generation artifact mismatch: prefix-suite.json"):
