@@ -1202,5 +1202,16 @@ Preflight found zero identical code blobs and zero shared root commits across
 the ten development and twelve exposed evaluation views; the external
 preflight is `/private/tmp/qi-c5-fresh-20261003/zerolog-preflight.json`
 (SHA-256 `1fd8fa1019035af44cbba2ae946e7940f31bb3a7923f2afd2efb5089bfaf915c`).
-Near-duplicate source audit, the other eleven releases, labels and product
-captures are **NOT_RUN**. This one candidate is not yet C5-admitted.
+Near-duplicate source audit, labels and product captures are **NOT_RUN**.
+This candidate is not yet C5-admitted.
+
+The same frozen candidate order has since produced source-replayed releases
+for the remaining three small cells: `zoxide` (26 code files), `attrs` (56)
+and `immer` (55). Together with `zerolog` (82), these four candidates have
+219 `code_only` files and zero identical code blobs or shared root commits
+against the 22 prior development/evaluation views. The per-candidate commits,
+release digests and preflight limitations are in
+`/private/tmp/qi-c5-fresh-20261003/candidate-status.json`
+(SHA-256 `839bb8dd898a6dd72ed4d2f874025741ec7a8a44df7c13b0eb3a6bb7d2753903`).
+This does not discharge near-duplicate checks or admit any of the four.
+The other eight cells have no frozen release yet.
