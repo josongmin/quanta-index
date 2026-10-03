@@ -832,60 +832,30 @@ v3 mixed-suite capture followed by unmocked verdict and C5 replay is still
 
 ## C5 file-ranking qualification boundary (2026-10-03)
 
-**Confirmed code limit:** the C5 decision replay currently selects only
-`graded: true` context reports with `rank_metrics.comparison`. The pair spec
-rejects `scope: qualified` and `claims.quality: true` for
-`code_search_file`/`code_search_typo_file`. Their evaluator produces
-`paired_independent_file_judgment_diagnostic_v1`; verdict replay labels its
-metric `diagnostic_file_ndcg_at_10` with `graded: false`, and `QUALITY_DELTA`
-rejects the file execution policy. Existing tests intentionally assert these
-refusals. A 12-repository C5 context decision therefore cannot qualify ranked
-file retrieval or the C4 multi-mode matrix. The earlier mixed-label repair
-does not change this boundary.
+**Code path implemented, native qualification NOT_RUN.** The qualified pair
+spec accepts only `code_search_file` with `default_file_search`, schema-v3
+repository-disjoint admission and a quality claim. The evaluator requires
+source-oracle or reviewed-complete label authority, scored distinct-file order,
+native score evidence, complete paired top-10 judgments and no-answer controls.
+It emits a separate `file-judgments-complete-v1` report with
+`file_ndcg_at_10`, per-query values, paired and stratified deltas, and
+uncertainty. The verdict independently re-scores the report; `QUALITY_DELTA`
+accepts the file metric only with schema-v3 admission and all existing
+qualification gates. Exploratory file reports remain diagnostic. The C5 policy
+v3 binds `metric_scope: scored_distinct_file` and
+`request_mode: default_file_search`; replay rejects a context report in that
+track. Context policy v2 remains `context_span_density`. Typo and exact-content
+file requests remain diagnostic because their request and relevance contracts
+are different.
 
-To qualify a **separately preregistered file-ranking track**, add a versioned
-file comparison/report contract in `evaluator.py`, `run.py` and `decision.py`.
-It must use source-bound `file_judgments`, require complete paired top-10
-judgment coverage and scored distinct-file ordering, replay per-query deltas,
-bind each selected request mode and capture, and apply repository-cluster and
-resource gates to those same cells. `code_search_file` and typo requests need
-separate modes/strata; the current one-suite/one-policy C5 input cannot claim
-coverage of all C4 modes. Positive and negative source-backed fixtures must
-prove candidate order, unjudged result refusal, missing mode/cell refusal,
-policy/report/record binding, no-answer behavior and per-repository coverage.
-Changing `graded` or adding file policies to the context allowlist alone would
-mislabel a diagnostic report as qualified. This implementation and the real
-multi-repository file capture are `NOT_RUN`.
-
-The existing context C5 replay now requires the exact
-`rb-rank-context-density-first-coverage` report version and emits
-`metric_scope: context_span_density`. A forged file metric version is rejected
-before metric gating. The decision/benchctl focused rail passed 86 tests.
-
-The evaluator now has a narrow `complete_scored_file_rows()` selector for the
-future file track. It starts from the existing replayed paired-file diagnostic
-and admits rows only when both routes have scored ordering, the required native
-score evidence, complete top-10 judgments, a common positive-task cohort, and
-source-oracle or reviewed-complete label authority. Focused tests accept two
-fully judged file tasks and reject unreviewed policy, missing judgments and
-missing score evidence (2 tests passed). This selector is not wired into a
-qualified report or product gate; those remain `NOT_RUN`.
-
-The selector now feeds a separate `file-judgments-complete-v1` evidence report.
-It records per-query file NDCG, paired mean, within-repository uncertainty,
-stratified deltas and no-answer abstention from the same validated result rows.
-It remains explicitly `diagnostic_unqualified`. Focused fixed-grade tests
-verify a reversed file ordering against an independent NDCG value and reject
-failed or absent no-answer controls. The qualified runner and C5 decision do
-not yet accept this report.
-
-The file evidence now includes the same within-repository bootstrap and
-stratified/no-answer summaries as the context comparison, under the distinct
-`file_ndcg_at_10` metric. `run.py` can independently re-score a supplied
-file evidence report and reject per-query tampering. The native pair command
-still emits only the exploratory file diagnostic; this replay helper does not
-promote a quality state or product decision. The two-policy focused fixture
-passed 2/2.
+**VERIFIED, focused code checks:** source-backed file evaluator fixtures cover
+score order, an independent NDCG golden, unjudged result refusal, missing score
+evidence, no-answer failure and report tampering. C5 synthetic replay covers
+both policy versions across twelve repositories. The decision/benchctl rail
+passed 87 tests. These checks do not substitute for an unmocked qualified pair
+capture and verdict replay. The 12-repository file capture, independently
+reviewed labels, external indexed-universe attestations and product-default
+decision remain `NOT_RUN`.
 
 ## Frozen C4 v6 and native typo diagnostics (2026-10-03)
 

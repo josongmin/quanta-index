@@ -84,6 +84,30 @@ def test_repository_disjoint_policy_requires_full_frozen_roster(tmp_path):
         decision.validate_repository_disjoint_policy(policy)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("metric_scope", "context_span_density"),
+        ("request_mode", "typo_file_search"),
+        ("primary_metric", "ndcg_at_10"),
+    ],
+)
+def test_repository_disjoint_file_policy_refuses_wrong_contract(tmp_path, field, value):
+    policy = repository_disjoint_policy(tmp_path, "c" * 64)
+    policy.update(
+        schema_version=3,
+        metric_scope="scored_distinct_file",
+        request_mode="default_file_search",
+    )
+    policy["comparison"]["primary_metric"] = "file_ndcg_at_10"
+    if field == "primary_metric":
+        policy["comparison"][field] = value
+    else:
+        policy[field] = value
+    with pytest.raises(decision.DecisionError, match="file metric or request mode"):
+        decision.validate_repository_disjoint_policy(policy)
+
+
 @pytest.mark.parametrize("file_policy", [False, True])
 def test_repository_disjoint_bundle_replays_policy_bound_captures(
     monkeypatch, tmp_path, file_policy
@@ -122,6 +146,17 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(
                     "gold": [],
                     "query_family_id": row["query_family_ids"][0],
                     "category": "objective",
+                    **(
+                        {
+                            "judgment_policy": ev.SOURCE_ORACLE_JUDGMENT_POLICY,
+                            "source_oracle": {
+                                "contract": "ascii_content_absent_casefold_v1",
+                                "unit": "distinct_file",
+                            },
+                        }
+                        if file_policy
+                        else {}
+                    ),
                 },
                 {
                     "task_id": "T3",
