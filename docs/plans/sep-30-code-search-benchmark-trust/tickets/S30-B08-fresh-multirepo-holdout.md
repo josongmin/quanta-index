@@ -962,6 +962,11 @@ user-intent judgment. The task-level gold, top-ten paths, record/report digests
 and statuses are in
 `/private/tmp/qi-b08-product-8e8592f4-20261003/exact-pair-miss-audit.json`
 (SHA-256 `d98dd3e9cd974a6b6f8845efccda9d2d2b6a633a141674917fb545235688e177`).
+For example, `mocha.def.041` queries bare `test`: its mechanical declaration
+file is `lib/reporters/xunit.js`, while Quanta returned ten test/fixture
+files at equal score `142.0`. This is a returned-window ranking observation,
+not proof that the declaration file is absent from the index or that a generic
+file-search user intended the declaration.
 
 Read-only offline file-evidence replay at evaluator `main@91b18b48` used the
 existing exploratory `/tmp/qx` `lo` pair, source commit
