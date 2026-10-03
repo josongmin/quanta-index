@@ -834,7 +834,8 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 10")
-                    && message.contains("serves 11")
+                    && message.contains("serves 12")
+                    && message.contains("explicit symbol-name source policy")
                     && message.contains("folded-only file posting counts")
                     && message.contains("must be rebuilt")
         ));
