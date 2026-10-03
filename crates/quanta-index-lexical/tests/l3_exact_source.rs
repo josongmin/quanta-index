@@ -960,58 +960,63 @@ fn code_search_rank_study_marks_unverified_declaration_names_unknown_without_los
 -> TestResult {
     use quanta_index_core::LexicalCandidateExplanationV1;
 
-    let mut file = code_scope("wrong_name.rs", "fn needle() {}", 4)?;
-    // The legacy Unspecified producer contract admits a display name. That
-    // name cannot become source-verified declaration ranking evidence.
-    let mut symbol = scope(
-        "source-a",
-        "wrong_name.rs",
-        &[("wrong-name", "manufactured", "manufactured", None)],
-    )?
-    .symbols
-    .remove(0);
-    symbol.definition_span.byte_end = u32::try_from(file.source_bytes.len())?;
-    file.symbols.push(symbol);
-    file.coverage.symbols = SymbolCoverage::Complete { symbol_count: 1 };
-    file.coverage.unit_set_sha256 = source_file_unit_set_sha256(&file.chunks, &file.symbols)?;
-    let (_dir, searcher) = fixture_with_scopes(vec![file])?;
-    let query = code_query(&["needle"], false);
-    let page = searcher.search_constrained(
-        &query,
-        &QueryConstraintSetV1::default(),
-        &LexicalPageSpec::first(10),
-        &RequestBudgetV1::unbounded(),
-    )?;
-    assert_eq!(
-        page.candidates.len(),
-        1,
-        "literal admission is independent of metadata"
-    );
-    let explained = searcher.explain_candidate(
-        &query,
-        &QueryConstraintSetV1::default(),
-        &page.candidates[0].candidate_id,
-        &RequestBudgetV1::unbounded(),
-    )?;
-    let LexicalCandidateExplanationV1::Matched(trace) = explained else {
-        panic!("valid legacy metadata cannot erase the selected file score");
-    };
-    let study = trace.code_search_rank_study.expect("native study");
-    assert_eq!(trace.emitted_score, 105.0);
-    assert_eq!(study.declaration_bonus, None);
-    assert!(!study.declaration_coverage_complete);
-    assert_eq!(study.declaration_only, study.baseline);
-    // A normal no-match can still be decided without extracting features.
-    let other_query = code_query(&["absent token"], false);
-    assert!(matches!(
-        searcher.explain_candidate(
-            &other_query,
+    for (body, query_text) in [
+        ("fn needle() {}", "needle"),
+        ("fn needle() { let manufactured = 1; }", "manufactured"),
+    ] {
+        let mut file = code_scope("wrong_name.rs", body, 4)?;
+        // The legacy Unspecified producer contract admits a display name. That
+        // name cannot become source-verified declaration ranking evidence.
+        let mut symbol = scope(
+            "source-a",
+            "wrong_name.rs",
+            &[("wrong-name", "manufactured", "manufactured", None)],
+        )?
+        .symbols
+        .remove(0);
+        symbol.definition_span.byte_end = u32::try_from(file.source_bytes.len())?;
+        file.symbols.push(symbol);
+        file.coverage.symbols = SymbolCoverage::Complete { symbol_count: 1 };
+        file.coverage.unit_set_sha256 = source_file_unit_set_sha256(&file.chunks, &file.symbols)?;
+        let (_dir, searcher) = fixture_with_scopes(vec![file])?;
+        let query = code_query(&[query_text], false);
+        let page = searcher.search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?;
+        assert_eq!(
+            page.candidates.len(),
+            1,
+            "literal admission is independent of metadata"
+        );
+        let explained = searcher.explain_candidate(
+            &query,
             &QueryConstraintSetV1::default(),
             &page.candidates[0].candidate_id,
-            &RequestBudgetV1::unbounded()
-        )?,
-        LexicalCandidateExplanationV1::NotMatched { .. }
-    ));
+            &RequestBudgetV1::unbounded(),
+        )?;
+        let LexicalCandidateExplanationV1::Matched(trace) = explained else {
+            panic!("valid legacy metadata cannot erase the selected file score");
+        };
+        let study = trace.code_search_rank_study.expect("native study");
+        assert_eq!(trace.emitted_score, 105.0);
+        assert_eq!(study.declaration_bonus, None);
+        assert!(!study.declaration_coverage_complete);
+        assert_eq!(study.declaration_only, study.baseline);
+        // A normal no-match can still be decided without extracting features.
+        let other_query = code_query(&["absent token"], false);
+        assert!(matches!(
+            searcher.explain_candidate(
+                &other_query,
+                &QueryConstraintSetV1::default(),
+                &page.candidates[0].candidate_id,
+                &RequestBudgetV1::unbounded()
+            )?,
+            LexicalCandidateExplanationV1::NotMatched { .. }
+        ));
+    }
     Ok(())
 }
 

@@ -4570,7 +4570,9 @@ def run_quanta(spec: dict, _spec_dir: Path) -> int:
     )
     capture_spec = dict(spec)
     task_ids = [task["task_id"] for task in read_json(pack_path)["tasks"]]
-    if "_query_protocol" not in capture_spec:
+    if "_query_protocol" not in capture_spec and any(
+        field in spec for field in ("query_warmup_passes", "query_repetitions_per_root")
+    ):
         protocol = build_query_protocol(
             task_ids,
             _int(spec.get("seed", 0), "spec.seed"),

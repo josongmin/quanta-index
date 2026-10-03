@@ -589,6 +589,15 @@ The JSON schema is the complete field authority; frequently used options:
 | `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL, actual-runner record and Python/Rust/SDK collection inventories; all bytes are frozen and raw evidence is reparsed by the verdict |
 | `timeout_secs` | `1800` | per-capture timeout |
 
+Direct `quanta` capture also honors explicitly supplied `query_warmup_passes`
+and `query_repetitions_per_root` through the same query protocol. Its omitted
+values are zero warmup passes and one measured pass; without either option it
+keeps the single measured traversal. The runner's phase receipt must match the
+requested protocol and pass counts. A direct capture supports one fresh root;
+use `pair` for multiple fresh-root repetitions. Historical direct captures
+whose phase receipts report zero warmups cannot be relabeled as warmed merely
+because their spec requested a warmup.
+
 For `qualified`, the license receipt must be JSON with exactly
 `schema_version: 1`, `reviewer_id`, `decision: approved`, `repository_commit`,
 `corpus_manifest_sha256`, and a nonempty `rationale`. The reviewer and corpus
