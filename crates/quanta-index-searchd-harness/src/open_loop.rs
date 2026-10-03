@@ -785,7 +785,7 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
                 ensure!(
                     page.results
                         .iter()
-                        .all(|row| row.source_repo_id == pin.repo_id.as_str()),
+                        .all(|row| row.source_repo_id.as_str() == pin.repo_id.as_str()),
                     "open-loop baseline returned a foreign source repository"
                 );
             }
@@ -799,8 +799,8 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
                 .iter()
                 .map(|row| ExpectedRow {
                     candidate_id: row.candidate_id.clone(),
-                    source_repo_id: row.source_repo_id.clone(),
-                    repo_relative_path: row.repo_relative_path.clone(),
+                    source_repo_id: row.source_repo_id.as_str().to_string(),
+                    repo_relative_path: row.repo_relative_path.as_str().to_string(),
                 })
                 .collect()
         }

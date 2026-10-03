@@ -1420,6 +1420,16 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     with monkeypatch.context() as patch:
         patch.setattr(live, "_read_control_file", control_only)
         assert live.verify(root) == result
+    if not any(
+        (index_changes_during_queries, unsupported_query, backend_changes_during_queries,
+         use_bound_release, use_index_scope, scope_changes_during_queries)
+    ):
+        native_paths = {name: path for name, path in paths.items() if not name.endswith("_rows")}
+        joined = live.lexical.evaluate_external_captures(
+            native_paths, {name: root for name in live.PRODUCTS}
+        )
+        assert set(joined["external_capture_binding"]["captures"]) == {str(root)}
+        assert joined["external_capture_binding"]["captures"][str(root)]["products"] == list(live.PRODUCTS)
     assert (root / "sourcegraph" / "S00.stream").exists()
     assert (root / "opengrok" / "S00.json").exists()
     assert (root / "cs" / "S00.json").exists()
@@ -1664,6 +1674,14 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
     assert summary["products"] == [product]
     assert set(summary["rows_sha256"]) == {product}
     assert live.verify(root) == summary
+    retained_spec = root / "spec.json"
+    retained_spec_raw = retained_spec.read_bytes()
+    other = next(name for name in live.PRODUCTS if name != product)
+    for changed in ({**spec, other: configs[other]}, {key: value for key, value in spec.items() if key != product}):
+        retained_spec.write_text(json.dumps(changed))
+        with pytest.raises(ValueError, match="spec keys differ"):
+            live.verify(root)
+    retained_spec.write_bytes(retained_spec_raw)
     for other in set(live.PRODUCTS) - {product}:
         assert not (root / other).exists()
         assert not (root / f"{other}_rows.jsonl").exists()
@@ -1679,6 +1697,10 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
     summary_raw = summary_path.read_bytes()
     summary_path.write_text(json.dumps({**summary, "products": list(live.PRODUCTS)}))
     with pytest.raises(ValueError, match="unsupported capture metadata"):
+        live.verify(root)
+    summary_path.write_bytes(summary_raw)
+    summary_path.write_text(json.dumps({**summary, "binding": {}}))
+    with pytest.raises(ValueError, match="capture binding differs"):
         live.verify(root)
     summary_path.write_bytes(summary_raw)
     raw_name = next(iter(summary["raw_capture_sha256"]))
