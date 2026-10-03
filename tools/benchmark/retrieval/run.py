@@ -3916,13 +3916,13 @@ def _validate_explanation(
     observation_policy: str = "enabled",
 ) -> None:
     if value is None:
-        if version in (4, 5, 6, 7) and route in ("lexical", "semantic", "hybrid"):
+        if version in (4, 5, 6, 7, 8) and route in ("lexical", "semantic", "hybrid"):
             raise RunError(f"{where} is missing measured stage timings")
         return
     fields = {"request_id", "early_stop_reason", "engines_executed", "engines_touched", "strategy"}
-    if version in (6, 7):
+    if version in (6, 7, 8):
         fields.add("planner_trace")
-    if version in (4, 5, 6, 7):
+    if version in (4, 5, 6, 7, 8):
         fields.add("stage_timings")
     detail = _exact_keys(value, fields, where)
     if detail["request_id"] is not None and (
@@ -3941,7 +3941,7 @@ def _validate_explanation(
             raise RunError(f"{where}.{field} is invalid")
     if detail["strategy"] is not None and not isinstance(detail["strategy"], str):
         raise RunError(f"{where}.strategy is invalid")
-    if version in (6, 7):
+    if version in (6, 7, 8):
         trace = detail["planner_trace"]
         if not isinstance(trace, list) or any(
             not isinstance(entry, dict)
@@ -3951,10 +3951,10 @@ def _validate_explanation(
             for entry in trace
         ):
             raise RunError(f"{where}.planner_trace is missing or malformed")
-    if version not in (4, 5, 6, 7):
+    if version not in (4, 5, 6, 7, 8):
         return
     timings = detail["stage_timings"]
-    if version in (5, 6, 7) and observation_policy == "disabled":
+    if version in (5, 6, 7, 8) and observation_policy == "disabled":
         if timings is not None:
             raise RunError(f"{where} disabled observation must be unmeasured, not zero/empty")
         if route in ("lexical", "semantic", "hybrid") and (
@@ -4214,7 +4214,7 @@ def _validate_diagnostic_response_v3(
         raise RunError(f"{where} is malformed")
     if kind == "returned_window":
         fields = {"window", "explanation"}
-        projected = version in (6, 7) and "native_projection" in response
+        projected = version in (6, 7, 8) and "native_projection" in response
         if projected:
             fields.add("native_projection")
         detail = _exact_keys(response, fields, where)
@@ -4389,7 +4389,10 @@ def _validate_ingest_request_identity(payload: object) -> dict:
 
 
 def _validate_ingest_diagnostic(
-    payload: object, record: dict, *, lexical_stage_contract: bool = False,
+    payload: object,
+    record: dict,
+    *,
+    lexical_stage_contract: bool = False,
     detailed_authority: bool = False,
 ) -> dict:
     """Bind transient stages to durable receipt/activation bytes, not self-reported totals.
@@ -4559,14 +4562,25 @@ def _validate_ingest_diagnostic(
                 "seal_merge_wait_ns",
                 "seal_commitment_ns",
                 "seal_file_admission_ns",
-            } | ({
-                "text_authority_collect_ns", "text_authority_shard_build_ns",
-                "text_authority_publish_ns",
-            } if detailed_authority else set()),
+            }
+            | (
+                {
+                    "text_authority_collect_ns",
+                    "text_authority_shard_build_ns",
+                    "text_authority_publish_ns",
+                }
+                if detailed_authority
+                else set()
+            ),
             "ingest lexical stages",
         )
         for key, value in stages.items():
-            if detailed_authority and key.startswith("text_authority_") and key != "text_authority_ns" and value is None:
+            if (
+                detailed_authority
+                and key.startswith("text_authority_")
+                and key != "text_authority_ns"
+                and value is None
+            ):
                 continue
             u64(value, f"ingest lexical stages {key}")
         if detailed_authority:
@@ -4575,11 +4589,14 @@ def _validate_ingest_diagnostic(
             publish = stages["text_authority_publish_ns"]
             if (
                 (build is None) != (publish is None)
-                or collect is not None and build is None
+                or collect is not None
+                and build is None
                 or sum(value for value in (collect, build, publish) if value is not None)
                 > stages["text_authority_ns"]
             ):
-                raise RunError("ingest text authority child clocks are unavailable or exceed parent")
+                raise RunError(
+                    "ingest text authority child clocks are unavailable or exceed parent"
+                )
         outer = sum(
             stages[key]
             for key in (
@@ -4715,7 +4732,10 @@ def validate_retrieval_diagnostic(
     if diagnostic["schema_version"] in (6, 7, 8):
         _validate_hybrid_fetch_policy(diagnostic["hybrid_fetch_policy"])
         _validate_ingest_diagnostic(
-            diagnostic["ingest"], record, lexical_stage_contract=diagnostic["schema_version"] in (7, 8)
+            diagnostic["ingest"],
+            record,
+            lexical_stage_contract=diagnostic["schema_version"] in (7, 8),
+            detailed_authority=diagnostic["schema_version"] == 8,
         )
     detail = _exact_keys(
         diagnostic["runner_timing_detail_ms"],
@@ -5229,11 +5249,16 @@ def run_quanta_strategy(
     ):
         raise RunError("captured hybrid fetch floor differs from explicit spec policy")
     if _validate_ingest_diagnostic(
-        diagnostic["ingest"], read_json(record_path), lexical_stage_contract=True
+        diagnostic["ingest"],
+        read_json(record_path),
+        lexical_stage_contract=True,
+        detailed_authority=True,
     ) != ingest_request_identity(spec):
         raise RunError("captured ingest identity differs from requested batch scope")
     index_bytes = tree_size(state_root)
     phase = _validate_phase_metrics(read_json(phase_path), f"Rust runner phase metrics for {name}")
+    if phase["schema_version"] != 4:
+        raise RunError("current Rust runner omitted SDK child clock phase schema v4")
     _validate_quanta_query_protocol_execution(requested_protocol, phase)
     if protocol_bytes is not None and Path(spec["_query_protocol"]).read_bytes() != protocol_bytes:
         raise RunError("Quanta query protocol changed during capture")
@@ -7896,6 +7921,12 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 and metrics["schema_version"] not in (3, 4)
             ):
                 raise RunError("protocol v5 requires measured Quanta phase schema v3/v4")
+            if (
+                metrics["system"] == "quanta"
+                and protocol_payload.get("lock_version") == 6
+                and metrics["schema_version"] != 4
+            ):
+                raise RunError("protocol v6 requires measured Quanta phase schema v4")
             if metrics["system"] == "quanta":
                 _verify_symbol_coverage_corpus(metrics, corpus_payload)
                 bound_preflights.append(
@@ -8203,6 +8234,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                         diagnostic["ingest"],
                         record_payload,
                         lexical_stage_contract=diagnostic["schema_version"] in (7, 8),
+                        detailed_authority=diagnostic["schema_version"] == 8,
                     ) != protocol_payload.get("ingest_request_identity"):
                         raise RunError("retrieval diagnostic ingest identity differs from protocol")
                 except (KeyError, TypeError, ValueError, OSError) as exc:

@@ -825,9 +825,15 @@ fn empty_full_generation_and_empty_delta_retain_admission() -> TestResult {
     assert!(full_stages.seal_writer_commit_ns.is_some());
     assert!(full_stages.seal_merge_wait_ns.is_some());
     assert!(full_stages.seal_file_admission_ns.is_some());
+    assert!(full_stages.text_authority_collect_ns.is_none());
+    assert!(full_stages.text_authority_shard_build_ns.is_none());
+    assert!(full_stages.text_authority_publish_ns.is_none());
     let delta = batch(2, Some(1), Vec::new())?;
     let delta_stages = adapter.build_batch(&delta)?.ok_or("missing delta timing")?;
     assert!(delta_stages.seal_file_admission_ns.is_some());
+    assert!(delta_stages.text_authority_collect_ns.is_none());
+    assert!(delta_stages.text_authority_shard_build_ns.is_none());
+    assert!(delta_stages.text_authority_publish_ns.is_none());
     let view = adapter.open(
         &delta.repo_id,
         &delta.revision_id,

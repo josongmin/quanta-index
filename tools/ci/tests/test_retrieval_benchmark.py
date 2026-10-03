@@ -6348,8 +6348,8 @@ def _pair_stage(
         qdir.mkdir(parents=True)
         sdir.mkdir(parents=True)
         qrec = record(lex_rows, lex_sha, "quanta", f"q-r{rep}", f"run-q-r{rep}")
-        ingest = _diagnostic_ingest_fixture(qrec) if diagnostic_version in (5, 6, 7) else None
-        if diagnostic_version == 7:
+        ingest = _diagnostic_ingest_fixture(qrec) if diagnostic_version in (5, 6, 7, 8) else None
+        if diagnostic_version in (7, 8):
             ingest["observation"].update(
                 lexical_build_ns=100,
                 lexical_stages={
@@ -6364,6 +6364,12 @@ def _pair_stage(
                     "seal_file_admission_ns": 15,
                 },
             )
+            if diagnostic_version == 8:
+                ingest["observation"]["lexical_stages"].update(
+                    text_authority_collect_ns=2,
+                    text_authority_shard_build_ns=3,
+                    text_authority_publish_ns=4,
+                )
         srec = record(sem_rows, sem_sha, "semble", f"s-r{rep}", f"run-s-r{rep}")
         qpath = qdir / "record.json"
         spath = sdir / "record.json"
@@ -6431,7 +6437,7 @@ def _pair_stage(
         qphase.write_text(
             json.dumps(
                 {
-                    "schema_version": 3 if diagnostic_version == 7 else 2,
+                    "schema_version": 3 if diagnostic_version in (7, 8) else 2,
                     "system": "quanta",
                     "timing_layer": "runner_monotonic_wall_v1",
                     "strategy": "whole_file",
@@ -6471,12 +6477,12 @@ def _pair_stage(
                         "discovery": 1.0,
                         "chunk": 1.0,
                         "daemon_boot_and_readiness"
-                        if diagnostic_version == 7
+                        if diagnostic_version in (7, 8)
                         else "model_provider_prepare": 1.0,
                         "embed_publish_seal_activate": 1.0,
                         **(
                             {"sdk_publish": 0.6, "sdk_activate": 0.3}
-                            if diagnostic_version == 7
+                            if diagnostic_version in (7, 8)
                             else {}
                         ),
                         "cold_query": 1.0,
@@ -6755,10 +6761,10 @@ def _pair_stage(
                 }
             )
         diagnostic_path = qdir / "retrieval-diagnostic.json"
-        if diagnostic_version in (5, 6, 7) and query_observation == "disabled":
+        if diagnostic_version in (5, 6, 7, 8) and query_observation == "disabled":
             for row in diagnostic_rows:
                 row["response"]["explanation"]["stage_timings"] = None
-        if diagnostic_version in (6, 7):
+        if diagnostic_version in (6, 7, 8):
             for row in diagnostic_rows:
                 row["response"]["explanation"]["planner_trace"] = []
         diagnostic_path.write_text(
@@ -6771,7 +6777,7 @@ def _pair_stage(
                                 hybrid_floor
                             )
                         }
-                        if diagnostic_version in (6, 7)
+                        if diagnostic_version in (6, 7, 8)
                         else {}
                     ),
                     **(
@@ -6781,7 +6787,7 @@ def _pair_stage(
                             ),
                             "ingest": ingest,
                         }
-                        if diagnostic_version in (5, 6, 7)
+                        if diagnostic_version in (5, 6, 7, 8)
                         else {}
                     ),
                     "kind": "quanta_returned_window_diagnostic",
@@ -6796,7 +6802,7 @@ def _pair_stage(
                         "sdk_publish_and_activate_opaque": 1.0,
                         **(
                             {"sdk_publish": 0.6, "sdk_activate": 0.3}
-                            if diagnostic_version == 7
+                            if diagnostic_version in (7, 8)
                             else {}
                         ),
                         "runner_record_assembly": 0.1,
@@ -7174,12 +7180,12 @@ def _pair_stage(
     (stage / "protocol-lock.json").write_text(
         json.dumps(
             {
-                "lock_version": {4: 2, 5: 3, 6: 4, 7: 5}[diagnostic_version],
+                "lock_version": {4: 2, 5: 3, 6: 4, 7: 5, 8: 6}[diagnostic_version],
                 "retrieval_diagnostic_version": diagnostic_version,
                 "symbol_coverage_policy": "allow-incomplete",
                 **(
                     {"hybrid_fetch_policy": pairrun.hybrid_fetch_policy_configuration(hybrid_floor)}
-                    if diagnostic_version in (6, 7)
+                    if diagnostic_version in (6, 7, 8)
                     else {}
                 ),
                 **(
@@ -7189,7 +7195,7 @@ def _pair_stage(
                         ),
                         "ingest_request_identity": pairrun.ingest_request_identity({}),
                     }
-                    if diagnostic_version in (5, 6, 7)
+                    if diagnostic_version in (5, 6, 7, 8)
                     else {}
                 ),
                 "rank_metric_k_policy": "declared_top_k_v1",
@@ -7229,7 +7235,7 @@ def _pair_stage(
     )
     manifest_path = stage / "run-manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    return {
+    result = {
         "repo": repo,
         "suite": suite,
         "stage": stage,
@@ -7243,6 +7249,12 @@ def _pair_stage(
         "binary_digest": binary_digest,
         "commit": suite["repository_commit"],
     }
+    if diagnostic_version == 8:
+        from tools.ci.tests.test_completed_response_timing import _add_timing
+
+        _add_timing(result, sdk_children=True)
+        result["manifest"] = json.loads(manifest_path.read_text())
+    return result
 
 
 def _stage_verdict(st):
@@ -15851,6 +15863,61 @@ def test_query_clock_comparator_validates_nested_typo_clocks_without_erasing_cou
             overhead._without_code_search_work_clocks(
                 [{"stage": "merge", "detail": f"code_search.execution.candidate_ns={value}"}]
             )
+
+
+def test_v8_authority_stage_replay_preserves_nullable_children_and_phase_contract(tmp_path):
+    stage = _pair_stage(tmp_path, diagnostic_version=8)
+    path = next(stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json"))
+    record = json.loads(path.with_name("record.json").read_text())
+    diagnostic = json.loads(path.read_text())
+    pack = json.loads((stage["stage"] / "query-pack.json").read_text())
+    suite = json.loads(stage["suite_path"].read_text())
+    pack, _ = pairrun.project_pack_and_suite(pack, suite, ["lexical"])
+    assert pairrun.validate_retrieval_diagnostic(
+        diagnostic, record, pairrun.sha_file(path.with_name("record.json")), pack
+    )
+    verdict = _stage_verdict(stage)
+    assert verdict["states"]["PAIR_VALID"] == "pass", verdict["state_evidence"]["PAIR_VALID"]
+    base = diagnostic["ingest"]
+    for children in ((None, 3, 4), (None, None, None), (0, 0, 0)):
+        raw = copy.deepcopy(base)
+        raw["observation"]["lexical_stages"].update(
+            zip(
+                (
+                    "text_authority_collect_ns",
+                    "text_authority_shard_build_ns",
+                    "text_authority_publish_ns",
+                ),
+                children,
+            )
+        )
+        pairrun._validate_ingest_diagnostic(
+            raw, record, lexical_stage_contract=True, detailed_authority=True
+        )
+    for children in ((2, None, 4), (2, None, None), (2, 3, 6), (True, 3, 4), (-1, 3, 4)):
+        raw = copy.deepcopy(base)
+        raw["observation"]["lexical_stages"].update(
+            zip(
+                (
+                    "text_authority_collect_ns",
+                    "text_authority_shard_build_ns",
+                    "text_authority_publish_ns",
+                ),
+                children,
+            )
+        )
+        with pytest.raises(pairrun.RunError):
+            pairrun._validate_ingest_diagnostic(
+                raw, record, lexical_stage_contract=True, detailed_authority=True
+            )
+    missing = copy.deepcopy(base)
+    del missing["observation"]["lexical_stages"]["text_authority_publish_ns"]
+    with pytest.raises(pairrun.RunError, match="keys mismatch"):
+        pairrun._validate_ingest_diagnostic(
+            missing, record, lexical_stage_contract=True, detailed_authority=True
+        )
+    with pytest.raises(pairrun.RunError):
+        pairrun._validate_ingest_diagnostic(base, record, lexical_stage_contract=True)
 
 
 @pytest.mark.parametrize("parameter", ["timeout_secs", "cleanup_timeout_secs"])

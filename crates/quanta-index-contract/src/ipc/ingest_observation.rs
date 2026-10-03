@@ -963,16 +963,28 @@ mod tests {
         observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;
         stages.text_authority_shard_build_ns = None;
         observation.lexical_stages = Some(stages.clone());
-        assert!(observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt).is_err());
+        assert!(
+            observation
+                .validate_for(11, &batch, &outcome.publication, &outcome.receipt)
+                .is_err()
+        );
         stages.text_authority_shard_build_ns = Some(1);
         observation.lexical_stages = Some(stages.clone());
-        assert!(observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt).is_err());
+        assert!(
+            observation
+                .validate_for(11, &batch, &outcome.publication, &outcome.receipt)
+                .is_err()
+        );
 
         stages.text_authority_publish_ns = None;
         stages.text_authority_shard_build_ns = None;
         stages.text_authority_collect_ns = Some(0);
         observation.lexical_stages = Some(stages.clone());
-        assert!(observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt).is_err());
+        assert!(
+            observation
+                .validate_for(11, &batch, &outcome.publication, &outcome.receipt)
+                .is_err()
+        );
         stages.text_authority_collect_ns = None; // no text write
         observation.lexical_stages = Some(stages);
         observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;

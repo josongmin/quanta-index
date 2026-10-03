@@ -59,12 +59,21 @@ def _timing(phase, record):
     }
 
 
-def _add_timing(stage):
+def _add_timing(stage, *, sdk_children=False):
     for layout in stage["rep_layouts"]:
         for strategy, record_path in layout["quanta"].items():
             path = fixtures.Path(layout["quanta_phase_metrics"][strategy])
             phase = pairrun.read_json(path)
             phase["query_timing"] = _timing(phase, pairrun.read_json(fixtures.Path(record_path)))
+            if sdk_children:
+                phase["schema_version"] = 4
+                for observation in phase["query_timing"]["observations"]:
+                    duration = observation["end_ns"] - observation["start_ns"]
+                    observation.update(
+                        sdk_execute_ns=duration // 2,
+                        sdk_post_execute_ns=duration // 4,
+                        runner_result_materialize_ns=duration // 8,
+                    )
             path.write_text(json.dumps(phase))
         native_path = fixtures.Path(layout["semble"]).parent / "native.json"
         native = pairrun.read_json(native_path)

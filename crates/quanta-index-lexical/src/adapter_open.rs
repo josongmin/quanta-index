@@ -58,7 +58,11 @@ struct TextAuthorityMutation {
 }
 
 impl TextAuthorityMutation {
-    fn from_result(rebuilt: bool, collect_ns: Option<u64>, result: TextAuthorityWriteResult) -> Self {
+    fn from_result(
+        rebuilt: bool,
+        collect_ns: Option<u64>,
+        result: TextAuthorityWriteResult,
+    ) -> Self {
         Self {
             rebuilt,
             receipt: result.receipt,
@@ -183,7 +187,9 @@ impl LexicalAdapter {
                     &touched_shards,
                     max_doc_id,
                 )?;
-                Ok(Some(TextAuthorityMutation::from_result(false, None, result)))
+                Ok(Some(TextAuthorityMutation::from_result(
+                    false, None, result,
+                )))
             }
         }
     }

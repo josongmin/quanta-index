@@ -302,7 +302,21 @@ fn one_scope_delta_rewrites_touched_shards_and_links_the_rest() -> TestResult {
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
 
-    let _stages = adapter.build_batch(&base_batch(g1, COST_DOCS)?)?;
+    let base_stages = adapter
+        .build_batch(&base_batch(g1, COST_DOCS)?)?
+        .ok_or("missing base timing")?;
+    let base_text_children = [
+        base_stages
+            .text_authority_collect_ns
+            .ok_or("missing full collection timing")?,
+        base_stages
+            .text_authority_shard_build_ns
+            .ok_or("missing full shard timing")?,
+        base_stages
+            .text_authority_publish_ns
+            .ok_or("missing full publish timing")?,
+    ];
+    assert!(base_text_children.iter().sum::<u64>() <= base_stages.text_authority_ns);
     let base_files = text_authority_files(&generation_dir(&root, g1))?;
     let base_shards = shard_files(&base_files);
     let expected_shards = u64::try_from(COST_DOCS)?.div_ceil(SHARD_DOCS);
@@ -322,13 +336,25 @@ fn one_scope_delta_rewrites_touched_shards_and_links_the_rest() -> TestResult {
     // Replace one scope in shard 0; its replacement takes the next doc id,
     // which lands in the last shard.
     let replaced = 100;
-    let _stages = adapter.build_batch(&batch(
-        g2,
-        Some(g1),
-        vec![scope(replaced, "fn replaced() { replacedsentinel }")?],
-        &[],
-        true,
-    )?)?;
+    let delta_stages = adapter
+        .build_batch(&batch(
+            g2,
+            Some(g1),
+            vec![scope(replaced, "fn replaced() { replacedsentinel }")?],
+            &[],
+            true,
+        )?)?
+        .ok_or("missing delta timing")?;
+    assert!(delta_stages.text_authority_collect_ns.is_none());
+    let delta_text_children = [
+        delta_stages
+            .text_authority_shard_build_ns
+            .ok_or("missing delta shard timing")?,
+        delta_stages
+            .text_authority_publish_ns
+            .ok_or("missing delta publish timing")?,
+    ];
+    assert!(delta_text_children.iter().sum::<u64>() <= delta_stages.text_authority_ns);
     let after = adapter.text_authority_update_stats()?;
     let delta_files = text_authority_files(&generation_dir(&root, g2))?;
     let delta_shards = shard_files(&delta_files);
