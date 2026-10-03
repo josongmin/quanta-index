@@ -16,7 +16,8 @@ use quanta_index_core::IngestBatchBodyV1;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::codec::{IpcError, encode_cbor_payload};
+use crate::codec::encode_cbor_payload;
+use crate::error::IpcError;
 
 /// The canonical digest of `body`'s route and content, as raw bytes.
 ///

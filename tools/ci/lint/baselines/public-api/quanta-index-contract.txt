@@ -4,6 +4,7 @@ pub use quanta_index_contract::ActivationTokenValidationErrorV1
 pub use quanta_index_contract::ApproximateMethodV2
 pub use quanta_index_contract::ApproximateQualityContractV2
 pub use quanta_index_contract::CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE
+pub use quanta_index_contract::CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE
 pub use quanta_index_contract::CURSOR_ENVELOPE_V2_VERSION
 pub use quanta_index_contract::CandidateCountV1
 pub use quanta_index_contract::ContinuationTokenError
@@ -100,6 +101,7 @@ pub use quanta_index_contract::TextQueryRequest
 pub use quanta_index_contract::TextQuerySyntax
 pub use quanta_index_contract::TopKOutOfRangeV1
 pub use quanta_index_contract::continuation_fetch_size
+pub use quanta_index_contract::valid_code_search_component_query
 pub use quanta_index_contract::valid_code_search_typo_identifier
 pub use quanta_index_contract::validate_internal_fetch_size
 pub use quanta_index_contract::validate_lexical_page_v1
@@ -1277,6 +1279,7 @@ pub quanta_index_contract::ipc::SearchCorpusSurfaceMutationConflictV1::RecordPat
 pub quanta_index_contract::ipc::SearchCorpusSurfaceMutationConflictV1::RecordSourceMismatch
 pub quanta_index_contract::ipc::SearchCorpusSurfaceMutationConflictV1::ReplaceAndTombstone(quanta_index_contract::SearchScopeSurface)
 pub quanta_index_contract::ipc::SearchCorpusSurfaceMutationConflictV1::SourceBytesDigestMismatch
+pub quanta_index_contract::ipc::SearchCorpusSurfaceMutationConflictV1::SymbolNameSourceMismatch
 impl core::clone::Clone for quanta_index_contract::SearchCorpusSurfaceMutationConflictV1
 pub fn quanta_index_contract::SearchCorpusSurfaceMutationConflictV1::clone(&self) -> quanta_index_contract::SearchCorpusSurfaceMutationConflictV1
 impl core::cmp::Eq for quanta_index_contract::SearchCorpusSurfaceMutationConflictV1
@@ -5403,6 +5406,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHash
 pub fn quanta_index_contract::lex::compute_parse_tree_source_hash(text: &str) -> [u8; 32]
 pub mod quanta_index_contract::query
 pub use quanta_index_contract::query::CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE
+pub use quanta_index_contract::query::CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE
 pub use quanta_index_contract::query::ContinuationTokenError
 pub use quanta_index_contract::query::ContinuationTokenV2
 pub use quanta_index_contract::query::ExactRepoRelativePathV1
@@ -5444,6 +5448,7 @@ pub use quanta_index_contract::query::QueryConstraintIntersectionV1
 pub use quanta_index_contract::query::QueryConstraintSetV1
 pub use quanta_index_contract::query::TextQueryRequest
 pub use quanta_index_contract::query::TextQuerySyntax
+pub use quanta_index_contract::query::valid_code_search_component_query
 pub use quanta_index_contract::query::valid_code_search_typo_identifier
 pub use quanta_index_contract::query::validate_lexical_page_v1
 pub enum quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1
@@ -10313,6 +10318,7 @@ pub quanta_index_contract::SearchCorpusSurfaceMutationConflictV1::RecordPathMism
 pub quanta_index_contract::SearchCorpusSurfaceMutationConflictV1::RecordSourceMismatch
 pub quanta_index_contract::SearchCorpusSurfaceMutationConflictV1::ReplaceAndTombstone(quanta_index_contract::SearchScopeSurface)
 pub quanta_index_contract::SearchCorpusSurfaceMutationConflictV1::SourceBytesDigestMismatch
+pub quanta_index_contract::SearchCorpusSurfaceMutationConflictV1::SymbolNameSourceMismatch
 impl core::clone::Clone for quanta_index_contract::SearchCorpusSurfaceMutationConflictV1
 pub fn quanta_index_contract::SearchCorpusSurfaceMutationConflictV1::clone(&self) -> quanta_index_contract::SearchCorpusSurfaceMutationConflictV1
 impl core::cmp::Eq for quanta_index_contract::SearchCorpusSurfaceMutationConflictV1
@@ -10938,6 +10944,29 @@ impl core::marker::Unpin for quanta_index_contract::SymbolCoverage
 impl core::marker::UnsafeUnpin for quanta_index_contract::SymbolCoverage
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SymbolCoverage
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SymbolCoverage
+pub enum quanta_index_contract::SymbolNameSourcePolicyV1
+pub quanta_index_contract::SymbolNameSourcePolicyV1::RawAsciiLocalName
+pub quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified
+impl core::clone::Clone for quanta_index_contract::SymbolNameSourcePolicyV1
+pub fn quanta_index_contract::SymbolNameSourcePolicyV1::clone(&self) -> quanta_index_contract::SymbolNameSourcePolicyV1
+impl core::cmp::Eq for quanta_index_contract::SymbolNameSourcePolicyV1
+impl core::cmp::PartialEq for quanta_index_contract::SymbolNameSourcePolicyV1
+pub fn quanta_index_contract::SymbolNameSourcePolicyV1::eq(&self, other: &quanta_index_contract::SymbolNameSourcePolicyV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SymbolNameSourcePolicyV1
+pub fn quanta_index_contract::SymbolNameSourcePolicyV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::SymbolNameSourcePolicyV1
+impl core::marker::StructuralPartialEq for quanta_index_contract::SymbolNameSourcePolicyV1
+impl serde_core::ser::Serialize for quanta_index_contract::SymbolNameSourcePolicyV1
+pub fn quanta_index_contract::SymbolNameSourcePolicyV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SymbolNameSourcePolicyV1
+pub fn quanta_index_contract::SymbolNameSourcePolicyV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for quanta_index_contract::SymbolNameSourcePolicyV1
+impl core::marker::Send for quanta_index_contract::SymbolNameSourcePolicyV1
+impl core::marker::Sync for quanta_index_contract::SymbolNameSourcePolicyV1
+impl core::marker::Unpin for quanta_index_contract::SymbolNameSourcePolicyV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SymbolNameSourcePolicyV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SymbolNameSourcePolicyV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SymbolNameSourcePolicyV1
 pub enum quanta_index_contract::TextRankUnit
 pub quanta_index_contract::TextRankUnit::Chunk
 pub quanta_index_contract::TextRankUnit::File
@@ -15443,6 +15472,7 @@ pub struct quanta_index_contract::SourceFileCoverage
 pub quanta_index_contract::SourceFileCoverage::language: quanta_index_contract_base::query::constraints::LanguageCode
 pub quanta_index_contract::SourceFileCoverage::producer_policy_sha256: [u8; 32]
 pub quanta_index_contract::SourceFileCoverage::source: quanta_index_contract_base::source_file::SourceFileRevision
+pub quanta_index_contract::SourceFileCoverage::symbol_name_source_policy: quanta_index_contract::SymbolNameSourcePolicyV1
 pub quanta_index_contract::SourceFileCoverage::symbols: quanta_index_contract::SymbolCoverage
 pub quanta_index_contract::SourceFileCoverage::text_admitted: bool
 pub quanta_index_contract::SourceFileCoverage::unit_set_sha256: [u8; 32]

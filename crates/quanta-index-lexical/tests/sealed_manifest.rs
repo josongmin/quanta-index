@@ -2215,13 +2215,13 @@ fn scrub_quarantines_a_tampered_coverage_root_before_page_expansion() -> TestRes
 
 #[test]
 fn older_formats_require_explicit_rebuild() -> TestResult {
-    for format in [8, 9, 10] {
+    for format in [8, 9, 10, 11] {
         let temp = tempfile::tempdir()?;
         let root = temp.path().to_path_buf();
         let adapter = LexicalAdapter::with_state_root(root.clone());
         let generation = ManifestGeneration::new(1);
         adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
-        expect_admitted(&knock(&adapter, generation), "current format eleven")?;
+        expect_admitted(&knock(&adapter, generation), "current format twelve")?;
         let manifest = generation_dir(&root, generation).join(MANIFEST);
         let raw = std::fs::read(&manifest)?;
         let mut value: ciborium::Value = ciborium::from_reader(raw.as_slice())?;
@@ -2243,7 +2243,7 @@ fn older_formats_require_explicit_rebuild() -> TestResult {
 }
 
 #[test]
-fn oversized_legacy_format_nine_requires_rebuild_at_every_door() -> TestResult {
+fn oversized_sealed_manifest_requires_rebuild_at_every_door() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
@@ -2254,7 +2254,7 @@ fn oversized_legacy_format_nine_requires_rebuild_at_every_door() -> TestResult {
     file.set_len(16 * 1024 * 1024 + 1)?;
     expect_refused(
         &knock(&adapter, generation),
-        "oversized format nine requires rebuild",
+        "oversized sealed manifest requires rebuild",
         "GENERATION_MANIFEST_FORMAT_UNSUPPORTED",
     )?;
     Ok(())

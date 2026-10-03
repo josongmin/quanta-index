@@ -1698,7 +1698,9 @@ fn source_proves_component_absence(
         budget.checkpoint("lexical:component-coverage-source-proof")?;
         folded.extend(chunk.iter().map(u8::to_ascii_lowercase));
     }
-    for component in components.iter().collect::<BTreeSet<_>>() {
+    let mut unique_components = BTreeSet::new();
+    unique_components.extend(components.iter());
+    for component in unique_components {
         if memchr::memmem::find(&folded, component.as_bytes()).is_none() {
             return Ok(true);
         }
@@ -1856,13 +1858,13 @@ impl TantivySearcher {
             budget,
         )?;
         let mut clauses = Vec::with_capacity(components.len());
-        for component in components.iter().collect::<BTreeSet<_>>() {
+        let mut unique_components = BTreeSet::new();
+        unique_components.extend(components.iter());
+        for component in unique_components {
             let term = Term::from_field_text(self.fields.symbol_component_folded, component);
-            clauses.push((
-                Occur::Must,
-                Box::new(TermQuery::new(term, IndexRecordOption::Basic))
-                    as Box<dyn tantivy::query::Query>,
-            ));
+            let term_query: Box<dyn tantivy::query::Query> =
+                Box::new(TermQuery::new(term, IndexRecordOption::Basic));
+            clauses.push((Occur::Must, term_query));
         }
         let compiled =
             self.with_doc_kind(Box::new(BooleanQuery::new(clauses)), crate::SYMBOL_DOC_KIND);
@@ -1874,7 +1876,7 @@ impl TantivySearcher {
             "code search symbol components",
             budget,
         )?;
-        let mut files: BTreeMap<quanta_index_contract::SourceFileKey, (u32, String)> =
+        let mut files: BTreeMap<quanta_index_contract::SourceFileKey, (u16, String)> =
             BTreeMap::new();
         for row in rows.iter() {
             budget.checkpoint("lexical:code-search-symbol-component-verify")?;
@@ -1958,7 +1960,14 @@ impl TantivySearcher {
                 .transpose()?
                 .flatten();
             ranked.push((
-                file_candidate(self, file, score as f32, witness.as_ref(), false, budget)?,
+                file_candidate(
+                    self,
+                    file,
+                    f32::from(score),
+                    witness.as_ref(),
+                    false,
+                    budget,
+                )?,
                 witness,
             ));
         }

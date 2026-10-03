@@ -3,6 +3,10 @@
 Run commands from the repository root. Start `quanta-index-searchd` and publish
 an active generation before querying it. Run as the daemon's permitted Unix user.
 
+Source routing: [src/lib.rs](src/lib.rs) binds commands to SDK calls,
+[src/parse.rs](src/parse.rs) owns argument parsing and validation, and
+[src/render.rs](src/render.rs) owns response-kind checks and output rendering.
+
 ```sh
 ./scripts/cargow --lane dev-lane build -p quanta-index-searchctl --locked
 ./scripts/cargow --lane dev-lane run -p quanta-index-searchctl --locked -- --help

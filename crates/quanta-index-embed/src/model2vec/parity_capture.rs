@@ -59,11 +59,8 @@ pub(super) fn cosine_triangle(vectors: &[Vec<f32>]) -> Vec<Vec<f64>> {
             vectors
                 .iter()
                 .zip(&lengths)
-                .skip(
-                    index
-                        .checked_add(1)
-                        .expect("index is within an allocated vector slice"),
-                )
+                .skip(index)
+                .skip(1)
                 .map(|(right, right_norm)| {
                     left.iter()
                         .zip(right)

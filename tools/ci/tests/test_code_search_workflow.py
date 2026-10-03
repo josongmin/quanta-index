@@ -1,6 +1,7 @@
 """Workflow refuses divergent inputs and never publishes partial captures."""
 
 import json
+import string
 import sys
 from pathlib import Path
 
@@ -32,9 +33,24 @@ def test_workflow_spec_refuses_unbounded_timeout_and_unknown_key(tmp_path):
 
 def test_native_pair_root_checks_socket_budget_before_external_capture(tmp_path):
     pair = {"strategies": [{"name": "fixed_window_strict"}], "repetitions": 1}
-    short_root = Path("/private/tmp/q")
-    workflow._preflight_native_output(short_root, pair)
-    assert not short_root.exists()
+    # Darwin leaves only two bytes beyond /private/tmp/q for this socket.
+    # Reserve a one-character directory atomically so parallel tests cannot
+    # reuse the same fresh root.
+    for suffix in string.ascii_letters + string.digits:
+        short_dir = Path("/tmp").resolve() / suffix
+        try:
+            short_dir.mkdir()
+        except FileExistsError:
+            continue
+        try:
+            short_root = short_dir / "q"
+            workflow._preflight_native_output(short_root, pair)
+            assert not short_root.exists()
+        finally:
+            short_dir.rmdir()
+        break
+    else:
+        pytest.fail("no short temporary path available for socket preflight")
 
     long_root = tmp_path / ("q" * 120)
     limit = {"darwin": 103, "linux": 107}.get(sys.platform)

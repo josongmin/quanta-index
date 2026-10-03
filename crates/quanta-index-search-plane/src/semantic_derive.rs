@@ -954,7 +954,8 @@ mod tests {
                     },
                     language: quanta_index_contract::lex::LanguageCode::new("rust")?,
                     producer_policy_sha256: [2; 32],
-                    symbol_name_source_policy: quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
+                    symbol_name_source_policy:
+                        quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
                     unit_set_sha256: quanta_index_contract::source_file_unit_set_sha256(
                         &[fixture_chunk()?],
                         &[],

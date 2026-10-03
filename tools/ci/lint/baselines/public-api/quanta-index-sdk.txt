@@ -335,7 +335,7 @@ pub quanta_index_sdk::SdkError::Remote::code: quanta_index_contract::ipc::error:
 pub quanta_index_sdk::SdkError::Remote::message: alloc::string::String
 pub quanta_index_sdk::SdkError::Remote::repair: core::option::Option<quanta_index_contract::ipc::error::QueryErrorRepair>
 pub quanta_index_sdk::SdkError::Serialization(alloc::string::String)
-pub quanta_index_sdk::SdkError::Transport(quanta_index_ipc::codec::IpcError)
+pub quanta_index_sdk::SdkError::Transport(quanta_index_ipc::error::IpcError)
 pub quanta_index_sdk::SdkError::Usage(alloc::string::String)
 impl core::error::Error for quanta_index_sdk::SdkError
 pub fn quanta_index_sdk::SdkError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
@@ -449,7 +449,7 @@ pub quanta_index_sdk::FileContributorBatch::revision_id: quanta_index_contract_b
 impl quanta_index_sdk::FileContributorBatch
 pub fn quanta_index_sdk::FileContributorBatch::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::FileContributorBatch::entry(self, source_repo_id: quanta_index_contract_base::ids::RepoId, repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath, contributors: alloc::vec::Vec<alloc::string::String>) -> Self
-pub fn quanta_index_sdk::FileContributorBatch::entry_identities(self, source_repo_id: quanta_index_contract_base::ids::RepoId, repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath, contributors: alloc::vec::Vec<quanta_index_contract::ipc::ingest::FileContributorIdentityEntry>) -> Self
+pub fn quanta_index_sdk::FileContributorBatch::entry_identities(self, source_repo_id: quanta_index_contract_base::ids::RepoId, repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath, contributors: alloc::vec::Vec<quanta_index_contract::ipc::ingest::history_wire::FileContributorIdentityEntry>) -> Self
 pub fn quanta_index_sdk::FileContributorBatch::new(repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> Self
 impl core::clone::Clone for quanta_index_sdk::FileContributorBatch
 pub fn quanta_index_sdk::FileContributorBatch::clone(&self) -> quanta_index_sdk::FileContributorBatch
@@ -467,7 +467,7 @@ impl core::marker::UnsafeUnpin for quanta_index_sdk::FileContributorBatch
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::FileContributorBatch
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::FileContributorBatch
 pub struct quanta_index_sdk::FileContributorMutation
-pub quanta_index_sdk::FileContributorMutation::contributors: alloc::vec::Vec<quanta_index_contract::ipc::ingest::FileContributorIdentityEntry>
+pub quanta_index_sdk::FileContributorMutation::contributors: alloc::vec::Vec<quanta_index_contract::ipc::ingest::history_wire::FileContributorIdentityEntry>
 pub quanta_index_sdk::FileContributorMutation::repo_relative_path: quanta_index_contract_base::ids::RepoRelativePath
 pub quanta_index_sdk::FileContributorMutation::source_repo_id: quanta_index_contract_base::ids::RepoId
 impl core::clone::Clone for quanta_index_sdk::FileContributorMutation
@@ -1015,13 +1015,13 @@ pub fn quanta_index_sdk::SearchCorpusBatch::replace_generation(repo_id: quanta_i
 impl<const SEALED: bool> quanta_index_sdk::SearchCorpusBatch<SEALED>
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::base_generation(&self) -> core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::batch_digest(&self) -> core::result::Result<alloc::string::String, quanta_index_sdk::SdkError>
-pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::clear_surface(self, surface: quanta_index_contract::ipc::ingest::SearchScopeSurface) -> Self
-pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::clear_surfaces(&self) -> &[quanta_index_contract::ipc::ingest::SearchScopeSurface]
+pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::clear_surface(self, surface: quanta_index_contract::ipc::ingest::corpus_wire::SearchScopeSurface) -> Self
+pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::clear_surfaces(&self) -> &[quanta_index_contract::ipc::ingest::corpus_wire::SearchScopeSurface]
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::manifest_digest(&self) -> &str
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::mode(&self) -> quanta_index_sdk::BatchMode
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_scope(self, coverage: quanta_index_contract::source_coverage::SourceFileCoverage, source_bytes: alloc::vec::Vec<u8>, chunks: alloc::vec::Vec<quanta_index_contract::channel::records::ChunkRecord>, symbols: alloc::vec::Vec<quanta_index_contract::lex::symbol::SymbolRecord>) -> Self
-pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_scopes(&self) -> &[quanta_index_contract::ipc::ingest::SearchCorpusReplaceScope]
+pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_scopes(&self) -> &[quanta_index_contract::ipc::ingest::corpus_wire::SearchCorpusReplaceScope]
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_semantic_scope(self, scope: quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1, scope_digest: impl core::convert::Into<alloc::string::String>, sources: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::SemanticSourceRecordV1>, cluster_memberships: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::ClusterMembershipReplaceV1>) -> Self
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
@@ -1030,7 +1030,7 @@ pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::semantic_replace_scopes(&sel
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::semantic_tombstone_scopes(&self) -> &[quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1]
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::source_event(self, event: quanta_index_contract::source_coverage::SourcePublicationEvent) -> Self
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::tombstone_scope(self, file: quanta_index_contract_base::source_file::SourceFileKey) -> Self
-pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::tombstone_scopes(&self) -> &[quanta_index_contract::ipc::ingest::SearchCorpusTombstoneScope]
+pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::tombstone_scopes(&self) -> &[quanta_index_contract::ipc::ingest::corpus_wire::SearchCorpusTombstoneScope]
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::tombstone_semantic_scope(self, scope: quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1) -> Self
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::without_seal(self) -> quanta_index_sdk::SearchCorpusBatch<false>
 impl<const SEALED: bool> core::clone::Clone for quanta_index_sdk::SearchCorpusBatch<SEALED>
@@ -1122,14 +1122,14 @@ pub fn quanta_index_sdk::StructuralBatch<SEALED>::batch_digest(&self) -> core::r
 pub const fn quanta_index_sdk::StructuralBatch<SEALED>::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
 pub fn quanta_index_sdk::StructuralBatch<SEALED>::manifest_digest(&self) -> &str
 pub const fn quanta_index_sdk::StructuralBatch<SEALED>::mode(&self) -> quanta_index_sdk::BatchMode
-pub fn quanta_index_sdk::StructuralBatch<SEALED>::replace_scope(self, scope: quanta_index_contract::ipc::ingest::SearchScopeKey, scope_digest: impl core::convert::Into<alloc::string::String>, trees: alloc::vec::Vec<quanta_index_contract::ipc::ingest::StructuralTreeRecord>) -> Self
-pub fn quanta_index_sdk::StructuralBatch<SEALED>::replace_scopes(&self) -> &[quanta_index_contract::ipc::ingest::StructuralReplaceScope]
-pub fn quanta_index_sdk::StructuralBatch<SEALED>::replace_tree(self, scope: quanta_index_contract::ipc::ingest::SearchScopeKey, scope_digest: impl core::convert::Into<alloc::string::String>, chunk_id: quanta_index_contract::channel::ids::ChunkId, record: quanta_index_contract::lex::parse_tree::ParseTreeRecord) -> Self
+pub fn quanta_index_sdk::StructuralBatch<SEALED>::replace_scope(self, scope: quanta_index_contract::ipc::ingest::corpus_wire::SearchScopeKey, scope_digest: impl core::convert::Into<alloc::string::String>, trees: alloc::vec::Vec<quanta_index_contract::ipc::ingest::runtime_wire::StructuralTreeRecord>) -> Self
+pub fn quanta_index_sdk::StructuralBatch<SEALED>::replace_scopes(&self) -> &[quanta_index_contract::ipc::ingest::runtime_wire::StructuralReplaceScope]
+pub fn quanta_index_sdk::StructuralBatch<SEALED>::replace_tree(self, scope: quanta_index_contract::ipc::ingest::corpus_wire::SearchScopeKey, scope_digest: impl core::convert::Into<alloc::string::String>, chunk_id: quanta_index_contract::channel::ids::ChunkId, record: quanta_index_contract::lex::parse_tree::ParseTreeRecord) -> Self
 pub const fn quanta_index_sdk::StructuralBatch<SEALED>::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
 pub const fn quanta_index_sdk::StructuralBatch<SEALED>::revision_id(&self) -> &quanta_index_contract_base::ids::RevisionId
 pub const fn quanta_index_sdk::StructuralBatch<SEALED>::seal_requested(&self) -> bool
-pub fn quanta_index_sdk::StructuralBatch<SEALED>::tombstone_scope(self, scope: quanta_index_contract::ipc::ingest::SearchScopeKey) -> Self
-pub fn quanta_index_sdk::StructuralBatch<SEALED>::tombstone_scopes(&self) -> &[quanta_index_contract::ipc::ingest::StructuralTombstoneScope]
+pub fn quanta_index_sdk::StructuralBatch<SEALED>::tombstone_scope(self, scope: quanta_index_contract::ipc::ingest::corpus_wire::SearchScopeKey) -> Self
+pub fn quanta_index_sdk::StructuralBatch<SEALED>::tombstone_scopes(&self) -> &[quanta_index_contract::ipc::ingest::runtime_wire::StructuralTombstoneScope]
 pub fn quanta_index_sdk::StructuralBatch<SEALED>::without_seal(self) -> quanta_index_sdk::StructuralBatch<false>
 impl<const SEALED: bool> core::clone::Clone for quanta_index_sdk::StructuralBatch<SEALED>
 pub fn quanta_index_sdk::StructuralBatch<SEALED>::clone(&self) -> quanta_index_sdk::StructuralBatch<SEALED>

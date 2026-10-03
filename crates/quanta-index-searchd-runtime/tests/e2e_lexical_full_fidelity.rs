@@ -446,23 +446,49 @@ fn code_search_components_use_symbol_names_through_live_driver() -> AnyResult<()
     _ = rt.seal()?;
     let mut rt = rt.reopen();
     let result = rt.query_text(TextQuerySyntax::CodeSearch, "components:\"clean up\"", 10);
-    assert!(result.typed_error.is_none());
-    assert_eq!(
-        result
-            .candidates
-            .iter()
-            .map(|candidate| candidate.repo_relative_path.as_str())
-            .collect::<Vec<_>>(),
-        vec!["components/exact.rs", "components/longer.rs"]
+    anyhow::ensure!(
+        result.typed_error.is_none(),
+        "component query returned typed error: {:?}",
+        result.typed_error
     );
-    assert!(result.candidates[0].score > result.candidates[1].score);
+    let paths = result
+        .candidates
+        .iter()
+        .map(|candidate| candidate.repo_relative_path.as_str())
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        paths == ["components/exact.rs", "components/longer.rs"],
+        "unexpected component candidate order: {paths:?}"
+    );
+    let exact = result
+        .candidates
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("exact component candidate is absent"))?;
+    let longer = result
+        .candidates
+        .get(1)
+        .ok_or_else(|| anyhow::anyhow!("longer component candidate is absent"))?;
+    anyhow::ensure!(
+        exact.score > longer.score,
+        "exact component score {} must exceed longer component score {}",
+        exact.score,
+        longer.score
+    );
 
     let absent = rt.query_text(
         TextQuerySyntax::CodeSearch,
         "components:\"clean missing\"",
         10,
     );
-    assert!(absent.typed_error.is_none());
-    assert!(absent.candidates.is_empty());
+    anyhow::ensure!(
+        absent.typed_error.is_none(),
+        "absent component query returned typed error: {:?}",
+        absent.typed_error
+    );
+    anyhow::ensure!(
+        absent.candidates.is_empty(),
+        "absent component query returned {} candidates",
+        absent.candidates.len()
+    );
     Ok(())
 }

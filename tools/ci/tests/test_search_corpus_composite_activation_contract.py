@@ -17,6 +17,8 @@ SDK_GENERATIONS = ROOT / "crates/quanta-index-sdk/src/generations.rs"
 SDK_LIB = ROOT / "crates/quanta-index-sdk/src/lib.rs"
 SDK_REPOMAP = ROOT / "crates/quanta-index-sdk/src/repomap.rs"
 SDK_TESTS = ROOT / "crates/quanta-index-sdk/src/tests.rs"
+SDK_CORPUS_INGEST_TESTS = ROOT / "crates/quanta-index-sdk/src/tests/corpus_ingest_tests.rs"
+SDK_CONTROL_TESTS = ROOT / "crates/quanta-index-sdk/src/tests/control_tests.rs"
 ROLLBACK_PRODUCTION_ROOTS = (
     ROOT / "crates/quanta-index-contract/src",
     ROOT / "crates/quanta-index-sdk/src",
@@ -181,7 +183,8 @@ def test_activation_relation_validation_is_contract_owned_v1() -> None:
 def test_sdk_search_corpus_receipt_is_exact_bound_before_activation_v1() -> None:
     corpus = read_source(SDK_CORPUS)
     binding = read_source(SDK_BINDING)
-    tests = read_source(SDK_TESTS)
+    assert "mod corpus_ingest_tests;" in read_source(SDK_TESTS)
+    tests = read_source(SDK_CORPUS_INGEST_TESTS)
 
     assert "validate_search_corpus_publish_receipt_v1(batch, &outcome.receipt)?" in corpus
     assert "validate_receipt(requested, *sealed, &outcome.receipt)" in binding
@@ -202,9 +205,11 @@ def test_sdk_search_corpus_receipt_is_exact_bound_before_activation_v1() -> None
 
 def test_sdk_control_request_id_mismatch_is_a_protocol_error_v1() -> None:
     tests = read_source(SDK_TESTS)
+    assert "mod control_tests;" in tests
+    control_tests = read_source(SDK_CONTROL_TESTS)
 
     assert "with_request_id_offset" in tests
-    assert "control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1" in tests
+    assert "control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1" in control_tests
 
 
 def test_existing_ipc_fuzz_targets_decode_composite_control_dtos_directly_v1() -> None:

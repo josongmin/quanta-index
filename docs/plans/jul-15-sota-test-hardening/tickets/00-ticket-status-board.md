@@ -18,7 +18,7 @@ cleanup; source presence or historical tests are not current qualification.
 | QIT-06 / SDK/daemon | SDK-only ingest/query/lifecycle/crash/recovery matrix; exercise public front door rather than internal harness controls | QIT-01, QIT-02, QIT-05 |
 | QIT-07 / correctness tooling | Risk-owner quantitative coverage/mutation/fuzz gates, survivor exceptions, seed/minimized-input retention and actual target selection; source guards are not execution | QIT-01, QIT-02, QIT-05 |
 | QIT-08 / harness | Correctness-gated independent relevance/latency/RSS/index/ingest/cold-start evidence for medium/large/XL, plus platform limits | QIT-03, QIT-04, QIT-06 |
-| QIT-09 / Actions, CI | Actual PR/merge/main/nightly receipts and promotion refusal on missing/stale/wrong scope; weekly/release hierarchy, retention and complete release DAG remain open | QIT-00, QIT-07, QIT-08 |
+| [QIT-09](QIT-09-circleci-provider-coverage.md) / tools CI | Restore CircleCI job execution and terminal GitHub status; obtain exact-commit PR/main receipts and reject missing/stale/wrong-scope evidence. Decide former Actions-only coverage. Weekly/release hierarchy, retention and the complete release DAG remain open under [S21-13](../../sep-21-search-plane-sota-hardening/tickets/S21-13-release-evidence-and-sota-qualification.md) | QIT-00, QIT-07, QIT-08 |
 
 ## Unadmitted quantitative targets retained from the old plan
 

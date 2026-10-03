@@ -1224,12 +1224,13 @@ fn as_format_one(current: &[ciborium::Value]) -> Vec<ciborium::Value> {
 /// Number of elements in the current manifest row.
 ///
 /// Includes format, identity, normalizer, index metadata, segment policy,
-/// segments, ranked keys, text authority, overlays, and source-file coverage.
-const MANIFEST_ROW_LEN: usize = 10;
+/// segments, ranked keys, text authority, file authority, overlays, and
+/// source-file coverage.
+const MANIFEST_ROW_LEN: usize = 11;
 /// Position of the normalizer stamp in the current manifest row.
 const MANIFEST_NORMALIZER_INDEX: usize = 2;
 /// The manifest format this build seals.
-const CURRENT_FORMAT: u32 = 9;
+const CURRENT_FORMAT: u32 = 12;
 
 /// Generations sealed under earlier manifest formats are refused typed by
 /// both doors.
@@ -1238,7 +1239,9 @@ const CURRENT_FORMAT: u32 = 9;
 /// and 5 are this row shape over indexes that lacked a fast column this
 /// build ranks or restricts by (the text-authority doc id; the page order).
 /// Format 6 predates the source-file coverage commitment; format 7 predates
-/// the ranked-key commitment.
+/// the ranked-key commitment. Format 8 predates bounded coverage pages;
+/// format 9 predates full-file authority; format 10 predates folded-only
+/// posting counts; format 11 predates explicit symbol-name source policy.
 /// The validator and the query open both answer
 /// `GENERATION_MANIFEST_FORMAT_UNSUPPORTED` for each, and the intact
 /// current manifest is admitted again once restored.
@@ -1256,7 +1259,7 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
         return Err(format!("unexpected current manifest row shape: {current:?}").into());
     }
 
-    for earlier in [4_u32, 5, 6, 7, 8] {
+    for earlier in [4_u32, 5, 6, 7, 8, 9, 10, 11] {
         let mut downgraded = current.clone();
         if let Some(version) = downgraded.first_mut() {
             *version = ciborium::Value::from(earlier);

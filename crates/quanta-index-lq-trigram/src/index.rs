@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
+use std::fmt;
 use std::io::{Read, Write};
 
 use crate::errors::{LimitDimension, TrigramError, TrigramErrorCode};
@@ -32,6 +33,24 @@ pub struct TrigramIndex {
 pub enum TrigramIntersectionError<E> {
     Index(TrigramError),
     Checkpoint(E),
+}
+
+impl<E: fmt::Display> fmt::Display for TrigramIntersectionError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Index(error) => write!(formatter, "trigram index: {error}"),
+            Self::Checkpoint(error) => write!(formatter, "trigram checkpoint: {error}"),
+        }
+    }
+}
+
+impl<E: core::error::Error + 'static> core::error::Error for TrigramIntersectionError<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Index(error) => Some(error),
+            Self::Checkpoint(error) => Some(error),
+        }
+    }
 }
 
 impl TrigramIndex {
@@ -478,9 +497,9 @@ mod serde_bytes_compat {
 
 #[cfg(test)]
 mod tests {
-    use super::TrigramIndex;
+    use super::{TrigramIndex, TrigramIntersectionError};
     use crate::builder::TrigramIndexBuilder;
-    use crate::errors::{LimitDimension, TrigramErrorCode};
+    use crate::errors::{LimitDimension, TrigramError, TrigramErrorCode};
     use crate::types::{DocId, MAX_CANDIDATE_PRE_VERIFY, MAX_TRIGRAMS_PER_QUERY, Trigram};
 
     fn fatal(msg: &str) -> ! {
@@ -497,6 +516,27 @@ mod tests {
         b.add_doc(DocId(2), b"xyzabc");
         b.add_doc(DocId(3), b"abcabc");
         b.finish()
+    }
+
+    #[test]
+    fn intersection_error_preserves_typed_sources() {
+        let index: TrigramIntersectionError<std::io::Error> = TrigramIntersectionError::Index(
+            TrigramError::new(TrigramErrorCode::IndexCorrupted, "bad postings"),
+        );
+        assert!(index.to_string().starts_with("trigram index: "));
+        assert!(
+            std::error::Error::source(&index)
+                .and_then(|source| source.downcast_ref::<TrigramError>())
+                .is_some()
+        );
+
+        let checkpoint = TrigramIntersectionError::Checkpoint(std::io::Error::other("cancelled"));
+        assert!(checkpoint.to_string().starts_with("trigram checkpoint: "));
+        assert!(
+            std::error::Error::source(&checkpoint)
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+                .is_some()
+        );
     }
 
     #[test]

@@ -6,3 +6,11 @@
 [[profile.default.overrides]]
 filter = 'binary(=runtime_semantic_stream_suite) & test(=e2e_semantic_stream_window::a_batch_streams_through_bounded_windows_and_every_row_survives_a_restart)'
 threads-required = "num-test-threads"
+
+# ANN incremental sealing trains and appends a persisted vector index through
+# the daemon IPC front door. The 30-second IPC read deadline was exhausted
+# under the default full-suite concurrency on macOS; isolate this test's
+# resource demand while retaining its production timeout and assertions.
+[[profile.default.overrides]]
+filter = 'binary(=runtime_extended_suite) & test(=e2e_ann_incremental_seal::a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so)'
+threads-required = "num-test-threads"

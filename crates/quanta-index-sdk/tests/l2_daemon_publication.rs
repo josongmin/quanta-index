@@ -213,7 +213,8 @@ fn corpus(
                 },
                 language,
                 producer_policy_sha256: [0x72; 32],
-                symbol_name_source_policy: quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
+                symbol_name_source_policy:
+                    quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
                 unit_set_sha256: source_file_unit_set_sha256(&chunks, &symbols)?,
                 text_admitted: true,
                 symbols: SymbolCoverage::NotRequested,

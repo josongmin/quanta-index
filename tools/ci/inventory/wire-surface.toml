@@ -208,7 +208,7 @@ variants = [
 
 [[ipc]]
 enum = "SearchPlaneIngestIpcRequest"
-file = "crates/quanta-index-contract/src/ipc/ingest.rs"
+file = "crates/quanta-index-contract/src/ipc/ingest/envelope.rs"
 plane = "ingest"
 direction = "request"
 variants = [
@@ -228,7 +228,7 @@ variants = [
 
 [[ipc]]
 enum = "SearchPlaneIngestIpcResponse"
-file = "crates/quanta-index-contract/src/ipc/ingest.rs"
+file = "crates/quanta-index-contract/src/ipc/ingest/envelope.rs"
 plane = "ingest"
 direction = "response"
 variants = [
@@ -256,11 +256,11 @@ id = "lexical-sealed-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Seal commitment (QI-BB-030): identity digest, normalizer stamp, Tantivy meta.json (length + sha256), every segment component file the commit references (length + sha256; content proved at seal and by scrub, length at the doors), the text-authority tree, every repo-metadata overlay present, optional source-file coverage, and ranked-key tables. Format 5 added each text document's text-authority doc id indexed and as a fast column (the bitmap restriction of QI-BB-024); format 6 added the ranked page order's columns (candidate id, path, start and end line) as fast columns (the stored-document-free page and projection collectors of QI-BB-005); format 7 commits optional source-file coverage; format 8 commits ranked-key tables; format 9 commits bounded coverage root/pages. Formats 1-8 are refused typed; rebuild is the migration."
+notes = "Seal commitment binds identity digest, normalizer, Tantivy commit and segment components, text authority, overlays, optional source coverage and ranked keys. Format 9 added bounded coverage pages; format 10 added full-file authority and immutable source bytes with four-surface posting counts; format 11 counts folded content and path postings only; format 12 binds explicit symbol-name source policy. Formats 1-11 are refused typed and require a producer rebuild."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
-value = 9
+value = 12
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
@@ -351,11 +351,11 @@ id = "semantic-manifest"
 owner = "quanta-index-semantic"
 path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/semantic-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Rebuild cost includes one embedding call per typed semantic source record (provider-priced) plus ANN training time. Exactly one format is served: every earlier format (including 10, which may contain chunk-text fallback rows) is refused typed at decode/open/validate and quarantined by the boot inventory; old decoders remain removed. Format 11 preserves the ANN per-segment build record and marks the typed-source-only cutover."
+notes = "Exactly one format is served; older formats are refused typed at decode, open, validate and inventory. Format 11 required typed-source-only semantic derivation; format 12 adds generation-wide record_id and embedding_id uniqueness at seal. Older artifacts cannot prove those identities and require a producer rebuild, including embedding calls and ANN training."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/manifest.rs"
 name = "FORMAT_VERSION"
-value = 11
+value = 12
 
 [[artifact]]
 id = "semantic-build-contract"

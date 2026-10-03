@@ -212,12 +212,28 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(
                 }
             },
             "per_query": [
-                {"task_id": "T1", "route": "semble-hybrid", "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.25},
-                {"task_id": "T1", "route": "hybrid", "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.75},
+                {
+                    "task_id": "T1",
+                    "route": "semble-hybrid",
+                    "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.25,
+                },
+                {
+                    "task_id": "T1",
+                    "route": "hybrid",
+                    "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.75,
+                },
                 {"task_id": "T2", "route": "semble-hybrid", "status": "ok"},
                 {"task_id": "T2", "route": "hybrid", "status": "ok"},
-                {"task_id": "T3", "route": "semble-hybrid", "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.25},
-                {"task_id": "T3", "route": "hybrid", "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.75},
+                {
+                    "task_id": "T3",
+                    "route": "semble-hybrid",
+                    "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.25,
+                },
+                {
+                    "task_id": "T3",
+                    "route": "hybrid",
+                    "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.75,
+                },
             ],
         }
         (root / "report.json").write_bytes(ev.canonical(report))

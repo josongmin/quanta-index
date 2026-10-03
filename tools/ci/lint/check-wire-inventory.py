@@ -43,7 +43,7 @@ INVENTORY_PATH = ROOT / "tools" / "ci" / "inventory" / "wire-surface.toml"
 # The only files that may declare the search-plane IPC opcode enums.
 IPC_FILES: tuple[str, ...] = (
     "crates/quanta-index-contract/src/ipc/split.rs",
-    "crates/quanta-index-contract/src/ipc/ingest.rs",
+    "crates/quanta-index-contract/src/ipc/ingest/envelope.rs",
 )
 
 IPC_ENUM_NAME_RE = re.compile(r"^SearchPlane(?:Query|Control|Ingest)Ipc(?:Request|Response)$")
