@@ -49,7 +49,7 @@ fn sdk_wait_never_ready_script_returns_typed_timeout() {
     );
     assert_eq!(calls.load(Ordering::SeqCst), timeout.attempts);
     assert!(
-        timeout.expected.contains("sdk_frontdoor.rs"),
+        timeout.expected.contains(file!()),
         "the timeout names its wait call site: {}",
         timeout.expected
     );
