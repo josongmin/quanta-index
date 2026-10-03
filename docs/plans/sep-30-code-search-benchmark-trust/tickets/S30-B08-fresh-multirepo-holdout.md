@@ -2167,3 +2167,34 @@ Evidence: [follow-up results](/Users/songmin/Documents/code-new/qi-b08-nl-comple
 `verification-parser-contract.json`, `single-capture-schedule-rca.json` and
 `direct-protocol-control-v3/RESULT.json` in the same fresh external root. Original
 captures, frozen sources and original review forms are preserved.
+
+## C5 Sourcegraph typo score contract and full recapture (2026-10-04)
+
+The C5 ordinary-input OSA1 lane submitted bare identifiers to Sourcegraph's
+`type:file patternType:keyword count:all` Stream content search. It did not invoke
+an edit-distance or fuzzy symbol request. A fresh, source-bound Sourcegraph-only
+recapture of all 4,149 tasks matched the original top-10 file paths on
+4,149/4,149 tasks: 145 nonempty results and 132 all-relevant file hits. All
+requests returned HTTP 200 with validated complete streams; the 13 Zoekt index
+files had identical before/after hashes. The run took 693.649 seconds wall time,
+with 565.388 seconds summed HTTP request timing. These timings are diagnostic.
+
+Of the 132 hits, 128 were deletion variants whose query remains a substring of
+the intended name. None of the 2,068 same-length-edit tasks hit a gold file.
+A SymPy control returned zero results for the typo, 21 for its intended spelling;
+the same typo also returned zero results with `type:symbol`, while the correct
+spelling returned one symbol. The separate Sourcegraph UI fuzzy finder was not
+measured. The observed 132/4,149 is reproducible for this **keyword content
+request**, not a product-wide fuzzy-search score.
+
+Future B08 reports must label the native request beside each score and keep
+ordinary-input experience separate from explicit OSA1 capability. They must
+not rank these policies as feature-equivalent. The existing Quanta `typo:` and
+cs `~1` captures remain separate request lanes. No Sourcegraph adapter or
+scorer arithmetic defect was found, so the frozen captures and aggregate were
+not rewritten. Full RCA, raw recapture, source and index bindings, and controls:
+`/private/tmp/qi-sourcegraph-osa1-full-yzpjy5ut/RCA.md`.
+
+**VERIFIED:** Sourcegraph 4,149-task Stream recapture and original top-10
+agreement. **NOT_RUN:** Sourcegraph UI fuzzy finder, full content-posting
+attestation, human-reviewed C5 relevance, or post-fix Quanta full recapture.
