@@ -1023,3 +1023,29 @@ runner/evaluator/decision sources and that test file are unchanged through
 `5121711c`. `pm.py lint` passed and the checkout is clean. These checks prove
 the tested code surfaces, not human label custody, an unmocked qualified pair
 capture, B07 host performance or the C5 product decision.
+
+## Twelve-repository partial-name paired diagnostic (2026-10-03)
+
+**VERIFIED, diagnostic only:** clean `9d38b69d` completed and replayed all 36
+prefix, infix and components C4 v6 cells across twelve repositories. Every
+selected task was paired eligible (222/222); all cell verdicts passed.
+The route counts below were also recomputed directly from suite file gold
+`(path, file_sha256)` and both native records, independently of the report's
+aggregate. The complete per-repository and per-intent output is
+`/private/tmp/qi-b08-product-8e8592f4-20261003/partial-pair-summary.json`
+(SHA-256 `8e8406b8750da710135fc70b23224c0d687d7ee04c8dda379`).
+
+| Intent | Paired tasks | Quanta file Hit@10 | Semble file Hit@10 |
+| --- | ---: | ---: | ---: |
+| Components | 71 | 67 | 69 |
+| Infix | 74 | 73 | 29 |
+| Prefix | 77 | 73 | 48 |
+
+All nine Quanta misses returned ten distinct files with `capped` status.
+Of Semble's 45 infix misses, 26 abstained; of its 29 prefix misses, 16
+abstained. The remaining returned results did not contain gold; their
+beyond-window ranks are unknown. These are
+mechanical intended-declaration-file targets and have no human relevance
+review. The sequential run-plus-replay wall sum was 3,969.976s on a contended
+host; it is not a query-latency comparison. No five-product or C5 qualified
+claim follows from this diagnostic.
