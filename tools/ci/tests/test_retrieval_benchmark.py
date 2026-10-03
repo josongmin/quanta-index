@@ -3768,6 +3768,94 @@ def test_freeze_inputs_freezes_lockfile(tmp_path):
         pairrun.freeze_inputs(dict(inputs, semble_lockfile=str(tmp_path / "absent.txt")), stage2)
 
 
+@pytest.mark.parametrize("shared", [False, True])
+def test_direct_quanta_driver_honors_requested_query_schedule(tmp_path, monkeypatch, shared):
+    runner = tmp_path / "runner"
+    runner.write_bytes(b"fixed runner identity")
+    output = tmp_path / "output"
+    pack = tmp_path / "pack.json"
+    pack.write_text(json.dumps({"tasks": [{"task_id": "T1"}, {"task_id": "T2"}]}))
+    spec = {
+        "runner_binary": str(runner),
+        "searchd_binary": "/unused/searchd",
+        "searchd_expected_sha256": "b" * 64,
+        "query_pack": str(pack),
+        "suite": "/unused/suite",
+        "strategies": [{"name": "whole_file"}],
+        "query_warmup_passes": 1,
+        "query_repetitions_per_root": 3,
+        "seed": 7,
+        "repetitions": 1,
+    }
+    original_protocol_bytes = None
+    if shared:
+        protocol_path = tmp_path / "shared-protocol.json"
+        protocol_path.write_text(json.dumps(pairrun.build_query_protocol(["T1", "T2"], 8, 1, 3)))
+        original_protocol_bytes = protocol_path.read_bytes()
+        spec["_query_protocol"] = str(protocol_path)
+        # Parent pair repetitions already own fresh roots; don't create nested ones.
+        spec["repetitions"] = 3
+    before = copy.deepcopy(spec)
+    monkeypatch.setattr(pairrun, "preflight_capture", lambda _spec: output)
+    monkeypatch.setattr(pairrun, "preflight_daemon_socket_paths", lambda *_args: None)
+    monkeypatch.setattr(pairrun, "write_projected_pack", lambda *_args: pack)
+    observed = []
+
+    def fake_strategy(capture_spec, *_args):
+        protocol = json.loads(Path(capture_spec["_query_protocol"]).read_bytes())
+        assert protocol["task_ids"] == ["T1", "T2"]
+        assert len(protocol["warmup_schedules"]) == 1
+        assert len(protocol["measurement_schedules"]) == 3
+        assert all(
+            sorted(schedule) == ["T1", "T2"] for schedule in protocol["measurement_schedules"]
+        )
+        assert protocol["seed"] == (8 if shared else 7)
+        observed.append(protocol)
+        return {"strategy": "whole_file"}
+
+    monkeypatch.setattr(pairrun, "run_quanta_strategy", fake_strategy)
+    assert pairrun.run_quanta(spec, tmp_path) == 0
+    assert len(observed) == 1
+    assert spec == before
+    if shared:
+        assert protocol_path.read_bytes() == original_protocol_bytes
+        assert not (output / "query-protocol.json").exists()
+    else:
+        assert (output / "query-protocol.json").is_file()
+
+
+def test_direct_quanta_capture_does_not_silently_drop_fresh_root_repetitions(tmp_path):
+    with pytest.raises(pairrun.RunError, match="one fresh root"):
+        pairrun.run_quanta({"repetitions": 2}, tmp_path)
+
+
+def test_quanta_capture_refuses_protocol_that_contradicts_requested_counts(tmp_path):
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(json.dumps(pairrun.build_query_protocol(["T1", "T2"], 8, 0, 1)))
+    with pytest.raises(pairrun.RunError, match="differs from spec.query_warmup_passes"):
+        pairrun._requested_quanta_query_protocol(
+            {"_query_protocol": str(protocol_path), "query_warmup_passes": 1}, ["T1", "T2"]
+        )
+    with pytest.raises(pairrun.RunError, match="differs from spec.query_repetitions_per_root"):
+        pairrun._requested_quanta_query_protocol(
+            {"_query_protocol": str(protocol_path), "query_repetitions_per_root": 2}, ["T1", "T2"]
+        )
+
+
+def test_quanta_query_protocol_execution_refuses_missing_or_different_schedule():
+    expected = pairrun.build_query_protocol(["T1", "T2"], 7, 1, 3)
+    phase = {"query_protocol": expected, "warmup_passes": 1, "measurement_repetitions": 3}
+    pairrun._validate_quanta_query_protocol_execution(expected, phase)
+    for changed in (
+        {},
+        {**phase, "warmup_passes": 0},
+        {**phase, "measurement_repetitions": 1},
+        {**phase, "query_protocol": pairrun.build_query_protocol(["T1", "T2"], 8, 1, 3)},
+    ):
+        with pytest.raises(pairrun.RunError, match="differs from requested schedule"):
+            pairrun._validate_quanta_query_protocol_execution(expected, changed)
+
+
 def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatch):
     def fake_run(command, **kwargs):
         assert command[command.index("--embedder") + 1] == "potion-code"

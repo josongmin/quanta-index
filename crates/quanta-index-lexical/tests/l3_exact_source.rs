@@ -887,6 +887,8 @@ fn code_search_rank_study_keeps_declaration_usage_and_unknown_metadata_distinct(
     symbol.definition_span.byte_end = u32::try_from(definition.source_bytes.len())?;
     definition.symbols.push(symbol);
     definition.coverage.symbols = SymbolCoverage::Complete { symbol_count: 1 };
+    definition.coverage.symbol_name_source_policy =
+        quanta_index_contract::SymbolNameSourcePolicyV1::RawAsciiLocalName;
     definition.coverage.unit_set_sha256 =
         source_file_unit_set_sha256(&definition.chunks, &definition.symbols)?;
     let mut unknown = code_scope("unknown.rs", "needle", 3)?;

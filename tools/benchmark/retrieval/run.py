@@ -4537,6 +4537,8 @@ def validate_retrieval_diagnostic(
 
 def run_quanta(spec: dict, _spec_dir: Path) -> int:
     """Run the Rust SDK runner once per strategy. Returns process exit code."""
+    if "_query_protocol" not in spec and _int(spec.get("repetitions", 1), "spec.repetitions") != 1:
+        raise RunError("direct quanta capture supports one fresh root; use pair for repetitions")
     out_root = preflight_capture(spec)
     if out_root.exists():
         raise RunError(f"output root already exists (refusing reuse): {out_root}")
@@ -4566,11 +4568,24 @@ def run_quanta(spec: dict, _spec_dir: Path) -> int:
         routes,
         out_root / "quanta-pack.json",
     )
+    capture_spec = dict(spec)
+    task_ids = [task["task_id"] for task in read_json(pack_path)["tasks"]]
+    if "_query_protocol" not in capture_spec:
+        protocol = build_query_protocol(
+            task_ids,
+            _int(spec.get("seed", 0), "spec.seed"),
+            _int(spec.get("query_warmup_passes", 0), "spec.query_warmup_passes"),
+            _int(spec.get("query_repetitions_per_root", 1), "spec.query_repetitions_per_root"),
+        )
+        protocol_path = out_root / "query-protocol.json"
+        protocol_path.write_bytes(canonical_bytes(protocol))
+        capture_spec["_query_protocol"] = str(protocol_path)
+    _requested_quanta_query_protocol(capture_spec, task_ids)
     runs = []
     for index, strategy in enumerate(strategies):
         runs.append(
             run_quanta_strategy(
-                spec, strategy, index, out_root, routes, pack_path, runner_binary_sha256
+                capture_spec, strategy, index, out_root, routes, pack_path, runner_binary_sha256
             )
         )
         if sha_file(Path(runner_bin)) != runner_binary_sha256:
@@ -4580,6 +4595,30 @@ def run_quanta(spec: dict, _spec_dir: Path) -> int:
     )
     print(json.dumps({"runs": len(runs), "output_root": str(out_root)}, indent=2))
     return 0
+
+
+def _requested_quanta_query_protocol(spec: dict, task_ids: list[str]) -> dict | None:
+    if "_query_protocol" not in spec:
+        return None
+    protocol = validate_query_protocol(
+        read_json(Path(spec["_query_protocol"])), task_ids, "requested Quanta query protocol"
+    )
+    for field, schedule in (
+        ("query_warmup_passes", "warmup_schedules"),
+        ("query_repetitions_per_root", "measurement_schedules"),
+    ):
+        if field in spec and len(protocol[schedule]) != _int(spec[field], "spec." + field):
+            raise RunError("requested Quanta query protocol differs from spec." + field)
+    return protocol
+
+
+def _validate_quanta_query_protocol_execution(expected: dict | None, phase: dict) -> None:
+    if expected is not None and (
+        phase.get("query_protocol") != expected
+        or phase.get("warmup_passes") != len(expected["warmup_schedules"])
+        or phase.get("measurement_repetitions") != len(expected["measurement_schedules"])
+    ):
+        raise RunError("Rust runner query protocol differs from requested schedule")
 
 
 def run_quanta_strategy(
@@ -4594,6 +4633,16 @@ def run_quanta_strategy(
     name = strategy.get("name")
     if name not in RUNNABLE_STRATEGIES:
         raise RunError(f"unknown strategy: {name}")
+    requested_protocol = (
+        _requested_quanta_query_protocol(
+            spec, [task["task_id"] for task in read_json(pack_path)["tasks"]]
+        )
+        if "_query_protocol" in spec
+        else None
+    )
+    protocol_bytes = (
+        Path(spec["_query_protocol"]).read_bytes() if requested_protocol is not None else None
+    )
     out_abs = out_root.resolve()
     run_dir = out_root / _strategy_run_directory(index, name)
     run_dir.mkdir(parents=True)
@@ -4783,6 +4832,9 @@ def run_quanta_strategy(
         raise RunError("captured ingest identity differs from requested batch scope")
     index_bytes = tree_size(state_root)
     phase = _validate_phase_metrics(read_json(phase_path), f"Rust runner phase metrics for {name}")
+    _validate_quanta_query_protocol_execution(requested_protocol, phase)
+    if protocol_bytes is not None and Path(spec["_query_protocol"]).read_bytes() != protocol_bytes:
+        raise RunError("Quanta query protocol changed during capture")
     if phase["symbol_coverage_policy"] != spec.get("symbol_coverage_policy", "require-complete"):
         raise RunError("Rust runner symbol coverage policy differs from the requested profile")
     try:

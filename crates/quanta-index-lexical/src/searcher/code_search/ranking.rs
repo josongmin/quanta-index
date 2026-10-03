@@ -278,22 +278,22 @@ fn declaration_features(
                 "lexical: rank declaration name is empty".into(),
             ));
         }
-        if memchr::memmem::find(source, name.as_bytes()).is_none() {
-            if name.is_ascii()
-                && coverage.is_some_and(|row| {
-                    row.symbol_name_source_policy
-                        == quanta_index_contract::SymbolNameSourcePolicyV1::RawAsciiLocalName
-                })
-            {
-                return Err(CoreError::Storage(
-                    "lexical: promised declaration name is absent from source range".into(),
-                ));
-            }
-            // Unspecified/non-ASCII producer names may legitimately differ
-            // from source spelling. Keep the selected score and expose unknown
-            // evidence; never treat their unverified absence as a zero feature.
+        // A display name's incidental occurrence in the body cannot establish
+        // declaration-name evidence. Use the producer's explicit source-spelling
+        // contract; this still does not claim a precise declaration-name span.
+        if !name.is_ascii()
+            || !coverage.is_some_and(|row| {
+                row.symbol_name_source_policy
+                    == quanta_index_contract::SymbolNameSourcePolicyV1::RawAsciiLocalName
+            })
+        {
             complete = false;
             continue;
+        }
+        if memchr::memmem::find(source, name.as_bytes()).is_none() {
+            return Err(CoreError::Storage(
+                "lexical: promised declaration name is absent from source range".into(),
+            ));
         }
         let name = normalize::nfc(name);
         let name = normalize::apply_case(name.as_ref(), case);
