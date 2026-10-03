@@ -862,6 +862,10 @@ def test_holdout_sampling_freezes_seeded_ledger_recipes_and_split(split_releases
     first = holdout_sampling.build(hold_root, dev_root, 11)
     again = holdout_sampling.build(hold_root, dev_root, 11)
     other = holdout_sampling.build(hold_root, dev_root, 12)
+    with pytest.raises(ValueError, match="unknown sampling profile"):
+        holdout_sampling.build(hold_root, dev_root, 11, "missing")
+    with pytest.raises(ValueError, match="fewer than 1000 admitted tasks"):
+        holdout_sampling.build(hold_root, dev_root, 11, "scale_diagnostic_v1")
     assert canonical_json(first[0]) == canonical_json(again[0]) and first[1] == again[1]
     assert first[1] != other[1]
     ledger, recipes, manifest_raw, manifest = first

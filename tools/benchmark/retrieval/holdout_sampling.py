@@ -51,6 +51,21 @@ QUOTAS = {
     "no_answer_wrong_repository": 5,
     "natural_language_workflow": 20,
 }
+SCALE_DIAGNOSTIC_QUOTAS = {
+    "exact_content": 100,
+    "exact_definition": 100,
+    "variant_prefix": 130,
+    "variant_infix": 130,
+    "variant_components": 130,
+    "variant_osa1": 400,
+    "no_answer_synthetic": 100,
+    "no_answer_wrong_repository": 100,
+    "natural_language_workflow": 0,
+}
+PROFILES = {"baseline_v3": QUOTAS, "scale_diagnostic_v1": SCALE_DIAGNOSTIC_QUOTAS}
+SCALE_MINIMUM_LANES = tuple(
+    lane for lane in SCALE_DIAGNOSTIC_QUOTAS if lane != "natural_language_workflow"
+)
 VARIANT_LANES = {
     "variant_prefix": ("prefix", "declaration_name_prefix"),
     "variant_infix": ("infix", "declaration_name_infix"),
@@ -174,7 +189,9 @@ def _task(
     return task
 
 
-def _literals(repository: Repository, seed: int, ledger: dict) -> list[dict]:
+def _literals(
+    repository: Repository, seed: int, ledger: dict, quotas: dict[str, int]
+) -> list[dict]:
     candidates: dict[str, tuple[str, int]] = {}
     for path, raw in repository.files.items():
         for number, line in enumerate(raw.split(b"\n"), 1):
@@ -188,7 +205,7 @@ def _literals(repository: Repository, seed: int, ledger: dict) -> list[dict]:
     population = len(candidates)
     tasks, skipped = [], defaultdict(int)
     for query in _ranked(list(candidates), seed, repository.name, "exact_content"):
-        if len(tasks) == QUOTAS["exact_content"]:
+        if len(tasks) == quotas["exact_content"]:
             break
         encoded = query.encode("utf-8")
         occurrences = sum(raw.count(encoded) for raw in repository.files.values())
@@ -215,7 +232,9 @@ def _literals(repository: Repository, seed: int, ledger: dict) -> list[dict]:
     return tasks
 
 
-def _declarations(repository: Repository, seed: int, ledger: dict) -> list[dict]:
+def _declarations(
+    repository: Repository, seed: int, ledger: dict, quotas: dict[str, int]
+) -> list[dict]:
     if repository.audit is None:
         for lane in ("exact_definition", *VARIANT_LANES):
             ledger[lane] = {"population": 0, "underfill": "language_without_declaration_census"}
@@ -232,7 +251,7 @@ def _declarations(repository: Repository, seed: int, ledger: dict) -> list[dict]
     ranked = _ranked(eligible, seed, repository.name, "base_name")
     tasks: list[dict] = []
     ledger["exact_definition"] = {"population": len(eligible)}
-    paired_bases = ranked[: QUOTAS["exact_definition"]]
+    paired_bases = ranked[: quotas["exact_definition"]]
     for index, name in enumerate(paired_bases, 1):
         tasks.append(
             _task(
@@ -250,7 +269,7 @@ def _declarations(repository: Repository, seed: int, ledger: dict) -> list[dict]
     cursor = 0
     lanes = [lane for lane in VARIANT_LANES if lane != "variant_osa1"]
     for name in ranked:
-        open_lanes = [lane for lane in lanes if len(filled[lane]) < QUOTAS[lane]]
+        open_lanes = [lane for lane in lanes if len(filled[lane]) < quotas[lane]]
         if not open_lanes:
             break
         lane = open_lanes[cursor % len(open_lanes)]
@@ -397,7 +416,11 @@ def _tally(values) -> dict[str, int]:
 
 
 def _no_answer(
-    repository: Repository, others: list[Repository], seed: int, ledger: dict
+    repository: Repository,
+    others: list[Repository],
+    seed: int,
+    ledger: dict,
+    quotas: dict[str, int],
 ) -> list[dict]:
     tasks: list[dict] = []
     if repository.audit is None:
@@ -414,7 +437,7 @@ def _no_answer(
         }
     )
     attempts = 0
-    while len(tasks) < QUOTAS["no_answer_synthetic"] and vocabulary and attempts < 2000:
+    while len(tasks) < quotas["no_answer_synthetic"] and vocabulary and attempts < 2000:
         first = vocabulary[_draw(seed, repository.name, "noa", "first", attempts) % len(vocabulary)]
         second = vocabulary[
             _draw(seed, repository.name, "noa", "second", attempts) % len(vocabulary)
@@ -459,7 +482,7 @@ def _no_answer(
     ]
     wrong, substring_present = [], 0
     for name in candidates:
-        if len(wrong) == QUOTAS["no_answer_wrong_repository"]:
+        if len(wrong) == quotas["no_answer_wrong_repository"]:
             break
         if repository.content_absent(name):
             wrong.append(name)
@@ -489,8 +512,14 @@ def _no_answer(
 
 
 def build(
-    holdout_release: Path, development_release: Path, seed: int
+    holdout_release: Path,
+    development_release: Path,
+    seed: int,
+    profile: str = "baseline_v3",
 ) -> tuple[dict, dict[str, dict], bytes, dict]:
+    if profile not in PROFILES:
+        raise ValueError(f"unknown sampling profile: {profile}")
+    quotas = PROFILES[profile]
     holdout = json.loads((holdout_release / "release.json").read_bytes())
     development = json.loads((development_release / "release.json").read_bytes())
     repositories = [Repository(holdout_release, holdout, row) for row in holdout["repositories"]]
@@ -515,9 +544,11 @@ def build(
             },
         }
         tasks = (
-            _literals(repository, seed, ledger)
-            + _declarations(repository, seed, ledger)
-            + _no_answer(repository, [r for r in repositories if r is not repository], seed, ledger)
+            _literals(repository, seed, ledger, quotas)
+            + _declarations(repository, seed, ledger, quotas)
+            + _no_answer(
+                repository, [r for r in repositories if r is not repository], seed, ledger, quotas
+            )
         )
         ledger["natural_language_workflow"] = {
             "population": None,
@@ -535,7 +566,7 @@ def build(
             "no_answer_wrong_repository": "wrr",
             "natural_language_workflow": None,
         }
-        for lane, quota in QUOTAS.items():
+        for lane, quota in quotas.items():
             admitted = by_lane.get(lane_codes[lane], 0) if lane_codes[lane] else 0
             population = ledger[lane].get("population")
             probability = (
@@ -605,21 +636,30 @@ def build(
     summary = {
         "schema_version": 1,
         "kind": "holdout_sampling_ledger",
-        "sampling_version": SAMPLING_VERSION,
+        "sampling_version": SAMPLING_VERSION if profile == "baseline_v3" else 4,
         "seed": seed,
         "holdout_release_digest": holdout["digest"],
         "development_release_digest": development["digest"],
-        "quotas": QUOTAS,
+        "quotas": quotas,
         "split_manifest_sha256": manifest_sha,
         "repositories": ledgers,
         "totals": {
             lane: {
-                "quota": QUOTAS[lane] * len(repositories),
+                "quota": quotas[lane] * len(repositories),
                 "admitted": sum(ledgers[name][lane]["admitted"] for name in ledgers),
             }
-            for lane in QUOTAS
+            for lane in quotas
         },
     }
+    if profile == "scale_diagnostic_v1":
+        summary["profile"] = profile
+        underfilled = {
+            lane: summary["totals"][lane]["admitted"]
+            for lane in SCALE_MINIMUM_LANES
+            if summary["totals"][lane]["admitted"] < 1000
+        }
+        if underfilled:
+            raise ValueError(f"scale diagnostic has fewer than 1000 admitted tasks: {underfilled}")
     return summary, recipes, manifest_raw, manifest
 
 
@@ -628,6 +668,7 @@ def main() -> int:
     parser.add_argument("--holdout-release", required=True, type=Path)
     parser.add_argument("--development-release", required=True, type=Path)
     parser.add_argument("--seed", required=True, type=int)
+    parser.add_argument("--profile", choices=tuple(PROFILES), default="baseline_v3")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     output = args.output.resolve()
@@ -635,7 +676,10 @@ def main() -> int:
     if output.exists() or output == root or root in output.parents:
         parser.exit(2, "ERROR: output must be new and outside the checkout\n")
     summary, recipes, manifest_raw, _manifest = build(
-        args.holdout_release.resolve(), args.development_release.resolve(), args.seed
+        args.holdout_release.resolve(),
+        args.development_release.resolve(),
+        args.seed,
+        args.profile,
     )
     output.mkdir(parents=True)
     (output / "recipes").mkdir()
