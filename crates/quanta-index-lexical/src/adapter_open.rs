@@ -35,6 +35,10 @@ use std::time::Instant;
 use tantivy::Index;
 
 #[derive(Clone, Copy, Debug, Default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "these internal timing fields preserve explicit nanosecond units across the ingest/report boundary"
+)]
 pub(crate) struct LexicalMutationTimings {
     pub(crate) writer_mutation_ns: u64,
     pub(crate) text_authority_ns: u64,

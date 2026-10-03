@@ -49,8 +49,17 @@ const MAX_REGEX_TERMS: usize = 4;
 const MAX_TYPO_TOKEN_COMPARISONS: usize = 1_000_000;
 const MAX_TYPO_POSTING_VISITS: usize = 2_000_000;
 
-fn observed_ns(started: Instant) -> u64 {
-    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+fn checked_count_u64(value: usize, field: &str) -> Result<u64, CoreError> {
+    u64::try_from(value)
+        .map_err(|error| CoreError::Storage(format!("lexical: {field} exceeds u64: {error}")))
+}
+
+fn observed_ns(started: Instant) -> Result<u64, CoreError> {
+    u64::try_from(started.elapsed().as_nanos()).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: observed duration exceeds u64 nanoseconds: {error}"
+        ))
+    })
 }
 
 // Request-local bounded memoization; this is neither persisted nor externally
@@ -356,6 +365,13 @@ enum TermsToScore {
     All,
 }
 
+struct CodeSearchTypoRequest<'a> {
+    query: &'a LqQuery,
+    constraints: &'a QueryConstraintSetV1,
+    page: &'a LexicalPageSpec,
+    budget: &'a RequestBudgetV1,
+}
+
 fn add_witness_score(
     scored: &mut Option<ScoredMatch>,
     file: &SourceFile,
@@ -444,11 +460,12 @@ fn score_terms_observed(
             } else {
                 case
             };
-            stats.source_surface_bytes_considered =
-                stats.source_surface_bytes_considered.saturating_add(
-                    u64::try_from(scanned_bytes(file, term.scope, surface_case))
-                        .unwrap_or(u64::MAX),
-                );
+            stats.source_surface_bytes_considered = stats
+                .source_surface_bytes_considered
+                .saturating_add(checked_count_u64(
+                    scanned_bytes(file, term.scope, surface_case),
+                    "source surface bytes",
+                )?);
         }
         let Some(witness) = choose_witness(file, term, case, budget)? else {
             return Ok(None);
@@ -799,11 +816,6 @@ fn typo_witness(
 ///
 /// One OSA edit disturbs at most four distinct query byte trigrams for ASCII
 /// identifiers. File postings are a superset; source tokens remain the truth.
-#[expect(
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "heap entries are created only from live list positions and posting count is bounded"
-)]
 #[cfg(test)]
 fn typo_candidates(
     index: &TrigramIndex,
@@ -845,10 +857,10 @@ fn typo_candidates_observed(
                 message: "lexical code search: typo eligible posting probes exceeded".into(),
             });
         }
-        if let Some(stats) = stats.as_deref_mut() {
+        if let Some(stats) = stats.as_mut() {
             stats.posting_probes = stats
                 .posting_probes
-                .saturating_add(u64::try_from(probes).unwrap_or(u64::MAX));
+                .saturating_add(checked_count_u64(probes, "typo posting probes")?);
         }
         let mut candidates = BTreeSet::new();
         for (ordinal, &id) in eligible.iter().enumerate() {
@@ -881,10 +893,10 @@ fn typo_candidates_observed(
             message: "lexical code search: typo posting walk budget exceeded".into(),
         });
     }
-    if let Some(stats) = stats.as_deref_mut() {
+    if let Some(stats) = stats.as_mut() {
         stats.posting_probes = stats
             .posting_probes
-            .saturating_add(u64::try_from(total_visits).unwrap_or(u64::MAX));
+            .saturating_add(checked_count_u64(total_visits, "typo posting visits")?);
     }
     let mut heap = BinaryHeap::new();
     for (list_index, list) in lists.iter().enumerate() {
@@ -899,8 +911,9 @@ fn typo_candidates_observed(
             budget.checkpoint("lexical:code-search-typo-postings")?;
         }
         visited = visited.saturating_add(1);
-        if let Some(&next) = lists[list_index].get(offset + 1) {
-            heap.push(Reverse((next, list_index, offset + 1)));
+        let next_offset = offset.saturating_add(1);
+        if let Some(&next) = lists.get(list_index).and_then(|list| list.get(next_offset)) {
+            heap.push(Reverse((next, list_index, next_offset)));
         }
         let mut count = 1_usize;
         while heap.peek().is_some_and(|Reverse((next, _, _))| *next == id) {
@@ -908,10 +921,14 @@ fn typo_candidates_observed(
                 break;
             };
             visited = visited.saturating_add(1);
-            if let Some(&next) = lists[next_list].get(next_offset + 1) {
-                heap.push(Reverse((next, next_list, next_offset + 1)));
+            let following_offset = next_offset.saturating_add(1);
+            if let Some(&next) = lists
+                .get(next_list)
+                .and_then(|list| list.get(following_offset))
+            {
+                heap.push(Reverse((next, next_list, following_offset)));
             }
-            count += 1;
+            count = count.saturating_add(1);
         }
         if count >= threshold {
             if candidates.len() >= MAX_CANDIDATE_PRE_VERIFY {
@@ -1167,9 +1184,10 @@ fn candidate_ids_observed(
                 .map(|gram| index.lookup(*gram).len())
                 .min()
                 .unwrap_or(0);
-            stats.posting_probes = stats
-                .posting_probes
-                .saturating_add(u64::try_from(shortest_posting).unwrap_or(u64::MAX));
+            stats.posting_probes = stats.posting_probes.saturating_add(checked_count_u64(
+                shortest_posting,
+                "shortest trigram posting",
+            )?);
             let _candidates = index
                 .intersect_trigrams_filtered_with_checkpoint(
                     &seed.trigrams,
@@ -2097,7 +2115,7 @@ impl TantivySearcher {
             if let Some(text) = file.folded_text.as_deref() {
                 stats.source_surface_bytes_considered = stats
                     .source_surface_bytes_considered
-                    .saturating_add(u64::try_from(text.len()).unwrap_or(u64::MAX));
+                    .saturating_add(checked_count_u64(text.len(), "source surface bytes")?);
             }
             ranked.push((
                 file_candidate(
@@ -2113,7 +2131,7 @@ impl TantivySearcher {
             stats.materialized_files = stats.materialized_files.saturating_add(1);
         }
         stats.verified_matching_files = stats.materialized_files;
-        stats.candidate_ns = observed_ns(candidate_started);
+        stats.candidate_ns = observed_ns(candidate_started)?;
         let sort_started = Instant::now();
         ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
         if let Some(after) = self.page_boundary(page)? {
@@ -2135,7 +2153,7 @@ impl TantivySearcher {
                 "lexical: component fetched file count overflow: {error}"
             ))
         })?;
-        stats.sort_page_ns = observed_ns(sort_started);
+        stats.sort_page_ns = observed_ns(sort_started)?;
         let preview_started = Instant::now();
         for (candidate, witness) in &mut ranked {
             budget.checkpoint("lexical:code-search-symbol-component-preview")?;
@@ -2149,7 +2167,7 @@ impl TantivySearcher {
                 file_candidate(self, file, candidate.score, witness.as_ref(), true, budget)?;
             stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
         }
-        stats.preview_ns = observed_ns(preview_started);
+        stats.preview_ns = observed_ns(preview_started)?;
         Ok(LexicalSearchPageV1 {
             code_search_stats: Some(stats),
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
@@ -2160,15 +2178,18 @@ impl TantivySearcher {
     fn search_code_files_typo(
         &self,
         authority: &FileAuthority,
-        query: &LqQuery,
         identifier: &str,
         case: CaseMode,
-        constraints: &QueryConstraintSetV1,
-        page: &LexicalPageSpec,
-        budget: &RequestBudgetV1,
+        request: CodeSearchTypoRequest<'_>,
         mut stats: CodeSearchExecutionStatsV1,
         candidate_started: Instant,
     ) -> Result<LexicalSearchPageV1, CoreError> {
+        let CodeSearchTypoRequest {
+            query,
+            constraints,
+            page,
+            budget,
+        } = request;
         let eligible = language_eligible_ids(authority, constraints, budget)?;
         let possible = if constraints.repo_relative_path_exact.is_some() {
             None
@@ -2229,7 +2250,7 @@ impl TantivySearcher {
             })?;
             stats.source_surface_bytes_considered = stats
                 .source_surface_bytes_considered
-                .saturating_add(u64::try_from(content.len()).unwrap_or(u64::MAX));
+                .saturating_add(checked_count_u64(content.len(), "source surface bytes")?);
             let Some((witness, distance)) = typo_witness(
                 content,
                 identifier,
@@ -2254,9 +2275,9 @@ impl TantivySearcher {
             ));
             stats.materialized_files = stats.materialized_files.saturating_add(1);
         }
-        stats.typo_token_comparisons = u64::try_from(comparisons).unwrap_or(u64::MAX);
+        stats.typo_token_comparisons = checked_count_u64(comparisons, "typo token comparisons")?;
         stats.verified_matching_files = stats.materialized_files;
-        stats.candidate_ns = observed_ns(candidate_started);
+        stats.candidate_ns = observed_ns(candidate_started)?;
         let sort_started = Instant::now();
         ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
         let after = self.page_boundary(page)?;
@@ -2279,7 +2300,7 @@ impl TantivySearcher {
                 "lexical: typo fetched file count overflow: {error}"
             ))
         })?;
-        stats.sort_page_ns = observed_ns(sort_started);
+        stats.sort_page_ns = observed_ns(sort_started)?;
         let preview_started = Instant::now();
         for (candidate, witness) in &mut ranked {
             budget.checkpoint("lexical:code-search-typo-preview")?;
@@ -2292,7 +2313,7 @@ impl TantivySearcher {
             *candidate = file_candidate(self, file, candidate.score, Some(witness), true, budget)?;
             stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
         }
-        stats.preview_ns = observed_ns(preview_started);
+        stats.preview_ns = observed_ns(preview_started)?;
         Ok(LexicalSearchPageV1 {
             code_search_stats: Some(stats),
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
@@ -2316,12 +2337,14 @@ impl TantivySearcher {
             let candidate_started = Instant::now();
             return self.search_code_files_typo(
                 authority,
-                query,
                 identifier,
                 parsed.case,
-                constraints,
-                page,
-                budget,
+                CodeSearchTypoRequest {
+                    query,
+                    constraints,
+                    page,
+                    budget,
+                },
                 CodeSearchExecutionStatsV1 {
                     mode: CodeSearchExecutionModeV1::TypoExplicit,
                     ..CodeSearchExecutionStatsV1::default()
@@ -2477,12 +2500,14 @@ impl TantivySearcher {
             stats.mode = CodeSearchExecutionModeV1::TypoFallback;
             return self.search_code_files_typo(
                 authority,
-                query,
                 identifier,
                 parsed.case,
-                constraints,
-                page,
-                budget,
+                CodeSearchTypoRequest {
+                    query,
+                    constraints,
+                    page,
+                    budget,
+                },
                 stats,
                 candidate_started,
             );
@@ -2490,7 +2515,7 @@ impl TantivySearcher {
         stats.verified_matching_files = u64::try_from(ranked.len()).map_err(|error| {
             CoreError::Storage(format!("lexical: verified match count overflow: {error}"))
         })?;
-        stats.candidate_ns = observed_ns(candidate_started);
+        stats.candidate_ns = observed_ns(candidate_started)?;
         let sort_started = Instant::now();
         ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
         let after = self.page_boundary(page)?;
@@ -2511,7 +2536,7 @@ impl TantivySearcher {
         stats.fetched_files = u64::try_from(ranked.len()).map_err(|error| {
             CoreError::Storage(format!("lexical: fetched file count overflow: {error}"))
         })?;
-        stats.sort_page_ns = observed_ns(sort_started);
+        stats.sort_page_ns = observed_ns(sort_started)?;
         let preview_started = Instant::now();
         for (candidate, witness) in &mut ranked {
             budget.checkpoint("lexical:code-search-selected-preview")?;
@@ -2525,7 +2550,7 @@ impl TantivySearcher {
             *candidate = file_candidate(self, file, candidate.score, Some(witness), true, budget)?;
             stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
         }
-        stats.preview_ns = observed_ns(preview_started);
+        stats.preview_ns = observed_ns(preview_started)?;
         Ok(LexicalSearchPageV1 {
             code_search_stats: Some(stats),
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
