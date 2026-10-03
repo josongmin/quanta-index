@@ -287,7 +287,7 @@ pub(super) fn collect(
         };
         let request = TextQueryRequest { syntax:TextQuerySyntax::CodeSearch,
             query_text:plan.lexical_request.clone(),constraints:QueryConstraintSetV1::unconstrained(),
-            generation:None,generation_selector:None,top_k,cursor:None };
+            generation:Some(pin.clone()),generation_selector:None,top_k,cursor:None };
         let result = outcomes.get(&(task.task_id.clone(), "lexical".into()))
             .map(|original| collect_one(client, pin, &request, original, limits))
             .unwrap_or_else(|| json!({"status":"not_run","reason":"missing_original_outcome"}));
