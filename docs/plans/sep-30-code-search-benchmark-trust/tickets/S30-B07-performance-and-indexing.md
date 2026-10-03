@@ -1,6 +1,7 @@
 # S30-B07 — equal-boundary performance and indexing measurement
 
-Status: `NOT_RUN` (2026-09-30); see receipt below. Priority: P1. Depends on B04's
+Status: `ACTIVE` (2026-10-04): instrumentation and focused validation in progress;
+qualified performance measurement remains `NOT_RUN`. Priority: P1. Depends on B04's
 correct, complete capture contract and a quiet admitted host. Parent:
 [Sep 30 plan](../README.md). Contract owners:
 [CS-BENCH-04](../../sep-27-code-search-remediation/rfcs/CS-BENCH-04-comparators-performance-and-incremental.md)
@@ -52,6 +53,112 @@ unattested indexes cannot silently share local index-build denominators.
 
 Extend the current registered capture and resource owners only for an observed
 missing boundary; do not add a second benchmark harness.
+
+## 2026-10-04 parallel execution plan
+
+This section supersedes speculative optimization proposals. Instrumentation is
+implemented work; reduced latency is a separate claim requiring measurements.
+Use one frozen baseline and a distinct external output root for each experiment.
+
+| Owner | Existing implementation boundary | Next action | Acceptance |
+| --- | --- | --- | --- |
+| Benchmark/integration | `tools/benchmark/retrieval/run.py`, canonical `tools/benchmark/host_monitor.py`, required test inventory | Finish positive/negative monitor replay, phase contracts and public daemon roundtrip; admit a quiet host for repeated captures | Complete required output and every measured response checked; missing observations and zero-request schedules cannot qualify; canonical raw transcript and phase bytes bound |
+| Ordinary and typo search | `crates/quanta-index-lexical/src/searcher/code_search.rs`, core lexical outbound stats, plane lexical route and response budget | Attribute posting probes, source verification, OSA comparisons, row creation, sorting and preview costs by execution mode | Independent byte/OSA oracle; result IDs, scores, order, spans, exact count, cursor, budget/cancel and status preserved |
+| Indexing | lexical ingest/writer/authority/seal, SDK lexical publication and retrieval runner | Measure full and delta builds with the existing stage inclusion tree; optimize only the repeatedly dominant stage | Fresh versus delta update/delete equality; immutable identity/digest, replay/restart and durability preserved; no double-counted child durations |
+| Scale and load | registered harness `scale.rs`, `tail.rs`, `open_loop.rs` and their existing binaries | Extend actual runners beyond small tier using typed source repository identity; reuse existing arrival scheduler | File/byte/digest and per-repository identity oracle; every timed response validated after its timer; nonzero offered work; repeatable capacity and refusal evidence |
+
+### Search decisions after attribution
+
+- Posting/source verification dominates: improve lossless candidate intersection
+  or eliminate repeated verification. Keep independent exhaustive byte-scan
+  fixtures, source spans and case semantics.
+- Sorting/row creation dominates: delay row materialization and assess bounded
+  top-k selection. Full match verification required by exact totals/cursors
+  still runs; finding the first ten matches is not a stopping rule.
+- Preview dominates: reduce copies/normalization for selected rows without
+  changing required output bytes or source span.
+- Typo comparisons dominate: assess generation-bound token/posting reuse or
+  conservative candidate filtering against an independent exhaustive OSA1
+  oracle. Preserve exact-first policy, Unicode/case, no-answer and admission.
+- SDK/IPC overhead dominates: attribute transport, serialization and active
+  resolution first, then assess connection reuse or resolve/search integration
+  with activation-race, generation-pin and deadline tests.
+
+Automatic fallback currently includes both the failed ordinary pass and OSA
+work in its candidate clock. Split those subspans only if that aggregate is the
+measured hotspot. Source-surface bytes are a work proxy, not measured disk I/O.
+Disabled stage observation still executes backend clock reads, so enabled versus
+disabled captures do not measure all instrumentation overhead.
+
+### Indexing decisions after attribution
+
+Existing delta generation files are hard-linked; text authority already uses
+touched shards, file authority writes missing digests and sealing reuses base
+commitments. Validate these counters rather than implementing parallel reuse.
+
+The inclusion tree is runner total -> discovery/preflight/chunk/daemon boot/
+publish envelope/query. SDK publish and activate are children of that envelope;
+server lexical build is inside publish. Lexical stages partition preparation,
+writer mutation, text authority, file authority and seal. Writer commit, merge
+wait and commitment are children of seal; file admission is inside commitment.
+Display unmeasured residuals instead of summing nested durations twice.
+
+If writer/commit/merge dominates, compare bounded writer/segment policies. If
+authority/admission dominates, inspect changed-shard reuse, digest writes and
+remaining normalization. Preserve seal validation, fsync and directory sync.
+The current Quanta phase-v3 `daemon_boot_and_readiness` field describes the
+actual `DaemonSession::boot` envelope; historic v1/v2 `model_provider_prepare`
+must not be interpreted as an isolated model preparation measurement.
+
+### Scale, workload and comparison schedule
+
+1. Prove scoped fixture rows `(source_repo_id, relative_path, bytes)` and digest
+   inventory, including equal relative paths in two distinct repositories.
+2. Run 256, then 4,096, then 32,768 files with per-source-repository planted
+   tokens and identity checks. Distinct source repositories under one serving
+   owner are explicitly different from independent owner generations; the
+   latter need SDK publish/CAS and per-owner generation pins.
+3. Measure fresh build, one-file update/delete, activation, reopen, warm query,
+   CPU, peak process-tree RSS and index bytes. Large tier constants alone are
+   not executed scale evidence. Existing scale and open-loop binaries currently
+   execute only the small fixture.
+4. Keep closed-loop request latency separate from scheduled-arrival open-loop
+   throughput, queue latency, timeouts and refusal rates. Reuse the scheduler.
+5. Preserve current 8 MiB/file, 128 MiB/generation and posting/transport limits;
+   report the exact capacity refusal rather than increasing limits to pass.
+6. Re-run all five products using the admitted exact 1,196 tasks and separately
+   admitted prefix/infix/components/typo/no-answer lanes. Report native units,
+   timer boundaries, corpus binding and external-index uncertainty per product.
+
+Implementation and owner-local tests can run in parallel. Resource-heavy Rust
+rails use admitted lanes; performance captures run sequentially on one host.
+Apply existing five-fresh-root and route-local warm-observation floors with
+paired blocks and uncertainty reporting. Do not invent a numerical performance
+SLO, improvement factor or product ranking before obtaining these observations.
+
+### Validation state
+
+Search worker reports lexical `l3_exact_source` 28/28 and two focused plane
+tests passing. Indexing worker reports contract 171/171 and SDK 120/120 unit
+tests passing, plus lexical test-target compilation. These are owner-local
+checks, not whole-repository or performance qualification. Harness executable
+tests and public daemon boundary checks are still being scheduled through the
+shared resource admission queue.
+
+Fresh stage attribution, optimization A/B, actual medium/large/XL execution,
+quiet-host performance qualification and fresh five-product comparison remain
+`NOT_RUN`. No performance improvement has been established by instrumentation.
+
+Integration focused check: `uv run --frozen --extra dev python -m pytest
+tools/ci/tests/test_retrieval_benchmark.py -q -k
+'host_timeline_replays_complete_bound_monitor or
+protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately'` passed 2 tests
+in 13.42 seconds. The new positive monitor replay first exposed a digest-prefix
+mismatch; the corrected reader admits the valid canonical transcript and
+rejects a changed reservation. The phase golden accepts the actual v3 daemon
+boot label, rejects the misleading old label, and excludes nested SDK timings
+from the outer partition. The canonical Python inventory collects 664
+identities; collection is not execution. Ruff and `git diff --check` passed.
 
 ## Execution receipt (2026-09-30)
 
