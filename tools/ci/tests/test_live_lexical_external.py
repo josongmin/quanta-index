@@ -150,7 +150,10 @@ def test_cs_fuzzy_query_refuses_unsupported_shapes(query):
         live._cs_fuzzy_query(query)
 
 
-def test_cs_fuzzy_native_request_and_separate_replay(tmp_path, lexical_release_seed):
+@pytest.mark.parametrize("use_bound_release", [False, True])
+def test_cs_fuzzy_native_request_and_separate_replay(
+    tmp_path, lexical_release_seed, monkeypatch, use_bound_release
+):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
     suite = json.loads(paths["suite"].read_bytes())
     pack = json.loads(paths["query_pack"].read_bytes())
@@ -190,10 +193,19 @@ def test_cs_fuzzy_native_request_and_separate_replay(tmp_path, lexical_release_s
     }
     spec_path = tmp_path / "cs-fuzzy-spec.json"
     spec_path.write_text(json.dumps(spec))
-    summary = live.capture_cs_fuzzy(spec_path)
+    bound_release = (
+        live.BoundRelease.begin(Path(spec["corpus"]["release_path"])) if use_bound_release else None
+    )
+    if use_bound_release:
+        monkeypatch.setattr(
+            live.corpus_release,
+            "validate",
+            lambda _root: pytest.fail("bound cs fuzzy capture must reuse full validation"),
+        )
+    summary = live.capture_cs_fuzzy(spec_path, bound_release=bound_release)
     assert summary["tasks"] == 20
     assert summary["scoring_status"] == "not_scored"
-    assert live.verify_cs_fuzzy(root) == summary
+    assert live.verify_cs_fuzzy(root, bound_release=bound_release) == summary
     rows = [json.loads(line) for line in (root / "cs_fuzzy_rows.jsonl").read_bytes().splitlines()]
     assert rows[0]["native_query"] == "symbol_0~1"
     assert rows[0]["paths"] == ["src/0.go"]
@@ -205,7 +217,7 @@ def test_cs_fuzzy_native_request_and_separate_replay(tmp_path, lexical_release_s
     summary["raw_capture_sha256"]["cs/S00.process.json"] = live._sha_file(process)
     (root / "capture.json").write_text(json.dumps(summary))
     with pytest.raises(ValueError, match="native argv"):
-        live.verify_cs_fuzzy(root)
+        live.verify_cs_fuzzy(root, bound_release=bound_release)
 
 
 @pytest.mark.parametrize("failure", [KeyboardInterrupt, OSError])

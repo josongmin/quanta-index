@@ -1,10 +1,12 @@
-"""Prepare two blind, unjudged file-review forms from an existing query pack.
+"""Prepare blind file-review forms and reissue reviewed NL file diagnostics.
 
 This is a preparation adapter, not a labeler or a qualification pipeline.
 Candidates from retrieval, source alternatives and random controls are pooled
 by file. Product identities and pool membership stay in the owner-only custody
 document; scores and ranks are rejected. Human decisions must subsequently enter the
 existing evaluator judgments and run.py annotation/adjudication receipts.
+Diagnostic projection preserves supplied labels and review identities without
+attesting human provenance or transferring the original admission receipts.
 """
 
 from __future__ import annotations

@@ -958,9 +958,15 @@ def _cs_fuzzy_spec(path: Path) -> dict:
     return spec
 
 
-def _cs_fuzzy_inputs(spec: dict) -> tuple[dict, bytes, bytes, bytes, dict, dict, dict, Path]:
+def _cs_fuzzy_inputs(
+    spec: dict, *, bound_release: BoundRelease | None = None
+) -> tuple[dict, bytes, bytes, bytes, dict, dict, dict, Path]:
     release = Path(spec["corpus"]["release_path"])
-    document = corpus_release.validate(release)
+    document = (
+        corpus_release.validate(release)
+        if bound_release is None
+        else bound_release.recheck(release)
+    )
     repository = next(
         (
             row
@@ -1007,7 +1013,7 @@ def _cs_fuzzy_inputs(spec: dict) -> tuple[dict, bytes, bytes, bytes, dict, dict,
     )
 
 
-def capture_cs_fuzzy(spec_path: Path) -> dict:
+def capture_cs_fuzzy(spec_path: Path, *, bound_release: BoundRelease | None = None) -> dict:
     """Capture cs ~1 separately; never submit these rows to default product_result."""
     spec = _cs_fuzzy_spec(spec_path)
     root = Path(spec["output_root"])
@@ -1033,7 +1039,9 @@ def capture_cs_fuzzy(spec_path: Path) -> dict:
         or release.resolve().is_relative_to(root.resolve())
     ):
         raise ValueError("cs fuzzy output must be fresh and disjoint from release")
-    binding, suite_raw, pack_raw, manifest_raw, pack, tasks, admitted, view = _cs_fuzzy_inputs(spec)
+    binding, suite_raw, pack_raw, manifest_raw, pack, tasks, admitted, view = _cs_fuzzy_inputs(
+        spec, bound_release=bound_release
+    )
     binary = Path(spec["cs"]["binary"]).resolve(strict=True)
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError("cs fuzzy binary must be executable")
@@ -1064,7 +1072,12 @@ def capture_cs_fuzzy(spec_path: Path) -> dict:
         or _read_control_file(Path(spec["query_pack"])) != pack_raw
         or _sha_file(binary) != binary_sha
         or _source_hashes() != sources
-        or corpus_release.validate(release)["digest"] != binding["release_digest"]
+        or (
+            corpus_release.validate(release)
+            if bound_release is None
+            else bound_release.recheck(release)
+        )["digest"]
+        != binding["release_digest"]
     ):
         raise ValueError("cs fuzzy input, binary or source changed during capture")
     summary = {
@@ -1097,14 +1110,16 @@ def capture_cs_fuzzy(spec_path: Path) -> dict:
     return summary
 
 
-def verify_cs_fuzzy(root: Path) -> dict:
+def verify_cs_fuzzy(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     """Re-derive the explicit native argv and every row from captured process bytes."""
     inventory = corpus_release.regular_tree(root)
     spec = _cs_fuzzy_spec(root / "spec.json")
     if Path(spec["output_root"]) != root:
         raise ValueError("cs fuzzy output root differs from frozen spec")
     summary = _json(_read_control_file(root / "capture.json"))
-    binding, suite_raw, pack_raw, manifest_raw, pack, tasks, admitted, view = _cs_fuzzy_inputs(spec)
+    binding, suite_raw, pack_raw, manifest_raw, pack, tasks, admitted, view = _cs_fuzzy_inputs(
+        spec, bound_release=bound_release
+    )
     binary = Path(spec["cs"]["binary"]).resolve(strict=True)
     code, version_raw, stderr, _ = _process([str(binary), "--version"], 10)
     version = version_raw.decode().strip()
@@ -1195,6 +1210,8 @@ def verify_cs_fuzzy(root: Path) -> dict:
             raise ValueError("cs fuzzy row differs from native response")
 
     _replay_rows(root / "cs_fuzzy_rows.jsonl", pack["tasks"], replay)
+    if bound_release is not None:
+        bound_release.recheck(Path(spec["corpus"]["release_path"]))
     return summary
 
 
