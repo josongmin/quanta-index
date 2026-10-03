@@ -65,18 +65,20 @@ times; they do not show whole-pair savings or batch product-index reuse.
 tests passed 6/6 at that HEAD. The remaining quality-matrix work is a native
 union index session for each of the other eleven repositories.
 
-At clean isolated driver `47e3018a`, attrs four intents (110 exact, 8 infix,
+At clean isolated driver `2b718e93`, attrs four intents (110 exact, 8 infix,
 386 casefold OSA1, 8 prefix) ran as 512 execution tasks against one Quanta
 and one Semble index. Native union records, independently replayed membership,
-four scoring reports and product pack custody are under `/private/tmp/qb-a5`.
+four scoring reports and product pack custody are under `/private/tmp/qb-a6`.
 Runner SHA256 is `d2329da833292a3225369d5535c74c0253429cc6d2833110e4ca53b6c36128a6`;
 searchd SHA256 is `0304217033965e1bd4d91622aa19082974e5aede127ba019232fdc0f22c6bb58`.
 Replay passed. Against the old four separate C5 captures, every non-timing
 result row matched (512/512 for each product), and every report's judgments,
 no-answer section and status matched. A copied output with a modified Quanta
-projected pack was rejected by replay. The batch recorded one Quanta
-`embed_publish_seal_activate` phase of 3.438 s and one Semble `index` phase of
-1.443 s. The release binary build took 43m38s under concurrent load; it is
+projected pack was rejected by replay at clean driver `47e3018a` using
+`/private/tmp/qb-a5`; the later driver additionally rejects changed external
+spec, suite or blind-pack bytes before promotion. The later batch recorded one
+Quanta `embed_publish_seal_activate` phase of 4.037 s and one Semble `index`
+phase of 1.284 s. The release binary build took 43m38s under concurrent load; it is
 outside capture time. None of these observations qualifies a speedup or B07
 performance result. The original C5 source, four suites and their corpus
 remain frozen; no 48-cell rerun was performed.
