@@ -263,6 +263,7 @@ def test_partial_top_k_pool_is_excluded_and_preserves_original_quality_row():
         ("first_window", "original result status"),
         ("source_pin", "original capture"),
         ("limit", "producer bounds"),
+        ("missing_source_pin", "original capture source identity"),
     ],
 )
 def test_bound_complete_study_rejects_mutations(mutation, match):
@@ -307,6 +308,10 @@ def test_bound_complete_study_rejects_mutations(mutation, match):
         row["generation"]["revision_id"] = "other-revision"
     elif mutation == "limit":
         artifact["limits"]["timeout_ms"] = 300_001
+    elif mutation == "missing_source_pin":
+        capture = record["captures"]["cap"]
+        capture.pop("source_repo_id")
+        capture.pop("source_revision_id")
     with pytest.raises(ValueError, match=match):
         validate(artifact, record, pack)
 
@@ -415,3 +420,42 @@ def test_rank_study_public_spec_schema_accepts_only_bounded_ordinary_diagnostics
         mutator(bad)
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(bad, schema)
+
+
+def test_ordinary_capture_source_pair_is_validated_without_promoting_historical_evidence():
+    capture = {
+        "system": "quanta",
+        "chunk_strategy": "whole_file",
+        "chunk_config": {},
+        "runner_binary": {"name": "quanta-sdk-runner", "digest": "a" * 64},
+        "searchd_binary": {"binary_digest": "b" * 64},
+        "generation": 1,
+        "source_repo_id": "repo",
+        "source_revision_id": "rev",
+        "receipt_digest": "c" * 64,
+        "activation_digest": "d" * 64,
+        "model": "none:lexical",
+        "model_revision": "not-applicable",
+        "execution_profile": qp.execution_profile("code_search_file"),
+        "execution_profile_sha256": qp.execution_profile_sha256("code_search_file"),
+    }
+    schema = json.loads((Path(driver.__file__).parent / "runner.schema.json").read_text())
+    validator = jsonschema.Draft202012Validator(
+        {"$defs": schema["$defs"], "$ref": "#/$defs/capture"}
+    )
+    validator.validate(capture)
+    study.ev.validate_capture(capture, "capture", version=5)
+    for key in ("source_repo_id", "source_revision_id"):
+        partial = copy.deepcopy(capture)
+        partial.pop(key)
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate(partial)
+        with pytest.raises(study.ev.EvidenceError):
+            study.ev.validate_capture(partial, "capture", version=5)
+    # Historical rows remain replayable, but lack the source pin required by
+    # validate_artifact and cannot qualify a new complete-pool experiment.
+    historical = copy.deepcopy(capture)
+    historical.pop("source_repo_id")
+    historical.pop("source_revision_id")
+    validator.validate(historical)
+    study.ev.validate_capture(historical, "capture", version=5)

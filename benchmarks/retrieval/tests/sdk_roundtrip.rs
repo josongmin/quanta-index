@@ -2579,9 +2579,14 @@ fn verify_rank_study_runner(original_command: &Command, original_pack: &Path, ev
         assert_eq!(artifact["record_sha256"], sha256_hex(&record_bytes));
         assert_eq!(artifact["qualification"], "diagnostic_unqualified");
         let row = &artifact["results"][0];
-        let capture = &record["captures"][record["route_provenance"]["lexical"]["capture_id"].as_str().expect("capture ID")];
+        let capture = &record["captures"][record["route_provenance"]["lexical"]["capture_id"]
+            .as_str()
+            .expect("capture ID")];
         assert_eq!(capture["source_repo_id"], row["generation"]["repo_id"]);
-        assert_eq!(capture["source_revision_id"], row["generation"]["revision_id"]);
+        assert_eq!(
+            capture["source_revision_id"],
+            row["generation"]["revision_id"]
+        );
         assert_eq!(row["effective_request"]["generation"], row["generation"]);
         let collection = &row["collection"];
         assert_eq!(collection["pool_complete"], complete);

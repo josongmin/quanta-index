@@ -2149,7 +2149,10 @@ def _validate_run(
                 allow_span_accounting=version == 5 and capture["system"] == "quanta",
                 allow_score=score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1"),
             )
-            if profile_policy in ("code_search_file", "code_search_exact_content_file") and "source_repo_id" in capture:
+            if (
+                profile_policy in ("code_search_file", "code_search_exact_content_file")
+                and "source_repo_id" in capture
+            ):
                 accounting = candidate["span_accounting"]
                 require(
                     accounting["source_repo_id"] == capture["source_repo_id"]

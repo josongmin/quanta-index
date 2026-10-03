@@ -80,6 +80,7 @@
     },
     "capture": {
       "type": "object", "additionalProperties": false,
+      "dependentRequired": {"source_repo_id": ["source_revision_id"], "source_revision_id": ["source_repo_id"]},
       "required": ["system", "chunk_strategy", "chunk_config", "runner_binary", "searchd_binary", "generation", "receipt_digest", "activation_digest", "model", "model_revision", "execution_profile", "execution_profile_sha256"],
       "properties": {
         "system": {"enum": ["quanta", "semble"]},

@@ -638,7 +638,10 @@ fn capture_value(capture_id: &str, capture: &CaptureProvenance) -> BenchResult<V
         "execution_profile_sha256": capture.execution_profile_sha256,
     });
     if matches!(
-        capture.execution_profile.get("policy").and_then(Value::as_str),
+        capture
+            .execution_profile
+            .get("policy")
+            .and_then(Value::as_str),
         Some("code_search_file" | "code_search_exact_content_file")
     ) {
         let object = value.as_object_mut().ok_or_else(|| {
@@ -2377,10 +2380,15 @@ mod tests {
         let historical = capture_value("cap-1", &capture).expect("historical capture");
         assert!(historical.get("source_repo_id").is_none());
         assert!(historical.get("source_revision_id").is_none());
-        for policy in [QueryInputPolicy::CodeSearchFile, QueryInputPolicy::CodeSearchExactContentFile] {
+        for policy in [
+            QueryInputPolicy::CodeSearchFile,
+            QueryInputPolicy::CodeSearchExactContentFile,
+        ] {
             capture.execution_profile = execution_profile_value(policy, &NlPlanConfig::default());
-            capture.execution_profile_sha256 = execution_profile_sha256(policy, &NlPlanConfig::default());
-            let value = capture_value("cap-1", &capture).expect("source-bound capture without candidate rows");
+            capture.execution_profile_sha256 =
+                execution_profile_sha256(policy, &NlPlanConfig::default());
+            let value = capture_value("cap-1", &capture)
+                .expect("source-bound capture without candidate rows");
             assert_eq!(value["source_repo_id"], "bench-repo");
             assert_eq!(value["source_revision_id"], "bench-revision");
         }
