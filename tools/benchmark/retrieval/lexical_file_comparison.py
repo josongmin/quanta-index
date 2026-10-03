@@ -1219,16 +1219,117 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
     return result
 
 
+def read_external_spec(path: Path) -> tuple[dict[str, Path], dict[str, Path]]:
+    """A closed join spec references native inputs and verified external roots."""
+    spec = _read(path)
+    if (
+        set(spec) != {"schema_version", "native_inputs", "external_captures"}
+        or type(spec.get("schema_version")) is not int
+        or spec["schema_version"] != 1
+        or not isinstance(spec["native_inputs"], dict)
+        or not isinstance(spec["external_captures"], dict)
+    ):
+        raise ValueError("external join spec requires its exact schema version 1 inventory")
+    native, external = spec["native_inputs"], spec["external_captures"]
+    _native_input_roles(native)
+    if set(external) != set(PRODUCTS):
+        raise ValueError("external join requires every external product exactly once")
+    for value in (*native.values(), *external.values()):
+        if not isinstance(value, str) or not Path(value).is_absolute() or ".." in Path(value).parts:
+            raise ValueError("external join inputs must be explicit absolute canonical paths")
+    return (
+        {name: Path(value) for name, value in native.items()},
+        {name: Path(value) for name, value in external.items()},
+    )
+
+
+def _native_input_roles(paths: dict) -> tuple[str, ...]:
+    row_roles = {name + "_rows" for name in PRODUCTS}
+    for roles in (INPUT_ROLES, FILE_INPUT_ROLES):
+        native_roles = tuple(role for role in roles if role not in row_roles)
+        if set(paths) == set(native_roles):
+            return native_roles
+    raise ValueError("external join native input role inventory differs")
+
+
+def evaluate_external_captures(
+    native_paths: dict[str, Path], external_roots: dict[str, Path]
+) -> dict:
+    """Replay native captures, then score complete independently captured products.
+
+    This joins observations; it does not issue searches, fabricate native rows,
+    or turn sequential product measurements into a paired speed experiment.
+    """
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    _native_input_roles(native_paths)
+    if set(external_roots) != set(PRODUCTS):
+        raise ValueError("external join requires every external product exactly once")
+    if any(
+        not isinstance(value, Path) or not value.is_absolute() or ".." in value.parts
+        for value in (*native_paths.values(), *external_roots.values())
+    ):
+        raise ValueError("external join inputs must be explicit absolute canonical paths")
+    suite_raw, pack_raw = _bytes(native_paths["suite"]), _bytes(native_paths["query_pack"])
+    roots: dict[Path, set[str]] = {}
+    for name, root in external_roots.items():
+        roots.setdefault(root.resolve(strict=True), set()).add(name)
+    summaries = {}
+    evidence = {}
+    common_binding = None
+    for root, assigned in roots.items():
+        summary = live.verify(root)
+        selected = PRODUCTS if summary["schema_version"] == 1 else summary["products"]
+        if set(selected) != assigned:
+            raise ValueError("external root selected products differ from the join mapping")
+        if _bytes(root / "suite.json") != suite_raw or _bytes(root / "query-pack.json") != pack_raw:
+            raise ValueError("external and native suite or query-pack bytes differ")
+        binding = (summary["release_digest"], summary["binding"])
+        if common_binding is not None and common_binding != binding:
+            raise ValueError("external product source bindings differ")
+        common_binding = binding
+        summaries[root] = summary
+        evidence[str(root)] = {
+            "products": [name for name in PRODUCTS if name in assigned],
+            "capture_sha256": _sha(root / "capture.json"),
+            "release_digest": summary["release_digest"],
+            "binding": summary["binding"],
+            "rows_sha256": summary["rows_sha256"],
+        }
+    paths = dict(native_paths)
+    paths.update({name + "_rows": root / (name + "_rows.jsonl") for name, root in external_roots.items()})
+    result = evaluate_capture(paths)
+    for root, before in summaries.items():
+        after = live.verify(root)
+        if after != before or _sha(root / "capture.json") != evidence[str(root)]["capture_sha256"]:
+            raise ValueError("external capture changed during joined scoring")
+    if _bytes(native_paths["suite"]) != suite_raw or _bytes(native_paths["query_pack"]) != pack_raw:
+        raise ValueError("native suite or query-pack changed during joined scoring")
+    result["external_capture_binding"] = {
+        "execution": "offline_join_of_independently_replayed_external_captures",
+        "performance_scope": "descriptive_only_not_a_paired_speed_experiment",
+        "captures": evidence,
+    }
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--spec", type=Path)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--spec", type=Path)
+    modes.add_argument("--external-spec", type=Path)
     for role in FILE_INPUT_ROLES:
         parser.add_argument("--" + role.replace("_", "-"), type=Path)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     explicit = {role: getattr(args, role) for role in FILE_INPUT_ROLES}
     try:
-        if args.spec is not None:
+        if args.external_spec is not None:
+            if any(path is not None for path in explicit.values()):
+                parser.error("--external-spec refuses mixed explicit input controls")
+            native_paths, external_roots = read_external_spec(args.external_spec)
+            paths = None
+        elif args.spec is not None:
             if any(path is not None for path in explicit.values()):
                 parser.error("--spec refuses mixed explicit input controls")
             paths = read_spec(args.spec)
@@ -1240,7 +1341,11 @@ def main() -> None:
             paths = explicit
         if args.out.exists() or args.out.is_symlink():
             raise ValueError("output already exists")
-        result = evaluate_capture(paths)
+        result = (
+            evaluate_external_captures(native_paths, external_roots)
+            if args.external_spec is not None
+            else evaluate_capture(paths)
+        )
         args.out.parent.mkdir(parents=True, exist_ok=True)
         with args.out.open("x", encoding="utf-8") as output:
             output.write(json.dumps(result, indent=2, sort_keys=True) + "\n")

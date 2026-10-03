@@ -51,6 +51,7 @@ HTTP_TIMEOUT = 50
 MAX_SOURCEGRAPH_REQUEST_TARGET_BYTES = 8 * 1024
 CS_FUZZY_CAPABILITY = "cs_fuzzy_osa1_file"
 CS_FUZZY_VERIFIED_VERSION = "cs version 3.2.0"
+PRODUCTS = ("sourcegraph", "opengrok", "cs")
 
 
 @dataclass(frozen=True)
@@ -232,45 +233,56 @@ def _service(value: object, keys: set[str], optional: set[str] = frozenset()) ->
 
 def _spec(path: Path) -> dict:
     value = _json(_read_control_file(path))
-    if (
-        set(value)
-        != {
-            "schema_version",
-            "corpus",
-            "suite",
-            "query_pack",
-            "sourcegraph",
-            "opengrok",
-            "cs",
-            "output_root",
-        }
-        or type(value["schema_version"]) is not int
-        or value["schema_version"] != 1
-    ):
-        raise ValueError("live external spec requires the closed schema version 1")
+    common = {"schema_version", "corpus", "suite", "query_pack", "output_root"}
+    version = value.get("schema_version")
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("live external spec requires schema version 1 or 2")
+    if version == 1:
+        products = PRODUCTS
+        expected = common | set(PRODUCTS)
+    else:
+        selected = value.get("products")
+        if (
+            not isinstance(selected, list)
+            or not selected
+            or any(type(name) is not str for name in selected)
+            or selected != [name for name in PRODUCTS if name in selected]
+        ):
+            raise ValueError("live external products must be a nonempty canonical subset")
+        products = tuple(selected)
+        expected = common | {"products"} | set(products)
+    if set(value) != expected:
+        raise ValueError("live external spec keys differ from selected products")
     corpus_binding._selection(value["corpus"])
-    value["sourcegraph"] = _service(
-        value["sourcegraph"],
-        {"base_url", "repository", "server_image_digest"},
-        {"backend_snapshot", "projection_git_root", "indexed_scope_receipt"},
-    )
-    value["opengrok"] = _service(
-        value["opengrok"],
-        {"base_url", "project", "server_image_digest"},
-        {"indexed_view_probe", "backend_snapshot"},
-    )
-    if value["opengrok"].get("indexed_view_probe") not in (None, "full"):
-        raise ValueError("OpenGrok indexed view probe must be full or absent")
-    if not isinstance(value["cs"], dict) or set(value["cs"]) != {"binary"}:
+    if "sourcegraph" in products:
+        value["sourcegraph"] = _service(
+            value["sourcegraph"],
+            {"base_url", "repository", "server_image_digest"},
+            {"backend_snapshot", "projection_git_root", "indexed_scope_receipt"},
+        )
+    if "opengrok" in products:
+        value["opengrok"] = _service(
+            value["opengrok"],
+            {"base_url", "project", "server_image_digest"},
+            {"indexed_view_probe", "backend_snapshot"},
+        )
+        if value["opengrok"].get("indexed_view_probe") not in (None, "full"):
+            raise ValueError("OpenGrok indexed view probe must be full or absent")
+    if "cs" in products and (not isinstance(value["cs"], dict) or set(value["cs"]) != {"binary"}):
         raise ValueError("cs spec requires only binary")
     for key in ("suite", "query_pack", "output_root"):
         item = value[key]
         if not isinstance(item, str) or not Path(item).is_absolute() or ".." in Path(item).parts:
             raise ValueError(f"{key} path must be canonical absolute")
-    binary = value["cs"]["binary"]
-    if not isinstance(binary, str) or not Path(binary).is_absolute() or ".." in Path(binary).parts:
-        raise ValueError("cs binary path must be canonical absolute")
+    if "cs" in products:
+        binary = value["cs"]["binary"]
+        if not isinstance(binary, str) or not Path(binary).is_absolute() or ".." in Path(binary).parts:
+            raise ValueError("cs binary path must be canonical absolute")
     return value
+
+
+def _selected_products(spec: dict) -> tuple[str, ...]:
+    return PRODUCTS if spec["schema_version"] == 1 else tuple(spec["products"])
 
 
 def _projection_binding(config: dict, manifest: dict) -> dict | None:
@@ -1473,6 +1485,7 @@ def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
 
 def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> dict:
     spec = _spec(spec_path)
+    products = _selected_products(spec)
     root = Path(spec["output_root"])
     stage = root.with_name(root.name + ".staging")
     release = Path(spec["corpus"]["release_path"])
@@ -1483,26 +1496,29 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         release,
         Path(spec["suite"]),
         Path(spec["query_pack"]),
-        Path(spec["cs"]["binary"]),
+        *((Path(spec["cs"]["binary"]),) if "cs" in products else ()),
         *(
             (Path(spec["sourcegraph"]["indexed_scope_receipt"]),)
-            if "indexed_scope_receipt" in spec["sourcegraph"]
+            if "sourcegraph" in products and "indexed_scope_receipt" in spec["sourcegraph"]
             else ()
         ),
         *(
             (Path(spec["sourcegraph"]["projection_git_root"]),)
-            if "projection_git_root" in spec["sourcegraph"]
+            if "sourcegraph" in products and "projection_git_root" in spec["sourcegraph"]
             else ()
         ),
         *(
             Path(spec[name]["backend_snapshot"]["root"])
-            for name in ("sourcegraph", "opengrok")
+            for name in products
+            if name in ("sourcegraph", "opengrok")
             if "backend_snapshot" in spec[name]
         ),
     )
     if any(path.resolve().is_relative_to(checkout) for path in input_paths):
         raise ValueError("live capture inputs and output must stay outside the source checkout")
-    for name in ("sourcegraph", "opengrok"):
+    for name in products:
+        if name == "cs":
+            continue
         if "backend_snapshot" in spec[name]:
             backend_root = Path(spec[name]["backend_snapshot"]["root"]).resolve(strict=True)
             if (
@@ -1551,7 +1567,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
     files = {row["path"]: row["file_sha256"] for row in manifest["files"]}
     if set(files) != admitted:
         raise ValueError("live capture file universe differs from selected release")
-    projection = _projection_binding(spec["sourcegraph"], manifest)
+    projection = _projection_binding(spec["sourcegraph"], manifest) if "sourcegraph" in products else None
     if projection is not None:
         projection_root = Path(spec["sourcegraph"]["projection_git_root"]).resolve(strict=True)
         if (
@@ -1562,18 +1578,22 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         ):
             raise ValueError("Sourcegraph projection root must be disjoint")
         spec["sourcegraph"]["projection_revision"] = projection["projection_revision"]
-    _, sourcegraph_max_request_target_bytes = _preflight_sourcegraph_request_targets(
-        spec["sourcegraph"],
-        pack["tasks"],
-        manifest,
-    )
-    binary = Path(spec["cs"]["binary"]).resolve(strict=True)
-    if not binary.is_file() or not os.access(binary, os.X_OK):
-        raise ValueError("cs binary must be an executable regular file")
-    code, version, stderr, _ = _process([str(binary), "--version"], 10)
-    if code != 0 or stderr or not version.strip():
-        raise ValueError("cs version command failed")
-    binary_sha = _sha_file(binary)
+    sourcegraph_max_request_target_bytes = None
+    if "sourcegraph" in products:
+        _, sourcegraph_max_request_target_bytes = _preflight_sourcegraph_request_targets(
+            spec["sourcegraph"], pack["tasks"], manifest
+        )
+    binary = None
+    binary_sha = None
+    version = None
+    if "cs" in products:
+        binary = Path(spec["cs"]["binary"]).resolve(strict=True)
+        if not binary.is_file() or not os.access(binary, os.X_OK):
+            raise ValueError("cs binary must be an executable regular file")
+        code, version, stderr, _ = _process([str(binary), "--version"], 10)
+        if code != 0 or stderr or not version.strip():
+            raise ValueError("cs version command failed")
+        binary_sha = _sha_file(binary)
     source_hashes = _source_hashes()
     stage.mkdir(parents=True)
     _write(stage / "spec.json", _read_control_file(spec_path))
@@ -1584,7 +1604,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
     if projection is not None:
         _write(stage / "sourcegraph-projection.json", canonical_json(projection).encode() + b"\n")
     backend_names = tuple(
-        name for name in ("sourcegraph", "opengrok") if "backend_snapshot" in spec[name]
+        name for name in products if name in ("sourcegraph", "opengrok") and "backend_snapshot" in spec[name]
     )
     backend_before = {}
     for name in backend_names:
@@ -1593,7 +1613,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         backend_before[name] = snapshot
         _write(stage / "backend" / f"{name}-before.json", canonical_json(snapshot).encode() + b"\n")
     index_scope = None
-    if "indexed_scope_receipt" in spec["sourcegraph"]:
+    if "sourcegraph" in products and "indexed_scope_receipt" in spec["sourcegraph"]:
         index_scope = sourcegraph_index_scope.verify(
             Path(spec["sourcegraph"]["indexed_scope_receipt"]),
             manifest_raw=manifest_raw,
@@ -1603,10 +1623,22 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
             snapshot=backend_before["sourcegraph"],
         )
         _write(stage / "sourcegraph-index-scope.json", canonical_json(index_scope).encode() + b"\n")
-    probe_indexed_view = spec["opengrok"].get("indexed_view_probe") == "full"
+    probe_indexed_view = "opengrok" in products and spec["opengrok"].get("indexed_view_probe") == "full"
     if probe_indexed_view:
         _opengrok_indexed_view(spec["opengrok"], manifest, view, stage / "opengrok-view")
-    products = ("sourcegraph", "opengrok", "cs")
+    capture_product = {
+        "sourcegraph": lambda task, gold: _sourcegraph(
+            spec["sourcegraph"], task, gold, manifest, view, files,
+            stage / "sourcegraph" / f"{task['task_id']}.stream",
+        ),
+        "opengrok": lambda task, gold: _opengrok(
+            spec["opengrok"], task, gold, view, files,
+            stage / "opengrok" / f"{task['task_id']}.json",
+        ),
+        "cs": lambda task, gold: _cs(
+            binary, task, gold, view, files, stage / "cs" / f"{task['task_id']}.json"
+        ),
+    }
     with ExitStack() as stack:
         streams = {
             name: stack.enter_context((stage / f"{name}_rows.jsonl").open("xb"))
@@ -1615,27 +1647,8 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         for task in pack["tasks"]:
             task_id = task["task_id"]
             gold = tasks[task_id][1]
-            rows = {
-                "sourcegraph": _sourcegraph(
-                    spec["sourcegraph"],
-                    task,
-                    gold,
-                    manifest,
-                    view,
-                    files,
-                    stage / "sourcegraph" / f"{task_id}.stream",
-                ),
-                "opengrok": _opengrok(
-                    spec["opengrok"],
-                    task,
-                    gold,
-                    view,
-                    files,
-                    stage / "opengrok" / f"{task_id}.json",
-                ),
-                "cs": _cs(binary, task, gold, view, files, stage / "cs" / f"{task_id}.json"),
-            }
-            for name, row in rows.items():
+            for name in products:
+                row = capture_product[name](task, gold)
                 streams[name].write(json.dumps(row, sort_keys=True).encode() + b"\n")
     if probe_indexed_view:
         # Two fixed, independently bounded full probes bracket every search.
@@ -1672,15 +1685,16 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         or _read_control_file(spec_path) != _read_control_file(stage / "spec.json")
         or _read_control_file(Path(spec["suite"])) != suite_raw
         or _read_control_file(Path(spec["query_pack"])) != pack_raw
-        or _sha_file(binary) != binary_sha
+        or (binary is not None and _sha_file(binary) != binary_sha)
         or _source_hashes() != source_hashes
-        or _projection_binding(spec["sourcegraph"], manifest) != projection
+        or ("sourcegraph" in products and _projection_binding(spec["sourcegraph"], manifest) != projection)
     ):
         raise ValueError(
             "release, live spec, suite, pack, cs binary or producer source changed during capture"
         )
     summary = {
-        "schema_version": 1,
+        "schema_version": spec["schema_version"],
+        **({"products": list(products)} if spec["schema_version"] == 2 else {}),
         "status": "diagnostic_unqualified",
         "release_digest": document["digest"],
         "binding": binding,
@@ -1703,11 +1717,11 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         "python_executable_sha256": _sha_file(Path(sys.executable).resolve()),
         "python_version": sys.version.split()[0],
         "server_image_digests_operator_supplied": {
-            name: spec[name]["server_image_digest"] for name in ("sourcegraph", "opengrok")
+            name: spec[name]["server_image_digest"] for name in products if name != "cs"
         },
         "sourcegraph_max_request_target_bytes": sourcegraph_max_request_target_bytes,
         "cs_binary_sha256": binary_sha,
-        "cs_version": version.decode().strip(),
+        "cs_version": version.decode().strip() if version is not None else None,
         "rows_sha256": {name: _sha_file(stage / f"{name}_rows.jsonl") for name in products},
         "raw_capture_sha256": {
             path.relative_to(stage).as_posix(): _sha_file(path)
@@ -1748,6 +1762,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     """Re-derive every external row from retained native bytes; no live searches."""
     inventory = corpus_release.regular_tree(root)
     spec = _spec(root / "spec.json")
+    products = _selected_products(spec)
     summary = _json(_read_control_file(root / "capture.json"))
     fields = {
         "schema_version",
@@ -1772,20 +1787,23 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         "raw_capture_sha256",
         "exclusions",
     }
+    if spec["schema_version"] == 2:
+        fields.add("products")
     if (
         set(summary) != fields
         or type(summary.get("schema_version")) is not int
-        or summary["schema_version"] != 1
+        or summary["schema_version"] != spec["schema_version"]
+        or (spec["schema_version"] == 2 and summary.get("products") != list(products))
         or summary.get("status") != "diagnostic_unqualified"
         or summary.get("indexed_universe_attested") is not False
         or summary.get("opengrok_indexed_universe_attested") is not False
         or not isinstance(summary.get("backend_snapshot_sha256"), dict)
         or set(summary["backend_snapshot_sha256"])
-        != {name for name in ("sourcegraph", "opengrok") if "backend_snapshot" in spec[name]}
+        != {name for name in products if name != "cs" and "backend_snapshot" in spec[name]}
         or summary.get("opengrok_indexed_view_probe")
         != (
             "exact_indexed_inventory_and_served_bytes_bracketing_queries"
-            if spec["opengrok"].get("indexed_view_probe") == "full"
+            if "opengrok" in products and spec["opengrok"].get("indexed_view_probe") == "full"
             else "not_requested"
         )
         or type(summary.get("tasks")) is not int
@@ -1794,18 +1812,21 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         or summary.get("python_executable_sha256") != _sha_file(Path(sys.executable).resolve())
         or summary.get("python_version") != sys.version.split()[0]
         or summary.get("server_image_digests_operator_supplied")
-        != {name: spec[name]["server_image_digest"] for name in ("sourcegraph", "opengrok")}
+        != {name: spec[name]["server_image_digest"] for name in products if name != "cs"}
         or summary.get("cs_binary_sha256")
-        != _sha_file(Path(spec["cs"]["binary"]).resolve(strict=True))
+        != (_sha_file(Path(spec["cs"]["binary"]).resolve(strict=True)) if "cs" in products else None)
         or not isinstance(summary.get("rows_sha256"), dict)
-        or set(summary["rows_sha256"]) != set(lexical.PRODUCTS)
+        or set(summary["rows_sha256"]) != set(products)
         or summary.get("exclusions")
         != ["backend_indexed_universe_attestation", "independent_gold", "qualified_speed"]
     ):
         raise ValueError("unsupported capture metadata, claim or runtime identity")
-    code, version, stderr, _ = _process([spec["cs"]["binary"], "--version"], 10)
-    if code != 0 or stderr or summary.get("cs_version") != version.decode().strip():
-        raise ValueError("unsupported capture metadata: cs version identity differs")
+    if "cs" in products:
+        code, version, stderr, _ = _process([spec["cs"]["binary"], "--version"], 10)
+        if code != 0 or stderr or summary.get("cs_version") != version.decode().strip():
+            raise ValueError("unsupported capture metadata: cs version identity differs")
+    elif summary.get("cs_version") is not None:
+        raise ValueError("unselected cs version identity is present")
     suite_raw = _read_control_file(root / "suite.json")
     pack_raw = _read_control_file(root / "query-pack.json")
     suite, pack = _json(suite_raw), _json(pack_raw)
@@ -1830,16 +1851,16 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         raise ValueError("retained manifest differs from release")
     binding = corpus_binding._bind(document, manifest_raw, spec["corpus"], suite_raw, pack_raw)
     manifest = _json(manifest_raw)
-    projection = _projection_binding(spec["sourcegraph"], manifest)
+    projection = _projection_binding(spec["sourcegraph"], manifest) if "sourcegraph" in products else None
     if projection is not None:
         spec["sourcegraph"]["projection_revision"] = projection["projection_revision"]
         if _json(_read_control_file(root / "sourcegraph-projection.json")) != projection:
             raise ValueError("Sourcegraph projection differs from retained capture")
-    _, sourcegraph_max_request_target_bytes = _preflight_sourcegraph_request_targets(
-        spec["sourcegraph"],
-        pack["tasks"],
-        manifest,
-    )
+    sourcegraph_max_request_target_bytes = None
+    if "sourcegraph" in products:
+        _, sourcegraph_max_request_target_bytes = _preflight_sourcegraph_request_targets(
+            spec["sourcegraph"], pack["tasks"], manifest
+        )
     if (
         canonical_json(binding) != canonical_json(_json(_read_control_file(root / "binding.json")))
         or canonical_json(binding) != canonical_json(summary.get("binding"))
@@ -1851,7 +1872,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         raise ValueError("external capture binding differs")
     files = {row["path"]: row["file_sha256"] for row in manifest["files"]}
     view = release / "views" / spec["corpus"]["repository"] / view_name
-    probe_indexed_view = spec["opengrok"].get("indexed_view_probe") == "full"
+    probe_indexed_view = "opengrok" in products and spec["opengrok"].get("indexed_view_probe") == "full"
     if type(summary.get("opengrok_indexed_view_files")) is not int or summary[
         "opengrok_indexed_view_files"
     ] != (len(manifest["files"]) if probe_indexed_view else 0):
@@ -1859,18 +1880,13 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     expected_raw = set()
     for task in pack["tasks"]:
         task_id = task["task_id"]
-        expected_raw.update(
-            {
-                f"sourcegraph/{task_id}.stream",
-                f"sourcegraph/{task_id}.transport.json",
-                f"opengrok/{task_id}.json",
-                f"opengrok/{task_id}.transport.json",
-                f"cs/{task_id}.json",
-                f"cs/{task_id}.stderr",
-                f"cs/{task_id}.process.json",
-            }
-        )
-        if lexical.sourcegraph_capability(task["query"])["status"] == "unsupported":
+        if "sourcegraph" in products:
+            expected_raw.update({f"sourcegraph/{task_id}.stream", f"sourcegraph/{task_id}.transport.json"})
+        if "opengrok" in products:
+            expected_raw.update({f"opengrok/{task_id}.json", f"opengrok/{task_id}.transport.json"})
+        if "cs" in products:
+            expected_raw.update({f"cs/{task_id}.json", f"cs/{task_id}.stderr", f"cs/{task_id}.process.json"})
+        if "sourcegraph" in products and lexical.sourcegraph_capability(task["query"])["status"] == "unsupported":
             expected_raw.difference_update(
                 {f"sourcegraph/{task_id}.stream", f"sourcegraph/{task_id}.transport.json"}
             )
@@ -1895,10 +1911,10 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         *(("sourcegraph-projection.json",) if projection is not None else ()),
         *(
             ("sourcegraph-index-scope.json",)
-            if "indexed_scope_receipt" in spec["sourcegraph"]
+            if "sourcegraph" in products and "indexed_scope_receipt" in spec["sourcegraph"]
             else ()
         ),
-        *(f"{name}_rows.jsonl" for name in lexical.PRODUCTS),
+        *(f"{name}_rows.jsonl" for name in products),
     }
     if (
         set(inventory) != fixed | expected_raw
@@ -1918,7 +1934,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         if digest != _sha_file(before_path) or canonical_json(before) != canonical_json(after):
             raise ValueError("backend snapshot changed during capture or replay")
     index_scope = None
-    if "indexed_scope_receipt" in spec["sourcegraph"]:
+    if "sourcegraph" in products and "indexed_scope_receipt" in spec["sourcegraph"]:
         index_scope = sourcegraph_index_scope.verify(
             Path(spec["sourcegraph"]["indexed_scope_receipt"]),
             manifest_raw=manifest_raw,
@@ -1976,7 +1992,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                     transport["content_type"],
                     _read_control_file(root / f"{name}.content"),
                 )
-    for name in lexical.PRODUCTS:
+    for name in products:
         row_path = root / f"{name}_rows.jsonl"
         if _sha_file(row_path) != summary.get("rows_sha256", {}).get(name):
             raise ValueError("external rows differ from capture")

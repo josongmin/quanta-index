@@ -11,7 +11,7 @@ use anyhow::{Context, Result as AnyResult};
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::scale::ScaleTier;
 
-fn parse_args() -> AnyResult<(open_loop::Config, PathBuf)> {
+fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
     let mut config = open_loop::Config {
         seed: 0x4f50_454e_4c4f_4f50,
         tier: ScaleTier::Small,
@@ -86,15 +86,26 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf)> {
         }
     }
     config.validate()?;
-    Ok((config, out_dir))
+    Ok((config, out_dir, out_dir_explicit))
 }
 
-fn run(config: open_loop::Config, out_dir: &Path) -> AnyResult<open_loop::Report> {
+fn run(
+    config: open_loop::Config,
+    out_dir: &Path,
+    fresh_output: bool,
+) -> AnyResult<open_loop::Report> {
     let git_head = GitHeadV1::resolve(Path::new("."))?;
     let host = HostV1::observe()?;
+    if fresh_output {
+        std::fs::create_dir(out_dir)?;
+    }
     let report = open_loop::run(config)?;
     open_loop::artifact(&report, git_head, host)?.write_to(&out_dir.join("summary.json"))?;
     Ok(report)
+}
+
+fn format_latency(value: Option<f64>) -> String {
+    value.map_or_else(|| "unavailable".to_string(), |ms| format!("{ms:.3}"))
 }
 
 #[expect(
@@ -103,14 +114,14 @@ fn run(config: open_loop::Config, out_dir: &Path) -> AnyResult<open_loop::Report
     reason = "benchmark CLI reports measured results"
 )]
 fn main() -> ExitCode {
-    let (config, out_dir) = match parse_args() {
+    let (config, out_dir, fresh_output) = match parse_args() {
         Ok(value) => value,
         Err(error) => {
             eprintln!("open_loop_matrix: {error:#}");
             return ExitCode::FAILURE;
         }
     };
-    let report = match run(config, &out_dir) {
+    let report = match run(config, &out_dir, fresh_output) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("open_loop_matrix: {error:#}");
@@ -119,15 +130,15 @@ fn main() -> ExitCode {
     };
     for point in &report.points {
         println!(
-            "open_loop[qps{}]: offered={} served={} offered_qps={:.2} achieved_qps={:.2} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} typed_errors={} unexpected_typed_errors={} timeouts={} transport_errors={} invalid_results={} drops={} saturated={}",
+            "open_loop[qps{}]: offered={} served={} offered_qps={:.2} achieved_qps={:.2} p50_ms={} p95_ms={} p99_ms={} typed_errors={} unexpected_typed_errors={} timeouts={} transport_errors={} invalid_results={} drops={} saturated={}",
             point.target_qps,
             point.offered,
             point.served,
             point.offered_qps,
             point.achieved_qps,
-            point.latency.map_or(0.0, |value| value.p50_ms),
-            point.latency.map_or(0.0, |value| value.p95_ms),
-            point.latency.map_or(0.0, |value| value.p99_ms),
+            format_latency(point.latency.map(|value| value.p50_ms)),
+            format_latency(point.latency.map(|value| value.p95_ms)),
+            format_latency(point.latency.map(|value| value.p99_ms)),
             point.typed_errors,
             point.unexpected_typed_errors,
             point.timeouts,
@@ -151,5 +162,16 @@ fn main() -> ExitCode {
             "open_loop_matrix: correctness failure: no healthy first load point, invalid result, or unexpected typed error"
         );
         ExitCode::FAILURE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_latency;
+
+    #[test]
+    fn unavailable_latency_is_not_printed_as_zero() {
+        assert_eq!(format_latency(None), "unavailable");
+        assert_eq!(format_latency(Some(0.0)), "0.000");
     }
 }

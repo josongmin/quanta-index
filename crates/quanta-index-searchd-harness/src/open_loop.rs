@@ -232,6 +232,26 @@ fn fixture_candidate_ids<'a>(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct ExpectedRow {
+    candidate_id: String,
+    source_repo_id: String,
+    repo_relative_path: String,
+}
+
+fn matches_expected_rows<'a>(
+    expected: &[ExpectedRow],
+    observed: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>,
+) -> bool {
+    observed.into_iter().eq(expected.iter().map(|row| {
+        (
+            row.candidate_id.as_str(),
+            row.source_repo_id.as_str(),
+            row.repo_relative_path.as_str(),
+        )
+    }))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Outcome {
     Served { result_count: u64 },
     InvalidResult,
@@ -341,7 +361,7 @@ fn transport_kind(error: &IpcError) -> String {
 fn dispatch(
     socket: &Path,
     pin: &GenerationPin,
-    expected_ids: &[String],
+    expected_rows: &[ExpectedRow],
     task: OfferedRequest,
     timeout: Duration,
 ) -> Completion {
@@ -374,11 +394,16 @@ fn dispatch(
             SearchPlaneQueryIpcResponse::Text(page)
                 if page.generation == *pin
                     && page.rank_unit == TextRankUnit::Chunk
-                    && page
-                        .results
-                        .iter()
-                        .map(|row| &row.candidate_id)
-                        .eq(expected_ids.iter()) =>
+                    && matches_expected_rows(
+                        expected_rows,
+                        page.results.iter().map(|row| {
+                            (
+                                row.candidate_id.as_str(),
+                                row.source_repo_id.as_str(),
+                                row.repo_relative_path.as_str(),
+                            )
+                        }),
+                    ) =>
             {
                 u64::try_from(page.results.len()).map_or(Outcome::InvalidResult, |result_count| {
                     Outcome::Served { result_count }
@@ -537,7 +562,7 @@ fn summarize(
 fn measure_point(
     socket: &Path,
     pin: &GenerationPin,
-    expected_ids: &[String],
+    expected_rows: &[ExpectedRow],
     config: &Config,
     rate: u32,
 ) -> AnyResult<LoadPoint> {
@@ -556,7 +581,7 @@ fn measure_point(
         let results_sender = results_sender.clone();
         let socket = PathBuf::from(socket);
         let pin = pin.clone();
-        let expected_ids = expected_ids.to_vec();
+        let expected_rows = expected_rows.to_vec();
         let timeout = config.request_timeout;
         handles.push(thread::spawn(move || {
             loop {
@@ -567,7 +592,7 @@ fn measure_point(
                 match next {
                     Ok(task) => {
                         if results_sender
-                            .send(dispatch(&socket, &pin, &expected_ids, task, timeout))
+                            .send(dispatch(&socket, &pin, &expected_rows, task, timeout))
                             .is_err()
                         {
                             return;
@@ -740,7 +765,7 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
         }
     }
     let preflight = runtime.query_once(|_| request(&pin))?;
-    let expected_ids = match preflight {
+    let expected_rows = match preflight {
         SearchPlaneQueryIpcResponse::Text(page)
             if page.generation == pin && page.rank_unit == TextRankUnit::Chunk =>
         {
@@ -756,12 +781,28 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
                     (row.candidate_id.clone(), path)
                 })
                 .collect::<Vec<_>>();
+            if config.tier == ScaleTier::Small {
+                ensure!(
+                    page.results
+                        .iter()
+                        .all(|row| row.source_repo_id == pin.repo_id.as_str()),
+                    "open-loop baseline returned a foreign source repository"
+                );
+            }
             fixture_candidate_ids(
                 &source_paths,
                 observed
                     .iter()
                     .map(|(id, path)| (id.as_str(), path.as_str())),
-            )?
+            )?;
+            page.results
+                .iter()
+                .map(|row| ExpectedRow {
+                    candidate_id: row.candidate_id.clone(),
+                    source_repo_id: row.source_repo_id.clone(),
+                    repo_relative_path: row.repo_relative_path.clone(),
+                })
+                .collect()
         }
         SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
@@ -787,7 +828,7 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
     let socket = socket.to_path_buf();
     let mut points = Vec::with_capacity(config.rates_qps.len());
     for rate in &config.rates_qps {
-        points.push(measure_point(&socket, &pin, &expected_ids, &config, *rate)?);
+        points.push(measure_point(&socket, &pin, &expected_rows, &config, *rate)?);
     }
     Ok(Report {
         config,
@@ -1064,6 +1105,27 @@ mod tests {
             .is_err()
         );
         Ok(())
+    }
+
+    #[test]
+    fn measured_response_rejects_identity_change_with_same_candidate_ids() {
+        let expected = vec![ExpectedRow {
+            candidate_id: "candidate-0".to_string(),
+            source_repo_id: "repo0".to_string(),
+            repo_relative_path: "src/file_0.rs".to_string(),
+        }];
+        assert!(matches_expected_rows(
+            &expected,
+            [("candidate-0", "repo0", "src/file_0.rs")]
+        ));
+        assert!(!matches_expected_rows(
+            &expected,
+            [("candidate-0", "repo1", "src/file_0.rs")]
+        ));
+        assert!(!matches_expected_rows(
+            &expected,
+            [("candidate-0", "repo0", "src/foreign.rs")]
+        ));
     }
 
     #[test]
