@@ -610,6 +610,25 @@ def test_c4_admits_query_specific_checker_disagreement(tmp_path, monkeypatch):
         holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
 
 
+def test_c4_checker_refusal_with_complete_primary_census(tmp_path, monkeypatch):
+    release, capsule, checkout = _fixture(tmp_path, monkeypatch, checker_disagreement=True)
+    gold = holdout_c4._read(capsule / "gold.json")
+    audit = gold["census_audits"]["go"]
+    audit["refused_paths"] = ["disputed.go"]
+    audit["disagreement_paths"] = []
+    gold["tasks"][0]["census_text_excluded"] = [
+        {"path": "disputed.go", "reason": "census_refused"}
+    ]
+    _resign(capsule, "gold.json", gold)
+
+    suite, _pack, report = holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
+    assert report["selected"] == 1
+    assert report["census_excluded_source_paths"] == [
+        {"path": "disputed.go", "reason": "census_refused"}
+    ]
+    assert "declaration_exclusions" not in suite["tasks"][0]["source_oracle"]
+
+
 def test_c4_refuses_disputed_file_with_possible_answer(tmp_path, monkeypatch):
     release, capsule, checkout = _fixture(
         tmp_path, monkeypatch, checker_disagreement=True, disputed_name="Alpha"
