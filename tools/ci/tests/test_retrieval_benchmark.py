@@ -3392,6 +3392,43 @@ def test_worker_template_runs_against_stub_semble(tmp_path, monkeypatch):
     assert "duplicate task_ids" in duplicate.stderr
 
 
+def test_worker_template_preserves_all_measured_rows_after_encoding(tmp_path, monkeypatch):
+    _write_stub_semble(tmp_path)
+    worker = tmp_path / "worker.py"
+    worker.write_text(semble_adapter.WORKER_TEMPLATE, encoding="utf-8")
+    tasks = [{"task_id": "T1", "query": "first"}, {"task_id": "T2", "query": "second"}]
+    protocol = pairrun.build_query_protocol([task["task_id"] for task in tasks], 0, 1, 1)
+    spec = {
+        "corpus_dir": str(tmp_path),
+        "tasks": tasks,
+        "top_k": 5,
+        "seed": 0,
+        "warmup_passes": 1,
+        "repetitions": 1,
+        "query_protocol": protocol,
+        "semble_profile": "lexical-file",
+        "execution_profile_sha256": ev.digest(
+            ev.canonical(semble_adapter.execution_profile("lexical-file", None))
+        ),
+    }
+    spec_path = tmp_path / "spec.json"
+    native_path = tmp_path / "native.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    monkeypatch.setenv("SPEC_JSON", str(spec_path))
+    monkeypatch.setenv("NATIVE_JSON", str(native_path))
+    monkeypatch.setenv("SEMBLE_MODEL_NAME", "stub-model")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+
+    completed = _run_protocol_worker_fixture(worker, spec)
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(native_path.read_bytes())
+    assert [row["task_id"] for row in payload["native"]] == protocol["measurement_schedules"][0]
+    assert all(
+        len(row["results"]) == 1 and row["results"][0]["score"] == 0.5 for row in payload["native"]
+    )
+    assert len(payload["query_timing"]["observations"]) == 5
+
+
 def test_worker_template_dispatches_profiles_with_lane_isolation(tmp_path, monkeypatch):
     _write_stub_semble(tmp_path)
     worker = tmp_path / "worker.py"

@@ -332,14 +332,20 @@ def main() -> int:
              "end_line": int(hit.chunk.end_line), "score": float(hit.score)}
             for hit in result
         ]
-        protocol_output.write(json.dumps({"kind": "response", "task_id": task_id,
-                                          "results": native_result}) + "\\n")
+        # Encode once for both the completed-response pipe and the immutable
+        # native capture. The pipe adds only its protocol kind field.
+        native_row = json.dumps(
+            {"task_id": task_id, "results": native_result},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        protocol_output.write('{"kind":"response",' + native_row[1:] + "\\n")
         protocol_output.flush()
         observation = json.loads(sys.stdin.readline())
         if observation.get("task_id") != task_id or observation.get("phase") != phase:
             raise SystemExit("parent completed-response observation differs from the request")
         completed_calls.append(observation)
-        return native_result
+        return native_row
 
     observed = sorted({chunk.file_path for chunk in index.chunks})
     stats = {
@@ -377,7 +383,10 @@ def main() -> int:
         for task_id in schedule:
             dispatch(query_by_id[task_id], top_k, rep=0, phase="warmup", phase_iteration=warmup_iteration, task_id=task_id)
     warmup_end_ns = time.monotonic_ns()
-    native = []
+    # Retain encoded rows instead of millions of per-hit Python objects until
+    # the final native artifact is written. The full ordered hits remain in it.
+    native_rows = []
+    native_task_ids = []
     latencies = {}
     actual_alpha_by_task = {}
     query_started_ns = time.monotonic_ns()
@@ -388,7 +397,7 @@ def main() -> int:
         for task_id in schedule:
             query = query_by_id[task_id]
             t0 = time.monotonic_ns()
-            results = dispatch(query, top_k, rep=rep, phase="measured", phase_iteration=rep, task_id=task_id)
+            native_row = dispatch(query, top_k, rep=rep, phase="measured", phase_iteration=rep, task_id=task_id)
             ended_ns = time.monotonic_ns()
             elapsed_ms = (completed_calls[-1]["end_ns"] - completed_calls[-1]["start_ns"]) / 1_000_000.0
             if first_query_ms is None:
@@ -397,12 +406,8 @@ def main() -> int:
                 first_query_end_ns = ended_ns
             latencies.setdefault(task_id, []).append(elapsed_ms)
             if rep == 0:
-                native.append(
-                    {
-                        "task_id": task_id,
-                        "results": results,
-                    }
-                )
+                native_rows.append(native_row)
+                native_task_ids.append(task_id)
                 if profile in ("native-default", "hybrid-no-rerank"):
                     actual_alpha_by_task[task_id] = events[-1]["actual_alpha"]
     query_end_ns = time.monotonic_ns()
@@ -449,7 +454,7 @@ def main() -> int:
     first_query_ms = first_query_ms or 0.0
     if first_query_start_ns is None or first_query_end_ns is None:
         raise SystemExit("worker did not execute a first measured query")
-    emitted = sorted(row["task_id"] for row in native)
+    emitted = sorted(native_task_ids)
     expected = sorted(task_id for task_id, _ in queries)
     if emitted != expected:
         raise SystemExit("worker output task set differs from the spec task set")
@@ -507,7 +512,7 @@ def main() -> int:
         "query_schedule": [task_id for task_id, _ in queries],
         "query_protocol": protocol,
         "cold_latency_ms": cold_latency_ms,
-        "native": native,
+        "native": [],
         "latencies_ms": latencies,
         "query_timing": {
             "boundary": "request_construction_to_normalized_response",
@@ -519,8 +524,20 @@ def main() -> int:
         "warmup_passes": warmup,
         "seed": seed,
     }
-    with open(out_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
+    rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    marker = '"native":[]'
+    if rendered.count(marker) != 1:
+        raise SystemExit("native artifact lacks one result slot")
+    before, after = rendered.split(marker)
+    with open(out_path, "x", encoding="utf-8") as handle:
+        handle.write(before)
+        handle.write('"native":[')
+        for ordinal, row in enumerate(native_rows):
+            if ordinal:
+                handle.write(",")
+            handle.write(row)
+        handle.write("]")
+        handle.write(after)
         handle.write("\\n")
     protocol_output.write(json.dumps({"kind": "finished"}) + "\\n")
     protocol_output.flush()
