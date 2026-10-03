@@ -831,6 +831,39 @@ def test_osa1_text_exclusion_trigram_filter_preserves_regex_witnesses(monkeypatc
     )
 
 
+def test_osa1_text_anchor_scan_matches_unanchored_reference():
+    import random
+
+    from tools.benchmark.retrieval import source_oracle as so
+
+    generator = random.Random(20261003)
+    for size in range(3, 13):
+        for _ in range(200):
+            query = "".join(generator.choices("abc", k=size))
+            text = "".join(generator.choices("abcx\n", k=generator.randrange(48)))
+            expected = so._osa1_text_pattern(query).search(text) is not None
+            assert so._osa1_text_witness(text, query) == expected, (query, text)
+
+
+def test_osa1_text_anchor_scan_does_not_search_entire_sparse_text(monkeypatch):
+    from tools.benchmark.retrieval import source_oracle as so
+
+    original = so._osa1_text_pattern("abcdefgh")
+    starts = []
+
+    class AnchoredPattern:
+        def search(self, _text):
+            pytest.fail("long-name witness search must use anchored candidates")
+
+        def match(self, text, start):
+            starts.append(start)
+            return original.match(text, start)
+
+    monkeypatch.setattr(so, "_osa1_text_pattern", lambda _query: AnchoredPattern())
+    assert not so._osa1_text_witness("abc" + "x" * 20_000 + "fgh", "abcdefgh")
+    assert len(starts) <= 5
+
+
 def test_paired_typo_builder_emits_operation_and_stress_suites(tmp_path):
     from tools.benchmark.retrieval import identifier_robustness_suite as irs
 
