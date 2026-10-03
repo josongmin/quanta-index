@@ -8208,6 +8208,31 @@ def test_host_timeline_replays_complete_bound_monitor(tmp_path):
         pairrun.validate_host_timeline_monitor(changed, st["stage"] / "host-timeline.jsonl")
 
 
+@pytest.mark.parametrize("fault", ["digest", "host", "count", "foreign_rust", "clock"])
+def test_host_timeline_monitor_rejects_independent_binding_faults(tmp_path, fault):
+    st = _pair_stage(tmp_path)
+    timeline = json.loads((st["stage"] / "host-timeline.json").read_text())
+    raw_path = st["stage"] / "host-timeline.jsonl"
+    rows = [json.loads(line) for line in raw_path.read_text().splitlines()]
+    if fault == "host":
+        rows[0]["host"]["cpu_count"] = 16
+    elif fault == "count":
+        del timeline["samples"][1]
+    elif fault == "foreign_rust":
+        rows[2]["facts"]["foreign_rust"] = [
+            {"pid": 123, "ppid": 1, "command_sha256": "sha256:" + "e" * 64}
+        ]
+    elif fault == "clock":
+        timeline["samples"][1]["finished_ns"] += 1
+    raw_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    if fault != "digest":
+        timeline["monitor_sha256"] = pairrun.sha_file(raw_path)
+    else:
+        timeline["monitor_sha256"] = "0" * 64
+    with pytest.raises((pairrun.RunError, pairrun.host_monitor.EvidenceError)):
+        pairrun.validate_host_timeline_monitor(timeline, raw_path)
+
+
 def test_qualified_speed_verdict_rejects_incomplete_response_timer_boundary(tmp_path):
     st = _pair_stage(
         tmp_path,

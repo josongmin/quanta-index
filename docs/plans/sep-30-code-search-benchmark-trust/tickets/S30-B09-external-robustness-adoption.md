@@ -191,6 +191,8 @@ not admitted for a qualified comparison.
 | --- | --- | --- |
 | Integrated new-owner/policy/closure tests | VERIFIED | 99 passed, 201.73s |
 | Fresh-join/projection/enrollment/closure integration | VERIFIED | 80 passed,98.37s |
+| Final snippet/projection/fresh-join/enrollment/closure slice | VERIFIED | 91 passed,71.02s |
+| Gold-runtime/capsule/C4 owner suite | VERIFIED | 199 passed,585.89s; two subsequently added pinfile binding/tamper tests passed separately |
 | Pinned-source/adapters/strata focused tests | VERIFIED | 46 passed, 20.76s before final profile negative fixture; profile wrapper separately 6 passed |
 | Affected runner/planner Python file | FAILED, then focused repair VERIFIED | Initial full execution499 passed/1 expected-error-text assertion failed in1331.49s; error contract preserved and affected19 passed. The full file was not repeated. |
 | Final profile/query-identity slice | VERIFIED | 14 passed,493 deselected,11.65s |
@@ -237,7 +239,8 @@ Current vendored parsers resolve21 files that old oracle recipes excluded.
 Four old C5 suites (1382/4149 tasks) therefore fail current public validation.
 These are source-eligibility blocks, not product misses. The current C4 producer
 also changes the declaration authority from language-specific contracts to the
-all-language `declaration_name_exact` contract. A fixed-cohort projection must
+`declaration_name_exact` contract over all supported declaration languages.
+A fixed-cohort projection must
 reject that change even when selected query bytes happen to be identical.
 The reusable projector preserves source truth and rejects contract drift;
 ordinary-file projection changes only the declared request mode.
