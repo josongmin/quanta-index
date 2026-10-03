@@ -501,7 +501,7 @@ The JSON schema is the complete field authority; frequently used options:
 | `order` | `["quanta","semble"]` | base system order |
 | `baseline_route` | Semble route | Must match `semble_route`; the spec loader refuses a different baseline label |
 | `scope` | `exploratory` | `exploratory` or `qualified` |
-| `admission` | required for `qualified` | v2 W0-B manifest plus frozen development suite, experiment-custody manifest, license receipt, two independent annotation receipts, and adjudication receipt; the verdict revalidates both suites and their source-bound cross-suite leakage boundary |
+| `admission` | required for `qualified` | v2 within-repository or v3 repository-disjoint manifest, with the applicable frozen source, license and independent annotation/adjudication receipts; the verdict revalidates source and label custody |
 | `host_profile` | required for `pair` | path to a generated host-profile JSON; the file is frozen, digest-bound, and matched against both host probes |
 | `linux_cgroup_parent` | none | required for qualified native Linux: an explicitly delegated cgroup v2 parent, frozen by path/device/inode and rechecked with the resource owner |
 | `claims` | all `false` | `{quality,speed,same_model,incremental}` |
@@ -575,10 +575,12 @@ nonempty list of `critical_strata` (`axis`, `name`, `min_delta`) including
 `python -m tools.benchmark.retrieval.decision --repo REPO --suite SUITE
 --run-manifest RUN_MANIFEST --policy POLICY --out DECISION_JSON`. Exit 0 admits,
 1 records a threshold refusal, and 2 refuses malformed or missing proof.
-The current decision path refuses multi-repository policy requests because its
-uncertainty estimate clusters query families within one repository. A
-cross-repository default decision requires a separate repository-bound capture
-and repository-cluster analysis.
+The single-repository policy does not establish a multi-repository default.
+The separate repository-disjoint C5 replay uses policy v2 for context metrics
+or v3 for scored distinct-file `file_ndcg_at_10` in
+`default_file_search` mode. It requires each repository's qualified capture,
+repository-cluster uncertainty and the preregistered track/resource gates;
+replay alone returns `replayed_no_default_decision`.
 
 For a Linux performance host, select the actual CPU thermal zone and limits:
 

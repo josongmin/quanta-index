@@ -474,6 +474,13 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(
     with pytest.raises(decision.DecisionError, match="report metric differs from policy"):
         decision.replay_repository_disjoint_bundle(bundle_path)
     report_path.write_bytes(original_report)
+    if file_policy:
+        wrong_scope = json.loads(original_report)
+        wrong_scope["report_scope"] = "paired_independent_file_judgment_diagnostic_v1"
+        report_path.write_text(json.dumps(wrong_scope))
+        with pytest.raises(decision.DecisionError, match="report metric differs from policy"):
+            decision.replay_repository_disjoint_bundle(bundle_path)
+        report_path.write_bytes(original_report)
 
     (tmp_path / "repo-00" / "admission.json").write_text(
         json.dumps(
