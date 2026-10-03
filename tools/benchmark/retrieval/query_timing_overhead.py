@@ -50,16 +50,21 @@ def _without_code_search_work_clocks(planner_trace: list, *, allow_clocks: bool 
         if not allow_clocks:
             raise ValueError("disabled query observation emitted a CodeSearch work clock")
         if (
-            prefix in seen or not value.isascii() or not value.isdecimal()
-            or len(value) > 20 or int(value) > (1 << 64) - 1
+            prefix in seen
+            or not value.isascii()
+            or not value.isdecimal()
+            or len(value) > 20
+            or int(value) > (1 << 64) - 1
         ):
             raise ValueError("on/off CodeSearch work clock is malformed or duplicated")
         seen.add(prefix)
         clocks[prefix] = int(value)
     if seen.intersection(child_prefixes):
         modes = [
-            entry["detail"] for entry in planner_trace
-            if isinstance(entry, dict) and isinstance(entry.get("detail"), str)
+            entry["detail"]
+            for entry in planner_trace
+            if isinstance(entry, dict)
+            and isinstance(entry.get("detail"), str)
             and entry["detail"].startswith("code_search.execution.mode=")
         ]
         if (

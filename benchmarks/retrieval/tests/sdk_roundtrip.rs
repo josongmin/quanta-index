@@ -2331,6 +2331,24 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     let metrics: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&metrics_out).expect("phase metrics bytes"))
             .expect("phase metrics JSON");
+    assert_eq!(metrics["schema_version"], 4);
+    let query_observations = metrics["query_timing"]["observations"]
+        .as_array()
+        .expect("complete query timing observations");
+    assert!(!query_observations.is_empty());
+    for observation in query_observations {
+        let start = observation["start_ns"].as_u64().expect("query start");
+        let end = observation["end_ns"].as_u64().expect("query end");
+        let children = [
+            "sdk_execute_ns",
+            "sdk_post_execute_ns",
+            "runner_result_materialize_ns",
+        ]
+        .iter()
+        .map(|key| observation[*key].as_u64().expect("query timing child"))
+        .sum::<u64>();
+        assert!(start <= end && children <= end - start);
+    }
     let preflight_bytes = std::fs::read(
         evidence.join(
             metrics["symbol_preflight_out"]
@@ -2354,7 +2372,7 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
             .as_f64()
             .is_some_and(|value| value >= 0.0)
     );
-    // Schema 3 exposes SDK child intervals inside the publish envelope.
+    // Schema 4 retains SDK child intervals inside the publish envelope.
     // Only disjoint phases partition total time; children must fit their parent.
     let phases = metrics["phases_ms"].as_object().expect("phase ledger");
     let sdk_children = ["sdk_publish", "sdk_activate"];

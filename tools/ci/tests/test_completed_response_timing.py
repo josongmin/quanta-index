@@ -104,26 +104,36 @@ def test_paired_completed_response_clocks_require_binary_source_attestation(tmp_
     verdict = fixtures._stage_verdict(stage)
     assert verdict["states"]["PAIR_VALID"] == "pass"
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
-    assert (
-        verdict["state_evidence"]["PERF_QUALIFIED"]["reason"]
-        == "binary_build_source_unattested"
-    )
+    assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "binary_build_source_unattested"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["proof_digest"] is None
 
 
 def test_sdk_timing_children_preserve_outer_clock_and_reject_false_attribution():
     metrics = {
-        "schema_version": 4, "system": "quanta", "route_count": 1,
-        "query_schedule": ["T1"], "warmup_passes": 0, "measurement_repetitions": 1,
+        "schema_version": 4,
+        "system": "quanta",
+        "route_count": 1,
+        "query_schedule": ["T1"],
+        "warmup_passes": 0,
+        "measurement_repetitions": 1,
         "query_timing": {
             "boundary": semble.QUERY_TIMING_BOUNDARY,
             "clock": semble.QUERY_TIMING_CLOCK,
-            "observations": [{
-                "task_id": "T1", "route": "lexical", "phase": "measured", "iteration": 0,
-                "start_ns": 10, "end_ns": 110, "status": "success", "output_bytes": 1,
-                "sdk_execute_ns": 30, "sdk_post_execute_ns": 20,
-                "runner_result_materialize_ns": 10,
-            }],
+            "observations": [
+                {
+                    "task_id": "T1",
+                    "route": "lexical",
+                    "phase": "measured",
+                    "iteration": 0,
+                    "start_ns": 10,
+                    "end_ns": 110,
+                    "status": "success",
+                    "output_bytes": 1,
+                    "sdk_execute_ns": 30,
+                    "sdk_post_execute_ns": 20,
+                    "runner_result_materialize_ns": 10,
+                }
+            ],
         },
     }
     pairrun.validate_completed_query_timing(metrics)
@@ -142,6 +152,30 @@ def test_sdk_timing_children_preserve_outer_clock_and_reject_false_attribution()
     historical["schema_version"] = 3
     with pytest.raises(pairrun.RunError, match="observation is malformed"):
         pairrun.validate_completed_query_timing(historical)
+
+
+def test_completed_response_qualification_accepts_verified_fresh_release_source(tmp_path):
+    stage = fixtures._pair_stage(
+        tmp_path,
+        repetitions=5,
+        qualified_speed_sample=True,
+        scope="qualified",
+        claims={"speed": True},
+        sdk_build_profile="release-fresh",
+    )
+    _add_timing(stage)
+    verdict = fixtures._stage_verdict(stage)
+    assert verdict["states"]["PAIR_VALID"] == "pass"
+    assert verdict["states"]["SDK_PATH_GREEN"] == "pass", verdict["state_evidence"][
+        "SDK_PATH_GREEN"
+    ]
+    assert verdict["states"]["PERF_QUALIFIED"] == "pass", verdict["state_evidence"][
+        "PERF_QUALIFIED"
+    ]
+    assert (
+        verdict["provenance"]["quanta"]["binary_build_source_revision"]
+        == (stage["manifest"]["provenance"]["quanta"]["source_sha"])
+    )
 
 
 @pytest.mark.parametrize("system", ["quanta", "semble"])

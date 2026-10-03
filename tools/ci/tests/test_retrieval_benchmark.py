@@ -5856,13 +5856,20 @@ def _canonical_log_zip(entries: dict[str, bytes]) -> bytes:
     return sink.buffer.getvalue()
 
 
-def _full_receipts(commit, binary_digest, binary_dir):
+def _full_receipts(commit, binary_digest, binary_dir, *, sdk_build_profile=None):
     py_cmd = portable_proof.PYTHON_COMMAND
     rs_cmd = (
         "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
         "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked"
     )
-    sdk_cmd = "just retrieval-sdk-proof"
+    sdk_cmd = (
+        "just retrieval-sdk-proof-fresh"
+        if sdk_build_profile == "release-fresh"
+        else "just retrieval-sdk-proof"
+    )
+    sdk_original_out = (binary_dir / "sdk-proof").resolve()
+    sdk_binary_dir = sdk_original_out / "target" / "release" if sdk_build_profile else binary_dir
+    sdk_binary_dir.mkdir(parents=True, exist_ok=True)
     # A synthetic qualified receipt models the committed source at `commit`,
     # not the concurrently dirty working tree used to execute this test.
     authority_bytes = subprocess.check_output(
@@ -5896,7 +5903,7 @@ def _full_receipts(commit, binary_digest, binary_dir):
         inventory = json.loads(raw)
         for binary_id, row in inventory["rust-suites"].items():
             role = "nextest-" + ev.digest(binary_id.encode())
-            executable = binary_dir / f"{rail}-{role}"
+            executable = (sdk_binary_dir if rail == "sdk" else binary_dir) / f"{rail}-{role}"
             executable.write_bytes(binary_id.encode())
             row.update(
                 {
@@ -5908,8 +5915,10 @@ def _full_receipts(commit, binary_digest, binary_dir):
             )
         inventories.append(json.dumps(inventory).encode())
     rust_inventory, sdk_inventory = inventories
-    (binary_dir / "runner").write_bytes(b"quanta-runner-binary")
-    (binary_dir / "searchd").write_bytes(b"g0-seed-searchd")
+    runner_path = sdk_binary_dir / (portable_proof.PACKAGE if sdk_build_profile else "runner")
+    searchd_path = sdk_binary_dir / ("quanta-index-searchd" if sdk_build_profile else "searchd")
+    runner_path.write_bytes(b"quanta-runner-binary")
+    searchd_path.write_bytes(b"g0-seed-searchd")
     sdk_record = _sdk_raw_record(binary_digest)
     py_inventory = json.dumps(
         {
@@ -5996,9 +6005,9 @@ def _full_receipts(commit, binary_digest, binary_dir):
     ):
         binaries = (
             {
-                "runner": {"path": str((binary_dir / "runner").resolve()), "sha256": binary_digest},
+                "runner": {"path": str(runner_path.resolve()), "sha256": binary_digest},
                 "searchd": {
-                    "path": str((binary_dir / "searchd").resolve()),
+                    "path": str(searchd_path.resolve()),
                     "sha256": _fake_sha("searchd"),
                 },
             }
@@ -6035,7 +6044,8 @@ def _full_receipts(commit, binary_digest, binary_dir):
             "binary-path",
             "build-platform",
         }
-        target_directory = str(binary_dir.resolve())
+        profile = sdk_build_profile if rail == "sdk" else None
+        target_directory = str(sdk_original_out / "target" if profile else binary_dir.resolve())
         build_list = {
             "rust-build-meta": {"target-directory": target_directory},
             "rust-binaries": {
@@ -6073,14 +6083,16 @@ def _full_receipts(commit, binary_digest, binary_dir):
             transcripts["metadata.stdout"],
             transcripts["rust-collection.stdout"],
             workspace_root=portable_proof.ROOT,
+            build_profile=profile,
         )
         commands = []
         for name, argv, overrides in portable_proof._expected_commands(
             rail,
-            Path("/proof"),
+            sdk_original_out if profile else Path("/proof"),
             tools,
             binaries,
             inherited_environment=inherited_environment,
+            build_profile=profile,
         ):
             commands.append(
                 {
@@ -6100,7 +6112,12 @@ def _full_receipts(commit, binary_digest, binary_dir):
                 }
             )
         context = {
-            "schema_version": portable_proof.EXECUTION_CONTEXT_VERSION,
+            "schema_version": (
+                portable_proof.FRESH_EXECUTION_CONTEXT_VERSION
+                if profile
+                else portable_proof.EXECUTION_CONTEXT_VERSION
+            ),
+            **({"build_profile": profile} if profile else {}),
             "rail": rail,
             "revision": commit,
             "os": {
@@ -6153,6 +6170,7 @@ def _pair_stage(
     diagnostic_version=4,
     hybrid_floor="100",
     query_observation="enabled",
+    sdk_build_profile=None,
 ):
     """Build a complete valid pair stage through the real driver functions."""
     work = tmp_path / "work"
@@ -6946,7 +6964,12 @@ def _pair_stage(
     }
     if receipts == "full" or (scope == "qualified" and receipts is None):
         source_sha = pairrun.git_head_sha(Path(__file__).resolve().parents[3])
-        contents = _full_receipts(source_sha, binary_digest, work / "receipt-binaries")
+        contents = _full_receipts(
+            source_sha,
+            binary_digest,
+            work / "receipt-binaries",
+            sdk_build_profile=sdk_build_profile,
+        )
     else:
         contents = receipts or {}
     frozen = {}
@@ -9858,6 +9881,25 @@ def test_pair_provenance_keeps_driver_revision_distinct_from_unattested_binary_s
         st, lambda value: value["provenance"]["quanta"].pop("binary_build_source_revision")
     )
     assert "binary_build_source_revision" not in _stage_verdict(st)["provenance"]["quanta"]
+
+
+def test_pair_derives_binary_source_only_after_fresh_sdk_chain_verifies(tmp_path):
+    stage = _pair_stage(tmp_path, receipts="full", sdk_build_profile="release-fresh")
+    assert stage["manifest"]["provenance"]["quanta"]["binary_build_source_revision"] is None
+    verdict = _stage_verdict(stage)
+    assert verdict["states"]["SDK_PATH_GREEN"] == "pass", verdict["state_evidence"][
+        "SDK_PATH_GREEN"
+    ]
+    assert (
+        verdict["provenance"]["quanta"]["binary_build_source_revision"]
+        == (stage["manifest"]["provenance"]["quanta"]["source_sha"])
+    )
+    jsonschema.validate(verdict, _load_schema("verdict.schema.json"))
+    raw = stage["stage"] / stage["manifest"]["artifacts"]["sdk_nextest_raw"]
+    raw.write_bytes(raw.read_bytes() + b"tampered")
+    rejected = _stage_verdict(stage)
+    assert rejected["states"]["SDK_PATH_GREEN"] == "fail"
+    assert rejected["provenance"]["quanta"]["binary_build_source_revision"] is None
 
 
 def test_exploratory_pair_refuses_unbound_or_tampered_source_closure(tmp_path):
@@ -15796,15 +15838,19 @@ def test_query_clock_comparator_validates_nested_typo_clocks_without_erasing_cou
         trace[:1] + trace[2:],
         [{"stage": "merge", "detail": "code_search.execution.mode=ordinary"}, *trace[1:]],
         [trace[0], *trace],
-        [*trace[:5], {"stage": "merge", "detail": "code_search.execution.typo_source_token_scan_ns=71"}, *trace[6:]],
+        [
+            *trace[:5],
+            {"stage": "merge", "detail": "code_search.execution.typo_source_token_scan_ns=71"},
+            *trace[6:],
+        ],
     ):
         with pytest.raises(ValueError, match="clock hierarchy"):
             overhead._without_code_search_work_clocks(mutant)
     for value in ("-1", "True", str(1 << 64), "0" * 21):
         with pytest.raises(ValueError, match="work clock"):
-            overhead._without_code_search_work_clocks([
-                {"stage": "merge", "detail": f"code_search.execution.candidate_ns={value}"}
-            ])
+            overhead._without_code_search_work_clocks(
+                [{"stage": "merge", "detail": f"code_search.execution.candidate_ns={value}"}]
+            )
 
 
 @pytest.mark.parametrize("parameter", ["timeout_secs", "cleanup_timeout_secs"])

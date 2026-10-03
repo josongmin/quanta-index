@@ -515,6 +515,7 @@ def _native_records(
     records: dict[str, dict[str, dict[str, Any]]] = {}
     hashes: dict[str, str] = {}
     record_paths: list[Path] = []
+    raw_by_product: dict[str, dict[str, dict[str, Any]]] = {}
     for product, route in (("quanta", "lexical"), ("semble", "semble-lexical-file")):
         if product == "quanta":
             matches = sorted((output / "rep-00/quanta").glob("strategy-*/record.json"))
@@ -536,7 +537,6 @@ def _native_records(
         )
         results = scoring._unique(record["results"], "task_id", repo + "/" + product)
         require(set(results) == set(tasks), "native task coverage differs: " + repo + "/" + product)
-        product_rows: dict[str, dict[str, Any]] = {}
         for task_id, raw in results.items():
             task = tasks[task_id]
             require(
@@ -546,21 +546,9 @@ def _native_records(
                 and len(raw["candidates"]) <= 10,
                 "native route/unit/query differs: " + repo + "/" + product + "/" + task_id,
             )
-            paths = scoring._top10(
-                [candidate["path"] for candidate in raw["candidates"][:10]],
-                universe,
-                repo + "/" + product + "/" + task_id,
-            )
             result_status = raw["status"]
             require(result_status in evaluator.RESULT_STATUSES, "unknown native result status")
-            product_rows[task_id] = scoring._result(
-                task,
-                paths,
-                eligible=result_status != "error",
-                status=result_status,
-                latency_ms=raw["timings"].get("query_latency_ms"),
-            )
-        records[product] = product_rows
+        raw_by_product[product] = results
     checked_suite, checked_pack, merged = run.merge_records(
         Path(spec["repo"]), Path(spec["suite"]), record_paths
     )
@@ -570,10 +558,95 @@ def _native_records(
     )
     report_path = output / PAIR_REPORT
     report_sha = sha(report_path)
+    report = read(report_path)
     _require_native_report_binding(
-        read(report_path), verdict, suite, checked_pack, merged, report_sha, repo
+        report, verdict, suite, checked_pack, merged, report_sha, repo
     )
+    judgments = _bound_native_file_judgments(suite, merged, report, tasks, repo)
+    for product, route in (("quanta", "lexical"), ("semble", "semble-lexical-file")):
+        product_rows = {}
+        for task_id, raw in raw_by_product[product].items():
+            paths = scoring._top10(
+                [candidate["path"] for candidate in raw["candidates"][:10]],
+                universe,
+                repo + "/" + product + "/" + task_id,
+            )
+            product_rows[task_id] = _native_scored_result(
+                tasks[task_id], raw, paths, judgments[(task_id, route)]
+            )
+        records[product] = product_rows
     return records, hashes, report_sha, status_binding
+
+
+def _same_judgment_diagnostics(left: Any, right: Any) -> bool:
+    """Compare frozen aggregate floats at scorer precision; all other fields exactly."""
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _same_judgment_diagnostics(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _same_judgment_diagnostics(a, b) for a, b in zip(left, right)
+        )
+    if type(left) in (int, float) and type(right) in (int, float):
+        return math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
+    return type(left) is type(right) and left == right
+
+
+def _bound_native_file_judgments(
+    suite: dict[str, Any],
+    merged: dict[str, Any],
+    report: dict[str, Any],
+    tasks: dict[str, dict[str, Any]],
+    repo: str,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Use the official evaluator's TopK eligibility and bind its published rows."""
+    evaluated = {task_id: task for task_id, task in tasks.items() if task["split"] == "eval"}
+    require(set(evaluated) == set(tasks), "native suite contains non-eval tasks: " + repo)
+    results = {(row["task_id"], row["route"]): row for row in merged["results"]}
+    diagnostics = evaluator.judgment_diagnostics(
+        suite, merged, results, evaluated, "semble-lexical-file", "lexical"
+    )
+    require(
+        isinstance(diagnostics, dict)
+        and isinstance(diagnostics.get("file_judgments"), dict)
+        and isinstance(report.get("judgment_metrics"), dict)
+        and _same_judgment_diagnostics(
+            diagnostics["file_judgments"], report["judgment_metrics"].get("file_judgments")
+        ),
+        "native published file judgment diagnostics differ: " + repo,
+    )
+    rows = diagnostics["file_judgments"]["per_query"]
+    indexed = {(row["task_id"], row["route"]): row for row in rows}
+    require(
+        len(indexed) == len(rows)
+        and set(indexed) == {(task_id, route) for task_id in tasks for route in suite["routes"]},
+        "native file judgment task/route coverage differs: " + repo,
+    )
+    return indexed
+
+
+def _native_scored_result(
+    task: dict[str, Any], raw: dict[str, Any], paths: list[str], judgment: dict[str, Any]
+) -> dict[str, Any]:
+    """Keep the observed prefix while zero-filling operational scores if excluded."""
+    eligible = judgment["eligible"] is True
+    row = scoring._result(
+        task,
+        paths if eligible else [],
+        eligible=eligible,
+        status=raw["status"],
+        latency_ms=raw["timings"].get("query_latency_ms"),
+    )
+    row["eligibility_reason"] = None if eligible else judgment["reason"]
+    if not eligible:
+        row["top10_paths"] = paths
+        if paths:
+            row["observed_top10_scores"] = {
+                "near_name_file": scoring._score(paths, task["file_judgments"]),
+                "intended_original_file": scoring._score(paths, task["gold"]),
+            }
+    return row
 
 
 def _select_native_status(cell: dict[str, Any], prepared: dict[str, Any]) -> dict[str, Any]:

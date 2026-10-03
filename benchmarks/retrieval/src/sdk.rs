@@ -499,11 +499,13 @@ mod empty_status_tests {
         let (outcome, timing) = time_route_execution(
             || {
                 assert_eq!(step.replace(1), 0);
+                std::thread::sleep(Duration::from_millis(1));
                 Ok::<_, SdkError>(17_u32)
             },
             |response| {
                 assert_eq!(step.replace(2), 1);
                 assert_eq!(response.expect("SDK response"), 17);
+                std::thread::sleep(Duration::from_millis(1));
                 QueryOutcome::SdkFailure {
                     status: "error",
                     code: "fixture".to_string(),
@@ -514,13 +516,20 @@ mod empty_status_tests {
         );
         assert_eq!(step.get(), 2);
         assert!(matches!(outcome, QueryOutcome::SdkFailure { code, .. } if code == "fixture"));
-        assert!(timing.sdk_execute <= timing.sdk_execute + timing.post_execute);
+        assert!(timing.sdk_execute >= Duration::from_millis(1));
+        assert!(timing.post_execute >= Duration::from_millis(1));
 
         let (failure, _timing) = time_route_execution(
             || Err::<u32, _>(SdkError::PlaneUnavailable { plane: "search" }),
             |response| failed_outcome(&response.expect_err("SDK failure"), Instant::now()),
         );
-        assert!(matches!(failure, QueryOutcome::SdkFailure { status: "unavailable", .. }));
+        assert!(matches!(
+            failure,
+            QueryOutcome::SdkFailure {
+                status: "unavailable",
+                ..
+            }
+        ));
     }
 
     #[test]

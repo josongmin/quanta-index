@@ -5973,34 +5973,45 @@ def validate_completed_query_timing(metrics: dict, record: dict | None = None) -
         )
     observed_keys = []
     previous_end = 0
-    sdk_child_keys = {
-        "sdk_execute_ns", "sdk_post_execute_ns", "runner_result_materialize_ns"
-    } if metrics.get("system") == "quanta" and metrics.get("schema_version") == 4 else set()
+    sdk_child_keys = (
+        {"sdk_execute_ns", "sdk_post_execute_ns", "runner_result_materialize_ns"}
+        if metrics.get("system") == "quanta" and metrics.get("schema_version") == 4
+        else set()
+    )
     record_rows = (
         {(row["task_id"], row["route"]): row for row in record["results"]} if record else {}
     )
     for index, entry in enumerate(observations):
-        if not isinstance(entry, dict) or set(entry) != {
-            "task_id",
-            "route",
-            "phase",
-            "iteration",
-            "start_ns",
-            "end_ns",
-            "status",
-            "output_bytes",
-        } | sdk_child_keys:
+        if (
+            not isinstance(entry, dict)
+            or set(entry)
+            != {
+                "task_id",
+                "route",
+                "phase",
+                "iteration",
+                "start_ns",
+                "end_ns",
+                "status",
+                "output_bytes",
+            }
+            | sdk_child_keys
+        ):
             raise RunError("completed-response timing observation is malformed")
         start, end = entry["start_ns"], entry["end_ns"]
         if type(start) is not int or type(end) is not int or start < previous_end or end < start:
             raise RunError("completed-response timing clock is not monotonic and serial")
         previous_end = end
         if sdk_child_keys and (
-            any(type(entry[key]) is not int or not 0 <= entry[key] <= (1 << 64) - 1
-                for key in sdk_child_keys)
+            any(
+                type(entry[key]) is not int or not 0 <= entry[key] <= (1 << 64) - 1
+                for key in sdk_child_keys
+            )
             or sum(entry[key] for key in sdk_child_keys) > end - start
         ):
-            raise RunError("completed-response SDK child clocks are invalid or exceed outer interval")
+            raise RunError(
+                "completed-response SDK child clocks are invalid or exceed outer interval"
+            )
         if type(entry["iteration"]) is not int or entry["iteration"] < 0:
             raise RunError("completed-response timing iteration is invalid")
         if type(entry["output_bytes"]) is not int or entry["output_bytes"] <= 0:
@@ -6298,7 +6309,9 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     if not is_finite_json_number(total) or total <= 0:
         raise RunError(f"{where}.total_ms must be finite and positive")
     nested_keys = (
-        {"sdk_publish", "sdk_activate"} if system == "quanta" and schema_version in (3, 4) else set()
+        {"sdk_publish", "sdk_activate"}
+        if system == "quanta" and schema_version in (3, 4)
+        else set()
     )
     if (
         nested_keys
@@ -7854,7 +7867,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             if sha_file(Path(path)) != artifacts["phase_metrics_digests"][ref]:
                 raise RunError("phase metrics digest differs from the capture manifest")
             metrics = _validate_phase_metrics(read_json(Path(path)), f"phase metrics {path}")
-            if metrics["schema_version"] not in ((2, 3, 4) if metrics["system"] == "quanta" else (2,)):
+            if metrics["schema_version"] not in (
+                (2, 3, 4) if metrics["system"] == "quanta" else (2,)
+            ):
                 raise RunError("current pair replay requires Quanta phase v2/v3/v4 or Semble v2")
             if (
                 metrics["system"] == "quanta"
@@ -8569,7 +8584,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             if sdk_actual != evidence["sdk_path"]["test_result_digest"]:
                 raise RunError("sdk manifest digest mismatch")
             sdk_command = (
-                "just retrieval-sdk-proof-fresh" if sdk_build_revisions
+                "just retrieval-sdk-proof-fresh"
+                if sdk_build_revisions
                 else "just retrieval-sdk-proof"
             )
             if (
@@ -8855,10 +8871,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     raise RunError("completed-response output units differ across paired products")
             except (RunError, KeyError, TypeError, ValueError) as exc:
                 perf_fail = (f"completed_response_timing_unverified: {exc}", "provenance")
-        if (
-            perf_fail is None
-            and binary_build_source_revision is None
-        ):
+        if perf_fail is None and binary_build_source_revision is None:
             perf_fail = ("binary_build_source_unattested", "provenance")
         if perf_fail is None:
             set_state(
@@ -10137,19 +10150,20 @@ def _verify_execution_context(
             "binaries",
             "commands",
             "raw_evidence",
-        } | ({"build_profile"} if fresh_context else set()),
+        }
+        | ({"build_profile"} if fresh_context else set()),
         where,
     )
     if (
         type(context["schema_version"]) is not int
-        or context["schema_version"] not in (
+        or context["schema_version"]
+        not in (
             portable_proof.EXECUTION_CONTEXT_VERSION,
             portable_proof.FRESH_EXECUTION_CONTEXT_VERSION,
         )
         or context["rail"] != rail
-        or fresh_context and (
-            rail != "sdk" or context["build_profile"] != portable_proof.FRESH_BUILD_PROFILE
-        )
+        or fresh_context
+        and (rail != "sdk" or context["build_profile"] != portable_proof.FRESH_BUILD_PROFILE)
         or not _is_hex(context["revision"], 40)
     ):
         raise RunError(f"{where} schema/rail/revision mismatch")
@@ -10240,7 +10254,11 @@ def _verify_execution_context(
     ):
         raise RunError(f"{where} malformed inherited environment")
     expected = portable_proof._expected_commands(
-        rail, original_out, tools, binaries, inherited_environment=first_inherited,
+        rail,
+        original_out,
+        tools,
+        binaries,
+        inherited_environment=first_inherited,
         build_profile=build_profile,
     )
     if len(commands) != len(expected):
@@ -10253,7 +10271,12 @@ def _verify_execution_context(
         except ValueError as exc:
             raise RunError(f"{where} fresh binary paths refused: {exc}") from exc
         _verify_context_commands(
-            commands, expected, logs, raw_files, collection_name, rail,
+            commands,
+            expected,
+            logs,
+            raw_files,
+            collection_name,
+            rail,
             build_profile=build_profile,
         )
     for captured in inputs:
@@ -10599,7 +10622,8 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
         if (
             not isinstance(context, dict)
             or type(context.get("schema_version")) is not int
-            or context["schema_version"] not in (
+            or context["schema_version"]
+            not in (
                 portable_proof.EXECUTION_CONTEXT_VERSION,
                 portable_proof.FRESH_EXECUTION_CONTEXT_VERSION,
             )
