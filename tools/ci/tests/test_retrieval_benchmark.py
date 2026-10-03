@@ -11566,16 +11566,6 @@ def test_natural_language_file_contract_binds_intent_policy_and_unit(tmp_path):
         row["score_evidence"] = "native_sdk_score_v1"
         for candidate in row["candidates"]:
             candidate["score"] = 1.0
-            candidate["span_accounting"] = {
-                "unit_kind": "chunk",
-                "unit_id": f"{row['task_id']}:{candidate['rank']}",
-                "producer_identity": run["captures"]["q0"]["chunk_strategy"],
-                "indexed_start_byte": candidate["start_byte"],
-                "indexed_end_byte": candidate["end_byte"],
-                "sdk_start_line": candidate["start_line"],
-                "sdk_end_line": candidate["end_line"],
-                "extra_context_bytes": 0,
-            }
     _pack, run = _repack(repo, suite, run)
     jsonschema.validate(suite, _load_schema("suite.schema.json"))
     jsonschema.validate(run, _load_schema("runner.schema.json"))
@@ -14551,6 +14541,18 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
                         "snippet_sha256": ev.digest(path_bytes),
                     },
                 )
+        if policy == "natural_language_file":
+            for item in by_file.values():
+                item["span_accounting"] = {
+                    "unit_kind": "chunk",
+                    "unit_id": f"{task['task_id']}:{item['rank']}",
+                    "producer_identity": run["captures"]["q0"]["chunk_strategy"],
+                    "indexed_start_byte": item["start_byte"],
+                    "indexed_end_byte": item["end_byte"],
+                    "sdk_start_line": item["start_line"],
+                    "sdk_end_line": item["end_line"],
+                    "extra_context_bytes": 0,
+                }
         chosen = [by_file[path] for path in sorted(by_file, reverse=reverse)]
         for rank, item in enumerate(chosen, 1):
             item["rank"] = rank
