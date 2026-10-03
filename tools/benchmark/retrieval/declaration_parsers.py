@@ -1,6 +1,6 @@
-"""Use the producer's vendored TypeScript grammar in benchmark oracles.
+"""Use the producer's vendored Go and TypeScript grammars in benchmark oracles.
 
-Other languages retain their existing pinned language-pack parser. TypeScript
+Other languages retain their existing pinned language-pack parser. Vendored
 C sources are compiled once outside the checkout; no downloaded grammar or
 fallback is allowed to silently change declaration eligibility.
 """
@@ -20,17 +20,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 VENDOR = ROOT / "vendor/tree-sitter-typescript"
+GO_VENDOR = ROOT / "vendor/tree-sitter-go"
 
 
 def component_source_digests() -> dict[str, str]:
-    if VENDOR.is_symlink() or VENDOR.parent.is_symlink() or not VENDOR.is_dir():
-        raise ValueError("vendored TypeScript parser sources missing or linked")
-    entries = sorted(VENDOR.rglob("*"))
-    if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in entries):
-        raise ValueError("vendored TypeScript parser sources must be regular or directories")
-    paths = [path for path in entries if path.is_file() and path.suffix in (".c", ".h")]
-    if not paths:
-        raise ValueError("vendored TypeScript parser sources missing or linked")
+    paths = []
+    for vendor in (VENDOR, GO_VENDOR):
+        if vendor.is_symlink() or vendor.parent.is_symlink() or not vendor.is_dir():
+            raise ValueError("vendored parser sources missing or linked")
+        entries = sorted(vendor.rglob("*"))
+        if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in entries):
+            raise ValueError("vendored parser sources must be regular or directories")
+        components = [path for path in entries if path.is_file() and path.suffix in (".c", ".h")]
+        if not components:
+            raise ValueError("vendored parser sources missing or linked")
+        paths.extend(components)
     return {
         path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in paths
@@ -61,7 +65,7 @@ def _checked_library(directory: Path, expected: dict) -> Path:
 
 
 def _library(grammar: str) -> Path:
-    if grammar not in ("typescript", "tsx"):
+    if grammar not in ("go", "typescript", "tsx"):
         raise ValueError("unsupported vendored grammar")
     before = component_source_digests()
     system = platform.system()
@@ -89,7 +93,7 @@ def _library(grammar: str) -> Path:
     cache.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".parser-", dir=cache))
     try:
-        source = VENDOR / grammar / "src"
+        source = GO_VENDOR / "src" if grammar == "go" else VENDOR / grammar / "src"
         command = [
             compiler,
             "-dynamiclib" if system == "Darwin" else "-shared",
@@ -99,10 +103,10 @@ def _library(grammar: str) -> Path:
             "-I",
             str(source),
             str(source / "parser.c"),
-            str(source / "scanner.c"),
-            "-o",
-            str(stage / "parser.so"),
         ]
+        if grammar != "go":
+            command.append(str(source / "scanner.c"))
+        command += ["-o", str(stage / "parser.so")]
         completed = subprocess.run(command, capture_output=True, timeout=120, check=False)
         if completed.returncode:
             raise ValueError(
@@ -127,7 +131,7 @@ def _library(grammar: str) -> Path:
             shutil.rmtree(stage)
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=3)
 def _language(grammar: str):
     from tree_sitter import Language
 
@@ -143,7 +147,7 @@ def _language(grammar: str):
 
 
 def get_parser(grammar: str):
-    if grammar not in ("typescript", "tsx"):
+    if grammar not in ("go", "typescript", "tsx"):
         from tree_sitter_language_pack import get_parser as language_pack_parser
 
         return language_pack_parser(grammar)

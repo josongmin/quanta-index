@@ -437,7 +437,7 @@ checks and proposed product changes. No benchmark counts were replaced.
 
 ## 2026-10-03 execution: score authority and experimental features
 
-Status: `PARTIAL_IMPLEMENTATION`. Selected production ranking is unchanged.
+Status: `DIAGNOSTIC_IMPLEMENTED`. Selected production ranking is unchanged.
 This section does not promote a retrieval-quality, performance, release or
 five-product qualification claim.
 
@@ -459,6 +459,14 @@ They are not a frozen-source qualification receipt. Existing captures and
    reaching the backend. A real SDK/runtime test failed with `INVALID_REQUEST`
    after backend repair. Lexical explain now admits the same CodeSearch plan
    as lexical search. Hybrid and symbol admission stay route-specific.
+3. Fresh complete-pool execution refused 391 explanations on the NFC-normalized
+   112,684-byte `context_test.go`. Rank features unnecessarily reserved a full
+   Unicode provenance map, exceeding the retained-byte limit of 64 MiB. A
+   120-KiB fixed NFC fixture with a folding-expansion offset reproduced the
+   refusal. Rank features now reuse the preview's bounded NFC offset walk;
+   non-NFC input still uses the accounted mapper. The budget was not increased,
+   and selected membership/scores are unchanged. The fixed fixture also checks
+   folded/sensitive score goldens and original camel boundaries.
 
 Owners: `searcher/code_search.rs`, `searcher/port.rs`,
 `query_dispatcher/planning.rs` and `routes/explain.rs`.
@@ -531,13 +539,19 @@ current v3 oracle. Changing only the contract string also failed canonical gold
 validation; neither refusal was weakened. A new suite and blind pack were
 derived from the same 99 immutable Gin files and the same 1,196 ordered queries
 in `/private/tmp/qi-rank-study-gin-1196-20261004-3l7aoaqo/`.
-The file qrels changed for 15 tasks; canonical source-line gold changed as well.
+The file qrels changed for 15 tasks; canonical source-line gold changed for 86.
 The current independent `census_checkers/go_checker.go` verified all 1,196 file
 qrels over 99 files using Go's AST parser. No human relevance review is claimed.
 This exposed declaration dataset is development-only, diagnostic and separate
 from historical scores and any future unexposed holdout. Original input and
-capture files were not changed. Fresh native execution is pending the final
-source-pin runner E2E and uses a new state/output root.
+capture files were not changed. The historical corpus-manifest path no longer
+exists; the new external manifest was rebuilt from the validated frozen file
+universe and retains SHA-256
+`d4e1ea025c067f344af640568b5bfd0835ed09c2bfbcf9668b8e9782bc68bd67`.
+The first fresh native execution completed all 1,196 candidate pools but refused
+391 explanations on the retained-byte defect above. Its 805 eligible samples
+cannot represent the full suite. Those original diagnostic artifacts are
+preserved; the repair is replayed in a separate state/output root.
 
 ### Local checks
 
@@ -557,7 +571,11 @@ one-off repository evidence files.
 | `python3 tools/ci/lint/check-test-authority.py` | `VERIFIED` | Existing test targets remain registered |
 | `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench` | `VERIFIED`: final 10 passed, including all 4 rank-study tests | Stable counts/order, duplicate/drift refusal, bounded work, ordinary-policy separation and existing runner guards |
 | `./scripts/cargow --lane code-search-rank-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked` | `VERIFIED`: fresh build after source-name guard | Standalone development-profile daemon for the explicitly pinned runner E2E; not release/performance qualification |
-| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_identifier_robustness_report.py` | `VERIFIED`: 59 passed | Complete-pool independent golden, artifact mutations, refusal/unknown/partial exclusions, zero-hit source binding, original exhaustion status and existing intent contracts |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_identifier_robustness_report.py` | `VERIFIED`: 63 passed | Complete-pool independent golden, artifact mutations, refusal/unknown/partial exclusions, zero-hit source binding, original exhaustion status and existing intent contracts |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_retrieval_benchmark.py -k 'code_search_file_policy_binds or exact_content_file_policy_binds or v3_pair_spec_schema or g0_schema_files_are_closed or g0_receipt_shape_matches_canonical_receipt_schema or v5_capture_schema'` | `VERIFIED`: 6 passed | Public diagnostic schema, ordinary/exact-content capture identity and forged-pin refusal |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench record::tests::quanta_capture_binds_source_pin -- --exact` | `VERIFIED`: 1 passed | Both ordinary file policies emit source repository/revision |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-retrieval-bench --test sdk_roundtrip actual_runner_binary_emits_receipt_bound_v5_record -- --exact --nocapture` | `VERIFIED`: 1 passed, 84.40 s | Explicitly pinned standalone daemon; actual SDK/native complete and capped study artifacts |
+| Source-validated Python replay of both actual runner artifacts | `VERIFIED`: complete and one-page-limited artifacts accepted with independent three-file gold | External output: `/private/tmp/qi-rank-study-source-pin-20261004.NhQYZU/`; limited pool remains excluded |
 | `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_retrieval_benchmark.py -k 'code_search_rank_study or spec or server_observation or hybrid_fetch or quanta_strategy or query_protocol'` | `VERIFIED`: 38 passed | Study and affected driver/protocol contracts on live main; overlaps the preceding row |
 
 Some first attempts had test-code compilation errors, corrected before the

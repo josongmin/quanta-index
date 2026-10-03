@@ -21,13 +21,14 @@ def test_typescript_oracles_use_the_producer_compatibility_grammar(suffix):
     raw = (
         b'export type * from "./other";\n'
         b'export type * as Other from "./other";\n'
+        b"type Overloads = { <T>(): T\n<T>(): T };\n"
         b"export function Locate() {\n"
         b"  return runnerImport<typeof import('./basic')>(fixture('cjs.js'),);\n"
         + (b"  return <div />;\n" if suffix == "tsx" else b"")
         + b"}\n"
     )
     rows = source_oracle.declaration_census("typescript", "input." + suffix, raw)
-    assert [raw[start:end] for start, end, *_ in rows] == [b"Locate"]
+    assert [raw[start:end] for start, end, *_ in rows] == [b"Overloads", b"Locate"]
     spans, refusal = gold_oracle._definition_spans(
         raw, b"Locate", "typescript", path="input." + suffix
     )
@@ -38,6 +39,25 @@ def test_typescript_oracles_use_the_producer_compatibility_grammar(suffix):
         source_oracle.declaration_census(
             "typescript", "broken." + suffix, raw + b"function Broken( {"
         )
+    for invalid in [b"type F = { <T>(): T <U>(): U }", b"type F = { <T>(): T\n<U: U }"]:
+        with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
+            source_oracle.declaration_census("typescript", "broken." + suffix, invalid)
+
+
+def test_go_126_expression_operands_preserve_declaration_spans_and_refuse_malformed_calls():
+    from tools.benchmark.retrieval import gold_oracle, source_oracle
+
+    raw = b"package p\nfunc Locate(i int) { _ = new(1); _ = new(i > 0); _ = new(int); _ = make([]int, 2) }\n"
+    rows = source_oracle.declaration_census("go", "input.go", raw)
+    assert [raw[start:end] for start, end, *_ in rows] == [b"Locate"]
+    spans, refusal = gold_oracle._definition_spans(raw, b"Locate", "go", path="input.go")
+    assert refusal is None
+    assert len(spans) == 1
+    assert raw[spans[0][0] : spans[0][1]] == b"Locate"
+    for call in [b"new(1, 2)", b"new(i +)"]:
+        invalid = b"package p\nfunc Broken() { _ = " + call + b" }"
+        with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
+            source_oracle.declaration_census("go", "broken.go", invalid)
 
 
 def test_vendored_parser_cache_refuses_identity_and_binary_tampering(tmp_path):

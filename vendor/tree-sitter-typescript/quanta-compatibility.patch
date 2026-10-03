@@ -25,3 +25,31 @@
          seq(
            'export',
            'type',
+--- a/common/define-grammar.js
++++ b/common/define-grammar.js
+@@ -8,0 +9 @@
++      $._object_type_automatic_semicolon,
+@@ -968 +969 @@
+-            choice(',', $._semicolon),
++            choice(',', $._semicolon, $._object_type_automatic_semicolon),
+@@ -978 +979 @@
+-          optional(choice(',', $._semicolon)),
++          optional(choice(',', $._semicolon, $._object_type_automatic_semicolon)),
+--- a/common/scanner.h
++++ b/common/scanner.h
+@@ -14,0 +15 @@
++    OBJECT_TYPE_AUTOMATIC_SEMICOLON,
+@@ -83 +84,2 @@
+-    lexer->result_symbol = AUTOMATIC_SEMICOLON;
++    lexer->result_symbol = valid_symbols[OBJECT_TYPE_AUTOMATIC_SEMICOLON]
++        ? OBJECT_TYPE_AUTOMATIC_SEMICOLON : AUTOMATIC_SEMICOLON;
+@@ -118,0 +121,3 @@
++        case '<':
++            // A new generic call signature can begin after a type member.
++            return valid_symbols[OBJECT_TYPE_AUTOMATIC_SEMICOLON];
+@@ -126 +130,0 @@
+-        case '<':
+@@ -329 +333,2 @@
+-    if (valid_symbols[AUTOMATIC_SEMICOLON] || valid_symbols[FUNCTION_SIGNATURE_AUTOMATIC_SEMICOLON]) {
++    if (valid_symbols[AUTOMATIC_SEMICOLON] || valid_symbols[FUNCTION_SIGNATURE_AUTOMATIC_SEMICOLON] ||
++        valid_symbols[OBJECT_TYPE_AUTOMATIC_SEMICOLON]) {

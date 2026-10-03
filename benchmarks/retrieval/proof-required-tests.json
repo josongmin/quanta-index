@@ -573,6 +573,7 @@
     "tools.ci.tests.test_source_oracle_suite.test_code_search_absence_rejects_content_and_path_matches",
     "tools.ci.tests.test_source_oracle_suite.test_content_no_answer_replay_refuses_content_positive_query",
     "tools.ci.tests.test_source_oracle_suite.test_default_code_search_absence_rejects_one_edit_fallback",
+    "tools.ci.tests.test_source_oracle_suite.test_go_126_expression_operands_preserve_declaration_spans_and_refuse_malformed_calls",
     "tools.ci.tests.test_source_oracle_suite.test_go_indexed_local_name_includes_interface_methods_and_aliases",
     "tools.ci.tests.test_source_oracle_suite.test_go_name_components_split_only_existing_boundaries_contiguously",
     "tools.ci.tests.test_source_oracle_suite.test_go_name_osa1_separates_unique_ambiguous_and_exact_collision",

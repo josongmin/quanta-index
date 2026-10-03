@@ -14,6 +14,9 @@ patch. Upstream MIT [LICENSE](LICENSE) is unchanged.
    matches [upstream PR 360](https://github.com/tree-sitter/tree-sitter-typescript/pull/360);
    this vendored patch does not claim that PR was merged upstream.
 
+3. Insert a type-member separator before a newline-starting generic call
+   signature inside object types, without changing expression semicolon rules.
+
 The TS and TSX generated parser, grammar JSON and node types are kept with their
 source grammar, shared scanner, C headers, Rust bindings and queries. Build-time
 source hashing in the retrieval producer binds actual vendored bytes into its

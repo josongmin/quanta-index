@@ -28,7 +28,7 @@ members = [
     "benchmarks/retrieval",
     "benchmarks/bench-protocol",
 ]
-exclude = ["vendor/tree-sitter-typescript"]
+exclude = ["vendor/tree-sitter-typescript", "vendor/tree-sitter-go"]
 resolver = "2"
 
 [workspace.package]
@@ -176,7 +176,7 @@ zstd = { version = "0.13.3", default-features = false }
 # and the RBR-04 source-bound symbol producer: tree-sitter boundaries
 # replace the retired hand lexer. No product crate may depend on these.
 tree-sitter = "0.25"
-tree-sitter-go = "0.25"
+tree-sitter-go = { version = "=0.25.0", path = "vendor/tree-sitter-go" }
 tree-sitter-javascript = "0.25"
 tree-sitter-python = "0.25"
 tree-sitter-rust = "0.24"

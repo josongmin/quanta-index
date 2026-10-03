@@ -26,7 +26,7 @@
 use tree_sitter_language::LanguageFn;
 
 /// Identifies the source grammar delta required by Quanta's producer.
-pub const QUANTA_COMPATIBILITY_PATCH_ID: &str = "quanta-typescript-compatibility-1";
+pub const QUANTA_COMPATIBILITY_PATCH_ID: &str = "quanta-typescript-compatibility-2";
 
 extern "C" {
     fn tree_sitter_typescript() -> *const ();

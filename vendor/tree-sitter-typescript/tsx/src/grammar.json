@@ -10410,6 +10410,10 @@
                               {
                                 "type": "SYMBOL",
                                 "name": "_semicolon"
+                              },
+                              {
+                                "type": "SYMBOL",
+                                "name": "_object_type_automatic_semicolon"
                               }
                             ]
                           },
@@ -10460,6 +10464,10 @@
                         {
                           "type": "SYMBOL",
                           "name": "_semicolon"
+                        },
+                        {
+                          "type": "SYMBOL",
+                          "name": "_object_type_automatic_semicolon"
                         }
                       ]
                     },
@@ -11984,6 +11992,10 @@
     {
       "type": "SYMBOL",
       "name": "_function_signature_automatic_semicolon"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_object_type_automatic_semicolon"
     },
     {
       "type": "SYMBOL",

@@ -35,16 +35,19 @@ pub use preflight::{
 pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
     "tree-sitter@0.25.10;",
     "rust@0.24.2;",
-    "go@0.25.0;",
+    "go@0.25.0+quanta-go-compatibility-1;vendored-source-sha256=",
+    env!("QI_GO_GRAMMAR_SHA256"),
+    ";",
     "javascript@0.25.0;",
     "python@0.25.0;",
-    "typescript@0.23.2+quanta-typescript-compatibility-1;vendored-source-sha256=",
+    "typescript@0.23.2+quanta-typescript-compatibility-2;vendored-source-sha256=",
     env!("QI_TYPESCRIPT_GRAMMAR_SHA256"),
 );
 
 // Refuse compilation against an unpatched registry dependency. Hashing a local
 // vendor directory alone must not claim that those bytes were linked.
 const _: &str = tree_sitter_typescript::QUANTA_COMPATIBILITY_PATCH_ID;
+const _: &str = tree_sitter_go::QUANTA_COMPATIBILITY_PATCH_ID;
 
 /// Producer identity for batch digests.
 pub const SYMBOL_PRODUCER_IDENTITY: &str = "source-bound-symbols-v2";
@@ -1056,7 +1059,7 @@ mod tests {
                       type Rect struct {\n\tW float64\n}\n\n\
                       type Shape interface {\n\tArea() float64\n}\n\n\
                       func (r *Rect) Area() float64 { return r.W }\n\n\
-                      func NewRect(w float64) *Rect { return &Rect{W: w} }\n";
+                      func NewRect(w float64) *Rect { _ = new(w > 0); _ = new(1); _ = new(int); _ = make([]int, 2); return &Rect{W: w} }\n";
         let records = extract_symbols("geom/rect.go", source).expect("go parses");
         let method = records
             .iter()
@@ -1079,6 +1082,15 @@ mod tests {
             .find(|record| &*record.local_name == "Shape")
             .expect("interface");
         assert_eq!(interface.symbol_kind.as_str(), "interface");
+        for malformed in [
+            "package p\nfunc Broken() { _ = new(1, 2) }",
+            "package p\nfunc Broken() { _ = new(i +) }",
+        ] {
+            assert!(matches!(
+                extract_symbols("broken.go", malformed),
+                Err(SymbolExtractError::ParseFailure { .. })
+            ));
+        }
     }
 
     #[test]
@@ -1143,6 +1155,7 @@ mod tests {
         assert_eq!(find(&records, "main").symbol_kind.as_str(), "function");
 
         let ts = "export interface Node {\n  id: string;\n}\n\
+                  type Overloads = { <T>(): T\n<T>(): T };\n\
                   export type Alias = Node;\n\
                   export class Tree {\n  \
                   insert(node: Node) {}\n\

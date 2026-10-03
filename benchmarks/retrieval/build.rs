@@ -30,21 +30,19 @@ fn source_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<dy
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
-    let grammar = manifest.join("../../vendor/tree-sitter-typescript");
+fn bind_grammar(grammar: &Path, tag: &str, environment_key: &str) -> Result<(), Box<dyn Error>> {
     let mut output = std::io::stdout().lock();
     writeln!(output, "cargo:rerun-if-changed={}", grammar.display())?;
     let mut files = Vec::new();
-    source_files(&grammar, &mut files)?;
+    source_files(grammar, &mut files)?;
     if files.is_empty() {
-        return Err("vendored TypeScript grammar input is empty".into());
+        return Err("vendored grammar input is empty".into());
     }
     let mut files = files
         .into_iter()
         .map(|file| {
             let relative = file
-                .strip_prefix(&grammar)?
+                .strip_prefix(grammar)?
                 .to_str()
                 .ok_or("non-UTF8 grammar path")?
                 .replace('\\', "/");
@@ -53,7 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
     files.sort_by(|left, right| left.0.cmp(&right.0));
     let mut hash = Sha256::new();
-    hash.update(b"quanta-index:vendored-typescript-inputs:v1\0");
+    hash.update(format!("quanta-index:vendored-{tag}-inputs:v1\0").as_bytes());
     for (relative, file) in files {
         let content = std::fs::read(&file)?;
         hash.update(u64::try_from(relative.len())?.to_le_bytes());
@@ -63,8 +61,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     writeln!(
         output,
-        "cargo:rustc-env=QI_TYPESCRIPT_GRAMMAR_SHA256={:x}",
+        "cargo:rustc-env={environment_key}={:x}",
         hash.finalize()
     )?;
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
+    for (tag, environment_key) in [
+        ("typescript", "QI_TYPESCRIPT_GRAMMAR_SHA256"),
+        ("go", "QI_GO_GRAMMAR_SHA256"),
+    ] {
+        bind_grammar(
+            &manifest.join(format!("../../vendor/tree-sitter-{tag}")),
+            tag,
+            environment_key,
+        )?;
+    }
     Ok(())
 }
