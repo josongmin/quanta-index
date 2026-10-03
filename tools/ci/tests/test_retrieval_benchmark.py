@@ -207,6 +207,66 @@ def test_quality_batch_spec_and_product_contract_refuse_drift(tmp_path, monkeypa
         pairrun._quality_batch_input_snapshot(valid)
 
 
+def test_quality_matrix_groups_and_replay_custody(tmp_path, monkeypatch) -> None:
+    specs = [tmp_path / f"member-{index}.json" for index in range(4)]
+    for index, path in enumerate(specs):
+        path.write_text(
+            json.dumps({"repo": str(tmp_path / f"repo-{index // 2}")}), encoding="utf-8"
+        )
+    monkeypatch.setattr(pairrun, "load_spec", lambda path: json.loads(path.read_text()))
+    matrix = {
+        "schema_version": 1,
+        "member_specs": [str(path) for path in (specs[2], specs[0], specs[3], specs[1])],
+        "output_root": str(tmp_path / "matrix"),
+    }
+    groups = pairrun._quality_matrix_groups(matrix)
+    assert len(groups) == 2
+    assert [row[2] for row in groups] == [
+        sorted([str(specs[0]), str(specs[1])]),
+        sorted([str(specs[2]), str(specs[3])]),
+    ]
+    root = Path(matrix["output_root"])
+    root.mkdir()
+    rows = []
+    for group in groups:
+        name, repo, paths = group
+        batch_path = root / f"{name}-spec.json"
+        batch_path.write_bytes(
+            pairrun.canonical_bytes(pairrun._quality_matrix_batch(matrix, group))
+        )
+        child_manifest = root / name / "batch-manifest.json"
+        child_manifest.parent.mkdir()
+        child_manifest.write_text("{}", encoding="utf-8")
+        rows.append(
+            {
+                "name": name,
+                "repo": repo,
+                "member_specs": paths,
+                "batch_spec_sha256": pairrun.sha_file(batch_path),
+                "batch_manifest_sha256": pairrun.sha_file(child_manifest),
+            }
+        )
+    (root / "matrix-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "retrieval_quality_matrix_v1",
+                "qualification": "diagnostic_unqualified",
+                "matrix_spec_sha256": ev.digest(ev.canonical(matrix)),
+                "groups": rows,
+            }
+        ),
+        encoding="utf-8",
+    )
+    replayed = []
+    monkeypatch.setattr(pairrun, "verify_quality_batch", lambda batch: replayed.append(batch))
+    assert pairrun.verify_quality_matrix(matrix) == 0
+    assert len(replayed) == 2
+    (root / f"{groups[0][0]}-spec.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="batch custody changed"):
+        pairrun.verify_quality_matrix(matrix)
+
+
 def _clean_host_timeline_fixture():
     host = {
         "system": "Darwin",

@@ -11539,15 +11539,36 @@ def _quality_batch_input_snapshot(members: list[tuple]) -> list[dict]:
     return snapshot
 
 
-def run_quality_batch(batch: dict) -> int:
+def _quality_batch_model_assets_unchanged(members: list[tuple], expected: str) -> None:
+    for spec_path, spec, _suite, _pack, _source in members:
+        try:
+            _, observed = semble_adapter.resolve_model_revision(
+                Path(spec["semble_cache_root"]) / "hf",
+                semble_adapter.DEFAULT_MODEL_ID,
+                spec["semble_model_revision"],
+            )
+        except semble_adapter.AdapterError as exc:
+            raise RunError(f"quality batch Semble model cache changed: {spec_path}: {exc}") from exc
+        if observed != expected:
+            raise RunError(f"quality batch Semble model asset changed: {spec_path}")
+
+
+def run_quality_batch(
+    batch: dict,
+    *,
+    prevalidated: tuple[list[tuple[Path, dict, dict, dict, SourceSnapshot]], dict] | None = None,
+) -> int:
     """Run compatible blind packs through one index per product, then score separately.
 
     Native records remain union records. Each per-intent scoring view is
     revalidated against its original suite/pack; no projected view is saved
     or represented as a native capture.
     """
-    members, model = _quality_batch_members(batch)
+    members, model = prevalidated if prevalidated is not None else _quality_batch_members(batch)
     input_snapshot = _quality_batch_input_snapshot(members)
+    _quality_batch_model_assets_unchanged(members, model["model_asset_sha256"])
+    if source_oracle.census_parser_identity() != model["oracle_parser_identity"]:
+        raise RunError("quality batch oracle parser identity changed before capture")
     first_spec = members[0][1]
     out_root = Path(batch["output_root"]).resolve()
     source_repo = Path(first_spec["repo"]).resolve()
@@ -11660,6 +11681,8 @@ def run_quality_batch(batch: dict) -> int:
     }
     if _quality_batch_input_snapshot(members) != input_snapshot:
         raise RunError("quality batch member inputs changed during product capture")
+    _quality_batch_model_assets_unchanged(members, model["model_asset_sha256"])
+    verify_repo(repo, execution_pack["repository_commit"])
     if source_oracle.census_parser_identity() != model["oracle_parser_identity"]:
         raise RunError("quality batch oracle parser identity changed during capture")
     (stage / "batch-manifest.json").write_text(
@@ -11800,6 +11823,122 @@ def verify_quality_batch(batch: dict) -> int:
     return 0
 
 
+def _quality_matrix_groups(matrix: dict) -> list[tuple[str, str, list[str]]]:
+    by_repo: dict[str, list[str]] = {}
+    for name in matrix["member_specs"]:
+        spec = load_spec(Path(name))
+        repo = str(Path(spec["repo"]).resolve())
+        by_repo.setdefault(repo, []).append(name)
+    if len(by_repo) < 2 or any(len(paths) < 2 for paths in by_repo.values()):
+        raise RunError("quality matrix requires at least two repositories and two specs each")
+    groups = [
+        ("r-" + hashlib.sha256(repo.encode()).hexdigest()[:12], repo, sorted(paths))
+        for repo, paths in sorted(by_repo.items())
+    ]
+    if len({name for name, _repo, _paths in groups}) != len(groups):
+        raise RunError("quality matrix repository artifact name collision")
+    return groups
+
+
+def _quality_matrix_batch(matrix: dict, group: tuple[str, str, list[str]]) -> dict:
+    name, _repo, paths = group
+    return {
+        "schema_version": 1,
+        "member_specs": paths,
+        "output_root": str(Path(matrix["output_root"]).resolve() / name),
+    }
+
+
+def run_quality_matrix(matrix: dict) -> int:
+    """Prevalidate all groups, then publish one diagnostic batch per repository."""
+    root = Path(matrix["output_root"]).resolve()
+    if root.exists():
+        raise RunError("quality matrix output root already exists")
+    driver_repo = Path(__file__).resolve().parents[3]
+    groups = _quality_matrix_groups(matrix)
+    prepared = []
+    for group in groups:
+        batch = _quality_matrix_batch(matrix, group)
+        repo = Path(group[1])
+        if root in (repo, driver_repo) or repo in root.parents or driver_repo in root.parents:
+            raise RunError(
+                "quality matrix output root must be outside source and driver repositories"
+            )
+        members, model = _quality_batch_members(batch)
+        _quality_batch_input_snapshot(members)
+        preflight_daemon_socket_paths(
+            Path(batch["output_root"] + ".staging") / "quanta",
+            members[0][1]["strategies"],
+        )
+        prepared.append((group, batch, (members, model)))
+    root.mkdir(parents=True)
+    rows = []
+    for group, batch, validated in prepared:
+        name, repo, paths = group
+        batch_path = root / f"{name}-spec.json"
+        batch_path.write_bytes(canonical_bytes(batch))
+        run_quality_batch(batch, prevalidated=validated)
+        manifest_path = Path(batch["output_root"]) / "batch-manifest.json"
+        rows.append(
+            {
+                "name": name,
+                "repo": repo,
+                "member_specs": paths,
+                "batch_spec_sha256": sha_file(batch_path),
+                "batch_manifest_sha256": sha_file(manifest_path),
+            }
+        )
+    manifest = {
+        "schema_version": 1,
+        "kind": "retrieval_quality_matrix_v1",
+        "qualification": "diagnostic_unqualified",
+        "matrix_spec_sha256": digest(canonical(matrix)),
+        "groups": rows,
+    }
+    (root / "matrix-manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(json.dumps({"output_root": str(root), "repositories": len(rows)}))
+    return 0
+
+
+def verify_quality_matrix(matrix: dict) -> int:
+    root = Path(matrix["output_root"]).resolve()
+    if not root.is_dir():
+        raise RunError("quality matrix output root is missing")
+    manifest = _exact_keys(
+        read_json(root / "matrix-manifest.json"),
+        {"schema_version", "kind", "qualification", "matrix_spec_sha256", "groups"},
+        "quality matrix manifest",
+    )
+    groups = _quality_matrix_groups(matrix)
+    if (
+        manifest["schema_version"] != 1
+        or manifest["kind"] != "retrieval_quality_matrix_v1"
+        or manifest["qualification"] != "diagnostic_unqualified"
+        or manifest["matrix_spec_sha256"] != digest(canonical(matrix))
+        or not isinstance(manifest["groups"], list)
+        or len(manifest["groups"]) != len(groups)
+    ):
+        raise RunError("quality matrix manifest contract differs from its spec")
+    for group, row in zip(groups, manifest["groups"], strict=True):
+        name, repo, paths = group
+        batch = _quality_matrix_batch(matrix, group)
+        batch_path = root / f"{name}-spec.json"
+        child_manifest = root / name / "batch-manifest.json"
+        if read_json(batch_path) != batch or row != {
+            "name": name,
+            "repo": repo,
+            "member_specs": paths,
+            "batch_spec_sha256": sha_file(batch_path),
+            "batch_manifest_sha256": sha_file(child_manifest),
+        }:
+            raise RunError(f"quality matrix batch custody changed: {name}")
+        verify_quality_batch(batch)
+    print(json.dumps({"verified_repositories": len(groups)}))
+    return 0
+
+
 def cmd_quality_batch(args: argparse.Namespace) -> int:
     try:
         return run_quality_batch(load_quality_batch_spec(Path(args.spec)))
@@ -11811,6 +11950,15 @@ def cmd_quality_batch(args: argparse.Namespace) -> int:
 def cmd_quality_batch_verify(args: argparse.Namespace) -> int:
     try:
         return verify_quality_batch(load_quality_batch_spec(Path(args.spec)))
+    except (RunError, eb.BatchError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+
+def cmd_quality_matrix(args: argparse.Namespace, *, verify: bool) -> int:
+    try:
+        matrix = load_quality_batch_spec(Path(args.spec))
+        return verify_quality_matrix(matrix) if verify else run_quality_matrix(matrix)
     except (RunError, eb.BatchError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -11831,6 +11979,11 @@ def build_parser() -> argparse.ArgumentParser:
         "quality-batch-verify", help="replay native batch records against original member suites"
     )
     quality_batch_verify.add_argument("--spec", required=True)
+    for name, help_text in (
+        ("quality-matrix", "prevalidate and run one quality batch per repository"),
+        ("quality-matrix-verify", "replay every repository quality batch"),
+    ):
+        sub.add_parser(name, help=help_text).add_argument("--spec", required=True)
     merge = sub.add_parser("merge", help="merge per-system records")
     merge.add_argument("--repo", required=True)
     merge.add_argument("--suite", required=True)
@@ -11862,6 +12015,8 @@ def main(argv: list[str] | None = None) -> int:
         "verdict",
         "quality-batch",
         "quality-batch-verify",
+        "quality-matrix",
+        "quality-matrix-verify",
     ) and sys.version_info < (3, 10):
         print("ERROR: retrieval benchmark requires Python 3.10 or newer", file=sys.stderr)
         return 2
@@ -11877,6 +12032,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_quality_batch(args)
     if args.command == "quality-batch-verify":
         return cmd_quality_batch_verify(args)
+    if args.command in ("quality-matrix", "quality-matrix-verify"):
+        return cmd_quality_matrix(args, verify=args.command.endswith("-verify"))
     if args.command == "verdict":
         return cmd_verdict(args)
     return cmd_pair(args)
