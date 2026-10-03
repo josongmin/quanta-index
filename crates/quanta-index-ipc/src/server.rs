@@ -66,21 +66,11 @@ use rustix::net::{SocketFlags, socket_with};
 
 #[cfg(test)]
 use crate::codec::decode_request;
-use crate::codec::{
-    IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES, decode_request_guarded, decode_response,
-    encode_request, encode_response,
-};
+use crate::codec::{decode_request_guarded, decode_response, encode_request, encode_response};
 use crate::counters::{IpcServerCounters, RequestEventSinkV1, RequestEventStageV1, RequestEventV1};
+use crate::error::{IpcError, IpcIoOperation, MAX_FRAME_BODY_BYTES};
+use crate::plane::IpcPlane;
 use crate::socket_access::PeerCredentials;
-
-/// Which daemon plane one server serves (S21-10). The transport names it
-/// so a dispatch context cannot misreport which socket carried a request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IpcPlane {
-    Query,
-    Control,
-    Ingest,
-}
 
 /// The kernel-derived dispatch context the transport creates for every
 /// request (S21-10 `DispatchContextV1`).
@@ -2183,7 +2173,7 @@ mod tests {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     use crate::admission::{DispatchSlots, IngressBudget, ServerAdmissionPolicy, SlotRefusal};
-    use crate::codec::MAX_FRAME_BODY_BYTES;
+    use crate::error::MAX_FRAME_BODY_BYTES;
 
     type TestRes = Result<(), String>;
 

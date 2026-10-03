@@ -335,7 +335,7 @@ pub quanta_index_sdk::SdkError::Remote::code: quanta_index_contract::ipc::error:
 pub quanta_index_sdk::SdkError::Remote::message: alloc::string::String
 pub quanta_index_sdk::SdkError::Remote::repair: core::option::Option<quanta_index_contract::ipc::error::QueryErrorRepair>
 pub quanta_index_sdk::SdkError::Serialization(alloc::string::String)
-pub quanta_index_sdk::SdkError::Transport(quanta_index_ipc::codec::IpcError)
+pub quanta_index_sdk::SdkError::Transport(quanta_index_ipc::error::IpcError)
 pub quanta_index_sdk::SdkError::Usage(alloc::string::String)
 impl core::error::Error for quanta_index_sdk::SdkError
 pub fn quanta_index_sdk::SdkError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>

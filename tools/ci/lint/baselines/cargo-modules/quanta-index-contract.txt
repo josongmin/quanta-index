@@ -218,7 +218,6 @@ crate quanta_index_contract
 │   │   ├── struct RuntimeSnapshotRecord: pub
 │   │   ├── struct RuntimeSnapshotRecordVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   ├── enum SearchCorpusBatchShapeErrorV1: pub
 │   │   ├── struct SearchCorpusIngestBatch: pub
 │   │   ├── struct SearchCorpusIngestBatchVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
@@ -228,18 +227,6 @@ crate quanta_index_contract
 │   │   ├── enum SearchCorpusSurfaceMutationConflictV1: pub
 │   │   ├── struct SearchCorpusTombstoneScope: pub
 │   │   ├── struct SearchCorpusTombstoneScopeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── enum SearchPlaneIngestIpcRequest: pub
-│   │   ├── struct SearchPlaneIngestIpcRequestEnvelope: pub
-│   │   ├── struct SearchPlaneIngestIpcRequestEnvelopeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct SearchPlaneIngestIpcRequestVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── enum SearchPlaneIngestIpcResponse: pub
-│   │   ├── struct SearchPlaneIngestIpcResponseEnvelope: pub
-│   │   ├── struct SearchPlaneIngestIpcResponseEnvelopeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct SearchPlaneIngestIpcResponseVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct SearchScopeKey: pub
 │   │   ├── struct SearchScopeKeyVisitor: pub(self)
@@ -272,7 +259,22 @@ crate quanta_index_contract
 │   │   ├── struct StructuralTreeRecord: pub
 │   │   ├── struct StructuralTreeRecordVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   └── mod payload_digest: pub(self)
+│   │   ├── mod envelope: pub(self)
+│   │   │   ├── enum SearchPlaneIngestIpcRequest: pub
+│   │   │   ├── struct SearchPlaneIngestIpcRequestEnvelope: pub
+│   │   │   ├── struct SearchPlaneIngestIpcRequestEnvelopeVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct SearchPlaneIngestIpcRequestVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── enum SearchPlaneIngestIpcResponse: pub
+│   │   │   ├── struct SearchPlaneIngestIpcResponseEnvelope: pub
+│   │   │   ├── struct SearchPlaneIngestIpcResponseEnvelopeVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   └── struct SearchPlaneIngestIpcResponseVisitor: pub(self)
+│   │   │       └── type Value: pub(self)
+│   │   ├── mod payload_digest: pub(self)
+│   │   └── mod validation: pub(self)
+│   │       └── enum SearchCorpusBatchShapeErrorV1: pub
 │   ├── mod ingest_observation: pub(self)
 │   │   ├── enum IngestObservationStatus: pub
 │   │   ├── struct IngestStageDurations: pub

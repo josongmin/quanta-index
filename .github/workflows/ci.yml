@@ -1,7 +1,8 @@
 name: ci
 
 # Historical manual rail only. GitHub Actions is disabled at repository level;
-# the replacement CI definition is .circleci/config.yml (project activation pending).
+# the active CI definition is .circleci/config.yml. Hosted qualification still
+# requires a passing exact-commit CircleCI run and its test-authority artifact.
 on:
   workflow_dispatch:
 

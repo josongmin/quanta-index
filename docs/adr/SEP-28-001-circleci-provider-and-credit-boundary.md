@@ -55,3 +55,10 @@ The former GitHub-only proof bundle dispatch, P00 hosted manifest, sanitizer,
 Miri, mutation, dependency and parity jobs are not reproduced by this CircleCI
 config. Their local commands remain available. Their absence from hosted
 CircleCI is an explicit coverage gap, not an implied pass.
+
+[QIT-09](../plans/jul-15-sota-test-hardening/tickets/QIT-09-circleci-provider-coverage.md)
+tracks provider execution, terminal GitHub status, the exact-commit promotion
+gate and the decision for each former Actions-only rail. A registered trigger,
+valid config, queued or failed-before-checkout job, or pending GitHub context
+does not establish hosted qualification. The current source must have passing
+regular jobs and the declared test-authority artifact before a GREEN claim.
