@@ -999,7 +999,7 @@ fn real_daemon_query_observation_off_preserves_results_and_marks_unmeasured() {
         ("disabled", QueryStageObservationPolicy::Disabled),
     ] {
         let session = boot_session_with_policy(&state.path().join(name), &identity, policy);
-        let (_receipt, _ack, _ingest) =
+        let (_receipt, _ack, _ingest, _sdk_timings) =
             publish_and_activate(&session, &batch, &identity, None).expect("publish");
         let mut routes = BTreeMap::new();
         for route in ["lexical", "semantic", "hybrid"] {
@@ -1078,7 +1078,7 @@ fn real_daemon_experimental_fetch_floor_matches_initial_probe_without_changing_d
             QueryStageObservationPolicy::Disabled,
             policy,
         );
-        let (_receipt, _ack, _ingest) =
+        let (_receipt, _ack, _ingest, _sdk_timings) =
             publish_and_activate(&session, &batch, &identity, None).expect("publish");
         for (top_k, fetch) in [1, 10, 100].into_iter().zip(expected) {
             let outcome = query_route(&RouteQuery {
@@ -1307,7 +1307,7 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
         history_max_generations: 8,
     };
     let session = DaemonSession::boot(&config).expect("daemon boots");
-    let (_receipt, _ack, _observation) =
+    let (_receipt, _ack, _observation, _sdk_timings) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     match query_route(&RouteQuery {
         client: session.client(),
@@ -1418,7 +1418,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         "query before activation must fail, got {premature:?}"
     );
 
-    let (receipt, ack, observation) =
+    let (receipt, ack, observation, sdk_timings) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     assert_eq!(observation.repo_id, identity.repo_id);
     assert_eq!(observation.revision_id, identity.revision_id);
@@ -1439,6 +1439,13 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             .is_some()
     );
     assert!(observation.lexical_build_ns.is_some());
+    let stages = observation
+        .lexical_stages
+        .as_ref()
+        .expect("lexical stages measured");
+    assert!(stages.seal_file_admission_ns.is_some());
+    assert!(sdk_timings.publish_ns > 0);
+    assert!(sdk_timings.activation_ns > 0);
     assert!(observation.finalize_ns.is_some());
     assert!(
         observation.activation_ns.is_none(),
@@ -1458,6 +1465,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     );
     assert!(replayed.semantic.is_none());
     assert!(replayed.lexical_build_ns.is_none());
+    assert!(replayed.lexical_stages.is_none());
     assert!(replayed.finalize_ns.is_none());
     assert!(replayed.activation_ns.is_none());
 
@@ -2048,7 +2056,7 @@ fn incomplete_symbol_profile_publishes_malformed_text_and_refuses_symbol_authori
     assert_eq!(assembly.empty_scopes, ["empty.ts"]);
     let state = tempfile::tempdir().expect("state");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (receipt, _activation, observation) =
+    let (receipt, _activation, observation, _sdk_timings) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish source facts");
     assert_eq!(receipt.accepted_replace_scopes, 7);
     assert_eq!(observation.repo_id, identity.repo_id);
@@ -2666,7 +2674,7 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
     let state = tempfile::tempdir().expect("state root");
     let state_root = state.path().join("daemon");
     let session = boot_session(&state_root, &identity);
-    let (_receipt, _ack, _observation) =
+    let (_receipt, _ack, _observation, _sdk_timings) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish");
     session.stop().expect("stop");
     // The used root still holds index data: a second boot must refuse it.
@@ -2747,7 +2755,7 @@ fn exact_symbol_name_public_route_preserves_case_homonyms_and_source_spans() {
     let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack, _observation) =
+    let (_receipt, _ack, _observation, _sdk_timings) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
 
     for (name, expected_paths) in [
@@ -2884,7 +2892,7 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
         .expect("units");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack, _observation) =
+    let (_receipt, _ack, _observation, _sdk_timings) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     let plan = plan_query(
         QueryInputPolicy::Native,
@@ -3004,7 +3012,7 @@ fn symbol_route_no_answer_is_typed_never_fake_success() {
         .expect("published units");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack, _observation) =
+    let (_receipt, _ack, _observation, _sdk_timings) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     let outcome = query_route(&RouteQuery {
         client: session.client(),
@@ -3120,7 +3128,7 @@ fn sentence_and_identifier_queries_anchor_the_same_definition_over_distractors()
         .expect("published units");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack, _observation) =
+    let (_receipt, _ack, _observation, _sdk_timings) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
 
     // The two policies produce distinct executed lexical requests for the
@@ -3230,7 +3238,7 @@ fn homonymous_symbols_stay_distinct_units_on_the_symbol_route() {
     );
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack, _observation) =
+    let (_receipt, _ack, _observation, _sdk_timings) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     let plan = plan_query(
         QueryInputPolicy::Native,

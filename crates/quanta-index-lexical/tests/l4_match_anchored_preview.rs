@@ -147,7 +147,7 @@ fn indexed_and_manual_preserve_fixed_original_focus_after_checkout_drift() -> Te
         std::fs::write(&source_file, &raw)?;
         let adapter = LexicalAdapter::with_state_root(dir.path().join("state"));
         let batch = batch(1, None, vec![file_scope("source.rs", &raw)?])?;
-        adapter.build_batch(&batch)?;
+        let _stages = adapter.build_batch(&batch)?;
         let view = adapter.open(
             &batch.repo_id,
             &batch.revision_id,
@@ -214,7 +214,7 @@ fn indexed_and_manual_preserve_overlapping_raw_witnesses() -> TestResult {
             file_scope("overflow.rs", &overflow)?,
         ],
     )?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -268,7 +268,7 @@ fn oversized_focus_and_path_only_keep_admitted_hit() -> TestResult {
     let raw = "x".repeat(241);
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("needle.rs", &raw)?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -304,7 +304,7 @@ fn synthetic_symbol_label_carries_no_source_excerpt_coordinates() -> TestResult 
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -328,7 +328,7 @@ fn request_output_slot_exhaustion_preserves_hits_and_retained_memory_lifetime() 
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -367,7 +367,7 @@ fn l4_preview_admission_skips_empty_regex_pages() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -397,7 +397,7 @@ fn l4_preview_admission_empty_pages_do_not_exhaust_output_slots() -> TestResult 
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -432,7 +432,7 @@ fn l4_preview_admission_unavailable_pages_do_not_exhaust_output_slots() -> TestR
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -484,7 +484,7 @@ fn optional_preview_refusal_preserves_selected_identity_score_and_order() -> Tes
             file_scope("c.rs", "needle context context")?,
         ],
     )?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -585,7 +585,7 @@ fn configured_regex_state_policy_cannot_be_bypassed_by_search_route_or_leaf_kind
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     for max_nfa_states in [6, 7] {
         let adapter = LexicalAdapter::with_state_root_and_policies(
             dir.path().to_path_buf(),
@@ -638,7 +638,7 @@ fn verify_only_regex_matches_through_both_search_routes() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle42")?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -717,7 +717,7 @@ fn strict_literal_policy_refuses_empty_alternatives_before_search() -> TestResul
         LexicalWriterPolicy::DEFAULT,
     );
     let batch = batch(1, None, vec![file_scope("source.rs", "needle42")?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -753,7 +753,7 @@ fn compiled_regex_byte_refusal_is_consistent_across_search_routes() -> TestResul
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -802,7 +802,7 @@ fn l4_preview_admission_skips_oversized_source_before_regex_compile() -> TestRes
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let raw = format!("needle{}", " ".repeat(65_536));
     let batch = batch(1, None, vec![file_scope("source.rs", &raw)?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -845,7 +845,7 @@ fn l4_preview_admission_oversized_row_does_not_refuse_other_selected_rows() -> T
             file_scope("b-small.rs", "needle")?,
         ],
     )?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -887,7 +887,7 @@ fn l4_unicode_regex_compilation_is_charged_before_selected_preview() -> TestResu
     let raw = format!("needle{}", "a".repeat(120));
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", &raw)?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,
@@ -924,7 +924,7 @@ fn l4_distinct_complex_regex_leaves_refuse_only_optional_preview() -> TestResult
     let raw = format!("needle{}", "a".repeat(120));
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let batch = batch(1, None, vec![file_scope("source.rs", &raw)?])?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let view = adapter.open(
         &batch.repo_id,
         &batch.revision_id,

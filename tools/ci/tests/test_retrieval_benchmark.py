@@ -55,7 +55,7 @@ def _clean_host_timeline_fixture():
     profile = {"fingerprint": pairrun._host_fingerprint(host)}
     payload = {
         "schema_version": 1,
-        "interval_ns": 5_000_000_000,
+        "interval_ns": 1_000_000_000,
         "started_ns": 100,
         "finished_ns": 10_000_000_100,
         "samples": [
@@ -132,6 +132,16 @@ def test_host_timeline_capture_keeps_probe_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pairrun, "_host_dynamic_probe", broken_probe)
     path = tmp_path / "timeline.json"
+    calls = 0
+
+    def first_success_then_failure(identity, override):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return copy.deepcopy(host)
+        return broken_probe(identity, override)
+
+    monkeypatch.setattr(pairrun, "_host_dynamic_probe", first_success_then_failure)
     with pairrun.HostTimeline(path, host, False):
         pass
     captured = json.loads(path.read_text())
@@ -810,6 +820,33 @@ def test_retrieval_diagnostic_v5_ingest_rejects_unbound_partial_replayed_or_forg
         mutate(forged)
         with pytest.raises(pairrun.RunError):
             pairrun._validate_ingest_diagnostic(forged, record)
+
+
+def test_ingest_lexical_stage_intervals_reject_overcount_and_missing_measurements():
+    record = {"captures": {"capture": {}}}
+    raw = _diagnostic_ingest_fixture(record)
+    raw["observation"]["lexical_build_ns"] = 100
+    stages = {
+        "preparation_ns": 10, "writer_mutation_ns": 20, "text_authority_ns": 10,
+        "file_authority_ns": 10, "seal_ns": 40, "seal_writer_commit_ns": 10,
+        "seal_merge_wait_ns": 10, "seal_commitment_ns": 15, "seal_file_admission_ns": 5,
+    }
+    raw["observation"]["lexical_stages"] = stages
+    pairrun._validate_ingest_diagnostic(raw, record, lexical_stage_contract=True)
+    for field, value in (
+        ("preparation_ns", 101), ("seal_writer_commit_ns", 40),
+        ("seal_file_admission_ns", 16), ("seal_ns", None),
+        ("writer_mutation_ns", True), ("file_authority_ns", 2**64),
+    ):
+        changed = copy.deepcopy(raw)
+        changed["observation"]["lexical_stages"][field] = value
+        with pytest.raises(pairrun.RunError, match="ingest lexical stages"):
+            pairrun._validate_ingest_diagnostic(changed, record, lexical_stage_contract=True)
+    for value in (None, {}, {**stages, "unsupported": 1}):
+        changed = copy.deepcopy(raw)
+        changed["observation"]["lexical_stages"] = value
+        with pytest.raises(pairrun.RunError):
+            pairrun._validate_ingest_diagnostic(changed, record, lexical_stage_contract=True)
     forged = json.loads(json.dumps(raw))
     forged["activation_ack"]["active"]["activation_token"]["activation_sequence"] = 2
     rebound = json.loads(json.dumps(record))
@@ -5251,6 +5288,28 @@ def test_merge_combines_disjoint_records_and_scores(tmp_path):
     )
 
 
+def test_merge_reuses_one_source_validation_without_weakening_record_checks(tmp_path, monkeypatch):
+    repo, _suite, _pack, suite_path, lex_path, sem_path, _files = _merge_fixture_v3(tmp_path)
+    validate = pairrun.validate_suite
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return validate(*args, **kwargs)
+
+    monkeypatch.setattr(pairrun, "validate_suite", counted)
+    pairrun.merge_records(repo, suite_path, [lex_path, sem_path])
+    assert calls == 1
+
+    forged = json.loads(lex_path.read_text(encoding="utf-8"))
+    forged["results"][0]["candidates"][0]["block_sha256"] = "0" * 64
+    lex_path.write_text(json.dumps(forged), encoding="utf-8")
+    with pytest.raises(ev.EvidenceError, match="block hash mismatch"):
+        pairrun.merge_records(repo, suite_path, [lex_path, sem_path])
+    assert calls == 2
+
+
 def test_v3_rescore_is_deterministic_under_row_order(tmp_path):
     # T13: scores never change with row order. (The merged record id still
     # commits to the exact input bytes; only scores are compared.)
@@ -6971,6 +7030,45 @@ def test_verdict_pair_only_green(tmp_path):
         verdict["provenance"]["quanta"]["source_sha"]
         == (st["manifest"]["provenance"]["quanta"]["source_sha"])
     )
+
+
+def test_verdict_rederives_suite_once_and_rejects_forged_candidate(tmp_path, monkeypatch):
+    st = _pair_stage(tmp_path)
+    validate = pairrun.validate_suite
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return validate(*args, **kwargs)
+
+    monkeypatch.setattr(pairrun, "validate_suite", counted)
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+    assert calls == 1
+
+    record_path = Path(st["rep_layouts"][0]["quanta"]["whole_file"])
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["results"][0]["candidates"][0]["block_sha256"] = "0" * 64
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
+    assert calls == 2
+
+
+def test_verdict_reads_large_semble_native_artifact_once(tmp_path, monkeypatch):
+    st = _pair_stage(tmp_path)
+    native_path = Path(st["rep_layouts"][0]["semble"]).parent / "native.json"
+    read = pairrun.read_json
+    native_reads = 0
+
+    def counted(path):
+        nonlocal native_reads
+        if Path(path) == native_path:
+            native_reads += 1
+        return read(path)
+
+    monkeypatch.setattr(pairrun, "read_json", counted)
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+    assert native_reads == 1
 
 
 def test_current_pair_rejects_legacy_phase_metrics(tmp_path):
@@ -14994,6 +15092,21 @@ def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp
         )
 
 
+def test_query_clock_comparator_excludes_only_policy_controlled_code_search_clocks():
+    trace = [
+        {"stage": "merge", "detail": "code_search.execution.mode=ordinary"},
+        {"stage": "merge", "detail": "code_search.execution.candidate_ns=123"},
+        {"stage": "merge", "detail": "code_search.execution.sort_page_ns=456"},
+        {"stage": "merge", "detail": "code_search.execution.preview_ns=789"},
+        {"stage": "merge", "detail": "code_search.execution.posting_probes=3"},
+        {"stage": "merge", "detail": "code_search.execution.candidate_ns_extra=1"},
+        {"stage": "merge", "detail": "hybrid.initial_fetch=10"},
+    ]
+    observed = overhead._without_code_search_work_clocks(trace)
+    assert observed == [trace[0], *trace[4:]]
+    assert trace[1:4] != observed[1:4]
+
+
 @pytest.mark.parametrize("parameter", ["timeout_secs", "cleanup_timeout_secs"])
 @pytest.mark.parametrize(
     "invalid", [10**400, -(10**400), float("inf"), float("nan"), True, 0, -1, None]
@@ -16385,3 +16498,117 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
     run["results"][0]["rank_unit"] = "symbol"
     with pytest.raises(ev.EvidenceError, match="distinct-file results"):
         ev.evaluate_paired_file_diagnostic(suite, {}, run, "semble-lexical-file", "lexical")
+
+
+def test_host_process_probe_exempts_only_owned_frozen_semble_run(monkeypatch):
+    driver = os.getpid()
+    adapter = Path("/tmp/frozen-semble-runner.pyz")
+    ps_rows = "\n".join(
+        [
+            f"{driver} 1 Sun Oct  4 12:00:00 2026 python run.py pair",
+            f"101 {driver} Sun Oct  4 12:00:01 2026 python {adapter} run --query-pack /tmp/pack.json --output-root /tmp/owned",
+            f"102 1 Sun Oct  4 12:00:02 2026 python {adapter} run --query-pack /tmp/pack.json --output-root /tmp/foreign",
+            f"103 {driver} Sun Oct  4 12:00:03 2026 cargo build",
+            "104 1 Sun Oct  4 12:00:04 2026 pytest tests/",
+        ]
+    )
+
+    def fake_run(command, **_kwargs):
+        if command[0] == "ps":
+            return SimpleNamespace(returncode=0, stdout=ps_rows)
+        assert command[:2] == ["pgrep", "-f"]
+        matches = {
+            "cargo": "103\n",
+            "semble": "101\n102\n",
+            "pytest": "104\n",
+        }.get(command[2], "")
+        return SimpleNamespace(returncode=0 if matches else 1, stdout=matches)
+
+    monkeypatch.setattr(pairrun.shutil, "which", lambda name: "/usr/bin/pgrep")
+    monkeypatch.setattr(pairrun.subprocess, "run", fake_run)
+    assert pairrun.find_competing_processes(owned_semble_adapter=adapter) == {
+        "cargo": [103],
+        "semble": [102],
+        "pytest": [104],
+    }
+    assert pairrun.find_competing_processes()["semble"] == [101, 102]
+
+
+def test_host_process_probe_keeps_owned_semble_run_clean(monkeypatch):
+    driver = os.getpid()
+    adapter = Path("/tmp/frozen-semble-runner.pyz")
+    ps_rows = "\n".join(
+        [
+            f"{driver} 1 Sun Oct  4 12:00:00 2026 python run.py pair",
+            f"101 {driver} Sun Oct  4 12:00:01 2026 python {adapter} run --query-pack /tmp/pack.json --output-root /tmp/owned",
+        ]
+    )
+
+    def fake_run(command, **_kwargs):
+        if command[0] == "ps":
+            return SimpleNamespace(returncode=0, stdout=ps_rows)
+        return SimpleNamespace(
+            returncode=0 if command[2] == "semble" else 1,
+            stdout="101\n" if command[2] == "semble" else "",
+        )
+
+    monkeypatch.setattr(pairrun.shutil, "which", lambda name: "/usr/bin/pgrep")
+    monkeypatch.setattr(pairrun.subprocess, "run", fake_run)
+    assert pairrun.find_competing_processes(owned_semble_adapter=adapter) == {"none": []}
+
+
+def test_host_process_probe_does_not_exempt_reused_pid_or_wrong_adapter(monkeypatch):
+    driver = os.getpid()
+    adapter = Path("/tmp/frozen-semble-runner.pyz")
+    ps_rows = "\n".join(
+        [
+            f"{driver} 1 Sun Oct  4 12:00:00 2026 python run.py pair",
+            f"101 {driver} Sun Oct  4 12:00:01 2026 python /tmp/other-semble-runner.pyz run --query-pack /tmp/pack.json --output-root /tmp/other",
+        ]
+    )
+
+    def fake_run(command, **_kwargs):
+        if command[0] == "ps":
+            return SimpleNamespace(returncode=0, stdout=ps_rows)
+        return SimpleNamespace(returncode=0 if command[2] == "semble" else 1, stdout="101\n" if command[2] == "semble" else "")
+
+    monkeypatch.setattr(pairrun.shutil, "which", lambda name: "/usr/bin/pgrep")
+    monkeypatch.setattr(pairrun.subprocess, "run", fake_run)
+    assert pairrun.find_competing_processes(owned_semble_adapter=adapter) == {"semble": [101]}
+
+
+@pytest.mark.parametrize("failure", ["pgrep", "ps", "race", "drift"])
+def test_host_process_probe_fails_closed_when_process_identity_unavailable(monkeypatch, failure):
+    adapter = Path("/tmp/frozen-semble-runner.pyz")
+    semble_calls = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal semble_calls
+        if command[0] == "ps":
+            if failure == "ps":
+                return SimpleNamespace(returncode=1, stdout="")
+            if failure == "race":
+                return SimpleNamespace(returncode=0, stdout="")
+            driver = os.getpid()
+            return SimpleNamespace(
+                returncode=0,
+                stdout="\n".join(
+                    [
+                        f"{driver} 1 Sun Oct  4 12:00:00 2026 python run.py pair",
+                        f"101 {driver} Sun Oct  4 12:00:01 2026 python {adapter} run --query-pack /tmp/pack.json --output-root /tmp/owned",
+                    ]
+                ),
+            )
+        if failure == "pgrep":
+            return SimpleNamespace(returncode=2, stdout="")
+        if command[2] == "semble":
+            semble_calls += 1
+            if failure == "drift" and semble_calls == 2:
+                return SimpleNamespace(returncode=1, stdout="")
+            return SimpleNamespace(returncode=0, stdout="101\n")
+        return SimpleNamespace(returncode=1, stdout="")
+
+    monkeypatch.setattr(pairrun.shutil, "which", lambda name: "/usr/bin/pgrep")
+    monkeypatch.setattr(pairrun.subprocess, "run", fake_run)
+    expected = {"ps": "unavailable"} if failure in ("ps", "race") else {"pgrep": "unavailable"}
+    assert pairrun.find_competing_processes(owned_semble_adapter=adapter) == expected

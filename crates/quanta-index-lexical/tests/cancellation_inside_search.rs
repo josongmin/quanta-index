@@ -135,7 +135,7 @@ fn seeded() -> Result<(tempfile::TempDir, LexicalAdapter), Box<dyn Error>> {
         RegexMatchCachePolicy::DEFAULT,
         LexicalWriterPolicy::DEFAULT,
     );
-    adapter.build_batch(&sealed_batch()?)?;
+    let _stages = adapter.build_batch(&sealed_batch()?)?;
     Ok((dir, adapter))
 }
 

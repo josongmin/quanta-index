@@ -297,7 +297,8 @@ fn delta_keeps_its_proved_base_from_reclaim_until_seal() -> TestResult {
     let root = dir.path().to_path_buf();
     let base = ManifestGeneration::new(1);
     let target = ManifestGeneration::new(2);
-    LexicalAdapter::with_state_root(root.clone()).build_batch(&base_batch(base)?)?;
+    let _stages = LexicalAdapter::with_state_root(root.clone())
+        .build_batch(&base_batch(base)?)?;
 
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -362,11 +363,11 @@ fn delta_generation_inherits_unmutated_base_scopes() -> TestResult {
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
 
-    adapter.build_batch(&base_batch(g1)?)?;
+    let _stages = adapter.build_batch(&base_batch(g1)?)?;
     assert_hits(&adapter, g1, ALPHA_MARKER, &["chunk-alpha"], "base")?;
     assert_hits(&adapter, g1, BETA_MARKER, &["chunk-beta"], "base")?;
 
-    adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let _stages = adapter.build_batch(&delta_batch(g2, g1)?)?;
     assert_hits(&adapter, g2, ALPHA_MARKER, &["chunk-alpha"], "delta")?;
     assert_hits(&adapter, g2, BETA_MARKER_V2, &["chunk-beta"], "delta")?;
     assert_hits(&adapter, g2, BETA_MARKER, &[], "delta")?;
@@ -385,11 +386,11 @@ fn delta_generation_inherits_base_when_a_sidecar_authority_lands_first() -> Test
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
 
-    adapter.build_batch(&base_batch(g1)?)?;
+    let _stages = adapter.build_batch(&base_batch(g1)?)?;
     assert_hits(&adapter, g1, ALPHA_MARKER, &["chunk-alpha"], "base")?;
 
     let _receipt = adapter.publish_batch(&recency_batch(g2))?;
-    adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let _stages = adapter.build_batch(&delta_batch(g2, g1)?)?;
 
     assert_hits(
         &adapter,
@@ -517,11 +518,11 @@ fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
 
-    adapter.build_batch(&base_batch_with_filler(g1, COST_FIXTURE_FILLER_SCOPES)?)?;
+    let _stages = adapter.build_batch(&base_batch_with_filler(g1, COST_FIXTURE_FILLER_SCOPES)?)?;
     let base_dir = generation_dir(dir.path(), g1)?;
     let (base_inodes, base_bytes) = inodes_and_bytes(&base_dir)?;
 
-    adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let _stages = adapter.build_batch(&delta_batch(g2, g1)?)?;
     let delta_dir = generation_dir(dir.path(), g2)?;
     let (fresh_bytes, fresh_entries) = bytes_not_shared_with(&delta_dir, &base_inodes)?;
 
@@ -660,7 +661,7 @@ fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult
     let g2 = ManifestGeneration::new(2);
 
     let start = Instant::now();
-    adapter.build_batch(&base_batch_with_filler(g1, filler_scopes)?)?;
+    let _stages = adapter.build_batch(&base_batch_with_filler(g1, filler_scopes)?)?;
     let base_ms = start.elapsed().as_millis();
     let base_dir = generation_dir(dir.path(), g1)?;
     let (base_inodes, base_bytes) = inodes_and_bytes(&base_dir)?;
@@ -705,7 +706,7 @@ fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult
     let second_preflight_read = coverage_read_delta(after_first_preflight, after_second_preflight)?;
     let before_seal = adapter.seal_commitment_stats()?;
     let start = Instant::now();
-    adapter.build_batch(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
     let build_ms = start.elapsed().as_millis();
     let after_build = adapter.coverage_read_stats()?;
     let build_read = coverage_read_delta(after_second_preflight, after_build)?;
@@ -942,7 +943,7 @@ fn delta_generation_does_not_mutate_base_text_authority_sidecars() -> TestResult
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
 
-    adapter.build_batch(&base_batch(g1)?)?;
+    let _stages = adapter.build_batch(&base_batch(g1)?)?;
     let base_dir = generation_dir(dir.path(), g1)?;
     let base_files: Vec<std::path::PathBuf> = text_authority_files(&base_dir)?
         .into_iter()
@@ -950,7 +951,7 @@ fn delta_generation_does_not_mutate_base_text_authority_sidecars() -> TestResult
         .collect();
     let before = sidecar_facts(&base_files)?;
 
-    adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let _stages = adapter.build_batch(&delta_batch(g2, g1)?)?;
     let after = sidecar_facts(&base_files)?;
 
     if before != after {
@@ -1035,7 +1036,7 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
     let g9 = ManifestGeneration::new(9);
 
     // Base: alpha + beta + fillers.
-    adapter.build_batch(&base_batch_with_filler(g1, FILLERS)?)?;
+    let _stages = adapter.build_batch(&base_batch_with_filler(g1, FILLERS)?)?;
 
     // Delta: replace beta, tombstone filler 7, add a brand-new scope.
     let mut delta = delta_batch(g2, g1)?;
@@ -1061,7 +1062,7 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
             },
         });
     current_source_fixture::finish_batch(&mut delta)?;
-    adapter.build_batch(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
 
     // Oracle: the same final content, built fresh with no base.
     let mut oracle = base_batch_with_filler(g9, FILLERS)?;
@@ -1088,7 +1089,7 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
             .cmp(right.coverage.source.file.repo_relative_path.as_str())
     });
     current_source_fixture::finish_batch(&mut oracle)?;
-    adapter.build_batch(&oracle)?;
+    let _stages = adapter.build_batch(&oracle)?;
 
     let probes: Vec<(&str, LqLeaf)> = vec![
         (
@@ -1179,7 +1180,7 @@ fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
     let g2 = ManifestGeneration::new(2);
     let g9 = ManifestGeneration::new(9);
 
-    adapter.build_batch(&base_batch_with_filler(g1, FILLERS)?)?;
+    let _stages = adapter.build_batch(&base_batch_with_filler(g1, FILLERS)?)?;
     let after_base = adapter.text_authority_update_stats()?;
     let total_docs = u64::try_from(FILLERS.saturating_add(2))?;
     if after_base
@@ -1199,7 +1200,7 @@ fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
     }
 
     let delta_started = std::time::Instant::now();
-    adapter.build_batch(&delta_batch(g2, g1)?)?;
+    let _stages = adapter.build_batch(&delta_batch(g2, g1)?)?;
     let delta_wall = delta_started.elapsed();
     let after_delta = adapter.text_authority_update_stats()?;
     let delta_work = TextAuthorityUpdateStats {
@@ -1256,7 +1257,7 @@ fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
     });
     current_source_fixture::finish_batch(&mut full)?;
     let full_started = std::time::Instant::now();
-    adapter.build_batch(&full)?;
+    let _stages = adapter.build_batch(&full)?;
     let full_wall = full_started.elapsed();
     let after_full = adapter.text_authority_update_stats()?;
     let full_work = after_full

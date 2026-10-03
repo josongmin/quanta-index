@@ -147,7 +147,7 @@ fn inventory_quarantines_untrusted_directories_and_never_reads_content() -> Test
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let g1 = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(g1)?)?;
+    let _stages = adapter.build_batch(&sealed_batch(g1)?)?;
     let sealed_dir = generation_dir(&root, g1);
     let family_dir = sealed_dir
         .parent()

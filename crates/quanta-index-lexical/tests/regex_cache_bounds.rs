@@ -137,7 +137,7 @@ fn adapter_of(
         policy,
         LexicalWriterPolicy::DEFAULT,
     );
-    adapter.build_batch(&sealed_batch_of(docs)?)?;
+    let _stages = adapter.build_batch(&sealed_batch_of(docs)?)?;
     Ok(adapter)
 }
 

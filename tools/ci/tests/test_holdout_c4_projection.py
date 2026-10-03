@@ -129,7 +129,7 @@ def test_fixed_cohort_rejects_malformed_id_and_non_boolean_mode(tmp_path, monkey
         )
 
 
-def test_fixed_cohort_osa1_default_projection_regenerates_pack(tmp_path, monkeypatch):
+def _osa1_suite(tmp_path, monkeypatch):
     release, capsule, checkout = _fixture(tmp_path, monkeypatch)
     gold = holdout_c4._read(capsule / "gold.json")
     blind = holdout_c4._read(capsule / "blind.json")
@@ -150,6 +150,11 @@ def test_fixed_cohort_osa1_default_projection_regenerates_pack(tmp_path, monkeyp
     fresh, _pack, _report = holdout_c4.derive(
         release, capsule, checkout, "declaration_name_osa1_casefold"
     )
+    return checkout, fresh
+
+
+def test_fixed_cohort_osa1_default_projection_regenerates_pack(tmp_path, monkeypatch):
+    checkout, fresh = _osa1_suite(tmp_path, monkeypatch)
     legacy = copy.deepcopy(fresh)
     legacy["suite_id"] += "-legacy"
     legacy["routes"] = ["lexical", "semble-lexical-file"]
@@ -167,3 +172,35 @@ def test_fixed_cohort_osa1_default_projection_regenerates_pack(tmp_path, monkeyp
     )
     with pytest.raises(ValueError, match="legacy ordinary-file typo mode differs"):
         _project(checkout, fresh, wrong_selector, default_file_typo=True)
+
+
+def test_fresh_osa1_ordinary_file_projects_complete_cohort(tmp_path, monkeypatch):
+    checkout, fresh = _osa1_suite(tmp_path, monkeypatch)
+    suite, pack, lineage = holdout_c4.project_ordinary_file_osa1(
+        checkout, fresh, suite_id="toy-new-full-ordinary-osa1"
+    )
+    assert [row["task_id"] for row in suite["tasks"]] == [row["task_id"] for row in fresh["tasks"]]
+    assert suite["routes"] == ["lexical", "semble-lexical-file"]
+    assert suite["tasks"][0]["source_oracle"] == fresh["tasks"][0]["source_oracle"]
+    assert suite["tasks"][0]["file_judgments"] == fresh["tasks"][0]["file_judgments"]
+    assert (
+        suite["tasks"][0]["evaluation_contract"]["request_mode"] == query_plan.DEFAULT_FILE_SEARCH
+    )
+    assert pack["suite_commitment_sha256"] == evaluator.digest(evaluator.canonical(suite))
+    assert lineage["selected_task_ids"] == [row["task_id"] for row in fresh["tasks"]]
+
+
+def test_fresh_osa1_ordinary_file_rejects_wrong_intent_or_route(tmp_path, monkeypatch):
+    checkout, fresh = _osa1_suite(tmp_path, monkeypatch)
+    changed = copy.deepcopy(fresh)
+    changed["tasks"][0]["category"] = "declaration_name_exact"
+    with pytest.raises(ValueError, match="requires explicit OSA1 tasks"):
+        holdout_c4.project_ordinary_file_osa1(
+            checkout, changed, suite_id="toy-new-full-ordinary-osa1"
+        )
+    changed = copy.deepcopy(fresh)
+    changed["routes"] = ["lexical", "semble-lexical-file"]
+    with pytest.raises(ValueError, match="validated lexical OSA1 suite"):
+        holdout_c4.project_ordinary_file_osa1(
+            checkout, changed, suite_id="toy-new-full-ordinary-osa1"
+        )

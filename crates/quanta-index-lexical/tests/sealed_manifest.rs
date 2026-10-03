@@ -357,7 +357,7 @@ fn sealed_generation_with_overlays(
     body: &str,
 ) -> TestResult {
     expect_overlays_landed(publish_overlays(adapter, generation, label)?)?;
-    adapter.build_batch(&sealed_batch(generation, body)?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, body)?)?;
     Ok(())
 }
 
@@ -367,7 +367,7 @@ fn point_inventory_matches_full_inventory_for_digest_and_family_symlink() -> Tes
     let root = temp.path().join("lexical");
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn point_inventory() {}")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn point_inventory() {}")?)?;
     let exact = identity(generation);
     if !adapter.inventory_sealed_generation_identity(&exact)? {
         return Err("point inventory missed an intact sealed generation".into());
@@ -400,7 +400,7 @@ fn point_inventory_reports_control_file_read_failures() -> TestResult {
     let root = temp.path().join("lexical");
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn point_inventory_io() {}")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn point_inventory_io() {}")?)?;
     if !adapter.inventory_sealed_generation_identity(&identity(generation))?
         || adapter.inventory_sealed_generations()?.sealed.len() != 1
     {
@@ -598,8 +598,8 @@ fn both_doors_refuse_a_sidecar_that_does_not_match_the_manifest() -> TestResult 
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
     let stale_generation = ManifestGeneration::new(2);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
-    adapter.build_batch(&sealed_batch(
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(
         stale_generation,
         "fn two() { sealed_needle other }",
     )?)?;
@@ -666,7 +666,7 @@ fn both_doors_refuse_an_index_commit_other_than_the_sealed_one() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let meta = generation_dir(&root, generation).join(TANTIVY_META);
     let original = std::fs::read(&meta)?;
     // Same JSON, different bytes: whitespace Tantivy tolerates, the manifest does not.
@@ -691,7 +691,7 @@ fn a_sealed_identity_without_a_manifest_is_refused_by_both_doors() -> TestResult
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let manifest = generation_dir(&root, generation).join(MANIFEST);
     let original = std::fs::read(&manifest)?;
     std::fs::remove_file(&manifest)?;
@@ -713,7 +713,7 @@ fn an_identity_that_does_not_match_the_manifest_is_refused() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let dir = generation_dir(&root, generation);
     let identity_path = dir.join(IDENTITY);
     let original = std::fs::read(&identity_path)?;
@@ -848,7 +848,7 @@ fn both_doors_refuse_trailing_bytes_after_a_valid_sealed_manifest() -> TestResul
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let path = generation_dir(&root, generation).join(MANIFEST);
     let mut bytes = std::fs::read(&path)?;
     bytes.push(0xff);
@@ -887,7 +887,7 @@ fn both_doors_refuse_missing_changed_or_uncommitted_ranked_keys() -> TestResult 
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let dir = generation_dir(&root, generation);
     let entries = std::fs::read_dir(&dir)?.collect::<Result<Vec<_>, _>>()?;
     let tables: Vec<_> = entries
@@ -1009,7 +1009,7 @@ fn both_doors_refuse_an_overlay_the_seal_did_not_commit_to() -> TestResult {
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
     let donor = ManifestGeneration::new(2);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     sealed_generation_with_overlays(&adapter, donor, "donor", "fn two() { sealed_needle }")?;
     expect_admitted(&knock(&adapter, generation), "intact")?;
     let dir = generation_dir(&root, generation);
@@ -1043,7 +1043,7 @@ fn both_doors_refuse_uncommitted_dangling_overlay_links() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let dir = generation_dir(&root, generation);
     for name in OVERLAY_FILES {
         let path = dir.join(name);
@@ -1148,7 +1148,7 @@ fn segment_files_are_length_proved_at_the_doors() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     expect_admitted(&knock(&adapter, generation), "intact")?;
     let dir = generation_dir(&root, generation);
     for path in segment_files(&dir)? {
@@ -1211,7 +1211,7 @@ fn a_same_length_segment_redirect_is_refused_and_quarantined() -> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let dir = generation_dir(temp.path(), generation);
     let segment = segment_files(&dir)?
         .into_iter()
@@ -1273,7 +1273,7 @@ fn a_same_length_flip_is_found_by_the_scrub_and_quarantines_the_generation() -> 
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let dir = generation_dir(&root, generation);
     let segment = segment_files(&dir)?
         .into_iter()
@@ -1391,7 +1391,7 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
         },
     ];
     for damaged_file in damaged_files {
-        adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
         let file = damaged_file(&dir)?;
         let what = file.display().to_string();
 
@@ -1486,7 +1486,7 @@ fn long_manifest_damage_still_records_a_durable_quarantine() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let dir = generation_dir(&root, generation);
     let manifest_path = dir.join(MANIFEST);
     let raw = std::fs::read(&manifest_path)?;
@@ -1560,7 +1560,7 @@ fn oversized_committed_control_files_are_refused_before_read() -> TestResult {
         let root = temp.path().to_path_buf();
         let adapter = LexicalAdapter::with_state_root(root.clone());
         let generation = ManifestGeneration::new(1);
-        adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
         let path = generation_dir(&root, generation).join(MANIFEST);
         let mut manifest: ciborium::Value =
             ciborium::from_reader(std::fs::read(&path)?.as_slice())?;
@@ -1621,7 +1621,7 @@ fn malformed_manifest_is_quarantined_by_door_reproof_and_scrub() -> TestResult {
         let root = temp.path().to_path_buf();
         let adapter = LexicalAdapter::with_state_root(root.clone());
         let generation = ManifestGeneration::new(1);
-        adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
         let dir = generation_dir(&root, generation);
         let path = dir.join(MANIFEST);
         let original = std::fs::read(&path)?;
@@ -1707,7 +1707,7 @@ fn an_intact_generation_scrubs_in_bounded_resumable_steps() -> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let before = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
@@ -1773,8 +1773,8 @@ fn malformed_completion_receipt_is_rescrubbed_without_blocking_other_candidates(
     let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
     let damaged = ManifestGeneration::new(81);
     let other = ManifestGeneration::new(82);
-    adapter.build_batch(&sealed_batch(damaged, "fn damaged() {}")?)?;
-    adapter.build_batch(&sealed_batch(other, "fn other() {}")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(damaged, "fn damaged() {}")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(other, "fn other() {}")?)?;
     let report = adapter.scrub(
         &identity(other),
         None,
@@ -1814,7 +1814,7 @@ fn a_caller_cannot_skip_the_scrub_prefix_with_an_unissued_cursor() -> TestResult
     let temp = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let result = adapter.scrub(
         &identity(generation),
         Some(IntegrityScrubCursorV1 { next_artifact: 1 }),
@@ -1845,7 +1845,7 @@ fn a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined() -> T
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let one_byte = IntegrityScrubBudgetV1 { max_bytes: 1 };
     let first = adapter.scrub(&identity(generation), None, one_byte)?;
     let IntegrityScrubOutcomeV1::Paused { cursor } = first.outcome else {
@@ -1888,7 +1888,7 @@ fn reclaim_and_quarantine_discard_of_other_generations_preserve_a_paused_scrub()
         ManifestGeneration::new(3),
     );
     for generation in [scrubbed, reclaimed, quarantined] {
-        adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     }
     let one_byte = IntegrityScrubBudgetV1 { max_bytes: 1 };
     let first = adapter.scrub(&identity(scrubbed), None, one_byte)?;
@@ -1973,8 +1973,8 @@ fn an_interrupted_reclaim_is_out_of_the_namespace_and_finished_once() -> TestRes
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let (first, second) = (ManifestGeneration::new(1), ManifestGeneration::new(2));
-    adapter.build_batch(&sealed_batch(first, "fn one() { sealed_needle }")?)?;
-    adapter.build_batch(&sealed_batch(second, "fn two() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(first, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(second, "fn two() { sealed_needle }")?)?;
     let reclaimed = adapter.reclaim_sealed_generation(&identity(first))?;
     if !matches!(
         reclaimed,
@@ -2032,7 +2032,7 @@ fn an_interrupted_overlay_publish_leaves_nothing_the_seal_commits_to() -> TestRe
     let leftover = dir.join(".repo-meta.cbor.tmp-99999-7");
     std::fs::write(&leftover, b"torn")?;
     let published = std::fs::read(dir.join("repo-meta.cbor"))?;
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     if leftover.exists() {
         return Err("the seal left a crashed publish's temporary in the sealed directory".into());
     }
@@ -2063,7 +2063,7 @@ fn a_generation_that_indexed_nothing_seals_openable() -> TestResult {
     let mut empty = sealed_batch(generation, "unused")?;
     empty.replace_scopes.clear();
     current_source_fixture::finish_batch(&mut empty)?;
-    adapter.build_batch(&empty)?;
+    let _stages = adapter.build_batch(&empty)?;
     let doors = knock(&adapter, generation);
     if let Err(err) = doors.validate {
         return Err(format!("validator refused an empty sealed generation: {err}").into());
@@ -2092,7 +2092,7 @@ fn both_doors_refuse_uncommitted_text_authority_entries() -> TestResult {
     let mut empty = sealed_batch(generation, "unused")?;
     empty.replace_scopes.clear();
     current_source_fixture::finish_batch(&mut empty)?;
-    adapter.build_batch(&empty)?;
+    let _stages = adapter.build_batch(&empty)?;
     let path = generation_dir(&root, generation).join(TEXT_AUTHORITY_DIR);
     symlink("missing-text-authority-target", &path)?;
     expect_refused(
@@ -2118,7 +2118,7 @@ fn coverage_pages_are_bound_at_both_doors_and_by_scrub() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let dir = generation_dir(&root, generation);
     let page = std::fs::read_dir(&dir)?
         .collect::<Result<Vec<_>, _>>()?
@@ -2182,7 +2182,7 @@ fn scrub_quarantines_a_tampered_coverage_root_before_page_expansion() -> TestRes
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let path = generation_dir(&root, generation).join("source-file-coverage.cbor");
     let original = std::fs::read(&path)?;
     let mut changed = original.clone();
@@ -2220,7 +2220,7 @@ fn older_formats_require_explicit_rebuild() -> TestResult {
         let root = temp.path().to_path_buf();
         let adapter = LexicalAdapter::with_state_root(root.clone());
         let generation = ManifestGeneration::new(1);
-        adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
         expect_admitted(&knock(&adapter, generation), "current format twelve")?;
         let manifest = generation_dir(&root, generation).join(MANIFEST);
         let raw = std::fs::read(&manifest)?;
@@ -2248,7 +2248,7 @@ fn oversized_sealed_manifest_requires_rebuild_at_every_door() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(1);
-    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
     let manifest = generation_dir(&root, generation).join(MANIFEST);
     let file = std::fs::OpenOptions::new().write(true).open(manifest)?;
     file.set_len(16 * 1024 * 1024 + 1)?;
@@ -2266,7 +2266,7 @@ fn a_dangling_sealed_identity_is_never_discarded_as_incomplete() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let generation = ManifestGeneration::new(81);
-    adapter.build_batch(&sealed_batch(generation, "fn sealed() { preserve_me }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn sealed() { preserve_me }")?)?;
     let dir = generation_dir(&root, generation);
     let identity_path = dir.join(IDENTITY);
     std::fs::remove_file(&identity_path)?;
@@ -2313,7 +2313,7 @@ fn an_invalid_quarantine_receipt_does_not_block_sibling_inventory() -> TestResul
     let damaged = ManifestGeneration::new(82);
     let healthy = ManifestGeneration::new(83);
     for generation in [damaged, healthy] {
-        adapter.build_batch(&sealed_batch(generation, "fn sealed() { sealed_needle }")?)?;
+        let _stages = adapter.build_batch(&sealed_batch(generation, "fn sealed() { sealed_needle }")?)?;
     }
     std::fs::write(
         generation_dir(&root, damaged).join(QUARANTINE_RECEIPT),
@@ -2353,7 +2353,7 @@ fn a_scrub_quarantine_does_not_stop_an_unrelated_generation_build() -> TestResul
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let damaged = ManifestGeneration::new(1);
     let unrelated = ManifestGeneration::new(2);
-    adapter.build_batch(&sealed_batch(damaged, "fn damaged() { sealed_needle }")?)?;
+    let _stages = adapter.build_batch(&sealed_batch(damaged, "fn damaged() { sealed_needle }")?)?;
     let manifest = generation_dir(&root, damaged).join(MANIFEST);
     let mut bytes = std::fs::read(&manifest)?;
     let last = bytes.last_mut().ok_or("empty sealed manifest")?;
@@ -2400,7 +2400,7 @@ fn a_scrub_quarantine_does_not_stop_an_unrelated_generation_build() -> TestResul
         let scrubbed = scrub
             .join()
             .map_err(|panic| format!("scrub thread panicked: {panic:?}"))??;
-        build
+        let _stages = build
             .join()
             .map_err(|panic| format!("build thread panicked: {panic:?}"))??;
         if !matches!(scrubbed.outcome, IntegrityScrubOutcomeV1::Corrupt { .. }) {

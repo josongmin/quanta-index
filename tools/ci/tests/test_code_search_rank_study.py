@@ -350,6 +350,29 @@ def test_partial_top_k_pool_is_excluded_and_preserves_original_quality_row():
     assert record == original
 
 
+def test_complete_pool_accepts_ordinary_mode_and_rejects_contradictory_modes():
+    artifact, record, pack, _ = fixture()
+    pages = artifact["results"][0]["collection"]["pages"]
+    for page in pages:
+        page["explanation"]["planner_trace"].append(
+            {"stage": "merge", "detail": "code_search.execution.mode=ordinary"}
+        )
+    validate(artifact, record, pack)
+    for bad in ("typo_fallback", "unknown", ""):
+        changed = copy.deepcopy(artifact)
+        changed["results"][0]["collection"]["pages"][0]["explanation"]["planner_trace"][
+            -1
+        ]["detail"] = f"code_search.execution.mode={bad}"
+        with pytest.raises(ValueError, match="ordinary execution mode"):
+            validate(changed, record, pack)
+    duplicate = copy.deepcopy(artifact)
+    duplicate["results"][0]["collection"]["pages"][0]["explanation"]["planner_trace"].append(
+        {"stage": "merge", "detail": "code_search.execution.mode=ordinary"}
+    )
+    with pytest.raises(ValueError, match="ordinary execution mode"):
+        validate(duplicate, record, pack)
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [

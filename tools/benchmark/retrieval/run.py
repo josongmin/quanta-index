@@ -29,7 +29,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
@@ -50,14 +49,15 @@ try:
         COMPLETE_JUDGMENT_POLICY,
         RUNNER_SCHEMA_VERSION,
         TOKENIZER_BUDGET_VERSION,
+        SourceSnapshot,
         canonical,
         digest,
         evaluate,
         evaluate_complete_scored_file_evidence,
         evaluate_paired_file_diagnostic,
-        load_evidence,
         qualified_query_family_ci,
         validate_comparison_contract,
+        validate_evidence_against_suite,
         validate_experiment_custody,
         validate_suite,
         verify_repo,
@@ -83,14 +83,15 @@ except ImportError:  # direct script invocation: import the sibling module
         COMPLETE_JUDGMENT_POLICY,
         RUNNER_SCHEMA_VERSION,
         TOKENIZER_BUDGET_VERSION,
+        SourceSnapshot,
         canonical,
         digest,
         evaluate,
         evaluate_complete_scored_file_evidence,
         evaluate_paired_file_diagnostic,
-        load_evidence,
         qualified_query_family_ci,
         validate_comparison_contract,
+        validate_evidence_against_suite,
         validate_experiment_custody,
         validate_suite,
         verify_repo,
@@ -102,7 +103,7 @@ except ImportError:  # direct script invocation: import the sibling module
     from proof_inventory import verify_inventory_authority  # noqa: E402
     from sdk_proof import build_summary_from_evidence  # noqa: E402
 
-from tools.benchmark import raw_archive
+from tools.benchmark import host_monitor, raw_archive
 from tools.benchmark.evidence import RawFile, parse_json, read_control, write_raw_file
 
 VERDICT_VERSION = 2
@@ -110,8 +111,8 @@ MANIFEST_VERSION = 2
 PILOT_OBSERVATIONS_FLOOR = 1000
 FRESH_ROOTS_FLOOR = 5
 FROZEN_TASKS_FLOOR = 20
-HOST_SAMPLE_INTERVAL_NS = 5_000_000_000
-HOST_SAMPLE_MAX_GAP_NS = 15_000_000_000
+HOST_SAMPLE_INTERVAL_NS = host_monitor.INTERVAL_NS
+HOST_SAMPLE_MAX_GAP_NS = host_monitor.MAX_GAP_NS
 RUNNABLE_STRATEGIES = tuple(s for s in CHUNK_STRATEGIES if s != "semble_native")
 SEMBLE_PINNED_VERSION = "0.6.0"
 SEMBLE_PROFILES = (
@@ -1715,7 +1716,9 @@ def host_probe() -> dict:
     return record
 
 
-def _host_dynamic_probe(identity: dict, override: bool) -> dict:
+def _host_dynamic_probe(
+    identity: dict, override: bool, owned_semble_adapter: Path | None = None
+) -> dict:
     """Refresh mutable state without repeatedly spawning rustc during timing."""
     power = read_power()
     return {
@@ -1723,7 +1726,7 @@ def _host_dynamic_probe(identity: dict, override: bool) -> dict:
             key: identity[key]
             for key in ("system", "release", "machine", "processor", "cpu_count", "python", "rustc")
         },
-        "concurrent_processes": find_competing_processes(),
+        "concurrent_processes": find_competing_processes(owned_semble_adapter=owned_semble_adapter),
         "thermal": read_thermal(),
         "power": power,
         "frequency": read_frequency(power),
@@ -1732,28 +1735,32 @@ def _host_dynamic_probe(identity: dict, override: bool) -> dict:
 
 
 class HostTimeline:
-    """Bounded periodic observations; probe failure never becomes a clean sample.
+    """Qualified probe adapter over the existing host reservation and scheduler.
 
-    This is sampled evidence, not continuous OS attestation. The qualification
-    gate rejects gaps over 15 seconds, including slow or stalled probes.
+    Thermal/power/frequency probes extend cooperative host facts; the existing
+    HostMonitor owns polling, resource bounds, reservation and worker teardown.
+    This remains sampled evidence, not continuous OS attestation.
     """
 
-    def __init__(self, path: Path, identity: dict, override: bool):
-        self.path = path
-        self.identity = identity
-        self.override = override
+    def __init__(self, path: Path, identity: dict, override: bool, *, owned_semble_adapter: Path | None = None):
+        self.path, self.identity, self.override = path, identity, override
+        self.owned_semble_adapter = owned_semble_adapter
         self.samples: list[dict] = []
         self.errors: list[str] = []
-        self.stop = threading.Event()
-        self.thread = threading.Thread(target=self._run, name="benchmark-host-probe", daemon=True)
+        self.monitor = host_monitor.HostMonitor(
+            path.with_suffix(".jsonl"),
+            "retrieval-host",
+            "qualified-speed",
+            sample_observer=self._sample,
+        )
 
     def _sample(self) -> None:
         started = time.monotonic_ns()
-        try:
-            probe = _host_dynamic_probe(self.identity, self.override)
-        except Exception as exc:
-            self.errors.append(f"{type(exc).__name__}: {exc}")
-            return
+        # HostMonitor captures and propagates this exception; no clean default.
+        probe = (
+            _host_dynamic_probe(self.identity, self.override, owned_semble_adapter=self.owned_semble_adapter)
+            if self.owned_semble_adapter is not None else _host_dynamic_probe(self.identity, self.override)
+        )
         self.samples.append(
             {
                 "started_ns": started,
@@ -1762,33 +1769,26 @@ class HostTimeline:
             }
         )
 
-    def _run(self) -> None:
-        while not self.stop.wait(HOST_SAMPLE_INTERVAL_NS / 1_000_000_000):
-            self._sample()
-
     def __enter__(self):
         self.started_ns = time.monotonic_ns()
-        self._sample()
-        self.thread.start()
+        self.monitor.start()
         return self
 
     def __exit__(self, exc_type, exc, traceback):
-        self.stop.set()
-        # Bound teardown even when a subprocess-backed probe stalls. A live
-        # worker cannot yield a valid timeline; do not read its mutable state.
-        self.thread.join(timeout=HOST_SAMPLE_MAX_GAP_NS / 1_000_000_000)
-        if self.thread.is_alive():
-            samples, errors = [], ["host probe did not stop within the coverage bound"]
-        else:
-            self._sample()
-            samples, errors = self.samples, self.errors
+        try:
+            self.monitor.finish(failed=exc_type is not None)
+        except Exception as error:
+            self.errors.append(f"{type(error).__name__}: {error}")
+        # A stuck worker owns mutable state and its reservation. Retain failed
+        # evidence without racing that worker or declaring the epoch complete.
+        live = self.monitor.thread is not None and self.monitor.thread.is_alive()
         payload = {
             "schema_version": 1,
             "interval_ns": HOST_SAMPLE_INTERVAL_NS,
             "started_ns": self.started_ns,
             "finished_ns": time.monotonic_ns(),
-            "samples": samples,
-            "errors": errors,
+            "samples": [] if live else self.samples,
+            "errors": self.errors,
         }
         self.path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -1823,7 +1823,7 @@ def validate_host_timeline(payload: object, profile: dict) -> None:
         if (
             type(begin) is not int
             or type(end) is not int
-            or not previous_end <= begin <= end <= finished
+            or not previous_end <= begin < end <= finished
             or begin - previous_start > HOST_SAMPLE_MAX_GAP_NS
             or end - begin > HOST_SAMPLE_MAX_GAP_NS
         ):
@@ -1965,29 +1965,111 @@ def read_power() -> dict:
     return {"status": "unavailable", "digest": None}
 
 
-def find_competing_processes() -> dict:
-    """Look for concurrent builds/benchmarks. Absence is recorded, not assumed."""
+def _ps_process_snapshot() -> dict[int, tuple[int, str, str]] | None:
+    """Read one PID/parent/start/argv view for an owned adapter exception."""
+    try:
+        completed = subprocess.run(
+            ["ps", "-ww", "-axo", "pid=,ppid=,lstart=,command="],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0 or len(completed.stdout) > 16 * 1024 * 1024:
+        return None
+    processes: dict[int, tuple[int, str, str]] = {}
+    for line in completed.stdout.splitlines():
+        fields = line.split(maxsplit=7)
+        if len(fields) != 8:
+            return None
+        try:
+            pid, ppid = int(fields[0]), int(fields[1])
+        except ValueError:
+            return None
+        if pid < 1 or ppid < 0 or pid in processes:
+            return None
+        # lstart is five fields. Keep it with the PID so a reused PID whose
+        # command changes between pgrep and ps cannot be silently admitted.
+        started = " ".join(fields[2:7])
+        argv = fields[7]
+        if not started or not argv:
+            return None
+        processes[pid] = (ppid, started, argv)
+    return processes
+
+
+def _is_owned_semble_process(
+    pid: int, processes: dict[int, tuple[int, str, str]], adapter: Path
+) -> bool:
+    """Only exempt this driver's frozen Semble adapter run, never its tools."""
+    row = processes.get(pid)
+    if row is None:
+        return False
+    argv = row[2]
+    path = re.escape(str(adapter))
+    if not (
+        re.search(rf"(?<!\S){path}(?=\s|$)", argv)
+        and re.search(r"(?<!\S)run(?=\s|$)", argv)
+        and "--query-pack" in argv.split()
+        and "--output-root" in argv.split()
+    ):
+        return False
+    seen = {pid}
+    parent = row[0]
+    while parent != os.getpid():
+        if parent < 1 or parent in seen or parent not in processes:
+            return False
+        seen.add(parent)
+        parent = processes[parent][0]
+    return True
+
+
+def find_competing_processes(*, owned_semble_adapter: Path | None = None) -> dict:
+    """Look for competing builds; exempt only an attested owned Semble run."""
     patterns = ["cargo", "rustc", "semble", "pytest", "run_benchmark", "speed_benchmark"]
     found: dict[str, list[int]] = {}
     if shutil.which("pgrep") is None:
         return {"pgrep": "unavailable"}
     own = os.getpid()
+    process_snapshot = None
     for pattern in patterns:
         try:
             completed = subprocess.run(
                 ["pgrep", "-f", pattern], capture_output=True, text=True, timeout=15
             )
         except (OSError, subprocess.SubprocessError):
-            found[pattern] = []
-            continue
+            return {"pgrep": "unavailable"}
+        if completed.returncode not in (0, 1):
+            return {"pgrep": "unavailable"}
+        if (completed.returncode == 0) != bool(completed.stdout.strip()):
+            return {"pgrep": "unavailable"}
         pids = []
         for line in completed.stdout.splitlines():
             try:
                 pid = int(line.strip())
             except ValueError:
-                continue
+                return {"pgrep": "unavailable"}
             if pid != own:
+                if pattern == "semble" and owned_semble_adapter is not None:
+                    if process_snapshot is None:
+                        process_snapshot = _ps_process_snapshot()
+                    if process_snapshot is None or pid not in process_snapshot:
+                        return {"ps": "unavailable"}
+                    if "semble" not in process_snapshot[pid][2]:
+                        return {"ps": "unavailable"}
+                    if _is_owned_semble_process(pid, process_snapshot, owned_semble_adapter):
+                        continue
                 pids.append(pid)
+        if pattern == "semble" and owned_semble_adapter is not None and completed.stdout.strip():
+            try:
+                repeated = subprocess.run(
+                    ["pgrep", "-f", pattern], capture_output=True, text=True, timeout=15
+                )
+            except (OSError, subprocess.SubprocessError):
+                return {"pgrep": "unavailable"}
+            if repeated.returncode != completed.returncode or repeated.stdout != completed.stdout:
+                return {"pgrep": "unavailable"}
         if pids:
             found[pattern] = sorted(pids)
     return found if found else {"none": []}
@@ -2149,7 +2231,20 @@ def merge_records(
         raise RunError("suite must be an object")
     if suite_payload.get("schema_version") != 3:
         raise RunError("merge requires a v3 suite")
-    suite, pack, _source = validate_suite(repo, suite_payload)
+    suite, pack, source = validate_suite(repo, suite_payload)
+    return _merge_validated_records(repo, suite, pack, source, record_paths)
+
+
+def _merge_validated_records(
+    repo: Path,
+    suite: dict,
+    pack: dict,
+    source: SourceSnapshot,
+    record_paths: list[Path],
+) -> tuple[dict, dict, dict]:
+    """Merge records within one independently validated suite pass."""
+    if not record_paths:
+        raise RunError("merge needs at least one record")
     provenance: dict = {}
     captures: dict = {}
     capture_sources: dict = {}
@@ -2158,7 +2253,7 @@ def merge_records(
     contracts: list[dict] = []
     validated_runs: list[dict] = []
     for path in record_paths:
-        run = _validate_single_record(repo, suite, pack, path)
+        run = _validate_single_record(repo, suite, pack, source, path)
         validated_runs.append(run)
         contracts.append(run["comparison_contract"])
         for capture_id, entry in run["captures"].items():
@@ -2234,37 +2329,12 @@ def merge_records(
     }
     if any(run.get("span_accounting_version") == 1 for run in validated_runs):
         combined["span_accounting_version"] = 1
-    # The merge itself must validate: re-run the evaluator over it.
-    with tempfile_record(combined) as merged_path:
-        _, _, checked = load_evidence(repo, suite_path, merged_path)
+    # Validate the merged rows and route coverage against the same source
+    # snapshot. The verdict builds a fresh snapshot before replaying this.
+    checked = validate_evidence_against_suite(repo, suite, pack, source, combined)
     if len(checked["results"]) != len(ordered):
         raise RunError("merged record failed evaluator re-validation")
     return suite, pack, combined
-
-
-class tempfile_record:
-    """Write a payload to a temp file for evaluator re-validation."""
-
-    def __init__(self, record: dict, suffix: str = ".json") -> None:
-        self.record = record
-        self.suffix = suffix
-        self.path: Path | None = None
-
-    def __enter__(self) -> Path:
-        import tempfile
-
-        handle, name = tempfile.mkstemp(prefix="retrieval-merge-", suffix=self.suffix)
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(self.record, stream, sort_keys=True)
-        self.path = Path(name)
-        return self.path
-
-    def __exit__(self, *exc: object) -> None:
-        if self.path is not None:
-            try:
-                self.path.unlink()
-            except OSError:
-                pass
 
 
 def percentile(sorted_samples: list[float], pct: float) -> float:
@@ -3758,13 +3828,13 @@ def _validate_explanation(
     observation_policy: str = "enabled",
 ) -> None:
     if value is None:
-        if version in (4, 5, 6) and route in ("lexical", "semantic", "hybrid"):
+        if version in (4, 5, 6, 7) and route in ("lexical", "semantic", "hybrid"):
             raise RunError(f"{where} is missing measured stage timings")
         return
     fields = {"request_id", "early_stop_reason", "engines_executed", "engines_touched", "strategy"}
     if version == 6:
         fields.add("planner_trace")
-    if version in (4, 5, 6):
+    if version in (4, 5, 6, 7):
         fields.add("stage_timings")
     detail = _exact_keys(value, fields, where)
     if detail["request_id"] is not None and (
@@ -3793,10 +3863,10 @@ def _validate_explanation(
             for entry in trace
         ):
             raise RunError(f"{where}.planner_trace is missing or malformed")
-    if version not in (4, 5, 6):
+    if version not in (4, 5, 6, 7):
         return
     timings = detail["stage_timings"]
-    if version in (5, 6) and observation_policy == "disabled":
+    if version in (5, 6, 7) and observation_policy == "disabled":
         if timings is not None:
             raise RunError(f"{where} disabled observation must be unmeasured, not zero/empty")
         if route in ("lexical", "semantic", "hybrid") and (
@@ -4230,7 +4300,9 @@ def _validate_ingest_request_identity(payload: object) -> dict:
     return identity
 
 
-def _validate_ingest_diagnostic(payload: object, record: dict) -> dict:
+def _validate_ingest_diagnostic(
+    payload: object, record: dict, *, lexical_stage_contract: bool = False
+) -> dict:
     """Bind transient stages to durable receipt/activation bytes, not self-reported totals.
 
     A fresh capture requires executed stages. Replay/partial/finalize-only are
@@ -4303,6 +4375,7 @@ def _validate_ingest_diagnostic(payload: object, record: dict) -> dict:
             "status",
             "semantic",
             "lexical_build_ns",
+            *({"lexical_stages"} if lexical_stage_contract else set()),
             "finalize_ns",
             "activation_ns",
         },
@@ -4384,6 +4457,44 @@ def _validate_ingest_diagnostic(payload: object, record: dict) -> dict:
         raise RunError("fresh ingest requires executed status and unmeasured separate activation")
     u64(observation["lexical_build_ns"], "ingest lexical build")
     u64(observation["finalize_ns"], "ingest finalize")
+    if lexical_stage_contract:
+        stages = _exact_keys(
+            observation["lexical_stages"],
+            {
+                "preparation_ns",
+                "writer_mutation_ns",
+                "text_authority_ns",
+                "file_authority_ns",
+                "seal_ns",
+                "seal_writer_commit_ns",
+                "seal_merge_wait_ns",
+                "seal_commitment_ns",
+                "seal_file_admission_ns",
+            },
+            "ingest lexical stages",
+        )
+        for key, value in stages.items():
+            u64(value, f"ingest lexical stages {key}")
+        outer = sum(
+            stages[key]
+            for key in (
+                "preparation_ns",
+                "writer_mutation_ns",
+                "text_authority_ns",
+                "file_authority_ns",
+                "seal_ns",
+            )
+        )
+        nested = sum(
+            stages[key]
+            for key in ("seal_writer_commit_ns", "seal_merge_wait_ns", "seal_commitment_ns")
+        )
+        if (
+            outer > observation["lexical_build_ns"]
+            or nested > stages["seal_ns"]
+            or stages["seal_file_admission_ns"] > stages["seal_commitment_ns"]
+        ):
+            raise RunError("ingest lexical stages exceed their containing interval")
     report = _exact_keys(
         observation["semantic"],
         {
@@ -4463,9 +4574,9 @@ def validate_retrieval_diagnostic(
         "results",
         "runner_timing_detail_ms",
     }
-    if isinstance(payload, dict) and payload.get("schema_version") in (5, 6):
+    if isinstance(payload, dict) and payload.get("schema_version") in (5, 6, 7):
         fields.update({"server_observation", "ingest"})
-    if isinstance(payload, dict) and payload.get("schema_version") == 6:
+    if isinstance(payload, dict) and payload.get("schema_version") in (6, 7):
         fields.add("hybrid_fetch_policy")
     diagnostic = _exact_keys(
         payload,
@@ -4479,7 +4590,7 @@ def validate_retrieval_diagnostic(
         raise RunError("retrieval diagnostic requires a valid record contract and digest")
     if (
         type(diagnostic["schema_version"]) is not int
-        or diagnostic["schema_version"] not in (2, 3, 4, 5, 6)
+        or diagnostic["schema_version"] not in (2, 3, 4, 5, 6, 7)
         or diagnostic["kind"] != "quanta_returned_window_diagnostic"
         or diagnostic["scope"] != "returned_window_only"
         or diagnostic["record_sha256"] != record_sha256
@@ -4491,20 +4602,23 @@ def validate_retrieval_diagnostic(
         raise RunError("retrieval diagnostic identity or contract mismatch")
     observation_policy = (
         _validate_server_observation(diagnostic["server_observation"])["query_stages"]
-        if diagnostic["schema_version"] in (5, 6)
+        if diagnostic["schema_version"] in (5, 6, 7)
         else "enabled"
     )
     if diagnostic["schema_version"] == 5:
         _validate_ingest_diagnostic(diagnostic["ingest"], record)
-    if diagnostic["schema_version"] == 6:
+    if diagnostic["schema_version"] in (6, 7):
         _validate_hybrid_fetch_policy(diagnostic["hybrid_fetch_policy"])
-        _validate_ingest_diagnostic(diagnostic["ingest"], record)
+        _validate_ingest_diagnostic(
+            diagnostic["ingest"], record, lexical_stage_contract=diagnostic["schema_version"] == 7
+        )
     detail = _exact_keys(
         diagnostic["runner_timing_detail_ms"],
         {
             "clock",
             "daemon_boot_and_readiness",
             "sdk_publish_and_activate_opaque",
+            *({"sdk_publish", "sdk_activate"} if diagnostic["schema_version"] == 7 else set()),
             "runner_record_assembly",
             "corpus_reverification",
             "daemon_shutdown",
@@ -4517,6 +4631,11 @@ def validate_retrieval_diagnostic(
         if key != "clock"
     ):
         raise RunError("retrieval diagnostic timing is invalid")
+    if diagnostic["schema_version"] == 7 and (
+        detail["sdk_publish"] + detail["sdk_activate"]
+        > detail["sdk_publish_and_activate_opaque"] + 0.01
+    ):
+        raise RunError("retrieval diagnostic SDK children exceed publish/activate interval")
     record_results = record.get("results")
     pack_tasks = pack.get("tasks")
     provenance = record.get("route_provenance")
@@ -4564,7 +4683,7 @@ def validate_retrieval_diagnostic(
             "candidates",
             "response",
         }
-        if diagnostic["schema_version"] in (3, 4, 5, 6):
+        if diagnostic["schema_version"] in (3, 4, 5, 6, 7):
             row_fields.add("response_kind")
         row = _exact_keys(
             row,
@@ -4605,7 +4724,7 @@ def validate_retrieval_diagnostic(
                 diagnostic["top_k"],
             )
             if (
-                diagnostic["schema_version"] == 6
+                diagnostic["schema_version"] in (6, 7)
                 and key[1] == "hybrid"
                 and row["response_kind"] == "returned_window"
             ):
@@ -4614,7 +4733,7 @@ def validate_retrieval_diagnostic(
                     trace, diagnostic["top_k"], diagnostic["hybrid_fetch_policy"]
                 )
             if (
-                diagnostic["schema_version"] in (4, 5, 6)
+                diagnostic["schema_version"] in (4, 5, 6, 7)
                 and key[1] in ("lexical", "semantic", "hybrid")
                 and row["response_kind"] != "sdk_failure"
             ):
@@ -4688,7 +4807,7 @@ def validate_retrieval_diagnostic(
                     or not is_finite_json_number(lane["raw_score"])
                 ):
                     raise RunError("retrieval diagnostic lane is invalid")
-                if diagnostic["schema_version"] in (3, 4, 5, 6) and not (
+                if diagnostic["schema_version"] in (3, 4, 5, 6, 7) and not (
                     lane_execution.get(lane["lane"], False)
                     or lane_execution.get(f"hybrid.{lane['lane']}", False)
                 ):
@@ -4994,7 +5113,7 @@ def run_quanta_strategy(
         sha_file(record_path),
         read_json(pack_path),
     )
-    if diagnostic["schema_version"] != 6 or diagnostic[
+    if diagnostic["schema_version"] != 7 or diagnostic[
         "server_observation"
     ] != server_observation_configuration(spec.get("query_stage_observation", "enabled")):
         raise RunError(
@@ -5399,7 +5518,9 @@ def _validate_manifest_shape(payload: object) -> dict:
     return manifest
 
 
-def _validate_single_record(repo: Path, suite: dict, pack: dict, path: Path) -> dict:
+def _validate_single_record(
+    repo: Path, suite: dict, pack: dict, source: SourceSnapshot, path: Path
+) -> dict:
     """Validate one historical v3/v4 or current v5 record against its pack."""
     raw = read_json(path)
     if not isinstance(raw, dict):
@@ -5413,9 +5534,7 @@ def _validate_single_record(repo: Path, suite: dict, pack: dict, path: Path) -> 
     expected_sha = digest(canonical_bytes(projected_pack))
     if raw.get("query_pack_sha256") != expected_sha:
         raise RunError(f"record {path} pack digest does not match its projected pack")
-    with tempfile_record(projected_suite, suffix=".suite.json") as suite_file:
-        _, _, run = load_evidence(repo, suite_file, path)
-    return run
+    return validate_evidence_against_suite(repo, projected_suite, projected_pack, source, raw)
 
 
 def _rep_segment(path: Path, root: Path) -> str:
@@ -5844,8 +5963,10 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             "warm_query",
             "unattributed",
         }
-        if schema_version == 2:
+        if schema_version in (2, 3):
             expected_phases.add("symbol_preflight")
+        if schema_version == 3:
+            expected_phases.update({"sdk_publish", "sdk_activate"})
         if protocol_mode:
             expected_phases.add("warmup")
     else:
@@ -5891,7 +6012,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
                     "observed_wrapped_call_ns",
                 }
             )
-    elif schema_version == 2:
+    elif schema_version in (2, 3):
         metric_keys.update(
             {
                 "symbol_count",
@@ -5917,9 +6038,10 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         where,
     )
     if (
-        system not in ("quanta", "semble")
+        type(schema_version) is not int
+        or system not in ("quanta", "semble")
         or (system == "semble" and schema_version not in (1, 2))
-        or (system == "quanta" and schema_version not in (1, 2))
+        or (system == "quanta" and schema_version not in (1, 2, 3))
     ):
         raise RunError(f"{where} has unknown schema/system")
     if system == "semble" and schema_version == 2:
@@ -5996,7 +6118,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             or metrics["observed_wrapped_call_ns"] < 0
         ):
             raise RunError(f"{where} has invalid observed wrapped-call duration")
-    if system == "quanta" and schema_version == 2:
+    if system == "quanta" and schema_version in (2, 3):
         try:
             symbol_coverage.validate_metrics(metrics, QUANTA_SYMBOL_GRAMMARS)
         except (ValueError, KeyError, TypeError) as exc:
@@ -6070,7 +6192,16 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
     total = metrics["total_ms"]
     if not is_finite_json_number(total) or total <= 0:
         raise RunError(f"{where}.total_ms must be finite and positive")
-    if not math.isclose(sum(phases.values()), total, rel_tol=1e-9, abs_tol=0.01):
+    nested_keys = (
+        {"sdk_publish", "sdk_activate"} if system == "quanta" and schema_version == 3 else set()
+    )
+    if (
+        nested_keys
+        and sum(phases[key] for key in nested_keys) > phases["embed_publish_seal_activate"] + 0.01
+    ):
+        raise RunError(f"{where} SDK children exceed publish/activate interval")
+    partition = sum(value for key, value in phases.items() if key not in nested_keys)
+    if not math.isclose(partition, total, rel_tol=1e-9, abs_tol=0.01):
         raise RunError(f"{where} phase sum differs from total")
     if protocol_mode:
         cold_duration = sum(cold.values())
@@ -7074,7 +7205,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         suite_payload = read_json(resolved["suite"])
         if not isinstance(suite_payload, dict):
             raise RunError("frozen suite is not an object")
-        suite, pack, _source = validate_suite(repo, suite_payload)
+        suite, pack, source = validate_suite(repo, suite_payload)
     except ValueError as exc:
         raise RunError(f"suite unverifiable; refusing verdict: {exc}") from exc
     try:
@@ -7137,9 +7268,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     }
     if parent_binding is not None:
         protocol_keys.add("delegated_cgroup_parent")
-    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") in (3, 4):
+    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") in (3, 4, 5):
         protocol_keys.update({"server_observation", "ingest_request_identity"})
-    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") == 4:
+    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") in (4, 5):
         protocol_keys.add("hybrid_fetch_policy")
     if isinstance(protocol_payload, dict) and "symbol_total_timeout_ms" in protocol_payload:
         protocol_keys.add("symbol_total_timeout_ms")
@@ -7163,7 +7294,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         root_digests = protocol_payload["query_protocol_sha256s"]
         protocol_shape_valid = protocol_shape_valid and (
             type(protocol_payload["lock_version"]) is int
-            and protocol_payload["lock_version"] in (2, 3, 4)
+            and protocol_payload["lock_version"] in (2, 3, 4, 5)
             and type(protocol_payload["retrieval_diagnostic_version"]) is int
             and protocol_payload["symbol_coverage_policy"]
             in ("require-complete", "allow-incomplete")
@@ -7213,15 +7344,15 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             and protocol_payload["execution_profiles_sha256"]
             == digest(canonical_bytes(protocol_payload["execution_profiles"]))
             and protocol_payload["retrieval_diagnostic_version"]
-            == {2: 4, 3: 5, 4: 6}.get(protocol_payload["lock_version"])
+            == {2: 4, 3: 5, 4: 6, 5: 7}.get(protocol_payload["lock_version"])
             and protocol_payload["rank_metric_k_policy"] == "declared_top_k_v1"
         )
         if protocol_shape_valid:
             try:
-                if protocol_payload["lock_version"] in (3, 4):
+                if protocol_payload["lock_version"] in (3, 4, 5):
                     _validate_server_observation(protocol_payload["server_observation"])
                     _validate_ingest_request_identity(protocol_payload["ingest_request_identity"])
-                if protocol_payload["lock_version"] == 4:
+                if protocol_payload["lock_version"] in (4, 5):
                     _validate_hybrid_fetch_policy(protocol_payload["hybrid_fetch_policy"])
                 profiles = protocol_payload["execution_profiles"]
                 if set(profiles) != {"quanta", "semble"}:
@@ -7345,7 +7476,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             pair_note("record_outside_rep_layout", ("T12", "T14"))
             continue
         try:
-            run = _validate_single_record(repo, suite, pack, path)
+            run = _validate_single_record(repo, suite, pack, source, path)
             system, strategy = _record_identity(run, f"record {path.name}")
         except (RunError, ValueError) as exc:
             pair_note(f"record_invalid: {exc}", ("T03", "T12"))
@@ -7411,9 +7542,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     if semble_rep0 is not None:
         for strategy in sorted(quanta_by_strategy):
             try:
-                _suite, _pack, merged = merge_records(
+                _suite, _pack, merged = _merge_validated_records(
                     repo,
-                    resolved["suite"],
+                    suite,
+                    pack,
+                    source,
                     [Path(quanta_by_strategy[strategy]), Path(semble_rep0)],
                 )
             except (RunError, ValueError):
@@ -7558,8 +7691,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             if sha_file(Path(path)) != artifacts["phase_metrics_digests"][ref]:
                 raise RunError("phase metrics digest differs from the capture manifest")
             metrics = _validate_phase_metrics(read_json(Path(path)), f"phase metrics {path}")
-            if metrics["schema_version"] != 2:
-                raise RunError("current pair replay requires phase metrics schema_version 2")
+            if metrics["schema_version"] not in ((2, 3) if metrics["system"] == "quanta" else (2,)):
+                raise RunError("current pair replay requires Quanta phase v2/v3 or Semble v2")
+            if metrics["system"] == "quanta" and protocol_payload.get("lock_version") == 5 and metrics["schema_version"] != 3:
+                raise RunError("protocol v5 requires measured Quanta phase schema v3")
             if metrics["system"] == "quanta":
                 _verify_symbol_coverage_corpus(metrics, corpus_payload)
                 bound_preflights.append(
@@ -7657,7 +7792,22 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         expected_storage = "memory" if entry["system"] == "semble" else "disk"
         if metrics["storage"]["index_storage"] != expected_storage:
             resource_ok = False
+    expected_semble_profile = protocol_payload.get("execution_profiles", {}).get("semble")
+    expected_query_sha256 = {
+        task["task_id"]: task["query_sha256"] for task in pack.get("tasks", [])
+    }
+    native_binding_fields = (
+        "actual_alpha_by_task",
+        "lane_call_counts",
+        "execution_events_sha256",
+        "function_identity",
+        "observed_wrapped_call_ns",
+        "rerank_applied",
+        "requested_alpha",
+    )
+    validated_semble_native: dict[str, dict] = {}
     for path in resolved["semble_native"]:
+        native = None
         try:
             rep = _rep_segment(Path(path), root)
             semble_records = [
@@ -7667,8 +7817,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             ]
             if len(semble_records) != 1:
                 raise RunError("Semble native artifact lacks one record owner")
-            metrics = resource_by_subject[sha_file(Path(semble_records[0]))]
             native = read_json(Path(path))
+            metrics = resource_by_subject[sha_file(Path(semble_records[0]))]
             stats = native.get("stats") if isinstance(native, dict) else None
             if not isinstance(stats, dict):
                 raise RunError("Semble native artifact lacks index statistics")
@@ -7679,13 +7829,6 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("Semble index memory attribution differs from native evidence")
         except (KeyError, RunError, ValueError, OSError):
             resource_ok = False
-
-    expected_semble_profile = protocol_payload.get("execution_profiles", {}).get("semble")
-    expected_query_sha256 = {
-        task["task_id"]: task["query_sha256"] for task in pack.get("tasks", [])
-    }
-    validated_semble_native: dict[str, dict] = {}
-    for path in resolved["semble_native"]:
         try:
             if not isinstance(expected_semble_profile, dict):
                 raise RunError("protocol lock lacks the Semble execution profile")
@@ -7701,7 +7844,6 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             phase = phase_by_record.get(record_digest)
             if not isinstance(phase, dict) or phase.get("schema_version") != 2:
                 raise RunError("Semble native artifact lacks current phase metrics")
-            native = read_json(Path(path))
             if not isinstance(native, dict):
                 raise RunError("Semble native artifact must be an object")
             semble_adapter.validate_native_profile_report(
@@ -7732,10 +7874,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     or native.get("cold_latency_ms") != phase["cold_latencies_ms"][route]
                 ):
                     raise RunError("Semble completed-response samples differ from phase metrics")
-            validated_semble_native[rep] = native
+            validated_semble_native[rep] = {
+                field: native.get(field) for field in native_binding_fields
+            }
         except (KeyError, RunError, ValueError, OSError) as exc:
             phase_ok = False
             pair_note(f"semble_native_actual_call_invalid:{exc}", ("T11", "T12"))
+        finally:
+            native = None
 
     for path in resolved["quanta_manifests"]:
         content = read_note(path, "quanta_manifest", ("T12",))
@@ -7812,7 +7958,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 bound_records.add(observed)
             diagnostic_ref = run_entry.get("retrieval_diagnostic")
             diagnostic_digest = run_entry.get("retrieval_diagnostic_digest")
-            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3, 4, 5, 6) and (
+            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3, 4, 5, 6, 7) and (
                 diagnostic_ref is None or diagnostic_digest is None
             ):
                 pair_note("retrieval_diagnostic_missing", ("T12",))
@@ -7840,20 +7986,22 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                         raise RunError(
                             "retrieval diagnostic version differs from the current protocol lock"
                         )
-                    if diagnostic["schema_version"] in (5, 6) and diagnostic[
+                    if diagnostic["schema_version"] in (5, 6, 7) and diagnostic[
                         "server_observation"
                     ] != protocol_payload.get("server_observation"):
                         raise RunError(
                             "retrieval diagnostic server configuration differs from protocol"
                         )
-                    if diagnostic["schema_version"] == 6 and diagnostic[
+                    if diagnostic["schema_version"] in (6, 7) and diagnostic[
                         "hybrid_fetch_policy"
                     ] != protocol_payload.get("hybrid_fetch_policy"):
                         raise RunError(
                             "retrieval diagnostic hybrid fetch policy differs from protocol"
                         )
-                    if diagnostic["schema_version"] in (5, 6) and _validate_ingest_diagnostic(
-                        diagnostic["ingest"], record_payload
+                    if diagnostic["schema_version"] in (5, 6, 7) and _validate_ingest_diagnostic(
+                        diagnostic["ingest"],
+                        record_payload,
+                        lexical_stage_contract=diagnostic["schema_version"] == 7,
                     ) != protocol_payload.get("ingest_request_identity"):
                         raise RunError("retrieval diagnostic ingest identity differs from protocol")
                 except (KeyError, TypeError, ValueError, OSError) as exc:
@@ -7937,7 +8085,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 rep0_model_cache
             ):
                 pair_note("adapter_model_cache_binding_broken", ("T11", "T12"))
-        if protocol_payload.get("retrieval_diagnostic_version") in (3, 4, 5, 6):
+        if protocol_payload.get("retrieval_diagnostic_version") in (3, 4, 5, 6, 7):
             expected_profile = protocol_payload.get("execution_profiles", {}).get("semble", {})
             expected_mode = expected_profile.get("mode")
             expected_alpha = expected_profile.get("alpha")
@@ -7965,17 +8113,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             ):
                 pair_note("semble_lane_profile_drift", ("T11", "T12"))
             rep0_native = validated_semble_native.get("rep-00")
-            manifest_native_fields = (
-                "actual_alpha_by_task",
-                "lane_call_counts",
-                "execution_events_sha256",
-                "function_identity",
-                "observed_wrapped_call_ns",
-                "rerank_applied",
-                "requested_alpha",
-            )
             if not isinstance(rep0_native, dict) or any(
-                adapter.get(field) != rep0_native.get(field) for field in manifest_native_fields
+                adapter.get(field) != rep0_native.get(field) for field in native_binding_fields
             ):
                 pair_note("adapter_native_actual_call_binding_broken", ("T11", "T12"))
     mapping_diff = mapping_payload.get("diff_digest") if isinstance(mapping_payload, dict) else None
@@ -9031,7 +9170,10 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     semble_spec = dict(spec)
     # One pinned model cache across reps; each rep still rebuilds its index.
     monitor = (
-        HostTimeline(stage / "host-timeline.json", host_start, override)
+        HostTimeline(
+            stage / "host-timeline.json", host_start, override,
+            owned_semble_adapter=Path(spec.get("_semble_adapter", Path(__file__).resolve().parent / "semble.py")),
+        )
         if spec.get("claims", {}).get("speed")
         else nullcontext()
     )
@@ -9113,7 +9255,8 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     # Quality reports merge rep-0 records only.
     repo = source_repo
     suite_path = Path(spec["suite"])
-    for layout in rep_layouts:
+    suite, pack, source = validate_suite(repo, read_json(suite_path))
+    for rep_index, layout in enumerate(rep_layouts):
         for strategy, record in sorted(layout["quanta"].items()):
             payload = read_json(Path(record))
             if not isinstance(payload, dict):
@@ -9121,7 +9264,11 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
             system, captured_strategy = _record_identity(payload, f"quanta record {record}")
             if system != "quanta" or captured_strategy != strategy:
                 raise RunError(f"strategy echo mismatch for {record}: {strategy}")
-            merge_records(repo, suite_path, [Path(record), Path(layout["semble"])])
+            # The rep-0 merge below also validates the records before scoring.
+            if rep_index:
+                _merge_validated_records(
+                    repo, suite, pack, source, [Path(record), Path(layout["semble"])]
+                )
     baseline = spec.get("baseline_route", semble_routes[0])
     rep0 = rep_layouts[0]
     reports = []
@@ -9129,8 +9276,8 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         payload = read_json(Path(record))
         if not isinstance(payload, dict):
             raise RunError(f"record is not an object: {record}")
-        suite, pack, combined = merge_records(
-            repo, suite_path, [Path(record), Path(rep0["semble"])]
+        _suite, _pack, combined = _merge_validated_records(
+            repo, suite, pack, source, [Path(record), Path(rep0["semble"])]
         )
         candidate_routes = sorted({row["route"] for row in payload["results"]})
         for candidate in candidate_routes:
@@ -9159,8 +9306,8 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     )
     driver_closure_digest = driver_closure["digest"]
     protocol_lock = {
-        "lock_version": 4,
-        "retrieval_diagnostic_version": 6,
+        "lock_version": 5,
+        "retrieval_diagnostic_version": 7,
         "symbol_coverage_policy": spec.get("symbol_coverage_policy", "require-complete"),
         "server_observation": server_observation_configuration(
             spec.get("query_stage_observation", "enabled")
@@ -9412,8 +9559,8 @@ def build_latency_matrix(rep_layouts: list[dict]) -> dict:
                     read_json(Path(layout["quanta_phase_metrics"][strategy])),
                     f"rep {layout['rep']} quanta {strategy} phase metrics",
                 )
-                if phase["schema_version"] != 2:
-                    raise RunError("current Quanta latency matrix requires phase metrics v2")
+                if phase["schema_version"] not in (2, 3):
+                    raise RunError("current Quanta latency matrix requires phase metrics v2/v3")
                 if phase.get("query_protocol") != protocol:
                     raise RunError("Quanta phase metrics do not echo the shared query protocol")
                 cell["warm_latencies"] = phase["warm_latencies_ms"]

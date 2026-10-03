@@ -302,7 +302,7 @@ fn one_scope_delta_rewrites_touched_shards_and_links_the_rest() -> TestResult {
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
 
-    adapter.build_batch(&base_batch(g1, COST_DOCS)?)?;
+    let _stages = adapter.build_batch(&base_batch(g1, COST_DOCS)?)?;
     let base_files = text_authority_files(&generation_dir(&root, g1))?;
     let base_shards = shard_files(&base_files);
     let expected_shards = u64::try_from(COST_DOCS)?.div_ceil(SHARD_DOCS);
@@ -322,7 +322,7 @@ fn one_scope_delta_rewrites_touched_shards_and_links_the_rest() -> TestResult {
     // Replace one scope in shard 0; its replacement takes the next doc id,
     // which lands in the last shard.
     let replaced = 100;
-    adapter.build_batch(&batch(
+    let _stages = adapter.build_batch(&batch(
         g2,
         Some(g1),
         vec![scope(replaced, "fn replaced() { replacedsentinel }")?],
@@ -445,7 +445,7 @@ fn boundary_documents_answer_like_an_independent_rebuild() -> TestResult {
     let g1 = ManifestGeneration::new(1);
     let g2 = ManifestGeneration::new(2);
     let g9 = ManifestGeneration::new(9);
-    adapter.build_batch(&base_batch(g1, DOCS)?)?;
+    let _stages = adapter.build_batch(&base_batch(g1, DOCS)?)?;
 
     // Delta: rewrite the low edge in place (same marker, new tail), move the
     // mid edge to a fresh doc id with a new marker, tombstone the high edge,
@@ -454,7 +454,7 @@ fn boundary_documents_answer_like_an_independent_rebuild() -> TestResult {
     let mid_body = "fn moved() { edgemovedmarker phraseanchor edgemovedmarker_tail }".to_string();
     let new_index = DOCS + 7;
     let new_body = "fn added() { addedmarker phraseanchor addedmarker_tail }";
-    adapter.build_batch(&batch(
+    let _stages = adapter.build_batch(&batch(
         g2,
         Some(g1),
         vec![
@@ -480,7 +480,7 @@ fn boundary_documents_answer_like_an_independent_rebuild() -> TestResult {
         scopes.push(scope(index, &body)?);
     }
     scopes.push(scope(new_index, new_body)?);
-    adapter.build_batch(&batch(g9, None, scopes, &[], true)?)?;
+    let _stages = adapter.build_batch(&batch(g9, None, scopes, &[], true)?)?;
 
     let mut probes: Vec<(String, LqLeaf)> = Vec::new();
     for marker in [
@@ -719,7 +719,7 @@ fn a_sealed_text_authority_that_changes_is_refused_at_both_doors() -> TestResult
         let root = temp.path().to_path_buf();
         let adapter = LexicalAdapter::with_state_root(root.clone());
         let g1 = ManifestGeneration::new(1);
-        adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
+        let _stages = adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
         let dir = generation_dir(&root, g1);
         let mut row = read_manifest_row(&dir)?;
         fault(&dir, &mut row)?;
@@ -759,7 +759,7 @@ fn a_delta_refuses_to_build_on_a_shard_whose_digest_changed() -> TestResult {
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let g1 = ManifestGeneration::new(1);
-    adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
+    let _stages = adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
     let dir = generation_dir(&root, g1);
     let row = read_manifest_row(&dir)?;
     let shard = row.4.first().ok_or("a shard")?;
@@ -818,7 +818,7 @@ fn an_unsealed_source_batch_cannot_leave_index_authority_skew() -> TestResult {
         return Err("rejected source batch created a generation directory".into());
     }
 
-    adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
+    let _stages = adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
     let observed = leaf_hit_ids(&adapter, g1, LqLeaf::Regex("quartz_00000".to_string()))?;
     if observed != vec![scope_chunk(0)] {
         return Err(format!("sealed source batch returned {observed:?}").into());
@@ -838,7 +838,7 @@ fn a_whole_corpus_layout_generation_is_refused_by_text_authority_format() -> Tes
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let g1 = ManifestGeneration::new(1);
-    adapter.build_batch(&small_batch(g1, None, &[0, 1], true)?)?;
+    let _stages = adapter.build_batch(&small_batch(g1, None, &[0, 1], true)?)?;
     let dir = generation_dir(&root, g1);
     let manifest = dir.join(SEALED_MANIFEST);
     let mut value: ciborium::Value = ciborium::from_reader(std::fs::read(&manifest)?.as_slice())?;

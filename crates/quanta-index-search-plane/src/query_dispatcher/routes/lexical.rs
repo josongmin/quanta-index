@@ -27,7 +27,7 @@ use crate::query_dispatcher::planning::{
 use crate::query_dispatcher::read_view::ReadViewRequestV1;
 use crate::query_dispatcher::response_budget::fit_ranked_page;
 use crate::query_dispatcher::selection::resolve_optional_selection;
-use crate::query_dispatcher::stage_timing::StageTimings;
+use crate::query_dispatcher::stage_timing::{QueryStageObservationPolicy, StageTimings};
 use crate::query_dispatcher::window::{
     lexical_fetch_limit_v1, lexical_page_window_v1, pageable_window_v2,
 };
@@ -100,6 +100,7 @@ fn code_search_execution_trace(
     stats: CodeSearchExecutionStatsV1,
     fetched: usize,
     exact_total: Option<u64>,
+    observe_timings: bool,
 ) -> Result<Vec<PlannerTraceEntry>, CoreError> {
     let ordinary = stats.mode == CodeSearchExecutionModeV1::Ordinary;
     let typo = matches!(
@@ -180,9 +181,6 @@ fn code_search_execution_trace(
             ("typo_token_comparisons", stats.typo_token_comparisons),
             ("materialized_files", stats.materialized_files),
             ("preview_attempted_files", stats.preview_attempted_files),
-            ("candidate_ns", stats.candidate_ns),
-            ("sort_page_ns", stats.sort_page_ns),
-            ("preview_ns", stats.preview_ns),
         ]
         .into_iter()
         .map(|(name, value)| PlannerTraceEntry {
@@ -190,6 +188,22 @@ fn code_search_execution_trace(
             detail: format!("code_search.execution.{name}={value}"),
         }),
     );
+    // Work counts remain observable in either policy. Clock values are only
+    // response observations when query stage observation is enabled.
+    if observe_timings {
+        entries.extend(
+            [
+                ("candidate_ns", stats.candidate_ns),
+                ("sort_page_ns", stats.sort_page_ns),
+                ("preview_ns", stats.preview_ns),
+            ]
+            .into_iter()
+            .map(|(name, value)| PlannerTraceEntry {
+                stage: PlannerStage::Merge,
+                detail: format!("code_search.execution.{name}={value}"),
+            }),
+        );
+    }
     Ok(entries)
 }
 
@@ -321,7 +335,12 @@ impl SearchPlaneDispatcher {
         let code_search_trace = page
             .code_search_stats
             .map(|stats| {
-                code_search_execution_trace(stats, page.candidates.len(), page.exact_total)
+                code_search_execution_trace(
+                    stats,
+                    page.candidates.len(),
+                    page.exact_total,
+                    self.query_stage_observation == QueryStageObservationPolicy::Enabled,
+                )
             })
             .transpose()?;
         let window = lexical_page_window_v1(&mut page, request.top_k, fetch_top_k)?;
@@ -611,24 +630,39 @@ mod typed_cursor_tests {
             ..CodeSearchExecutionStatsV1::default()
         };
         assert_eq!(
-            code_search_execution_trace(stats, 1, Some(1))
+            code_search_execution_trace(stats, 1, Some(1), true)
                 .expect("fixed counts")
                 .len(),
             17
         );
-        assert!(code_search_execution_trace(stats, 2, Some(1)).is_err());
-        assert!(code_search_execution_trace(stats, 1, Some(2)).is_err());
-        assert!(code_search_execution_trace(stats, 1, None).is_err());
+        let disabled = code_search_execution_trace(stats, 1, Some(1), false)
+            .expect("fixed counts without response clocks");
+        assert_eq!(disabled.len(), 14);
+        assert!(!disabled.iter().any(|entry| entry.detail.ends_with("_ns=0")));
+        assert!(!disabled.iter().any(|entry| {
+            entry
+                .detail
+                .starts_with("code_search.execution.candidate_ns=")
+                || entry
+                    .detail
+                    .starts_with("code_search.execution.sort_page_ns=")
+                || entry
+                    .detail
+                    .starts_with("code_search.execution.preview_ns=")
+        }));
+        assert!(code_search_execution_trace(stats, 2, Some(1), true).is_err());
+        assert!(code_search_execution_trace(stats, 1, Some(2), true).is_err());
+        assert!(code_search_execution_trace(stats, 1, None, true).is_err());
         let invalid = CodeSearchExecutionStatsV1 {
             verified_matching_files: 3,
             ..stats
         };
-        assert!(code_search_execution_trace(invalid, 1, Some(1)).is_err());
+        assert!(code_search_execution_trace(invalid, 1, Some(1), true).is_err());
         let invalid_preview = CodeSearchExecutionStatsV1 {
             preview_attempted_files: 0,
             ..stats
         };
-        assert!(code_search_execution_trace(invalid_preview, 1, Some(1)).is_err());
+        assert!(code_search_execution_trace(invalid_preview, 1, Some(1), true).is_err());
         let typo = CodeSearchExecutionStatsV1 {
             mode: CodeSearchExecutionModeV1::TypoExplicit,
             literal_prefilter_executed: false,
@@ -637,7 +671,8 @@ mod typed_cursor_tests {
             typo_token_comparisons: 1,
             ..stats
         };
-        let typo_trace = code_search_execution_trace(typo, 1, Some(1)).expect("typed typo counts");
+        let typo_trace =
+            code_search_execution_trace(typo, 1, Some(1), true).expect("typed typo counts");
         assert!(
             typo_trace
                 .iter()
@@ -648,7 +683,7 @@ mod typed_cursor_tests {
             mode: CodeSearchExecutionModeV1::Components,
             ..typo
         };
-        assert!(code_search_execution_trace(invalid_mode, 1, Some(1)).is_err());
+        assert!(code_search_execution_trace(invalid_mode, 1, Some(1), true).is_err());
     }
 
     #[test]

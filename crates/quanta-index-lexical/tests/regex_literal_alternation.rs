@@ -92,7 +92,7 @@ fn build(adapter: &LexicalAdapter, rows: &[(&str, &str, &str)]) -> TestResult {
     for (path, chunk_id, body) in rows {
         replace_scopes.push(scope(path, chunk_id, body)?);
     }
-    adapter.build_batch(&source_fixture::sealed_batch(
+    let _stages = adapter.build_batch(&source_fixture::sealed_batch(
         &repo(),
         &revision(),
         generation,

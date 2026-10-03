@@ -142,7 +142,7 @@ fn query(filters: Vec<LqFilter>) -> LqQuery {
 fn searcher() -> Result<(tempfile::TempDir, Box<dyn LexicalSearcher>), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    adapter.build_batch(&sealed_batch()?)?;
+    let _stages = adapter.build_batch(&sealed_batch()?)?;
     let searcher = adapter.open(
         &repo(),
         &revision(),

@@ -439,9 +439,15 @@ fn score_terms_observed(
             continue;
         }
         if let Some(stats) = stats.as_deref_mut() {
+            let surface_case = if term.regex.is_some() {
+                CaseMode::Sensitive
+            } else {
+                case
+            };
             stats.source_surface_bytes_considered =
                 stats.source_surface_bytes_considered.saturating_add(
-                    u64::try_from(scanned_bytes(file, term.scope, case)).unwrap_or(u64::MAX),
+                    u64::try_from(scanned_bytes(file, term.scope, surface_case))
+                        .unwrap_or(u64::MAX),
                 );
         }
         let Some(witness) = choose_witness(file, term, case, budget)? else {
@@ -798,6 +804,7 @@ fn typo_witness(
     clippy::arithmetic_side_effects,
     reason = "heap entries are created only from live list positions and posting count is bounded"
 )]
+#[cfg(test)]
 fn typo_candidates(
     index: &TrigramIndex,
     identifier: &str,

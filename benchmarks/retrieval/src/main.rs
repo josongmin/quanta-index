@@ -1520,7 +1520,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         None
     };
     let mut phase_metrics = serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "system": "quanta",
         "timing_layer": "runner_monotonic_wall_v1",
         "query_timing": {

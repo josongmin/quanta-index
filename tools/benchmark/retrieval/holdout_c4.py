@@ -774,6 +774,44 @@ def project_fixed_cohort(
     return validated, pack, lineage
 
 
+def project_ordinary_file_osa1(
+    checkout: Path, fresh_suite: dict, *, suite_id: str
+) -> tuple[dict, dict, dict]:
+    """Submit every fresh OSA1 task to ordinary file search without changing gold."""
+    checked, _original_pack, _ = evaluator.validate_suite(checkout, fresh_suite)
+    if checked != fresh_suite or checked["routes"] != ["lexical"]:
+        raise ValueError("C4 ordinary-file input must be a validated lexical OSA1 suite")
+    if not isinstance(suite_id, str) or not suite_id or suite_id == checked["suite_id"]:
+        raise ValueError("C4 ordinary-file projection requires a new suite_id")
+    if any(
+        task.get("category") != "declaration_name_osa1_casefold"
+        or task.get("evaluation_contract", {}).get("request_mode") != query_plan.EXPLICIT_OSA1_TYPO
+        for task in checked["tasks"]
+    ):
+        raise ValueError("C4 ordinary-file projection requires explicit OSA1 tasks")
+    projected = copy.deepcopy(checked)
+    projected["suite_id"] = suite_id
+    projected["routes"] = ["lexical", "semble-lexical-file"]
+    for task in projected["tasks"]:
+        task["evaluation_contract"]["request_mode"] = query_plan.DEFAULT_FILE_SEARCH
+    validated, pack, _ = evaluator.validate_suite(checkout, projected)
+    if validated != projected or [row["task_id"] for row in pack["tasks"]] != [
+        row["task_id"] for row in checked["tasks"]
+    ]:
+        raise ValueError("C4 ordinary-file projection did not validate")
+    lineage = {
+        "status": "diagnostic_unqualified",
+        "fresh_suite_sha256": hashlib.sha256(evaluator.canonical(checked)).hexdigest(),
+        "projected_suite_sha256": hashlib.sha256(evaluator.canonical(validated)).hexdigest(),
+        "blind_pack_sha256": hashlib.sha256(evaluator.canonical(pack)).hexdigest(),
+        "selected_task_ids": [row["task_id"] for row in checked["tasks"]],
+        "request_mode_from": query_plan.EXPLICIT_OSA1_TYPO,
+        "request_mode_to": query_plan.DEFAULT_FILE_SEARCH,
+        "relevance_unchanged": True,
+    }
+    return validated, pack, lineage
+
+
 def _batch_preflight(
     release: Path, capsule_root: Path, checkout_root: Path, expected_repositories: int
 ) -> _Batch:

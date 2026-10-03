@@ -2258,7 +2258,22 @@ def load_evidence(
     repo: Path, suite_path: Path, runner_path: Path
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     suite, pack, source = validate_suite(repo, read_json(suite_path))
-    payload = read_json(runner_path)
+    run = validate_evidence_against_suite(repo, suite, pack, source, read_json(runner_path))
+    return suite, pack, run
+
+
+def validate_evidence_against_suite(
+    repo: Path,
+    suite: dict[str, Any],
+    pack: dict[str, Any],
+    source: SourceSnapshot,
+    payload: Any,
+) -> dict[str, Any]:
+    """Validate a record using a suite already derived from the frozen source.
+
+    A caller may reuse this context only within one validation pass. A fresh
+    verdict must re-derive the suite from its own frozen artifact bytes.
+    """
     version = payload.get("schema_version") if isinstance(payload, dict) else None
     require(
         type(version) is int and version in (RUNNER_SCHEMA_VERSION, *RUNNER_LEGACY_SCHEMA_VERSIONS),
@@ -2280,7 +2295,7 @@ def load_evidence(
     )
     _validate_run(run, pack, suite, source)
     verify_repo(repo, suite["repository_commit"])
-    return suite, pack, run
+    return run
 
 
 def selected(candidates: list[dict[str, Any]], budget: int) -> tuple[list[dict[str, Any]], int]:

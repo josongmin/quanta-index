@@ -89,6 +89,7 @@ impl SealedFixtureBuildPort for LexicalAdapter {
             self,
             &op_fixture::batch(repo, revision, generation, ops)?,
         )
+        .map(|_stages| ())
     }
 }
 
@@ -1260,9 +1261,9 @@ fn symbol_content_authority_shapes_fail_closed_on_initial_and_replayed_batches()
         ];
         let batch = op_fixture::batch(&repo(), &revision(), generation(), &ops)?;
         if replayed {
-            adapter.build_batch(&batch)?;
+            let _stages = adapter.build_batch(&batch)?;
         }
-        adapter.build_batch(&batch)?;
+        let _stages = adapter.build_batch(&batch)?;
         let searcher = adapter.open(
             &repo(),
             &revision(),
@@ -4169,7 +4170,7 @@ fn independent_chunk_clear_refuses_and_file_tombstone_preserves_symbols_v1() -> 
             file: source_fixture::file_key(&repo(), "src/smoke.txt"),
         });
     delta.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&delta)?;
-    adapter.build_batch(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
 
     let searcher = adapter.open(
         &repo(),

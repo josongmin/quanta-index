@@ -65,3 +65,44 @@ def test_fresh_join_repaired_cell_preserves_original_cohort():
         changed = [{**repaired[0], key: "drift"}]
         with pytest.raises(fresh.FreshJoinError, match="changes the fixed original query cohort"):
             fresh._reconcile_blocked(blocked, changed, custody)
+
+
+def test_fresh_join_binds_raw_record_to_scored_pair_report():
+    suite = {"tasks": [{"task_id": "q1"}], "routes": ["lexical", "semble-lexical-file"]}
+    pack = {"tasks": [{"task_id": "q1"}]}
+    merged = {
+        "route_provenance": {
+            "lexical": {"capture_id": "quanta"},
+            "semble-lexical-file": {"capture_id": "semble"},
+        },
+        "results": [{"task_id": "q1", "candidates": [{"path": "gold.go"}]}],
+    }
+    report_sha = "a" * 64
+    report = {
+        "status": "diagnostic_unqualified",
+        "suite_commitment_sha256": fresh.canonical_sha(suite),
+        "query_pack_sha256": fresh.canonical_sha(pack),
+        "runner_record_sha256": fresh.canonical_sha(merged),
+        "route_provenance": merged["route_provenance"],
+    }
+    verdict = {
+        "comparisons": [
+            {
+                "report_digest": report_sha,
+                "record_digest": report["runner_record_sha256"],
+                "candidate_route": "lexical",
+                "baseline_route": "semble-lexical-file",
+            }
+        ]
+    }
+    fresh._require_native_report_binding(report, verdict, suite, pack, merged, report_sha, "r")
+    changed = copy.deepcopy(merged)
+    changed["results"][0]["candidates"][0]["path"] = "wrong.go"
+    with pytest.raises(fresh.FreshJoinError, match="do not bind"):
+        fresh._require_native_report_binding(report, verdict, suite, pack, changed, report_sha, "r")
+    changed_verdict = copy.deepcopy(verdict)
+    changed_verdict["comparisons"][0]["report_digest"] = "b" * 64
+    with pytest.raises(fresh.FreshJoinError, match="do not bind"):
+        fresh._require_native_report_binding(
+            report, changed_verdict, suite, pack, merged, report_sha, "r"
+        )

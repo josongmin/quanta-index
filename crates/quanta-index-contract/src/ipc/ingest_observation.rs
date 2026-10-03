@@ -575,6 +575,7 @@ mod tests {
             "/observation",
             "/observation/semantic",
             "/observation/lexical_build_ns",
+            "/observation/lexical_stages",
             "/observation/finalize_ns",
             "/observation/activation_ns",
             "/observation/semantic/durations/seal",
@@ -839,6 +840,63 @@ mod tests {
         );
         observation.lexical_build_ns = None;
         observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;
+        Ok(())
+    }
+
+    #[test]
+    fn lexical_stage_timings_are_nested_and_never_replayed_as_zero() -> TestResult {
+        let batch = batch()?;
+        let outcome = outcome()?;
+        let mut observation = outcome.observation.ok_or("missing observation")?;
+        let stages = LexicalBuildStageDurationsV1 {
+            preparation_ns: 1,
+            writer_mutation_ns: 1,
+            text_authority_ns: 0,
+            file_authority_ns: 0,
+            seal_ns: Some(1),
+            seal_writer_commit_ns: Some(0),
+            seal_merge_wait_ns: Some(0),
+            seal_commitment_ns: Some(1),
+            seal_file_admission_ns: Some(1),
+        };
+        observation.lexical_stages = Some(stages.clone());
+        observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;
+        for mutation in [
+            LexicalBuildStageDurationsV1 {
+                preparation_ns: 2,
+                ..stages.clone()
+            },
+            LexicalBuildStageDurationsV1 {
+                seal_writer_commit_ns: Some(1),
+                ..stages.clone()
+            },
+            LexicalBuildStageDurationsV1 {
+                seal_file_admission_ns: Some(2),
+                ..stages.clone()
+            },
+            LexicalBuildStageDurationsV1 {
+                seal_merge_wait_ns: None,
+                ..stages.clone()
+            },
+            LexicalBuildStageDurationsV1 {
+                seal_ns: None,
+                ..stages.clone()
+            },
+        ] {
+            observation.lexical_stages = Some(mutation);
+            assert!(
+                observation
+                    .validate_for(11, &batch, &outcome.publication, &outcome.receipt)
+                    .is_err()
+            );
+        }
+        observation.lexical_stages = Some(stages);
+        observation.lexical_build_ns = None;
+        assert!(
+            observation
+                .validate_for(11, &batch, &outcome.publication, &outcome.receipt)
+                .is_err()
+        );
         Ok(())
     }
 

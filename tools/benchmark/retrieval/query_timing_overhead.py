@@ -17,6 +17,31 @@ from tools.benchmark.retrieval.conditional_proof import load, sha
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
 
+def _without_code_search_work_clocks(planner_trace: list) -> list:
+    """Ignore only the three policy-controlled CodeSearch response clocks."""
+    clock_prefixes = (
+        "code_search.execution.candidate_ns=",
+        "code_search.execution.sort_page_ns=",
+        "code_search.execution.preview_ns=",
+    )
+    result = []
+    seen: set[str] = set()
+    for entry in planner_trace:
+        detail = entry.get("detail") if isinstance(entry, dict) else None
+        prefix = next(
+            (candidate for candidate in clock_prefixes if isinstance(detail, str) and detail.startswith(candidate)),
+            None,
+        )
+        if prefix is None:
+            result.append(entry)
+            continue
+        value = detail[len(prefix) :]
+        if prefix in seen or not value.isascii() or not value.isdecimal():
+            raise ValueError("on/off CodeSearch work clock is malformed or duplicated")
+        seen.add(prefix)
+    return result
+
+
 def compare(
     on: dict,
     off: dict,
@@ -121,10 +146,16 @@ def compare(
                 # clocks change under this policy; page, planner and lane facts do not.
                 explanation = response["explanation"]
                 if isinstance(explanation, dict):
+                    # CodeSearch work clocks are response observations under
+                    # the enabled policy. Keep every work count, mode, scope,
+                    # and other planner entry in the equality check.
+                    planner_trace = explanation.get("planner_trace")
+                    if isinstance(planner_trace, list):
+                        planner_trace = _without_code_search_work_clocks(planner_trace)
                     response = {
                         **response,
                         "explanation": {
-                            key: value
+                            key: planner_trace if key == "planner_trace" else value
                             for key, value in explanation.items()
                             if key not in ("request_id", "stage_timings")
                         },

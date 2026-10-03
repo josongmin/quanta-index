@@ -833,7 +833,7 @@ struct Fixture {
 fn open_corpus(corpus: &[(&str, &str)]) -> Result<Fixture, Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    adapter.build_batch(&sealed_batch(corpus)?)?;
+    let _stages = adapter.build_batch(&sealed_batch(corpus)?)?;
     let searcher = adapter.open(
         &repo(),
         &revision(),
@@ -1249,7 +1249,7 @@ const CURRENT_FORMAT: u32 = 12;
 fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    adapter.build_batch(&sealed_batch(CORPUS)?)?;
+    let _stages = adapter.build_batch(&sealed_batch(CORPUS)?)?;
     let manifest = generation_dir(dir.path(), generation()).join(MANIFEST_FILE);
     let original = std::fs::read(&manifest)?;
     let current = read_manifest_row(&manifest)?;
@@ -1305,7 +1305,7 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
 fn a_generation_stamped_with_another_normalizer_is_refused_typed() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    adapter.build_batch(&sealed_batch(CORPUS)?)?;
+    let _stages = adapter.build_batch(&sealed_batch(CORPUS)?)?;
     let manifest = generation_dir(dir.path(), generation()).join(MANIFEST_FILE);
     let original = std::fs::read(&manifest)?;
     let mut stamped = read_manifest_row(&manifest)?;
@@ -1338,7 +1338,7 @@ fn a_generation_stamped_with_another_normalizer_is_refused_typed() -> TestResult
 fn a_delta_over_a_previous_format_base_is_refused_typed() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    adapter.build_batch(&sealed_batch(CORPUS)?)?;
+    let _stages = adapter.build_batch(&sealed_batch(CORPUS)?)?;
     let manifest = generation_dir(dir.path(), generation()).join(MANIFEST_FILE);
     let current = read_manifest_row(&manifest)?;
     write_manifest_row(&manifest, as_format_one(&current))?;

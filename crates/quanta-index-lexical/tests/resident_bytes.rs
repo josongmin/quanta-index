@@ -169,7 +169,7 @@ fn the_estimate_counts_the_decoded_authority_not_its_cbor() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().join("indexes").join("lexical");
     let adapter = LexicalAdapter::with_state_root(root.clone());
-    adapter.build_batch(&batch(
+    let _stages = adapter.build_batch(&batch(
         1,
         None,
         vec![scope("src/a.rs", &body(1))?, scope("src/b.rs", &body(2))?],
@@ -206,8 +206,8 @@ fn a_hard_linked_delta_counts_shared_inodes_once() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().join("indexes").join("lexical");
     let adapter = LexicalAdapter::with_state_root(root.clone());
-    adapter.build_batch(&batch(1, None, vec![scope("src/a.rs", &body(1))?])?)?;
-    adapter.build_batch(&batch(2, Some(1), vec![scope("src/b.rs", &body(2))?])?)?;
+    let _stages = adapter.build_batch(&batch(1, None, vec![scope("src/a.rs", &body(1))?])?)?;
+    let _stages = adapter.build_batch(&batch(2, Some(1), vec![scope("src/b.rs", &body(2))?])?)?;
     let base = generation_dir(&root, 1);
     let delta = generation_dir(&root, 2);
     let (_base_bytes, base_inodes) = inode_set_bytes(&base, TEXT_AUTHORITY_DIR)?;

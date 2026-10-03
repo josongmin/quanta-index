@@ -164,6 +164,17 @@ def _pool(row: dict, original: dict) -> list[dict]:
         require(
             details.count(ORDINARY_SCOPE) == 1, "ordinary exhaustive exploration not established"
         )
+        modes = [
+            detail.removeprefix("code_search.execution.mode=")
+            for detail in details
+            if detail.startswith("code_search.execution.mode=")
+        ]
+        # Older bound captures predate the mode trace. If a producer emits it,
+        # the mode must agree with the ordinary complete-pool contract.
+        require(
+            not modes or modes == ["ordinary"],
+            "ordinary execution mode is malformed or contradictory",
+        )
         verified = _count(details, "verified_matching_files")
         eligible = _count(details, "cursor_eligible_files")
         returned = len(page["results"])

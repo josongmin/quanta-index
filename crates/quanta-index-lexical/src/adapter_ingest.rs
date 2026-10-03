@@ -1,6 +1,7 @@
 //! The ingest ports: search-corpus batches, repo-metadata overlays, the writer sweep and the metrics scrape.
 
 use crate::adapter::{declared_delta_base_generation, legacy_ops_for_batch};
+use crate::adapter_open::LexicalMutationTimings;
 use crate::channel_payloads::{decode_replace_scope_payload, decode_tombstone_scope_payload};
 use crate::generation_dir::{ensure_unsealed, is_writer_lock_entry, read_lexical_delta_base};
 use crate::index_store::{persist_lexical_sealed_identity, sealed_identity_entry_present};
@@ -15,15 +16,13 @@ use crate::sealed_generation::coverage::{
     plan_file_coverage, read_staged_coverage, write_staged_coverage,
 };
 use crate::sealed_generation::{DiscardingVisitor, seal_generation, walk_sealed_generation};
-use crate::adapter_open::LexicalMutationTimings;
 use crate::{GenKey, LexicalAdapter, op_mutates_index, op_writes_generation};
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
     BatchIngestMode, FileContributorIngestBatch, FileOwnershipIngestBatch, GenerationSnapshot,
-    LexicalBuildStageDurationsV1,
-    ManifestGeneration, RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId,
-    RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
-    SearchPlaneTrackKind, validate_lexical_file_mutations_v1,
+    LexicalBuildStageDurationsV1, ManifestGeneration, RepoCommitRecencyIngestBatch,
+    RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId,
+    SearchCorpusIngestBatch, SearchPlaneTrackKind, validate_lexical_file_mutations_v1,
 };
 use std::time::Instant;
 

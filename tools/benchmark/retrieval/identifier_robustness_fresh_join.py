@@ -18,11 +18,11 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.benchmark.retrieval import evaluator, identifier_robustness_suite
+    from tools.benchmark.retrieval import evaluator, identifier_robustness_suite, run
     from tools.benchmark.retrieval import identifier_robustness_multiproduct_report as scoring
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from tools.benchmark.retrieval import evaluator, identifier_robustness_suite
+    from tools.benchmark.retrieval import evaluator, identifier_robustness_suite, run
     from tools.benchmark.retrieval import identifier_robustness_multiproduct_report as scoring
 
 PRODUCTS = ("quanta", "semble", "sourcegraph", "cs", "opengrok")
@@ -110,8 +110,13 @@ def _reconcile_blocked(
 
 
 def _native_records(
-    cell: dict[str, Any], prepared: dict[str, Any], tasks: dict[str, Any], universe: set[str]
-) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, str]]:
+    cell: dict[str, Any],
+    prepared: dict[str, Any],
+    spec: dict[str, Any],
+    suite: dict[str, Any],
+    tasks: dict[str, Any],
+    universe: set[str],
+) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, str], str]:
     repo, output = cell["repository"], Path(cell["output_root"])
     status_path = output.parent / (cell["cell_id"] + ".status.json")
     status = read(status_path)
@@ -132,6 +137,7 @@ def _native_records(
     )
     records: dict[str, dict[str, dict[str, Any]]] = {}
     hashes: dict[str, str] = {}
+    record_paths: list[Path] = []
     for product, route in (("quanta", "lexical"), ("semble", "semble-lexical-file")):
         if product == "quanta":
             matches = sorted((output / "rep-00/quanta").glob("strategy-*/record.json"))
@@ -142,6 +148,7 @@ def _native_records(
             record_path = output / "rep-00/semble/record.json"
             pack_path = output / "semble-pack.json"
         record = read(record_path)
+        record_paths.append(record_path)
         hashes[product] = sha(record_path)
         require(
             record["query_pack_sha256"] == canonical_sha(read(pack_path))
@@ -177,7 +184,49 @@ def _native_records(
                 latency_ms=raw["timings"].get("query_latency_ms"),
             )
         records[product] = product_rows
-    return records, hashes
+    checked_suite, checked_pack, merged = run.merge_records(
+        Path(spec["repo"]), Path(spec["suite"]), record_paths
+    )
+    require(
+        checked_suite == suite,
+        "native merged suite differs from paired source suite: " + repo,
+    )
+    report_path = output / PAIR_REPORT
+    report_sha = sha(report_path)
+    _require_native_report_binding(
+        read(report_path), verdict, suite, checked_pack, merged, report_sha, repo
+    )
+    return records, hashes, report_sha
+
+
+def _require_native_report_binding(
+    report: dict[str, Any],
+    verdict: dict[str, Any],
+    suite: dict[str, Any],
+    pack: dict[str, Any],
+    merged: dict[str, Any],
+    report_sha: str,
+    repo: str,
+) -> None:
+    """Bind the two source-validated raw records to the runner's scored report."""
+    comparisons = verdict.get("comparisons")
+    require(
+        isinstance(comparisons, list) and len(comparisons) == 1,
+        "native pair comparison count differs: " + repo,
+    )
+    comparison = comparisons[0]
+    require(
+        report.get("status") == "diagnostic_unqualified"
+        and report.get("suite_commitment_sha256") == canonical_sha(suite)
+        and report.get("query_pack_sha256") == canonical_sha(pack)
+        and report.get("runner_record_sha256") == canonical_sha(merged)
+        and report.get("route_provenance") == merged["route_provenance"]
+        and comparison.get("report_digest") == report_sha
+        and comparison.get("record_digest") == report["runner_record_sha256"]
+        and comparison.get("candidate_route") == "lexical"
+        and comparison.get("baseline_route") == "semble-lexical-file",
+        "native raw records, scored report, or verdict do not bind: " + repo,
+    )
 
 
 def _external_records(
@@ -370,7 +419,9 @@ def _pair_rows(
             sha(native_manifest) == sha(external_manifest),
             "paired corpus file universe differs: " + repo,
         )
-        native, native_hashes = _native_records(native_cell, prepared, tasks, universe)
+        native, native_hashes, native_report_sha = _native_records(
+            native_cell, prepared, native_spec, suite, tasks, universe
+        )
         external, external_hashes = _external_records(external_cell, receipt, tasks, universe)
         bindings.append(
             {
@@ -387,6 +438,7 @@ def _pair_rows(
                 "corpus_manifest_sha256": sha(native_manifest),
                 "task_count": len(tasks),
                 "native_record_sha256": native_hashes,
+                "native_pair_report_sha256": native_report_sha,
                 "external_rows_sha256": external_hashes,
             }
         )
@@ -411,6 +463,7 @@ def _pair_rows(
         "native_source_commit": prepared["source_commit"],
         "native_runner_sha256": prepared["runner_sha256"],
         "native_searchd_sha256": prepared["searchd_sha256"],
+        "native_merge_validator_sha256": sha(Path(run.__file__)),
         "external_manifest_sha256": sha(external_manifest_path),
         "external_ledger_sha256": sha(external_ledger_path),
         "external_source_commit": manifest["source_head"],

@@ -278,7 +278,7 @@ fn file_admission_counts_inherited_source_reads_separately() -> TestResult {
     let original = "fn original() { firstsentinel }";
     let inherited = "fn unchanged() { secondsentinel }";
     let replacement = "fn replacement() { thirdsentinel }";
-    adapter.build_batch(&batch(
+    let _stages = adapter.build_batch(&batch(
         g1,
         None,
         vec![scope(0, original)?, scope(1, inherited)?],
@@ -290,7 +290,7 @@ fn file_admission_counts_inherited_source_reads_separately() -> TestResult {
         u64::try_from(original.len() + inherited.len())?
     );
     let base_files = committed_files(&generation_dir(root, g1))?;
-    adapter.build_batch(&batch(g2, Some(g1), vec![scope(0, replacement)?])?)?;
+    let _stages = adapter.build_batch(&batch(g2, Some(g1), vec![scope(0, replacement)?])?)?;
     let after = adapter.seal_commitment_stats()?;
     let delta = delta_stats(base_stats, after);
     let delta_files = committed_files(&generation_dir(root, g2))?;
@@ -396,7 +396,7 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     // The base: a full build, measured whole.
     publish_repo_meta(&adapter, g1)?;
     let before_base = adapter.seal_commitment_stats()?;
-    adapter.build_batch(&base_batch(g1)?)?;
+    let _stages = adapter.build_batch(&base_batch(g1)?)?;
     let base_seal = delta_stats(before_base, adapter.seal_commitment_stats()?);
     let base_files = committed_files(&generation_dir(&root, g1))?;
     let base_bytes = total_bytes(base_files.iter());
@@ -420,7 +420,7 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     // The delta: one scope replaced, the overlay inherited untouched.
     let replaced = 100;
     let before_delta = adapter.seal_commitment_stats()?;
-    adapter.build_batch(&batch(
+    let _stages = adapter.build_batch(&batch(
         g2,
         Some(g1),
         vec![scope(replaced, "fn replaced() { replacedsentinel }")?],

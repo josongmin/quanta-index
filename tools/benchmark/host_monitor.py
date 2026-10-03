@@ -14,15 +14,29 @@ import time
 import uuid
 from pathlib import Path
 
-from evidence import (
-    EvidenceError,
-    RawFile,
-    RawWriter,
-    _run_id,
-    canonical_json,
-    digest_bytes,
-    parse_json,
-)
+try:
+    from .evidence import (
+        EvidenceError,
+        RawFile,
+        RawWriter,
+        _run_id,
+        canonical_json,
+        digest_bytes,
+        parse_json,
+        require_digest,
+    )
+except ImportError:  # Existing direct-script benchmark entrypoints.
+    from evidence import (
+        EvidenceError,
+        RawFile,
+        RawWriter,
+        _run_id,
+        canonical_json,
+        digest_bytes,
+        parse_json,
+        require_digest,
+    )
+
 
 RAW_NAME = "host-observations.jsonl"
 INPUT_ID = "benchmark-host-observations"
@@ -99,8 +113,6 @@ def _uint(value, name, *, positive=False):
 
 
 def _digest(value):
-    from evidence import require_digest
-
     require_digest("host observation digest", value)
 
 
@@ -259,13 +271,16 @@ def validate(raw: RawFile, *, capture_id: str, profile: str) -> dict:
 class HostMonitor:
     """One cooperative reservation and bounded periodic diagnostic transcript."""
 
-    def __init__(self, path: Path, capture_id: str, profile: str):
+    def __init__(self, path: Path, capture_id: str, profile: str, *, sample_observer=None):
         self.path, self.capture_id, self.profile = path, _run_id(capture_id), _run_id(profile)
         self.fd, self.writer, self.thread = None, None, None
         self.stop_event, self.mutex = threading.Event(), threading.Lock()
         self.error, self.sequence, self.bytes = None, 0, 0
         self.phase_name = "preparation"
         self.reservation_id = uuid.uuid4().hex
+        # Optional owner-specific facts use this same reservation and polling
+        # lifecycle. Observer failure invalidates the whole capture.
+        self.sample_observer = sample_observer
 
     def start(self):
         from tools.ci.resource_admission import check_lock
@@ -324,6 +339,8 @@ class HostMonitor:
             host, facts = observe()
             if host != self.host:
                 raise EvidenceError("host identity changed during capture")
+        if self.sample_observer is not None:
+            self.sample_observer()
         if self.sequence >= MAX_SAMPLES:
             raise EvidenceError("host observation sample count exceeds limit")
         self._write(

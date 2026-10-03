@@ -132,7 +132,7 @@ fn is_budget_refusal(err: &CoreError) -> bool {
 fn seeded(budget: usize) -> Result<(tempfile::TempDir, LexicalAdapter), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let adapter = adapter_with_budget(dir.path().to_path_buf(), budget)?;
-    adapter.build_batch(&sealed_batch()?)?;
+    let _stages = adapter.build_batch(&sealed_batch()?)?;
     Ok((dir, adapter))
 }
 
@@ -408,7 +408,7 @@ fn unindexed_scan_obeys_native_collection_byte_limit() -> TestResult {
         RegexMatchCachePolicy::DEFAULT,
         LexicalWriterPolicy::DEFAULT,
     );
-    adapter.build_batch(&sealed_batch()?)?;
+    let _stages = adapter.build_batch(&sealed_batch()?)?;
     let searcher = adapter.open(
         &repo(),
         &revision(),

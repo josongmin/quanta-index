@@ -499,7 +499,7 @@ fn run() -> Result<BenchArtifactV1> {
     let batch = ingest_batch(&corpus, generation)?;
 
     let build_started = Instant::now();
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let build_ms = elapsed_ms(build_started);
     let index_bytes = directory_bytes(&args.index_dir)?;
 
@@ -583,7 +583,7 @@ mod tests {
 
         let root = tempfile::tempdir()?;
         let adapter = LexicalAdapter::with_state_root(root.path().join("index"));
-        adapter.build_batch(&batch)?;
+        let _stages = adapter.build_batch(&batch)?;
         let searcher = adapter.open(
             &batch.repo_id,
             &batch.revision_id,

@@ -280,7 +280,7 @@ fn a_seal_releases_its_generations_writer_and_the_index_stays_readable() -> Test
         seal: true,
     };
     current_source_fixture::finish_batch(&mut batch)?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let stats = adapter.writer_cache_stats()?;
     if stats.open_writers != 0 || stats.seal_releases != 1 || stats.allocated_heap_bytes != 0 {
         return Err(format!("a sealed generation holds no writer: {stats:?}").into());

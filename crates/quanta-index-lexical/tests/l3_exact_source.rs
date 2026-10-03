@@ -183,7 +183,7 @@ fn fixture_with_scopes(
         seal: true,
     };
     batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
-    adapter.build_batch(&batch)?;
+    let _stages = adapter.build_batch(&batch)?;
     let searcher = adapter.open(
         &repo,
         &revision,

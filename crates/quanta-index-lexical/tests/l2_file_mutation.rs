@@ -176,9 +176,9 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let original = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
-    adapter.build_batch(&original)?;
+    let _stages = adapter.build_batch(&original)?;
     let newer = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
-    adapter.build_batch(&newer)?;
+    let _stages = adapter.build_batch(&newer)?;
 
     // The producer knows event-2, but points materialization back at event-1.
     // Applying only b.rs to that snapshot would silently resurrect old a.rs.
@@ -188,7 +188,7 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
     request.validate_surface_mutations_v1()?;
     for result in [
         adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent),
-        adapter.build_batch(&request),
+        adapter.build_batch(&request).map(|_stages| ()),
     ] {
         assert!(
             matches!(
@@ -222,7 +222,7 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
         invalid.validate_v1()?;
         for result in [
             adapter.preflight_batch(&invalid, SearchCorpusPreflightPhaseV1::BeforeIntent),
-            adapter.build_batch(&invalid),
+            adapter.build_batch(&invalid).map(|_stages| ()),
         ] {
             assert!(matches!(
                 result,
@@ -235,7 +235,7 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
         assert!(!target.exists());
     }
     adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
-    adapter.build_batch(&request)?;
+    let _stages = adapter.build_batch(&request)?;
     assert_units(&adapter, &request, "oldmarker", &[], &[])?;
     assert_units(
         &adapter,
@@ -543,7 +543,7 @@ fn oversized_published_source_is_refused_before_target_creation() -> TestResult 
     let request = batch(1, None, vec![scope])?;
     for result in [
         adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent),
-        adapter.build_batch(&request),
+        adapter.build_batch(&request).map(|_stages| ()),
     ] {
         assert!(
             matches!(result, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message.contains("8 MiB")),
@@ -561,7 +561,7 @@ fn oversized_published_source_is_refused_before_target_creation() -> TestResult 
     allowed.coverage.source.source_sha256 = Sha256::digest(&allowed.source_bytes).into();
     let admitted = batch(1, None, vec![allowed])?;
     adapter.preflight_batch(&admitted, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
-    adapter.build_batch(&admitted)?;
+    let _stages = adapter.build_batch(&admitted)?;
     assert_eq!(
         code_search_source_owners(&adapter, &admitted, "needle")?,
         ["l2-mutation-repo"]
@@ -580,7 +580,7 @@ fn malformed_bundle_is_refused_before_source_publication_or_generation_preparati
     request.validate_surface_mutations_v1()?;
     for result in [
         adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent),
-        adapter.build_batch(&request),
+        adapter.build_batch(&request).map(|_stages| ()),
     ] {
         assert!(
             matches!(
@@ -643,7 +643,7 @@ fn combined_replacement_retires_old_symbols_and_preserves_pinned_view() -> TestR
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
-    adapter.build_batch(&base)?;
+    let _stages = adapter.build_batch(&base)?;
     let pinned = adapter.open(
         &base.repo_id,
         &base.revision_id,
@@ -651,7 +651,7 @@ fn combined_replacement_retires_old_symbols_and_preserves_pinned_view() -> TestR
         &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
-    adapter.build_batch(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
     assert_units(&adapter, &delta, "oldmarker", &[], &[])?;
     assert_units(
         &adapter,
@@ -685,7 +685,7 @@ fn tombstone_removes_its_file_and_inherits_other_file_units() -> TestResult {
             file_scope("b.rs", "keptmarker")?,
         ],
     )?;
-    adapter.build_batch(&base)?;
+    let _stages = adapter.build_batch(&base)?;
     let mut delta = batch(2, Some(1), Vec::new())?;
     delta.tombstone_scopes.push(SearchCorpusTombstoneScope {
         file: SourceFileKey {
@@ -694,7 +694,7 @@ fn tombstone_removes_its_file_and_inherits_other_file_units() -> TestResult {
         },
     });
     delta.source_event.payload_sha256 = source_event_payload_sha256(&delta)?;
-    adapter.build_batch(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
     assert_units(&adapter, &delta, "retiredmarker", &[], &[])?;
     assert_units(
         &adapter,
@@ -713,9 +713,9 @@ fn same_path_sources_replace_and_tombstone_independently() -> TestResult {
     let mut other = file_scope("a.rs", "othermarker")?;
     other.coverage.source.file.source_repo_id = RepoId::new("other-source")?;
     let base = batch(1, None, vec![first, other])?;
-    adapter.build_batch(&base)?;
+    let _stages = adapter.build_batch(&base)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
-    adapter.build_batch(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
     assert_eq!(
         code_search_source_owners(&adapter, &delta, "firstmarker")?,
         Vec::<String>::new()
@@ -744,7 +744,7 @@ fn same_path_sources_replace_and_tombstone_independently() -> TestResult {
         },
     });
     removed.source_event.payload_sha256 = source_event_payload_sha256(&removed)?;
-    adapter.build_batch(&removed)?;
+    let _stages = adapter.build_batch(&removed)?;
     assert_eq!(
         code_search_source_owners(&adapter, &removed, "freshmarker")?,
         Vec::<String>::new()
@@ -773,9 +773,9 @@ fn admitted_empty_failed_file_gates_broad_symbol_query_and_survives_delta() -> T
     failed.coverage.symbols = SymbolCoverage::ParseFailed;
     failed.coverage.unit_set_sha256 = source_file_unit_set_sha256(&[], &[])?;
     let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?, failed])?;
-    adapter.build_batch(&base)?;
+    let _stages = adapter.build_batch(&base)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
-    adapter.build_batch(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
     let view = adapter.open(
         &delta.repo_id,
         &delta.revision_id,
@@ -818,9 +818,14 @@ fn empty_full_generation_and_empty_delta_retain_admission() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let empty = batch(1, None, Vec::new())?;
-    adapter.build_batch(&empty)?;
+    let full_stages = adapter.build_batch(&empty)?.ok_or("missing full-build timing")?;
+    assert!(full_stages.seal_ns.is_some());
+    assert!(full_stages.seal_writer_commit_ns.is_some());
+    assert!(full_stages.seal_merge_wait_ns.is_some());
+    assert!(full_stages.seal_file_admission_ns.is_some());
     let delta = batch(2, Some(1), Vec::new())?;
-    adapter.build_batch(&delta)?;
+    let delta_stages = adapter.build_batch(&delta)?.ok_or("missing delta timing")?;
+    assert!(delta_stages.seal_file_admission_ns.is_some());
     let view = adapter.open(
         &delta.repo_id,
         &delta.revision_id,
@@ -845,7 +850,7 @@ fn inherited_candidate_collision_refuses_before_target_creation() -> TestResult 
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("kept.rs", "keptmarker")?])?;
-    adapter.build_batch(&base)?;
+    let _stages = adapter.build_batch(&base)?;
     let mut replacement = file_scope("different.rs", "newmarker")?;
     replacement
         .chunks
@@ -888,9 +893,9 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("base.rs", "basemarker")?])?;
-    adapter.build_batch(&base)?;
+    let _stages = adapter.build_batch(&base)?;
     let request = batch(2, None, vec![file_scope("a.rs", "rebuiltmarker")?])?;
-    adapter.build_batch(&request)?;
+    let _stages = adapter.build_batch(&request)?;
     let mut other_event = request.clone();
     other_event.source_event.event_id = "different-event".into();
     assert!(
@@ -959,7 +964,7 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
         adapter.reclaim_sealed_generation(&identity)?,
         quanta_index_core::SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
     ));
-    adapter.build_batch(&request)?;
+    let _stages = adapter.build_batch(&request)?;
     adapter.validate_generation_identity(&identity)?;
     assert_units(
         &adapter,
@@ -975,7 +980,7 @@ fn actual_generation_open_refuses_missing_or_tampered_coverage() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("a.rs", "marker")?])?;
-    adapter.build_batch(&base)?;
+    let _stages = adapter.build_batch(&base)?;
     let generation =
         quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
             &base.repo_id,
@@ -1022,7 +1027,7 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
-    adapter.build_batch(&base)?;
+    let _stages = adapter.build_batch(&base)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
     let base_dir =
         quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
@@ -1090,7 +1095,7 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
 
     std::fs::write(page, original)?;
     adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
-    adapter.build_batch(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
     assert_units(
         &adapter,
         &delta,
@@ -1114,7 +1119,7 @@ fn build_rechecks_base_page_after_lock_phase_and_retry_succeeds() -> TestResult 
 fn repeated_delta_admission_reuses_decode_but_rehashes_all_coverage_pages() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    adapter.build_batch(&batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?)?;
+    let _stages = adapter.build_batch(&batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
     let before = adapter.coverage_read_stats()?;
     let before_phases = adapter.coverage_read_by_phase_stats()?;
@@ -1131,7 +1136,7 @@ fn repeated_delta_admission_reuses_decode_but_rehashes_all_coverage_pages() -> T
         first.page_bytes - before.page_bytes
     );
     assert_eq!(second.pages - first.pages, first.pages - before.pages);
-    adapter.build_batch(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
     let built = adapter.coverage_read_stats()?;
     assert_eq!(built.decodes, first.decodes);
     assert_eq!(built.rows, first.rows);
@@ -1187,7 +1192,7 @@ fn raw_delta_cannot_inherit_coverage_without_a_source_publication() -> TestResul
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
-    adapter.build_batch(&base)?;
+    let _stages = adapter.build_batch(&base)?;
     let replacement = file_scope("a.rs", "freshmarker")?;
     let mut payload = Vec::new();
     ciborium::into_writer(
@@ -1234,9 +1239,9 @@ fn reclaiming_base_preserves_delta_coverage_and_refuses_old_open() -> TestResult
             file_scope("b.rs", "keptmarker")?,
         ],
     )?;
-    adapter.build_batch(&base)?;
+    let _stages = adapter.build_batch(&base)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
-    adapter.build_batch(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
     let retired = quanta_index_contract::GenerationSnapshot {
         repo_id: base.repo_id.clone(),
         revision_id: base.revision_id.clone(),
