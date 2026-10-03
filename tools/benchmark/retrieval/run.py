@@ -2343,6 +2343,7 @@ SPEC_REQUIRED = (
 )
 SPEC_OPTIONAL = (
     "symbol_coverage_policy",
+    "symbol_total_timeout_ms",
     "routes",
     "blinding",
     "suite_secret_root",
@@ -3112,12 +3113,15 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
         ("seed", 0),
         ("timeout_secs", 1),
         ("io_timeout_secs", 1),
+        ("symbol_total_timeout_ms", 1),
         ("repetitions", 1),
         ("query_repetitions_per_root", 1),
         ("query_warmup_passes", 0),
     ):
         if key in spec:
             _spec_int(spec, key, minimum)
+    if spec.get("symbol_total_timeout_ms", 120_000) >= 2**64:
+        raise RunError("spec.symbol_total_timeout_ms must fit u64")
     if "alternate_order" in spec and type(spec["alternate_order"]) is not bool:
         raise RunError("spec.alternate_order must be a boolean")
     for key in (
@@ -4741,6 +4745,8 @@ def run_quanta_strategy(
     command += ["--searchd-expected-sha256", spec["searchd_expected_sha256"]]
     if "io_timeout_secs" in spec:
         command += ["--io-timeout-secs", str(spec["io_timeout_secs"])]
+    if "symbol_total_timeout_ms" in spec:
+        command += ["--symbol-total-timeout-ms", str(spec["symbol_total_timeout_ms"])]
     materialized = spec.get("_materialized_corpus")
     if materialized is not None:
         command += ["--materialized-corpus-sha256", materialized["proof_sha256"]]
@@ -4840,7 +4846,12 @@ def run_quanta_strategy(
     if phase["symbol_coverage_policy"] != spec.get("symbol_coverage_policy", "require-complete"):
         raise RunError("Rust runner symbol coverage policy differs from the requested profile")
     try:
-        symbol_coverage.verify_artifact(phase, phase_path, read_json(Path(spec["manifest"])))
+        symbol_coverage.verify_artifact(
+            phase,
+            phase_path,
+            read_json(Path(spec["manifest"])),
+            expected_timeout_total_ms=spec.get("symbol_total_timeout_ms", 120_000),
+        )
     except (ValueError, OSError, KeyError, TypeError) as exc:
         raise RunError(f"Rust runner preflight evidence is invalid: {exc}") from exc
     model_dir = Path(spec["quanta_model_dir"]) if "quanta_model_dir" in spec else None
@@ -6948,10 +6959,13 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         protocol_keys.update({"server_observation", "ingest_request_identity"})
     if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") == 4:
         protocol_keys.add("hybrid_fetch_policy")
+    if isinstance(protocol_payload, dict) and "symbol_total_timeout_ms" in protocol_payload:
+        protocol_keys.add("symbol_total_timeout_ms")
     protocol_shape_valid = (
         isinstance(protocol_payload, dict) and set(protocol_payload) == protocol_keys
     )
     if protocol_shape_valid:
+        symbol_timeout = protocol_payload.get("symbol_total_timeout_ms", 120_000)
         if parent_binding is not None:
             try:
                 protocol_parent = _validate_cgroup_parent_identity(
@@ -6971,6 +6985,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             and type(protocol_payload["retrieval_diagnostic_version"]) is int
             and protocol_payload["symbol_coverage_policy"]
             in ("require-complete", "allow-incomplete")
+            and type(symbol_timeout) is int
+            and 0 < symbol_timeout < 2**64
             and all(
                 _is_hex(protocol_payload[key], 64)
                 for key in (
@@ -7334,7 +7350,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             if metrics["system"] == "quanta":
                 _verify_symbol_coverage_corpus(metrics, corpus_payload)
                 bound_preflights.append(
-                    symbol_coverage.verify_artifact(metrics, Path(path), corpus_payload).resolve()
+                    symbol_coverage.verify_artifact(
+                        metrics,
+                        Path(path),
+                        corpus_payload,
+                        expected_timeout_total_ms=protocol_payload.get(
+                            "symbol_total_timeout_ms", 120_000
+                        ),
+                    ).resolve()
                 )
                 if metrics["symbol_coverage_policy"] != protocol_payload.get(
                     "symbol_coverage_policy"
@@ -8999,6 +9022,8 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
             for layout in rep_layouts
         ],
     }
+    if "symbol_total_timeout_ms" in spec:
+        protocol_lock["symbol_total_timeout_ms"] = spec["symbol_total_timeout_ms"]
     (stage / "protocol-lock.json").write_text(
         json.dumps(protocol_lock, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

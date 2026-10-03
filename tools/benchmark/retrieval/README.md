@@ -54,6 +54,14 @@ speed, or same-model claim. A dirty/wrong-HEAD
 corpus, stale state root or existing output is refused. `freeze` creates a blind
 pack from an authored suite; it does not generate gold labels.
 
+For a large corpus, set optional `symbol_total_timeout_ms` in the capture spec.
+It forwards the existing Rust `--symbol-total-timeout-ms` option; the default is
+120,000 ms for the entire symbol preflight, including source validation. The
+driver verifies the actual timeout against the source-bound preflight policy.
+Paired protocol locks retain an explicit override and replay rejects mismatched
+budgets. Increasing this finite budget does not waive producer failures or
+per-file timeouts. Keep retries in a fresh output root and retain failed captures.
+
 For a **declaration-name** diagnostic, keep bare ASCII names in a separate
 suite with `routes: ["symbol"]` and run with `--routes symbol
 --query-input-policy exact_symbol_name`. The runner plans each name as

@@ -3880,6 +3880,7 @@ def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatc
         assert command[command.index("--searchd-bin") + 1] == "/unused/searchd"
         assert command[command.index("--searchd-expected-sha256") + 1] == "b" * 64
         assert command[command.index("--query-input-policy") + 1] == "native"
+        assert command[command.index("--symbol-total-timeout-ms") + 1] == "600000"
         assert command[command.index("--diagnostics-out") + 1].endswith("retrieval-diagnostic.json")
         assert command[command.index("--refusal-out") + 1].endswith("query-plan-refusal.json")
         Path(command[command.index("--out") + 1]).write_text("{}", encoding="utf-8")
@@ -3903,6 +3904,7 @@ def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatc
         "searchd_binary": "/unused/searchd",
         "searchd_expected_sha256": "b" * 64,
         "execution_profiles": {"quanta": qp.execution_profile("native")},
+        "symbol_total_timeout_ms": 600_000,
     }
     with pytest.raises(pairrun.RunError, match="omitted retrieval diagnostics"):
         pairrun.run_quanta_strategy(
@@ -3913,6 +3915,43 @@ def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatc
             pairrun.run_quanta_strategy(
                 spec, {"name": legacy}, 0, tmp_path, ["lexical"], tmp_path / "pack.json", "a" * 64
             )
+
+
+@pytest.mark.parametrize("budget", [0, -1, True, 1.5, 2**64])
+def test_symbol_total_timeout_rejects_invalid_spec(tmp_path, budget):
+    spec = {**_g0_spec(), "symbol_total_timeout_ms": budget}
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec))
+    with pytest.raises(pairrun.RunError, match="spec.symbol_total_timeout_ms"):
+        pairrun.load_spec(path)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(spec, _load_schema("pair-spec.schema.json"))
+
+
+def test_symbol_total_timeout_binds_requested_preflight_and_replay(tmp_path):
+    spec = {**_g0_spec(), "symbol_total_timeout_ms": 600_000}
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec))
+    assert pairrun.load_spec(path)["symbol_total_timeout_ms"] == 600_000
+    jsonschema.validate(spec, _load_schema("pair-spec.schema.json"))
+    st = _pair_stage(tmp_path / "pair")
+    protocol = st["stage"] / "protocol-lock.json"
+    frozen = json.loads(protocol.read_text())
+    frozen["symbol_total_timeout_ms"] = 120_000
+    protocol.write_text(json.dumps(frozen))
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+    # Rehashing a lock cannot make a 120s execution satisfy a requested 600s policy.
+    frozen["symbol_total_timeout_ms"] = 600_000
+    protocol.write_text(json.dumps(frozen))
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
+
+
+@pytest.mark.parametrize("budget", [0, -1, True, 1.5, 2**64, 120_000])
+def test_symbol_total_timeout_rejects_invalid_or_mismatched_actual_policy(budget):
+    policy = {"timeout_total_ns": "600000000000"}
+    pairrun.symbol_coverage.verify_requested_timeout(policy, 600_000)
+    with pytest.raises(ValueError, match="requested symbol timeout|differs from requested"):
+        pairrun.symbol_coverage.verify_requested_timeout(policy, budget)
 
 
 def test_quanta_driver_freezes_typed_failure_without_record(tmp_path, monkeypatch):

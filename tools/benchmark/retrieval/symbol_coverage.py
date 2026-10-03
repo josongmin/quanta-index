@@ -328,7 +328,21 @@ def validate_report_row(row: dict) -> None:
         raise ValueError("unsupported coverage must have exactly one diagnostic")
 
 
-def verify_artifact(metrics: dict, phase_path: Path, corpus: dict, root: Path = ROOT) -> Path:
+def verify_requested_timeout(policy: dict, expected_total_ms: int) -> None:
+    if type(expected_total_ms) is not int or not 0 < expected_total_ms < 2**64:
+        raise ValueError("requested symbol timeout must be a positive u64")
+    if policy.get("timeout_total_ns") != str(expected_total_ms * 1_000_000):
+        raise ValueError("symbol total timeout differs from requested budget")
+
+
+def verify_artifact(
+    metrics: dict,
+    phase_path: Path,
+    corpus: dict,
+    root: Path = ROOT,
+    *,
+    expected_timeout_total_ms: int | None = None,
+) -> Path:
     validate_metrics(metrics, grammar_identity(root))
     artifact = phase_path.parent / metrics["symbol_preflight_out"]
     raw = regular_bytes(artifact, max_bytes=64 * 1024 * 1024)
@@ -377,6 +391,8 @@ def verify_artifact(metrics: dict, phase_path: Path, corpus: dict, root: Path = 
         or report["producer_policy_sha256"] != policy_digest(report["policy"], root)
     ):
         raise ValueError("preflight source/grammar/policy commitment mismatch")
+    if expected_timeout_total_ms is not None:
+        verify_requested_timeout(report["policy"], expected_timeout_total_ms)
     files = report["files"]
     if (
         not isinstance(files, list)

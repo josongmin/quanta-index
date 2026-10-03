@@ -2134,11 +2134,16 @@ replaying raw byte spans/name relations; it is not a third parser. A separate
 Rust build attempt was not admitted within its 1,200s bound; that attempt was
 not reported as compilation success.
 
-**Diagnostic capture progress:** 200/240 C3 rows have completed source-bound
-capture and replay, including Django (1,355.276s wall); all completed rows are
-`capped` with ten distinct files. At this checkpoint 1,063 returned task/file
-pairs are missing from the old qrels. Tailscale and TypeORM captures remain active
-under the original pinned source/binary batch; final per-repository state is in
+**Diagnostic capture progress:** 220/240 C3 rows completed source-bound
+capture and replay; all completed rows are `capped` with ten distinct files.
+1,189 returned task/file pairs are missing from the old qrels. The original batch
+finished; TypeORM failed before search when the corpus-wide 120-second symbol
+preflight deadline expired at file 2,210 of 3,608. The first timed-out file parses
+cleanly in isolation. The existing Rust timeout option is now exposed through
+the Python spec, verified against the actual preflight policy, and frozen in
+paired protocol locks. A controlled retry uses a fresh root, the same frozen
+Rust source/binaries and a 600-second budget; its state is recorded separately
+in `typeorm-budget-control-result.json`. Original per-repository state is in
 `capture-summary.json`. Process wall and contained publish/seal/activate times
 are reported separately from call sums and compile/admission waits. These
 contended debug/hash-dev runs do not qualify speed or semantic/hybrid quality.
@@ -2146,8 +2151,11 @@ contended debug/hash-dev runs do not qualify speed or semantic/hybrid quality.
 **Remaining data/admission work:** source-bound blank forms/batches include the
 new candidates and threshold 2; no completed independent reviews are invented.
 The old external `scripts/finalize_repo.py` uses `grade > 0` and drops the new
-threshold, so it must not be reused unchanged for this rubric. Final issue must
-preserve threshold, actual reviewer/adjudicator identities and new hashes. Missing
+threshold, so it must not be reused unchanged for this rubric. The canonical
+`holdout_review.finalize_file_review_labels` now preserves the threshold, validates
+two completed forms and a third adjudicator, and issues source-bound NL file
+labels with new commitments. Sixteen focused fixed-golden/negative tests passed;
+actual new completed review/adjudication data is still required. Missing
 qrels, original C3 family/split mismatch, full admission bundle, current-source
 binary proof and other-product NL/index-universe evidence remain open. C3 labels
 cannot qualify the repository-disjoint C5 corpus. Full CI/release/deployment

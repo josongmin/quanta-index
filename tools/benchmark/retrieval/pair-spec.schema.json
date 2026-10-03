@@ -8,6 +8,7 @@
   "required": ["spec_version", "repo", "manifest", "suite", "query_pack", "execution_profiles", "top_k", "output_root", "runner_binary", "strategies", "searchd_binary", "searchd_expected_sha256"],
   "properties": {
     "symbol_coverage_policy": {"enum": ["require-complete", "allow-incomplete"], "default": "require-complete", "description": "Frozen capability policy; incomplete text admission never claims complete symbol coverage."},
+    "symbol_total_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615, "description": "Corpus-wide symbol preflight budget in milliseconds (runner default 120000). Forwarded to the existing runner option and verified against its source-bound preflight policy. Producer failures remain fatal."},
     "spec_version": {"const": 2},
     "repo": {"type": "string", "minLength": 1},
     "manifest": {"type": "string", "minLength": 1},
