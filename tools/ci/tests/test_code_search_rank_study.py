@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
+from pathlib import Path
 
+import jsonschema
 import pytest
 
 from tools.benchmark.retrieval import code_search_rank_study as study
@@ -374,3 +377,41 @@ def test_rank_study_limits_require_ordinary_file_policy_and_lexical_only():
     ]:
         with pytest.raises(driver.RunError):
             driver.rank_study_configuration(limits, policy, routes)
+
+
+@pytest.mark.parametrize("policy", ["code_search_file", "code_search_exact_content_file"])
+def test_rank_study_public_spec_schema_accepts_only_bounded_ordinary_diagnostics(policy):
+    schema = json.loads((Path(driver.__file__).parent / "pair-spec.schema.json").read_text())
+    spec = {
+        "spec_version": 2,
+        "repo": "/tmp/repo",
+        "manifest": "/tmp/manifest.json",
+        "suite": "/tmp/suite.json",
+        "query_pack": "/tmp/pack.json",
+        "execution_profiles": {"quanta": qp.execution_profile(policy)},
+        "top_k": 1,
+        "output_root": "/tmp/output",
+        "runner_binary": "/tmp/runner",
+        "searchd_binary": "/tmp/searchd",
+        "searchd_expected_sha256": "a" * 64,
+        "strategies": [{"name": "whole_file"}],
+        "routes": ["lexical"],
+        "code_search_rank_study": {"max_files": 100, "max_pages": 10, "timeout_ms": 1000},
+    }
+    jsonschema.validate(spec, schema)
+    for mutator in (
+        lambda row: row["code_search_rank_study"].update(max_files=True),
+        lambda row: row["code_search_rank_study"].update(max_pages=0),
+        lambda row: row["code_search_rank_study"].update(timeout_ms=300_001),
+        lambda row: row["code_search_rank_study"].update(unexpected=1),
+        lambda row: row.update(routes=["lexical", "hybrid"]),
+        lambda row: row.pop("routes"),
+        lambda row: row.update(claims={"speed": True}),
+        lambda row: row["execution_profiles"].update(
+            quanta=qp.execution_profile("code_search_typo_file")
+        ),
+    ):
+        bad = copy.deepcopy(spec)
+        mutator(bad)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(bad, schema)

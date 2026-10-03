@@ -43,6 +43,16 @@
     "embedder": {"enum": ["potion-code", "potion-code-full-v2", "hash-dev"]},
     "query_stage_observation": {"enum": ["enabled", "disabled"], "default": "enabled", "description": "Actual daemon server-query-stage observation policy, explicitly passed by the runner and bound in diagnostic v5/protocol. Does not disable request/deadline or operational metrics. Sidecar serialization is separate."},
     "experimental_hybrid_fetch_floor": {"enum": ["25", "50", "100"], "default": "100", "description": "Bounded experimental startup selector. Production default remains 100. Explicit daemon env and diagnostic v6/protocol4 config digest bind the selected floor; top-k, probe and ceiling rules still apply."},
+    "code_search_rank_study": {
+      "type": "object", "additionalProperties": false,
+      "description": "Optional post-measurement native paging and explanation diagnostics. Never selects a rank policy; incompatible with speed claims because process resource metrics include diagnostic work.",
+      "required": ["max_files", "max_pages", "timeout_ms"],
+      "properties": {
+        "max_files": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "max_pages": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000}
+      }
+    },
     "cache_regime": {"enum": ["true_process_cold", "warm_cache", "undeclared"]},
     "seed": {"type": "integer", "minimum": 0},
     "timeout_secs": {"type": "integer", "minimum": 1},
@@ -133,6 +143,17 @@
   },
   "allOf": [
     {
+      "if": {"required": ["code_search_rank_study"]},
+      "then": {
+        "required": ["routes"],
+        "properties": {
+          "routes": {"const": ["lexical"]},
+          "execution_profiles": {"properties": {"quanta": {"properties": {"policy": {"enum": ["code_search_file", "code_search_exact_content_file"]}}}}},
+          "claims": {"properties": {"speed": {"const": false}}}
+        }
+      }
+    },
+    {
       "if": {"properties": {"blinding": {"const": "isolated"}}, "required": ["blinding"]},
       "then": {
         "required": ["suite_secret_root"],
@@ -192,6 +213,7 @@
         {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-natural-language-ucd17-v2"}, "policy": {"const": "natural_language"}, "config": {"type": "object", "additionalProperties": false, "required": ["max_token_chars", "max_tokens", "min_token_chars"], "properties": {"max_token_chars": {"const": 96}, "max_tokens": {"const": 32}, "min_token_chars": {"const": 1}}}, "planning_cost_in_latency": {"const": false}}},
         {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-natural-language-file-ucd17-v1"}, "policy": {"const": "natural_language_file"}, "config": {"type": "object", "additionalProperties": false, "required": ["max_token_chars", "max_tokens", "min_token_chars"], "properties": {"max_token_chars": {"const": 96}, "max_tokens": {"const": 32}, "min_token_chars": {"const": 1}}}, "planning_cost_in_latency": {"const": false}}},
         {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-code-search-file-v1"}, "policy": {"const": "code_search_file"}, "config": {"type": "object", "additionalProperties": false, "maxProperties": 0}, "planning_cost_in_latency": {"const": false}}},
+        {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-code-search-exact-content-file-v1"}, "policy": {"const": "code_search_exact_content_file"}, "config": {"type": "object", "additionalProperties": false, "maxProperties": 0}, "planning_cost_in_latency": {"const": false}}},
         {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-code-search-typo-file-v1"}, "policy": {"const": "code_search_typo_file"}, "config": {"type": "object", "additionalProperties": false, "maxProperties": 0}, "planning_cost_in_latency": {"const": false}}},
         {"type": "object", "additionalProperties": false, "required": ["profile_id", "policy", "config", "planning_cost_in_latency"], "properties": {"profile_id": {"const": "quanta-code-search-components-file-v1"}, "policy": {"const": "code_search_components_file"}, "config": {"type": "object", "additionalProperties": false, "maxProperties": 0}, "planning_cost_in_latency": {"const": false}}}
       ]

@@ -437,6 +437,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_semble_env_refuses_missing_lockfile",
     "tools.ci.tests.test_retrieval_benchmark.test_semble_env_reports_lockfile_digest_and_pair_requires_pin",
     "tools.ci.tests.test_retrieval_benchmark.test_semble_file_collection_preserves_native_rank_and_exhaustion",
+    "tools.ci.tests.test_retrieval_benchmark.test_semble_file_collection_reuses_verified_source_work_across_queries",
     "tools.ci.tests.test_retrieval_benchmark.test_semble_inputs_refuse_duplicate_keys_and_unsafe_paths",
     "tools.ci.tests.test_retrieval_benchmark.test_semble_model_revision_requires_observed_pinned_cache",
     "tools.ci.tests.test_retrieval_benchmark.test_semble_worker_resident_probe_has_native_windows_path",

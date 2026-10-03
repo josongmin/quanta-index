@@ -182,6 +182,7 @@ def test_file_review_issuer_preserves_sufficient_answer_threshold(tmp_path, answ
             **labels,
         }
     ]
+    suite["diagnostic_policy"] = evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
     _checked, issued_pack, _tokens = evaluator.validate_suite(checkout, suite)
     assert issued_pack["suite_commitment_sha256"] != pack["suite_commitment_sha256"]
     assert (
