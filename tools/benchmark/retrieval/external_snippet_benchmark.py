@@ -412,6 +412,7 @@ def score_capture(
     """Score a bound native record; this is not a substitute for full record replay."""
     if (
         pack.get("schema_version") != 3
+        or record.get("schema_version") != 5
         or pack.get("suite_commitment_sha256") != _sha(_canonical(sidecar))
         or pack.get("repository_commit") != sidecar.get("repository_commit")
         or pack.get("file_universe_digest") != sidecar.get("file_universe_digest")
@@ -435,12 +436,22 @@ def score_capture(
     unjudged = 0
     returned = 0
     for row in rows:
-        if not isinstance(row, dict) or row.get("route") != "lexical":
-            raise ExternalSnippetError("native record route differs")
+        if (
+            not isinstance(row, dict)
+            or row.get("route") != "lexical"
+            or row.get("rank_unit") != "distinct_file"
+        ):
+            raise ExternalSnippetError("native record route or ranking unit differs")
         task_id = row.get("task_id")
         if task_id not in tasks or task_id in seen:
             raise ExternalSnippetError("native record task ID missing or duplicate")
         seen.add(task_id)
+        identity = row.get("query_identity")
+        if (
+            not isinstance(identity, dict)
+            or identity.get("original_query_sha256") != tasks[task_id]["query_sha256"]
+        ):
+            raise ExternalSnippetError("native record original query identity differs")
         status = row.get("status")
         if status not in SCORED_STATUSES | FAILED_STATUSES:
             raise ExternalSnippetError("native record status unknown")

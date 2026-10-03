@@ -124,12 +124,15 @@ def test_clarc_native_pack_is_blind_source_bound_and_preserves_default_refusals(
 
     task_id = pack["tasks"][0]["task_id"]
     record = {
+        "schema_version": 5,
         "query_pack_sha256": hashlib.sha256(retrieval_contract.canonical(pack)).hexdigest(),
         "comparison_contract": pack["comparison_contract"],
         "results": [
             {
                 "task_id": task_id,
                 "route": "lexical",
+                "rank_unit": "distinct_file",
+                "query_identity": {"original_query_sha256": pack["tasks"][0]["query_sha256"]},
                 "status": "success",
                 "candidates": [
                     {"rank": 1, "path": "snippets/c_group_1_id_1.cpp"},
@@ -153,6 +156,10 @@ def test_clarc_native_pack_is_blind_source_bound_and_preserves_default_refusals(
     corrupt = json.loads(json.dumps(record))
     corrupt["results"][0]["candidates"][0]["path"] = "missing.cpp"
     with pytest.raises(ext.ExternalSnippetError, match="unknown"):
+        ext.score_capture(pack, gold, corrupt)
+    corrupt = json.loads(json.dumps(record))
+    corrupt["results"][0]["rank_unit"] = "chunk"
+    with pytest.raises(ext.ExternalSnippetError, match="ranking unit"):
         ext.score_capture(pack, gold, corrupt)
 
 
