@@ -3039,3 +3039,11 @@ is live; the external service reported 08:40 KST quota reset. Final reviewed
 suite/split/license/model/proof admission, matching proofs for the final
 producer source, fresh five-product captures and equal-boundary repeated
 performance remain incomplete. This update does not close those scopes.
+
+Follow-up at 06:22 KST: the pinned `9e27b8ba` contract Python stage completed:
+**671 passed, zero errors/failures/skips**, JUnit time **667.835 seconds**
+(pytest wall report **667.98 seconds**). The original host-monitor failures no
+longer reproduce on this pinned source. The overall producer remains live for
+the Rust stage and final canonical receipts; Python success is not whole
+contract success. The index-scope changes and this ticket update are present
+on main and pushed through `f5b3b55e`; unrelated dirty owner work is preserved.
