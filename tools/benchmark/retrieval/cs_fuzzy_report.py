@@ -61,7 +61,7 @@ def score_capture(root: Path) -> dict:
         "cs fuzzy scored rows differ from source-bound suite",
     )
     compatible = []
-    unsupported = []
+    excluded = []
     raw_hit = 0
     by_edit: dict[str, dict[str, float | int]] = {}
     for row in rows:
@@ -80,13 +80,13 @@ def score_capture(root: Path) -> dict:
             {"submitted": 0, "hit_at_10_count": 0, "mrr_at_10_sum": 0.0, "ndcg_at_10_sum": 0.0},
         )
         operation_row["submitted"] += 1
-        operation_row["hit_at_10_count"] += scores["hit_at_10"]
+        operation_row["hit_at_10_count"] += int(scores["hit_at_10"])
         operation_row["mrr_at_10_sum"] += scores["mrr_at_10"]
         operation_row["ndcg_at_10_sum"] += scores["ndcg_at_10"]
         if operation == "substitution":
             compatible.append({"task_id": row["task_id"], "scores": scores})
         else:
-            unsupported.append(row["task_id"])
+            excluded.append(row["task_id"])
     totals = {
         metric: sum(row["scores"][metric] for row in compatible)
         for metric in ("hit_at_10", "mrr_at_10", "ndcg_at_10")
@@ -101,8 +101,8 @@ def score_capture(root: Path) -> dict:
         "suite_sha256": evaluator.digest((root / "suite.json").read_bytes()),
         "submitted": len(rows),
         "compatible": len(compatible),
-        "unsupported": len(unsupported),
-        "unsupported_task_ids": sorted(unsupported),
+        "excluded_from_shared_edit_class": len(excluded),
+        "excluded_task_ids": sorted(excluded),
         "raw_hit_at_10_count": int(raw_hit),
         "native_by_edit_operation": {key: by_edit[key] for key in sorted(by_edit)},
         "compatible_hit_at_10_count": int(totals["hit_at_10"]),

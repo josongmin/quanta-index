@@ -59,7 +59,8 @@ def test_native_report_excludes_non_substitution_even_if_raw_result_hits(tmp_pat
         report["compatible_edit_contract"]
         == "ascii_casefold_single_substitution_same_length_window"
     )
-    assert report["unsupported_task_ids"] == ["delete", "insert", "swap"]
+    assert report["excluded_from_shared_edit_class"] == 3
+    assert report["excluded_task_ids"] == ["delete", "insert", "swap"]
     assert report["raw_hit_at_10_count"] == 4
     assert report["compatible_hit_at_10_count"] == 1
     assert report["compatible_mrr_at_10"] == 0.5
