@@ -7,6 +7,8 @@
 
 #![forbid(unsafe_code)]
 
+mod rank_study;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -83,6 +85,7 @@ fn print_help() -> BenchResult<()> {
          [--source-stream-id ID] [--source-event-id ID] [--source-base-event-id ID]\n\
          [--symbol-preflight-out PATH]\n\
          --out PATH --refusal-out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|potion-code-full-v2|hash-dev]\n\
+         [--rank-study-out PATH --rank-study-max-files N --rank-study-max-pages N --rank-study-timeout-ms N] (optional post-measurement ordinary CodeSearch study)\n\
          potion-code: historical effective 512-token V1; potion-code-full-v2: no 512-token truncation, 16 KiB/text and 4 MiB/model batch admission, rebuild required\n\
          [--max-file-bytes N]\n\
          [--io-timeout-secs N] [--ready-timeout-secs N]\n",
@@ -343,10 +346,10 @@ fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
 fn validated_protocol_latency(outcome: &QueryOutcome, phase: &str) -> BenchResult<Duration> {
     // A typed refusal is a measured execution outcome. The record and verdict
     // decide quality and qualification; the protocol must still reach later tasks.
-    outcome.classification().map_err(|message| {
-        BenchError::Protocol(format!("invalid {phase} outcome: {message}"))
-    })?;
-    Ok(outcome.latency())
+    outcome
+        .classification()
+        .map(|_classification| outcome.latency())
+        .map_err(|message| BenchError::Protocol(format!("invalid {phase} outcome: {message}")))
 }
 
 fn write_query_plan_refusal(
@@ -716,6 +719,10 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "access-block-log",
             "metrics-out",
             "diagnostics-out",
+            "rank-study-out",
+            "rank-study-max-files",
+            "rank-study-max-pages",
+            "rank-study-timeout-ms",
             "query-stage-observation",
             "experimental-hybrid-fetch-floor",
             "out",
@@ -798,6 +805,24 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             )));
         }
     }
+    let rank_study_out = args.flags.get("rank-study-out").map(PathBuf::from);
+    if let Some(path) = &rank_study_out {
+        let _external_path = require_external_path(&repo, path, "--rank-study-out")?;
+        if path.exists() {
+            return Err(BenchError::Config(format!("--rank-study-out already exists: {}", path.display())));
+        }
+    } else if ["rank-study-max-files", "rank-study-max-pages", "rank-study-timeout-ms"]
+        .iter().any(|key| args.flags.contains_key(*key)) {
+        return Err(BenchError::Config("rank-study limits require --rank-study-out".into()));
+    }
+    let rank_study_limits = rank_study::Limits {
+        max_files: optional_usize(args, "rank-study-max-files", 10_000)?,
+        max_pages: optional_usize(args, "rank-study-max-pages", 1_000)?,
+        timeout: Duration::from_millis(optional_u64(args, "rank-study-timeout-ms", 30_000)?),
+    };
+    if rank_study_limits.max_files == 0 || rank_study_limits.max_pages == 0 || rank_study_limits.timeout.is_zero() {
+        return Err(BenchError::Config("rank-study limits must be positive".into()));
+    }
     let refusal_out = PathBuf::from(required(args, "refusal-out")?);
     let _external_path = require_external_path(&repo, &refusal_out, "--refusal-out")?;
     if refusal_out.exists() {
@@ -851,6 +876,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         ("--out", Some(&out)),
         ("--metrics-out", metrics_out.as_ref()),
         ("--diagnostics-out", diagnostics_out.as_ref()),
+        ("--rank-study-out", rank_study_out.as_ref()),
         ("--refusal-out", Some(&refusal_out)),
         ("--symbol-preflight-out", Some(&symbol_preflight_out)),
     ] {
@@ -880,6 +906,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     // has one accepted plan.
     let (policy, nl_plan_config, task_plans) = plan_query_pack(args, &pack, &refusal_out)?;
     validate_policy_routes(policy, &selected)?;
+    if rank_study_out.is_some() && (!rank_study::allowed(policy) || selected != BTreeSet::from(["lexical"])) {
+        return Err(BenchError::Config("rank study requires lexical-only ordinary CodeSearch file policy".into()));
+    }
     validate_source_revision_for_policy(
         policy,
         &required(args, "revision-id")?,
@@ -1339,6 +1368,15 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         BTreeMap::new()
     };
     let record_elapsed = record_start.elapsed();
+    // Optional diagnostics run only after every measured request. Their refusals
+    // are artifact rows, not capture failures or zero-quality replacements.
+    let rank_study_start = Instant::now();
+    let rank_study_rows = rank_study_out.as_ref().map(|_path| rank_study::collect(
+        session.client(),
+        &quanta_index_contract::GenerationPin::new(identity.repo_id.clone(), identity.revision_id.clone(), identity.generation),
+        &pack, &task_plans, &outcomes, top_k, rank_study_limits,
+    ));
+    let rank_study_elapsed = rank_study_start.elapsed();
     let verify_start = Instant::now();
     verify_capture_corpus(args, &repo, &manifest)?;
     let verify_elapsed = verify_start.elapsed();
@@ -1519,6 +1557,18 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     if let (Some(path), Some(value)) = (&diagnostics_out, &diagnostics) {
         write_json(path, value)?;
     }
+    if let (Some(path), Some(results)) = (&rank_study_out, rank_study_rows) {
+        write_json(path, &serde_json::json!({
+            "schema_version":1,"kind":"quanta_code_search_rank_study",
+            "qualification":"diagnostic_unqualified","record_sha256":record_digest,
+            "policy":policy.as_str(),"execution_profile_sha256":execution_profile_sha256(policy, &nl_plan_config),
+            "timing_boundary":"post_measurement_sdk_paging_and_explanations",
+            "diagnostic_ms":rank_study_elapsed.as_secs_f64()*1000.0,
+            "limits":{"max_files":rank_study_limits.max_files,"max_pages":rank_study_limits.max_pages,
+                "timeout_ms":rank_study_limits.timeout.as_millis()},
+            "results":results,
+        }))?;
+    }
     // A failed owned-daemon shutdown or phase-artifact write must not leave a
     // scoreable success record. The record is the final create-new artifact.
     write_json(&out, &record)?;
@@ -1683,8 +1733,7 @@ mod tests {
             latency
         );
         assert_eq!(
-            validated_protocol_latency(&refused, "measurement")
-                .expect("typed measurement refusal"),
+            validated_protocol_latency(&refused, "measurement").expect("typed measurement refusal"),
             latency
         );
         let malformed = QueryOutcome::SdkFailure {

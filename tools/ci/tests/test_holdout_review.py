@@ -337,9 +337,7 @@ def test_partial_clue_does_not_force_answerability_at_sufficient_answer_threshol
     assert any(row["grade"] == 1 for row in completed[0]["reviews"][0]["files"])
     completed[0]["reviews"][0]["files"][0]["grade"] = 2
     with pytest.raises(evaluator.EvidenceError, match="sufficient-answer grade"):
-        holdout_review.validate_completed_forms(
-            checkout, pack, contexts, pools, completed, seed=42
-        )
+        holdout_review.validate_completed_forms(checkout, pack, contexts, pools, completed, seed=42)
 
 
 @pytest.mark.parametrize("threshold", [0, 4, True, "2", 2.0])
@@ -357,9 +355,7 @@ def test_review_threshold_is_frozen_with_context(tmp_path):
     completed = _completed_forms(forms)
     completed[0]["reviews"][0]["answerability_min_grade"] = 1
     with pytest.raises(evaluator.EvidenceError, match="query/context changed"):
-        holdout_review.validate_completed_forms(
-            checkout, pack, contexts, pools, completed, seed=42
-        )
+        holdout_review.validate_completed_forms(checkout, pack, contexts, pools, completed, seed=42)
 
 
 @pytest.mark.parametrize(
@@ -515,9 +511,12 @@ def test_suite_distinguishes_partial_relevance_from_answerability(tmp_path):
     checked, pack, _source = evaluator.validate_suite(checkout, original)
     assert checked["tasks"][0]["file_judgments"][0]["grade"] == 1
     assert "answerability_min_grade" not in pack["tasks"][0]
-    assert evaluator.file_ndcg_at_k(
-        [{"path": task["file_judgments"][0]["path"]}], task["file_judgments"], 10
-    ) == 1.0
+    assert (
+        evaluator.file_ndcg_at_k(
+            [{"path": task["file_judgments"][0]["path"]}], task["file_judgments"], 10
+        )
+        == 1.0
+    )
     task["file_judgments"][0]["grade"] = 2
     with pytest.raises(evaluator.EvidenceError, match="answerability mismatch"):
         evaluator.validate_suite(checkout, original)

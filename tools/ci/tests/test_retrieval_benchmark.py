@@ -11484,7 +11484,9 @@ def test_exact_symbol_profile_admits_only_standalone_symbol_capture(tmp_path, mo
     monkeypatch.setattr(
         pairrun,
         "run_quanta",
-        lambda loaded, _spec_dir: observed.append(loaded["execution_profiles"]["quanta"]["policy"]) or 0,
+        lambda loaded, _spec_dir: (
+            observed.append(loaded["execution_profiles"]["quanta"]["policy"]) or 0
+        ),
     )
     assert pairrun.cmd_quanta(SimpleNamespace(spec=str(spec_path))) == 0
     assert observed == ["exact_symbol_name"]
@@ -11498,9 +11500,7 @@ def test_exact_symbol_profile_admits_only_standalone_symbol_capture(tmp_path, mo
         pairrun.load_spec(spec_path, standalone_quanta=True)
 
     invalid = copy.deepcopy(spec)
-    invalid["execution_profiles"]["semble"] = semble_adapter.execution_profile(
-        "lexical-file", None
-    )
+    invalid["execution_profiles"]["semble"] = semble_adapter.execution_profile("lexical-file", None)
     spec_path.write_text(json.dumps(invalid), encoding="utf-8")
     with pytest.raises(pairrun.RunError, match="cannot include Semble"):
         pairrun.load_spec(spec_path, standalone_quanta=True)
