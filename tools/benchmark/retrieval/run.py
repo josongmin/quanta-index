@@ -11373,6 +11373,28 @@ def _quality_batch_members(
     return members, {"model_asset_sha256": model_asset}
 
 
+def _quality_batch_input_snapshot(members: list[tuple]) -> list[dict]:
+    """Bind external member input bytes before product execution and promotion."""
+    snapshot = []
+    for spec_path, spec, suite, pack, _source in members:
+        suite_path = Path(spec["suite"])
+        pack_path = Path(spec["query_pack"])
+        if (
+            read_json(spec_path) != spec
+            or read_json(suite_path) != suite
+            or read_json(pack_path) != pack
+        ):
+            raise RunError(f"quality batch member inputs changed while loading: {spec_path}")
+        snapshot.append(
+            {
+                "member_spec_sha256": sha_file(spec_path),
+                "suite_sha256": sha_file(suite_path),
+                "query_pack_file_sha256": sha_file(pack_path),
+            }
+        )
+    return snapshot
+
+
 def run_quality_batch(batch: dict) -> int:
     """Run compatible blind packs through one index per product, then score separately.
 
@@ -11381,6 +11403,7 @@ def run_quality_batch(batch: dict) -> int:
     or represented as a native capture.
     """
     members, model = _quality_batch_members(batch)
+    input_snapshot = _quality_batch_input_snapshot(members)
     first_spec = members[0][1]
     out_root = Path(batch["output_root"]).resolve()
     source_repo = Path(first_spec["repo"]).resolve()
@@ -11446,7 +11469,7 @@ def run_quality_batch(batch: dict) -> int:
         repo, execution_view, execution_pack, members[0][4], product_records
     )
     report_rows = []
-    for index, (spec_path, spec, suite, pack, source) in enumerate(members):
+    for index, (spec_path, _spec, suite, pack, source) in enumerate(members):
         view = eb.project_scoring_view(execution_pack, membership, pack, combined)
         validate_evidence_against_suite(repo, suite, pack, source, view)
         report = evaluate_paired_file_diagnostic(
@@ -11460,8 +11483,7 @@ def run_quality_batch(batch: dict) -> int:
             {
                 "suite_id": suite["suite_id"],
                 "member_spec_path": str(spec_path),
-                "member_spec_sha256": sha_file(spec_path),
-                "suite_sha256": sha_file(Path(spec["suite"])),
+                **input_snapshot[index],
                 "blind_pack_sha256": digest(canonical(pack)),
                 "scoring_view_sha256": digest(canonical(view)),
                 "report": report_path.name,
@@ -11491,6 +11513,8 @@ def run_quality_batch(batch: dict) -> int:
         ],
         "members": report_rows,
     }
+    if _quality_batch_input_snapshot(members) != input_snapshot:
+        raise RunError("quality batch member inputs changed during product capture")
     (stage / "batch-manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -11547,6 +11571,7 @@ def verify_quality_batch(batch: dict) -> int:
     if closure_digest != manifest["driver_source_closure_digest"]:
         raise RunError("quality batch driver source closure digest changed")
     members, model = _quality_batch_members(batch)
+    input_snapshot = _quality_batch_input_snapshot(members)
     if model["model_asset_sha256"] != manifest["model_asset_sha256"]:
         raise RunError("quality batch model asset changed")
     packs = [row[3] for row in members]
@@ -11601,7 +11626,7 @@ def verify_quality_batch(batch: dict) -> int:
     )
     if not isinstance(manifest["members"], list) or len(manifest["members"]) != len(members):
         raise RunError("quality batch member report count changed")
-    for index, ((spec_path, spec, suite, pack, source), row) in enumerate(
+    for index, ((spec_path, _spec, suite, pack, source), row) in enumerate(
         zip(members, manifest["members"], strict=True)
     ):
         view = eb.project_scoring_view(execution_pack, membership, pack, combined)
@@ -11613,8 +11638,7 @@ def verify_quality_batch(batch: dict) -> int:
         expected_row = {
             "suite_id": suite["suite_id"],
             "member_spec_path": str(spec_path),
-            "member_spec_sha256": sha_file(spec_path),
-            "suite_sha256": sha_file(Path(spec["suite"])),
+            **input_snapshot[index],
             "blind_pack_sha256": digest(canonical(pack)),
             "scoring_view_sha256": digest(canonical(view)),
             "report": report_path.name,

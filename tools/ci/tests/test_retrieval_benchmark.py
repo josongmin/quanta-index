@@ -177,6 +177,10 @@ def test_quality_batch_spec_and_product_contract_refuse_drift(tmp_path, monkeypa
     )
     valid, model = pairrun._quality_batch_members(batch)
     assert len(valid) == 2 and model["model_asset_sha256"] == "b" * 64
+    for path in member_paths:
+        path.write_text(json.dumps(specs[str(path)]), encoding="utf-8")
+    snapshot = pairrun._quality_batch_input_snapshot(valid)
+    assert len(snapshot) == 2
 
     specs[str(member_paths[1])]["strategies"] = [{"name": "whole_file"}]
     with pytest.raises(pairrun.RunError, match="product/source contract differs"):
@@ -199,6 +203,8 @@ def test_quality_batch_spec_and_product_contract_refuse_drift(tmp_path, monkeypa
     packs[1].write_text(json.dumps({"id": "wrong"}), encoding="utf-8")
     with pytest.raises(pairrun.RunError, match="blind pack differs"):
         pairrun._quality_batch_members(batch)
+    with pytest.raises(pairrun.RunError, match="inputs changed while loading"):
+        pairrun._quality_batch_input_snapshot(valid)
 
 
 def _clean_host_timeline_fixture():
