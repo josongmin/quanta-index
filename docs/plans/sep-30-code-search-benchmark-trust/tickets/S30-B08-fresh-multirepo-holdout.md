@@ -1664,3 +1664,38 @@ passed, but this frozen pair did not execute that later code.
 **VERIFIED:** 12/12 pair receipts and independent joined counts.
 **NOT_RUN:** fresh C5 product capture, subjective relevance review, matched
 five-product index attestation, and qualified product-default decision.
+
+## Fresh C5 gold and Sourcegraph projection boundary (2026-10-03)
+
+The corrected twelve-repository C5 release (`sha256:2ec04aa3…`) produced
+12/12 source-derived gold capsules at
+`/private/tmp/qi-c5-fresh-20261003-v6/gold-v6`. The exact clean producer was
+`dd86ec99`; the receipt is `gold-capture-receipt.json` in the same external
+root. It records a 1,152.116-second wall and binds the unchanged sampling
+ledger, split manifest, both releases and producer file hashes. The prior v5
+attempt failed at the generic 16 MiB control-document limit because
+`rust-analyzer/gold.json` was 28,375,487 bytes. The role-scoped 32 MiB gold
+bound in `4301e3cc` admits that document without raising the limit for other
+control JSON; the published v6 document is 28,375,781 bytes. C4 suite
+admission is running under that same frozen source and has not published an
+output or result yet.
+
+The frozen release's 11,695 `code_only` files were independently projected into
+twelve new Git repositories at
+`/private/tmp/qi-c5-comparators-20261003-v1/repos`. The projection receipt
+`projections.json` has SHA-256
+`d837b25e4baa93c965ee151386395e720ed8a48b12ef9a96b199d3be1fe05380`.
+Each repository's tracked path and SHA-256 set matches its release manifest;
+the projection commits are distinct from the original repository commits.
+Sourcegraph capture previously submitted the original `rev:` even for a
+projection, which cannot identify that projection commit. Commits `7c7c66c6`,
+`d99ee9c6` and `a6370967` add separate source/service revision binding,
+replay checks, and committed-blob validation. The Sourcegraph adapter's 37
+focused tests pass, including a Git `skip-worktree` counterexample.
+
+**VERIFIED:** 12 gold capsules and exact-file Git projection; Sourcegraph
+revision contract and focused tests. **NOT_RUN:** a new Sourcegraph or
+OpenGrok service index, request-time indexed-universe attestation, fresh C5
+product queries, independent relevance approval, qualified product comparison
+and performance measurement. A Git projection is input evidence, not proof
+that a service indexed every file.
