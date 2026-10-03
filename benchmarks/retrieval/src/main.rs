@@ -1993,7 +1993,10 @@ mod tests {
         for invalid in ["0", "129", "-1", "1.5", "true", " 48", ""] {
             args.flags
                 .insert("nl-max-tokens".to_string(), invalid.to_string());
-            assert!(nl_plan_config(&args, policy).is_err(), "accepted {invalid:?}");
+            assert!(
+                nl_plan_config(&args, policy).is_err(),
+                "accepted {invalid:?}"
+            );
         }
         args.flags
             .insert("nl-max-tokens".to_string(), "48".to_string());
