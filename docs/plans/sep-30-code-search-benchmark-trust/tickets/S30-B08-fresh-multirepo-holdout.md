@@ -3142,3 +3142,65 @@ Independent `portable_proof.py verify --receipt
 passed from the unchanged pinned checkout. Together with the verified SDK
 **25/25**, this closes that source's proof production. It does not include
 later main changes or provide the final producer admission/comparison.
+
+### 2026-10-04: Sourcegraph literal-data submission and proof-inventory closure
+
+- **VERIFIED**, the Sourcegraph adapter now compiles printable single-line
+  query data as whitespace-delimited literal content terms with AND semantics.
+  Syntax-bearing terms use `content:` JSON quoting; caller text cannot inject
+  repository filters, boolean operators, negation, regexes or whole-query
+  phrases. Previously admitted safe bare terms retain their exact request
+  bytes. Capability admission delegates to the same compiler instead of a
+  second regex/operator predicate. Empty/control/surrogate inputs still refuse
+  before HTTP and receive neither fabricated latency nor HTTP success.
+  Official syntax: <https://sourcegraph.com/docs/code-search/queries> and
+  <https://sourcegraph.com/docs/code-search/queries/language>.
+- **VERIFIED**, 11 native controls matched independent case-insensitive literal
+  AND path sets computed from frozen zustand contents. Controls cover repeated
+  content conditions, a missing first term, reserved words, filter text, quotes,
+  backslashes and punctuation. Runtime/index identities and scoped stored bytes
+  were unchanged. `sourcegraph-literal-and-probe-ghuiqvmy/` under the external
+  closeout root retains requests, raw streams and oracle path sets; **7.607s**.
+- **VERIFIED**, all **240 unchanged C3 queries** passed the current compiler
+  and request-target preflight (largest **766 bytes**, below the existing 8KiB
+  limit). Actual native submissions returned **240 HTTP 200 responses**, each
+  accepted by the canonical response validator. All 12 repositories consumed
+  their existing native stored-content/path receipts against unchanged
+  bracketing runtime/index snapshots. Capture took **232.263s** before result
+  serialization; this includes scope verification and is not query latency.
+  Offline replay accepted all 240 responses and refused four forged request
+  bindings in **12.763s**. Artifacts: `sourcegraph-c3-literal-submission-fc1p78td/`.
+  Commands: `PYTHONPATH=<source> <workspace-python> <root>/capture.py` and
+  `<root>/replay.py`. Replay exports clean **2266b8cb** because later main edits
+  changed a scorer digest; all four exported owner hashes match the capture.
+  The current compiler bytes match that executed compiler. No qrels were used
+  for scoring, and no original query, capture or index was overwritten.
+- **VERIFIED**, compiler/offline owner **37 tests plus 11 subtests** passed;
+  source-closure/test-authority checks **3 passed**, and the authority CLI,
+  Ruff and diff hygiene passed. The joint three-owner run was **FAILED**:
+  **179 passed / 2 failed**, **385.70s**. The reserved-word fixture still expected
+  an unsupported-only report field; its corrected focused run passed in
+  **76.18s**. The other failure reached capture identity validation while main
+  changed. Both failed cases were re-executed from clean **e7a26a69** and passed
+  **2/2**, **65.09s**, in `sourcegraph-owner-failure-recheck-_09tt092/` with JUnit.
+  This is focused closure, not a fresh passing whole-owner or whole-repository
+  receipt. The updated offline test also refuses OR/phrase/filter substitution
+  even when the raw-query hash is recomputed.
+- **VERIFIED**, an additional admission prerequisite was repaired: clean
+  **e7a26a69** collected **677** Contract Python identities while its required
+  authority named **673**. The four missing IDs cover guarded source-closure
+  reuse, final verification preservation, unsupported Python refusal and
+  driver-versus-unattested-binary provenance. They were added to the existing
+  authority without deleting entries or changing Rust/SDK inventories.
+  Canonical collection now matches **677**; the four tests passed (**2.43s**).
+  The external recheck root retains the original refusal, set difference and
+  reconciled collection. Full current-source Contract/SDK execution is separate.
+
+**Remaining:** C3 actual review is still **40/240 issued tasks**, with **200**
+pending tasks and **1,157/1,324** original returned task/file pairs unissued.
+No review worker is running before the service-reported **08:40 KST** reset.
+Full final admission, reviewed five-product captures and repeated performance
+remain **NOT_RUN**. This closes the conservative Sourcegraph submission guard;
+native literal AND search is not Quanta NL token-OR or semantic retrieval.
+Declare product workflow versus matched predicates before interpreting quality
+or performance. All new executions remain diagnostic and unqualified.
