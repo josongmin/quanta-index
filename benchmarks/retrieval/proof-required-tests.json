@@ -842,6 +842,7 @@
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::explicit_binary_pin_never_falls_back",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::lexical_rank_unit_tracks_the_bound_request_policy",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::sealed_receipt_forgeries_refuse",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::timed_route_separates_execute_from_post_execute_without_changing_outcome",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$sdk::empty_status_tests::unset_pin_refuses_without_discovery",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::definition_query::tests::queries_are_shared_only_with_the_same_grammar",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::definition_query::tests::repeated_files_preserve_source_bound_symbols_and_reject_bad_syntax",

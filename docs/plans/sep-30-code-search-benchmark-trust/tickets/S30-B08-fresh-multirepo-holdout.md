@@ -3338,3 +3338,12 @@ final 200 reviews and admission are still incomplete.
   also exited zero from that pinned source. It does not include later main
   batching, timing or evidence changes. Fresh matching Contract/SDK evidence,
   remaining 200 C3 reviews and final comparison remain incomplete.
+
+Follow-up Contract execution from clean `126f2e9a` failed closed before Python
+execution: actual Rust collection has **169** identities while authority has
+168. The sole unregistered case is
+`sdk::empty_status_tests::timed_route_separates_execute_from_post_execute_without_changing_outcome`.
+The test exists in the pinned source and actual compiled nextest inventory;
+there are no missing required Rust tests. Register that identity, retain the
+failed raw collection in `contract-junit-fixed-126f2e9a-zksoyc5z/`, then rerun
+with a new output root. The strict collection validator remains unchanged.
