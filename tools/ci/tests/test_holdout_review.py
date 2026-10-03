@@ -183,6 +183,9 @@ def test_file_review_issuer_preserves_sufficient_answer_threshold(tmp_path, answ
         "unsupported_answer",
         "wrong_unit",
         "missing_contract",
+        "wrong_mode",
+        "same_reviewer",
+        "original_unsupported_answer",
     ],
 )
 def test_file_review_issuer_rejects_incomplete_or_unbound_decisions(tmp_path, fault):
@@ -210,10 +213,46 @@ def test_file_review_issuer_rejects_incomplete_or_unbound_decisions(tmp_path, fa
         contracts["toy.001"].update(gold_unit="symbol", result_unit="symbol")
     elif fault == "missing_contract":
         contracts = {}
-    with pytest.raises(evaluator.EvidenceError):
+    elif fault == "wrong_mode":
+        contracts["toy.001"]["request_mode"] = query_plan.DEFAULT_FILE_SEARCH
+    elif fault == "same_reviewer":
+        forms[1]["reviewer_id"] = forms[0]["reviewer_id"]
+    elif fault == "original_unsupported_answer":
+        for file in forms[0]["reviews"][0]["files"]:
+            file["grade"] = 1
+    expected = {
+        "missing_review": "two review forms required",
+        "same_adjudicator": "adjudicator must differ",
+        "missing_decision": "review task coverage changed",
+        "changed_threshold": "review query/context changed",
+        "changed_hash": "review source/candidate changed",
+        "changed_source": "review source/candidate changed",
+        "unjudged": "review grade must be 0..3",
+        "unsupported_answer": "adjudicated answerability requires a sufficient pooled file",
+        "wrong_unit": "evaluation_contract unit mismatch",
+        "missing_contract": "file review evaluation contract coverage differs",
+        "wrong_mode": "file review issuer requires the NL file search contract",
+        "same_reviewer": "two distinct reviewer identities required",
+        "original_unsupported_answer": "review answerability requires a sufficient pooled file",
+    }
+    with pytest.raises(evaluator.EvidenceError, match=expected[fault]):
         holdout_review.finalize_file_review_labels(
             checkout, pack, contexts, pools, forms, adjudicated, contracts, seed=42
         )
+
+
+def test_file_review_issuer_marks_an_adjudicated_override_ambiguous(tmp_path):
+    checkout, pack, contexts, pools, forms, adjudicated, contracts = _completed_file_review_fixture(
+        tmp_path
+    )
+    for file in adjudicated["reviews"][0]["files"]:
+        if file["path"] == "answer.py":
+            file["grade"] = 2
+    result = holdout_review.finalize_file_review_labels(
+        checkout, pack, contexts, pools, forms, adjudicated, contracts, seed=42
+    )
+    assert result["task_labels"]["toy.001"]["label_review"]["assessment"] == "reviewed_ambiguous"
+    assert result["task_labels"]["toy.001"]["gold"][0]["grade"] == 2
 
 
 def test_prepare_deduplicates_blinds_and_retains_unjudged(tmp_path):

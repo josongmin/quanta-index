@@ -508,7 +508,7 @@ def finalize_file_review_labels(
     *,
     seed: int,
 ) -> dict:
-    """Issue existing file-label IR from two reviews and a source-bound decision.
+    """Issue NL file-label IR from two reviews and a source-bound decision.
 
     The adjudicator fills the slot-1 form with a third actual identity. Whole-file
     gold blocks are file witnesses, never declaration/context-span judgments.
@@ -516,6 +516,13 @@ def finalize_file_review_labels(
     or qualification, and cannot rebind a captured record to the issued labels.
     """
     checked = validate_completed_forms(checkout, pack, contexts, pools, completed, seed=seed)
+    for form in completed:
+        for row in form["reviews"]:
+            threshold = evaluator.answerability_min_grade(row, "completed review")
+            evaluator.require(
+                row["answerable"] == any(file["grade"] >= threshold for file in row["files"]),
+                "review answerability requires a sufficient pooled file: " + row["task_id"],
+            )
     evaluator.require(isinstance(adjudicated, dict), "adjudication form must be an object")
     adjudicator = evaluator.string(adjudicated.get("reviewer_id"), "adjudicator identity")
     evaluator.require(
@@ -535,6 +542,7 @@ def finalize_file_review_labels(
         checkout, pack["repository_commit"], max_total_bytes=source_oracle.MAX_SOURCE_BYTES
     )
     disputed = {row["task_id"] for row in checked["disagreements"]}
+    original_rows = [{row["task_id"]: row for row in form["reviews"]} for form in completed]
     evidence = {
         "query_pack_sha256": checked["query_pack_sha256"],
         "completed_form_sha256": checked["completed_form_sha256"],
@@ -543,17 +551,29 @@ def finalize_file_review_labels(
     labels = {}
     for row in adjudicated["reviews"]:
         task_id = row["task_id"]
+        final_grades = {file["path"]: file["grade"] for file in row["files"]}
+        if any(
+            original[task_id]["answerable"] != row["answerable"]
+            or {file["path"]: file["grade"] for file in original[task_id]["files"]} != final_grades
+            for original in original_rows
+        ):
+            disputed.add(task_id)
         threshold = evaluator.answerability_min_grade(row, "adjudicated task")
         judgments = [
             {key: file[key] for key in ("path", "file_sha256", "grade")}
             for file in sorted(row["files"], key=lambda file: file["path"])
         ]
         contract = evaluator.validate_evaluation_contract(
-            {"evaluation_contract": task_contracts[task_id], "file_judgments": judgments},
+            {
+                "evaluation_contract": task_contracts[task_id],
+                "file_judgments": judgments,
+                "query_intent": "semantic_intent",
+            },
             task_id,
         )
         evaluator.require(
-            contract["gold_unit"] == "distinct_file", "file review requires file unit"
+            contract["request_mode"] == query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+            "file review issuer requires the NL file search contract",
         )
         sufficient = [file for file in judgments if file["grade"] >= threshold]
         evaluator.require(
@@ -575,6 +595,7 @@ def finalize_file_review_labels(
                 }
             )
         labels[task_id] = {
+            "query_intent": "semantic_intent",
             "answerable": row["answerable"],
             "answerability_min_grade": threshold,
             "gold": gold,
