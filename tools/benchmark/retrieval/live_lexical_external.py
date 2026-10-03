@@ -1284,8 +1284,38 @@ def _backend_runtime(config: dict) -> dict:
     }
 
 
+def _backend_index_paths(root: Path) -> set[str]:
+    """Inventory index files while rejecting active Zoekt staging artifacts."""
+    if root.is_symlink() or any(parent.is_symlink() for parent in root.absolute().parents):
+        raise ValueError("backend index contains a link or special file")
+
+    def onerror(error: OSError) -> None:
+        raise ValueError("backend index inventory is unreadable") from error
+
+    paths: set[str] = set()
+    for directory, directories, files in os.walk(root, followlinks=False, onerror=onerror):
+        base = Path(directory)
+        for name in tuple(directories):
+            path = base / name
+            if path.is_symlink():
+                raise ValueError("backend index contains a link or special file")
+            if base == root and name in {".indexserver.tmp", ".trash"}:
+                if any(path.iterdir()):
+                    raise ValueError("backend transient index directory is nonempty")
+                directories.remove(name)
+        for name in files:
+            path = base / name
+            mode = path.lstat().st_mode
+            if base == root and name == "indexserver.sock" and stat.S_ISSOCK(mode):
+                continue
+            if not stat.S_ISREG(mode):
+                raise ValueError("backend index contains a link or special file")
+            paths.add(path.relative_to(root).as_posix())
+    return paths
+
+
 def _backend_tree(root: Path) -> tuple[list[dict], str]:
-    paths = corpus_release.regular_tree(root)
+    paths = _backend_index_paths(root)
     if not paths or len(paths) > MAX_INDEX_FILES:
         raise ValueError("backend index file inventory is empty or exceeds 4096 files")
     rows = []
@@ -1310,7 +1340,7 @@ def _backend_tree(root: Path) -> tuple[list[dict], str]:
         ) != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size):
             raise ValueError("backend index file changed during hashing")
         rows.append({"path": name, "sha256": digest.removeprefix("sha256:"), "bytes": size})
-    if corpus_release.regular_tree(root) != paths:
+    if _backend_index_paths(root) != paths:
         raise ValueError("backend index inventory changed during hashing")
     return rows, _sha(canonical_json(rows).encode())
 

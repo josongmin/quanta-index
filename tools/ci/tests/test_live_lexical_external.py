@@ -3,7 +3,9 @@
 import hashlib
 import json
 import selectors
+import socket
 import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -470,6 +472,28 @@ def test_local_backend_snapshot_binds_container_image_mount_port_and_index(tmp_p
     root.rmdir()
     with pytest.raises(ValueError, match="existing canonical directory"):
         live._backend_snapshot(config)
+
+
+def test_backend_tree_accepts_only_idle_zoekt_runtime_entries():
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    with tempfile.TemporaryDirectory(prefix="qi-zoekt-", dir=temp_root) as directory:
+        root = Path(directory)
+        (root / "shard.zoekt").write_bytes(b"index")
+        (root / ".indexserver.tmp").mkdir()
+        (root / ".trash").mkdir()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(root / "indexserver.sock"))
+            rows, _ = live._backend_tree(root)
+            assert [row["path"] for row in rows] == ["shard.zoekt"]
+
+            (root / ".indexserver.tmp" / "active.zoekt").write_bytes(b"partial")
+            with pytest.raises(ValueError, match="transient index directory is nonempty"):
+                live._backend_tree(root)
+            (root / ".indexserver.tmp" / "active.zoekt").unlink()
+
+            (root / "other.sock").symlink_to(root / "shard.zoekt")
+            with pytest.raises(ValueError, match="link or special file"):
+                live._backend_tree(root)
 
 
 def test_backend_snapshot_refuses_process_restart_and_unbounded_index(tmp_path, monkeypatch):
