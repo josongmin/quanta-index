@@ -3249,3 +3249,23 @@ test success is inferred from collection or waiting. These jobs do not include
 later main changes to external fresh-join or execution batching. Retain the
 source distinction when assembling final admission; do not relabel the old
 9e27b8ba receipts or duplicate the live jobs because observation yielded.
+
+Follow-up native controls confirmed the metadata-only distinction through the
+actual OpenGrok API: fixture path-only search returns HTTP 200 / one file;
+fixture `full=import` returns HTTP 200 / zero files. A positive
+`full=hiddenfileextension` control returns exactly `bat/src/assets.rs`. Its
+expected path was independently derived from every hash-checked frozen bat
+source before submission. Index/runtime snapshots stayed identical; **2.139s**.
+The earlier positive control incorrectly assumed `path=src/assets.rs` meant an
+exact file restriction; it returned seven paths and the wrapper failed. Those
+responses remain in `opengrok-metadata-content-controls-l2nlb1sr/`; the corrected
+unique-term controls are a separate run in
+`opengrok-metadata-content-controls-unique-25ypkztd/`.
+
+The corrected root's `scope-disposition.json` binds all 20 original bat C3 NL
+tasks and both prepared 20-task independent review forms. None references the
+metadata-only fixture in task labels or candidate paths. This is a bounded
+scope disposition, not completed relevance review: preserve the release and
+all task denominators, declare native content coverage, and recheck newly
+issued qrels rather than silently excluding a product's omitted file. The
+final 200 reviews and admission are still incomplete.
