@@ -18,13 +18,16 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::Result as AnyResult;
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::scale::{
-    ScaleTier, TierMeasurement, measure_tier, source_binding_for_failure, write_artifacts,
-    write_refusal_artifact,
+    ScaleTier, TierMeasurement, measure_tier_with_client_timeout, source_binding_for_failure,
+    write_artifacts, write_refusal_artifact_with_context,
 };
+use quanta_index_ipc::DEFAULT_CLIENT_IO_TIMEOUT;
+use serde_json::json;
 
 /// Deterministic default seed so the rail is reproducible run-to-run unless an
 /// operator overrides it via `--seed`.
@@ -35,6 +38,7 @@ struct CliArgs {
     seed: u64,
     tiers: Vec<ScaleTier>,
     fresh_output: bool,
+    client_timeout_ms: Option<u64>,
 }
 
 fn parse_args() -> AnyResult<CliArgs> {
@@ -42,6 +46,7 @@ fn parse_args() -> AnyResult<CliArgs> {
     let mut seed = DEFAULT_SEED;
     let mut tiers = vec![ScaleTier::Small];
     let mut out_dir_explicit = false;
+    let mut client_timeout_ms = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -59,6 +64,16 @@ fn parse_args() -> AnyResult<CliArgs> {
                 seed = raw
                     .parse::<u64>()
                     .map_err(|err| anyhow::anyhow!("--seed {raw:?}: {err}"))?;
+            }
+            "--client-timeout-ms" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--client-timeout-ms requires a value"))?;
+                let parsed = raw.parse::<u64>()?;
+                if !(1..=600_000).contains(&parsed) {
+                    anyhow::bail!("--client-timeout-ms must be in 1..=600000");
+                }
+                client_timeout_ms = Some(parsed);
             }
             "--tier" => {
                 let raw = args
@@ -107,6 +122,7 @@ fn parse_args() -> AnyResult<CliArgs> {
         seed,
         tiers,
         fresh_output: out_dir_explicit,
+        client_timeout_ms,
     })
 }
 
@@ -122,11 +138,28 @@ fn run(cli: &CliArgs) -> AnyResult<Vec<TierMeasurement>> {
     }
     let mut measurements = Vec::with_capacity(cli.tiers.len());
     for tier in &cli.tiers {
-        match measure_tier(*tier, cli.seed) {
+        match measure_tier_with_client_timeout(
+            *tier,
+            cli.seed,
+            cli.client_timeout_ms.map(Duration::from_millis),
+        ) {
             Ok(measurement) => measurements.push(measurement),
             Err(error) => {
                 let binding = source_binding_for_failure(*tier, cli.seed)?;
-                write_refusal_artifact(&binding, &cli.out_dir, &git_head, &host, &error)?;
+                let execution = json!({
+                    "client_request_timeout_ms": cli.client_timeout_ms.unwrap_or(
+                        u64::try_from(DEFAULT_CLIENT_IO_TIMEOUT.as_millis())?
+                    ),
+                });
+                write_refusal_artifact_with_context(
+                    &binding,
+                    &cli.out_dir,
+                    &git_head,
+                    &host,
+                    &error,
+                    "scale",
+                    Some(&execution),
+                )?;
                 return Err(error);
             }
         }

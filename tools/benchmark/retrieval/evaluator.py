@@ -511,6 +511,7 @@ class SourceSnapshot:
 
     def __init__(self, repo: Path, commit: str, *, max_total_bytes: int | None = None) -> None:
         self.repo = verify_repo(repo, commit)
+        self.commit = commit
         self.max_total_bytes = max_total_bytes
         self.cached_source_bytes = 0
         try:
@@ -1065,6 +1066,7 @@ def validate_suite(
     *,
     source_oracle_admission: bool = False,
     declaration_census_cache: source_oracle.DeclarationCensusCache | None = None,
+    source_snapshot: SourceSnapshot | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], SourceSnapshot]:
     version = payload.get("schema_version") if isinstance(payload, dict) else None
     require(type(version) is int and version == SCHEMA_VERSION, "unsupported suite schema")
@@ -1123,15 +1125,22 @@ def validate_suite(
             <= source_oracle.MAX_QUERIES,
             "source oracle query limit exceeded",
         )
-    source = SourceSnapshot(
-        repo,
-        commit,
-        max_total_bytes=(
-            source_oracle.MAX_SOURCE_BYTES
-            if source_oracle_admission or annotated_oracle_tasks
-            else None
-        ),
+    source_byte_limit = (
+        source_oracle.MAX_SOURCE_BYTES
+        if source_oracle_admission or annotated_oracle_tasks
+        else None
     )
+    if source_snapshot is None:
+        source = SourceSnapshot(repo, commit, max_total_bytes=source_byte_limit)
+    else:
+        resolved_repo = verify_repo(repo, commit)
+        require(
+            source_snapshot.repo == resolved_repo
+            and source_snapshot.commit == commit
+            and source_snapshot.max_total_bytes == source_byte_limit,
+            "shared source snapshot repository or byte limit differs",
+        )
+        source = source_snapshot
     routes = suite["routes"]
     require(isinstance(routes, list) and len(routes) >= 1, "suite requires at least one route")
     for route in routes:

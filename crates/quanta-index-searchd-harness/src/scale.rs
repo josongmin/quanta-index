@@ -32,7 +32,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{
@@ -41,6 +41,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1};
 use quanta_index_lexical::LexicalAdapter;
+use quanta_index_ipc::DEFAULT_CLIENT_IO_TIMEOUT;
 use quanta_index_search_plane::lower_lexical_text_query;
 use serde_json::{Value, json};
 
@@ -763,6 +764,22 @@ pub struct TierMeasurement {
     pub delta: DeltaMeasurementV1,
     pub result_count: usize,
     pub model_revision: Option<String>,
+    /// Effective client request deadline; raising it does not raise daemon
+    /// admission limits and must be recorded with each measured tier.
+    pub client_request_timeout_ms: u64,
+}
+
+fn scale_runtime(client_timeout: Option<Duration>) -> AnyResult<E2eRuntime> {
+    match client_timeout {
+        Some(timeout) => Ok(E2eRuntime::boot_with_client_request_timeout(timeout)?
+            .with_history_max_generations(2)),
+        None => E2eRuntime::boot_with_history_max_generations(2),
+    }
+}
+
+fn timeout_ms(client_timeout: Option<Duration>) -> AnyResult<u64> {
+    u64::try_from(client_timeout.unwrap_or(DEFAULT_CLIENT_IO_TIMEOUT).as_millis())
+        .map_err(Into::into)
 }
 
 /// Keep the measurement error and daemon teardown error separately. A failed
@@ -777,7 +794,11 @@ struct ScaleRuntimeFailure {
 impl std::fmt::Display for ScaleRuntimeFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(primary) = &self.primary {
-            write!(formatter, "scale measurement failed: {primary:#}; daemon cleanup failed: {:#}", self.cleanup)
+            write!(
+                formatter,
+                "scale measurement failed: {primary:#}; daemon cleanup failed: {:#}",
+                self.cleanup
+            )
         } else {
             write!(formatter, "scale daemon cleanup failed: {:#}", self.cleanup)
         }
@@ -1092,6 +1113,13 @@ fn measure_delta(rt: &mut E2eRuntime, seed: u64) -> AnyResult<DeltaMeasurementV1
 /// not show the expected samples in a window is a rail error, never a
 /// fabricated phase time.
 pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
+    measure_small_tier_with_timeout(seed, None)
+}
+
+fn measure_small_tier_with_timeout(
+    seed: u64,
+    client_timeout: Option<Duration>,
+) -> AnyResult<TierMeasurement> {
     let corpus = generate_corpus(ScaleTier::Small, seed);
     let corpus_digest = corpus_digest(DIMENSION, &corpus);
     let expected_results = expected_small_result_count(&corpus)?;
@@ -1103,77 +1131,82 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
         })?;
 
     // The search-corpus history contract requires at least two generations.
-    let mut rt = E2eRuntime::boot_with_history_max_generations(2)?;
-    let model_revision = model_revision_of(rt.embedder_profile());
+    let mut rt = scale_runtime(client_timeout)?;
+    let measurement = (|| -> AnyResult<TierMeasurement> {
+        let model_revision = model_revision_of(rt.embedder_profile());
 
-    let before_build = directory_bytes(rt.state_root())?;
-    let build_started = Instant::now();
-    let serving_owner = rt.repo();
-    for (path, content) in &corpus {
-        rt.ingest_text(serving_owner.as_str(), path, content)?;
-    }
-    let _generation = rt.seal()?;
-    let build_ms = elapsed_ms(build_started);
-    let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
+        let before_build = directory_bytes(rt.state_root())?;
+        let build_started = Instant::now();
+        let serving_owner = rt.repo();
+        for (path, content) in &corpus {
+            rt.ingest_text(serving_owner.as_str(), path, content)?;
+        }
+        let _generation = rt.seal()?;
+        let build_ms = elapsed_ms(build_started);
+        let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
 
-    let activation_started = Instant::now();
-    rt.activate_last_sealed_generation()?;
-    let activation_ms = elapsed_ms(activation_started);
+        let activation_started = Instant::now();
+        rt.activate_last_sealed_generation()?;
+        let activation_ms = elapsed_ms(activation_started);
 
-    let scrape_before_first = rt.metrics_snapshot()?;
-    let first_started = Instant::now();
-    let result_count = served_query(&mut rt)?;
-    let first_query_ms = elapsed_ms(first_started);
-    require_result_count(result_count, expected_results, "first query")?;
-    let scrape_after_first = rt.metrics_snapshot()?;
-    let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)?;
-    let first_route_ms = histogram_window(
-        &scrape_before_first,
-        &scrape_after_first,
-        "lq_route_lexical_latency_ms",
-        1,
-    )?;
+        let scrape_before_first = rt.metrics_snapshot()?;
+        let first_started = Instant::now();
+        let result_count = served_query(&mut rt)?;
+        let first_query_ms = elapsed_ms(first_started);
+        require_result_count(result_count, expected_results, "first query")?;
+        let scrape_after_first = rt.metrics_snapshot()?;
+        let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)?;
+        let first_route_ms = histogram_window(
+            &scrape_before_first,
+            &scrape_after_first,
+            "lq_route_lexical_latency_ms",
+            1,
+        )?;
 
-    let warm_samples = collect_warm_samples(expected_results, WARM_QUERY_SAMPLES, || {
-        served_query(&mut rt)
-    })?;
-    let scrape_after_warm = rt.metrics_snapshot()?;
-    let warm_route_total_ms = histogram_window(
-        &scrape_after_first,
-        &scrape_after_warm,
-        "lq_route_lexical_latency_ms",
-        u64::try_from(WARM_QUERY_SAMPLES)?,
-    )?;
-    let warm_query = LatencySummary::from_samples_ms(&warm_samples)
-        .ok_or_else(|| anyhow::anyhow!("scale: no warm samples"))?;
+        let warm_samples = collect_warm_samples(expected_results, WARM_QUERY_SAMPLES, || {
+            served_query(&mut rt)
+        })?;
+        let scrape_after_warm = rt.metrics_snapshot()?;
+        let warm_route_total_ms = histogram_window(
+            &scrape_after_first,
+            &scrape_after_warm,
+            "lq_route_lexical_latency_ms",
+            u64::try_from(WARM_QUERY_SAMPLES)?,
+        )?;
+        let warm_query = LatencySummary::from_samples_ms(&warm_samples)
+            .ok_or_else(|| anyhow::anyhow!("scale: no warm samples"))?;
 
-    let adapter = measure_adapter_phases(&rt, None)?;
-    let delta = measure_delta(&mut rt, seed)?;
+        let adapter = measure_adapter_phases(&rt, None)?;
+        let delta = measure_delta(&mut rt, seed)?;
 
-    Ok(TierMeasurement {
-        tier: ScaleTier::Small,
-        seed,
-        file_count,
-        corpus_digest,
-        source_repo_count: 1,
-        corpus_bytes,
-        ingest_decoded_bytes: None,
-        ingest_wire_bytes: None,
-        build_ms,
-        build_bytes_written,
-        activation_ms,
-        first_query_ms,
-        warm_query,
-        daemon: DaemonPhaseTimingV1 {
-            cold_open_ms,
-            first_route_ms,
-            warm_route_mean_ms: warm_route_total_ms / f64::from(u32::try_from(WARM_QUERY_SAMPLES)?),
-        },
-        adapter,
-        delta,
+        Ok(TierMeasurement {
+            tier: ScaleTier::Small,
+            seed,
+            file_count,
+            corpus_digest,
+            source_repo_count: 1,
+            corpus_bytes,
+            ingest_decoded_bytes: None,
+            ingest_wire_bytes: None,
+            build_ms,
+            build_bytes_written,
+            activation_ms,
+            first_query_ms,
+            warm_query,
+            daemon: DaemonPhaseTimingV1 {
+                cold_open_ms,
+                first_route_ms,
+                warm_route_mean_ms: warm_route_total_ms
+                    / f64::from(u32::try_from(WARM_QUERY_SAMPLES)?),
+            },
+            adapter,
+            delta,
         result_count,
         model_revision,
+        client_request_timeout_ms: timeout_ms(client_timeout)?,
     })
+    })();
+    finish_runtime_measurement(measurement, rt.stop())
 }
 
 fn measure_scoped_delta(rt: &mut E2eRuntime, file: &ScopedFile) -> AnyResult<DeltaMeasurementV1> {
@@ -1214,8 +1247,16 @@ fn measure_scoped_delta(rt: &mut E2eRuntime, file: &ScopedFile) -> AnyResult<Del
 /// distinct source-repository identities into one serving owner and
 /// independently probe every source repository.
 pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
+    measure_tier_with_client_timeout(tier, seed, None)
+}
+
+pub fn measure_tier_with_client_timeout(
+    tier: ScaleTier,
+    seed: u64,
+    client_timeout: Option<Duration>,
+) -> AnyResult<TierMeasurement> {
     if tier == ScaleTier::Small {
-        return measure_small_tier(seed);
+        return measure_small_tier_with_timeout(seed, client_timeout);
     }
     let files = generate_scoped_corpus(tier, seed)?;
     let corpus_digest = scoped_corpus_digest(DIMENSION, &files);
@@ -1230,103 +1271,108 @@ pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
                 .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
         })?;
 
-    let mut rt = E2eRuntime::boot_with_history_max_generations(2)?;
-    let model_revision = model_revision_of(rt.embedder_profile());
-    let before_build = directory_bytes(rt.state_root())?;
-    let chunks = files
-        .iter()
-        .map(|file| {
-            [E2eTextChunkSpec {
-                content: &file.content,
-                start_line: 1,
-                end_line: 2,
-                source_repo_id: Some(&file.source_repo_id),
-            }]
-        })
-        .collect::<Vec<_>>();
-    let batch_files = files
-        .iter()
-        .zip(&chunks)
-        .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
-        .collect::<Vec<_>>();
-    let ingest_started = Instant::now();
-    let _ids = rt.ingest_text_files_one_batch(&batch_files)?;
-    let ingest_ms = elapsed_ms(ingest_started);
-    let (ingest_decoded_bytes, ingest_wire_bytes) = rt
-        .preview_pending_search_corpus_wire_bytes()
-        .map_err(ScaleStageError::wire_admission)?;
-    let seal_started = Instant::now();
-    let _generation = rt.seal()?;
-    let build_ms = ingest_ms + elapsed_ms(seal_started);
-    let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
-    let activation_started = Instant::now();
-    rt.activate_last_sealed_generation()?;
-    let activation_ms = elapsed_ms(activation_started);
+    let mut rt = scale_runtime(client_timeout)?;
+    let measurement = (|| -> AnyResult<TierMeasurement> {
+        let model_revision = model_revision_of(rt.embedder_profile());
+        let before_build = directory_bytes(rt.state_root())?;
+        let chunks = files
+            .iter()
+            .map(|file| {
+                [E2eTextChunkSpec {
+                    content: &file.content,
+                    start_line: 1,
+                    end_line: 2,
+                    source_repo_id: Some(&file.source_repo_id),
+                }]
+            })
+            .collect::<Vec<_>>();
+        let batch_files = files
+            .iter()
+            .zip(&chunks)
+            .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
+            .collect::<Vec<_>>();
+        let ingest_started = Instant::now();
+        let _ids = rt.ingest_text_files_one_batch(&batch_files)?;
+        let ingest_ms = elapsed_ms(ingest_started);
+        let (ingest_decoded_bytes, ingest_wire_bytes) = rt
+            .preview_pending_search_corpus_wire_bytes()
+            .map_err(ScaleStageError::wire_admission)?;
+        let seal_started = Instant::now();
+        let _generation = rt.seal()?;
+        let build_ms = ingest_ms + elapsed_ms(seal_started);
+        let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
+        let activation_started = Instant::now();
+        rt.activate_last_sealed_generation()?;
+        let activation_ms = elapsed_ms(activation_started);
 
-    let scrape_before_first = rt.metrics_snapshot()?;
-    let first_started = Instant::now();
-    let first = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
-    let first_query_ms = elapsed_ms(first_started);
-    let result_count = validate_scoped_response(&oracle, None, &first)?;
-    let scrape_after_first = rt.metrics_snapshot()?;
-    let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)?;
-    let first_route_ms = histogram_window(
-        &scrape_before_first,
-        &scrape_after_first,
-        "lq_route_lexical_latency_ms",
-        1,
-    )?;
-    let warm_samples = collect_validated_samples(
-        WARM_QUERY_SAMPLES,
-        || rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K),
-        |response| validate_scoped_response(&oracle, None, response).map(|_| ()),
-    )?;
-    let scrape_after_warm = rt.metrics_snapshot()?;
-    let warm_route_total_ms = histogram_window(
-        &scrape_after_first,
-        &scrape_after_warm,
-        "lq_route_lexical_latency_ms",
-        u64::try_from(WARM_QUERY_SAMPLES)?,
-    )?;
-    let warm_query = LatencySummary::from_samples_ms(&warm_samples)
-        .ok_or_else(|| anyhow::anyhow!("scale: no warm samples"))?;
+        let scrape_before_first = rt.metrics_snapshot()?;
+        let first_started = Instant::now();
+        let first = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
+        let first_query_ms = elapsed_ms(first_started);
+        let result_count = validate_scoped_response(&oracle, None, &first)?;
+        let scrape_after_first = rt.metrics_snapshot()?;
+        let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)?;
+        let first_route_ms = histogram_window(
+            &scrape_before_first,
+            &scrape_after_first,
+            "lq_route_lexical_latency_ms",
+            1,
+        )?;
+        let warm_samples = collect_validated_samples(
+            WARM_QUERY_SAMPLES,
+            || rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K),
+            |response| validate_scoped_response(&oracle, None, response).map(|_| ()),
+        )?;
+        let scrape_after_warm = rt.metrics_snapshot()?;
+        let warm_route_total_ms = histogram_window(
+            &scrape_after_first,
+            &scrape_after_warm,
+            "lq_route_lexical_latency_ms",
+            u64::try_from(WARM_QUERY_SAMPLES)?,
+        )?;
+        let warm_query = LatencySummary::from_samples_ms(&warm_samples)
+            .ok_or_else(|| anyhow::anyhow!("scale: no warm samples"))?;
 
-    // The global top-10 can be dominated by one source repo. These independent
-    // probes prove that every declared repo's source files reached the index.
-    verify_scoped_repositories(&mut rt, &oracle)?;
+        // The global top-10 can be dominated by one source repo. These independent
+        // probes prove that every declared repo's source files reached the index.
+        verify_scoped_repositories(&mut rt, &oracle)?;
 
-    let adapter = measure_adapter_phases(&rt, Some(&oracle))?;
-    let delta_file = files
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
-    let delta = measure_scoped_delta(&mut rt, delta_file)?;
-    let after_delta = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
-    let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)?;
-    verify_scoped_repositories(&mut rt, &oracle)?;
-    Ok(TierMeasurement {
-        tier,
-        seed,
-        file_count,
-        corpus_digest,
-        source_repo_count: oracle.paths_by_repo.len(),
-        corpus_bytes,
-        ingest_decoded_bytes: Some(ingest_decoded_bytes),
-        ingest_wire_bytes: Some(ingest_wire_bytes),
-        build_ms,
-        build_bytes_written,
-        activation_ms,
-        first_query_ms,
-        warm_query,
-        daemon: DaemonPhaseTimingV1 {
-            cold_open_ms,
-            first_route_ms,
-            warm_route_mean_ms: warm_route_total_ms / f64::from(u32::try_from(WARM_QUERY_SAMPLES)?),
-        },
-        adapter,
-        delta,
+        let adapter = measure_adapter_phases(&rt, Some(&oracle))?;
+        let delta_file = files
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
+        let delta = measure_scoped_delta(&mut rt, delta_file)?;
+        let after_delta = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
+        let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)?;
+        verify_scoped_repositories(&mut rt, &oracle)?;
+        Ok(TierMeasurement {
+            tier,
+            seed,
+            file_count,
+            corpus_digest,
+            source_repo_count: oracle.paths_by_repo.len(),
+            corpus_bytes,
+            ingest_decoded_bytes: Some(ingest_decoded_bytes),
+            ingest_wire_bytes: Some(ingest_wire_bytes),
+            build_ms,
+            build_bytes_written,
+            activation_ms,
+            first_query_ms,
+            warm_query,
+            daemon: DaemonPhaseTimingV1 {
+                cold_open_ms,
+                first_route_ms,
+                warm_route_mean_ms: warm_route_total_ms
+                    / f64::from(u32::try_from(WARM_QUERY_SAMPLES)?),
+            },
+            adapter,
+            delta,
         result_count,
         model_revision,
+        client_request_timeout_ms: timeout_ms(client_timeout)?,
     })
+    })();
+    finish_runtime_measurement(measurement, rt.stop())
 }
 
 /// Source identity for a refusal, recomputed from the deterministic generator
@@ -1407,11 +1453,15 @@ pub fn refusal_json_with_context(
     dimension: &str,
     execution: Option<&Value>,
 ) -> Value {
-    let stage = error.downcast_ref::<ScaleStageError>();
+    let runtime_failure = error.downcast_ref::<ScaleRuntimeFailure>();
+    let primary = runtime_failure
+        .and_then(|failure| failure.primary.as_ref())
+        .unwrap_or(error);
+    let stage = primary.downcast_ref::<ScaleStageError>();
     let mut value = json!({
         "kind": format!("quanta-index-{dimension}-failure"),
         "schema_version": 1,
-        "status": if stage.and_then(|failure| failure.limit).is_some() { "refused" } else { "failed" },
+        "status": if runtime_failure.is_none() && stage.and_then(|failure| failure.limit).is_some() { "refused" } else { "failed" },
         "source": {
             "tier": binding.tier.as_str(),
             "seed": binding.seed,
@@ -1436,9 +1486,18 @@ pub fn refusal_json_with_context(
             "limit": stage.and_then(|failure| failure.limit).map(ScaleAdmissionLimit::as_str),
             "observed": stage.and_then(|failure| failure.observed),
             "maximum": stage.and_then(|failure| failure.maximum),
-            "message": format!("{error:#}"),
+            "message": format!("{primary:#}"),
         },
     });
+    if let Some(runtime_failure) = runtime_failure {
+        value["failure"]["primary"] = runtime_failure
+            .primary
+            .as_ref()
+            .map(|error| json!({ "message": format!("{error:#}") }))
+            .unwrap_or(Value::Null);
+        value["failure"]["cleanup"] =
+            json!({ "message": format!("{:#}", runtime_failure.cleanup) });
+    }
     if let Some(execution) = execution {
         value["execution"] = execution.clone();
     }
@@ -1509,6 +1568,7 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
     json!({
         "tier": measurement.tier.as_str(),
         "seed": measurement.seed,
+        "client_request_timeout_ms": measurement.client_request_timeout_ms,
         "file_count": measurement.file_count,
         "serving_owner_count": 1,
         "source_repo_count": measurement.source_repo_count,
@@ -1956,6 +2016,33 @@ mod tests {
     }
 
     #[test]
+    fn measurement_and_cleanup_failures_are_both_preserved_without_a_latency_row() -> AnyResult<()> {
+        let failure = finish_runtime_measurement::<()>(
+            Err(anyhow::anyhow!("primary measurement marker")),
+            Err(anyhow::anyhow!("driver cleanup marker")),
+        )
+        .expect_err("both failures must reject the tier");
+        let binding = source_binding_for_failure(ScaleTier::Medium, 13)?;
+        let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567")?;
+        let host = HostV1 {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            cpu_count: 4,
+            mem_bytes: 1 << 30,
+            hostname_hash: "sha256:host".to_string(),
+        };
+        let record = refusal_json(&binding, &head, &host, &failure);
+        assert_eq!(record["status"], "failed");
+        assert_eq!(record["failure"]["message"], "primary measurement marker");
+        assert_eq!(record["failure"]["primary"]["message"], "primary measurement marker");
+        assert_eq!(record["failure"]["cleanup"]["message"], "driver cleanup marker");
+        assert!(record["failure"]["limit"].is_null());
+        assert!(record.get("latency").is_none());
+        assert!(finish_runtime_measurement(Ok(()), Err(anyhow::anyhow!("cleanup only"))).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn scoped_source_admission_counts_the_newline_and_rejects_each_hard_limit() {
         let files = generate_scoped_corpus(ScaleTier::Medium, 11).expect("seeded fixture");
         let expected_source_bytes: u64 = files
@@ -2161,6 +2248,7 @@ mod tests {
 
     fn sample_measurement() -> TierMeasurement {
         TierMeasurement {
+            client_request_timeout_ms: 30_000,
             tier: ScaleTier::Small,
             seed: 3,
             file_count: 16,

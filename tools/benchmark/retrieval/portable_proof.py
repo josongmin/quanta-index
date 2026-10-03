@@ -921,6 +921,12 @@ def validated_build_profile(context: object, execution_root: Path) -> str | None
         raise ValueError("fresh build used an unbound compiler wrapper")
     if inherited.get("QUANTA_INDEX_SCCACHE") not in (None, "0"):
         raise ValueError("fresh build used a compiler cache")
+    if any(
+        not isinstance(command, dict)
+        or command.get("inherited_environment") != inherited
+        for command in commands
+    ):
+        raise ValueError("fresh build inherited environment changed between commands")
     return FRESH_BUILD_PROFILE
 
 

@@ -11469,6 +11469,7 @@ def _quality_batch_members(
     model_asset = None
     parser_identity = source_oracle.census_parser_identity()
     census_cache = source_oracle.DeclarationCensusCache(parser_identity)
+    shared_snapshot: SourceSnapshot | None = None
     for name in batch["member_specs"]:
         path = Path(name)
         spec = load_spec(path)
@@ -11507,7 +11508,10 @@ def _quality_batch_members(
             Path(spec["repo"]),
             read_json(Path(spec["suite"])),
             declaration_census_cache=census_cache,
+            source_snapshot=shared_snapshot,
         )
+        if shared_snapshot is None:
+            shared_snapshot = source
         if pack != read_json(Path(spec["query_pack"])):
             raise RunError(f"quality batch blind pack differs from its suite: {path}")
         members.append((path, spec, suite, pack, source))

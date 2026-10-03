@@ -542,6 +542,69 @@ root's distribution, tail, coverage and refusals; do not pool host-contended
 diagnostics into qualified timing. Prefix/infix/components/no-answer remain
 separate follow-up suites from the completed exact/four-typo matrix.
 
+### Implementation and actual scale follow-up (2026-10-04)
+
+The current producer/reader cutover uses Quanta phase schema 4, retrieval
+diagnostic schema 8 and protocol lock 6. Phase 4 requires three bounded
+per-request children (`sdk_execute_ns`, `sdk_post_execute_ns`,
+`runner_result_materialize_ns`), whose sum cannot exceed the unchanged
+completed-response clock. `.execute()` is an opaque SDK boundary, including
+possible active resolution, transport and decode; it is not an IPC-only clock.
+Diagnostic 8 requires nullable text-authority collection, shard construction
+and durable-publication children. Delta collection is absent, and a no-op
+write has absent children, rather than fabricated zero measurements. Historical
+v7 JSON remains replayable. The strict IPC observation DTO adds required
+nullable keys, so the new daemon/client binaries must be used together.
+
+Typo candidate clocks now separate shortlist/admission, token scan/distance
+cache and materialization. The parent still includes the preceding ordinary
+miss; that work remains in the residual. The trace byte reservation preserves
+enabled/disabled behavior within the new build, not every tight-budget prefix
+of an older binary with fewer trace fields.
+
+Binary-source qualification has an actual positive code path through existing
+`portable_proof.py` schema 3 `release-fresh` and the truthful recipe
+`just retrieval-sdk-proof-fresh`. The caller's manifest field remains null.
+Only a fully verified SDK receipt chain, matching source closure and captured
+runner/searchd binaries supplies the verdict's derived source revision. The
+fresh output/target, fixed release/all-feature commands, inherited environment
+and frozen binary paths are verified. This is controlled local build evidence,
+not signed remote producer attestation. A real fresh release proof is still
+required; mock fixtures do not close that execution gate.
+
+Focused Python verification passed 15 legacy/context/qualification checks and
+9 current SDK/typo/v8 replay checks. One initial v8 test failed because its
+expected exception wording differed; correcting that assertion preserved the
+production rejection and the 9-check rerun passed. The source-controlled Python
+inventory was regenerated from actual collection (694 identities); collection
+is not execution. Owner Rust SDK timing 1/1 and lexical 28/28 passed. Remaining
+plane, live runner, new authority contract, public API and response fuzz checks
+require their own results; admission timeout is not a tested failure.
+
+Actual synthetic runs used a separate clean `108873c0` source snapshot built
+before execution. Its build took 7m43s and is outside the following phases:
+
+- Medium 256 files: execution exit 0; build 9,634.314 ms, activation 544.944 ms,
+  one-file update 3,301.578 ms. Open-loop QPS 10 served 10/10 with no errors or
+  drops (p50 49.719 ms, p95 183.103 ms). Busy-host diagnostic only.
+- Large 4,096 files: execution exit 101. Runtime teardown panicked with
+  `HardDeadlineEscalated`, masking the original measurement error and leaving
+  no refusal artifact. This proves a harness error-reporting defect, not a
+  source-capacity cause. Explicit teardown preserving primary and cleanup
+  errors is being repaired and requires a new execution.
+- XL 32,768 files: bound source-preflight refusal, posting memberships
+  4,000,107 exceeded the 4,000,000 limit. This is a supported-limit observation,
+  not a successful XL tier or a latency sample.
+
+Preserved scale roots are `/private/tmp/qi-scale-medium-20261004-108873c0-r2`,
+`/private/tmp/qi-scale-large-20261004-108873c0-r1` and
+`/private/tmp/qi-scale-xlarge-20261004-108873c0-r1`.
+The five joined diagnostic reports and per-product query time boundaries are
+summarized in
+`/private/tmp/qi-five-product-scoped-20261004-5ke6oh_h/FIVE-PRODUCT-SUMMARY.md`
+(SHA-256 `9d08605718e0842f2bdf53d329cc813cc82b268e7c51b96f9c8e3a89ce6544a7`).
+No old raw capture was replaced and no optimization speedup is established.
+
 ## Execution receipt (2026-09-30)
 
 `NOT_RUN`: host not quiet (load ~26 on 16 cores, concurrent builds). Producer `quanta-index@0d21914e` (clean worktree);

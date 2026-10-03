@@ -1002,6 +1002,20 @@ def test_fresh_binary_paths_bind_original_target(fake_execution) -> None:
         portable_proof.validate_fresh_binary_paths(context, out, metadata)
 
 
+def test_fresh_release_refuses_later_inherited_environment_drift(fake_execution) -> None:
+    out, _legacy_runner, _calls = fake_execution
+    receipt = portable_proof.produce("sdk", out, build_profile="release-fresh")
+    context = json.loads(receipt.read_text())
+    assert portable_proof.validated_build_profile(context, out) == "release-fresh"
+    context["commands"][1]["inherited_environment"]["RUSTFLAGS"] = "-C target-cpu=native"
+    with pytest.raises(ValueError, match="inherited environment changed"):
+        portable_proof.validated_build_profile(context, out)
+    context["commands"][1]["inherited_environment"].pop("RUSTFLAGS")
+    context["commands"][1]["inherited_environment"]["RUSTC_WRAPPER"] = "/opaque/wrapper"
+    with pytest.raises(ValueError, match="inherited environment changed"):
+        portable_proof.validated_build_profile(context, out)
+
+
 @pytest.mark.parametrize("occupied", ["directory", "symlink"])
 def test_fresh_build_refuses_occupied_target(tmp_path, monkeypatch, occupied) -> None:
     for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "QUANTA_INDEX_SCCACHE"):
