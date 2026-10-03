@@ -627,11 +627,13 @@ def _opengrok_response(
 def _opengrok_indexed_view_response(
     row: dict, view: Path, status: int, content_type: str, raw: bytes
 ) -> None:
-    # text/plain checks indexed-document presence. Exact bytes bind the served
-    # source view, but do not prove that Lucene terms match the current bytes.
-    if status != 200 or content_type != "text/plain":
+    # The bracketing /projects/{project}/files responses enumerate Lucene UIDs.
+    # The octet endpoint binds each indexed path to served source bytes without
+    # relying on the text endpoint's separate getDocument(path) query.
+    # Neither check proves that Lucene content terms match the current bytes.
+    if status != 200 or content_type != "application/octet-stream":
         raise ValueError(
-            f"OpenGrok indexed document {row['path']} is unavailable or not plain text: "
+            f"OpenGrok indexed source {row['path']} is unavailable or not octet data: "
             f"HTTP {status} / {content_type}"
         )
     if (
@@ -707,7 +709,7 @@ def _opengrok_indexed_view(config: dict, manifest: dict, view: Path, target: Pat
             raise ValueError("OpenGrok full indexed view probe timed out")
         path = "/" + config["project"] + "/" + row["path"]
         status, content_type, raw, elapsed = _http(
-            config, "/api/v1/file/content", {"path": path}, "text/plain"
+            config, "/api/v1/file/content", {"path": path}, "application/octet-stream"
         )
         name = f"{index:06d}"
         _write(target / f"{name}.content", raw)

@@ -322,7 +322,7 @@ def test_opengrok_response_refuses_malformed_search_hits(tmp_path, hits):
 
 
 @pytest.mark.parametrize("status,body", [(404, b"missing"), (200, b"stale source")])
-def test_opengrok_full_view_probe_refuses_missing_or_stale_indexed_document(
+def test_opengrok_full_view_probe_refuses_missing_or_stale_indexed_source(
     tmp_path, monkeypatch, status, body
 ):
     view = tmp_path / "view"
@@ -334,13 +334,37 @@ def test_opengrok_full_view_probe_refuses_missing_or_stale_indexed_document(
     def fake_http(_config, endpoint, _params, _accept):
         if endpoint.endswith("/files"):
             return 200, "application/json", b'["/fixture/file.go"]', 1.0
-        return status, "text/plain", body, 1.0
+        return status, "application/octet-stream", body, 1.0
 
     monkeypatch.setattr(live, "_http", fake_http)
-    with pytest.raises(ValueError, match="indexed document"):
+    with pytest.raises(ValueError, match="indexed source"):
         live._opengrok_indexed_view({"project": "fixture"}, manifest, view, target)
     assert (target / "000000.content").read_bytes() == body
     assert json.loads((target / "000000.transport.json").read_bytes())["path"] == "/fixture/file.go"
+
+
+def test_opengrok_full_view_probe_binds_index_uid_and_octet_source(tmp_path, monkeypatch):
+    view = tmp_path / "view"
+    view.mkdir()
+    (view / "file.go").write_bytes(b"current source")
+    manifest = {"files": [{"path": "file.go", "file_sha256": live._sha(b"current source")}]}
+    calls = []
+
+    def fake_http(_config, endpoint, _params, accept):
+        calls.append((endpoint, accept))
+        if endpoint.endswith("/files"):
+            return 200, "application/json", b'["/fixture/file.go"]', 1.0
+        assert accept == "application/octet-stream"
+        return 200, "application/octet-stream", b"current source", 1.0
+
+    monkeypatch.setattr(live, "_http", fake_http)
+    target = tmp_path / "probe"
+    live._opengrok_indexed_view({"project": "fixture"}, manifest, view, target)
+    assert calls == [
+        ("/api/v1/projects/fixture/files", "application/json"),
+        ("/api/v1/file/content", "application/octet-stream"),
+        ("/api/v1/projects/fixture/files", "application/json"),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -513,7 +537,7 @@ def test_opengrok_full_view_probe_rejects_inventory_change_during_capture(tmp_pa
             if inventory_calls == 2:
                 paths.append("/fixture/extra.go")
             return 200, "application/json", json.dumps(paths).encode(), 1.0
-        return 200, "text/plain", b"current source", 1.0
+        return 200, "application/octet-stream", b"current source", 1.0
 
     monkeypatch.setattr(live, "_http", fake_http)
     target = tmp_path / "probe"
@@ -611,7 +635,7 @@ class SearchHandler(BaseHTTPRequestHandler):
             requested = query["path"][0]
             assert requested.startswith("/fixture/")
             body = (self.view / requested.removeprefix("/fixture/")).read_bytes()
-            content_type = "text/plain"
+            content_type = "application/octet-stream"
         elif parsed.path == "/api/v1/projects/fixture/files":
             paths = [
                 "/fixture/" + path.relative_to(self.view).as_posix()
