@@ -1173,7 +1173,6 @@ pub fn result_value(
                         | QueryInputPolicy::CodeSearchExactContentFile
                         | QueryInputPolicy::CodeSearchTypoFile
                         | QueryInputPolicy::CodeSearchComponentsFile
-                        | QueryInputPolicy::NaturalLanguageFile
                 ) != (proven.unit_kind == PublishedUnitKind::File)
                 {
                     return Err(BenchError::Protocol(format!(
@@ -1610,7 +1609,6 @@ mod tests {
         for (policy, raw) in [
             (QueryInputPolicy::CodeSearchTypoFile, "load_jsom"),
             (QueryInputPolicy::CodeSearchExactContentFile, "load_json()"),
-            (QueryInputPolicy::NaturalLanguageFile, "find load_json"),
         ] {
             let plan = plan_query(policy, raw, &NlPlanConfig::default()).expect("file plan");
             let row = result_value(
@@ -1637,6 +1635,63 @@ mod tests {
                 plan.effective_lexical_request_sha256
             );
         }
+    }
+
+    #[test]
+    fn natural_language_file_preserves_native_representative_chunk_authority() {
+        // Native select:file groups before top-k, but retains the winning
+        // chunk identity. Rank unit and published unit kind are independent.
+        let (files, units, hit) = status_fixture();
+        let plan = plan_query(
+            QueryInputPolicy::NaturalLanguageFile,
+            "find main",
+            &NlPlanConfig::default(),
+        )
+        .expect("native file plan");
+        let outcome = QueryOutcome::ReturnedWindow {
+            hits: vec![hit.clone()],
+            window: QueryResultWindowV2::exact_probe(1),
+            explanation: Some(RouteExplanation::default()),
+            latency: Duration::from_millis(1),
+        };
+        let row = result_value("T1", "lexical", &outcome, &plan, 10, &files, &units)
+            .expect("source-bound native representative");
+        assert_eq!(row["rank_unit"], "distinct_file");
+        assert_eq!(row["score_evidence"], "native_sdk_score_v1");
+        assert_eq!(row["candidates"][0]["score"].as_f64(), Some(1.0));
+        assert_eq!(
+            row["candidates"][0]["span_accounting"]["unit_kind"],
+            "chunk"
+        );
+        assert_eq!(
+            row["candidates"][0]["span_accounting"]["unit_id"],
+            "chunk-id"
+        );
+        let duplicate = QueryOutcome::ReturnedWindow {
+            hits: vec![hit.clone(), hit],
+            window: QueryResultWindowV2::exact_probe(2),
+            explanation: Some(RouteExplanation::default()),
+            latency: Duration::from_millis(1),
+        };
+        assert!(
+            result_value("T1", "lexical", &duplicate, &plan, 10, &files, &units)
+                .expect_err("duplicate files must fail")
+                .to_string()
+                .contains("duplicate file path")
+        );
+        let (file_hit, files) = file_hit_fixture("a.txt", "fn main() {}\n", false);
+        let wrong_identity = QueryOutcome::ReturnedWindow {
+            hits: vec![file_hit],
+            window: QueryResultWindowV2::exact_probe(1),
+            explanation: Some(RouteExplanation::default()),
+            latency: Duration::from_millis(1),
+        };
+        assert!(
+            result_value("T1", "lexical", &wrong_identity, &plan, 10, &files, &units)
+                .expect_err("CodeSearch identity is not a Native representative")
+                .to_string()
+                .contains("incompatible file identity")
+        );
     }
 
     #[test]

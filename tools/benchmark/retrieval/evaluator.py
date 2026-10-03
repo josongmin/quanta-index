@@ -2147,7 +2147,7 @@ def _validate_run(
                 require(span_protocol == 1, f"span evidence lacks record protocol: {key}")
                 accounting = candidate["span_accounting"]
                 require(
-                    (profile_policy in query_plan_contract.FILE_PAIR_POLICIES)
+                    (profile_policy in query_plan_contract.CODE_SEARCH_FILE_POLICIES)
                     == (accounting["unit_kind"] == "file"),
                     f"code_search_file requires file identity and other profiles cannot claim it: {key}",
                 )

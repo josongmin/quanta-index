@@ -11566,10 +11566,22 @@ def test_natural_language_file_contract_binds_intent_policy_and_unit(tmp_path):
         row["score_evidence"] = "native_sdk_score_v1"
         for candidate in row["candidates"]:
             candidate["score"] = 1.0
+            candidate["span_accounting"] = {
+                "unit_kind": "chunk",
+                "unit_id": f"{row['task_id']}:{candidate['rank']}",
+                "producer_identity": run["captures"]["q0"]["chunk_strategy"],
+                "indexed_start_byte": candidate["start_byte"],
+                "indexed_end_byte": candidate["end_byte"],
+                "sdk_start_line": candidate["start_line"],
+                "sdk_end_line": candidate["end_line"],
+                "extra_context_bytes": 0,
+            }
     _pack, run = _repack(repo, suite, run)
     jsonschema.validate(suite, _load_schema("suite.schema.json"))
     jsonschema.validate(run, _load_schema("runner.schema.json"))
     loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    assert loaded_run["results"][0]["rank_unit"] == "distinct_file"
+    assert loaded_run["results"][0]["candidates"][0]["span_accounting"]["unit_kind"] == "chunk"
     assert (
         ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)["evaluation_contract"]
         == (suite["tasks"][0]["evaluation_contract"])
@@ -11585,6 +11597,16 @@ def test_natural_language_file_contract_binds_intent_policy_and_unit(tmp_path):
     wrong_intent["tasks"][0]["query_intent"] = "bare_symbol"
     with pytest.raises(ev.EvidenceError, match="requires independently judged semantic_intent"):
         ev.validate_suite(repo, wrong_intent)
+
+    # A structurally source-valid CodeSearch file identity cannot be substituted
+    # for the Native select:file representative returned by this policy.
+    _, _, file_run, _, _ = _file_projection_run(tmp_path / "code-file", "code_search_file")
+    forged_identity = copy.deepcopy(run)
+    forged_identity["results"][0]["candidates"] = file_run["results"][0]["candidates"]
+    for candidate in forged_identity["results"][0]["candidates"]:
+        candidate["score"] = 1.0
+    with pytest.raises(ev.EvidenceError, match="other profiles cannot claim it"):
+        record_v3(repo, suite, forged_identity, suite_path, runner_path)
 
 
 @pytest.mark.parametrize(
@@ -14487,7 +14509,6 @@ def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", 
             "code_search_exact_content_file",
             "code_search_typo_file",
             "code_search_components_file",
-            "natural_language_file",
         ):
             repo_bytes = b"bench-repo"
             for path, item in by_file.items():
