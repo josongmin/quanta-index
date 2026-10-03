@@ -1710,3 +1710,28 @@ OpenGrok service index, request-time indexed-universe attestation, fresh C5
 product queries, independent relevance approval, qualified product comparison
 and performance measurement. A Git projection is input evidence, not proof
 that a service indexed every file.
+
+## Fresh C5 external index progress (2026-10-03)
+
+An isolated Sourcegraph 6.8 service indexed the twelve exact-file Git
+projections. Its native `type:path` V3 streams returned 11,695 paths; each
+repository's path set and service revision matched the release manifest and
+projection commit. The raw streams and summary are under
+`/private/tmp/qi-c5-comparators-20261003-v1/sourcegraph-paths`; the summary
+SHA-256 is `db988e088ed1c5afaf17a4c026a92dab9da16d9420fb7aaa6e4993310c00ae78`.
+This proves the observed path-index inventory, not every content posting or
+request-time index stability. A post-stop Zoekt shard snapshot exists at
+`/private/tmp/qi-c5-comparators-20261003-v1/sourcegraph-index-snapshot.json`
+(`ff58bed2a5165b33ba27b79d19ce9998ebc5ee63bdd51b9dc62ce467b307d0d8`);
+there is no matching pre-query snapshot yet. The service is stopped with its
+data preserved so OpenGrok can index within Docker's memory limit.
+
+The isolated OpenGrok 1.14.18 service is still indexing the same 11,695-file
+projection. A live, two-sided indexed-file inventory and served-content probe
+passed for `attrs` (56/56 exact paths and file SHA-256s), with raw evidence at
+`/private/tmp/qi-c5-comparators-20261003-v1/opengrok-attrs-index-probe-v1`.
+Other repositories are not promoted until their indexer processes finish and
+their full inventories and content probes pass. The affected external-capture
+and adapter tests passed 119/119 with `pytest -q` over
+`test_live_lexical_external.py`, `test_lexical_file_comparison.py`, and
+`test_sourcegraph.py`; this is code verification, not a C5 product score.
