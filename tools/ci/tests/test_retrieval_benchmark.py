@@ -8204,7 +8204,7 @@ def test_host_timeline_replays_complete_bound_monitor(tmp_path):
     pairrun.validate_host_timeline_monitor(timeline, st["stage"] / "host-timeline.jsonl")
     changed = copy.deepcopy(timeline)
     changed["reservation_id"] = "e" * 32
-    with pytest.raises(pairrun.RunError, match="reservation"):
+    with pytest.raises(pairrun.host_monitor.EvidenceError, match="reservation"):
         pairrun.validate_host_timeline_monitor(changed, st["stage"] / "host-timeline.jsonl")
 
 
