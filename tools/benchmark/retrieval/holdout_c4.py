@@ -497,9 +497,7 @@ def _derive_prepared(
             "split": "eval",
             "category": task["intent"],
             "query_intent": (
-                "symbol_components"
-                if intent == "declaration_name_components"
-                else "bare_symbol"
+                "symbol_components" if intent == "declaration_name_components" else "bare_symbol"
             ),
             "evaluation_contract": {
                 "request_mode": (

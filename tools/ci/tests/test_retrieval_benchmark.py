@@ -11459,7 +11459,9 @@ def test_pair_spec_refuses_diagnostic_rank_profiles_before_quality_gate(tmp_path
             pairrun.load_spec(spec_path)
 
 
-@pytest.mark.parametrize("policy", ["code_search_file", "code_search_typo_file", "code_search_components_file"])
+@pytest.mark.parametrize(
+    "policy", ["code_search_file", "code_search_typo_file", "code_search_components_file"]
+)
 def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, policy):
     spec_path = tmp_path / "pair-spec.json"
     spec = _g0_spec()
@@ -11515,7 +11517,10 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
             pairrun.load_spec(spec_path)
 
 
-@pytest.mark.parametrize("policy", ["code_search_exact_content_file", "code_search_typo_file", "code_search_components_file"])
+@pytest.mark.parametrize(
+    "policy",
+    ["code_search_exact_content_file", "code_search_typo_file", "code_search_components_file"],
+)
 def test_qualified_file_stage_refuses_nondefault_mode_before_capture(tmp_path, policy):
     spec = {
         "scope": "qualified",
@@ -11529,7 +11534,10 @@ def test_qualified_file_stage_refuses_nondefault_mode_before_capture(tmp_path, p
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize("policy", ["code_search_exact_content_file", "code_search_typo_file", "code_search_components_file"])
+@pytest.mark.parametrize(
+    "policy",
+    ["code_search_exact_content_file", "code_search_typo_file", "code_search_components_file"],
+)
 def test_verdict_never_qualifies_nondefault_file_policy(tmp_path, policy):
     st = _pair_stage(tmp_path, claims={"quality": True})
     lock_path = st["stage"] / "protocol-lock.json"
