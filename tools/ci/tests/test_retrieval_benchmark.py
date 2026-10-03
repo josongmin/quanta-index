@@ -11828,6 +11828,7 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
     objective_no_answer["task_id"] = "T3"
     objective_no_answer["query_family_id"] = "objective-no-answer-family"
     suite["tasks"] = [cases[1], subjective, objective_no_answer]
+    jsonschema.validate(suite, _load_schema("suite.schema.json"))
     ev.validate_suite(repo, suite)
     mixed_receipt = {
         "schema_version": 2,
