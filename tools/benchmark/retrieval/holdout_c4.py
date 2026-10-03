@@ -496,7 +496,11 @@ def _derive_prepared(
             "query_family_id": task["query_family_id"],
             "split": "eval",
             "category": task["intent"],
-            "query_intent": "bare_symbol",
+            "query_intent": (
+                "symbol_components"
+                if intent == "declaration_name_components"
+                else "bare_symbol"
+            ),
             "evaluation_contract": {
                 "request_mode": (
                     query_plan.EXPLICIT_OSA1_TYPO

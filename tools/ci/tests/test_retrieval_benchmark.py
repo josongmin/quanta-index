@@ -14766,7 +14766,9 @@ def test_evaluation_contract_binds_file_request_gold_result_and_mrr(tmp_path, po
         tmp_path, policy, reverse=True, queries=queries
     )
     for task in suite["tasks"]:
-        task["query_intent"] = "bare_symbol"
+        task["query_intent"] = (
+            "symbol_components" if mode == "explicit_symbol_components" else "bare_symbol"
+        )
         task["evaluation_contract"] = {
             "request_mode": mode,
             "gold_unit": "distinct_file",

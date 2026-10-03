@@ -102,7 +102,7 @@ CHUNK_STRATEGIES = (
     "brace_heuristic",
     "semble_native",
 )
-QUERY_INTENTS = ("bare_symbol", "semantic_intent", "exact_content")
+QUERY_INTENTS = ("bare_symbol", "symbol_components", "semantic_intent", "exact_content")
 LABEL_REVIEW_ASSESSMENTS = ("unreviewed", "reviewed_unambiguous", "reviewed_ambiguous")
 OBSERVED_PREFIX_DIAGNOSTIC_POLICY = "observed_prefix_v1"
 UNJUDGED_POLICY = "unjudged_zero_v1"
@@ -246,6 +246,11 @@ def validate_evaluation_contract(task: dict[str, Any], task_id: str) -> dict[str
         require(
             task.get("query_intent") == "bare_symbol",
             f"evaluation_contract requires bare_symbol intent for {task_id}",
+        )
+    if mode == query_plan_contract.EXPLICIT_SYMBOL_COMPONENTS:
+        require(
+            task.get("query_intent") == "symbol_components",
+            f"explicit_symbol_components requires symbol_components intent for {task_id}",
         )
     return contract
 
@@ -1252,7 +1257,14 @@ def validate_suite(
             literal_contract = (
                 oracle["contract"] == literal_source_oracle.CONTENT_LITERAL_UTF8_EXACT
             )
-            required_intent = "exact_content" if literal_contract else "bare_symbol"
+            required_intent = (
+                "exact_content"
+                if literal_contract
+                else "symbol_components"
+                if task.get("evaluation_contract", {}).get("request_mode")
+                == query_plan_contract.EXPLICIT_SYMBOL_COMPONENTS
+                else "bare_symbol"
+            )
             require(
                 task.get("query_intent") == required_intent,
                 f"source oracle requires {required_intent} intent: {task_id}",
