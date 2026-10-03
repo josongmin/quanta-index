@@ -11551,6 +11551,7 @@ def verify_quality_batch(batch: dict) -> int:
     ):
         raise RunError("quality batch execution inputs changed")
     first_spec = members[0][1]
+    preflight_capture(first_spec)
     if manifest["runner_binary_sha256"] != sha_file(Path(first_spec["runner_binary"])) or manifest[
         "searchd_binary_sha256"
     ] != sha_file(Path(first_spec["searchd_binary"])):
