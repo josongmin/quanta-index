@@ -11806,8 +11806,12 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
         )
 
     subjective = task(
-        "Next", "go_exact_local_name_v3", "distinct_file", [file_row("b.go")],
-        gold_path="b.go", gold_line=2,
+        "Next",
+        "go_exact_local_name_v3",
+        "distinct_file",
+        [file_row("b.go")],
+        gold_path="b.go",
+        gold_line=2,
     )
     subjective["task_id"] = "T2"
     subjective["query_family_id"] = "reviewed-family"
@@ -11818,7 +11822,12 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
         "reviewer_id": "fixture-reviewer",
         "evidence_sha256": ev.digest(b"independent review evidence"),
     }
-    suite["tasks"] = [cases[1], subjective]
+    objective_no_answer = task(
+        "NoSuchName", "ascii_content_absent_casefold_v1", "distinct_file", []
+    )
+    objective_no_answer["task_id"] = "T3"
+    objective_no_answer["query_family_id"] = "objective-no-answer-family"
+    suite["tasks"] = [cases[1], subjective, objective_no_answer]
     ev.validate_suite(repo, suite)
     mixed_receipt = {
         "schema_version": 2,

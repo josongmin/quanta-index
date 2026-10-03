@@ -2748,8 +2748,7 @@ def _validate_gold_review_receipt(
     if mixed:
         reviewed_by_id = {task["task_id"]: task for task in reviewed_tasks}
         reviewed_suite["tasks"] = [
-            task if "source_oracle" in task else reviewed_by_id[task["task_id"]]
-            for task in tasks
+            task if "source_oracle" in task else reviewed_by_id[task["task_id"]] for task in tasks
         ]
     else:
         reviewed_suite["tasks"] = reviewed_tasks

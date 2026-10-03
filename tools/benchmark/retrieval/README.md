@@ -525,6 +525,14 @@ three distinct reviewer IDs. Hashes and IDs establish content and claimed
 custody, but cannot establish that three humans actually reviewed independently;
 that remains an external qualification check.
 
+For a repository-disjoint admission (schema v3) whose suite mixes
+`source_oracle` and reviewed tasks, use annotation and adjudication receipts
+with `schema_version: 2`. Their `reviews` contain only the tasks without
+`source_oracle`, in suite order. All mechanical tasks remain bound to the full
+`suite_sha256` and are recomputed against the pinned source by suite validation.
+The two annotation receipts must cover every reviewed task; adjudication must
+match the final suite labels. A schema-v1 receipt for a mixed suite is refused.
+
 Use a short native output path: Unix socket path limits are 103 bytes on macOS
 and 107 on Linux. The composed code-search workflow reserves a short runtime
 path automatically and retains the native tree in its permanent capture.
