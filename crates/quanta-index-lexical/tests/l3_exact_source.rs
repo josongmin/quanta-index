@@ -1068,6 +1068,42 @@ fn code_search_rank_study_recovers_original_boundaries_after_unicode_normalizati
         );
         assert_eq!(trace.emitted_score, rows[0].score);
     }
+    // One non-ASCII scalar in an otherwise ordinary 120 KiB NFC source must
+    // not require a full provenance allocation above the 64 MiB request cap.
+    // U+0130 expands under folding before the witness, so byte identity alone
+    // is insufficient. The same source has fixed sensitive/folded score goldens.
+    let body = format!("İ{}fooBar", " ".repeat(120_000));
+    let (_dir, searcher) = fixture_with_scopes(vec![code_scope("large.rs", &body, 0)?])?;
+    for (needle, sensitive, expected_score) in [("bar", false, 40.0), ("Bar", true, 45.0)] {
+        let query = code_query(&[needle], sensitive);
+        let rows = searcher
+            .search_constrained(
+                &query,
+                &QueryConstraintSetV1::default(),
+                &LexicalPageSpec::first(10),
+                &RequestBudgetV1::unbounded(),
+            )?
+            .candidates;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].score, expected_score);
+        let LexicalCandidateExplanationV1::Matched(trace) = searcher.explain_candidate(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &rows[0].candidate_id,
+            &RequestBudgetV1::unbounded(),
+        )?
+        else {
+            panic!("large NFC source must retain its explanation");
+        };
+        assert_eq!(trace.emitted_score, expected_score);
+        assert_eq!(
+            trace
+                .code_search_rank_study
+                .expect("study")
+                .original_boundary_bonus,
+            16
+        );
+    }
     Ok(())
 }
 

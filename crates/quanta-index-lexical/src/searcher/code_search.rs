@@ -1395,20 +1395,40 @@ fn nfc_identity_focus(
     witness: &Witness,
     budget: &RequestBudgetV1,
 ) -> Result<Option<Range<usize>>, CoreError> {
+    nfc_identity_range(
+        raw,
+        indexed,
+        folded,
+        &witness.normalized,
+        witness.mapping_case,
+        budget,
+    )
+}
+
+// Shared by previews and rank features. NFC identity permits a bounded scalar
+// walk for folding offsets without allocating a whole-source provenance map.
+fn nfc_identity_range(
+    raw: &str,
+    indexed: &str,
+    folded: &str,
+    normalized: &Range<usize>,
+    mapping_case: CaseMode,
+    budget: &RequestBudgetV1,
+) -> Result<Option<Range<usize>>, CoreError> {
     if raw != indexed {
         return Ok(None);
     }
-    let surface = match witness.mapping_case {
+    let surface = match mapping_case {
         CaseMode::Sensitive => indexed,
         CaseMode::Folded => folded,
     };
-    if witness.normalized.is_empty() || surface.get(witness.normalized.clone()).is_none() {
+    if normalized.is_empty() || surface.get(normalized.clone()).is_none() {
         return Err(CoreError::Storage(
             "lexical: NFC file focus is not UTF-8 aligned".into(),
         ));
     }
-    if witness.mapping_case == CaseMode::Sensitive || raw.is_ascii() {
-        return Ok(Some(witness.normalized.clone()));
+    if mapping_case == CaseMode::Sensitive || raw.is_ascii() {
+        return Ok(Some(normalized.clone()));
     }
     budget.checkpoint("lexical:code-search-preview-nfc-focus")?;
     let mut folded_offset = 0_usize;
@@ -1431,14 +1451,14 @@ fn nfc_identity_focus(
         let end = folded_offset
             .checked_add(folded_len)
             .ok_or_else(|| CoreError::Storage("lexical: folded preview offset overflow".into()))?;
-        if end > witness.normalized.start && folded_offset < witness.normalized.end {
+        if end > normalized.start && folded_offset < normalized.end {
             if original_start.is_none() {
                 original_start = Some(start);
             }
             original_end = start.saturating_add(scalar.len_utf8());
         }
         folded_offset = end;
-        if folded_offset >= witness.normalized.end {
+        if folded_offset >= normalized.end {
             break;
         }
     }

@@ -2235,3 +2235,31 @@ not rewritten. Full RCA, raw recapture, source and index bindings, and controls:
 **VERIFIED:** Sourcegraph 4,149-task Stream recapture and original top-10
 agreement. **NOT_RUN:** Sourcegraph UI fuzzy finder, full content-posting
 attestation, human-reviewed C5 relevance, or post-fix Quanta full recapture.
+
+### Sourcegraph Fuzzy Finder request probe (2026-10-04)
+
+The running Sourcegraph 6.8.0 frontend's `FuzzyFinderSymbols` bundle issues
+GraphQL `search(patternType: regexp, query: $query)` with
+`repo:^<name>$@<revision> type:symbol count:100 <input>`. Its symbol cache
+starts empty; the browser-side fuzzy matcher ranks only symbols returned by
+these requests. The separate Files tab fetches file names and therefore does
+not test recovery of a misspelled declaration name from source content.
+
+A fresh, isolated GraphQL probe used that exact Symbols query shape against
+`benchmark/sympy@02ae2b456e5ea40de3b36e8381457f6211361318`.
+`sdm_irref` and the deletion/substring `sdm_irre` each returned the
+`sdm_irref` declaration in `sympy/polys/matrices/sdm.py`; insertion
+`sydm_irref`, substitution `sdm_irrex`, and transposition `sdm_irerf`
+returned no symbol candidates. All five HTTP responses were 200 with no
+GraphQL errors. The frontend bundle and raw responses are under
+`/private/tmp/qi-sg-fuzzy-finder-rca-20261004/`; bundle SHA-256 is
+`64b24fe2a9a3c267bc6ab0f30c6da8b9fc7afdc4c458fd82455b9fe845479465`.
+
+This confirms that simply switching the cold-query benchmark adapter to the
+Symbols tab's GraphQL request would not supply candidates for these three
+non-substring edits. Interactive typing can accumulate earlier prefix-query
+candidates in the browser cache and must be evaluated as a separate,
+stateful UI session if that behavior is the intended contract. These five
+controls do not establish a full-suite Fuzzy Finder score or product-wide
+lack of typo recovery. **VERIFIED:** frontend request shape and five GraphQL
+controls. **NOT_RUN:** interactive UI trajectory and full OSA1 suite.

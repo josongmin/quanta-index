@@ -94,7 +94,7 @@ fn boundary_features(
             .ok_or_else(|| CoreError::Storage("lexical: rank provenance size overflow".into()))?
             .max(1);
         let max_bytes = raw.len().max(indexed.len()).saturating_mul(3);
-        let allocation = if raw.is_ascii() {
+        let allocation = if raw == indexed {
             0
         } else {
             MappedText::allocation_bound(max_bytes, max_entries).ok_or_else(|| {
@@ -106,7 +106,7 @@ fn boundary_features(
             resources.reserve_bytes(u64::try_from(allocation).map_err(|error| {
                 CoreError::Storage(format!("lexical: rank allocation: {error}"))
             })?)?;
-        let mapped = if raw.is_ascii() {
+        let mapped = if raw == indexed {
             None
         } else {
             Some(
@@ -145,7 +145,10 @@ fn boundary_features(
                     Some(mapped) => mapped.source_range(span).map_err(|error| {
                         CoreError::Storage(format!("lexical: rank source mapping: {error}"))
                     })?,
-                    None => span,
+                    None => nfc_identity_range(raw, indexed, text, &span, case, budget)?
+                        .ok_or_else(|| {
+                            CoreError::Storage("lexical: rank NFC identity drift".into())
+                        })?,
                 };
                 let value = original_boundary_bonus(raw, original)?;
                 let prior = per_term.get_mut(index).ok_or_else(|| {
