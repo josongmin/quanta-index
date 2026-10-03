@@ -2354,11 +2354,33 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
             .as_f64()
             .is_some_and(|value| value >= 0.0)
     );
-    let phase_sum = metrics["phases_ms"]
-        .as_object()
-        .expect("phase ledger")
-        .values()
-        .map(|value| value.as_f64().expect("measured phase"))
+    // Schema 3 exposes SDK child intervals inside the publish envelope.
+    // Only disjoint phases partition total time; children must fit their parent.
+    let phases = metrics["phases_ms"].as_object().expect("phase ledger");
+    let sdk_children = ["sdk_publish", "sdk_activate"];
+    let sdk_sum = sdk_children
+        .iter()
+        .map(|name| {
+            let measured = phases[*name].as_f64().expect("measured SDK child");
+            assert!(measured.is_finite() && measured >= 0.0);
+            measured
+        })
+        .sum::<f64>();
+    let publish = phases["embed_publish_seal_activate"]
+        .as_f64()
+        .expect("publish envelope");
+    assert!(
+        sdk_sum <= publish + 0.01,
+        "SDK children exceed publish envelope"
+    );
+    let phase_sum = phases
+        .iter()
+        .filter(|(name, _)| !sdk_children.contains(&name.as_str()))
+        .map(|(_, value)| {
+            let measured = value.as_f64().expect("measured disjoint phase");
+            assert!(measured.is_finite() && measured >= 0.0);
+            measured
+        })
         .sum::<f64>();
     let total = metrics["total_ms"].as_f64().expect("overall measured time");
     assert!(
