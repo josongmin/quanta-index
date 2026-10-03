@@ -449,8 +449,11 @@ impl LexicalQueryPort for SearchPlaneDispatcher {
 }
 
 #[cfg(test)]
-mod typo_cursor_tests {
-    use super::{CODE_SEARCH_CURSOR_ORDER, CODE_SEARCH_TYPO_CURSOR_ORDER, is_code_search_typo};
+mod typed_cursor_tests {
+    use super::{
+        CODE_SEARCH_COMPONENT_CURSOR_ORDER, CODE_SEARCH_CURSOR_ORDER,
+        CODE_SEARCH_TYPO_CURSOR_ORDER, is_code_search_components, is_code_search_typo,
+    };
     use crate::lowering::lower_code_search_query_text;
 
     #[test]
@@ -460,5 +463,21 @@ mod typo_cursor_tests {
         assert!(is_code_search_typo(&typo));
         assert!(!is_code_search_typo(&exact));
         assert_ne!(CODE_SEARCH_TYPO_CURSOR_ORDER, CODE_SEARCH_CURSOR_ORDER);
+    }
+
+    #[test]
+    fn component_cursor_order_is_distinct_from_other_file_modes() {
+        let components =
+            lower_code_search_query_text("components:\"clean up\"").expect("component query");
+        let ordinary = lower_code_search_query_text("clean up").expect("ordinary query");
+        let typo = lower_code_search_query_text("typo:load_jsom").expect("typo query");
+        assert!(is_code_search_components(&components));
+        assert!(!is_code_search_components(&ordinary));
+        assert!(!is_code_search_components(&typo));
+        assert_ne!(CODE_SEARCH_COMPONENT_CURSOR_ORDER, CODE_SEARCH_CURSOR_ORDER);
+        assert_ne!(
+            CODE_SEARCH_COMPONENT_CURSOR_ORDER,
+            CODE_SEARCH_TYPO_CURSOR_ORDER
+        );
     }
 }
