@@ -1431,7 +1431,8 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             live.lexical._tasks(suite, pack),
             {row["path"] for row in suite["file_universe"]},
         )
-        assert scored["capability_coverage"]["supported"] == 20
+        assert "capability_coverage" not in scored
+        assert len(scored["per_query"]) == 20
         assert scored["latency_ms"]["count"] == 20
     original_read = live._read_control_file
 

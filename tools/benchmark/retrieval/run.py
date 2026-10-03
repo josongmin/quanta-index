@@ -5556,11 +5556,12 @@ def _validate_manifest_shape(payload: object) -> dict:
             raise RunError("qualified manifest admission digest must be a sha256")
     elif admission_digest is not None:
         raise RunError("exploratory manifest admission digest must be null")
-    quanta = _exact_keys(
-        provenance["quanta"],
-        {"source_sha", "source_closure_digest", "binary_digest", "embedder"},
-        "manifest quanta",
-    )
+    quanta_fields = {"source_sha", "source_closure_digest", "binary_digest", "embedder"}
+    if isinstance(provenance["quanta"], dict) and "binary_build_source_revision" in provenance["quanta"]:
+        quanta_fields.add("binary_build_source_revision")
+    quanta = _exact_keys(provenance["quanta"], quanta_fields, "manifest quanta")
+    if quanta.get("binary_build_source_revision") is not None:
+        raise RunError("binary build source revision is not attested by a build receipt")
     if not _is_hex(quanta["source_sha"], 40) or not _is_hex(quanta["binary_digest"], 64):
         raise RunError("manifest quanta provenance digests malformed")
     if quanta["embedder"] not in ("potion-code", "potion-code-full-v2", "hash-dev"):
@@ -9107,6 +9108,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             "source_sha": provenance_claims["quanta"]["source_sha"],
             "binary_digest": binary_digest,
             "embedder": provenance_claims["quanta"].get("embedder", "undeclared"),
+            **(
+                {"binary_build_source_revision": None}
+                if "binary_build_source_revision" in provenance_claims["quanta"]
+                else {}
+            ),
         },
         "semble": {
             "revision": SEMBLE_PINNED_VERSION,
@@ -11133,6 +11139,9 @@ def build_run_manifest(
                 "source_closure_digest": source_closure_digest,
                 "binary_digest": runner_binary_digest,
                 "embedder": spec.get("embedder", "potion-code"),
+                # Binary digests are pinned, but the build source is not
+                # independently attested by this capture contract.
+                "binary_build_source_revision": None,
             },
             "semble": {
                 "revision": SEMBLE_PINNED_VERSION,
