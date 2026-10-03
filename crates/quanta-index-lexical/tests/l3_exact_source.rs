@@ -379,6 +379,97 @@ fn explicit_typo_search_uses_source_tokens_and_valid_spans() -> TestResult {
 }
 
 #[test]
+fn symbol_components_match_one_ordered_name_and_page_distinct_files() -> TestResult {
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        scope(
+            "source-a",
+            "exact.rs",
+            &[("exact", "UpdateAvailableNo", "A::UpdateAvailableNo", None)],
+        )?,
+        scope(
+            "source-a",
+            "longer.rs",
+            &[(
+                "longer",
+                "UpdateAvailableNoCurrentVersion",
+                "B::UpdateAvailableNoCurrentVersion",
+                None,
+            )],
+        )?,
+        scope(
+            "source-a",
+            "reversed.rs",
+            &[(
+                "reversed",
+                "UpdateNoAvailable",
+                "C::UpdateNoAvailable",
+                None,
+            )],
+        )?,
+        scope(
+            "source-a",
+            "split.rs",
+            &[
+                ("update", "Update", "D::Update", None),
+                ("available", "AvailableNo", "D::AvailableNo", None),
+            ],
+        )?,
+    ])?;
+    let mut query = code_query(&["update available no"], false);
+    query.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.symbol_components".into(),
+        args: vec![LqPredicateArg::RawString("update available no".into())],
+    });
+    let budget = RequestBudgetV1::unbounded();
+    let first = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
+        &budget,
+    )?;
+    assert_eq!(first.exact_total, Some(2));
+    assert_eq!(
+        first
+            .candidates
+            .iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["exact.rs", "longer.rs"]
+    );
+    assert!(first.candidates[0].score > first.candidates[1].score);
+
+    let one = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(1),
+        &budget,
+    )?;
+    assert_eq!(one.candidates.len(), 1);
+    assert_eq!(
+        one.candidates[0].candidate_id,
+        first.candidates[0].candidate_id
+    );
+    let next = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec {
+            fetch: 1,
+            after: Some(LexicalCursor::at(
+                ManifestGeneration::new(1),
+                one.candidates[0].order_key(),
+            )),
+        },
+        &budget,
+    )?;
+    assert_eq!(next.candidates.len(), 1);
+    assert_eq!(
+        next.candidates[0].candidate_id,
+        first.candidates[1].candidate_id
+    );
+    Ok(())
+}
+
+#[test]
 fn default_bare_identifier_uses_osa1_only_after_empty_literal_search() -> TestResult {
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("near.rs", "load_json", 4)?,

@@ -1053,7 +1053,8 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
         | QueryInputPolicy::SubstringFile
         | QueryInputPolicy::CodeSearchFile
         | QueryInputPolicy::CodeSearchExactContentFile
-        | QueryInputPolicy::CodeSearchTypoFile => Some("distinct_file"),
+        | QueryInputPolicy::CodeSearchTypoFile
+        | QueryInputPolicy::CodeSearchComponentsFile => Some("distinct_file"),
         QueryInputPolicy::ExactSymbolName => Some("symbol"),
         QueryInputPolicy::Native
         | QueryInputPolicy::Literal
@@ -1074,6 +1075,7 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
             | QueryInputPolicy::CodeSearchFile
             | QueryInputPolicy::CodeSearchExactContentFile
             | QueryInputPolicy::CodeSearchTypoFile
+            | QueryInputPolicy::CodeSearchComponentsFile
     ) {
         let _previous = object.insert(
             "score_evidence".to_string(),
@@ -1168,6 +1170,7 @@ pub fn result_value(
                     QueryInputPolicy::CodeSearchFile
                         | QueryInputPolicy::CodeSearchExactContentFile
                         | QueryInputPolicy::CodeSearchTypoFile
+                        | QueryInputPolicy::CodeSearchComponentsFile
                 ) != (proven.unit_kind == PublishedUnitKind::File)
                 {
                     return Err(BenchError::Protocol(format!(
@@ -1182,6 +1185,7 @@ pub fn result_value(
                         | QueryInputPolicy::CodeSearchFile
                         | QueryInputPolicy::CodeSearchExactContentFile
                         | QueryInputPolicy::CodeSearchTypoFile
+                        | QueryInputPolicy::CodeSearchComponentsFile
                 ) {
                     let score = serde_json::Number::from_f64(hit.score).ok_or_else(|| {
                         BenchError::Protocol(format!(

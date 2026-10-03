@@ -499,6 +499,7 @@ mod empty_status_tests {
             Policy::CodeSearchFile,
             Policy::CodeSearchExactContentFile,
             Policy::CodeSearchTypoFile,
+            Policy::CodeSearchComponentsFile,
         ] {
             assert_eq!(expected_lexical_rank_unit(policy), TextRankUnit::File);
         }
@@ -1320,6 +1321,7 @@ pub fn query_route_with_policy(
                 crate::query_plan::QueryInputPolicy::CodeSearchFile
                     | crate::query_plan::QueryInputPolicy::CodeSearchExactContentFile
                     | crate::query_plan::QueryInputPolicy::CodeSearchTypoFile
+                    | crate::query_plan::QueryInputPolicy::CodeSearchComponentsFile
             ) {
                 builder.code_search(query.lexical_request)
             } else {
@@ -1349,6 +1351,7 @@ pub fn query_route_with_policy(
                         crate::query_plan::QueryInputPolicy::CodeSearchFile
                             | crate::query_plan::QueryInputPolicy::CodeSearchExactContentFile
                             | crate::query_plan::QueryInputPolicy::CodeSearchTypoFile
+                            | crate::query_plan::QueryInputPolicy::CodeSearchComponentsFile
                     ) && response.results.iter().any(|candidate| {
                         let pin_matches = candidate.repo_id == expected_pin.repo_id
                             && candidate.revision_id == expected_pin.revision_id

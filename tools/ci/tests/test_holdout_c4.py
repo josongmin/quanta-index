@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -995,3 +997,22 @@ def test_c4_matrix_optimized_replay_matches_canonical_validator(
     assert {cell["repository"] for cell in matrix["cells"]} == {"beta"}
     exact = next(cell for cell in matrix["cells"] if cell["intent"] == "declaration_name_exact")
     assert {row["reason"] for row in exact["excluded"]} >= {"query_near_duplicate"}
+
+
+@pytest.mark.parametrize("name", ["holdout_c4.py", "holdout_literal.py"])
+def test_holdout_cli_help_runs_from_external_cwd_without_pythonpath(tmp_path, name):
+    repository = Path(__file__).resolve().parents[3]
+    command = repository / "tools" / "benchmark" / "retrieval" / name
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [sys.executable, str(command), "--help"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--capsules" in result.stdout

@@ -17,12 +17,15 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# corpus_binding still imports corpus_release as a top-level benchmark module.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Support direct execution from an external working directory. corpus_binding
+# also imports corpus_release as a top-level benchmark module.
+for path in (Path(__file__).resolve().parents[3], Path(__file__).resolve().parents[1]):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
-from tools.benchmark import corpus_binding
-from tools.benchmark.evidence import _read_control_file, digest_bytes, parse_json
-from tools.benchmark.retrieval import evaluator, gold_oracle, query_plan, source_oracle
+from tools.benchmark import corpus_binding  # noqa: E402
+from tools.benchmark.evidence import _read_control_file, digest_bytes, parse_json  # noqa: E402
+from tools.benchmark.retrieval import evaluator, gold_oracle, query_plan, source_oracle  # noqa: E402
 
 MATRIX_INTENTS = tuple(sorted(gold_oracle.DECLARATION_INTENTS))
 

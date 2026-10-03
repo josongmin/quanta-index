@@ -10,17 +10,22 @@ from __future__ import annotations
 import argparse
 import hashlib
 import shutil
+import sys
 from pathlib import Path
 
-from tools.benchmark import corpus_binding
-from tools.benchmark.evidence import digest_bytes
+for path in (Path(__file__).resolve().parents[3], Path(__file__).resolve().parents[1]):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+from tools.benchmark import corpus_binding  # noqa: E402
+from tools.benchmark.evidence import digest_bytes  # noqa: E402
 from tools.benchmark.retrieval import (
     evaluator,
     gold_oracle,
     holdout_c4,
     literal_source_oracle,
     query_plan,
-)
+)  # noqa: E402
 
 INTENT = "literal_utf8_exact"
 POLICY = "code_search_exact_content_file"
