@@ -54,8 +54,9 @@ No semantic/hybrid or comparative SOTA claim is closed by this ticket alone.
 
 ## 2026-10-03 final audit and action plan
 
-Status: `PLANNED`; source inspection and offline diagnosis `VERIFIED`.
-Implementation, engine replay and new comparative capture: `NOT_RUN`.
+Historical audit status: `PLANNED`; source inspection and offline diagnosis `VERIFIED`.
+Implementation status is updated in the execution section below. Historical
+engine replay and comparative captures remain separate from that execution.
 Audit source: clean `main@e18805150ca3c74377e7f9bee0000306d56ce3d3`.
 
 ### Decision
@@ -432,3 +433,122 @@ the relevant-file `git diff fabbe589866047e2c586e7218d91d5f57d3cee29 HEAD`,
 official documentation reads. `VERIFIED`: the cited source/design findings;
 `NOT_RUN`: upstream tests, native comparison runs, runtime lifecycle/performance
 checks and proposed product changes. No benchmark counts were replaced.
+
+
+## 2026-10-03 execution: score authority and experimental features
+
+Status: `PARTIAL_IMPLEMENTATION`. Selected production ranking is unchanged.
+This section does not promote a retrieval-quality, performance, release or
+five-product qualification claim.
+
+The work started at `main@88c1366e764e4ae69fd2bc93c31c3b148da6b895`.
+Other tasks committed overlapping shared-main changes during execution; the
+reported local checks exercised live main and its then-current overlay.
+They are not a frozen-source qualification receipt. Existing captures and
+`/private/tmp/g3` were not modified or replayed into a new aggregate.
+
+### Confirmed defects repaired
+
+1. Backend explanation treated a CodeSearch `file:` identity as a stored chunk
+   document ID and returned `NotIndexed`. The sealed adapter fixture failed
+   at this exact assertion before repair. File presence now resolves the
+   immutable file authority; ordinary matched file explanation uses the same
+   selected scorer, independent of the search page cap. A `file:`-prefixed
+   legacy chunk ID still falls through to document lookup when no file matches.
+2. Public lexical explain refused CodeSearch at the shared planner before
+   reaching the backend. A real SDK/runtime test failed with `INVALID_REQUEST`
+   after backend repair. Lexical explain now admits the same CodeSearch plan
+   as lexical search. Hybrid and symbol admission stay route-specific.
+
+Owners: `searcher/code_search.rs`, `searcher/port.rs`,
+`query_dispatcher/planning.rs` and `routes/explain.rs`.
+
+### Implemented boundaries
+
+- `CodeSearchScoreComponentsV1` is the selected scorer's additive authority:
+  boundary/path, occurrence, exact case and proximity. Native explanation
+  refuses engine, boost, total or emitted-score contradictions.
+- `searcher/code_search/ranking.rs` extracts file-level producer declaration
+  names from the pinned symbol index and verifies identity and raw source
+  range. It does not infer a declaration-name occurrence span from a body hit.
+  One batched symbol query is used per explained file. This is diagnostic
+  extraction; a production multi-file ranker still needs per-request batching.
+- Optional declaration evidence distinguishes zero from unknown. Unspecified
+  display names absent from raw source stay unknown. A promised raw ASCII
+  name absent from its definition range or a stale identity is an error.
+- Original-source camel/snake/acronym/digit boundary signals use verified
+  normalization provenance for Unicode. Literal membership, tokenizer and
+  selected ranking remain unchanged.
+- Native study exposes baseline, declaration-only, boundary-only,
+  half-occurrence, no-occurrence and combined scores. Provisional declaration
+  weights are 64/32/16; original-boundary weights are 16/8. These are experimental
+  constants, not holdout-selected defaults. Only baseline is marked selected.
+- Cursor order and explanation rank fingerprint share one policy authority;
+  ordinary, explicit typo and components use distinct fingerprints. No cursor
+  scoring-version bump is needed for these diagnostics because selected scores
+  and their order did not change.
+- `CodeSearchExecutionStatsV1` records successful ordinary-page work: literal
+  prefilter execution, source-verification attempts, verified literal files,
+  final candidate visits, all verified matches, cursor-eligible matches and
+  fetched files. Public trace adds the actual returned-file count after response
+  fitting. Counts are validated against the native page; conflicting counts
+  are refused. This is not raw posting-visit or distinct pre-verification count.
+  Exact-path/regex-only zero literal counts mean no literal prefilter execution.
+  Explicit recovery/components remain unobserved; limits/cancellation remain
+  typed errors rather than fabricated complete statistics.
+- Existing runner diagnostics already retain native planner traces. Per-file
+  score-study capture and complete-pool ablation reporting are not yet wired
+  into that runner. Top-ten-only studies cannot establish post-change full ranks.
+
+### Local checks
+
+All commands ran from this checkout; output was retained in the chat, not as
+one-off repository evidence files.
+
+| Command | Observed outcome | Scope |
+| --- | --- | --- |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical --test l3_exact_source code_search_explanation_uses_the_same_file_score_outside_top_k -- --exact` | RED: `NotIndexed`; then GREEN, 1 test | Confirmed backend defect |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical -p quanta-index-search-plane --lib code_search` | `VERIFIED`: 23 + 14 tests passed | Native feature, score, grammar, count and cursor contracts |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-lexical --test l3_exact_source` | `VERIFIED`: 28 tests passed | Sealed source/symbol index, Unicode, independent source oracle, gram collision, late better candidate, paging and exact-symbol separation |
+| `./scripts/cargow --lane code-search-rank-lane test -p quanta-index-searchd-runtime --test runtime_fast_suite e2e_explain_score_trace::explain_score_traces_share_one_indexed_fixture -- --exact --nocapture` | RED: public planner refused CodeSearch; then GREEN, 1 test before work-count additions; final rerun pending | SDK/runtime wiring and fixed 109/107/105 source score goldens |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_retrieval_benchmark.py -k 'independent_file_ndcg or declaration_judgment_requires or cross_suite_experiment_custody or v3_query_family_split or intended_name_source_oracle or code_search_file_refuses_context or code_search_file_policy_binds'` | `VERIFIED`: 7 passed | Existing file/declaration metrics and leakage guard |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_identifier_robustness_report.py -k 'scored_family_separately or fixed_golden_preserves or clean_to_typo or operation_and_length or policy_refusal or no_answer_success or rederived_from_source'` | `VERIFIED`: 7 passed | Existing lane, eligibility, no-answer and intended-name reporting |
+| `git diff --check`; `python3 tools/ci/lint/check-module-discipline.py`; `just rust-hexagonal` | `VERIFIED` | Hygiene and dependency/facade boundaries |
+| `just rust-cargo-modules` | Initial drift exposed missing snapshots; corrected core/contract snapshots; final rerun pending | Module inventory, not behavioral qualification |
+
+Some first attempts had test-code compilation errors, corrected before the
+passing runs. An accidental system Python 3.9 invocation failed on the existing
+`zip(strict=True)` fixture; the frozen repository Python command passed.
+One native command was not admitted after 300 seconds of another task's build
+lock; a subsequent admitted attempt passed. Build/admission time is not query
+or indexing latency.
+
+### Remaining execution, ordered by dependency
+
+1. Finish the final public work-count proof and module inventory check.
+2. Extend the existing SDK runner's optional diagnostic path to retain each
+   returned candidate's native score explanation under its exact effective
+   request and generation. Bind it to the existing record/input/binary identities;
+   record explanation cost separately from measured query cost. An explanation
+   refusal must stay visible and must not erase valid original quality results.
+3. For candidate-complete ablation, collect every matching file through the
+   existing paging contract and prove exhaustion; do not re-rank only a top-ten
+   pool and call it full recall. Add an independent fixed-rank study golden.
+4. Freeze development/holdout by repository and seed family before expanding
+   exact/prefix/infix/components/typo/no-answer tasks. Reuse the existing source
+   oracle, evaluator and review tools. Prepare default-content/use-example and
+   typed-declaration pools separately; obtain genuine independent judgments.
+5. Batch declaration enrichment once per ranked request before experimenting
+   with production selection. Preserve unknown evidence, literal recall, typed
+   errors, budget accounting, deterministic ordering and score-version cursors.
+6. Select a frozen policy only after reviewed, unexposed holdout improvement;
+   report regressions by intent and repository. Run comparable API/build/input
+   latency and memory measurements on an uncontended host.
+7. Bind served external inventories/versions and run the existing five-product
+   capture per supported lane. Qualification does not follow from the historical
+   Gin counts or from this local explanation fixture.
+
+`NOT_RUN`: fresh 1,196-task or expanded five-product capture, complete-pool
+ablation, independent human relevance qualification, comparable performance,
+release/deployment and scale optimizations. No default relevance improvement
+has been established by this execution.

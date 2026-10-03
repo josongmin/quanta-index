@@ -1,4 +1,4 @@
-//! Source-bound feature extraction and preregistered diagnostic rank ablations.
+//! Source-bound feature extraction and diagnostic rank ablations.
 //! The selected file scorer remains owned by the parent; study scores are never
 //! silently substituted for its output. Symbol evidence is file-level only.
 
