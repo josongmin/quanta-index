@@ -190,8 +190,11 @@ fn collect_one(
                 return Err("ordinary exhaustive execution is not established".into());
             }
             for row in &page.results {
+                // This single-repository benchmark binds source and search repo
+                // identities together (the record authority enforces equality).
+                // GenerationPin carries only repo/revision/generation.
                 if row.repo_id != pin.repo_id
-                    || row.source_repo_id != pin.source_repo_id
+                    || row.source_repo_id != row.repo_id
                     || row.revision_id != pin.revision_id
                     || row.manifest_generation != pin.manifest_generation
                     || !row.candidate_id.starts_with("file:")
