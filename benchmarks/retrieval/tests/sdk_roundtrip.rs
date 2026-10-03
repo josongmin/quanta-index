@@ -827,7 +827,16 @@ fn native_file_public_routes_group_order_scope_and_case() {
         .expect("source-proven result");
         assert_eq!(recorded["rank_unit"], "distinct_file");
         assert_eq!(recorded["ordering"], ordering);
-        if policy != QueryInputPolicy::SubstringFile {
+        if policy == QueryInputPolicy::SubstringFile {
+            assert!(recorded.get("score_evidence").is_none());
+            assert!(
+                recorded["candidates"]
+                    .as_array()
+                    .expect("recorded rows")
+                    .iter()
+                    .all(|candidate| candidate.get("score").is_none())
+            );
+        } else {
             assert_eq!(recorded["score_evidence"], "native_sdk_score_v1");
             for (candidate, hit) in recorded["candidates"]
                 .as_array()
@@ -839,15 +848,6 @@ fn native_file_public_routes_group_order_scope_and_case() {
                 assert_eq!(candidate["span_accounting"]["unit_kind"], "chunk");
                 assert_eq!(candidate["span_accounting"]["unit_id"], hit.candidate_id);
             }
-        } else {
-            assert!(recorded.get("score_evidence").is_none());
-            assert!(
-                recorded["candidates"]
-                    .as_array()
-                    .expect("recorded rows")
-                    .iter()
-                    .all(|candidate| candidate.get("score").is_none())
-            );
         }
         // Continuation pages preserve the complete file list without repeats.
         let mut paged_paths = Vec::new();
@@ -2494,9 +2494,10 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     verify_rank_study_runner(&command, &pack_path, &evidence);
 }
 
-/// Exercise the same separately pinned runner/daemon boundary with a top-one
-/// ordinary file request. The fixture's three `pub` occurrences require three
-/// pages; a one-page diagnostic cap must retain the original capped record.
+/// Exercise the separately pinned runner and daemon.
+///
+/// The top-one file fixture has three `pub` occurrences and needs three pages.
+/// A one-page diagnostic cap must retain the original capped record.
 fn verify_rank_study_runner(original_command: &Command, original_pack: &Path, evidence: &Path) {
     let mut pack: serde_json::Value =
         serde_json::from_slice(&std::fs::read(original_pack).expect("original blind pack"))
@@ -2611,10 +2612,11 @@ fn verify_rank_study_runner(original_command: &Command, original_pack: &Path, ev
                     );
                     assert_eq!(response.explanation.contributions.len(), 1);
                     assert_eq!(
-                        f64::from(response.explanation.contributions[0].contribution),
+                        f64::from(response.explanation.contributions[0].contribution).to_bits(),
                         item["candidate"]["score"]
                             .as_f64()
                             .expect("native candidate score")
+                            .to_bits()
                     );
                     item["candidate"]["repo_relative_path"]
                         .as_str()
