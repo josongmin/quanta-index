@@ -110,9 +110,11 @@ fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
     for candidate in result.candidates {
         let carried = candidate.score;
         let presence = rt.explain_candidate(candidate.clone());
-        if presence.typed_error.is_some() || presence.presence != Some(CandidatePresenceV1::Indexed)
-        {
-            return Err(format!("file candidate exact presence failed: {presence:?}").into());
+        if let Some(error) = presence.typed_error {
+            return Err(format!("file candidate exact presence failed: {error}").into());
+        }
+        if presence.presence != Some(CandidatePresenceV1::Indexed) {
+            return Err("file candidate exact presence must be Indexed".into());
         }
         let explained =
             rt.explain_candidate_under_query(candidate, TextQuerySyntax::CodeSearch, PLAIN_QUERY);
