@@ -1931,3 +1931,45 @@ admitted and `zoxide.lit.013` was excluded as a near-duplicate. The replay is
 (`af2a08aad300a6264378b87bcf610a0448603958b78eafbdacd243693bacd4f2`).
 This proves a mechanical exact-content input contract; product search and
 human relevance review remain `NOT_RUN` for this v9 lane.
+
+## Literal product execution and interrupted C4 retry (2026-10-03)
+
+A first Quanta whole-file product run captured seven repository cells, then
+`sympy` failed during publish with
+`LEX_PHRASE_PLAN_LIMIT_EXCEEDED[POSITIONS_PER_CELL]`: a single term/document
+cell would exceed 4,096 positions. This is an index-build failure, not a
+top-ten miss. Its failed receipt remains at
+`/private/tmp/qi-c5-literal-product-20261003-v1/sympy/receipt.json`; the seven
+successful whole-file cells are not pooled with the replacement run.
+
+The replacement froze `fixed_window_strict` at 4,096 bytes with 256-byte
+overlap. An independent byte scanner checked that all 239 selected literal
+occurrences, each at most 80 bytes, lie within a complete emitted window;
+receipt: `/private/tmp/qi-c5-external-20261003-v4/literal-window-coverage.json`.
+The first replacement process completed nine repository cells and was
+interrupted during `telegraf`; it left no receipt for that cell. A separately
+precommitted continuation captured `telegraf`, `zerolog`, and `zoxide` in a
+fresh root, preserving the partial original state. The combined independent
+raw-row scorer bound both precommits, each cell receipt, suite, manifest,
+record and report, then recomputed file metrics from returned paths:
+
+- 12 repositories, 239/239 file Hit@10, mean file Recall@10
+  `0.997907949790795`, mean file NDCG@10 `1.0`, one `capped` response.
+- The only incomplete-recall task is `rust-analyzer.lit.005`: 10 relevant
+  files returned from 20 judged files. All ten returned files are relevant,
+  hence its NDCG@10 is 1.0 despite Recall@10 of 0.5.
+- Sum of per-cell wall times is 520.158 seconds; SDK query timers sum to
+  720.377909 milliseconds. These have different boundaries and the host was
+  contended, so neither is a comparative latency claim.
+- Source-bound precommits:
+  `/private/tmp/qi-c5-literal-product-20261003-v2/precommit.json` and
+  `/private/tmp/qi-c5-literal-product-20261003-v3/precommit.json`.
+  Independent result:
+  `/private/tmp/qi-c5-literal-product-20261003-v3/independent-combined-results.json`
+  (`32f09287a43a187cb21dccdac61cad06189d266e5c6ca65894f655460b4dac1c`).
+
+This is `VERIFIED` as a mechanical, diagnostic Quanta literal-file result.
+It is not a five-product result or a human-reviewed relevance judgment. The
+first gold-compatible C4 rerun was interrupted with no receipt or matrix. Its
+replacement is active under `/private/tmp/qi-c5-c4-goldbound-20261003-v2/`;
+C4 matrix validation and scored declaration-product capture remain `NOT_RUN`.
