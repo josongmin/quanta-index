@@ -14,7 +14,7 @@ runner, source oracle and evaluator remain the execution authorities.
 - In progress: the new global declaration-authority cohort for all 12
   repositories. Its gold capsules and public 72-cell admission matrix are
   complete. The new OSA1 lane contains4,363 tasks; ordinary-file projection
-  and new product captures must complete before it receives a score.
+  is complete. New product captures must complete before it receives a score.
 - These are diagnostic captures. Local human relevance review, an unseen
   holdout, whole upstream corpus execution, and qualified performance remain
   separate gates. The eight-repository scores do not fill the new cohort.
@@ -173,7 +173,8 @@ Additional reusable owners:
 - Six new Python owners are enrolled in the control scope, Justfile, closure
   profiles and policy collection checks. The required Python inventory adds
   observed NL test identities; SDK identities were sorted without deletion.
-  Current exact required inventories are Python634/Rust168/SDK25.
+  The inventories observed at this milestone were Python634/Rust168/SDK25;
+  concurrent owner changes may subsequently add identities.
 
 Resolved defects:
 
@@ -196,6 +197,19 @@ Resolved defects:
    profile. The external wrapper now requires the commitment-bound NL policy
    and exact configuration, or the fixed Semble lexical-file profile. Unknown
    record fields, policy/config tampering and wrong product modes are refused.
+5. CodeSearchNet freeze trusted ledger-provided paths and could read a file
+   outside the materialization root. A negative fixture reproduced this.
+   Source/snippet paths are now rederived from the pinned CSV URLs; absolute
+   paths, traversal, symlinks, oversized files, unavailable-source file paths,
+   extra snippet-path entries and source/span association drift are refused.
+   All fetched source bytes and all six existing actual synthetic corpora
+   passed the repaired read-only freeze. Existing capture bytes remain intact.
+   This is structural input validation, not remote Git blob attestation.
+6. Fresh-join JSON parsing and later digest calculation could observe different
+   input bytes. A per-build input registry now binds parsing, digest calculation
+   and JSONL replay to the same bytes, with a final unchanged-input check.
+   Mutations after parsing and before completion are rejected. This does not
+   claim an operating-system lock against transient mutation and reversal.
 
 Observed source materialization: 2,739 distinct source files, 2,613 fetched,
 126 HTTP404, 2,746 admitted spans and 2,781 admitted qrels. A separate GitHub
@@ -210,6 +224,7 @@ not admitted for a qualified comparison.
 | Fresh-join/projection/enrollment/closure integration | VERIFIED | 80 passed,98.37s |
 | Final snippet/projection/fresh-join/enrollment/closure slice | VERIFIED | 91 passed,71.02s |
 | Final fresh-join/projection/snippet owner units | VERIFIED | 27 passed,20.73s after four-pin runtime, actual payload commitment, and relocatable gold-path guards; test-authority check and owned diff hygiene passed |
+| Final input-custody/path-hardening owner units | VERIFIED | 28 passed,12.48s across fresh-join, C4 projection and external snippet owners; canonical test-authority check passed. Existing CSN six-language source validation passed separately. |
 | Gold-runtime/capsule/C4 owner suite | VERIFIED | 199 passed,585.89s; two subsequently added pinfile binding/tamper tests passed separately |
 | Pinned-source/adapters/strata focused tests | VERIFIED | 46 passed, 20.76s before final profile negative fixture; profile wrapper separately 6 passed |
 | Affected runner/planner Python file | FAILED, then focused repair VERIFIED | Initial full execution499 passed/1 expected-error-text assertion failed in1331.49s; error contract preserved and affected19 passed. The full file was not repeated. |
@@ -228,6 +243,12 @@ Quanta307/408 versus Semble387/408. Each CLARC full population remains526.
 Historical NL128 Semble results161/526 and91/526 remain separate receipts. CLARC is positive-only, and neutralized identical
 code groups retain the original labels. CSN NDCG is pool-estimated. These are
 synthetic snippet/file diagnostics, not whole-repository or semantic rankings.
+The eight actual Quanta NL64 records have no score or path-tie ordering
+inversions. Their frozen planner emits an OR of quoted phrases; the native
+phrase authority uses constant scorers, and the final collector orders score
+descending then path. These are native score-ranked results whose score mainly
+counts matching phrases, rather than BM25 relevance. Low target recovery is
+an observed product behavior, not evidence of a missing benchmark wire.
 
 Per-run artifacts (outside the checkout):
 
@@ -284,8 +305,12 @@ The new OSA1 lane selects4,363 tasks across12 repositories, compared with the
 historical4,149 under the older contract. Ordered task-ID lists add214 IDs
 and remove none: chartjs+134, immer+34, svelte+27, tauri+14, telegraf+5.
 ID retention is not proof of unchanged query, gold, or request contracts.
-Ordinary-file projection is running; only completed projection and capture
-receipts can admit the new cohort to a score.
+Public ordinary-file projection completed12/12 in345.235s (5m45s), preserving
+the source-validated gold while changing only the request mode. Receipt:
+`/private/tmp/qi-c5-oracle-pinned-TgLgCP/ordinary-projection-receipt.json`,
+SHA-256 `7ef35826dad6525bf70bfe5b59317edc816224fd2d448de5c28f56a511f2c18b`.
+Native and external captures use these exact projected payloads. Only their
+completed capture receipts can admit the new cohort to a score.
 
 Frozen runtime boundaries are explicit: Quanta binaries were built from
 clean `d7063ac755916d48867416d4f970b6aebc360abd`; the proposed new Python
