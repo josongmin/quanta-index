@@ -232,3 +232,50 @@ current collector now records `opengrok_indexed_universe_attested=false` even
 when its API path/served-byte probe passes, and replay refuses a forged `true`.
 Future qualification requires before/after backend artifact and service mount
 binding in the existing collector, followed by a fresh capture.
+
+## Full Gin ordinary-input typo paired diagnostic (2026-10-03)
+
+**VERIFIED, diagnostic only:** the same 99-file `gin@d3ffc998` corpus and
+frozen generated typo queries were submitted to Quanta `code_search_file`
+and Semble `lexical-file` as **ordinary user input**. The paired harness ran
+from clean `quanta-index@7fc77bc1` with the release/all-features binaries
+bound in `/private/tmp/qi-gin-full-product-7fc-20261003/build-binding.json`;
+the generated suites came from `main@5121711c`. All four pair verdicts passed,
+and a separate clean pair ran through the same harness. Source/census/report
+replay produced all eight product-by-operation clean→typo reports with no
+excluded paired families. The native result paths and file hashes were
+independently joined to each suite's intended-name gold. Raw results,
+per-query timing and status counts are bound in
+`/private/tmp/qi-gin-default-pair-5121711c-short-20261003/summary.json`
+(SHA-256 `aca4fa23da89f71c6305979460829d19ae75bced9c1f5eb1a319529443d962e0`);
+the paired clean deltas and report hashes are in
+`/private/tmp/qi-gin-default-pair-5121711c-short-20261003/paired-report-summary.json`
+(SHA-256 `8b59289a22ec507a605eae5b6ffbd7ea6ee7af3c196d97c52ba7f2e731a7f724`).
+
+| Input | Paired families | Quanta file Hit@10 | Semble file Hit@10 |
+| --- | ---: | ---: | ---: |
+| Clean | 1,196 | 1,187 | 1,190 |
+| Insertion | 1,192 | 1 | 1,036 |
+| Deletion | 1,178 | 181 | 1,004 |
+| Substitution | 1,192 | 7 | 1,034 |
+| Transposition | 1,192 | 1 | 967 |
+
+Quanta's ordinary-input search submits each typo as the raw query;
+`code_search.rs` enters its OSA1 candidate branch only for an explicit
+`typo:` predicate. Thus this measured default-path gap is consistent with
+the implemented request contract, not evidence that the explicit typo path
+failed. The separate Quanta explicit-OSA1 diagnostic in B03 found
+1,181/1,192, 1,161/1,178, 1,174/1,192 and 1,180/1,192. Semble has no
+matching explicit OSA1 request in this capture. Both routes have different
+retrieval internals, but the **submitted ordinary input and intended gold are
+identical within each row**.
+
+The four pair runs plus replay took 484.531s sequentially; the clean pair
+took another 89.401s. An earlier first attempt was refused before searching
+because the Unix socket path under a long output root exceeded 103 bytes; its
+failed receipt remains separate. Query-call p50/p95 and sums in the summary
+are single-run, contended-host diagnostics with different product call paths,
+not a speed comparison. Mechanical intended-name gold has no human relevance
+review. Sourcegraph, cs and OpenGrok were not newly captured on these full
+operation suites, so this is not a five-product ranking or product-default
+decision.

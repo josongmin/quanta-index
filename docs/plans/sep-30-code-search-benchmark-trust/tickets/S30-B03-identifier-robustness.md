@@ -163,3 +163,24 @@ comparison. The four operation rows share 1,196 original-name families and
 are not independent samples. The report status is `diagnostic_unqualified`;
 human relevance review, five-product matching and a fresh holdout remain
 **NOT_RUN** for this Gin operation set.
+
+## Full Gin ordinary-input typo projections (2026-10-03)
+
+**VERIFIED, diagnostic generation:** `main@5121711c` added four paired
+`default-typo-{insertion,deletion,substitution,transposition}` suites. Each
+has exactly the corresponding explicit OSA1 suite's typo query, intended-name
+gold, family ID and source partition; only the request contract changes to
+`default_file_search` and routes become Quanta `lexical` plus Semble
+`lexical-file`. The census references its original operation rows instead of
+duplicating them, and the reporter rejects a changed source/count or wrong
+default request contract. The four suite sizes are 1,192/1,178/1,192/1,192.
+
+The generator produced 45 bound artifacts under
+`/private/tmp/qi-gin-full-default-5121711c-20261003` (manifest SHA-256
+`341f3e6c6b840c0dde37bea0b7c93fdfe369d2ceab334602b6129f93d4684e99`).
+A second fresh output root produced 46 byte-identical files including the
+manifest; all artifact hashes, four suite/census source replays and the
+query/gold equality to the explicit suites passed. The affected source-oracle
+and reporter tests passed 72/72, followed by Ruff check/format and
+`git diff --check`. This extends the diagnostic inputs, not the qualified
+five-product comparison.
