@@ -106,6 +106,11 @@ fn code_search_execution_trace(
         || stats.fetched_files > stats.cursor_eligible_files
         || stats.verified_matching_files > stats.final_candidate_visits
         || stats.literal_verified_files > stats.literal_source_verification_attempts
+        || (!stats.literal_prefilter_executed
+            && (stats.literal_source_verification_attempts != 0
+                || stats.literal_verified_files != 0))
+        || (stats.literal_prefilter_executed
+            && stats.literal_verified_files != stats.final_candidate_visits)
     {
         return Err(CoreError::InvalidContract(
             "lexical: contradictory code-search work counts".into(),
@@ -116,6 +121,13 @@ fn code_search_execution_trace(
         detail: "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true"
             .into(),
     }];
+    entries.push(PlannerTraceEntry {
+        stage: PlannerStage::Merge,
+        detail: format!(
+            "code_search.execution.literal_prefilter_executed={}",
+            stats.literal_prefilter_executed
+        ),
+    });
     entries.extend(
         [
             (
@@ -541,6 +553,7 @@ mod typed_cursor_tests {
     fn code_search_execution_counts_reject_contradictory_page_provenance() {
         use super::{CodeSearchExecutionStatsV1, code_search_execution_trace};
         let stats = CodeSearchExecutionStatsV1 {
+            literal_prefilter_executed: true,
             literal_source_verification_attempts: 3,
             literal_verified_files: 2,
             final_candidate_visits: 2,
@@ -552,7 +565,7 @@ mod typed_cursor_tests {
             code_search_execution_trace(stats, 1, Some(1))
                 .expect("fixed counts")
                 .len(),
-            7
+            8
         );
         assert!(code_search_execution_trace(stats, 2, Some(1)).is_err());
         assert!(code_search_execution_trace(stats, 1, Some(2)).is_err());

@@ -792,6 +792,7 @@ fn code_search_work_counts_separate_gram_collision_verification_rank_and_paging(
     assert_eq!(
         stats,
         CodeSearchExecutionStatsV1 {
+            literal_prefilter_executed: true,
             literal_source_verification_attempts: 3,
             literal_verified_files: 2,
             final_candidate_visits: 2,

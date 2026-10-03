@@ -229,6 +229,9 @@ pub struct LexicalSearchPageV1<Candidate = LexicalCandidate> {
 /// postings. They are work counts, not the size of a distinct candidate set.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CodeSearchExecutionStatsV1 {
+    /// False for exact-path and regex-only plans; their zero literal counts
+    /// describe no prefilter work, not a proof of no literal matches.
+    pub literal_prefilter_executed: bool,
     pub literal_source_verification_attempts: u64,
     pub literal_verified_files: u64,
     pub final_candidate_visits: u64,

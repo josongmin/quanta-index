@@ -2167,6 +2167,7 @@ impl TantivySearcher {
                 // dialect proves that literal mandatory. Join all literal terms
                 // first, then verify regex over the admitted file set.
                 budget.checkpoint("lexical:code-search-terms")?;
+                stats.literal_prefilter_executed = true;
                 Some(
                     candidate_ids_observed(
                         authority,
@@ -2227,9 +2228,7 @@ impl TantivySearcher {
             admit_regex_scan(authority, ids.keys().copied(), scope, budget)?;
         }
         // Exact-path and regex-only plans have no literal prefilter pass.
-        if constraints.repo_relative_path_exact.is_none()
-            && parsed.terms.iter().any(|term| term.regex.is_none())
-        {
+        if stats.literal_prefilter_executed {
             stats.literal_verified_files = u64::try_from(ids.len()).map_err(|error| {
                 CoreError::Storage(format!("lexical: literal match count overflow: {error}"))
             })?;
