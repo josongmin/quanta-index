@@ -2186,9 +2186,14 @@ Current Python checks: review owner **79 passed (26.71s)**; requested timeout,
 CLI/replay and cache-source tamper selectors **15 passed (16.49s)**; proof inventory
 and local rail selectors **7 passed (1.04s)**. These are separate scopes. The Rust
 symbols unit rail was not admitted within its first 300-second bound (exit 124,
-zero tests executed); retry retains the same resource lock with a 1,200-second
-wait budget. Rust unit completion, actual cache speed and current-main Rust E2E
-must be recorded after execution, not inferred from the Python checks.
+zero tests executed). The same-lock retry was admitted after 768.223s, compiled
+in about 140s and **passed all 21 symbol units in 0.18s** (94 other library tests
+filtered). `rust-symbol-unit-result.json` binds relevant sources and test binary.
+Actual nextest collection contains 167 tests across the library, chunking and L5
+parser owners. The required authority was missing 15 existing test identities;
+it is now synchronized to the actual collected list. Collection alone does not
+prove those tests passed. Actual cache speed and current-main Rust E2E remain
+unrun; the frozen control does not measure the repaired producer.
 
 All 12 repositories now have new threshold-2, source-bound blank review forms,
 including the new TypeORM, tailscale, uvicorn and zustand pools. Their fields
