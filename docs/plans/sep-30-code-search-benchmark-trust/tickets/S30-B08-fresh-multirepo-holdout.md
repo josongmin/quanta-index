@@ -3104,3 +3104,24 @@ on main and pushed through `f5b3b55e`; unrelated dirty owner work is preserved.
   `9e27b8ba` proofs are recorded as a different source, not rebound to `08549763`.
   Remaining actual reviews, final matching proofs, host/cache/lockfile profile
   and declared NL comparator semantics are required before capture qualification.
+
+### 2026-10-04: fresh OpenGrok UID scope and retained-body replay
+
+- **VERIFIED**, a fresh native UID enumeration for all **12 repositories /
+  13,347 files** exactly matches their release manifests. Both fresh Lucene
+  snapshots match the original full-probe snapshots and runtime: **84 files /
+  136,566,270 bytes**, index SHA `38971d8ec7e83a17d3a32b2bd9fe7e8fe4087a82f8bcd7d38759b95c3ab76d6e`.
+- The original full probe's raw inventory, bracketing UID responses, all served
+  body/transport responses and release view bytes independently replayed under
+  the pinned `08549763` capture validator. Missing/duplicate UID inventories
+  and altered body bytes refused in three negative controls. Total wall time
+  was **45.261s** before final result serialization (reported script completion
+  **45.378s**); original captures and index volumes were unchanged.
+- Scope is deliberately bounded: UID lists are fresh; served body responses
+  are historical and replayed, not newly fetched for all files. Unchanged native
+  index bytes/runtime do not independently decode Lucene content terms or prove
+  every current served source body. This supplies no quality/speed ranking.
+- Artifacts: `opengrok-native-scope-replay-c_99hi7s/` under the external closeout
+  root. Command: `PYTHONPATH=/Users/songmin/Documents/code-new/quanta-index
+  .venv/bin/python <external-root>/replay.py`. **NOT_RUN**, fresh full body fetch,
+  posting decoding, product search and performance qualification.
