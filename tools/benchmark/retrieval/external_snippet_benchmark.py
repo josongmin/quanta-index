@@ -120,9 +120,10 @@ def _freeze(
     ) != len(tasks):
         raise ExternalSnippetError("duplicate external task ID or query")
     for task in tasks:
-        if set(task) != {"task_id", "query", "query_sha256"} or _sha(
-            task["query"].encode("utf-8")
-        ) != task["query_sha256"]:
+        if (
+            set(task) != {"task_id", "query", "query_sha256"}
+            or _sha(task["query"].encode("utf-8")) != task["query_sha256"]
+        ):
             raise ExternalSnippetError("external task query identity differs")
     universe = _source_checkout(repo, commit, expected_files)
     paths = set(expected_files)
@@ -229,7 +230,9 @@ def freeze_clarc(
         or blind.get("request_policy") != "natural_language_file"
         or blind.get("corpus_root") != str(dataset_root / variant)
     ):
-        raise ExternalSnippetError("CLARC blindpack differs from pinned source or default admission")
+        raise ExternalSnippetError(
+            "CLARC blindpack differs from pinned source or default admission"
+        )
     blind_tasks = blind.get("tasks")
     if not isinstance(blind_tasks, list) or len(blind_tasks) != len(tasks):
         raise ExternalSnippetError("CLARC blindpack task population differs")
@@ -335,9 +338,12 @@ def freeze_codesearchnet(
         if task_language != language:
             continue
         query_hash = _sha(query.encode("utf-8"))
-        task_id = "CSN-" + task_language.upper() + "-" + _sha(
-            (task_language + "\0" + query).encode("utf-8")
-        )[:24]
+        task_id = (
+            "CSN-"
+            + task_language.upper()
+            + "-"
+            + _sha((task_language + "\0" + query).encode("utf-8"))[:24]
+        )
         if all(row["materialization_status"] == "admitted" for row in rows):
             tasks.append({"task_id": task_id, "query": query, "query_sha256": query_hash})
             judgments[task_id] = [
@@ -363,7 +369,9 @@ def freeze_codesearchnet(
             "synthetic_file_unit": "one_file_per_commit_pinned_source_span",
             "language": language,
             "all_query_language_pairs": len(groups),
-            "language_population_tasks": sum(task_language == language for task_language, _ in groups),
+            "language_population_tasks": sum(
+                task_language == language for task_language, _ in groups
+            ),
             "incomplete_task_ids": incomplete,
             "qrels_total": sum(row["language"] == language for row in qrels),
             "qrels_materialized": sum(
@@ -398,7 +406,9 @@ def official_csn_ndcg(predicted_paths: list[str], judgments: list[dict[str, Any]
     return dcg / idcg
 
 
-def score_capture(pack: dict[str, Any], sidecar: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+def score_capture(
+    pack: dict[str, Any], sidecar: dict[str, Any], record: dict[str, Any]
+) -> dict[str, Any]:
     """Score a bound native record; this is not a substitute for full record replay."""
     if (
         pack.get("schema_version") != 3

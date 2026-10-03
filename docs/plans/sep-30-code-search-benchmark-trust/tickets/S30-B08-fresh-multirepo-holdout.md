@@ -2438,3 +2438,31 @@ including `nushell.com.006` answerability and five census exclusion inventories.
 The old summary is retained. The corrected 20-row tally remains 16 complete
 mechanical tasks and four unjudged tasks; no current proof is inferred from
 the old per-row timing fields.
+
+**First actual issuance completed:** zustand has 20 independently authored
+queries, 360 explicitly judged task/file pairs, two actual model passes and
+separate actual adjudication. Canonical `finalize_file_review_labels` passed
+and issued qrels SHA-256
+`38dd5b3867af5ed45e3b7b87676d061c965be3c7007b3b62fbc3bf65c82bcd6f`.
+All 20 tasks have sufficient answering files; five tasks had reviewer or
+adjudicator differences. There are 60 validated model calls and one preserved
+failed call. No failed response was included as a successful review.
+
+The new NL-only suite, blind pack, both annotation receipts and adjudication
+receipt passed canonical source/contract validation at frozen `36970d9f`.
+Suite SHA-256 is
+`1a901b83451323db53c63bd9a28bf8a199be8eb67456e411ecf75a264dc83ccb`.
+Queries are unchanged, sufficient-answer threshold is 2, and whole-file gold
+is used solely as a file witness. Evidence is
+`ai-review-current/zustand/nl-suite-current/validation.json`. This proves
+reviewed file-label/suite/receipt issuance; complete admission, index authority,
+fresh retrieval quality and qualified timing remain unproved.
+
+The first issuance watcher exited after qrels success because its isolated
+runtime lacked pytest imported by the existing `run.py` receipt validator.
+That failed startup log is retained. Installing the observed main pytest
+version (9.1.1) into the isolated environment allowed the actual NL validator
+to pass. `continue_actual_review_issuance_remaining.py` / session `79578`
+continues the other 11 repositories and retains the completed zustand output;
+it does not rerun or silently overwrite the issued qrels. The mechanical
+capsule execution remains session `48760`, observed PID `19595`.
