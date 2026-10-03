@@ -822,3 +822,10 @@ and mechanical no-answer task. It accepts the mixed suite and versioned review
 receipts, rejects the legacy mixed receipt, missing subjective review and
 adjudication label drift. This establishes the code contract, not human
 provenance or a complete v3 product capture.
+
+**VERIFIED, code rails:** `env -u PYTHONPATH .venv/bin/python -m pytest -q
+tools/ci/tests/test_retrieval_benchmark.py` passed 443 tests in 366.03
+seconds. The decision, benchctl and review preparation set passed 124 tests
+in 13.77 seconds. Ruff check/format and `git diff --check` passed. A complete
+v3 mixed-suite capture followed by unmocked verdict and C5 replay is still
+`NOT_RUN`.
