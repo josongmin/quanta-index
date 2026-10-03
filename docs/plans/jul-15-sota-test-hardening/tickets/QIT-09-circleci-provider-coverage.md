@@ -30,6 +30,18 @@ terminal `failure` for each context. The later `f4bc41c` main run created at
 intervening time has no observed run in this audit. This narrows the provider
 investigation without assigning a cause or attributing every earlier failure
 to the same pre-start condition.
+
+Later API v2 job detail resolves the cause for main pipeline 410 at
+`6f8feb90e7012e79fe78a45c588780eeb59ed779`: both `verify-python` job 795
+and `verify` job 796 report `free-plan-no-credits-available` and the message
+"This job has been blocked because no credits are available on your plan."
+Both have `started_at: null` and no executor. The API v3 step summary for
+these jobs only says `Task information unavailable`; the v2 detail supplies
+the specific rejection. The workflow ended in about one second. This confirms
+credit blocking for pipeline 410, without assigning the same cause to every
+earlier pre-start failure. The Plan Usage balance and reset date were not
+observed in the browser.
+
 The [public CircleCI status page](https://status.circleci.com/) listed no
 Linux Machine incident for that window when checked on 2026-10-03; its
 absence cannot exclude an account-specific or unposted provider failure.
@@ -43,8 +55,9 @@ quanta-index PR head `c90d32d0` repeated the pre-start failure at 06:29 UTC
 (`3bb3ed25`), with both GitHub contexts still `pending`. A repository-only
 source or config fault does not explain the cross-project symptom; organization
 credit/entitlement, shared machine execution and provider scheduling remain
-unresolved candidates. The inspected CircleCI run and job API responses do
-not expose the billing balance or a more specific task rejection reason.
+unresolved candidates for those earlier runs. Their inspected run and job API
+responses do not expose the billing balance or a more specific task rejection
+reason.
 
 Separately, `just rust-module-cycles` failed on two IPC cycles at that commit.
 Local `just rust-policy` replay also exposed stale ingest enum inventory paths,
@@ -98,9 +111,11 @@ The hosted and release gates above remain open until their own evidence exists.
 
 ## Former Actions-only coverage
 
-The current CircleCI regular job covers format, clippy, full-workspace nextest
-and policy/tooling checks. Its explicit heavy job covers nextest and four
-bounded fuzz targets. The following are **not** inherited from disabled GitHub
+The current CircleCI regular job defines format, clippy, full-workspace nextest,
+MSRV no-run, Rustdoc, cargo-deny, cargo-machete, bench compile, pre-commit,
+and policy/tooling checks. These additions still need an exact-source hosted
+run; static configuration is not execution proof. Its explicit heavy job covers
+nextest and four bounded fuzz targets. The following are **not** inherited from disabled GitHub
 Actions. Each owner must either port a reachable CircleCI rail with exact-source
 output or run the registered local/qualified-host rail and state its narrower
 authority. A local result must not be labeled hosted CI.
@@ -112,7 +127,7 @@ authority. A local result must not be labeled hosted CI.
 | Mutation and fuzz coverage | QIT-07 / query and correctness owners | **Required for selected risk owners.** Record target selection, thresholds, survivor decisions and minimized inputs. The four CircleCI heavy fuzz targets alone do not close the QIT-07 mutation/fuzz matrix. |
 | Guarded public API and changed-line coverage | contract/SDK and correctness owners | **Required when the respective public-surface or selected production-line policy applies.** `rust-public-api` and the former PR 90% changed-line coverage job are absent from CircleCI; select exact-source local/qualified-host rails or port them before claiming those gates. |
 | Miri, cargo-careful and ASan | contract/core and IPC owners | **Conditional diagnostic evidence.** Select a bounded target, platform and claim explicitly; their absence is `NOT_RUN` when selected, not a general release failure by itself. |
-| Rustdoc, bench build, LLVM lines, cargo-machete/udeps | tools CI and affected crate owners | **Unassigned as mandatory CI gates.** Decide each gate's owner and promotion scope; retain the command as local diagnostics until a selected release or PR contract makes it required. CircleCI's Rust 1.92 nextest/clippy does not prove the former `--all-targets` MSRV no-run target selection. |
+| LLVM lines and cargo-udeps | tools CI and affected crate owners | **Unassigned as mandatory CI gates.** Decide each gate's owner and promotion scope; retain the command as local diagnostics until a selected release or PR contract makes it required. Rustdoc, bench build, cargo-machete and the exact Rust 1.92 `--all-targets` MSRV no-run command are now in the regular CircleCI definition but require a passing hosted run. |
 | Pinned model parity | embedding owner | **Required before an encoder-parity claim** under SEP-26-002. Run the exact pinned model/reference pair; bind artifact bytes and model identity. |
 
 Closure requires observed terminal runs and artifacts on the selected final
