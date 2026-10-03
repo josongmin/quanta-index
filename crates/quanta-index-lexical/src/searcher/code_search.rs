@@ -270,6 +270,17 @@ impl CodeSearchPlan {
             typo: None,
         })
     }
+
+    fn auto_typo_on_empty(&self) -> Option<&str> {
+        let [term] = self.terms.as_slice() else {
+            return None;
+        };
+        (self.case == CaseMode::Folded
+            && matches!(term.scope, Scope::Both)
+            && term.regex.is_none()
+            && valid_code_search_typo_identifier(&term.text))
+        .then_some(term.text.as_str())
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1832,6 +1843,22 @@ impl TantivySearcher {
                 budget,
             )?;
             ranked.push((candidate, scored.primary));
+        }
+        // A bare identifier with no literal file match may be misspelled.
+        // Preserve every exact result and its cursor order; only an empty
+        // result takes the existing bounded, source-verified OSA1 route.
+        if ranked.is_empty()
+            && let Some(identifier) = parsed.auto_typo_on_empty()
+        {
+            return self.search_code_files_typo(
+                authority,
+                query,
+                identifier,
+                parsed.case,
+                constraints,
+                page,
+                budget,
+            );
         }
         ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
         let after = self.page_boundary(page)?;
