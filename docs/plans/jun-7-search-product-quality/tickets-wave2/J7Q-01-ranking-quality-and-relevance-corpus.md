@@ -514,6 +514,30 @@ Owners: `searcher/code_search.rs`, `searcher/port.rs`,
   is refused with this mode: query timers exclude diagnostics, but whole-process
   CPU/RSS includes them. Separate performance captures are required. Deadlines
   are checked between SDK calls; the SDK I/O timeout bounds an individual call.
+- The public pair-spec schema now admits this optional diagnostic configuration
+  for both ordinary file policies and rejects unsupported routes, extra/invalid
+  limits and speed claims. The exact-content profile is included in the schema.
+- Actual native artifact replay exposed a source-binding omission: ordinary
+  `code_search_file` records did not emit the capture's source repository and
+  revision, although those values were available to the record producer. The
+  producer now emits the pair. The evaluator checks candidate/capture identity;
+  partial pairs are refused. Historical rows remain replayable without the pair,
+  but cannot qualify a new complete-pool study, including zero-hit tasks.
+
+### Development input refresh on 2026-10-04
+
+The historical 1,196-query v1 declaration oracle suite is not accepted by the
+current v3 oracle. Changing only the contract string also failed canonical gold
+validation; neither refusal was weakened. A new suite and blind pack were
+derived from the same 99 immutable Gin files and the same 1,196 ordered queries
+in `/private/tmp/qi-rank-study-gin-1196-20261004-3l7aoaqo/`.
+The file qrels changed for 15 tasks; canonical source-line gold changed as well.
+The current independent `census_checkers/go_checker.go` verified all 1,196 file
+qrels over 99 files using Go's AST parser. No human relevance review is claimed.
+This exposed declaration dataset is development-only, diagnostic and separate
+from historical scores and any future unexposed holdout. Original input and
+capture files were not changed. Fresh native execution is pending the final
+source-pin runner E2E and uses a new state/output root.
 
 ### Local checks
 
