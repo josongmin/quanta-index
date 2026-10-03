@@ -155,6 +155,7 @@ def validate_repository_disjoint_policy(value: object) -> dict:
             "min_cluster_lower_95",
             "confidence_method",
             "critical_strata",
+            "track_min_delta",
             "resource_limits",
         },
         "repository-disjoint decision policy",
@@ -223,8 +224,13 @@ def validate_repository_disjoint_policy(value: object) -> dict:
         strata[stratum] = strata.get(stratum, 0) + 1
     if names != sorted(set(names)) or any(count < 2 for count in strata.values()):
         raise DecisionError("repository-disjoint holdout names or strata are invalid")
+    tracks = _object(
+        policy["track_min_delta"], {"objective", "reviewed"}, "repository-disjoint tracks"
+    )
+    for name, minimum in tracks.items():
+        _number(minimum, f"repository-disjoint track {name} minimum")
     single = {
-        **policy,
+        **{key: value for key, value in policy.items() if key != "track_min_delta"},
         "schema_version": 1,
         "repository_scope": {
             "kind": "single_repository",
@@ -242,6 +248,26 @@ def validate_repository_disjoint_policy(value: object) -> dict:
     if any(("repository", name) not in required_repo_strata for name in names):
         raise DecisionError("repository-disjoint critical strata omit a holdout repository")
     return policy
+
+
+def _repository_disjoint_track(task: dict) -> str:
+    """Classify positive gold using the validated suite's label authority."""
+    if task.get("source_oracle") is not None:
+        if (
+            task.get("judgment_policy") != evaluator.SOURCE_ORACLE_JUDGMENT_POLICY
+            or "label_review" in task
+        ):
+            raise DecisionError("repository-disjoint objective label authority is invalid")
+        return "objective"
+    review = task.get("label_review")
+    if (
+        isinstance(review, dict)
+        and review.get("assessment") in evaluator.LABEL_REVIEW_ASSESSMENTS[1:]
+        and task.get("judgment_policy") == evaluator.COMPLETE_JUDGMENT_POLICY
+        and ("file_judgments" in task or "declaration_judgments" in task)
+    ):
+        return "reviewed"
+    raise DecisionError("repository-disjoint positive task lacks objective or reviewed labels")
 
 
 def _repository_disjoint_metric_gate(
@@ -269,6 +295,7 @@ def _repository_disjoint_metric_gate(
     for name in names:
         suite, report = suites[name], reports[name]
         task_by_id = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
+        repository_tracks = set()
         for task_id, family_id, category, delta in evaluator.paired_query_family_rows(
             suite,
             report,
@@ -276,9 +303,14 @@ def _repository_disjoint_metric_gate(
             policy["comparison"]["candidate_route"],
             require_graded=True,
         ):
+            task = task_by_id[task_id]
+            track = _repository_disjoint_track(task)
+            repository_tracks.add(track)
             family_rows.append(
-                (name, family_id, category, evaluator._task_language(task_by_id[task_id]), delta)
+                (name, family_id, category, evaluator._task_language(task), track, delta)
             )
+        if repository_tracks != {"objective", "reviewed"}:
+            raise DecisionError("repository-disjoint objective or reviewed track is missing")
         comparison = report["rank_metrics"]["comparison"]
         negative_count = sum(
             task["split"] == "eval" and not task["gold"] for task in suite["tasks"]
@@ -312,7 +344,7 @@ def _repository_disjoint_metric_gate(
     critical = {(row["axis"], row["name"]) for row in policy["critical_strata"]}
     observed_strata = {
         (axis, value)
-        for _repository, _family, category, language, _delta in family_rows
+        for _repository, _family, category, language, _track, _delta in family_rows
         for axis, value in (("category", category), ("language", language))
     }
     if not observed_strata <= critical:
@@ -320,12 +352,14 @@ def _repository_disjoint_metric_gate(
 
     def mean_for(axis: str, value: str) -> tuple[float, int]:
         groups = {}
-        for repository, family, category, language, delta in family_rows:
+        for repository, family, category, language, track, delta in family_rows:
             if axis == "repository" and repository != value:
                 continue
             if axis == "category" and category != value:
                 continue
             if axis == "language" and language != value:
+                continue
+            if axis == "track" and track != value:
                 continue
             groups.setdefault(repository, {}).setdefault(family, []).append(delta)
         if not groups:
@@ -355,6 +389,14 @@ def _repository_disjoint_metric_gate(
             raise DecisionError(f"repository-disjoint critical stratum {axis}:{name} is sparse")
         if observed < row["min_delta"]:
             reasons.append(f"critical_stratum_regression:{axis}:{name}")
+    track_summary = {}
+    for name, minimum in policy["track_min_delta"].items():
+        observed, coverage = mean_for("track", name)
+        if coverage != len(names):
+            raise DecisionError(f"repository-disjoint {name} track coverage is incomplete")
+        track_summary[name] = {"repository_count": coverage, "mean_delta": observed}
+        if observed < minimum:
+            reasons.append(f"track_regression:{name}")
     measurements = {}
     for key in ("query_p95_ms", "peak_rss_bytes", "index_bytes"):
         values = [receipt["measurements"].get(key) for receipt in receipts]
@@ -380,6 +422,7 @@ def _repository_disjoint_metric_gate(
         "primary_delta": primary,
         "repository_lower_95": lower,
         "measurements": measurements,
+        "tracks": track_summary,
     }
 
 
