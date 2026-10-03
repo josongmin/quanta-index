@@ -13,10 +13,23 @@ ended `failed` in about one second. Neither `verify` nor `verify-python` reached
 checkout; job detail reported `Task information unavailable` with an unset
 start time. GitHub kept both `ci/circleci` commit contexts `pending` after the
 CircleCI workflow ended, including on `549f83f7`. `circleci config validate` accepted the config;
-project and organization `is_running_disabled` were false, and both GitHub App
-triggers were enabled. These observations locate the first failure before
+project and organization `is_running_disabled` were false, project
+`can_set_github_status` was true, and both GitHub App triggers were enabled.
+The draft PR head `3a805980` repeated the same one-second pre-start failure
+and pending contexts. These observations locate the first failure before
 repository commands. They do **not** identify exhausted credits, executor
 entitlement, provider scheduling, or GitHub status delivery as the cause.
+CircleCI's [Ubuntu 24.04 image catalog](https://circleci.com/developer/machine/image/ubuntu-2404)
+still lists the configured `2026.05.1` tag, so a removed image tag is not
+supported by the available evidence.
+
+The observed transition is bounded: the `22320380` main run created at
+2026-10-02 07:20 UTC ran both jobs for over five minutes and GitHub recorded
+terminal `failure` for each context. The later `f4bc41c` main run created at
+19:46 UTC ended in one second, with both contexts still `pending`. The
+intervening time has no observed run in this audit. This narrows the provider
+investigation without assigning a cause or attributing every earlier failure
+to the same pre-start condition.
 
 Separately, `just rust-module-cycles` failed on two IPC cycles at that commit.
 Once jobs start, `verify-python` reaches this check through `just rust-policy`.
@@ -24,14 +37,17 @@ The source failure and pre-start hosted failure require separate closure.
 
 ## Execution and status repair
 
-1. Inspect CircleCI Plan Overview/Usage for the exact organization, job-page
+1. Inspect [CircleCI Plan Overview/Usage](https://circleci.com/docs/guides/plans-pricing/credits/)
+   for the exact organization, job-page
    error banner, machine executor entitlement and provider incident details.
    Record the observed cause and action; do not infer credit exhaustion from
    the one-second failure alone.
 2. On one exact commit, observe checkout and command output for both regular
    jobs. Confirm that GitHub's two `ci/circleci` contexts reach terminal states
-   for the same SHA. A CircleCI `failed` workflow with GitHub `pending` remains
-   a status-delivery defect, even when the build itself fails correctly.
+   for the same SHA. A CircleCI `failed` workflow with GitHub `pending` is an
+   unresolved status-completion gap. Determine whether the provider treats
+   pre-start cancellation as a skipped job or failed job before assigning the
+   fault to the GitHub integration.
 3. After source fixes, require both jobs to pass and validate the emitted
    test-authority artifact for that SHA. No local check, static workflow guard,
    earlier SHA, or manually posted commit status substitutes for the hosted run.
@@ -50,13 +66,15 @@ Actions. Each owner must either port a reachable CircleCI rail with exact-source
 output or run the registered local/qualified-host rail and state its narrower
 authority. A local result must not be labeled hosted CI.
 
-| Coverage | Owner | Decision needed before claim |
+| Coverage | Owner | Requirement and closure |
 | --- | --- | --- |
-| Proof-bundle dispatch and P00 hosted manifest | release-proof / tools CI | Required for the S21-13 release aggregate; port or retain `NOT_RUN` for the hosted slot and execute the registered exact-pair proof independently. |
-| Miri and cargo-careful | contract/core owner | Select bounded targets and host/toolchain; record result when the release contract selects this evidence. |
-| TSan and ASan | semantic/searchd and IPC owners | Bind target, platform and race/memory-safety claim; QIT-04's native race-detector evidence remains open until executed. |
-| Mutation and unused-dependency checks | QIT-07 / tools CI | Select owner targets, survivor policy and dependency scope; do not infer coverage from configured jobs. |
-| Pinned model parity | embedding owner | Run the exact pinned model/reference pair before a parity claim; artifact bytes and model identity must be bound. |
+| Proof-bundle dispatch and P00 hosted manifest | release-proof / tools CI | **Required for S21-13 release aggregate.** CircleCI's P00 owner tests do not emit the former hosted manifest. Port the exact-pair bundle gate or keep the hosted slot `NOT_RUN` and execute the registered proof on its selected qualified host. |
+| Native race detector | semantic/searchd owner | **Required by QIT-04.** Select the affected concurrent owner targets and native host; TSan can supply detector evidence but does not replace the deterministic linearization oracle. |
+| Mutation and fuzz coverage | QIT-07 / query and correctness owners | **Required for selected risk owners.** Record target selection, thresholds, survivor decisions and minimized inputs. The four CircleCI heavy fuzz targets alone do not close the QIT-07 mutation/fuzz matrix. |
+| Guarded public API and changed-line coverage | contract/SDK and correctness owners | **Required when the respective public-surface or selected production-line policy applies.** `rust-public-api` and the former PR 90% changed-line coverage job are absent from CircleCI; select exact-source local/qualified-host rails or port them before claiming those gates. |
+| Miri, cargo-careful and ASan | contract/core and IPC owners | **Conditional diagnostic evidence.** Select a bounded target, platform and claim explicitly; their absence is `NOT_RUN` when selected, not a general release failure by itself. |
+| Rustdoc, bench build, LLVM lines, cargo-machete/udeps | tools CI and affected crate owners | **Unassigned as mandatory CI gates.** Decide each gate's owner and promotion scope; retain the command as local diagnostics until a selected release or PR contract makes it required. CircleCI's Rust 1.92 nextest/clippy does not prove the former `--all-targets` MSRV no-run target selection. |
+| Pinned model parity | embedding owner | **Required before an encoder-parity claim** under SEP-26-002. Run the exact pinned model/reference pair; bind artifact bytes and model identity. |
 
 Closure requires observed terminal runs and artifacts on the selected final
 source, plus explicit outcomes for every selected coverage row. The absence of

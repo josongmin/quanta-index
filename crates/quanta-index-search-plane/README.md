@@ -1,9 +1,11 @@
 # Quanta Index search plane
 
 The daemon's ingest, query and control authority. It coordinates durable
-generation state, lexical and semantic adapters, activation, retention and
-readiness. The SDK and IPC crates own client and transport behavior; this
-crate owns the state transitions after typed admission.
+generation state, adapter ports, activation, retention and readiness. The
+runtime composes concrete lexical and semantic adapters; this crate has no
+normal dependency on either adapter. The SDK and IPC crates own client and
+transport behavior; this crate owns the state transitions after typed
+admission.
 
 Start at [`src/lib.rs`](src/lib.rs) for the exported dispatcher surfaces.
 `ingest_dispatcher` applies typed producer batches, `query_dispatcher`
