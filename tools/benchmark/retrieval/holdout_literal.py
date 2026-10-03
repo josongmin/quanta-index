@@ -100,10 +100,20 @@ def _derive_prepared(prepared: holdout_c4._Prepared) -> tuple[dict, dict, dict]:
                 {"task_id": task["task_id"], "reason": "raw_indexed_file_membership_differs"}
             )
             continue
+        try:
+            for prior in selected:
+                evaluator.check_query_near_duplicates(
+                    [
+                        (prior["task_id"], prior["query"]),
+                        (task["task_id"], task["query"]),
+                    ]
+                )
+        except evaluator.EvidenceError:
+            excluded.append({"task_id": task["task_id"], "reason": "query_near_duplicate"})
+            continue
         selected.append(task)
     if not selected:
         raise ValueError("literal capsule has no admitted exact-content task")
-    evaluator.check_query_near_duplicates([(task["task_id"], task["query"]) for task in selected])
     rows = []
     for task in selected:
         query = task["query"]

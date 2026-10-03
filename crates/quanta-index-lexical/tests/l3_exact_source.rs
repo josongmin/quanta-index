@@ -481,6 +481,54 @@ fn symbol_components_match_one_ordered_name_and_page_distinct_files() -> TestRes
 }
 
 #[test]
+fn symbol_components_refuse_incomplete_in_scope_source() -> TestResult {
+    let complete = scope(
+        "source-a",
+        "complete.rs",
+        &[("clean", "cleanUp", "C::cleanUp", None)],
+    )?;
+    let mut incomplete = scope("source-a", "unparsed.rs", &[])?;
+    incomplete.coverage.symbols = SymbolCoverage::ParseFailed;
+    let (_dir, searcher) = fixture_with_scopes(vec![complete, incomplete])?;
+    let mut query = code_query(&["clean up"], false);
+    query.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.symbol_components".into(),
+        args: vec![LqPredicateArg::RawString("clean up".into())],
+    });
+    let error = searcher
+        .search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )
+        .expect_err("incomplete symbol authority must not look like complete search");
+    assert!(matches!(
+        error,
+        CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SymbolCoverageIncomplete,
+            ..
+        }
+    ));
+    let constraints = QueryConstraintSetV1 {
+        language_any_of: BTreeSet::new(),
+        repo_relative_path_exact: Some(
+            quanta_index_contract::ExactRepoRelativePathV1::new("complete.rs")
+                .map_err(str::to_string)?,
+        ),
+    };
+    let page = searcher.search_constrained(
+        &query,
+        &constraints,
+        &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(page.exact_total, Some(1));
+    assert_eq!(page.candidates[0].repo_relative_path.as_str(), "complete.rs");
+    Ok(())
+}
+
+#[test]
 fn default_bare_identifier_uses_osa1_only_after_empty_literal_search() -> TestResult {
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("near.rs", "load_json", 4)?,

@@ -208,13 +208,36 @@ def test_literal_adapter_excludes_invalid_query_without_backfilling(tmp_path, mo
     public = copy.deepcopy(blind["tasks"][0])
     public.update(task_id="toy.lit.002", query_family_id="toy.lit.002", query=query)
     blind["tasks"].append(public)
+    duplicate_query = "Alpha() {}"
+    duplicate = copy.deepcopy(gold["tasks"][0])
+    duplicate.update(
+        task_id="toy.lit.003", query_family_id="toy.lit.003", query=duplicate_query
+    )
+    duplicate_start = raw.index(duplicate_query.encode())
+    duplicate["labels"] = [
+        {
+            "path": "main.go",
+            "file_sha256": hashlib.sha256(raw).hexdigest(),
+            "start_byte": duplicate_start,
+            "end_byte": duplicate_start + len(duplicate_query.encode()),
+            "kind": "literal_occurrence",
+            "local_name": None,
+        }
+    ]
+    gold["tasks"].append(duplicate)
+    duplicate_public = copy.deepcopy(blind["tasks"][0])
+    duplicate_public.update(
+        task_id="toy.lit.003", query_family_id="toy.lit.003", query=duplicate_query
+    )
+    blind["tasks"].append(duplicate_public)
     _resign(capsule, "gold.json", gold)
     _resign(capsule, "blind.json", blind)
 
     suite, pack, report = holdout_literal.derive(release, capsule, checkout)
     assert report["selected"] == 1
     assert report["excluded"] == [
-        {"task_id": "toy.lit.002", "reason": "outside_literal_query_contract"}
+        {"task_id": "toy.lit.002", "reason": "outside_literal_query_contract"},
+        {"task_id": "toy.lit.003", "reason": "query_near_duplicate"},
     ]
     assert len(suite["tasks"]) == len(pack["tasks"]) == 1
 
