@@ -262,6 +262,21 @@ It runs the existing source/pack/record validation, retains abstentions as empty
 candidate lists, rejects chunk collapse and changed inputs, and exports only
 paths and file hashes. Add this retrieval pool to the existing diverse pools
 and call `holdout_review.prepare`/`write` again; both forms remain unjudged.
+
+After actual completion, `holdout_review.finalize_file_review_labels` accepts
+both original forms, a slot-1 adjudication form with a third distinct identity,
+and each task's declared `natural_language_file_search` contract. It reuses the
+frozen form/source validators, preserves the answerability threshold, and
+requires a sufficiently graded pooled file whenever any final or original
+review claims an answer. Missing judgments, changed text/hashes/thresholds,
+wrong units and other request modes are refused. Adjudicator overrides remain
+marked ambiguous. Its task-label output uses existing file judgments and
+whole-file gold witnesses; those witnesses are not declaration/context spans.
+Merge the labels into a new suite and call `evaluator.validate_suite` to issue
+a new blind-pack commitment. Original captured records retain their original
+commitment. The function does not attest human provenance, reviewer independence,
+pool execution or benchmark qualification; do not reuse a one-off finalizer
+that silently drops `answerability_min_grade`.
 Keep its capture custody in the owner area. Revised labels require a new suite
 commitment and capture; never rebind an old runner record to new qrels.
 
