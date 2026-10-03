@@ -2412,3 +2412,29 @@ Concurrent C5 pair processing was observed alive (runner and daemon processes),
 with 27/48 cells recorded at observation. The old external ledger's `running`
 string does not prove a live process. Qualified performance remains **NOT_RUN**
 while builds, indexing and these diagnostic jobs contend on this host.
+
+**Review failure and bounded recovery:** zustand task 18, Sonnet pass, returned
+one wrong frozen file SHA. The original process exited with a typed source
+binding failure; its raw response and `invalid.json` are retained. The resumed
+execution revalidates terminal successful calls against their raw model output,
+model identity, input/decision hashes and exact source quotes. It reissues only
+the failed call in a fresh retry directory, with JSON-schema constants binding
+each allowed path/SHA pair. The real retry passed; no grade or identity was
+repaired by hand. `zustand-resume-precommit.json` binds the old and resumed
+scripts. Process `49652` / session `57884` continues tasks 18–20. The other
+actual review process remains `93265` / session `35655`.
+
+`continue_actual_review_issuance.py` (session `21859`) waits on those specific
+live processes and requires all 20 actual completed forms for each of the three
+roles before invoking canonical label issuance and NL-only suite/receipt
+validation. A partial form or terminal failed review does not become qrels.
+Its outputs are fresh, external, source-pinned, and explicitly unqualified.
+
+The v5 merged audit also carried stale fields from the old Nushell rows despite
+using the corrected result's label state. The new
+`v5-remaining-final-source-audit-corrected.json` reads every task's actual gold
+document and binds each document SHA. Six stale fields were corrected,
+including `nushell.com.006` answerability and five census exclusion inventories.
+The old summary is retained. The corrected 20-row tally remains 16 complete
+mechanical tasks and four unjudged tasks; no current proof is inferred from
+the old per-row timing fields.
