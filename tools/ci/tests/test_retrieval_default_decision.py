@@ -84,11 +84,19 @@ def test_repository_disjoint_policy_requires_full_frozen_roster(tmp_path):
         decision.validate_repository_disjoint_policy(policy)
 
 
-def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, tmp_path):
+@pytest.mark.parametrize("file_policy", [False, True])
+def test_repository_disjoint_bundle_replays_policy_bound_captures(
+    monkeypatch, tmp_path, file_policy
+):
     split_path = tmp_path / "split.json"
     split_path.write_text("{}")
     split_sha = hashlib.sha256(split_path.read_bytes()).hexdigest()
     policy = repository_disjoint_policy(tmp_path, split_sha)
+    if file_policy:
+        policy["schema_version"] = 3
+        policy["metric_scope"] = "scored_distinct_file"
+        policy["request_mode"] = "default_file_search"
+        policy["comparison"]["primary_metric"] = "file_ndcg_at_10"
     captures = []
     for row in policy["repository_scope"]["holdout"]:
         name = row["repository"]
@@ -127,6 +135,16 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
                 },
             ],
         }
+        if file_policy:
+            for task in suite["tasks"]:
+                task["evaluation_contract"] = {
+                    "request_mode": "default_file_search",
+                    "gold_unit": "distinct_file",
+                    "result_unit": "distinct_file",
+                }
+                task["file_judgments"] = task.get("file_judgments", [])
+                if "source_oracle" in task:
+                    task["source_oracle"]["unit"] = "distinct_file"
         suite_path = root / "suite.json"
         suite_path.write_bytes(ev.canonical(suite))
         row["suite_sha256"] = hashlib.sha256(suite_path.read_bytes()).hexdigest()
@@ -135,24 +153,36 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
             "suite_commitment_sha256": ev.digest(ev.canonical(suite)),
             "repository_commit": row["repository_commit"],
             "graded": True,
-            "rank_metric_version": "rb-rank-context-density-first-coverage",
+            "rank_metric_version": (
+                "file-judgments-complete-v1"
+                if file_policy
+                else "rb-rank-context-density-first-coverage"
+            ),
+            **(
+                {
+                    "report_scope": "paired_complete_scored_file_evidence_v1",
+                    "status": "evidence_unqualified",
+                }
+                if file_policy
+                else {}
+            ),
             "rank_metrics": {
                 "comparison": {
                     "baseline": "semble-hybrid",
                     "candidate": "hybrid",
-                    "primary_metric": "ndcg_at_10",
+                    "primary_metric": policy["comparison"]["primary_metric"],
                     "sample_count": 2,
                     "primary_delta": 0.5,
                     "no_answer_abstention_delta": {"sample_count": 1, "mean_delta": 0.0},
                 }
             },
             "per_query": [
-                {"task_id": "T1", "route": "semble-hybrid", "ndcg_at_10": 0.25},
-                {"task_id": "T1", "route": "hybrid", "ndcg_at_10": 0.75},
+                {"task_id": "T1", "route": "semble-hybrid", "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.25},
+                {"task_id": "T1", "route": "hybrid", "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.75},
                 {"task_id": "T2", "route": "semble-hybrid", "status": "ok"},
                 {"task_id": "T2", "route": "hybrid", "status": "ok"},
-                {"task_id": "T3", "route": "semble-hybrid", "ndcg_at_10": 0.25},
-                {"task_id": "T3", "route": "hybrid", "ndcg_at_10": 0.75},
+                {"task_id": "T3", "route": "semble-hybrid", "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.25},
+                {"task_id": "T3", "route": "hybrid", "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.75},
             ],
         }
         (root / "report.json").write_bytes(ev.canonical(report))
@@ -293,7 +323,9 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
     result = decision.replay_repository_disjoint_bundle(bundle_path)
     assert result["status"] == "replayed_no_default_decision"
     assert result["product_default_decision"] is False
-    assert result["metric_scope"] == "context_span_density"
+    assert result["metric_scope"] == (
+        "scored_distinct_file" if file_policy else "context_span_density"
+    )
     assert (result["repository_count"], result["paired_sample_count"]) == (12, 24)
     assert result["repository_cluster_ci"]["mean"] == 0.5
     assert result["metric_gate"] == {
