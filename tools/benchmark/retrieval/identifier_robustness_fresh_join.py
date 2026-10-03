@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import subprocess
 import sys
 from collections import defaultdict
@@ -45,6 +46,7 @@ PAIR_CUSTODY_FIELDS = (
     "native_searchd_sha256",
     "native_merge_validator_sha256",
     "external_source_commit",
+    "external_prebind_sha256",
 )
 EXTERNAL_PRODUCER_FILES = {
     "producer": "tools/benchmark/retrieval/live_lexical_external.py",
@@ -118,6 +120,46 @@ def _bound_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _external_row_shape(raw: dict[str, Any], product: str, task_id: str) -> None:
+    """Reject malformed replay rows before accessing product-specific fields."""
+    where = product + "/" + task_id
+    require(
+        raw.get("task_id") == task_id
+        and raw.get("lane") == "symbol_only"
+        and raw.get("status", "success") == "success"
+        and isinstance(raw.get("submitted_query"), str)
+        and isinstance(raw.get("gold_paths"), list)
+        and all(isinstance(path, str) for path in raw["gold_paths"])
+        and type(raw.get("file_hit_at_10")) is bool
+        and type(raw.get("elapsed_ms")) in (int, float)
+        and math.isfinite(raw["elapsed_ms"])
+        and raw["elapsed_ms"] >= 0,
+        "malformed external task/query/status fields: " + where,
+    )
+    paths = raw.get("paths") if product == "cs" else raw.get("file_paths_top_10")
+    require(
+        isinstance(paths, list)
+        and len(paths) <= 10
+        and all(isinstance(path, str) for path in paths),
+        "malformed external result paths: " + where,
+    )
+    if product == "cs":
+        require(type(raw.get("exit_code")) is int, "malformed cs exit status: " + where)
+    else:
+        require(
+            type(raw.get("http_status")) is int and "error" in raw,
+            "malformed external HTTP status: " + where,
+        )
+        if product == "sourcegraph":
+            require(
+                isinstance(raw.get("request_query"), str)
+                and type(raw.get("out_of_manifest_match_count")) is int,
+                "malformed Sourcegraph request profile: " + where,
+            )
+        else:
+            require(isinstance(raw.get("field"), str), "malformed OpenGrok field: " + where)
+
+
 def _external_producer_sources(source_checkout: Path, source_head: str) -> dict[str, str]:
     """Bind live producer bytes to tracked blobs at the claimed frozen HEAD."""
     head = subprocess.run(
@@ -138,6 +180,64 @@ def _external_producer_sources(source_checkout: Path, source_head: str) -> dict[
         require(current == blob, "external producer source differs from frozen HEAD: " + relative)
         hashes[name] = hashlib.sha256(current).hexdigest()
     return hashes
+
+
+def _global_prebind(
+    external_root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    producer_sources: dict[str, str],
+) -> str:
+    """Bind the global capture's full-release preflight to its final ledger."""
+    if manifest.get("schema") != "c5_osa1_external_global12_fresh_v1":
+        return "not_applicable_legacy"
+    path = external_root / "prebind.json"
+    prebind = read(path)
+    bound = ledger.get("bound_release")
+    require(
+        isinstance(prebind, dict)
+        and isinstance(bound, dict)
+        and set(prebind)
+        == {
+            "status",
+            "source_head",
+            "driver_sha256",
+            "python_executable_sha256",
+            "gold_receipt_sha256",
+            "release_path",
+            "release_digest",
+            "full_validate_wall_seconds",
+            "regular_file_count",
+            "regular_files_digest_sha256",
+            "validator_owner_sha256",
+        }
+        and bound == {**prebind, "prebind_sha256": sha(path), "rechecked_after_projection": True},
+        "global external release prebind or ledger differs",
+    )
+    require(
+        prebind["status"] == "full_release_validated_before_global_projection"
+        and prebind["source_head"]
+        == manifest["source_head"]
+        == manifest["external_collector_runtime"]["source_head"]
+        and prebind["release_path"] == manifest["release_path"]
+        and prebind["release_digest"] == manifest["release_digest"]
+        and prebind["driver_sha256"]
+        == manifest["driver_sha256"]
+        == sha(external_root / "run_external.py")
+        and prebind["python_executable_sha256"]
+        == manifest["external_collector_runtime"]["python_executable_sha256"]
+        and prebind["gold_receipt_sha256"] == sha(Path(manifest["gold_receipt_path"]))
+        and prebind["validator_owner_sha256"] == producer_sources["corpus_release"]
+        and type(prebind["regular_file_count"]) is int
+        and prebind["regular_file_count"] > 0
+        and type(prebind["full_validate_wall_seconds"]) in (int, float)
+        and math.isfinite(prebind["full_validate_wall_seconds"])
+        and prebind["full_validate_wall_seconds"] >= 0
+        and isinstance(prebind["regular_files_digest_sha256"], str)
+        and len(prebind["regular_files_digest_sha256"]) == 64,
+        "global external prebind source, release, or runtime differs",
+    )
+    return sha(path)
 
 
 def _require_default_profiles(
@@ -589,11 +689,19 @@ def _external_records(
             == sha(rows_path),
             "external raw row hash differs: " + repo + "/" + product,
         )
-        rows = scoring._unique(_bound_jsonl(rows_path), "task_id", repo + "/" + product)
+        raw_rows = _bound_jsonl(rows_path)
+        ids = [row.get("task_id") for row in raw_rows]
+        require(
+            all(isinstance(task_id, str) and task_id for task_id in ids)
+            and len(ids) == len(set(ids)),
+            "external task ID is missing or duplicated: " + repo + "/" + product,
+        )
+        rows = dict(zip(ids, raw_rows, strict=True))
         require(set(rows) == set(tasks), "external task coverage differs: " + repo + "/" + product)
         product_rows: dict[str, dict[str, Any]] = {}
         for task_id, raw in rows.items():
             task = tasks[task_id]
+            _external_row_shape(raw, product, task_id)
             require(
                 raw["submitted_query"] == task["query"]
                 and raw["lane"] == "symbol_only"
@@ -611,8 +719,19 @@ def _external_records(
                 )
             if product == "opengrok":
                 require(raw["field"] == "full", "OpenGrok default full field differs")
+            result_paths = raw["paths"] if product == "cs" else raw["file_paths_top_10"]
+            require(
+                len(result_paths) == len(set(result_paths))
+                and all(path in universe for path in result_paths),
+                "external result paths differ from file universe: "
+                + repo
+                + "/"
+                + product
+                + "/"
+                + task_id,
+            )
             paths = scoring._top10(
-                raw["paths"] if product == "cs" else raw["file_paths_top_10"],
+                result_paths,
                 universe,
                 repo + "/" + product + "/" + task_id,
             )
@@ -621,6 +740,7 @@ def _external_records(
                 if product == "cs"
                 else raw["http_status"] == 200 and raw["error"] is None
             )
+            require(eligible, "verified external row reports query failure: " + repo + "/" + product + "/" + task_id)
             require(
                 bool(scoring._score(paths, task["gold"])["hit_at_10"]) == raw["file_hit_at_10"],
                 "external recorded hit differs: " + repo + "/" + product + "/" + task_id,
