@@ -1900,3 +1900,34 @@ replacement C4 receipt is pending. **VERIFIED:** C4 cause, focused and full
 unit tests, source equivalence for the external adapter. **FAILED:** original
 C4 v8 capture. **NOT_RUN:** replacement C4 result verification and all scored
 C5 product cells.
+
+## Literal v9 independent replay and C4 source-identity failure (2026-10-03)
+
+The second C4 run from clean `f2aa7d82` also failed, after 1,078.928 seconds.
+Its traceback and failed receipt are under
+`/private/tmp/qi-c5-c4-f2aa7d82-20261003/`. This failure is a different
+boundary: the v8 gold capsule binds `gold_oracle.py` at clean `9397c1b1`,
+while `f2aa7d82` includes a formatting-only change to that file. The
+source-derived capsule validator rejected the changed producer SHA in
+`identity.json`. No C4 matrix or product score was published. A separate clean
+`9397c1b1`-based checkout now contains only the current C4 fix and tests at
+`2edb982d`; its four gold-producing source hashes match the frozen capsule,
+its C4 adapter and tests match current `main`, and seven focused tests pass.
+Its precommit is
+`/private/tmp/qi-c5-c4-goldbound-20261003-v1/precommit.json`
+(`b963362fbc785c574fe82b148236694dd92074111d712cf7b85c283efa2ba6d1`).
+A successful full C4 run from that source is still `NOT_RUN`.
+
+The separate literal v9 run from clean `9397c1b1` completed in 2,022.596
+seconds. Its receipt is
+`/private/tmp/qi-c5-literal-20261003-v9/literal-receipt.json`
+(`6dd69b2f045a82ee03b8734aa01d8702ae1fa0feaa9fb1f26fba7b8f37d0ba53`).
+An independent Python stdlib replay hashed all 11,695 source files
+(86,469,103 bytes), checked every gold literal byte span, rescanned each
+selected query against its full file universe, and matched all twelve suite,
+blind-pack and admission ID/hash partitions. Of 240 candidates, 239 were
+admitted and `zoxide.lit.013` was excluded as a near-duplicate. The replay is
+`/private/tmp/qi-c5-literal-20261003-v9/literal-independent-verification.json`
+(`af2a08aad300a6264378b87bcf610a0448603958b78eafbdacd243693bacd4f2`).
+This proves a mechanical exact-content input contract; product search and
+human relevance review remain `NOT_RUN` for this v9 lane.
