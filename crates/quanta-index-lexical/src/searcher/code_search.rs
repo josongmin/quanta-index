@@ -2399,10 +2399,10 @@ impl TantivySearcher {
 mod tests {
     use super::{
         CodeSearchTerm, HitSurface, MAX_TYPO_POSTING_VISITS, MAX_TYPO_TOKEN_COMPARISONS,
-        OverlappingMatches, Scope, TermsToScore, best_in, boundary_score, candidate_ids,
-        content_witness_lines, file_candidate_id, language_eligible_ids, min_cover_gap,
-        nfc_identity_focus, path_highlight, regex_scan_scope, scanned_bytes, score_terms,
-        source_bytes_checked, typo_candidates, typo_distance, typo_witness,
+        OverlappingMatches, Scope, TermsToScore, TypoDistanceCache, best_in, boundary_score,
+        candidate_ids, content_witness_lines, file_candidate_id, language_eligible_ids,
+        min_cover_gap, nfc_identity_focus, path_highlight, regex_scan_scope, scanned_bytes,
+        score_terms, source_bytes_checked, typo_candidates, typo_distance, typo_witness,
     };
     use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
@@ -2412,7 +2412,7 @@ mod tests {
     use quanta_index_core::{CoreError, RequestBudgetV1};
     use quanta_index_lq_regex::RegexExecutor;
     use quanta_index_lq_trigram::{DocId, TrigramIndexBuilder, TrigramIntersectionError};
-    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    use std::collections::{BTreeMap, BTreeSet};
 
     use crate::file_authority::{FileAuthority, SourceFile, from_verified_files};
     use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText};
@@ -2565,7 +2565,7 @@ mod tests {
                 "load_jsom",
                 CaseMode::Folded,
                 &mut comparisons,
-                &mut HashMap::new(),
+                &mut TypoDistanceCache::new(),
                 &budget,
             )
             .expect("independent no-answer fixture")
@@ -2578,7 +2578,7 @@ mod tests {
                 "load_jsom",
                 CaseMode::Folded,
                 &mut exhausted,
-                &mut HashMap::new(),
+                &mut TypoDistanceCache::new(),
                 &budget
             ),
             Err(CoreError::Typed {
@@ -2598,7 +2598,7 @@ mod tests {
                     "load_jsom",
                     CaseMode::Folded,
                     &mut comparisons,
-                    &mut HashMap::new(),
+                    &mut TypoDistanceCache::new(),
                     &budget
                 )
                 .expect("scan")
@@ -2612,7 +2612,7 @@ mod tests {
             "load_jsom",
             CaseMode::Folded,
             &mut comparisons,
-            &mut HashMap::new(),
+            &mut TypoDistanceCache::new(),
             &budget,
         )
         .expect("scan")
@@ -2626,7 +2626,7 @@ mod tests {
             "load_jsom",
             CaseMode::Folded,
             &mut comparisons,
-            &mut HashMap::new(),
+            &mut TypoDistanceCache::new(),
             &budget,
         )
         .expect("scan")
@@ -2639,7 +2639,7 @@ mod tests {
                 "load_jsom",
                 CaseMode::Sensitive,
                 &mut comparisons,
-                &mut HashMap::new(),
+                &mut TypoDistanceCache::new(),
                 &budget
             )
             .expect("scan")
@@ -2651,7 +2651,7 @@ mod tests {
     fn typo_distance_budget_counts_distinct_tokens_across_files() {
         let budget = RequestBudgetV1::unbounded();
         let mut comparisons = MAX_TYPO_TOKEN_COMPARISONS - 1;
-        let mut distance_cache = HashMap::new();
+        let mut distance_cache = TypoDistanceCache::new();
         let first = typo_witness(
             "load_json",
             "load_jsom",
