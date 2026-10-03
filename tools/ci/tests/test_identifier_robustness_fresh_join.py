@@ -213,7 +213,12 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
                 "repository_commit": "commit", "tasks": [{"task_id": repo + ".q1"}],
             })),
         })
-        identity = write(tmp_path / "gold-v10" / repo / "identity.json", {"repo": repo})
+        parser_runtime = {
+            "tree_sitter": "0.23.2", "tree_sitter_language_pack": "0.9.1",
+        }
+        identity = write(tmp_path / "gold-v10" / repo / "identity.json", {
+            "repo": repo, "parser_runtime": parser_runtime,
+        })
         rows.append({
             "repository": repo, "intent": fresh.INTENT,
             "status": "diagnostic_unqualified", "selected_task_ids": [repo + ".q1"],
@@ -232,9 +237,7 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         }
         sources[repo] = {
             "identity_sha256": fresh.sha(identity),
-            "parser_runtime": {
-                "tree_sitter": "0.23.2", "tree_sitter_language_pack": "0.9.1",
-            },
+            "parser_runtime": parser_runtime,
         }
     gold_path = write(tmp_path / "gold.json", {
         "status": "captured", "capsule_count": 12, "source_head": "driver",

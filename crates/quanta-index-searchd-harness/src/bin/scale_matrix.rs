@@ -22,7 +22,8 @@ use std::process::ExitCode;
 use anyhow::Result as AnyResult;
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::scale::{
-    ScaleTier, TierMeasurement, measure_tier, write_artifacts,
+    ScaleTier, TierMeasurement, measure_tier, source_binding_for_failure, write_artifacts,
+    write_refusal_artifact,
 };
 
 /// Deterministic default seed so the rail is reproducible run-to-run unless an
@@ -33,6 +34,7 @@ struct CliArgs {
     out_dir: PathBuf,
     seed: u64,
     tiers: Vec<ScaleTier>,
+    fresh_output: bool,
 }
 
 fn parse_args() -> AnyResult<CliArgs> {
@@ -91,6 +93,7 @@ fn parse_args() -> AnyResult<CliArgs> {
         out_dir,
         seed,
         tiers,
+        fresh_output: out_dir_explicit,
     })
 }
 
@@ -98,9 +101,22 @@ fn run(cli: &CliArgs) -> AnyResult<Vec<TierMeasurement>> {
     // Provenance first: a run that cannot be attributed is not started.
     let git_head = GitHeadV1::resolve(Path::new("."))?;
     let host = HostV1::observe()?;
+    if cli.fresh_output {
+        if let Some(parent) = cli.out_dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::create_dir(&cli.out_dir)?;
+    }
     let mut measurements = Vec::with_capacity(cli.tiers.len());
     for tier in &cli.tiers {
-        measurements.push(measure_tier(*tier, cli.seed)?);
+        match measure_tier(*tier, cli.seed) {
+            Ok(measurement) => measurements.push(measurement),
+            Err(error) => {
+                let binding = source_binding_for_failure(*tier, cli.seed)?;
+                write_refusal_artifact(&binding, &cli.out_dir, &git_head, &host, &error)?;
+                return Err(error);
+            }
+        }
     }
     // An all-tier run does not write earlier tier artifacts if a later tier
     // refuses source or wire admission.

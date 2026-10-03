@@ -834,6 +834,27 @@ pub(crate) fn write_json_pretty(path: &Path, value: &serde_json::Value) -> anyho
     Ok(())
 }
 
+/// Publish a complete JSON refusal at a new path without replacing a prior
+/// receipt. The sibling temporary file stays on the same filesystem;
+/// `persist_noclobber` uses an atomic no-replace publication step.
+pub(crate) fn write_json_pretty_noclobber(
+    path: &Path,
+    value: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("artifact path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let mut text = serde_json::to_string_pretty(value)?;
+    text.push('\n');
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(text.as_bytes())?;
+    file.flush()?;
+    file.as_file().sync_all()?;
+    let _persisted = file.persist_noclobber(path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 #[expect(
     clippy::indexing_slicing,
@@ -1063,6 +1084,20 @@ mod tests {
                 &[("seed", "2".to_string()), ("tier", "small".to_string())]
             )
         );
+    }
+
+    #[test]
+    fn refusal_writer_publishes_complete_json_once_without_replacement() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("refusal.json");
+        write_json_pretty_noclobber(&path, &serde_json::json!({"status": "refused"}))?;
+        let first = std::fs::read(&path)?;
+        assert!(first.ends_with(b"\n"));
+        assert!(
+            write_json_pretty_noclobber(&path, &serde_json::json!({"status": "failed"})).is_err()
+        );
+        assert_eq!(std::fs::read(&path)?, first);
+        Ok(())
     }
 
     #[test]

@@ -1275,6 +1275,102 @@ pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
     })
 }
 
+/// Source identity for a refusal, recomputed from the deterministic generator
+/// only after a failed run. It is never substituted for a successful timing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScaleSourceBinding {
+    pub tier: ScaleTier,
+    pub seed: u64,
+    pub serving_owner_count: u32,
+    pub source_repo_count: u32,
+    pub file_count: usize,
+    pub corpus_bytes: u64,
+    pub source_bytes: u64,
+    pub corpus_digest: String,
+}
+
+pub fn source_binding_for_failure(tier: ScaleTier, seed: u64) -> AnyResult<ScaleSourceBinding> {
+    let params = params_for(tier);
+    let (corpus_digest, file_count, corpus_bytes) = if tier == ScaleTier::Small {
+        let corpus = generate_corpus(tier, seed);
+        let bytes = corpus.iter().try_fold(0_u64, |total, (_, content)| {
+            total
+                .checked_add(u64::try_from(content.len())?)
+                .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
+        })?;
+        (corpus_digest(DIMENSION, &corpus), corpus.len(), bytes)
+    } else {
+        let files = generate_scoped_corpus(tier, seed)?;
+        let bytes = files.iter().try_fold(0_u64, |total, file| {
+            total
+                .checked_add(u64::try_from(file.content.len())?)
+                .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
+        })?;
+        (scoped_corpus_digest(DIMENSION, &files), files.len(), bytes)
+    };
+    let source_bytes = corpus_bytes
+        .checked_add(u64::try_from(file_count)?)
+        .ok_or_else(|| anyhow::anyhow!("scale: source byte count overflow"))?;
+    Ok(ScaleSourceBinding {
+        tier,
+        seed,
+        serving_owner_count: 1,
+        source_repo_count: params.repo_count,
+        file_count,
+        corpus_bytes,
+        source_bytes,
+        corpus_digest,
+    })
+}
+
+pub fn refusal_json(
+    binding: &ScaleSourceBinding,
+    git_head: &GitHeadV1,
+    host: &HostV1,
+    error: &anyhow::Error,
+) -> Value {
+    let stage = error.downcast_ref::<ScaleStageError>();
+    json!({
+        "kind": "quanta-index-scale-failure",
+        "schema_version": 1,
+        "status": if stage.and_then(|failure| failure.limit).is_some() { "refused" } else { "failed" },
+        "source": {
+            "tier": binding.tier.as_str(),
+            "seed": binding.seed,
+            "serving_owner_count": binding.serving_owner_count,
+            "source_repo_count": binding.source_repo_count,
+            "file_count": binding.file_count,
+            "corpus_bytes": binding.corpus_bytes,
+            "source_bytes": binding.source_bytes,
+            "corpus_digest": binding.corpus_digest,
+        },
+        "provenance": {
+            "git_head": git_head.as_str(),
+            "host": host,
+        },
+        "failure": {
+            "stage": stage.map(|failure| failure.stage).unwrap_or("execution_unclassified"),
+            "limit": stage.and_then(|failure| failure.limit).map(ScaleAdmissionLimit::as_str),
+            "observed": stage.and_then(|failure| failure.observed),
+            "maximum": stage.and_then(|failure| failure.maximum),
+            "message": format!("{error:#}"),
+        },
+    })
+}
+
+pub fn write_refusal_artifact(
+    binding: &ScaleSourceBinding,
+    dir: &Path,
+    git_head: &GitHeadV1,
+    host: &HostV1,
+    error: &anyhow::Error,
+) -> AnyResult<()> {
+    crate::artifact::write_json_pretty_noclobber(
+        &dir.join("refusal.json"),
+        &refusal_json(binding, git_head, host, error),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Artifact emission (BenchArtifactV1; the tier manifest is a plain record).
 // ---------------------------------------------------------------------------
@@ -1674,6 +1770,42 @@ mod tests {
         let mut changed_content = files;
         changed_content[0].content.push_str("// changed\n");
         assert_ne!(original, scoped_corpus_digest(DIMENSION, &changed_content));
+    }
+
+    #[test]
+    fn refusal_record_binds_the_source_and_only_names_typed_limits() -> AnyResult<()> {
+        let binding = source_binding_for_failure(ScaleTier::Medium, 13)?;
+        assert_eq!(binding.source_repo_count, 4);
+        assert_eq!(binding.file_count, 256);
+        assert_eq!(binding.source_bytes, binding.corpus_bytes + 256);
+        assert_eq!(
+            binding.corpus_digest,
+            scoped_corpus_digest(DIMENSION, &generate_scoped_corpus(ScaleTier::Medium, 13)?)
+        );
+        let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567")?;
+        let host = HostV1 {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            cpu_count: 4,
+            mem_bytes: 1 << 30,
+            hostname_hash: "sha256:host".to_string(),
+        };
+        let capacity = check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1)
+            .expect_err("source bound");
+        let typed = anyhow::Error::new(ScaleStageError::source_admission(anyhow::Error::new(capacity)));
+        let refused = refusal_json(&binding, &head, &host, &typed);
+        assert_eq!(refused["status"], "refused");
+        assert_eq!(refused["failure"]["stage"], "source_preflight");
+        assert_eq!(refused["failure"]["limit"], "lexical_total_source_bytes_128m");
+        assert_eq!(refused["failure"]["observed"], MAX_SCALE_SOURCE_BYTES + 1);
+        assert_eq!(refused["source"]["corpus_digest"], binding.corpus_digest);
+        assert!(refused.get("latency").is_none());
+
+        let unknown = refusal_json(&binding, &head, &host, &anyhow::anyhow!("runtime failure"));
+        assert_eq!(unknown["status"], "failed");
+        assert_eq!(unknown["failure"]["stage"], "execution_unclassified");
+        assert!(unknown["failure"]["limit"].is_null());
+        Ok(())
     }
 
     #[test]

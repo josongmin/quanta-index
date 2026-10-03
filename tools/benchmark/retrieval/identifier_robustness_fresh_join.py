@@ -259,6 +259,13 @@ def _source_admission(
     selected = [row for row in authority["cells"] if row["intent"] == INTENT]
     by_repo = {row["repository"]: row for row in selected}
     cohorts = projection["cohorts"]
+    capsule_root = Path(manifest["gold_capsule_root"])
+    require(
+        capsule_root.is_absolute()
+        and capsule_root.is_dir()
+        and ".." not in capsule_root.parts,
+        "global gold capsule root is absent or noncanonical",
+    )
     require(
         len(selected) == len(by_repo) == 12
         and set(by_repo) == set(cohorts) == {row["repository"] for row in manifest["cells"]}
@@ -270,10 +277,16 @@ def _source_admission(
     for cell in manifest["cells"]:
         repo = cell["repository"]
         row, cohort = by_repo[repo], cohorts[repo]
-        identity_path = gold_receipt_path.parent / "gold-v10" / repo / "identity.json"
+        identity_path = Path(cell["gold_identity_path"])
+        require(
+            identity_path == capsule_root / repo / "identity.json",
+            "global gold identity path differs from bound capsule root: " + repo,
+        )
         identity = read(identity_path)
         suite_path = Path(cell["spec_path"])
-        suite = read(Path(read(suite_path)["suite"]))
+        spec = read(suite_path)
+        suite = read(Path(spec["suite"]))
+        pack = read(Path(spec["query_pack"]))
         selected_ids = [task["task_id"] for task in suite["tasks"]]
         require(
             row["status"] == "diagnostic_unqualified"
@@ -294,7 +307,9 @@ def _source_admission(
             and row["release_digest"] == authority["release_digest"]
             and cell["tasks"] == cohort["selected"] == len(selected_ids)
             and cell["projected_suite_commitment_sha256"] == cohort["projected_suite_sha256"]
-            and cell["blind_pack_commitment_sha256"] == cohort["blind_pack_sha256"],
+            and cell["blind_pack_commitment_sha256"] == cohort["blind_pack_sha256"]
+            and canonical_sha(suite) == cohort["projected_suite_sha256"]
+            and canonical_sha(pack) == cohort["blind_pack_sha256"],
             "global source admission task, gold, or projected suite differs: " + repo,
         )
         admission.append({"repository": repo, "status": "VALID", "tasks": len(selected_ids)})
