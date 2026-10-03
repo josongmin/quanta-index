@@ -161,6 +161,29 @@ def test_file_review_issuer_preserves_sufficient_answer_threshold(tmp_path, answ
         ]
     else:
         assert labels["gold"] == []
+    suite = {
+        key: copy.deepcopy(pack[key])
+        for key in (
+            "schema_version",
+            "suite_id",
+            "repository_commit",
+            "routes",
+            "comparison_contract",
+            "file_universe",
+            "file_universe_digest",
+        )
+    }
+    suite["tasks"] = [
+        {
+            **pack["tasks"][0],
+            "query_family_id": "toy.001",
+            "split": "eval",
+            "category": "nl_review_fixture",
+            **labels,
+        }
+    ]
+    _checked, issued_pack, _tokens = evaluator.validate_suite(checkout, suite)
+    assert issued_pack["suite_commitment_sha256"] != pack["suite_commitment_sha256"]
     assert (
         result["qualified"]
         is result["human_provenance_attested"]
