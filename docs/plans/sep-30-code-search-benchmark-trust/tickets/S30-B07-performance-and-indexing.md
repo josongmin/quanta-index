@@ -83,6 +83,18 @@ outside capture time. None of these observations qualifies a speedup or B07
 performance result. The original C5 source, four suites and their corpus
 remain frozen; no 48-cell rerun was performed.
 
+SymPy remains a separate verifier cost. Four independent `validate_suite`
+calls on its frozen C5 suites took 31.812, 44.921, 75.400 and 36.130 s on
+the contended host. A `cProfile` of the 8-query infix suite spent 27.231 s
+inside validation, including 16.432 s in declaration census and 8.500 s in
+file-universe validation. These are diagnostic costs, not quiet-host targets.
+The narrow P2 change is a batch-lifetime declaration census cache keyed by
+file bytes/digest and parser identity in `source_oracle.py`; each suite must
+still independently validate its gold and the corpus must be rechecked before
+promotion. Test fixed expected rows and reports, reject changed source or
+parser identity, then remeasure all four SymPy suites. Do not bypass the
+qualified admission contract to improve this exploratory workload.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
