@@ -1344,3 +1344,88 @@ requires a new release/capsule/output root. **NOT_RUN:** that recapture,
 parser remediation, partial-coverage response design, independently reviewed
 file relevance, and C5 qualification. Do not score a typed coverage refusal
 as a top-ten miss or merge any future recapture into the frozen C4 totals.
+
+## Exposed twelve-repository scale diagnostic (2026-10-03)
+
+**VERIFIED for source-bound preparation and admission; `diagnostic_unqualified` for
+quality.** Clean `a867f47b8dd4ca5efa36b0cca671c84d258c204a` sampled the
+already exposed release-v4 with `scale_diagnostic_v1`, seed `3797249375`.
+The frozen ledger is
+`/private/tmp/qi-scale-diagnostic-20261003-a/ledger.json` (SHA-256
+`bfb5f9fa63c0e675d102dc7af46c645e6e9397ad315685fb485c50e2e6ab1980`).
+Its 12 recipes contain 13,823 task rows: 1,200 exact content, 1,200 exact
+positive declarations, 1,428 prefix, 1,422 infix, 1,397 components, 4,776
+case-folded OSA1, and 1,200 each synthetic and wrong-repository negatives.
+The source replay published 12/12 gold capsules at
+`/private/tmp/qi-scale-gold-a867-20261003`; all bind the same release digest
+`sha256:cb896b12a8faf9569a829469bc39fe8c8bd9869ce908494722c0bf8f829bf1df`.
+
+The C4 matrix at `/private/tmp/qi-scale-c4-a867-20261003/admission-matrix.json`
+(SHA-256 `22a23fb51505e172dff4c45d2eb05d09749dbfb65f864ac9ae80f111e667a0ed`)
+contains 72 cells, 60 admitted suites and 12 empty case-sensitive OSA1 cells;
+the latter intent was not sampled. Exact-file literal admission is separate.
+
+| Mechanical lane | Source candidates | Admitted | Excluded |
+| --- | ---: | ---: | ---: |
+| Exact declaration, positive | 1,200 | 1,132 | 68 |
+| Prefix | 1,428 | 1,215 | 213 |
+| Infix | 1,422 | 1,056 | 366 |
+| Components | 1,397 | 1,115 | 282 |
+| Case-folded OSA1 | 4,776 | 4,206 | 570 |
+| Synthetic no-answer | 1,200 | 1,200 | 0 |
+| Wrong-repository no-answer | 1,200 | 1,200 | 0 |
+| Exact content literal | 1,200 | 1,196 | 4 |
+
+The exact-content matrix is
+`/private/tmp/qi-scale-literal-fixed2-a867-20261003/literal-matrix.json`
+(SHA-256 `a47dd48e1dd1f87ff14f64a37361ccfb26c8932a9570de379fbc36868f10befa`).
+It uses the frozen `a867f47b` producer plus only the current literal adapter
+patch (file SHA-256
+`4f3ecca0b476d3ee70a7186c535ae4ab38c29f2ab633b8ab2ef8375050f255cd`;
+patch SHA-256
+`389405ed0f8d209dddc14e202cd7e3b6aec0c52b6a6921b8e2b1625c28293fa0`).
+The initial literal admission **FAILED** because `cli.lit.077` and
+`cli.lit.099` contain tabs: the sampler accepted stripped lines with internal
+control characters, while the independent literal oracle refuses them.
+`lo.lit.042` and `zellij.lit.056` were also near-duplicates. The sampler now
+checks the literal query contract before selection; the adapter records these
+four exclusions without post-score backfill. The superseded second attempt
+was intentionally interrupted before admission. Fixed tests passed:
+`test_gold_oracle.py` plus `test_holdout_literal.py` 90/90 on the first fix;
+the final literal file 22/22 and four focused boundary tests passed after the
+duplicate fix. Ruff and format checks passed.
+
+Independent accounting matched every C4 candidate ID to exactly one selected
+or excluded ID, verified 60 suite/blind-pack hashes, and split the exact lane
+into 1,132 positive plus 1,200+1,200 negatives. The same check matched all
+1,200 literal IDs to 1,196 selected plus four excluded, verified 12 suites and
+their pack hashes. No task was scored as failed merely because its source
+census was unsupported or its query contract was invalid. The global counts
+exceed 1,000 for the sampled mechanical lanes; per-repository cells remain
+uneven, including small `zustand` and parser-limited `tailscale`. Natural
+language and case-sensitive OSA1 remain unsampled.
+
+Execution commands, from the frozen source root unless otherwise noted:
+
+```text
+python tools/benchmark/retrieval/holdout_sampling.py --holdout-release RELEASE_V4 --development-release DEV_RELEASE_V3 --seed 3797249375 --profile scale_diagnostic_v1 --output /private/tmp/qi-scale-diagnostic-20261003-a
+python tools/benchmark/retrieval/gold_capture_batch.py --release RELEASE_V4 --other-release DEV_RELEASE_V3 --sampling /private/tmp/qi-scale-diagnostic-20261003-a --output /private/tmp/qi-scale-gold-a867-20261003
+PYTHONPATH=FROZEN_ROOT python tools/benchmark/retrieval/holdout_c4.py --release RELEASE_V4 --capsules /private/tmp/qi-scale-gold-a867-20261003 --checkouts CHECKOUT_ROOT --output /private/tmp/qi-scale-c4-a867-20261003 --expected-repositories 12 --emit-suites
+python tools/benchmark/retrieval/holdout_literal.py --release RELEASE_V4 --capsules /private/tmp/qi-scale-gold-a867-20261003 --checkouts CHECKOUT_ROOT --output /private/tmp/qi-scale-literal-fixed2-a867-20261003 --expected-repositories 12
+```
+
+`RELEASE_V4`, `DEV_RELEASE_V3`, `CHECKOUT_ROOT` and `FROZEN_ROOT` are respectively
+`/Users/songmin/Documents/code-new/qi-s30-b08-holdout-20261002/{release-v4,dev-release-v3,checkouts}`
+and `/private/tmp/qi-scale-src-a867f47b`; the final literal command ran from
+`/private/tmp/qi-scale-literal-fix-a867-20261003`. Observed walls were about
+64 minutes for gold, 79 minutes for C4, and 44 minutes for fixed literal
+admission on a host with load average roughly 30–70. These are preparation
+costs, not search latency. The separate large-inventory census stdin/stdout
+pipe deadlock was fixed with a file-backed stdin and a large-input test.
+
+**NOT_RUN:** product captures on these newly admitted suites, human relevance
+review, fresh post-tuning holdout qualification, C5 decision and deployment.
+Sourcegraph/OpenGrok local endpoints on ports 7080/7081 refused connections
+at this audit; their full indexed universes are unattested. Do not combine
+these source-exposed mechanical cases with an independent holdout, infer a
+five-product ranking, or promote this admission matrix to a product decision.
