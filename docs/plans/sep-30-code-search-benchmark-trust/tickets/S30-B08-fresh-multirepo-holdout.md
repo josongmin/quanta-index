@@ -978,3 +978,17 @@ true. The frozen `/tmp/qx` manifest is exploratory and its verdict has
 labels; schema-v3 admission explicitly refuses a suite with no human-reviewed
 task. A focused negative test verifies that refusal. This verifies the
 evaluator/replay path only.
+
+The same current scored-file evaluator at `main@ff2bae33` also consumed the
+native Quanta/Semble records for **all twelve** exact-name repositories via
+`merge_records`, then produced `evidence_unqualified` on each. It revalidated
+the source-bound suites and records, scored all 1,132 paired positive tasks,
+and retained 20 no-answer route observations (ten tasks) in each repository. The
+positive-task-weighted Quanta minus Semble file NDCG@10 delta is `+0.00258515`;
+this is a diagnostic arithmetic check, not a qualified effect estimate.
+Per-repository deltas, source-file hashes, record hashes and evaluator report
+hashes are in
+`/private/tmp/qi-b08-product-8e8592f4-20261003/exact-complete-file-evidence.json`
+(SHA-256 `c63a0e3785db5c52c57a5541de9008087def30c01e377b1d777dad6b59e2c3ab`).
+No qualified native capture, human review, external index attestation or C5
+decision was performed by this replay.
