@@ -429,6 +429,59 @@ def test_split_manifest_accepts_disjoint_repositories_in_one_or_two_releases(spl
     assert binding.validate_split_manifest(canonical(manifest), releases) == manifest
 
 
+def test_qualified_disjoint_source_accepts_real_release_and_holdout_suite(split_releases, tmp_path):
+    from tools.benchmark.retrieval import holdout_literal, run
+
+    manifest, releases = split_manifest(disjoint_assignments(split_releases))
+    split_raw = canonical(manifest)
+    release, document = split_releases["disjoint"]
+    selection = {
+        "release_path": str(release),
+        "release_digest": document["digest"],
+        "repository": "beta",
+        "view": "code_only",
+    }
+    recipe = {
+        "schema_version": 2,
+        "split": "holdout",
+        "split_manifest_sha256": hashlib.sha256(split_raw).hexdigest(),
+        "tasks": [
+            {
+                "task_id": "hold-beta-1",
+                "query_family_id": "hold-beta-1",
+                "intent": "literal_utf8_exact",
+                "query": "worker_3",
+                "scope_prefix": "",
+                "language": None,
+                "case_semantics": "sensitive",
+                "normalization": "none_raw_utf8",
+            }
+        ],
+    }
+    capsule = tmp_path / "gold"
+    binding.capture_gold(release, selection, canonical(recipe), capsule, (split_raw, releases))
+    checkout = release.parents[1] / "checkouts" / "beta"
+    suite, _pack, _diagnostic = holdout_literal.derive(release, capsule, checkout)
+    split_path, releases_path = tmp_path / "split.json", tmp_path / "releases.json"
+    split_path.write_bytes(split_raw)
+    releases_path.write_text(json.dumps({key: str(value) for key, value in releases.items()}))
+    admission = {
+        "repository_commit": suite["repository_commit"],
+        "repository_disjoint": {
+            "repository": "beta",
+            "release_digest": document["digest"],
+            "split_manifest_sha256": run.sha_file(split_path),
+            "split_releases_sha256": run.sha_file(releases_path),
+        },
+    }
+    run._validate_disjoint_admission_source(admission, suite, checkout, split_path, releases_path)
+    admission["repository_disjoint"]["repository"] = "alpha"
+    with pytest.raises(run.RunError, match="holdout assignment"):
+        run._validate_disjoint_admission_source(
+            admission, suite, checkout, split_path, releases_path
+        )
+
+
 def test_leakage_fingerprints_ignore_layout_but_not_tokens():
     assert binding._fingerprints(b"fn a() { b(1, 2); c(3) }\n" * 4) == binding._fingerprints(
         b"fn a()\n{\n\tb(1,2);\n  c(3)\n}" * 4

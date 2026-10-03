@@ -8054,6 +8054,54 @@ def test_repository_disjoint_admission_freeze_routes_global_custody(monkeypatch,
     assert observed == [(Path(frozen["split_manifest"]), Path(frozen["split_releases"]))]
 
 
+def test_repository_disjoint_verdict_replays_frozen_split_artifacts(monkeypatch, tmp_path):
+    st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
+    before = _stage_verdict(st)
+    admission_path = st["stage"] / "admission" / "admission.json"
+    admission = json.loads(admission_path.read_text())
+    admission["schema_version"] = 3
+    admission.pop("development_suite_sha256")
+    admission.pop("experiment_custody_sha256")
+    admission["decision_policy_sha256"] = _fake_sha("policy")
+    split_path = st["stage"] / "admission" / "split-manifest.json"
+    split_path.write_text("{}")
+    releases_path = st["stage"] / "admission" / "split-releases.json"
+    releases_path.write_text("{}")
+    admission["repository_disjoint"] = {
+        "repository": "holdout",
+        "release_digest": "sha256:" + _fake_sha("release"),
+        "split_manifest_sha256": pairrun.sha_file(split_path),
+        "split_releases_sha256": pairrun.sha_file(releases_path),
+    }
+    admission_path.write_text(json.dumps(admission))
+    manifest = json.loads(st["manifest_path"].read_text())
+    manifest["artifacts"].pop("experiment_custody")
+    manifest["artifacts"].pop("development_suite")
+    manifest["artifacts"].update(
+        split_manifest="admission/split-manifest.json",
+        split_releases="admission/split-releases.json",
+    )
+    manifest["provenance"]["admission"]["manifest_digest"] = pairrun.sha_file(admission_path)
+    st["manifest_path"].write_text(json.dumps(manifest))
+    protocol_path = st["stage"] / "protocol-lock.json"
+    protocol = json.loads(protocol_path.read_text())
+    protocol["admission_digest"] = pairrun.sha_file(admission_path)
+    protocol_path.write_text(json.dumps(protocol))
+    calls = []
+    monkeypatch.setattr(
+        pairrun,
+        "_validate_disjoint_admission_source",
+        lambda _claim, _suite, _repo, split, releases: calls.append((split, releases)),
+    )
+    after = _stage_verdict(st)
+    assert after["states"] == before["states"]
+    assert calls == [(split_path, releases_path)]
+    split_path.write_text('{"changed":true}')
+    rejected = _stage_verdict(st)
+    assert rejected["states"]["QUALITY_DELTA"] == "fail"
+    assert "split bytes differ" in rejected["state_evidence"]["QUALITY_DELTA"]["reason"]
+
+
 def test_qualified_license_receipt_requires_approved_corpus_bound_decision(tmp_path):
     st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
     evidence = st["stage"] / "admission"
