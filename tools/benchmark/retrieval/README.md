@@ -241,6 +241,17 @@ historical `unjudged_zero_v1` policy remains available for exploratory reports
 and retains its original behavior. Neither policy turns a post-result review
 into a pre-result qualified holdout.
 
+For reviewed tasks whose rubric requires a sufficient answer (grade 2 or 3),
+declare `answerability_min_grade: 2` in both the review context and suite task.
+An unanswerable task may then contain grade-1 partial clues, but no judgment
+at or above the declared threshold and no gold blocks. Answerable tasks need
+a sufficient-answer judgment and gold grade. The threshold is frozen with the
+review context and suite commitment, and omitted from the blind query pack.
+It does not change graded NDCG gains or the existing positive-relevance
+Hit/MRR definition (grade > 0). Reports expose each declared answerability
+threshold separately. Omission retains the historical threshold of 1;
+mechanical source-oracle tasks retain their own answerability contract.
+
 For objective lexical checks, a task may instead declare `source_oracle` with
 `contract: go_exact_local_name_v3` and `unit: symbol` or `distinct_file`, or
 `contract: ascii_identifier_word_v1` and `unit: distinct_file`. Set

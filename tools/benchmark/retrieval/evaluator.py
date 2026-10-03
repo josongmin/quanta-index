@@ -171,6 +171,16 @@ def judgment_grade(value: Any, where: str) -> int:
     return value
 
 
+def answerability_min_grade(task: dict[str, Any], where: str) -> int:
+    """Keep sufficient-answer grades separate from partial relevance gains."""
+    value = task.get("answerability_min_grade", 1)
+    require(
+        type(value) is int and 1 <= value <= 3,
+        f"{where} answerability_min_grade must be an integer 1-3",
+    )
+    return value
+
+
 def finite_timing(value: Any, where: str) -> float:
     require(
         is_finite_json_number(value) and value >= 0,
@@ -893,6 +903,12 @@ def validate_judgments(
     """Bind optional independent file and declaration judgments to source bytes."""
     kinds = ("file_judgments", "declaration_judgments")
     present = [kind for kind in kinds if kind in task]
+    if "answerability_min_grade" in task:
+        require(
+            bool(present) and "source_oracle" not in task,
+            f"answerability_min_grade requires independent judgments: {task_id}",
+        )
+    answer_grade = answerability_min_grade(task, task_id)
     if not present:
         require("judgment_policy" not in task, f"orphan judgment_policy: {task_id}")
         require("source_oracle" not in task, f"source oracle lacks judgments: {task_id}")
@@ -947,12 +963,12 @@ def validate_judgments(
             seen.add(key)
         if task["answerable"]:
             require(
-                any(row["grade"] > 0 for row in judgments),
-                f"{kind} lacks a positive judgment: {task_id}",
+                any(row["grade"] >= answer_grade for row in judgments),
+                f"{kind} lacks a positive judgment at answerability_min_grade: {task_id}",
             )
         else:
             require(
-                not any(row["grade"] > 0 for row in judgments),
+                not any(row["grade"] >= answer_grade for row in judgments),
                 f"{kind} answerability mismatch: {task_id}",
             )
 
@@ -1210,6 +1226,7 @@ def validate_suite(
                 "query_intent",
                 "label_review",
                 "judgment_policy",
+                "answerability_min_grade",
                 "file_judgments",
                 "declaration_judgments",
                 "source_oracle",
@@ -1228,6 +1245,7 @@ def validate_suite(
                     "query_intent",
                     "label_review",
                     "judgment_policy",
+                    "answerability_min_grade",
                     "file_judgments",
                     "declaration_judgments",
                     "source_oracle",
@@ -1433,6 +1451,11 @@ def validate_suite(
                 universe=universe,
                 allow_grade=True,
             )
+            if "answerability_min_grade" in task:
+                require(
+                    label.get("grade", 1) >= answerability_min_grade(task, task_id),
+                    "gold grade below answerability_min_grade: " + task_id,
+                )
             if "source_oracle" in task:
                 if (
                     task["source_oracle"]["contract"]
@@ -2672,6 +2695,10 @@ def judgment_diagnostics(
     output: dict[str, Any] = {
         "unjudged_policy": policy,
     }
+    if any("answerability_min_grade" in task for task in tasks.values()):
+        output["answerability_min_grade_by_task"] = {
+            task_id: answerability_min_grade(task, task_id) for task_id, task in tasks.items()
+        }
     evaluation_contract = declared_evaluation_contract(list(tasks.values()))
     for kind in kinds:
         if kind == "file_judgments":

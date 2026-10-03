@@ -209,9 +209,16 @@ def prepare(
         "review context task coverage mismatch",
     )
     for context in contexts.values():
-        evaluator.object_keys(context, ["intent", "provenance", "rubric"], "review context")
+        evaluator.object_keys_optional(
+            context,
+            ["intent", "provenance", "rubric"],
+            ["answerability_min_grade"],
+            "review context",
+        )
+        evaluator.answerability_min_grade(context, "review context")
         for field, value in context.items():
-            evaluator.string(value, "review context " + field)
+            if field != "answerability_min_grade":
+                evaluator.string(value, "review context " + field)
     require(isinstance(pools, list) and bool(pools), "review candidate pools missing")
     pool_ids = set()
     candidates = {task_id: {} for task_id in task_ids}
@@ -384,7 +391,8 @@ def validate_completed_forms(
                 isinstance(row["files"], list) and len(row["files"]) == len(frozen["files"]),
                 "review candidate coverage changed",
             )
-            has_positive = False
+            has_answer = False
+            answer_grade = evaluator.answerability_min_grade(row, "review task")
             for file_row, source_row in zip(row["files"], frozen["files"], strict=True):
                 require(
                     isinstance(file_row, dict) and set(file_row) == set(source_row),
@@ -397,10 +405,10 @@ def validate_completed_forms(
                 grade = file_row["grade"]
                 require(type(grade) is int and 0 <= grade <= 3, "review grade must be 0..3")
                 evaluator.string(file_row["rationale"], "review file rationale")
-                has_positive |= grade > 0
+                has_answer |= grade >= answer_grade
             require(
-                row["answerable"] or not has_positive,
-                "review cannot deny answerability while grading a file relevant",
+                row["answerable"] or not has_answer,
+                "review cannot deny answerability with a sufficient-answer grade",
             )
     require(len(set(reviewer_ids)) == 2, "two distinct reviewer identities required")
 

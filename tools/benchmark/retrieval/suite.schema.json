@@ -42,6 +42,7 @@
         {"required": ["query_intent"]}, {"required": ["label_review"]},
         {"required": ["file_judgments"]}, {"required": ["declaration_judgments"]},
         {"required": ["judgment_policy"]}, {"required": ["source_oracle"]},
+        {"required": ["answerability_min_grade"]},
         {"required": ["evaluation_contract"]}
       ]}}}},
       "then": {"required": ["diagnostic_policy"]}
@@ -138,6 +139,10 @@
           "description": "Paraphrase family. One family must not appear in both train and eval."
         },
         "answerable": {"type": "boolean"},
+        "answerability_min_grade": {
+          "type": "integer", "minimum": 1, "maximum": 3,
+          "description": "Minimum independent judgment grade that makes a task answerable; omitted means 1. Grade-1 partial relevance still contributes to graded retrieval metrics."
+        },
         "category": {"type": "string", "minLength": 1},
         "query_intent": {
           "enum": ["bare_symbol", "symbol_components", "semantic_intent", "exact_content"],
@@ -156,6 +161,10 @@
         "gold": {"type": "array", "items": {"$ref": "#/$defs/block"}}
       },
       "allOf": [
+        {"if": {"required": ["answerability_min_grade"]}, "then": {
+          "anyOf": [{"required": ["file_judgments"]}, {"required": ["declaration_judgments"]}],
+          "not": {"required": ["source_oracle"]}
+        }},
         {"if": {"properties": {"answerable": {"const": true}}}, "then": {"properties": {"gold": {"minItems": 1}}}},
         {"if": {"properties": {"answerable": {"const": false}}}, "then": {"properties": {"gold": {"maxItems": 0}}}},
         {"if": {"anyOf": [{"required": ["file_judgments"]}, {"required": ["declaration_judgments"]}]},

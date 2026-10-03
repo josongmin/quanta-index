@@ -322,6 +322,46 @@ def test_answerable_may_be_outside_the_pooled_candidates(tmp_path):
     assert result["qualified"] is False
 
 
+def test_partial_clue_does_not_force_answerability_at_sufficient_answer_threshold(tmp_path):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    contexts["toy.001"]["answerability_min_grade"] = 2
+    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+    completed = _completed_forms(forms)
+    for form in completed:
+        form["reviews"][0]["answerable"] = False
+    validated = holdout_review.validate_completed_forms(
+        checkout, pack, contexts, pools, completed, seed=42
+    )
+    assert validated["disagreements"] == []
+    assert completed[0]["reviews"][0]["answerability_min_grade"] == 2
+    assert any(row["grade"] == 1 for row in completed[0]["reviews"][0]["files"])
+    completed[0]["reviews"][0]["files"][0]["grade"] = 2
+    with pytest.raises(evaluator.EvidenceError, match="sufficient-answer grade"):
+        holdout_review.validate_completed_forms(
+            checkout, pack, contexts, pools, completed, seed=42
+        )
+
+
+@pytest.mark.parametrize("threshold", [0, 4, True, "2", 2.0])
+def test_review_refuses_malformed_answerability_threshold(tmp_path, threshold):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    contexts["toy.001"]["answerability_min_grade"] = threshold
+    with pytest.raises(evaluator.EvidenceError, match="answerability_min_grade"):
+        holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+
+
+def test_review_threshold_is_frozen_with_context(tmp_path):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    contexts["toy.001"]["answerability_min_grade"] = 2
+    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+    completed = _completed_forms(forms)
+    completed[0]["reviews"][0]["answerability_min_grade"] = 1
+    with pytest.raises(evaluator.EvidenceError, match="query/context changed"):
+        holdout_review.validate_completed_forms(
+            checkout, pack, contexts, pools, completed, seed=42
+        )
+
+
 @pytest.mark.parametrize(
     "fault",
     [
@@ -462,6 +502,64 @@ def test_nl_projection_preserves_labels_and_blinds_only_selected_queries(tmp_pat
     assert lineage["human_provenance_attested"] is False
     assert lineage["review_receipts"] == "remain_bound_to_original_suite"
     assert lineage["split_admission"] == "not_carried_forward"
+
+
+def test_suite_distinguishes_partial_relevance_from_answerability(tmp_path):
+    checkout, original = _reviewed_suite_fixture(tmp_path)
+    task = original["tasks"][0]
+    task["answerability_min_grade"] = 2
+    evaluator.validate_suite(checkout, original)
+    task["answerable"] = False
+    task["gold"] = []
+    task["file_judgments"][0]["grade"] = 1
+    checked, pack, _source = evaluator.validate_suite(checkout, original)
+    assert checked["tasks"][0]["file_judgments"][0]["grade"] == 1
+    assert "answerability_min_grade" not in pack["tasks"][0]
+    assert evaluator.file_ndcg_at_k(
+        [{"path": task["file_judgments"][0]["path"]}], task["file_judgments"], 10
+    ) == 1.0
+    task["file_judgments"][0]["grade"] = 2
+    with pytest.raises(evaluator.EvidenceError, match="answerability mismatch"):
+        evaluator.validate_suite(checkout, original)
+
+
+def test_suite_refuses_insufficient_answer_and_gold_grades(tmp_path):
+    checkout, original = _reviewed_suite_fixture(tmp_path)
+    task = original["tasks"][0]
+    task["answerability_min_grade"] = 2
+    task["file_judgments"][0]["grade"] = 1
+    with pytest.raises(evaluator.EvidenceError, match="lacks a positive judgment"):
+        evaluator.validate_suite(checkout, original)
+    task["file_judgments"][0]["grade"] = 3
+    task["gold"][0]["grade"] = 1
+    with pytest.raises(evaluator.EvidenceError, match="gold grade below"):
+        evaluator.validate_suite(checkout, original)
+
+
+@pytest.mark.parametrize("threshold", [0, 4, True, "2", 2.0])
+def test_suite_refuses_invalid_answerability_threshold(tmp_path, threshold):
+    checkout, original = _reviewed_suite_fixture(tmp_path)
+    original["tasks"][0]["answerability_min_grade"] = threshold
+    with pytest.raises(evaluator.EvidenceError, match="answerability_min_grade"):
+        evaluator.validate_suite(checkout, original)
+
+
+@pytest.mark.parametrize("fault", ["orphan", "source_oracle"])
+def test_suite_refuses_orphan_or_oracle_answerability_threshold(tmp_path, fault):
+    checkout, original = _reviewed_suite_fixture(tmp_path)
+    task = original["tasks"][1]
+    task["answerability_min_grade"] = 2
+    if fault == "orphan":
+        del task["file_judgments"]
+    else:
+        task["source_oracle"] = {"contract": "ascii_identifier_word_v1", "unit": "distinct_file"}
+    with pytest.raises(evaluator.EvidenceError, match="requires independent judgments"):
+        evaluator.validate_judgments(
+            evaluator.SourceSnapshot(checkout, original["repository_commit"]),
+            task,
+            {row["path"] for row in original["file_universe"]},
+            task["task_id"],
+        )
 
 
 @pytest.mark.parametrize(
