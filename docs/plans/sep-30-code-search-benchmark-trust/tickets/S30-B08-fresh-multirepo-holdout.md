@@ -3134,3 +3134,11 @@ Independent post-exit replay matched all **50 input hashes and 5 owner hashes**.
 This closes the selected split/source prerequisite; **200 actual task reviews,
 final matching proofs and complete admission remain incomplete**. No qualified
 product/performance result or missing label is inferred from split success.
+
+Follow-up: the pinned `9e27b8ba` Contract producer is terminal, exit zero:
+**Python 671/671 and Rust 168/168 selected/executed/passed, zero failed**.
+Independent `portable_proof.py verify --receipt
+<external-root>/integrated-portable-proof-9e27-sj_x_b3k/contract/execution-context.json`
+passed from the unchanged pinned checkout. Together with the verified SDK
+**25/25**, this closes that source's proof production. It does not include
+later main changes or provide the final producer admission/comparison.
