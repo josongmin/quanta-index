@@ -29,7 +29,10 @@ SOURCES = {
         "path": "reconstructed_group1_neutral_renamed_cleaned.json",
         "sha256": "702931060b29fc024cb5bee27b2cbb0567d4bfce8c5a15471292b484c5624d7a",
     },
-    "dataset_card": {"path": "README.md", "sha256": "42c32d7f1130e63bbb7f9a27b8d2cb29c2e91eeafefe7695abfba65d9fb54aca"},
+    "dataset_card": {
+        "path": "README.md",
+        "sha256": "42c32d7f1130e63bbb7f9a27b8d2cb29c2e91eeafefe7695abfba65d9fb54aca",
+    },
     "project_license_info": {
         "path": "project_license_info.csv",
         "sha256": "9d465c3fa6a07122bc6315b6f7fd666bf943897a75f9e2c48975c67ad3984258",
@@ -96,7 +99,9 @@ def _parse_rows(raw: bytes, variant: str, expected_pairs: int) -> dict[int, dict
     return indexed
 
 
-def _validate_pair(original_raw: bytes, neutral_raw: bytes, expected_pairs: int) -> list[dict[str, Any]]:
+def _validate_pair(
+    original_raw: bytes, neutral_raw: bytes, expected_pairs: int
+) -> list[dict[str, Any]]:
     original = _parse_rows(original_raw, "original", expected_pairs)
     neutral = _parse_rows(neutral_raw, "neutral_renamed", expected_pairs)
     paired = []
@@ -118,23 +123,47 @@ def _duplicate_content(rows: list[dict[str, Any]], variant: str) -> dict[str, An
     for pair in rows:
         row = pair[variant]
         by_digest[_sha256(row["code_text"].encode("utf-8"))].append(row["code_id"])
-    groups = [ids for ids in by_digest.values() if len(ids) > 1]
-    return {"groups": len(groups), "affected_code_ids": sum(map(len, groups)), "max_group_size": max(map(len, groups), default=1)}
+    groups = [
+        {"code_sha256": digest, "code_ids": ids}
+        for digest, ids in sorted(by_digest.items())
+        if len(ids) > 1
+    ]
+    return {
+        "groups": len(groups),
+        "affected_code_ids": sum(len(group["code_ids"]) for group in groups),
+        "max_group_size": max((len(group["code_ids"]) for group in groups), default=1),
+        "equivalence_groups": groups,
+        "qrel_effect": "metadata_only_original_positive_qrels_unchanged",
+    }
 
 
 def plan_admission(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Preflight the existing file-search route with unchanged query text."""
     admitted: list[str] = []
     refused: list[dict[str, str]] = []
+    ledger: list[dict[str, str]] = []
     for pair in rows:
         row = pair["original"]
         try:
             query_plan.plan_lexical_request("natural_language_file", row["query_text"])
         except query_plan.QueryPlanError as exc:
-            refused.append({"query_id": row["query_id"], "reason": str(exc)})
+            failure = {"query_id": row["query_id"], "reason": str(exc)}
+            refused.append(failure)
+            ledger.append({**failure, "status": "refused", "reason_type": "QueryPlanError"})
         else:
             admitted.append(row["query_id"])
-    return {"requested": len(rows), "admitted_query_ids": admitted, "refused": refused}
+            ledger.append({"query_id": row["query_id"], "status": "admitted"})
+    return {
+        "request_policy": "natural_language_file",
+        "config": dict(query_plan.DEFAULT_NL_CONFIG),
+        "requested": len(rows),
+        "admitted": len(admitted),
+        "refused_count": len(refused),
+        "coverage": len(admitted) / len(rows) if rows else 0.0,
+        "admitted_query_ids": admitted,
+        "refused": refused,
+        "ledger": ledger,
+    }
 
 
 def admit_pinned_pair(
@@ -173,7 +202,8 @@ def admit_pinned_pair(
         "pairs": EXPECTED_PAIRS,
         "admission": admission,
         "duplicate_content": {
-            variant: _duplicate_content(rows, variant) for variant in ("original", "neutral_renamed")
+            variant: _duplicate_content(rows, variant)
+            for variant in ("original", "neutral_renamed")
         },
     }
     return rows, metadata
@@ -196,7 +226,15 @@ def materialize(
     if output_root.resolve(strict=False).is_relative_to(checkout):
         raise ClarcAdmissionError("output root must be outside the source checkout")
     output_root.mkdir(exist_ok=False)
+    provenance = output_root / "provenance"
+    provenance.mkdir()
+    with (provenance / "README.md").open("xb") as handle:
+        handle.write(dataset_card_raw)
+    with (provenance / "project_license_info.csv").open("xb") as handle:
+        handle.write(license_info_raw)
     files: dict[str, list[dict[str, Any]]] = {"original": [], "neutral_renamed": []}
+    tasks: dict[str, list[dict[str, Any]]] = {"original": [], "neutral_renamed": []}
+    admitted = set(metadata["admission"]["admitted_query_ids"])
     qrels = []
     for pair in rows:
         source = pair["original"]
@@ -214,15 +252,32 @@ def materialize(
         )
         for variant in files:
             row = pair[variant]
+            task_id = ("CLARC-G1-ORG-" if variant == "original" else "CLARC-G1-NEU-") + source[
+                "query_id"
+            ].rsplit("_", 1)[1].zfill(4)
+            tasks[variant].append(
+                {
+                    "task_id": task_id,
+                    "query_id": source["query_id"],
+                    "query": source["query_text"],
+                    "query_sha256": _sha256(source["query_text"].encode("utf-8")),
+                    "request_status": "admitted" if source["query_id"] in admitted else "refused",
+                }
+            )
             destination = output_root / variant / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             raw = row["code_text"].encode("utf-8")
             with destination.open("xb") as handle:
                 handle.write(raw)
             files[variant].append(
-                {"code_id": row["code_id"], "path": relative, "sha256": _sha256(raw), "bytes": len(raw)}
+                {
+                    "code_id": row["code_id"],
+                    "path": relative,
+                    "sha256": _sha256(raw),
+                    "bytes": len(raw),
+                }
             )
-    manifest = {**metadata, "corpora": files, "qrels": qrels}
+    manifest = {**metadata, "file_universes": files, "tasks": tasks, "qrels": qrels}
     with (output_root / "manifest.json").open("x", encoding="utf-8") as handle:
         json.dump(manifest, handle, sort_keys=True, ensure_ascii=False, indent=2)
         handle.write("\n")
@@ -248,7 +303,16 @@ def main(argv: list[str] | None = None) -> int:
     except (ClarcAdmissionError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps({"output_root": str(args.output_root), "pairs": manifest["pairs"], "admission": manifest["admission"]}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "output_root": str(args.output_root),
+                "pairs": manifest["pairs"],
+                "admission": manifest["admission"],
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

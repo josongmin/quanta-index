@@ -50,12 +50,17 @@ def _inputs(monkeypatch):
     monkeypatch.setattr(
         clarc,
         "SOURCES",
-        {key: {"path": key, "sha256": hashlib.sha256(raw).hexdigest()} for key, raw in raws.items()},
+        {
+            key: {"path": key, "sha256": hashlib.sha256(raw).hexdigest()}
+            for key, raw in raws.items()
+        },
     )
     return raws
 
 
-def test_paired_ids_and_unchanged_queries_create_two_synthetic_file_universes(tmp_path, monkeypatch):
+def test_paired_ids_and_unchanged_queries_create_two_synthetic_file_universes(
+    tmp_path, monkeypatch
+):
     raws = _inputs(monkeypatch)
     rows, metadata = clarc.admit_pinned_pair(*raws.values())
     assert [pair["original"]["query_id"] for pair in rows] == [
@@ -63,10 +68,9 @@ def test_paired_ids_and_unchanged_queries_create_two_synthetic_file_universes(tm
         "q_group_1_id_1",
     ]
     assert metadata["admission"]["requested"] == 2
+    assert metadata["admission"]["coverage"] == 0.5
     assert metadata["admission"]["admitted_query_ids"] == ["q_group_1_id_0"]
-    assert [item["query_id"] for item in metadata["admission"]["refused"]] == [
-        "q_group_1_id_1"
-    ]
+    assert [item["query_id"] for item in metadata["admission"]["refused"]] == ["q_group_1_id_1"]
     root = tmp_path / "out"
     manifest = clarc.materialize(*raws.values(), root)
     assert manifest["pairs"] == 2
@@ -76,13 +80,24 @@ def test_paired_ids_and_unchanged_queries_create_two_synthetic_file_universes(tm
     )
     assert manifest["contract"]["source_oracle"] == "not_applicable"
     assert manifest["qrels"][1]["query_text"] == _rows()[0][1]["query_text"]
-    assert [entry["path"] for entry in manifest["corpora"]["original"]] == [
+    assert [entry["path"] for entry in manifest["file_universes"]["original"]] == [
         "snippets/c_group_1_id_0.cpp",
         "snippets/c_group_1_id_1.cpp",
     ]
-    assert (root / "original/snippets/c_group_1_id_0.cpp").read_text() == _rows()[0][0][
-        "code_text"
+    assert [row["task_id"] for row in manifest["tasks"]["original"]] == [
+        "CLARC-G1-ORG-0000",
+        "CLARC-G1-ORG-0001",
     ]
+    assert [row["task_id"] for row in manifest["tasks"]["neutral_renamed"]] == [
+        "CLARC-G1-NEU-0000",
+        "CLARC-G1-NEU-0001",
+    ]
+    assert [row["query"] for row in manifest["tasks"]["original"]] == [
+        row["query"] for row in manifest["tasks"]["neutral_renamed"]
+    ]
+    assert manifest["tasks"]["original"][1]["request_status"] == "refused"
+    assert len(manifest["admission"]["ledger"]) == 2
+    assert (root / "original/snippets/c_group_1_id_0.cpp").read_text() == _rows()[0][0]["code_text"]
     assert (root / "neutral_renamed/snippets/c_group_1_id_0.cpp").read_text() == _rows()[1][1][
         "code_text"
     ]
@@ -131,6 +146,7 @@ def test_pinned_digest_and_license_evidence_are_required(tmp_path, monkeypatch):
     changed = {**raws, "dataset_card": b"---\nlicense: unknown\n---\n"}
     with pytest.raises(clarc.ClarcAdmissionError, match="SHA-256"):
         clarc.admit_pinned_pair(*changed.values())
-    assert "redistribution_unverified" in clarc.admit_pinned_pair(*raws.values())[1][
-        "contract"
-    ]["license_status"]
+    assert (
+        "redistribution_unverified"
+        in clarc.admit_pinned_pair(*raws.values())[1]["contract"]["license_status"]
+    )

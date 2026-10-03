@@ -112,6 +112,7 @@ def _result(
     status: str,
     latency_ms: float | None,
 ) -> dict[str, Any]:
+    _require(eligible or not paths, "failed result has partial top-10 candidates")
     _require(
         latency_ms is None
         or type(latency_ms) in (int, float)
@@ -180,7 +181,7 @@ def _paired_receipts(
     continuation: dict[str, Any],
     continuation_ledger: dict[str, Any],
     split_root: Path,
-) -> dict[str, tuple[dict[str, Any], bool]]:
+) -> dict[str, tuple[dict[str, Any], dict[str, Any], bool]]:
     _require(pair_ledger["manifest_sha256"] == _sha(Path(pair["_path"])), "pair manifest drift")
     _require(
         continuation_ledger["manifest_sha256"] == _sha(Path(continuation["_path"]))
@@ -222,7 +223,9 @@ def _paired_receipts(
         "split cell binding differs",
     )
     completed[split_repo] = {}, True
-    return {repo: (pair_cells[repo], split) for repo, (_receipt, split) in completed.items()}
+    return {
+        repo: (pair_cells[repo], receipt, split) for repo, (receipt, split) in completed.items()
+    }
 
 
 def build(
@@ -254,7 +257,7 @@ def build(
     per_query: list[dict[str, Any]] = []
     bindings: list[dict[str, Any]] = []
     for repo in sorted(paired):
-        cell, split = paired[repo]
+        cell, receipt, split = paired[repo]
         ext_cell = external_cells[repo]
         _require(
             (cell["suite_sha256"], cell["blind_pack_sha256"], cell["tasks"])
@@ -297,6 +300,23 @@ def build(
         )
         by_product: dict[str, dict[str, dict[str, Any]]] = {}
         pair_output = Path(cell["output_root"])
+        if not split:
+            _require(
+                receipt["verdict_sha256"] == _sha(pair_output / "verdict.json")
+                and receipt["report_sha256"] == _sha(pair_output / PAIR_REPORT),
+                "pair receipt differs: " + repo,
+            )
+        else:
+            split_precommit = _read(split_root / "precommit.json")
+            split_receipt = _read(split_root / "semble-receipt.json")
+            _require(
+                split_precommit["failed_pair_ledger_sha256"] == _sha(pair_root / "ledger.json")
+                and split_receipt["precommit_sha256"] == _sha(split_root / "precommit.json")
+                and split_receipt["status"] == "captured"
+                and split_receipt["exit_code"] == 0,
+                "split receipt differs: " + repo,
+            )
+        native_record_sha256: dict[str, str] = {}
         for product, route in (("quanta", "lexical"), ("semble", "semble-lexical-file")):
             record_root = (
                 (split_quanta_root if product == "quanta" else split_root) if split else pair_output
@@ -320,6 +340,12 @@ def build(
                 else "semble-pack.json"
             )
             record = _read(record_path)
+            native_record_sha256[product] = _sha(record_path)
+            if split and product == "semble":
+                _require(
+                    split_receipt["record_sha256"] == native_record_sha256[product],
+                    "split Semble record differs",
+                )
             _require(
                 record["query_pack_sha256"] == _canonical_sha(_read(pack_path)),
                 "native pack differs: " + repo + "/" + product,
@@ -391,6 +417,7 @@ def build(
                 "suite_sha256": cell["suite_sha256"],
                 "task_count": len(tasks),
                 "split_protocol": split,
+                "native_record_sha256": native_record_sha256,
                 "external_rows_sha256": capture["rows_sha256"],
             }
         )
@@ -429,8 +456,12 @@ def build(
         "schema": "identifier_robustness_five_product_offline_strata_v1",
         "status": "diagnostic_unqualified",
         "execution": "offline_replay_of_existing_captures",
+        "native_split_timing_scope": "split_cell_query_timings_excluded",
         "intent": INTENT,
         "source_strata_policy": identifier_robustness_suite.TYPO_SOURCE_STRATA_POLICY,
+        "report_tool_sha256": _sha(Path(__file__)),
+        "strata_generator_sha256": _sha(Path(identifier_robustness_suite.__file__)),
+        "evaluator_sha256": _sha(Path(evaluator.__file__)),
         "producer_source_head": pair["source_head"],
         "external_adapter_source_head": external["source_head"],
         "input_sha256": {
