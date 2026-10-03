@@ -453,7 +453,16 @@ def score_capture(
     ):
         raise ExternalSnippetError("native record, pack or gold commitment differs")
     tasks = {task["task_id"]: task for task in pack["tasks"]}
-    if not tasks or set(sidecar.get("selected_task_ids", [])) != set(tasks):
+    if (
+        not tasks
+        or set(sidecar.get("selected_task_ids", [])) != set(tasks)
+        or sidecar.get("admission", {}).get("admitted") != len(tasks)
+        or not isinstance(sidecar.get("population_task_count"), int)
+        or not isinstance(sidecar.get("materialized_complete_tasks"), int)
+        or not sidecar["population_task_count"]
+        >= sidecar["materialized_complete_tasks"]
+        >= len(tasks)
+    ):
         raise ExternalSnippetError("selected external task population differs")
     universe = {row["path"] for row in pack["file_universe"]}
     rows = record.get("results")
@@ -524,26 +533,39 @@ def score_capture(
         score_rows.append(result)
     if seen != set(tasks):
         raise ExternalSnippetError("native record task coverage incomplete")
+    hit_sum = sum(row["hit_at_10"] for row in score_rows)
+    mrr_sum = sum(row["mrr_at_10"] for row in score_rows)
+    scored_count = len(score_rows)
+    submitted_count = len(tasks)
+    population_count = sidecar["population_task_count"]
     report = {
         "qualification": "diagnostic_unqualified",
         "kind": sidecar["kind"],
         "record_validation_scope": "pack_commitment_result_status_rank_path_only",
-        "population_tasks": sidecar["population_task_count"],
+        "denominator_contract": {
+            "conditional": "scored_responses_only_including_capped_and_abstained",
+            "operational_submitted": "all_native_pack_tasks_execution_failures_zero_filled",
+            "operational_population": "all_upstream_tasks_source_blocked_refused_and_execution_failures_zero_filled",
+        },
+        "population_tasks": population_count,
         "materialized_complete_tasks": sidecar["materialized_complete_tasks"],
         "profile_admitted": sidecar["admission"]["admitted"],
-        "executed_scored": len(score_rows),
+        "source_blocked_tasks": population_count - sidecar["materialized_complete_tasks"],
+        "profile_refused_tasks": sidecar["admission"]["refused"],
+        "submitted_tasks": submitted_count,
+        "executed_scored": scored_count,
         "execution_failed": len(failed),
         "failed_task_ids": sorted(failed),
         "unjudged_returned": unjudged,
         "returned": returned,
         "judged_returned_fraction": (returned - unjudged) / returned if returned else None,
-        "hit_at_10_count": sum(row["hit_at_10"] for row in score_rows),
-        "hit_at_10": (
-            sum(row["hit_at_10"] for row in score_rows) / len(score_rows) if score_rows else None
-        ),
-        "mrr_at_10": (
-            sum(row["mrr_at_10"] for row in score_rows) / len(score_rows) if score_rows else None
-        ),
+        "hit_at_10_count": hit_sum,
+        "hit_at_10": hit_sum / scored_count if scored_count else None,
+        "mrr_at_10": mrr_sum / scored_count if scored_count else None,
+        "operational_submitted_hit_at_10": hit_sum / submitted_count,
+        "operational_submitted_mrr_at_10": mrr_sum / submitted_count,
+        "operational_population_hit_at_10": hit_sum / population_count,
+        "operational_population_mrr_at_10": mrr_sum / population_count,
         "per_query": score_rows,
     }
     if sidecar["kind"] == "codesearchnet_fractional_pool_v1":

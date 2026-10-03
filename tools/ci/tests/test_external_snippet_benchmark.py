@@ -151,7 +151,38 @@ def test_clarc_native_pack_is_blind_source_bound_and_preserves_default_refusals(
     assert report["hit_at_10"] == 1
     assert report["mrr_at_10"] == 0.5
     assert report["unjudged_returned"] == 1
+    assert report["operational_population_hit_at_10"] == 0.5
     assert "pool_estimated_ndcg_at_10" not in report
+
+    first, second = pack128["tasks"]
+    mixed = {
+        "schema_version": 5,
+        "query_pack_sha256": hashlib.sha256(retrieval_contract.canonical(pack128)).hexdigest(),
+        "comparison_contract": pack128["comparison_contract"],
+        "results": [
+            {
+                "task_id": first["task_id"],
+                "route": "lexical",
+                "rank_unit": "distinct_file",
+                "query_identity": {"original_query_sha256": first["query_sha256"]},
+                "status": "success",
+                "candidates": [{"rank": 1, "path": "snippets/c_group_1_id_0.cpp"}],
+            },
+            {
+                "task_id": second["task_id"],
+                "route": "lexical",
+                "rank_unit": "distinct_file",
+                "query_identity": {"original_query_sha256": second["query_sha256"]},
+                "status": "error",
+                "candidates": [],
+            },
+        ],
+    }
+    mixed_report = ext.score_capture(pack128, gold128, mixed)
+    assert mixed_report["hit_at_10"] == 1.0
+    assert mixed_report["execution_failed"] == 1
+    assert mixed_report["operational_submitted_hit_at_10"] == 0.5
+    assert mixed_report["operational_population_hit_at_10"] == 0.5
 
     corrupt = json.loads(json.dumps(record))
     corrupt["results"][0]["candidates"][1]["rank"] = 3
@@ -275,6 +306,8 @@ def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_
     assert score["unjudged_returned"] == 1
     assert score["judged_returned_fraction"] == pytest.approx(2 / 3)
     assert score["population_tasks"] == 2 and score["materialized_complete_tasks"] == 1
+    assert score["operational_submitted_hit_at_10"] == 1.0
+    assert score["operational_population_hit_at_10"] == 0.5
     _, _, _, clarc_raws = _clarc(tmp_path, monkeypatch)
     prepared_root = tmp_path / "prepared"
     prepared = ext.prepare_external_lanes(

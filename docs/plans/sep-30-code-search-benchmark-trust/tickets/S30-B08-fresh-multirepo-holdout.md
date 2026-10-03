@@ -2385,8 +2385,9 @@ removed so that fresh actual reference identities enter the issued gold.
 The isolated Python 3.14.5 environment keeps CPython t-string reference parsing
 and pinned retrieval dependencies outside the shared venv. Two startup attempts
 failed for missing dependencies before any capsule execution; their logs are
-retained. Attempt 3 passed dependency preflight and is running. Its session is
-`48760`; no completed capsule/matrix is claimed yet.
+retained. Attempt 3 passed dependency preflight but subsequently exited with
+`gold task has unsupported or ambiguous query semantics`. Session `48760` is
+terminal; no completed capsule/matrix is claimed.
 
 Actual C3 judgments continue under the existing three-model amendment. Fresh
 `issue_reviewed_labels.py` invokes the canonical issuer only after all actual
@@ -2465,4 +2466,71 @@ version (9.1.1) into the isolated environment allowed the actual NL validator
 to pass. `continue_actual_review_issuance_remaining.py` / session `79578`
 continues the other 11 repositories and retains the completed zustand output;
 it does not rerun or silently overwrite the issued qrels. The mechanical
-capsule execution remains session `48760`, observed PID `19595`.
+capsule execution requires a fresh invocation after the recorded failure.
+
+### Current-source and concurrent-work audit — 2026-10-04
+
+Observed main was clean at `8fe282c04dc676206b09004e9d1c82009fe33c3a`,
+matching the locally observed `origin/main`. Existing C3 issued artifacts remain
+bound to frozen `36970d9f`; publication does not rebind those artifacts.
+
+- **VERIFIED, focused producer repair:** commit `f3d2ae29` validates every gold
+  recipe before the expensive corpus/split replay. Command
+  `.venv/bin/python -m pytest -q tools/ci/tests/test_gold_oracle.py -k gold_batch`
+  passed **8 tests**, with 66 deselected, in **186.99 seconds**. Ruff passed for
+  `corpus_binding.py` and `test_gold_oracle.py`. Malformed JSON, a wrong raw type
+  and an invalid later recipe cannot start corpus replay; the existing valid
+  batch and source-drift checks remain covered. Full qualification is unproved.
+- **VERIFIED, new input preparation only:** all 12 amended recipes validate.
+  Their 84 components tasks use the current `casefold` contract. All 6,612
+  task IDs, query bytes and family sets are retained; no old artifact is
+  overwritten. Evidence: `mechanical-capsule-preparation-amended/amendment.json`
+  under the external root. **NOT_RUN:** amended full capsule/C4 emission.
+- **Actual C3 review in progress:** PID `93265` is alive. At observation the
+  progress document contains 19 complete mocha tasks, each with two actual
+  AI reviews and actual adjudication. Zustand's 20-task suite/receipts are
+  already issued; thus **20/240 tasks have issued suite/receipt proof**, while
+  another 19 have completed decisions but no issued suite yet. Watcher PID
+  `73141` is alive and waits for all three completed 20-task forms. These are
+  AI reviews under the recorded policy amendment, not human review receipts.
+- **VERIFIED, comparator preparation:** fresh source-identical projections
+  contain **13,347 files / 12 repositories**, prepared in **101.448 seconds**.
+  Dedicated C3 containers use loopback ports 18080 (Sourcegraph) and 18083
+  (OpenGrok), leaving the concurrent C5 services untouched. Both HTTP health
+  checks passed and fresh Sourcegraph site initialization completed.
+  **NOT_RUN:** Sourcegraph repository registration, complete indexed-universe
+  attestation, fresh C3 product capture and qualified timing. Container health
+  is not indexed-content proof. Sourcegraph uses an emulated amd64 image;
+  deployment and fair performance qualification are not claimed.
+- **Remaining v5 scope:** the corrected 20-task audit has 16 complete and four
+  unjudged tasks: `bat.pre.002`, `mocha.pre.007`, `typeorm.osa.003`,
+  `zellij.inf.003`. Invalid syntax/highlight fixtures and unscoped cross-language
+  declaration matches need explicit source/eligibility or query contracts;
+  do not silently exclude files or fabricate negative gold.
+- **BLOCKED, complete C3 admission:** final NL-only track split families and
+  license/model/contract/SDK custody must be bound to the newly issued suites.
+  The old mixed-suite split is preparation proof; keep exact family equality.
+  No full `verify_admission_bundle` result or qualified C3 comparison exists.
+
+Concurrent work was inspected read-only:
+
+- **「조사 lexical 실패 5건 (2)」** has a live C5 pair runner, with
+  **29/48 cells and 3,572/5,521 tasks** in the raw ledger. The validated cell
+  wall-time sum is **7,168.093 seconds**. This diagnostic batch covers a
+  different corpus/track and cannot close the C3 NL review/admission work.
+- **「ㅔ벤치 준비 - 코퍼스」** is inspecting this same external root for label
+  admission and five-product binding, and inspecting request-wide declaration
+  lookup in core/SDK/search-plane code. Admission ownership overlaps this
+  ticket; a second executing C3 issuance/index pipeline was not observed.
+  Reuse the current issuance artifacts rather than starting another pipeline.
+- **「벤치 - 엔진문제」** is handling CLARC, CodeSearchNet and the older
+  12-repository typo/external capture track. Its release build is alive.
+  These datasets and commits are separate from this C3 holdout. Its reported
+  focused SDK checks are not a full C3 admission result.
+
+Audit commands: `git status --short`, `git rev-parse HEAD`, `git log`,
+`ps -axo pid,ppid,etime,command`, `docker ps`, targeted JSON reads of progress,
+amendment, projections, v5 audit and C5 ledger, plus read-only application
+thread status/history. No new heavy batch or duplicate product run was started
+for this inventory. Full five-product quality ranking and fair latency remain
+**NOT_RUN**.

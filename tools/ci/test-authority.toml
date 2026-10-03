@@ -356,6 +356,10 @@ targets = [
   "benchmark-identifier-robustness-report-python-owner",
   "benchmark-identifier-robustness-strata-python-owner",
   "benchmark-codesearchnet-qrels-python-owner",
+  "benchmark-codesearchnet-materialize-python-owner",
+  "benchmark-clarc-adapter-python-owner",
+  "benchmark-external-snippet-python-owner",
+  "benchmark-identifier-robustness-multiproduct-python-owner",
   "benchmark-code-search-rank-study-python-owner",
   "benchmark-portable-proof-python-owner",
   "benchmark-pair-capture-python-owner",
@@ -1870,4 +1874,28 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-cargow-resource-admission-python-owner"
 path = "tools/ci/tests/test_cargow_resource_admission.py"
 owner = "scripts/cargow"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-codesearchnet-materialize-python-owner"
+path = "tools/ci/tests/test_codesearchnet_materialize.py"
+owner = "tools/benchmark/retrieval/codesearchnet_materialize.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-clarc-adapter-python-owner"
+path = "tools/ci/tests/test_clarc_adapter.py"
+owner = "tools/benchmark/retrieval/clarc_adapter.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-external-snippet-python-owner"
+path = "tools/ci/tests/test_external_snippet_benchmark.py"
+owner = "tools/benchmark/retrieval/external_snippet_benchmark.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-identifier-robustness-multiproduct-python-owner"
+path = "tools/ci/tests/test_identifier_robustness_multiproduct_report.py"
+owner = "tools/benchmark/retrieval/identifier_robustness_multiproduct_report.py"
 rail = "pr-benchmark-control-python"

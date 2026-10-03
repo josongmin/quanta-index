@@ -1110,6 +1110,32 @@ fn code_search_rank_study_recovers_original_boundaries_after_unicode_normalizati
             16
         );
     }
+    // An optional rank experiment must not invalidate the selected score when
+    // full non-NFC provenance exceeds its diagnostic collection budget.
+    let body = format!("cafe\u{301}{}fooBar", " ".repeat(120_000));
+    let (_dir, searcher) = fixture_with_scopes(vec![code_scope("nfd-large.rs", &body, 0)?])?;
+    let query = code_query(&["bar"], false);
+    let rows = searcher
+        .search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )?
+        .candidates;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].score, 40.0);
+    let LexicalCandidateExplanationV1::Matched(trace) = searcher.explain_candidate(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &rows[0].candidate_id,
+        &RequestBudgetV1::unbounded(),
+    )?
+    else {
+        panic!("selected score must remain explainable without experimental features");
+    };
+    assert_eq!(trace.emitted_score, 40.0);
+    assert!(trace.code_search_rank_study.is_none());
     Ok(())
 }
 

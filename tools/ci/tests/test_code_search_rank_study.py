@@ -211,6 +211,49 @@ def validate(artifact, record, pack):
     return study.validate_artifact(artifact, record, "a" * 64, pack)
 
 
+def test_native_diagnostic_budget_refusal_preserves_baseline_and_excludes_ablation():
+    artifact, record, pack, suite = fixture()
+    trace = artifact["results"][0]["collection"]["explanations"][1]["response"]["explanation"]
+    trace["planner_trace"] = [
+        row for row in trace["planner_trace"] if "code_search_rank_study_v1." not in row["detail"]
+    ]
+    trace["planner_trace"].append(
+        {
+            "stage": "merge",
+            "detail": "explain.code_search_rank_study_v1.refused=LEXICAL_COLLECTION_BUDGET_EXCEEDED",
+        }
+    )
+    rows = validate(artifact, record, pack)
+    report = study.compose(suite, rows)
+    for result in report["comparisons"].values():
+        assert result["coverage"] == 0
+        assert result["paired_means"]["candidate"]["file_hit"] is None
+        assert result["excluded"] == [
+            {"task_id": "T1", "reason": "explanation_incomplete_or_refused"}
+        ]
+    # A refusal cannot hide a false selected-score decomposition or an
+    # interruption/source error, nor coexist with completed study scores.
+    for replacement in (
+        "explain.code_search_score.occurrence=1",
+        "explain.code_search_rank_study_v1.refused=QUERY_CANCELLED",
+        "explain.code_search_rank_study_v1.baseline=105;selected=true",
+    ):
+        invalid = copy.deepcopy(artifact)
+        details = invalid["results"][0]["collection"]["explanations"][1]["response"][
+            "explanation"
+        ]["planner_trace"]
+        if replacement.endswith("QUERY_CANCELLED"):
+            details[-1]["detail"] = replacement
+        elif "occurrence=" in replacement:
+            next(row for row in details if "score.occurrence=" in row["detail"])[
+                "detail"
+            ] = replacement
+        else:
+            details.append({"stage": "merge", "detail": replacement})
+        with pytest.raises(ValueError):
+            validate(invalid, record, pack)
+
+
 def test_intent_breakdown_exposes_content_regression_hidden_by_declaration_gains():
     artifact, record, pack, suite = fixture()
     original = validate(artifact, record, pack)["T1"]
