@@ -980,6 +980,58 @@ def test_fresh_release_sdk_proof_binds_source_and_binaries(fake_execution) -> No
     assert any("--all-features" in argv for argv, _ in calls if "quanta-index-searchd-runtime" in argv)
 
 
+@pytest.mark.parametrize("occupied", ["directory", "symlink"])
+def test_fresh_build_refuses_occupied_target(tmp_path, monkeypatch, occupied) -> None:
+    for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "QUANTA_INDEX_SCCACHE"):
+        monkeypatch.delenv(key, raising=False)
+    out = tmp_path / "proof"
+    out.mkdir()
+    target = out / "target"
+    if occupied == "directory":
+        target.mkdir()
+    else:
+        target.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(ValueError, match="target already exists"):
+        portable_proof._fresh_build_environment(out)
+
+
+@pytest.mark.parametrize("variable,value", [
+    ("RUSTC_WRAPPER", "/opaque/wrapper"),
+    ("RUSTC_WORKSPACE_WRAPPER", "/opaque/wrapper"),
+    ("QUANTA_INDEX_SCCACHE", "1"),
+])
+def test_fresh_build_refuses_unbound_compiler_path(tmp_path, monkeypatch, variable, value) -> None:
+    for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "QUANTA_INDEX_SCCACHE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(variable, value)
+    out = tmp_path / "proof"
+    out.mkdir()
+    with pytest.raises(ValueError, match="unbound|compiler cache"):
+        portable_proof._fresh_build_environment(out)
+    assert not (out / "target").exists()
+
+
+def test_fresh_release_proof_rejects_command_profile_and_binary_tampering(fake_execution) -> None:
+    out, _legacy_runner, _calls = fake_execution
+    receipt = portable_proof.produce("sdk", out, build_profile="release-fresh")
+    canonical = receipt.read_bytes()
+    for mutation in (
+        lambda row: row.update(build_profile="debug"),
+        lambda row: row["commands"][1]["argv"].remove("--all-features"),
+        lambda row: row["commands"][1]["environment"].update(CARGO_TARGET_DIR="/other/target"),
+    ):
+        changed = json.loads(canonical)
+        mutation(changed)
+        receipt.write_text(json.dumps(changed), encoding="utf-8")
+        with pytest.raises(ValueError):
+            portable_proof.validate(receipt)
+    receipt.write_bytes(canonical)
+    runner = out / "target" / "release" / portable_proof.PACKAGE
+    runner.write_bytes(b"swapped-runner")
+    with pytest.raises(ValueError, match="binary identity changed"):
+        portable_proof.validate(receipt)
+
+
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
 def test_relocated_custody_preserves_commands_and_paths(fake_execution, rail):
     import shutil

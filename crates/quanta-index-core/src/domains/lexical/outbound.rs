@@ -270,7 +270,8 @@ pub struct CodeSearchExecutionStatsV1 {
     /// Candidate generation and verification through building unsorted rows.
     pub candidate_ns: u64,
     /// Typo-only subset of `candidate_ns`: language/posting shortlist and
-    /// bounded file admission before source-token verification.
+    /// bounded file admission before source-token verification. For fallback,
+    /// a preceding unsuccessful ordinary pass remains outside this child.
     pub typo_shortlist_admission_ns: u64,
     /// Typo-only subset of `candidate_ns`: source-token walk and request-local
     /// edit-distance memoization. Unmeasured loop work remains in the outer

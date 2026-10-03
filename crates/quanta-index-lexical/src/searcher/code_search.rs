@@ -2198,6 +2198,10 @@ impl TantivySearcher {
             page,
             budget,
         } = request;
+        // Fallback keeps the original candidate clock across the failed
+        // literal pass. The typo shortlist clock starts here so that prior
+        // ordinary work remains visible only as unallocated outer time.
+        let typo_started = Instant::now();
         let eligible = language_eligible_ids(authority, constraints, budget)?;
         let possible = if constraints.repo_relative_path_exact.is_some() {
             None
@@ -2244,7 +2248,7 @@ impl TantivySearcher {
                 });
             }
         }
-        stats.typo_shortlist_admission_ns = observed_ns(candidate_started)?;
+        stats.typo_shortlist_admission_ns = observed_ns(typo_started)?;
         let mut comparisons = 0;
         let mut distance_cache = TypoDistanceCache::new();
         let mut ranked = Vec::new();
