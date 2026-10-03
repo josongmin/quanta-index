@@ -640,3 +640,6 @@ def test_fresh_join_global_prebind_binds_release_and_runtime(tmp_path):
         with pytest.raises(fresh.FreshJoinError, match="global external"):
             fresh._global_prebind(tmp_path, changed_manifest, changed_ledger, changed_sources)
     assert fresh._global_prebind(tmp_path, {"schema": "legacy"}, {}, {}) == "not_applicable_legacy"
+    path.unlink()
+    with pytest.raises(fresh.FreshJoinError, match="prebind path is absent"):
+        fresh._global_prebind(tmp_path, manifest, ledger, sources)

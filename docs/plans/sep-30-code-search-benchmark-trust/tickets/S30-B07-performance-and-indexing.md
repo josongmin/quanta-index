@@ -394,8 +394,12 @@ and file versus declaration recovery must stay separate.
 The separate public `writeContentType` rank study at `/private/tmp/qf4s273`
 walked the complete pool: 18 files in two pages. `render/render.go` ranks 13
 with score 109; the preceding 12 render files score 111 and contain uppercase
-`WriteContentType` declarations plus helper calls. The default request folds
-case; its declaration bonus also applies to these uppercase method names.
+`WriteContentType` declarations plus lowercase helper calls. The default
+request folds case. Its baseline score is boundary 100 plus an occurrence
+bonus (6 versus 4) and a file-level exact-spelling bonus of 5. The latter
+proves exact spelling occurs somewhere in the file, not that the declaration
+has that spelling. The study's declaration-bonus ablation also rewards the
+uppercase methods under folded matching; it is not a current baseline bonus.
 The source gold instead names the lowercase local declaration. Index omission
 is therefore disproved for this fresh request; the observed rank and differing
 intent contracts explain its miss. This diagnostic must not be mixed into the

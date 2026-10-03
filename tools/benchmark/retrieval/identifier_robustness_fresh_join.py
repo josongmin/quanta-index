@@ -192,6 +192,7 @@ def _global_prebind(
     if manifest.get("schema") != "c5_osa1_external_global12_fresh_v1":
         return "not_applicable_legacy"
     path = external_root / "prebind.json"
+    require(path.is_file() and not path.is_symlink(), "global external prebind path is absent")
     prebind = read(path)
     bound = ledger.get("bound_release")
     require(
