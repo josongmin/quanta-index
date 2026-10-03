@@ -22,11 +22,10 @@ pub use history_text::{
 pub use inbound::LexicalQueryPort;
 pub use outbound::{
     CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, CodeSearchRankStudyV1,
-    CodeSearchScoreComponentsV1,
-    FileContributorIngestPort, FileOwnershipIngestPort, LexicalCandidateExplanationV1,
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec, LexicalReadiness,
-    LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher,
-    RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
+    CodeSearchScoreComponentsV1, FileContributorIngestPort, FileOwnershipIngestPort,
+    LexicalCandidateExplanationV1, LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec,
+    LexicalReadiness, LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1,
+    LexicalSearcher, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
     RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
     SearchCorpusPreflightPhaseV1, SymbolSearchPageV1,
 };
