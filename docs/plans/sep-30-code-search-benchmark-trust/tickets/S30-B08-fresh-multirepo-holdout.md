@@ -892,6 +892,18 @@ same cause. The TypeORM first page ranks usages, tests, and fixture files ahead
 of declarations with tied scores. A content-file search and a declaration
 navigation judgment remain distinct contracts.
 
+An offline join of all 60 misses against the twelve v6 gold capsules and the
+raw candidate rows confirmed that each first page has ten distinct files and
+none includes an intended file. All 60 source partitions have exactly one
+near declaration name and no extra near declaration file; 37 have one gold
+file. Thus near-name ambiguity does not explain these specific synthetic
+target misses, although their user relevance remains unreviewed. The
+per-task paths, scores, source-capsule digests and record/report bindings are
+in `/private/tmp/qi-b08-product-8e8592f4-20261003/quanta-typo-miss-partition.json`
+(SHA-256 `1b49b9a696c27ee8fc8d50e1840ecb6a1c3ef9866d89c5d7545a106ff04c191d`).
+Only the four top-50 continuations above establish their gold ranks beyond
+ten; no beyond-window rank is inferred for the other 56 misses.
+
 **VERIFIED, separately scoped native cs diagnostic:** the exact same `lo`
 358-task typo suite was submitted as `cs 3.2.0` native `~1` under
 `/private/tmp/qi-b08-product-8e8592f4-20261003/cs-fuzzy-lo-9d38`.
