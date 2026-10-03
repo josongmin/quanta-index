@@ -2963,3 +2963,14 @@ Follow-up at 05:29 KST supersedes the SDK-live observation above:
 and query captures; freeze the integrated source and produce complete matching
 contract/SDK proofs; finish C4 and the reviewed five-product comparison with
 equal public API timing. No qualified ranking or final performance claim is made.
+
+Follow-up: fresh contract and SDK portable producers were started on one clean,
+pinned `9e27b8ba18282cd9c8c6c72afb63ada26868176e` checkout at
+`/Users/songmin/.codex/worktrees/b08-integrated-admission-proof/quanta-index`.
+Their external root is `integrated-portable-proof-9e27-sj_x_b3k/`; its
+`precommit.json` binds commands, source and environment before execution.
+Sessions **72447** (contract) and **89355** (SDK) are confirmed live. A fresh
+isolated compiler target avoids mutating the earlier still-live `32fbdb2d` SDK
+target. This is a verification checkout; fixes remain on main. Neither new
+producer has yet issued a passing receipt, and later main commits are not
+silently included in this pinned proof.
