@@ -5195,7 +5195,7 @@ def run_quanta_strategy(
     ):
         raise RunError("captured hybrid fetch floor differs from explicit spec policy")
     if _validate_ingest_diagnostic(
-        diagnostic["ingest"], read_json(record_path)
+        diagnostic["ingest"], read_json(record_path), lexical_stage_contract=True
     ) != ingest_request_identity(spec):
         raise RunError("captured ingest identity differs from requested batch scope")
     index_bytes = tree_size(state_root)
