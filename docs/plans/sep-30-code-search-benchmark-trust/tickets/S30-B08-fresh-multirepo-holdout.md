@@ -949,3 +949,16 @@ The sequential sum of run-plus-replay wall times is 1,945.258s excluding the
 previously reused `lo` capture; it is not query latency or a performance
 comparison. These source-exposed mechanical labels lack human relevance review
 and no product ranking or qualified file decision follows from this diagnostic.
+
+Read-only offline file-evidence replay at evaluator `main@91b18b48` used the
+existing exploratory `/tmp/qx` `lo` pair, source commit
+`5c6ddcb7063c9908031340db03f27ba7483d1ece`, suite SHA-256
+`aa6e7bb9767f593f2db07e45775c98991cae6cd522248136d7559c98864143c2`,
+Quanta record SHA-256 `83ef50820d440d62cb2cfca5ec72c45a2f42f6625a8193cce0bef504ad46c6c4`
+and Semble record SHA-256
+`b6e34a311d8e6b115083d502431edc6c126fc81be861fa150c41b3882ea94edd`.
+`merge_records` and `evaluate_complete_scored_file_evidence` rederived 98
+paired positive rows under `file_ndcg_at_10` (Quanta minus Semble mean delta
+`0.005574468530525119`); both qualified uncertainty-shape checks returned
+true. The frozen `/tmp/qx` manifest is exploratory and its verdict has
+`QUALITY_DELTA: not_applicable`, so this verifies the evaluator/replay path only.
