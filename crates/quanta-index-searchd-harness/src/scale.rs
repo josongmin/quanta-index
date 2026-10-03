@@ -2029,6 +2029,29 @@ mod tests {
             unaffected.candidates[0].repo_relative_path.as_str(),
             shared_path
         );
+
+        rt.delete_chunk_for_source_file("repo0", shared_path)?;
+        let _delete = rt.seal()?;
+        rt.activate_last_sealed_generation()?;
+        let deleted = rt.query_text(TextQuerySyntax::Native, &repo_query_token(0), 10);
+        assert!(deleted.typed_error.is_none());
+        assert!(deleted.candidates.is_empty());
+        let retained = rt.query_text(TextQuerySyntax::Native, &repo_query_token(1), 10);
+        assert!(retained.typed_error.is_none());
+        assert_eq!(retained.candidates.len(), 1);
+        assert_eq!(retained.candidates[0].source_repo_id.as_str(), "repo1");
+
+        let mut reopened = rt.reopen();
+        let still_deleted = reopened.query_text(TextQuerySyntax::Native, &repo_query_token(0), 10);
+        assert!(still_deleted.typed_error.is_none());
+        assert!(still_deleted.candidates.is_empty());
+        let still_retained = reopened.query_text(TextQuerySyntax::Native, &repo_query_token(1), 10);
+        assert!(still_retained.typed_error.is_none());
+        assert_eq!(still_retained.candidates.len(), 1);
+        assert_eq!(
+            still_retained.candidates[0].source_repo_id.as_str(),
+            "repo1"
+        );
         Ok(())
     }
 

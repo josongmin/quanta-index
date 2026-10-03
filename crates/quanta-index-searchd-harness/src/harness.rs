@@ -1895,6 +1895,28 @@ impl E2eRuntime {
         Ok(())
     }
 
+    /// Stage a tombstone for one source repository's file. The path-only
+    /// helper intentionally deletes every source with that relative path.
+    pub fn delete_chunk_for_source_file(
+        &mut self,
+        source_repo_id: &str,
+        path: &str,
+    ) -> AnyResult<()> {
+        let key = quanta_index_contract::SourceFileKey {
+            source_repo_id: RepoId::new(source_repo_id)?,
+            repo_relative_path: RepoRelativePath::new(path),
+        };
+        let deleted_ids = self.source_publication.delete_source_file(key)?;
+        if self
+            .chunk_ids_by_path
+            .get(path)
+            .is_some_and(|id| deleted_ids.contains(id))
+        {
+            let _removed = self.chunk_ids_by_path.remove(path);
+        }
+        Ok(())
+    }
+
     pub fn ingest_symbol(
         &mut self,
         _repo: &str,

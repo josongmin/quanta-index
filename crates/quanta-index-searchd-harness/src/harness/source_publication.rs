@@ -150,11 +150,32 @@ impl CorpusPublicationState {
             });
         }
         for key in keys {
-            let _removed = self.files.remove(&key);
-            let _was_dirty = self.dirty.remove(&key);
-            let _new_tombstone = self.tombstones.insert(key);
+            let _deleted_ids = self.delete_source_file(key)?;
         }
         Ok(())
+    }
+
+    /// Tombstone exactly one source file, even when another repository has
+    /// the same relative path in the containing search corpus.
+    pub(super) fn delete_source_file(
+        &mut self,
+        key: SourceFileKey,
+    ) -> Result<Vec<quanta_index_contract::ChunkId>> {
+        self.ensure_mutable()?;
+        ensure!(
+            self.semantic_fixture.is_none(),
+            "explicit fixture already owns pending corpus"
+        );
+        key.validate().map_err(anyhow::Error::msg)?;
+        let deleted_ids = self.files.remove(&key).map_or_else(Vec::new, |file| {
+            file.chunks
+                .into_iter()
+                .map(|chunk| chunk.chunk_id)
+                .collect()
+        });
+        let _was_dirty = self.dirty.remove(&key);
+        let _new_tombstone = self.tombstones.insert(key);
+        Ok(deleted_ids)
     }
 
     pub(super) fn stage_fixture(
@@ -529,6 +550,13 @@ impl SourceCorpusFixture {
 
     pub fn delete_path(&mut self, path: &str) -> Result<()> {
         self.state.delete_path(self.repo.clone(), path)
+    }
+
+    pub fn delete_source_file(
+        &mut self,
+        key: SourceFileKey,
+    ) -> Result<Vec<quanta_index_contract::ChunkId>> {
+        self.state.delete_source_file(key)
     }
 
     pub fn frozen_batch(&mut self) -> Result<SearchCorpusIngestBatch> {

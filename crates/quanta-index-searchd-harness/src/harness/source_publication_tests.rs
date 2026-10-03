@@ -258,6 +258,44 @@ fn deleting_a_path_retracts_each_source_and_each_old_semantic_unit() -> Result<(
     successor.validate_surface_mutations_v1()?;
     Ok(())
 }
+
+#[test]
+fn deleting_one_source_file_preserves_another_repo_at_the_same_path() -> Result<()> {
+    let mut state = CorpusPublicationState::default();
+    let foreign_repo = RepoId::new("foreign-repo")?;
+    state.replace_chunks(
+        &repo()?,
+        vec![
+            chunk("local", "alpha", None)?,
+            chunk("foreign", "beta", Some(foreign_repo.clone()))?,
+        ],
+    )?;
+    let original = batch(&state, 1)?;
+    state.accept(&original, &receipt(&original)?)?;
+    state.finish_frozen();
+    state.activate(
+        &original.repo_id,
+        &original.revision_id,
+        original.generation,
+        &original.manifest_digest,
+    )?;
+    let deleted_ids = state.delete_source_file(SourceFileKey {
+        source_repo_id: foreign_repo.clone(),
+        repo_relative_path: RepoRelativePath::new("src/a.py"),
+    })?;
+    assert_eq!(deleted_ids, vec![ChunkId::new("foreign")]);
+    let successor = batch(&state, 2)?;
+    assert_eq!(successor.tombstone_scopes.len(), 1);
+    assert_eq!(
+        successor.tombstone_scopes[0].file.source_repo_id,
+        foreign_repo
+    );
+    assert_eq!(successor.semantic_tombstone_scopes.len(), 1);
+    assert!(successor.replace_scopes.is_empty());
+    successor.validate_v1()?;
+    successor.validate_surface_mutations_v1()?;
+    Ok(())
+}
 #[test]
 fn standalone_delta_preserves_prior_semantic_removal_evidence() -> Result<()> {
     let mut state = CorpusPublicationState::default();
