@@ -593,9 +593,15 @@ def require_gold_runtime() -> dict[str, str]:
         )
     except (OSError, UnicodeError, ValueError) as error:
         raise EvidenceError("gold runtime source pins are unreadable or malformed") from error
-    dependencies = project.get("project", {}).get("dependencies")
-    optional = project.get("project", {}).get("optional-dependencies", {}).get("dev")
-    packages = locked.get("package")
+    project_section = project.get("project") if isinstance(project, dict) else None
+    optional_section = (
+        project_section.get("optional-dependencies") if isinstance(project_section, dict) else None
+    )
+    dependencies = (
+        project_section.get("dependencies") if isinstance(project_section, dict) else None
+    )
+    optional = optional_section.get("dev") if isinstance(optional_section, dict) else None
+    packages = locked.get("package") if isinstance(locked, dict) else None
     if (
         not isinstance(dependencies, list)
         or not isinstance(optional, list)

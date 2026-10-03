@@ -162,6 +162,20 @@ def test_gold_runtime_rejects_project_lock_disagreement(tmp_path, monkeypatch):
         binding.require_gold_runtime()
 
 
+@pytest.mark.parametrize(
+    ("relative", "content"),
+    [("pyproject.toml", b"project = []\n"), ("uv.lock", b'package = "invalid"\n')],
+)
+def test_gold_runtime_rejects_malformed_pin_structure(tmp_path, monkeypatch, relative, content):
+    source_root = binding.GOLD_RUNTIME_SOURCE_ROOT
+    for filename in ("pyproject.toml", "uv.lock"):
+        (tmp_path / filename).write_bytes((source_root / filename).read_bytes())
+    (tmp_path / relative).write_bytes(content)
+    monkeypatch.setattr(binding, "GOLD_RUNTIME_SOURCE_ROOT", tmp_path)
+    with pytest.raises(EvidenceError, match="gold runtime source pins are malformed"):
+        binding.require_gold_runtime()
+
+
 @pytest.mark.parametrize("view", ["code_only", "developer_search"])
 def test_capsule_replays_after_original_sources_are_unavailable(source, tmp_path, view):  # noqa: F811
     # This oracle must remove the actual producer checkout, not a spare seed copy.

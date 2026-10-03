@@ -665,6 +665,21 @@ def test_parity_reference_v2_input_envelope():
     parity_reference.validate_v2_input_envelope(["x" * 4096] * 1024)
 
 
+def test_current_v7_pair_replays_nested_indexing_stages_and_phase_contract(tmp_path):
+    stage = _pair_stage(tmp_path, diagnostic_version=7)
+    diagnostic_path = next(stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json"))
+    diagnostic = json.loads(diagnostic_path.read_text())
+    phase = json.loads(diagnostic_path.with_name("phase-metrics.json").read_text())
+    protocol = json.loads((stage["stage"] / "protocol-lock.json").read_text())
+    assert protocol["lock_version"] == 5
+    assert phase["schema_version"] == 3
+    assert phase["phases_ms"]["daemon_boot_and_readiness"] == 1.0
+    assert "model_provider_prepare" not in phase["phases_ms"]
+    assert diagnostic["ingest"]["observation"]["lexical_stages"]["seal_ns"] == 40
+    pairrun._validate_phase_metrics(phase, "current phase fixture")
+    assert _stage_verdict(stage)["states"]["PAIR_VALID"] == "pass"
+
+
 def test_retrieval_diagnostic_v5_binds_actual_server_observation_policy(tmp_path):
     stage = _pair_stage(tmp_path)
     path = next(stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json"))
@@ -15319,6 +15334,48 @@ def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp
             capped_off,
             pack,
         )
+
+
+def test_query_clock_overhead_v7_preserves_current_diagnostic_and_hybrid_policy(tmp_path):
+    stage = _pair_stage(tmp_path, diagnostic_version=7)
+    path = next(stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json"))
+    record = json.loads(path.with_name("record.json").read_text())
+    record["span_accounting_version"] = 1
+    suite = json.loads(stage["suite_path"].read_text())
+    pack = json.loads((stage["stage"] / "query-pack.json").read_text())
+    pack, _ = pairrun.project_pack_and_suite(pack, suite, sorted(record["route_provenance"]))
+    on = json.loads(path.read_text())
+    on["record_sha256"] = cp.sha(cp.canonical(record))
+    off = json.loads(json.dumps(on))
+    off["server_observation"] = pairrun.server_observation_configuration("disabled")
+    for row in off["results"]:
+        row["response"]["explanation"]["stage_timings"] = None
+    for name, value in (("candidate_ns", 100), ("sort_page_ns", 20), ("preview_ns", 5)):
+        on["results"][0]["response"]["explanation"]["planner_trace"].append(
+            {"stage": "merge", "detail": f"code_search.execution.{name}={value}"}
+        )
+    phases = json.loads(path.with_name("phase-metrics.json").read_text())
+    phases["record_sha256"] = on["record_sha256"]
+    phases["measurement_repetitions"] = 2
+    phases["query_protocol"] = pairrun.build_query_protocol(phases["query_schedule"], 0, 1, 2)
+    phases["warm_latencies_ms"] = {
+        row["route"]: {row["task_id"]: [4.0, 6.0] for row in record["results"]}
+        for row in record["results"]
+    }
+    phases["phases_ms"]["warm_query"] = 10.0 * len(record["results"])
+    phases["total_ms"] = sum(phases["phases_ms"].values())
+    off_phases = json.loads(json.dumps(phases))
+    off_phases["warm_latencies_ms"] = {
+        route: {task_id: [2.0, 3.0] for task_id in rows}
+        for route, rows in phases["warm_latencies_ms"].items()
+    }
+    off_phases["phases_ms"]["warm_query"] = 5.0 * len(record["results"])
+    off_phases["total_ms"] = sum(off_phases["phases_ms"].values())
+    assert overhead.compare(record, record, phases, off_phases, on, off, pack)["rows"]
+    forged = json.loads(json.dumps(off))
+    forged["hybrid_fetch_policy"] = pairrun.hybrid_fetch_policy_configuration("25")
+    with pytest.raises(ValueError, match="hybrid fetch policy"):
+        overhead.compare(record, record, phases, off_phases, on, forged, pack)
 
 
 def test_query_clock_comparator_excludes_only_policy_controlled_code_search_clocks():
