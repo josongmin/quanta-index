@@ -1226,3 +1226,19 @@ five frozen candidates total 1,300 code files; their digests and the three
 size refusals are in `/private/tmp/qi-c5-fresh-20261003/candidate-status-v2.json`
 (SHA-256 `0fe6a3231fd4e92a8d213791f1c401852e967afe67b7331d9e25d2de35044e61`).
 Near-duplicate audit and the other seven cells remain **NOT_RUN**.
+
+Nine of the twelve fresh candidate cells now have complete-history checkouts
+and source-replayed provisional releases. They contain 6,264 `code_only`
+files. The source/manifest/release bindings, commits and per-cell counts are
+in `/private/tmp/qi-c5-fresh-20261003/candidate-status-v4.json` (SHA-256
+`aff99bea5eb2e3be46bd21e6903a73f0980171a2e7ec0d19470f0d340ab7f7ae`).
+The existing split-leakage winnowing policy was run over all nine candidates
+against the ten development and twelve exposed evaluation repositories, plus
+all cross-candidate pairs. It found zero exact copies above the policy's
+256-byte floor and zero near-duplicate pairs. The complete census is
+`/private/tmp/qi-c5-fresh-20261003/near-audit-v1.json` (SHA-256
+`5c75f136e2cab8447cd960fc0a8dbec4c4f2824e4e9b7ee5e2cba1e25be76afd`).
+One 26-byte Celery example stub still matches a Django file below that floor;
+it remains visible in the preflight and is not counted as a policy violation.
+Three cells, independent relevance labels, index attestation and product
+captures remain **NOT_RUN**. None of these candidates is C5-admitted yet.
