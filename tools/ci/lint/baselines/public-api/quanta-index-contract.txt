@@ -4,6 +4,7 @@ pub use quanta_index_contract::ActivationTokenValidationErrorV1
 pub use quanta_index_contract::ApproximateMethodV2
 pub use quanta_index_contract::ApproximateQualityContractV2
 pub use quanta_index_contract::CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE
+pub use quanta_index_contract::CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE
 pub use quanta_index_contract::CURSOR_ENVELOPE_V2_VERSION
 pub use quanta_index_contract::CandidateCountV1
 pub use quanta_index_contract::ContinuationTokenError
@@ -100,6 +101,7 @@ pub use quanta_index_contract::TextQueryRequest
 pub use quanta_index_contract::TextQuerySyntax
 pub use quanta_index_contract::TopKOutOfRangeV1
 pub use quanta_index_contract::continuation_fetch_size
+pub use quanta_index_contract::valid_code_search_component_query
 pub use quanta_index_contract::valid_code_search_typo_identifier
 pub use quanta_index_contract::validate_internal_fetch_size
 pub use quanta_index_contract::validate_lexical_page_v1
@@ -5403,6 +5405,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::WeightsHash
 pub fn quanta_index_contract::lex::compute_parse_tree_source_hash(text: &str) -> [u8; 32]
 pub mod quanta_index_contract::query
 pub use quanta_index_contract::query::CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE
+pub use quanta_index_contract::query::CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE
 pub use quanta_index_contract::query::ContinuationTokenError
 pub use quanta_index_contract::query::ContinuationTokenV2
 pub use quanta_index_contract::query::ExactRepoRelativePathV1
@@ -5444,6 +5447,7 @@ pub use quanta_index_contract::query::QueryConstraintIntersectionV1
 pub use quanta_index_contract::query::QueryConstraintSetV1
 pub use quanta_index_contract::query::TextQueryRequest
 pub use quanta_index_contract::query::TextQuerySyntax
+pub use quanta_index_contract::query::valid_code_search_component_query
 pub use quanta_index_contract::query::valid_code_search_typo_identifier
 pub use quanta_index_contract::query::validate_lexical_page_v1
 pub enum quanta_index_contract::query::ClusterMembershipReadPolicyErrorV1

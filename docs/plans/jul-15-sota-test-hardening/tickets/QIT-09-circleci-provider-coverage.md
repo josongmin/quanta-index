@@ -98,3 +98,13 @@ authority. A local result must not be labeled hosted CI.
 Closure requires observed terminal runs and artifacts on the selected final
 source, plus explicit outcomes for every selected coverage row. The absence of
 a selected rail is `NOT_RUN`, not GREEN.
+
+## Release evidence remaining after CI restoration
+
+Restoring regular CircleCI does not close the original QIT-09 release scope:
+weekly/release evidence hierarchy, artifact retention and the complete release
+proof DAG remain open. The release-proof owner follows
+[S21-13](../../sep-21-search-plane-sota-hardening/tickets/S21-13-release-evidence-and-sota-qualification.md)
+and the registered proof-authority graph, with exact-source manifests and
+terminal results for every selected dependency. A passing PR job cannot be
+promoted into a weekly or release verdict by changing this ticket's status.
