@@ -5559,7 +5559,10 @@ def _validate_manifest_shape(payload: object) -> dict:
     elif admission_digest is not None:
         raise RunError("exploratory manifest admission digest must be null")
     quanta_fields = {"source_sha", "source_closure_digest", "binary_digest", "embedder"}
-    if isinstance(provenance["quanta"], dict) and "binary_build_source_revision" in provenance["quanta"]:
+    if (
+        isinstance(provenance["quanta"], dict)
+        and "binary_build_source_revision" in provenance["quanta"]
+    ):
         quanta_fields.add("binary_build_source_revision")
     quanta = _exact_keys(provenance["quanta"], quanta_fields, "manifest quanta")
     if quanta.get("binary_build_source_revision") is not None:
@@ -8830,7 +8833,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     raise RunError("completed-response output units differ across paired products")
             except (RunError, KeyError, TypeError, ValueError) as exc:
                 perf_fail = (f"completed_response_timing_unverified: {exc}", "provenance")
-        if perf_fail is None and provenance_claims["quanta"].get("binary_build_source_revision") is None:
+        if (
+            perf_fail is None
+            and provenance_claims["quanta"].get("binary_build_source_revision") is None
+        ):
             perf_fail = ("binary_build_source_unattested", "provenance")
         if perf_fail is None:
             set_state(

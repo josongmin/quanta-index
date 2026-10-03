@@ -8792,9 +8792,7 @@ def test_qualified_claims_require_pair_contract_and_sdk_states(tmp_path, monkeyp
 
     _rewrite_manifest(
         st,
-        lambda manifest: manifest["provenance"]["quanta"].pop(
-            "binary_build_source_revision"
-        ),
+        lambda manifest: manifest["provenance"]["quanta"].pop("binary_build_source_revision"),
     )
     legacy = _stage_verdict(st)
     assert legacy["states"]["PAIR_VALID"] == "pass"
@@ -9845,14 +9843,14 @@ def test_pair_provenance_keeps_driver_revision_distinct_from_unattested_binary_s
 
     _rewrite_manifest(
         st,
-        lambda value: value["provenance"]["quanta"].update(
-            binary_build_source_revision="e" * 40
-        ),
+        lambda value: value["provenance"]["quanta"].update(binary_build_source_revision="e" * 40),
     )
     with pytest.raises(pairrun.RunError, match="binary build source revision is not attested"):
         _stage_verdict(st)
 
-    _rewrite_manifest(st, lambda value: value["provenance"]["quanta"].pop("binary_build_source_revision"))
+    _rewrite_manifest(
+        st, lambda value: value["provenance"]["quanta"].pop("binary_build_source_revision")
+    )
     assert "binary_build_source_revision" not in _stage_verdict(st)["provenance"]["quanta"]
 
 
