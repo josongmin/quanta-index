@@ -4,6 +4,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{
@@ -20,6 +21,19 @@ use quanta_index_contract::{
 
 use crate::text_query_builder::TextQueryBuilderState;
 use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError, stamp_batch_digest_v1};
+
+/// SDK wall time of the two successful control requests. These measurements
+/// are outside the server's ingest observation and exclude caller setup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SdkPublishActivateDurationsV1 {
+    pub publish_ns: u64,
+    pub activation_ns: u64,
+}
+
+fn sdk_elapsed_ns(started: Instant) -> Result<u64, SdkError> {
+    u64::try_from(started.elapsed().as_nanos())
+        .map_err(|_| SdkError::Protocol("SDK phase nanoseconds exceed u64".into()))
+}
 
 /// A search-corpus publish under construction.
 ///
@@ -372,7 +386,7 @@ impl<'a> SearchCorpusNamespace<'a> {
         batch: &SearchCorpusBatch,
         expected_active: Option<SearchCorpusActiveHeadV1>,
     ) -> Result<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck), SdkError> {
-        let (outcome, activation) =
+        let (outcome, activation, _timings) =
             self.publish_and_activate_outcome(batch, expected_active, false)?;
         Ok((outcome.receipt, activation))
     }
@@ -387,6 +401,7 @@ impl<'a> SearchCorpusNamespace<'a> {
         (
             quanta_index_contract::SearchCorpusPublishOutcome,
             SearchPlaneSearchCorpusActivationCasAck,
+            SdkPublishActivateDurationsV1,
         ),
         SdkError,
     > {
@@ -402,6 +417,7 @@ impl<'a> SearchCorpusNamespace<'a> {
         (
             quanta_index_contract::SearchCorpusPublishOutcome,
             SearchPlaneSearchCorpusActivationCasAck,
+            SdkPublishActivateDurationsV1,
         ),
         SdkError,
     > {
@@ -415,7 +431,10 @@ impl<'a> SearchCorpusNamespace<'a> {
         .map_err(|error| {
             SdkError::Protocol(format!("composite activation request is invalid: {error}"))
         })?;
+        let publish_started = Instant::now();
         let outcome = dispatch_search_corpus_publish_outcome_v1(self.client, batch)?;
+        let publish_ns = sdk_elapsed_ns(publish_started)?;
+        let activation_started = Instant::now();
         if observation_required && outcome.observation.is_none() {
             return Err(SdkError::Protocol(
                 "search corpus observation is missing".to_string(),
@@ -455,7 +474,15 @@ impl<'a> SearchCorpusNamespace<'a> {
                 ));
             }
         };
-        Ok((outcome, activation))
+        let activation_ns = sdk_elapsed_ns(activation_started)?;
+        Ok((
+            outcome,
+            activation,
+            SdkPublishActivateDurationsV1 {
+                publish_ns,
+                activation_ns,
+            },
+        ))
     }
 }
 

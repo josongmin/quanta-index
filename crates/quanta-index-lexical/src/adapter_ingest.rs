@@ -15,14 +15,22 @@ use crate::sealed_generation::coverage::{
     plan_file_coverage, read_staged_coverage, write_staged_coverage,
 };
 use crate::sealed_generation::{DiscardingVisitor, seal_generation, walk_sealed_generation};
+use crate::adapter_open::LexicalMutationTimings;
 use crate::{GenKey, LexicalAdapter, op_mutates_index, op_writes_generation};
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
     BatchIngestMode, FileContributorIngestBatch, FileOwnershipIngestBatch, GenerationSnapshot,
+    LexicalBuildStageDurationsV1,
     ManifestGeneration, RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId,
     RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
     SearchPlaneTrackKind, validate_lexical_file_mutations_v1,
 };
+use std::time::Instant;
+
+pub(crate) fn elapsed_stage_ns(started: Instant) -> Result<u64, CoreError> {
+    u64::try_from(started.elapsed().as_nanos())
+        .map_err(|_| CoreError::Storage("lexical stage nanoseconds exceed u64".into()))
+}
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     LexicalIndexBuildPort, MetricPointV1, MetricSourcePort, RepoCommitRecencyIngestPort,
@@ -284,7 +292,11 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         Ok(())
     }
 
-    fn build_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+    fn build_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<Option<LexicalBuildStageDurationsV1>, CoreError> {
+        let preparation_started = Instant::now();
         // Storage-free admission precedes even the sealed replay shortcut.
         // The same owner validates the public materializer and raw channel.
         batch.validate_surface_mutations_v1().map_err(|error| {
@@ -330,7 +342,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                     "lexical: sealed generation belongs to a different source event".into(),
                 ));
             }
-            return Ok(());
+            return Ok(None);
         }
         let ops = legacy_ops_for_batch(batch, batch.seal)?;
         self.preflight_file_authority_batch(batch)?;
@@ -341,20 +353,29 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         let coverage_root =
             write_staged_coverage(&generation_dir, &candidate, &batch.source_event, &coverage)?;
         self.prepare_generation_from_base(&key, batch.base_generation)?;
-        self.build_ops(
+        let preparation_ns = elapsed_stage_ns(preparation_started)?;
+        let mutation = self.build_ops(
             &batch.repo_id,
             &batch.revision_id,
             batch.generation,
             &ops,
             true,
         )?;
+        let mut stages = LexicalBuildStageDurationsV1 {
+            preparation_ns,
+            writer_mutation_ns: mutation.writer_mutation_ns,
+            text_authority_ns: mutation.text_authority_ns,
+            file_authority_ns: mutation.file_authority_ns,
+            ..LexicalBuildStageDurationsV1::default()
+        };
         if batch.seal {
+            let seal_started = Instant::now();
             // Finalize and retire the writer before measuring: a cached
             // writer would commit again on eviction and rewrite `meta.json`
             // behind the manifest. Then manifest first, identity last: the
             // identity's presence is the promotion point and implies a
             // durable manifest.
-            self.finalize_index_for_seal(&key)?;
+            let writer_timings = self.finalize_index_for_seal(&key)?;
             let base_dir = read_lexical_delta_base(&generation_dir)?.map(|base| {
                 self.index_path(&GenKey {
                     repo_id: key.repo_id.clone(),
@@ -362,20 +383,27 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                     generation: base,
                 })
             });
-            let measured = seal_generation(
+            let commitment_started = Instant::now();
+            let (measured, file_admission_ns) = seal_generation(
                 &generation_dir,
                 &self.fields,
                 &candidate,
                 base_dir.as_deref(),
                 &coverage_root,
             )?;
+            let commitment_ns = elapsed_stage_ns(commitment_started)?;
             self.record_seal_measurement(measured)?;
             persist_lexical_sealed_identity(&generation_dir, &candidate)?;
+            stages.seal_ns = Some(elapsed_stage_ns(seal_started)?);
+            stages.seal_writer_commit_ns = Some(writer_timings.commit_ns);
+            stages.seal_merge_wait_ns = Some(writer_timings.merge_wait_ns);
+            stages.seal_commitment_ns = Some(commitment_ns);
+            stages.seal_file_admission_ns = Some(file_admission_ns);
         }
         // Every batch is a chance to give an abandoned generation's heap back
         // to the envelope (QI-BB-016).
         let _released = self.release_idle_writers()?;
-        Ok(())
+        Ok(Some(stages))
     }
 }
 
@@ -522,6 +550,7 @@ impl LexicalIndexBuildPort for LexicalAdapter {
         let _mutation = self.generation_build_guards(&key, base)?;
         let _lifecycle = self.directory_lifecycle_read_guard()?;
         self.build_ops(repo, revision, generation, ops, false)
+            .map(|_timings| ())
     }
 }
 
@@ -707,9 +736,9 @@ impl LexicalAdapter {
         generation: ManifestGeneration,
         ops: &[LexicalChannelOp],
         source_batch: bool,
-    ) -> Result<(), CoreError> {
+    ) -> Result<LexicalMutationTimings, CoreError> {
         if ops.is_empty() && !source_batch {
-            return Ok(());
+            return Ok(LexicalMutationTimings::default());
         }
         // All ops in a single `build` invocation must share the (repo, rev, gen)
         // triple. The dispatcher feeds us one op per call today; defending the
@@ -758,7 +787,7 @@ impl LexicalAdapter {
             for op in ops {
                 let _committed = self.apply_snapshot_op(&key, op)?;
             }
-            return Ok(());
+            return Ok(LexicalMutationTimings::default());
         }
         let handle = self.writer_handle(&key)?;
         self.commit_ops_under_lock(&handle, &key, ops)

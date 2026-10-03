@@ -1133,9 +1133,18 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let boot_elapsed = boot_start.elapsed();
 
     let publish_start = Instant::now();
-    let (receipt, ack, ingest_observation) =
+    let (receipt, ack, ingest_observation, sdk_timings) =
         publish_and_activate(&session, &batch, &identity, None)?;
     let publish_elapsed = publish_start.elapsed();
+    let sdk_total_ns = sdk_timings
+        .publish_ns
+        .checked_add(sdk_timings.activation_ns)
+        .ok_or_else(|| BenchError::Protocol("SDK publish/activation timing overflow".into()))?;
+    if u128::from(sdk_total_ns) > publish_elapsed.as_nanos() {
+        return Err(BenchError::Protocol(
+            "SDK publish/activation stages exceed runner publish envelope".into(),
+        ));
+    }
     let accepted_scopes = usize::try_from(receipt.accepted_replace_scopes).map_err(|err| {
         BenchError::Protocol(format!("receipt scope count cannot fit usize: {err}"))
     })?;
@@ -1481,6 +1490,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "clock": "runner_monotonic_wall_v1",
             "daemon_boot_and_readiness": boot_elapsed.as_secs_f64() * 1000.0,
             "sdk_publish_and_activate_opaque": publish_elapsed.as_secs_f64() * 1000.0,
+            "sdk_publish": Duration::from_nanos(sdk_timings.publish_ns).as_secs_f64() * 1000.0,
+            "sdk_activate": Duration::from_nanos(sdk_timings.activation_ns).as_secs_f64() * 1000.0,
             "runner_record_assembly": record_elapsed.as_secs_f64() * 1000.0,
             "corpus_reverification": verify_elapsed.as_secs_f64() * 1000.0,
             "daemon_shutdown": shutdown_elapsed.as_secs_f64() * 1000.0,
@@ -1546,6 +1557,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "chunk": chunk_elapsed.as_secs_f64() * 1000.0,
             "model_provider_prepare": boot_elapsed.as_secs_f64() * 1000.0,
             "embed_publish_seal_activate": publish_elapsed.as_secs_f64() * 1000.0,
+            "sdk_publish": Duration::from_nanos(sdk_timings.publish_ns).as_secs_f64() * 1000.0,
+            "sdk_activate": Duration::from_nanos(sdk_timings.activation_ns).as_secs_f64() * 1000.0,
             "first_query": first_query_elapsed.as_secs_f64() * 1000.0,
             "warmup": warmup_elapsed.as_secs_f64() * 1000.0,
             "warm_query": warm_query_elapsed.as_secs_f64() * 1000.0,

@@ -31,7 +31,7 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 try:
@@ -1719,11 +1719,14 @@ def _host_dynamic_probe(identity: dict, override: bool) -> dict:
     """Refresh mutable state without repeatedly spawning rustc during timing."""
     power = read_power()
     return {
-        **{key: identity[key] for key in (
-            "system", "release", "machine", "processor", "cpu_count", "python", "rustc"
-        )},
+        **{
+            key: identity[key]
+            for key in ("system", "release", "machine", "processor", "cpu_count", "python", "rustc")
+        },
         "concurrent_processes": find_competing_processes(),
-        "thermal": read_thermal(), "power": power, "frequency": read_frequency(power),
+        "thermal": read_thermal(),
+        "power": power,
+        "frequency": read_frequency(power),
         "contention_override": override,
     }
 
@@ -1751,9 +1754,13 @@ class HostTimeline:
         except Exception as exc:
             self.errors.append(f"{type(exc).__name__}: {exc}")
             return
-        self.samples.append({
-            "started_ns": started, "finished_ns": time.monotonic_ns(), "probe": probe,
-        })
+        self.samples.append(
+            {
+                "started_ns": started,
+                "finished_ns": time.monotonic_ns(),
+                "probe": probe,
+            }
+        )
 
     def _run(self) -> None:
         while not self.stop.wait(HOST_SAMPLE_INTERVAL_NS / 1_000_000_000):
@@ -1776,21 +1783,29 @@ class HostTimeline:
             self._sample()
             samples, errors = self.samples, self.errors
         payload = {
-            "schema_version": 1, "interval_ns": HOST_SAMPLE_INTERVAL_NS,
-            "started_ns": self.started_ns, "finished_ns": time.monotonic_ns(),
-            "samples": samples, "errors": errors,
+            "schema_version": 1,
+            "interval_ns": HOST_SAMPLE_INTERVAL_NS,
+            "started_ns": self.started_ns,
+            "finished_ns": time.monotonic_ns(),
+            "samples": samples,
+            "errors": errors,
         }
         self.path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def validate_host_timeline(payload: object, profile: dict) -> None:
     """Re-derive interval coverage and host validity from every captured sample."""
-    timeline = _exact_keys(payload, {
-        "schema_version", "interval_ns", "started_ns", "finished_ns", "samples", "errors"
-    }, "host timeline")
+    timeline = _exact_keys(
+        payload,
+        {"schema_version", "interval_ns", "started_ns", "finished_ns", "samples", "errors"},
+        "host timeline",
+    )
     if type(timeline["schema_version"]) is not int or timeline["schema_version"] != 1:
         raise RunError("host timeline schema is unsupported")
-    if type(timeline["interval_ns"]) is not int or timeline["interval_ns"] != HOST_SAMPLE_INTERVAL_NS:
+    if (
+        type(timeline["interval_ns"]) is not int
+        or timeline["interval_ns"] != HOST_SAMPLE_INTERVAL_NS
+    ):
         raise RunError("host timeline interval differs from the capture contract")
     for key in ("started_ns", "finished_ns"):
         if type(timeline[key]) is not int or timeline[key] < 0:
@@ -1806,7 +1821,8 @@ def validate_host_timeline(payload: object, profile: dict) -> None:
         sample = _exact_keys(item, {"started_ns", "finished_ns", "probe"}, "host timeline sample")
         begin, end = sample["started_ns"], sample["finished_ns"]
         if (
-            type(begin) is not int or type(end) is not int
+            type(begin) is not int
+            or type(end) is not int
             or not previous_end <= begin <= end <= finished
             or begin - previous_start > HOST_SAMPLE_MAX_GAP_NS
             or end - begin > HOST_SAMPLE_MAX_GAP_NS
@@ -5215,12 +5231,16 @@ def _validate_manifest_shape(payload: object) -> dict:
             if not _is_hex(claim["test_result_digest"], 64):
                 raise RunError(f"manifest {key} test_result_digest must be a lowercase sha256")
     host_keys = {"start_digest", "end_digest", "cache_regime"}
+    if isinstance(manifest["host"], dict) and "timeline_digest" in manifest["host"]:
+        host_keys.add("timeline_digest")
     if isinstance(manifest["host"], dict) and "delegated_cgroup_parent" in manifest["host"]:
         host_keys.add("delegated_cgroup_parent")
     host = _exact_keys(manifest["host"], host_keys, "manifest host")
     for key in ("start_digest", "end_digest"):
         if not _is_hex(host[key], 64):
             raise RunError(f"manifest host {key} must be a lowercase sha256")
+    if "timeline_digest" in host and not _is_hex(host["timeline_digest"], 64):
+        raise RunError("manifest host timeline_digest must be a lowercase sha256")
     if host["cache_regime"] not in ("true_process_cold", "warm_cache", "undeclared"):
         raise RunError("manifest host cache_regime must be a frozen regime")
     if "delegated_cgroup_parent" in host:
@@ -5264,7 +5284,11 @@ def _validate_manifest_shape(payload: object) -> dict:
     local_admission = admission_common | {"experiment_custody", "development_suite"}
     disjoint_admission = admission_common | {"split_manifest", "split_releases"}
     admission_artifacts = local_admission | disjoint_admission
-    optional_artifacts = set(RECEIPT_KEYS) | {"isolation_proof"} | admission_artifacts
+    optional_artifacts = (
+        set(RECEIPT_KEYS) | {"isolation_proof", "host_timeline"} | admission_artifacts
+    )
+    if ("host_timeline" in artifacts) != ("timeline_digest" in host):
+        raise RunError("manifest host timeline artifact and digest must be paired")
     if "driver_source_closure" not in artifacts:
         raise RunError("run manifest lacks the driver source closure")
     if not required_artifacts <= set(artifacts) <= required_artifacts | optional_artifacts:
@@ -6965,6 +6989,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     for key in RECEIPT_KEYS:
         if key in artifacts:
             resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
+    if "host_timeline" in artifacts:
+        resolved["host_timeline"] = _resolve_artifact(
+            root, artifacts["host_timeline"], "artifacts.host_timeline"
+        )
     resolved["driver_source_closure"] = _resolve_artifact(
         root, artifacts["driver_source_closure"], "artifacts.driver_source_closure"
     )
@@ -7290,6 +7318,22 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         )
         if check_record_digest != provenance_claims["host"]["check_record_digest"]:
             pair_note("host_check_record_mismatch", ("T12",))
+
+    host_timeline_payload = None
+    host_timeline_error = "host_timeline_missing"
+    if "host_timeline" in resolved:
+        host_timeline_payload = read_note(resolved["host_timeline"], "host_timeline", ("T12",))
+        timeline_digest = sha_note(resolved["host_timeline"], "host_timeline_bytes", ("T12",))
+        if timeline_digest != manifest["host"]["timeline_digest"]:
+            pair_note("host_timeline_digest_mismatch", ("T12",))
+            host_timeline_error = "host_timeline_digest_mismatch"
+        else:
+            try:
+                validate_host_timeline(host_timeline_payload, host_profile)
+            except (RunError, KeyError, TypeError, ValueError) as exc:
+                host_timeline_error = f"host_timeline_unverified: {exc}"
+            else:
+                host_timeline_error = None
 
     # Records: validate every rep record, then merge rep-00 combos.
     validated: dict[str, dict] = {}
@@ -8440,6 +8484,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 and _probe_clean(host_end_payload, host_profile)
             ):
                 perf_fail = ("host_contended", "host")
+            elif host_timeline_error is not None:
+                perf_fail = (host_timeline_error, "host")
             elif not shared_protocol_ok:
                 perf_fail = (protocol_failure_reason, "provenance")
             elif any(
@@ -8508,6 +8554,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                         {
                             "admission": admission_evidence,
                             "latency_matrix": rebuilt,
+                            "host_timeline_digest": manifest["host"]["timeline_digest"],
                             "phase_metrics": [
                                 sha_file(Path(path)) for path in resolved["phase_metrics"]
                             ],
@@ -8983,72 +9030,78 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     rep_layouts: list[dict] = []
     semble_spec = dict(spec)
     # One pinned model cache across reps; each rep still rebuilds its index.
-    for rep in range(repetitions):
-        rep_order = order if (rep % 2 == 0 or not alternate) else list(reversed(order))
-        rep_dir = stage / f"rep-{rep:02d}"
-        rep_dir.mkdir(
-            parents=True, exist_ok=spec.get("isolation_method") == LINUX_ISOLATION_BACKEND
-        )
-        pack_payload = read_json(Path(spec["query_pack"]))
-        tasks = pack_payload.get("tasks") if isinstance(pack_payload, dict) else None
-        if not isinstance(tasks, list):
-            raise RunError("frozen query pack lacks tasks")
-        task_ids = [task.get("task_id") for task in tasks if isinstance(task, dict)]
-        if len(task_ids) != len(tasks):
-            raise RunError("frozen query pack has malformed tasks")
-        protocol = build_query_protocol(
-            task_ids,
-            _int(spec.get("seed", 0), "spec.seed") + rep,
-            _int(
-                spec.get("query_warmup_passes", 1),
-                "spec.query_warmup_passes",
-            ),
-            _int(
-                spec.get("query_repetitions_per_root", 1),
-                "spec.query_repetitions_per_root",
-            ),
-        )
-        protocol_path = rep_dir / "query-protocol.json"
-        protocol_path.write_text(
-            json.dumps(protocol, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        layout: dict = {
-            "rep": rep,
-            "order": rep_order,
-            "query_protocol": str(protocol_path),
-            "quanta": {},
-            "quanta_phase_metrics": {},
-            "semble": "",
-        }
-        for system in rep_order:
-            if system == "quanta":
-                quanta_out = rep_dir / "quanta"
-                quanta_spec = dict(spec)
-                quanta_spec["output_root"] = str(quanta_out)
-                quanta_spec["run_id"] = f"{spec.get('run_id', 'run')}-r{rep}"
-                quanta_spec["_query_protocol"] = str(protocol_path)
-                if run_quanta(quanta_spec, Path(".")) != 0:
-                    raise RunError(f"quanta capture failed at rep {rep}")
-                quanta_manifest_path = quanta_out / "quanta-manifest.json"
-                quanta_manifest = read_json(quanta_manifest_path)
-                if not isinstance(quanta_manifest, dict):
-                    raise RunError("quanta manifest is not an object")
-                for run in quanta_manifest["runs"]:
-                    layout["quanta"][run["strategy"]] = str(quanta_out / run["record"])
-                    layout["quanta_phase_metrics"][run["strategy"]] = str(
-                        quanta_out / run["phase_metrics"]
+    monitor = (
+        HostTimeline(stage / "host-timeline.json", host_start, override)
+        if spec.get("claims", {}).get("speed")
+        else nullcontext()
+    )
+    with monitor:
+        for rep in range(repetitions):
+            rep_order = order if (rep % 2 == 0 or not alternate) else list(reversed(order))
+            rep_dir = stage / f"rep-{rep:02d}"
+            rep_dir.mkdir(
+                parents=True, exist_ok=spec.get("isolation_method") == LINUX_ISOLATION_BACKEND
+            )
+            pack_payload = read_json(Path(spec["query_pack"]))
+            tasks = pack_payload.get("tasks") if isinstance(pack_payload, dict) else None
+            if not isinstance(tasks, list):
+                raise RunError("frozen query pack lacks tasks")
+            task_ids = [task.get("task_id") for task in tasks if isinstance(task, dict)]
+            if len(task_ids) != len(tasks):
+                raise RunError("frozen query pack has malformed tasks")
+            protocol = build_query_protocol(
+                task_ids,
+                _int(spec.get("seed", 0), "spec.seed") + rep,
+                _int(
+                    spec.get("query_warmup_passes", 1),
+                    "spec.query_warmup_passes",
+                ),
+                _int(
+                    spec.get("query_repetitions_per_root", 1),
+                    "spec.query_repetitions_per_root",
+                ),
+            )
+            protocol_path = rep_dir / "query-protocol.json"
+            protocol_path.write_text(
+                json.dumps(protocol, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            layout: dict = {
+                "rep": rep,
+                "order": rep_order,
+                "query_protocol": str(protocol_path),
+                "quanta": {},
+                "quanta_phase_metrics": {},
+                "semble": "",
+            }
+            for system in rep_order:
+                if system == "quanta":
+                    quanta_out = rep_dir / "quanta"
+                    quanta_spec = dict(spec)
+                    quanta_spec["output_root"] = str(quanta_out)
+                    quanta_spec["run_id"] = f"{spec.get('run_id', 'run')}-r{rep}"
+                    quanta_spec["_query_protocol"] = str(protocol_path)
+                    if run_quanta(quanta_spec, Path(".")) != 0:
+                        raise RunError(f"quanta capture failed at rep {rep}")
+                    quanta_manifest_path = quanta_out / "quanta-manifest.json"
+                    quanta_manifest = read_json(quanta_manifest_path)
+                    if not isinstance(quanta_manifest, dict):
+                        raise RunError("quanta manifest is not an object")
+                    for run in quanta_manifest["runs"]:
+                        layout["quanta"][run["strategy"]] = str(quanta_out / run["record"])
+                        layout["quanta_phase_metrics"][run["strategy"]] = str(
+                            quanta_out / run["phase_metrics"]
+                        )
+                    layout["quanta_manifest"] = str(quanta_manifest_path)
+                else:
+                    semble_out = rep_dir / "semble"
+                    rep_semble_spec = dict(semble_spec, _query_protocol=str(protocol_path))
+                    semble_metrics = run_semble_capture(
+                        rep_semble_spec, semble_out, semble_pack, semble_routes[0], rep=rep
                     )
-                layout["quanta_manifest"] = str(quanta_manifest_path)
-            else:
-                semble_out = rep_dir / "semble"
-                rep_semble_spec = dict(semble_spec, _query_protocol=str(protocol_path))
-                semble_metrics = run_semble_capture(
-                    rep_semble_spec, semble_out, semble_pack, semble_routes[0], rep=rep
-                )
-                layout["semble"] = str(semble_out / "record.json")
-                layout["semble_phase_metrics"] = semble_metrics["phase_metrics"]
-                layout["semble_resource_metrics"] = semble_metrics["resource_metrics"]
-        rep_layouts.append(layout)
+                    layout["semble"] = str(semble_out / "record.json")
+                    layout["semble_phase_metrics"] = semble_metrics["phase_metrics"]
+                    layout["semble_resource_metrics"] = semble_metrics["resource_metrics"]
+            rep_layouts.append(layout)
     host_end = host_probe()
     host_end["contention_override"] = override
     (stage / "host-end.json").write_text(
@@ -10422,6 +10475,7 @@ def build_run_manifest(
             raise RunError(f"spec.{name} must name the frozen stage copy")
     host_start_path = out_root / "host-start.json"
     host_end_path = out_root / "host-end.json"
+    host_timeline_path = out_root / "host-timeline.json"
     evidence: dict = {
         "pair": {"mapping_proof_digest": sha_file(mapping_path)},
         "perf": {
@@ -10641,6 +10695,8 @@ def build_run_manifest(
         "resource_metrics": sorted(resource_metrics),
         "protocol_lock": "protocol-lock.json",
     }
+    if host_timeline_path.is_file():
+        artifacts["host_timeline"] = relative(host_timeline_path)
     closure_path = Path(spec["_driver_source_closure"])
     closure = _validate_source_closure_shape(read_json(closure_path), "driver source closure")
     if closure["revision"] != source_sha:
@@ -10691,6 +10747,11 @@ def build_run_manifest(
         "host": {
             "start_digest": sha_file(host_start_path),
             "end_digest": sha_file(host_end_path),
+            **(
+                {"timeline_digest": sha_file(host_timeline_path)}
+                if host_timeline_path.is_file()
+                else {}
+            ),
             "cache_regime": spec.get("cache_regime", "undeclared"),
             **(
                 {"delegated_cgroup_parent": spec["_linux_cgroup_parent_identity"]}

@@ -76,6 +76,7 @@
       "properties": {
         "start_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "end_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "timeline_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "cache_regime": {"enum": ["true_process_cold", "warm_cache", "undeclared"]},
         "delegated_cgroup_parent": {
           "type": "object", "additionalProperties": false,
@@ -99,6 +100,7 @@
         "latency_matrix": {"type": "string", "minLength": 1},
         "host_start": {"type": "string", "minLength": 1},
         "host_end": {"type": "string", "minLength": 1},
+        "host_timeline": {"type": "string", "minLength": 1},
         "host_profile": {"type": "string", "minLength": 1},
         "admission_manifest": {"type": "string", "minLength": 1},
         "experiment_custody": {"type": "string", "minLength": 1},

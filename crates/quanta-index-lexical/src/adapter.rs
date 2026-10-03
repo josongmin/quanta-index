@@ -294,7 +294,10 @@ impl LexicalAdapter {
     /// produces, and drops the writer from the cache so nothing can commit
     /// to this generation again. A sealed generation is never built again,
     /// so its heap goes back to the envelope now.
-    pub(crate) fn finalize_index_for_seal(&self, key: &GenKey) -> Result<(), CoreError> {
+    pub(crate) fn finalize_index_for_seal(
+        &self,
+        key: &GenKey,
+    ) -> Result<crate::writer_cache::WriterSealTimings, CoreError> {
         let handle = self.writer_handle(key)?;
         drop(handle);
         self.writers

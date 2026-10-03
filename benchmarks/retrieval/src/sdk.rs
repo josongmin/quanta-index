@@ -18,7 +18,10 @@ use quanta_index_contract::{
     RepoId, RevisionId, SearchCorpusActiveHeadV1, SearchCorpusIngestObservation, SearchExplanation,
     SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck, TextRankUnit,
 };
-use quanta_index_sdk::{BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
+use quanta_index_sdk::{
+    BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SdkPublishActivateDurationsV1,
+    SearchCorpusBatch,
+};
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
 use crate::batch::BatchIdentity;
@@ -824,11 +827,12 @@ pub fn publish_and_activate(
     BatchReceipt,
     SearchPlaneSearchCorpusActivationCasAck,
     SearchCorpusIngestObservation,
+    SdkPublishActivateDurationsV1,
 )> {
     let digest = batch
         .batch_digest()
         .map_err(|err| BenchError::Sdk(format!("failed to compute batch digest: {err}")))?;
-    let (outcome, ack) = session
+    let (outcome, ack, sdk_timings) = session
         .client()
         .search_corpus()
         .publish_and_activate_observed(batch, expected_active.cloned())
@@ -844,7 +848,7 @@ pub fn publish_and_activate(
             "sealed receipt roots differ from the activated roots".to_string(),
         ));
     }
-    Ok((receipt, ack, observation))
+    Ok((receipt, ack, observation, sdk_timings))
 }
 
 pub(crate) fn verify_sealed_receipt(

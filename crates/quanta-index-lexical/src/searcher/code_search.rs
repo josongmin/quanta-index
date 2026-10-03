@@ -2105,17 +2105,20 @@ impl TantivySearcher {
         if let Some(after) = self.page_boundary(page)? {
             ranked.retain(|(candidate, _)| after.admits(&candidate.order_key()));
         }
-        let exact_total = Some(u64::try_from(ranked.len()).map_err(|error| {
+        let cursor_eligible = u64::try_from(ranked.len()).map_err(|error| {
             CoreError::Storage(format!("lexical: component file count overflow: {error}"))
-        })?);
+        })?;
+        let exact_total = Some(cursor_eligible);
         ranked.truncate(Self::page_limit(
             query,
             usize::try_from(page.fetch).map_err(|error| {
                 CoreError::Storage(format!("lexical: component fetch overflow: {error}"))
             })?,
         ));
-        stats.cursor_eligible_files = exact_total.unwrap_or(0);
-        stats.fetched_files = u64::try_from(ranked.len()).unwrap_or(u64::MAX);
+        stats.cursor_eligible_files = cursor_eligible;
+        stats.fetched_files = u64::try_from(ranked.len()).map_err(|error| {
+            CoreError::Storage(format!("lexical: component fetched file count overflow: {error}"))
+        })?;
         stats.sort_page_ns = observed_ns(sort_started);
         let preview_started = Instant::now();
         for (candidate, witness) in &mut ranked {
@@ -2147,17 +2150,20 @@ impl TantivySearcher {
         constraints: &QueryConstraintSetV1,
         page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
+        mut stats: CodeSearchExecutionStatsV1,
+        candidate_started: Instant,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         let eligible = language_eligible_ids(authority, constraints, budget)?;
         let possible = if constraints.repo_relative_path_exact.is_some() {
             None
         } else {
-            typo_candidates(
+            typo_candidates_observed(
                 &authority.content_folded,
                 identifier,
                 eligible.as_ref(),
                 MAX_TYPO_POSTING_VISITS,
                 budget,
+                Some(&mut stats),
             )?
         };
         let mut selected = Vec::new();
@@ -2198,12 +2204,16 @@ impl TantivySearcher {
         let mut ranked = Vec::new();
         for key in selected {
             budget.checkpoint("lexical:code-search-typo-file")?;
+            stats.final_candidate_visits = stats.final_candidate_visits.saturating_add(1);
             let file = authority.files.get(key).ok_or_else(|| {
                 CoreError::Storage("lexical: typo file disappeared from authority".into())
             })?;
             let content = file.indexed_text.as_deref().ok_or_else(|| {
                 CoreError::Storage("lexical: admitted typo file has no content".into())
             })?;
+            stats.source_surface_bytes_considered = stats
+                .source_surface_bytes_considered
+                .saturating_add(u64::try_from(content.len()).unwrap_or(u64::MAX));
             let Some((witness, distance)) = typo_witness(
                 content,
                 identifier,
@@ -2226,21 +2236,33 @@ impl TantivySearcher {
                 file_candidate(self, file, score, Some(&witness), false, budget)?,
                 witness,
             ));
+            stats.materialized_files = stats.materialized_files.saturating_add(1);
         }
+        stats.typo_token_comparisons = u64::try_from(comparisons).unwrap_or(u64::MAX);
+        stats.verified_matching_files = stats.materialized_files;
+        stats.candidate_ns = observed_ns(candidate_started);
+        let sort_started = Instant::now();
         ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
         let after = self.page_boundary(page)?;
         if let Some(after) = after {
             ranked.retain(|(candidate, _)| after.admits(&candidate.order_key()));
         }
-        let exact_total = Some(u64::try_from(ranked.len()).map_err(|error| {
+        let cursor_eligible = u64::try_from(ranked.len()).map_err(|error| {
             CoreError::Storage(format!("lexical: typo file count overflow: {error}"))
-        })?);
+        })?;
+        let exact_total = Some(cursor_eligible);
         ranked.truncate(Self::page_limit(
             query,
             usize::try_from(page.fetch).map_err(|error| {
                 CoreError::Storage(format!("lexical: typo fetch overflow: {error}"))
             })?,
         ));
+        stats.cursor_eligible_files = cursor_eligible;
+        stats.fetched_files = u64::try_from(ranked.len()).map_err(|error| {
+            CoreError::Storage(format!("lexical: typo fetched file count overflow: {error}"))
+        })?;
+        stats.sort_page_ns = observed_ns(sort_started);
+        let preview_started = Instant::now();
         for (candidate, witness) in &mut ranked {
             budget.checkpoint("lexical:code-search-typo-preview")?;
             let source = candidate.source.as_ref().ok_or_else(|| {
@@ -2250,9 +2272,11 @@ impl TantivySearcher {
                 CoreError::Storage("lexical: typo candidate source disappeared".into())
             })?;
             *candidate = file_candidate(self, file, candidate.score, Some(witness), true, budget)?;
+            stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
         }
+        stats.preview_ns = observed_ns(preview_started);
         Ok(LexicalSearchPageV1 {
-            code_search_stats: None,
+            code_search_stats: Some(stats),
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
             exact_total,
         })
@@ -2271,6 +2295,7 @@ impl TantivySearcher {
             message: "lexical code search requires rebuilt full-file source authority".into(),
         })?;
         if let Some(identifier) = parsed.typo.as_deref() {
+            let candidate_started = Instant::now();
             return self.search_code_files_typo(
                 authority,
                 query,
@@ -2279,6 +2304,11 @@ impl TantivySearcher {
                 constraints,
                 page,
                 budget,
+                CodeSearchExecutionStatsV1 {
+                    mode: CodeSearchExecutionModeV1::TypoExplicit,
+                    ..CodeSearchExecutionStatsV1::default()
+                },
+                candidate_started,
             );
         }
         if let Some(components) = parsed.components.as_deref() {
@@ -2291,6 +2321,7 @@ impl TantivySearcher {
                 budget,
             );
         }
+        let candidate_started = Instant::now();
         let eligible = language_eligible_ids(authority, constraints, budget)?;
         let eligible = eligible.as_ref();
         let mut stats = CodeSearchExecutionStatsV1::default();
@@ -2401,13 +2432,14 @@ impl TantivySearcher {
             } else {
                 TermsToScore::All
             };
-            let Some(mut scored) = score_terms(
+            let Some(mut scored) = score_terms_observed(
                 file,
                 &parsed.terms,
                 parsed.case,
                 preverified,
                 selection,
                 budget,
+                Some(&mut stats),
             )?
             else {
                 continue;
@@ -2416,6 +2448,7 @@ impl TantivySearcher {
             let candidate =
                 file_candidate(self, file, score, Some(&scored.primary), false, budget)?;
             ranked.push((candidate, scored.primary));
+            stats.materialized_files = stats.materialized_files.saturating_add(1);
         }
         // A bare identifier with no literal file match may be misspelled.
         // Preserve every exact result and its cursor order; only an empty
@@ -2423,6 +2456,7 @@ impl TantivySearcher {
         if ranked.is_empty()
             && let Some(identifier) = parsed.auto_typo_on_empty()
         {
+            stats.mode = CodeSearchExecutionModeV1::TypoFallback;
             return self.search_code_files_typo(
                 authority,
                 query,
@@ -2431,11 +2465,15 @@ impl TantivySearcher {
                 constraints,
                 page,
                 budget,
+                stats,
+                candidate_started,
             );
         }
         stats.verified_matching_files = u64::try_from(ranked.len()).map_err(|error| {
             CoreError::Storage(format!("lexical: verified match count overflow: {error}"))
         })?;
+        stats.candidate_ns = observed_ns(candidate_started);
+        let sort_started = Instant::now();
         ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
         let after = self.page_boundary(page)?;
         if let Some(after) = after {
@@ -2455,6 +2493,8 @@ impl TantivySearcher {
         stats.fetched_files = u64::try_from(ranked.len()).map_err(|error| {
             CoreError::Storage(format!("lexical: fetched file count overflow: {error}"))
         })?;
+        stats.sort_page_ns = observed_ns(sort_started);
+        let preview_started = Instant::now();
         for (candidate, witness) in &mut ranked {
             budget.checkpoint("lexical:code-search-selected-preview")?;
             let source = candidate
@@ -2465,7 +2505,9 @@ impl TantivySearcher {
                 CoreError::Storage("lexical: selected file outside authority".into())
             })?;
             *candidate = file_candidate(self, file, candidate.score, Some(witness), true, budget)?;
+            stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
         }
+        stats.preview_ns = observed_ns(preview_started);
         Ok(LexicalSearchPageV1 {
             code_search_stats: Some(stats),
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),

@@ -40,6 +40,7 @@ pub use history::{
 };
 pub use lexical::{
     LexicalNamespace, LexicalQueryBuilder, SearchCorpusBatch, SearchCorpusNamespace,
+    SdkPublishActivateDurationsV1,
 };
 pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
 pub use observability::ObservabilityNamespace;

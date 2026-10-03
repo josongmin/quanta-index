@@ -769,7 +769,7 @@ fn code_search_matches_file_across_chunk_boundaries_and_maps_unicode_source_span
 
 #[test]
 fn code_search_work_counts_separate_gram_collision_verification_rank_and_paging() -> TestResult {
-    use quanta_index_core::CodeSearchExecutionStatsV1;
+    use quanta_index_core::CodeSearchExecutionModeV1;
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("a_usage.rs", "abcd", 2)?,
         code_scope("collision.rs", "abc bcd", 3)?,
@@ -789,18 +789,19 @@ fn code_search_work_counts_separate_gram_collision_verification_rank_and_paging(
         "a later high-score source must survive the one-file page cap"
     );
     let stats = first.code_search_stats.expect("ordinary exhaustive work");
-    assert_eq!(
-        stats,
-        CodeSearchExecutionStatsV1 {
-            literal_prefilter_executed: true,
-            literal_source_verification_attempts: 3,
-            literal_verified_files: 2,
-            final_candidate_visits: 2,
-            verified_matching_files: 2,
-            cursor_eligible_files: 2,
-            fetched_files: 1,
-        }
-    );
+    assert_eq!(stats.mode, CodeSearchExecutionModeV1::Ordinary);
+    assert!(stats.literal_prefilter_executed);
+    assert_eq!(stats.literal_source_verification_attempts, 3);
+    assert_eq!(stats.literal_verified_files, 2);
+    assert_eq!(stats.final_candidate_visits, 2);
+    assert_eq!(stats.verified_matching_files, 2);
+    assert_eq!(stats.cursor_eligible_files, 2);
+    assert_eq!(stats.fetched_files, 1);
+    assert_eq!(stats.materialized_files, 2);
+    assert_eq!(stats.preview_attempted_files, 1);
+    assert_eq!(stats.typo_token_comparisons, 0);
+    assert!(stats.posting_probes >= 3);
+    assert!(stats.source_surface_bytes_considered >= 3 * 4);
     let boundary = quanta_index_contract::LexicalCursor::at(
         first.candidates[0].manifest_generation,
         first.candidates[0].order_key(),
@@ -816,13 +817,15 @@ fn code_search_work_counts_separate_gram_collision_verification_rank_and_paging(
     )?;
     assert_eq!(next.candidates[0].repo_relative_path.as_str(), "a_usage.rs");
     assert_eq!(next.exact_total, Some(1));
-    assert_eq!(
-        next.code_search_stats.expect("continued exhaustive page"),
-        CodeSearchExecutionStatsV1 {
-            cursor_eligible_files: 1,
-            ..stats
-        }
-    );
+    let continued = next.code_search_stats.expect("continued exhaustive page");
+    assert_eq!(continued.mode, stats.mode);
+    assert_eq!(continued.literal_source_verification_attempts, 3);
+    assert_eq!(continued.literal_verified_files, 2);
+    assert_eq!(continued.verified_matching_files, 2);
+    assert_eq!(continued.cursor_eligible_files, 1);
+    assert_eq!(continued.fetched_files, 1);
+    assert_eq!(continued.materialized_files, 2);
+    assert_eq!(continued.preview_attempted_files, 1);
     Ok(())
 }
 

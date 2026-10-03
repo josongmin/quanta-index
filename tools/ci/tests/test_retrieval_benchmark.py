@@ -39,16 +39,25 @@ from tools.ci.tests.test_portable_proof import proof_actor_environment as proof_
 
 def _clean_host_timeline_fixture():
     host = {
-        "system": "Darwin", "release": "test", "machine": "arm64",
-        "processor": "cpu", "cpu_count": 8, "python": "3.11", "rustc": "test",
-        "concurrent_processes": {"none": []}, "contention_override": False,
-        "thermal": {"status": "clean"}, "frequency": {"status": "bounded"},
+        "system": "Darwin",
+        "release": "test",
+        "machine": "arm64",
+        "processor": "cpu",
+        "cpu_count": 8,
+        "python": "3.11",
+        "rustc": "test",
+        "concurrent_processes": {"none": []},
+        "contention_override": False,
+        "thermal": {"status": "clean"},
+        "frequency": {"status": "bounded"},
         "power": {"status": "bounded", "digest": "a" * 64},
     }
     profile = {"fingerprint": pairrun._host_fingerprint(host)}
     payload = {
-        "schema_version": 1, "interval_ns": 5_000_000_000,
-        "started_ns": 100, "finished_ns": 10_000_000_100,
+        "schema_version": 1,
+        "interval_ns": 5_000_000_000,
+        "started_ns": 100,
+        "finished_ns": 10_000_000_100,
         "samples": [
             {"started_ns": ns, "finished_ns": ns + 10, "probe": copy.deepcopy(host)}
             for ns in (100, 5_000_000_100, 10_000_000_090)
@@ -89,6 +98,46 @@ def test_host_timeline_rejects_missing_or_malformed_observations(mutation):
         payload["unsupported"] = True
     with pytest.raises(pairrun.RunError, match="host timeline"):
         pairrun.validate_host_timeline(payload, profile)
+
+
+def test_host_timeline_capture_observes_background_contention(tmp_path, monkeypatch):
+    payload, profile = _clean_host_timeline_fixture()
+    host = payload["samples"][0]["probe"]
+    observed = threading.Event()
+    calls = 0
+
+    def probe(identity, override):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            observed.set()
+            return {**host, "concurrent_processes": {"rustc": [123]}}
+        return copy.deepcopy(host)
+
+    monkeypatch.setattr(pairrun, "_host_dynamic_probe", probe)
+    monkeypatch.setattr(pairrun, "HOST_SAMPLE_INTERVAL_NS", 1_000_000)
+    path = tmp_path / "timeline.json"
+    with pairrun.HostTimeline(path, host, False):
+        assert observed.wait(timeout=5), "background probe did not observe the measured interval"
+    with pytest.raises(pairrun.RunError, match="host timeline.*unclean"):
+        pairrun.validate_host_timeline(json.loads(path.read_text()), profile)
+
+
+def test_host_timeline_capture_keeps_probe_failure(tmp_path, monkeypatch):
+    payload, profile = _clean_host_timeline_fixture()
+    host = payload["samples"][0]["probe"]
+
+    def broken_probe(identity, override):
+        raise OSError("missing host input")
+
+    monkeypatch.setattr(pairrun, "_host_dynamic_probe", broken_probe)
+    path = tmp_path / "timeline.json"
+    with pairrun.HostTimeline(path, host, False):
+        pass
+    captured = json.loads(path.read_text())
+    assert captured["errors"] and "OSError" in captured["errors"][0]
+    with pytest.raises(pairrun.RunError, match="host timeline.*errors"):
+        pairrun.validate_host_timeline(captured, profile)
 
 
 def _current_symbol_metrics(metrics):
@@ -6479,6 +6528,10 @@ def _pair_stage(
     host_end = dict(host)
     (stage / "host-start.json").write_text(json.dumps(host_start), encoding="utf-8")
     (stage / "host-end.json").write_text(json.dumps(host_end), encoding="utf-8")
+    timeline, _profile = _clean_host_timeline_fixture()
+    for sample in timeline["samples"]:
+        sample["probe"] = copy.deepcopy(host)
+    (stage / "host-timeline.json").write_text(json.dumps(timeline), encoding="utf-8")
     host_profile = stage / "host-profile.json"
     host_profile.write_text(
         json.dumps(
@@ -7893,6 +7946,7 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
         start = json.loads((st["stage"] / "host-start.json").read_text(encoding="utf-8"))
         end = json.loads((st["stage"] / "host-end.json").read_text(encoding="utf-8"))
         manifest["host"] = {
+            **manifest["host"],
             "start_digest": ev.digest((st["stage"] / "host-start.json").read_bytes()),
             "end_digest": ev.digest((st["stage"] / "host-end.json").read_bytes()),
             "cache_regime": manifest["host"]["cache_regime"],
@@ -7906,6 +7960,36 @@ def test_verdict_perf_frontier_and_gates(tmp_path, monkeypatch):
     assert verdict["states"]["PERF_QUALIFIED"] == "fail"
     assert verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == "host_contended"
     assert verdict["failure_class"] == "host"
+
+
+@pytest.mark.parametrize("fault", ["missing", "tamper", "middle_busy", "gap"])
+def test_qualified_speed_requires_bound_host_timeline(tmp_path, monkeypatch, fault):
+    _allow_minimal_speed_fixture(monkeypatch)
+    st = _pair_stage(tmp_path, scope="qualified", claims={"speed": True})
+    path = st["stage"] / "host-timeline.json"
+    if fault == "missing":
+
+        def remove_binding(manifest):
+            manifest["host"].pop("timeline_digest")
+            manifest["artifacts"].pop("host_timeline")
+
+        _rewrite_manifest(st, remove_binding)
+    else:
+        timeline = json.loads(path.read_text())
+        if fault in ("tamper", "middle_busy"):
+            timeline["samples"][1]["probe"]["concurrent_processes"] = {"rustc": [123]}
+        else:
+            timeline["finished_ns"] = 50_000_000_100
+        path.write_text(json.dumps(timeline))
+        if fault != "tamper":
+            _rewrite_manifest(
+                st, lambda manifest: manifest["host"].update(timeline_digest=pairrun.sha_file(path))
+            )
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PERF_QUALIFIED"] == "fail"
+    assert "host_timeline" in verdict["state_evidence"]["PERF_QUALIFIED"]["reason"]
+    if fault != "tamper":
+        assert verdict["states"]["PAIR_VALID"] == "pass"
 
 
 def test_qualified_speed_verdict_rejects_incomplete_response_timer_boundary(tmp_path):

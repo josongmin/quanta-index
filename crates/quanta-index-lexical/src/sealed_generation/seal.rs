@@ -28,6 +28,7 @@ use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use quanta_index_contract::{GenerationSnapshot, SourceFileRevision};
 use quanta_index_core::CoreError;
@@ -273,7 +274,7 @@ pub(crate) fn seal_generation(
     identity: &GenerationSnapshot,
     base_dir: Option<&Path>,
     prepared_coverage_root: &SealedArtifactCommitmentV1,
-) -> Result<LexicalSealCommitmentStats, CoreError> {
+) -> Result<(LexicalSealCommitmentStats, u64), CoreError> {
     remove_publish_leftovers(generation_dir)?;
     let mut measurer = Measurer {
         generation_dir: generation_dir.to_path_buf(),
@@ -433,12 +434,14 @@ pub(crate) fn seal_generation(
         overlays,
         source_coverage,
     };
+    let file_admission_started = Instant::now();
     let (files_read, bytes_read) =
         file_authority::validate_index_build_budget(generation_dir, identity, &file_rows)?;
+    let file_admission_ns = crate::adapter_ingest::elapsed_stage_ns(file_admission_started)?;
     measurer.stats.file_admission_files_read = files_read;
     measurer.stats.file_admission_bytes_read = bytes_read;
     write_manifest(generation_dir, &manifest)?;
-    Ok(measurer.stats)
+    Ok((measurer.stats, file_admission_ns))
 }
 
 /// Count bytes per source path, even when paths share one physical artifact.

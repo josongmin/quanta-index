@@ -20,6 +20,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tantivy::IndexWriter;
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct WriterSealTimings {
+    pub(crate) commit_ns: u64,
+    pub(crate) merge_wait_ns: u64,
+}
+
 impl WriterCache {
     pub(crate) fn new(policy: LexicalWriterPolicy) -> Self {
         Self {
@@ -57,12 +63,17 @@ impl WriterCache {
     /// only final once no merge is in flight. That needs the writer by
     /// value, which is only possible when no in-flight build still holds
     /// it — for a seal, a structural guarantee the batch order gives.
-    pub(crate) fn release(&mut self, key: &GenKey, why: WriterRelease) -> Result<(), CoreError> {
+    pub(crate) fn release(
+        &mut self,
+        key: &GenKey,
+        why: WriterRelease,
+    ) -> Result<WriterSealTimings, CoreError> {
         let Some(victim) = self.remove(key) else {
             return Err(CoreError::Storage(
                 "lexical writer cache: order references missing entry".to_string(),
             ));
         };
+        let mut timings = WriterSealTimings::default();
         match why {
             WriterRelease::Seal => {
                 let Ok(owned) = Arc::try_unwrap(victim) else {
@@ -74,12 +85,16 @@ impl WriterCache {
                 let GenerationWriter { index, mut writer } = owned.into_inner().map_err(|err| {
                     CoreError::Storage(format!("lexical: release lock poisoned: {err}"))
                 })?;
+                let commit_started = Instant::now();
                 let _opstamp = writer
                     .commit()
                     .map_err(|err| CoreError::Storage(format!("lexical: seal commit: {err}")))?;
+                timings.commit_ns = crate::adapter_ingest::elapsed_stage_ns(commit_started)?;
+                let merge_started = Instant::now();
                 writer.wait_merging_threads().map_err(|err| {
                     CoreError::Storage(format!("lexical: seal wait for merges: {err}"))
                 })?;
+                timings.merge_wait_ns = crate::adapter_ingest::elapsed_stage_ns(merge_started)?;
                 drop(index);
             }
             WriterRelease::Lru | WriterRelease::Idle => {
@@ -102,7 +117,7 @@ impl WriterCache {
             WriterRelease::Idle => self.idle_releases = self.idle_releases.saturating_add(1),
             WriterRelease::Seal => self.seal_releases = self.seal_releases.saturating_add(1),
         }
-        Ok(())
+        Ok(timings)
     }
 
     /// Release the least-recently-used writers until there is room for one
@@ -117,7 +132,7 @@ impl WriterCache {
                     "lexical writer cache: order/entries desync during release".to_string(),
                 ));
             };
-            self.release(&victim_key, WriterRelease::Lru)?;
+            let _timings = self.release(&victim_key, WriterRelease::Lru)?;
         }
         Ok(())
     }
@@ -134,7 +149,7 @@ impl WriterCache {
             .collect();
         let released = count_from_usize(idle.len());
         for key in idle {
-            self.release(&key, WriterRelease::Idle)?;
+            let _timings = self.release(&key, WriterRelease::Idle)?;
         }
         Ok(released)
     }
