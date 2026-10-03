@@ -1866,3 +1866,37 @@ Sourcegraph's backend snapshot matched its pre-query snapshot. Receipt:
 `/private/tmp/qi-c5-external-20261003-v2/preflight-attrs-convert/summary.json`
 (`3c9c078a5db85cefe5b1808c8bf615bfc53c035e951920f71484e03a0b5e5eea`).
 This preflight is not a relevance score or full C5 capture.
+
+## C4 checker refusal boundary and replacement capture (2026-10-03)
+
+The corrected v8 C4 run at clean `9397c1b1` exited 1 after 727.124 seconds;
+its receipt and traceback are under
+`/private/tmp/qi-c5-corrected-9397c1b1-20261003/`. The independent Rust
+checker refused `rust-analyzer`'s
+`crates/parser/test_data/lexer/ok/single_line_comments.rs`, but the primary
+tree-sitter oracle completed that file's census with zero declarations. C4
+incorrectly passed every checker refusal as a primary-parser exclusion, which
+the source oracle correctly rejected. No C4 matrix was published from that run.
+
+`holdout_c4.py` now excludes a checker-refused file from the primary oracle
+only when the primary parser also refuses it. The checker refusal and its
+query-specific textual absence remain in the gold provenance. Focused positive
+and forged-exclusion tests passed 7/7; the entire C4 test file passed 51/51,
+and Ruff, formatting and `git diff --check` passed. The fix and tests are on
+clean `main` at `17b2af2a`. A replacement C4 run from clean frozen
+`f2aa7d82` is active under `/private/tmp/qi-c5-c4-f2aa7d82-20261003/c4`;
+the literal v9 capture remains active independently. Neither has a successful
+final receipt yet.
+
+The C5 external ordinary-input selection was carried forward to a third
+precommit, `/private/tmp/qi-c5-external-20261003-v3/precommit.json`
+(`2f633ba7a1f99c65f85e583ac356d411920ff39bfb68f7679545a61970fdbf18`).
+It supersedes v2 after its three explicitly unscored native preflight queries
+and before any scored C5 product capture. It binds the replacement C4 output
+and source head; the external adapter source remains clean `a9b4ec6e`.
+Between those two commits only the C4 adapter and this ticket changed.
+The v3 preparation and batch scripts compile but have not run because the
+replacement C4 receipt is pending. **VERIFIED:** C4 cause, focused and full
+unit tests, source equivalence for the external adapter. **FAILED:** original
+C4 v8 capture. **NOT_RUN:** replacement C4 result verification and all scored
+C5 product cells.
