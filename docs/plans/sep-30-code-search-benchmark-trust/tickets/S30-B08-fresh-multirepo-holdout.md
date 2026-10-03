@@ -426,26 +426,6 @@ admission calculation conditional on producer text coverage. Full ingest,
 activation, physical RSS, all 12 repository captures and B08 product
 qualification remain `NOT_RUN`.
 
-## Mixed objective/reviewed admission repair (2026-10-03)
-
-An admission contradiction blocked the intended C5 suite: the decision gate
-required both objective and reviewed positive tasks in each repository, while
-`evaluator.validate_suite()` refused their two judgment policies in one eval
-split and `run._validate_gold_review_receipt()` refused every source-oracle task
-in a qualified suite. The source validator now permits only the explicit
-`source_oracle_complete_v1` plus `complete_ranked_pool_v1` combination, with
-each policy tied to its corresponding task authority. Other mixed policies
-remain invalid. For admission schema v3, a mixed suite requires review receipt
-schema v2: two annotations and adjudication cover only subjective tasks in
-suite order; the complete suite hash and source validation still bind every
-mechanical task. Schema-v2 local admission retains all-task schema-v1 receipts.
-
-The focused source fixture contains an objective positive, reviewed positive
-and mechanical no-answer task. It accepts the mixed suite and versioned review
-receipts, rejects the legacy mixed receipt, missing subjective review and
-adjudication label drift. This establishes the code contract, not human
-provenance or a complete v3 product capture.
-
 ## Current-source ingest diagnostic (2026-10-02)
 
 The all-features release preflight at `14fdeffb` failed to publish the frozen
@@ -822,3 +802,23 @@ passed 86 tests; Ruff and `git diff --check` passed. The full 528-test Python
 set was run before this track-gate change, so it is not current proof for this
 new code. The actual 12-repository capture, reviewed qrels and separate scale
 qualification remain `NOT_RUN`.
+
+## Mixed objective/reviewed admission repair (2026-10-03)
+
+An admission contradiction blocked the intended C5 suite: the decision gate
+required both objective and reviewed positive tasks in each repository, while
+`evaluator.validate_suite()` refused their two judgment policies in one eval
+split and `run._validate_gold_review_receipt()` refused every source-oracle task
+in a qualified suite. The source validator now permits only the explicit
+`source_oracle_complete_v1` plus `complete_ranked_pool_v1` combination, with
+each policy tied to its corresponding task authority. Other mixed policies
+remain invalid. For admission schema v3, a mixed suite requires review receipt
+schema v2: two annotations and adjudication cover only subjective tasks in
+suite order; the complete suite hash and source validation still bind every
+mechanical task. Schema-v2 local admission retains all-task schema-v1 receipts.
+
+The focused source fixture contains an objective positive, reviewed positive
+and mechanical no-answer task. It accepts the mixed suite and versioned review
+receipts, rejects the legacy mixed receipt, missing subjective review and
+adjudication label drift. This establishes the code contract, not human
+provenance or a complete v3 product capture.
