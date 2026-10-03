@@ -16,19 +16,18 @@
 //! - a **measured run of a selected tier** — `measure_tier` boots one
 //!   [`E2eRuntime`], ingests the seeded corpus, seals, activates, queries
 //!   cold and warm across the socket, opens the same sealed generation through
-//!   the lexical adapter in-process, then applies a one-file delta and
-//!   reclaims the predecessor — capturing every phase on its own into a
-//!   [`TierMeasurement`] (QI-BB-010 #2): build, activation, the daemon's own
-//!   cold-open and route timings from its metrics scrape, the adapter-only
-//!   open / plan / execute, the delta update and the reclaim, each against
-//!   the state root's byte count where bytes are what is measured.
+//!   the lexical adapter in-process, then applies a one-file delta — capturing
+//!   measured phases into a [`TierMeasurement`] (QI-BB-010 #2): build,
+//!   activation, route timing from daemon metrics, optional query cold-open,
+//!   adapter open / plan / execute, delta update and activation. A one-file
+//!   delta under minimum two-generation retention need not reclaim bytes.
 //!   Medium/large/xlarge use distinct source-repository IDs and per-repo
 //!   probes inside one serving owner. Each selected run measures one tier;
 //!   canonical performance qualification still requires a quiet host.
 //!
 //! Fail-closed posture: a query that the runtime rejects on any selected tier is a
-//! rail error (typed error -> `Err`), never a zero-latency "pass"; a phase the
-//! daemon did not record is a rail error, never a fabricated time.
+//! rail error (typed error -> `Err`), never a zero-latency "pass". Required
+//! route samples must be present; a legitimately absent query cold-open is null.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -685,11 +684,11 @@ const WARM_QUERY_SAMPLES: usize = 32;
     reason = "each field names the millisecond metric it was read from"
 )]
 pub struct DaemonPhaseTimingV1 {
-    /// `lq_snapshot_lexical_cold_open_ms`: the lexical generation's cold
-    /// open, which the first query after activation pays.
-    pub cold_open_ms: f64,
-    /// `lq_route_lexical_latency_ms` of the first query: open + plan +
-    /// execute inside the dispatcher.
+    /// `lq_snapshot_lexical_cold_open_ms` if the first query opens a snapshot.
+    /// Activation normally promotes an already opened snapshot, so no query
+    /// cold-open sample exists in that case.
+    pub cold_open_ms: Option<f64>,
+    /// `lq_route_lexical_latency_ms` of the first query inside the dispatcher.
     pub first_route_ms: f64,
     /// Mean `lq_route_lexical_latency_ms` over the warm queries: plan +
     /// execute inside the dispatcher, no open.
@@ -716,8 +715,8 @@ pub struct AdapterPhaseTimingV1 {
 }
 
 /// One delta step: one file changed, ingested and sealed as a delta
-/// generation, then activated (which reclaims the predecessor under the
-/// rail's retention of one generation).
+/// generation, then activated. Retention may reclaim an older generation;
+/// the recorded byte difference establishes whether physical bytes shrank.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeltaMeasurementV1 {
     /// Ingest of the one changed file through seal.
@@ -726,12 +725,12 @@ pub struct DeltaMeasurementV1 {
     pub changed_bytes: u64,
     /// Bytes the state root grew by during the delta build.
     pub bytes_written: u64,
-    /// Activation of the delta generation, which retires and reclaims the
-    /// predecessor: the reclaim runs inside it, so this is the reclaim's
-    /// upper bound.
+    /// Activation of the delta generation. The historical field name also
+    /// covers any reclaim performed within the activation, but a one-file
+    /// delta under two-generation retention may reclaim nothing.
     pub activation_with_reclaim_ms: f64,
-    /// Bytes the state root shrank by across that activation: the reclaimed
-    /// predecessor.
+    /// Bytes the state root shrank by across that activation; zero means no
+    /// physical reclaim was observed in this window.
     pub reclaimed_bytes: u64,
 }
 
@@ -798,6 +797,25 @@ fn histogram_window(
         ));
     }
     Ok(sum_after - sum_before)
+}
+
+fn optional_cold_open_window(
+    before: &MetricsSnapshotV1,
+    after: &MetricsSnapshotV1,
+) -> AnyResult<Option<f64>> {
+    let name = "lq_snapshot_lexical_cold_open_ms";
+    let (count_before, sum_before) = histogram_totals(before, name);
+    let (count_after, sum_after) = histogram_totals(after, name);
+    let count = count_after
+        .checked_sub(count_before)
+        .ok_or_else(|| anyhow::anyhow!("scale: cold-open histogram count decreased"))?;
+    match count {
+        0 if sum_after == sum_before => Ok(None),
+        1 => Ok(Some(sum_after - sum_before)),
+        _ => Err(anyhow::anyhow!(
+            "scale: cold-open histogram recorded {count} samples for one query"
+        )),
+    }
 }
 
 fn median_ms(samples: &mut [f64]) -> AnyResult<f64> {
@@ -1048,7 +1066,7 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
             Ok(total.saturating_add(u64::try_from(content.len())?))
         })?;
 
-    // Retain one generation so the delta's activation reclaims the base.
+    // The search-corpus history contract requires at least two generations.
     let mut rt = E2eRuntime::boot_with_history_max_generations(2)?;
     let model_revision = model_revision_of(rt.embedder_profile());
 
@@ -1072,12 +1090,7 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
     let first_query_ms = elapsed_ms(first_started);
     require_result_count(result_count, expected_results, "first query")?;
     let scrape_after_first = rt.metrics_snapshot()?;
-    let cold_open_ms = histogram_window(
-        &scrape_before_first,
-        &scrape_after_first,
-        "lq_snapshot_lexical_cold_open_ms",
-        1,
-    )?;
+    let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)?;
     let first_route_ms = histogram_window(
         &scrape_before_first,
         &scrape_after_first,
@@ -1220,12 +1233,7 @@ pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
     let first_query_ms = elapsed_ms(first_started);
     let result_count = validate_scoped_response(&oracle, None, &first)?;
     let scrape_after_first = rt.metrics_snapshot()?;
-    let cold_open_ms = histogram_window(
-        &scrape_before_first,
-        &scrape_after_first,
-        "lq_snapshot_lexical_cold_open_ms",
-        1,
-    )?;
+    let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)?;
     let first_route_ms = histogram_window(
         &scrape_before_first,
         &scrape_after_first,
@@ -1572,9 +1580,9 @@ pub fn artifact(
         phases: PhaseDurationsV1 {
             build_ms: Some(measurement.build_ms),
             update_ms: Some(measurement.delta.update_ms),
-            // The reclaim runs inside the delta's activation: this is its
-            // upper bound, see `DeltaMeasurementV1::activation_with_reclaim_ms`.
-            gc_ms: Some(measurement.delta.activation_with_reclaim_ms),
+            // Activation is only a GC upper bound when physical bytes shrink.
+            gc_ms: (measurement.delta.reclaimed_bytes > 0)
+                .then_some(measurement.delta.activation_with_reclaim_ms),
         },
         disk_amplification: Some(DiskAmplificationV1 {
             bytes_written: measurement.build_bytes_written,
@@ -1604,11 +1612,29 @@ pub fn write_artifacts(
     reason = "tests index into JSON values and slices whose shape this module constructs and asserts directly; an out-of-range index is a legitimate test failure"
 )]
 mod tests {
-    //! Generator determinism + manifest schema.
-    //!
-    //! These never boot a runtime: they pin the pure construction layer so a
-    //! perf number can always be attributed to a known, reproducible corpus.
+    //! Generator, artifact and narrow runtime behavior.
     use super::*;
+
+    #[test]
+    fn activated_snapshot_without_query_cold_open_is_unavailable() -> AnyResult<()> {
+        use quanta_index_contract::MetricHistogramV1;
+
+        let before = MetricsSnapshotV1::default();
+        assert_eq!(optional_cold_open_window(&before, &before)?, None);
+        let mut after = before.clone();
+        after.histograms.push(MetricHistogramV1 {
+            name: "lq_snapshot_lexical_cold_open_ms".to_string(),
+            count: 1,
+            sum: 3.0,
+            min: 3.0,
+            max: 3.0,
+            buckets: Vec::new(),
+        });
+        assert_eq!(optional_cold_open_window(&before, &after)?, Some(3.0));
+        after.histograms[0].count = 2;
+        assert!(optional_cold_open_window(&before, &after).is_err());
+        Ok(())
+    }
 
     #[test]
     fn manifest_has_one_row_per_tier() {
@@ -2028,7 +2054,7 @@ mod tests {
             first_query_ms: 0.75,
             warm_query: LatencySummary::from_samples_ms(&[0.2, 0.25, 0.3]).expect("samples"),
             daemon: DaemonPhaseTimingV1 {
-                cold_open_ms: 1.0,
+                cold_open_ms: Some(1.0),
                 first_route_ms: 1.0,
                 warm_route_mean_ms: 0.0,
             },
