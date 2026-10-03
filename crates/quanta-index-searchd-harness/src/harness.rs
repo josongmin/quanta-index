@@ -1944,6 +1944,42 @@ impl E2eRuntime {
         self.seal_lexical_generation_for_tracks(&[SearchPlaneTrackKind::Lexical])
     }
 
+    fn pending_search_corpus_batch(
+        &self,
+        event_sequence: u64,
+    ) -> AnyResult<SearchCorpusIngestBatch> {
+        let (mode, base_generation) = self.lexical_batch_contract();
+        self.source_publication.build_batch(
+            self.repo(),
+            self.revision(),
+            self.current_generation(),
+            mode,
+            base_generation,
+            format!("e2e-source-event-{event_sequence}"),
+        )
+    }
+
+    /// Encode the exact pending ingest envelope without advancing its event,
+    /// generation, or request counters. This uses the same batch constructor
+    /// as `seal` and the IPC encoder's actual single-frame/compressed/
+    /// multiframe admission. Call after staging and before timing a scale run.
+    pub fn preview_pending_search_corpus_wire_bytes(&self) -> AnyResult<(u64, u64)> {
+        let batch = if let Some(frozen) = self.source_publication.frozen() {
+            frozen.clone()
+        } else {
+            self.pending_search_corpus_batch(self.batch_sequence.load(Ordering::Relaxed))?
+        };
+        let payload =
+            stamped_ingest_request(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?;
+        let envelope = SearchPlaneIngestIpcRequestEnvelope {
+            request_id: self.request_id_counter.load(Ordering::Relaxed),
+            payload,
+        };
+        let decoded = quanta_index_ipc::cbor_payload_len(&envelope)?;
+        let wire = quanta_index_ipc::encode_request(&envelope)?;
+        Ok((decoded, u64::try_from(wire.len())?))
+    }
+
     /// Seal the current generation through the search-corpus ingest surface.
     ///
     /// There is no separate structural or semantic seal IPC. Those tracks
@@ -1969,15 +2005,7 @@ impl E2eRuntime {
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("harness generation exhausted"))?;
         if self.source_publication.frozen().is_none() {
-            let (mode, base_generation) = self.lexical_batch_contract();
-            let batch = self.source_publication.build_batch(
-                self.repo(),
-                self.revision(),
-                sealed,
-                mode,
-                base_generation,
-                format!("e2e-source-event-{}", self.next_batch_sequence()),
-            )?;
+            let batch = self.pending_search_corpus_batch(self.next_batch_sequence())?;
             self.source_publication.freeze(batch);
         }
         let batch = self
@@ -3878,6 +3906,64 @@ mod readiness_deadline_tests {
             ),
             caller_deadline,
             "a caller's absolute deadline remains effective"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pending_corpus_preview_tests {
+    use std::sync::atomic::Ordering;
+
+    use super::{E2eRuntime, E2eTextChunkSpec};
+
+    #[test]
+    fn wire_preview_preserves_pending_source_generation_and_activation_state() {
+        let mut runtime = E2eRuntime::boot().expect("isolated fixture runtime");
+        runtime
+            .ingest_text_chunks(
+                "serving-owner",
+                "src/shared.rs",
+                &[E2eTextChunkSpec {
+                    content: "// planted scale_needle_token\n",
+                    start_line: 1,
+                    end_line: 2,
+                    source_repo_id: Some("repo0"),
+                }],
+            )
+            .expect("stage source file");
+        let event_sequence = runtime.batch_sequence.load(Ordering::Relaxed);
+        let request_id = runtime.request_id_counter.load(Ordering::Relaxed);
+        let before = runtime
+            .pending_search_corpus_batch(event_sequence)
+            .expect("pending batch");
+        let generation = runtime.current_generation();
+        assert!(runtime.source_publication.frozen().is_none());
+        assert!(runtime.last_sealed_search_corpus_identity.is_none());
+
+        let first = runtime
+            .preview_pending_search_corpus_wire_bytes()
+            .expect("actual IPC encoder admits pending batch");
+        let second = runtime
+            .preview_pending_search_corpus_wire_bytes()
+            .expect("preview remains repeatable");
+        assert_eq!(first, second);
+        assert!(first.0 > 0 && first.1 > 0);
+        assert_eq!(runtime.current_generation(), generation);
+        assert_eq!(
+            runtime.batch_sequence.load(Ordering::Relaxed),
+            event_sequence
+        );
+        assert_eq!(
+            runtime.request_id_counter.load(Ordering::Relaxed),
+            request_id
+        );
+        assert!(runtime.source_publication.frozen().is_none());
+        assert!(runtime.last_sealed_search_corpus_identity.is_none());
+        assert_eq!(
+            runtime
+                .pending_search_corpus_batch(event_sequence)
+                .expect("same pending batch"),
+            before
         );
     }
 }

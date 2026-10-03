@@ -446,6 +446,86 @@ impl ScopedOracle {
     }
 }
 
+/// The scale fixture is ASCII, so its lexical folded surface is exactly the
+/// ASCII-lowercased source and relative path. Count distinct three-byte
+/// windows per file/surface, as the file authority's membership admission
+/// does. These limits mirror `lexical/file_authority.rs`; keep the focused
+/// threshold tests in sync when that authority changes.
+const MAX_SCALE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_SCALE_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_SCALE_POSTING_MEMBERSHIPS: u64 = 4_000_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScopedCorpusAdmission {
+    pub source_bytes: u64,
+    pub posting_memberships: u64,
+}
+
+fn check_admission_counts(file_bytes: u64, source_bytes: u64, postings: u64) -> AnyResult<()> {
+    if file_bytes > MAX_SCALE_FILE_BYTES {
+        return Err(anyhow::anyhow!(
+            "scale: source file exceeds lexical 8 MiB admission"
+        ));
+    }
+    if source_bytes > MAX_SCALE_SOURCE_BYTES {
+        return Err(anyhow::anyhow!(
+            "scale: corpus exceeds lexical 128 MiB source admission"
+        ));
+    }
+    if postings > MAX_SCALE_POSTING_MEMBERSHIPS {
+        return Err(anyhow::anyhow!(
+            "scale: corpus exceeds lexical 4M trigram posting memberships"
+        ));
+    }
+    Ok(())
+}
+
+fn distinct_ascii_trigrams(bytes: &[u8]) -> usize {
+    bytes
+        .windows(3)
+        .map(|window| [window[0], window[1], window[2]])
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+/// Refuse a fixture above the lexical source/posting limits before starting
+/// the daemon. `source_scope` adds one newline after each chunk, which is
+/// included here. IPC wire size is checked separately against the actual
+/// pending batch because its encoded metadata cannot be inferred from bytes.
+pub fn preflight_scoped_corpus(files: &[ScopedFile]) -> AnyResult<ScopedCorpusAdmission> {
+    let mut source_bytes = 0_u64;
+    let mut posting_memberships = 0_u64;
+    for file in files {
+        if !file.content.is_ascii() || !file.repo_relative_path.is_ascii() {
+            return Err(anyhow::anyhow!(
+                "scale: scoped fixture must remain ASCII for exact admission preflight"
+            ));
+        }
+        let file_bytes = u64::try_from(file.content.len())?
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("scale: source byte count overflow"))?;
+        source_bytes = source_bytes
+            .checked_add(file_bytes)
+            .ok_or_else(|| anyhow::anyhow!("scale: source byte count overflow"))?;
+        check_admission_counts(file_bytes, source_bytes, posting_memberships)?;
+
+        let path = file.repo_relative_path.to_ascii_lowercase();
+        let mut source = file.content.to_ascii_lowercase().into_bytes();
+        source.push(b'\n');
+        let memberships = distinct_ascii_trigrams(path.as_bytes())
+            .checked_add(distinct_ascii_trigrams(&source))
+            .ok_or_else(|| anyhow::anyhow!("scale: posting membership count overflow"))?;
+        posting_memberships = posting_memberships
+            .checked_add(u64::try_from(memberships)?)
+            .ok_or_else(|| anyhow::anyhow!("scale: posting membership count overflow"))?;
+        check_admission_counts(file_bytes, source_bytes, posting_memberships)?;
+    }
+    Ok(ScopedCorpusAdmission {
+        source_bytes,
+        posting_memberships,
+    })
+}
+
 /// Build one file's content deterministically.
 fn generate_file(
     tier: ScaleTier,
@@ -1262,6 +1342,35 @@ mod tests {
             original,
             corpus_digest(DIMENSION, &scoped_digest_files(&changed_content))
         );
+    }
+
+    #[test]
+    fn scoped_source_admission_counts_the_newline_and_rejects_each_hard_limit() {
+        let files = generate_scoped_corpus(ScaleTier::Medium, 11).expect("seeded fixture");
+        let expected_source_bytes = files
+            .iter()
+            .map(|file| u64::try_from(file.content.len() + 1).expect("fixture length"))
+            .sum();
+        let admitted = preflight_scoped_corpus(&files).expect("medium source is admissible");
+        assert_eq!(admitted.source_bytes, expected_source_bytes);
+        assert!(
+            admitted.posting_memberships > u64::from(params_for(ScaleTier::Medium).total_files())
+        );
+        assert!(check_admission_counts(MAX_SCALE_FILE_BYTES + 1, 1, 1).is_err());
+        assert!(check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1).is_err());
+        assert!(check_admission_counts(1, 1, MAX_SCALE_POSTING_MEMBERSHIPS + 1).is_err());
+        assert!(
+            check_admission_counts(
+                MAX_SCALE_FILE_BYTES,
+                MAX_SCALE_SOURCE_BYTES,
+                MAX_SCALE_POSTING_MEMBERSHIPS
+            )
+            .is_ok()
+        );
+
+        let mut non_ascii = files;
+        non_ascii[0].content.push('é');
+        assert!(preflight_scoped_corpus(&non_ascii).is_err());
     }
 
     #[test]

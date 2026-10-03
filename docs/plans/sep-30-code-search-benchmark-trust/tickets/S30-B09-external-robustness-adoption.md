@@ -245,13 +245,19 @@ reject that change even when selected query bytes happen to be identical.
 The reusable projector preserves source truth and rejects contract drift;
 ordinary-file projection changes only the declared request mode.
 
-The first fresh gold/matrix attempt used tree-sitter-language-pack0.13.0,
-whereas the frozen source requires0.9.1. On the same Svelte JavaScript bytes,
-0.13.0 rejects the parse and0.9.1 admits it. The observed59 answerability changes
+The first fresh gold/matrix attempt used tree-sitter0.25.2 with
+tree-sitter-language-pack0.13.0, whereas the source-locked environment uses
+tree-sitter0.23.2 with language-pack0.9.1. On the same Svelte JavaScript bytes,
+the first environment rejects the parse and the locked environment admits it.
+This confirms runtime drift; it does not isolate a defect in one package.
+The observed59 answerability changes
 and11 span-set changes in that attempt are invalid-run diagnostics, not an
 accepted source-truth change. Its artifacts are preserved and the matrix was
-stopped. Official full gold/matrix generation is restarting with the exact
-source-defined dependency pins; the new cohort is not scored until it passes.
+stopped. Official gold generation with the source-defined parser/tokenizer
+pins completed12/12 capsules in1996.263s. The receipt is
+`/private/tmp/qi-c5-oracle-pinned-TgLgCP/gold-batch-receipt.json`.
+The public72-cell C4 matrix is now running in that same environment; the new
+cohort is not scored until matrix/projection admission passes.
 
 Frozen runtime boundaries are explicit: Quanta binaries were built from
 clean `d7063ac755916d48867416d4f970b6aebc360abd`; the proposed new Python
