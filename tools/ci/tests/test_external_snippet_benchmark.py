@@ -387,6 +387,50 @@ def test_codesearchnet_fractional_qrels_language_split_and_partial_coverage(tmp_
     assert prepared["lanes"]["csn-python"]["source_blocked_tasks"] == 1
     assert prepared["runtime_gold_isolation"] == "not_verified_static_path_separation_only"
     assert json.loads((prepared_root / "manifest.json").read_text()) == prepared
+    sources_path = root / "source-fetches.json"
+    source_rows = json.loads(sources_path.read_text())
+    source_url = next(url for url, value in source_rows.items() if value["status"] == "fetched")
+    source_path = root / source_rows[source_url]["relative_path"]
+    source_raw = source_path.read_bytes()
+    outside = tmp_path / "outside.blob"
+    outside.write_bytes(source_raw)
+    for forged_path in (str(outside), "../outside.blob"):
+        source_rows[source_url]["relative_path"] = forged_path
+        sources_path.write_text(json.dumps(source_rows))
+        with pytest.raises(ext.ExternalSnippetError, match="path differs from pinned URL"):
+            ext.freeze_codesearchnet(
+                b"mock CSV", root, repo, commit, language="python", suite_id="fixture"
+            )
+    source_rows[source_url]["relative_path"] = source_path.relative_to(root).as_posix()
+    sources_path.write_text(json.dumps(source_rows))
+    source_path.unlink()
+    source_path.symlink_to(outside)
+    with pytest.raises(ext.ExternalSnippetError, match="symlink"):
+        ext.freeze_codesearchnet(
+            b"mock CSV", root, repo, commit, language="python", suite_id="fixture"
+        )
+    source_path.unlink()
+    source_path.write_bytes(source_raw)
+    snippet_path = root / next(iter(source_paths))
+    snippet_raw = snippet_path.read_bytes()
+    snippet_path.unlink()
+    snippet_path.symlink_to(outside)
+    with pytest.raises(ext.ExternalSnippetError, match="symlink"):
+        ext.freeze_codesearchnet(
+            b"mock CSV", root, repo, commit, language="python", suite_id="fixture"
+        )
+    snippet_path.unlink()
+    snippet_path.write_bytes(snippet_raw)
+    manifest_path = root / "manifest.json"
+    manifest_raw = manifest_path.read_bytes()
+    manifest_path.unlink()
+    manifest_path.symlink_to(outside)
+    with pytest.raises(ext.ExternalSnippetError, match="symlink"):
+        ext.freeze_codesearchnet(
+            b"mock CSV", root, repo, commit, language="python", suite_id="fixture"
+        )
+    manifest_path.unlink()
+    manifest_path.write_bytes(manifest_raw)
     with pytest.raises(ext.ExternalSnippetError, match="supported language"):
         ext.freeze_codesearchnet(
             b"mock CSV", root, repo, commit, language="unknown", suite_id="fixture"

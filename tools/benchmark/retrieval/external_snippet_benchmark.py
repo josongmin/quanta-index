@@ -84,7 +84,10 @@ def _materialized_bytes(root: Path, declared: object, expected: str) -> bytes:
     target = root / relative
     try:
         base = root.resolve(strict=True)
-        if any((root / Path(*relative.parts[:index])).is_symlink() for index in range(1, len(relative.parts) + 1)):
+        if any(
+            (root / Path(*relative.parts[:index])).is_symlink()
+            for index in range(1, len(relative.parts) + 1)
+        ):
             raise ExternalSnippetError("CodeSearchNet materialized path is a symlink")
         if not target.resolve(strict=True).is_relative_to(base):
             raise ExternalSnippetError("CodeSearchNet materialized path escapes root")
@@ -93,11 +96,22 @@ def _materialized_bytes(root: Path, declared: object, expected: str) -> bytes:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                 raise ExternalSnippetError("CodeSearchNet materialized path is not a regular file")
             raw = handle.read(codesearchnet_materialize.MAX_FILE_BYTES + 1)
+    except ExternalSnippetError:
+        raise
     except (OSError, ValueError) as exc:
         raise ExternalSnippetError("CodeSearchNet materialized source path is unreadable") from exc
     if len(raw) > codesearchnet_materialize.MAX_FILE_BYTES:
         raise ExternalSnippetError("CodeSearchNet materialized source exceeds byte cap")
     return raw
+
+
+def _materialized_json(root: Path, filename: str) -> Any:
+    try:
+        return json.loads(_materialized_bytes(root, filename, filename))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ExternalSnippetError(
+            f"invalid CodeSearchNet materialization JSON: {filename}"
+        ) from exc
 
 
 def _admission(tasks: list[dict[str, str]], config: dict[str, int] | None) -> dict[str, Any]:
@@ -310,10 +324,10 @@ def freeze_codesearchnet(
     if language not in codesearchnet_materialize.EXTENSIONS:
         raise ExternalSnippetError("CodeSearchNet requires one supported language per native pack")
     seed = codesearchnet_qrels.diagnostic_seed(csv_raw)
-    materialized = _json(materialized_root / "manifest.json")
-    qrels = _json(materialized_root / "qrels.json")
-    spans = _json(materialized_root / "spans.json")
-    sources = _json(materialized_root / "source-fetches.json")
+    materialized = _materialized_json(materialized_root, "manifest.json")
+    qrels = _materialized_json(materialized_root, "qrels.json")
+    spans = _materialized_json(materialized_root, "spans.json")
+    sources = _materialized_json(materialized_root, "source-fetches.json")
     if (
         materialized.get("kind") != "codesearchnet_snippet_materialization_diagnostic_v1"
         or materialized.get("upstream_csv") != seed["source"]
@@ -349,10 +363,9 @@ def freeze_codesearchnet(
         if span is None or row.get("materialization_status") != span.get("status"):
             raise ExternalSnippetError("CodeSearchNet qrel/span ledger differs")
         location = locations[row["github_url"]]
-        if (
-            any(span.get(key) != value for key, value in location.items())
-            or span.get("languages") != sorted(languages_by_url[row["github_url"]])
-        ):
+        if any(span.get(key) != value for key, value in location.items()) or span.get(
+            "languages"
+        ) != sorted(languages_by_url[row["github_url"]]):
             raise ExternalSnippetError("CodeSearchNet source span differs from pinned URL")
         path = row.get("snippet_path")
         if span["status"] == "admitted":
@@ -862,7 +875,7 @@ def prepare_external_lanes(
         clarc_raw_inputs["project_license_info"],
     )
     codesearchnet_qrels.diagnostic_seed(codesearchnet_csv_raw)
-    materialized = _json(codesearchnet_materialized_root / "manifest.json")
+    materialized = _materialized_json(codesearchnet_materialized_root, "manifest.json")
     if materialized.get("kind") != "codesearchnet_snippet_materialization_diagnostic_v1":
         raise ExternalSnippetError("CodeSearchNet materialization kind differs")
     output_root.mkdir(mode=0o700)
@@ -886,9 +899,9 @@ def prepare_external_lanes(
         "bytes": len(codesearchnet_csv_raw),
     }
     csn_copy = upstream_root / "codesearchnet-materialized"
-    shutil.copytree(codesearchnet_materialized_root, csn_copy, symlinks=False)
+    shutil.copytree(codesearchnet_materialized_root, csn_copy, symlinks=True)
     for filename in ("manifest.json", "source-fetches.json", "spans.json", "qrels.json"):
-        raw = (csn_copy / filename).read_bytes()
+        raw = _materialized_bytes(csn_copy, filename, filename)
         input_bindings["codesearchnet_materialized_" + filename] = {
             "path": str(csn_copy / filename),
             "sha256": _sha(raw),

@@ -489,6 +489,25 @@ class SourcegraphCaptureTests(unittest.TestCase):
         request, raw, manifest, universe = inputs()
         request["response_sha256"] = "0" * 64
         self.assert_refused(request, raw, manifest, universe)
+        raw = event("progress", {"done": True, "skipped": [], "matchCount": 0, "durationMs": 1})
+        raw += event("done", {})
+        request, _, manifest, universe = inputs(raw)
+        request["query"] = "foo OR bar"
+        request["query_sha256"] = sha256(b"foo OR bar")
+        suffix = (
+            " repo:^bench/example$ rev:" + REVISION + " type:file patternType:keyword count:all"
+        )
+        request["request_query"] = 'content:"foo" content:"OR" content:"bar"' + suffix
+        self.assertEqual(validate_capture(request, raw, manifest, universe)["file_order"], [])
+        for altered in (
+            "foo OR bar",
+            'content:"foo OR bar"',
+            'content:"foo" OR content:"bar"',
+            'content:"foo" content:"OR" content:"bar" repo:other',
+        ):
+            with self.subTest(request_pattern=altered):
+                request["request_query"] = altered + suffix
+                self.assert_refused(request, raw, manifest, universe)
 
     def test_missing_or_mismatched_indexed_universe_refused(self) -> None:
         request, raw, manifest, universe = inputs()
