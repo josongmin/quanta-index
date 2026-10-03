@@ -11391,6 +11391,8 @@ def test_quanta_encoder_selector_binds_semantic_capture_revision():
         [record("semantic", "none:lexical", "not-applicable")],
         [record("semantic", model, None)],
         [record("semantic", model, " ")],
+        [record("semantic", model, "not-applicable")],
+        [record("semantic", model, " not-applicable ")],
         [semantic, record("hybrid", model, v2)],
         [semantic, record("hybrid", "other-model", v1)],
     ]

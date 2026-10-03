@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
@@ -1867,6 +1868,15 @@ def validate_host_timeline_monitor(payload: dict, path: Path) -> None:
     rows: list[dict] = []
     raw.consume_lines(lambda lines: rows.extend(json.loads(line) for line in lines))
     header, observations = rows[0], rows[1:]
+    probe = payload["samples"][0]["probe"]
+    if (
+        header["host"]["os"]
+        != ("macos" if probe["system"] == "Darwin" else probe["system"].lower())
+        or header["host"]["arch"] != probe["machine"]
+        or header["host"]["cpu_count"] != probe["cpu_count"]
+        or any(observation["facts"]["foreign_rust"] for observation in observations)
+    ):
+        raise RunError("host timeline monitor host differs or contains foreign Rust contention")
     if header["reservation_id"] != payload["reservation_id"] or len(observations) != len(
         payload["samples"]
     ):
@@ -7030,7 +7040,7 @@ def _validate_isolation_proof(
     return result
 
 
-def _quanta_admission_model_revision(records) -> str:
+def _quanta_admission_model_revision(records: Iterable[object]) -> str:
     """Derive model authority from bound routes, never an unused encoder option."""
     identities: set[tuple[str, str]] = set()
     observed = False
@@ -7060,9 +7070,11 @@ def _quanta_admission_model_revision(records) -> str:
                 if (
                     not isinstance(model, str)
                     or not model.strip()
+                    or model != model.strip()
                     or model.startswith("none:")
                     or not isinstance(revision, str)
                     or not revision.strip()
+                    or revision != revision.strip()
                     or revision == "not-applicable"
                 ):
                     raise RunError("Quanta modeled route lacks a real model identity")
@@ -8258,9 +8270,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             if not isinstance(annotation_paths, list):
                 raise RunError("qualified verdict lacks annotation receipts")
             quanta_model_revision = _quanta_admission_model_revision(
-                entry["run"]
-                for entry in validated.values()
-                if entry["rep"] == "rep-00" and entry["system"] == "quanta"
+                entry["run"] for entry in validated.values() if entry["system"] == "quanta"
             )
             if not isinstance(adapter, dict):
                 raise RunError("qualified verdict lacks the Semble adapter manifest")
@@ -10882,7 +10892,9 @@ def build_run_manifest(
         if not isinstance(annotation_refs, list):
             raise RunError("frozen admission annotation receipts are malformed")
         quanta_model_revision = _quanta_admission_model_revision(
-            read_json(Path(record_path)) for record_path in rep0["quanta"].values()
+            read_json(Path(record_path))
+            for layout in rep_layouts
+            for record_path in layout["quanta"].values()
         )
         admission = verify_admission_bundle(
             Path(str(admission_files["manifest"])),
