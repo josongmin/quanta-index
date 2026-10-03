@@ -50,8 +50,7 @@ pub(crate) fn query_components(query: &str) -> Option<Vec<String>> {
     Some(parts.into_iter().map(str::to_owned).collect())
 }
 
-pub(crate) fn contains_ordered_components(name: &str, wanted: &[String]) -> bool {
-    let have = name_components(name);
+pub(crate) fn contains_ordered_components(have: &[String], wanted: &[String]) -> bool {
     have.windows(wanted.len()).any(|window| window == wanted)
 }
 
@@ -77,10 +76,13 @@ mod tests {
         }
         let wanted = query_components("update available no").expect("valid query");
         assert!(contains_ordered_components(
-            "TestUpdateAvailable_NoCurrentVersion",
+            &name_components("TestUpdateAvailable_NoCurrentVersion"),
             &wanted
         ));
-        assert!(!contains_ordered_components("UpdateNoAvailable", &wanted));
+        assert!(!contains_ordered_components(
+            &name_components("UpdateNoAvailable"),
+            &wanted
+        ));
     }
 
     #[test]

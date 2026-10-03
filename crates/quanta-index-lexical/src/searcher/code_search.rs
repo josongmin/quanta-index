@@ -1683,10 +1683,7 @@ impl TantivySearcher {
                 ));
             }
             let have = crate::symbol_components::name_components(name);
-            if !have
-                .windows(components.len())
-                .any(|window| window == components)
-            {
+            if !crate::symbol_components::contains_ordered_components(&have, components) {
                 continue;
             }
             let symbol = self.document_to_symbol_candidate_identity(&doc, 0.0)?;
@@ -1717,12 +1714,12 @@ impl TantivySearcher {
             let score = if have == components { 200 } else { 100 };
             match files.entry(source.file) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert((score, name.to_owned()));
+                    let _inserted = entry.insert((score, name.to_owned()));
                 }
                 std::collections::btree_map::Entry::Occupied(mut entry) => {
                     let prior = entry.get();
                     if score > prior.0 || (score == prior.0 && name < prior.1.as_str()) {
-                        entry.insert((score, name.to_owned()));
+                        let _replaced = entry.insert((score, name.to_owned()));
                     }
                 }
             }
