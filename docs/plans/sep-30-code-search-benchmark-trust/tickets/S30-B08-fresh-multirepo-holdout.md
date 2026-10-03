@@ -1625,3 +1625,41 @@ SDK-to-daemon captures with four evaluated queries. **NOT_RUN:** full C4
 recapture and C5 qualification. Gold remains mechanical and unreviewed;
 product quality, external indexed-universe equivalence and a speed ranking
 remain unqualified.
+
+## Exposed ordinary-input typo pair completion (2026-10-03)
+
+The source-bound `12fe7d9f` pair finished all twelve previously exposed
+repositories. The independent raw-row join at
+`/private/tmp/qi-default-auto-12fe-20261003/new-default-pair-summary.json`
+has SHA-256 `9d2a36ee8111c91bd2f4421b2a23033db36c71b429540fbaa6e2e7e397d47934`.
+It checks all 4,206 selected task IDs, source file hashes, distinct-file rank
+units, native records, report scores and the separate explicit-typo capture.
+The frozen projection manifest SHA-256 is
+`a4b6a37cf269beb6de2537d68215f616910562e547c1688c6b0dcdecc1179bef`.
+
+| Request | File Hit@10 | MRR@10 | NDCG@10 | Native status |
+| --- | ---: | ---: | ---: | --- |
+| Quanta ordinary input | 4,137/4,206 | 0.8739 | 0.8996 | 3,978 success; 228 capped |
+| Semble lexical-file | 3,053/4,206 | 0.5051 | 0.5551 | 3,769 success; 437 abstained |
+| Quanta explicit `typo:` | 4,146/4,206 | separate capture | separate capture | separate request policy |
+
+Quanta ordinary input and explicit typo both hit 4,135 tasks; ordinary input
+alone hit two, explicit typo alone hit eleven, and both missed 58. Of the 69
+ordinary-input misses, 58 were `capped` and eleven `success`. The earlier
+112/4,206 ordinary-input observation used the pre-fallback source and must not
+be mixed with this capture. The new default route falls back to bounded OSA1
+only when a folded, unscoped, bare identifier produces no literal file result;
+existing literal matches retain their rank and can still crowd out the
+intended declaration. These exposed examples are diagnosis, not tuning gold.
+
+The sequential pair wall sum was 13,634.471 seconds excluding the separately
+preverified `lo` row; `zellij` alone took 3,304.835 seconds. This includes
+indexing, capture and source replay, and is not per-query latency. The frozen
+source used an unanchored one-edit textual-exclusion regex during source
+validation. Commit `5b1cf2f2` later bounded that search to possible start
+positions; its focused parity tests and source-bound 1,336-exclusion audit
+passed, but this frozen pair did not execute that later code.
+
+**VERIFIED:** 12/12 pair receipts and independent joined counts.
+**NOT_RUN:** fresh C5 product capture, subjective relevance review, matched
+five-product index attestation, and qualified product-default decision.
