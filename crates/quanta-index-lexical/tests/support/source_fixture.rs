@@ -51,6 +51,7 @@ pub(super) fn complete_file(
         },
         language,
         producer_policy_sha256: Sha256::digest(b"lexical-test:hand-authored-units:v1").into(),
+        symbol_name_source_policy: quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
         unit_set_sha256: source_file_unit_set_sha256(&chunks, &symbols)
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?,
         text_admitted: !chunks.is_empty(),

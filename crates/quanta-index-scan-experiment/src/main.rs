@@ -300,6 +300,7 @@ fn replace_scope(
             },
             language: language.clone(),
             producer_policy_sha256: Sha256::digest(b"scan-experiment-synthetic-source-v1").into(),
+            symbol_name_source_policy: quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
             unit_set_sha256: source_file_unit_set_sha256(&file.chunks, &[])?,
             text_admitted: !file.chunks.is_empty(),
             symbols: SymbolCoverage::NotRequested,

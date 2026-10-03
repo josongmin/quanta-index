@@ -2031,6 +2031,7 @@ pub(super) fn scope_with_chunks(
             },
             language,
             producer_policy_sha256: [2; 32],
+            symbol_name_source_policy: quanta_index_contract::SymbolNameSourcePolicyV1::Unspecified,
             unit_set_sha256,
             text_admitted: true,
             symbols: quanta_index_contract::SymbolCoverage::NotRequested,

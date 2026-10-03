@@ -256,6 +256,27 @@ pub fn validate_lexical_file_mutations_v1(
             {
                 return Err(SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange);
             }
+            if scope.coverage.symbol_name_source_policy
+                == crate::SymbolNameSourcePolicyV1::RawAsciiLocalName
+                && symbol.local_name.is_ascii()
+            {
+                let start =
+                    usize::try_from(symbol.definition_span.byte_start).map_err(|_overflow| {
+                        SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange
+                    })?;
+                let end =
+                    usize::try_from(symbol.definition_span.byte_end).map_err(|_overflow| {
+                        SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange
+                    })?;
+                if memchr::memmem::find(
+                    &scope.source_bytes[start..end],
+                    symbol.local_name.as_bytes(),
+                )
+                .is_none()
+                {
+                    return Err(SearchCorpusSurfaceMutationConflictV1::SymbolNameSourceMismatch);
+                }
+            }
             if !candidate_ids.insert(symbol.symbol_id.as_str()) {
                 return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateCandidateId);
             }

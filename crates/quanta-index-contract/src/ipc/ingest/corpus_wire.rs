@@ -197,6 +197,7 @@ pub enum SearchCorpusSurfaceMutationConflictV1 {
     InvalidRecordRange,
     SourceBytesDigestMismatch,
     ChunkSourceMismatch,
+    SymbolNameSourceMismatch,
 }
 
 impl fmt::Display for SearchCorpusSurfaceMutationConflictV1 {
@@ -223,6 +224,8 @@ impl fmt::Display for SearchCorpusSurfaceMutationConflictV1 {
             Self::ChunkSourceMismatch => {
                 formatter.write_str("chunk text disagrees with its source-file byte span")
             }
+            Self::SymbolNameSourceMismatch => formatter
+                .write_str("attested ASCII symbol local name is absent from its source span"),
             Self::DuplicateClear(surface) => {
                 write!(formatter, "duplicate clear for search surface {surface:?}")
             }

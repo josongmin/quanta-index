@@ -25,6 +25,14 @@ Build and start the daemon against an external current-format state root:
 Publish typed producer input through the SDK before querying an active generation.
 Legacy generations require a rebuild; see the state operations guide.
 
+Engine code path (2026-10-03, source over residual prose): ingest is
+publish-only; serve requires `ActivateSearchCorpusGenerationCas`. Lexical
+(Tantivy), semantic (Lance ANN), and hybrid (RRF) query handlers are live.
+Default development embed is `search-owned-hash-text-v1` (FNV), not a neural
+model; PotionCode/OpenAI are opt-in profiles. Residual tickets below are
+**host/release evidence**, not missing IPC match arms. See
+[engine status](docs/ssot/engine-status-v1.md).
+
 ## Build and verification
 
 
@@ -117,7 +125,9 @@ own the guarantees; this section is operator usage.
 | `quanta-index-searchctl` | Operator CLI |
 | `quanta-index-sdk` | External producer/client facade |
 
-Accepted contracts are in [ADRs](docs/adr/README.md). Generated references:
+Accepted contracts are in [ADRs](docs/adr/README.md). Living engine vs
+qualification split:
+[engine status](docs/ssot/engine-status-v1.md). Generated references:
 [DSL capabilities](docs/reference/dsl-capabilities.md) and
 [Sourcegraph filter coverage](docs/reference/sourcegraph-filter-parity.md).
 

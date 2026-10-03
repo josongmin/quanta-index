@@ -256,11 +256,11 @@ id = "lexical-sealed-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Seal commitment binds identity digest, normalizer, Tantivy commit and segment components, text authority, overlays, optional source coverage and ranked keys. Format 9 added bounded coverage pages; format 10 added full-file authority and immutable source bytes with four-surface posting counts; format 11 counts folded content and path postings only. Formats 1-10 are refused typed and require a producer rebuild."
+notes = "Seal commitment binds identity digest, normalizer, Tantivy commit and segment components, text authority, overlays, optional source coverage and ranked keys. Format 9 added bounded coverage pages; format 10 added full-file authority and immutable source bytes with four-surface posting counts; format 11 counts folded content and path postings only; format 12 binds explicit symbol-name source policy. Formats 1-11 are refused typed and require a producer rebuild."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
-value = 11
+value = 12
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"

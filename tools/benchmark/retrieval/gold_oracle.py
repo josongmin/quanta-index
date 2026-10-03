@@ -6,6 +6,8 @@ declaration census of `source_oracle` and are labelled only for files where an
 independent parser agrees with that census (`declaration_census_audit`). A
 parser-refused file can be excluded from one query's labels only when its raw
 text proves that the queried name is absent. Disagreements remain unjudged.
+For an unscoped file-search request, a possible declaration in another
+supported language also leaves the task unjudged.
 All labels remain unreviewed.
 
 Schema v1 recipes carry development and holdout tasks for one repository and
@@ -410,11 +412,27 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
             if (
                 task["intent"] == "named_function_declaration"
                 and Path(path).suffix not in (LANGUAGE_SUFFIXES[task["language"]])
-            ) or (
-                task["intent"] in DECLARATION_INTENTS
-                and source_oracle.declaration_language(path) != task["language"]
             ):
                 continue
+            if task["intent"] in DECLARATION_INTENTS:
+                source_language = source_oracle.declaration_language(path)
+                if source_language != task["language"]:
+                    # The file-search request has no language filter. A name
+                    # that could be declared in another supported language
+                    # cannot be scored as an irrelevant file without a census.
+                    if source_language in source_oracle.DECLARATION_CENSUS and (
+                        not _textually_excluded(
+                            raw, scoring_query, DECLARATION_INTENTS[scoring_intent]
+                        )
+                        or (
+                            intended_typo
+                            and not _textually_excluded(raw, task["query"], "osa1_casefold")
+                        )
+                    ):
+                        unsupported.append(
+                            {"path": path, "reason": "other_language_possible_declaration"}
+                        )
+                    continue
             selected += 1
             if task["intent"] == "literal_utf8_exact":
                 spans = _literal_spans(raw, query)

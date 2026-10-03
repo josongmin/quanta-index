@@ -698,7 +698,10 @@ def test_declaration_intents_label_audited_census_and_unjudge_refused_files(tmp_
     # unjudged, never negative; the others are proven absent from its bytes.
     exact = rows["hold-exact"]
     assert exact["label_state"] == "unjudged" and exact["answerable"] is None
-    assert exact["unsupported"] == [{"path": "pkg/legacy.py", "reason": "census_refused"}]
+    assert exact["unsupported"] == [
+        {"path": "pkg/legacy.py", "reason": "census_refused"},
+        {"path": "pkg/lib.rs", "reason": "other_language_possible_declaration"},
+    ]
     for task_id in ("hold-prefix", "hold-components"):
         row = rows[task_id]
         assert row["label_state"] == "mechanical_unreviewed" and row["answerable"] is True
@@ -712,6 +715,53 @@ def test_declaration_intents_label_audited_census_and_unjudge_refused_files(tmp_
     assert gold["census_audits"]["rust"]["status"] == "admitted"
     assert gold["census_audits"]["rust"]["checker"]["id"] == "rust_syn"
     assert all("labels" not in row for row in blind["tasks"])
+
+
+def test_unscoped_declaration_gold_unjudges_possible_other_language_files(tmp_path):
+    view = tmp_path / "view"
+    view.mkdir()
+    files = {
+        "target.ts": b"export function hello() {}\nexport function OnlyTs() {}\n",
+        "near.js": b"export function help() {}\n",
+        "same.js": b"export function hello() {}\n",
+        "unrelated.js": b"export function elsewhere() {}\n",
+    }
+    for name, raw in files.items():
+        (view / name).write_bytes(raw)
+    manifest = {
+        "repository_commit": "a" * 40,
+        "files": [
+            {"path": name, "file_sha256": gold_oracle._sha(raw)}
+            for name, raw in sorted(files.items())
+        ],
+    }
+    recipe = v2_recipe(
+        "holdout",
+        b"{}",
+        declaration_task("same", "declaration_name_exact", "hello", "typescript"),
+        declaration_task("only", "declaration_name_exact", "OnlyTs", "typescript"),
+        {
+            **declaration_task("typo", "declaration_name_osa1_casefold", "hellp", "typescript"),
+            "intended_name": "hello",
+        },
+    )
+    gold, _blind = gold_oracle.derive(recipe, manifest, view)
+    rows = {row["task_id"]: row for row in gold["tasks"]}
+    assert [(r["path"], r["local_name"]) for r in rows["same"]["labels"]] == [
+        ("target.ts", "hello")
+    ]
+    assert rows["same"]["label_state"] == "unjudged"
+    assert rows["same"]["unsupported"] == [
+        {"path": "same.js", "reason": "other_language_possible_declaration"}
+    ]
+    assert rows["only"]["label_state"] == "mechanical_unreviewed"
+    assert rows["only"]["unsupported"] == []
+    assert rows["typo"]["label_state"] == "unjudged"
+    assert rows["typo"]["near_declaration_state"] == "partial"
+    assert rows["typo"]["unsupported"] == [
+        {"path": "near.js", "reason": "other_language_possible_declaration"},
+        {"path": "same.js", "reason": "other_language_possible_declaration"},
+    ]
 
 
 @pytest.mark.parametrize(

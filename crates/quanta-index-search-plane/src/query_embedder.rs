@@ -202,8 +202,10 @@ fn stable_fnv1a64(bytes: &[u8]) -> u64 {
 /// exactly zero provider calls and reserves nothing — the owner-local suite
 /// proves this with a counting spy. Cancellation and failure settle the
 /// reservation on the way out, so no detached work can outlive the request
-/// against the global caps. The supervisor enrollment handle is created at
-/// reservation; the actual spawn/register/cancel/join is P08 (S21-09).
+/// against the global caps. Searchd enrolls the provider attempt pool at
+/// serve (`spawn_provider_child`); this type settles the request-path
+/// reservation. Host-process signal/lease probes remain qualification work,
+/// not a missing spawn implementation.
 pub struct ProviderBoundaryQueryEmbedder {
     inner: Arc<dyn QueryTextEmbedderPort + Send + Sync>,
     ledger: Arc<ProviderBudgetLedger>,

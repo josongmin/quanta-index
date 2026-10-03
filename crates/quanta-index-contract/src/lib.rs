@@ -30,7 +30,7 @@ pub use quanta_index_contract_base::{
 };
 pub use source_coverage::{
     FileCoverageIter, FileCoverageSnapshot, SourceCoverageError, SourceFileCoverage,
-    SourcePublicationEvent, SymbolCoverage, source_file_unit_set_sha256,
+    SourcePublicationEvent, SymbolCoverage, SymbolNameSourcePolicyV1, source_file_unit_set_sha256,
 };
 
 /// Internal legacy channel surface used by `searchd` composition-root,

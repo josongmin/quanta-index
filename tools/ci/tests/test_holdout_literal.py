@@ -315,3 +315,30 @@ def test_literal_batch_rechecks_inputs_after_suite_derivation(tmp_path, monkeypa
     )
     with pytest.raises((evaluator.EvidenceError, ValueError), match=failure):
         holdout_literal.derive_batch(release, capsule_root, checkout_root, expected_repositories=1)
+
+
+def test_literal_matrix_uses_raw_split_sha256_like_sampling_and_c4(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    split_raw = b'{"split":"fixed"}\n'
+    batch = SimpleNamespace(
+        names=("toy",),
+        split_raw=split_raw,
+        document={"digest": "sha256:release"},
+    )
+    prepared = SimpleNamespace(identity_sha256="a" * 64)
+    monkeypatch.setattr(holdout_c4, "_batch_preflight", lambda *_: batch)
+    monkeypatch.setattr(holdout_c4, "_batch_prepare", lambda *_: prepared)
+    monkeypatch.setattr(holdout_c4, "_batch_recheck", lambda *_: None)
+    monkeypatch.setattr(
+        holdout_literal,
+        "_derive_prepared",
+        lambda *_: (
+            {"tasks": [{"task_id": "toy.lit.001"}]},
+            {"tasks": [{"task_id": "toy.lit.001"}]},
+            {"selected": 1, "selected_task_ids": ["toy.lit.001"], "excluded": []},
+        ),
+    )
+    matrix, _ = holdout_literal.derive_batch(tmp_path, tmp_path, tmp_path, expected_repositories=1)
+    assert matrix["split_manifest_sha256"] == hashlib.sha256(split_raw).hexdigest()
+    assert len(matrix["split_manifest_sha256"]) == 64
