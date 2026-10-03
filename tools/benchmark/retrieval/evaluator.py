@@ -3931,6 +3931,63 @@ def evaluate_paired_file_diagnostic(
     return output
 
 
+def complete_scored_file_rows(
+    suite: dict[str, Any],
+    pack: dict[str, Any],
+    run: dict[str, Any],
+    baseline: str,
+    candidate: str,
+) -> list[tuple[str, float, float]]:
+    """Require complete, scored file observations before any qualified use.
+
+    The caller must first validate source, suite, pack and runner evidence.
+    This selects paired rows only; it does not grant a quality or product claim.
+    """
+    report = evaluate_paired_file_diagnostic(suite, pack, run, baseline, candidate)
+    tasks = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
+    answerable = sorted(task_id for task_id, task in tasks.items() if task["answerable"])
+    require(bool(answerable), "complete scored file comparison needs positive tasks")
+    require(
+        all(
+            task.get("judgment_policy") in (SOURCE_ORACLE_JUDGMENT_POLICY, COMPLETE_JUDGMENT_POLICY)
+            and (
+                "source_oracle" in task
+                or task.get("label_review", {}).get("assessment") in LABEL_REVIEW_ASSESSMENTS[1:]
+            )
+            for task in tasks.values()
+        ),
+        "complete scored file comparison lacks authoritative labels",
+    )
+    file_metrics = report["judgment_metrics"]["file_judgments"]
+    for route, evidence in (
+        (baseline, "semble_bm25_score_v1"),
+        (candidate, "native_sdk_score_v1"),
+    ):
+        route_metrics = file_metrics["routes"][route]
+        require(
+            route_metrics["rank_metric_interpretation"]
+            in ("scored_ranking", "scored_ranking_native_ties")
+            and route_metrics["score_evidence"] == evidence
+            and route_metrics["eligible_task_ids"] == answerable
+            and not route_metrics["excluded"],
+            f"complete scored file comparison lacks ordered, judged {route} rows",
+        )
+    comparison = file_metrics["comparison"]
+    require(
+        comparison["eligible_task_ids"] == answerable
+        and comparison["sample_count"] == len(answerable),
+        "complete scored file comparison lacks paired answerable coverage",
+    )
+    scores = {
+        (row["task_id"], row["route"]): row["scores"]["ndcg_at_10"]
+        for row in file_metrics["per_query"]
+        if row["eligible"]
+    }
+    return [
+        (task_id, scores[task_id, baseline], scores[task_id, candidate]) for task_id in answerable
+    ]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)

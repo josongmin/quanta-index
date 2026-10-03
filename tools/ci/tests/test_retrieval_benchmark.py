@@ -15236,6 +15236,23 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
         )
     with pytest.raises(ev.EvidenceError, match="context metrics are undefined"):
         ev.evaluate(suite, {}, run, "semble-lexical-file", "lexical")
+    with pytest.raises(ev.EvidenceError, match="authoritative labels"):
+        ev.complete_scored_file_rows(suite, {}, run, "semble-lexical-file", "lexical")
+    for task in suite["tasks"]:
+        task["judgment_policy"] = ev.COMPLETE_JUDGMENT_POLICY
+    complete_rows = ev.complete_scored_file_rows(suite, {}, run, "semble-lexical-file", "lexical")
+    assert [task_id for task_id, _before, _after in complete_rows] == ["T1", "T2"]
+    unjudged = copy.deepcopy(suite)
+    for task in unjudged["tasks"]:
+        task["file_judgments"] = task["file_judgments"][:1]
+    with pytest.raises(ev.EvidenceError, match="ordered, judged"):
+        ev.complete_scored_file_rows(unjudged, {}, run, "semble-lexical-file", "lexical")
+    unscored = copy.deepcopy(run)
+    for row in unscored["results"]:
+        if row["route"] == "lexical":
+            row["score_evidence"] = None
+    with pytest.raises(ev.EvidenceError, match="ordered, judged"):
+        ev.complete_scored_file_rows(suite, {}, unscored, "semble-lexical-file", "lexical")
     run["results"][0]["rank_unit"] = "symbol"
     with pytest.raises(ev.EvidenceError, match="distinct-file results"):
         ev.evaluate_paired_file_diagnostic(suite, {}, run, "semble-lexical-file", "lexical")

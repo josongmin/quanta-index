@@ -862,6 +862,15 @@ The existing context C5 replay now requires the exact
 `metric_scope: context_span_density`. A forged file metric version is rejected
 before metric gating. The decision/benchctl focused rail passed 86 tests.
 
+The evaluator now has a narrow `complete_scored_file_rows()` selector for the
+future file track. It starts from the existing replayed paired-file diagnostic
+and admits rows only when both routes have scored ordering, the required native
+score evidence, complete top-10 judgments, a common positive-task cohort, and
+source-oracle or reviewed-complete label authority. Focused tests accept two
+fully judged file tasks and reject unreviewed policy, missing judgments and
+missing score evidence (2 tests passed). This selector is not wired into a
+qualified report or product gate; those remain `NOT_RUN`.
+
 ## Frozen C4 v6 and native typo diagnostics (2026-10-03)
 
 **VERIFIED, diagnostic only:** clean `9d38b69d` rebuilt all twelve source-oracle
