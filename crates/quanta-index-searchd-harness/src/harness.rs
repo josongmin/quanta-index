@@ -3919,7 +3919,7 @@ mod pending_corpus_preview_tests {
     #[test]
     fn wire_preview_preserves_pending_source_generation_and_activation_state() {
         let mut runtime = E2eRuntime::boot().expect("isolated fixture runtime");
-        runtime
+        let _ids = runtime
             .ingest_text_chunks(
                 "serving-owner",
                 "src/shared.rs",

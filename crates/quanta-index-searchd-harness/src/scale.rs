@@ -1049,7 +1049,7 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
         })?;
 
     // Retain one generation so the delta's activation reclaims the base.
-    let mut rt = E2eRuntime::boot_with_history_max_generations(1)?;
+    let mut rt = E2eRuntime::boot_with_history_max_generations(2)?;
     let model_revision = model_revision_of(rt.embedder_profile());
 
     let before_build = directory_bytes(rt.state_root())?;
@@ -1181,7 +1181,7 @@ pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
                 .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
         })?;
 
-    let mut rt = E2eRuntime::boot_with_history_max_generations(1)?;
+    let mut rt = E2eRuntime::boot_with_history_max_generations(2)?;
     let model_revision = model_revision_of(rt.embedder_profile());
     let before_build = directory_bytes(rt.state_root())?;
     let chunks = files
@@ -1562,7 +1562,7 @@ pub fn artifact(
                     ),
                     ("top_k", SCALE_TOP_K.to_string()),
                     ("warm_query_samples", WARM_QUERY_SAMPLES.to_string()),
-                    ("history_max_generations", "1".to_string()),
+                    ("history_max_generations", "2".to_string()),
                 ],
             ),
             model_revision: measurement.model_revision.clone(),
@@ -1718,8 +1718,11 @@ mod tests {
         assert!(oracle.paths_by_repo["repo0"].contains(shared_path));
         assert!(oracle.paths_by_repo["repo1"].contains(shared_path));
         assert_ne!(files[0].content, files[64].content);
-        assert_eq!(oracle.expected_count(Some("repo0"))?, 10);
-        assert_eq!(oracle.expected_count(None)?, 10);
+        assert_eq!(
+            oracle.expected_count(Some("repo0")).expect("fixture count"),
+            10
+        );
+        assert_eq!(oracle.expected_count(None).expect("fixture count"), 10);
         let repo1_rows = files
             .iter()
             .filter(|file| file.source_repo_id == "repo1")
@@ -1874,7 +1877,7 @@ mod tests {
 
     #[test]
     fn same_relative_path_in_two_source_repos_survives_publish_and_delta() -> AnyResult<()> {
-        let mut rt = E2eRuntime::boot_with_history_max_generations(1)?;
+        let mut rt = E2eRuntime::boot_with_history_max_generations(2)?;
         let shared_path = "src/shared.rs";
         let content0 = format!(
             "// {SCALE_QUERY_TOKEN}\n// {} anchor\n",
