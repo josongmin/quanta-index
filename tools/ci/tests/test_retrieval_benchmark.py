@@ -15338,7 +15338,7 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
         )
         task = copy.deepcopy(source_task)
         task["task_id"] = f"T{index}"
-        task["query"] = f"{source_task['query']} reviewed variant {index}"
+        task["query"] = "v" + ev.digest(f"file-gate-variant-{index}".encode())[:20]
         task["query_sha256"] = ev.digest(task["query"].encode())
         task["query_family_id"] = f"file-family-{index}"
         sufficiently_sampled_suite["tasks"].append(task)
@@ -15346,6 +15346,13 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
             if source_row["task_id"] == source_id:
                 result = copy.deepcopy(source_row)
                 result["task_id"] = task["task_id"]
+                if result["route"] == "lexical":
+                    result["query_identity"] = qp.derive_query_identity(policy, task["query"])
+                else:
+                    result["query_identity"] = {
+                        "original_query_sha256": task["query_sha256"],
+                        "submitted_query_sha256": task["query_sha256"],
+                    }
                 sufficiently_sampled_run["results"].append(result)
     _validated_suite, sufficiently_sampled_pack, _source = ev.validate_suite(
         repo, sufficiently_sampled_suite
