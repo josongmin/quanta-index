@@ -1939,6 +1939,68 @@ mod tests {
     }
 
     #[test]
+    fn natural_language_token_budget_is_bounded_and_bound_to_the_plan() {
+        let policy = QueryInputPolicy::NaturalLanguageFile;
+        let mut args = Args {
+            positional: vec!["run".to_string()],
+            flags: BTreeMap::from([(
+                "query-input-policy".to_string(),
+                "natural_language_file".to_string(),
+            )]),
+            help: false,
+        };
+        let raw = (0..48)
+            .map(|index| format!("w{index:02}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let pack = QueryPack {
+            suite_id: "suite".to_string(),
+            suite_commitment_sha256: "a".repeat(64),
+            repository_commit: "b".repeat(40),
+            tokenizer: "test".to_string(),
+            tokenizer_budget_version: None,
+            routes: vec!["lexical".to_string()],
+            file_universe: vec![("src/lib.rs".to_string(), "c".repeat(64))],
+            file_universe_digest: "d".repeat(64),
+            tasks: vec![quanta_index_retrieval_bench::record::PackTask {
+                task_id: "T48".to_string(),
+                query: raw.clone(),
+                query_sha256: sha256_hex(raw.as_bytes()),
+            }],
+            pack_sha256: "e".repeat(64),
+            comparison_contract: serde_json::json!({"top_k": 10}),
+            contract_top_k: 10,
+        };
+        let parent = tempfile::tempdir().expect("tempdir");
+        let refusal = parent.path().join("refusal.json");
+        assert!(plan_query_pack(&args, &pack, &refusal).is_err());
+        args.flags
+            .insert("nl-max-tokens".to_string(), "128".to_string());
+        let (planned_policy, config, plans) =
+            plan_query_pack(&args, &pack, &refusal).expect("bounded exploratory plan");
+        assert_eq!(planned_policy, policy);
+        assert_eq!(config.max_tokens, 128);
+        let plan = plans.get("T48").expect("planned task");
+        assert_eq!(plan.lexical_request.matches(" OR ").count(), 47);
+        assert_eq!(
+            plan.effective_lexical_request_sha256,
+            "ef00c2235552602acb805be3d2554bf0e92ab578cc8ca09f23fa89bb7a19940d"
+        );
+        assert_ne!(
+            execution_profile_sha256(policy, &config),
+            execution_profile_sha256(policy, &NlPlanConfig::default())
+        );
+        for invalid in ["0", "129", "-1", "1.5", "true", " 48", ""] {
+            args.flags
+                .insert("nl-max-tokens".to_string(), invalid.to_string());
+            assert!(nl_plan_config(&args, policy).is_err(), "accepted {invalid:?}");
+        }
+        args.flags
+            .insert("nl-max-tokens".to_string(), "48".to_string());
+        assert!(nl_plan_config(&args, QueryInputPolicy::Native).is_err());
+    }
+
+    #[test]
     fn exact_symbol_name_policy_refuses_other_routes_before_capture() {
         let symbol = BTreeSet::from(["symbol"]);
         let lexical = BTreeSet::from(["lexical"]);
