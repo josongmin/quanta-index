@@ -11512,6 +11512,20 @@ def test_exact_symbol_profile_admits_only_standalone_symbol_capture(tmp_path, mo
         pairrun.load_spec(spec_path, standalone_quanta=True)
 
 
+def test_literal_file_diagnostic_profile_admits_standalone_lexical_only(tmp_path):
+    spec = _g0_spec()
+    spec["execution_profiles"] = {"quanta": qp.execution_profile("literal_file")}
+    spec["routes"] = ["lexical"]
+    spec["candidate_route"] = "lexical"
+    path = tmp_path / "literal-spec.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    assert pairrun.load_spec(path, standalone_quanta=True)["routes"] == ["lexical"]
+    spec["scope"] = "qualified"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    with pytest.raises(pairrun.RunError, match="cannot carry qualified claims"):
+        pairrun.load_spec(path, standalone_quanta=True)
+
+
 @pytest.mark.parametrize(
     "policy",
     [
