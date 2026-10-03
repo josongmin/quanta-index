@@ -17,7 +17,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace

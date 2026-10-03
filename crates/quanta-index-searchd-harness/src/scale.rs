@@ -530,7 +530,7 @@ fn collect_warm_samples(
         let observed = query().map_err(|err| {
             anyhow::anyhow!(
                 "scale: warm query sample {}/{} failed: {err}",
-                sample_index + 1,
+                sample_index.saturating_add(1),
                 sample_count
             )
         })?;
@@ -538,7 +538,7 @@ fn collect_warm_samples(
         require_result_count(
             observed,
             expected,
-            &format!("warm query sample {}/{}", sample_index + 1, sample_count),
+            &format!("warm query sample {}/{}", sample_index.saturating_add(1), sample_count),
         )?;
         samples_ms.push(elapsed);
     }

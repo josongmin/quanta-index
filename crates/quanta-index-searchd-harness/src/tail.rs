@@ -191,7 +191,7 @@ fn collect_timed_samples(
                     "tail: route `{}` scenario `{}` measured sample {}/{} failed golden validation: {err}",
                     route.as_str(),
                     scenario.id,
-                    sample_index + 1,
+                    sample_index.saturating_add(1),
                     sample_count
                 )
             })?;

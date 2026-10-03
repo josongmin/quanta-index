@@ -64,10 +64,19 @@ def link_issue(doc_path: Path, raw_target: str, repo_root: Path = REPO_ROOT) -> 
     if not target or "://" in target or target.startswith("mailto:"):
         return None
     normalized, _, fragment = target.partition("#")
-    candidate = (doc_path.parent / normalized).resolve() if normalized else doc_path.resolve()
+    absolute = Path(normalized)
+    if absolute.is_absolute():
+        candidate = absolute.resolve()
+    elif normalized:
+        candidate = (doc_path.parent / normalized).resolve()
+    else:
+        candidate = doc_path.resolve()
     try:
         candidate.relative_to(repo_root)
     except ValueError:
+        # External evidence artifacts cannot be resolved from a clean checkout.
+        if absolute.is_absolute():
+            return None
         return "broken doc path"
     if not candidate.exists():
         return "broken doc path"
