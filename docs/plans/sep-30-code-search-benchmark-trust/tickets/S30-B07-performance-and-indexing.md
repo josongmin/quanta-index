@@ -373,16 +373,37 @@ is justified by this single sample. Repeated indexing, substage attribution,
 and incremental correctness/performance qualification are `NOT_RUN`.
 
 Repeated typo attribution, capacity runs and equal-boundary five-product
-comparison remain separate completion scopes.
+comparison remain separate completion scopes. All four typo pair lanes passed
+capture and independent verdict replay. Their fallback candidate stage
+accounts for approximately 94-96% of backend search time; posting traversal,
+source token verification and materialization still share that stage clock.
+Positive per-query correlation with considered source bytes and token
+comparisons is a hypothesis for a finer scan profile, not proof of disk I/O or
+an authorization to replace the candidate algorithm.
 Five diagnostic query lanes contain 1,196/1,192/1,178/1,192/1,192 tasks, or
 5,950 total, over the unchanged Gin 99-file corpus. OpenGrok captured and
 replayed every lane under clean external driver
-`45dd36a492b882000f7063aa52fd583427808c05`; Sourcegraph and the native pair's
-remaining lanes are running. cs is prepared but not executed. Native index
+`45dd36a492b882000f7063aa52fd583427808c05`; Sourcegraph and the native pair
+also completed every lane. cs collection is running and the five-product join
+is not yet executed. Native index
 evidence proves Sourcegraph's 99 stored bodies and OpenGrok's served 99 bodies;
 OpenGrok backend index attestation remains unavailable. Its zero typo hits are
 successful empty HTTP results, not execution errors. Exact versus typo scores
 and file versus declaration recovery must stay separate.
+
+The separate public `writeContentType` rank study at `/private/tmp/qf4s273`
+walked the complete pool: 18 files in two pages. `render/render.go` ranks 13
+with score 109; the preceding 12 render files score 111 and contain uppercase
+`WriteContentType` declarations plus helper calls. The default request folds
+case; its declaration bonus also applies to these uppercase method names.
+The source gold instead names the lowercase local declaration. Index omission
+is therefore disproved for this fresh request; the observed rank and differing
+intent contracts explain its miss. This diagnostic must not be mixed into the
+full-lane aggregate. Keep folded content/file retrieval and exact-case
+declaration/symbol intent separate; test the existing exact-case route before
+proposing a ranking change to force this single gold file into the default top
+10. Default ranking changes need independently reviewed broader relevance
+judgments and holdout evidence.
 
 Actual medium execution at `06aac8cc` failed after publication because the
 harness expected a first-query cold-open increment. Activation already proves,

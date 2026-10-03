@@ -375,8 +375,7 @@ def _source_admission(
             "pyproject.toml": gold.get("pyproject_sha256"),
             "uv.lock": gold.get("uv_lock_sha256"),
         }
-        and manifest.get("gold_producer_runtime", {}).get("source_head")
-        == gold.get("source_head")
+        and manifest.get("gold_producer_runtime", {}).get("source_head") == gold.get("source_head")
         and manifest.get("gold_producer_runtime", {}).get("dependency_versions")
         == gold.get("dependency_versions")
         and manifest.get("gold_producer_runtime", {}).get("parser_runtime_versions")
@@ -417,10 +416,8 @@ def _source_admission(
         and bool(prepared["driver_python_sha256"])
         and prepared.get("gold_receipt_sha256") == sha(gold_receipt_path)
         and prepared.get("projection_receipt_sha256") == sha(projection_receipt_path)
-        and prepared.get("projector_overlay_sha256")
-        == projection.get("projector_overlay_sha256")
-        and prepared.get("projector_source_commit")
-        == projection.get("projector_source_commit"),
+        and prepared.get("projector_overlay_sha256") == projection.get("projector_overlay_sha256")
+        and prepared.get("projector_source_commit") == projection.get("projector_source_commit"),
         "global gold, matrix, projection, or native preparation differs",
     )
     selected = [row for row in authority["cells"] if row["intent"] == INTENT]
@@ -428,9 +425,7 @@ def _source_admission(
     cohorts = projection["cohorts"]
     capsule_root = Path(manifest["gold_capsule_root"])
     require(
-        capsule_root.is_absolute()
-        and capsule_root.is_dir()
-        and ".." not in capsule_root.parts,
+        capsule_root.is_absolute() and capsule_root.is_dir() and ".." not in capsule_root.parts,
         "global gold capsule root is absent or noncanonical",
     )
     require(
@@ -598,14 +593,11 @@ def _select_native_status(cell: dict[str, Any], prepared: dict[str, Any]) -> dic
                 "driver_source_sha" not in prepared
                 or (
                     status.get("driver_source_sha") == prepared["driver_source_sha"]
-                    and status.get("binary_build_source_sha")
-                    == prepared["binary_build_source_sha"]
+                    and status.get("binary_build_source_sha") == prepared["binary_build_source_sha"]
                     and status.get("driver_python_sha256") == prepared["driver_python_sha256"]
-                    and status.get("parser_runtime_versions")
-                    == prepared["parser_runtime_versions"]
+                    and status.get("parser_runtime_versions") == prepared["parser_runtime_versions"]
                     and status.get("postrun_verification", {}).get("pair_valid") is True
-                    and status.get("postrun_verification", {}).get("selected")
-                    == 2 * cell["tasks"]
+                    and status.get("postrun_verification", {}).get("selected") == 2 * cell["tasks"]
                 )
             )
         ):
@@ -740,7 +732,15 @@ def _external_records(
                 if product == "cs"
                 else raw["http_status"] == 200 and raw["error"] is None
             )
-            require(eligible, "verified external row reports query failure: " + repo + "/" + product + "/" + task_id)
+            require(
+                eligible,
+                "verified external row reports query failure: "
+                + repo
+                + "/"
+                + product
+                + "/"
+                + task_id,
+            )
             require(
                 bool(scoring._score(paths, task["gold"])["hit_at_10"]) == raw["file_hit_at_10"],
                 "external recorded hit differs: " + repo + "/" + product + "/" + task_id,
@@ -782,6 +782,7 @@ def _pair_rows(
     expected_external_sources = _external_producer_sources(
         Path(manifest["source_checkout"]), manifest["source_head"]
     )
+    prebind_sha256 = _global_prebind(external_root, manifest, ledger, expected_external_sources)
     if "continuation" in ledger:
         require(
             ledger["continuation"]["source_eligibility_sha256"] == sha(eligibility_path),
@@ -935,6 +936,7 @@ def _pair_rows(
         "external_manifest_sha256": sha(external_manifest_path),
         "external_ledger_sha256": sha(external_ledger_path),
         "external_source_commit": manifest["source_head"],
+        "external_prebind_sha256": prebind_sha256,
         "external_producer_sources_sha256": expected_external_sources,
         "source_eligibility_sha256": sha(eligibility_path),
         "release_digest": manifest["release_digest"],

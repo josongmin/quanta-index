@@ -164,24 +164,37 @@ def test_fresh_join_selects_successful_retry_without_hiding_failed_attempts(tmp_
 
 def test_fresh_join_global_status_binds_driver_binary_build_and_postrun(tmp_path):
     cell = {
-        "cell_id": "d", "repository": "attrs", "tasks": 2,
-        "output_root": str(tmp_path / "d"), "spec_sha256": "spec",
+        "cell_id": "d",
+        "repository": "attrs",
+        "tasks": 2,
+        "output_root": str(tmp_path / "d"),
+        "spec_sha256": "spec",
     }
     prepared = {
-        "source_commit": "driver", "driver_source_sha": "driver",
-        "binary_build_source_sha": "binary-build", "driver_python_sha256": "python",
+        "source_commit": "driver",
+        "driver_source_sha": "driver",
+        "binary_build_source_sha": "binary-build",
+        "driver_python_sha256": "python",
         "parser_runtime_versions": {
-            "tree-sitter": "0.23.2", "tree-sitter-language-pack": "0.9.1",
-            "regex": "2025.10.23", "unicodedata2": "17.0.0",
+            "tree-sitter": "0.23.2",
+            "tree-sitter-language-pack": "0.9.1",
+            "regex": "2025.10.23",
+            "unicodedata2": "17.0.0",
         },
-        "runner_sha256": "runner", "searchd_sha256": "searchd",
+        "runner_sha256": "runner",
+        "searchd_sha256": "searchd",
     }
     status = {
-        "returncode": 0, "source_commit": "driver", "driver_source_sha": "driver",
-        "binary_build_source_sha": "binary-build", "driver_python_sha256": "python",
+        "returncode": 0,
+        "source_commit": "driver",
+        "driver_source_sha": "driver",
+        "binary_build_source_sha": "binary-build",
+        "driver_python_sha256": "python",
         "parser_runtime_versions": prepared["parser_runtime_versions"],
-        "runner_sha256": "runner", "searchd_sha256": "searchd",
-        "spec_sha256": "spec", "output_root": str(tmp_path / "d"),
+        "runner_sha256": "runner",
+        "searchd_sha256": "searchd",
+        "spec_sha256": "spec",
+        "output_root": str(tmp_path / "d"),
         "postrun_verification": {"pair_valid": True, "selected": 4},
     }
     path = tmp_path / "d.status.json"
@@ -190,7 +203,12 @@ def test_fresh_join_global_status_binds_driver_binary_build_and_postrun(tmp_path
     for changed in (
         {"binary_build_source_sha": "wrong"},
         {"driver_python_sha256": "wrong"},
-        {"parser_runtime_versions": {**prepared["parser_runtime_versions"], "tree-sitter": "wrong"}},
+        {
+            "parser_runtime_versions": {
+                **prepared["parser_runtime_versions"],
+                "tree-sitter": "wrong",
+            }
+        },
         {"postrun_verification": {"pair_valid": False, "selected": 4}},
         {"postrun_verification": {"pair_valid": True, "selected": 3}},
     ):
@@ -212,29 +230,48 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         pack = {"tasks": [{"task_id": repo + ".q1"}]}
         suite_path = write(tmp_path / repo / "suite.json", suite)
         pack_path = write(tmp_path / repo / "pack.json", pack)
-        spec_path = write(tmp_path / repo / "spec.json", {
-            "suite": str(suite_path), "query_pack": str(pack_path),
-        })
+        spec_path = write(
+            tmp_path / repo / "spec.json",
+            {
+                "suite": str(suite_path),
+                "query_pack": str(pack_path),
+            },
+        )
         parser_runtime = {
-            "tree_sitter": "0.23.2", "tree_sitter_language_pack": "0.9.1",
+            "tree_sitter": "0.23.2",
+            "tree_sitter_language_pack": "0.9.1",
         }
-        identity = write(tmp_path / "gold-v10" / repo / "identity.json", {
-            "repo": repo, "parser_runtime": parser_runtime,
-        })
-        rows.append({
-            "repository": repo, "intent": fresh.INTENT,
-            "status": "diagnostic_unqualified", "selected_task_ids": [repo + ".q1"],
-            "repository_commit": "commit", "gold_capsule_identity_sha256": fresh.sha(identity),
-            "release_digest": "release",
-        })
-        external_cells.append({
-            "repository": repo, "spec_path": str(spec_path), "tasks": 1,
-            "gold_identity_path": str(identity),
-            "projected_suite_commitment_sha256": fresh.canonical_sha(suite),
-            "blind_pack_commitment_sha256": fresh.canonical_sha(pack),
-        })
+        identity = write(
+            tmp_path / "gold-v10" / repo / "identity.json",
+            {
+                "repo": repo,
+                "parser_runtime": parser_runtime,
+            },
+        )
+        rows.append(
+            {
+                "repository": repo,
+                "intent": fresh.INTENT,
+                "status": "diagnostic_unqualified",
+                "selected_task_ids": [repo + ".q1"],
+                "repository_commit": "commit",
+                "gold_capsule_identity_sha256": fresh.sha(identity),
+                "release_digest": "release",
+            }
+        )
+        external_cells.append(
+            {
+                "repository": repo,
+                "spec_path": str(spec_path),
+                "tasks": 1,
+                "gold_identity_path": str(identity),
+                "projected_suite_commitment_sha256": fresh.canonical_sha(suite),
+                "blind_pack_commitment_sha256": fresh.canonical_sha(pack),
+            }
+        )
         cohorts[repo] = {
-            "selected_task_ids": [repo + ".q1"], "selected": 1,
+            "selected_task_ids": [repo + ".q1"],
+            "selected": 1,
             "projected_suite_sha256": fresh.canonical_sha(suite),
             "blind_pack_sha256": fresh.canonical_sha(pack),
         }
@@ -242,58 +279,91 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
             "identity_sha256": fresh.sha(identity),
             "parser_runtime": parser_runtime,
         }
-    gold_path = write(tmp_path / "gold.json", {
-        "status": "captured", "capsule_count": 12, "source_head": "driver",
-        "dependency_versions": {"parser": "pinned"},
-        "python_executable": "/pinned/python",
-        "pyproject_sha256": "project", "uv_lock_sha256": "lock",
-        "identity_sha256": {repo: row["identity_sha256"] for repo, row in sources.items()},
-    })
-    matrix_path = write(tmp_path / "admission-matrix.json", {
-        "schema_version": 1, "status": "diagnostic_unqualified",
-        "repository_count": 12, "intent_count": 6, "release_digest": "release",
-        "cells": rows,
-    })
-    matrix_receipt_path = write(tmp_path / "matrix-receipt.json", {
-        "status": "factory_derived_diagnostic_unqualified",
-        "matrix_sha256": fresh.sha(matrix_path),
-        "gold_receipt_sha256": fresh.sha(gold_path),
-    })
-    projection_path = write(tmp_path / "ordinary-receipt.json", {
-        "status": "global_ordinary_diagnostic_unqualified",
-        "source_matrix_sha256": fresh.sha(matrix_path),
-        "repository_count": 12, "selected_total": 12,
-        "source_base_head": "driver", "projector_source_commit": "projector",
-        "projector_overlay_sha256": "overlay", "cohorts": cohorts,
-    })
+    gold_path = write(
+        tmp_path / "gold.json",
+        {
+            "status": "captured",
+            "capsule_count": 12,
+            "source_head": "driver",
+            "dependency_versions": {"parser": "pinned"},
+            "python_executable": "/pinned/python",
+            "pyproject_sha256": "project",
+            "uv_lock_sha256": "lock",
+            "identity_sha256": {repo: row["identity_sha256"] for repo, row in sources.items()},
+        },
+    )
+    matrix_path = write(
+        tmp_path / "admission-matrix.json",
+        {
+            "schema_version": 1,
+            "status": "diagnostic_unqualified",
+            "repository_count": 12,
+            "intent_count": 6,
+            "release_digest": "release",
+            "cells": rows,
+        },
+    )
+    matrix_receipt_path = write(
+        tmp_path / "matrix-receipt.json",
+        {
+            "status": "factory_derived_diagnostic_unqualified",
+            "matrix_sha256": fresh.sha(matrix_path),
+            "gold_receipt_sha256": fresh.sha(gold_path),
+        },
+    )
+    projection_path = write(
+        tmp_path / "ordinary-receipt.json",
+        {
+            "status": "global_ordinary_diagnostic_unqualified",
+            "source_matrix_sha256": fresh.sha(matrix_path),
+            "repository_count": 12,
+            "selected_total": 12,
+            "source_base_head": "driver",
+            "projector_source_commit": "projector",
+            "projector_overlay_sha256": "overlay",
+            "cohorts": cohorts,
+        },
+    )
     prepared = {
-        "source_commit": "driver", "driver_source_sha": "driver",
+        "source_commit": "driver",
+        "driver_source_sha": "driver",
         "driver_python": "/pinned/python",
         "parser_dependency_versions": {"parser": "pinned"},
         "parser_runtime_versions": {
-            "tree-sitter": "0.23.2", "tree-sitter-language-pack": "0.9.1",
-            "regex": "2025.10.23", "unicodedata2": "17.0.0",
+            "tree-sitter": "0.23.2",
+            "tree-sitter-language-pack": "0.9.1",
+            "regex": "2025.10.23",
+            "unicodedata2": "17.0.0",
         },
-        "pyproject_sha256": "project", "uv_lock_sha256": "lock",
+        "pyproject_sha256": "project",
+        "uv_lock_sha256": "lock",
         "gold_receipt_sha256": fresh.sha(gold_path),
         "projection_receipt_sha256": fresh.sha(projection_path),
-        "projector_overlay_sha256": "overlay", "projector_source_commit": "projector",
-        "binary_build_source_sha": "binary", "driver_python_sha256": "python",
+        "projector_overlay_sha256": "overlay",
+        "projector_source_commit": "projector",
+        "binary_build_source_sha": "binary",
+        "driver_python_sha256": "python",
     }
-    runtime_binding_path = write(tmp_path / "runtime-four-pin-binding.json", {
-        "status": "supplementary_runtime_binding", "gold_receipt_sha256": fresh.sha(gold_path),
-        "source_head": "driver", "capsule_identity_sha256": {
-            repo: row["identity_sha256"] for repo, row in sources.items()
+    runtime_binding_path = write(
+        tmp_path / "runtime-four-pin-binding.json",
+        {
+            "status": "supplementary_runtime_binding",
+            "gold_receipt_sha256": fresh.sha(gold_path),
+            "source_head": "driver",
+            "capsule_identity_sha256": {
+                repo: row["identity_sha256"] for repo, row in sources.items()
+            },
+            "active_distribution_versions": prepared["parser_runtime_versions"],
+            "source_lock_pins": prepared["parser_runtime_versions"],
+            "pin_files_sha256": {"pyproject.toml": "project", "uv.lock": "lock"},
         },
-        "active_distribution_versions": prepared["parser_runtime_versions"],
-        "source_lock_pins": prepared["parser_runtime_versions"],
-        "pin_files_sha256": {"pyproject.toml": "project", "uv.lock": "lock"},
-    })
+    )
     prepared["runtime_four_pin_binding_path"] = str(runtime_binding_path)
     prepared["runtime_four_pin_binding_sha256"] = fresh.sha(runtime_binding_path)
     manifest = {
         "schema": "c5_osa1_external_global12_fresh_v1",
-        "release_digest": "release", "matrix_path": str(matrix_path),
+        "release_digest": "release",
+        "matrix_path": str(matrix_path),
         "matrix_sha256": fresh.sha(matrix_path),
         "matrix_receipt_path": str(matrix_receipt_path),
         "ordinary_projection_receipt_path": str(projection_path),
@@ -303,21 +373,27 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         "runtime_four_pin_binding_sha256": fresh.sha(runtime_binding_path),
         "gold_capsule_root": str(tmp_path / "gold-v10"),
         "gold_producer_runtime": {
-            "receipt_sha256": fresh.sha(gold_path), "source_head": "driver",
+            "receipt_sha256": fresh.sha(gold_path),
+            "source_head": "driver",
             "dependency_versions": {"parser": "pinned"},
             "parser_runtime_versions": prepared["parser_runtime_versions"],
-            "python_executable": "/pinned/python", "python_executable_sha256": "python",
-            "pyproject_sha256": "project", "uv_lock_sha256": "lock",
+            "python_executable": "/pinned/python",
+            "python_executable_sha256": "python",
+            "pyproject_sha256": "project",
+            "uv_lock_sha256": "lock",
         },
         "external_collector_runtime": {
             "parser_runtime_versions": prepared["parser_runtime_versions"],
             "python_executable_sha256": "python",
         },
         "suite_projector_source": {
-            "base_head": "driver", "commit": "projector", "overlay_sha256": "overlay",
+            "base_head": "driver",
+            "commit": "projector",
+            "overlay_sha256": "overlay",
         },
         "gold_producer_sources": sources,
-        "cells": external_cells, "total_tasks": 12,
+        "cells": external_cells,
+        "total_tasks": 12,
     }
     admission, custody = fresh._source_admission(matrix_path, prepared, manifest)
     assert len(admission) == 12 and all(row["status"] == "VALID" for row in admission)
@@ -327,18 +403,30 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
     with pytest.raises(fresh.FreshJoinError, match="global source admission task"):
         fresh._source_admission(matrix_path, prepared, changed)
     # A body edit cannot be hidden behind unchanged cohort commitment metadata.
-    write(tmp_path / "repo0" / "suite.json", {
-        "repository_commit": "commit", "tasks": [{"task_id": "repo0.q1"}],
-        "unscored_payload": "tampered",
-    })
+    write(
+        tmp_path / "repo0" / "suite.json",
+        {
+            "repository_commit": "commit",
+            "tasks": [{"task_id": "repo0.q1"}],
+            "unscored_payload": "tampered",
+        },
+    )
     with pytest.raises(fresh.FreshJoinError, match="global source admission task"):
         fresh._source_admission(matrix_path, prepared, manifest)
-    write(tmp_path / "repo0" / "suite.json", {
-        "repository_commit": "commit", "tasks": [{"task_id": "repo0.q1"}],
-    })
-    write(tmp_path / "repo0" / "pack.json", {
-        "tasks": [{"task_id": "repo0.q1"}], "unscored_payload": "tampered",
-    })
+    write(
+        tmp_path / "repo0" / "suite.json",
+        {
+            "repository_commit": "commit",
+            "tasks": [{"task_id": "repo0.q1"}],
+        },
+    )
+    write(
+        tmp_path / "repo0" / "pack.json",
+        {
+            "tasks": [{"task_id": "repo0.q1"}],
+            "unscored_payload": "tampered",
+        },
+    )
     with pytest.raises(fresh.FreshJoinError, match="global source admission task"):
         fresh._source_admission(matrix_path, prepared, manifest)
     write(tmp_path / "repo0" / "pack.json", {"tasks": [{"task_id": "repo0.q1"}]})
@@ -356,7 +444,8 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         fresh._source_admission(matrix_path, changed, manifest)
     old, old_custody = fresh._source_admission(
         write(tmp_path / "old-audit.json", [{"repository": "repo", "status": "VALID"}]),
-        {}, {},
+        {},
+        {},
     )
     assert old == [{"repository": "repo", "status": "VALID"}]
     assert old_custody["cohort_contract"] == "c5_fixed_original_source_eligibility_v1"
@@ -417,3 +506,137 @@ def test_fresh_join_rejects_evidence_change_between_parse_digest_and_completion(
         with fresh._evidence_session():
             assert fresh.read(evidence) == {"value": 1}
             evidence.write_text('{"value": 2}\n')
+
+
+def test_fresh_join_external_rows_reject_malformed_typed_fields(tmp_path):
+    task = {
+        "query": "foo",
+        "gold": [{"path": "a.go", "grade": 1.0}],
+        "file_judgments": [{"path": "a.go", "grade": 1.0}],
+    }
+    common = {
+        "task_id": "q1",
+        "lane": "symbol_only",
+        "submitted_query": "foo",
+        "gold_paths": ["a.go"],
+        "file_hit_at_10": True,
+        "elapsed_ms": 1.0,
+    }
+    originals = {
+        "sourcegraph": {
+            **common,
+            "request_query": "foo repo:benchmark/r type:file patternType:keyword count:all",
+            "out_of_manifest_match_count": 0,
+            "file_paths_top_10": ["a.go"],
+            "http_status": 200,
+            "error": None,
+        },
+        "cs": {**common, "paths": ["a.go"], "exit_code": 0},
+        "opengrok": {
+            **common,
+            "file_paths_top_10": ["a.go"],
+            "field": "full",
+            "http_status": 200,
+            "error": None,
+        },
+    }
+
+    def verify(rows):
+        hashes = {}
+        for product, row in rows.items():
+            path = tmp_path / (product + "_rows.jsonl")
+            path.write_text(json.dumps(row) + "\n")
+            hashes[product] = fresh.sha(path)
+        capture = {
+            "status": "diagnostic_unqualified",
+            "tasks": 1,
+            "opengrok_indexed_view_probe": "exact_indexed_inventory_and_served_bytes_bracketing_queries",
+            "producer_sources_sha256": {},
+            "rows_sha256": hashes,
+        }
+        (tmp_path / "capture.json").write_text(json.dumps(capture))
+        receipt = {
+            "repository": "r",
+            "tasks": 1,
+            "status": "verified",
+            "spec_sha256": "spec",
+            "capture_completed": True,
+            "offline_verify_completed": True,
+            "capture_sha256": fresh.sha(tmp_path / "capture.json"),
+            "raw_rows_sha256": hashes,
+        }
+        return fresh._external_records(
+            {"repository": "r", "output_root": str(tmp_path), "spec_sha256": "spec"},
+            receipt,
+            {"q1": task},
+            {"a.go"},
+            {},
+        )
+
+    assert set(verify(originals)[0]) == set(originals)
+    for product, key, replacement, message in (
+        ("sourcegraph", "task_id", None, "external task ID"),
+        ("sourcegraph", "submitted_query", None, "task/query/status"),
+        ("sourcegraph", "gold_paths", [{"path": "a.go"}], "task/query/status"),
+        ("sourcegraph", "request_query", 17, "request profile"),
+        ("sourcegraph", "status", "unsupported", "task/query/status"),
+        ("sourcegraph", "file_hit_at_10", 1, "task/query/status"),
+        ("sourcegraph", "file_paths_top_10", {"a.go": True}, "result paths"),
+        ("sourcegraph", "http_status", 500, "verified external row reports query failure"),
+        ("cs", "exit_code", "0", "cs exit status"),
+        ("opengrok", "field", None, "OpenGrok field"),
+    ):
+        rows = copy.deepcopy(originals)
+        if replacement is None and key in ("task_id", "submitted_query"):
+            del rows[product][key]
+        else:
+            rows[product][key] = replacement
+        with pytest.raises(fresh.FreshJoinError, match=message):
+            verify(rows)
+
+
+def test_fresh_join_global_prebind_binds_release_and_runtime(tmp_path):
+    driver = tmp_path / "run_external.py"
+    driver.write_text("frozen driver\n")
+    gold = tmp_path / "gold-receipt.json"
+    gold.write_text("frozen gold\n")
+    prebind = {
+        "status": "full_release_validated_before_global_projection",
+        "source_head": "source",
+        "driver_sha256": fresh.sha(driver),
+        "python_executable_sha256": "python",
+        "gold_receipt_sha256": fresh.sha(gold),
+        "release_path": "/frozen/release",
+        "release_digest": "sha256:" + "a" * 64,
+        "full_validate_wall_seconds": 1.0,
+        "regular_file_count": 2,
+        "regular_files_digest_sha256": "b" * 64,
+        "validator_owner_sha256": "owner",
+    }
+    path = tmp_path / "prebind.json"
+    path.write_text(json.dumps(prebind))
+    manifest = {
+        "schema": "c5_osa1_external_global12_fresh_v1",
+        "source_head": "source",
+        "external_collector_runtime": {
+            "source_head": "source",
+            "python_executable_sha256": "python",
+        },
+        "release_path": "/frozen/release",
+        "release_digest": "sha256:" + "a" * 64,
+        "driver_sha256": fresh.sha(driver),
+        "gold_receipt_path": str(gold),
+    }
+    bound = {**prebind, "prebind_sha256": fresh.sha(path), "rechecked_after_projection": True}
+    ledger = {"bound_release": bound}
+    sources = {"corpus_release": "owner"}
+    assert fresh._global_prebind(tmp_path, manifest, ledger, sources) == fresh.sha(path)
+    for changed_manifest, changed_ledger, changed_sources in (
+        (manifest, {"bound_release": {**bound, "prebind_sha256": "bad"}}, sources),
+        (manifest, ledger, {"corpus_release": "wrong"}),
+        ({**manifest, "release_path": "/other"}, ledger, sources),
+        ({**manifest, "driver_sha256": "wrong"}, ledger, sources),
+    ):
+        with pytest.raises(fresh.FreshJoinError, match="global external"):
+            fresh._global_prebind(tmp_path, changed_manifest, changed_ledger, changed_sources)
+    assert fresh._global_prebind(tmp_path, {"schema": "legacy"}, {}, {}) == "not_applicable_legacy"
