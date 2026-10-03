@@ -274,6 +274,7 @@ def test_native_index_scope_replays_exact_paths_and_stored_bytes(tmp_path):
         "path_extra",
         "path_partial",
         "path_skipped",
+        "path_count",
         "manifest_input",
     ],
 )
@@ -330,6 +331,8 @@ def test_native_index_scope_refuses_independent_binding_faults(tmp_path, fault):
             events[0][1][0]["path"] = "other.go"
         elif fault == "path_skipped":
             events[1][1]["skipped"] = [{"reason": "limit"}]
+        elif fault == "path_count":
+            events[1][1]["matchCount"] += 1
         else:
             events.pop()
         p.write_bytes(
@@ -340,12 +343,47 @@ def test_native_index_scope_refuses_independent_binding_faults(tmp_path, fault):
         )
         value = json.loads(paths.read_bytes())
         value["repositories"][0]["raw_stream_sha256"] = live._sha_file(p)
+        if fault == "path_count":
+            value["repositories"][0]["native_match_count"] += 1
         paths.write_text(json.dumps(value))
     else:
         (tmp_path / "manifests/fixture/code_only.json").write_bytes(b"{}")
     receipt_path.write_text(json.dumps(receipt))
     with pytest.raises((ValueError, OSError)):
         live.sourcegraph_index_scope.verify(receipt_path, **args)
+
+
+def test_native_index_scope_refuses_evidence_change_during_replay(tmp_path, monkeypatch):
+    receipt, args = index_scope_fixture(tmp_path)
+    original = live.sourcegraph._events
+
+    def changed_during_replay(raw):
+        (receipt.parent / "native-file-bodies/fixture/a.go").write_bytes(b"changed after hash")
+        return original(raw)
+
+    monkeypatch.setattr(live.sourcegraph, "_events", changed_during_replay)
+    with pytest.raises(ValueError, match="evidence changed during replay"):
+        live.sourcegraph_index_scope.verify(receipt, **args)
+
+
+def test_index_scope_spec_requires_backend_and_projection_binding(tmp_path):
+    receipt, args = index_scope_fixture(tmp_path)
+    config = {
+        **args["config"],
+        "base_url": "http://127.0.0.1:18080",
+        "projection_git_root": str(tmp_path / "projection"),
+        "indexed_scope_receipt": str(receipt),
+    }
+    keys = {"base_url", "repository", "server_image_digest"}
+    optional = {"backend_snapshot", "projection_git_root", "indexed_scope_receipt"}
+    assert live._service(config, keys, optional) == config
+    for removed in ("backend_snapshot", "projection_git_root"):
+        with pytest.raises(ValueError, match="requires backend and projection"):
+            live._service(
+                {key: value for key, value in config.items() if key != removed}, keys, optional
+            )
+    with pytest.raises(ValueError, match="canonical absolute"):
+        live._service({**config, "indexed_scope_receipt": "relative.json"}, keys, optional)
 
 
 def test_standalone_cli_bootstraps_its_source_package_from_external_cwd(tmp_path):
@@ -1372,6 +1410,22 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     assert (root / "opengrok" / "S00.json").exists()
     assert (root / "cs" / "S00.json").exists()
     summary_path = root / "capture.json"
+    if use_index_scope:
+        scope_path = root / "sourcegraph-index-scope.json"
+        original_scope = scope_path.read_bytes()
+        forged_scope = {**result["sourcegraph_index_scope"], "files": file_count + 1}
+        scope_path.write_text(json.dumps(forged_scope))
+        summary_path.write_text(json.dumps({**result, "sourcegraph_index_scope": forged_scope}))
+        with pytest.raises(ValueError, match="retained Sourcegraph index scope differs"):
+            live.verify(root)
+        scope_path.write_bytes(original_scope)
+        summary_path.write_text(json.dumps(result))
+        body = tmp_path / "native-audit/native-file-bodies/fixture/src/0.go"
+        original_body = body.read_bytes()
+        body.write_bytes(b"changed native stored bytes")
+        with pytest.raises(ValueError, match="stored bytes differ"):
+            live.verify(root)
+        body.write_bytes(original_body)
     if not unsupported_query:
         backend_path = root / "backend" / "sourcegraph-after.json"
         original_backend = backend_path.read_bytes()

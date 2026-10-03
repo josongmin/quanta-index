@@ -1038,8 +1038,7 @@ mod tests {
             "borrowed source bytes retain the exact existing digest"
         );
         assert_eq!(
-            split_late,
-            "sha256:165f3d3e494e609f64259037eabd576ce3c6bae091c1d751311491bc2f4a7a04",
+            split_late, "sha256:165f3d3e494e609f64259037eabd576ce3c6bae091c1d751311491bc2f4a7a04",
             "independent SHA-256 of domain-NUL, framed path, and framed content"
         );
         assert_ne!(split_late, split_early, "part boundaries are framed");

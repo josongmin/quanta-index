@@ -34,8 +34,9 @@ wrong typed response stops the rail before the latency summary is produced. The
 owner unit injects a wrong second response and also checks that the adversarial
 scenario's expected `PARSE_FAIL` remains a valid measured response.
 
-Focused Rust owner execution and the real `tail_matrix` rail remain `NOT_RUN`
-for this source change. Canonical-host tail evidence and any new p95/p99
+The focused `tail::` Rust owner unit command passed 7/7 on 2026-10-04:
+`./scripts/cargow --lane indexing-stage-test-lane test -p quanta-index-searchd-harness --lib --all-features --locked tail::`.
+The real `tail_matrix` rail, canonical-host tail evidence and any new p95/p99
 blocking decision remain `NOT_RUN`.
 
 ## 2026-10-04 offered-load correctness
@@ -47,5 +48,9 @@ nonfinite completion timing. The baseline page is checked against the generated
 one-chunk-per-file source fixture (ten distinct admitted paths from sixteen
 files), rather than treating a prior engine response as relevance gold. The
 existing response-ID comparison still detects under-load order/identity drift.
-Focused `open_loop_matrix` tests and the real offered-load rail remain `NOT_RUN`
-for this source change. No capacity limit is qualified from these unit checks.
+The open-loop runner now selects the same scoped scale tiers with `--tier`; it
+reuses its existing arrival scheduler, validates the source-repo/path oracle,
+and probes each source repository before dispatch. Non-default tiers require
+an explicit external output directory. Focused `open_loop_matrix` tests and
+the real offered-load rail remain `NOT_RUN` for this extension. No capacity
+limit is qualified from these unit checks.

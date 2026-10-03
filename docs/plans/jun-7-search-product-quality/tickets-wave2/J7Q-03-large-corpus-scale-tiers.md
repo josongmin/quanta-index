@@ -4,9 +4,12 @@ Status: `ACTIVE_RESIDUAL`
 Parent: [quality index](INDEX.md)
 Owner: seeded corpus generator, storage/runtime and benchmark harness
 
-`scale.rs` defines seeded tier generation/manifests. `scale_matrix` measures
-small-tier ingest/seal/activation/query; medium/large/XL declarations are
-advisory. Declared tiers and toy fixture success are not measured capacity.
+`scale.rs` defines seeded tier generation/manifests. `scale_matrix` now accepts
+`--tier medium|large|xlarge` or explicit `--all-tiers`; default is small.
+Large tiers bind each file to `(source_repo_id, repo_relative_path)` under one
+serving owner, check the planted source oracle and actual ingest envelope, then
+measure ingest/seal, activation, cold/warm query, adapter open and one-file
+delta. A selectable rail is not measured capacity until its actual run succeeds.
 
 ## Remaining acceptance
 
@@ -33,6 +36,28 @@ checked after their request timer stops; a shorter successful page fails the
 rail with the sample number instead of entering the latency aggregate. The
 owner unit includes a source-fixture mutation and a second-sample short page.
 
-Focused Rust owner execution and the real `scale_matrix` rail remain `NOT_RUN`
-for this source change. Medium/large/XL measurements and canonical-host
-capacity acceptance remain `NOT_RUN`.
+The pre-extension `scale::` focused unit binary passed 12/12 on 2026-10-04;
+`cargow` admission for the same filter timed out waiting on another build.
+That result does not verify the later scoped-tier implementation.
+
+## 2026-10-04 scoped-tier implementation
+
+- Medium is 4 distinct source repositories × 64 files; large is 16 × 256;
+  XL is 64 × 512. The serving owner count remains one. The corpus digest binds
+  both repo ID and relative path. A fixture unit covers the same relative path
+  in two source repositories and rejects wrong/duplicate identities.
+- Before sealing, the rail checks the lexical 8 MiB per-file, 128 MiB total
+  source and 4 million posting-membership limits. It previews the exact pending
+  IPC envelope through the existing encoder, including its 16 MiB frame and
+  128 MiB decoded-request admission. A refusal is a tier failure, not a timing.
+- The global query's cold and every warm response, 32 adapter responses, and a
+  separate planted query for every source repository require source-backed
+  top-10 identities. Timers stop before response validation. The recorded build
+  time sums ingest and seal and excludes the wire preflight cost.
+- `--out-dir` is required for non-default tiers. Each selected run records one
+  measured tier; unselected tiers remain declarations in that artifact.
+
+The scoped-tier Rust owner tests, real medium/large/XL runs, canonical-host
+capacity and portability remain `NOT_RUN` at this code stage. A source limit or
+wire admission refusal must be recorded with its exact tier and must not be
+converted into a throughput result.

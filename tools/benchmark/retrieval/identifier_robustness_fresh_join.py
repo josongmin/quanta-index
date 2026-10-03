@@ -212,7 +212,25 @@ def _source_admission(
         and gold.get("capsule_count") == 12
         and manifest.get("gold_producer_runtime", {}).get("receipt_sha256")
         == sha(gold_receipt_path)
+        and manifest.get("gold_producer_runtime", {}).get("source_head")
+        == gold.get("source_head")
+        and manifest.get("gold_producer_runtime", {}).get("dependency_versions")
+        == gold.get("dependency_versions")
+        and manifest.get("suite_projector_source", {}).get("base_head")
+        == projection.get("source_base_head")
+        and manifest.get("suite_projector_source", {}).get("commit")
+        == projection.get("projector_source_commit")
+        and manifest.get("suite_projector_source", {}).get("overlay_sha256")
+        == projection.get("projector_overlay_sha256")
         and prepared.get("source_commit") == gold.get("source_head")
+        and prepared.get("driver_source_sha") == gold.get("source_head")
+        and prepared.get("parser_dependency_versions") == gold.get("dependency_versions")
+        and prepared.get("pyproject_sha256") == gold.get("pyproject_sha256")
+        and prepared.get("uv_lock_sha256") == gold.get("uv_lock_sha256")
+        and isinstance(prepared.get("binary_build_source_sha"), str)
+        and bool(prepared["binary_build_source_sha"])
+        and isinstance(prepared.get("driver_python_sha256"), str)
+        and bool(prepared["driver_python_sha256"])
         and prepared.get("gold_receipt_sha256") == sha(gold_receipt_path)
         and prepared.get("projection_receipt_sha256") == sha(projection_receipt_path)
         and prepared.get("projector_overlay_sha256")
@@ -242,6 +260,8 @@ def _source_admission(
             and row["repository_commit"] == suite["repository_commit"]
             and row["gold_capsule_identity_sha256"]
             == manifest["gold_producer_sources"][repo]["identity_sha256"]
+            == gold["identity_sha256"][repo]
+            == sha(gold_receipt_path.parent / "gold-v10" / repo / "identity.json")
             and row["release_digest"] == authority["release_digest"]
             and cell["tasks"] == cohort["selected"] == len(selected_ids)
             and cell["projected_suite_commitment_sha256"] == cohort["projected_suite_sha256"]

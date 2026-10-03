@@ -1564,16 +1564,10 @@ mod tests {
         let original = scoped_corpus_digest(DIMENSION, &files);
         let mut changed_repo = files.clone();
         changed_repo[0].source_repo_id = "repo2".to_string();
-        assert_ne!(
-            original,
-            scoped_corpus_digest(DIMENSION, &changed_repo)
-        );
+        assert_ne!(original, scoped_corpus_digest(DIMENSION, &changed_repo));
         let mut changed_content = files;
         changed_content[0].content.push_str("// changed\n");
-        assert_ne!(
-            original,
-            scoped_corpus_digest(DIMENSION, &changed_content)
-        );
+        assert_ne!(original, scoped_corpus_digest(DIMENSION, &changed_content));
     }
 
     #[test]

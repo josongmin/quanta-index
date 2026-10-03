@@ -69,6 +69,9 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf)> {
     if config.tier != ScaleTier::Small && !out_dir_explicit {
         anyhow::bail!("--out-dir is required for a non-default open-loop tier");
     }
+    if out_dir_explicit && out_dir.exists() {
+        anyhow::bail!("--out-dir must name a new output root; refusing to overwrite artifacts");
+    }
     config.validate()?;
     Ok((config, out_dir))
 }

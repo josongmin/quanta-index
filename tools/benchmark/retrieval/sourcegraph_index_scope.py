@@ -323,7 +323,7 @@ def _verify(
         or progress is None
         or progress["done"] is not True
         or progress["matchCount"] != path_row["native_match_count"]
-        or progress["matchCount"] < len(found)
+        or progress["matchCount"] != len(found)
         or len(found) != len(set(found))
         or set(found) != set(expected)
     ):

@@ -84,6 +84,9 @@ fn parse_args() -> AnyResult<CliArgs> {
     if !out_dir_explicit && (tiers.len() != 1 || tiers[0] != ScaleTier::Small) {
         anyhow::bail!("--out-dir is required for a non-default scale tier");
     }
+    if out_dir_explicit && out_dir.exists() {
+        anyhow::bail!("--out-dir must name a new output root; refusing to overwrite artifacts");
+    }
     Ok(CliArgs {
         out_dir,
         seed,
@@ -97,14 +100,17 @@ fn run(cli: &CliArgs) -> AnyResult<Vec<TierMeasurement>> {
     let host = HostV1::observe()?;
     let mut measurements = Vec::with_capacity(cli.tiers.len());
     for tier in &cli.tiers {
-        let measurement = measure_tier(*tier, cli.seed)?;
+        measurements.push(measure_tier(*tier, cli.seed)?);
+    }
+    // An all-tier run does not write earlier tier artifacts if a later tier
+    // refuses source or wire admission.
+    for measurement in &measurements {
         let out_dir = if cli.tiers.len() == 1 {
             cli.out_dir.clone()
         } else {
-            cli.out_dir.join(tier.as_str())
+            cli.out_dir.join(measurement.tier.as_str())
         };
-        write_artifacts(&measurement, &out_dir, git_head.clone(), host.clone())?;
-        measurements.push(measurement);
+        write_artifacts(measurement, &out_dir, git_head.clone(), host.clone())?;
     }
     Ok(measurements)
 }
