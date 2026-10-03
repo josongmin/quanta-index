@@ -11451,6 +11451,7 @@ def run_quality_batch(batch: dict) -> int:
         report_rows.append(
             {
                 "suite_id": suite["suite_id"],
+                "member_spec_path": str(spec_path),
                 "member_spec_sha256": sha_file(spec_path),
                 "suite_sha256": sha_file(Path(spec["suite"])),
                 "blind_pack_sha256": digest(canonical(pack)),
@@ -11463,6 +11464,7 @@ def run_quality_batch(batch: dict) -> int:
         "schema_version": 1,
         "kind": "retrieval_quality_execution_batch_v1",
         "qualification": "diagnostic_unqualified",
+        "batch_spec_sha256": digest(canonical(batch)),
         "source_revision": git_head_sha(driver_repo),
         "driver_source_closure_digest": _validate_source_closure_shape(
             read_json(closure_path), "batch driver source closure"
@@ -11489,9 +11491,123 @@ def run_quality_batch(batch: dict) -> int:
     return 0
 
 
+def verify_quality_batch(batch: dict) -> int:
+    """Replay score views from saved native records and original member inputs."""
+    root = Path(batch["output_root"]).resolve()
+    if not root.is_dir():
+        raise RunError("quality batch output root is missing")
+    manifest = _exact_keys(
+        read_json(root / "batch-manifest.json"),
+        {
+            "schema_version",
+            "kind",
+            "qualification",
+            "batch_spec_sha256",
+            "source_revision",
+            "driver_source_closure_digest",
+            "corpus_repository_commit",
+            "file_universe_digest",
+            "model_asset_sha256",
+            "execution_pack_sha256",
+            "membership_sha256",
+            "native_records",
+            "members",
+        },
+        "quality batch manifest",
+    )
+    if (
+        manifest["schema_version"] != 1
+        or manifest["kind"] != "retrieval_quality_execution_batch_v1"
+        or manifest["qualification"] != "diagnostic_unqualified"
+        or manifest["batch_spec_sha256"] != digest(canonical(batch))
+    ):
+        raise RunError("quality batch manifest contract differs from its batch spec")
+    driver_repo = Path(__file__).resolve().parents[3]
+    if manifest["source_revision"] != git_head_sha(driver_repo):
+        raise RunError("quality batch driver revision changed")
+    closure_path = root / "driver-source-closure.json"
+    _source_closure(driver_repo, "verify", closure_path)
+    closure_digest = _validate_source_closure_shape(
+        read_json(closure_path), "batch driver source closure"
+    )["digest"]
+    if closure_digest != manifest["driver_source_closure_digest"]:
+        raise RunError("quality batch driver source closure digest changed")
+    members, model = _quality_batch_members(batch)
+    if model["model_asset_sha256"] != manifest["model_asset_sha256"]:
+        raise RunError("quality batch model asset changed")
+    packs = [row[3] for row in members]
+    execution_pack = read_json(root / "execution-pack.json")
+    membership = read_json(root / "membership.json")
+    eb.verify_execution_membership(packs, execution_pack, membership)
+    if (
+        manifest["execution_pack_sha256"] != membership["execution_pack_sha256"]
+        or manifest["membership_sha256"] != sha_file(root / "membership.json")
+        or manifest["corpus_repository_commit"] != execution_pack["repository_commit"]
+        or manifest["file_universe_digest"] != execution_pack["file_universe_digest"]
+    ):
+        raise RunError("quality batch execution inputs changed")
+    first_spec = members[0][1]
+    expected_paths = [
+        (
+            root
+            / "quanta"
+            / _strategy_run_directory(0, first_spec["strategies"][0]["name"])
+            / "record.json"
+        ),
+        root / "semble" / "record.json",
+    ]
+    actual_records = manifest["native_records"]
+    if not isinstance(actual_records, list) or len(actual_records) != 2:
+        raise RunError("quality batch requires two native product records")
+    for row, expected in zip(actual_records, expected_paths, strict=True):
+        if row != {"path": expected.relative_to(root).as_posix(), "sha256": sha_file(expected)}:
+            raise RunError("quality batch native record path or digest changed")
+    repo = Path(first_spec["repo"])
+    _, _, combined = _merge_validated_records(
+        repo,
+        eb.execution_validation_view(execution_pack),
+        execution_pack,
+        members[0][4],
+        expected_paths,
+    )
+    if not isinstance(manifest["members"], list) or len(manifest["members"]) != len(members):
+        raise RunError("quality batch member report count changed")
+    for index, ((spec_path, spec, suite, pack, source), row) in enumerate(
+        zip(members, manifest["members"], strict=True)
+    ):
+        view = eb.project_scoring_view(execution_pack, membership, pack, combined)
+        validate_evidence_against_suite(repo, suite, pack, source, view)
+        report = evaluate_paired_file_diagnostic(
+            suite, pack, view, "semble-lexical-file", "lexical"
+        )
+        report_path = root / f"member-{index:02d}-report.json"
+        expected_row = {
+            "suite_id": suite["suite_id"],
+            "member_spec_path": str(spec_path),
+            "member_spec_sha256": sha_file(spec_path),
+            "suite_sha256": sha_file(Path(spec["suite"])),
+            "blind_pack_sha256": digest(canonical(pack)),
+            "scoring_view_sha256": digest(canonical(view)),
+            "report": report_path.name,
+            "report_sha256": sha_file(report_path),
+        }
+        if row != expected_row or read_json(report_path) != report:
+            raise RunError(f"quality batch member {index} report or provenance changed")
+    print(json.dumps({"verified_members": len(members), "native_records": 2}))
+    return 0
+
+
 def cmd_quality_batch(args: argparse.Namespace) -> int:
     try:
         return run_quality_batch(load_quality_batch_spec(Path(args.spec)))
+    except (RunError, eb.BatchError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+
+def cmd_quality_batch_verify(args: argparse.Namespace) -> int:
+    try:
+        return verify_quality_batch(load_quality_batch_spec(Path(args.spec)))
     except (RunError, eb.BatchError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -11508,6 +11624,10 @@ def build_parser() -> argparse.ArgumentParser:
         "quality-batch", help="one native index per product, separate diagnostic suite reports"
     )
     quality_batch.add_argument("--spec", required=True)
+    quality_batch_verify = sub.add_parser(
+        "quality-batch-verify", help="replay native batch records against original member suites"
+    )
+    quality_batch_verify.add_argument("--spec", required=True)
     merge = sub.add_parser("merge", help="merge per-system records")
     merge.add_argument("--repo", required=True)
     merge.add_argument("--suite", required=True)
@@ -11538,6 +11658,7 @@ def main(argv: list[str] | None = None) -> int:
         "merge",
         "verdict",
         "quality-batch",
+        "quality-batch-verify",
     ) and sys.version_info < (3, 10):
         print("ERROR: retrieval benchmark requires Python 3.10 or newer", file=sys.stderr)
         return 2
@@ -11551,6 +11672,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_quanta(args)
     if args.command == "quality-batch":
         return cmd_quality_batch(args)
+    if args.command == "quality-batch-verify":
+        return cmd_quality_batch_verify(args)
     if args.command == "verdict":
         return cmd_verdict(args)
     return cmd_pair(args)
