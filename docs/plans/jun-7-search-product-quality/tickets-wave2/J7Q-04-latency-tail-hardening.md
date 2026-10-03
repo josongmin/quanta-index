@@ -52,7 +52,11 @@ repository ID, or relative path, including a path change with unchanged IDs.
 The open-loop runner now selects the same scoped scale tiers with `--tier`; it
 reuses its existing arrival scheduler, validates the source-repo/path oracle,
 and probes each source repository before dispatch. Non-default tiers require
-an explicit, newly created external output directory. Missing latency prints
-as `unavailable`, rather than a fabricated zero. Focused `open_loop_matrix` tests and
+an explicit, newly created external output directory. A failed run writes a
+no-replace `refusal.json` through the scale rail's existing writer. It binds
+the `open-loop` source digest and exact arrival settings, and names a limit
+only for typed source admission; unknown wire/runtime errors keep `limit: null`.
+Missing latency prints as `unavailable`, rather than a fabricated zero.
+Focused `open_loop_matrix` tests and
 the real offered-load rail remain `NOT_RUN` for this extension. No capacity
 limit is qualified from these unit checks.

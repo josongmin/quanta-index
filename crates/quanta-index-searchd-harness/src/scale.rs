@@ -1891,6 +1891,27 @@ mod tests {
         assert_eq!(refused["source"]["corpus_digest"], binding.corpus_digest);
         assert!(refused.get("latency").is_none());
 
+        let open_loop_binding =
+            source_binding_for_failure_in_dimension("open-loop", ScaleTier::Medium, 13)?;
+        assert_ne!(open_loop_binding.corpus_digest, binding.corpus_digest);
+        let execution = json!({"arrival_model": "seeded_poisson", "rates_qps": [25, 50]});
+        let open_loop = refusal_json_with_context(
+            &open_loop_binding,
+            &head,
+            &host,
+            &typed,
+            "open-loop",
+            Some(&execution),
+        );
+        assert_eq!(open_loop["kind"], "quanta-index-open-loop-failure");
+        assert_eq!(open_loop["execution"], execution);
+        assert_eq!(
+            open_loop["source"]["corpus_digest"],
+            open_loop_binding.corpus_digest
+        );
+        assert_eq!(open_loop["failure"]["limit"], refused["failure"]["limit"]);
+        assert!(open_loop.get("latency").is_none());
+
         let unknown = refusal_json(&binding, &head, &host, &anyhow::anyhow!("runtime failure"));
         assert_eq!(unknown["status"], "failed");
         assert_eq!(unknown["failure"]["stage"], "execution_unclassified");

@@ -9,7 +9,21 @@ use std::time::Duration;
 
 use anyhow::{Context, Result as AnyResult};
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
-use quanta_index_searchd_harness::scale::ScaleTier;
+use quanta_index_searchd_harness::scale::{
+    ScaleTier, source_binding_for_failure_in_dimension, write_refusal_artifact_with_context,
+};
+use serde_json::{Value, json};
+
+fn execution_context(config: &open_loop::Config) -> Value {
+    json!({
+        "arrival_model": config.arrival_model.as_str(),
+        "rates_qps": config.rates_qps,
+        "duration_ms": config.duration.as_millis(),
+        "workers": config.workers,
+        "queue_capacity": config.queue_capacity,
+        "request_timeout_ms": config.request_timeout.as_millis(),
+    })
+}
 
 fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
     let mut config = open_loop::Config {
@@ -99,7 +113,27 @@ fn run(
     if fresh_output {
         std::fs::create_dir(out_dir)?;
     }
-    let report = open_loop::run(config)?;
+    let report = match open_loop::run(config.clone()) {
+        Ok(report) => report,
+        Err(error) => {
+            let binding = source_binding_for_failure_in_dimension(
+                open_loop::DIMENSION,
+                config.tier,
+                config.seed,
+            )?;
+            let execution = execution_context(&config);
+            write_refusal_artifact_with_context(
+                &binding,
+                out_dir,
+                &git_head,
+                &host,
+                &error,
+                open_loop::DIMENSION,
+                Some(&execution),
+            )?;
+            return Err(error);
+        }
+    };
     open_loop::artifact(&report, git_head, host)?.write_to(&out_dir.join("summary.json"))?;
     Ok(report)
 }
@@ -167,11 +201,34 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::format_latency;
+    use super::{execution_context, format_latency, open_loop};
+    use quanta_index_searchd_harness::scale::ScaleTier;
+    use std::time::Duration;
 
     #[test]
     fn unavailable_latency_is_not_printed_as_zero() {
         assert_eq!(format_latency(None), "unavailable");
         assert_eq!(format_latency(Some(0.0)), "0.000");
+    }
+
+    #[test]
+    fn refusal_context_names_the_exact_arrival_contract() {
+        let config = open_loop::Config {
+            seed: 7,
+            tier: ScaleTier::Medium,
+            arrival_model: open_loop::ArrivalModel::SeededPoisson,
+            rates_qps: vec![25, 50],
+            duration: Duration::from_secs(10),
+            workers: 4,
+            queue_capacity: 8,
+            request_timeout: Duration::from_millis(250),
+        };
+        let value = execution_context(&config);
+        assert_eq!(value["arrival_model"], "seeded_poisson");
+        assert_eq!(value["rates_qps"], serde_json::json!([25, 50]));
+        assert_eq!(value["duration_ms"], 10_000);
+        assert_eq!(value["workers"], 4);
+        assert_eq!(value["queue_capacity"], 8);
+        assert_eq!(value["request_timeout_ms"], 250);
     }
 }

@@ -320,8 +320,49 @@ implement a bounded-sort optimization based on these observations alone.
 The complete SDK call minus server search remains an unattributed residual;
 it is not a measured IPC cost.
 
-Fresh indexing stage observations, repeated typo attribution, capacity runs
-and equal-boundary five-product comparison remain separate completion scopes.
+The clean pair's one fresh Gin 99-file build has a lexical build observation of
+7.038 s inside an 8.995 s SDK publish observation; SDK activation is a separate
+0.410 s observation. The five non-overlapping lexical child stages are text
+authority 2.510 s, preparation 1.814 s, file authority 1.436 s, writer
+mutation 0.664 s, and seal 0.299 s. Their sum is 6.722 s; 0.315 s remains in
+the outer lexical build clock. Seal's writer commit 0.016 s, merge wait 0.001 s,
+and commitment 0.219 s are nested measurements, not extra elapsed time. These
+are one contended-host diagnostic sample, not a stable profile or speedup.
+Source: `/private/tmp/qf4a/rep-00/quanta/strategy-00-fw_strict/retrieval-diagnostic.json`
+`observation.lexical_build_ns` and `observation.lexical_stages`, plus the same
+cell's `phase-metrics.json` `phases_ms.sdk_publish` and `sdk_activate`.
+
+The code boundary determines what can be optimized: `adapter_ingest.rs::build_batch`
+times admission, coverage and base preparation before mutation; this fresh
+generation has no base clone. `adapter_open.rs::commit_ops_under_lock` includes
+file-delta planning and source digest/trigram admission inside **writer mutation**,
+then runs the text-authority write and `file_authority::apply_plan` sequentially
+under the generation writer lock. The text-authority stage includes a committed
+Tantivy document scan and shard rebuild; the file-authority stage covers durable
+source/manifest writes and obsolete-file cleanup, not the source trigram build.
+The latter's serving index is materialized at open time. Existing text-authority
+touched-shard updates and delta base carry-forward must be reused, not rebuilt.
+
+Next indexing decision: repeat fresh-root and one-file-delta/no-op samples on
+an admitted quiet host with the same pinned source, binaries and corpus. If text
+authority remains dominant, split its scan, shard construction and durable
+publish timings within `text_docs.rs`/`text_authority/writer.rs`; consider a
+small change only after one component dominates repeated samples. If file
+authority remains dominant, split source writes, manifest fsync and cleanup in
+`file_authority.rs`; retain `index_store.rs::write_atomic_durable` and the
+seal/identity durability order. If preparation remains dominant, split coverage
+admission, staged coverage and base preparation in `adapter_ingest.rs` before
+changing it. A candidate change must preserve the independently expected
+file/text authority content, sealed identity and query results for a fixed
+fresh corpus, a one-file delta and a no-op; corrupt source bytes or a mismatched
+base identity must still be rejected. Compare bytes only where the canonical
+format and generation identity require byte determinism.
+Writer and seal changes need their own repeated evidence; no engine optimization
+is justified by this single sample. Repeated indexing, substage attribution,
+and incremental correctness/performance qualification are `NOT_RUN`.
+
+Repeated typo attribution, capacity runs and equal-boundary five-product
+comparison remain separate completion scopes.
 Five diagnostic query lanes contain 1,196/1,192/1,178/1,192/1,192 tasks, or
 5,950 total, over the unchanged Gin 99-file corpus. OpenGrok captured and
 replayed every lane under clean external driver

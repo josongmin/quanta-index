@@ -695,8 +695,8 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
     } else {
         let files = generate_scoped_corpus(config.tier, config.seed)?;
         let oracle = ScopedOracle::from_source(&files, config.tier)?;
-        let _admission = preflight_scoped_corpus(&files)
-            .map_err(ScaleStageError::source_admission)?;
+        let _admission =
+            preflight_scoped_corpus(&files).map_err(ScaleStageError::source_admission)?;
         Some((files, oracle))
     };
     let (source_paths, corpus_digest) = if let Some(corpus) = &legacy {
