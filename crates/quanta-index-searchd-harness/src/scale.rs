@@ -314,6 +314,10 @@ pub fn repo_query_token(repo_index: u32) -> String {
     format!("scalereponeedle{repo_index:03}")
 }
 
+fn file_query_token(repo_index: u32, file_index: u32) -> String {
+    format!("scalefileneedle{repo_index:03}file{file_index:05}")
+}
+
 /// Reuse the seeded file generator while assigning real source-repository
 /// identities. The extra repo-specific anchor makes each source repo
 /// independently observable through lexical queries.
@@ -324,6 +328,11 @@ pub fn generate_scoped_corpus(tier: ScaleTier, seed: u64) -> AnyResult<Vec<Scope
         for file_index in 0..params.files_per_repo {
             let mut content = generate_file(tier, &params, repo_index, file_index, seed);
             writeln!(&mut content, "// {} anchor", repo_query_token(repo_index))?;
+            writeln!(
+                &mut content,
+                "// {} anchor",
+                file_query_token(repo_index, file_index)
+            )?;
             files.push(ScopedFile {
                 source_repo_id: format!("repo{repo_index}"),
                 repo_relative_path: format!("src/file_{file_index}.rs"),
@@ -370,10 +379,21 @@ impl ScopedOracle {
                 return Err(anyhow::anyhow!("scale: invalid source repo ID"));
             }
             let repo_anchor = format!("// {} anchor", repo_query_token(repo_index));
+            let file_index = file
+                .repo_relative_path
+                .strip_prefix("src/file_")
+                .and_then(|suffix| suffix.strip_suffix(".rs"))
+                .and_then(|digits| digits.parse::<u32>().ok())
+                .ok_or_else(|| anyhow::anyhow!("scale: invalid scoped file path"))?;
+            let file_anchor = format!(
+                "// {} anchor",
+                file_query_token(repo_index, file_index)
+            );
             if !file.repo_relative_path.starts_with("src/")
                 || file.repo_relative_path.contains("..")
                 || !file.content.contains(SCALE_QUERY_TOKEN)
                 || !file.content.lines().any(|line| line == repo_anchor)
+                || !file.content.lines().any(|line| line == file_anchor)
             {
                 return Err(anyhow::anyhow!(
                     "scale: invalid planted source for {}/{}",
@@ -406,6 +426,18 @@ impl ScopedOracle {
             ));
         }
         Ok(Self { paths_by_repo })
+    }
+
+    fn without_file(&self, source_repo_id: &str, path: &str) -> AnyResult<Self> {
+        let mut successor = self.clone();
+        let paths = successor
+            .paths_by_repo
+            .get_mut(source_repo_id)
+            .ok_or_else(|| anyhow::anyhow!("scale: source repo absent from deletion oracle"))?;
+        if !paths.remove(path) {
+            return Err(anyhow::anyhow!("scale: source file absent from deletion oracle"));
+        }
+        Ok(successor)
     }
 
     fn expected_count(&self, source_repo_id: Option<&str>) -> AnyResult<usize> {
@@ -737,6 +769,15 @@ pub struct DeltaMeasurementV1 {
     pub reclaimed_bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeleteReopenMeasurementV1 {
+    pub delete_seal_ms: f64,
+    pub delete_activation_ms: f64,
+    /// Stops and restarts the daemon thread in the same OS process, then
+    /// waits for readiness. This is not a cold process or cold page cache.
+    pub same_process_reopen_ms: f64,
+}
+
 /// Captured measurements for one measured tier run.
 #[derive(Clone, Debug)]
 pub struct TierMeasurement {
@@ -772,6 +813,7 @@ pub struct TierMeasurement {
     /// RUSAGE_SELF around runtime boot through driver cleanup. The daemon is
     /// an in-process thread; this includes harness and daemon CPU time.
     pub cpu: Option<CpuUsageV1>,
+    pub delete_reopen: Option<DeleteReopenMeasurementV1>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1064,6 +1106,83 @@ fn verify_scoped_repositories(rt: &mut E2eRuntime, oracle: &ScopedOracle) -> Any
     Ok(())
 }
 
+fn require_single_source_file(
+    result: &crate::harness::E2eQueryResult,
+    source_repo_id: &str,
+    path: &str,
+) -> AnyResult<()> {
+    if let Some(error) = &result.typed_error {
+        anyhow::bail!("scale: file query returned typed error {}: {}", error.code, error.message);
+    }
+    if result.candidates.len() != 1
+        || result.candidates[0].source_repo_id != source_repo_id
+        || result.candidates[0].repo_relative_path != path
+    {
+        anyhow::bail!("scale: file query did not return exactly {source_repo_id}/{path}");
+    }
+    Ok(())
+}
+
+fn require_no_source_file(result: &crate::harness::E2eQueryResult) -> AnyResult<()> {
+    if let Some(error) = &result.typed_error {
+        anyhow::bail!("scale: deleted-file query returned typed error {}: {}", error.code, error.message);
+    }
+    if !result.candidates.is_empty() {
+        anyhow::bail!("scale: deleted-file query still returned candidates");
+    }
+    Ok(())
+}
+
+fn measure_scoped_delete_reopen(
+    rt: &mut E2eRuntime,
+    oracle: &ScopedOracle,
+    file: &ScopedFile,
+) -> AnyResult<DeleteReopenMeasurementV1> {
+    if file.source_repo_id != "repo0" || file.repo_relative_path != "src/file_0.rs" {
+        anyhow::bail!("scale: deletion fixture must be repo0/src/file_0.rs");
+    }
+    let deleted_token = file_query_token(0, 0);
+    let retained_token = file_query_token(1, 0);
+    let deleted_before = rt.query_text(TextQuerySyntax::Native, &deleted_token, SCALE_TOP_K);
+    require_single_source_file(&deleted_before, "repo0", &file.repo_relative_path)?;
+    let retained_before = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
+    require_single_source_file(&retained_before, "repo1", &file.repo_relative_path)?;
+
+    let delete_started = Instant::now();
+    rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)?;
+    let _generation = rt.seal()?;
+    let delete_seal_ms = elapsed_ms(delete_started);
+    let activation_started = Instant::now();
+    rt.activate_last_sealed_generation()?;
+    let delete_activation_ms = elapsed_ms(activation_started);
+    let successor = oracle.without_file("repo0", &file.repo_relative_path)?;
+
+    let deleted_after = rt.query_text(TextQuerySyntax::Native, &deleted_token, SCALE_TOP_K);
+    require_no_source_file(&deleted_after)?;
+    let retained_after = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
+    require_single_source_file(&retained_after, "repo1", &file.repo_relative_path)?;
+    let global_after = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
+    let _count = validate_scoped_response(&successor, None, &global_after)?;
+    verify_scoped_repositories(rt, &successor)?;
+
+    let reopen_started = Instant::now();
+    rt.try_reopen_in_place()?;
+    rt.start()?;
+    let same_process_reopen_ms = elapsed_ms(reopen_started);
+    let deleted_reopened = rt.query_text(TextQuerySyntax::Native, &deleted_token, SCALE_TOP_K);
+    require_no_source_file(&deleted_reopened)?;
+    let retained_reopened = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
+    require_single_source_file(&retained_reopened, "repo1", &file.repo_relative_path)?;
+    let global_reopened = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
+    let _count = validate_scoped_response(&successor, None, &global_reopened)?;
+    verify_scoped_repositories(rt, &successor)?;
+    Ok(DeleteReopenMeasurementV1 {
+        delete_seal_ms,
+        delete_activation_ms,
+        same_process_reopen_ms,
+    })
+}
+
 /// Open the sealed generation the daemon serves through the lexical
 /// adapter in-process and time open, plan and execute on their own.
 fn measure_adapter_phases(
@@ -1250,6 +1369,7 @@ fn measure_small_tier_with_timeout(
         model_revision,
         client_request_timeout_ms: timeout_ms(client_timeout)?,
         cpu: None,
+        delete_reopen: None,
     })
     })();
     let mut measurement = finish_runtime_measurement(measurement, rt.stop())?;
@@ -1392,9 +1512,10 @@ pub fn measure_tier_with_client_timeout(
             .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
         let delta = measure_scoped_delta(&mut rt, delta_file)?;
         let after_delta = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
-        let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)?;
-        verify_scoped_repositories(&mut rt, &oracle)?;
-        Ok(TierMeasurement {
+    let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)?;
+    verify_scoped_repositories(&mut rt, &oracle)?;
+    let delete_reopen = measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)?;
+    Ok(TierMeasurement {
             tier,
             seed,
             file_count,
@@ -1420,6 +1541,7 @@ pub fn measure_tier_with_client_timeout(
         model_revision,
         client_request_timeout_ms: timeout_ms(client_timeout)?,
         cpu: None,
+        delete_reopen: Some(delete_reopen),
     })
     })();
     let mut measurement = finish_runtime_measurement(measurement, rt.stop())?;
@@ -1665,6 +1787,12 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
             "activation_with_reclaim_ms": measurement.delta.activation_with_reclaim_ms,
             "reclaimed_bytes": measurement.delta.reclaimed_bytes,
         },
+        "delete_reopen": measurement.delete_reopen.map(|timing| json!({
+            "delete_seal_ms": timing.delete_seal_ms,
+            "delete_activation_ms": timing.delete_activation_ms,
+            "same_process_reopen_ms": timing.same_process_reopen_ms,
+            "scope": "same OS process and state root; daemon thread restarted; page cache not cleared",
+        })),
         "result_count": measurement.result_count,
     })
 }
@@ -2224,11 +2352,12 @@ mod tests {
         assert_eq!(retained.candidates.len(), 1);
         assert_eq!(retained.candidates[0].source_repo_id.as_str(), "repo1");
 
-        let mut reopened = rt.reopen();
-        let still_deleted = reopened.query_text(TextQuerySyntax::Native, &repo_query_token(0), 10);
+        rt.try_reopen_in_place()?;
+        rt.start()?;
+        let still_deleted = rt.query_text(TextQuerySyntax::Native, &repo_query_token(0), 10);
         assert!(still_deleted.typed_error.is_none());
         assert!(still_deleted.candidates.is_empty());
-        let still_retained = reopened.query_text(TextQuerySyntax::Native, &repo_query_token(1), 10);
+        let still_retained = rt.query_text(TextQuerySyntax::Native, &repo_query_token(1), 10);
         assert!(still_retained.typed_error.is_none());
         assert_eq!(still_retained.candidates.len(), 1);
         assert_eq!(
@@ -2313,6 +2442,7 @@ mod tests {
                 user_ms: 3.0,
                 system_ms: 2.0,
             }),
+            delete_reopen: None,
             tier: ScaleTier::Small,
             seed: 3,
             file_count: 16,
