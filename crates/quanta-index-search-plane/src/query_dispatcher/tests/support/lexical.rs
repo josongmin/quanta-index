@@ -189,6 +189,7 @@ impl LexicalSearcher for StubLexicalSearcher {
                 LexicalCandidateExplanationV1::Matched(quanta_index_core::LexicalScoreTraceV1 {
                     engine: LexicalScoreEngineV1::Bm25,
                     code_search_components: None,
+                    code_search_rank_study: None,
                     engine_score: candidate.score,
                     boost_factor: 1.0,
                     emitted_score: candidate.score,
@@ -463,6 +464,7 @@ impl LexicalSearcher for RecordingLexicalSearcher {
                 LexicalCandidateExplanationV1::Matched(quanta_index_core::LexicalScoreTraceV1 {
                     engine: LexicalScoreEngineV1::Bm25,
                     code_search_components: None,
+                    code_search_rank_study: None,
                     engine_score: candidate.score,
                     boost_factor: 1.0,
                     emitted_score: candidate.score,

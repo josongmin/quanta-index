@@ -25,6 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 
 BENCH_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +48,33 @@ HTTP_TIMEOUT = 50
 MAX_SOURCEGRAPH_REQUEST_TARGET_BYTES = 8 * 1024
 CS_FUZZY_CAPABILITY = "cs_fuzzy_osa1_file"
 CS_FUZZY_VERIFIED_VERSION = "cs version 3.2.0"
+
+
+@dataclass(frozen=True)
+class BoundRelease:
+    """Reuse one full Git replay while rehashing every release file per cell."""
+
+    root: Path
+    document: dict
+    files: dict[str, str]
+    owner_sha256: str
+
+    @classmethod
+    def begin(cls, root: Path) -> BoundRelease:
+        root = root.resolve(strict=True)
+        document = corpus_release.validate(root)
+        files = {name: _sha_file(root / name) for name in sorted(corpus_release.regular_tree(root))}
+        return cls(root, document, files, _sha_file(Path(corpus_release.__file__)))
+
+    def recheck(self, root: Path) -> dict:
+        if (
+            root.resolve(strict=True) != self.root
+            or _sha_file(Path(corpus_release.__file__)) != self.owner_sha256
+            or {name: _sha_file(root / name) for name in sorted(corpus_release.regular_tree(root))}
+            != self.files
+        ):
+            raise ValueError("batch-bound release root, owner or complete file bytes changed")
+        return self.document
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1415,7 +1443,7 @@ def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
         raise ValueError("backend snapshot tree digest differs")
 
 
-def capture(spec_path: Path) -> dict:
+def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> dict:
     spec = _spec(spec_path)
     root = Path(spec["output_root"])
     stage = root.with_name(root.name + ".staging")
@@ -1467,7 +1495,11 @@ def capture(spec_path: Path) -> dict:
     tasks = lexical._tasks(suite, pack)
     if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id) is None for task_id in tasks):
         raise ValueError("task IDs must be safe filename components")
-    document = corpus_release.validate(release)
+    document = (
+        corpus_release.validate(release)
+        if bound_release is None
+        else bound_release.recheck(release)
+    )
     repository = next(
         (
             row
@@ -1574,7 +1606,8 @@ def capture(spec_path: Path) -> dict:
         destination = stage / f"{name}_rows.jsonl"
         lexical.product_result(name, destination, tasks, admitted)
     if (
-        corpus_release.validate(release) != document
+        (corpus_release.validate(release) if bound_release is None else bound_release.recheck(release))
+        != document
         or _read_control_file(spec_path) != _read_control_file(stage / "spec.json")
         or _read_control_file(Path(spec["suite"])) != suite_raw
         or _read_control_file(Path(spec["query_pack"])) != pack_raw
@@ -1649,7 +1682,7 @@ def _replay_rows(path: Path, tasks: list[dict], replay) -> None:
     RawFile.capture(path).consume_lines(consume)
 
 
-def verify(root: Path) -> dict:
+def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     """Re-derive every external row from retained native bytes; no live searches."""
     inventory = corpus_release.regular_tree(root)
     spec = _spec(root / "spec.json")
@@ -1718,7 +1751,11 @@ def verify(root: Path) -> dict:
     if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id) is None for task_id in tasks):
         raise ValueError("task IDs must be safe filename components")
     release = Path(spec["corpus"]["release_path"])
-    document = corpus_release.validate(release)
+    document = (
+        corpus_release.validate(release)
+        if bound_release is None
+        else bound_release.recheck(release)
+    )
     repository = next(
         row
         for row in document["repositories"]

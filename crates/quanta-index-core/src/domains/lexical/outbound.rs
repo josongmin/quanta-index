@@ -275,6 +275,24 @@ pub struct LexicalScoreTraceV1 {
     pub emitted_score: f32,
     /// Present only for full-source file scoring; values come from the scorer.
     pub code_search_components: Option<CodeSearchScoreComponentsV1>,
+    /// Diagnostic ablations, not the selected production policy or score.
+    pub code_search_rank_study: Option<CodeSearchRankStudyV1>,
+}
+
+/// Native-scored experimental policies over the same verified file match.
+/// Unknown declaration coverage stays explicit; its proposed contribution is
+/// neutral. These numbers do not establish relevance or holdout qualification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CodeSearchRankStudyV1 {
+    pub declaration_bonus: Option<u32>,
+    pub declaration_coverage_complete: bool,
+    pub original_boundary_bonus: u32,
+    pub baseline: u32,
+    pub declaration_only: u32,
+    pub boundary_only: u32,
+    pub occurrence_half: u32,
+    pub occurrence_none: u32,
+    pub combined: u32,
 }
 
 /// Additive signals of the selected full-source file ranker. This is internal

@@ -533,6 +533,7 @@ impl LexicalSearcher for TantivySearcher {
                 LexicalScoreTraceV1 {
                     engine: LexicalScoreEngineV1::UnindexedScan,
                     code_search_components: None,
+                    code_search_rank_study: None,
                     engine_score: 1.0,
                     boost_factor,
                     emitted_score: Self::apply_query_boost_score(1.0, &effective_query.options),
@@ -557,6 +558,7 @@ impl LexicalSearcher for TantivySearcher {
             LexicalScoreTraceV1 {
                 engine: LexicalScoreEngineV1::Bm25,
                 code_search_components: None,
+                code_search_rank_study: None,
                 engine_score,
                 boost_factor,
                 emitted_score: Self::apply_query_boost_score(

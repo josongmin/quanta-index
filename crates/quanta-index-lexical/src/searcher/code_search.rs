@@ -4,6 +4,8 @@
 //! pattern type. This executor does not reinterpret Native LQ raw-string
 //! leaves: its AND and ranking unit is one immutable source file.
 
+mod ranking;
+
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::ops::Range;
@@ -1702,10 +1704,12 @@ impl TantivySearcher {
                 None, TermsToScore::All, budget)? {
             let (score, components) = finish_score(file, &parsed.terms, parsed.case,
                 &mut scored, budget)?;
+            let study = ranking::study(self, file, &parsed.terms, parsed.case, components, budget)?;
             return Ok(LexicalCandidateExplanationV1::Matched(LexicalScoreTraceV1 {
                 engine: LexicalScoreEngineV1::CodeSearchFile,
                 engine_score: score, boost_factor: 1.0, emitted_score: score,
                 code_search_components: Some(components),
+                code_search_rank_study: Some(study),
             }));
         }
         // Auto-typo eligibility depends on the original scoped literal set.
@@ -1723,6 +1727,7 @@ impl TantivySearcher {
                     engine: LexicalScoreEngineV1::CodeSearchFile,
                     engine_score: row.score, boost_factor: 1.0, emitted_score: row.score,
                     code_search_components: None,
+                    code_search_rank_study: None,
                 })))
     }
 

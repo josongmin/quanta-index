@@ -679,6 +679,24 @@ fn build_lexical_score_explanation(
                     });
                 }
             }
+            if let Some(study) = trace.code_search_rank_study {
+                planner_trace.push(PlannerTraceEntry {
+                    stage: PlannerStage::Merge,
+                    detail: format!("explain.code_search_rank_study_v1.declaration_bonus={};coverage_complete={};original_boundary_bonus={}",
+                        study.declaration_bonus.map_or_else(|| "unknown".to_string(), |value| value.to_string()),
+                        study.declaration_coverage_complete, study.original_boundary_bonus),
+                });
+                for (name, value) in [
+                    ("baseline", study.baseline), ("declaration_only", study.declaration_only),
+                    ("boundary_only", study.boundary_only), ("occurrence_half", study.occurrence_half),
+                    ("occurrence_none", study.occurrence_none), ("combined", study.combined),
+                ] {
+                    planner_trace.push(PlannerTraceEntry {
+                        stage: PlannerStage::Merge,
+                        detail: format!("explain.code_search_rank_study_v1.{name}={value};selected=false"),
+                    });
+                }
+            }
             let prose = lexical_trace_prose_v1(trace);
             let summary = if reconciled {
                 format!(
