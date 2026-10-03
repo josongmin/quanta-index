@@ -766,3 +766,55 @@ these 1,000 tasks with the declaration score to inflate a quality claim.
   indexed universes, supported lane requests and served versions still require
   their own binding. Historical external rows and a legacy OpenGrok index dump
   do not establish that proof for the new release.
+
+### 2026-10-04: Optional rank diagnostics must not invalidate selected-score Explain
+
+A separate one-query SDK diagnostic reproduced a remaining operational defect:
+`/private/tmp/qi-nfd-explain-red-20261004-qkgknzn1/`. The independently source-
+validated Go fixture contains a decomposed combining accent and 120,000 spaces
+before `func fooBar() {}`. Ordinary search succeeded with one file, score 105;
+the complete pool also returned that file. Its Explain was refused with
+`LEXICAL_COLLECTION_BUDGET_EXCEEDED` (64 MiB retained-byte limit). The runner
+completed in 132.051 seconds on the contended host. This is a development binary
+reproduction, not a qualified performance measurement or frozen build-source
+claim; `binding.json` records input, fixture revision and binary hashes.
+
+Cause: `explain_code_file` computed the valid selected score, then propagated
+`ranking::study(...)?`. Full non-NFC provenance allocation for the optional
+experiment could consequently invalidate the otherwise valid score explanation.
+The preceding NFC fast path did not cover this fixture.
+
+Repair, present in main commit `2d7c9370`:
+
+- Core lexical trace represents an optional diagnostic refusal separately from
+  the selected score. A returned study and a refusal are mutually exclusive.
+- Catch only the optional study's typed collection-budget refusal, then check
+  request cancellation/deadline. Identity, storage and interruption errors still
+  propagate. Search scoring and resource limits are not changed.
+- Public Explain retains the selected contribution and emits
+  `explain.code_search_rank_study_v1.refused=LEXICAL_COLLECTION_BUDGET_EXCEEDED`.
+  Dispatcher validation rejects contradictory studies, wrong engines, missing
+  selected decomposition and other refusal codes.
+- The benchmark verifies the selected score before excluding the task from
+  experimental comparisons. It preserves original results, exclusions and
+  coverage; no neutral or zero experimental score is synthesized.
+- Extend the existing sealed Unicode fixture, the existing dispatcher score
+  golden, and the consumer mutation test. No new production ranking policy is
+  selected.
+
+Verification on current main:
+
+| Command / scope | Observed result |
+| --- | --- |
+| `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_code_search_rank_study.py tools/ci/tests/test_identifier_robustness_report.py tools/ci/tests/test_identifier_robustness_strata.py tools/ci/tests/test_identifier_robustness_multiproduct_report.py` | `VERIFIED`: 83 passed in 9.53 s; the rank-study subset is 30 tests |
+| Source-validated `code_search_rank_study` replay of the existing 1,196 declaration and 1,000 literal captures | `VERIFIED`: all comparison structures unchanged; new outputs and equality check in `/private/tmp/qi-nfd-explain-green-20261004-163xq3sz/`, original artifacts untouched |
+| Ruff, test-authority inventory and `git diff --check` | `VERIFIED` |
+| System Python 3.9 / mistaken test path attempts | `FAILED`: unsupported `zip(strict=True)` runtime / absent paths; not the project test verdict; superseded by the frozen environment command above |
+| Native sealed Unicode test, dispatcher score tests and rebuilt one-query SDK control | PENDING_NATIVE_DIAGNOSTIC_REPAIR_CHECKS |
+
+Independent holdout/externals are concurrent work, not duplicated here. The
+current Sourcegraph path-inventory receipt observes 12 repositories and 13,347
+files but explicitly does not prove content postings. Actual AI relevance review
+remains partial and unqualified; it is not human review. These observations do
+not authorize production ranking selection, a fresh five-product ranking or a
+performance comparison. Selected ranking remains baseline.

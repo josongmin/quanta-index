@@ -53,7 +53,7 @@ them does not create an unseen holdout or a qualified comparison.
   labels still need review. Repository/family-cluster statistics apply only
   after the applicable comparison admission.
 
-## Verification — 2026-10-04
+## Verification — 2026-10-04 initial intake
 
 Implemented owners:
 
@@ -129,3 +129,87 @@ uv run --frozen --extra dev python -m pytest -q \
 The imported annotations and new diagnostic report fields are implemented.
 Source materialization, local relevance review, declaration-position recovery,
 qualified product comparisons and an unseen holdout remain separate unfinished scopes.
+
+
+## Execution follow-up — 2026-10-04
+
+Additional reusable owners:
+
+- `codesearchnet_materialize.py`: pinned full-file fetch, exact line-span
+  materialization, source/snippet hashes, explicit unavailable-source ledger.
+- `clarc_adapter.py`: pinned 526-pair original/neutral source admission;
+  query-hash task identities prevent ordinal task IDs leaking target filenames.
+- `external_snippet_benchmark.py`: six language-specific CSN packs, two CLARC
+  packs, fractional/positive-only scoring, commitment-bound sidecars, full
+  native source/record replay and expected execution-profile checks.
+- `identifier_robustness_multiproduct_report.py`: source-derived input strata
+  with independently replayed historical native/external rows; this offline
+  historical report is not a fresh five-product run.
+- `query_plan.py`, `run.py`, `evaluator.py`, native `main.rs` and pair/runner
+  schemas: explicit bounded NL token configuration (1..128, default32),
+  effective request/profile binding and exploratory-only nondefault admission.
+- Four new Python owners are enrolled in the control scope, Justfile, closure
+  profiles and policy collection checks. The required Python inventory adds
+  nine observed NL test identities; SDK identities were sorted without deletion.
+
+Resolved defects:
+
+1. Unsorted SDK inventory rejected otherwise valid SDK receipts. Sorting the
+   canonical 25 identities preserves their membership; seven owner tests and
+   eleven affected SDK-path tests passed.
+2. Long CLARC queries were refused by the default32 profile (483/526). The
+   explicit128 profile submits all526 without shortening query text, and is
+   bound through the native CLI, profile, effective request and record replay.
+3. A partial external qrel pool was liable to hide source and denominator
+   loss. Full CSN573 = submitted462 + source-blocked111; submitted462 =
+   positive-known408 + no-positive-judged54. Those54 have undefined target
+   quality, not proven no-answer. Failed execution is separately counted.
+4. Native record validation alone accepted a valid but unintended product
+   profile. The external wrapper now requires the commitment-bound NL policy
+   and exact configuration, or the fixed Semble lexical-file profile. Unknown
+   record fields, policy/config tampering and wrong product modes are refused.
+
+Observed source materialization: 2,739 distinct source files, 2,613 fetched,
+126 HTTP404, 2,746 admitted spans and 2,781 admitted qrels. A separate GitHub
+contents-API cross-check of three unavailable sources also returned404. Fetched
+GitHub URL bytes are not an independently verified Git tree/blob attestation.
+The full CodeSearchNet corpus and original snippet license attribution are
+not admitted for a qualified comparison.
+
+| Executed scope | Verdict | Result |
+| --- | --- | --- |
+| Integrated new-owner/policy/closure tests | VERIFIED | 99 passed, 201.73s |
+| Pinned-source/adapters/strata focused tests | VERIFIED | 46 passed, 20.76s before final profile negative fixture; profile wrapper separately 6 passed |
+| Affected runner/planner Python file | FAILED, then focused repair VERIFIED | Initial full execution499 passed/1 expected-error-text assertion failed in1331.49s; error contract preserved and affected19 passed. The full file was not repeated. |
+| Final profile/query-identity slice | VERIFIED | 14 passed,493 deselected,11.65s |
+| Rust NL CLI owner unit | BLOCKED | Resource admission timed out; release build and real native captures are separate proof scopes |
+| Semble external snippet captures | VERIFIED | 8/8 captures and full source/record replays;1514/1514 success,0 execution failures |
+| Quanta external snippet captures | NOT_RUN | Release build in progress; not yet scoreable |
+| Fresh three-external-product C5 typo | NOT_RUN for full4149 | Capture batch running; completed cells remain separate from the historical offline report |
+| Fresh native C5 typo pair | NOT_RUN | 12cells/4149 bound inputs prepared, awaiting release daemon |
+| Qualified performance / full upstream CSN / human local adjudication | NOT_RUN | Not established by these diagnostic runs |
+
+Semble lexical-file target results: CLARC original161/526, neutral91/526;
+CSN positive-known387/408. CLARC is positive-only, and neutralized identical
+code groups retain the original labels. CSN NDCG is pool-estimated. These are
+synthetic snippet/file diagnostics, not whole-repository or semantic rankings.
+
+Per-run artifacts (outside the checkout):
+
+- Materialization: `/private/tmp/qi-csn-materialization-20261004-6f8feb90-v1/manifest.json`.
+- Eight prepared lanes: `/private/tmp/qi-external-snippet-prep-parent-yhwz2shs/prepared/manifest.json`.
+- Semble capture/replay: `/private/tmp/qi-external-semble-run-4jwxqn5b/frozen-verify.json`
+  and `score-summary.json` (commands and wall times in adjacent execution ledger).
+- Historical strata replay: `/private/tmp/qi-c5-source-strata-offline-20261004-v3.json`.
+- Fresh external C5 batch: `/private/tmp/qi-c5-external-source-strata-fresh-20261004-v2/ledger.json`.
+- Native snippet execution root: `/private/tmp/qi-b09-native-snippets-20261004-v1/`.
+- Native C5 batch preparation: `/private/tmp/qc5t-azl3zc/`.
+
+Capture cost audit: the 58,562-file/1.02GiB release is fully rehashed four
+boundaries per external cell. Across12 cells this means about2.81million file
+opens/49GiB read, plus the initial full Git replay. A fixed1024-file sample
+produced identical digests but bounded4-worker hashing was slower on this host
+(serial median0.607s,parallel0.914s). No hash-range/check-boundary shortcut or
+performance patch was made. Host load and about24GiB swap invalidate any
+qualified speed ranking; preparation, compile, validation, index and call
+wall boundaries remain separate.
