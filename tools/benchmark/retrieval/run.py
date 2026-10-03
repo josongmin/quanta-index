@@ -3461,12 +3461,16 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
                 raise RunError(f"spec.claims.{key} must be a strict boolean")
     if "source_closure_reuse" in spec:
         value = spec["source_closure_reuse"]
+        if standalone_quanta:
+            raise RunError("spec.source_closure_reuse is supported only by pair capture")
         if not isinstance(value, str) or not Path(value).is_absolute() or not value:
             raise RunError("spec.source_closure_reuse must be an absolute path")
         if spec.get("scope", "exploratory") != "exploratory" or any(
             spec.get("claims", {}).values()
         ):
-            raise RunError("source closure reuse is only valid for exploratory captures without claims")
+            raise RunError(
+                "source closure reuse is only valid for exploratory captures without claims"
+            )
     if spec.get("embedder") == "potion-code-full-v2" and (
         spec.get("scope", "exploratory") != "exploratory" or any(spec.get("claims", {}).values())
     ):
@@ -9274,6 +9278,7 @@ def run_pair(spec: dict) -> int:
             closure_path,
             reuse_from=Path(closure_source),
         )
+        _validate_source_closure_shape(read_json(closure_path), "reused driver source closure")
     closure_capture_finished_ns = time.monotonic_ns()
     spec = dict(spec, _driver_source_closure=str(closure_path))
     try:

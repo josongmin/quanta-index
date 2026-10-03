@@ -479,6 +479,22 @@
   },
   "allOf": [
     {
+      "if": {"required": ["source_closure_reuse"]},
+      "then": {
+        "properties": {
+          "scope": {"const": "exploratory"},
+          "claims": {
+            "properties": {
+              "quality": {"const": false},
+              "speed": {"const": false},
+              "same_model": {"const": false},
+              "incremental": {"const": false}
+            }
+          }
+        }
+      }
+    },
+    {
       "if": {
         "required": [
           "code_search_rank_study"

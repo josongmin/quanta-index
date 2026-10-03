@@ -8,6 +8,7 @@ does not) are proven independently of the live checkout's dirty state.
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -187,8 +188,11 @@ def test_changed_file_invalidates_the_closure(tmp_path: Path) -> None:
         raise AssertionError("a changed normative file was captured into a closure")
 
 
-def test_reused_closure_preflight_requires_same_clean_revision_and_inventory(tmp_path: Path) -> None:
+def test_reused_closure_preflight_requires_same_clean_revision_and_inventory(
+    tmp_path: Path,
+) -> None:
     repo, module = _synthetic_repo(tmp_path)
+    module.PROFILES["bm-synthetic"]["paths"] = ("tools/benchmark",)
     manifest = module.build_manifest(repo, "bm-synthetic")
     assert module.preflight_reused_manifest(repo, manifest) == manifest
 
@@ -209,6 +213,33 @@ def test_reused_closure_preflight_requires_same_clean_revision_and_inventory(tmp
     _git(repo, "commit", "-qm", "new revision")
     with pytest.raises(module.ClosureError, match="revision changed"):
         module.preflight_reused_manifest(repo, manifest)
+
+
+def test_reuse_cli_writes_prior_closure_only_for_matching_source(tmp_path, monkeypatch) -> None:
+    repo, module = _synthetic_repo(tmp_path)
+    manifest = module.build_manifest(repo, "bm-synthetic")
+    prior = tmp_path / "prior.json"
+    prior.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+    out = tmp_path / "reused.json"
+    monkeypatch.setattr(module, "_repo_root", lambda: repo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["source_closure.py", "reuse", "--manifest", str(prior), "--out", str(out)],
+    )
+    assert module.main() == 0
+    assert module.load_and_verify(out, repo) == manifest
+
+    changed = tmp_path / "changed.json"
+    (repo / "tools/benchmark/registry.toml").write_text("dirty\n", encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["source_closure.py", "reuse", "--manifest", str(prior), "--out", str(changed)],
+    )
+    with pytest.raises(SystemExit, match="dirty relevant source"):
+        module.main()
+    assert not changed.exists()
 
 
 def test_incomplete_import_traversal_refuses_python_inventory(tmp_path, monkeypatch):

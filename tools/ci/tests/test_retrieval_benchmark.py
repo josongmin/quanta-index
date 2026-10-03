@@ -9605,9 +9605,7 @@ def test_source_closure_driver_reuse_invokes_bound_preflight(tmp_path, monkeypat
     reused = tmp_path / "prior.json"
     staged = tmp_path / "staged.json"
     pairrun._source_closure(tmp_path, "reuse", staged, reuse_from=reused)
-    assert observed[0][0][-5:] == [
-        "reuse", "--manifest", str(reused), "--out", str(staged)
-    ]
+    assert observed[0][0][-5:] == ["reuse", "--manifest", str(reused), "--out", str(staged)]
     assert observed[0][1]["cwd"] == tmp_path
 
 
@@ -9725,7 +9723,15 @@ def test_exploratory_pair_requires_source_closure_capture_and_final_verify(tmp_p
 def test_exploratory_pair_reuses_closure_but_keeps_final_verification(tmp_path, monkeypatch):
     cache, revision = _pinned_semble_cache(tmp_path)
     prior = tmp_path / "prior-closure.json"
-    prior.write_text("{}\n", encoding="utf-8")
+    closure = {
+        "schema_version": 1,
+        "profile": "retrieval",
+        "revision": "a" * 40,
+        "roots": ["source.rs"],
+        "files": [{"path": "source.rs", "sha256": _fake_sha("source")}],
+    }
+    closure["digest"] = ev.digest(ev.canonical(closure))
+    prior.write_text(json.dumps(closure) + "\n", encoding="utf-8")
     spec = {
         "execution_profiles": {
             "quanta": qp.execution_profile("native"),
@@ -11436,6 +11442,15 @@ def _g0_spec() -> dict:
 def test_v3_pair_spec_schema():
     schema = _load_schema("pair-spec.schema.json")
     jsonschema.validate(_g0_spec(), schema)
+    reused = {**_g0_spec(), "source_closure_reuse": "/tmp/prior-closure.json"}
+    jsonschema.validate(reused, schema)
+    for invalid_claim in ("quality", "speed", "same_model", "incremental"):
+        claimed = json.loads(json.dumps(reused))
+        claimed["claims"][invalid_claim] = True
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(claimed, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**reused, "scope": "qualified"}, schema)
 
     def invalid(mutator):
         spec = json.loads(json.dumps(_g0_spec()))
