@@ -353,9 +353,7 @@ def test_c4_excludes_true_alternative_near_name(tmp_path, monkeypatch):
     )
     assert suite is pack is None
     assert report["selected"] == 0
-    assert report["excluded"] == [
-        {"task_id": "toy.def.001", "reason": "ambiguous_typo_target"}
-    ]
+    assert report["excluded"] == [{"task_id": "toy.def.001", "reason": "ambiguous_typo_target"}]
 
 
 def test_c4_partial_typo_excludes_before_parsing_refused_file(tmp_path, monkeypatch):
