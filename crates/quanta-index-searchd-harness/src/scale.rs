@@ -765,6 +765,42 @@ pub struct TierMeasurement {
     pub model_revision: Option<String>,
 }
 
+/// Keep the measurement error and daemon teardown error separately. A failed
+/// driver must never turn a failed measurement into a successful tier, and a
+/// panic in `E2eRuntime::Drop` must not erase the primary error.
+#[derive(Debug)]
+struct ScaleRuntimeFailure {
+    primary: Option<anyhow::Error>,
+    cleanup: anyhow::Error,
+}
+
+impl std::fmt::Display for ScaleRuntimeFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(primary) = &self.primary {
+            write!(formatter, "scale measurement failed: {primary:#}; daemon cleanup failed: {:#}", self.cleanup)
+        } else {
+            write!(formatter, "scale daemon cleanup failed: {:#}", self.cleanup)
+        }
+    }
+}
+
+impl std::error::Error for ScaleRuntimeFailure {}
+
+fn finish_runtime_measurement<T>(
+    measurement: AnyResult<T>,
+    cleanup: AnyResult<()>,
+) -> AnyResult<T> {
+    match (measurement, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (primary, Err(cleanup)) => Err(ScaleRuntimeFailure {
+            primary: primary.err(),
+            cleanup,
+        }
+        .into()),
+    }
+}
+
 /// Convert an elapsed `Instant` span to milliseconds.
 fn elapsed_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0

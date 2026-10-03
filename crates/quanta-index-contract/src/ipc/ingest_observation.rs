@@ -988,6 +988,10 @@ mod tests {
         stages.text_authority_collect_ns = None; // no text write
         observation.lexical_stages = Some(stages.clone());
         observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;
+        assert_eq!(
+            serde_json::from_value::<LexicalBuildStageDurationsV1>(serde_json::to_value(&stages)?)?,
+            stages
+        );
         let mut wire = serde_json::to_value(&stages)?;
         let _removed = wire
             .as_object_mut()
