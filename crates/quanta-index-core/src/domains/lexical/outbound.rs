@@ -224,7 +224,8 @@ pub struct LexicalSearchPageV1<Candidate = LexicalCandidate> {
     pub code_search_stats: Option<CodeSearchExecutionStatsV1>,
 }
 
-/// Counts observed during one successful exhaustive ordinary CodeSearch page.
+/// Counts from one successful exhaustive ordinary `CodeSearch` page.
+///
 /// Verification attempts may revisit a rejected file through content/path
 /// postings. They are work counts, not the size of a distinct candidate set.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -298,6 +299,7 @@ pub struct LexicalScoreTraceV1 {
 }
 
 /// Native-scored experimental policies over the same verified file match.
+///
 /// Unknown declaration coverage stays explicit; its proposed contribution is
 /// neutral. These numbers do not establish relevance or holdout qualification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -342,7 +344,7 @@ pub enum LexicalScoreEngineV1 {
     Bm25,
     /// An unindexed scan, where every match scores 1.
     UnindexedScan,
-    /// Source-verified, distinct-file CodeSearch scoring.
+    /// Source-verified, distinct-file `CodeSearch` scoring.
     CodeSearchFile,
 }
 

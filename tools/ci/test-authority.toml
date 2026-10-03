@@ -354,6 +354,8 @@ targets = [
   "benchmark-lexical-scorer-python-owner",
   "benchmark-lexical-five-product-oracle-python-owner",
   "benchmark-identifier-robustness-report-python-owner",
+  "benchmark-identifier-robustness-strata-python-owner",
+  "benchmark-codesearchnet-qrels-python-owner",
   "benchmark-code-search-rank-study-python-owner",
   "benchmark-portable-proof-python-owner",
   "benchmark-pair-capture-python-owner",
@@ -533,6 +535,18 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-identifier-robustness-report-python-owner"
 path = "tools/ci/tests/test_identifier_robustness_report.py"
 owner = "tools/benchmark/retrieval/identifier_robustness_report.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-identifier-robustness-strata-python-owner"
+path = "tools/ci/tests/test_identifier_robustness_strata.py"
+owner = "tools/benchmark/retrieval/identifier_robustness_suite.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-codesearchnet-qrels-python-owner"
+path = "tools/ci/tests/test_codesearchnet_qrels.py"
+owner = "tools/benchmark/retrieval/codesearchnet_qrels.py"
 rail = "pr-benchmark-control-python"
 
 [[python_targets]]

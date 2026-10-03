@@ -51,21 +51,36 @@ impl<'ast> Visit<'ast> for Census {
 
     named!(visit_item_fn, syn::ItemFn, "fn", |i| &i.sig.ident);
     named!(visit_impl_item_fn, syn::ImplItemFn, "fn", |i| &i.sig.ident);
-    named!(visit_trait_item_fn, syn::TraitItemFn, "fn", |i| &i.sig.ident);
-    named!(visit_foreign_item_fn, syn::ForeignItemFn, "fn", |i| &i.sig.ident);
+    named!(visit_trait_item_fn, syn::TraitItemFn, "fn", |i| &i
+        .sig
+        .ident);
+    named!(visit_foreign_item_fn, syn::ForeignItemFn, "fn", |i| &i
+        .sig
+        .ident);
     named!(visit_item_struct, syn::ItemStruct, "struct", |i| &i.ident);
     named!(visit_item_enum, syn::ItemEnum, "enum", |i| &i.ident);
     named!(visit_item_union, syn::ItemUnion, "union", |i| &i.ident);
     named!(visit_item_trait, syn::ItemTrait, "trait", |i| &i.ident);
     named!(visit_item_type, syn::ItemType, "type", |i| &i.ident);
-    named!(visit_impl_item_type, syn::ImplItemType, "type", |i| &i.ident);
-    named!(visit_trait_item_type, syn::TraitItemType, "type", |i| &i.ident);
-    named!(visit_foreign_item_type, syn::ForeignItemType, "type", |i| &i.ident);
+    named!(visit_impl_item_type, syn::ImplItemType, "type", |i| &i
+        .ident);
+    named!(visit_trait_item_type, syn::TraitItemType, "type", |i| &i
+        .ident);
+    named!(visit_foreign_item_type, syn::ForeignItemType, "type", |i| {
+        &i.ident
+    });
     named!(visit_item_const, syn::ItemConst, "const", |i| &i.ident);
-    named!(visit_impl_item_const, syn::ImplItemConst, "const", |i| &i.ident);
-    named!(visit_trait_item_const, syn::TraitItemConst, "const", |i| &i.ident);
+    named!(visit_impl_item_const, syn::ImplItemConst, "const", |i| &i
+        .ident);
+    named!(visit_trait_item_const, syn::TraitItemConst, "const", |i| &i
+        .ident);
     named!(visit_item_static, syn::ItemStatic, "static", |i| &i.ident);
-    named!(visit_foreign_item_static, syn::ForeignItemStatic, "static", |i| &i.ident);
+    named!(
+        visit_foreign_item_static,
+        syn::ForeignItemStatic,
+        "static",
+        |i| &i.ident
+    );
     named!(visit_item_mod, syn::ItemMod, "mod", |i| &i.ident);
 
     fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {

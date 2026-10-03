@@ -2263,3 +2263,75 @@ stateful UI session if that behavior is the intended contract. These five
 controls do not establish a full-suite Fuzzy Finder score or product-wide
 lack of typo recovery. **VERIFIED:** frontend request shape and five GraphQL
 controls. **NOT_RUN:** interactive UI trajectory and full OSA1 suite.
+
+## C3 oracle alignment and actual AI review continuation (2026-10-04)
+
+The current-source oracle used the older Python language pack for Rust and
+Python while the Rust producer already accepted raw references and Python
+3.14 template strings. The canonical Rust 0.24.2 and Python 0.25.0 grammars
+are now source-bound path dependencies, generated with the same pinned CLI
+0.24.4 / ABI 14 used for Go and TypeScript. Rust and Python oracle adapters
+consume the same C/scanner sources; malformed inputs remain typed failures.
+Actual vendor bytes enter both producer grammar identities. The generic
+compiler/cache adapter is reused; no per-language parser implementation or
+legacy IR was added. Main commits `6c4c7713` and `93953ecb` contain this cutover
+and the fixed source-span proofs.
+
+The independent `syn` checker also omitted attributed, bodyless function
+signatures (`#[ref_cast_custom] fn ref_cast(...);`) retained as `Item::Verbatim`.
+It now parses the complete token stream as `ForeignItemFn` before counting
+that source-written declaration; arbitrary macro tokens are not inferred as
+names. The actual checker positive/malformed test passed. This repairs the
+reference census, not a product ranking algorithm.
+
+Verification scopes (separate, overlapping checks, not an additive test total):
+
+| Command / scope | Observed result |
+| --- | --- |
+| `./scripts/cargow --lane b08-nl-proof-lane test -p quanta-index-retrieval-bench --lib symbols:: --locked -- --test-threads 1` | **VERIFIED**, 21 passed; 18.52s compile, 0.16s tests |
+| `.venv/bin/python -m pytest -q tools/ci/tests/test_source_oracle_suite.py tools/ci/tests/test_gold_oracle.py` | **VERIFIED**, 118 passed, 265.91s; before the later independent-checker repair |
+| `.venv/bin/python -m pytest -q tools/ci/tests/test_retrieval_benchmark.py -k 'symbol or preflight'` | **VERIFIED**, 82 passed, 63.28s |
+| `./scripts/cargow --lane b08-nl-proof-lane nextest run -p quanta-index-retrieval-bench --lib --test chunking_contract --test l5_parser_regressions --all-features --locked --test-threads 1` | **VERIFIED**, 167 passed / 0 skipped, 10.695s tests; run `03c9c5d2-5d29-4b01-8744-1808b80c8f42` |
+| `.venv/bin/python -m pytest -q tools/ci/tests/test_retrieval_contract_proof.py -k 'inventory or local'` | **VERIFIED**, 7 passed, 2.75s; before the new checker test identity was added |
+| Source-oracle selector including producer grammars, cache refusal and independent Rust signature census | **VERIFIED**, 9 passed, 2.84s; before formatting-only checker changes |
+
+Fresh external work root:
+`/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`.
+Original captures, qrels, v5 packet and frozen checkouts remain unchanged.
+
+- **VERIFIED, release generation:** holdout 12 repositories (195.23s) and
+  development 10 (114.35s) were reissued with the current generator digest.
+  Every original view and tracked inventory is unchanged. Status is
+  `source_reissued_not_admitted`, not benchmark qualification.
+- **VERIFIED, v5 source audit:** all 20 originally unjudged tasks were
+  rederived diagnostically. Sixteen now have complete mechanical labels,
+  including a genuinely empty negative task. Four remain explicitly unjudged:
+  `bat.pre.002` (ANSI-highlighted output fixtures), `mocha.pre.007` (intentional
+  malformed fixture), `typeorm.osa.003` and `zellij.inf.003` (matching
+  declarations in another language under an unscoped request). None received
+  fabricated negative gold. Old components `sensitive` metadata was corrected
+  to the current `casefold` contract only in separately issued recipes; these
+  outputs must not be scored as unchanged original v5 commitments.
+- **Actual AI review in progress:** the installed CLI supports the existing
+  amended Opus 5.5 / Sonnet 5.5 / Fable 5.1 roles. Fresh blind full-source
+  judgments and separate adjudications are running in the new root, with
+  actual model usage, input/output hashes and exact source quotes. The two
+  independent decisions are committed before the adjudicator sees them.
+  No old grades are carried forward; no result is described as human review.
+- **Split validation in progress:** the new release mapping and authored C3
+  suite family sets have been written to `c3-split-preparation/`; complete
+  release/source/near-duplicate verification is running. The equality gate
+  remains unchanged. This is preparation; no full admission is claimed.
+
+Evidence: `release-reissue-progress.json`,
+`v5-remaining-final-source-audit.json`, `v5-nushell-reference-corrected/result.json`,
+`ai-review-current/`, `ai-review-rest-precommit.json` and the fresh process logs.
+
+**BLOCKED / remaining:** actual completed reviews for all 240 tasks, canonical
+form validation and qrels issuance, explicit treatment of the four v5
+ineligible/ambiguous tasks, capsule/suite/split/receipt reissuance and the full
+admission bundle. **NOT_RUN:** current-source qualified product captures,
+complete external indexed-universe proof, same application-facing API boundary
+performance qualification and a qualified five-product ranking. The concurrent
+C5 pair batch remains bound to its own older source and corpus; its results
+cannot be composed with this C3 source/data cutover.

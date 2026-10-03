@@ -332,6 +332,42 @@ python3 tools/benchmark/retrieval/identifier_robustness_suite.py \
 Its base names come from an exposed suite, so its output is a source-exposed
 diagnostic, never an unseen holdout.
 
+New typo census data also records two independent input properties:
+
+- `literal_relation`: whether the folded query is a proper substring of the
+  intended name, the intended name is a proper substring of the query, or neither.
+- `surviving_components`: whether none, some, or all distinct intended-name
+  components of at least three characters remain as whole query components.
+  `no_eligible_components` covers names without such components. The policy
+  uses `camel-snake-v1`, including its inferred acronym boundaries; it does not
+  claim to reproduce any product tokenizer.
+
+The robustness report rederives these properties from the frozen source/query
+and reports eligible task counts and file-hit counts by property. A surviving
+component does not establish why a product retrieved the file. Historical
+census files without the policy retain their previous report shape.
+
+### External human-annotation intake
+
+`codesearchnet_qrels.py` admits the pinned [CodeSearchNet annotation CSV](https://github.com/github/CodeSearchNet/blob/106e827405c968597da938f6b373d30183918869/resources/annotationStore.csv)
+as a review seed. Download that exact revision outside the checkout, then run:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.codesearchnet_qrels \
+  --csv /absolute/external/annotationStore.csv \
+  --output /absolute/existing-external-directory/new-review-seed.json
+```
+
+The importer checks the fixed upstream SHA-256, preserves all repeated grades
+and notes, and computes the upstream mean without rounding fractional values.
+It rejects normalization collisions, mutable source URLs, checkout-local
+outputs, and replacement of existing outputs. Unjudged candidates remain
+unknown. This output is not an executable suite or a quality score: source
+snippets, corpus licensing, file hashes and a compatible scoring contract must
+be admitted first. Public annotations are source-exposed rather than an unseen
+holdout. See [S30-B09](../../../docs/plans/sep-30-code-search-benchmark-trust/tickets/S30-B09-external-robustness-adoption.md)
+for adoption decisions and remaining execution boundaries.
+
 The same lanes exist for Rust, Python, TypeScript (`.ts`/`.tsx`) and
 JavaScript as `<language>_exact_local_name_v1` and
 `<language>_declaration_name_{prefix,infix,components,osa1}_v1` over the
