@@ -12,7 +12,7 @@ use quanta_index_contract::{
     CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, HighlightSpan,
     LexicalCandidate, LqExpr, LqFilter, LqLeaf, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
     MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, PreviewByteRange, PreviewKind,
-    PreviewMetadata, PreviewUnavailableReason, QueryConstraintSetV1, SymbolCoverage,
+    PreviewMetadata, PreviewUnavailableReason, QueryConstraintSetV1,
     valid_code_search_typo_identifier,
 };
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
@@ -1615,38 +1615,6 @@ fn file_candidate(
     Ok(candidate)
 }
 
-/// An ASCII symbol component must occur as contiguous source bytes, ignoring
-/// ASCII case. Absence of any requested component is a conservative proof that
-/// an uncensused file cannot contain a matching local name.
-fn source_proves_component_absence(
-    raw: &[u8],
-    components: &[String],
-    budget: &RequestBudgetV1,
-) -> Result<bool, CoreError> {
-    for component in components.iter().collect::<BTreeSet<_>>() {
-        let needle = component.as_bytes();
-        if needle.is_empty() {
-            return Err(CoreError::InvalidContract(
-                "component absence proof requires nonempty words".into(),
-            ));
-        }
-        let mut found = false;
-        for (offset, window) in raw.windows(needle.len()).enumerate() {
-            if offset % (64 * 1024) == 0 {
-                budget.checkpoint("lexical:component-coverage-source-proof")?;
-            }
-            if window.eq_ignore_ascii_case(needle) {
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 impl TantivySearcher {
     /// Match ordered components in one stored symbol name before projecting
     /// the result to its immutable source file. The posting conjunction is a
@@ -1661,35 +1629,16 @@ impl TantivySearcher {
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         // CodeSearch has a file result domain, so the ordinary lexical plan
-        // does not infer symbol authority. An incomplete symbol census is
-        // admissible only when immutable source bytes prove that this exact
-        // component query cannot match the affected file.
+        // does not infer symbol authority. Source-byte absence cannot prove
+        // an incomplete symbol census safe: the producer contract does not
+        // require local_name to be a literal source-byte slice.
         quanta_index_core::domains::lexical::require_complete_symbol_coverage(
             self.source_coverage.as_ref(),
             |entry| {
                 let path = entry.source.file.repo_relative_path.as_str();
-                if !Self::manual_exact_path_allows(path, constraints)
-                    || (!constraints.language_any_of.is_empty()
-                        && !constraints.language_any_of.contains(&entry.language))
-                {
-                    return Ok(false);
-                }
-                if matches!(entry.symbols, SymbolCoverage::Complete { .. }) {
-                    return Ok(true);
-                }
-                let file = authority.files.get(&entry.source.file).ok_or_else(|| {
-                    CoreError::Storage("lexical: component coverage source is absent".into())
-                })?;
-                if file.source != entry.source {
-                    return Err(CoreError::Storage(
-                        "lexical: component coverage source revision differs".into(),
-                    ));
-                }
-                Ok(!source_proves_component_absence(
-                    &file.bytes,
-                    components,
-                    budget,
-                )?)
+                Ok(Self::manual_exact_path_allows(path, constraints)
+                    && (constraints.language_any_of.is_empty()
+                        || constraints.language_any_of.contains(&entry.language)))
             },
             budget,
         )?;

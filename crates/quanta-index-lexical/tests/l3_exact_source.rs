@@ -534,20 +534,24 @@ fn symbol_components_refuse_incomplete_in_scope_source() -> TestResult {
         "complete.rs",
         &[("clean", "cleanUp", "C::cleanUp", None)],
     )?;
-    let mut provably_absent = scope("source-a", "unparsed.rs", &[])?;
-    provably_absent.coverage.symbols = SymbolCoverage::ParseFailed;
-    let (_dir, searcher) = fixture_with_scopes(vec![complete, provably_absent])?;
-    let page = searcher.search_constrained(
-        &query,
-        &QueryConstraintSetV1::default(),
-        &LexicalPageSpec::first(10),
-        &RequestBudgetV1::unbounded(),
-    )?;
-    assert_eq!(page.exact_total, Some(1));
-    assert_eq!(
-        page.candidates[0].repo_relative_path.as_str(),
-        "complete.rs"
-    );
+    let mut no_literal_component = scope("source-a", "unparsed.rs", &[])?;
+    no_literal_component.coverage.symbols = SymbolCoverage::ParseFailed;
+    let (_dir, searcher) = fixture_with_scopes(vec![complete, no_literal_component])?;
+    let error = searcher
+        .search_constrained(
+            &query,
+            &QueryConstraintSetV1::default(),
+            &LexicalPageSpec::first(10),
+            &RequestBudgetV1::unbounded(),
+        )
+        .expect_err("source-byte absence does not establish a complete symbol census");
+    assert!(matches!(
+        error,
+        CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SymbolCoverageIncomplete,
+            ..
+        }
+    ));
     Ok(())
 }
 
