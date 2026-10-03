@@ -131,6 +131,12 @@ def _pool(row: dict, original: dict) -> list[dict]:
         require(not collection["pool_complete"], "empty evidence cannot prove a complete pool")
         return []
     first = pages[0]
+    require(
+        original["status"] in ("success", "abstained", "capped")
+        and (first["window"]["outcome"]["kind"] == "exact_exhausted")
+        == (original["status"] != "capped"),
+        "first page exhaustion differs from original result status",
+    )
     original_candidates = original["candidates"]
     require(
         len(first["results"]) == len(original_candidates), "first page differs from original window"
@@ -320,8 +326,11 @@ def validate_artifact(
         "study cost must be outside query measurements",
     )
     _number(artifact["diagnostic_ms"], "diagnostic_ms")
-    for name in ("max_files", "max_pages", "timeout_ms"):
-        require(_uint(artifact["limits"][name], name) > 0, "study limit must be positive")
+    for name, maximum in (("max_files", 100_000), ("max_pages", 10_000), ("timeout_ms", 300_000)):
+        require(
+            0 < _uint(artifact["limits"][name], name) <= maximum,
+            "study limit is outside producer bounds",
+        )
     originals = {row["task_id"]: row for row in record["results"] if row["route"] == "lexical"}
     tasks = {task["task_id"]: task for task in pack["tasks"]}
     universe = {item["path"]: item["file_sha256"] for item in pack["file_universe"]}
@@ -351,8 +360,10 @@ def validate_artifact(
         )
         pin = row["generation"]
         require(
-            pin["manifest_generation"] == capture["generation"],
-            "study generation differs from original capture",
+            pin["manifest_generation"] == capture["generation"]
+            and pin["repo_id"] == capture["source_repo_id"]
+            and pin["revision_id"] == capture["source_revision_id"],
+            "study generation/source differs from original capture",
         )
         request = row["effective_request"]
         require(

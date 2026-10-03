@@ -127,6 +127,7 @@ def fixture():
             {
                 "task_id": "T1",
                 "route": "lexical",
+                "status": "capped",
                 "query_identity": identity,
                 "candidates": [captured],
             }
@@ -135,6 +136,8 @@ def fixture():
         "captures": {
             "cap": {
                 "generation": 1,
+                "source_repo_id": "repo",
+                "source_revision_id": "rev",
                 "execution_profile": qp.execution_profile("code_search_file"),
                 "execution_profile_sha256": qp.execution_profile_sha256("code_search_file"),
             }
@@ -254,6 +257,9 @@ def test_partial_top_k_pool_is_excluded_and_preserves_original_quality_row():
         ("explain_generation", "generation/presence"),
         ("task_omitted", "omitted"),
         ("nonfinite", "finite number"),
+        ("first_window", "original result status"),
+        ("source_pin", "original capture"),
+        ("limit", "producer bounds"),
     ],
 )
 def test_bound_complete_study_rejects_mutations(mutation, match):
@@ -292,7 +298,32 @@ def test_bound_complete_study_rejects_mutations(mutation, match):
         artifact["results"] = []
     elif mutation == "nonfinite":
         artifact["diagnostic_ms"] = float("nan")
+    elif mutation == "first_window":
+        collection["pages"][0]["window"]["outcome"]["kind"] = "exact_exhausted"
+    elif mutation == "source_pin":
+        row["generation"]["revision_id"] = "other-revision"
+    elif mutation == "limit":
+        artifact["limits"]["timeout_ms"] = 300_001
     with pytest.raises(ValueError, match=match):
+        validate(artifact, record, pack)
+
+
+def test_zero_hit_pool_still_requires_original_source_identity():
+    artifact, record, pack, suite = fixture()
+    record["results"][0].update(status="abstained", candidates=[])
+    collection = artifact["results"][0]["collection"]
+    page = collection["pages"][1]
+    page["results"] = []
+    page["window"]["returned"] = 0
+    page["explanation"]["planner_trace"][1:4] = [
+        {"stage": "merge", "detail": f"code_search.execution.{name}=0"}
+        for name in ("verified_matching_files", "cursor_eligible_files", "returned_files")
+    ]
+    collection.update(pages=[page], explanations=[])
+    report = study.compose(suite, validate(artifact, record, pack))
+    assert report["comparisons"]["boundary_only"]["paired_means"]["baseline"]["file_hit"] == 0
+    artifact["results"][0]["generation"]["repo_id"] = "other-repo"
+    with pytest.raises(ValueError, match="original capture"):
         validate(artifact, record, pack)
 
 
