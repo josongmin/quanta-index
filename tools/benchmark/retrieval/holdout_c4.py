@@ -659,6 +659,8 @@ def project_fixed_cohort(
         or hashlib.sha256(legacy_suite_raw).hexdigest() != legacy_suite_sha256
     ):
         raise ValueError("C4 legacy suite byte commitment differs")
+    if type(default_file_typo) is not bool:
+        raise ValueError("C4 default_file_typo must be boolean")
     legacy = parse_json(legacy_suite_raw.decode("utf-8"))
     if not isinstance(legacy, dict) or not isinstance(legacy.get("tasks"), list):
         raise ValueError("C4 legacy suite selector is malformed")
@@ -698,16 +700,22 @@ def project_fixed_cohort(
     fresh_by_id = {row["task_id"]: row for row in fresh_rows}
     legacy_rows = legacy["tasks"]
     legacy_ids = [row.get("task_id") for row in legacy_rows if isinstance(row, dict)]
+    valid_ids = len(legacy_ids) == len(legacy_rows) and all(
+        isinstance(task_id, str) and task_id for task_id in legacy_ids
+    )
+    selected_ids = set(legacy_ids) if valid_ids else set()
     if (
         not legacy_ids
-        or len(legacy_ids) != len(legacy_rows)
-        or len(set(legacy_ids)) != len(legacy_ids)
-        or legacy_ids != [row["task_id"] for row in fresh_rows if row["task_id"] in set(legacy_ids)]
+        or not valid_ids
+        or len(selected_ids) != len(legacy_ids)
+        or legacy_ids != [row["task_id"] for row in fresh_rows if row["task_id"] in selected_ids]
     ):
         raise ValueError("C4 legacy task cohort is unknown, duplicated, or reordered")
     for old in legacy_rows:
         fresh = fresh_by_id[old["task_id"]]
-        old_truth = copy.deepcopy({key: value for key, value in old.items() if key != "source_oracle"})
+        old_truth = copy.deepcopy(
+            {key: value for key, value in old.items() if key != "source_oracle"}
+        )
         fresh_truth = {key: value for key, value in fresh.items() if key != "source_oracle"}
         if default_file_typo:
             if (
@@ -757,6 +765,10 @@ def project_fixed_cohort(
         "blind_pack_sha256": hashlib.sha256(evaluator.canonical(pack)).hexdigest(),
         "fresh_selected": len(fresh_rows),
         "fixed_selected": len(selected),
+        "selected_task_ids": legacy_ids,
+        "excluded_fresh_task_ids": [
+            row["task_id"] for row in fresh_rows if row["task_id"] not in selected_ids
+        ],
         "default_file_typo": default_file_typo,
     }
     return validated, pack, lineage

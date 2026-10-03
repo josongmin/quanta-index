@@ -107,8 +107,26 @@ def test_fixed_cohort_rejects_wrong_digest_and_invalid_fresh(tmp_path, monkeypat
 
 def test_fixed_cohort_typo_default_request_is_explicit(tmp_path, monkeypatch):
     checkout, fresh, legacy = _two_task_suites(tmp_path, monkeypatch)
-    with pytest.raises(ValueError, match="requires explicit OSA1 tasks"):
+    with pytest.raises(ValueError, match="legacy ordinary-file typo mode differs"):
         _project(checkout, fresh, legacy, default_file_typo=True)
+
+
+def test_fixed_cohort_rejects_malformed_id_and_non_boolean_mode(tmp_path, monkeypatch):
+    checkout, fresh, legacy = _two_task_suites(tmp_path, monkeypatch)
+    malformed = copy.deepcopy(legacy)
+    malformed["tasks"][0]["task_id"] = ["toy.def.001"]
+    with pytest.raises(ValueError, match="unknown, duplicated, or reordered"):
+        _project(checkout, fresh, malformed)
+    raw = evaluator.canonical(legacy)
+    with pytest.raises(ValueError, match="must be boolean"):
+        holdout_c4.project_fixed_cohort(
+            checkout,
+            fresh,
+            raw,
+            hashlib.sha256(raw).hexdigest(),
+            suite_id="toy-new-fixed-cohort",
+            default_file_typo="yes",
+        )
 
 
 def test_fixed_cohort_osa1_default_projection_regenerates_pack(tmp_path, monkeypatch):
@@ -144,6 +162,8 @@ def test_fixed_cohort_osa1_default_projection_regenerates_pack(tmp_path, monkeyp
     assert pack["suite_commitment_sha256"] == evaluator.digest(evaluator.canonical(suite))
     assert lineage["default_file_typo"] is True
     wrong_selector = copy.deepcopy(legacy)
-    wrong_selector["tasks"][0]["evaluation_contract"]["request_mode"] = query_plan.EXPLICIT_OSA1_TYPO
+    wrong_selector["tasks"][0]["evaluation_contract"]["request_mode"] = (
+        query_plan.EXPLICIT_OSA1_TYPO
+    )
     with pytest.raises(ValueError, match="legacy ordinary-file typo mode differs"):
         _project(checkout, fresh, wrong_selector, default_file_typo=True)

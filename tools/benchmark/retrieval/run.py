@@ -3242,15 +3242,15 @@ def require_reviewed_file_labels(suite: dict, policy: str) -> None:
     mode = qp.NATURAL_LANGUAGE_FILE_SEARCH if natural_language else qp.DEFAULT_FILE_SEARCH
     tasks = suite.get("tasks")
     if not isinstance(tasks, list):
-        raise RunError("qualified default file suite lacks tasks")
+        raise RunError("qualified file suite lacks tasks")
     for task in tasks:
         if not isinstance(task, dict):
-            raise RunError("qualified default file suite task is malformed")
+            raise RunError("qualified file suite task is malformed")
         if task.get("split") != "eval":
             continue
         contract = task.get("evaluation_contract")
         if not isinstance(contract, dict) or contract.get("request_mode") != mode:
-            raise RunError("qualified default file suite requires a declared file request mode")
+            raise RunError("qualified file suite requires a declared file request mode")
         if (
             contract.get("gold_unit") != "distinct_file"
             or contract.get("result_unit") != "distinct_file"
@@ -3262,7 +3262,7 @@ def require_reviewed_file_labels(suite: dict, policy: str) -> None:
             continue
         if "source_oracle" in task or task.get("judgment_policy") != COMPLETE_JUDGMENT_POLICY:
             raise RunError(
-                "qualified default file positive requires independently reviewed "
+                "qualified file labels require independently reviewed "
                 f"complete relevance labels: {task.get('task_id', '<unknown>')}"
             )
 
@@ -8736,9 +8736,6 @@ def run_pair(spec: dict) -> int:
     root. Partial output is never resumed: rerun from a fresh root.
     """
     scope = spec.get("scope", "exploratory")
-    profiles = spec.get("execution_profiles")
-    quanta_profile = profiles.get("quanta") if isinstance(profiles, dict) else None
-    semble_profile = profiles.get("semble") if isinstance(profiles, dict) else None
     _validate_file_pair_contract(spec, paired=True)
     if spec.get("embedder") == "potion-code-full-v2" and (
         scope != "exploratory" or any(spec.get("claims", {}).values())
