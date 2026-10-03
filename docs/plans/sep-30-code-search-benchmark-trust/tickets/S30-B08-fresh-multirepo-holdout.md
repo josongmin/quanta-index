@@ -1033,7 +1033,7 @@ The route counts below were also recomputed directly from suite file gold
 `(path, file_sha256)` and both native records, independently of the report's
 aggregate. The complete per-repository and per-intent output is
 `/private/tmp/qi-b08-product-8e8592f4-20261003/partial-pair-summary.json`
-(SHA-256 `8e8406b8750da710135fc70b23224c0d687d7ee04c8dda379`).
+(SHA-256 `8e8406b8750da710135fc70c1164a6d4e6ec70b23224c0d687d7ee04c8dda379`).
 
 | Intent | Paired tasks | Quanta file Hit@10 | Semble file Hit@10 |
 | --- | ---: | ---: | ---: |
@@ -1504,3 +1504,33 @@ product capture, relevance review and scale quality decision. The initial
 `zip(strict=True)` is unsupported there; the subsequent `python -m pytest`
 attempt encountered a host pytest plugin mismatch. Neither failure is a
 product-test result; the project `.venv` uses Python 3.12 and passed.
+
+## Diagnostic ranking boundary audit (2026-10-03)
+
+The exposed twelve-repository pair receipts were rejoined read-only from each
+source-bound suite's `(path, file_sha256)` judgments and both native records.
+All task-level Hit@10 bits reproduce the frozen summaries:
+
+| Request and intent | Paired positive tasks | Quanta Hit@10 | Semble Hit@10 |
+| --- | ---: | ---: | ---: |
+| Default file, exact declaration name | 1,132 | 1,108 | 1,111 |
+| Default file, prefix | 77 | 73 | 48 |
+| Default file, infix | 74 | 73 | 29 |
+| Components file, component name | 71 | 67 | 69 |
+| Ordinary-input file, OSA1 typo | 4,206 | 112 | 3,053 |
+
+Quanta's **explicit** OSA1 request separately reached 4,146/4,206; it is a
+different request policy and is not substituted into the ordinary-input row.
+The newer exposed scale suites have at least 1,000 admitted tasks per sampled
+mechanical lane, but no corresponding product records. These tables cannot be
+promoted to a scale ranking or a C5 decision.
+
+The existing Gin five-product comparison remains the separate, source-exposed
+99-file diagnostic in S30-B04. Its five lane summaries and original native
+rows were independently rejoined for file Hit@10 on the common eligible task
+IDs; all five products' counts match that report. Sourcegraph and OpenGrok
+have no request-time indexed-universe attestation. At this audit, their local
+service ports 17080/17081 and 7080/7081 were closed, and Docker's daemon was
+unavailable. The preserved service state is Gin-specific, not a twelve-repo
+index. **BLOCKED:** a fresh five-product scale comparison. **NOT_RUN:** fresh
+scale Quanta/Semble capture, human-reviewed relevance, and C5 product decision.
