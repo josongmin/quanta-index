@@ -1735,3 +1735,32 @@ their full inventories and content probes pass. The affected external-capture
 and adapter tests passed 119/119 with `pytest -q` over
 `test_live_lexical_external.py`, `test_lexical_file_comparison.py`, and
 `test_sourcegraph.py`; this is code verification, not a C5 product score.
+
+## C4 v6 admission audit and gold correction (2026-10-03)
+
+The frozen `dd86ec99` C4 run completed successfully in 1,940.81 seconds.
+Its matrix at `/private/tmp/qi-c5-fresh-20261003-v6/c4-v6/admission-matrix.json`
+has SHA-256 `e96f5d08ea0b7e8269296913252fca909192533f8108a629f4f6f78afdccc5f7`.
+Independent byte-hash and ID-partition checks verified all 72 cells, 54 emitted
+suite/pack/admission triples, 6,388 candidate IDs, 4,801 selected IDs and
+1,587 exclusions. Exclusion reasons were 1,366 unjudged/unsupported, 157
+ambiguous typo targets, 56 near-duplicate queries and 8 incomplete near-name
+censuses. The 240 literal tasks are outside this C4 declaration matrix.
+
+Every `rust-analyzer` declaration task was excluded. Its corpus contains
+intentionally invalid parser fixtures, and the independent `syn` checker
+refused some of those files. The old gold oracle treated a checker-refused file
+as unresolved even when the query spelling was absent from its bytes. For
+exact-name tasks, 4,070 of 4,082 `census_refused` task/file pairs had no query
+bytes; 102 of 110 exact tasks had no text hit in any unsupported file. A
+query-specific source-byte absence is a sufficient exclusion proof for an
+identifier declaration. Commit `9397c1b1` removes the extra primary-parser
+refusal precondition and versions the gold oracle to 5. The independent
+positive/negative fixture was red before the change; gold/C4 tests then passed
+120/120. This does not assert that every `rust-analyzer` task is now judged:
+files that may contain the name remain unjudged.
+
+The v6 C4 result is therefore superseded for C5 admission. A fresh source-bound
+gold capture at clean `9397c1b1` is running under
+`/private/tmp/qi-c5-fresh-20261003-v7`; its C4 wrapper is prepared but must
+wait for the matching gold receipt. No v6 labels or counts are merged with v7.
