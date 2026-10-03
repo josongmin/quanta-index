@@ -283,6 +283,11 @@ def test_c4_independent_name_variants(tmp_path, monkeypatch, intent, query, name
         else "code_search_file"
     )
     assert report["execution_policy"] == expected_policy
+    assert suite["routes"] == (
+        ["lexical"]
+        if intent == "declaration_name_components"
+        else ["lexical", "semble-lexical-file"]
+    )
     assert suite["tasks"][0]["evaluation_contract"] == {
         "request_mode": (
             "explicit_symbol_components"
@@ -326,6 +331,7 @@ def test_c4_casefold_typo_binds_intended_name_and_request_mode(tmp_path, monkeyp
     assert task["intended_name"] == "Alpha"
     assert task["source_oracle"]["contract"] == "go_exact_local_name_v3"
     assert task["evaluation_contract"]["request_mode"] == "explicit_osa1_typo"
+    assert suite["routes"] == ["lexical"]
     assert report["execution_policy"] == "code_search_typo_file"
     assert (
         query_plan.plan_lexical_request(report["execution_policy"], task["query"]) == "typo:Alphb"

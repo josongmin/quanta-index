@@ -226,3 +226,94 @@ top-ten reproduction. `NOT_RUN`: Rust tests, current daemon reproduction,
 proposed ranker, five-product recapture, reviewed holdout and performance gates.
 This edit is a plan update only. Historical captures and shared product source
 were not modified by the audit.
+
+## Zoekt and Blackbird implementation analysis (2026-10-03)
+
+Scope: read-only source/design analysis. Zoekt was inspected at
+`153817f643cde8b229ee388c1dddbcf07f4798af`; selected source files are in the
+external directory `/tmp/qi-zoekt-reference-_5z3qz_2`. Quanta was rechecked at
+`fabbe589866047e2c586e7218d91d5f57d3cee29`; the inspected file-search,
+file-authority and normalizer files are unchanged from `e1880515`.
+This Zoekt revision is not established as the version inside the earlier
+Sourcegraph benchmark image. Blackbird conclusions below use dated public
+engineering descriptions; its current full engine/ranking implementation was
+not available in the inspected material.
+
+### Zoekt: directly inspectable mechanisms
+
+- [Candidate selection](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/indexdata.go#L337)
+  selects low-frequency ngrams and adjusts overlapping choices; a positional
+  distance iterator rejects incompatible offsets before source comparison.
+  `matchtree.go` stages cheap checks before content and regex work. Unlike
+  Quanta's file-ID trigram intersection, this can reject spatially unrelated
+  grams without scanning the whole candidate file. It costs positional storage.
+- [Default scoring](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/score.go#L99)
+  uses the strongest matching fragment and matched query atoms. An occurrence
+  inside a stored symbol receives full/edge/overlap bonuses. Filename basename
+  matching has analogous distinctions. Repeated body occurrences do not enter
+  this default file formula as Quanta's occurrence bonus does.
+- [Constants and symbol kinds](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/contentprovider.go#L589):
+  full symbol bonus 7,000, edge 5,500, overlap 4,000; whole-word bonus 500,
+  partial-word 50. Kind/language adds another signal. These numbers establish
+  their relative priorities; copying their numeric scale into Quanta is not a
+  justified calibration.
+- [Index-time document order](https://github.com/sourcegraph/zoekt/blob/153817f643cde8b229ee388c1dddbcf07f4798af/index/builder.go#L887)
+  considers generated/vendor/test flags, path length and other properties.
+  It affects the file tie break and which files are visited before limits.
+  Thus the system's behavior depends on both query scoring and index order.
+- The optional BM25 branch in `index/score.go` uses constant IDF, byte-length
+  normalization, boosted filename/symbol term frequency and a low-priority
+  file adjustment. The executable code retains those code-specific signals;
+  the broad API comment about ignoring other scoring signals is not a complete
+  description. Record the actual option before attributing a result to BM25.
+- `DebugScore` explains score components. Search limits still apply; source
+  inspection does not establish exhaustive retrieval or reproduce the captured
+  Sourcegraph service's final ordering.
+
+### Blackbird: public design and its limits
+
+The [2021 engineering account](https://github.blog/engineering/architecture-optimization/a-brief-history-of-code-search-at-github/)
+explicitly describes boosting definitions and complete matches, with lower
+priority for tests and partial matches. Symbol extraction uses Tree-sitter.
+This supports adding declaration features to ordinary search. It does not
+publish the current weights or justify universally demoting test code.
+
+The [2023 architecture](https://github.blog/engineering/architecture-optimization/the-technology-behind-githubs-new-code-search/)
+uses content/symbol/path indices, blob-based sharding/deduplication, incremental
+compaction, and commit-consistent visibility. Sparse grams select variable-length
+grams deterministically at index/query time to reduce false candidates.
+Posting iterators exploit document priority; matches are source-verified and
+scored, then results are merged across shards. These are scale techniques,
+not evidence that a different gram layout improves Gin relevance.
+
+The [2026-07-31 case-folding article](https://github.blog/engineering/architecture-optimization/dont-stop-early-case-folding-source-code-at-memory-speed/)
+describes an ASCII pass that can be vectorized and reuses the input allocation,
+plus compact Unicode simple-fold tables. Its reported throughput is a folding
+microbenchmark, not end-to-end query performance. Quanta explicitly specifies
+NFC plus per-character Unicode lowercase. Simple folding differs for cases
+such as final sigma and dotted I: a replacement would require an intentional
+contract/version change and rebuilt generations. An ASCII-only fast path can
+instead be evaluated for exact equivalence to the existing contract.
+
+### Additions to the execution plan
+
+| Priority | Action | Gate |
+| --- | --- | --- |
+| P1 ranking | R3 compares best-match declaration features, symbol match extent, case and current occurrence signal. Use existing generation-bound symbol evidence and a deterministic rank function. | Independent declaration/usage fixtures and R2 reviewed holdout; no missing literal candidates or fabricated symbol evidence. |
+| P1 explainability | Provide one internal score decomposition used by both ranking tests and diagnostics; avoid duplicating the score formula in a report generator. | Native captured score equals its decomposition; distinct candidate, verification, scoring and preview work counts. |
+| P2 candidate cost | Measure posting visits, prefilter files, verified files and bytes scanned on long/common literals and regex. Compare current file postings with a positional prototype or sparse grams only if false candidates dominate. | Source-scan recall invariant, memory/index-build cost and identical API p95; no early top-k stop without a safe score upper bound or an explicitly partial contract. |
+| P2 capacity | Audit full-file source residency and index opening before increasing scale limits. Current `file_authority.rs` bounds source bytes at 128 MiB and posting memberships at 4,000,000; short-literal scanning has separate file/byte caps. | Explain admitted corpus size, cold-open peak RSS, index bytes and rejection behavior; do not simply raise constants. |
+| P2 normalization | Profile normalization allocations and ASCII throughput while preserving the current normalizer contract. | Byte-for-byte differential tests, source-offset mapping, Unicode edge cases and measured whole-index/query benefit. |
+| Later distributed scale | Consider blob deduplication, persistent compressed postings and sharding only after single-node costs and real repository sizes require them. | Repository/path/ACL identity, deletion and generation visibility survive deduplication and shard merging. |
+
+The immediate priority remains ranking and its evidence. Positional indexing,
+sparse grams and normalization optimization address measured cost; they do not
+substitute for independently judged relevance. Default ranking, optional BM25,
+typed symbol search and typo recovery are separate configurations in ablations.
+
+Verification: GitHub API pinned the Zoekt commit; selected files were downloaded
+to a new external directory and inspected with `rg`/`sed`. Official GitHub
+articles were read directly. Quanta relevant-file diff versus the prior audit
+was empty. `VERIFIED` covers these source/design observations. Zoekt execution,
+Blackbird execution, performance comparison and proposed Quanta changes are
+`NOT_RUN`.

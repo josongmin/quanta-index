@@ -553,7 +553,11 @@ def _derive_prepared(
             "output_unit_policy": "rank_prefix",
             "span_unit": evaluator.SPAN_UNIT,
         },
-        "routes": ["lexical", "semble-lexical-file"],
+        "routes": (
+            ["lexical"]
+            if intent in ("declaration_name_components", "declaration_name_osa1_casefold")
+            else ["lexical", "semble-lexical-file"]
+        ),
         "file_universe": universe,
         "file_universe_digest": evaluator.universe_digest(universe),
         "diagnostic_policy": evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY,

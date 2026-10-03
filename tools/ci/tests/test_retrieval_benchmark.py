@@ -14854,6 +14854,13 @@ def test_default_file_contract_accepts_bound_semble_pair(tmp_path):
     _pack, run = _repack(repo, suite, run)
     record_v3(repo, suite, run, suite_path, runner_path)
 
+    explicit = copy.deepcopy(suite)
+    for task in explicit["tasks"]:
+        task["evaluation_contract"]["request_mode"] = "explicit_osa1_typo"
+    _pack, explicit_run = _repack(repo, explicit, run)
+    with pytest.raises(ev.EvidenceError, match="explicit_osa1_typo has an unsupported route"):
+        record_v3(repo, explicit, explicit_run, suite_path, runner_path)
+
 
 def test_evaluation_contract_rejects_partial_mixed_and_wrong_units(tmp_path):
     repo, suite, _run, _suite_path, _runner_path = _file_projection_run(
