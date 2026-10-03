@@ -1694,13 +1694,17 @@ twelve new Git repositories at
 `d837b25e4baa93c965ee151386395e720ed8a48b12ef9a96b199d3be1fe05380`.
 Each repository's tracked path and SHA-256 set matches its release manifest;
 the projection commits are distinct from the original repository commits.
+The same exact-file views were copied to an isolated OpenGrok source root at
+`/private/tmp/qi-c5-comparators-20261003-v1/opengrok-src`; its source receipt
+has SHA-256
+`66421616d5d6f5112ded029b00dbc46ecdf9977167763d312d774de42aaf1ca9`.
 Sourcegraph capture previously submitted the original `rev:` even for a
 projection, which cannot identify that projection commit. Commits `7c7c66c6`,
 `d99ee9c6` and `a6370967` add separate source/service revision binding,
 replay checks, and committed-blob validation. The Sourcegraph adapter's 37
 focused tests pass, including a Git `skip-worktree` counterexample.
 
-**VERIFIED:** 12 gold capsules and exact-file Git projection; Sourcegraph
+**VERIFIED:** 12 gold capsules and both exact-file input projections; Sourcegraph
 revision contract and focused tests. **NOT_RUN:** a new Sourcegraph or
 OpenGrok service index, request-time indexed-universe attestation, fresh C5
 product queries, independent relevance approval, qualified product comparison
