@@ -2233,7 +2233,7 @@ not rewritten. Full RCA, raw recapture, source and index bindings, and controls:
 `/private/tmp/qi-sourcegraph-osa1-full-yzpjy5ut/RCA.md`.
 
 **VERIFIED:** Sourcegraph 4,149-task Stream recapture and original top-10
-agreement. **NOT_RUN:** Sourcegraph UI fuzzy finder, full content-posting
+agreement. **NOT_RUN:** Sourcegraph UI fuzzy finder end-to-end, full content-posting
 attestation, human-reviewed C5 relevance, or post-fix Quanta full recapture.
 
 ### Sourcegraph Fuzzy Finder request probe (2026-10-04)
