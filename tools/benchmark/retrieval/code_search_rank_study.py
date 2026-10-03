@@ -467,6 +467,27 @@ def _regressions(samples: list[dict]) -> dict:
     }
 
 
+def _family_summary(tasks: dict, samples: list[dict]) -> dict:
+    if any(not task.get("query_family_id") for task in tasks.values()):
+        return {"status": "not_available", "reason": "query_family_identity_absent"}
+    groups: dict[str, list[dict]] = {}
+    for sample in samples:
+        family = tasks[sample["task_id"]]["query_family_id"]
+        groups.setdefault(family, []).append(sample)
+    means = [_paired_means(group) for group in groups.values()]
+    return {
+        "status": "admitted_families_only",
+        "family_count": len(groups),
+        "paired_means": {
+            side: {
+                metric: sum(mean[side][metric] for mean in means) / len(means) if means else None
+                for metric in ("file_ndcg", "file_hit", "file_mrr")
+            }
+            for side in ("baseline", "candidate")
+        },
+    }
+
+
 def _intent_comparisons(tasks: dict, samples: list[dict], excluded: list[dict]) -> list[dict]:
     # A literal-content oracle and a declaration oracle may use the same file
     # metric but have different relevance contracts. Never hide them in one mean.
@@ -474,7 +495,7 @@ def _intent_comparisons(tasks: dict, samples: list[dict], excluded: list[dict]) 
     for task_id, task in tasks.items():
         key = (
             task.get("query_intent", "unspecified"),
-            task.get("source_oracle", {}).get("contract", "reviewed_or_unspecified"),
+            task.get("source_oracle", {}).get("contract", "unspecified"),
         )
         groups.setdefault(key, set()).add(task_id)
     result = []
@@ -495,6 +516,9 @@ def _intent_comparisons(tasks: dict, samples: list[dict], excluded: list[dict]) 
                 "coverage": len(admitted) / len(ids),
                 "paired_means": _paired_means(admitted),
                 "regressions": _regressions(admitted),
+                "family_macro": _family_summary(
+                    {task_id: tasks[task_id] for task_id in ids}, admitted
+                ),
             }
         )
     return result
@@ -562,6 +586,7 @@ def compose(suite: dict, rows: dict[str, dict]) -> dict:
             "samples": samples,
             "regressions": _regressions(samples),
             "intent_comparisons": _intent_comparisons(tasks, samples, excluded),
+            "family_macro": _family_summary(tasks, samples),
         }
     return {
         "kind": "code_search_complete_pool_ablation_report",

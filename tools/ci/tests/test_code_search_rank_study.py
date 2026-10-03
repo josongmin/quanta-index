@@ -220,6 +220,7 @@ def test_intent_breakdown_exposes_content_regression_hidden_by_declaration_gains
         task = copy.deepcopy(suite["tasks"][0])
         task["task_id"] = task_id
         declaration = task_id.startswith("D")
+        task["query_family_id"] = "declaration-family" if declaration else "content-family"
         task["query_intent"] = "bare_symbol" if declaration else "exact_content"
         task["source_oracle"] = {
             "contract": "rust_exact_local_name_v1"
@@ -236,6 +237,9 @@ def test_intent_breakdown_exposes_content_regression_hidden_by_declaration_gains
     report = study.compose(suite, rows)["comparisons"]["declaration_only"]
     assert report["paired_means"]["candidate"]["file_hit"] == 2 / 3
     assert report["regressions"]["file_hit"] == ["C1"]
+    assert report["family_macro"]["family_count"] == 2
+    assert report["family_macro"]["paired_means"]["candidate"]["file_hit"] == 0.5
+    assert report["family_macro"]["paired_means"]["baseline"]["file_hit"] == 0.5
     declaration, content = report["intent_comparisons"]
     assert declaration["query_intent"] == "bare_symbol"
     assert declaration["paired_means"]["candidate"]["file_hit"] == 1
@@ -257,6 +261,10 @@ def test_fully_excluded_intent_has_no_fabricated_quality_mean():
     assert group["task_count"] == 1
     assert group["paired_means"]["candidate"]["file_hit"] is None
     assert group["regressions"]["file_hit"] == []
+    assert group["family_macro"] == {
+        "status": "not_available",
+        "reason": "query_family_identity_absent",
+    }
 
 
 def test_complete_pool_promotes_outside_original_top_k_with_fixed_file_goldens():
