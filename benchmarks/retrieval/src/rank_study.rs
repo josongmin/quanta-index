@@ -231,7 +231,7 @@ fn collect_one(
             stop = Some("non_exhausted_page_without_cursor".into());
             break;
         };
-        if candidates.is_empty() || !cursor_values.insert(format!("{next:?}")) {
+        if candidates.is_empty() || !cursor_values.insert(next.as_str().to_owned()) {
             stop = Some("non_progressing_cursor".into());
             break;
         }

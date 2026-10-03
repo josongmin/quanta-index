@@ -661,6 +661,20 @@ def test_code_search_absence_rejects_content_and_path_matches(tmp_path):
     )
 
 
+def test_default_code_search_absence_rejects_one_edit_fallback():
+    so = ev.source_oracle
+    raw = b"def test_init(): pass\n"
+    oracle = so.SourceOracleIndex({"tests.py": (raw, ev.digest(raw))}, {"test_unit", "Absent"})
+    assert oracle.expected_rows(so.ASCII_CODE_SEARCH_ABSENT_CASEFOLD, "test_unit", "distinct_file") == []
+    with pytest.raises(so.SourceOracleError, match="identifier osa1 absent"):
+        oracle.expected_rows(
+            so.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD, "test_unit", "distinct_file"
+        )
+    assert oracle.expected_rows(
+        so.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD, "Absent", "distinct_file"
+    ) == []
+
+
 @pytest.mark.parametrize(
     "source_token",
     ["load_json", "load_jsom", "load_jsonx", "load_jso", "load_jsno", "LOAD_JSON"],

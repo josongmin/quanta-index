@@ -247,6 +247,7 @@
         "contract": {"enum": [
           "go_exact_local_name_v3", "ascii_identifier_word_v1", "content_literal_utf8_exact_v1",
           "ascii_content_absent_casefold_v1", "ascii_code_search_absent_casefold_v1",
+          "ascii_code_search_default_absent_casefold_v1",
           "ascii_identifier_osa1_absent_casefold_v1",
           "go_declaration_name_prefix_v1", "go_declaration_name_infix_v1",
           "go_declaration_name_components_v1", "go_declaration_name_osa1_v1", "go_declaration_name_osa1_casefold_v1",
@@ -275,6 +276,8 @@
         {"if": {"properties": {"contract": {"const": "ascii_content_absent_casefold_v1"}}},
          "then": {"properties": {"unit": {"const": "distinct_file"}}}},
         {"if": {"properties": {"contract": {"const": "ascii_code_search_absent_casefold_v1"}}},
+         "then": {"properties": {"unit": {"const": "distinct_file"}}}},
+        {"if": {"properties": {"contract": {"const": "ascii_code_search_default_absent_casefold_v1"}}},
          "then": {"properties": {"unit": {"const": "distinct_file"}}}},
         {"if": {"properties": {"contract": {"const": "ascii_identifier_osa1_absent_casefold_v1"}}},
          "then": {"properties": {"unit": {"const": "distinct_file"}}}},

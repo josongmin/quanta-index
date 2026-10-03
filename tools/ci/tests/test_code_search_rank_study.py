@@ -90,7 +90,8 @@ def fixture():
                 "contributions": [
                     {
                         "signal_name": "lexical.code_search_file",
-                        "candidate_id": item["candidate_id"],
+                        "signal_value": item["score"],
+                        "weight": 1.0,
                         "contribution": item["score"],
                     }
                 ],

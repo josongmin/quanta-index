@@ -418,7 +418,7 @@ def _derive_prepared(
                 if absence_oracle is None:
                     raise source_oracle.SourceOracleError("negative query is not an identifier")
                 absence_oracle.expected_rows(
-                    source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+                    source_oracle.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD,
                     task["query"],
                     "distinct_file",
                 )
@@ -497,7 +497,9 @@ def _derive_prepared(
             if label["file_sha256"] != source.file(label["path"])[2]:
                 raise ValueError(f"C4 label file hash differs: {task['task_id']}")
         score_contract = (
-            contract if task["answerable"] else source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD
+            contract
+            if task["answerable"]
+            else source_oracle.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD
         )
         judgments = oracle.expected_rows(score_contract, oracle_query, "distinct_file")
         source_contract = {"contract": score_contract, "unit": "distinct_file"}

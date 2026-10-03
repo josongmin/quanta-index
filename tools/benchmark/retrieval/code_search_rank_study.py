@@ -258,8 +258,10 @@ def _scores(candidate: dict, response: dict, pin: dict) -> tuple[dict[str, int],
     require(
         len(contributions) == 1
         and contributions[0]["signal_name"] == "lexical.code_search_file"
-        and contributions[0]["candidate_id"] == candidate["candidate_id"]
-        and contributions[0]["contribution"] == baseline,
+        and set(contributions[0]) == {"signal_name", "signal_value", "weight", "contribution"}
+        and _number(contributions[0]["signal_value"], "native signal") == baseline
+        and _number(contributions[0]["weight"], "native weight") == 1.0
+        and _number(contributions[0]["contribution"], "native contribution") == baseline,
         "native total contribution mismatch",
     )
     require(

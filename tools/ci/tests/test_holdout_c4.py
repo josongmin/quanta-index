@@ -538,11 +538,15 @@ def test_c4_admits_typo_with_query_proven_checker_disagreement(
     assert "near_declaration_exclusions" not in suite["tasks"][0]["source_oracle"]
 
 
-def test_c4_excludes_negative_with_default_content_or_path_match(tmp_path, monkeypatch):
+def test_c4_excludes_negative_with_default_literal_path_or_typo_match(tmp_path, monkeypatch):
     release, capsule, checkout = _fixture(tmp_path, monkeypatch)
     gold = holdout_c4._read(capsule / "gold.json")
     blind = holdout_c4._read(capsule / "blind.json")
-    for query, task_id in (("package", "toy.negative.content"), ("main", "toy.negative.path")):
+    for query, task_id in (
+        ("package", "toy.negative.content"),
+        ("main", "toy.negative.path"),
+        ("Alphb", "toy.negative.near"),
+    ):
         candidate = dict(gold["tasks"][0])
         candidate.update(task_id=task_id, query=query, answerable=False, labels=[])
         gold["tasks"].append(candidate)
@@ -563,7 +567,7 @@ def test_c4_excludes_negative_with_default_content_or_path_match(tmp_path, monke
         "toy.negative.absent",
     ]
     assert suite["tasks"][1]["source_oracle"] == {
-        "contract": source_oracle.ASCII_CODE_SEARCH_ABSENT_CASEFOLD,
+        "contract": source_oracle.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD,
         "unit": "distinct_file",
     }
     assert suite["tasks"][1]["file_judgments"] == []
@@ -571,9 +575,14 @@ def test_c4_excludes_negative_with_default_content_or_path_match(tmp_path, monke
     assert report["excluded"] == [
         {"task_id": "toy.negative.content", "reason": "negative_not_default_search_absent"},
         {"task_id": "toy.negative.path", "reason": "negative_not_default_search_absent"},
+        {"task_id": "toy.negative.near", "reason": "negative_not_default_search_absent"},
     ]
 
-    for query, reason in (("package", "content absent"), ("main", "path match")):
+    for query, reason in (
+        ("package", "content absent"),
+        ("main", "path match"),
+        ("Alphb", "identifier osa1 absent"),
+    ):
         tampered = {**suite, "tasks": [dict(task) for task in suite["tasks"]]}
         negative = tampered["tasks"][1]
         negative["query"] = query

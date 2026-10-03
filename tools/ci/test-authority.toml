@@ -354,6 +354,7 @@ targets = [
   "benchmark-lexical-scorer-python-owner",
   "benchmark-lexical-five-product-oracle-python-owner",
   "benchmark-identifier-robustness-report-python-owner",
+  "benchmark-code-search-rank-study-python-owner",
   "benchmark-portable-proof-python-owner",
   "benchmark-pair-capture-python-owner",
   "benchmark-corpus-release-python-owner",

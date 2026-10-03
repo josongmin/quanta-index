@@ -237,6 +237,10 @@ declaration diagnostics. Each returned top-10 file or published declaration
 must have an explicit source-bound grade, including grade 0 for irrelevant
 results. A missing judgment excludes that task with `unjudged_ranked_file` or
 `unjudged_ranked_declaration`; it is not silently scored as irrelevant. The
+route's all-selected `operational_mean` is also `not_applicable` when a ranked
+judgment is missing, with `operational_unavailable_reason:
+incomplete_ranked_judgments`. Conditional scores still use the eligible cohort;
+observed execution errors and timeouts retain their operational zero penalty.
 historical `unjudged_zero_v1` policy remains available for exploratory reports
 and retains its original behavior. Neither policy turns a post-result review
 into a pre-result qualified holdout.

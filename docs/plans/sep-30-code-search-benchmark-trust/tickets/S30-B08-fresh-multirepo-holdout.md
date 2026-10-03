@@ -1,7 +1,7 @@
 # S30-B08 — fresh multi-repository holdout and product decision
 
-Status: C4 `VERIFIED` as diagnostic admission; 240 exact-content product tasks
-captured and replayed; C5 `NOT_RUN` (2026-10-03).
+Status: C4 `VERIFIED` as diagnostic admission; C5 diagnostic capture in progress;
+qualified multi-repository decision `NOT_RUN` (2026-10-03).
 Priority: P2. Parent:
 [Sep 30 plan](../README.md). Contract owners:
 [CS-BENCH-01](../../sep-27-code-search-remediation/rfcs/CS-BENCH-01-corpus-gold-and-holdout.md),
@@ -205,6 +205,41 @@ and no-gold controls remain a separate external workflow track.
   Installed release, hosted CI, activation and deployment retain their own
   gates. The holdout is retired from future independent evaluation once used
   to select a policy.
+
+## C5 diagnostic update (2026-10-03)
+
+The corrected C4 mechanical suites admit 48 ordinary-search cells (5,521
+tasks per product), 12 explicit OSA1 typo cells (4,149 positive tasks), and
+12 component cells (64 tasks). This is exposed, mechanically labeled
+diagnostic data. No human-reviewed relevance judgments, complete external
+indexed-universe proof, repository-cluster decision, or qualified default
+change follows from these captures.
+
+- Sourcegraph, cs, and OpenGrok completed 48 ordinary-search cells. The raw
+  capture is `/private/tmp/qi-c5-external-session-v6-20261003`; independently
+  amended scoring is under `/private/tmp/qi-c5-external-score-v6-20261003`.
+  The original external scorer failed because it treated the legacy
+  representative `gold_paths` as the full multi-file judgment set. The amended
+  scorer validates that raw projection separately and uses the frozen
+  `file_judgments` for grading. All 144 cell-product rescored Hit@10/NDCG
+  outputs were checked against the repository evaluator.
+- Quanta explicit OSA1 completed 12 cells: 4,109/4,149 file Hit@10, with six
+  typed `LEX_TRIGRAM_PLAN_LIMIT_EXCEEDED` errors. Evidence:
+  `/private/tmp/qi-c5-explicit-quanta-20261003-v2`. Quanta components completed
+  64 tasks (60 file hits, three producer abstentions and one typed parse
+  refusal): `/private/tmp/qi-c5-components-quanta-20261003-v1`.
+- Quanta exact declaration capture completed 12 cells:
+  `/private/tmp/qi-c5-declaration-quanta-20261003-v6`. The original precommitted
+  scorer failed on its zero-error assertion. A separately registered
+  post-capture amendment reports 649/658 Hit@10 among completed positive
+  tasks, 649/1,101 among attempted positive tasks, and 493 typed
+  `SYMBOL_COVERAGE_INCOMPLETE` rows across five repositories. Nine completed
+  positive misses are Rust constants or a macro in `zoxide` absent from the
+  captured producer. `benchmarks/retrieval/src/symbols.rs` now extracts these
+  Rust node kinds; a source-bound recapture has not yet verified the fix.
+- The repaired Quanta/Semble ordinary-search pair and cs native fuzzy search
+  are still running or preparing. Do not combine partial cells or the earlier
+  failed pair batch with completed 48-cell results.
 
 ## Execution receipt (2026-09-30)
 
