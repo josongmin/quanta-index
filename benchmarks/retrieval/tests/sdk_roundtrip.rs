@@ -731,7 +731,7 @@ fn native_file_public_routes_group_order_scope_and_case() {
         ),
         (
             QueryInputPolicy::NaturalLanguageFile,
-            "needle",
+            "needle evidence",
             "score_desc_path_tiebreak",
         ),
     ] {
