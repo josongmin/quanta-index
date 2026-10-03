@@ -729,6 +729,21 @@ def capture_gold_batch(
     stage = target.with_name(target.name + ".staging")
     if stage.exists() or stage.is_symlink():
         raise EvidenceError("gold staging target already exists")
+    # Refuse every recipe before restoring Git bundles and comparing the
+    # corpus-wide source fingerprints. Invalid later recipes must not make
+    # an otherwise valid batch pay for a full split replay.
+    from tools.benchmark.retrieval import gold_oracle
+
+    for name, raw in recipes.items():
+        if (
+            not isinstance(name, str)
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", name) is None
+            or not isinstance(raw, bytes)
+        ):
+            raise EvidenceError("gold batch recipe inventory differs from release repositories")
+        if not 0 < len(raw) <= CONTROL_DOCUMENT_BYTES:
+            raise EvidenceError("gold batch recipe exceeds control-document size limit")
+        gold_oracle.validate_recipe(_json(raw))
     manifest, documents = _validated_split_manifest(manifest_raw, releases)
     matches = [digest for digest, path in releases.items() if path == root]
     if len(matches) != 1:

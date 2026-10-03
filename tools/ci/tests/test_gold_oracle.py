@@ -540,6 +540,38 @@ def test_gold_batch_replays_global_split_twice_and_publishes_independent_capsule
         assert selection["repository"] == name
 
 
+@pytest.mark.parametrize("fault", ["case_contract", "malformed_json", "wrong_raw_type"])
+def test_gold_batch_refuses_invalid_later_recipe_before_corpus_replay(tmp_path, monkeypatch, fault):
+    manifest_raw = b"{}"
+    valid = v2_recipe("holdout", manifest_raw, task("one", "holdout", "worker", ""))
+    invalid = copy.deepcopy(valid)
+    invalid["tasks"][0].update(
+        intent="declaration_name_components", query="worker helper", case_semantics="sensitive"
+    )
+    raw = (
+        canonical_json(invalid).encode()
+        if fault == "case_contract"
+        else b'{"schema_version":'
+        if fault == "malformed_json"
+        else invalid
+    )
+
+    def must_not_replay(*_args):
+        pytest.fail("invalid recipe started corpus-wide Git/source replay")
+
+    monkeypatch.setattr(binding, "_validated_split_manifest", must_not_replay)
+    source = tmp_path / "unavailable-source"
+    target = tmp_path / "batch"
+    with pytest.raises(EvidenceError):
+        binding.capture_gold_batch(
+            source,
+            {"alpha": canonical_json(valid).encode(), "beta": raw},
+            target,
+            (manifest_raw, {"sha256:" + "a" * 64: source}),
+        )
+    assert not target.exists() and not target.with_name("batch.staging").exists()
+
+
 def test_gold_batch_refuses_source_drift_before_atomic_publication(
     split_releases,  # noqa: F811
     tmp_path,
