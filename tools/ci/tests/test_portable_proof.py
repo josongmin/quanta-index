@@ -964,6 +964,7 @@ def test_fresh_release_sdk_proof_binds_source_and_binaries(fake_execution) -> No
     out, _legacy_runner, calls = fake_execution
     receipt = portable_proof.produce("sdk", out, build_profile="release-fresh")
     context = portable_proof.validate(receipt)
+    assert portable_proof.validated_build_profile(context, out) == "release-fresh"
     assert context["schema_version"] == 3
     assert context["build_profile"] == "release-fresh"
     assert context["revision"] == "b" * 40
@@ -1019,6 +1020,9 @@ def test_fresh_release_proof_rejects_command_profile_and_binary_tampering(fake_e
         lambda row: row.update(build_profile="debug"),
         lambda row: row["commands"][1]["argv"].remove("--all-features"),
         lambda row: row["commands"][1]["environment"].update(CARGO_TARGET_DIR="/other/target"),
+        lambda row: row["commands"][0]["inherited_environment"].update(
+            RUSTC_WRAPPER="/opaque/wrapper"
+        ),
     ):
         changed = json.loads(canonical)
         mutation(changed)

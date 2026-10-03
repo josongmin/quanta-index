@@ -8518,6 +8518,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         else:
             set_state("CONTRACT_GREEN", "pass", "receipts_verified", digest(canonical(proofs)))
 
+    # This is derived only after the complete SDK receipt chain verifies.
+    # The manifest's caller-provided field remains null and is never authority.
+    binary_build_source_revision = None
     sdk_ids = ["T05", "T06", "T07"]
     if "sdk_path" not in evidence:
         set_state("SDK_PATH_GREEN", "not_run", "no_evidence", None)
@@ -8625,6 +8628,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             missing.extend(sdk_ids)
             classes.append("provenance")
         else:
+            sdk_context = _proof_control(resolved["sdk_execution_context"])
+            if sdk_context["schema_version"] == portable_proof.FRESH_EXECUTION_CONTEXT_VERSION:
+                binary_build_source_revision = sdk_closure["revision"]
             set_state(
                 "SDK_PATH_GREEN", "pass", "sdk_proof_verified", digest(canonical(sdk_results))
             )
@@ -8835,7 +8841,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 perf_fail = (f"completed_response_timing_unverified: {exc}", "provenance")
         if (
             perf_fail is None
-            and provenance_claims["quanta"].get("binary_build_source_revision") is None
+            and binary_build_source_revision is None
         ):
             perf_fail = ("binary_build_source_unattested", "provenance")
         if perf_fail is None:
@@ -8994,7 +9000,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             None,
         )
         classes.append("provenance")
-    elif provenance_claims["quanta"].get("binary_build_source_revision") is None:
+    elif binary_build_source_revision is None:
         set_state("QUALITY_DELTA", "fail", "binary_build_source_unattested", None)
         classes.append("provenance")
     else:
@@ -9122,8 +9128,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             "binary_digest": binary_digest,
             "embedder": provenance_claims["quanta"].get("embedder", "undeclared"),
             **(
-                {"binary_build_source_revision": None}
+                {"binary_build_source_revision": binary_build_source_revision}
                 if "binary_build_source_revision" in provenance_claims["quanta"]
+                or binary_build_source_revision is not None
                 else {}
             ),
         },
@@ -10098,8 +10105,12 @@ def _verify_execution_context(
     logs_file = _proof_file(logs_path)
     raw_files = {name: _proof_file(artifact) for name, artifact in raw.items()}
     inputs = [context_file, closure_file, logs_file, *raw_files.values()]
+    raw_context = _proof_control(context_file)
+    fresh_context = isinstance(raw_context, dict) and raw_context.get("schema_version") == (
+        portable_proof.FRESH_EXECUTION_CONTEXT_VERSION
+    )
     context = _exact_keys(
-        _proof_control(context_file),
+        raw_context,
         {
             "schema_version",
             "rail",
@@ -10109,13 +10120,19 @@ def _verify_execution_context(
             "binaries",
             "commands",
             "raw_evidence",
-        },
+        } | ({"build_profile"} if fresh_context else set()),
         where,
     )
     if (
         type(context["schema_version"]) is not int
-        or context["schema_version"] != portable_proof.EXECUTION_CONTEXT_VERSION
+        or context["schema_version"] not in (
+            portable_proof.EXECUTION_CONTEXT_VERSION,
+            portable_proof.FRESH_EXECUTION_CONTEXT_VERSION,
+        )
         or context["rail"] != rail
+        or fresh_context and (
+            rail != "sdk" or context["build_profile"] != portable_proof.FRESH_BUILD_PROFILE
+        )
         or not _is_hex(context["revision"], 40)
     ):
         raise RunError(f"{where} schema/rail/revision mismatch")
@@ -10195,6 +10212,10 @@ def _verify_execution_context(
     original_out = Path(first_argv[-1]).parent
     if not original_out.is_absolute():
         raise RunError(f"{where} command output root is not absolute")
+    try:
+        build_profile = portable_proof.validated_build_profile(context, original_out)
+    except ValueError as exc:
+        raise RunError(f"{where} build profile refused: {exc}") from exc
     first_inherited = commands[0].get("inherited_environment")
     if not isinstance(first_inherited, dict) or any(
         key not in portable_proof.RELEVANT_ENV or not isinstance(value, str)
@@ -10202,12 +10223,16 @@ def _verify_execution_context(
     ):
         raise RunError(f"{where} malformed inherited environment")
     expected = portable_proof._expected_commands(
-        rail, original_out, tools, binaries, inherited_environment=first_inherited
+        rail, original_out, tools, binaries, inherited_environment=first_inherited,
+        build_profile=build_profile,
     )
     if len(commands) != len(expected):
         raise RunError(f"{where} command count mismatch")
     with _frozen_context_logs(logs_file, rail) as logs:
-        _verify_context_commands(commands, expected, logs, raw_files, collection_name, rail)
+        _verify_context_commands(
+            commands, expected, logs, raw_files, collection_name, rail,
+            build_profile=build_profile,
+        )
     for captured in inputs:
         if _proof_file(captured.path) != captured:
             raise RunError(f"{where} input changed during verification: {captured.path}")
@@ -10219,7 +10244,9 @@ def _verify_execution_context(
     return closure
 
 
-def _verify_context_commands(commands, expected, logs, raw, collection_name, rail):
+def _verify_context_commands(
+    commands, expected, logs, raw, collection_name, rail, *, build_profile=None
+):
     where = f"{rail} execution context"
     reuse_build_raw = {}
     for index, (row, (name, argv, overrides)) in enumerate(zip(commands, expected)):
@@ -10281,6 +10308,7 @@ def _verify_context_commands(commands, expected, logs, raw, collection_name, rai
             reuse_build_raw["metadata"],
             reuse_build_raw["rust-collection"],
             workspace_root=Path(commands[0]["cwd"]),
+            build_profile=build_profile,
         )
     except ValueError as exc:
         raise RunError(f"{where} native reused build refused: {exc}") from exc
@@ -10546,9 +10574,16 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
         if (
             not isinstance(context, dict)
             or type(context.get("schema_version")) is not int
-            or context["schema_version"] != portable_proof.EXECUTION_CONTEXT_VERSION
+            or context["schema_version"] not in (
+                portable_proof.EXECUTION_CONTEXT_VERSION,
+                portable_proof.FRESH_EXECUTION_CONTEXT_VERSION,
+            )
         ):
             raise RunError("execution context schema mismatch during freeze")
+        try:
+            portable_proof.validated_build_profile(context, source_dir)
+        except ValueError as exc:
+            raise RunError(f"execution context build profile refused during freeze: {exc}") from exc
         try:
             selected = portable_proof.selected_test_binaries(
                 RawFile.capture(source_dir / "rust-collection.stdout")

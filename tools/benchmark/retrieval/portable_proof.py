@@ -873,6 +873,51 @@ def _expected_commands(
     ]
 
 
+def validated_build_profile(context: object, execution_root: Path) -> str | None:
+    """Admit the historical context or the one fresh release build profile."""
+    keys = {
+        "schema_version",
+        "rail",
+        "revision",
+        "os",
+        "tools",
+        "binaries",
+        "commands",
+        "raw_evidence",
+    }
+    if not isinstance(context, dict) or type(context.get("schema_version")) is not int:
+        raise ValueError("invalid execution context shape")
+    version = context["schema_version"]
+    if version == EXECUTION_CONTEXT_VERSION:
+        if set(context) != keys or context.get("rail") not in {"contract", "sdk"}:
+            raise ValueError("invalid execution context shape")
+        return None
+    if (
+        version != FRESH_EXECUTION_CONTEXT_VERSION
+        or set(context) != keys | {"build_profile"}
+        or context.get("rail") != "sdk"
+        or context.get("build_profile") != FRESH_BUILD_PROFILE
+    ):
+        raise ValueError("invalid execution context shape")
+    if (
+        not execution_root.is_absolute()
+        or ".." in execution_root.parts
+        or execution_root != execution_root.resolve()
+    ):
+        raise ValueError("fresh proof execution root is not canonical")
+    commands = context["commands"]
+    if not isinstance(commands, list) or not commands or not isinstance(commands[0], dict):
+        raise ValueError("fresh proof lacks command environment")
+    inherited = commands[0].get("inherited_environment")
+    if not isinstance(inherited, dict):
+        raise ValueError("fresh proof lacks inherited environment")
+    if any(inherited.get(key) for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")):
+        raise ValueError("fresh build used an unbound compiler wrapper")
+    if inherited.get("QUANTA_INDEX_SCCACHE") not in (None, "0"):
+        raise ValueError("fresh build used a compiler cache")
+    return FRESH_BUILD_PROFILE
+
+
 def produce(rail: str, out: Path, *, build_profile: str | None = None) -> Path:
     if rail not in {"contract", "sdk"}:
         raise ValueError(f"unknown rail: {rail}")
@@ -1265,30 +1310,7 @@ def validate(
     if not execution_root.is_absolute() or ".." in execution_root.parts:
         raise ValueError("execution root must be an absolute canonical recorded path")
     context = _json_bytes(capture(receipt_path.name))
-    base_context_keys = {
-        "schema_version",
-        "rail",
-        "revision",
-        "os",
-        "tools",
-        "binaries",
-        "commands",
-        "raw_evidence",
-    }
-    version = context.get("schema_version") if isinstance(context, dict) else None
-    build_profile = context.get("build_profile") if version == FRESH_EXECUTION_CONTEXT_VERSION else None
-    if (
-        not isinstance(context, dict)
-        or type(version) is not int
-        or version not in (EXECUTION_CONTEXT_VERSION, FRESH_EXECUTION_CONTEXT_VERSION)
-        or set(context)
-        != (base_context_keys | ({"build_profile"} if version == FRESH_EXECUTION_CONTEXT_VERSION else set()))
-        or context["rail"] not in {"contract", "sdk"}
-        or (version == FRESH_EXECUTION_CONTEXT_VERSION and (
-            context["rail"] != "sdk" or build_profile != FRESH_BUILD_PROFILE
-        ))
-    ):
-        raise ValueError("invalid execution context shape")
+    build_profile = validated_build_profile(context, execution_root)
     closure = source_closure.validate_manifest_shape(_json_bytes(capture("source-closure.json")))
     if (
         context["revision"] != closure["revision"]
@@ -1372,14 +1394,6 @@ def validate(
         or not isinstance(commands[0].get("inherited_environment"), dict)
     ):
         raise ValueError("missing or malformed proof commands")
-    if build_profile == FRESH_BUILD_PROFILE:
-        inherited = commands[0]["inherited_environment"]
-        if any(inherited.get(key) for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")):
-            raise ValueError("fresh build used an unbound compiler wrapper")
-        if inherited.get("QUANTA_INDEX_SCCACHE") not in (None, "0"):
-            raise ValueError("fresh build used a compiler cache")
-        if execution_root != execution_root.resolve():
-            raise ValueError("fresh proof execution root is not canonical")
     expected_commands = _expected_commands(
         context["rail"],
         execution_root,
