@@ -8107,9 +8107,18 @@ def test_repository_disjoint_verdict_replays_frozen_split_artifacts(monkeypatch,
         "_validate_disjoint_admission_source",
         lambda _claim, _suite, _repo, split, releases: calls.append((split, releases)),
     )
+    review_modes = []
+    validate_review = pairrun._validate_gold_review_receipt
+
+    def capture_review_mode(*args, **kwargs):
+        review_modes.append(kwargs.get("allow_mixed_source_oracle"))
+        return validate_review(*args, **kwargs)
+
+    monkeypatch.setattr(pairrun, "_validate_gold_review_receipt", capture_review_mode)
     after = _stage_verdict(st)
     assert after["states"] == before["states"]
     assert calls == [(split_path, releases_path)]
+    assert review_modes == [True, True, True]
     monkeypatch.undo()
     split_path.write_text('{"changed":true}')
     rejected = _stage_verdict(st)
