@@ -15246,6 +15246,23 @@ def test_code_search_file_policy_binds_syntax_scores_and_file_unit(tmp_path):
         "native_sdk_score_v1",
     )
 
+    source_bound = copy.deepcopy(run)
+    source_bound["captures"]["q0"].update(
+        source_repo_id="bench-repo", source_revision_id="bench-revision"
+    )
+    jsonschema.validate(source_bound, _load_schema("runner.schema.json"))
+    record_v3(repo, suite, source_bound, suite_path, runner_path)
+    for target in ("capture", "candidate"):
+        forged_pin = copy.deepcopy(source_bound)
+        if target == "capture":
+            forged_pin["captures"]["q0"]["source_revision_id"] = "other-revision"
+        else:
+            forged_pin["results"][0]["candidates"][0]["span_accounting"]["source_revision_id"] = (
+                "other-revision"
+            )
+        with pytest.raises(ev.EvidenceError, match="source pin differs from capture"):
+            record_v3(repo, suite, forged_pin, suite_path, runner_path)
+
     forged = copy.deepcopy(run)
     forged["results"][0]["query_identity"] = qp.derive_query_identity(
         "native", suite["tasks"][0]["query"]
