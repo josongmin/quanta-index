@@ -55,6 +55,12 @@ pub struct LexicalBuildStageDurationsV1 {
     pub preparation_ns: u64,
     pub writer_mutation_ns: u64,
     pub text_authority_ns: u64,
+    /// Present for a full rebuild; a touched-shard delta does not enumerate live docs.
+    pub text_authority_collect_ns: Option<u64>,
+    /// Present for rebuilds and touched-shard deltas, including prior-shard loads.
+    pub text_authority_shard_build_ns: Option<u64>,
+    /// Present for rebuilds and deltas; includes encode, durable writes, and cleanup.
+    pub text_authority_publish_ns: Option<u64>,
     pub file_authority_ns: u64,
     pub seal_ns: Option<u64>,
     pub seal_writer_commit_ns: Option<u64>,
@@ -254,6 +260,9 @@ impl_observation_struct_serde!(LexicalBuildStageDurationsV1 {
     preparation_ns: u64 => "preparation_ns",
     writer_mutation_ns: u64 => "writer_mutation_ns",
     text_authority_ns: u64 => "text_authority_ns",
+    text_authority_collect_ns: Option<u64> => "text_authority_collect_ns",
+    text_authority_shard_build_ns: Option<u64> => "text_authority_shard_build_ns",
+    text_authority_publish_ns: Option<u64> => "text_authority_publish_ns",
     file_authority_ns: u64 => "file_authority_ns",
     seal_ns: Option<u64> => "seal_ns",
     seal_writer_commit_ns: Option<u64> => "seal_writer_commit_ns",
@@ -398,6 +407,26 @@ impl SearchCorpusIngestObservation {
             .ok_or_else(|| "lexical stage duration sum overflow".to_string())?;
             if outer > total {
                 return Err("lexical stages exceed containing build".to_string());
+            }
+            let text_children = [
+                stages.text_authority_collect_ns,
+                stages.text_authority_shard_build_ns,
+                stages.text_authority_publish_ns,
+            ];
+            if stages.text_authority_shard_build_ns.is_some()
+                != stages.text_authority_publish_ns.is_some()
+                || stages.text_authority_collect_ns.is_some()
+                    && stages.text_authority_shard_build_ns.is_none()
+            {
+                return Err("lexical text authority stage availability is inconsistent".to_string());
+            }
+            let text_nested = text_children
+                .into_iter()
+                .flatten()
+                .try_fold(0_u64, u64::checked_add)
+                .ok_or_else(|| "lexical text authority duration sum overflow".to_string())?;
+            if text_nested > stages.text_authority_ns {
+                return Err("lexical text authority stages exceed containing stage".to_string());
             }
             match stages.seal_ns {
                 Some(seal) if sealed => {
@@ -856,6 +885,9 @@ mod tests {
             preparation_ns: 1,
             writer_mutation_ns: 1,
             text_authority_ns: 0,
+            text_authority_collect_ns: None,
+            text_authority_shard_build_ns: None,
+            text_authority_publish_ns: None,
             file_authority_ns: 0,
             seal_ns: Some(1),
             seal_writer_commit_ns: Some(0),
@@ -901,6 +933,49 @@ mod tests {
                 .validate_for(11, &batch, &outcome.publication, &outcome.receipt)
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn text_authority_child_availability_and_bounds_are_closed() -> TestResult {
+        let batch = batch()?;
+        let outcome = outcome()?;
+        let mut observation = outcome.observation.ok_or("missing observation")?;
+        let mut stages = LexicalBuildStageDurationsV1 {
+            preparation_ns: 1,
+            writer_mutation_ns: 0,
+            text_authority_ns: 1,
+            text_authority_collect_ns: Some(0),
+            text_authority_shard_build_ns: Some(0),
+            text_authority_publish_ns: Some(1),
+            file_authority_ns: 0,
+            seal_ns: Some(1),
+            seal_writer_commit_ns: Some(0),
+            seal_merge_wait_ns: Some(0),
+            seal_commitment_ns: Some(1),
+            seal_file_admission_ns: Some(1),
+        };
+        observation.lexical_stages = Some(stages.clone());
+        observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;
+
+        stages.text_authority_collect_ns = None; // touched-shard delta
+        observation.lexical_stages = Some(stages.clone());
+        observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;
+        stages.text_authority_shard_build_ns = None;
+        observation.lexical_stages = Some(stages.clone());
+        assert!(observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt).is_err());
+        stages.text_authority_shard_build_ns = Some(1);
+        observation.lexical_stages = Some(stages.clone());
+        assert!(observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt).is_err());
+
+        stages.text_authority_publish_ns = None;
+        stages.text_authority_shard_build_ns = None;
+        stages.text_authority_collect_ns = Some(0);
+        observation.lexical_stages = Some(stages.clone());
+        assert!(observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt).is_err());
+        stages.text_authority_collect_ns = None; // no text write
+        observation.lexical_stages = Some(stages);
+        observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;
         Ok(())
     }
 

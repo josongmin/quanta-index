@@ -4389,7 +4389,8 @@ def _validate_ingest_request_identity(payload: object) -> dict:
 
 
 def _validate_ingest_diagnostic(
-    payload: object, record: dict, *, lexical_stage_contract: bool = False
+    payload: object, record: dict, *, lexical_stage_contract: bool = False,
+    detailed_authority: bool = False,
 ) -> dict:
     """Bind transient stages to durable receipt/activation bytes, not self-reported totals.
 
@@ -4558,11 +4559,27 @@ def _validate_ingest_diagnostic(
                 "seal_merge_wait_ns",
                 "seal_commitment_ns",
                 "seal_file_admission_ns",
-            },
+            } | ({
+                "text_authority_collect_ns", "text_authority_shard_build_ns",
+                "text_authority_publish_ns",
+            } if detailed_authority else set()),
             "ingest lexical stages",
         )
         for key, value in stages.items():
+            if detailed_authority and key.startswith("text_authority_") and key != "text_authority_ns" and value is None:
+                continue
             u64(value, f"ingest lexical stages {key}")
+        if detailed_authority:
+            collect = stages["text_authority_collect_ns"]
+            build = stages["text_authority_shard_build_ns"]
+            publish = stages["text_authority_publish_ns"]
+            if (
+                (build is None) != (publish is None)
+                or collect is not None and build is None
+                or sum(value for value in (collect, build, publish) if value is not None)
+                > stages["text_authority_ns"]
+            ):
+                raise RunError("ingest text authority child clocks are unavailable or exceed parent")
         outer = sum(
             stages[key]
             for key in (
@@ -4662,9 +4679,9 @@ def validate_retrieval_diagnostic(
         "results",
         "runner_timing_detail_ms",
     }
-    if isinstance(payload, dict) and payload.get("schema_version") in (5, 6, 7):
+    if isinstance(payload, dict) and payload.get("schema_version") in (5, 6, 7, 8):
         fields.update({"server_observation", "ingest"})
-    if isinstance(payload, dict) and payload.get("schema_version") in (6, 7):
+    if isinstance(payload, dict) and payload.get("schema_version") in (6, 7, 8):
         fields.add("hybrid_fetch_policy")
     diagnostic = _exact_keys(
         payload,
@@ -4678,7 +4695,7 @@ def validate_retrieval_diagnostic(
         raise RunError("retrieval diagnostic requires a valid record contract and digest")
     if (
         type(diagnostic["schema_version"]) is not int
-        or diagnostic["schema_version"] not in (2, 3, 4, 5, 6, 7)
+        or diagnostic["schema_version"] not in (2, 3, 4, 5, 6, 7, 8)
         or diagnostic["kind"] != "quanta_returned_window_diagnostic"
         or diagnostic["scope"] != "returned_window_only"
         or diagnostic["record_sha256"] != record_sha256
@@ -4690,15 +4707,15 @@ def validate_retrieval_diagnostic(
         raise RunError("retrieval diagnostic identity or contract mismatch")
     observation_policy = (
         _validate_server_observation(diagnostic["server_observation"])["query_stages"]
-        if diagnostic["schema_version"] in (5, 6, 7)
+        if diagnostic["schema_version"] in (5, 6, 7, 8)
         else "enabled"
     )
     if diagnostic["schema_version"] == 5:
         _validate_ingest_diagnostic(diagnostic["ingest"], record)
-    if diagnostic["schema_version"] in (6, 7):
+    if diagnostic["schema_version"] in (6, 7, 8):
         _validate_hybrid_fetch_policy(diagnostic["hybrid_fetch_policy"])
         _validate_ingest_diagnostic(
-            diagnostic["ingest"], record, lexical_stage_contract=diagnostic["schema_version"] == 7
+            diagnostic["ingest"], record, lexical_stage_contract=diagnostic["schema_version"] in (7, 8)
         )
     detail = _exact_keys(
         diagnostic["runner_timing_detail_ms"],
@@ -4706,7 +4723,7 @@ def validate_retrieval_diagnostic(
             "clock",
             "daemon_boot_and_readiness",
             "sdk_publish_and_activate_opaque",
-            *({"sdk_publish", "sdk_activate"} if diagnostic["schema_version"] == 7 else set()),
+            *({"sdk_publish", "sdk_activate"} if diagnostic["schema_version"] in (7, 8) else set()),
             "runner_record_assembly",
             "corpus_reverification",
             "daemon_shutdown",
@@ -4719,7 +4736,7 @@ def validate_retrieval_diagnostic(
         if key != "clock"
     ):
         raise RunError("retrieval diagnostic timing is invalid")
-    if diagnostic["schema_version"] == 7 and (
+    if diagnostic["schema_version"] in (7, 8) and (
         detail["sdk_publish"] + detail["sdk_activate"]
         > detail["sdk_publish_and_activate_opaque"] + 0.01
     ):
@@ -4771,7 +4788,7 @@ def validate_retrieval_diagnostic(
             "candidates",
             "response",
         }
-        if diagnostic["schema_version"] in (3, 4, 5, 6, 7):
+        if diagnostic["schema_version"] in (3, 4, 5, 6, 7, 8):
             row_fields.add("response_kind")
         row = _exact_keys(
             row,
@@ -4812,7 +4829,7 @@ def validate_retrieval_diagnostic(
                 diagnostic["top_k"],
             )
             if (
-                diagnostic["schema_version"] in (6, 7)
+                diagnostic["schema_version"] in (6, 7, 8)
                 and key[1] == "hybrid"
                 and row["response_kind"] == "returned_window"
             ):
@@ -4821,7 +4838,7 @@ def validate_retrieval_diagnostic(
                     trace, diagnostic["top_k"], diagnostic["hybrid_fetch_policy"]
                 )
             if (
-                diagnostic["schema_version"] in (4, 5, 6, 7)
+                diagnostic["schema_version"] in (4, 5, 6, 7, 8)
                 and key[1] in ("lexical", "semantic", "hybrid")
                 and row["response_kind"] != "sdk_failure"
             ):
@@ -4895,7 +4912,7 @@ def validate_retrieval_diagnostic(
                     or not is_finite_json_number(lane["raw_score"])
                 ):
                     raise RunError("retrieval diagnostic lane is invalid")
-                if diagnostic["schema_version"] in (3, 4, 5, 6, 7) and not (
+                if diagnostic["schema_version"] in (3, 4, 5, 6, 7, 8) and not (
                     lane_execution.get(lane["lane"], False)
                     or lane_execution.get(f"hybrid.{lane['lane']}", False)
                 ):
@@ -5201,7 +5218,7 @@ def run_quanta_strategy(
         sha_file(record_path),
         read_json(pack_path),
     )
-    if diagnostic["schema_version"] != 7 or diagnostic[
+    if diagnostic["schema_version"] != 8 or diagnostic[
         "server_observation"
     ] != server_observation_configuration(spec.get("query_stage_observation", "enabled")):
         raise RunError(
@@ -7438,9 +7455,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     }
     if parent_binding is not None:
         protocol_keys.add("delegated_cgroup_parent")
-    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") in (3, 4, 5):
+    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") in (3, 4, 5, 6):
         protocol_keys.update({"server_observation", "ingest_request_identity"})
-    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") in (4, 5):
+    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") in (4, 5, 6):
         protocol_keys.add("hybrid_fetch_policy")
     if isinstance(protocol_payload, dict) and "symbol_total_timeout_ms" in protocol_payload:
         protocol_keys.add("symbol_total_timeout_ms")
@@ -7464,7 +7481,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         root_digests = protocol_payload["query_protocol_sha256s"]
         protocol_shape_valid = protocol_shape_valid and (
             type(protocol_payload["lock_version"]) is int
-            and protocol_payload["lock_version"] in (2, 3, 4, 5)
+            and protocol_payload["lock_version"] in (2, 3, 4, 5, 6)
             and type(protocol_payload["retrieval_diagnostic_version"]) is int
             and protocol_payload["symbol_coverage_policy"]
             in ("require-complete", "allow-incomplete")
@@ -7514,15 +7531,15 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             and protocol_payload["execution_profiles_sha256"]
             == digest(canonical_bytes(protocol_payload["execution_profiles"]))
             and protocol_payload["retrieval_diagnostic_version"]
-            == {2: 4, 3: 5, 4: 6, 5: 7}.get(protocol_payload["lock_version"])
+            == {2: 4, 3: 5, 4: 6, 5: 7, 6: 8}.get(protocol_payload["lock_version"])
             and protocol_payload["rank_metric_k_policy"] == "declared_top_k_v1"
         )
         if protocol_shape_valid:
             try:
-                if protocol_payload["lock_version"] in (3, 4, 5):
+                if protocol_payload["lock_version"] in (3, 4, 5, 6):
                     _validate_server_observation(protocol_payload["server_observation"])
                     _validate_ingest_request_identity(protocol_payload["ingest_request_identity"])
-                if protocol_payload["lock_version"] in (4, 5):
+                if protocol_payload["lock_version"] in (4, 5, 6):
                     _validate_hybrid_fetch_policy(protocol_payload["hybrid_fetch_policy"])
                 profiles = protocol_payload["execution_profiles"]
                 if set(profiles) != {"quanta", "semble"}:
@@ -7875,7 +7892,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("current pair replay requires Quanta phase v2/v3/v4 or Semble v2")
             if (
                 metrics["system"] == "quanta"
-                and protocol_payload.get("lock_version") == 5
+                and protocol_payload.get("lock_version") in (5, 6)
                 and metrics["schema_version"] not in (3, 4)
             ):
                 raise RunError("protocol v5 requires measured Quanta phase schema v3/v4")
@@ -8142,7 +8159,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 bound_records.add(observed)
             diagnostic_ref = run_entry.get("retrieval_diagnostic")
             diagnostic_digest = run_entry.get("retrieval_diagnostic_digest")
-            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3, 4, 5, 6, 7) and (
+            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3, 4, 5, 6, 7, 8) and (
                 diagnostic_ref is None or diagnostic_digest is None
             ):
                 pair_note("retrieval_diagnostic_missing", ("T12",))
@@ -8170,22 +8187,22 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                         raise RunError(
                             "retrieval diagnostic version differs from the current protocol lock"
                         )
-                    if diagnostic["schema_version"] in (5, 6, 7) and diagnostic[
+                    if diagnostic["schema_version"] in (5, 6, 7, 8) and diagnostic[
                         "server_observation"
                     ] != protocol_payload.get("server_observation"):
                         raise RunError(
                             "retrieval diagnostic server configuration differs from protocol"
                         )
-                    if diagnostic["schema_version"] in (6, 7) and diagnostic[
+                    if diagnostic["schema_version"] in (6, 7, 8) and diagnostic[
                         "hybrid_fetch_policy"
                     ] != protocol_payload.get("hybrid_fetch_policy"):
                         raise RunError(
                             "retrieval diagnostic hybrid fetch policy differs from protocol"
                         )
-                    if diagnostic["schema_version"] in (5, 6, 7) and _validate_ingest_diagnostic(
+                    if diagnostic["schema_version"] in (5, 6, 7, 8) and _validate_ingest_diagnostic(
                         diagnostic["ingest"],
                         record_payload,
-                        lexical_stage_contract=diagnostic["schema_version"] == 7,
+                        lexical_stage_contract=diagnostic["schema_version"] in (7, 8),
                     ) != protocol_payload.get("ingest_request_identity"):
                         raise RunError("retrieval diagnostic ingest identity differs from protocol")
                 except (KeyError, TypeError, ValueError, OSError) as exc:
@@ -8269,7 +8286,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 rep0_model_cache
             ):
                 pair_note("adapter_model_cache_binding_broken", ("T11", "T12"))
-        if protocol_payload.get("retrieval_diagnostic_version") in (3, 4, 5, 6, 7):
+        if protocol_payload.get("retrieval_diagnostic_version") in (3, 4, 5, 6, 7, 8):
             expected_profile = protocol_payload.get("execution_profiles", {}).get("semble", {})
             expected_mode = expected_profile.get("mode")
             expected_alpha = expected_profile.get("alpha")
@@ -9561,8 +9578,8 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     )
     driver_closure_digest = driver_closure["digest"]
     protocol_lock = {
-        "lock_version": 5,
-        "retrieval_diagnostic_version": 7,
+        "lock_version": 6,
+        "retrieval_diagnostic_version": 8,
         "symbol_coverage_policy": spec.get("symbol_coverage_policy", "require-complete"),
         "server_observation": server_observation_configuration(
             spec.get("query_stage_observation", "enabled")

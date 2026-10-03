@@ -19,5 +19,6 @@ pub(crate) use reader::load_shard;
 pub(crate) use reader::{ShardedTextAuthority, load_shard_at};
 pub(crate) use shard::{ShardBody, sha256_of_bytes};
 pub(crate) use writer::{
-    AddedTextDoc, TextAuthorityWriteReceipt, finalize_for_seal, rebuild, update,
+    AddedTextDoc, TextAuthorityWriteReceipt, TextAuthorityWriteResult, finalize_for_seal, rebuild,
+    update,
 };

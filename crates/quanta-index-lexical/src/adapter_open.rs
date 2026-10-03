@@ -11,6 +11,7 @@ use crate::overlay_codec::OverlayFamily;
 use crate::sealed_generation::{SealedGenerationVisitor, walk_sealed_generation};
 use crate::text_authority::{
     ShardBody, ShardedTextAuthority, TEXT_AUTHORITY_DIR_NAME, TextAuthorityWriteReceipt,
+    TextAuthorityWriteResult,
 };
 use crate::text_authority_plan::plan_text_authority_delta;
 use crate::text_docs::collect_text_authority_docs;
@@ -42,7 +43,30 @@ use tantivy::Index;
 pub(crate) struct LexicalMutationTimings {
     pub(crate) writer_mutation_ns: u64,
     pub(crate) text_authority_ns: u64,
+    pub(crate) text_authority_collect_ns: Option<u64>,
+    pub(crate) text_authority_shard_build_ns: Option<u64>,
+    pub(crate) text_authority_publish_ns: Option<u64>,
     pub(crate) file_authority_ns: u64,
+}
+
+struct TextAuthorityMutation {
+    rebuilt: bool,
+    receipt: TextAuthorityWriteReceipt,
+    collect_ns: Option<u64>,
+    shard_build_ns: u64,
+    publish_ns: u64,
+}
+
+impl TextAuthorityMutation {
+    fn from_result(rebuilt: bool, collect_ns: Option<u64>, result: TextAuthorityWriteResult) -> Self {
+        Self {
+            rebuilt,
+            receipt: result.receipt,
+            collect_ns,
+            shard_build_ns: result.shard_build_ns,
+            publish_ns: result.publish_ns,
+        }
+    }
 }
 
 impl LexicalAdapter {
@@ -94,12 +118,15 @@ impl LexicalAdapter {
         crate::file_authority::apply_plan(&generation_dir, file_plan)?;
         let file_authority_ns = crate::adapter_ingest::elapsed_stage_ns(file_authority_started)?;
         drop(guarded);
-        if let Some((rebuilt, receipt)) = written {
-            self.record_text_authority_write(rebuilt, receipt)?;
+        if let Some(written) = &written {
+            self.record_text_authority_write(written.rebuilt, written.receipt)?;
         }
         Ok(LexicalMutationTimings {
             writer_mutation_ns,
             text_authority_ns,
+            text_authority_collect_ns: written.as_ref().and_then(|value| value.collect_ns),
+            text_authority_shard_build_ns: written.as_ref().map(|value| value.shard_build_ns),
+            text_authority_publish_ns: written.as_ref().map(|value| value.publish_ns),
             file_authority_ns,
         })
     }
@@ -108,27 +135,33 @@ impl LexicalAdapter {
     ///
     /// Returns whether it was a rebuild and what it did, or `None` when the
     /// batch touched no text.
-    pub(crate) fn write_text_authority(
+    fn write_text_authority(
         &self,
         generation_dir: &Path,
         key: &GenKey,
         index: &Index,
         plan: TextAuthorityPlan,
-    ) -> Result<Option<(bool, TextAuthorityWriteReceipt)>, CoreError> {
+    ) -> Result<Option<TextAuthorityMutation>, CoreError> {
         let max_doc_id = plan.allocator.max_doc_id();
         match plan.write {
             TextAuthorityWrite::None => Ok(None),
             TextAuthorityWrite::Rebuild => {
                 self.invalidate_regex_match_cache_generation(key)?;
+                let collect_started = Instant::now();
                 let docs = collect_text_authority_docs(index, &self.fields)?;
-                let receipt = text_authority::rebuild(
+                let collect_ns = crate::adapter_ingest::elapsed_stage_ns(collect_started)?;
+                let result = text_authority::rebuild(
                     generation_dir,
                     key.generation,
                     docs,
                     plan.prior.as_ref(),
                     max_doc_id,
                 )?;
-                Ok(Some((true, receipt)))
+                Ok(Some(TextAuthorityMutation::from_result(
+                    true,
+                    Some(collect_ns),
+                    result,
+                )))
             }
             TextAuthorityWrite::Incremental {
                 retired,
@@ -141,7 +174,7 @@ impl LexicalAdapter {
                             .to_string(),
                     ));
                 };
-                let receipt = text_authority::update(
+                let result = text_authority::update(
                     generation_dir,
                     key.generation,
                     prior,
@@ -150,7 +183,7 @@ impl LexicalAdapter {
                     &touched_shards,
                     max_doc_id,
                 )?;
-                Ok(Some((false, receipt)))
+                Ok(Some(TextAuthorityMutation::from_result(false, None, result)))
             }
         }
     }

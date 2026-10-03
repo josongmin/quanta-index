@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::Path;
+use std::time::Instant;
 
 use quanta_index_contract::ManifestGeneration;
 use quanta_index_core::CoreError;
@@ -38,6 +39,16 @@ pub(crate) struct TextAuthorityWriteReceipt {
     pub(crate) shards_written: u64,
     /// Shards listed unchanged: their files were not written by this publish.
     pub(crate) shards_inherited: u64,
+}
+
+/// One canonical write result; timings describe completed, non-overlapping work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TextAuthorityWriteResult {
+    pub(crate) receipt: TextAuthorityWriteReceipt,
+    /// Includes loading and validating touched prior shards for a delta.
+    pub(crate) shard_build_ns: u64,
+    /// Includes encoding, durable writes, and removal of unowned files.
+    pub(crate) publish_ns: u64,
 }
 
 /// One document a batch added, with the doc id the index stores for it.
@@ -68,7 +79,8 @@ pub(crate) fn rebuild(
     docs: Vec<AddedTextDoc>,
     prior: Option<&TextAuthorityManifest>,
     max_doc_id: u64,
-) -> Result<TextAuthorityWriteReceipt, CoreError> {
+) -> Result<TextAuthorityWriteResult, CoreError> {
+    let shard_started = Instant::now();
     let docs_derived = count(docs.len(), "text authority doc count")?;
     let mut by_shard: BTreeMap<u64, Vec<AddedTextDoc>> = BTreeMap::new();
     let mut seen: BTreeSet<u64> = BTreeSet::new();
@@ -93,12 +105,18 @@ pub(crate) fn rebuild(
         }
         let _prior = outcomes.insert(index, ShardOutcome::Built(builders.finish()?));
     }
+    let shard_build_ns = crate::adapter_ingest::elapsed_stage_ns(shard_started)?;
+    let publish_started = Instant::now();
     let (shards_written, shards_inherited) = publish(generation_dir, prior, outcomes, max_doc_id)?;
-    Ok(TextAuthorityWriteReceipt {
-        docs_derived,
-        docs_retired: 0,
-        shards_written,
-        shards_inherited,
+    Ok(TextAuthorityWriteResult {
+        receipt: TextAuthorityWriteReceipt {
+            docs_derived,
+            docs_retired: 0,
+            shards_written,
+            shards_inherited,
+        },
+        shard_build_ns,
+        publish_ns: crate::adapter_ingest::elapsed_stage_ns(publish_started)?,
     })
 }
 
@@ -117,7 +135,8 @@ pub(crate) fn update(
     added: &[AddedTextDoc],
     touched: &BTreeSet<u64>,
     max_doc_id: u64,
-) -> Result<TextAuthorityWriteReceipt, CoreError> {
+) -> Result<TextAuthorityWriteResult, CoreError> {
+    let shard_started = Instant::now();
     let mut actual: BTreeSet<u64> = retired
         .keys()
         .map(|doc_id| shard_index_of(*doc_id))
@@ -172,13 +191,19 @@ pub(crate) fn update(
         }
         let _prior = outcomes.insert(*index, ShardOutcome::Built(builders.finish()?));
     }
+    let shard_build_ns = crate::adapter_ingest::elapsed_stage_ns(shard_started)?;
+    let publish_started = Instant::now();
     let (shards_written, shards_inherited) =
         publish(generation_dir, Some(prior), outcomes, max_doc_id)?;
-    Ok(TextAuthorityWriteReceipt {
-        docs_derived: count(added.len(), "text authority add count")?,
-        docs_retired: count(retired.len(), "text authority retire count")?,
-        shards_written,
-        shards_inherited,
+    Ok(TextAuthorityWriteResult {
+        receipt: TextAuthorityWriteReceipt {
+            docs_derived: count(added.len(), "text authority add count")?,
+            docs_retired: count(retired.len(), "text authority retire count")?,
+            shards_written,
+            shards_inherited,
+        },
+        shard_build_ns,
+        publish_ns: crate::adapter_ingest::elapsed_stage_ns(publish_started)?,
     })
 }
 

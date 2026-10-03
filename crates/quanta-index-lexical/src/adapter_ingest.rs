@@ -365,6 +365,9 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             preparation_ns,
             writer_mutation_ns: mutation.writer_mutation_ns,
             text_authority_ns: mutation.text_authority_ns,
+            text_authority_collect_ns: mutation.text_authority_collect_ns,
+            text_authority_shard_build_ns: mutation.text_authority_shard_build_ns,
+            text_authority_publish_ns: mutation.text_authority_publish_ns,
             file_authority_ns: mutation.file_authority_ns,
             ..LexicalBuildStageDurationsV1::default()
         };

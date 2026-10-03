@@ -16,7 +16,7 @@ use crate::sdk::{QueryOutcome, RankedHit, RouteExplanation};
 use crate::{BenchError, BenchResult};
 
 /// Current diagnostic artifact version, independent of runner record schema.
-pub const DIAGNOSTIC_SCHEMA_VERSION: u64 = 7;
+pub const DIAGNOSTIC_SCHEMA_VERSION: u64 = 8;
 
 fn lane_trace_matches_contribution(trace_lane: &str, contribution_lane: &str) -> bool {
     trace_lane == contribution_lane || trace_lane.strip_prefix("hybrid.") == Some(contribution_lane)
@@ -1092,7 +1092,7 @@ mod tests {
             &projection_fixture(),
         )
         .expect("complete diagnostic");
-        assert_eq!(value.get("schema_version"), Some(&json!(7)));
+        assert_eq!(value.get("schema_version"), Some(&json!(8)));
         assert_eq!(
             value.pointer("/results/0/response_kind"),
             Some(&json!("returned_window"))
