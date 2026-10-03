@@ -91,3 +91,37 @@ remain readable. Focused fixtures reject content-positive and case-variant
 mutations and wrong units. The original 99 NOC query/gold identities are
 unchanged. Fresh Quanta/Semble 99-query diagnostics under this new suite are
 recorded in B04. Archived scores retain their old provenance.
+
+## Full Gin OSA1 operation generation (2026-10-03)
+
+**VERIFIED, generation only:** clean `quanta-index@7fc77bc1` generated paired
+diagnostic suites from the frozen 1,196-task Gin exact suite and
+`gin@d3ffc998` (`code_only`, 99 files, universe digest
+`d4e1ea025c067f344af640568b5bfd0835ed09c2bfbcf9668b8e9782bc68bd67`).
+The first attempt on clean `9d38b69d` exposed a bounded oracle bug: the
+validator registered both the intended exact names and the submitted typo
+queries in its 2,000-query word index, although the typo collision check uses
+the separate exhaustive folded-token index. Commit `7fc77bc1` limits that
+word index to intended names; the focused paired-generation, query-limit and
+Ruff checks passed.
+
+| Lane | Admitted | Ineligible out of 1,196 |
+| --- | ---: | ---: |
+| Insertion | 1,192 | 4 |
+| Deletion | 1,178 | 18 |
+| Substitution | 1,192 | 4 |
+| Transposition | 1,192 | 4 |
+| Keyboard stress | 1,192 | 4 |
+| Boundary stress | 1,056 | 140 |
+
+The four core operations contain 4,754 admitted task rows from 1,196 query
+families; they are not 4,754 independent samples. The census also marks 118
+exact-name overcorrection candidates as unjudged and 1,192 two-substitution
+probes as unjudged/unscored. The generated artifacts are under
+`/private/tmp/qi-gin-full-osa1-7fc77bc1-20261003` with manifest SHA-256
+`3bd6f31c09e4c6248b481fc9bf63dc63a8c9706ef7c6427d79a7089ee2091b8c`.
+A second fresh generation under the adjacent `-repeat-20261003` root produced
+38 byte-identical files, including the manifest. All 37 manifest artifact
+digests were independently recomputed. Product execution and ranking for
+these new Gin operation suites are **NOT_RUN**; no archived 363-task score is
+combined with them.
