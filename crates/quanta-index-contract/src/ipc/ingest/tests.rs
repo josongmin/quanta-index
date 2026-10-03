@@ -1,4 +1,5 @@
 use super::super::{BatchPublishReceipt, SearchPlaneIpcError};
+use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 
 use super::*;
@@ -7,7 +8,10 @@ use crate::lex::{
     ParseTreeRecord, compute_parse_tree_source_hash,
 };
 use crate::{
-    CapabilityStatusV1, ChunkRecord, EmbeddingId, EmbeddingRecord, RepoRelativePath, SourceRoleV1,
+    CapabilityStatusV1, ChunkId, ChunkRecord, EmbeddingId, EmbeddingRecord, ManifestGeneration,
+    OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1,
+    SemanticSourceScopeKeyV1, SourceFileCoverage, SourceFileKey, SourcePublicationEvent,
+    SourceRoleV1,
 };
 
 type TestRes = Result<(), Box<dyn std::error::Error>>;

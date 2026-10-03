@@ -125,140 +125,30 @@ crate quanta_index_contract
 │   │   └── struct SearchPlaneIpcErrorVisitor: pub(self)
 │   │       └── type Value: pub(self)
 │   ├── mod ingest: pub(self)
-│   │   ├── enum BatchIngestMode: pub
-│   │   ├── struct BatchIngestModeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct DirtyDelete: pub
-│   │   ├── struct DirtyDeleteVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct DirtyIngestBatch: pub
-│   │   ├── struct DirtyIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── enum DirtyMutation: pub
-│   │   ├── struct DirtyMutationVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── enum EmbeddingDistanceMetric: pub
-│   │   ├── struct EmbeddingDistanceMetricVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct EmbeddingModelContract: pub
-│   │   ├── struct EmbeddingModelContractVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── enum EmbeddingNormalization: pub
-│   │   ├── struct EmbeddingNormalizationVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct FileContributorEntry: pub
-│   │   ├── struct FileContributorEntryVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct FileContributorIdentityEntry: pub
-│   │   ├── struct FileContributorIdentityEntryVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct FileContributorIngestBatch: pub
-│   │   ├── struct FileContributorIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct FileOwnershipEntry: pub
-│   │   ├── struct FileOwnershipEntryVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct FileOwnershipIngestBatch: pub
-│   │   ├── struct FileOwnershipIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct HistoryDiffHunkUpsert: pub
-│   │   ├── struct HistoryDiffHunkUpsertVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct HistoryIngestBatch: pub
-│   │   ├── struct HistoryIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct HistoryRefDelete: pub
-│   │   ├── struct HistoryRefDeleteVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── enum HistoryRefMutation: pub
-│   │   ├── struct HistoryRefMutationVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct HistoryRefUpsert: pub
-│   │   ├── struct HistoryRefUpsertVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── type HistoryTagDelete: pub
-│   │   ├── type HistoryTagMutation: pub
-│   │   ├── type HistoryTagUpsert: pub
-│   │   ├── struct RepoCommitRecencyEntry: pub
-│   │   ├── struct RepoCommitRecencyEntryVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RepoCommitRecencyIngestBatch: pub
-│   │   ├── struct RepoCommitRecencyIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RepoDescriptionEntry: pub
-│   │   ├── struct RepoDescriptionEntryVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RepoDescriptionIngestBatch: pub
-│   │   ├── struct RepoDescriptionIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RepoMetaEntry: pub
-│   │   ├── struct RepoMetaEntryVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RepoMetaIngestBatch: pub
-│   │   ├── struct RepoMetaIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RepoTopicEntry: pub
-│   │   ├── struct RepoTopicEntryVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RepoTopicIngestBatch: pub
-│   │   ├── struct RepoTopicIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RuntimeCatalogIngestBatch: pub
-│   │   ├── struct RuntimeCatalogIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RuntimeChangedRecord: pub
-│   │   ├── struct RuntimeChangedRecordVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RuntimeDocFacetRecord: pub
-│   │   ├── struct RuntimeDocFacetRecordVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RuntimeEdgeAuthorityRecord: pub
-│   │   ├── struct RuntimeEdgeAuthorityRecordVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct RuntimeSnapshotRecord: pub
-│   │   ├── struct RuntimeSnapshotRecordVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct SearchCorpusIngestBatch: pub
-│   │   ├── struct SearchCorpusIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct SearchCorpusReplaceScope: pub
-│   │   ├── struct SearchCorpusReplaceScopeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── enum SearchCorpusSurfaceMutationConflictV1: pub
-│   │   ├── struct SearchCorpusTombstoneScope: pub
-│   │   ├── struct SearchCorpusTombstoneScopeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct SearchScopeKey: pub
-│   │   ├── struct SearchScopeKeyVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── enum SearchScopeSurface: pub
-│   │   ├── struct SearchScopeSurfaceVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct SemanticIngestBatch: pub
-│   │   ├── struct SemanticIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct SemanticReplaceScope: pub
-│   │   ├── struct SemanticReplaceScopeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct SemanticTombstoneScope: pub
-│   │   ├── struct SemanticTombstoneScopeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct SourceBytesBuf: pub(self)
-│   │   ├── struct SourceBytesVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct SourceBytesWire: pub(self)
-│   │   ├── struct StructuralIngestBatch: pub
-│   │   ├── struct StructuralIngestBatchVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct StructuralReplaceScope: pub
-│   │   ├── struct StructuralReplaceScopeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct StructuralTombstoneScope: pub
-│   │   ├── struct StructuralTombstoneScopeVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
-│   │   ├── struct StructuralTreeRecord: pub
-│   │   ├── struct StructuralTreeRecordVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
+│   │   ├── mod corpus_wire: pub(self)
+│   │   │   ├── enum BatchIngestMode: pub
+│   │   │   ├── struct BatchIngestModeVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct SearchCorpusIngestBatch: pub
+│   │   │   ├── struct SearchCorpusIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct SearchCorpusReplaceScope: pub
+│   │   │   ├── struct SearchCorpusReplaceScopeVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── enum SearchCorpusSurfaceMutationConflictV1: pub
+│   │   │   ├── struct SearchCorpusTombstoneScope: pub
+│   │   │   ├── struct SearchCorpusTombstoneScopeVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct SearchScopeKey: pub
+│   │   │   ├── struct SearchScopeKeyVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── enum SearchScopeSurface: pub
+│   │   │   ├── struct SearchScopeSurfaceVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct SourceBytesBuf: pub(self)
+│   │   │   ├── struct SourceBytesVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   └── struct SourceBytesWire: pub(self)
 │   │   ├── mod envelope: pub(self)
 │   │   │   ├── enum SearchPlaneIngestIpcRequest: pub
 │   │   │   ├── struct SearchPlaneIngestIpcRequestEnvelope: pub
@@ -272,7 +162,121 @@ crate quanta_index_contract
 │   │   │   │   └── type Value: pub(self)
 │   │   │   └── struct SearchPlaneIngestIpcResponseVisitor: pub(self)
 │   │   │       └── type Value: pub(self)
+│   │   ├── mod history_wire: pub(self)
+│   │   │   ├── struct FileContributorEntry: pub
+│   │   │   ├── struct FileContributorEntryVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct FileContributorIdentityEntry: pub
+│   │   │   ├── struct FileContributorIdentityEntryVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct FileContributorIngestBatch: pub
+│   │   │   ├── struct FileContributorIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct FileOwnershipEntry: pub
+│   │   │   ├── struct FileOwnershipEntryVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct FileOwnershipIngestBatch: pub
+│   │   │   ├── struct FileOwnershipIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct HistoryDiffHunkUpsert: pub
+│   │   │   ├── struct HistoryDiffHunkUpsertVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct HistoryIngestBatch: pub
+│   │   │   ├── struct HistoryIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct HistoryRefDelete: pub
+│   │   │   ├── struct HistoryRefDeleteVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── enum HistoryRefMutation: pub
+│   │   │   ├── struct HistoryRefMutationVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct HistoryRefUpsert: pub
+│   │   │   ├── struct HistoryRefUpsertVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── type HistoryTagDelete: pub
+│   │   │   ├── type HistoryTagMutation: pub
+│   │   │   ├── type HistoryTagUpsert: pub
+│   │   │   ├── struct RepoCommitRecencyEntry: pub
+│   │   │   ├── struct RepoCommitRecencyEntryVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RepoCommitRecencyIngestBatch: pub
+│   │   │   ├── struct RepoCommitRecencyIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RepoDescriptionEntry: pub
+│   │   │   ├── struct RepoDescriptionEntryVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RepoDescriptionIngestBatch: pub
+│   │   │   ├── struct RepoDescriptionIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RepoMetaEntry: pub
+│   │   │   ├── struct RepoMetaEntryVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RepoMetaIngestBatch: pub
+│   │   │   ├── struct RepoMetaIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RepoTopicEntry: pub
+│   │   │   ├── struct RepoTopicEntryVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RepoTopicIngestBatch: pub
+│   │   │   └── struct RepoTopicIngestBatchVisitor: pub(self)
+│   │   │       └── type Value: pub(self)
 │   │   ├── mod payload_digest: pub(self)
+│   │   ├── mod runtime_wire: pub(self)
+│   │   │   ├── struct DirtyDelete: pub
+│   │   │   ├── struct DirtyDeleteVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct DirtyIngestBatch: pub
+│   │   │   ├── struct DirtyIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── enum DirtyMutation: pub
+│   │   │   ├── struct DirtyMutationVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RuntimeCatalogIngestBatch: pub
+│   │   │   ├── struct RuntimeCatalogIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RuntimeChangedRecord: pub
+│   │   │   ├── struct RuntimeChangedRecordVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RuntimeDocFacetRecord: pub
+│   │   │   ├── struct RuntimeDocFacetRecordVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RuntimeEdgeAuthorityRecord: pub
+│   │   │   ├── struct RuntimeEdgeAuthorityRecordVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct RuntimeSnapshotRecord: pub
+│   │   │   ├── struct RuntimeSnapshotRecordVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct StructuralIngestBatch: pub
+│   │   │   ├── struct StructuralIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct StructuralReplaceScope: pub
+│   │   │   ├── struct StructuralReplaceScopeVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct StructuralTombstoneScope: pub
+│   │   │   ├── struct StructuralTombstoneScopeVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct StructuralTreeRecord: pub
+│   │   │   └── struct StructuralTreeRecordVisitor: pub(self)
+│   │   │       └── type Value: pub(self)
+│   │   ├── mod semantic_wire: pub(self)
+│   │   │   ├── enum EmbeddingDistanceMetric: pub
+│   │   │   ├── struct EmbeddingDistanceMetricVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct EmbeddingModelContract: pub
+│   │   │   ├── struct EmbeddingModelContractVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── enum EmbeddingNormalization: pub
+│   │   │   ├── struct EmbeddingNormalizationVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct SemanticIngestBatch: pub
+│   │   │   ├── struct SemanticIngestBatchVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct SemanticReplaceScope: pub
+│   │   │   ├── struct SemanticReplaceScopeVisitor: pub(self)
+│   │   │   │   └── type Value: pub(self)
+│   │   │   ├── struct SemanticTombstoneScope: pub
+│   │   │   └── struct SemanticTombstoneScopeVisitor: pub(self)
+│   │   │       └── type Value: pub(self)
 │   │   └── mod validation: pub(self)
 │   │       └── enum SearchCorpusBatchShapeErrorV1: pub
 │   ├── mod ingest_observation: pub(self)

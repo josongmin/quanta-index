@@ -159,6 +159,40 @@ def test_manual_error_impl_satisfies_requirement(tmp_path: Path):
     assert MODULE.audit_file(p) == []
 
 
+def test_generic_manual_error_impl_satisfies_requirement(tmp_path: Path):
+    p = write(
+        tmp_path,
+        """
+        #[derive(Debug)]
+        pub enum CheckpointError<E> {
+            Index,
+            Checkpoint(E),
+        }
+
+        impl<E: core::fmt::Display> core::fmt::Display for CheckpointError<E> {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("checkpoint")
+            }
+        }
+
+        impl<E: core::error::Error> core::error::Error for CheckpointError<E> {}
+        """,
+    )
+    assert MODULE.audit_file(p) == []
+
+
+def test_generic_error_impl_without_display_still_fails(tmp_path: Path):
+    p = write(
+        tmp_path,
+        """
+        #[derive(Debug)]
+        pub enum CheckpointError<E> { Checkpoint(E) }
+        impl<E: core::error::Error> core::error::Error for CheckpointError<E> {}
+        """,
+    )
+    assert len(MODULE.audit_file(p)) == 1
+
+
 def test_manual_impl_skips_variant_attr_check(tmp_path: Path):
     """Manual impl Display covers the Display surface — per-variant #[error] not required."""
     p = write(

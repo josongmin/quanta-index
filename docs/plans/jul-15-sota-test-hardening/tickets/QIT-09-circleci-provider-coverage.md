@@ -30,10 +30,17 @@ terminal `failure` for each context. The later `f4bc41c` main run created at
 intervening time has no observed run in this audit. This narrows the provider
 investigation without assigning a cause or attributing every earlier failure
 to the same pre-start condition.
+The [public CircleCI status page](https://status.circleci.com/) listed no
+Linux Machine incident for that window when checked on 2026-10-03; its
+absence cannot exclude an account-specific or unposted provider failure.
 
 Separately, `just rust-module-cycles` failed on two IPC cycles at that commit.
-Once jobs start, `verify-python` reaches this check through `just rust-policy`.
-The source failure and pre-start hosted failure require separate closure.
+Local `just rust-policy` replay also exposed stale ingest enum inventory paths,
+two manifest-format inventory versions, an ignored-test exception path and a
+generic public error without `Display`/`Error` implementations. The branch
+repairs those source gates; local policy passing does not replace a hosted run.
+`verify-python` reaches them through `just rust-policy` once its job starts.
+The source failures and pre-start hosted failure require separate closure.
 
 ## Execution and status repair
 
