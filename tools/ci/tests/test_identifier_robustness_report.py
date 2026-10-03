@@ -1040,6 +1040,45 @@ def test_generation_manifest_accepts_quanta_projection_of_generated_pair(tmp_pat
         )
 
 
+def test_generation_manifest_accepts_only_identical_suite_reserialization(tmp_path):
+    from tools.benchmark.retrieval.source_oracle_suite import _json_bytes
+
+    suite, census, _, _ = fixture()
+    source_path = tmp_path / "prefix-suite.json"
+    submitted_path = tmp_path / "submitted-suite.json"
+    census_path = tmp_path / "census.json"
+    manifest_path = tmp_path / "manifest.json"
+    source_path.write_bytes(_json_bytes(suite))
+    submitted_path.write_bytes(evaluator.canonical(suite))
+    assert source_path.read_bytes() != submitted_path.read_bytes()
+    census_path.write_bytes(_json_bytes(census))
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "qualification": "diagnostic_unqualified_source_exposed",
+                "repository_commit": suite["repository_commit"],
+                "artifacts": [
+                    {"path": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                    for name, path in (
+                        ("census.json", census_path),
+                        ("prefix-suite.json", source_path),
+                    )
+                ],
+            }
+        )
+    )
+    verify_generation_manifest(
+        manifest_path, census_path, submitted_path, suite, census, "prefix"
+    )
+    suite["tasks"][0]["query"] = "tampered"
+    submitted_path.write_bytes(evaluator.canonical(suite))
+    with pytest.raises(ValueError, match="generation artifact mismatch: prefix-suite.json"):
+        verify_generation_manifest(
+            manifest_path, census_path, submitted_path, suite, census, "prefix"
+        )
+
+
 def test_content_no_answer_population_requires_frozen_generation_count(tmp_path):
     suite, census, _, _ = fixture()
     census["lanes"]["no-answer"] = {"records": [{"task_id": "NOA1"}]}

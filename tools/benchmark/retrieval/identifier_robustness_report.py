@@ -192,18 +192,26 @@ def verify_generation_manifest(
         _require(name in paths, "missing generation artifact: " + name)
         observed = evaluator.digest(path.read_bytes())
         if name == f"{lane}-suite.json" and observed != paths[name]:
+            generated_path = manifest_path.parent / name
+            generated = evaluator.read_json(generated_path)
+            if (
+                evaluator.digest(generated_path.read_bytes()) == paths[name]
+                and generated == suite
+            ):
+                # The runner may reserialize an unchanged suite canonically.
+                observed = paths[name]
             # The pair runner adds exactly one external route. Bind all other
             # bytes back to the generator's single-route suite. A Quanta-only
             # capture of a generated paired clean suite removes that route.
-            if suite.get("routes") == ["lexical", "semble-lexical-file"]:
+            elif suite.get("routes") == ["lexical", "semble-lexical-file"]:
                 source_suite = {**suite, "routes": ["lexical"]}
                 observed = evaluator.digest(source_oracle_suite._json_bytes(source_suite))
             elif suite.get("routes") == ["lexical"]:
-                source_suite = evaluator.read_json(manifest_path.parent / name)
                 if (
-                    isinstance(source_suite, dict)
-                    and source_suite.get("routes") == ["lexical", "semble-lexical-file"]
-                    and {**source_suite, "routes": ["lexical"]} == suite
+                    evaluator.digest(generated_path.read_bytes()) == paths[name]
+                    and isinstance(generated, dict)
+                    and generated.get("routes") == ["lexical", "semble-lexical-file"]
+                    and {**generated, "routes": ["lexical"]} == suite
                 ):
                     observed = paths[name]
             else:

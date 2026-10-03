@@ -15327,6 +15327,47 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
     )
     assert file_replay["primary_metric"] == "file_ndcg_at_10"
     assert file_replay["sample_count"] == 2
+    assert not pairrun._qualified_uncertainty(file_replay)
+    assert not pairrun._qualified_cluster_uncertainty(file_replay)
+    sufficiently_sampled_suite = copy.deepcopy(suite)
+    sufficiently_sampled_run = copy.deepcopy(run)
+    for index in range(4, 22):
+        source_id = "T1" if index % 2 == 0 else "T2"
+        source_task = next(
+            task for task in suite["tasks"] if task["task_id"] == source_id
+        )
+        task = copy.deepcopy(source_task)
+        task["task_id"] = f"T{index}"
+        task["query"] = f"{source_task['query']} reviewed variant {index}"
+        task["query_sha256"] = ev.digest(task["query"].encode())
+        task["query_family_id"] = f"file-family-{index}"
+        sufficiently_sampled_suite["tasks"].append(task)
+        for source_row in run["results"]:
+            if source_row["task_id"] == source_id:
+                result = copy.deepcopy(source_row)
+                result["task_id"] = task["task_id"]
+                sufficiently_sampled_run["results"].append(result)
+    _validated_suite, sufficiently_sampled_pack, _source = ev.validate_suite(
+        repo, sufficiently_sampled_suite
+    )
+    sufficiently_sampled_report = ev.evaluate_complete_scored_file_evidence(
+        sufficiently_sampled_suite,
+        sufficiently_sampled_pack,
+        sufficiently_sampled_run,
+        "semble-lexical-file",
+        "lexical",
+    )
+    sufficiently_sampled_replay = pairrun.replay_complete_scored_file_report(
+        sufficiently_sampled_suite,
+        sufficiently_sampled_pack,
+        sufficiently_sampled_run,
+        sufficiently_sampled_report,
+        "whole_file",
+        "a" * 64,
+    )
+    assert sufficiently_sampled_replay["sample_count"] == 20
+    assert pairrun._qualified_uncertainty(sufficiently_sampled_replay)
+    assert pairrun._qualified_cluster_uncertainty(sufficiently_sampled_replay)
     forged_file_evidence = copy.deepcopy(file_evidence)
     forged_file_evidence["per_query"][0]["file_ndcg_at_10"] = 0.0
     with pytest.raises(pairrun.RunError, match="differs from independent replay"):
