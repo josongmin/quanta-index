@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,20 @@ def test_tree_sitter_census_matches_hand_written_declarations(name):
 def require_tool(language: str) -> None:
     if language != "python" and shutil.which(TOOLS[language]) is None:
         pytest.skip(f"independent {language} checker toolchain is not installed")
+
+
+def test_checker_large_input_and_output_do_not_deadlock(tmp_path, monkeypatch):
+    monkeypatch.setattr(audit, "CHECKER_TIMEOUT_SECONDS", 5)
+    program = (
+        "import sys; "
+        "sys.stdin.buffer.readline(); "
+        "sys.stdout.buffer.write(b'X' * 131072); "
+        "remaining = sys.stdin.buffer.read(); "
+        "sys.stdout.buffer.write(str(len(remaining)).encode())"
+    )
+    payload = b"first\n" + b"a" * 262144
+    output = audit._run([sys.executable, "-c", program], tmp_path, payload)
+    assert output == b"X" * 131072 + b"262144"
 
 
 @pytest.mark.parametrize("name", sorted(LANGUAGES))

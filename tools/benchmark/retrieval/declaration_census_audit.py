@@ -87,14 +87,20 @@ def _source_digest(kind: str) -> str:
 
 def _run(argv: list[str], cwd: Path, stdin: bytes = b"") -> bytes:
     try:
-        completed = subprocess.run(
-            argv,
-            cwd=cwd,
-            input=stdin,
-            capture_output=True,
-            timeout=CHECKER_TIMEOUT_SECONDS,
-            check=False,
-        )
+        # Large checker inventories can fill both stdin and stdout pipes while
+        # the child writes its census. A seekable input file leaves only stdout
+        # and stderr to drain during communicate().
+        with tempfile.TemporaryFile() as source:
+            source.write(stdin)
+            source.seek(0)
+            completed = subprocess.run(
+                argv,
+                cwd=cwd,
+                stdin=source,
+                capture_output=True,
+                timeout=CHECKER_TIMEOUT_SECONDS,
+                check=False,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CensusAuditError(f"census checker command failed: {argv[0]}: {exc}") from exc
     if completed.returncode:
