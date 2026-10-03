@@ -7,6 +7,42 @@ correct, complete capture contract and a quiet admitted host. Parent:
 [CS-BENCH-04](../../sep-27-code-search-remediation/rfcs/CS-BENCH-04-comparators-performance-and-incremental.md)
 and [MISC-06](../../sep-27-misc/tickets/INDEX.md).
 
+## 2026-10-04 harness cost RCA and next actions
+
+One exploratory attrs pair (one fresh root, debug Quanta binaries, 3.12 driver,
+busy macOS host) passed `PAIR_VALID`. The diagnostic driver timer measured
+96.43 s total: 54.55 s product envelope, 14.09 s source closure capture,
+11.39 s protocol-lock phase containing a second closure verification, and
+10.94 s final closure verification. The closure inventories 1,123 files /
+53.2 MB; a standalone verification took 9.36 s. This establishes repeated
+custody scanning as a local cost, not a qualified speed comparison.
+
+The middle verification was removed. The captured closure digest remains in
+the manifest and protocol lock; independent verdict replay and the final full
+verification still precede atomic promotion. A second fresh attrs pair passed
+`PAIR_VALID`; protocol-lock time fell from 11.39 s to 0.046 s. Total time rose
+to 115.12 s because product and final verification times rose under concurrent
+load. Do not infer an end-to-end speedup from these two uncontrolled samples.
+The stage timer is diagnostic only and is not authority for the verdict.
+Receipts: `/private/tmp/a42f990` at source `ab0641b6`, and
+`/private/tmp/a727b65` at source `a7e44827`, using the same runner SHA
+`29fd369c0e0ddb3e704c3ef62d6f8459a0b146a1c4b8a29cce666154e169c32b`
+and searchd SHA
+`f324ccd7c578213d4217556c3c31b2a68692d79688ebd2dd330098ed4326af13`.
+
+| Priority | Owner and exact change | Acceptance |
+| --- | --- | --- |
+| P0 done | `run.py`: phase timer, v7 ingest stage contract in direct capture, one final closure verification, and Python >=3.10 admission before product execution | Focused positive/negative tests; one complete source-bound pair with `PAIR_VALID=pass`; final source-drift refusal retained |
+| P1 | C5 quality batch in `holdout_c4.py`, `run.py`, Rust retrieval runner and `semble.py`: run the four intent packs against one immutable index per repository, with separate sealed packs, records, reports and replay per intent | Same per-intent rows, statuses and judgments as four fresh runs; a changed corpus/model/strategy/generation refuses reuse; indexing phase reported once, never charged to individual query latency |
+| P1 | `source_closure.py` and pair driver: benchmark batch reuse of one captured closure for identical source revision, then verify each cell before promotion; keep qualified capture policy explicit | Mutated file, changed root set, revision drift and altered closure digest all refuse; measured capture cost per cell falls without losing final custody check |
+| P2 | Profile SymPy verifier under the current source. Optimize repeated parsing only inside one independent validation pass, keyed by source bytes and parser identity; keep verdict re-derivation independent | Report and verdict bytes unchanged; tampered source and parser identity rejected; representative large-cell wall and CPU reported |
+
+Exploratory C5 specs had no qualified admission bundle, so admission was not
+the observed bottleneck. Do not remove qualified admission or reuse indexes in
+fresh-root speed samples. The old 48-cell ledger had repeated per-repository
+Quanta/Semble indexing across four intents, but its summed wall times overlap
+concurrent cells and are not an estimate of achievable batch savings.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
