@@ -1645,7 +1645,8 @@ The frozen projection manifest SHA-256 is
 
 Quanta ordinary input and explicit typo both hit 4,135 tasks; ordinary input
 alone hit two, explicit typo alone hit eleven, and both missed 58. Of the 69
-ordinary-input misses, 58 were `capped` and eleven `success`. The earlier
+ordinary-input misses, 58 were `capped` and eleven `success`. Those 69 variant
+tasks belong to 29 repository/name families, not 69 independent examples. The earlier
 112/4,206 ordinary-input observation used the pre-fallback source and must not
 be mixed with this capture. The new default route falls back to bounded OSA1
 only when a folded, unscoped, bare identifier produces no literal file result;
