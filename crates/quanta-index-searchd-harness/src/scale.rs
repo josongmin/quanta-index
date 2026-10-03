@@ -35,6 +35,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::Result as AnyResult;
+use nix::sys::resource::{UsageWho, getrusage};
+use nix::sys::time::TimeValLike as _;
 use quanta_index_contract::{
     LexicalCandidate, ManifestGeneration, MetricsSnapshotV1, QueryConstraintSetV1,
     TextQueryRequest, TextQuerySyntax,
@@ -767,6 +769,48 @@ pub struct TierMeasurement {
     /// Effective client request deadline; raising it does not raise daemon
     /// admission limits and must be recorded with each measured tier.
     pub client_request_timeout_ms: u64,
+    /// RUSAGE_SELF around runtime boot through driver cleanup. The daemon is
+    /// an in-process thread; this includes harness and daemon CPU time.
+    pub cpu: Option<CpuUsageV1>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CpuUsageV1 {
+    pub user_ms: f64,
+    pub system_ms: f64,
+}
+
+#[derive(Clone, Copy)]
+struct CpuSnapshot {
+    user_us: i64,
+    system_us: i64,
+}
+
+impl CpuSnapshot {
+    fn observe() -> AnyResult<Self> {
+        let usage = getrusage(UsageWho::RUSAGE_SELF)?;
+        Ok(Self {
+            user_us: usage.user_time().num_microseconds(),
+            system_us: usage.system_time().num_microseconds(),
+        })
+    }
+
+    fn elapsed_since(self, earlier: Self) -> AnyResult<CpuUsageV1> {
+        let user = self
+            .user_us
+            .checked_sub(earlier.user_us)
+            .filter(|elapsed| *elapsed >= 0)
+            .ok_or_else(|| anyhow::anyhow!("scale: CPU user time decreased"))?;
+        let system = self
+            .system_us
+            .checked_sub(earlier.system_us)
+            .filter(|elapsed| *elapsed >= 0)
+            .ok_or_else(|| anyhow::anyhow!("scale: CPU system time decreased"))?;
+        Ok(CpuUsageV1 {
+            user_ms: user as f64 / 1_000.0,
+            system_ms: system as f64 / 1_000.0,
+        })
+    }
 }
 
 fn scale_runtime(client_timeout: Option<Duration>) -> AnyResult<E2eRuntime> {
@@ -1131,6 +1175,7 @@ fn measure_small_tier_with_timeout(
         })?;
 
     // The search-corpus history contract requires at least two generations.
+    let cpu_started = CpuSnapshot::observe()?;
     let mut rt = scale_runtime(client_timeout)?;
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
@@ -1204,9 +1249,12 @@ fn measure_small_tier_with_timeout(
         result_count,
         model_revision,
         client_request_timeout_ms: timeout_ms(client_timeout)?,
+        cpu: None,
     })
     })();
-    finish_runtime_measurement(measurement, rt.stop())
+    let mut measurement = finish_runtime_measurement(measurement, rt.stop())?;
+    measurement.cpu = Some(CpuSnapshot::observe()?.elapsed_since(cpu_started)?);
+    Ok(measurement)
 }
 
 fn measure_scoped_delta(rt: &mut E2eRuntime, file: &ScopedFile) -> AnyResult<DeltaMeasurementV1> {
@@ -1271,6 +1319,7 @@ pub fn measure_tier_with_client_timeout(
                 .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
         })?;
 
+    let cpu_started = CpuSnapshot::observe()?;
     let mut rt = scale_runtime(client_timeout)?;
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
@@ -1370,9 +1419,12 @@ pub fn measure_tier_with_client_timeout(
         result_count,
         model_revision,
         client_request_timeout_ms: timeout_ms(client_timeout)?,
+        cpu: None,
     })
     })();
-    finish_runtime_measurement(measurement, rt.stop())
+    let mut measurement = finish_runtime_measurement(measurement, rt.stop())?;
+    measurement.cpu = Some(CpuSnapshot::observe()?.elapsed_since(cpu_started)?);
+    Ok(measurement)
 }
 
 /// Source identity for a refusal, recomputed from the deterministic generator
@@ -1569,6 +1621,11 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
         "tier": measurement.tier.as_str(),
         "seed": measurement.seed,
         "client_request_timeout_ms": measurement.client_request_timeout_ms,
+        "cpu_process": {
+            "scope": "RUSAGE_SELF, harness and in-process daemon, runtime boot through cleanup",
+            "user_ms": measurement.cpu.map(|cpu| cpu.user_ms),
+            "system_ms": measurement.cpu.map(|cpu| cpu.system_ms),
+        },
         "file_count": measurement.file_count,
         "serving_owner_count": 1,
         "source_repo_count": measurement.source_repo_count,
@@ -1671,6 +1728,9 @@ pub fn artifact(
     git_head: GitHeadV1,
     host: HostV1,
 ) -> AnyResult<BenchArtifactV1> {
+    if measurement.cpu.is_none() {
+        anyhow::bail!("scale: measured tier has no process CPU observation");
+    }
     let params = params_for(measurement.tier);
     Ok(BenchArtifactV1 {
         dimension: DIMENSION.to_string(),
@@ -2249,6 +2309,10 @@ mod tests {
     fn sample_measurement() -> TierMeasurement {
         TierMeasurement {
             client_request_timeout_ms: 30_000,
+            cpu: Some(CpuUsageV1 {
+                user_ms: 3.0,
+                system_ms: 2.0,
+            }),
             tier: ScaleTier::Small,
             seed: 3,
             file_count: 16,

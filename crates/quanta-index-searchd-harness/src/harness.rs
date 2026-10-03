@@ -735,10 +735,17 @@ impl E2eRuntime {
         reason = "the harness is test infrastructure; a failed daemon restart invalidates every assertion that follows and must abort the test rather than return a runtime the test would keep driving"
     )]
     pub fn reopen(mut self) -> Self {
-        if let Err(error) = self.stop_driver() {
+        if let Err(error) = self.try_reopen_in_place() {
             panic!("e2e-harness: daemon runtime restart failed: {error:#}");
         }
         self
+    }
+
+    /// Stop the daemon thread while retaining this process, publisher and
+    /// state root. The next `start` reopens persisted state; unlike `reopen`,
+    /// this reports teardown failure to benchmark callers instead of panicking.
+    pub fn try_reopen_in_place(&mut self) -> AnyResult<()> {
+        self.stop_driver()
     }
 
     fn stop_driver(&mut self) -> AnyResult<()> {

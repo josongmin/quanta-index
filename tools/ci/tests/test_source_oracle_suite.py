@@ -57,6 +57,28 @@ def test_batch_declaration_census_cache_preserves_gold_and_refuses_drift(monkeyp
     assert len(parsed) == 2
 
 
+def test_shared_source_snapshot_revalidates_suite_and_refuses_checkout_drift(tmp_path):
+    repo, commit, files = _source_repo(tmp_path)
+    baseline = _baseline(commit, files)
+    suite = source_oracle_suite.derive_suites(repo, baseline)["identifier-word-file"][0]
+    original, pack, snapshot = ev.validate_suite(repo, suite)
+    cached_bytes = snapshot.cached_source_bytes
+
+    repeated, repeated_pack, reused = ev.validate_suite(repo, suite, source_snapshot=snapshot)
+    assert (repeated, repeated_pack) == (original, pack)
+    assert reused is snapshot
+    assert snapshot.cached_source_bytes == cached_bytes
+
+    unlimited = ev.SourceSnapshot(repo, commit)
+    with pytest.raises(ev.EvidenceError, match="shared source snapshot"):
+        ev.validate_suite(repo, suite, source_snapshot=unlimited)
+
+    first_path = sorted(files)[0]
+    (repo / first_path).write_bytes(files[first_path] + b"\n// changed\n")
+    with pytest.raises(ev.EvidenceError, match="checkout has tracked or untracked changes"):
+        ev.validate_suite(repo, suite, source_snapshot=snapshot)
+
+
 @pytest.mark.parametrize("suffix", ["ts", "tsx"])
 def test_typescript_oracles_use_the_producer_compatibility_grammar(suffix):
     from tools.benchmark.retrieval import gold_oracle, source_oracle
