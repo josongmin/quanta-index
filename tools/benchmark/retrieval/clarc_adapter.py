@@ -195,12 +195,16 @@ def admit_pinned_pair(
             "file_suffix": ".cpp",
             "qrel_policy": "one_upstream_positive_per_query_other_candidates_unjudged",
             "positive_relevance": 2,
+            "unjudged_policy": "unknown",
+            "metrics_scope": "positive_target_retrieval_only",
+            "gold_provenance": "upstream_paired_code_id_no_local_rowwise_human_review",
             "source_oracle": "not_applicable",
             "source_repository_file_identity": "not_provided_by_group1_rows",
             "license_status": "dataset_card_claims_cc_by_sa_4_0_project_attribution_and_redistribution_unverified",
         },
         "pairs": EXPECTED_PAIRS,
         "admission": admission,
+        "full_population_admitted": admission["admitted"] == EXPECTED_PAIRS,
         "duplicate_content": {
             variant: _duplicate_content(rows, variant)
             for variant in ("original", "neutral_renamed")
