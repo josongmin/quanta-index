@@ -19,6 +19,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.parse
@@ -273,6 +274,42 @@ def _projection_binding(config: dict, manifest: dict) -> dict | None:
             or _sha_file(file) != expected[path]
         ):
             raise ValueError(f"projection file differs from source manifest: {path}")
+    # `git status` can hide skip-worktree or assume-unchanged content. Sourcegraph
+    # indexes the requested commit, so compare that commit's blobs directly.
+    process = subprocess.Popen(
+        ["git", "-C", str(root), "archive", "--format=tar", "HEAD"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    committed: set[str] = set()
+    try:
+        assert process.stdout is not None
+        with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+            for member in archive:
+                if member.isdir():
+                    continue
+                if not member.isfile() or member.name not in expected or member.name in committed:
+                    raise ValueError("projection commit tree has an unexpected file")
+                if member.size > MAX_INDEX_BYTES:
+                    raise ValueError("projection commit blob exceeds file bound")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise ValueError("projection commit blob cannot be read")
+                digest = hashlib.sha256()
+                with stream:
+                    while block := stream.read(1024 * 1024):
+                        digest.update(block)
+                if digest.hexdigest() != expected[member.name]:
+                    raise ValueError(f"projection commit blob differs: {member.name}")
+                committed.add(member.name)
+        if process.wait(timeout=30) != 0 or committed != set(expected):
+            raise ValueError("projection commit tree differs from source manifest")
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
     return {
         "source_revision": manifest["repository_commit"],
         "projection_revision": revision,

@@ -167,6 +167,50 @@ class SourcegraphCaptureTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 live_lexical_external._projection_binding(config, manifest)
 
+    def test_projection_refuses_clean_looking_worktree_with_different_commit_blob(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+            root = Path(temporary)
+            (root / "a.py").write_text("committed = 1\n")
+            subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "a.py"], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "fixture",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "update-index", "--skip-worktree", "a.py"], check=True
+            )
+            (root / "a.py").write_text("working = 2\n")
+            self.assertEqual(
+                subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"]),
+                b"",
+            )
+            manifest = {
+                "repository_commit": REVISION,
+                "files": [
+                    {
+                        "path": "a.py",
+                        "file_sha256": hashlib.sha256((root / "a.py").read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+            with self.assertRaisesRegex(ValueError, "projection commit blob differs"):
+                live_lexical_external._projection_binding(
+                    {"projection_git_root": str(root)}, manifest
+                )
+
     def test_live_response_uses_projection_revision_and_source_manifest(self) -> None:
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
             view = Path(temporary)
