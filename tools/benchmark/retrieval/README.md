@@ -389,6 +389,13 @@ universe; the commitment-bound `scorer-input/gold-sidecar.json` retains the
 upstream judgments. Distinct directory names and file modes alone do not prove
 runtime isolation. Attested diagnostics must not claim an enforced access block.
 
+Keep driver and executable provenance separate. The pair harness field
+`provenance.quanta.source_sha` identifies the Python driver's source checkout;
+`binary_digest` identifies the executed runner bytes. Neither field alone
+attests the runner or daemon build source. When those sources differ, retain a
+separate build-source binding with both executable hashes and state both roles
+in the report. A driver commit must not be reported as the engine commit.
+
 The prepared manifest records source commitments, raw and canonical hashes,
 the selected profile, and submitted/source-blocked task counts. Use its bound
 profile without truncating or rewriting queries. The CLARC group1 freeze retains all526 population rows:425 are submitted

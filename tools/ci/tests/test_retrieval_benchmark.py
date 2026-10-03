@@ -15386,6 +15386,62 @@ def test_query_clock_overhead_v7_preserves_current_diagnostic_and_hybrid_policy(
         overhead.compare(record, record, phases, off_phases, on, forged, pack)
 
 
+@pytest.mark.parametrize("rank_unit", ["distinct_file", None])
+def test_current_v7_diagnostic_replays_native_file_or_chunk_projection(tmp_path, rank_unit):
+    stage = _pair_stage(tmp_path, diagnostic_version=7)
+    path = next(stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json"))
+    record = json.loads(path.with_name("record.json").read_text())
+    diagnostic = json.loads(path.read_text())
+    suite = json.loads(stage["suite_path"].read_text())
+    pack = json.loads((stage["stage"] / "query-pack.json").read_text())
+    pack, _ = pairrun.project_pack_and_suite(pack, suite, ["lexical"])
+    scored = record["results"][0]
+    row = diagnostic["results"][0]
+    if rank_unit is not None:
+        scored["rank_unit"] = rank_unit
+    hits = []
+    assert len(scored["candidates"]) == len(row["candidates"])
+    for rank, (candidate, observed) in enumerate(
+        zip(scored["candidates"], row["candidates"]), 1
+    ):
+        if rank_unit == "distinct_file":
+            source = (stage["stage"] / "runner-corpus" / candidate["path"]).read_bytes()
+            candidate["start_byte"] = 0
+            candidate["end_byte"] = len(source)
+            candidate["start_line"] = 1
+            candidate["end_line"] = len(source.splitlines())
+            candidate["block_sha256"] = ev.digest(source)
+            observed["start_line"] = candidate["start_line"]
+            observed["end_line"] = candidate["end_line"]
+        unit_id = f"{rank_unit or 'chunk'}:{rank}"
+        candidate["span_accounting"] = {
+            "unit_kind": "file" if rank_unit else "chunk",
+            "unit_id": unit_id,
+        }
+        observed["candidate_id"] = unit_id
+        hits.append(
+            {
+                "candidate_id": unit_id,
+                "path": candidate["path"],
+                "start_byte": candidate["start_byte"],
+                "end_byte": candidate["end_byte"],
+                "scored_rank": rank,
+            }
+        )
+    row["response"]["native_projection"] = {
+        "policy": "first-source-span-v1",
+        "hits": hits,
+    }
+    diagnostic["record_sha256"] = cp.sha(cp.canonical(record))
+    assert pairrun.validate_retrieval_diagnostic(
+        diagnostic, record, diagnostic["record_sha256"], pack
+    )
+    forged = json.loads(json.dumps(diagnostic))
+    forged["results"][0]["response"]["native_projection"]["hits"][0]["scored_rank"] = 2
+    with pytest.raises(pairrun.RunError, match="native projection"):
+        pairrun.validate_retrieval_diagnostic(forged, record, diagnostic["record_sha256"], pack)
+
+
 def test_query_clock_comparator_excludes_only_policy_controlled_code_search_clocks():
     trace = [
         {"stage": "merge", "detail": "code_search.execution.mode=ordinary"},
