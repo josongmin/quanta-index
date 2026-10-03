@@ -1107,6 +1107,8 @@ def validate_suite(
     if "leakage_allowlist" in suite:
         allowlist = validate_leakage_allowlist(source, suite["leakage_allowlist"])
     require(isinstance(tasks, list) and bool(tasks), "suite requires tasks")
+    # Explicit typo queries use the exhaustive folded-token collision index;
+    # only their intended exact names belong in the bounded query-word index.
     oracle_names = {
         raw.get("intended_name", raw["query"])
         for raw in tasks
@@ -1115,14 +1117,6 @@ def validate_suite(
         and raw["source_oracle"].get("contract") != literal_source_oracle.CONTENT_LITERAL_UTF8_EXACT
         and isinstance(raw.get("query"), str)
     }
-    oracle_names.update(
-        raw["query"]
-        for raw in tasks
-        if isinstance(raw, dict)
-        and isinstance(raw.get("source_oracle"), dict)
-        and isinstance(raw.get("intended_name"), str)
-        and isinstance(raw.get("query"), str)
-    )
     literal_names = {
         raw["query"]
         for raw in tasks

@@ -857,6 +857,16 @@ def test_paired_typo_builder_emits_operation_and_stress_suites(tmp_path):
         )
 
 
+def test_paired_typo_oracle_limit_counts_intended_names_once(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import identifier_robustness_suite as irs
+
+    repo, baseline = _robustness_baseline(tmp_path)
+    monkeypatch.setattr(ev.source_oracle, "MAX_QUERIES", len(baseline["tasks"]))
+    suites, _census = irs.derive_paired_full(repo, baseline, seed=7)
+    assert len(suites["clean"][0]["tasks"]) == len(baseline["tasks"])
+    assert suites["typo-insertion"][0]["tasks"]
+
+
 def test_stress_typo_generators_are_deterministic_one_edit_and_boundary_scoped():
     from tools.benchmark.retrieval import identifier_robustness_suite as irs
     from tools.benchmark.retrieval import source_oracle as so
