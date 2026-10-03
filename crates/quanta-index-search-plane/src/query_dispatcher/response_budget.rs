@@ -95,9 +95,10 @@ fn encoded_len<T: Serialize>(value: &T, what: &str) -> Result<u64, CoreError> {
         .map_err(|err| CoreError::InvalidContract(format!("measure {what}: {err}")))
 }
 
-/// Normalize the three policy-controlled CodeSearch clocks to their maximum
-/// `u64` wire shape. Both observation policies then reserve the same bytes
-/// before selecting a prefix or minting its continuation cursor.
+/// Normalize policy-controlled `CodeSearch` clocks to their maximum wire shape.
+///
+/// Both observation policies reserve the same bytes before selecting a prefix
+/// or minting its continuation cursor.
 fn code_search_clock_reserve_delta(trace: &[PlannerTraceEntry]) -> Result<u64, CoreError> {
     const CLOCKS: [&str; 3] = ["candidate_ns", "sort_page_ns", "preview_ns"];
     let has_code_search = trace
@@ -126,8 +127,8 @@ fn code_search_clock_reserve_delta(trace: &[PlannerTraceEntry]) -> Result<u64, C
                 .map(|value| (index, value))
         });
         if let Some((index, value)) = clock {
-            let parsed = value.parse::<u64>().map_err(|_| {
-                CoreError::InvalidContract("code-search work clock is malformed".into())
+            let parsed = value.parse::<u64>().map_err(|error| {
+                CoreError::InvalidContract(format!("code-search work clock is malformed: {error}"))
             })?;
             let duplicate = seen.get(index).copied().unwrap_or(true);
             if entry.stage != PlannerStage::Merge || duplicate || parsed.to_string() != value {

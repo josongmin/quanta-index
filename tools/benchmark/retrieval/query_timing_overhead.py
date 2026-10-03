@@ -64,7 +64,7 @@ def compare(
         if (
             record.get("schema_version") != 5
             or record.get("span_accounting_version") != 1
-            or diagnostic.get("schema_version") not in (5, 6)
+            or diagnostic.get("schema_version") not in (5, 6, 7)
             or phases.get("system") != "quanta"
             or not phases.get("query_protocol")
         ):
@@ -74,7 +74,7 @@ def compare(
         pairrun._validate_phase_metrics(phases, "overhead phase metrics")
         pairrun.validate_retrieval_diagnostic(diagnostic, record, phases["record_sha256"], pack)
     if on_diagnostic["schema_version"] != off_diagnostic["schema_version"] or (
-        on_diagnostic["schema_version"] == 6
+        on_diagnostic["schema_version"] in (6, 7)
         and on_diagnostic["hybrid_fetch_policy"] != off_diagnostic["hybrid_fetch_policy"]
     ):
         raise ValueError("on/off hybrid fetch policy or diagnostic version differs")

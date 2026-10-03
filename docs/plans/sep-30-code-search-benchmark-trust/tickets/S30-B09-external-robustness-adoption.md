@@ -263,10 +263,13 @@ from driver6f3. Old records are never rebound to a new suite or source.
 
 ### Original-cohort fresh results
 
-`/private/tmp/qi-c5-osa1-fresh-join-20261004/five-product-8-valid.json`
+`/private/tmp/qi-c5-osa1-fresh-join-20261004/five-product-8-valid-v3.json`
 joins exactly the original source-valid8 repositories and2767 tasks. Every
 product has the same2767 eligible tasks. These are default file-search requests,
 with product-specific matching behavior, rather than a Fuzzy Finder comparison.
+The final join checks committed bytes of the external producer files and
+refuses to aggregate pairs from different driver/binary/evaluator/corpus tuples.
+Prior helper-version reports remain intact; final quality summaries are equal.
 
 | Product | Intended-original-file Hit@10 | Near-name-file Hit@10 | Calls total seconds | Call p50 / p95 milliseconds |
 | --- | ---: | ---: | ---: | ---: |

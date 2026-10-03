@@ -3903,7 +3903,7 @@ def _validate_explanation(
             raise RunError(f"{where} is missing measured stage timings")
         return
     fields = {"request_id", "early_stop_reason", "engines_executed", "engines_touched", "strategy"}
-    if version == 6:
+    if version in (6, 7):
         fields.add("planner_trace")
     if version in (4, 5, 6, 7):
         fields.add("stage_timings")
@@ -3924,7 +3924,7 @@ def _validate_explanation(
             raise RunError(f"{where}.{field} is invalid")
     if detail["strategy"] is not None and not isinstance(detail["strategy"], str):
         raise RunError(f"{where}.strategy is invalid")
-    if version == 6:
+    if version in (6, 7):
         trace = detail["planner_trace"]
         if not isinstance(trace, list) or any(
             not isinstance(entry, dict)
@@ -4197,7 +4197,7 @@ def _validate_diagnostic_response_v3(
         raise RunError(f"{where} is malformed")
     if kind == "returned_window":
         fields = {"window", "explanation"}
-        projected = version == 6 and "native_projection" in response
+        projected = version in (6, 7) and "native_projection" in response
         if projected:
             fields.add("native_projection")
         detail = _exact_keys(response, fields, where)

@@ -6143,7 +6143,22 @@ def _pair_stage(
         qdir.mkdir(parents=True)
         sdir.mkdir(parents=True)
         qrec = record(lex_rows, lex_sha, "quanta", f"q-r{rep}", f"run-q-r{rep}")
-        ingest = _diagnostic_ingest_fixture(qrec) if diagnostic_version in (5, 6) else None
+        ingest = _diagnostic_ingest_fixture(qrec) if diagnostic_version in (5, 6, 7) else None
+        if diagnostic_version == 7:
+            ingest["observation"].update(
+                lexical_build_ns=100,
+                lexical_stages={
+                    "preparation_ns": 10,
+                    "writer_mutation_ns": 20,
+                    "text_authority_ns": 10,
+                    "file_authority_ns": 10,
+                    "seal_ns": 40,
+                    "seal_writer_commit_ns": 10,
+                    "seal_merge_wait_ns": 5,
+                    "seal_commitment_ns": 20,
+                    "seal_file_admission_ns": 15,
+                },
+            )
         srec = record(sem_rows, sem_sha, "semble", f"s-r{rep}", f"run-s-r{rep}")
         qpath = qdir / "record.json"
         spath = sdir / "record.json"
@@ -6211,7 +6226,7 @@ def _pair_stage(
         qphase.write_text(
             json.dumps(
                 {
-                    "schema_version": 2,
+                    "schema_version": 3 if diagnostic_version == 7 else 2,
                     "system": "quanta",
                     "timing_layer": "runner_monotonic_wall_v1",
                     "strategy": "whole_file",
@@ -6250,8 +6265,15 @@ def _pair_stage(
                     "phases_ms": {
                         "discovery": 1.0,
                         "chunk": 1.0,
-                        "model_provider_prepare": 1.0,
+                        "daemon_boot_and_readiness"
+                        if diagnostic_version == 7
+                        else "model_provider_prepare": 1.0,
                         "embed_publish_seal_activate": 1.0,
+                        **(
+                            {"sdk_publish": 0.6, "sdk_activate": 0.3}
+                            if diagnostic_version == 7
+                            else {}
+                        ),
                         "cold_query": 1.0,
                         "warmup": 1.0,
                         "warm_query": warm_query_ms,
@@ -6528,10 +6550,10 @@ def _pair_stage(
                 }
             )
         diagnostic_path = qdir / "retrieval-diagnostic.json"
-        if diagnostic_version in (5, 6) and query_observation == "disabled":
+        if diagnostic_version in (5, 6, 7) and query_observation == "disabled":
             for row in diagnostic_rows:
                 row["response"]["explanation"]["stage_timings"] = None
-        if diagnostic_version == 6:
+        if diagnostic_version in (6, 7):
             for row in diagnostic_rows:
                 row["response"]["explanation"]["planner_trace"] = []
         diagnostic_path.write_text(
@@ -6544,7 +6566,7 @@ def _pair_stage(
                                 hybrid_floor
                             )
                         }
-                        if diagnostic_version == 6
+                        if diagnostic_version in (6, 7)
                         else {}
                     ),
                     **(
@@ -6554,7 +6576,7 @@ def _pair_stage(
                             ),
                             "ingest": ingest,
                         }
-                        if diagnostic_version in (5, 6)
+                        if diagnostic_version in (5, 6, 7)
                         else {}
                     ),
                     "kind": "quanta_returned_window_diagnostic",
@@ -6567,6 +6589,11 @@ def _pair_stage(
                         "clock": "runner_monotonic_wall_v1",
                         "daemon_boot_and_readiness": 1.0,
                         "sdk_publish_and_activate_opaque": 1.0,
+                        **(
+                            {"sdk_publish": 0.6, "sdk_activate": 0.3}
+                            if diagnostic_version == 7
+                            else {}
+                        ),
                         "runner_record_assembly": 0.1,
                         "corpus_reverification": 0.1,
                         "daemon_shutdown": 0.1,
@@ -6937,12 +6964,12 @@ def _pair_stage(
     (stage / "protocol-lock.json").write_text(
         json.dumps(
             {
-                "lock_version": {4: 2, 5: 3, 6: 4}[diagnostic_version],
+                "lock_version": {4: 2, 5: 3, 6: 4, 7: 5}[diagnostic_version],
                 "retrieval_diagnostic_version": diagnostic_version,
                 "symbol_coverage_policy": "allow-incomplete",
                 **(
                     {"hybrid_fetch_policy": pairrun.hybrid_fetch_policy_configuration(hybrid_floor)}
-                    if diagnostic_version == 6
+                    if diagnostic_version in (6, 7)
                     else {}
                 ),
                 **(
@@ -6952,7 +6979,7 @@ def _pair_stage(
                         ),
                         "ingest_request_identity": pairrun.ingest_request_identity({}),
                     }
-                    if diagnostic_version in (5, 6)
+                    if diagnostic_version in (5, 6, 7)
                     else {}
                 ),
                 "rank_metric_k_policy": "declared_top_k_v1",
