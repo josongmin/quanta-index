@@ -1008,3 +1008,18 @@ checks: **12/12** reports and both checks passed, with per-repository positive
 counts exactly matching the frozen summary (1,132 total). It wrote no capture.
 No qualified native capture, human review, external index attestation or C5
 decision was performed by this replay.
+
+## Current code verification boundary (2026-10-03)
+
+At clean `main@5121711c`, the affected C0-C4 Python rails passed:
+`test_corpus_release.py`, `test_gold_oracle.py`, `test_corpus_binding.py`,
+`test_code_search_matrix.py`, `test_code_search_workflow.py` (**214/214**);
+`retrieval/test_corpus_set.py` (**4/4**);
+`test_identifier_robustness_report.py` and `test_source_oracle_suite.py`
+(**72/72**); `test_completed_response_timing.py` (**20/20**); and
+`test_holdout_review.py` plus `test_holdout_c4.py` (**84/84**).
+The full retrieval rail passed **447/447** at `ff2bae33`; the retrieval
+runner/evaluator/decision sources and that test file are unchanged through
+`5121711c`. `pm.py lint` passed and the checkout is clean. These checks prove
+the tested code surfaces, not human label custody, an unmocked qualified pair
+capture, B07 host performance or the C5 product decision.
