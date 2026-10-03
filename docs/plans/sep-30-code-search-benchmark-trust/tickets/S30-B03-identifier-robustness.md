@@ -125,3 +125,13 @@ A second fresh generation under the adjacent `-repeat-20261003` root produced
 digests were independently recomputed. Product execution and ranking for
 these new Gin operation suites are **NOT_RUN**; no archived 363-task score is
 combined with them.
+
+The independent reporter rederived all four admitted operation censuses from
+the frozen Gin bytes (insertion 2.467s, deletion 2.228s, substitution 2.204s,
+transposition 3.162s). Their admitted rows contain 23, 56, 27 and 24 cases,
+respectively, with another declaration name within OSA1 distance. These 130
+rows retain the intended original-name files and all near-name files as
+separate source facts; they require intent review before navigation relevance
+claims. The reporter's projected-clean-suite binding was repaired in
+`72436e5e` and checked against the real generated manifest; 36 report tests
+passed.
