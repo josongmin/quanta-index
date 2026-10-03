@@ -149,6 +149,103 @@ def test_fresh_join_binds_raw_record_to_scored_pair_report():
         )
 
 
+@pytest.mark.parametrize(
+    ("route", "status", "depth", "file_collection", "eligible", "reason"),
+    (
+        ("lexical", "timeout", 0, False, False, "execution_status_timeout"),
+        ("lexical", "unavailable", 0, False, False, "execution_status_unavailable"),
+        ("lexical", "capped", 5, False, False, "insufficient_depth_without_exhaustion"),
+        ("lexical", "capped", 10, False, True, None),
+        ("lexical", "success", 5, False, True, None),
+        ("lexical", "abstained", 0, False, True, None),
+        ("semble-lexical-file", "abstained", 0, True, True, None),
+        (
+            "semble-lexical-file",
+            "abstained",
+            0,
+            False,
+            False,
+            "execution_status_abstained",
+        ),
+    ),
+)
+def test_fresh_join_uses_published_evaluator_topk_eligibility(
+    route, status, depth, file_collection, eligible, reason
+):
+    task = {
+        "task_id": "q1",
+        "split": "eval",
+        "answerable": True,
+        "judgment_policy": "source_oracle_complete_v1",
+        "file_judgments": [{"path": "gold.go", "grade": 1}],
+        "gold": [{"path": "gold.go", "grade": 1}],
+    }
+    routes = ["lexical", "semble-lexical-file"]
+    suite = {"comparison_contract": {"top_k": 10}, "routes": routes}
+    merged = {
+        "captures": {
+            "q": {"system": "quanta", "execution_profile": {"policy": "code_search_file"}},
+            "s": {"system": "semble", "execution_profile": {"mode": "lexical-file"}},
+        },
+        "route_provenance": {
+            "lexical": {"capture_id": "q"},
+            "semble-lexical-file": {"capture_id": "s"},
+        },
+        "results": [],
+    }
+
+    def result(current_route, current_status, count, complete):
+        row = {
+            "task_id": "q1",
+            "route": current_route,
+            "status": current_status,
+            "rank_unit": "distinct_file",
+            "timings": {"query_latency_ms": 1.0},
+            "candidates": [
+                {
+                    "path": "gold.go" if i == 0 else f"other-{i}.go",
+                    "rank": i + 1,
+                    "score": float(10 - i),
+                }
+                for i in range(count)
+            ],
+        }
+        if complete:
+            row["file_collection"] = {"matching_files": 0}
+        return row
+
+    for current_route in routes:
+        if current_route == route:
+            raw = result(current_route, status, depth, file_collection)
+        elif current_route == "lexical":
+            raw = result(current_route, "success", 1, False)
+        else:
+            raw = result(current_route, "abstained", 0, True)
+        merged["results"].append(raw)
+    raw = next(row for row in merged["results"] if row["route"] == route)
+    raw_by_route = {(row["task_id"], row["route"]): row for row in merged["results"]}
+    published = fresh.evaluator.judgment_diagnostics(
+        suite, merged, raw_by_route, {"q1": task}, "semble-lexical-file", "lexical"
+    )
+    report = {"judgment_metrics": {"file_judgments": published["file_judgments"]}}
+    rows = fresh._bound_native_file_judgments(suite, merged, report, {"q1": task}, "fixture")
+    judgment = rows[("q1", route)]
+    assert judgment["eligible"] is eligible
+    assert judgment.get("reason") == reason
+    paths = [candidate["path"] for candidate in raw["candidates"]]
+    scored = fresh._native_scored_result(task, raw, paths, judgment)
+    assert scored["eligible"] is eligible
+    assert scored["top10_paths"] == paths
+    assert scored["eligibility_reason"] == reason
+    assert scored["intended_original_file"]["hit_at_10"] == float(eligible and bool(paths))
+    if not eligible and paths:
+        assert scored["observed_top10_scores"]["intended_original_file"]["hit_at_10"] == 1.0
+    drifted = copy.deepcopy(report)
+    drifted["judgment_metrics"]["file_judgments"]["per_query"][0]["eligible"] = "drift"
+    with pytest.raises(fresh.FreshJoinError, match="published file judgment diagnostics differ"):
+        fresh._bound_native_file_judgments(suite, merged, drifted, {"q1": task}, "fixture")
+
+
 def test_fresh_join_selects_successful_retry_without_hiding_failed_attempts(tmp_path):
     cell = {
         "cell_id": "l",

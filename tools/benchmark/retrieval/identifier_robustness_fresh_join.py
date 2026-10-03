@@ -559,9 +559,7 @@ def _native_records(
     report_path = output / PAIR_REPORT
     report_sha = sha(report_path)
     report = read(report_path)
-    _require_native_report_binding(
-        report, verdict, suite, checked_pack, merged, report_sha, repo
-    )
+    _require_native_report_binding(report, verdict, suite, checked_pack, merged, report_sha, repo)
     judgments = _bound_native_file_judgments(suite, merged, report, tasks, repo)
     for product, route in (("quanta", "lexical"), ("semble", "semble-lexical-file")):
         product_rows = {}
@@ -588,7 +586,9 @@ def _same_judgment_diagnostics(left: Any, right: Any) -> bool:
         return len(left) == len(right) and all(
             _same_judgment_diagnostics(a, b) for a, b in zip(left, right)
         )
-    if type(left) in (int, float) and type(right) in (int, float):
+    if type(left) is int and type(right) is int:
+        return left == right
+    if type(left) is float and type(right) is float:
         return math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12)
     return type(left) is type(right) and left == right
 
