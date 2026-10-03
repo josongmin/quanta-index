@@ -3347,3 +3347,46 @@ The test exists in the pinned source and actual compiled nextest inventory;
 there are no missing required Rust tests. Register that identity, retain the
 failed raw collection in `contract-junit-fixed-126f2e9a-zksoyc5z/`, then rerun
 with a new output root. The strict collection validator remains unchanged.
+
+### 2026-10-04: validated shared-source review resume preparation
+
+- New external root `c3-shared-source-review-validated-58t14589/` preserves the
+  original `c3-shared-source-review-z4mfg28z/` planning output. Duplicate task
+  identities and duplicate/missing form rows are now explicitly refused before
+  dictionaries could hide them. Both independent input sets still bind all
+  unchanged authored queries and frozen full files.
+- **VERIFIED**, offline planner/decoder controls: `python -m pytest -q
+  test_batches.py`, **27 passed / 0.06s**. Missing/extra/reordered pairs, source
+  forgery, boolean grades/lines, invalid anchors, unresolved grades, duplicate
+  model JSON keys and absent/false actual-model evidence refuse. Reviewers do
+  not receive each other's judgments; adjudication binds both completed passes.
+- **VERIFIED**, actual original-call cache reconstruction for lo, sqlalchemy
+  and zellij. Every reused partial call is checked against its original request,
+  raw completed model response and digests. Reconstructed previously completed
+  task bytes equal the original artifacts. Full reviewer/adjudicator task
+  coverage stays mandatory before completed forms or qrels can be emitted.
+- `run_batches.py` shares full file text across requested query/file pairs,
+  retains separate grades and original source-line anchors, and records one
+  actual raw response/usage receipt per batch. Pair provenance references that
+  receipt; it never fabricates pointwise calls or clones usage. Execution
+  precommit binds scripts, CLI binary, offline controls and original returned
+  pair coverage. Actual batched model calls are **NOT_RUN** before the service
+  reset at 08:40 KST; issued labels remain **40/240 tasks**.
+- The regenerated planning comparison uses **168,204,846** shared source
+  characters instead of **552,209,667** repeated characters, ratio **0.304603**.
+  This is a payload plan, not measured token, cost or latency improvement.
+  Actual execution additionally reuses validated partial calls and bounds each
+  batch to 64 pairs. The old 128-pair plan is not relabeled as executed output.
+- **VERIFIED**, current-source Go expression/shadowed-builtin and TypeScript
+  compatibility/overload focused checks: `pytest -q
+  tools/ci/tests/test_source_oracle_suite.py -k 'go_126 or typescript'`, **3 passed**.
+  The initial `go_new or go_builtin` selector selected zero tests (exit 5) and
+  was not counted as success. Original v5 audit remains 104 eligible / 2
+  excluded from 106 identities, including 18 repaired original unjudged tasks.
+- Matching Contract production is live from clean `ee764318` in
+  `contract-authority-fixed-ee764318-8oom78td/`, using canonical resource
+  admission and an existing incremental target. This is not fresh-build or
+  performance proof. Retain both preceding failed roots and the source
+  distinction from the successful `89058da8` SDK proof. Final admission,
+  remaining reviews, reviewed product comparison and equal-API timing remain
+  incomplete.
