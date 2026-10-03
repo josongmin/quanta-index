@@ -1150,7 +1150,7 @@ mod code_search_score_tests {
     fn code_search_score_decomposition_rejects_cross_engine_overflow_and_mismatches() {
         let valid = fixed_trace();
         let row = lexical_trace_row_v1("file:fixture", &valid).expect("valid trace");
-        assert_eq!(row.contribution.to_bits(), 109.0_f64.to_bits());
+        assert_eq!(row.contribution.to_bits(), 109.0_f32.to_bits());
         assert_eq!(row.signal_name.as_ref(), "lexical.code_search_file");
         let mut refused = valid.clone();
         refused.code_search_rank_study = None;
@@ -1168,7 +1168,7 @@ mod code_search_score_tests {
                 .expect("selected score survives optional refusal")
                 .contribution
                 .to_bits(),
-            109.0_f64.to_bits()
+            109.0_f32.to_bits()
         );
         for mutate in [
             |trace: &mut LexicalScoreTraceV1| {
