@@ -33,8 +33,8 @@ and searchd SHA
 | Priority | Owner and exact change | Acceptance |
 | --- | --- | --- |
 | P0 done | `run.py`: phase timer, v7 ingest stage contract in direct capture, one final closure verification, and Python >=3.10 admission before product execution | Focused positive/negative tests; one complete source-bound pair with `PAIR_VALID=pass`; final source-drift refusal retained |
-| P1 partial | `execution_batch.py` and `run.py` now batch compatible blind packs at product execution: one native union record per product, independently validated original suites, per-suite scoring views and replay. The Rust runner and Semble adapter did not need changes for identical request profiles. This is exploratory diagnostic only | Same per-intent rows, statuses and judgments as independent fresh runs; corpus/model/strategy and membership drift refused; indexing phase reported once, never charged to individual query latency. Current-source product E2E remains required |
-| P1 partial | `source_closure.py` and pair driver now accept an external prior closure for exploratory captures without claims. Reuse checks revision, clean source and file inventory; every cell still fully verifies before promotion. The C5 batch caller is not connected yet | Focused refusal tests and a clean-HEAD source-closure A/B passed. Full pair and C5 batch proof remain open |
+| P1 partial | `execution_batch.py` and `run.py` now batch compatible blind packs at product execution: one native union record per product, independently validated original suites, per-suite scoring views and replay. The Rust runner and Semble adapter did not need changes for identical request profiles. This is exploratory diagnostic only | attrs four-intent product E2E and replay passed; all 512 rows per product and four reports matched prior independent captures. Remaining: 12-repository matrix, qualified performance and source-attested binary proof |
+| P1 partial | `source_closure.py` and pair driver accept an external prior closure for exploratory captures without claims. Reuse checks revision, clean source and file inventory. A manual quality-batch CLI is connected; no C5 matrix planner is connected yet | Focused refusal tests and clean-HEAD closure A/B passed. Full 12-repository C5 batch proof remains open |
 | P2 | Profile SymPy verifier under the current source. Optimize repeated parsing only inside one independent validation pass, keyed by source bytes and parser identity; keep verdict re-derivation independent | Report and verdict bytes unchanged; tampered source and parser identity rejected; representative large-cell wall and CPU reported |
 
 Exploratory C5 specs had no qualified admission bundle, so admission was not
@@ -62,8 +62,24 @@ The first and reused payloads/digests were identical. The output is under
 `/private/tmp/qi-closure-reuse-mpjzrq0j`. These are diagnostic single-run
 times; they do not show whole-pair savings or batch product-index reuse.
 `test_benchmark_source_closure.py` passed 69/69 and the selected pair-driver
-tests passed 6/6 at this HEAD. The remaining high-cost work is one native
-product index session per repository with separate pack-bound executions.
+tests passed 6/6 at that HEAD. The remaining quality-matrix work is a native
+union index session for each of the other eleven repositories.
+
+At clean isolated driver `47e3018a`, attrs four intents (110 exact, 8 infix,
+386 casefold OSA1, 8 prefix) ran as 512 execution tasks against one Quanta
+and one Semble index. Native union records, independently replayed membership,
+four scoring reports and product pack custody are under `/private/tmp/qb-a5`.
+Runner SHA256 is `d2329da833292a3225369d5535c74c0253429cc6d2833110e4ca53b6c36128a6`;
+searchd SHA256 is `0304217033965e1bd4d91622aa19082974e5aede127ba019232fdc0f22c6bb58`.
+Replay passed. Against the old four separate C5 captures, every non-timing
+result row matched (512/512 for each product), and every report's judgments,
+no-answer section and status matched. A copied output with a modified Quanta
+projected pack was rejected by replay. The batch recorded one Quanta
+`embed_publish_seal_activate` phase of 3.438 s and one Semble `index` phase of
+1.443 s. The release binary build took 43m38s under concurrent load; it is
+outside capture time. None of these observations qualifies a speedup or B07
+performance result. The original C5 source, four suites and their corpus
+remain frozen; no 48-cell rerun was performed.
 
 ## Work and boundaries
 
