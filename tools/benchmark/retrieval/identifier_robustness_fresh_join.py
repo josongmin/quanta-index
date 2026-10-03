@@ -18,14 +18,12 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.benchmark.retrieval import evaluator
+    from tools.benchmark.retrieval import evaluator, identifier_robustness_suite
     from tools.benchmark.retrieval import identifier_robustness_multiproduct_report as scoring
-    from tools.benchmark.retrieval import identifier_robustness_suite
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from tools.benchmark.retrieval import evaluator
+    from tools.benchmark.retrieval import evaluator, identifier_robustness_suite
     from tools.benchmark.retrieval import identifier_robustness_multiproduct_report as scoring
-    from tools.benchmark.retrieval import identifier_robustness_suite
 
 PRODUCTS = ("quanta", "semble", "sourcegraph", "cs", "opengrok")
 EXTERNAL_PRODUCTS = ("sourcegraph", "cs", "opengrok")
@@ -58,7 +56,62 @@ def canonical_sha(value: Any) -> str:
     return hashlib.sha256(evaluator.canonical(value)).hexdigest()
 
 
-def _native_records(cell: dict[str, Any], prepared: dict[str, Any], tasks: dict[str, Any], universe: set[str]) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, str]]:
+def _require_default_profiles(
+    native_spec: dict[str, Any], external_spec: dict[str, Any], repo: str
+) -> None:
+    require(
+        native_spec["execution_profiles"]["quanta"]
+        == {
+            "config": {},
+            "planning_cost_in_latency": False,
+            "policy": "code_search_file",
+            "profile_id": "quanta-code-search-file-v1",
+        }
+        and native_spec["execution_profiles"]["semble"]["mode"] == "lexical-file"
+        and native_spec["candidate_route"] == "lexical"
+        and native_spec["baseline_route"] == "semble-lexical-file"
+        and set(external_spec)
+        == {
+            "corpus",
+            "cs",
+            "opengrok",
+            "output_root",
+            "query_pack",
+            "schema_version",
+            "sourcegraph",
+            "suite",
+        },
+        "paired request profile is not default file search: " + repo,
+    )
+
+
+def _reconcile_blocked(
+    blocked: list[dict[str, Any]],
+    bindings: list[dict[str, Any]],
+    custody: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    by_repo = {row["repository"]: row for row in bindings}
+    for origin in custody:
+        for repo, prior in origin["source_blocked_originals"].items():
+            if repo not in by_repo:
+                continue
+            repaired = by_repo[repo]
+            require(
+                repaired["blind_pack_sha256"] == prior["blind_pack_sha256"]
+                and repaired["task_identity_sha256"] == prior["task_identity_sha256"]
+                and repaired["file_universe_sha256"] == prior["file_universe_sha256"],
+                "repaired cell changes the fixed original query cohort or file universe: " + repo,
+            )
+    resolved = set(by_repo)
+    return (
+        [row for row in blocked if row["repository"] not in resolved],
+        [row for row in blocked if row["repository"] in resolved],
+    )
+
+
+def _native_records(
+    cell: dict[str, Any], prepared: dict[str, Any], tasks: dict[str, Any], universe: set[str]
+) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, str]]:
     repo, output = cell["repository"], Path(cell["output_root"])
     status_path = output.parent / (cell["cell_id"] + ".status.json")
     status = read(status_path)
@@ -105,7 +158,8 @@ def _native_records(cell: dict[str, Any], prepared: dict[str, Any], tasks: dict[
             require(
                 raw["route"] == route
                 and raw["rank_unit"] == "distinct_file"
-                and raw["query_identity"]["original_query_sha256"] == task["query_sha256"],
+                and raw["query_identity"]["original_query_sha256"] == task["query_sha256"]
+                and len(raw["candidates"]) <= 10,
                 "native route/unit/query differs: " + repo + "/" + product + "/" + task_id,
             )
             paths = scoring._top10(
@@ -182,8 +236,7 @@ def _external_records(
                 else raw["http_status"] == 200 and raw["error"] is None
             )
             require(
-                bool(scoring._score(paths, task["gold"])["hit_at_10"])
-                == raw["file_hit_at_10"],
+                bool(scoring._score(paths, task["gold"])["hit_at_10"]) == raw["file_hit_at_10"],
                 "external recorded hit differs: " + repo + "/" + product + "/" + task_id,
             )
             product_rows[task_id] = scoring._result(
@@ -231,7 +284,9 @@ def _pair_rows(
         "duplicate or missing repository in pair manifests",
     )
     audit = {row["repository"]: row for row in eligibility}
-    require(set(native_cells) == set(external_cells) == set(audit), "pair repository coverage differs")
+    require(
+        set(native_cells) == set(external_cells) == set(audit), "pair repository coverage differs"
+    )
     require(
         all(row["status"] in {"VALID", "BLOCKED"} for row in eligibility),
         "unknown source eligibility status",
@@ -241,7 +296,8 @@ def _pair_rows(
     require(set(receipts) == admitted, "external verified cells differ from source-admitted cells")
     require(
         all(
-            native_cells[repo]["source_admission"] == ("admitted" if repo in admitted else "blocked")
+            native_cells[repo]["source_admission"]
+            == ("admitted" if repo in admitted else "blocked")
             and native_cells[repo]["tasks"] == external_cells[repo]["tasks"] == audit[repo]["tasks"]
             for repo in audit
         ),
@@ -249,33 +305,42 @@ def _pair_rows(
     )
     per_query: list[dict[str, Any]] = []
     bindings: list[dict[str, Any]] = []
+    blocked_origins: dict[str, dict[str, Any]] = {}
+    for repo in sorted(set(audit) - admitted):
+        cell = external_cells[repo]
+        spec = read(Path(cell["spec_path"]))
+        suite = read(Path(spec["suite"]))
+        task_identity = [
+            (task["task_id"], task["query"], task["query_sha256"]) for task in suite["tasks"]
+        ]
+        blocked_origins[repo] = {
+            "suite_sha256": sha(Path(spec["suite"])),
+            "blind_pack_sha256": sha(Path(spec["query_pack"])),
+            "task_identity_sha256": canonical_sha(task_identity),
+            "file_universe_sha256": canonical_sha(suite["file_universe"]),
+        }
     for repo in sorted(admitted):
-        native_cell, external_cell, receipt = native_cells[repo], external_cells[repo], receipts[repo]
-        native_spec_path, external_spec_path = Path(native_cell["spec"]), Path(external_cell["spec_path"])
+        native_cell, external_cell, receipt = (
+            native_cells[repo],
+            external_cells[repo],
+            receipts[repo],
+        )
+        native_spec_path, external_spec_path = (
+            Path(native_cell["spec"]),
+            Path(external_cell["spec_path"]),
+        )
         require(
             sha(native_spec_path) == native_cell["spec_sha256"]
             and sha(external_spec_path) == external_cell["spec_sha256"],
             "paired spec digest differs: " + repo,
         )
         native_spec, external_spec = read(native_spec_path), read(external_spec_path)
-        require(
-            native_spec["execution_profiles"]["quanta"]
-            == {
-                "config": {},
-                "planning_cost_in_latency": False,
-                "policy": "code_search_file",
-                "profile_id": "quanta-code-search-file-v1",
-            }
-            and native_spec["execution_profiles"]["semble"]["mode"] == "lexical-file"
-            and native_spec["candidate_route"] == "lexical"
-            and native_spec["baseline_route"] == "semble-lexical-file"
-            and set(external_spec) == {
-                "corpus", "cs", "opengrok", "output_root", "query_pack", "schema_version", "sourcegraph", "suite"
-            },
-            "paired request profile is not default file search: " + repo,
-        )
+        _require_default_profiles(native_spec, external_spec, repo)
         native_suite, external_suite = Path(native_spec["suite"]), Path(external_spec["suite"])
-        native_pack, external_pack = Path(native_spec["query_pack"]), Path(external_spec["query_pack"])
+        native_pack, external_pack = (
+            Path(native_spec["query_pack"]),
+            Path(external_spec["query_pack"]),
+        )
         require(
             sha(native_suite) == sha(external_suite) == external_cell["source_suite_sha256"]
             and sha(native_pack) == sha(external_pack) == external_cell["source_pack_sha256"]
@@ -301,29 +366,46 @@ def _pair_rows(
         )
         native_manifest = Path(native_cell["output_root"]) / "corpus-manifest.json"
         external_manifest = Path(external_cell["output_root"]) / "manifest.json"
-        require(sha(native_manifest) == sha(external_manifest), "paired corpus file universe differs: " + repo)
+        require(
+            sha(native_manifest) == sha(external_manifest),
+            "paired corpus file universe differs: " + repo,
+        )
         native, native_hashes = _native_records(native_cell, prepared, tasks, universe)
         external, external_hashes = _external_records(external_cell, receipt, tasks, universe)
-        bindings.append({
-            "repository": repo,
-            "suite_sha256": sha(native_suite),
-            "blind_pack_sha256": sha(native_pack),
-            "corpus_manifest_sha256": sha(native_manifest),
-            "task_count": len(tasks),
-            "native_record_sha256": native_hashes,
-            "external_rows_sha256": external_hashes,
-        })
-        for task_id, task in tasks.items():
-            per_query.append({
+        bindings.append(
+            {
                 "repository": repo,
-                "repository_commit": suite["repository_commit"],
-                "task_id": task_id,
-                "query_family_id": task["query_family_id"],
-                "submitted_query": task["query"],
-                "intended_name": task["intended_name"],
-                "source_strata": scoring._task_source_strata(task),
-                "products": {**{name: rows[task_id] for name, rows in native.items()}, **{name: rows[task_id] for name, rows in external.items()}},
-            })
+                "suite_sha256": sha(native_suite),
+                "blind_pack_sha256": sha(native_pack),
+                "task_identity_sha256": canonical_sha(
+                    [
+                        (task["task_id"], task["query"], task["query_sha256"])
+                        for task in suite["tasks"]
+                    ]
+                ),
+                "file_universe_sha256": canonical_sha(suite["file_universe"]),
+                "corpus_manifest_sha256": sha(native_manifest),
+                "task_count": len(tasks),
+                "native_record_sha256": native_hashes,
+                "external_rows_sha256": external_hashes,
+            }
+        )
+        for task_id, task in tasks.items():
+            per_query.append(
+                {
+                    "repository": repo,
+                    "repository_commit": suite["repository_commit"],
+                    "task_id": task_id,
+                    "query_family_id": task["query_family_id"],
+                    "submitted_query": task["query"],
+                    "intended_name": task["intended_name"],
+                    "source_strata": scoring._task_source_strata(task),
+                    "products": {
+                        **{name: rows[task_id] for name, rows in native.items()},
+                        **{name: rows[task_id] for name, rows in external.items()},
+                    },
+                }
+            )
     custody = {
         "native_prepared_sha256": sha(prepared_path),
         "native_source_commit": prepared["source_commit"],
@@ -335,6 +417,7 @@ def _pair_rows(
         "source_eligibility_sha256": sha(eligibility_path),
         "release_digest": manifest["release_digest"],
         "source_blocked_task_count": sum(row["tasks"] for row in blocked),
+        "source_blocked_originals": blocked_origins,
     }
     return per_query, bindings, blocked, custody
 
@@ -344,7 +427,11 @@ def _macro(rows: list[dict[str, Any]], product: str, label: str) -> dict[str, An
     for row in rows:
         repositories[row["repository"]].append(row["products"][product][label]["hit_at_10"])
     means = {repo: sum(values) / len(values) for repo, values in sorted(repositories.items())}
-    return {"repository_count": len(means), "equal_repository_mean": sum(means.values()) / len(means) if means else None, "repository_hit_at_10": means}
+    return {
+        "repository_count": len(means),
+        "equal_repository_mean": sum(means.values()) / len(means) if means else None,
+        "repository_hit_at_10": means,
+    }
 
 
 def build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
@@ -361,26 +448,54 @@ def build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
         custody.append(origin)
     repos = [row["repository"] for row in bindings]
     ids = [(row["repository"], row["task_id"]) for row in per_query]
-    require(len(repos) == len(set(repos)) and len(ids) == len(set(ids)), "fresh pair repositories or tasks overlap")
-    require(len({row["release_digest"] for row in custody}) == 1, "fresh pairs use different corpus releases")
-    paired = [row for row in per_query if all(row["products"][product]["eligible"] for product in PRODUCTS)]
-    excluded_task_ids = [row["task_id"] for row in per_query if row not in paired]
+    require(
+        len(repos) == len(set(repos)) and len(ids) == len(set(ids)),
+        "fresh pair repositories or tasks overlap",
+    )
+    require(
+        len({row["release_digest"] for row in custody}) == 1,
+        "fresh pairs use different corpus releases",
+    )
+    paired = [
+        row
+        for row in per_query
+        if all(row["products"][product]["eligible"] for product in PRODUCTS)
+    ]
+    excluded_task_ids = [
+        row["task_id"]
+        for row in per_query
+        if not all(row["products"][product]["eligible"] for product in PRODUCTS)
+    ]
+    remaining_blocked, original_blocked = _reconcile_blocked(blocked, bindings, custody)
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in per_query:
         source_strata = row["source_strata"]
         groups["overall"].append(row)
         groups["literal_relation/" + source_strata["literal_relation"]].append(row)
         groups["surviving_components/" + source_strata["surviving_components"]].append(row)
-        groups["joint/" + source_strata["literal_relation"] + "/" + source_strata["surviving_components"]].append(row)
+        groups[
+            "joint/"
+            + source_strata["literal_relation"]
+            + "/"
+            + source_strata["surviving_components"]
+        ].append(row)
     summaries = {}
     for group, rows in sorted(groups.items()):
-        common = [row for row in rows if all(row["products"][product]["eligible"] for product in PRODUCTS)]
+        common = [
+            row for row in rows if all(row["products"][product]["eligible"] for product in PRODUCTS)
+        ]
         summaries[group] = {
             "selected_task_count": len(rows),
             "common_eligible_task_count": len(common),
             "query_family_count": len({row["query_family_id"] for row in rows}),
-            "products_operational": {product: scoring.summarize([row["products"][product] for row in rows]) for product in PRODUCTS},
-            "products_common_eligible": {product: scoring.summarize([row["products"][product] for row in common]) for product in PRODUCTS},
+            "products_operational": {
+                product: scoring.summarize([row["products"][product] for row in rows])
+                for product in PRODUCTS
+            },
+            "products_common_eligible": {
+                product: scoring.summarize([row["products"][product] for row in common])
+                for product in PRODUCTS
+            },
         }
     macro = {
         label: {product: _macro(paired, product, label) for product in PRODUCTS}
@@ -389,20 +504,27 @@ def build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
     repository_commits = {row["repository"]: row["repository_commit"] for row in per_query}
     cluster_rows = [
         (
-            row["repository"], row["task_id"], row["query_family_id"],
+            row["repository"],
+            row["task_id"],
+            row["query_family_id"],
             row["products"]["quanta"]["intended_original_file"]["hit_at_10"]
             - row["products"]["semble"]["intended_original_file"]["hit_at_10"],
         )
         for row in paired
     ]
-    cluster_ci = evaluator.repository_cluster_ci(
-        cluster_rows,
-        custody[0]["release_digest"].removeprefix("sha256:"),
-        repository_commits,
-        {repo: "c5_fixed_repository_cohort" for repo in repository_commits},
-    ) if len({row["repository"] for row in paired}) == len(repository_commits) else {
-        "status": "NOT_APPLICABLE", "reason": "one_or_more_repositories_lack_common_eligible_tasks"
-    }
+    cluster_ci = (
+        evaluator.repository_cluster_ci(
+            cluster_rows,
+            custody[0]["release_digest"].removeprefix("sha256:"),
+            repository_commits,
+            {repo: "c5_fixed_repository_cohort" for repo in repository_commits},
+        )
+        if len({row["repository"] for row in paired}) == len(repository_commits)
+        else {
+            "status": "NOT_APPLICABLE",
+            "reason": "one_or_more_repositories_lack_common_eligible_tasks",
+        }
+    )
     return {
         "schema": "identifier_robustness_fresh_five_product_join_v1",
         "status": "diagnostic_unqualified",
@@ -414,8 +536,9 @@ def build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
         "evaluator_sha256": sha(Path(evaluator.__file__)),
         "custody": custody,
         "cell_bindings": bindings,
-        "source_blocked_cells": blocked,
-        "source_blocked_task_count": sum(row["tasks"] for row in blocked),
+        "source_blocked_cells": remaining_blocked,
+        "source_blocked_task_count": sum(row["tasks"] for row in remaining_blocked),
+        "superseded_original_source_blocked_cells": original_blocked,
         "selected_task_count": len(per_query),
         "common_eligible_task_count": len(paired),
         "common_eligibility_excluded_task_ids": excluded_task_ids,
@@ -435,13 +558,36 @@ def build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--pair", nargs=3, action="append", metavar=("NATIVE_ROOT", "EXTERNAL_ROOT", "SOURCE_ELIGIBILITY"), required=True)
+    parser.add_argument(
+        "--pair",
+        nargs=3,
+        action="append",
+        metavar=("NATIVE_ROOT", "EXTERNAL_ROOT", "SOURCE_ELIGIBILITY"),
+        required=True,
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    report = build([(Path(native), Path(external), Path(eligibility)) for native, external, eligibility in args.pair])
+    report = build(
+        [
+            (Path(native), Path(external), Path(eligibility))
+            for native, external, eligibility in args.pair
+        ]
+    )
     with args.output.open("xb") as stream:
-        stream.write((json.dumps(report, sort_keys=True, ensure_ascii=False, indent=2) + "\n").encode())
-    print(json.dumps({"output": str(args.output), "sha256": sha(args.output), "selected_tasks": report["selected_task_count"], "source_blocked_tasks": report["source_blocked_task_count"]}, sort_keys=True))
+        stream.write(
+            (json.dumps(report, sort_keys=True, ensure_ascii=False, indent=2) + "\n").encode()
+        )
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "sha256": sha(args.output),
+                "selected_tasks": report["selected_task_count"],
+                "source_blocked_tasks": report["source_blocked_task_count"],
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 
