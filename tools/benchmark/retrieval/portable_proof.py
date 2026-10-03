@@ -46,6 +46,8 @@ TOOL_TIMEOUT_SECONDS = 30
 PACKAGE = "quanta-index-retrieval-bench"
 FLAGS = ["--all-features", "--locked"]
 EXECUTION_CONTEXT_VERSION = 2
+FRESH_EXECUTION_CONTEXT_VERSION = 3
+FRESH_BUILD_PROFILE = "release-fresh"
 FORMAT = ["--message-format", "libtest-json-plus", "--message-format-version", "0.1"]
 SOURCE_CLOSURE_SCRIPT = ROOT / "tools/ci/source_closure.py"
 RECEIPT_WRITER = ROOT / "tools/ci/write-verification-receipt.py"
@@ -159,6 +161,7 @@ def verify_reused_build(
     *,
     workspace_root: Path,
     required_non_test_binary: Path | None = None,
+    build_profile: str | None = None,
 ) -> dict[str, Path]:
     """Cross-check actual native build metadata against the selected collection."""
     selected = selected_test_binaries(collection_raw)
@@ -223,12 +226,13 @@ def verify_reused_build(
             == str(workspace_root / "benchmarks/retrieval/Cargo.toml")
         ]
         non_test = binary_list["rust-build-meta"].get("non-test-binaries")
-        expected_path = Path(target) / "debug" / PACKAGE
+        binary_dir = "release" if build_profile == FRESH_BUILD_PROFILE else "debug"
+        expected_path = Path(target) / binary_dir / PACKAGE
         if (
             len(package_ids) != 1
             or not isinstance(non_test, dict)
             or non_test.get(package_ids[0])
-            != [{"name": PACKAGE, "kind": "bin-exe", "path": f"debug/{PACKAGE}"}]
+            != [{"name": PACKAGE, "kind": "bin-exe", "path": f"{binary_dir}/{PACKAGE}"}]
             or required_non_test_binary != expected_path
         ):
             raise ValueError("SDK runner is absent from the selected native build")
@@ -599,12 +603,39 @@ def _cargo(wrapper: str, *args: str) -> list[str]:
     return [wrapper, "--lane", "test-daemon-lane", *args]
 
 
-def _target_dir(wrapper: str, out: Path, commands: list[dict[str, object]]) -> Path:
+def _fresh_build_environment(out: Path) -> dict[str, str]:
+    """Reserve an empty target inside this proof root before any Cargo command."""
+    if out != out.resolve():
+        raise ValueError("fresh proof output root must be canonical")
+    for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+        if os.environ.get(key):
+            raise ValueError(f"fresh build refuses unbound {key}")
+    if os.environ.get("QUANTA_INDEX_SCCACHE") not in (None, "0"):
+        raise ValueError("fresh build refuses compiler cache")
+    target = out / "target"
+    if target.is_symlink() or target.exists():
+        raise ValueError("fresh build target already exists")
+    target.mkdir(mode=0o700)
+    return {
+        "CARGO_TARGET_DIR": str(target),
+        "QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR": "1",
+        "QUANTA_INDEX_SCCACHE": "0",
+    }
+
+
+def _target_dir(
+    wrapper: str,
+    out: Path,
+    commands: list[dict[str, object]],
+    *,
+    env_overrides: dict[str, str] | None = None,
+) -> Path:
     raw = _run(
         "metadata",
         _cargo(wrapper, "metadata", "--format-version", "1", "--locked"),
         out,
         commands,
+        env_overrides=env_overrides,
     )
     payload = _json_bytes(raw)
     value = payload.get("target_directory") if isinstance(payload, dict) else None
@@ -696,7 +727,10 @@ def _expected_commands(
     binaries: dict[str, dict[str, str]],
     *,
     inherited_environment: dict[str, str] | None = None,
+    build_profile: str | None = None,
 ) -> list[tuple[str, list[str], dict[str, str]]]:
+    if build_profile not in (None, FRESH_BUILD_PROFILE):
+        raise ValueError("unsupported proof build profile")
     python = tools["python"]["path"]
     wrapper = tools["cargow"]["path"]
     base = {"CARGO_NET_OFFLINE": "true"}
@@ -707,6 +741,16 @@ def _expected_commands(
             )
         )
     test_env = {**base, "NEXTEST_EXPERIMENTAL_LIBTEST_JSON": "1"}
+    build_env = (
+        {
+            "CARGO_TARGET_DIR": str(out / "target"),
+            "QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR": "1",
+            "QUANTA_INDEX_SCCACHE": "0",
+        }
+        if build_profile == FRESH_BUILD_PROFILE
+        else {}
+    )
+    cargo_env = {**base, **build_env}
     source = (
         "source-closure",
         [
@@ -778,6 +822,8 @@ def _expected_commands(
             ("rust-test", _reuse_nextest(wrapper, "run", out, *FORMAT), test_env),
         ]
     selector = ["-p", PACKAGE, "--test", "sdk_roundtrip", *FLAGS]
+    if build_profile == FRESH_BUILD_PROFILE:
+        selector.append("--release")
     return [
         source,
         (
@@ -789,9 +835,10 @@ def _expected_commands(
                 "quanta-index-searchd-runtime",
                 "--bin",
                 "quanta-index-searchd",
+                *(["--all-features", "--release"] if build_profile == FRESH_BUILD_PROFILE else []),
                 "--locked",
             ),
-            base,
+            cargo_env,
         ),
         (
             "rust-build",
@@ -805,19 +852,20 @@ def _expected_commands(
                 "--message-format",
                 "json",
             ),
-            base,
+            cargo_env,
         ),
         (
             "metadata",
             _cargo(wrapper, "metadata", "--format-version", "1", "--locked"),
-            base,
+            cargo_env,
         ),
-        ("rust-collection", _reuse_nextest(wrapper, "list", out, "--message-format", "json"), base),
+        ("rust-collection", _reuse_nextest(wrapper, "list", out, "--message-format", "json"), cargo_env),
         (
             "rust-test",
             _reuse_nextest(wrapper, "run", out, *FORMAT),
             {
                 **test_env,
+                **build_env,
                 "QUANTA_BENCH_SDK_EVIDENCE_DIR": str(out),
                 "QUANTA_INDEX_SEARCHD_BIN": binaries["searchd"]["path"],
             },

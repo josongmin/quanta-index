@@ -269,6 +269,15 @@ pub struct CodeSearchExecutionStatsV1 {
     pub preview_attempted_files: u64,
     /// Candidate generation and verification through building unsorted rows.
     pub candidate_ns: u64,
+    /// Typo-only subset of `candidate_ns`: language/posting shortlist and
+    /// bounded file admission before source-token verification.
+    pub typo_shortlist_admission_ns: u64,
+    /// Typo-only subset of `candidate_ns`: source-token walk and request-local
+    /// edit-distance memoization. Unmeasured loop work remains in the outer
+    /// candidate duration; these child clocks are not an exhaustive partition.
+    pub typo_source_token_scan_ns: u64,
+    /// Typo-only subset of `candidate_ns`: build unsorted matching file rows.
+    pub typo_materialize_ns: u64,
     /// Sorting, cursor filtering, and page truncation.
     pub sort_page_ns: u64,
     /// Selected-page preview construction only.

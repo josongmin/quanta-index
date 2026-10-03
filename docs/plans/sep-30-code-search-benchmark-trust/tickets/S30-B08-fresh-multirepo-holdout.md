@@ -3269,3 +3269,41 @@ scope disposition, not completed relevance review: preserve the release and
 all task denominators, declare native content coverage, and recheck newly
 issued qrels rather than silently excluding a product's omitted file. The
 final 200 reviews and admission are still incomplete.
+
+### 2026-10-04: full OpenGrok source/posting reference replay
+
+- **VERIFIED**, all **12 repositories / 13,347 files** have native `full`
+  posting digests identical to fresh vendor-analyzer recomputation from their
+  frozen source bytes. The digest frames UTF-8 term bytes, frequency, positions
+  and start/end offsets in Lucene term order. Every live source byte hash matches
+  its release manifest. Comparison covers **2,358,047 term/document pairs** and
+  **22,926,663 token occurrences**; producer wall time **34.019s**.
+- The analyzer itself emits no `full` field for the ANSI highlighted fixture;
+  its empty expected digest matches the native empty digest. Thus this file is
+  an observed analyzer omission, not stale/missing index data for an expected
+  tokenized field. Retain the declared 13,346/13,347 nonempty posting coverage.
+- Native index/runtime snapshots are unchanged. All **74 classpath JARs** and
+  the actual configuration file match their pre/post hashes. The helper opens
+  readers and generated in-memory documents only, never an index writer.
+  Independent post-exit replay verifies raw-output/helper hashes, every frozen
+  source identity, digest/count equality and bracketing snapshots.
+- **VERIFIED**, a negative control appends a previously absent literal to a
+  separate copied `bat/src/assets.rs`: exactly that file fails frozen-source
+  identity and native/reference posting equality; the other **78 files** match.
+  Original source/index files remain unchanged; **5.148s**. The first negative
+  wrapper assumed one added occurrence, but the analyzer emitted three. Its
+  failed run is preserved; the corrected control asserts the actual corruption
+  invariant instead of inventing tokenizer counts. The first reference helper
+  also failed because an unbuffered stream lacked the analyzer's mark/reset
+  requirement; the buffered subset then passed **129/129** before full expansion.
+- Artifacts under the external closeout root:
+  `opengrok-source-posting-reference-full-moyyggn_/` (including independent replay),
+  `opengrok-source-posting-negative-digest-a7dm9ap8/`, and separate failed/subset
+  roots named by their precommits. Commands: `.venv/bin/python <full-root>/probe.py
+  bat,cli,django,lo,mocha,nushell,sqlalchemy,tailscale,typeorm,uvicorn,zellij,zustand`
+  and `.venv/bin/python <negative-root>/probe.py`.
+- This closes the previously unexecuted selected native `full` term/source
+  equivalence check. It does not prove analyzer semantic correctness, `defs` or
+  `refs`, product query ranking, relevance labels, public content-API freshness
+  for every file, or final quality/performance qualification. **NOT_RUN**, final
+  reviewed comparison; **200 C3 task reviews and final admission remain**.

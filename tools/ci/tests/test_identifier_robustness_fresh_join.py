@@ -9,6 +9,27 @@ import pytest
 from tools.benchmark.retrieval import identifier_robustness_fresh_join as fresh
 
 
+def test_fresh_join_osa1_operation_uses_exact_literal_edit_contract():
+    for intended, submitted, operation in (
+        ("abcd", "abxcd", "insertion"),
+        ("abcd", "abd", "deletion"),
+        ("abcd", "abxd", "substitution"),
+        ("abcd", "acbd", "transposition"),
+        ("ABCd", "abxcd", "insertion"),
+        ("aabc", "abc", "deletion"),
+    ):
+        assert fresh._osa1_operation(intended, submitted) == operation
+    for intended, submitted in (
+        ("abcd", "abcd"),
+        ("ABCD", "abcd"),
+        ("abcd", "abxy"),
+        ("abcd", "adcb"),
+        ("abcd", "abxxcd"),
+    ):
+        with pytest.raises(fresh.FreshJoinError, match="exact casefolded OSA1"):
+            fresh._osa1_operation(intended, submitted)
+
+
 def _profiles():
     native = {
         "candidate_route": "lexical",

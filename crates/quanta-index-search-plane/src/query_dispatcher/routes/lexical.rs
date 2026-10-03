@@ -107,6 +107,10 @@ fn code_search_execution_trace(
         stats.mode,
         CodeSearchExecutionModeV1::TypoExplicit | CodeSearchExecutionModeV1::TypoFallback
     );
+    let typo_children = stats
+        .typo_shortlist_admission_ns
+        .checked_add(stats.typo_source_token_scan_ns)
+        .and_then(|value| value.checked_add(stats.typo_materialize_ns));
     if Some(stats.cursor_eligible_files) != exact_total
         || !u64::try_from(fetched).is_ok_and(|count| count == stats.fetched_files)
         || stats.cursor_eligible_files > stats.verified_matching_files
@@ -122,6 +126,11 @@ fn code_search_execution_trace(
             && stats.literal_prefilter_executed
             && stats.literal_verified_files != stats.final_candidate_visits)
         || (!typo && stats.typo_token_comparisons != 0)
+        || (typo && typo_children.is_none_or(|total| total > stats.candidate_ns))
+        || (!typo
+            && (stats.typo_shortlist_admission_ns != 0
+                || stats.typo_source_token_scan_ns != 0
+                || stats.typo_materialize_ns != 0))
         || (matches!(
             stats.mode,
             CodeSearchExecutionModeV1::TypoExplicit | CodeSearchExecutionModeV1::Components
@@ -191,18 +200,25 @@ fn code_search_execution_trace(
     // Work counts remain observable in either policy. Clock values are only
     // response observations when query stage observation is enabled.
     if observe_timings {
-        entries.extend(
-            [
-                ("candidate_ns", stats.candidate_ns),
-                ("sort_page_ns", stats.sort_page_ns),
-                ("preview_ns", stats.preview_ns),
-            ]
-            .into_iter()
-            .map(|(name, value)| PlannerTraceEntry {
-                stage: PlannerStage::Merge,
-                detail: format!("code_search.execution.{name}={value}"),
-            }),
-        );
+        let mut clocks = vec![
+            ("candidate_ns", stats.candidate_ns),
+            ("sort_page_ns", stats.sort_page_ns),
+            ("preview_ns", stats.preview_ns),
+        ];
+        if typo {
+            clocks.extend([
+                (
+                    "typo_shortlist_admission_ns",
+                    stats.typo_shortlist_admission_ns,
+                ),
+                ("typo_source_token_scan_ns", stats.typo_source_token_scan_ns),
+                ("typo_materialize_ns", stats.typo_materialize_ns),
+            ]);
+        }
+        entries.extend(clocks.into_iter().map(|(name, value)| PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: format!("code_search.execution.{name}={value}"),
+        }));
     }
     Ok(entries)
 }

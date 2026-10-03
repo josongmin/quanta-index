@@ -62,6 +62,13 @@ fn observed_ns(started: Instant) -> Result<u64, CoreError> {
     })
 }
 
+fn add_observed_ns(total: &mut u64, started: Instant, stage: &str) -> Result<(), CoreError> {
+    *total = total
+        .checked_add(observed_ns(started)?)
+        .ok_or_else(|| CoreError::Storage(format!("lexical: {stage} duration exceeds u64")))?;
+    Ok(())
+}
+
 // Request-local bounded memoization; this is neither persisted nor externally
 // ordered, so hashing keeps repeated-token distance lookup inexpensive.
 #[expect(
@@ -2237,6 +2244,7 @@ impl TantivySearcher {
                 });
             }
         }
+        stats.typo_shortlist_admission_ns = observed_ns(candidate_started)?;
         let mut comparisons = 0;
         let mut distance_cache = TypoDistanceCache::new();
         let mut ranked = Vec::new();
@@ -2252,15 +2260,21 @@ impl TantivySearcher {
             stats.source_surface_bytes_considered = stats
                 .source_surface_bytes_considered
                 .saturating_add(checked_count_u64(content.len(), "source surface bytes")?);
-            let Some((witness, distance)) = typo_witness(
+            let scan_started = Instant::now();
+            let witness = typo_witness(
                 content,
                 identifier,
                 case,
                 &mut comparisons,
                 &mut distance_cache,
                 budget,
-            )?
-            else {
+            )?;
+            add_observed_ns(
+                &mut stats.typo_source_token_scan_ns,
+                scan_started,
+                "typo source-token scan",
+            )?;
+            let Some((witness, distance)) = witness else {
                 continue;
             };
             let score = f32::from(
@@ -2270,10 +2284,14 @@ impl TantivySearcher {
                         u16::from(witness.occurrences.saturating_sub(1)).saturating_mul(2),
                     ),
             );
-            ranked.push((
-                file_candidate(self, file, score, Some(&witness), false, budget)?,
-                witness,
-            ));
+            let materialize_started = Instant::now();
+            let candidate = file_candidate(self, file, score, Some(&witness), false, budget)?;
+            add_observed_ns(
+                &mut stats.typo_materialize_ns,
+                materialize_started,
+                "typo candidate materialization",
+            )?;
+            ranked.push((candidate, witness));
             stats.materialized_files = stats.materialized_files.saturating_add(1);
         }
         stats.typo_token_comparisons = checked_count_u64(comparisons, "typo token comparisons")?;

@@ -959,6 +959,27 @@ def _macro(rows: list[dict[str, Any]], product: str, label: str) -> dict[str, An
     }
 
 
+def _osa1_operation(intended: str, submitted: str) -> str:
+    """Classify a genuine casefolded one-edit pair from its literal bytes."""
+    name, query = intended.casefold(), submitted.casefold()
+    if len(query) == len(name) + 1 and any(
+        query[:i] + query[i + 1 :] == name for i in range(len(query))
+    ):
+        return "insertion"
+    if len(name) == len(query) + 1 and any(
+        name[:i] + name[i + 1 :] == query for i in range(len(name))
+    ):
+        return "deletion"
+    differences = [i for i, (a, b) in enumerate(zip(name, query)) if a != b]
+    if len(name) == len(query) and len(differences) == 1:
+        return "substitution"
+    if len(name) == len(query) and len(differences) == 2:
+        left, right = differences
+        if right == left + 1 and name[left] == query[right] and name[right] == query[left]:
+            return "transposition"
+    raise FreshJoinError("typo task is not an exact casefolded OSA1 edit")
+
+
 def build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
     with _evidence_session():
         return _build(pairs)
@@ -997,7 +1018,10 @@ def _build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in per_query:
         source_strata = row["source_strata"]
+        operation = _osa1_operation(row["intended_name"], row["submitted_query"])
+        row["osa1_operation"] = operation
         groups["overall"].append(row)
+        groups["edit_operation/" + operation].append(row)
         groups["literal_relation/" + source_strata["literal_relation"]].append(row)
         groups["surviving_components/" + source_strata["surviving_components"]].append(row)
         groups[
@@ -1058,6 +1082,7 @@ def _build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
         "request_contract": "default_file_search_across_five_products; distinct_file_top10; underlying_match_policies_differ",
         "execution": "offline_join_of_fresh_native_and_external_captures",
         "source_strata_policy": identifier_robustness_suite.TYPO_SOURCE_STRATA_POLICY,
+        "edit_operation_policy": "casefolded_exact_osa1_from_literal_input_v1",
         "report_tool_sha256": sha(Path(__file__)),
         "scoring_tool_sha256": sha(Path(scoring.__file__)),
         "evaluator_sha256": sha(Path(evaluator.__file__)),
