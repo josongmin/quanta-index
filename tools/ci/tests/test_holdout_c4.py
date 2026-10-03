@@ -198,6 +198,22 @@ def _resign(capsule: Path, name: str, payload: dict) -> None:
     (capsule / "identity.json").write_bytes(holdout_c4._raw(identity))
 
 
+def test_c4_reads_large_gold_only_under_its_scoped_limit(tmp_path, monkeypatch):
+    from tools.benchmark import evidence
+
+    monkeypatch.setattr(evidence, "CONTROL_DOCUMENT_BYTES", 16)
+    monkeypatch.setattr(holdout_c4.corpus_binding, "CONTROL_DOCUMENT_BYTES", 16)
+    monkeypatch.setattr(holdout_c4.corpus_binding, "GOLD_DOCUMENT_BYTES", 32)
+    gold = tmp_path / "gold.json"
+    blind = tmp_path / "blind.json"
+    payload = b'{"ok":true}' + b" " * 10
+    gold.write_bytes(payload)
+    blind.write_bytes(payload)
+    assert holdout_c4._read(gold) == {"ok": True}
+    with pytest.raises(evidence.EvidenceError, match="16-byte limit"):
+        holdout_c4._read(blind)
+
+
 def test_c4_derives_existing_suite_and_blind_pack(tmp_path, monkeypatch):
     release, capsule, checkout = _fixture(tmp_path, monkeypatch)
     suite, pack, report = holdout_c4.derive(release, capsule, checkout, "declaration_name_exact")
