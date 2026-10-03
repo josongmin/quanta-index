@@ -94,6 +94,22 @@ def test_gold_producer_binds_the_actual_vendored_parser_sources():
         assert digests[relative] == binding.digest_bytes(
             (declaration_parsers.ROOT / relative).read_bytes()
         )
+    for name, relative in (("pyproject_toml", "pyproject.toml"), ("uv_lock", "uv.lock")):
+        assert digests[name] == binding.digest_bytes(
+            (binding.GOLD_RUNTIME_SOURCE_ROOT / relative).read_bytes()
+        )
+
+
+def test_gold_producer_identity_changes_if_source_pinfile_changes(tmp_path, monkeypatch):
+    source_root = binding.GOLD_RUNTIME_SOURCE_ROOT
+    for relative in ("pyproject.toml", "uv.lock"):
+        (tmp_path / relative).write_bytes((source_root / relative).read_bytes())
+    monkeypatch.setattr(binding, "GOLD_RUNTIME_SOURCE_ROOT", tmp_path)
+    before = binding._gold_producer_source_digests()
+    (tmp_path / "uv.lock").write_bytes((tmp_path / "uv.lock").read_bytes() + b"\n# tampered\n")
+    after = binding._gold_producer_source_digests()
+    assert before["uv_lock"] != after["uv_lock"]
+    assert {key for key in before if before[key] != after[key]} == {"uv_lock"}
 
 
 def test_gold_runtime_requires_source_locked_parser_versions():

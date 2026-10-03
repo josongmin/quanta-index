@@ -1871,7 +1871,7 @@ def validate_host_timeline(payload: object, profile: dict) -> None:
 def validate_host_timeline_monitor(payload: dict, path: Path) -> None:
     """Bind qualified samples to the canonical reservation transcript on replay."""
     raw = host_monitor.RawFile.capture(path)
-    if raw.sha256 != payload["monitor_sha256"]:
+    if raw.sha256 != "sha256:" + payload["monitor_sha256"]:
         raise RunError("host timeline monitor digest mismatch")
     host_monitor.validate(raw, capture_id="retrieval-host", profile="qualified-speed")
 
@@ -6032,7 +6032,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         expected_phases = {
             "discovery",
             "chunk",
-            "model_provider_prepare",
+            "daemon_boot_and_readiness" if schema_version == 3 else "model_provider_prepare",
             "embed_publish_seal_activate",
             "cold_query" if protocol_mode else "first_query",
             "warm_query",

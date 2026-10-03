@@ -1555,7 +1555,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "discovery": discovery_elapsed.as_secs_f64() * 1000.0,
             "symbol_preflight": symbol_preflight_elapsed.as_secs_f64() * 1000.0,
             "chunk": chunk_elapsed.as_secs_f64() * 1000.0,
-            "model_provider_prepare": boot_elapsed.as_secs_f64() * 1000.0,
+            "daemon_boot_and_readiness": boot_elapsed.as_secs_f64() * 1000.0,
             "embed_publish_seal_activate": publish_elapsed.as_secs_f64() * 1000.0,
             "sdk_publish": Duration::from_nanos(sdk_timings.publish_ns).as_secs_f64() * 1000.0,
             "sdk_activate": Duration::from_nanos(sdk_timings.activation_ns).as_secs_f64() * 1000.0,

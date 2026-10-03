@@ -6662,7 +6662,12 @@ def _pair_stage(
         "interval_ns": 1_000_000_000,
         "max_gap_ns": 10_000_000_000,
         "clock_tolerance_ns": 1_000_000_000,
-        "host": {"os": "macos", "arch": "arm64", "cpu_count": 8, "hostname_hash": "c" * 64},
+        "host": {
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_count": 8,
+            "hostname_hash": "sha256:" + "c" * 64,
+        },
     }
     monitor_rows = [monitor_header]
     for index, sample in enumerate(timeline["samples"]):
@@ -6679,7 +6684,7 @@ def _pair_stage(
                     "load_average": [0.0, 0.0, 0.0],
                     "disk_available_bytes": 100,
                     "process_count": 1,
-                    "process_snapshot_sha256": "d" * 64,
+                    "process_snapshot_sha256": "sha256:" + "d" * 64,
                     "foreign_rust": [],
                 },
                 "status": "completed" if index == 2 else "active",
@@ -9186,9 +9191,18 @@ def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
     assert pairrun._validate_phase_metrics(current, "phase") == current
     measured = copy.deepcopy(current)
     measured["schema_version"] = 3
+    measured["phases_ms"]["daemon_boot_and_readiness"] = measured["phases_ms"].pop(
+        "model_provider_prepare"
+    )
     measured["phases_ms"].update(sdk_publish=0.6, sdk_activate=0.3)
     # Nested SDK clocks do not increase the 16 ms outer phase partition.
     assert pairrun._validate_phase_metrics(measured, "phase") == measured
+    mislabeled = copy.deepcopy(measured)
+    mislabeled["phases_ms"]["model_provider_prepare"] = mislabeled["phases_ms"].pop(
+        "daemon_boot_and_readiness"
+    )
+    with pytest.raises(pairrun.RunError, match="exactly"):
+        pairrun._validate_phase_metrics(mislabeled, "phase")
     for value in (True, None, float("nan"), float("inf"), -1.0, 0.5):
         forged = copy.deepcopy(measured)
         forged["phases_ms"]["sdk_activate"] = value
