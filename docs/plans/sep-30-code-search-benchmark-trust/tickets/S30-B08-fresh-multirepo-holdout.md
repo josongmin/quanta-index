@@ -772,8 +772,13 @@ metric gate requires critical category and language strata for every observed
 answerable group, alongside every repository and no-answer.
 
 The focused schema/source/freeze tests include negative holdout-side,
-file-universe, family and split-digest cases. They mock the full release
-validator in the runner seam; the release validator itself has independent
-real-Git fixture tests. A complete v3 pair capture followed by unmocked
-`run.build_verdict()` and C5 replay is still `NOT_RUN`. These changes do not
-establish human reviewer identity or an externally indexed file universe.
+file-universe, family and split-digest cases. A separate test admits a real-Git
+release and its source-derived holdout suite through the unmocked split
+validator, then rejects the wrong repository side. Another test runs the
+complete verdict fixture through v3 artifacts with only the split source
+validator mocked, and rejects changed split bytes. The retrieval benchmark,
+C5 decision and benchctl Python set passed 528 tests in 415.10 seconds;
+`test_corpus_binding.py` passed 51 tests in 75.34 seconds. A complete v3 pair
+capture followed by unmocked `run.build_verdict()` and 12-repository C5 replay
+is still `NOT_RUN`. These changes do not establish human reviewer identity or
+an externally indexed file universe.

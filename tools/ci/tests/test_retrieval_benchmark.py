@@ -8096,6 +8096,7 @@ def test_repository_disjoint_verdict_replays_frozen_split_artifacts(monkeypatch,
     after = _stage_verdict(st)
     assert after["states"] == before["states"]
     assert calls == [(split_path, releases_path)]
+    monkeypatch.undo()
     split_path.write_text('{"changed":true}')
     rejected = _stage_verdict(st)
     assert rejected["states"]["QUALITY_DELTA"] == "fail"
