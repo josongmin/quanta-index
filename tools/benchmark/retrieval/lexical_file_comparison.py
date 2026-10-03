@@ -112,10 +112,17 @@ def latency_summary(values: list[object], expected_count: int, layer: str) -> di
         not is_finite_json_number(value) or value < 0 for value in values
     ):
         raise ValueError(f"{layer}: missing, non-finite or invalid latency observation")
+    try:
+        total = math.fsum(values)
+    except OverflowError as error:
+        raise ValueError(f"{layer}: non-finite total latency") from error
+    if not math.isfinite(total):
+        raise ValueError(f"{layer}: non-finite total latency")
     ordered = sorted(values)
     return {
         "count": len(ordered),
         "timing_layer": layer,
+        "sum_ms": total,
         "mean_ms": statistics.mean(ordered),
         "p50_ms": statistics.median(ordered),
         "p95_ms": ordered[math.ceil(0.95 * len(ordered)) - 1],
@@ -1272,8 +1279,11 @@ def evaluate_external_captures(
         raise ValueError("external join inputs must be explicit absolute canonical paths")
     suite_raw, pack_raw = _bytes(native_paths["suite"]), _bytes(native_paths["query_pack"])
     roots: dict[Path, set[str]] = {}
+    resolved_roots = {}
     for name, root in external_roots.items():
-        roots.setdefault(root.resolve(strict=True), set()).add(name)
+        resolved = root.resolve(strict=True)
+        roots.setdefault(resolved, set()).add(name)
+        resolved_roots[name] = resolved
     summaries = {}
     evidence = {}
     common_binding = None
@@ -1297,7 +1307,9 @@ def evaluate_external_captures(
             "rows_sha256": summary["rows_sha256"],
         }
     paths = dict(native_paths)
-    paths.update({name + "_rows": root / (name + "_rows.jsonl") for name, root in external_roots.items()})
+    paths.update(
+        {name + "_rows": root / (name + "_rows.jsonl") for name, root in resolved_roots.items()}
+    )
     result = evaluate_capture(paths)
     for root, before in summaries.items():
         after = live.verify(root)

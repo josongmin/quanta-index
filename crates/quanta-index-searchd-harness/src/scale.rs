@@ -31,6 +31,7 @@
 //! daemon did not record is a rail error, never a fabricated time.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Instant;
 
@@ -297,6 +298,15 @@ pub struct ScopedFile {
     pub content: String,
 }
 
+fn parse_source_repo_index(source_repo_id: &str) -> AnyResult<u32> {
+    let suffix = source_repo_id
+        .strip_prefix("repo")
+        .ok_or_else(|| anyhow::anyhow!("scale: invalid source repo ID"))?;
+    suffix
+        .parse::<u32>()
+        .map_err(|error| anyhow::anyhow!("scale: invalid source repo ID {source_repo_id}: {error}"))
+}
+
 /// Planted query token unique to one generated source repository.
 pub fn repo_query_token(repo_index: u32) -> String {
     format!("scalereponeedle{repo_index:03}")
@@ -311,7 +321,7 @@ pub fn generate_scoped_corpus(tier: ScaleTier, seed: u64) -> AnyResult<Vec<Scope
     for repo_index in 0..params.repo_count {
         for file_index in 0..params.files_per_repo {
             let mut content = generate_file(tier, &params, repo_index, file_index, seed);
-            content.push_str(&format!("// {} anchor\n", repo_query_token(repo_index)));
+            writeln!(&mut content, "// {} anchor", repo_query_token(repo_index))?;
             files.push(ScopedFile {
                 source_repo_id: format!("repo{repo_index}"),
                 repo_relative_path: format!("src/file_{file_index}.rs"),
@@ -322,8 +332,9 @@ pub fn generate_scoped_corpus(tier: ScaleTier, seed: u64) -> AnyResult<Vec<Scope
     Ok(files)
 }
 
-/// Bind the existing corpus digest to both parts of the source identity. The
-/// generator reserves `repoN` as a single path component, so this canonical
+/// Bind the existing corpus digest to the source identity.
+///
+/// The generator reserves `repoN` as a single path component, so this canonical
 /// projection is injective over this fixture and matches the old path shape.
 #[must_use]
 pub fn scoped_corpus_digest(dimension: &str, files: &[ScopedFile]) -> String {
@@ -352,12 +363,10 @@ impl ScopedOracle {
         let params = params_for(tier);
         let mut paths_by_repo = BTreeMap::<String, BTreeSet<String>>::new();
         for file in files {
-            let repo_index = file
-                .source_repo_id
-                .strip_prefix("repo")
-                .and_then(|suffix| suffix.parse::<u32>().ok())
-                .filter(|index| *index < params.repo_count)
-                .ok_or_else(|| anyhow::anyhow!("scale: invalid source repo ID"))?;
+            let repo_index = parse_source_repo_index(&file.source_repo_id)?;
+            if repo_index >= params.repo_count {
+                return Err(anyhow::anyhow!("scale: invalid source repo ID"));
+            }
             let repo_anchor = format!("// {} anchor", repo_query_token(repo_index));
             if !file.repo_relative_path.starts_with("src/")
                 || file.repo_relative_path.contains("..")
@@ -397,12 +406,12 @@ impl ScopedOracle {
         Ok(Self { paths_by_repo })
     }
 
-    fn expected_count(&self, source_repo_id: Option<&str>) -> usize {
+    fn expected_count(&self, source_repo_id: Option<&str>) -> AnyResult<usize> {
         let files = source_repo_id.map_or_else(
             || self.paths_by_repo.values().map(BTreeSet::len).sum(),
             |repo| self.paths_by_repo.get(repo).map_or(0, BTreeSet::len),
         );
-        files.min(usize::try_from(SCALE_TOP_K).unwrap_or(usize::MAX))
+        Ok(files.min(usize::try_from(SCALE_TOP_K)?))
     }
 
     /// Verify one observed page without deriving the expected set from a
@@ -426,9 +435,9 @@ impl ScopedOracle {
                     "scale: response has a foreign or duplicate source identity {repo}/{path}"
                 ));
             }
-            count += 1;
+            count = count.saturating_add(1);
         }
-        require_result_count(count, self.expected_count(source_repo_id), "scoped query")?;
+        require_result_count(count, self.expected_count(source_repo_id)?, "scoped query")?;
         Ok(count)
     }
 
@@ -451,11 +460,12 @@ impl ScopedOracle {
     }
 }
 
-/// The scale fixture is ASCII, so its lexical folded surface is exactly the
-/// ASCII-lowercased source and relative path. Count distinct three-byte
-/// windows per file/surface, as the file authority's membership admission
-/// does. These limits mirror `lexical/file_authority.rs`; keep the focused
-/// threshold tests in sync when that authority changes.
+/// The scale fixture and source paths are ASCII.
+///
+/// Count distinct three-byte windows per file/surface, matching the file
+/// authority's membership admission. These limits mirror
+/// `lexical/file_authority.rs`; keep focused threshold tests in sync when that
+/// authority changes.
 const MAX_SCALE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SCALE_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_SCALE_POSTING_MEMBERSHIPS: u64 = 4_000_000;
@@ -574,18 +584,19 @@ fn check_admission_counts(
     Ok(())
 }
 
-fn distinct_ascii_trigrams(bytes: &[u8]) -> usize {
-    bytes
+fn distinct_ascii_trigrams(bytes: &[u8]) -> AnyResult<usize> {
+    let trigrams = bytes
         .windows(3)
-        .map(|window| [window[0], window[1], window[2]])
-        .collect::<BTreeSet<_>>()
-        .len()
+        .map(<[u8; 3]>::try_from)
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    Ok(trigrams.len())
 }
 
-/// Refuse a fixture above the lexical source/posting limits before starting
-/// the daemon. `source_scope` adds one newline after each chunk, which is
-/// included here. IPC wire size is checked separately against the actual
-/// pending batch because its encoded metadata cannot be inferred from bytes.
+/// Refuse oversized source/posting fixtures before starting the daemon.
+///
+/// `source_scope` adds one newline after each chunk, which is included here.
+/// IPC wire size is checked separately against the actual pending batch because
+/// its encoded metadata cannot be inferred from bytes.
 pub fn preflight_scoped_corpus(files: &[ScopedFile]) -> AnyResult<ScopedCorpusAdmission> {
     let mut source_bytes = 0_u64;
     let mut posting_memberships = 0_u64;
@@ -606,8 +617,8 @@ pub fn preflight_scoped_corpus(files: &[ScopedFile]) -> AnyResult<ScopedCorpusAd
         let path = file.repo_relative_path.to_ascii_lowercase();
         let mut source = file.content.to_ascii_lowercase().into_bytes();
         source.push(b'\n');
-        let memberships = distinct_ascii_trigrams(path.as_bytes())
-            .checked_add(distinct_ascii_trigrams(&source))
+        let memberships = distinct_ascii_trigrams(path.as_bytes())?
+            .checked_add(distinct_ascii_trigrams(&source)?)
             .ok_or_else(|| anyhow::anyhow!("scale: posting membership count overflow"))?;
         posting_memberships = posting_memberships
             .checked_add(u64::try_from(memberships)?)
@@ -923,16 +934,13 @@ fn validate_scoped_response(
 
 fn verify_scoped_repositories(rt: &mut E2eRuntime, oracle: &ScopedOracle) -> AnyResult<()> {
     for source_repo_id in oracle.paths_by_repo.keys() {
-        let repo_index = source_repo_id
-            .strip_prefix("repo")
-            .and_then(|suffix| suffix.parse::<u32>().ok())
-            .ok_or_else(|| anyhow::anyhow!("scale: malformed source repo oracle"))?;
+        let repo_index = parse_source_repo_index(source_repo_id)?;
         let response = rt.query_text(
             TextQuerySyntax::Native,
             &repo_query_token(repo_index),
             SCALE_TOP_K,
         );
-        validate_scoped_response(oracle, Some(source_repo_id), &response)?;
+        let _verified_count = validate_scoped_response(oracle, Some(source_repo_id), &response)?;
     }
     Ok(())
 }
@@ -976,7 +984,7 @@ fn measure_adapter_phases(
         )?;
         execute_samples.push(elapsed_ms(started));
         if let Some(oracle) = scoped_oracle {
-            oracle.verify_page(None, &page.candidates)?;
+            let _verified_count = oracle.verify_page(None, &page.candidates)?;
         } else if page.candidates.is_empty() {
             return Err(anyhow::anyhow!(
                 "scale: the adapter-only query returned an empty page"
@@ -1151,9 +1159,11 @@ fn measure_scoped_delta(rt: &mut E2eRuntime, file: &ScopedFile) -> AnyResult<Del
     })
 }
 
-/// Measure one declared tier. Small retains its existing one-repository
-/// fixture; larger tiers publish distinct source-repository identities into
-/// one serving owner and independently probe every source repository.
+/// Measure one declared scale tier.
+///
+/// Small retains its existing one-repository fixture; larger tiers publish
+/// distinct source-repository identities into one serving owner and
+/// independently probe every source repository.
 pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
     if tier == ScaleTier::Small {
         return measure_small_tier(seed);
@@ -1247,7 +1257,7 @@ pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
         .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
     let delta = measure_scoped_delta(&mut rt, delta_file)?;
     let after_delta = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
-    validate_scoped_response(&oracle, None, &after_delta)?;
+    let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)?;
     verify_scoped_repositories(&mut rt, &oracle)?;
     Ok(TierMeasurement {
         tier,

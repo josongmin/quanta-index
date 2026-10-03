@@ -83,6 +83,134 @@ def fixture_inputs(tmp_path):
     return base, original, suite, pack
 
 
+def _external_join_fixture(tmp_path):
+    from tools.benchmark.retrieval import lexical_file_comparison as owner
+
+    native_roles = [role for role in owner.INPUT_ROLES if not role.endswith("_rows")]
+    native = {role: tmp_path / (role + ".json") for role in native_roles}
+    for role, path in native.items():
+        path.write_bytes((role + " fixed bytes").encode())
+    roots = {}
+    summaries = {}
+    for name in owner.PRODUCTS:
+        root = tmp_path / name
+        root.mkdir()
+        (root / "suite.json").write_bytes(native["suite"].read_bytes())
+        (root / "query-pack.json").write_bytes(native["query_pack"].read_bytes())
+        (root / "capture.json").write_bytes(b"fixed capture bytes")
+        roots[name] = root
+        summaries[root] = {
+            "schema_version": 2,
+            "products": [name],
+            "release_digest": "sha256:" + "a" * 64,
+            "binding": {"source": "fixed independent fixture"},
+            "rows_sha256": {name: "b" * 64},
+        }
+    return native, roots, summaries
+
+
+def test_external_join_replays_each_root_before_and_after_existing_scorer(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import lexical_file_comparison as owner
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    native, roots, summaries = _external_join_fixture(tmp_path)
+    calls = []
+
+    def replay(root):
+        calls.append(root.name)
+        return summaries[root]
+
+    def score(paths):
+        calls.append("score")
+        assert set(paths) == set(owner.INPUT_ROLES)
+        for name, root in roots.items():
+            assert paths[name + "_rows"] == root / (name + "_rows.jsonl")
+        return {"status": "diagnostic_unqualified"}
+
+    monkeypatch.setattr(live, "verify", replay)
+    monkeypatch.setattr(owner, "evaluate_capture", score)
+    result = owner.evaluate_external_captures(native, roots)
+    assert calls == ["sourcegraph", "opengrok", "cs", "score", "sourcegraph", "opengrok", "cs"]
+    assert result["status"] == "diagnostic_unqualified"
+    binding = result["external_capture_binding"]
+    assert binding["performance_scope"] == "descriptive_only_not_a_paired_speed_experiment"
+    assert set(binding["captures"]) == {str(root) for root in roots.values()}
+
+
+@pytest.mark.parametrize("fault", ["missing_product", "selection", "suite", "pack", "source"])
+def test_external_join_refuses_independent_coverage_and_binding_faults(tmp_path, monkeypatch, fault):
+    from tools.benchmark.retrieval import lexical_file_comparison as owner
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    native, roots, summaries = _external_join_fixture(tmp_path)
+    if fault == "missing_product":
+        roots.pop("cs")
+    elif fault == "selection":
+        summaries[roots["sourcegraph"]]["products"] = ["sourcegraph", "cs"]
+    elif fault in {"suite", "pack"}:
+        filename = "suite.json" if fault == "suite" else "query-pack.json"
+        (roots["sourcegraph"] / filename).write_bytes(b"different bytes")
+    else:
+        summaries[roots["opengrok"]]["binding"] = {"source": "different source"}
+    monkeypatch.setattr(live, "verify", lambda root: summaries[root])
+
+    def must_not_score(paths):
+        raise AssertionError("invalid external binding reached the scorer")
+
+    monkeypatch.setattr(owner, "evaluate_capture", must_not_score)
+    with pytest.raises(ValueError, match="external"):
+        owner.evaluate_external_captures(native, roots)
+
+
+@pytest.mark.parametrize("fault", ["metadata", "capture_bytes", "native_pack"])
+def test_external_join_refuses_mutation_during_scoring(tmp_path, monkeypatch, fault):
+    from tools.benchmark.retrieval import lexical_file_comparison as owner
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    native, roots, summaries = _external_join_fixture(tmp_path)
+    monkeypatch.setattr(live, "verify", lambda root: dict(summaries[root]))
+
+    def score(paths):
+        if fault == "metadata":
+            summaries[roots["cs"]] = {**summaries[roots["cs"]], "tasks": 99}
+        elif fault == "capture_bytes":
+            (roots["cs"] / "capture.json").write_bytes(b"changed capture bytes")
+        else:
+            native["query_pack"].write_bytes(b"changed native pack")
+        return {"status": "diagnostic_unqualified"}
+
+    monkeypatch.setattr(owner, "evaluate_capture", score)
+    with pytest.raises(ValueError, match="changed during"):
+        owner.evaluate_external_captures(native, roots)
+
+
+@pytest.mark.parametrize("fault", [None, "unknown", "missing", "relative", "bool_version"])
+def test_external_join_spec_has_a_closed_inventory(tmp_path, fault):
+    from tools.benchmark.retrieval import lexical_file_comparison as owner
+
+    native, roots, _ = _external_join_fixture(tmp_path)
+    value = {
+        "schema_version": 1,
+        "native_inputs": {role: str(path) for role, path in native.items()},
+        "external_captures": {name: str(path) for name, path in roots.items()},
+    }
+    if fault == "unknown":
+        value["allow_partial"] = True
+    elif fault == "missing":
+        value["external_captures"].pop("cs")
+    elif fault == "relative":
+        value["native_inputs"]["suite"] = "relative.json"
+    elif fault == "bool_version":
+        value["schema_version"] = True
+    path = tmp_path / "join-spec.json"
+    path.write_text(json.dumps(value))
+    if fault is None:
+        assert owner.read_external_spec(path) == (native, roots)
+    else:
+        with pytest.raises(ValueError, match="external join"):
+            owner.read_external_spec(path)
+
+
 def test_prepare_binds_current_binary_and_pure_lexical_profiles(tmp_path):
     base, original, suite, pack = fixture_inputs(tmp_path)
     spec = build_spec(
@@ -800,6 +928,7 @@ def test_pair_result_rejects_hybrid_route_label_for_lexical_execution(tmp_path):
 def test_latency_summary_rejects_missing_and_nonfinite_values():
     values = [float(number) for number in range(1, 21)]
     summary = latency_summary(values, 20, "test-layer")
+    assert summary["sum_ms"] == 210.0
     assert summary["p50_ms"] == 10.5
     assert summary["p95_ms"] == 19.0
     with pytest.raises(ValueError, match="invalid latency"):
@@ -810,6 +939,8 @@ def test_latency_summary_rejects_missing_and_nonfinite_values():
         with pytest.raises(ValueError, match="invalid latency"):
             latency_summary(values[:-1] + [invalid], 20, "test-layer")
     assert latency_summary([0, 1, 2.5], 3, "control")["count"] == 3
+    with pytest.raises(ValueError, match="non-finite total latency"):
+        latency_summary([1e308, 1e308], 2, "control")
 
 
 def test_multiple_gold_files_distinguish_hit_rate_from_macro_file_recall(tmp_path):

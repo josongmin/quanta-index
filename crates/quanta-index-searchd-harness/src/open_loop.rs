@@ -828,7 +828,13 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
     let socket = socket.to_path_buf();
     let mut points = Vec::with_capacity(config.rates_qps.len());
     for rate in &config.rates_qps {
-        points.push(measure_point(&socket, &pin, &expected_rows, &config, *rate)?);
+        points.push(measure_point(
+            &socket,
+            &pin,
+            &expected_rows,
+            &config,
+            *rate,
+        )?);
     }
     Ok(Report {
         config,

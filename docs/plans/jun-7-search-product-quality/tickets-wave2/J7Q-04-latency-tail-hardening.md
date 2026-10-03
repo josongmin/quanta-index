@@ -47,10 +47,12 @@ a zero-arrival load point before measurement or aggregation, and rejects
 nonfinite completion timing. The baseline page is checked against the generated
 one-chunk-per-file source fixture (ten distinct admitted paths from sixteen
 files), rather than treating a prior engine response as relevance gold. The
-existing response-ID comparison still detects under-load order/identity drift.
+measured response comparison rejects changes in ordered candidate ID, source
+repository ID, or relative path, including a path change with unchanged IDs.
 The open-loop runner now selects the same scoped scale tiers with `--tier`; it
 reuses its existing arrival scheduler, validates the source-repo/path oracle,
 and probes each source repository before dispatch. Non-default tiers require
-an explicit external output directory. Focused `open_loop_matrix` tests and
+an explicit, newly created external output directory. Missing latency prints
+as `unavailable`, rather than a fabricated zero. Focused `open_loop_matrix` tests and
 the real offered-load rail remain `NOT_RUN` for this extension. No capacity
 limit is qualified from these unit checks.
