@@ -950,6 +950,19 @@ previously reused `lo` capture; it is not query latency or a performance
 comparison. These source-exposed mechanical labels lack human relevance review
 and no product ranking or qualified file decision follows from this diagnostic.
 
+An independent join of all twelve exact suites, native records and scored
+rows reproduced every file Hit@10 bit using `(path, file_sha256)` rather than
+the evaluator's aggregate. Quanta missed 24 and Semble missed 21; twelve task
+IDs overlap. Each Quanta miss returned ten distinct files with `capped`
+status; each Semble miss returned ten distinct files with `success` status.
+Neither status proves a rank beyond the returned window. Names including
+`test`, `label`, `show`, `Wait` and `timeout` are bare and may match many
+uses; the source-oracle declaration file is a mechanical target, not a reviewed
+user-intent judgment. The task-level gold, top-ten paths, record/report digests
+and statuses are in
+`/private/tmp/qi-b08-product-8e8592f4-20261003/exact-pair-miss-audit.json`
+(SHA-256 `d98dd3e9cd974a6b6f8845efccda9d2d2b6a633a141674917fb545235688e177`).
+
 Read-only offline file-evidence replay at evaluator `main@91b18b48` used the
 existing exploratory `/tmp/qx` `lo` pair, source commit
 `5c6ddcb7063c9908031340db03f27ba7483d1ece`, suite SHA-256
@@ -961,4 +974,7 @@ and Semble record SHA-256
 paired positive rows under `file_ndcg_at_10` (Quanta minus Semble mean delta
 `0.005574468530525119`); both qualified uncertainty-shape checks returned
 true. The frozen `/tmp/qx` manifest is exploratory and its verdict has
-`QUALITY_DELTA: not_applicable`, so this verifies the evaluator/replay path only.
+`QUALITY_DELTA: not_applicable`. All 108 tasks have mechanical source-oracle
+labels; schema-v3 admission explicitly refuses a suite with no human-reviewed
+task. A focused negative test verifies that refusal. This verifies the
+evaluator/replay path only.
