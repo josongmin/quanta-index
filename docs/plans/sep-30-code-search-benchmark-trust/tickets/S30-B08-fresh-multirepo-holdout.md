@@ -1680,6 +1680,13 @@ control JSON; the published v6 document is 28,375,781 bytes. C4 suite
 admission is running under that same frozen source and has not published an
 output or result yet.
 
+An independent count of the twelve published `gold.json` task arrays gives
+6,628 distinct IDs: 5,262 `mechanical_unreviewed` and 1,366 `unjudged`.
+Unsupported source coverage caused all 1,366 unjudged rows; 821 task rows
+contain `other_language_possible_declaration`, 692 contain `census_refused`,
+and 147 contain both. These are exclusion candidates for C4 admission, not
+search misses. The final selected denominator awaits C4's source replay.
+
 The frozen release's 11,695 `code_only` files were independently projected into
 twelve new Git repositories at
 `/private/tmp/qi-c5-comparators-20261003-v1/repos`. The projection receipt
