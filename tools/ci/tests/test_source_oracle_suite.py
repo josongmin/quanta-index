@@ -72,6 +72,22 @@ def test_vendored_parser_has_no_unpatched_fallback_when_compiler_is_missing(tmp_
         declaration_parsers._library("typescript")
 
 
+def test_vendored_parser_source_binding_rejects_linked_directories(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import declaration_parsers
+
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "bound.c").write_bytes(b"fixed compiled source")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "parser.c").write_bytes(b"unbound compiled source")
+    (vendor / "linked-src").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(declaration_parsers, "VENDOR", vendor)
+    monkeypatch.setattr(declaration_parsers, "ROOT", tmp_path)
+    with pytest.raises(ValueError, match="regular or directories"):
+        declaration_parsers.component_source_digests()
+
+
 def _source_repo(
     tmp_path: Path, extra_files: dict[str, bytes] | None = None
 ) -> tuple[Path, str, dict[str, bytes]]:

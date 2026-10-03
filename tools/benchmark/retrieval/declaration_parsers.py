@@ -23,8 +23,13 @@ VENDOR = ROOT / "vendor/tree-sitter-typescript"
 
 
 def component_source_digests() -> dict[str, str]:
-    paths = sorted(path for path in VENDOR.rglob("*") if path.suffix in (".c", ".h"))
-    if not paths or any(path.is_symlink() or not path.is_file() for path in paths):
+    if VENDOR.is_symlink() or VENDOR.parent.is_symlink() or not VENDOR.is_dir():
+        raise ValueError("vendored TypeScript parser sources missing or linked")
+    entries = sorted(VENDOR.rglob("*"))
+    if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in entries):
+        raise ValueError("vendored TypeScript parser sources must be regular or directories")
+    paths = [path for path in entries if path.is_file() and path.suffix in (".c", ".h")]
+    if not paths:
         raise ValueError("vendored TypeScript parser sources missing or linked")
     return {
         path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
