@@ -58,6 +58,18 @@ def test_vendored_parser_cache_refuses_identity_and_binary_tampering(tmp_path):
     binary.write_bytes(b"changed parser bytes")
     with pytest.raises(ValueError, match="binary differs"):
         declaration_parsers._checked_library(tmp_path, identity)
+    marker.write_text("null")
+    with pytest.raises(ValueError, match="identity differs"):
+        declaration_parsers._checked_library(tmp_path, identity)
+
+
+def test_vendored_parser_has_no_unpatched_fallback_when_compiler_is_missing(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import declaration_parsers
+
+    monkeypatch.setenv("QUANTA_CENSUS_PARSER_CACHE", str(tmp_path / "empty-parser-cache"))
+    monkeypatch.setattr(declaration_parsers.shutil, "which", lambda _name: None)
+    with pytest.raises(ValueError, match="C compiler unavailable"):
+        declaration_parsers._library("typescript")
 
 
 def _source_repo(

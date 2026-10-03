@@ -521,9 +521,19 @@ def main() -> int:
         artifact, record, hashlib.sha256(args.record.read_bytes()).hexdigest(), pack
     )
     report = compose(suite, rows)
+    report["inputs"] = {
+        name: {"path": str(path.resolve()), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        for name, path in (("suite", args.suite), ("record", args.record), ("study", args.study))
+    }
+    report["source"] = {
+        "repository_commit": suite["repository_commit"],
+        "file_universe_digest": pack["file_universe_digest"],
+        "query_pack_sha256": record["query_pack_sha256"],
+    }
     require(
-        not args.out.resolve().is_relative_to(Path(__file__).resolve().parents[3]),
-        "output must be outside the checkout",
+        not args.out.resolve().is_relative_to(Path(__file__).resolve().parents[3])
+        and not args.out.resolve().is_relative_to(args.repo.resolve()),
+        "output must be outside the code and corpus checkouts",
     )
     with args.out.open("x", encoding="utf-8") as handle:
         handle.write(json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n")
