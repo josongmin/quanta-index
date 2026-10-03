@@ -1584,3 +1584,44 @@ service ports 17080/17081 and 7080/7081 were closed, and Docker's daemon was
 unavailable. The preserved service state is Gin-specific, not a twelve-repo
 index. **BLOCKED:** a fresh five-product scale comparison. **NOT_RUN:** fresh
 scale Quanta/Semble capture, human-reviewed relevance, and C5 product decision.
+
+## Typed component route: four-case product diagnostic (2026-10-03)
+
+At build source `b1356784`, the producer publishes an explicit
+`raw_ascii_local_name_v1` source policy. Ingest checks every emitted ASCII
+local name against its definition bytes. For incomplete symbol coverage, the
+component route excludes a file only when its committed source lacks a
+requested component; otherwise it returns `SymbolCoverageIncomplete`. Sealed
+lexical manifest format 12 forces format-11 generations to be rebuilt.
+
+The four original `code_search_file` misses were rerun as a **different,
+explicit** `code_search_components_file` request over the same pinned corpus
+commits and unchanged mechanical gold. New suites and blind packs retained only
+those four task IDs. The binaries, inputs, original rows, new records and
+evaluation reports are joined in
+`/private/tmp/qi-component-actual-kYGykT/verification.json`; the CLI and
+Zellij successful retries are under `/private/tmp/qi-component-retry-9doaxN`.
+
+| Task | New gold-file rank | New file | Query call |
+| --- | ---: | --- | ---: |
+| `cli.com.002` | 1 | `pkg/cmd/extension/extension_test.go` | 15.564 ms |
+| `mocha.com.006` | 1 | `lib/reporters/base.js` | 11.770 ms |
+| `zellij.com.004` | 1 | `zellij-utils/src/web_server_commands.rs` | 59.784 ms |
+| `zellij.com.005` | 1 | `zellij-utils/src/lib.rs` | 22.784 ms |
+
+All four records have `success`, `distinct_file`, `score_desc_path_tiebreak`
+and native score evidence. `evaluate-diagnostic` replayed 4/4 Hit@10 and
+MRR@10 = 1. The original requests remain `capped` ten-file misses; this is
+contract-specific recovery, not a revision of those frozen scores. CLI and
+Zellij first attempts reached publish but timed out at the 180-second IPC
+read limit before producing any query record. Fresh-root retries completed
+with larger limits: publish/activate took 168.986 s (CLI), 45.620 s (Mocha)
+and 306.428 s (Zellij) on a heavily contended host. Those timings do not
+qualify a performance comparison.
+
+**VERIFIED:** contract source-name positive/negative test 1/1, lexical exact
+source integration 22/22, manifest format rejection 1/1, and three fresh
+SDK-to-daemon captures with four evaluated queries. **NOT_RUN:** full C4
+recapture and C5 qualification. Gold remains mechanical and unreviewed;
+product quality, external indexed-universe equivalence and a speed ranking
+remain unqualified.

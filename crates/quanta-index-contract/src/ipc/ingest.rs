@@ -5278,7 +5278,8 @@ mod tests {
     fn raw_ascii_symbol_name_policy_checks_definition_bytes() {
         let mut batch = fixture_search_corpus_batch();
         let scope = &mut batch.replace_scopes[0];
-        scope.coverage.symbol_name_source_policy = crate::SymbolNameSourcePolicyV1::RawAsciiLocalName;
+        scope.coverage.symbol_name_source_policy =
+            crate::SymbolNameSourcePolicyV1::RawAsciiLocalName;
         scope.coverage.symbols = crate::SymbolCoverage::Complete { symbol_count: 1 };
         scope.symbols.push(SymbolRecord {
             symbol_id: crate::SymbolId::new("symbol-main"),
