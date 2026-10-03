@@ -39,7 +39,7 @@ fn l2_source_replay_keeps_original_publication_through_sdk_activation_and_restar
     )
     .source_event(event);
     assert_ne!(retargeted.batch_digest()?, first.receipt.batch_digest);
-    let (replayed, activation) = fixture
+    let (replayed, activation, _sdk_timings) = fixture
         .client
         .search_corpus()
         .publish_and_activate_observed(&retargeted, None)?;

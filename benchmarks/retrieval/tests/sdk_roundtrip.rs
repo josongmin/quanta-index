@@ -663,6 +663,12 @@ fn native_file_public_routes_group_order_scope_and_case() {
         "src/upper.go".to_string(),
         "package fixture\n// NEEDLE EEDL in upper case only\n".to_string(),
     ));
+    assert!(
+        sources.iter().all(|(_, text)| !text
+            .to_ascii_lowercase()
+            .contains("neverpresentbenchmarktoken")),
+        "the second NL token must be absent so AND cannot satisfy the OR fixture"
+    );
     let references: Vec<(&str, &str)> = sources
         .iter()
         .map(|(path, text)| (path.as_str(), text.as_str()))
@@ -731,7 +737,7 @@ fn native_file_public_routes_group_order_scope_and_case() {
         ),
         (
             QueryInputPolicy::NaturalLanguageFile,
-            "needle evidence",
+            "needle NeverPresentBenchmarkToken",
             "score_desc_path_tiebreak",
         ),
     ] {

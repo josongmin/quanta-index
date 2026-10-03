@@ -9,8 +9,9 @@ use quanta_index_contract::{
     validate_lexical_page_v1,
 };
 use quanta_index_core::{
-    CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, CoreError, LexicalEndpoint, LexicalPageSpec, LexicalPolicy,
-    LexicalQueryPort, QueryRouteV1, RequestBudgetV1, validate_query_top_k,
+    CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, CoreError, LexicalEndpoint,
+    LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1, RequestBudgetV1,
+    validate_query_top_k,
 };
 
 use crate::lower_lexical_text_query;
@@ -116,12 +117,16 @@ fn code_search_execution_trace(
         || (!stats.literal_prefilter_executed
             && (stats.literal_source_verification_attempts != 0
                 || stats.literal_verified_files != 0))
-        || (ordinary && stats.literal_prefilter_executed
+        || (ordinary
+            && stats.literal_prefilter_executed
             && stats.literal_verified_files != stats.final_candidate_visits)
         || (!typo && stats.typo_token_comparisons != 0)
-        || (matches!(stats.mode, CodeSearchExecutionModeV1::TypoExplicit | CodeSearchExecutionModeV1::Components)
-            && (stats.literal_prefilter_executed || stats.literal_source_verification_attempts != 0
-                || stats.literal_verified_files != 0))
+        || (matches!(
+            stats.mode,
+            CodeSearchExecutionModeV1::TypoExplicit | CodeSearchExecutionModeV1::Components
+        ) && (stats.literal_prefilter_executed
+            || stats.literal_source_verification_attempts != 0
+            || stats.literal_verified_files != 0))
     {
         return Err(CoreError::InvalidContract(
             "lexical: contradictory code-search work counts".into(),
@@ -139,13 +144,16 @@ fn code_search_execution_trace(
         CodeSearchExecutionModeV1::TypoFallback => "typo_fallback_exhaustive_page_v1",
         CodeSearchExecutionModeV1::Components => "components_exhaustive_page_v1",
     };
-    let mut entries = vec![PlannerTraceEntry {
-        stage: PlannerStage::Merge,
-        detail: format!("code_search.execution.scope={scope};exploration_complete=true"),
-    }, PlannerTraceEntry {
-        stage: PlannerStage::Merge,
-        detail: format!("code_search.execution.mode={mode}"),
-    }];
+    let mut entries = vec![
+        PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: format!("code_search.execution.scope={scope};exploration_complete=true"),
+        },
+        PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: format!("code_search.execution.mode={mode}"),
+        },
+    ];
     entries.push(PlannerTraceEntry {
         stage: PlannerStage::Merge,
         detail: format!(
@@ -165,7 +173,10 @@ fn code_search_execution_trace(
             ("cursor_eligible_files", stats.cursor_eligible_files),
             ("fetched_files", stats.fetched_files),
             ("posting_probes", stats.posting_probes),
-            ("source_surface_bytes_considered", stats.source_surface_bytes_considered),
+            (
+                "source_surface_bytes_considered",
+                stats.source_surface_bytes_considered,
+            ),
             ("typo_token_comparisons", stats.typo_token_comparisons),
             ("materialized_files", stats.materialized_files),
             ("preview_attempted_files", stats.preview_attempted_files),
@@ -584,7 +595,9 @@ mod typed_cursor_tests {
 
     #[test]
     fn code_search_execution_counts_reject_contradictory_page_provenance() {
-        use super::{CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, code_search_execution_trace};
+        use super::{
+            CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, code_search_execution_trace,
+        };
         let stats = CodeSearchExecutionStatsV1 {
             literal_prefilter_executed: true,
             literal_source_verification_attempts: 3,
@@ -625,7 +638,11 @@ mod typed_cursor_tests {
             ..stats
         };
         let typo_trace = code_search_execution_trace(typo, 1, Some(1)).expect("typed typo counts");
-        assert!(typo_trace.iter().any(|entry| entry.detail == "code_search.execution.mode=typo_explicit"));
+        assert!(
+            typo_trace
+                .iter()
+                .any(|entry| entry.detail == "code_search.execution.mode=typo_explicit")
+        );
         assert!(typo_trace.iter().any(|entry| entry.detail == "code_search.execution.scope=typo_explicit_exhaustive_page_v1;exploration_complete=true"));
         let invalid_mode = CodeSearchExecutionStatsV1 {
             mode: CodeSearchExecutionModeV1::Components,

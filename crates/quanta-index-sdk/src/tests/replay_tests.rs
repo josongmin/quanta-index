@@ -100,7 +100,7 @@ fn l2_source_replay_publishes_original_receipt_and_activates_original_pair() {
             }),
         );
         if observed {
-            let (outcome, actual_ack) = ok_or_fail!(
+            let (outcome, actual_ack, _sdk_timings) = ok_or_fail!(
                 client
                     .search_corpus()
                     .publish_and_activate_observed(&batch, None)

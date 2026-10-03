@@ -305,7 +305,7 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
         None,
         &first_files,
     )?;
-    let (replay, activated) = daemon
+    let (replay, activated, _sdk_timings) = daemon
         .client
         .search_corpus()
         .publish_and_activate_observed(&retargeted, None)?;
@@ -682,7 +682,7 @@ fn recover_delta_after_crash(binary: &Path, state: &Path, point: &str) -> TestRe
         .active_head(repo()?, revision()?)?
         .ok_or("rollback head disappeared after crash")?;
     assert_eq!(current, rollback.active);
-    let (publication, active) = recovered
+    let (publication, active, _sdk_timings) = recovered
         .client
         .search_corpus()
         .publish_and_activate_observed(&third, Some(current))

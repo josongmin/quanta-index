@@ -439,9 +439,10 @@ fn score_terms_observed(
             continue;
         }
         if let Some(stats) = stats.as_deref_mut() {
-            stats.source_surface_bytes_considered = stats
-                .source_surface_bytes_considered
-                .saturating_add(u64::try_from(scanned_bytes(file, term.scope, case)).unwrap_or(u64::MAX));
+            stats.source_surface_bytes_considered =
+                stats.source_surface_bytes_considered.saturating_add(
+                    u64::try_from(scanned_bytes(file, term.scope, case)).unwrap_or(u64::MAX),
+                );
         }
         let Some(witness) = choose_witness(file, term, case, budget)? else {
             return Ok(None);
@@ -804,7 +805,14 @@ fn typo_candidates(
     max_posting_visits: usize,
     budget: &RequestBudgetV1,
 ) -> Result<Option<BTreeSet<u64>>, CoreError> {
-    typo_candidates_observed(index, identifier, eligible, max_posting_visits, budget, None)
+    typo_candidates_observed(
+        index,
+        identifier,
+        eligible,
+        max_posting_visits,
+        budget,
+        None,
+    )
 }
 
 fn typo_candidates_observed(
@@ -1246,8 +1254,7 @@ fn candidate_ids_observed(
             TermsToScore::Literals,
             budget,
             Some(stats),
-        )?
-        {
+        )? {
             let _previous = hits.insert(id, scored);
         }
     }
@@ -2117,7 +2124,9 @@ impl TantivySearcher {
         ));
         stats.cursor_eligible_files = cursor_eligible;
         stats.fetched_files = u64::try_from(ranked.len()).map_err(|error| {
-            CoreError::Storage(format!("lexical: component fetched file count overflow: {error}"))
+            CoreError::Storage(format!(
+                "lexical: component fetched file count overflow: {error}"
+            ))
         })?;
         stats.sort_page_ns = observed_ns(sort_started);
         let preview_started = Instant::now();
@@ -2259,7 +2268,9 @@ impl TantivySearcher {
         ));
         stats.cursor_eligible_files = cursor_eligible;
         stats.fetched_files = u64::try_from(ranked.len()).map_err(|error| {
-            CoreError::Storage(format!("lexical: typo fetched file count overflow: {error}"))
+            CoreError::Storage(format!(
+                "lexical: typo fetched file count overflow: {error}"
+            ))
         })?;
         stats.sort_page_ns = observed_ns(sort_started);
         let preview_started = Instant::now();

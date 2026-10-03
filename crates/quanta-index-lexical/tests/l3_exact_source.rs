@@ -317,6 +317,7 @@ fn repartition_code_scope(
 
 #[test]
 fn explicit_typo_search_uses_source_tokens_and_valid_spans() -> TestResult {
+    use quanta_index_core::CodeSearchExecutionModeV1;
     let (_dir, searcher) = fixture_with_scopes(vec![
         code_scope("exact.rs", "load_jsom", 4)?,
         code_scope("typo.rs", "load_json", 4)?,
@@ -328,14 +329,20 @@ fn explicit_typo_search_uses_source_tokens_and_valid_spans() -> TestResult {
         name: "code_search.identifier_typo".into(),
         args: vec![LqPredicateArg::RawString("load_jsom".into())],
     });
-    let rows = searcher
-        .search_constrained(
-            &request,
-            &QueryConstraintSetV1::default(),
-            &LexicalPageSpec::first(10),
-            &RequestBudgetV1::unbounded(),
-        )?
-        .candidates;
+    let page = searcher.search_constrained(
+        &request,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let stats = page.code_search_stats.expect("explicit typo work");
+    assert_eq!(stats.mode, CodeSearchExecutionModeV1::TypoExplicit);
+    assert_eq!(stats.verified_matching_files, 2);
+    assert_eq!(stats.materialized_files, 2);
+    assert_eq!(stats.preview_attempted_files, 2);
+    assert!(stats.typo_token_comparisons > 0);
+    assert!(stats.source_surface_bytes_considered > 0);
+    let rows = page.candidates;
     assert_eq!(
         rows.iter()
             .map(|row| row.repo_relative_path.as_str())
@@ -362,6 +369,23 @@ fn explicit_typo_search_uses_source_tokens_and_valid_spans() -> TestResult {
         .candidates;
     assert_eq!(exact_rows.len(), 1);
     assert_eq!(exact_rows[0].repo_relative_path.as_str(), "exact.rs");
+    let fallback = searcher.search_constrained(
+        &code_query(&["load_jsomx"], false),
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let fallback_stats = fallback.code_search_stats.expect("automatic typo work");
+    assert_eq!(fallback_stats.mode, CodeSearchExecutionModeV1::TypoFallback);
+    assert!(fallback_stats.literal_prefilter_executed);
+    assert_eq!(fallback_stats.literal_verified_files, 0);
+    assert_eq!(fallback_stats.verified_matching_files, 1);
+    assert_eq!(fallback_stats.materialized_files, 1);
+    assert_eq!(fallback_stats.preview_attempted_files, 1);
+    assert_eq!(
+        fallback.candidates[0].repo_relative_path.as_str(),
+        "exact.rs"
+    );
     request.options.case = Some(LqCase::Sensitive);
     request.expr = LqExpr::Leaf(LqLeaf::Predicate {
         name: "code_search.identifier_typo".into(),
@@ -381,6 +405,7 @@ fn explicit_typo_search_uses_source_tokens_and_valid_spans() -> TestResult {
 
 #[test]
 fn symbol_components_match_one_ordered_name_and_page_distinct_files() -> TestResult {
+    use quanta_index_core::CodeSearchExecutionModeV1;
     let (_dir, searcher) = fixture_with_scopes(vec![
         scope(
             "source-a",
@@ -429,6 +454,11 @@ fn symbol_components_match_one_ordered_name_and_page_distinct_files() -> TestRes
         &budget,
     )?;
     assert_eq!(first.exact_total, Some(2));
+    let stats = first.code_search_stats.expect("component work");
+    assert_eq!(stats.mode, CodeSearchExecutionModeV1::Components);
+    assert_eq!(stats.verified_matching_files, 2);
+    assert_eq!(stats.materialized_files, 2);
+    assert_eq!(stats.preview_attempted_files, 2);
     assert_eq!(
         first
             .candidates

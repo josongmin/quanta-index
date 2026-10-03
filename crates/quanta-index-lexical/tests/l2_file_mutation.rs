@@ -1065,7 +1065,9 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
     let refused = if after_second_preflight {
         adapter.build_batch(&delta)
     } else {
-        adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::UnderOperationLock)
+        adapter
+            .preflight_batch(&delta, SearchCorpusPreflightPhaseV1::UnderOperationLock)
+            .map(|()| None)
     };
     assert!(
         matches!(

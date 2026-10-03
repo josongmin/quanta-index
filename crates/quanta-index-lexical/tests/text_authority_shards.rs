@@ -575,7 +575,7 @@ fn small_batch(
     batch(generation, base, scopes, &[], seal)
 }
 
-fn typed_code(result: Result<(), CoreError>) -> Result<String, Box<dyn Error>> {
+fn typed_code<T: std::fmt::Debug>(result: Result<T, CoreError>) -> Result<String, Box<dyn Error>> {
     match result {
         Err(CoreError::Typed { code, .. }) => Ok(code.to_string()),
         other => Err(format!("expected a typed refusal, got {other:?}").into()),
