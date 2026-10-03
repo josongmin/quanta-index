@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
-    ContinuationTokenV2, GenerationPin, LexicalCandidate, QueryConstraintSetV1,
-    TextQueryRequest, TextQuerySyntax, TextRankUnit,
+    ContinuationTokenV2, GenerationPin, LexicalCandidate, QueryConstraintSetV1, TextQueryRequest,
+    TextQuerySyntax, TextRankUnit,
 };
 use quanta_index_retrieval_bench::query_plan::{QueryInputPolicy, QueryPlan};
 use quanta_index_retrieval_bench::record::QueryPack;
@@ -52,9 +52,11 @@ impl PoolProgress {
             {
                 return Err("paging repeated a file identity or path".into());
             }
-            if self.previous.as_ref().is_some_and(|previous| {
-                !previous.order_key().order(&row.order_key()).is_lt()
-            }) {
+            if self
+                .previous
+                .as_ref()
+                .is_some_and(|previous| !previous.order_key().order(&row.order_key()).is_lt())
+            {
                 return Err("paging violated the native total order".into());
             }
             self.previous = Some(row.clone());
@@ -67,7 +69,10 @@ impl PoolProgress {
     }
 }
 
-fn trace_count(trace: &quanta_index_contract::SearchExplanation, name: &str) -> Result<u64, String> {
+fn trace_count(
+    trace: &quanta_index_contract::SearchExplanation,
+    name: &str,
+) -> Result<u64, String> {
     let prefix = format!("code_search.execution.{name}=");
     let values: Vec<_> = trace
         .planner_trace
@@ -75,13 +80,19 @@ fn trace_count(trace: &quanta_index_contract::SearchExplanation, name: &str) -> 
         .filter_map(|entry| entry.detail.strip_prefix(&prefix))
         .collect();
     if values.len() != 1 {
-        return Err(format!("ordinary CodeSearch count {name} is absent or duplicated"));
+        return Err(format!(
+            "ordinary CodeSearch count {name} is absent or duplicated"
+        ));
     }
-    values[0].parse().map_err(|_| format!("invalid count {name}"))
+    values[0]
+        .parse()
+        .map_err(|_| format!("invalid count {name}"))
 }
 
 fn same_original_hit(row: &LexicalCandidate, hit: &RankedHit) -> bool {
-    let Some(authority) = &hit.file_authority else { return false; };
+    let Some(authority) = &hit.file_authority else {
+        return false;
+    };
     row.candidate_id == hit.candidate_id
         && row.repo_relative_path.as_str() == hit.path
         && f64::from(row.score) == hit.score
@@ -123,28 +134,52 @@ fn collect_one(
         }
         // Retain the original page size: cursors bind it and the first page must
         // reproduce the measured window, not a separately broadened request.
-        let builder = client.lexical().query().code_search(&request.query_text)
-            .pinned(pin.clone()).top_k(request.top_k);
-        let builder = match cursor.take() { Some(token) => builder.after(token), None => builder };
+        let builder = client
+            .lexical()
+            .query()
+            .code_search(&request.query_text)
+            .pinned(pin.clone())
+            .top_k(request.top_k);
+        let builder = match cursor.take() {
+            Some(token) => builder.after(token),
+            None => builder,
+        };
         let page = match builder.execute() {
             Ok(page) => page,
-            Err(error) => { stop = Some(format!("page_refused: {error}")); break; }
+            Err(error) => {
+                stop = Some(format!("page_refused: {error}"));
+                break;
+            }
         };
         let checked = (|| -> Result<(u64, u64), String> {
             if page.generation != *pin || page.rank_unit != TextRankUnit::File {
                 return Err("page generation or rank unit differs from request".into());
             }
-            if pages.is_empty() && (page.window != *window || page.results.len() != hits.len()
-                || !page.results.iter().zip(hits).all(|(row, hit)| same_original_hit(row, hit))) {
+            if pages.is_empty()
+                && (page.window != *window
+                    || page.results.len() != hits.len()
+                    || !page
+                        .results
+                        .iter()
+                        .zip(hits)
+                        .all(|(row, hit)| same_original_hit(row, hit)))
+            {
                 return Err("pinned first page differs from the measured original window".into());
             }
             let scope_count = page.explanation.planner_trace.iter().filter(|entry|
                 entry.detail == "code_search.execution.scope=ordinary_exhaustive_page_v1;exploration_complete=true").count();
-            if scope_count != 1 { return Err("ordinary exhaustive execution is not established".into()); }
+            if scope_count != 1 {
+                return Err("ordinary exhaustive execution is not established".into());
+            }
             for row in &page.results {
-                if row.repo_id != pin.repo_id || row.source_repo_id != pin.repo_id
-                    || row.revision_id != pin.revision_id || row.manifest_generation != pin.manifest_generation
-                    || !row.candidate_id.starts_with("file:") || row.source.is_none() || row.preview.is_none() {
+                if row.repo_id != pin.repo_id
+                    || row.source_repo_id != pin.repo_id
+                    || row.revision_id != pin.revision_id
+                    || row.manifest_generation != pin.manifest_generation
+                    || !row.candidate_id.starts_with("file:")
+                    || row.source.is_none()
+                    || row.preview.is_none()
+                {
                     return Err("candidate lacks pinned source-file authority".into());
                 }
             }
@@ -158,47 +193,77 @@ fn collect_one(
         let page_json = serde_json::to_value(&page);
         let page_json = match page_json {
             Ok(value) => value,
-            Err(error) => { stop = Some(format!("page_serialization: {error}")); break; }
+            Err(error) => {
+                stop = Some(format!("page_serialization: {error}"));
+                break;
+            }
         };
         pages.push(page_json);
         let (total, eligible) = match checked {
             Ok(counts) => counts,
-            Err(error) => { stop = Some(error); break; }
+            Err(error) => {
+                stop = Some(error);
+                break;
+            }
         };
-        if candidates.len().checked_add(page.results.len()).is_none_or(|n| n > limits.max_files) {
-            stop = Some("diagnostic_file_limit".into()); break;
+        if candidates
+            .len()
+            .checked_add(page.results.len())
+            .is_none_or(|n| n > limits.max_files)
+        {
+            stop = Some("diagnostic_file_limit".into());
+            break;
         }
         if let Err(error) = progress.observe(&page.results, total, eligible) {
-            stop = Some(error); break;
+            stop = Some(error);
+            break;
         }
         candidates.extend(page.results);
         if page.window.outcome().is_exhausted() {
             if page.next_cursor.is_some() || !progress.exhausted() {
                 stop = Some("exhaustion disagrees with verified file count".into());
-            } else { pool_complete = true; }
+            } else {
+                pool_complete = true;
+            }
             break;
         }
         let Some(next) = page.next_cursor else {
-            stop = Some("non_exhausted_page_without_cursor".into()); break;
+            stop = Some("non_exhausted_page_without_cursor".into());
+            break;
         };
         if candidates.is_empty() || !cursor_values.insert(format!("{next:?}")) {
-            stop = Some("non_progressing_cursor".into()); break;
+            stop = Some("non_progressing_cursor".into());
+            break;
         }
         cursor = Some(next);
     }
-    if !pool_complete && stop.is_none() { stop = Some("diagnostic_page_limit".into()); }
+    if !pool_complete && stop.is_none() {
+        stop = Some("diagnostic_page_limit".into());
+    }
     // A partial pool is still inspectable, but no consumer may rank it as complete.
     for candidate in candidates {
-        if start.elapsed() >= limits.timeout { stop = Some("diagnostic_deadline".into()); break; }
+        if start.elapsed() >= limits.timeout {
+            stop = Some("diagnostic_deadline".into());
+            break;
+        }
         let explanation_start = Instant::now();
-        let response = client.search().explain_under_query(pin.clone(), candidate.clone(), request.clone());
+        let response =
+            client
+                .search()
+                .explain_under_query(pin.clone(), candidate.clone(), request.clone());
         let elapsed = explanation_start.elapsed().as_secs_f64() * 1000.0;
         let row = match response {
             Ok(response) => match serde_json::to_value(&response) {
-                Ok(response) => json!({"candidate":candidate,"status":"returned", "response":response,"explanation_ms":elapsed}),
-                Err(error) => json!({"candidate":candidate,"status":"refused","error":format!("explanation_serialization: {error}"),"explanation_ms":elapsed}),
+                Ok(response) => {
+                    json!({"candidate":candidate,"status":"returned", "response":response,"explanation_ms":elapsed})
+                }
+                Err(error) => {
+                    json!({"candidate":candidate,"status":"refused","error":format!("explanation_serialization: {error}"),"explanation_ms":elapsed})
+                }
             },
-            Err(error) => json!({"candidate":candidate,"status":"refused","error":error.to_string(),"explanation_ms":elapsed}),
+            Err(error) => {
+                json!({"candidate":candidate,"status":"refused","error":error.to_string(),"explanation_ms":elapsed})
+            }
         };
         explanations.push(row);
     }
@@ -236,7 +301,10 @@ pub(super) fn collect(
 }
 
 pub(super) fn allowed(policy: QueryInputPolicy) -> bool {
-    matches!(policy, QueryInputPolicy::CodeSearchFile | QueryInputPolicy::CodeSearchExactContentFile)
+    matches!(
+        policy,
+        QueryInputPolicy::CodeSearchFile | QueryInputPolicy::CodeSearchExactContentFile
+    )
 }
 
 #[cfg(test)]
@@ -244,35 +312,57 @@ mod tests {
     use super::*;
     use quanta_index_contract::{ManifestGeneration, RepoId, RepoRelativePath, RevisionId};
     fn candidate(path: &str, score: f32) -> LexicalCandidate {
-        LexicalCandidate { source_repo_id:RepoId::new("repo"),source:None,preview:None,
-            candidate_id:format!("file:{path}"),repo_id:RepoId::new("repo"),revision_id:RevisionId::new("rev"),
-            manifest_generation:ManifestGeneration::new(1),repo_relative_path:RepoRelativePath::new(path),
-            start_line:1,end_line:1,score,snippet:String::new(),snippet_hit_offset:None,highlights:Vec::new() }
+        LexicalCandidate {
+            source_repo_id: RepoId::new("repo").expect("valid repo"),
+            source: None,
+            preview: None,
+            candidate_id: format!("file:{path}"),
+            repo_id: RepoId::new("repo").expect("valid repo"),
+            revision_id: RevisionId::new("rev").expect("valid revision"),
+            manifest_generation: ManifestGeneration::new(1),
+            repo_relative_path: RepoRelativePath::new(path),
+            start_line: 1,
+            end_line: 1,
+            score,
+            snippet: String::new(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }
     }
     #[test]
     fn full_pool_requires_stable_counts_order_and_exhaustion() {
         let mut pool = PoolProgress::default();
-        pool.observe(&[candidate("z.rs",109.0)], 3,3).expect("first page");
+        pool.observe(&[candidate("z.rs", 109.0)], 3, 3)
+            .expect("first page");
         assert!(!pool.exhausted(), "top-k is not the full pool");
-        pool.observe(&[candidate("a.rs",107.0),candidate("b.rs",105.0)],3,2).expect("continuation");
+        pool.observe(&[candidate("a.rs", 107.0), candidate("b.rs", 105.0)], 3, 2)
+            .expect("continuation");
         assert!(pool.exhausted());
     }
     #[test]
     fn duplicate_reordered_and_drifting_pages_refuse() {
-        for second in [candidate("z.rs",109.0),candidate("a.rs",110.0)] {
+        for second in [candidate("z.rs", 109.0), candidate("a.rs", 110.0)] {
             let mut pool = PoolProgress::default();
-            pool.observe(&[candidate("z.rs",109.0)],2,2).expect("first");
-            assert!(pool.observe(&[second],2,1).is_err());
+            pool.observe(&[candidate("z.rs", 109.0)], 2, 2)
+                .expect("first");
+            assert!(pool.observe(&[second], 2, 1).is_err());
         }
         let mut pool = PoolProgress::default();
-        pool.observe(&[candidate("z.rs",109.0)],2,2).expect("first");
-        assert!(pool.observe(&[candidate("a.rs",107.0)],3,2).is_err());
+        pool.observe(&[candidate("z.rs", 109.0)], 2, 2)
+            .expect("first");
+        assert!(pool.observe(&[candidate("a.rs", 107.0)], 3, 2).is_err());
     }
     #[test]
     fn explicit_recovery_and_non_code_search_policies_are_not_ordinary_studies() {
         assert!(allowed(QueryInputPolicy::CodeSearchFile));
         assert!(allowed(QueryInputPolicy::CodeSearchExactContentFile));
-        for policy in [QueryInputPolicy::CodeSearchTypoFile,QueryInputPolicy::CodeSearchComponentsFile,
-            QueryInputPolicy::SubstringFile,QueryInputPolicy::KeywordFile] { assert!(!allowed(policy)); }
+        for policy in [
+            QueryInputPolicy::CodeSearchTypoFile,
+            QueryInputPolicy::CodeSearchComponentsFile,
+            QueryInputPolicy::SubstringFile,
+            QueryInputPolicy::KeywordFile,
+        ] {
+            assert!(!allowed(policy));
+        }
     }
 }

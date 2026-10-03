@@ -14,8 +14,8 @@ use std::error::Error;
 
 use crate::e2e_harness;
 use quanta_index_contract::{
-    CandidatePresenceV1, HybridLaneV1, LexicalCandidate, PlannerStage, QueryConstraintSetV1,
-    SearchExplanation, TextQueryRequest, TextQuerySyntax,
+    CandidatePresenceV1, GenerationPin, HybridLaneV1, LexicalCandidate, PlannerStage,
+    QueryConstraintSetV1, SearchExplanation, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex};
 
@@ -84,13 +84,23 @@ fn contribution_sum(explanation: &SearchExplanation) -> f32 {
 }
 
 fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
-    let native_page =
-        match rt.query_text_page(TextQuerySyntax::CodeSearch, PLAIN_QUERY, 10, None, None)? {
-            E2eRoutePage::Served(page) => page,
-            E2eRoutePage::Refused(error) => {
-                return Err(format!("CodeSearch refused: {error}").into());
-            }
-        };
+    let sealed = rt
+        .last_sealed_search_corpus_identity()
+        .ok_or("sealed corpus identity")?;
+    let request_pin =
+        GenerationPin::new(rt.repo(), rt.revision(), sealed.lexical.manifest_generation);
+    let native_page = match rt.query_text_page(
+        TextQuerySyntax::CodeSearch,
+        PLAIN_QUERY,
+        10,
+        Some(request_pin),
+        None,
+    )? {
+        E2eRoutePage::Served(page) => page,
+        E2eRoutePage::Refused(error) => {
+            return Err(format!("CodeSearch refused: {error}").into());
+        }
+    };
     let pin = native_page.generation;
     let (query, control, ingest) = rt.socket_paths().ok_or("started runtime sockets")?;
     let client = QuantaIndex::connect(
