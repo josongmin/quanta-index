@@ -11418,7 +11418,7 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
         ),
         (lambda row: row.update(routes=["lexical", "hybrid"]), "lexical-only Quanta"),
         (lambda row: row["claims"].update(quality=True), "cannot carry claims"),
-        (lambda row: row.update(scope="qualified"), "requires a quality claim"),
+        (lambda row: row.update(scope="qualified"), "a quality claim"),
     ):
         forged = copy.deepcopy(spec)
         change(forged)

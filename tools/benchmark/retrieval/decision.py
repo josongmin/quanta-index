@@ -145,6 +145,12 @@ def _validate_split_manifest(raw: bytes, releases: dict[str, Path]) -> dict:
 
 def validate_repository_disjoint_policy(value: object) -> dict:
     """Validate the predeclared C5 policy without granting a product decision."""
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int:
+        raise DecisionError("repository-disjoint policy schema_version is invalid")
+    version = value["schema_version"]
+    if version not in (2, 3):
+        raise DecisionError("repository-disjoint policy schema_version must be 2 or 3")
+    file_policy = version == 3
     policy = _object(
         value,
         {
@@ -157,11 +163,17 @@ def validate_repository_disjoint_policy(value: object) -> dict:
             "critical_strata",
             "track_min_delta",
             "resource_limits",
-        },
+        }
+        | ({"metric_scope", "request_mode"} if file_policy else set()),
         "repository-disjoint decision policy",
     )
-    if type(policy["schema_version"]) is not int or policy["schema_version"] != 2:
-        raise DecisionError("repository-disjoint policy schema_version must be 2")
+    if file_policy and (
+        not isinstance(policy["comparison"], dict)
+        or policy["metric_scope"] != "scored_distinct_file"
+        or policy["request_mode"] != run.qp.DEFAULT_FILE_SEARCH
+        or policy["comparison"].get("primary_metric") != "file_ndcg_at_10"
+    ):
+        raise DecisionError("repository-disjoint file metric or request mode is unsupported")
     scope = _object(
         policy["repository_scope"],
         {"kind", "split_manifest_sha256", "releases", "holdout"},
@@ -230,8 +242,18 @@ def validate_repository_disjoint_policy(value: object) -> dict:
     for name, minimum in tracks.items():
         _number(minimum, f"repository-disjoint track {name} minimum")
     single = {
-        **{key: value for key, value in policy.items() if key != "track_min_delta"},
+        **{
+            key: value
+            for key, value in policy.items()
+            if key not in {"track_min_delta", "metric_scope", "request_mode"}
+        },
         "schema_version": 1,
+        "comparison": {
+            **policy["comparison"],
+            "primary_metric": "ndcg_at_10"
+            if file_policy
+            else policy["comparison"]["primary_metric"],
+        },
         "repository_scope": {
             "kind": "single_repository",
             "repository_commit": holdout[0]["repository_commit"],
@@ -534,6 +556,14 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
             or sorted({task.get("category") for task in eval_tasks}) != row["categories"]
         ):
             raise DecisionError("repository-disjoint suite omits a predeclared family or category")
+        if policy["schema_version"] == 3:
+            contract = evaluator.declared_evaluation_contract(tasks)
+            if contract != {
+                "request_mode": policy["request_mode"],
+                "gold_unit": "distinct_file",
+                "result_unit": "distinct_file",
+            }:
+                raise DecisionError("repository-disjoint file request mode differs")
         manifest = run._validate_manifest_shape(bound_json(manifest_path))
         if manifest["scope"] != "qualified":
             raise DecisionError("repository-disjoint capture is not qualified")
@@ -590,9 +620,21 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
         report = bound_json(matching[0])
         rank = report.get("rank_metrics")
         observed = rank.get("comparison") if isinstance(rank, dict) else None
+        file_metric = policy["schema_version"] == 3
         if (
-            report.get("rank_metric_version") != "rb-rank-context-density-first-coverage"
-            or report.get("report_scope") == "paired_independent_file_judgment_diagnostic_v1"
+            report.get("rank_metric_version")
+            != (
+                "file-judgments-complete-v1"
+                if file_metric
+                else "rb-rank-context-density-first-coverage"
+            )
+            or file_metric
+            and (
+                report.get("report_scope") != "paired_complete_scored_file_evidence_v1"
+                or report.get("status") != "evidence_unqualified"
+            )
+            or not file_metric
+            and report.get("report_scope") == "paired_independent_file_judgment_diagnostic_v1"
             or not isinstance(observed, dict)
             or observed.get("primary_metric") != comparison["primary_metric"]
             or observed.get("primary_delta") != selected[0].get("primary_delta")
@@ -654,7 +696,7 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
         "repository_count": len(expected),
         "paired_sample_count": ci["sample_count"],
         "repository_cluster_ci": ci,
-        "metric_scope": "context_span_density",
+        "metric_scope": policy.get("metric_scope", "context_span_density"),
         "metric_gate": metric_gate,
         "captures": receipts,
     }
