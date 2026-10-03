@@ -852,10 +852,13 @@ are different.
 score order, an independent NDCG golden, unjudged result refusal, missing score
 evidence, no-answer failure and report tampering. C5 synthetic replay covers
 both policy versions across twelve repositories. The decision/benchctl rail
-passed 87 tests. These checks do not substitute for an unmocked qualified pair
-capture and verdict replay. The 12-repository file capture, independently
-reviewed labels, external indexed-universe attestations and product-default
-decision remain `NOT_RUN`.
+passed 90 tests. A 2-positive-task fixture is correctly refused for insufficient
+uncertainty; a 20-positive-task/20-family fixture passes both qualified
+uncertainty checks. Direct stage and verdict tests refuse typo and exact-content
+file profiles for qualified file scoring. These checks do not substitute for an
+unmocked qualified pair capture and verdict replay. The 12-repository file
+capture, independently reviewed labels, external indexed-universe attestations
+and product-default decision remain `NOT_RUN`.
 
 ## Frozen C4 v6 and native typo diagnostics (2026-10-03)
 
