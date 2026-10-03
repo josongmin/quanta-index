@@ -80,6 +80,9 @@ def test_execution_batch_preserves_member_packs_and_names_shared_query() -> None
         {"task_id": row["task_id"], "query": row["query"], "split": "eval"}
         for row in union["tasks"]
     ]
+    assert (
+        eb.execution_validation_view(union)["comparison_contract"] == shared["comparison_contract"]
+    )
 
     native = {
         "query_pack_sha256": membership["execution_pack_sha256"],

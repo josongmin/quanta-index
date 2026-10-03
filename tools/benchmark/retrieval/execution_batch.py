@@ -151,9 +151,13 @@ def execution_validation_view(execution_pack: dict) -> dict:
     Original suites remain the only authority for relevance judgments.
     """
     return {
+        "schema_version": execution_pack["schema_version"],
+        "suite_id": execution_pack["suite_id"],
         "repository_commit": execution_pack["repository_commit"],
+        "comparison_contract": copy.deepcopy(execution_pack["comparison_contract"]),
         "routes": list(execution_pack["routes"]),
         "file_universe": copy.deepcopy(execution_pack["file_universe"]),
+        "file_universe_digest": execution_pack["file_universe_digest"],
         "tasks": [
             {"task_id": task["task_id"], "query": task["query"], "split": "eval"}
             for task in execution_pack["tasks"]
