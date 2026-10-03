@@ -1974,7 +1974,7 @@ mod tests {
         let parent = tempfile::tempdir().expect("tempdir");
         let refusal = parent.path().join("refusal.json");
         assert!(plan_query_pack(&args, &pack, &refusal).is_err());
-        let _ = args
+        let _previous_token_limit = args
             .flags
             .insert("nl-max-tokens".to_string(), "128".to_string());
         let (planned_policy, config, plans) =
@@ -1992,7 +1992,7 @@ mod tests {
             execution_profile_sha256(policy, &NlPlanConfig::default())
         );
         for invalid in ["0", "129", "-1", "1.5", "true", " 48", ""] {
-            let _ = args
+            let _previous_token_limit = args
                 .flags
                 .insert("nl-max-tokens".to_string(), invalid.to_string());
             assert!(
@@ -2000,7 +2000,7 @@ mod tests {
                 "accepted {invalid:?}"
             );
         }
-        let _ = args
+        let _previous_token_limit = args
             .flags
             .insert("nl-max-tokens".to_string(), "48".to_string());
         assert!(nl_plan_config(&args, QueryInputPolicy::Native).is_err());
