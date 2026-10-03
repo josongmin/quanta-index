@@ -11805,6 +11805,101 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
             repo=repo,
         )
 
+    subjective = task(
+        "Next", "go_exact_local_name_v3", "distinct_file", [file_row("b.go")],
+        gold_path="b.go", gold_line=2,
+    )
+    subjective["task_id"] = "T2"
+    subjective["query_family_id"] = "reviewed-family"
+    del subjective["source_oracle"]
+    subjective["judgment_policy"] = ev.COMPLETE_JUDGMENT_POLICY
+    subjective["label_review"] = {
+        "assessment": "reviewed_unambiguous",
+        "reviewer_id": "fixture-reviewer",
+        "evidence_sha256": ev.digest(b"independent review evidence"),
+    }
+    suite["tasks"] = [cases[1], subjective]
+    ev.validate_suite(repo, suite)
+    mixed_receipt = {
+        "schema_version": 2,
+        "reviewer_id": "fixture-reviewer",
+        "suite_sha256": ev.digest(ev.canonical(suite)),
+        "reviews": [
+            {
+                "task_id": subjective["task_id"],
+                "query_sha256": subjective["query_sha256"],
+                "labels": pairrun._gold_review_labels(subjective),
+                "rationale": "Source-backed independent file review.",
+            }
+        ],
+    }
+    pairrun._validate_gold_review_receipt(
+        mixed_receipt,
+        role="annotation 1",
+        reviewer_id="fixture-reviewer",
+        suite_sha256=mixed_receipt["suite_sha256"],
+        suite=suite,
+        repo=repo,
+        allow_mixed_source_oracle=True,
+    )
+    adjudication = copy.deepcopy(mixed_receipt)
+    adjudication["annotation_receipt_sha256"] = ["a" * 64, "b" * 64]
+    pairrun._validate_gold_review_receipt(
+        adjudication,
+        role="adjudication",
+        reviewer_id="fixture-reviewer",
+        suite_sha256=mixed_receipt["suite_sha256"],
+        suite=suite,
+        repo=repo,
+        annotation_digests=["a" * 64, "b" * 64],
+        allow_mixed_source_oracle=True,
+    )
+    wrong_version = copy.deepcopy(mixed_receipt)
+    wrong_version["schema_version"] = 1
+    with pytest.raises(pairrun.RunError, match="schema version mismatch"):
+        pairrun._validate_gold_review_receipt(
+            wrong_version,
+            role="annotation 1",
+            reviewer_id="fixture-reviewer",
+            suite_sha256=mixed_receipt["suite_sha256"],
+            suite=suite,
+            repo=repo,
+            allow_mixed_source_oracle=True,
+        )
+    with pytest.raises(pairrun.RunError, match="schema version mismatch"):
+        pairrun._validate_gold_review_receipt(
+            mixed_receipt,
+            role="annotation 1",
+            reviewer_id="fixture-reviewer",
+            suite_sha256=mixed_receipt["suite_sha256"],
+            suite=suite,
+            repo=repo,
+        )
+    missing_review = copy.deepcopy(mixed_receipt)
+    missing_review["reviews"] = []
+    with pytest.raises(pairrun.RunError, match="task coverage mismatch"):
+        pairrun._validate_gold_review_receipt(
+            missing_review,
+            role="annotation 1",
+            reviewer_id="fixture-reviewer",
+            suite_sha256=mixed_receipt["suite_sha256"],
+            suite=suite,
+            repo=repo,
+            allow_mixed_source_oracle=True,
+        )
+    adjudication["reviews"][0]["labels"]["file_judgments"][0]["grade"] = 2
+    with pytest.raises(pairrun.RunError, match="adjudication differs from suite gold"):
+        pairrun._validate_gold_review_receipt(
+            adjudication,
+            role="adjudication",
+            reviewer_id="fixture-reviewer",
+            suite_sha256=mixed_receipt["suite_sha256"],
+            suite=suite,
+            repo=repo,
+            annotation_digests=["a" * 64, "b" * 64],
+            allow_mixed_source_oracle=True,
+        )
+
 
 def test_cross_suite_custody_counts_positive_independent_file_judgments(tmp_path):
     repo, suite, _run, _sp, _rp, files = fixture_v3(tmp_path, answerable_only=True)

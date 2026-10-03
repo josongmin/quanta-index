@@ -1464,8 +1464,17 @@ def validate_suite(
                 all(kind in task for task in eval_tasks),
                 f"partial {kind} coverage in eval split",
             )
+            policies = {task["judgment_policy"] for task in eval_tasks}
+            mixed_objective_reviewed = policies == {
+                SOURCE_ORACLE_JUDGMENT_POLICY,
+                COMPLETE_JUDGMENT_POLICY,
+            } and all(
+                ("source_oracle" in task)
+                == (task["judgment_policy"] == SOURCE_ORACLE_JUDGMENT_POLICY)
+                for task in eval_tasks
+            )
             require(
-                len({task["judgment_policy"] for task in eval_tasks}) == 1,
+                len(policies) == 1 or mixed_objective_reviewed,
                 f"mixed judgment_policy for {kind} in eval split",
             )
     for family, splits in sorted(families.items()):
