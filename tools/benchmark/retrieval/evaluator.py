@@ -1060,7 +1060,11 @@ def _check_split_leakage(
 
 
 def validate_suite(
-    repo: Path, payload: Any, *, source_oracle_admission: bool = False
+    repo: Path,
+    payload: Any,
+    *,
+    source_oracle_admission: bool = False,
+    declaration_census_cache: source_oracle.DeclarationCensusCache | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], SourceSnapshot]:
     version = payload.get("schema_version") if isinstance(payload, dict) else None
     require(type(version) is int and version == SCHEMA_VERSION, "unsupported suite schema")
@@ -1395,6 +1399,7 @@ def validate_suite(
                             },
                             oracle_names,
                             declaration_exclusions,
+                            census_cache=declaration_census_cache,
                         )
                     active_oracle = oracle_index
                     if "intended_name" in task:

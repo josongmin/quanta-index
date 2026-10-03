@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -12,6 +13,48 @@ import pytest
 
 from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import source_oracle_suite
+
+
+def test_batch_declaration_census_cache_preserves_gold_and_refuses_drift(monkeypatch):
+    from tools.benchmark.retrieval import source_oracle as so
+
+    raw = b"package p\nfunc Locate() {}\n"
+    digest = hashlib.sha256(raw).hexdigest()
+    cache = so.DeclarationCensusCache(so.census_parser_identity())
+    original = so.declaration_census
+    parsed = []
+
+    def counted(language, path, source):
+        parsed.append((language, path, source))
+        return original(language, path, source)
+
+    monkeypatch.setattr(so, "declaration_census", counted)
+    for _ in range(2):
+        oracle = so.SourceOracleIndex({"source.go": (raw, digest)}, {"Locate"}, census_cache=cache)
+        assert oracle.expected_rows(so.GO_EXACT_LOCAL_NAME, "Locate", "distinct_file") == [
+            {"path": "source.go", "file_sha256": digest, "grade": 3}
+        ]
+    assert len(parsed) == 1
+
+    altered = raw.replace(b"Locate", b"Other_")
+    with pytest.raises(so.SourceOracleError, match="source digest changed"):
+        so.SourceOracleIndex(
+            {"source.go": (altered, digest)}, {"Locate"}, census_cache=cache
+        ).expected_rows(so.GO_EXACT_LOCAL_NAME, "Locate", "distinct_file")
+    monkeypatch.setattr(so, "census_parser_identity", lambda: "f" * 64)
+    with pytest.raises(so.SourceOracleError, match="parser identity changed"):
+        so.SourceOracleIndex({"source.go": (raw, digest)}, {"Locate"}, census_cache=cache)
+    monkeypatch.setattr(so, "census_parser_identity", lambda: cache.parser_identity)
+    invalid = b"package p\nfunc Broken( {\n"
+    invalid_digest = hashlib.sha256(invalid).hexdigest()
+    for _ in range(2):
+        with pytest.raises(so.SourceOracleError, match="parse error"):
+            so.SourceOracleIndex(
+                {"broken.go": (invalid, invalid_digest)},
+                {"Broken"},
+                census_cache=cache,
+            ).expected_rows(so.GO_EXACT_LOCAL_NAME, "Broken", "distinct_file")
+    assert len(parsed) == 2
 
 
 @pytest.mark.parametrize("suffix", ["ts", "tsx"])

@@ -40,6 +40,7 @@ try:
         linux_isolation,
         linux_process,
         portable_proof,
+        source_oracle,
         symbol_coverage,
     )
     from tools.benchmark.retrieval import execution_batch as eb
@@ -79,6 +80,7 @@ except ImportError:  # direct script invocation: import the sibling module
     import portable_proof  # noqa: E402
     import query_plan as qp  # noqa: E402
     import semble as semble_adapter  # noqa: E402
+    import source_oracle  # noqa: E402
     import symbol_coverage  # noqa: E402
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
     from evaluator import (  # noqa: E402
@@ -11416,6 +11418,8 @@ def _quality_batch_members(
     members = []
     shared = None
     model_asset = None
+    parser_identity = source_oracle.census_parser_identity()
+    census_cache = source_oracle.DeclarationCensusCache(parser_identity)
     for name in batch["member_specs"]:
         path = Path(name)
         spec = load_spec(path)
@@ -11450,11 +11454,18 @@ def _quality_batch_members(
             model_asset = observed_asset
         elif observed_asset != model_asset:
             raise RunError("quality batch Semble model assets differ")
-        suite, pack, source = validate_suite(Path(spec["repo"]), read_json(Path(spec["suite"])))
+        suite, pack, source = validate_suite(
+            Path(spec["repo"]),
+            read_json(Path(spec["suite"])),
+            declaration_census_cache=census_cache,
+        )
         if pack != read_json(Path(spec["query_pack"])):
             raise RunError(f"quality batch blind pack differs from its suite: {path}")
         members.append((path, spec, suite, pack, source))
-    return members, {"model_asset_sha256": model_asset}
+    return members, {
+        "model_asset_sha256": model_asset,
+        "oracle_parser_identity": parser_identity,
+    }
 
 
 def _quality_batch_input_snapshot(members: list[tuple]) -> list[dict]:
@@ -11586,6 +11597,7 @@ def run_quality_batch(batch: dict) -> int:
         "corpus_repository_commit": execution_pack["repository_commit"],
         "file_universe_digest": execution_pack["file_universe_digest"],
         "model_asset_sha256": model["model_asset_sha256"],
+        "oracle_parser_identity": model["oracle_parser_identity"],
         "runner_binary_sha256": runner_digest,
         "searchd_binary_sha256": sha_file(Path(run_spec["searchd_binary"])),
         "execution_pack_sha256": membership["execution_pack_sha256"],
@@ -11599,6 +11611,8 @@ def run_quality_batch(batch: dict) -> int:
     }
     if _quality_batch_input_snapshot(members) != input_snapshot:
         raise RunError("quality batch member inputs changed during product capture")
+    if source_oracle.census_parser_identity() != model["oracle_parser_identity"]:
+        raise RunError("quality batch oracle parser identity changed during capture")
     (stage / "batch-manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -11627,6 +11641,7 @@ def verify_quality_batch(batch: dict) -> int:
             "corpus_repository_commit",
             "file_universe_digest",
             "model_asset_sha256",
+            "oracle_parser_identity",
             "runner_binary_sha256",
             "searchd_binary_sha256",
             "execution_pack_sha256",
@@ -11658,6 +11673,8 @@ def verify_quality_batch(batch: dict) -> int:
     input_snapshot = _quality_batch_input_snapshot(members)
     if model["model_asset_sha256"] != manifest["model_asset_sha256"]:
         raise RunError("quality batch model asset changed")
+    if model["oracle_parser_identity"] != manifest["oracle_parser_identity"]:
+        raise RunError("quality batch oracle parser identity changed")
     packs = [row[3] for row in members]
     execution_pack = read_json(root / "execution-pack.json")
     membership = read_json(root / "membership.json")

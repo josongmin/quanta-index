@@ -6,9 +6,13 @@ The caller must bind every file to a frozen source snapshot before indexing.
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
+import json
 import re
 from collections import defaultdict
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -416,13 +420,79 @@ def has_identifier_word_in_span(raw: bytes, token: bytes, start: int, end: int) 
     return False
 
 
+def census_parser_identity() -> str:
+    """Bind shared census rows to the loaded oracle and parser source/grammar."""
+    import tree_sitter._binding as tree_sitter_binding
+    import tree_sitter_language_pack.bindings.javascript as javascript_binding
+
+    from tools.benchmark.retrieval import declaration_parsers
+
+    payload = {
+        "oracle_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "parser_source_sha256": hashlib.sha256(
+            Path(declaration_parsers.__file__).read_bytes()
+        ).hexdigest(),
+        "grammar_sources": declaration_parsers.component_source_digests(),
+        "tree_sitter": importlib.metadata.version("tree-sitter"),
+        "tree_sitter_language_pack": importlib.metadata.version("tree-sitter-language-pack"),
+        "tree_sitter_binary_sha256": hashlib.sha256(
+            Path(tree_sitter_binding.__file__).read_bytes()
+        ).hexdigest(),
+        "javascript_grammar_binary_sha256": hashlib.sha256(
+            Path(javascript_binding.__file__).read_bytes()
+        ).hexdigest(),
+        "census_contracts": DECLARATION_CENSUS,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+class DeclarationCensusCache:
+    """Per-batch parsed declarations, never a persistent or cross-repository cache."""
+
+    def __init__(self, parser_identity: str) -> None:
+        if not re.fullmatch(r"[0-9a-f]{64}", parser_identity):
+            raise SourceOracleError("declaration cache parser identity is invalid")
+        self.parser_identity = parser_identity
+        self._rows: dict[
+            tuple[str, str, str],
+            tuple[str, tuple[tuple[int, int, int, int, str], ...] | str],
+        ] = {}
+
+    def assert_parser_identity(self, observed: str) -> None:
+        if observed != self.parser_identity:
+            raise SourceOracleError("declaration cache parser identity changed")
+
+    def census(
+        self, language: str, path: str, raw: bytes, expected_sha256: str
+    ) -> list[tuple[int, int, int, int, str]]:
+        actual = hashlib.sha256(raw).hexdigest()
+        if actual != expected_sha256:
+            raise SourceOracleError(f"declaration cache source digest changed: {path}")
+        key = (language, path, actual)
+        if key not in self._rows:
+            try:
+                rows = tuple(declaration_census(language, path, raw))
+            except SourceOracleError as exc:
+                self._rows[key] = ("error", str(exc))
+                raise
+            self._rows[key] = ("rows", rows)
+        kind, value = self._rows[key]
+        if kind == "error":
+            raise SourceOracleError(value)
+        return list(value)
+
+
 class SourceOracleIndex:
     def __init__(
         self,
         files: dict[str, tuple[bytes, str]],
         query_names: set[str],
         declaration_exclusions: dict[tuple[str, str], set[str]] | None = None,
+        *,
+        census_cache: DeclarationCensusCache | None = None,
     ) -> None:
+        if census_cache is not None:
+            census_cache.assert_parser_identity(census_parser_identity())
         if not 0 < len(files) <= MAX_FILES:
             raise SourceOracleError("source oracle file limit exceeded")
         if sum(len(raw) for raw, _digest in files.values()) > MAX_SOURCE_BYTES:
@@ -433,6 +503,7 @@ class SourceOracleIndex:
         ):
             raise SourceOracleError("source oracle requires bounded ASCII bare identifiers")
         self.files = files
+        self._census_cache = census_cache
         self.query_tokens = {name.encode("ascii") for name in query_names}
         self._words: dict[bytes, set[str]] | None = None
         self._first_words: dict[bytes, tuple[str, int, int]] = {}
@@ -544,7 +615,7 @@ class SourceOracleIndex:
                     continue
                 if path in excluded:
                     try:
-                        declaration_census(source_language, path, raw)
+                        self._declaration_census(source_language, path, raw)
                     except SourceOracleError as exc:
                         if not _excludable_census_refusal(exc):
                             raise
@@ -556,7 +627,7 @@ class SourceOracleIndex:
                 # Every declaration is kept: variant contracts match names that
                 # differ from the submitted query bytes.
                 try:
-                    census = declaration_census(source_language, path, raw)
+                    census = self._declaration_census(source_language, path, raw)
                 except SourceOracleError as exc:
                     if path in self._excluded_declaration_paths[
                         language
@@ -571,6 +642,13 @@ class SourceOracleIndex:
                     )
             self._declarations[key] = declarations
         return self._declarations[key]
+
+    def _declaration_census(
+        self, language: str, path: str, raw: bytes
+    ) -> list[tuple[int, int, int, int, str]]:
+        if self._census_cache is None:
+            return declaration_census(language, path, raw)
+        return self._census_cache.census(language, path, raw, self.files[path][1])
 
     def declared_names(self, language: str) -> list[str]:
         if self._excluded_declaration_paths[language]:

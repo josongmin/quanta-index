@@ -173,7 +173,7 @@ def test_quality_batch_spec_and_product_contract_refuse_drift(tmp_path, monkeypa
     monkeypatch.setattr(
         pairrun,
         "validate_suite",
-        lambda _repo, payload: (payload, payload, object()),
+        lambda _repo, payload, **_kwargs: (payload, payload, object()),
     )
     valid, model = pairrun._quality_batch_members(batch)
     assert len(valid) == 2 and model["model_asset_sha256"] == "b" * 64
