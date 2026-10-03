@@ -44,6 +44,21 @@ pub struct IngestStageReport {
     pub durations: IngestStageDurations,
 }
 
+/// Non-overlapping lexical build stages. Nested seal measurements are subsets
+/// of `seal_ns`; file admission is a subset of `seal_commitment_ns`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LexicalBuildStageDurationsV1 {
+    pub preparation_ns: u64,
+    pub writer_mutation_ns: u64,
+    pub text_authority_ns: u64,
+    pub file_authority_ns: u64,
+    pub seal_ns: Option<u64>,
+    pub seal_writer_commit_ns: Option<u64>,
+    pub seal_merge_wait_ns: Option<u64>,
+    pub seal_commitment_ns: Option<u64>,
+    pub seal_file_admission_ns: Option<u64>,
+}
+
 /// Whether this request executed all storage stages, only missing tracks,
 /// or returned a durable acknowledgement without executing storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +82,7 @@ pub struct SearchCorpusIngestObservation {
     pub status: IngestObservationStatus,
     pub semantic: Option<Box<IngestStageReport>>,
     pub lexical_build_ns: Option<u64>,
+    pub lexical_stages: Option<LexicalBuildStageDurationsV1>,
     pub finalize_ns: Option<u64>,
     /// Activation belongs to a separate control request, not this ingest.
     pub activation_ns: Option<u64>,
@@ -230,6 +246,18 @@ impl_observation_struct_serde!(IngestStageReport {
     durations: IngestStageDurations => "durations",
 });
 
+impl_observation_struct_serde!(LexicalBuildStageDurationsV1 {
+    preparation_ns: u64 => "preparation_ns",
+    writer_mutation_ns: u64 => "writer_mutation_ns",
+    text_authority_ns: u64 => "text_authority_ns",
+    file_authority_ns: u64 => "file_authority_ns",
+    seal_ns: Option<u64> => "seal_ns",
+    seal_writer_commit_ns: Option<u64> => "seal_writer_commit_ns",
+    seal_merge_wait_ns: Option<u64> => "seal_merge_wait_ns",
+    seal_commitment_ns: Option<u64> => "seal_commitment_ns",
+    seal_file_admission_ns: Option<u64> => "seal_file_admission_ns",
+});
+
 impl_observation_struct_serde!(SearchCorpusIngestObservation {
     request_id: u64 => "request_id",
     repo_id: RepoId => "repo_id",
@@ -239,6 +267,7 @@ impl_observation_struct_serde!(SearchCorpusIngestObservation {
     status: IngestObservationStatus => "status",
     semantic: Option<Box<IngestStageReport>> => "semantic",
     lexical_build_ns: Option<u64> => "lexical_build_ns",
+    lexical_stages: Option<LexicalBuildStageDurationsV1> => "lexical_stages",
     finalize_ns: Option<u64> => "finalize_ns",
     activation_ns: Option<u64> => "activation_ns",
 });
@@ -347,6 +376,54 @@ impl SearchCorpusIngestObservation {
         };
         if !valid {
             return Err("ingest observation stages contradict execution status".to_string());
+        }
+        if let Some(stages) = &self.lexical_stages {
+            let Some(total) = self.lexical_build_ns else {
+                return Err("lexical stages require a measured lexical build".to_string());
+            };
+            let outer = [
+                Some(stages.preparation_ns),
+                Some(stages.writer_mutation_ns),
+                Some(stages.text_authority_ns),
+                Some(stages.file_authority_ns),
+                stages.seal_ns,
+            ]
+            .into_iter()
+            .flatten()
+            .try_fold(0_u64, u64::checked_add)
+            .ok_or_else(|| "lexical stage duration sum overflow".to_string())?;
+            if outer > total {
+                return Err("lexical stages exceed containing build".to_string());
+            }
+            match stages.seal_ns {
+                Some(seal) if sealed => {
+                    let (Some(commit), Some(merge), Some(commitment), Some(admission)) = (
+                        stages.seal_writer_commit_ns,
+                        stages.seal_merge_wait_ns,
+                        stages.seal_commitment_ns,
+                        stages.seal_file_admission_ns,
+                    ) else {
+                        return Err("sealed lexical stages omit a nested measurement".to_string());
+                    };
+                    let nested = [commit, merge, commitment]
+                        .into_iter()
+                        .try_fold(0_u64, u64::checked_add)
+                        .ok_or_else(|| "lexical seal duration sum overflow".to_string())?;
+                    if nested > seal || admission > commitment {
+                        return Err("lexical seal stages exceed containing stage".to_string());
+                    }
+                }
+                None if !sealed => {
+                    if stages.seal_writer_commit_ns.is_some()
+                        || stages.seal_merge_wait_ns.is_some()
+                        || stages.seal_commitment_ns.is_some()
+                        || stages.seal_file_admission_ns.is_some()
+                    {
+                        return Err("unsealed lexical build has seal measurements".to_string());
+                    }
+                }
+                _ => return Err("lexical seal availability contradicts request".to_string()),
+            }
         }
         if let Some(report) = &self.semantic {
             if report.durations.seal.is_some() != sealed {
@@ -475,6 +552,7 @@ mod tests {
                     ..IngestStageReport::default()
                 })),
                 lexical_build_ns: Some(3),
+                lexical_stages: None,
                 finalize_ns: Some(7),
                 activation_ns: None,
             }),
@@ -666,6 +744,7 @@ mod tests {
             status: IngestObservationStatus::Replayed,
             semantic: None,
             lexical_build_ns: None,
+            lexical_stages: None,
             finalize_ns: None,
             activation_ns: None,
         };

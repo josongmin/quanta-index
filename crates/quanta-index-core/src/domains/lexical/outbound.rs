@@ -61,7 +61,12 @@ pub trait SearchCorpusBatchBuildPort: Send + Sync {
         phase: SearchCorpusPreflightPhaseV1,
     ) -> Result<(), CoreError>;
 
-    fn build_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError>;
+    /// A successful build may report its non-persisted stage timings. `None`
+    /// means this implementation did not measure stages, never zero elapsed.
+    fn build_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError>;
 }
 
 /// Open an existing lexical index for query.
@@ -251,9 +256,9 @@ pub struct CodeSearchExecutionStatsV1 {
     pub verified_matching_files: u64,
     pub cursor_eligible_files: u64,
     pub fetched_files: u64,
-    /// Seed posting IDs examined before source verification. The value is
-    /// zero when no posting prefilter ran; it is not a distinct-file count.
-    pub posting_seed_docs_examined: u64,
+    /// Posting membership probes before source verification. This is an
+    /// algorithm-specific work proxy, not a distinct-file count.
+    pub posting_probes: u64,
     /// Total surface lengths passed to source verification, including repeat
     /// attempts and term multiplicity. This is an input-size proxy, not bytes
     /// actually read by the CPU or storage layer.

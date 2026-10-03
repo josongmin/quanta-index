@@ -1688,14 +1688,17 @@ impl quanta_index_core::SearchCorpusBatchBuildPort for FakeSearchCorpusBuilder {
             .validate_surface_mutations_v1()
             .map_err(|error| CoreError::InvalidContract(error.to_string()))
     }
-    fn build_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+    fn build_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
         self.batches
             .lock()
             .map_err(|err| {
                 CoreError::Storage(format!("fake search-corpus builder poisoned: {err}"))
             })?
             .push(batch.clone());
-        Ok(())
+        Ok(None)
     }
 }
 

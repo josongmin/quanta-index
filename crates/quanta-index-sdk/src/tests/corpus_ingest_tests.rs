@@ -529,6 +529,7 @@ impl IngestTransport for ObservedIngestTransport {
                 ..Default::default()
             })),
             lexical_build_ns: Some(17),
+            lexical_stages: None,
             finalize_ns: Some(23),
             activation_ns: None,
         };

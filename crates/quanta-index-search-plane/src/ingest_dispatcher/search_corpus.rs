@@ -491,6 +491,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             status: IngestObservationStatus::Executed,
             semantic: None,
             lexical_build_ns: None,
+            lexical_stages: None,
             finalize_ns: None,
             activation_ns: None,
         };
@@ -638,7 +639,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         }
         if build_lexical {
             let started = std::time::Instant::now();
-            self.builder.build_batch(batch)?;
+            observation.lexical_stages = self.builder.build_batch(batch)?;
             observation.lexical_build_ns = Some(elapsed_ingest_ns(started)?);
         }
         if batch.seal {

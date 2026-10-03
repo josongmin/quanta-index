@@ -29,6 +29,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -109,6 +110,8 @@ MANIFEST_VERSION = 2
 PILOT_OBSERVATIONS_FLOOR = 1000
 FRESH_ROOTS_FLOOR = 5
 FROZEN_TASKS_FLOOR = 20
+HOST_SAMPLE_INTERVAL_NS = 5_000_000_000
+HOST_SAMPLE_MAX_GAP_NS = 15_000_000_000
 RUNNABLE_STRATEGIES = tuple(s for s in CHUNK_STRATEGIES if s != "semble_native")
 SEMBLE_PINNED_VERSION = "0.6.0"
 SEMBLE_PROFILES = (
@@ -1710,6 +1713,110 @@ def host_probe() -> dict:
     record["power"] = power
     record["frequency"] = read_frequency(power)
     return record
+
+
+def _host_dynamic_probe(identity: dict, override: bool) -> dict:
+    """Refresh mutable state without repeatedly spawning rustc during timing."""
+    power = read_power()
+    return {
+        **{key: identity[key] for key in (
+            "system", "release", "machine", "processor", "cpu_count", "python", "rustc"
+        )},
+        "concurrent_processes": find_competing_processes(),
+        "thermal": read_thermal(), "power": power, "frequency": read_frequency(power),
+        "contention_override": override,
+    }
+
+
+class HostTimeline:
+    """Bounded periodic observations; probe failure never becomes a clean sample.
+
+    This is sampled evidence, not continuous OS attestation. The qualification
+    gate rejects gaps over 15 seconds, including slow or stalled probes.
+    """
+
+    def __init__(self, path: Path, identity: dict, override: bool):
+        self.path = path
+        self.identity = identity
+        self.override = override
+        self.samples: list[dict] = []
+        self.errors: list[str] = []
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="benchmark-host-probe", daemon=True)
+
+    def _sample(self) -> None:
+        started = time.monotonic_ns()
+        try:
+            probe = _host_dynamic_probe(self.identity, self.override)
+        except Exception as exc:
+            self.errors.append(f"{type(exc).__name__}: {exc}")
+            return
+        self.samples.append({
+            "started_ns": started, "finished_ns": time.monotonic_ns(), "probe": probe,
+        })
+
+    def _run(self) -> None:
+        while not self.stop.wait(HOST_SAMPLE_INTERVAL_NS / 1_000_000_000):
+            self._sample()
+
+    def __enter__(self):
+        self.started_ns = time.monotonic_ns()
+        self._sample()
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.stop.set()
+        # Bound teardown even when a subprocess-backed probe stalls. A live
+        # worker cannot yield a valid timeline; do not read its mutable state.
+        self.thread.join(timeout=HOST_SAMPLE_MAX_GAP_NS / 1_000_000_000)
+        if self.thread.is_alive():
+            samples, errors = [], ["host probe did not stop within the coverage bound"]
+        else:
+            self._sample()
+            samples, errors = self.samples, self.errors
+        payload = {
+            "schema_version": 1, "interval_ns": HOST_SAMPLE_INTERVAL_NS,
+            "started_ns": self.started_ns, "finished_ns": time.monotonic_ns(),
+            "samples": samples, "errors": errors,
+        }
+        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def validate_host_timeline(payload: object, profile: dict) -> None:
+    """Re-derive interval coverage and host validity from every captured sample."""
+    timeline = _exact_keys(payload, {
+        "schema_version", "interval_ns", "started_ns", "finished_ns", "samples", "errors"
+    }, "host timeline")
+    if type(timeline["schema_version"]) is not int or timeline["schema_version"] != 1:
+        raise RunError("host timeline schema is unsupported")
+    if type(timeline["interval_ns"]) is not int or timeline["interval_ns"] != HOST_SAMPLE_INTERVAL_NS:
+        raise RunError("host timeline interval differs from the capture contract")
+    for key in ("started_ns", "finished_ns"):
+        if type(timeline[key]) is not int or timeline[key] < 0:
+            raise RunError(f"host timeline {key} is invalid")
+    started, finished = timeline["started_ns"], timeline["finished_ns"]
+    if finished <= started or timeline["errors"] != []:
+        raise RunError("host timeline has invalid coverage or probe errors")
+    samples = timeline["samples"]
+    if not isinstance(samples, list) or len(samples) < 2:
+        raise RunError("host timeline lacks boundary observations")
+    previous_start, previous_end = started, started
+    for index, item in enumerate(samples):
+        sample = _exact_keys(item, {"started_ns", "finished_ns", "probe"}, "host timeline sample")
+        begin, end = sample["started_ns"], sample["finished_ns"]
+        if (
+            type(begin) is not int or type(end) is not int
+            or not previous_end <= begin <= end <= finished
+            or begin - previous_start > HOST_SAMPLE_MAX_GAP_NS
+            or end - begin > HOST_SAMPLE_MAX_GAP_NS
+        ):
+            raise RunError(f"host timeline coverage gap or invalid sample {index}")
+        if not _probe_clean(sample["probe"], profile):
+            raise RunError(f"host timeline sample {index} is unclean or has host identity drift")
+        previous_start, previous_end = begin, end
+    if finished - previous_start > HOST_SAMPLE_MAX_GAP_NS:
+        raise RunError("host timeline trailing coverage gap")
 
 
 def _darwin_power_source(text: str) -> str | None:

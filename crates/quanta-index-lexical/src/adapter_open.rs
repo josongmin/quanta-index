@@ -31,7 +31,15 @@ use quanta_index_core::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tantivy::Index;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LexicalMutationTimings {
+    pub(crate) writer_mutation_ns: u64,
+    pub(crate) text_authority_ns: u64,
+    pub(crate) file_authority_ns: u64,
+}
 
 impl LexicalAdapter {
     /// The writer guard spans op-apply, commit, and the text-authority
@@ -43,10 +51,11 @@ impl LexicalAdapter {
         handle: &Arc<Mutex<GenerationWriter>>,
         key: &GenKey,
         ops: &[LexicalChannelOp],
-    ) -> Result<(), CoreError> {
+    ) -> Result<LexicalMutationTimings, CoreError> {
         let mut guarded = handle
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical writer poisoned: {err}")))?;
+        let writer_started = Instant::now();
         let generation_dir = self.index_path(key);
         let file_plan = crate::file_authority::plan_ops(&generation_dir, ops)?;
         // Planned before any op runs: the retired documents are only
@@ -61,22 +70,34 @@ impl LexicalAdapter {
             }
         }
         if !needs_commit {
-            return Ok(());
+            return Ok(LexicalMutationTimings {
+                writer_mutation_ns: crate::adapter_ingest::elapsed_stage_ns(writer_started)?,
+                ..LexicalMutationTimings::default()
+            });
         }
         let _opstamp = guarded
             .writer
             .commit()
             .map_err(|err| CoreError::Storage(format!("lexical: commit: {err}")))?;
+        let writer_mutation_ns = crate::adapter_ingest::elapsed_stage_ns(writer_started)?;
         // The text-authority write happens under the writer lock (it reads
         // the committed index); the accounting is folded in after the lock
         // is released so the stats lock is never nested inside the writer's.
+        let text_authority_started = Instant::now();
         let written = self.write_text_authority(&generation_dir, key, &guarded.index, plan)?;
+        let text_authority_ns = crate::adapter_ingest::elapsed_stage_ns(text_authority_started)?;
+        let file_authority_started = Instant::now();
         crate::file_authority::apply_plan(&generation_dir, file_plan)?;
+        let file_authority_ns = crate::adapter_ingest::elapsed_stage_ns(file_authority_started)?;
         drop(guarded);
         if let Some((rebuilt, receipt)) = written {
             self.record_text_authority_write(rebuilt, receipt)?;
         }
-        Ok(())
+        Ok(LexicalMutationTimings {
+            writer_mutation_ns,
+            text_authority_ns,
+            file_authority_ns,
+        })
     }
 
     /// Publish the text authority the plan decided on, after the commit.

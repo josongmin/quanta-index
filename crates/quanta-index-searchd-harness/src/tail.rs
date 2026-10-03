@@ -416,9 +416,9 @@ pub fn write_artifacts(
 mod tests {
     //! Budget-manifest + percentile invariants.
     //!
-    //! These never boot a runtime: they pin the route-aware budget table and the
-    //! pure percentile reader. The seeded end-to-end measurement is exercised by
-    //! the `tail_matrix` rail under the daemon lane.
+    //! These never boot a runtime: they pin the route-aware budget table,
+    //! sampled-response admission and the pure percentile reader. The seeded
+    //! end-to-end measurement is exercised by `tail_matrix` under the daemon lane.
     use super::*;
 
     #[test]
@@ -457,6 +457,36 @@ mod tests {
         assert!(message.contains("route `lexical`"), "{message}");
         assert!(message.contains("lexical.keyword.native"), "{message}");
         assert!(message.contains("sample 2/3"), "{message}");
+    }
+
+    #[test]
+    fn measured_expected_typed_refusal_remains_a_valid_adversarial_sample() {
+        let scenario = representative_scenario(RouteFamily::Adversarial)
+            .expect("the adversarial budget has a scenario");
+        assert_eq!(scenario.id, "adversarial.unterminated_phrase.native");
+        let parse_fail = crate::harness::E2eErrorCode::from_code_str("PARSE_FAIL")
+            .expect("the daemon's expected typed parse refusal");
+        let samples =
+            collect_timed_samples(scenario, RouteFamily::Adversarial, 2, || QueryOutcome {
+                result_shape: crate::artifact::ResultShape::TypedError,
+                result_count: None,
+                typed_error_code: Some(parse_fail),
+                engine_touched: vec![],
+                early_stop_reason: None,
+            })
+            .expect("the source scenario expects this typed refusal");
+        assert_eq!(samples.len(), 2);
+
+        let wrong_refusal =
+            collect_timed_samples(scenario, RouteFamily::Adversarial, 1, || QueryOutcome {
+                result_shape: crate::artifact::ResultShape::TypedError,
+                result_count: None,
+                typed_error_code: Some(crate::harness::E2eErrorCode::IpcTransport),
+                engine_touched: vec![],
+                early_stop_reason: None,
+            })
+            .expect_err("transport failure is not the expected parser refusal");
+        assert!(wrong_refusal.to_string().contains("sample 1/1"));
     }
 
     #[test]

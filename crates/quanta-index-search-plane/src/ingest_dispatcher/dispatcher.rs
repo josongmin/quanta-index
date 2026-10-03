@@ -518,6 +518,7 @@ impl SearchPlaneIngestDispatcher {
                                         quanta_index_contract::IngestObservationStatus::Replayed,
                                     semantic: None,
                                     lexical_build_ns: None,
+                                    lexical_stages: None,
                                     finalize_ns: None,
                                     activation_ns: None,
                                 });

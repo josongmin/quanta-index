@@ -2806,3 +2806,20 @@ C4 and NL split completion; the two fixture exclusions in the final denominator;
 full license/model/contract/SDK admission; fresh eligible five-product holdout
 capture and equal-API timing. Older live mechanical jobs retain their own frozen
 source bindings and do not prove this newer Go/driver source.
+
+Follow-up at 04:50 KST: the frozen unscoped producer completed all **12**
+mechanical capsules in **2,087.271 seconds** and entered canonical C4 validation.
+All actual identity-file hashes match
+`mechanical-capsule-result-unscoped-current.json`; this is completion of that
+frozen producer, not current Go/driver or qualified comparison proof.
+
+The original v5 audit and these capsules use different query sets. In
+particular, reused local ID `bat.pre.002` is `lin` / `bat.name.line_range_2_3`
+in v5 but `parse_` / `bat.name.parse_less_version` in the new capsule.
+`mocha.pre.007` is `sho` / `mocha.name.shouldEscapeHtmlChar` in v5 but `retri` /
+`mocha.name.retries` in the new capsule. Both new capsule tasks are admitted;
+neither closes the original unjudged v5 task. The independently bound
+`v5-invalid-fixture-audit-gdvb0241/capsule-query-identity-crosswalk.json` records
+this distinction. The original v5 exclusion denominator and new C4 denominator
+must remain separate, keyed by their suite/gold bytes and query commitments,
+never joined by local task ID alone.

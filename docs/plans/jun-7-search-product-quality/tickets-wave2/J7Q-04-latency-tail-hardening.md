@@ -25,3 +25,15 @@ comparator. These policies must not be collapsed into one tail verdict.
 Output owner: registered `tail_matrix`, with `summary.json` and
 `route_budgets.json`. Fresh measurement and host admission remain required;
 existing command/schema/threshold implementation is not an open coding task.
+
+## 2026-10-04 measured-response hardening
+
+The local `tail_matrix` owner now validates all 64 measured responses per route
+against the existing scenario golden after stopping each timer. A fast empty or
+wrong typed response stops the rail before the latency summary is produced. The
+owner unit injects a wrong second response and also checks that the adversarial
+scenario's expected `PARSE_FAIL` remains a valid measured response.
+
+Focused Rust owner execution and the real `tail_matrix` rail remain `NOT_RUN`
+for this source change. Canonical-host tail evidence and any new p95/p99
+blocking decision remain `NOT_RUN`.

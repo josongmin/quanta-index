@@ -9,6 +9,7 @@ mod ranking;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::ops::Range;
+use std::time::Instant;
 
 use quanta_index_contract::{
     CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, HighlightSpan,
@@ -18,8 +19,8 @@ use quanta_index_contract::{
     SymbolNameSourcePolicyV1, valid_code_search_typo_identifier,
 };
 use quanta_index_core::{
-    CodeSearchExecutionStatsV1, CodeSearchScoreComponentsV1, LexicalCandidateExplanationV1,
-    LexicalScoreEngineV1, LexicalScoreTraceV1,
+    CodeSearchExecutionModeV1, CodeSearchExecutionStatsV1, CodeSearchScoreComponentsV1,
+    LexicalCandidateExplanationV1, LexicalScoreEngineV1, LexicalScoreTraceV1,
 };
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
 use quanta_index_lq_regex::RegexExecutor;
@@ -47,6 +48,10 @@ const MAX_REGEX_MATCHES_PER_SURFACE: usize = 4_096;
 const MAX_REGEX_TERMS: usize = 4;
 const MAX_TYPO_TOKEN_COMPARISONS: usize = 1_000_000;
 const MAX_TYPO_POSTING_VISITS: usize = 2_000_000;
+
+fn observed_ns(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
 
 // Request-local bounded memoization; this is neither persisted nor externally
 // ordered, so hashing keeps repeated-token distance lookup inexpensive.
@@ -411,15 +416,32 @@ fn score_terms(
     file: &SourceFile,
     terms: &[CodeSearchTerm],
     case: CaseMode,
+    scored: Option<ScoredMatch>,
+    selection: TermsToScore,
+    budget: &RequestBudgetV1,
+) -> Result<Option<ScoredMatch>, CoreError> {
+    score_terms_observed(file, terms, case, scored, selection, budget, None)
+}
+
+fn score_terms_observed(
+    file: &SourceFile,
+    terms: &[CodeSearchTerm],
+    case: CaseMode,
     mut scored: Option<ScoredMatch>,
     selection: TermsToScore,
     budget: &RequestBudgetV1,
+    mut stats: Option<&mut CodeSearchExecutionStatsV1>,
 ) -> Result<Option<ScoredMatch>, CoreError> {
     for (index, term) in terms.iter().enumerate() {
         if (matches!(selection, TermsToScore::Literals) && term.regex.is_some())
             || (matches!(selection, TermsToScore::Regex) && term.regex.is_none())
         {
             continue;
+        }
+        if let Some(stats) = stats.as_deref_mut() {
+            stats.source_surface_bytes_considered = stats
+                .source_surface_bytes_considered
+                .saturating_add(u64::try_from(scanned_bytes(file, term.scope, case)).unwrap_or(u64::MAX));
         }
         let Some(witness) = choose_witness(file, term, case, budget)? else {
             return Ok(None);
@@ -782,6 +804,17 @@ fn typo_candidates(
     max_posting_visits: usize,
     budget: &RequestBudgetV1,
 ) -> Result<Option<BTreeSet<u64>>, CoreError> {
+    typo_candidates_observed(index, identifier, eligible, max_posting_visits, budget, None)
+}
+
+fn typo_candidates_observed(
+    index: &TrigramIndex,
+    identifier: &str,
+    eligible: Option<&BTreeSet<u64>>,
+    max_posting_visits: usize,
+    budget: &RequestBudgetV1,
+    mut stats: Option<&mut CodeSearchExecutionStatsV1>,
+) -> Result<Option<BTreeSet<u64>>, CoreError> {
     let mut grams: Vec<Trigram> = trigrams_of(identifier.to_ascii_lowercase().as_bytes()).collect();
     grams.sort_unstable();
     grams.dedup();
@@ -796,6 +829,11 @@ fn typo_candidates(
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
                 message: "lexical code search: typo eligible posting probes exceeded".into(),
             });
+        }
+        if let Some(stats) = stats.as_deref_mut() {
+            stats.posting_probes = stats
+                .posting_probes
+                .saturating_add(u64::try_from(probes).unwrap_or(u64::MAX));
         }
         let mut candidates = BTreeSet::new();
         for (ordinal, &id) in eligible.iter().enumerate() {
@@ -827,6 +865,11 @@ fn typo_candidates(
             code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
             message: "lexical code search: typo posting walk budget exceeded".into(),
         });
+    }
+    if let Some(stats) = stats.as_deref_mut() {
+        stats.posting_probes = stats
+            .posting_probes
+            .saturating_add(u64::try_from(total_visits).unwrap_or(u64::MAX));
     }
     let mut heap = BinaryHeap::new();
     for (list_index, list) in lists.iter().enumerate() {
@@ -1103,6 +1146,15 @@ fn candidate_ids_observed(
             .flatten()
         {
             budget.checkpoint("lexical:code-search-trigram")?;
+            let shortest_posting = seed
+                .trigrams
+                .iter()
+                .map(|gram| index.lookup(*gram).len())
+                .min()
+                .unwrap_or(0);
+            stats.posting_probes = stats
+                .posting_probes
+                .saturating_add(u64::try_from(shortest_posting).unwrap_or(u64::MAX));
             let _candidates = index
                 .intersect_trigrams_filtered_with_checkpoint(
                     &seed.trigrams,
@@ -1124,8 +1176,15 @@ fn candidate_ids_observed(
                         let file = file_for_id(authority, id)?;
                         stats.literal_source_verification_attempts = stats.literal_source_verification_attempts.checked_add(1)
                             .ok_or_else(|| CoreError::Storage("lexical: verification work count overflow".into()))?;
-                        let Some(scored) =
-                            score_terms(file, terms, case, None, TermsToScore::Literals, budget)?
+                        let Some(scored) = score_terms_observed(
+                            file,
+                            terms,
+                            case,
+                            None,
+                            TermsToScore::Literals,
+                            budget,
+                            Some(stats),
+                        )?
                         else {
                             return Ok(false);
                         };
@@ -1179,7 +1238,15 @@ fn candidate_ids_observed(
             .ok_or_else(|| {
                 CoreError::Storage("lexical: verification work count overflow".into())
             })?;
-        if let Some(scored) = score_terms(file, terms, case, None, TermsToScore::Literals, budget)?
+        if let Some(scored) = score_terms_observed(
+            file,
+            terms,
+            case,
+            None,
+            TermsToScore::Literals,
+            budget,
+            Some(stats),
+        )?
         {
             let _previous = hits.insert(id, scored);
         }
@@ -1869,6 +1936,11 @@ impl TantivySearcher {
         page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
+        let candidate_started = Instant::now();
+        let mut stats = CodeSearchExecutionStatsV1 {
+            mode: CodeSearchExecutionModeV1::Components,
+            ..CodeSearchExecutionStatsV1::default()
+        };
         // CodeSearch has a file result domain, so the ordinary lexical plan
         // does not infer symbol authority. An incomplete census may be
         // excluded only under an explicit raw-name producer attestation and
@@ -1928,6 +2000,7 @@ impl TantivySearcher {
             BTreeMap::new();
         for row in rows.iter() {
             budget.checkpoint("lexical:code-search-symbol-component-verify")?;
+            stats.final_candidate_visits = stats.final_candidate_visits.saturating_add(1);
             let doc = searcher
                 .doc::<TantivyDocument>(row.address)
                 .map_err(|error| {
@@ -2007,6 +2080,11 @@ impl TantivySearcher {
                 })
                 .transpose()?
                 .flatten();
+            if let Some(text) = file.folded_text.as_deref() {
+                stats.source_surface_bytes_considered = stats
+                    .source_surface_bytes_considered
+                    .saturating_add(u64::try_from(text.len()).unwrap_or(u64::MAX));
+            }
             ranked.push((
                 file_candidate(
                     self,
@@ -2018,7 +2096,11 @@ impl TantivySearcher {
                 )?,
                 witness,
             ));
+            stats.materialized_files = stats.materialized_files.saturating_add(1);
         }
+        stats.verified_matching_files = stats.materialized_files;
+        stats.candidate_ns = observed_ns(candidate_started);
+        let sort_started = Instant::now();
         ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
         if let Some(after) = self.page_boundary(page)? {
             ranked.retain(|(candidate, _)| after.admits(&candidate.order_key()));
@@ -2032,6 +2114,10 @@ impl TantivySearcher {
                 CoreError::Storage(format!("lexical: component fetch overflow: {error}"))
             })?,
         ));
+        stats.cursor_eligible_files = exact_total.unwrap_or(0);
+        stats.fetched_files = u64::try_from(ranked.len()).unwrap_or(u64::MAX);
+        stats.sort_page_ns = observed_ns(sort_started);
+        let preview_started = Instant::now();
         for (candidate, witness) in &mut ranked {
             budget.checkpoint("lexical:code-search-symbol-component-preview")?;
             let source = candidate.source.as_ref().ok_or_else(|| {
@@ -2042,9 +2128,11 @@ impl TantivySearcher {
             })?;
             *candidate =
                 file_candidate(self, file, candidate.score, witness.as_ref(), true, budget)?;
+            stats.preview_attempted_files = stats.preview_attempted_files.saturating_add(1);
         }
+        stats.preview_ns = observed_ns(preview_started);
         Ok(LexicalSearchPageV1 {
-            code_search_stats: None,
+            code_search_stats: Some(stats),
             candidates: ranked.into_iter().map(|(candidate, _)| candidate).collect(),
             exact_total,
         })
