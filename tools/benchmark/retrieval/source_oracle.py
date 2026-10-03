@@ -237,6 +237,19 @@ def declaration_query_textually_excluded(raw: bytes, query: str, variant: str) -
         anchor = 3 if len(query) >= 7 else 2 if len(query) >= 5 else 0
         if anchor and query[:anchor] not in text and query[-anchor:] not in text:
             return True
+        # One insertion, deletion or substitution can disturb at most three
+        # distinct query trigrams; one adjacent swap can disturb at most four.
+        # A regex witness therefore retains all but at most four query grams.
+        # This is only a rejection filter: the conservative regex remains the
+        # authority whenever enough grams occur anywhere in the source.
+        grams = {query[index : index + 3] for index in range(len(query) - 2)}
+        if len(grams) > 4:
+            missing = 0
+            for gram in sorted(grams):
+                if gram not in text:
+                    missing += 1
+                    if missing > 4:
+                        return True
         return _osa1_text_pattern(query).search(text) is None
     raise SourceOracleError("unsupported declaration-name variant contract")
 

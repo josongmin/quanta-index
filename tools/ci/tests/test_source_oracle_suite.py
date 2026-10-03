@@ -798,6 +798,39 @@ def test_typo_partition_accepts_query_proven_parser_refusal():
     assert partition["query_is_declaration_name"] is False
 
 
+def test_osa1_text_exclusion_trigram_filter_preserves_regex_witnesses(monkeypatch):
+    from tools.benchmark.retrieval import source_oracle as so
+
+    query = "abcdefghijkl"
+    one_edits = {query}
+    for index in range(len(query)):
+        one_edits.add(query[:index] + query[index + 1 :])
+        one_edits.add(query[:index] + "x" + query[index + 1 :])
+        if index + 1 < len(query):
+            one_edits.add(query[:index] + query[index + 1] + query[index] + query[index + 2 :])
+    for index in range(len(query) + 1):
+        one_edits.add(query[:index] + "x" + query[index:])
+    for name in sorted(one_edits):
+        raw = f"prefix {name.upper()} suffix".encode()
+        assert not so.declaration_query_textually_excluded(raw, query, "osa1_casefold")
+    assert not so.declaration_query_textually_excluded(
+        "abcdefghijKl".encode(), query, "osa1_casefold"
+    )
+
+    for raw in (b"abc" + b"x" * 20_000 + b"jkl", b"abxxefghijkl", b"nothing here"):
+        folded = raw.decode().casefold()
+        regex_absent = so._osa1_text_pattern(query).search(folded) is None
+        assert so.declaration_query_textually_excluded(raw, query, "osa1_casefold") == regex_absent
+
+    def unexpected_regex(_query):
+        pytest.fail("the sparse source should be rejected before regex search")
+
+    monkeypatch.setattr(so, "_osa1_text_pattern", unexpected_regex)
+    assert so.declaration_query_textually_excluded(
+        b"abc" + b"x" * 20_000 + b"jkl", query, "osa1_casefold"
+    )
+
+
 def test_paired_typo_builder_emits_operation_and_stress_suites(tmp_path):
     from tools.benchmark.retrieval import identifier_robustness_suite as irs
 
