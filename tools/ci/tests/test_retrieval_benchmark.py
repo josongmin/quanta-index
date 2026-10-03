@@ -4852,6 +4852,90 @@ def test_semble_file_collection_preserves_native_rank_and_exhaustion(tmp_path):
         pairrun._validate_semble_route_binding({**bound, "semble_route": "semble-lexical-only"})
 
 
+def test_semble_file_collection_reuses_verified_source_work_across_queries(monkeypatch):
+    lines = {"a.txt": [f"item {index}\n".encode() for index in range(15)]}
+    lines.update({f"{letter}.txt": [b"value\n"] for letter in "bcdefghij"})
+    shas = {path: ev.digest(b"".join(parts)) for path, parts in lines.items()}
+    hits = [
+        {
+            "file_path": "a.txt",
+            "start_line": index + 1,
+            "end_line": index + 1,
+            "score": float(100 - index),
+        }
+        for index in range(15)
+    ]
+    hits.extend(
+        {"file_path": f"{letter}.txt", "start_line": 1, "end_line": 1, "score": float(80 - index)}
+        for index, letter in enumerate("bcdefghij")
+    )
+    contract = _v3_contract(10)
+    tasks = [{"task_id": task_id, "query": "item"} for task_id in ("T1", "T2")]
+    pack = {"comparison_contract": contract, "tasks": tasks}
+    native = [{"task_id": task["task_id"], "results": hits} for task in tasks]
+    args = (
+        shas,
+        lines,
+        contract,
+        "semble-lexical-file",
+        semble_adapter.execution_profile("lexical-file", None),
+    )
+    expected = semble_adapter.normalize_results(
+        pack, native, {"T1": [1.0], "T2": [1.0]}, *args, indexed_chunks=24
+    )
+    assert [[candidate["path"] for candidate in row["candidates"]] for row in expected] == [
+        ["a.txt", *(f"{letter}.txt" for letter in "bcdefghij")]
+    ] * 2
+    assert all(
+        row["file_collection"] == {"indexed_chunks": 24, "matched_chunks": 24, "matching_files": 10}
+        for row in expected
+    )
+
+    offsets = semble_adapter._source_line_offsets(lines)
+    verified_blocks = {}
+    original_count_tokens = semble_adapter.count_tokens
+    token_checks = []
+
+    def counted_tokens(text):
+        token_checks.append(text)
+        return original_count_tokens(text)
+
+    monkeypatch.setattr(semble_adapter, "count_tokens", counted_tokens)
+    monkeypatch.setattr(
+        semble_adapter,
+        "_source_line_offsets",
+        lambda _lines: pytest.fail("per-query normalization rebuilt source offsets"),
+    )
+    actual = [
+        semble_adapter.normalize_results(
+            {"comparison_contract": contract, "tasks": [task]},
+            [row],
+            {task["task_id"]: [1.0]},
+            *args,
+            indexed_chunks=24,
+            source_line_offsets=offsets,
+            verified_blocks=verified_blocks,
+        )[0]
+        for task, row in zip(tasks, native, strict=True)
+    ]
+    assert actual == expected
+    assert len(verified_blocks) == len(token_checks) == 24
+
+    malformed = copy.deepcopy(hits)
+    malformed[1]["end_line"] = 999
+    rejected = semble_adapter.normalize_results(
+        {"comparison_contract": contract, "tasks": [tasks[0]]},
+        [{"task_id": "T1", "results": malformed}],
+        {"T1": [1.0]},
+        *args,
+        indexed_chunks=24,
+        source_line_offsets=offsets,
+        verified_blocks=verified_blocks,
+    )[0]
+    assert rejected["status"] == "error"
+    assert rejected["error"]["code"] == "semble_hit_beyond_eof"
+
+
 def _single_route_record_v3(pack_sha, contract, route, system, capture_id, rows):
     return {
         "schema_version": 5,

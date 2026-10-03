@@ -1284,9 +1284,7 @@ def normalize_results(
     if file_mode and (type(indexed_chunks) is not int or indexed_chunks <= 0):
         raise AdapterError("Semble file collection lacks indexed chunk count")
     line_offsets = (
-        _source_line_offsets(file_lines)
-        if source_line_offsets is None
-        else source_line_offsets
+        _source_line_offsets(file_lines) if source_line_offsets is None else source_line_offsets
     )
     if verified_blocks is None:
         verified_blocks = {}
