@@ -496,25 +496,33 @@ def _python_import_roots(
     ]
     visited: set[str] = set()
     wildcard_packages: set[str] = set()
+    kind_cache: dict[tuple[Path, str], bool] = {}
 
     def kind(path: Path, wanted: str) -> bool:
+        key = (path, wanted)
+        if frame is not None and key in kind_cache:
+            return kind_cache[key]
         if frame is not None:
             relative = path.relative_to(repo).as_posix()
             if relative in (frame.blobs if wanted == "file" else frame.directories):
+                kind_cache[key] = True
                 return True
         try:
             mode = path.stat().st_mode
         except FileNotFoundError:
             if frame is not None:
                 frame.absent_import_candidates.add((path, wanted))
+                kind_cache[key] = False
             return False
         except OSError as error:
             raise ClosureError(
                 f"cannot inspect Python source dependency {path}: {error}"
             ) from error
         present = stat.S_ISREG(mode) if wanted == "file" else stat.S_ISDIR(mode)
-        if not present and frame is not None:
-            frame.absent_import_candidates.add((path, wanted))
+        if frame is not None:
+            kind_cache[key] = present
+            if not present:
+                frame.absent_import_candidates.add((path, wanted))
         return present
 
     def local_files(base: Path, parts: tuple[str, ...]) -> set[Path]:
