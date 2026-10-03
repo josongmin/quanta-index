@@ -33,7 +33,7 @@ and searchd SHA
 | Priority | Owner and exact change | Acceptance |
 | --- | --- | --- |
 | P0 done | `run.py`: phase timer, v7 ingest stage contract in direct capture, one final closure verification, and Python >=3.10 admission before product execution | Focused positive/negative tests; one complete source-bound pair with `PAIR_VALID=pass`; final source-drift refusal retained |
-| P1 | C5 quality batch in `holdout_c4.py`, `run.py`, Rust retrieval runner and `semble.py`: run compatible intent packs against one immutable index per repository, with separate sealed packs, records, reports and replay per intent | Same per-intent rows, statuses and judgments as fresh runs; a changed corpus/model/strategy/generation refuses reuse; indexing phase reported once, never charged to individual query latency |
+| P1 partial | `execution_batch.py` and `run.py` now batch compatible blind packs at product execution: one native union record per product, independently validated original suites, per-suite scoring views and replay. The Rust runner and Semble adapter did not need changes for identical request profiles. This is exploratory diagnostic only | Same per-intent rows, statuses and judgments as independent fresh runs; corpus/model/strategy and membership drift refused; indexing phase reported once, never charged to individual query latency. Current-source product E2E remains required |
 | P1 partial | `source_closure.py` and pair driver now accept an external prior closure for exploratory captures without claims. Reuse checks revision, clean source and file inventory; every cell still fully verifies before promotion. The C5 batch caller is not connected yet | Focused refusal tests and a clean-HEAD source-closure A/B passed. Full pair and C5 batch proof remain open |
 | P2 | Profile SymPy verifier under the current source. Optimize repeated parsing only inside one independent validation pass, keyed by source bytes and parser identity; keep verdict re-derivation independent | Report and verdict bytes unchanged; tampered source and parser identity rejected; representative large-cell wall and CPU reported |
 
@@ -46,11 +46,15 @@ concurrent cells and are not an estimate of achievable batch savings.
 The four observed C5 intents cannot be concatenated into one evaluator suite.
 The explicit OSA1 typo tasks use a different request mode from exact/prefix/
 infix; even the three default-mode suites contain cross-intent near-duplicate
-queries that the suite validator correctly rejects. Batch execution must keep
-each original suite and blind pack independently valid. A multi-pack product
-session may share the immutable index, but must emit one native, pack-bound
-record per intent and an explicit shared-index receipt; derived synthetic
-per-intent native records are not acceptable evidence.
+queries that the suite validator correctly rejects. Batch execution keeps
+each original suite and blind pack independently valid. Because the four
+product request profiles are identical within a repository, the driver can
+run their blind-query union against one immutable index per product. A shared
+query executes once and an explicit membership map binds it back to each
+original task. The two union records are native; per-intent scoring views are
+derived and never called native records. Replay re-derives the union and every
+report from the original packs and saved native records. This diagnostic
+contract does not satisfy B07 quiet-host performance qualification.
 
 At clean `934eb012`, a single local closure-only A/B over 1,124 files measured
 `capture` 5.744 s, `reuse` 0.377 s, and the mandatory final `verify` 5.495 s.
