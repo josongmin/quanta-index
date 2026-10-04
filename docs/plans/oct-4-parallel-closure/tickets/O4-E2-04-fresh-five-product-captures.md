@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | source0e6 bat409 warmup0/1 각40/40·독립 verdict/full parity 및 당시 native3 실제60요청/독립 raw replay `VERIFIED`. 수정 scorer의 SG scope receipts 재발행 중; fresh native3/5제품 join·required matrix·정식 qualification 미완료 |
+| 실행 상태 | source0e6 bat409 warmup0/1 각40/40·독립 verdict/full parity 및 ae8f native3 실제60요청/독립 raw replay `VERIFIED`. ae8f SG producer12개 exit0, 독립 replay 진행. join v4의 derived provenance 거절 수리 중; 새 control epoch·required matrix·정식 qualification 미완료 |
 | 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-02](O4-E2-02-external-index-universe.md), [O4-E2-03](O4-E2-03-required-cells-and-scheduling.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)

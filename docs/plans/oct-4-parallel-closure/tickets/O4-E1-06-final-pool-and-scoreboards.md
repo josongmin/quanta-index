@@ -25,6 +25,13 @@
 - 새 scorer를 clean `ae8f96bae1a0db1fc0378861b228cd5359080fa1`/`/Users/songmin/.codex/worktrees/oct5-native-scorer/quanta-index`에 고정했다. 같은3.13.9 interpreter의 `python -m tools.benchmark.retrieval.sourcegraph_index_scope --scope-batch /private/tmp/qi-sg-native-scorer-20261005-v1-batch.json --native-port 6071 --native-binary-path /usr/local/bin/zoekt-webserver`가 producer exit0,12개 receipt·stderr0bytes로 종료했다. batch SHA `46d64ca0ccaecf828e225b613671aabfae6f227995c5766be949f1d0ea835090`, output `/private/tmp/qi-sg-native-scorer-20261005-v1/<repo>`다. 별도12repo canonical replay는 실행 중이다.
 - same3.13.9/source에서 `python -m tools.benchmark.retrieval.live_lexical_external --spec /private/tmp/qi-native-bat-scorer-v3-spec.json`을 새 `/private/tmp/qnbsc3/bat` 대상으로 실행 중이다. spec SHA `9c688eb1d3575648e4f171e443044e13293fe641f726868bc8ad735452848585`, 새 SG receipt를 소비한다. 완료·독립 raw replay 전에는 capture/join PASS를 발행하지 않는다.
 
+## 2026-10-05 derived build provenance consumer RED
+
+- ae8f/same Python3.13.9의 새 native3 actual와 `--verify /private/tmp/qnbsc3/bat`는 각각 exit0이며 saved capture/producer/verifier JSON equality다. verifier SHA `200b162f993f9d05fc4341a0bc51998a536839b70981d88c98e1310984d15933`; SG/OG HTTP200각20·cs exit0각20·returned files각0·error0, SG79 owned stored-byte/path·OG79 served view, whole OG flagfalse다.
+- 새 join `--external-spec /private/tmp/qi-bat-five-product-scorer-v4-join-spec.json --out /private/tmp/qi-bat-five-product-scorer-v4-scoreboard.json`은 `FAILED`: exit2, `file pair source/binary provenance differs from the frozen manifest`; scoreboard가 없다. 실제 유일한 provenance 차이는 manifest의 caller field `quanta.binary_build_source_revision=null`과 fresh SDK chain 검증 뒤 canonical verdict가 도출한 source0e6 값이다. manifest nonnull은 upstream 계약이 거절하므로 raw equality가 정상 issued evidence를 거절한 consumer 결함이다.
+- consumer를 기존 `run.build_verdict`의 전체 frozen-artifact replay→retained verdict exact JSON equality에 연결했다. 별도 provenance projection 비교를 제거하고 기존 source/binary/profile/record/phase checks를 유지했다. 실제 fresh-SDK fixture에 정상 derived revision, forged revision, SDK raw 변조 거절을 추가했다. Ruff check/format 및 diff-check exit0, focused tests는 직렬 admission 실행 뒤 수행하며 아직 `NOT_RUN`이다.
+- 수정 scorer SHA `bff22b8a3344114017aba34017fcd44f2b0b076e011affc3b58d23e33e680c9b`의 retained bat file-pair canonical replay를 실행 중이다. 이는 새5제품 join이나 native producer hash 재결속 결과가 아니다. ae8f native/SG 기록은 당시 scope로 보존하고 추가 static consumer audit 뒤 새 고정 source/control epoch를 발행한다.
+
 ## 목적
 
 새 5제품 응답에서 생긴 마지막 미검수 union을 닫고 공통 eligible 집합에서 lane별 최종 결과를 재계산한다.

@@ -4,13 +4,13 @@
 
 - 담당·파일/함수·독립 검증·완료 조건: [4개 에픽 + I0](../../plans/oct-4-parallel-closure/README.md), [29개 티켓](../../plans/oct-4-parallel-closure/tickets/INDEX.md).
 - 실행 순서·실제 상태: [W0–W6](../../plans/oct-4-parallel-closure/WAVES.md). 개별 명령·관측·증거 범위는 기존 owning ticket이 기준이다.
-- 제품 proof/binaries/admissions는 frozen `0e6c7e7e9494b63fdb33f4594df059817459d3b1` 기준이다. 후속 Python file-report consumer 수리는 clean `ae8f96bae1a0db1fc0378861b228cd5359080fa1`에 고정했다. mutable main이나 과거 receipt를 이 source들의 새 결과로 재표기하지 않는다.
+- 제품 proof/binaries/admissions는 frozen `0e6c7e7e9494b63fdb33f4594df059817459d3b1` 기준이다. 후속 scope 수리/SG/native3는 clean `ae8f96bae1a0db1fc0378861b228cd5359080fa1`에 고정했다. 실제 join이 derived build-provenance 차이도 발견해 추가 consumer 수리·검증 중이다. mutable main이나 과거 receipt를 새 source 결과로 재표기하지 않는다.
 
 ## 1. 현재 실행 순서
 
 | 순서 / 웨이브 | 해야 할 일 | 현재 경계 |
 | --- | --- | --- |
-| 1 / W4–W5 | 수정 scorer의 새 Sourcegraph 12repo 독립 scope replay → bat native3 새 캡처 → 독립 raw replay → 5제품 join | scope producer exit0/12receipts, 독립 replay와 native3 실제 실행 중. old receipt control drift의 native v2 exit2는 보존 |
+| 1 / W3–W5 | derived provenance consumer 수리/정적 감사·focused 검증 → 새 fixed-source/control 결속 → 5제품 join | ae8f SG producer exit0/12receipts·독립 replay 진행, native3 actual/replay exit0. join v4는 정상 derived build revision을 manifest와 같다고 요구해 exit2; 추가 수리 검증 중 |
 | 2 / W3 | current0e6 proof로 cli/lo/mocha/uvicorn/zustand/django/typeorm/nushell의 원본8 admission 발행 | canonical issuer 실제 실행 중. terminal 미발행 저장소는 ready 아님. bat409 current v4는 이미 strict consumer 검증됨 |
 | 3 / W4–W5 | 준비된 C3 저장소의 실제 Quanta/Semble·SG/OG/cs 캡처, required-cell outcomes·source-bound blind union 발행 | existing exploratory pre-review mode로 신규 후보 확보. 새 미검수 후보를 final quality나 0점으로 처리하지 않음 |
 | 4 / W1→W3→W5 | SQLAlchemy/Zellij 실제 조정 완료·suite/pack/admission 발행, Tailscale 미결 정책 적용 후 재검수 | actual Opus 주간 한도로 SQL146·Zellij476pairs `BLOCKED`. SQL334pairs 보존. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 입력도 `BLOCKED` |
