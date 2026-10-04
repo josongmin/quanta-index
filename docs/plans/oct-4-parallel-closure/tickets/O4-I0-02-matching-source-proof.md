@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | source107 formal Contract788/191·fresh release SDK27 및 앞선 owner/daemon/process/fuzz `VERIFIED`; 후속 source27 semantic97·Clippy 및 sourcecef large4096 OS restart `VERIFIED`. 현재 sourcecef formal proof·matching scale/open-loop release·hosted CI 미완료 |
+| 실행 상태 | source107 formal Contract788/191·fresh release SDK27 및 앞선 owner/daemon/process/fuzz `VERIFIED`; 후속 semantic97·Clippy 및 최종source0e6 large4096 OS restart·matching scale/open-loop release build `VERIFIED`. source0e6 formal proof 미실행, hosted CI `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)

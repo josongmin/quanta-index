@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P2 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | source107 small/medium scale·small open-loop `VERIFIED`, large timeout/ANN seal `FAILED`; 새 ANN 수리 집중8·affected97 및 sourcecef large4096 OS restart `VERIFIED`. matching release lifecycle 재실행·다른 tier·qualified performance 미완료 |
+| 실행 상태 | source107 small/medium scale·small open-loop `VERIFIED`, large timeout/ANN seal `FAILED`; ANN 수리 집중8·affected97 및 최종source0e6 large4096 OS restart·matching release build `VERIFIED`. 새 large lifecycle 실행 중; 다른 tier·qualified performance 미완료 |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E4-01](O4-E4-01-index-phase-profile.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -66,6 +66,8 @@
 - 후속 `FAILED`: `./scripts/cargow --lane clippy-lane clippy -p quanta-index-searchd-harness -p quanta-index-searchd-runtime --all-targets --all-features --locked -- -D warnings` — exit101. 새 fixture의 type_complexity/collapsible_if2건이었다. tuple projection의 local type alias와 같은 predicate의 let-chain으로 정리했으며 lint allowance를 추가하지 않았다.
 - 최종 style bytes에서 같은 Clippy 명령 `VERIFIED`: exit0,7.12s. 기존 Tantivy vendor warning8개는 남는다. `just fmt-check`, `just rust-public-api`, `just rust-cargo-modules`, `just rust-hexagonal` 및 `git diff --check`도 exit0이다. 이 검사는 sourcecef 이후 main의 root-owned fixture overlay(SHA `1afc50f4863d4ed008b75ed5094ea9aef04009952fb1491a2fc6307911600ef9`)에 대한 결과다. assertion/query/source 조건은 유지했고 최종 clean source/owner release 재검증을 다음 실행에서 고정한다.
 - 최종 clean source `0e6c7e7e9494b63fdb33f4594df059817459d3b1`에서 위 exact release owner 명령을 다시 실행해 `VERIFIED`: exit0, release compile2m49s,1/1 passed·70.352s, owner26개 filtered out. fixture SHA `1afc50f4863d4ed008b75ed5094ea9aef04009952fb1491a2fc6307911600ef9`의 실제 실행이다. hash-dev/300s/256MiB 기능 scope이며 기존 sourcecef66.736s 관측과 별도로 보존한다. 같은 clean source의 scale/open-loop matching binary 빌드를 시작했으며 tier 실행 완료 전에는 lifecycle/성능 통과를 주장하지 않는다.
+- 후속 matching release build `VERIFIED`: source0e6의 `./scripts/cargow --lane release-lane build -p quanta-index-searchd-harness --bin scale_matrix --bin open_loop_matrix --all-features --locked --release` — exit0,4m26s. 새 own target `23355b3606c20af3/release-lane/release`의 binary 두 개가 build marker보다 새로웠고 `--help`/clean HEAD도 확인했다. scale SHA `f5f5b896fe56b8172329ebdea5e1c1a492d9fc05928ec6ee5e4b9fb6b8c36f9c`, open-loop SHA `5b6718ab042121c1b03137298eea6e1a7e6a542815d112b88655254088e79c28`다. source107 target/binaries는 보존했다.
+- 새 large diagnostic actual root는 `/private/tmp/qi-scale-large-diag-0e6-v1/result`다. 원 seed5864059738136528177과 explicit300000ms/268435456bytes로 root 단일 실행 중이며 완료 producer exit/summary/독립 readback 전에는 통과로 판정하지 않는다.
 
 ## 착수 입력과 실제 tier 실행
 
