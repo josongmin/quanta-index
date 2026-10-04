@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | 새 bat2route raw canonical pool·18tasks/51pairs supplemental request binding `VERIFIED`; 과거 first-six raw replay `BLOCKED`. 새5제품 union·actual supplemental model/merged labels 미완료 |
+| 실행 상태 | 새 bat5제품 raw union·18tasks/51pairs·actual role 요청 preflight `VERIFIED`; 과거 first-six raw replay `BLOCKED`. actual supplemental model/merged labels 미완료 |
 | 선행 결과 | [O4-E1-01](O4-E1-01-original-review-resume.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -38,6 +38,12 @@
 - `VERIFIED`: root가 source107의 `uv run --frozen --extra dev python /tmp/qi-bat-current-pool-driver-20261004-v1.py --output /private/tmp/qi-bat-current-pool-107-v1`를 actual 실행해 exit0이었다. 기존 `run.project_pack_and_suite`→route별 `holdout_review.capture_review_pool`→judged 차집합→`bind_supplemental_review_tasks`로18tasks/51pairs/1batch가 결속됐다. 두 reviewer 요청을 준비했으며 실제 model call·adjudication은`NOT_RUN`이다.
 - 원 pair의 failed terminal과 source/record bytes는 보존했다. 새 native3제품 수집·재생 후 기존 binder에 다섯 반환 파일 union을 연결해 추가 미판정 여부를 판정한다. 이2route pool에 source/control diversity 또는 whole-corpus relevance를 부여하지 않는다.
 - 원 qualified pair의 complete-scored evaluation은 `FAILED`로 유지한다. 리뷰 후보 발행·AI 실제 판단·merged labels·새 admission·fresh final pair를 서로 다른 단계로 판정한다. 두 제품의 미판정51쌍은 새5제품 최종 union 완료를 뜻하지 않는다.
+
+### 후속 실제 5제품 union과 role preflight
+
+- `VERIFIED`: `/tmp/qi-bat-five-product-unjudged-bridge-20261004-v2.py --pool-input /tmp/qi-bat-failedpair-review-pool-input-20261004-v1.json --pool-root /private/tmp/qi-bat-current-pool-107-v1 --native-root /private/tmp/qn/bat --out /private/tmp/qi-bat-five-pool-107-v1` actual exit0. canonical native replay, 원 2route 재생, five owner-pool과 source/input/tree pre/post 결속 후18tasks/51pairs가 남았다. Sourcegraph/OpenGrok/cs 각20 completed rows의 반환 파일은0이므로 이 셋이 union 분모를 늘리지 않았다.
+- `VERIFIED`: `/tmp/qi-bat-five-product-actual-review-20261004-v2.py --pool-input /tmp/qi-bat-failedpair-review-pool-input-20261004-v1.json --five-root /private/tmp/qi-bat-five-pool-107-v1 --out /private/tmp/qi-bat-five-actual-review-107-v2` actual preflight exit0. 원 suite binder,51 source pairs,5제품 membership,477 native retained files와 두 blind reviewer 요청의 canonical bytes를 재검증했다. 모델 호출은 `NOT_RUN`; 실제 두 판단 후에만 adjudicator를 실행한다.
+- v1 preflight는 tuple/list 표현을 Python 객체로 비교해 `FAILED`였다. 기존 failed root는 보존하고 v2가 producer의 동일 canonical JSON bytes로 비교한다. pool/source/grade를 변경하지 않았다. AI-only 판단, merged suite, 새 admission 및 fresh final pair는 계속 별도 단계다.
 
 ## 어떤 파일을 어떻게 수정할지
 

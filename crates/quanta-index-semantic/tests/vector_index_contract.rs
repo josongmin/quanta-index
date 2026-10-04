@@ -698,6 +698,61 @@ fn deleting_every_row_of_an_appended_segment_reseals_the_survivors() -> TestResu
     Ok(())
 }
 
+/// Replacing an appended scope with byte-identical rows is still a
+/// physical delete and append. The final canonical row fingerprints match
+/// the base, while Lance may retire the emptied appended segment.
+#[test]
+fn identical_replacement_of_an_appended_segment_can_reseal() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let base = ManifestGeneration::new(1);
+    let appended = ManifestGeneration::new(2);
+    let replaced = ManifestGeneration::new(3);
+    seal_with_scopes(
+        &adapter,
+        base,
+        None,
+        vec![scope("src/base.rs", records("base", "src/base.rs", 0..300)?)],
+        &[],
+    )?;
+    let same_rows = records("new", "src/new.rs", 1_000..1_060)?;
+    seal_with_scopes(
+        &adapter,
+        appended,
+        Some(base),
+        vec![scope("src/new.rs", same_rows.clone())],
+        &[],
+    )?;
+    if library_view(&generation_dir(temp.path(), appended))?.stats != Some((360, 0, Some(2))) {
+        return Err("fixture must first seal two ANN segments".into());
+    }
+    seal_with_scopes(
+        &adapter,
+        replaced,
+        Some(appended),
+        vec![scope("src/new.rs", same_rows)],
+        &[],
+    )?;
+    let view = library_view(&generation_dir(temp.path(), replaced))?;
+    if view.stats != Some((360, 0, Some(1))) {
+        return Err(format!("identical replacement did not reindex all live rows: {:?}", view.stats).into());
+    }
+    let served = adapter.open(&repo(), &revision(), replaced)?;
+    if served.dense_lane() != sealed_ann_lane(trained_at(3, 360)) {
+        return Err(format!("identical replacement retained stale lineage: {:?}", served.dense_lane()).into());
+    }
+    for (seed, id) in [(7, "base-7"), (1_042, "new-1042")] {
+        let hits = served.search(&unit_vector(seed, DIMENSION), 3, &RequestBudgetV1::unbounded())?;
+        if hits.first().is_none_or(|hit| hit.candidate_id != id || (hit.score - 1.0).abs() > 1e-5) {
+            return Err(format!("retained {id} was not served: {hits:?}").into());
+        }
+    }
+    if library_view(&generation_dir(temp.path(), appended))?.stats != Some((360, 0, Some(2))) {
+        return Err("sealed parent changed during identical replacement".into());
+    }
+    Ok(())
+}
+
 /// Rewrite a current manifest as a format-8 manifest (the index contract
 /// without its lineage record) and re-commit it in the sealed manifest, so
 /// the generation is exactly what a pre-W3 seal left behind.

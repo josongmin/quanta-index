@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P2 / `CODE_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | parent phase instrumentation·검증 fixtures `VERIFIED`; 실제 current-source phase capture는 `NOT_RUN` |
+| 실행 상태 | parent phase instrumentation·fixtures 및 source107 bat actual component replay `VERIFIED`; 반복 A/B·cache 최적화 결정·qualified speed 미완료 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -23,6 +23,13 @@ Semble worker 외부의 bootstrap/model/source/record 비용을 parent-bounded p
 - parent monotonic clock에서 admission/environment/corpus/spec/model/source/worker/output/record 단계를 연속 측정하고 누락·재정렬·중복 경계를 거절하도록 통합했다. child timestamp를 parent timestamp에서 빼지 않는다.
 - `VERIFIED`: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py tools/ci/tests/test_sourcegraph_parity_inventory.py tools/benchmark/retrieval/test_sourcegraph.py tools/ci/tests/test_lexical_file_comparison.py tools/ci/tests/test_completed_response_timing.py -q --tb=short` — 255 passed, 351.03s, exit 0. E1/controller 중앙 배치 786 passed에도 관련 adapter fixtures가 포함된다.
 - 실제 package/model/source에서 phase 비용과 residual 측정은 `NOT_RUN`이다. 과거 6.064초 gap의 해소나 immutable cache speedup은 주장하지 않는다.
+
+## 2026-10-04 source107 bat 실제 component 판독
+
+- `VERIFIED`: root가 failed bat pair의 `/private/tmp/qi-p0-v1/bat.staging/rep-00/semble` retained record/native/phase/adapter/model-cache/mapping 및 parent resource를 실제 읽고 source107의 phase/completed-query/native-profile/parent-profile/model-cache/resource validators와 exact79-file mapping을 실행해 exit0이었다. record SHA와 phase/adapter/resource subject, native timing/protocol/calls, model-cache/lock/profile bytes를 교차 검증했다. initial import 경로 오류는 수정 후 동일 validator 명령을 다시 실행했다.
+- worker clock: discovery0.082208ms, model-provider102.236ms, index1124.316667ms, warmup0.003459ms, cold25.816541ms, measured warm total123.737250ms, unattributed1.738ms. completed observations21개(cold1/measured20)이며 semantic/encode calls0, BM25 calls21이다.
+- 별도 parent monotonic envelope는2292.042750ms이고 resource process elapsed는2400.995833ms, observed peak RSS291,700,736bytes다. 서로 다른 clock의 timestamp를 빼지 않으며, 옛 gap 대비 감소·quiet host speedup·물리 I/O나 전체 pair 성공을 주장하지 않는다. 최종 pair는 미판정 qrel 때문에 `FAILED_UNJUDGED`로 유지한다.
+- 반복 same-input A/B, immutable 작업 제거의 채택 및 qualified performance는 `NOT_RUN`이다. capture 한 번의 phase 귀속을 최적화 완료로 표시하지 않는다.
 
 ## 착수 입력
 

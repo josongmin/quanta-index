@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | Django/TypeORM suite·review receipt 및 source107 bat/cli/lo/nushell fresh admission `VERIFIED`; 다른 ready admission 중앙 발행 진행 중. 전체 cohort qualification 미완료 |
+| 실행 상태 | Django/TypeORM suite·review receipt 및 source107 bat/cli/lo/mocha/uvicorn/zustand/nushell fresh admission `VERIFIED`; Django/TypeORM admission 중앙 발행 진행 중. 전체 cohort qualification 미완료 |
 | 선행 결과 | [O4-E1-02](O4-E1-02-supplemental-labels.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -34,6 +34,7 @@
 - `VERIFIED`: 후속 `cli/cli/result.json`은20 tasks/519 judgments,source107,stale-source negative control1이며 qualified/human provenance false다. 다른6개가 완료되기 전에는 전체 issuer exit0을 주장하지 않는다.
 - `VERIFIED`: 후속 `lo/lo/result.json`은20 tasks/495 judgments,source107,stale-source negative control1이다. 아직 미발행인 repository는 ready/PASS로 합성하지 않는다.
 - `VERIFIED`: first-eight에서 제외된 Nushell의 `/tmp/quanta-e1-current-admission-isolated-v3-20261004.py --input /tmp/qi-e1-nine-actual-proof-1071692b-20261004-v2.json --output-parent /Users/songmin/Documents/code-new/qi-e1-nushell-admission-20261004-v1 --selection nushell` actual issuance가 exit0이었다. `nushell/nushell/result.json`은20 tasks/504 judgments, source107, stale-source negative control1,590.334s이며 qualified/human provenance false다. current forms/validation 결속과 과거 raw execution provenance를 구별하며 전체9개 완료로 승격하지 않는다.
+- `VERIFIED`: 같은 first-eight 실행의 후속 mocha20tasks/511judgments(572.331s), uvicorn20/383(422.905s), zustand20/360(529.734s) result를 실제 읽었다. 각각 source107, stale-source negative control1, qualified/human false다. Django/TypeORM terminal과 aggregate는 아직 발행 전이며 전체 명령 exit0이나 전체9개 완료로 합성하지 않는다.
 
 ## 착수 입력과 후속 발행
 
