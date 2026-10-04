@@ -1868,6 +1868,11 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         assert rows[1]["file_hit_at_10"] is False
         rows[1]["paths" if product == "cs" else "file_paths_top_10"] = rows[1]["gold_paths"]
         rows[1]["file_hit_at_10"] = True
+        forged_normalized = live.canonical_json(
+            {"status": "success", "file_paths_top_10": rows[1]["gold_paths"]}
+        ).encode("utf-8")
+        rows[1]["completed_response"]["output_bytes"] = len(forged_normalized)
+        rows[1]["completed_response"]["output_sha256"] = live._sha(forged_normalized)
         row_path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in rows))
         summary_path.write_text(
             json.dumps(

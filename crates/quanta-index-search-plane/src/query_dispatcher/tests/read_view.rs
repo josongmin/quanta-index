@@ -132,7 +132,7 @@ fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() 
         let revision = g1.revision_id.clone();
         let release_retention = Arc::clone(&release_retention);
         std::thread::spawn(move || -> Result<(), String> {
-            release_retention.wait();
+            let _rendezvous = release_retention.wait();
             let mut previous = g1_head.active;
             for generation in [10, 11] {
                 let next = corpus_generation(
@@ -168,7 +168,7 @@ fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() 
             Ok(())
         })
     };
-    release_retention.wait();
+    let _rendezvous = release_retention.wait();
     // The completed mutation thread is the second rendezvous. A failure
     // returns instead of leaving the view acquisition waiting on a barrier.
     mutation.join().map_err(|_| "retention thread panicked")??;
