@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `CODE_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | native producer/consumer 통합·owner fixture `VERIFIED`; 새 실제 캡처·정식 반복 시간은 `NOT_RUN` |
+| 실행 상태 | native producer/consumer·owner fixture 및 source107 bat SG/OG/cs 각20 actual complete clocks/raw replay `VERIFIED`; 정식 반복 시간·speed qualification `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -29,6 +29,12 @@ Sourcegraph/OpenGrok/cs 요청 생성부터 normalized required response 완성�
 
 - 현 live spec·raw response fixtures, canonical completed-output contract
 - 독립 fake monotonic clock와 request construction/transport/decode/normalization 각각 비용을 가진 fixture
+
+## 2026-10-04 source107 실제 native clock
+
+- root는 canonical admission을 재생한 `/private/tmp/qnp1/bat.capture-spec.json`으로 `live_lexical_external.py --spec` 및 `--verify /private/tmp/qn/bat`를 실제 실행했다. 두 명령 exit0, source107/input byte bindings 전후 동일이며 별도 `/private/tmp/qna1/terminal.json`에 producer/raw replay `VERIFIED`가 있다.
+- Sourcegraph/OpenGrok/cs 각각20 completed rows의 `completed_response`는 `request_construction_to_normalized_response`와 `same_process_monotonic_ns`, nonnegative duration 및 normalized output bytes/SHA를 발행했다. HTTP 두 제품은200, cs process exit0이며 native raw 재생이 해당 output binding을 검사했다.
+- 이번 bat NL 질의에서 native3제품의 returned file 수는 각각0이다. empty 응답은 실패/미판정 grade0으로 치환하지 않는다. 이것은 단일 diagnostic capture의 시간 경계이며 warmed repeated speed·quiet host·quality 비교 qualification은 아니다. OpenGrok 전체 UID/auxiliary/query scope 미확정도 유지한다.
 
 ## 어떤 파일을 어떻게 수정할지
 
