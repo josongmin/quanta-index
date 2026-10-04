@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `DATA_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | Sourcegraph owner169·v5 12repo/13,347파일 owned native scope와 독립 replay `VERIFIED`; OpenGrok fresh scope v1 `FAILED`, 기존 container 재개 후 v2 실행 중; 새 query 전후 bracket `NOT_RUN` |
+| 실행 상태 | Sourcegraph owner169·v5 12repo/13,347파일 owned native scope와 독립 replay `VERIFIED`; OpenGrok fresh scope v1 `FAILED`, v2 producer exit0/24 sweeps 수집, offline raw replay 실행 중. 전체 UID/새 query 전후 bracket `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -46,6 +46,8 @@ B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 
 - 새 외부 root `qi-b08-closeout-20261004-2i72kj91/opengrok-native-full-20261004-v2`에서 `uv run --frozen --extra dev python /private/tmp/quanta-e2-og-scope-driver-20261004.py --spec /private/tmp/quanta-e2-og-scope-input-20261004.json --output /Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/opengrok-native-full-20261004-v2`를 실행 중이다. release/producer/token 입력을 재검사하고 전체 API path/served-byte before/after와 기존 vendor/Lucene의 path-bearing posting reference를 수집한다. 완성 receipt 및 재생 전에는 PASS를 주장하지 않는다. 이 scope driver는 benchmark query를 제출하지 않으며 `query_bracketed=false`다.
 - 중간 raw posting 관측은 manifest의13,347 path-bearing documents에 대해 path set/source SHA/`full` term·frequency·position·offset 불일치0이다. Java producer는 `stored.path == null`인 live auxiliary4,268개를 내용/UID/type 검증 없이 건너뛴다. path-bearing UID의 nonnull/global uniqueness는 raw 재집계 관측이며 현재 probe의 필수 predicate가 아니다. 전체 live UID universe 또는 auxiliary provenance를 입증했다는 표현을 사용하지 않는다.
 - 기존 named-volume snapshot은 native runtime·12projects/132 index artifacts의 digest를 기록하지만 canonical live collector의 bind/readonly backend snapshot과 호환되지 않으며 API host-port→container 연결도 검사하지 않는다. collector의 `opengrok_indexed_universe_attested=false`는 유지한다. source/UID/auxiliary 분류·native endpoint binding·실제 query 전후 snapshot 소비 및 독립 replay를 보완하기 전 qualification은 미충족이다. index hash가 같거나 v2 scope driver가 끝났다는 사실로 이 gap을 해소하지 않는다.
+- v2 producer는 exit0으로24개 repository-phase sweep을 모두 끝냈다. prequery scope의 네 captured snapshots는12projects/132 artifacts/136,606,249bytes, index SHA `ae8623d124eeac39af460ce985d4b901ddac2c22e90d3350df354be2d09a9873`다. producer 종료만으로 raw replay를 PASS로 표시하지 않는다. clean source107과 canonical uv Python에서 별도 offline replay를 실행 중이며, API path/served bytes·path-bearing UID/type/posting 및 retained snapshot identity를 재검증한다. auxiliary 내용·물리 index 재읽기·실제 query bracket은 이 replay의 범위 밖이다.
+- 별도 현재 관측 `docker inspect --format '{{json .NetworkSettings.Ports}}' <C3-container>`은 `8080/tcp → 127.0.0.1:18083`를 반환했다. 현재 endpoint 매핑의 read-only 관측이며, producer/consumer가 실제 query 전후에 이를 검사한다는 보장은 아니다.
 
 ## 착수 입력
 
