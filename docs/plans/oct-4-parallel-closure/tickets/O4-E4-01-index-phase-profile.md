@@ -22,6 +22,8 @@ full/delta/delete/no-op/reopen의 저장·검증·shard 비용과 transient reso
 - `small_source_lifecycle_matches_independent_bytes_and_fresh_rebuild`가 full→delta→no-op→delete→same-process reopen의 source hash, deleted-token negative, final path/rank/score parity를 검사한다. fresh rebuild parity는 독립 ranking gold나 OS restart 증거가 아니다.
 - Rust compile에서 unused `usize` 반환값 refusal을 수리했다. 중앙 workspace lib/bin은146 harness tests 통과 후 새 lifecycle fresh-rebuild score 비교1건이 실패했다. focused 재현에서 top10 paths/order는 같고 모든 score bits가 달랐다.
 - 일반 lexical seal은 tombstoned Tantivy 문서를 commit/wait만 하고, history index는 같은 BM25 N/df/length 잔여를 stale-segment compaction으로 제거한다. 일반 seal에도 stale segment만 purge하고 잔여0을 검증하는 구조 수리를 통합했다. 직접 L2 regression은 full→replace→invalid delete refusal→delete→fresh 경로와 고정 unequal-token source를 사용한다. 수리 전 retained source/path/candidate/hash는 같고 score bits가 달라 FAIL했다. source hash/no-op/reopen 검사를 완화하지 않는다.
+- 첫 stale-only purge 뒤 직접 short L2는30 passed였지만, 중앙 workspace harness의 fresh parity는 다시146 passed/1 failed였다. retained long-source L2로 좁혀 재현하니 deleted0, num_docs=max_doc4, needle df2는 같고 `chunk_text` total tokens만 live178 / fresh188이었다. pinned Tantivy0.22.1 merger는 delete 시 quantized fieldnorm로 token 총수를 근사해 저장한다. 같은 source에 대한 score difference가 지속돼 기존 fixture를 완화하지 않는다.
+- producing authority 수리로 pinned Tantivy merger의 문자열 freq fields에 한해 live posting term-frequency 합을 사용하도록 준비 중이다. Basic/JSON은 기존 엔진 의미를 보존한다. 추가 postings scan의 seal I/O/CPU와 dependency pin/upgrade 책임이 생긴다. 구형 근사 header를 새 exact 계약으로 읽지 않도록 lexical manifest13 및 history epoch2가 필요하다. 이 수리·old-format refusal·matching source 검증 전 formal proof는 `NOT_RUN`이다.
 - release phase capture·실제 physical I/O·tier scale은 `NOT_RUN`이다.
 
 ## 배경과 현재 상태

@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W0 — 소유권·실행 범위 고정](../waves/W0-ownership-and-scope.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | 에픽별 patch PREPARE·root 단일 integration 및 중앙 실행 운영 중; 최종 source epoch는 아직 미고정 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,13 @@
 ## 배경과 현재 상태
 
 이번 보완의 시작 기준은 main@f23af16f436c76ad4a700b75de4dd5b5771f56a6, checkout clean이다. 44bd68a1 이후 변경은 계획 문서이며 구현 소스는 같은 기준이다. 실행 착수 시 HEAD/dirty/로컬 ref를 다시 조회한다. 각 에픽의 owner-local proof와 해당 epoch qualification은 다르다. run.py·schema·registry·shared Rust runner changes가 경합의 중심이다.
+
+## 현재 통합 소유권
+
+- E1/root: actual model review, canonical label/split/admission input; E2: native/timer/controller proposals; E3: selection/SDK/maintenance/timeout proposals; E4: scale/profile and confirmed lexical statistics repair. worker는 source/fixture/static만 준비하고 actual Rust/Python/model/Docker는 root가 실행한다.
+- shared run.py·registry·Cargo/lock/public API baseline과 main patch 적용은 root 단일 owner다. root가 HEAD/dirty를 재조회하고 unrelated changes를 reset/stage/commit하지 않는다. 자동 외부 commit으로 HEAD가 진전되므로 과거 HEAD를 current proof로 재표기하지 않는다.
+- output은 checkout 밖 fresh namespace다. native Sourcegraph scope는 Python producer/control/release/index identity에 결속하고, Rust lexical format/dependency 수리는 matching Rust/SDK/Contract/scale source epoch를 다시 요구한다. model judgments는 frozen source/query/form/model identity에 결속하며 product qualification과 구별한다.
+- current product failure인 long-source BM25 score drift를 수리하는 동안 final source freeze와 admission ISSUE는 아직 `NOT_RUN`이다.
 
 ## 착수 입력
 
