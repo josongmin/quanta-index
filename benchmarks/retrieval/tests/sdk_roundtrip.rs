@@ -2546,6 +2546,148 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
         }
     }
     verify_rank_study_runner(&command, &pack_path, &evidence);
+    verify_serial_request_events_runner(&command, &pack_path, &evidence);
+}
+
+/// Run one fresh lexical-only capture through the public SDK and real daemon.
+/// The original three-route proof above remains a separate execution.
+fn verify_serial_request_events_runner(
+    original_command: &Command,
+    original_pack: &Path,
+    evidence: &Path,
+) {
+    let mut pack: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(original_pack).expect("original blind pack"))
+            .expect("pack JSON");
+    pack["routes"] = serde_json::json!(["lexical"]);
+    let pack_path = evidence.join("request-events-pack.json");
+    std::fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&pack).expect("serial pack JSON"),
+    )
+    .expect("serial pack writes");
+    let root = evidence.join("serial-request-events");
+    std::fs::create_dir(&root).expect("fresh serial root");
+    let replacements = BTreeMap::from([
+        ("--query-pack", pack_path.display().to_string()),
+        ("--routes", "lexical".to_string()),
+        ("--state-root", root.join("state").display().to_string()),
+        ("--out", root.join("record.json").display().to_string()),
+        (
+            "--diagnostics-out",
+            root.join("diagnostic.json").display().to_string(),
+        ),
+        (
+            "--metrics-out",
+            root.join("phase.json").display().to_string(),
+        ),
+        (
+            "--refusal-out",
+            root.join("refusal.json").display().to_string(),
+        ),
+    ]);
+    let original_args: Vec<_> = original_command
+        .get_args()
+        .map(|arg| arg.to_str().expect("fixture UTF-8 argument").to_string())
+        .collect();
+    let mut args = vec![original_args[0].clone()];
+    for pair in original_args[1..].chunks_exact(2) {
+        args.push(pair[0].clone());
+        args.push(
+            replacements
+                .get(pair[0].as_str())
+                .cloned()
+                .unwrap_or_else(|| pair[1].clone()),
+        );
+    }
+    let artifact_path = root.join("request-events.json");
+    for alias in [&root.join("record.json"), &pack_path] {
+        let refused = Command::new(original_command.get_program())
+            .args(&args)
+            .arg("--request-events-out")
+            .arg(alias)
+            .output()
+            .expect("alias probe runs");
+        assert_eq!(refused.status.code(), Some(2));
+        assert!(!root.join("record.json").exists());
+        assert!(!root.join("state").exists());
+    }
+    let output = Command::new(original_command.get_program())
+        .args(&args)
+        .arg("--request-events-out")
+        .arg(&artifact_path)
+        .output()
+        .expect("serial probe runs");
+    assert!(
+        output.status.success(),
+        "serial request-event probe failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let record_bytes = std::fs::read(root.join("record.json")).expect("record bytes");
+    let record: serde_json::Value = serde_json::from_slice(&record_bytes).expect("record JSON");
+    let phase: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("phase.json")).expect("phase bytes"))
+            .expect("phase JSON");
+    let diagnostic: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("diagnostic.json")).expect("diagnostic bytes"),
+    )
+    .expect("diagnostic JSON");
+    let events: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&artifact_path).expect("event bytes"))
+            .expect("event JSON");
+    assert_eq!(events["kind"], "quanta_serial_query_request_events");
+    assert_eq!(events["qualification"], "diagnostic_unqualified");
+    assert_eq!(events["record_sha256"], sha256_hex(&record_bytes));
+    assert_eq!(events["query_pack_sha256"], record["query_pack_sha256"]);
+    assert_eq!(
+        events["runner_binary_sha256"],
+        phase["runner_binary_sha256"]
+    );
+    let capture_id = record["route_provenance"]["lexical"]["capture_id"]
+        .as_str()
+        .expect("capture ID");
+    assert_eq!(
+        events["searchd_binary_sha256"],
+        record["captures"][capture_id]["searchd_binary"]["binary_digest"]
+    );
+    let before: quanta_index_contract::ProcessRequestEventsV1 =
+        serde_json::from_value(events["before"].clone()).expect("typed before window");
+    let after: quanta_index_contract::ProcessRequestEventsV1 =
+        serde_json::from_value(events["after"].clone()).expect("typed after window");
+    assert_eq!(before.process_instance, after.process_instance);
+    assert_eq!(before.dropped_after, 0);
+    assert_eq!(after.dropped_after, 0);
+    let new_events: Vec<_> = after
+        .events
+        .iter()
+        .filter(|event| event.sequence >= before.next_sequence)
+        .collect();
+    assert_eq!(new_events.len(), 16);
+    let routes: Vec<_> = new_events
+        .iter()
+        .filter(|event| {
+            event.stage == quanta_index_contract::ProcessRequestEventStageV1::BackendOutcome
+        })
+        .map(|event| event.route.as_deref().expect("backend route"))
+        .collect();
+    assert_eq!(routes, ["query.resolve_active", "query.text"]);
+    let text_id = diagnostic["results"][0]["response"]["explanation"]["request_id"]
+        .as_u64()
+        .expect("text request ID");
+    assert_eq!(events["tasks"][0]["text_request_id"], text_id);
+    assert_eq!(
+        events["tasks"][0]["resolve_request_id"],
+        new_events[0].request_id.get()
+    );
+    assert_eq!(new_events[8].request_id.get(), text_id);
+    assert_eq!(
+        phase["query_timing"]["observations"]
+            .as_array()
+            .expect("timings")
+            .len(),
+        1
+    );
 }
 
 /// Exercise the separately pinned runner and daemon.

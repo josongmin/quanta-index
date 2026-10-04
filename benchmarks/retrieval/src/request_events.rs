@@ -58,7 +58,11 @@ pub(crate) fn check_serial_windows(
     }
     if !(1..=2).contains(&expected_text_ids.len())
         || expected_text_ids.contains(&0)
-        || expected_text_ids.iter().copied().collect::<BTreeSet<_>>().len()
+        || expected_text_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len()
             != expected_text_ids.len()
     {
         return Err(BenchError::Protocol(
@@ -71,7 +75,9 @@ pub(crate) fn check_serial_windows(
         .filter(|event| event.sequence >= before.next_sequence)
         .collect::<Vec<_>>();
     if new_events.first().map(|event| event.sequence) != Some(before.next_sequence)
-        || new_events.last().and_then(|event| event.sequence.checked_add(1))
+        || new_events
+            .last()
+            .and_then(|event| event.sequence.checked_add(1))
             != Some(after.next_sequence)
         || new_events.len() != expected_text_ids.len() * SUCCESS_STAGES.len() * 2
     {
@@ -99,8 +105,7 @@ pub(crate) fn check_serial_windows(
                         || (index == 4
                             && (event.route.as_deref() != Some(expected_route)
                                 || event.error.is_some()))
-                        || (index > 0
-                            && event.elapsed_micros < group[index - 1].elapsed_micros)
+                        || (index > 0 && event.elapsed_micros < group[index - 1].elapsed_micros)
                 })
             {
                 return Err(BenchError::Protocol(format!(
@@ -133,8 +138,8 @@ mod tests {
     fn window(request_count: usize) -> ProcessRequestEventsV1 {
         let mut events = Vec::new();
         for rpc in 0..request_count {
-            let request_id = NonZeroU64::new(u64::try_from(rpc + 1).expect("small ID"))
-                .expect("nonzero ID");
+            let request_id =
+                NonZeroU64::new(u64::try_from(rpc + 1).expect("small ID")).expect("nonzero ID");
             for (index, stage) in SUCCESS_STAGES.iter().copied().enumerate() {
                 events.push(ProcessRequestEventV1 {
                     sequence: u64::try_from(events.len() + 1).expect("small sequence"),
@@ -201,7 +206,7 @@ mod tests {
         after.process_instance = "0000000000000000000000000000002b".into();
         assert!(check_serial_windows(&before, &after, &[2]).is_err());
         after = window(2);
-        after.events.remove(0);
+        let _removed = after.events.remove(0);
         assert!(check_serial_windows(&before, &after, &[2]).is_err());
     }
 }

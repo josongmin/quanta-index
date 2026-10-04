@@ -3929,6 +3929,12 @@ mod teardown_fault_tests {
 
     #[test]
     fn history_builder_applies_pair_and_total_budgets() -> AnyResult<()> {
+        let default = E2eRuntime::boot_with_history_max_generations(2)?;
+        let default_policy =
+            build_config(&default.driver_spec())?.search_corpus_history_retention_policy()?;
+        assert_eq!(default_policy.max_bytes(), 16_777_216);
+        default.stop()?;
+
         let runtime =
             E2eRuntime::boot_with_history_max_generations(2)?.with_history_max_bytes(268_435_456);
         let config = build_config(&runtime.driver_spec())?;

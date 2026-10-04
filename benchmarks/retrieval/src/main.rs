@@ -15,6 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use quanta_index_contract::ProcessRequestEventPlaneV1;
 use quanta_index_retrieval_bench::batch::{
     BatchIdentity, activation_digest, assemble_batch, receipt_digest,
 };
@@ -52,7 +53,6 @@ use quanta_index_retrieval_bench::symbols::{
     SymbolCoveragePolicy, SymbolPreflightOptions, preflight_corpus_symbols,
 };
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
-use quanta_index_contract::ProcessRequestEventPlaneV1;
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
 const KNOWN_ROUTES: [&str; 4] = ["lexical", "semantic", "hybrid", "symbol"];
@@ -1312,7 +1312,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                 .client()
                 .observability()
                 .request_events(ProcessRequestEventPlaneV1::Query, 1024)
-                .map_err(|error| BenchError::Sdk(format!("query event baseline failed: {error}")))?,
+                .map_err(|error| {
+                    BenchError::Sdk(format!("query event baseline failed: {error}"))
+                })?,
         )
     } else {
         None
@@ -1544,12 +1546,14 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             .client()
             .observability()
             .request_events(ProcessRequestEventPlaneV1::Query, 1024)
-            .map_err(|error| BenchError::Sdk(format!("query event terminal read failed: {error}")))?;
+            .map_err(|error| {
+                BenchError::Sdk(format!("query event terminal read failed: {error}"))
+            })?;
         let expected_text_ids = pack
             .tasks
             .iter()
-            .map(|task| {
-                match outcomes.get(&(task.task_id.clone(), "lexical".to_string())) {
+            .map(
+                |task| match outcomes.get(&(task.task_id.clone(), "lexical".to_string())) {
                     Some(QueryOutcome::ReturnedWindow {
                         explanation: Some(explanation),
                         ..
@@ -1563,8 +1567,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                         "query event probe requires returned lexical response for {}",
                         task.task_id
                     ))),
-                }
-            })
+                },
+            )
             .collect::<BenchResult<Vec<_>>>()?;
         let pairs = request_events::check_serial_windows(&before, &after, &expected_text_ids)?;
         Some((before, after, pairs))
@@ -1798,7 +1802,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     if let (Some(path), Some(value)) = (&diagnostics_out, &diagnostics) {
         write_json(path, value)?;
     }
-    if let (Some(path), Some((before, after, pairs))) = (&request_events_out, request_events_probe) {
+    if let (Some(path), Some((before, after, pairs))) = (&request_events_out, request_events_probe)
+    {
         let tasks = pack
             .tasks
             .iter()
