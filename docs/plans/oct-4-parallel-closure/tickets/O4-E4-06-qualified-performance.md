@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | 현재 Darwin host의 frequency preflight `BLOCKED`; 정식 반복 성능 실행·판정 `NOT_RUN`. scale/owner/phase diagnostic은 qualified speed가 아님 |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-01](O4-E2-01-native-completed-timer.md), [O4-E2-02](O4-E2-02-external-index-universe.md), [O4-E2-05](O4-E2-05-semble-process-attribution.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -20,6 +20,7 @@ B07에는 complete output/phase clocks/host timeline/required observations 검�
 
 ## 착수 입력
 
+- 2026-10-05 root가 source0e6의 canonical uv Python에서 `tools.benchmark.retrieval.run.host_probe()`를 실제 호출해 exit0이었다. frequency는 `status:unavailable`, `hw.cpufrequency/hw.cpufrequency_max` 둘 다 unavailable이며 thermal은 clean/power는 bounded였다. 한 번의 probe는 continuous quiet-host admission이 아니다. frequency의 필요한 authority가 없으므로 이 host의 정식 speed qualification은 `BLOCKED`; 임의 nominal 값을 넣거나 local functional/scale timings로 통과시키지 않는다. 허용된 host/profile/timeline과 사전 decision 입력이 필요한 상태다.
 - final source/binary/input/config tuple, E2 canonical timer와 topology/request policy
 - B07 최소5 fresh roots/route당1000 warm observations 규약, randomized paired schedule, predeclared effect/uncertainty decision
 - admitted quiet host의 continuous load/frequency/thermal/power/disk probes
