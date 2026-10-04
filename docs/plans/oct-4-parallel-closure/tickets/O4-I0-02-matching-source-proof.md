@@ -14,6 +14,7 @@
 
 - 후속 clean source는 `/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index`의 `27c21d07ca79772da820b9b46fd00071732746d6`이다. 실제 owner command/result는 [E4-05](O4-E4-05-release-scale-load.md)에 기록했다. 최종 source bytes의 semantic lib/vector contract97/97·Clippy all-targets 및 `just fmt-check`가 exit0이었다.
 - 아래 source107 formal Contract/fresh SDK/admission은 source107만 검증한다. 새 semantic epoch의 formal proof·matching release scale와 필요한 affected gates는 아직 `NOT_RUN`이며 과거 hosted CI `[]`도 새 source의 CI로 합성하지 않는다.
+- 새 source27의 `gh run list --commit 27c21d07ca79772da820b9b46fd00071732746d6 --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`도 실제 exit0/`[]`였다. 해당 exact source의 hosted CI는 `NOT_RUN`이다.
 
 ## 2026-10-04 source107 fresh release SDK proof 완료
 

@@ -15,11 +15,11 @@
 
 | 웨이브 | 확보한 실행 결과 | 남은 실제 작업 |
 | --- | --- | --- |
-| W0 | root 단일 통합/중앙 실행, clean `1071692b`와 matching proof source 고정 | 후속 product 변경 시 새 epoch 발행 |
+| W0 | root 단일 통합/중앙 실행, source107 matching proof 및 후속 clean ANN 수리 `27c21d07` 고정 | 후속 product 변경 시 영향 proof 재발행 |
 | W1 | owner regressions, Gin4 exact-name 실제 capture/scoring, Sourcegraph12repo native replay, OpenGrok24 sweeps/path-bearing posting replay `VERIFIED` | SQLAlchemy/Zellij/Tailscale 실제 role 판단 재개; whole OpenGrok UID/auxiliary/endpoint bracket; untouched holdout license·사전 acceptance 입력/발행 |
 | W2 | 실제 반례의 live-BM25, maintenance fatal ownership/terminal, fixture 수리 및 지원 Active single-RPC 검증 완료 | bootstrap/scanner/barrier/token-authority 최적화는 실제 비용 조건 판정 대기. E3-02는 현 Accepted refusal 계약에서 근거 있는 `NOT_APPLICABLE` |
 | W3 | source107 Contract Python788/Rust191·fresh SDK27·context 및 first-eight+Nushell9개 admission `VERIFIED` | SQLAlchemy/Zellij/Tailscale·supplemented bat·새 ANN epoch admission; source107 hosted CI `[]`/`NOT_RUN` |
-| W4 | source107 small/medium scale·small load3743requests·native3제품60rows·5제품 union51pairs·Semble phase replay `VERIFIED`; large timeout/ANN seal `FAILED`. 후속4e3 ANN 수리 집중8/affected97 passed | 새 epoch matching release/large lifecycle와 formal source gate. bat merged 발행→새 admission/fresh final pair; parity/remaining tiers/qualification 계속 |
+| W4 | source107 small/medium scale·small load3743requests·native3제품60rows·5제품 union51pairs·Semble phase replay `VERIFIED`; large timeout/ANN seal `FAILED`. 후속27 ANN 수리 집중8/affected97 및 Clippy passed | 새 epoch matching release/large lifecycle와 formal source gate. bat409 merged→새 admission/fresh final pair; parity/remaining tiers/qualification 계속 |
 | W5 | name/source oracle·source-bound 원본 labels 유지; bat51쌍 actual3 AI 역할 판단/raw 재생 및 원본358+신규51=409 canonical merged 발행 `VERIFIED` | 새 bat admission/fresh final capture·최종 scoreboard·독립 holdout 정책 판정 |
 | W6 | local infrastructure/owner proof와 운영 qualification 경계를 기록 | actual authorized Linux target/config/state/rollback 입력 `BLOCKED`; exact producer pair·CI·배포/활성화/restore/rollback 미실행 |
 
