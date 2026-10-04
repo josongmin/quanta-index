@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | full Clippy·current owner972·SDK27 assertions·daemon213/process26 `VERIFIED`; SDK stdio leak1 관측/단독 재실행 ordinary PASS. wire fuzz 후속 검증 중. formal Contract/SDK proof `NOT_RUN`; hosted CI·release/scale `NOT_RUN` |
+| 실행 상태 | full Clippy·current owner972·SDK27 assertions·daemon213/process26·bounded wire fuzz `VERIFIED`; SDK stdio leak1 관측/단독 재실행 ordinary PASS. formal Contract v2 collection `FAILED`(required registry 누락3 수리), fresh proof 재개 전. hosted CI·release/scale `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -86,6 +86,13 @@
 - `VERIFIED`: current `just rust-profile test-daemon` — exit0, 213 run/passed, 1 skipped, tests231.161s. 유지보수 fatal ownership 수리 뒤 실제 selected head/retirement 및 runtime lifecycle 범위를 다시 실행했다. SDK fixture commit은 이 daemon selector의 product bytes를 바꾸지 않는다. process owner 및 bounded wire fuzz는 뒤에서 순차 실행하며 완료 전에는 통과로 판정하지 않는다.
 - `VERIFIED`: current `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked --test-threads 4` — exit0,26 passed/0 skipped,tests16.869s. 별도 daemon OS-child14와 helper12의 owner 범위이며 learned semantic·Linux release·모든 scale tier restart를 판정한 결과가 아니다.
 - 새 Contract/SDK fresh proof 출력은 각각 `/Users/songmin/Documents/code-new/qi-oct4-contract-proof-20261004-v2`, `/Users/songmin/Documents/code-new/qi-oct4-sdk-proof-fresh-20261004-v2`를 사용한다. 아직 실행 결과가 없으며 기존 v1 실패 root를 재사용하지 않는다.
+
+## 2026-10-04 bounded fuzz 및 Contract collection 거절 수리
+
+- `VERIFIED`: `just rust-fuzz-smoke 10` — exit0, `ipc_request_decode`175,274회/11s, `ipc_response_decode`209,301회/11s, `search_corpus_ingest_decode`1,301,335회/11s, `lq_parse_pipeline`12,340회/13s, crash 없음. 각 target10초 예산의 smoke이며 exhaustive decode/fuzz qualification이 아니다. LQ elapsed에는 기존 corpus 초기화가 포함된다.
+- `FAILED`: clean sourcef3의 `just retrieval-contract-proof /Users/songmin/Documents/code-new/qi-oct4-contract-proof-20261004-v2`는 Rust collection equality에서 exit1로 거절됐다. 실제191 IDs(lib124/chunking25/parser27/runner15)와 required188의 차이는 새 name-inventory1 및 local-name capture2뿐이고 제거된 ID는 없다. Python/Rust test execution, receipt 및 authoritative execution-context가 발행되기 전 실패다.
+- 위3개의 source fixtures를 확인했다. declaration/usage 구분, UTF-8 byte offset 및 dotted namespace terminal의 고정 oracle와 partial/foreign/wrong-byte inventory 거절을 유지한다. required registry에 그3 ID만 추가하며 기존188을 제거·완화하지 않았다.
+- `VERIFIED`: current `uv run --frozen --extra dev python tools/benchmark/retrieval/proof_inventory.py --verify /Users/songmin/Documents/code-new/qi-oct4-contract-proof-20261004-v2/rust-collection.stdout --role rust` — exit0, 실제191과 수정 registry의 정확한 equality. 이는 collection 검증이며 미실행 test를 PASS로 바꾸지 않는다. registry commit을 새 source로 고정하고 fresh Contract v3 및 SDK fresh v2를 순차 실행한다. 실패 v2 root를 보존한다.
 
 ## 착수 입력
 
