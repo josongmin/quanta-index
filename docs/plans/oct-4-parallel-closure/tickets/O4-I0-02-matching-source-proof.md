@@ -46,6 +46,15 @@
 - 현재 별도 managed checkout `/Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index`는 clean904를 보존한다. final included source 수리·실제 gates 후 새 HEAD로 retarget하고 그 checkout에서 source-bound formal proof를 실행한다. main 문서 자동 commit 또는 old904 receipt를 새 product source 증거로 승격하지 않는다.
 - `gh run list --commit 904043302f1db8406302a5a62bcffdc0d9412267 --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`는 `[]`였다. 조회 성공을 hosted CI PASS로 표시하지 않는다.
 
+## 2026-10-04 Clippy 후속 수리와 영향 재검증
+
+- 후속 workspace Clippy는 IPC timing Rust 필드/호출부, lexical 문서, SDK binding/mock fixture, benchmark record/event assertions 및 search-plane owner test에서 추가 source 오류를 드러냈다. JSON `*_ns` 출력 키와 기존 실패 predicate는 유지하고 typed fixture builder·checked mutation·명시 enum arms로 수리했다. 아직 전체 Clippy PASS를 주장하지 않는다.
+- `VERIFIED`: `./scripts/cargow --lane test-fast-lane test -p quanta-index-contract -p quanta-index-sdk -p quanta-index-retrieval-bench --lib --bins --test sdk_binding_owner_v1 --all-features --locked` — exit0. contract lib172, SDK lib125/binding owner15, retrieval-bench lib124/runner15 passed. 실제 daemon integration 및 release proof를 대신하지 않는다.
+- `VERIFIED`: `./scripts/cargow --lane test-fast-lane test -p quanta-index-search-plane --lib -p quanta-index-contract --test ipc_query_result_v2_contract --all-features --locked` — exit0, contract lib172/integration54 및 search-plane537 passed. head/cursor option 교차 조합의 고정 JSON/CBOR oracle와 selected-G1 retirement pre-open refusal을 포함한다. 첫 명령의 없는 `wire_strict` selector refusal는 test 실행 실패와 구분한다.
+- `VERIFIED`: 현재 후속 source의 `just rust-public-api`, `just rust-cargo-modules`, `just rust-hexagonal`, `just fmt-check`. 공개 contract/SDK API와 감시 대상 module tree는 baseline과 일치했다.
+- maintenance production Clippy는 poison을 `into_inner`로 조용히 회복하고 worker/owner loss를 panic으로 처리하는 경로를 드러냈다. worker failure를 typed readiness와 supervisor terminal outcome에 전달하는 구조 수리를 진행 중이다. serving/shutdown 실패와 정상 cooperative stop/join을 재검증한 뒤 포함 source를 freeze한다.
+- Semantic/Hybrid/HybridSeed/History/RuntimeMetadata의 새 실제-daemon Active fixture는 G41/G42 positive 결과와 stale G41 token refusal를 모두 요구한다. registry는 SDK27로 갱신했다. `nextest list -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --message-format json`은 actual test-count27을 수집했고 `proof_inventory.py --verify /private/tmp/qi-oct4-sdk27-inventory-20261004-v1.json --role sdk`도 exit0으로 source authority equality를 확인했다. 새 live scenario 및 final-source formal proof는 아직 `NOT_RUN`이다.
+
 ## 착수 입력
 
 - I0-01의 epoch 범위: 포함할 product/driver/scorer 변경, 해당 patch-ready owner 결과·독립 oracle·mandatory surfaces, 미포함 티켓의 이유와 후속 epoch
