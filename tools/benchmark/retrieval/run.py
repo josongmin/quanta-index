@@ -9558,9 +9558,17 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
             else "semble-pack.json"
         ),
     )
-    rep_layouts: list[dict] = []
     semble_spec = dict(spec)
     setup_finished_ns = time.monotonic_ns()
+    # Validate the frozen gold and blind pack before either product builds an
+    # index. Report-time validation here used to waste complete captures on
+    # stale oracle contracts, then refuse the result after product execution.
+    repo = source_repo
+    suite, pack, source = validate_suite(repo, read_json(Path(spec["suite"])))
+    if read_json(Path(spec["query_pack"])) != pack:
+        raise RunError("frozen query pack differs from the validated suite")
+    suite_validation_finished_ns = time.monotonic_ns()
+    rep_layouts: list[dict] = []
     product_ns = {"quanta": 0, "semble": 0}
     # One pinned model cache across reps; each rep still rebuilds its index.
     monitor = (
@@ -9654,10 +9662,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     # each (strategy, semble) pair merges exactly like the scored join,
     # and each capture echoes the strategy it was invoked with.
     # Quality reports merge rep-0 records only.
-    repo = source_repo
     suite_path = Path(spec["suite"])
-    suite, pack, source = validate_suite(repo, read_json(suite_path))
-    suite_validation_finished_ns = time.monotonic_ns()
     for rep_index, layout in enumerate(rep_layouts):
         for strategy, record in sorted(layout["quanta"].items()):
             payload = read_json(Path(record))
@@ -9792,9 +9797,9 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     verdict_finished_ns = time.monotonic_ns()
     boundaries = (
         ("source_setup", stage_started_ns, setup_finished_ns),
-        ("product_envelope", setup_finished_ns, product_envelope_finished_ns),
-        ("suite_validation", product_envelope_finished_ns, suite_validation_finished_ns),
-        ("report_scoring", suite_validation_finished_ns, report_scoring_finished_ns),
+        ("suite_validation", setup_finished_ns, suite_validation_finished_ns),
+        ("product_envelope", suite_validation_finished_ns, product_envelope_finished_ns),
+        ("report_scoring", product_envelope_finished_ns, report_scoring_finished_ns),
         ("protocol_lock", report_scoring_finished_ns, protocol_lock_finished_ns),
         ("manifest", protocol_lock_finished_ns, manifest_finished_ns),
         ("verdict", manifest_finished_ns, verdict_finished_ns),

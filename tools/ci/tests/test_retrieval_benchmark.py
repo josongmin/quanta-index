@@ -10604,6 +10604,23 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
     assert list(stage.rglob("verdict.json")) == []
     assert not (stage / "driver-stage-timings.json").exists()
 
+    # A stale frozen gold contract must fail before the first product runs.
+    invalid = dict(spec, output_root=str(tmp_path / "invalid-gold"))
+    monkeypatch.setattr(
+        pairrun,
+        "validate_suite",
+        lambda *_args: (_ for _ in ()).throw(ev.EvidenceError("stale source oracle")),
+    )
+    monkeypatch.setattr(
+        pairrun,
+        "run_quanta",
+        lambda *_args: pytest.fail("product ran before frozen suite validation"),
+    )
+    with pytest.raises(ev.EvidenceError, match="stale source oracle"):
+        pairrun.run_pair(invalid)
+    assert not Path(invalid["output_root"]).exists()
+    assert not (tmp_path / "invalid-gold.staging" / "rep-00").exists()
+
 
 def test_matrix_floor_no_cross_strategy_inflation():
     cells = [
@@ -17579,10 +17596,28 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
         )
     without_negative = copy.deepcopy(suite)
     without_negative["tasks"].pop()
-    with pytest.raises(ev.EvidenceError, match="needs no-answer controls"):
-        ev.evaluate_complete_scored_file_evidence(
-            without_negative, pack, run, "semble-lexical-file", "lexical"
-        )
+    positive_run = copy.deepcopy(run)
+    positive_run["results"] = [row for row in positive_run["results"] if row["task_id"] != "T3"]
+    _positive_suite, positive_pack, _source = ev.validate_suite(repo, without_negative)
+    positive_evidence = ev.evaluate_complete_scored_file_evidence(
+        without_negative, positive_pack, positive_run, "semble-lexical-file", "lexical"
+    )
+    positive_comparison = positive_evidence["rank_metrics"]["comparison"]
+    assert positive_evidence["status"] == "evidence_unqualified"
+    assert positive_comparison["sample_count"] == 2
+    assert positive_comparison["primary_delta"] == 0.0
+    assert positive_comparison["paired_ties"] == 2
+    absent_controls = positive_comparison["no_answer_abstention_delta"]
+    assert absent_controls["sample_count"] == 0
+    assert absent_controls["mean_delta"] == "not_applicable"
+    assert absent_controls["ci_95"]["status"] == "not_applicable"
+    assert all(not strata for strata in absent_controls["strata"].values())
+    positive_replay = pairrun.replay_complete_scored_file_report(
+        without_negative, positive_pack, positive_run, positive_evidence, "whole_file", "a" * 64
+    )
+    assert positive_replay["graded"] is True
+    assert positive_replay["no_answer_abstention_delta"] == absent_controls
+    assert not pairrun._qualified_uncertainty(positive_replay)
     run["results"][0]["rank_unit"] = "symbol"
     with pytest.raises(ev.EvidenceError, match="distinct-file results"):
         ev.evaluate_paired_file_diagnostic(suite, {}, run, "semble-lexical-file", "lexical")
