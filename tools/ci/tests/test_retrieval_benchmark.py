@@ -10502,6 +10502,20 @@ def test_pair_derives_binary_source_only_after_fresh_sdk_chain_verifies(tmp_path
         portable_proof, "SOURCE_CLOSURE_SCRIPT", verifier_root / "tools/ci/source_closure.py"
     )
     _replay_file_pair_verdict(stage["repo"], stage["suite_path"], stage["manifest_path"], verdict)
+    for field, replacement in (
+        ("qualified", 0),
+        ("selected", float(verdict["counts"]["selected"])),
+    ):
+        type_forged = copy.deepcopy(verdict)
+        if field == "qualified":
+            assert type_forged["os_portability"][field] is False
+            type_forged["os_portability"][field] = replacement
+        else:
+            type_forged["counts"][field] = replacement
+        with pytest.raises(ValueError, match="verdict differs from canonical replay"):
+            _replay_file_pair_verdict(
+                stage["repo"], stage["suite_path"], stage["manifest_path"], type_forged
+            )
     forged = copy.deepcopy(verdict)
     forged["provenance"]["quanta"]["binary_build_source_revision"] = "e" * 40
     with pytest.raises(ValueError, match="verdict differs from canonical replay"):
@@ -17850,6 +17864,10 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
     assert _replay_file_pair_report(suite, {}, run, report) == report
     with pytest.raises(ValueError, match="unsupported scope"):
         _replay_file_pair_report(suite, {}, run, {**report, "report_scope": "unknown"})
+    type_forged_diagnostic = copy.deepcopy(report)
+    type_forged_diagnostic["judgment_metrics"]["file_judgments"]["comparison"]["sample_count"] = 2.0
+    with pytest.raises(ValueError, match="differs from raw record replay"):
+        _replay_file_pair_report(suite, {}, run, type_forged_diagnostic)
     replayed = pairrun.replay_paired_file_diagnostic_report(
         suite, {}, run, report, "whole_file", "a" * 64
     )
@@ -17918,6 +17936,11 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
     assert replayed_diagnostic == ev.evaluate_paired_file_diagnostic(
         suite, pack, run, "semble-lexical-file", "lexical"
     )
+    type_forged = copy.deepcopy(file_evidence)
+    assert type_forged["graded"] is True
+    type_forged["graded"] = 1
+    with pytest.raises(ValueError, match="differs from raw record replay"):
+        _replay_file_pair_report(suite, pack, run, type_forged)
     forged_evidence = copy.deepcopy(file_evidence)
     forged_evidence["rank_metrics"]["comparison"]["sample_count"] += 1
     with pytest.raises(ValueError, match="differs from raw record replay"):

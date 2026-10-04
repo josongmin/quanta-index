@@ -36,6 +36,12 @@
 - 수정 canonical owner의 실제 retained pair readback `/private/tmp/qi-bat-file-pair-canonical-v3-replay.py`는 `VERIFIED`: exit0/stderr0, 원본 raw/suite/pack/bundle 및 helper3개 SHA 전후 동일을 검사했다. result SHA `a001cda621c732c1eb2afa3c04ee0a65c9a7c81ad6be9826afd51b18b7ccaf00`다. current0e6 report/records/Contract/fresh SDK/derived revision을 canonical replay한 좁은 범위이며 새5제품 join이나 native source hash 재결속 결과는 아니다.
 - 이 consumer source를 clean `628541e150192b4aaf0ff4ba54566ae28c6ca25f`/`/Users/songmin/.codex/worktrees/oct5-canonical-consumer/quanta-index`로 고정했고 actual readback의 helper bytes와 같다. ae8f native/SG 기록은 당시 scope로 보존하고 새 고정 consumer source/control epoch에서 후속 캡처한다. focused 회귀는 아직 `NOT_RUN`이다.
 
+## 2026-10-05 JSON 타입 결속 수리
+
+- 실행 전 독립 controller 감사에서 saved verdict의 `os_portability.qualified:false→0`을 Python 객체 equality가 거절하지 못하는 경로를 확인했다. `_json`은 이 내부 타입을 검증하지 않으며 file-pair의 후속 count 검사도 해당 필드를 검사하지 않는다. complete report의 `graded:true→1`도 helper equality에서 같은 문제다.
+- canonical file-pair report/verdict 두 비교를 기존 canonical JSON serializer bytes equality로 변경했다. 기존 독립 report3-policy/fresh-SDK fixture에 bool→number 및 integer→float 변조 거절을 추가했다. scorer SHA `d4b54ffe715117b6ddfd4138ac60d1031c477b5333195bde1d6962264513aaf0`, regression SHA `545b83929e9cf64b4ec16b381a8b4b2552f8c04be12df653251112df7d0b0ceb`다. Ruff check/format·diff-check exit0이며 새 focused 회귀는 `NOT_RUN`이다.
+- clean628541 대기 배치v2는 actual phase 시작 전 중단했다. 그 namespace 및 기존 raw를 보존하며 이 수리를 포함한 source에서 tests→새 SG scope→native capture/replay→join을 실행한다. source628541 준비 specs/controllers를 후속 source의 actual 결과로 재표기하지 않는다.
+
 ## 목적
 
 새 5제품 응답에서 생긴 마지막 미검수 union을 닫고 공통 eligible 집합에서 lane별 최종 결과를 재계산한다.

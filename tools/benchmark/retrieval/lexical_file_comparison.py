@@ -835,7 +835,7 @@ def _replay_file_pair_report(suite: dict, pack: dict, merged: dict, report: dict
         )
     else:
         raise ValueError("current file pair report has an unsupported scope")
-    if report != rebuilt:
+    if canonical(report) != canonical(rebuilt):
         raise ValueError("current file pair report differs from raw record replay")
     return diagnostic
 
@@ -846,7 +846,7 @@ def _replay_file_pair_verdict(
     """Verify derived provenance through the canonical frozen-artifact authority."""
     from tools.benchmark.retrieval import run
 
-    if run.build_verdict(repo, suite_path, manifest_path) != verdict:
+    if canonical(run.build_verdict(repo, suite_path, manifest_path)) != canonical(verdict):
         raise ValueError("current file pair verdict differs from canonical replay")
 
 
