@@ -736,7 +736,7 @@ fn tombstone_removes_its_file_and_inherits_other_file_units() -> TestResult {
 
 /// Three distinct source files share one search term, but have independent
 /// candidate IDs and source hashes. The oracle is the two retained source
-/// files, constructed without the deleted file or its indexing history.
+/// files, constructed without the replaced/deleted file's indexing history.
 fn scored_file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let mut scope = file_scope(path, marker)?;
     let content = format!("{marker} livebm25needle");
@@ -758,25 +758,54 @@ fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
     let kept_c = scored_file_scope("c.rs", "keptcmarker")?;
     let base = batch(1, None, vec![retired, kept_b.clone(), kept_c.clone()])?;
     let _stages = adapter.build_batch(&base)?;
-    let mut delta = batch(2, Some(1), Vec::new())?;
-    delta.tombstone_scopes.push(SearchCorpusTombstoneScope {
+    let changed = batch(
+        2,
+        Some(1),
+        vec![scored_file_scope("a.rs", "replacedmarker")?],
+    )?;
+    let _stages = adapter.build_batch(&changed)?;
+    let mut deleted = batch(3, Some(2), Vec::new())?;
+    deleted.tombstone_scopes.push(SearchCorpusTombstoneScope {
         file: SourceFileKey {
             source_repo_id: RepoId::new("l2-mutation-repo")?,
             repo_relative_path: RepoRelativePath::new("a.rs"),
         },
     });
-    delta.source_event.payload_sha256 = source_event_payload_sha256(&delta)?;
-    let _stages = adapter.build_batch(&delta)?;
+    deleted.source_event.payload_sha256 = source_event_payload_sha256(&deleted)?;
+    let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+        &deleted.repo_id,
+        &deleted.revision_id,
+    )
+    .generation_dir(dir.path(), deleted.generation);
+    let mut invalid = deleted.clone();
+    invalid.source_event.payload_sha256 = [0; 32];
+    assert!(adapter.build_batch(&invalid).is_err());
+    assert!(
+        !target.exists(),
+        "invalid delete intent must not create target generation"
+    );
+    assert_units(
+        &adapter,
+        &changed,
+        "livebm25needle",
+        &[
+            "chunk-keptbmarker",
+            "chunk-keptcmarker",
+            "chunk-replacedmarker",
+        ],
+        &[],
+    )?;
+    let _stages = adapter.build_batch(&deleted)?;
 
     let fresh_dir = tempfile::tempdir()?;
     let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
-    let rebuilt = batch(2, None, vec![kept_b, kept_c])?;
+    let rebuilt = batch(3, None, vec![kept_b, kept_c])?;
     let _stages = fresh.build_batch(&rebuilt)?;
     let budget = RequestBudgetV1::unbounded();
     let live_view = adapter.open(
-        &delta.repo_id,
-        &delta.revision_id,
-        delta.generation,
+        &deleted.repo_id,
+        &deleted.revision_id,
+        deleted.generation,
         &budget,
     )?;
     let fresh_view = fresh.open(
@@ -818,11 +847,6 @@ fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
         live_rows, expected_rows,
         "deleted source must not change retained BM25 scores"
     );
-    let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
-        &delta.repo_id,
-        &delta.revision_id,
-    )
-    .generation_dir(dir.path(), delta.generation);
     let index = tantivy::Index::open_in_dir(&target)?;
     assert_eq!(
         index
