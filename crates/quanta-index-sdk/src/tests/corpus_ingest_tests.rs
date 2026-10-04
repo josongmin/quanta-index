@@ -381,8 +381,8 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
 
 #[test]
 fn reader_client_routes_lexical_query_surface() {
-    let query = Arc::new(StubQueryTransport::active(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
+    let query = Arc::new(StubQueryTransport::active(
+        SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
             selected_active_head: None,
             rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
@@ -391,8 +391,8 @@ fn reader_client_routes_lexical_query_surface() {
             window: QueryResultWindowV2::exact_probe(1),
             file_owner_rows: None,
             next_cursor: None,
-        },
-    )));
+        }),
+    ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let response = ok_or_fail!(
         client

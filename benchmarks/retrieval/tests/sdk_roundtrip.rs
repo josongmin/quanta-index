@@ -433,6 +433,158 @@ fn boot_session_with_policies(
 }
 
 #[test]
+fn real_daemon_sdk_active_text_and_symbol_bind_one_selected_head_without_resolve() {
+    use quanta_index_contract::{ProcessRequestEventPlaneV1, ProcessRequestEventStageV1};
+    use quanta_index_sdk::{ClientQueryRpcKindV1, ConnectOptions, QuantaIndex};
+
+    let repo = tempfile::tempdir().expect("repo root");
+    write_tiny_repo(repo.path());
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunks");
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        31,
+        "manifest:active-one-rpc".to_string(),
+    )
+    .expect("identity");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
+    let state = tempfile::tempdir().expect("state root");
+    let state_root = state.path().join("daemon");
+    let session = boot_session(&state_root, &identity);
+    let (_receipt, ack, _observation, _timings) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
+
+    // This client has no control transport. An Active preflight on that plane
+    // would fail; the query ring also exposes any extra query-plane resolve.
+    let query_only = QuantaIndex::connect_query_only(ConnectOptions::from_state_root(&state_root))
+        .expect("query-only SDK");
+    let before = session
+        .client()
+        .observability()
+        .request_events(ProcessRequestEventPlaneV1::Query, 1024)
+        .expect("query ring before Text");
+    let (text, observed) = query_only
+        .lexical()
+        .query()
+        .native("sphinx_riddle")
+        .active(identity.repo_id.clone(), identity.revision_id.clone())
+        .top_k(5)
+        .execute_observed()
+        .expect("SDK Active Text");
+    assert_eq!(observed.rpcs.len(), 1, "Active Text made an extra RPC");
+    assert_eq!(observed.rpcs[0].kind, ClientQueryRpcKindV1::Text);
+    assert_eq!(text.selected_active_head.as_ref(), Some(&ack.active));
+    let expected_pin = quanta_index_contract::GenerationPin::new(
+        identity.repo_id.clone(),
+        identity.revision_id.clone(),
+        identity.generation,
+    );
+    assert_eq!(text.generation, expected_pin);
+    assert!(!text.results.is_empty(), "fixture Text query has no result");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let after_text = loop {
+        let window = session
+            .client()
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 1024)
+            .expect("query ring after Text");
+        if window.events.iter().any(|event| {
+            event.sequence >= before.next_sequence
+                && event.request_id.get() == observed.rpcs[0].request_id
+                && event.stage == ProcessRequestEventStageV1::ResponseWritten
+        }) {
+            break window;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Text terminal event absent"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let new_text: Vec<_> = after_text
+        .events
+        .iter()
+        .filter(|event| event.sequence >= before.next_sequence)
+        .collect();
+    assert_eq!(
+        new_text
+            .iter()
+            .filter(|event| event.stage == ProcessRequestEventStageV1::QueueAdmitted)
+            .count(),
+        1,
+        "Active Text admitted an extra query-plane request"
+    );
+    assert!(new_text.iter().any(|event| {
+        event.request_id.get() == observed.rpcs[0].request_id
+            && event.stage == ProcessRequestEventStageV1::BackendOutcome
+            && event.route.as_deref() == Some("query.text")
+    }));
+
+    let symbol = query_only
+        .symbol()
+        .query()
+        .native("sphinx_riddle")
+        .active(identity.repo_id.clone(), identity.revision_id.clone())
+        .top_k(5)
+        .execute()
+        .expect("SDK Active Symbol");
+    assert_eq!(symbol.selected_active_head.as_ref(), Some(&ack.active));
+    assert_eq!(symbol.generation, expected_pin);
+    assert!(
+        !symbol.results.is_empty(),
+        "fixture Symbol query has no result"
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let after_symbol = loop {
+        let window = session
+            .client()
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 1024)
+            .expect("query ring after Symbol");
+        if window.events.iter().any(|event| {
+            event.sequence >= after_text.next_sequence
+                && event.stage == ProcessRequestEventStageV1::ResponseWritten
+        }) {
+            break window;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Symbol terminal event absent"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let new_symbol: Vec<_> = after_symbol
+        .events
+        .iter()
+        .filter(|event| event.sequence >= after_text.next_sequence)
+        .collect();
+    assert_eq!(
+        new_symbol
+            .iter()
+            .filter(|event| event.stage == ProcessRequestEventStageV1::QueueAdmitted)
+            .count(),
+        1,
+        "Active Symbol admitted an extra query-plane request"
+    );
+    let symbol_request = new_symbol
+        .iter()
+        .find(|event| {
+            event.stage == ProcessRequestEventStageV1::BackendOutcome
+                && event.route.as_deref() == Some("query.symbol")
+        })
+        .expect("Symbol backend outcome");
+    assert!(new_symbol.iter().any(|event| {
+        event.request_id == symbol_request.request_id
+            && event.stage == ProcessRequestEventStageV1::ResponseWritten
+    }));
+    session.stop().expect("bounded shutdown");
+}
+
+#[test]
 fn sdk_frontdoor_static_guard() {
     // RB-02 acceptance: the runner links the public SDK and never the
     // direct ingest IPC request, the in-process fixture harness, or

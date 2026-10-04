@@ -382,6 +382,7 @@ impl MaintenanceTimer {
         let thread = {
             let tallies = Arc::clone(&tallies);
             let meter_for_timer = Arc::clone(&meter_owner);
+            let meter_stop_for_timer = Arc::clone(&meter_stop);
             let spawned = std::thread::Builder::new()
                 .name("searchd-maintenance".to_string())
                 .spawn(move || {
@@ -398,6 +399,9 @@ impl MaintenanceTimer {
                                             .fetch_add(1, Ordering::AcqRel);
                                     }
                                     Err(TrySendError::Disconnected(())) => {
+                                        if meter_stop_for_timer.stopping.load(Ordering::Acquire) {
+                                            break;
+                                        }
                                         panic!("maintenance disk meter stopped unexpectedly");
                                     }
                                 }
@@ -494,9 +498,9 @@ impl Drop for MaintenanceStop {
 
 impl Drop for MaintenanceTimer {
     fn drop(&mut self) {
-        self.meter_stop.stop();
-        let _stop_result = self.stop.send(());
         if let Some(thread) = self.thread.take() {
+            self.meter_stop.stop();
+            let _stop_result = self.stop.send(());
             let _joined = thread.join();
         }
     }
@@ -730,6 +734,42 @@ mod tests {
         assert!(
             stopped.elapsed() < Duration::from_secs(2),
             "cooperative directory walk outlived shutdown"
+        );
+    }
+
+    #[test]
+    fn supervised_handoff_keeps_meter_live_until_its_owner_stops_and_joins() {
+        let root = tempfile::tempdir().expect("track fixture");
+        std::fs::write(root.path().join("file"), b"payload").expect("track bytes");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let timer = MaintenanceTimer::start(
+            MaintenanceParts {
+                writer_sweep: Arc::new(CountingSweep(AtomicU64::new(0))),
+                lexical_disk_usage: Arc::new(PausedWalker {
+                    root: root.path().to_path_buf(),
+                    calls: AtomicU64::new(0),
+                    entered: entered_tx,
+                }),
+                semantic_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(0))),
+                backend_probe: None,
+                inventory_admission: None,
+                integrity_scrub: None,
+            },
+            Duration::from_millis(10),
+        )
+        .expect("boot measurement completes");
+        let (stop, thread) = timer.into_supervised_parts().expect("transfer ownership");
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("handed-off meter entered the real walker");
+        let stopped = Instant::now();
+        stop.stop();
+        thread
+            .join()
+            .expect("supervised timer and meter stop cleanly");
+        assert!(
+            stopped.elapsed() < Duration::from_secs(2),
+            "supervised directory walk outlived shutdown"
         );
     }
 

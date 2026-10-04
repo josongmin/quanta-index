@@ -32,8 +32,8 @@ fn text_query_builder_refuses_out_of_range_top_k_before_any_round_trip() {
 
 #[test]
 fn text_query_builder_accepts_the_public_maximum_top_k() {
-    let query = Arc::new(StubQueryTransport::active(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
+    let query = Arc::new(StubQueryTransport::active(
+        SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
             selected_active_head: None,
             rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
@@ -42,8 +42,8 @@ fn text_query_builder_accepts_the_public_maximum_top_k() {
             window: QueryResultWindowV2::exact_probe(0),
             file_owner_rows: None,
             next_cursor: None,
-        },
-    )));
+        }),
+    ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response = ok_or_fail!(
         client
