@@ -43,6 +43,7 @@
 - corpus release/checkouts, development/holdout family assignments, source/runtime lock 및 matching Contract/SDK proof
 - 2026-10-05 static PREPARE: `/tmp/qi-bat-supplemental-admission-input-cef-v2.json`과 `/tmp/qi-bat-supplemental-admission-issuer-cef-v2.py`는 bat409 labels의 source107 producer와 sourcecef 제품 proof/admission을 독립 결속한다. canonical helper5파일의 SHA가 두 checkout에서 같고 라벨은 같은 corpus/query/rubric에 결속돼 있다. 기존 source107 제품 proof/capture를 sourcecef proof로 재사용하지 않는다.
 - v2는 실제 sourcecef Contract/SDK context2개 및 Python/Rust/SDK receipts3개의 정확한 경로를 CLI 필수 입력으로 받으며 revision/context/co-location을 검증한 뒤만 발행한다. 현재 새 proof 발행과 이 admission 실행은 `NOT_RUN`이다. SQLAlchemy/Zellij/Tailscale의 다음 admission은 실제 alternate result와 canonical suite SHA가 존재한 뒤 입력을 고정한다.
+- 최종 product source0e6용 별도 v3 PREPARE를 고정했다: `/tmp/qi-bat-supplemental-admission-input-0e6-v3.json` SHA `45a7e62e9217651dc2e1fd9f572562e0b0bdc5d882f16fc06bafaa6b1cba9c54`, `/tmp/qi-bat-supplemental-admission-issuer-0e6-v3.py` SHA `d187ba9627b55c1e74a57fa12abb29c8e844b169b68e343d6d366251c3a90f7c`다. label producer107/corpus/query/rubric 원본 결속은 유지하고 product revision과 proof requirement 문구를 최종 epoch로 바꿨다. 실제 새 proof5경로가 없으므로 admission ISSUE는 아직 `NOT_RUN`이다. 기존 v2와 source107 admissions는 보존한다.
 
 ## 어떤 파일을 어떻게 수정할지
 

@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `DATA_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | Sourcegraph owner169·v5 12repo/13,347파일 native scope/replay 및 OpenGrok v2 24 sweeps/path-bearing posting offline replay `VERIFIED`; 전체 OpenGrok UID·auxiliary·새 query bracket qualification `NOT_RUN` |
+| 실행 상태 | Sourcegraph owner169·v5 및 OpenGrok v2 path-bearing replay `VERIFIED`; 후속 전체 live17,615 문서·auxiliary 필드 형태·source13,347 path/UID term 독립 replay `VERIFIED`. 실제 query 전후 whole-index 결속과 canonical universe qualification 미완료 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -57,6 +57,11 @@ B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 
 
 ## 착수 입력과 추가 qualification
 
+- 2026-10-05 실제 whole live observation `VERIFIED`: clean source107의 `uv run --frozen --extra dev python /private/tmp/qi-og-full-live-docs-prep-20261005/observe.py --input /private/tmp/qi-og-full-live-docs-prep-20261005/input.json --output /private/tmp/qi-og-full-live-docs-actual-20261005-v1 --source-root /Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index --source-head 1071692b2dd4d5a77db54f79ecd0e80a1a20b2a7` — exit0. 모든 live stored field의 typed values 및 indexed field의 term 수/빈도/digest를 관측했고 before/after12repo API path set, native index digest, container/image/pid/restart, published127.0.0.1:18083→8080, named-volume RW, config/74JAR/source/input을 검사했다. owned remote helper cleanup도 성공 조건이다.
+- 독립 offline readback `VERIFIED`: 같은 source의 `uv run --frozen --extra dev python /private/tmp/qi-og-full-live-docs-readback-20261005-v2.py --capture-root /private/tmp/qi-og-full-live-docs-actual-20261005-v1 --output /private/tmp/qi-og-full-live-docs-offline-readback-20261005-v2.json` — exit0. live17,615 = source path13,347 + path-field/string 둘 다 없는4,268; repository당3segments, 총36segments다. path 없는4,256문서는 stored `d/loc/numl` + indexed `d/dirpath`, 나머지12문서는 stored `objser/objver` + indexed `objuid` 형태였다. path 없는 문서의 stored `u/type/project/associatedpath` 및 indexed `u`는 없었다. 누락된 UID나 source 연결을 생성하지 않는다.
+- 후속 root 독립 streaming 대조도 exit0: source path13,347의 set이 frozen code-only manifest와 정확히 일치하고 duplicate path0이다. source13,347의 stored UID는 모두 nonempty/unique이며 indexed `u`의 distinctTerms=occurrences=1과 `SHA256(big-endian length || UTF-8 stored UID || big-endian frequency1)`를 모든 행에서 재계산해 raw digest와 일치했다. auxiliary를 file UID로 세거나 `objuid`를 source UID로 바꾸지 않는다.
+- raw197,194,162bytes의 SHA는 `efb5df4894282b4f523340129a7f9b251b5b83ba3b3f415bc3a9d9c8a9de60d9`, native index SHA는 기존 `ae8623d124eeac39af460ce985d4b901ddac2c22e90d3350df354be2d09a9873`와 같다. 실제 terminal `result.json`은 `observation_only`, `qualified=false`, `query_bracketed=false`, `entire_uid_universe_attested=false`다. 이번 관측은 query를 실행하지 않았고 named-volume RW를 canonical readonly bind로 취급하지 않는다. whole query bracket·producer의 auxiliary 의미/분모·canonical consumer qualification은 별도 보완 범위다.
+- auxiliary `d` 값과 frozen source ancestor directories의 단순 set은 동일하지 않았다(저장소마다 extra1, bat missing1). source file set은 정확히 일치한다. 이 차이만으로 source 누락이나 corruption을 판정하지 않으며 native directory/object 필드의 의미를 확인하기 전 source association을 합성하지 않는다.
 - 2026-10-05 static PREPARE: `/private/tmp/qi-e2-opengrok-next-20261005/bat-og-only-spec.json`은 기존 canonical v2의 OG-only `indexed_view_probe:full`을 사용한다. source107 원본 bat admission에 결속하며 actual query 전후 API inventory/served bytes를 새 root에서 관측하도록 준비했다. 실행은 `NOT_RUN`; supplemented bat409나 새 sourcecef의 spec이 아니다. auxiliary4,268/whole UID/native readonly backend 결속을 이 API bracket으로 승격하지 않는다.
 
 - 외부 BASE의 sourcegraph-native-content-8l9gxy35, opengrok-source-posting-reference-full-moyyggn_ 역사적 증거
