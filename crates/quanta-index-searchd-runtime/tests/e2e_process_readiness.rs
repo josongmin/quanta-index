@@ -1060,15 +1060,15 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
 
     let chunks = files
         .iter()
-        .map(|file| {
-            [E2eTextChunkSpec {
+        .map(|file| -> Result<_, std::num::TryFromIntError> {
+            Ok([E2eTextChunkSpec {
                 content: &file.content,
                 start_line: 1,
-                end_line: 2,
+                end_line: u32::try_from(file.content.lines().count())?,
                 source_repo_id: Some(&file.source_repo_id),
-            }]
+            }])
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     let batch_files = files
         .iter()
         .zip(&chunks)
