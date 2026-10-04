@@ -988,3 +988,263 @@ fn binary_daemon_restart_preserves_active_source_and_ranked_rows() -> TestResult
         "ranked rows after binary restart",
     )
 }
+
+/// E4-05: observe every large-tier source after an OS process restart.
+///
+/// Two child daemons open the same sealed generation. The fixture supplies
+/// independent source bytes, identities and cardinality. The ordered ranking
+/// comparison across process instances is not a relevance ranking golden.
+#[test]
+fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -> TestResult {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use quanta_index_searchd_harness::E2eTextChunkSpec;
+    use quanta_index_searchd_harness::scale::{ScaleTier, generate_scoped_corpus, params_for};
+    use sha2::Digest as _;
+
+    use crate::searchd_binary_process::searchd_command;
+
+    const SEED: u64 = 5_864_059_738_136_528_177;
+    const HISTORY_MAX_BYTES: u64 = 268_435_456;
+    const PAGE_SIZE: u32 = 256;
+    const QUERY: &str = "scale_needle_token";
+
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let params = params_for(ScaleTier::Large);
+    let files = generate_scoped_corpus(ScaleTier::Large, SEED)?;
+    require_eq(
+        &files.len(),
+        &usize::try_from(params.total_files())?,
+        "large source count",
+    )?;
+    let mut expected = BTreeMap::new();
+    let mut source_files = files.iter();
+    for repo_index in 0..params.repo_count {
+        for file_index in 0..params.files_per_repo {
+            let file = source_files
+                .next()
+                .ok_or("missing deterministic source fixture")?;
+            let source_repo_id = format!("repo{repo_index}");
+            let repo_relative_path = format!("src/file_{file_index}.rs");
+            require_eq(
+                &file.source_repo_id,
+                &source_repo_id,
+                "fixture source owner",
+            )?;
+            require_eq(
+                &file.repo_relative_path,
+                &repo_relative_path,
+                "fixture source path",
+            )?;
+            if !file.content.contains(QUERY) {
+                return Err(format!(
+                    "fixture source lacks query: {source_repo_id}/{repo_relative_path}"
+                )
+                .into());
+            }
+            let source_sha256: [u8; 32] =
+                sha2::Sha256::digest(format!("{}\n", file.content).as_bytes()).into();
+            if expected
+                .insert((source_repo_id, repo_relative_path), source_sha256)
+                .is_some()
+            {
+                return Err("duplicate fixture source identity".into());
+            }
+        }
+    }
+    if source_files.next().is_some() {
+        return Err("extra deterministic source fixture".into());
+    }
+    require_eq(&expected.len(), &4096, "independent large identity count")?;
+
+    let chunks = files
+        .iter()
+        .map(|file| {
+            [E2eTextChunkSpec {
+                content: &file.content,
+                start_line: 1,
+                end_line: 2,
+                source_repo_id: Some(&file.source_repo_id),
+            }]
+        })
+        .collect::<Vec<_>>();
+    let batch_files = files
+        .iter()
+        .zip(&chunks)
+        .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
+        .collect::<Vec<_>>();
+    let mut prepared =
+        E2eRuntime::boot_in_with_client_request_timeout(&state_root, Duration::from_secs(300))?
+            .with_history_max_generations(2)
+            .with_history_max_bytes(HISTORY_MAX_BYTES);
+    let chunk_ids = prepared.ingest_text_files_one_batch(&batch_files)?;
+    require_eq(&chunk_ids.len(), &expected.len(), "staged chunk count")?;
+    let sealed = prepared.seal()?;
+    prepared.activate_last_sealed_generation()?;
+    let pin = GenerationPin::new(prepared.repo(), prepared.revision(), sealed);
+    prepared.stop()?;
+
+    let observe = |process: &SearchdBinaryProcess,
+                   request_id_base: u64|
+     -> Result<
+        (String, Vec<(String, String, [u8; 32], String, u32)>),
+        Box<dyn Error>,
+    > {
+        let client = process.connect()?;
+        let ready = wait_for(
+            &RealTicker::new(),
+            Duration::from_secs(300),
+            Duration::from_millis(50),
+            "large binary daemon ready after process start",
+            || client.observability().process_readiness(),
+            |report| report.ready,
+            |_| true,
+        )?;
+        require_eq(&ready.active_repositories, &1, "active serving owners")?;
+        let sockets = daemon_socket_paths(&state_root);
+        let io = quanta_index_ipc::ClientIoPolicy::try_new(Duration::from_secs(300))?;
+        let mut cursor = None;
+        let mut seen = BTreeSet::new();
+        let mut ranked = Vec::with_capacity(expected.len());
+        let mut previous: Option<quanta_index_contract::LexicalCandidate> = None;
+        // Every admitted page is nonempty and has only new source identities.
+        // A byte-cut page may be shorter than PAGE_SIZE, so only the source
+        // cardinality bounds the number of pages independently of the engine.
+        for page_index in 0..expected.len() {
+            let request_id = request_id_base
+                .checked_add(u64::try_from(page_index)?)
+                .ok_or("large request ID overflow")?;
+            let request = SearchPlaneQueryIpcRequestEnvelope {
+                request_id,
+                payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: QUERY.to_owned(),
+                    constraints: QueryConstraintSetV1::unconstrained(),
+                    generation: Some(pin.clone()),
+                    generation_selector: None,
+                    top_k: PAGE_SIZE,
+                    cursor,
+                }),
+            };
+            let response: SearchPlaneQueryIpcResponseEnvelope =
+                quanta_index_ipc::send_request(&sockets[0], &request, io)?;
+            require_eq(&response.request_id, &request_id, "large page request ID")?;
+            let SearchPlaneQueryIpcResponse::Text(page) = response.payload else {
+                return Err(format!("large binary query returned {:?}", response.payload).into());
+            };
+            require_eq(&page.generation, &pin, "large page generation")?;
+            if page.results.is_empty() || page.results.len() > usize::try_from(PAGE_SIZE)? {
+                return Err(
+                    format!("large page has invalid length: {}", page.results.len()).into(),
+                );
+            }
+            require_eq(
+                &usize::try_from(page.window.returned())?,
+                &page.results.len(),
+                "large page returned count",
+            )?;
+            for row in &page.results {
+                let identity = (
+                    row.source_repo_id.as_str().to_owned(),
+                    row.repo_relative_path.as_str().to_owned(),
+                );
+                let expected_sha = expected.get(&identity).ok_or("foreign large source row")?;
+                if !seen.insert(identity.clone()) {
+                    return Err(format!("duplicate large source row: {identity:?}").into());
+                }
+                let source = row
+                    .source
+                    .as_ref()
+                    .ok_or("large row has no source revision")?;
+                require_eq(
+                    &source.file.source_repo_id,
+                    &row.source_repo_id,
+                    "source owner",
+                )?;
+                require_eq(
+                    &source.file.repo_relative_path,
+                    &row.repo_relative_path,
+                    "source path",
+                )?;
+                require_eq(&source.source_sha256, expected_sha, "source bytes SHA-256")?;
+                require_eq(&row.repo_id, &pin.repo_id, "serving owner")?;
+                require_eq(
+                    &row.manifest_generation,
+                    &pin.manifest_generation,
+                    "row generation",
+                )?;
+                if let Some(prior) = &previous {
+                    if prior.order_key().order(&row.order_key()) != std::cmp::Ordering::Less {
+                        return Err("large rows violate strict ranked page order".into());
+                    }
+                }
+                previous = Some(row.clone());
+                ranked.push((
+                    identity.0,
+                    identity.1,
+                    source.source_sha256,
+                    row.candidate_id.clone(),
+                    row.score.to_bits(),
+                ));
+            }
+            match (page.window.has_more(), page.next_cursor) {
+                (Some(true), Some(next)) if seen.len() < expected.len() => cursor = Some(next),
+                (Some(false), None) if seen.len() == expected.len() => {
+                    let events = wait_for(
+                        &RealTicker::new(),
+                        Duration::from_secs(5),
+                        Duration::from_millis(10),
+                        "large binary query terminal response event",
+                        || {
+                            client
+                                .observability()
+                                .request_events(ProcessRequestEventPlaneV1::Query, 1024)
+                        },
+                        |events| {
+                            events.events.iter().any(|event| {
+                                event.request_id.get() == request_id
+                                    && event.stage == ProcessRequestEventStageV1::ResponseWritten
+                            })
+                        },
+                        |_| false,
+                    )?;
+                    require_eq(&seen.len(), &expected.len(), "observed large source count")?;
+                    return Ok((events.process_instance, ranked));
+                }
+                other => return Err(format!("large page continuation mismatch: {other:?}").into()),
+            }
+        }
+        Err("large page traversal exceeded the independent source count".into())
+    };
+
+    let mut command = searchd_command(&state_root, 2);
+    let _configured = command.env(
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
+        HISTORY_MAX_BYTES.to_string(),
+    );
+    let first = SearchdBinaryProcess::start_with_command(&state_root, command)?;
+    let first_observed = observe(&first, 0x5ca1_e000);
+    let first_stopped = first.stop();
+    let (first_instance, first_rows) = first_observed?;
+    first_stopped?;
+
+    let mut command = searchd_command(&state_root, 2);
+    let _configured = command.env(
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
+        HISTORY_MAX_BYTES.to_string(),
+    );
+    let second = SearchdBinaryProcess::start_with_command(&state_root, command)?;
+    let second_observed = observe(&second, 0x5ca2_e000);
+    let second_stopped = second.stop();
+    let (second_instance, second_rows) = second_observed?;
+    second_stopped?;
+    if first_instance == second_instance {
+        return Err("large binary process instance did not change".into());
+    }
+    require_eq(
+        &second_rows,
+        &first_rows,
+        "large ranked rows after binary restart",
+    )
+}

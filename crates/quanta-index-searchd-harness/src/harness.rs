@@ -713,10 +713,23 @@ impl E2eRuntime {
     /// caller owns the directory lifecycle. Used by the long-path proof,
     /// where the root must be deliberately deep.
     pub fn boot_in(state_root: &Path) -> AnyResult<Self> {
-        let mut runtime = Self::boot()?;
-        drop(runtime.tempdir.take());
-        runtime.state_root = state_root.to_path_buf();
-        Ok(runtime)
+        Ok(Self::boot()?.into_caller_owned_state_root(state_root))
+    }
+
+    /// Boot with both a caller-owned persisted root and a bounded client
+    /// deadline. The configuration is fixed before the lazy daemon starts.
+    pub fn boot_in_with_client_request_timeout(
+        state_root: &Path,
+        timeout: Duration,
+    ) -> AnyResult<Self> {
+        Ok(Self::boot_with_client_request_timeout(timeout)?
+            .into_caller_owned_state_root(state_root))
+    }
+
+    fn into_caller_owned_state_root(mut self, state_root: &Path) -> Self {
+        drop(self.tempdir.take());
+        self.state_root = state_root.to_path_buf();
+        self
     }
 
     /// Stop the driver and release the state root, returning the driver's
