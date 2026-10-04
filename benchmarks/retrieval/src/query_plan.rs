@@ -1561,9 +1561,16 @@ mod tests {
             "../../../vendor/unicode/17.0.0/lowercase.json"
         ))
         .expect("Unicode reference JSON");
-        assert_eq!(reference["unicode_version"], "17.0.0");
-        let pairs: std::collections::BTreeMap<char, String> = reference["mappings"]
-            .as_object()
+        assert_eq!(
+            reference
+                .get("unicode_version")
+                .and_then(serde_json::Value::as_str)
+                .expect("Unicode reference version"),
+            "17.0.0"
+        );
+        let pairs: std::collections::BTreeMap<char, String> = reference
+            .get("mappings")
+            .and_then(serde_json::Value::as_object)
             .expect("lowercase mappings")
             .iter()
             .map(|(code, lowered)| {
@@ -1581,7 +1588,7 @@ mod tests {
             })
             .collect();
         assert_eq!(pairs.len(), 1488);
-        for scalar in (0..0x110000).filter_map(char::from_u32) {
+        for scalar in (0..0x0011_0000).filter_map(char::from_u32) {
             let original = scalar.to_string();
             let expected = pairs.get(&scalar).unwrap_or(&original);
             assert_eq!(

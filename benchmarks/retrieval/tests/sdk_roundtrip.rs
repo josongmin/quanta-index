@@ -681,6 +681,420 @@ fn real_daemon_sdk_active_text_and_symbol_bind_one_selected_head_without_resolve
     session.stop().expect("bounded shutdown");
 }
 
+fn one_query_rpc_for_route<T>(
+    session: &DaemonSession,
+    route: &str,
+    query: impl FnOnce() -> T,
+) -> T {
+    use quanta_index_contract::{ProcessRequestEventPlaneV1, ProcessRequestEventStageV1};
+
+    let before = session
+        .client()
+        .observability()
+        .request_events(ProcessRequestEventPlaneV1::Query, 1024)
+        .expect("query ring before route");
+    let result = query();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let after = loop {
+        let window = session
+            .client()
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 1024)
+            .expect("query ring after route");
+        let outcome = window.events.iter().find(|event| {
+            event.sequence >= before.next_sequence
+                && event.stage == ProcessRequestEventStageV1::BackendOutcome
+                && event.route.as_deref() == Some(route)
+        });
+        if outcome.is_some_and(|outcome| {
+            window.events.iter().any(|event| {
+                event.request_id == outcome.request_id
+                    && event.stage == ProcessRequestEventStageV1::ResponseWritten
+            })
+        }) {
+            break window;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{route} backend/terminal event absent"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let admitted = after
+        .events
+        .iter()
+        .filter(|event| {
+            event.sequence >= before.next_sequence
+                && event.stage == ProcessRequestEventStageV1::QueueAdmitted
+        })
+        .count();
+    assert_eq!(admitted, 1, "{route} made an extra query-plane RPC");
+    result
+}
+
+#[test]
+fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token() {
+    use quanta_index_contract::lex::{
+        CommitRecord, CommitSha, DirtyRecord, ParseNode, ParseRoleTag, ParseTreeRecord,
+        compute_parse_tree_source_hash,
+    };
+    use quanta_index_contract::{
+        ChunkId, GenerationPin, GenerationSelector, HistoryOrderV1, HistoryQueryRequest,
+        HybridQueryRequest, HybridSeedQueryRequest, QueryConstraintSetV1, RepoRelativePath,
+        RuntimeMetadataQueryRequest, SearchPlaneErrorCodeV2, SearchScopeKey, SearchScopeSurface,
+        SemanticCorpusKindV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1, TextQueryRequest,
+        TextQuerySyntax,
+    };
+    use quanta_index_sdk::{ConnectOptions, DirtyBatch, QuantaIndex, SdkError, StructuralBatch};
+
+    let repo = tempfile::tempdir().expect("repo root");
+    write_tiny_repo(repo.path());
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunks");
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        41,
+        "manifest:active-vector-routes".to_string(),
+    )
+    .expect("identity");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
+    let state = tempfile::tempdir().expect("state root");
+    let state_root = state.path().join("daemon");
+    let session = boot_session(&state_root, &identity);
+    let (_receipt, ack, _observation, _timings) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish+activate G41");
+    let commit_sha = CommitSha::from_bytes([0x41; 20]);
+    let history_batch = quanta_index_sdk::HistoryBatch::new(
+        identity.repo_id.clone(),
+        identity.revision_id.clone(),
+        identity.generation,
+    )
+    .manifest_digest("manifest:active-history-fixture")
+    .commit(CommitRecord {
+        wire_version: 1,
+        sha: commit_sha,
+        parents: Vec::new(),
+        author_time_ms: 11,
+        committer_time_ms: 12,
+        applied_at_ms: 13,
+        author: "alice".to_string().into_boxed_str(),
+        author_name: None,
+        author_email: None,
+        committer: "alice".to_string().into_boxed_str(),
+        committer_name: None,
+        committer_email: None,
+        message: "fix: sphinx corpus".to_string().into_boxed_str(),
+        is_merge: false,
+        tags: Vec::new(),
+    })
+    .ref_upsert("refs/heads/main", commit_sha);
+    let _history_receipt = session
+        .client()
+        .history()
+        .publish(&history_batch)
+        .expect("publish admitted G41 history");
+    // The whole-file chunk is the exact source unit already admitted by the
+    // search-corpus batch. Both auxiliary authorities name that unit.
+    let owned_chunk = chunks
+        .get("src/lib.rs")
+        .and_then(|file_chunks| file_chunks.first())
+        .expect("admitted source chunk");
+    assert!(owned_chunk.text.starts_with("pub fn sphinx_riddle("));
+    let function_end =
+        u32::try_from(owned_chunk.text.trim_end().len()).expect("tiny Rust source byte span");
+    let chunk_id = ChunkId::new(owned_chunk.chunk_id.clone());
+    let tree = ParseTreeRecord {
+        wire_version: 1,
+        lang: quanta_index_contract::lex::LanguageCode::new("rust").expect("fixture Rust language"),
+        root: ParseNode {
+            kind: "function_item".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: function_end,
+            children: Vec::new(),
+        },
+        source_hash: compute_parse_tree_source_hash(&owned_chunk.text),
+        role_tag_schema_version: 1,
+        role_tags: vec![ParseRoleTag {
+            role: "item".to_string().into_boxed_str(),
+            byte_start: 0,
+            byte_end: function_end,
+        }],
+    };
+    let structural_batch = StructuralBatch::replace_generation(
+        identity.repo_id.clone(),
+        identity.revision_id.clone(),
+        identity.generation,
+        identity.manifest_digest.clone(),
+    )
+    .replace_tree(
+        SearchScopeKey {
+            doc_surface: SearchScopeSurface::Chunk,
+            repo_relative_path: RepoRelativePath::new(owned_chunk.path.clone()),
+        },
+        format!("fixture:structural:{}", owned_chunk.chunk_id),
+        chunk_id.clone(),
+        tree,
+    );
+    let _structural_receipt = session
+        .client()
+        .structural()
+        .publish(&structural_batch)
+        .expect("publish source-bound G41 structural authority");
+    let dirty_batch = DirtyBatch::new(
+        identity.repo_id.clone(),
+        identity.revision_id.clone(),
+        identity.generation,
+        1_717_171_717_000,
+    )
+    .upsert(DirtyRecord {
+        wire_version: 1,
+        doc_id: chunk_id.clone(),
+        applied_at_ms: 55,
+        payload_hash: [7; 32],
+    });
+    let _dirty_receipt = session
+        .client()
+        .runtime()
+        .publish_dirty(&dirty_batch)
+        .expect("publish source-bound G41 dirty authority");
+    let query_only = QuantaIndex::connect_query_only(ConnectOptions::from_state_root(&state_root))
+        .expect("query-only SDK");
+    let pin = GenerationPin::new(
+        identity.repo_id.clone(),
+        identity.revision_id.clone(),
+        identity.generation,
+    );
+    let semantic = one_query_rpc_for_route(&session, "query.semantic", || {
+        query_only
+            .semantic()
+            .query()
+            .text("sphinx_riddle")
+            .active(identity.repo_id.clone(), identity.revision_id.clone())
+            .top_k(5)
+            .execute()
+            .expect("SDK Active Semantic")
+    });
+    assert_eq!(semantic.selected_active_head.as_ref(), Some(&ack.active));
+    assert_eq!(semantic.generation, pin);
+    assert!(
+        !semantic.results.is_empty(),
+        "fixture Semantic query has no result"
+    );
+
+    let hybrid = one_query_rpc_for_route(&session, "query.hybrid", || {
+        query_only
+            .search()
+            .hybrid()
+            .native("sphinx_riddle")
+            .semantic_text("sphinx_riddle")
+            .active(identity.repo_id.clone(), identity.revision_id.clone())
+            .top_k(5)
+            .execute()
+            .expect("SDK Active Hybrid")
+    });
+    assert_eq!(hybrid.selected_active_head.as_ref(), Some(&ack.active));
+    assert_eq!(hybrid.generation, pin);
+    assert!(
+        !hybrid.results.is_empty(),
+        "fixture Hybrid query has no result"
+    );
+
+    let seed = one_query_rpc_for_route(&session, "query.hybrid_seed", || {
+        query_only
+            .search()
+            .hybrid_seed()
+            .native("sphinx_riddle")
+            .semantic_text("sphinx_riddle")
+            .active(identity.repo_id.clone(), identity.revision_id.clone())
+            .top_k(5)
+            .dense_corpus(SemanticCorpusKindV1::RawCodeFallback, 5)
+            .execute()
+            .expect("SDK Active HybridSeed")
+    });
+    assert_eq!(seed.selected_active_head.as_ref(), Some(&ack.active));
+    assert_eq!(seed.generation, pin);
+    assert!(
+        !seed.seed_candidates.is_empty(),
+        "fixture HybridSeed query has no seed"
+    );
+
+    let history = one_query_rpc_for_route(&session, "query.history", || {
+        query_only
+            .history()
+            .query()
+            .sourcegraph("type:commit rev:refs/heads/main author:alice fix")
+            .active(identity.repo_id.clone(), identity.revision_id.clone())
+            .top_k(5)
+            .order(HistoryOrderV1::Recency)
+            .execute()
+            .expect("SDK Active History")
+    });
+    assert_eq!(history.selected_active_head.as_ref(), Some(&ack.active));
+    assert_eq!(history.generation, pin);
+    assert_eq!(history.commits.len(), 1);
+    assert_eq!(history.commits[0].sha, commit_sha);
+
+    let runtime = one_query_rpc_for_route(&session, "query.runtime_metadata", || {
+        query_only
+            .runtime()
+            .query()
+            .sourcegraph("dirty:yes sphinx_riddle")
+            .active(identity.repo_id.clone(), identity.revision_id.clone())
+            .top_k(5)
+            .execute()
+            .expect("SDK Active RuntimeMetadata")
+    });
+    assert_eq!(runtime.selected_active_head.as_ref(), Some(&ack.active));
+    assert_eq!(runtime.generation, pin);
+    assert_eq!(runtime.results.len(), 1);
+    assert_eq!(runtime.results[0].candidate_id, owned_chunk.chunk_id);
+
+    let next_identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        42,
+        "manifest:active-vector-routes-next".to_string(),
+    )
+    .expect("next identity");
+    let (next_batch, _) =
+        assemble_fixture_batch(&next_identity, &chunks, &files).expect("next batch");
+    let next_batch = next_batch.source_event(quanta_index_contract::SourcePublicationEvent {
+        stream_id: "sdk-roundtrip-fixture".to_string(),
+        event_id: "source-fixture-next".to_string(),
+        expected_base_event_id: Some("source-fixture-initial".to_string()),
+        payload_sha256: [0; 32],
+    });
+    let (_next_receipt, next_ack, _next_observation, _next_timings) =
+        publish_and_activate(&session, &next_batch, &next_identity, Some(&ack.active))
+            .expect("publish+activate G42");
+    assert_ne!(
+        next_ack.active.activation_token,
+        ack.active.activation_token
+    );
+    let stale_selector = GenerationSelector::ResolvedActive {
+        repo_id: identity.repo_id.clone(),
+        revision_id: identity.revision_id.clone(),
+        activation_token: ack.active.activation_token,
+    };
+    let stale_text = || TextQueryRequest {
+        syntax: TextQuerySyntax::Native,
+        query_text: "sphinx_riddle".to_string(),
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: Some(pin.clone()),
+        generation_selector: Some(stale_selector.clone()),
+        top_k: 5,
+        cursor: None,
+    };
+    let semantic_stale = one_query_rpc_for_route(&session, "query.semantic", || {
+        query_only.semantic().query_request(SemanticQueryRequest {
+            query_text: "sphinx_riddle".to_string(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: Some(pin.clone()),
+            generation_selector: Some(stale_selector.clone()),
+            lexical_scope: None,
+            top_k: 5,
+        })
+    });
+    assert!(
+        matches!(
+            semantic_stale,
+            Err(SdkError::Remote {
+                code: SearchPlaneErrorCodeV2::NotReady,
+                ..
+            })
+        ),
+        "stale Semantic token was accepted: {semantic_stale:?}"
+    );
+    let hybrid_stale = one_query_rpc_for_route(&session, "query.hybrid", || {
+        query_only.search().hybrid_request(HybridQueryRequest {
+            text_query: stale_text(),
+            semantic_query_text: "sphinx_riddle".to_string(),
+            generation: Some(pin.clone()),
+            generation_selector: Some(stale_selector.clone()),
+            top_k: 5,
+        })
+    });
+    assert!(
+        matches!(
+            hybrid_stale,
+            Err(SdkError::Remote {
+                code: SearchPlaneErrorCodeV2::NotReady,
+                ..
+            })
+        ),
+        "stale Hybrid token was accepted: {hybrid_stale:?}"
+    );
+    let seed_stale = one_query_rpc_for_route(&session, "query.hybrid_seed", || {
+        query_only
+            .search()
+            .hybrid_seed_request(HybridSeedQueryRequest {
+                text_query: stale_text(),
+                semantic_query_text: "sphinx_riddle".to_string(),
+                generation: Some(pin.clone()),
+                generation_selector: Some(stale_selector.clone()),
+                dense_corpora: vec![SemanticSeedCorpusBudgetV1 {
+                    corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+                    top_k: 5,
+                }],
+                top_k: 5,
+            })
+    });
+    assert!(
+        matches!(
+            seed_stale,
+            Err(SdkError::Remote {
+                code: SearchPlaneErrorCodeV2::NotReady,
+                ..
+            })
+        ),
+        "stale HybridSeed token was accepted: {seed_stale:?}"
+    );
+    let history_stale = one_query_rpc_for_route(&session, "query.history", || {
+        let mut request = stale_text();
+        request.syntax = TextQuerySyntax::Sourcegraph;
+        request.query_text = "type:commit rev:refs/heads/main author:alice fix".to_string();
+        query_only.history().query_request(HistoryQueryRequest {
+            text_query: request,
+            order: HistoryOrderV1::Recency,
+            cursor: None,
+        })
+    });
+    assert!(
+        matches!(
+            history_stale,
+            Err(SdkError::Remote {
+                code: SearchPlaneErrorCodeV2::NotReady,
+                ..
+            })
+        ),
+        "stale History token was accepted: {history_stale:?}"
+    );
+    let runtime_stale = one_query_rpc_for_route(&session, "query.runtime_metadata", || {
+        let mut request = stale_text();
+        request.syntax = TextQuerySyntax::Sourcegraph;
+        request.query_text = "dirty:yes sphinx_riddle".to_string();
+        query_only
+            .runtime()
+            .query_request(RuntimeMetadataQueryRequest {
+                text_query: request,
+                cursor: None,
+            })
+    });
+    assert!(
+        matches!(
+            runtime_stale,
+            Err(SdkError::Remote {
+                code: SearchPlaneErrorCodeV2::NotReady,
+                ..
+            })
+        ),
+        "stale RuntimeMetadata token was accepted: {runtime_stale:?}"
+    );
+    session.stop().expect("bounded shutdown");
+}
+
 #[test]
 fn sdk_frontdoor_static_guard() {
     // RB-02 acceptance: the runner links the public SDK and never the

@@ -1349,6 +1349,7 @@ fn expected_lexical_rank_unit(policy: crate::query_plan::QueryInputPolicy) -> Te
 
 /// Execute a planned benchmark request through the exact product syntax.
 /// Existing direct route probes retain Native behavior through `query_route`.
+#[must_use]
 pub fn query_route_with_policy(
     query: &RouteQuery<'_>,
     policy: crate::query_plan::QueryInputPolicy,
@@ -1356,9 +1357,11 @@ pub fn query_route_with_policy(
     query_route_with_policy_timed(query, policy).0
 }
 
-/// Runner-only children of one SDK query. `sdk_execute` is the opaque product
-/// builder `.execute()` call (including any SDK transport/decode work), while
-/// `post_execute` covers benchmark response checks and hit normalization.
+/// Runner-only children of one SDK query.
+///
+/// `sdk_execute` is the opaque product builder `.execute()` call, including
+/// SDK transport and decode work. `post_execute` covers benchmark response
+/// checks and hit normalization.
 #[derive(Clone, Debug, Default)]
 pub struct RouteExecutionTiming {
     pub sdk_execute: Duration,
@@ -1388,6 +1391,7 @@ fn time_route_execution<T>(
 
 /// Return the same outcome plus internal timing children for the benchmark
 /// phase record. No extra product SDK operation is performed.
+#[must_use]
 pub fn query_route_with_policy_timed(
     query: &RouteQuery<'_>,
     policy: crate::query_plan::QueryInputPolicy,
@@ -1397,6 +1401,7 @@ pub fn query_route_with_policy_timed(
 
 /// Opt into request-local client IPC clocks for the bounded lexical diagnostic.
 /// The ordinary timed route uses the same execution path without observation.
+#[must_use]
 pub fn query_route_with_policy_client_observed(
     query: &RouteQuery<'_>,
     policy: crate::query_plan::QueryInputPolicy,

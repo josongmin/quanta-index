@@ -62,7 +62,7 @@ const _: &str = tree_sitter_javascript::QUANTA_GRAMMAR_BUILD_ID;
 pub const SYMBOL_PRODUCER_IDENTITY: &str = "source-bound-symbols-v2";
 
 /// Parser-captured local-name bytes, retained for benchmark proof without
-/// changing the product SymbolRecord wire contract.
+/// changing the product `SymbolRecord` wire contract.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SymbolNameSpan {
     pub start_byte: usize,
@@ -1033,7 +1033,10 @@ mod tests {
         let extracted = extract_parsed_symbols(language, "same.go", source, &tree, None)
             .expect("source extraction");
         let pick = find(&extracted.records, "Pick");
-        let name = &extracted.names[pick.symbol_id.as_str()];
+        let name = extracted
+            .names
+            .get(pick.symbol_id.as_str())
+            .expect("Pick declaration name witness");
         assert_eq!(
             name,
             &SymbolNameSpan {
@@ -1065,8 +1068,11 @@ mod tests {
                 .expect("source extraction");
             let record = find(&extracted.records, local_name);
             assert_eq!(
-                extracted.names[record.symbol_id.as_str()],
-                SymbolNameSpan {
+                extracted
+                    .names
+                    .get(record.symbol_id.as_str())
+                    .expect("local declaration name witness"),
+                &SymbolNameSpan {
                     start_byte: start,
                     end_byte: end,
                     name: local_name.into(),

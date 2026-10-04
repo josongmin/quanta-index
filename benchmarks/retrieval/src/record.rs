@@ -870,10 +870,16 @@ fn prove_hit(
         },
     });
     if let Some(name_span) = &unit.name_span {
-        candidate["span_accounting"]["name_span"] =
-            serde_json::to_value(name_span).map_err(|err| {
-                BenchError::Protocol(format!("cannot encode symbol name span: {err}"))
+        let name_span = serde_json::to_value(name_span).map_err(|err| {
+            BenchError::Protocol(format!("cannot encode symbol name span: {err}"))
+        })?;
+        let accounting = candidate
+            .get_mut("span_accounting")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| {
+                BenchError::Protocol("SDK candidate span accounting is not an object".to_string())
             })?;
+        let _previous_name_span = accounting.insert("name_span".to_string(), name_span);
     }
     Ok(ProvenHit {
         candidate,

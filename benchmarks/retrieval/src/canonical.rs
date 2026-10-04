@@ -5,7 +5,9 @@ use serde_json::Value;
 use crate::{BenchError, BenchResult, sha256_hex};
 
 /// The timing-independent result representation shared with the Python phase
-/// reader. Only candidate scores may be floating point; their IEEE-754 bits
+/// reader.
+///
+/// Only candidate scores may be floating point; their IEEE-754 bits
 /// are rendered as fixed-width lowercase hex before canonical JSON encoding.
 pub const REQUIRED_RESPONSE_OUTPUT_VALIDATION: &str = "normalized_row_score_bits_sha256_v1";
 
@@ -155,7 +157,14 @@ mod tests {
             required_response_sha256(&without_timing).expect("same response"),
             digest
         );
-        assert_eq!(row["candidates"][0]["score"].as_f64(), Some(-0.0));
+        let first_score = row
+            .get("candidates")
+            .and_then(Value::as_array)
+            .and_then(|candidates| candidates.first())
+            .and_then(|candidate| candidate.get("score"))
+            .and_then(Value::as_f64)
+            .expect("fixed response first candidate has a numeric score");
+        assert_eq!(first_score.to_bits(), (-0.0_f64).to_bits());
     }
 
     #[test]
