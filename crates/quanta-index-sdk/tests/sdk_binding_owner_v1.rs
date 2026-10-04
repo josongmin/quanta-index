@@ -23,10 +23,10 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use quanta_index_contract::{
-    GenerationPin, GenerationSelector, GenerationSnapshot,
-    ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
-    SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    GenerationPin, GenerationSelector, GenerationSnapshot, ManifestGeneration,
+    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchCorpusActivationTokenV1,
+    SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1, SearchPlaneQueryIpcRequest,
+    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneTrackKind, SemanticContentRootsV1,
     SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
