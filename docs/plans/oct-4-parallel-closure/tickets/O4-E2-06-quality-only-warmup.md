@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_AND_CONFIG` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | canonical protocol·readback helper 준비; bat warmup0 actual pair final comparison `FAILED`(unjudged). 실제0/1 parity `NOT_RUN`, warmup0 품질 정책 채택 미완료 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -22,6 +22,12 @@ run.py는 query_warmup_passes=0을 이미 허용하고 qualified speed는 1회 �
 
 - 작은 fixed corpus/suite/query protocol, matching Quanta runner/daemon와 Semble environment
 - 동일 task set/cold probe/profile/seed/repetitions의 0/1 두 quality-only spec; 각 protocol SHA·실제 measured schedule과 새 외부 output roots. 같은 seed의 측정 순서 동등성을 가정하지 않는다.
+
+## 2026-10-04 실제 실행 경계
+
+- source107 bat warmup0 actual capture는 두 시스템 각20 measured rows/cold1 timing observations까지 남았지만, 미판정51쌍으로 complete-scored comparison이 거절되어 canonical final manifest/verdict가 없다. 이 failed staging은 완성된 warmup0 root 또는 parity PASS가 아니다.
+- `/tmp/quanta-e2-warmup-parity-readback-20261004-v3.py`는 single repository/first8/first9/all12를 정확한 selected inventory로 검사하도록 준비됐다. original와 fresh verdict replay, PAIR_VALID/Contract/SDK, normalized task/repetition별 score bits/order/status, 각 protocol의 timing ledger를 요구한다. 실제 비교는 `NOT_RUN`이다.
+- 검수 후보 확보를 위한 새 exploratory pair는 claims/admission authority를 낮춘 별도 fresh capture로 실행할 수 있다. strict scoring guard를 제거하거나 failed qualified root를 승격하는 방법으로 사용하지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
 

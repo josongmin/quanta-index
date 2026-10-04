@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P2 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | harness lib/bin oracle·bound/refusal 회귀 및 source107 matching release build/CLI `VERIFIED`; 실제 tier/load/restart 실행 `NOT_RUN` |
+| 실행 상태 | harness 회귀·source107 matching release build/CLI·default small16/medium256 actual scale `VERIFIED`; default large4096 `FAILED`(build_seal30s timeout), 별도 diagnostic 실행 중. open-loop·OS restart·qualified performance 미완료 |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E4-01](O4-E4-01-index-phase-profile.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -23,13 +23,22 @@
 - sourcebf의 I0 owner 배치가 972/972 passed였다. 선택에 harness lib/bin의 scale·open-loop source fixture, history/timeout bounds, requested/effective refusal JSON, offered accounting과 existing lifecycle oracle가 포함됐다. 실제 release tier/load를 실행한 결과는 아니다.
 - 각 medium256/large4096/xlarge32768 tier는 별도 fresh external root에서 실행한다. default scale timeout30s/history16MiB·2generations와 explicit300s/history256MiB는 구별한다. open-loop request timeout의 허용 상한은30s이며 scale300s 인자를 그대로 적용하지 않는다.
 - 현재 `delete_reopen`은 same-process runtime 재개방이다. OS child restart, cold page cache, physical write I/O 및 4,096/32,768문서 독립 ranking gold는 이 harness artifact로 증명하지 않는다.
-- matching release build/run과 artifact readback은 `NOT_RUN`이다. 공유 macOS host의 diagnostic 실행에서 frequency/thermal/quiet qualification을 합성하지 않는다.
+- 아래 source107 결과 이전의 release build/run은 `NOT_RUN`이었다. 공유 macOS host의 diagnostic 실행에서 frequency/thermal/quiet qualification을 합성하지 않는다.
 
 ## 2026-10-04 source107 matching release binaries
 
 - `VERIFIED`: clean `/Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index`의 `./scripts/cargow --lane release-lane build -p quanta-index-searchd-harness --bin scale_matrix --bin open_loop_matrix --all-features --locked --release` — exit0,14m50s. 실제 binaries의 `--help`도 각각 exit0으로 current CLI를 확인했다. 빌드/usage만으로 tier qualification을 주장하지 않는다.
 - target은 `/Users/songmin/Library/Caches/quanta-index/target/222449791cf7286e/release-lane/release`다. scale_matrix SHA `2181bd0c047976859b516d6002220189f073ac83efabf22567d5a9af6cf5d2b0`, open_loop_matrix SHA `8a10e58e2b81f406cf856c3f2e5977f4491ec340ed5236fddab146d1eca37c31`를 실제 bytes에서 계산했다.
 - default 각 tier와 diagnostic override는 별도 fresh external root에서 직렬 실행한다. summary 존재·producer exit만 보지 않고 실제 passed/config/tier/phase/point accounting 및 resource refusal를 판독한다. same-process reopen와 OS-process restart를 구분한다.
+
+## 2026-10-04 default small·medium 실제 실행
+
+- `VERIFIED`: 위 scale binary의 `--tier small --seed 5864059738136528177 --out-dir /private/tmp/qi-scale-small-107-v1/result` 및 medium의 `/private/tmp/qi-scale-medium-107-v1/result`를 각각 새 root에서 실행해 exit0이었다. 두 summary는 source107, `detail.passed:true`, result_count10, requested timeout/history null 및 effective30s/16MiB·2generations다.
+- small16files/1repo: build1027.826ms, activate44.697ms, first query8.496ms, warm p504.525ms. 여섯 lifecycle resource phases가 존재한다. medium256files/4repos: build5557.130ms, activate87.676ms, first query11.275ms, warm p507.498ms. full ingest/seal·delete seal/activate·same-process reopen을 포함한 열 resource phases가 존재하며 delete seal1161.930ms, same-process reopen218.261ms다.
+- 같은 OS process의 재개방이며 실제 process restart를 증명하지 않는다. sampled RSS/allocated-root observations와 logical bytes는 true peak·physical I/O가 아니다. 큰 tier 및 open-loop 결과를 이 두 실행으로 합성하지 않는다.
+
+- `FAILED`: default large4096은 `/private/tmp/qi-scale-large-107-v1/result/refusal.json`에서 `status:failed`, `stage:build_seal`, `ipc Read timed out after 30000 ms`이며 producer exit1이었다. source107,16source repos,8,607,106source bytes, requested overrides null/effective30s·16MiB로 결속됐다. build 완료나 이후 lifecycle 성공을 합성하지 않는다.
+- 별도 `/private/tmp/qi-scale-large-diag-107-v1/result`에서 같은 tier/seed에 `--client-timeout-ms 300000 --history-max-bytes 268435456`를 명시한 실행을 시작했다. 아직 완료 전이며 diagnostic 결과가 default refusal를 대체하지 않는다.
 
 ## 착수 입력과 실제 tier 실행
 

@@ -18,8 +18,8 @@
 | W0 | root 단일 통합/중앙 실행, clean `1071692b`와 matching proof source 고정 | 후속 product 변경 시 새 epoch 발행 |
 | W1 | owner regressions, Gin4 exact-name 실제 capture/scoring, Sourcegraph12repo native replay, OpenGrok24 sweeps/path-bearing posting replay `VERIFIED` | SQLAlchemy/Zellij/Tailscale 실제 role 판단 재개; whole OpenGrok UID/auxiliary/endpoint bracket; untouched holdout license·사전 acceptance 입력/발행 |
 | W2 | 실제 반례의 live-BM25, maintenance fatal ownership/terminal, fixture 수리 및 지원 Active single-RPC 검증 완료 | bootstrap/scanner/barrier/token-authority 최적화는 실제 비용 조건 판정 대기. E3-02는 현 Accepted refusal 계약에서 근거 있는 `NOT_APPLICABLE` |
-| W3 | Contract Python788/Rust191, fresh release SDK27, context replay `VERIFIED`; 먼저 bat20tasks/358pairs admission 발행 | 다른 ready repository별 fresh admission 계속; source107 hosted CI 조회는 `[]`/`NOT_RUN` |
-| W4 | matching release runner/searchd 확보; bat부터 실제 pair 입력 준비; 별도 scale harness release build 진행 | 실제 Quanta/Semble roots와 warmup0/1 parity, native3제품 query/raw replay, release tier/load/restart, qualified repeated performance |
+| W3 | Contract Python788/Rust191, fresh release SDK27, context replay 및 bat/cli/lo/nushell admission `VERIFIED` | 다른 ready repository별 fresh admission 계속; source107 hosted CI 조회는 `[]`/`NOT_RUN` |
+| W4 | matching release runner/searchd/scale/open-loop 확보, default small16/medium256 actual scale `VERIFIED`; bat 실제 pair는 미판정51쌍으로 final comparison `FAILED` | bat raw의 새 리뷰 후보 결속→supplemental 판단→새 admission/fresh final pair. warmup0/1 parity, native3제품 query/raw replay, remaining tier/load/restart, qualified repeated performance |
 | W5 | name/source oracle 및 source-bound 원본 labels 유지 | 새5제품 blind union의 actual supplemental review·최종 qrel/scoreboard·독립 holdout 정책 판정 |
 | W6 | local infrastructure/owner proof와 운영 qualification 경계를 기록 | actual authorized Linux target/config/state/rollback 입력 `BLOCKED`; exact producer pair·CI·배포/활성화/restore/rollback 미실행 |
 

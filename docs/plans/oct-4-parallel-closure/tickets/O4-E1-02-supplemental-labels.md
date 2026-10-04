@@ -32,6 +32,12 @@
 - 원본 c3-all-five-pool-audit-gsZWij9u, lo issued-merged, 새 ready repository별 pool
 - 새 외부 driver root와 source/argv/input commitments
 
+## 2026-10-04 새 bat capture와 검수 순서
+
+- source107 bat actual pair의40 native rows가 `/private/tmp/qi-p0-v1/bat.staging`에 남았다. 기존 판단과의 차집합은51 `(task_id,path)`이며 과거 bat blind packet의 pair 집합과 같아도 record bytes는 다르므로 과거 producer receipt는 재사용하지 않는다.
+- 원 suite는2routes다. 기존 `run.project_pack_and_suite`로 route별 suite를 만들고 `holdout_review.capture_review_pool`을 현 raw에 다시 실행해야 한다. 그 후 이미 판정된 pair를 제외하고 `bind_supplemental_review_tasks`로 query/threshold/source bytes/미판정을 결속한다. 현재 준비 packet은 canonical 실행 전까지 `PREPARED_NOT_VERIFIED`다.
+- 원 qualified pair의 complete-scored evaluation은 `FAILED`로 유지한다. 리뷰 후보 발행·AI 실제 판단·merged labels·새 admission·fresh final pair를 서로 다른 단계로 판정한다. 두 제품의 미판정51쌍은 새5제품 최종 union 완료를 뜻하지 않는다.
+
 ## 어떤 파일을 어떻게 수정할지
 
 `OWNED`는 에픽 담당 통합, `SHARED`는 I0 반영, `READ`는 기존 구현 소비다. 재현된 결함이나 채택된 계약 변경이 있을 때만 product source를 수정한다. 구현 파일과 독립 검증 파일을 함께 지정한다.

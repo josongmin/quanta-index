@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | source107 bat Quanta/Semble 실제 요청 완료, 최종 complete-scored comparison `FAILED`(미판정51쌍). 전체5제품·required cells·최종 scoring 미완료 |
 | 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-02](O4-E2-02-external-index-universe.md), [O4-E2-03](O4-E2-03-required-cells-and-scheduling.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -23,6 +23,13 @@ Quanta33캡처/11,272응답과 historical5제품21,815행은 별도의 source/�
 - E2-03 required/reuse inventory, E1-03 issued admissions, I0-02 matching runner/daemon/proof
 - 제품별 native indexed scope와 config/service/binary identity, fresh external roots
 - Gin20 및 ARB 원문17/88 부분과 adapted88 historical 범위를 구별한 input manifest
+
+## 2026-10-04 source107 bat 실제 실행과 평가 거절
+
+- `FAILED`: clean source107에서 `uv run --frozen --extra dev python tools/benchmark/retrieval/run.py pair --spec /private/tmp/qi-p0-plan-v1/bat.json`를 실행했다. producer exit2이며 `complete scored file comparison lacks ordered, judged semble-lexical-file rows`로 평가 단계에서 거절됐다. spec·prepared input hashes와 source는 실행 전후 동일했다.
+- `/private/tmp/qi-p0-v1/bat.staging`에 Quanta20 lexical rows(`capped`)와 Semble20 lexical-file rows(`success`), 각21 timing observations(cold1+measured20)가 남았다. 판정되지 않은 `(task_id,path)`는 Semble22/14tasks, Quanta34/16tasks, 합집합51쌍이다. 이 거절은 관측된 index 결함이나 0점 판정이 아니다.
+- 최종 `run-manifest.json`, protocol-lock, verdict 및 promoted output root가 없다. 따라서 PAIR_VALID·warmup parity·최종 제품 비교 PASS로 재사용하지 않는다. route별 projected suite와 기존 `holdout_review.capture_review_pool`로 raw를 재검증해 미판정 리뷰 입력을 발행하는 단계만 가능하다.
+- 실제 supplemental 판단 후 새 merged suite/pack/receipt/admission을 발행하고 fresh final pair를 실행해야 한다. suite/pack identity가 달라지는 새 epoch에 기존 staging record를 최종 증거로 이식하지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
 
