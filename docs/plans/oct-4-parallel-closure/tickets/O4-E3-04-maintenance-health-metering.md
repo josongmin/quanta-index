@@ -25,7 +25,7 @@
 ## 2026-10-04 fatal ownership와 supervisor terminal 수리
 
 - active disk-meter mutex poison/중복 budget/owner 소실은 typed Storage error와 영속 fatal 상태를 남긴다. poisoned cancel handle은 cleanup 목적으로만 회복하며 이후 heartbeat를 healthy로 반환하지 않는다.
-- timer가 owned `DiskMeterJoinGuard`를 보유한다. 정상 종료와 callback unwind 모두 sender close→budget cancel→worker join을 완료한 뒤 timer thread가 종료된다. worker panic, owner 소실, terminal report 누락은 정상 `Completed`로 변환되지 않는다.
+- timer가 owned `DiskMeterJoinGuard`를 보유한다. 정상 종료와 callback unwind 모두 budget cancel·sender close·worker join을 완료한 뒤 timer thread가 종료된다. worker panic, owner 소실, terminal report 누락은 정상 `Completed`로 변환되지 않는다.
 - 기존 `ChildExitKind`를 원래 timer의 terminal channel로 supervisor에 전달한다. 실제 timer panic은 `Panicked`, worker/ownership fatal은 `Failed`, 정상 cooperative join은 `Completed`다. 별도 감시 thread나 새 terminal enum을 추가하지 않았다.
 - `VERIFIED`: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd --lib --all-features --locked -E 'test(/^app::(maintenance|supervisor)::/)' --success-output final` — exit0, 13 selected/13 passed/97 filtered, tests0.174s. controlled worker panic, poison, terminal 없음, 실제 filesystem walker가 시작한 뒤 timer callback panic, long walk 동안 heartbeat, handoff/정상 stop을 포함한다. source는 `561e5eb96c3fa52fa863d721b48447f047b110e8`의 maintenance/supervisor이며 동시 dirty SDK/harness 테스트는 이 selector의 입력이 아니다.
 - runtime supervisor drain 및 실제 daemon/process owner의 후속 실행은 진행 중이다. 위 unit 결과는 OS-child slow-disk injection이나 전체 daemon qualification이 아니다.

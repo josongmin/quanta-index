@@ -1,7 +1,7 @@
 //! The composition root's maintenance timer (QI-BB-016, QI-BB-015).
 //!
-//! One bounded thread, owned by the runtime and stopped with it, ticks on
-//! the configured cadence and does two things no request path does:
+//! The runtime owns a timer and its bounded disk-meter worker. The timer
+//! ticks on the configured cadence and does work no request path does:
 //!
 //! - sweeps the lexical writer cache for writers nothing has touched for
 //!   the policy's idle interval, so a producer that stops mid-generation
@@ -13,8 +13,8 @@
 //!   the bytes of sealed generations are re-proven off the serving path
 //!   without a second maintenance thread.
 //!
-//! Everything the timer does is counted, and a failed sweep or walk is a
-//! counted failure the next tick retries, never a silent stop.
+//! Ordinary sweep and walk errors are counted and retried. Worker panic or
+//! lost ownership persists a fatal readiness failure and ends the timer.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender, TrySendError};
