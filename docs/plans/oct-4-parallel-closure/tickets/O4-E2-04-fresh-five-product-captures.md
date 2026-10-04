@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | source0e6 bat409 warmup1 actual pair40/40·PAIR_VALID/Contract/SDK `VERIFIED`, 독립 verdict replay 진행. source107 미판정51쌍 실패는 과거 scope. 새 native3·required matrix·정식 qualification 미완료 |
+| 실행 상태 | source0e6 bat409 warmup0/1 각40/40·독립 verdict 및 native3 실제60요청/독립 raw replay `VERIFIED`. full warmup parity·5제품 join 실행 중; required matrix·정식 qualification 미완료 |
 | 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-02](O4-E2-02-external-index-universe.md), [O4-E2-03](O4-E2-03-required-cells-and-scheduling.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -43,6 +43,8 @@ Quanta33캡처/11,272응답과 historical5제품21,815행은 별도의 source/�
 - 후속 warmup1 producer `VERIFIED`: 실제 exit0, input binding 전후 동일, `/private/tmp/qbw1/bat`으로 atomic promotion됐다. verdict는 selected/executed/passed40/40/40, failed0, PAIR_VALID/CONTRACT_GREEN/SDK_PATH_GREEN pass, QUALITY_DELTA not_applicable(`attested_only`), PERF_QUALIFIED not_applicable(`no_speed_claim`)다. Quanta20 capped/Semble20 success를 정상 status 의미로 유지했다. 독립 `run.py verdict`를 별도 외부 replay path에서 실행 중이며 아직 그 통과를 주장하지 않는다.
 - 동일 source/suite/pack/binaries의 warmup0 control을 `/private/tmp/qpbw0/bat.json`→`/private/tmp/qbw0/bat`에서 실행 중이다. 차이는 warmup 횟수/output root/run ID3개뿐이고 warmup0 정책 채택이나 속도 qualification을 발행하지 않는다.
 - warmup1 독립 `run.py verdict` 후속 `VERIFIED`: exit0, producer verdict와 JSON equality를 확인했다. SHA `ae4e4ee7ab23d359bf76e46e6889f481e589929dfcb475233da0e1bef86d58a4`,40/40passed·failed0·동일5states다. source0e6 새 native3 spec은 `/private/tmp/qi-native-bat-0e6-spec-v1.json` SHA `f60ce4c1bcd0bdcb07344e740f3078dfbf638e9a09968a11381273e592d39e5e`로 suite/pack409를 참조하며 actual capture는 아직 NOT_RUN이다.
+- 후속 warmup0 actual pair 및 독립 verdict `VERIFIED`: producer/replay 각각 exit0,40/40passed·failed0, `/private/tmp/qbw0/bat/verdict.json`과 replay JSON이 일치했다. replay SHA `20a65be9b453f0e97cec710aff6ed0589de7cfd99ccc2761062ffd0e2bee5b7a`다. full protocol/phase/normalized parity는 별도 실행 중이며 두 producer 성공만으로 정책을 채택하지 않는다.
+- 후속 current native3 `VERIFIED`: 위 spec으로 canonical collector 실제 실행 및 `--verify /private/tmp/qnb0e6/bat`가 각각 exit0이고 verifier stdout JSON과 saved capture가 일치했다. SG/OG 각각 HTTP200 20/20, cs exit0 20/20, completed response60/60, error0이며 세 제품의 returned-file 합계는 각각0이다. SG79-file owned native stored-document scope와 OG79-file served indexed view가 결속됐고 whole indexed-universe attestation은false다. 이 empty NL 결과는 실행 실패나 whole-universe qualification으로 바꾸지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
 

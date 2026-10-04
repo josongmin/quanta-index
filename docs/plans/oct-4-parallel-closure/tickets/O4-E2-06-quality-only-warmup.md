@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_AND_CONFIG` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | source0e6 bat409 warmup1 pair40/40·독립 verdict replay `VERIFIED`; matching warmup0 actual control 실행 중. source107 unjudged 실패는 과거 scope. 실제0/1 parity와 warmup0 정책 채택은 미완료 |
+| 실행 상태 | source0e6 bat409 warmup0/1 각40/40·독립 verdict replay `VERIFIED`; full normalized/protocol/phase parity 실행 중. source107 unjudged 실패는 과거 scope. warmup0 정책 채택은 미완료 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -27,6 +27,8 @@ run.py는 query_warmup_passes=0을 이미 허용하고 qualified speed는 1회 �
 
 - source107 bat warmup0 actual capture는 두 시스템 각20 measured rows/cold1 timing observations까지 남았지만, 미판정51쌍으로 complete-scored comparison이 거절되어 canonical final manifest/verdict가 없다. 이 failed staging은 완성된 warmup0 root 또는 parity PASS가 아니다.
 - `/tmp/quanta-e2-warmup-parity-readback-20261004-v3.py`는 single repository/first8/first9/all12를 정확한 selected inventory로 검사하도록 준비됐다. original와 fresh verdict replay, PAIR_VALID/Contract/SDK, normalized task/repetition별 score bits/order/status, 각 protocol의 timing ledger를 요구한다. 실제 비교는 `NOT_RUN`이다.
+- 후속 source0e6 bat409의 `/private/tmp/qbw1/bat`과 `/private/tmp/qbw0/bat` actual pair 및 standalone verdict replay가 모두 exit0이다. 각40rows/failed0·PAIR_VALID/Contract/SDK pass이며 producer/replay JSON equality를 확인했다. preliminary canonical completed-output digest40개는 task/repetition별로 일치했다.
+- `/private/tmp/qi-bat-warmup-parity-0e6-input-v1.json` SHA `3bea3a9e690d45ffa7ae054e52f7a40a720609209e286d1aa8c5ecc81c3aafe0`로 v3 full readback을 실제 실행 중이다. spec differences3개(warmup/output/run ID), 각 protocol/timing ledger와 fresh verdict 재계산을 함께 요구한다. 완료 전에는 full parity·정책 채택·속도 절감을 주장하지 않는다.
 - 검수 후보 확보를 위한 새 exploratory pair는 claims/admission authority를 낮춘 별도 fresh capture로 실행할 수 있다. strict scoring guard를 제거하거나 failed qualified root를 승격하는 방법으로 사용하지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지

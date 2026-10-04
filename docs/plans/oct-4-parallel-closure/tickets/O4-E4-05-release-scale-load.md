@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P2 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | ANN 수리 집중8·affected97·Clippy 및 최종source0e6 release build·large4096 OS restart·300s/256MiB lifecycle `VERIFIED`; default large30s timeout `FAILED`. source107 small/medium/load는 과거 scope; 다른 tier·qualified performance 미완료 |
+| 실행 상태 | 최종source0e6 ANN97·Clippy·release·4096 OS restart·large300s/256MiB 및 기본 small16/medium256 lifecycle `VERIFIED`; default large30s timeout `FAILED`. xlarge 실행 중, current load·qualified performance 미완료 |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E4-01](O4-E4-01-index-phase-profile.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -71,6 +71,8 @@
 - 후속 large diagnostic `VERIFIED`: 위 actual producer exit0, 독립 `/tmp/qi-e4-readback-v3.py scale ... --tier large --source-revision 0e6c7e7e9494b63fdb33f4594df059817459d3b1 --client-timeout-ms 300000 --history-max-bytes 268435456 --exit-code 0`도 exit0/`SUMMARY_CONSISTENT_DIAGNOSTIC_ONLY`다.4096files/16repos, result10, passed=true,10 lifecycle resource phases가 결속됐다. build49287.270ms, activate840.024ms, first query10.956ms, warm p5010.463ms, delta6534.184ms, noop seal6937.084ms, delete seal6942.890ms, same-process reopen1141.540ms였다. sampled disk high-water1phase가 typed unavailable이고 physical I/O/true peak·quiet-host speed qualification은 아니다. 기존 source107 delete-seal 실패는 보존한다.
 - 별도 default large actual root `/private/tmp/qi-scale-large-default-0e6-v1/result`를 같은 binary/seed에서 overrides 없이 시작했다. effective30s/16MiB 프로파일 결과는 아직 미완료이며 diagnostic 성공으로 대체하지 않는다.
 - 후속 default large `FAILED`: actual producer exit1, refusal stage `build_seal`, `ipc Read timed out after 30000 ms`다. v3 독립 readback은 exit2/`REFUSED_OR_FAILED_UNQUALIFIED`, effective30s/16MiB와 source0e6을 확인했다. 기본 capacity gate는 통과하지 않았고 history 단계나 이후 lifecycle을 합성하지 않는다. 이 failure의 root와 source107의 원 실패는 별도로 보존한다.
+- 후속 source0e6 기본 small/medium `VERIFIED`: `/tmp/qi-e4-0e6-release-capture-v1.py scale --tier small|medium --root /private/tmp/qi-scale-small-0e6-v1|qi-scale-medium-0e6-v1`의 두 producer/independent v3 readback은 모두 exit0, source/binary 전후 동일, `SUMMARY_CONSISTENT_DIAGNOSTIC_ONLY`다. small16files/6phases/build966.258ms, medium256files/10phases/build4957.117ms, 둘 다 result10·effective30s/16MiB·2generations다. typed sampled high-water unavailable4/6은 유지하며 physical I/O/true peak/정식 speed를 주장하지 않는다.
+- matching binary의 default xlarge32768 actual run을 fresh `/private/tmp/qi-scale-xlarge-0e6-v1`에서 시작했다. source107의 posting-cap refusal을 current 결과로 이식하지 않는다. current open-loop는 이 시점 NOT_RUN이다.
 
 ## 착수 입력과 실제 tier 실행
 
