@@ -1703,7 +1703,8 @@ def validate_parent_phase_profile(profile: object) -> dict:
     }:
         raise AdapterError("Semble parent phase profile shape differs")
     if (
-        profile["schema_version"] != 1
+        type(profile["schema_version"]) is not int
+        or profile["schema_version"] != 1
         or profile["boundary"] != "adapter_entry_to_metrics_assembly"
         or profile["clock"] != "parent_monotonic_ns"
         or profile["excluded"] != ["cli_import_and_argument_parsing", "manifest_write_and_print"]

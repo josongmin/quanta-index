@@ -219,7 +219,7 @@ fn main() -> ExitCode {
     };
     for measurement in &measurements {
         println!(
-            "scale[{}]: seed={} serving_owners=1 source_repos={} files={} build_ms={:.3} activation_ms={:.3} first_query_ms={:.3} warm_p50_ms={:.3} daemon_cold_open_ms={} adapter_open_ms={:.3} plan_ms={:.3} execute_ms={:.3} update_ms={:.3} reclaimed_bytes={} results={}",
+            "scale[{}]: seed={} serving_owners=1 source_repos={} files={} build_ms={:.3} activation_ms={:.3} first_query_ms={:.3} warm_p50_ms={:.3} daemon_cold_open_ms={} adapter_open_ms={:.3} plan_ms={:.3} execute_ms={:.3} update_ms={:.3} noop_seal_ms={:.3} noop_activation_ms={:.3} reclaimed_bytes={} results={}",
             measurement.tier.as_str(),
             measurement.seed,
             measurement.source_repo_count,
@@ -233,6 +233,8 @@ fn main() -> ExitCode {
             measurement.adapter.plan_ms,
             measurement.adapter.execute_ms,
             measurement.delta.update_ms,
+            measurement.noop.seal_ms,
+            measurement.noop.activation_ms,
             measurement.delta.reclaimed_bytes,
             measurement.result_count,
         );

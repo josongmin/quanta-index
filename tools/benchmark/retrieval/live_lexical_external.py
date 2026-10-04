@@ -473,8 +473,7 @@ def _validate_completed_row(row: dict) -> None:
         type(row.get("elapsed_ms")) not in (int, float)
         or not math.isfinite(row["elapsed_ms"])
         or row["elapsed_ms"] < 0
-        or
-        timing["boundary"] != COMPLETED_BOUNDARY
+        or timing["boundary"] != COMPLETED_BOUNDARY
         or timing["clock"] != COMPLETED_CLOCK
         or type(timing["duration_ns"]) is not int
         or timing["duration_ns"] < 0

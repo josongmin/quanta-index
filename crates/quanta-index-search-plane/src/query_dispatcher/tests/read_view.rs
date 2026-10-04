@@ -23,6 +23,7 @@ use quanta_index_core::{
 };
 
 use crate::Ledger;
+use crate::PreparedSearchCorpusGenerationV1;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::{
     ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_PRODUCER_UNAVAILABLE,
@@ -41,7 +42,7 @@ use crate::query_dispatcher::tests::support::semantic::{
     RecordingSemanticOpener, RecordingSemanticState,
 };
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
-use crate::{PreparedSearchCorpusGenerationV1, SearchCorpusHistoryRetentionReceiptV1};
+use crate::readiness::SearchCorpusHistoryRetentionReceiptV1;
 
 /// A dispatcher over recording lexical and semantic openers and `ledger`.
 fn recording_dispatcher(
@@ -124,14 +125,12 @@ fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() 
         Arc::clone(&catalog),
     );
     let release_retention = Arc::new(Barrier::new(2));
-    let retention_done = Arc::new(Barrier::new(2));
     let mutation = {
         let catalog = Arc::clone(&catalog);
         let ledger = Arc::clone(&ledger);
         let repo = g1.repo_id.clone();
         let revision = g1.revision_id.clone();
         let release_retention = Arc::clone(&release_retention);
-        let retention_done = Arc::clone(&retention_done);
         std::thread::spawn(move || -> Result<(), String> {
             release_retention.wait();
             let mut previous = g1_head.active;
@@ -166,16 +165,12 @@ fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() 
                     &receipt,
                 )
                 .map_err(|error| error.to_string())?;
-            retention_done.wait();
             Ok(())
         })
     };
     release_retention.wait();
-    // Never wait forever if the mutation failed before signalling the second
-    // barrier: join its terminal result before trying to acquire the view.
-    // The completion barrier is only reached on success; use the thread's
-    // completion itself as the second deterministic rendezvous.
-    let _ = retention_done;
+    // The completed mutation thread is the second rendezvous. A failure
+    // returns instead of leaving the view acquisition waiting on a barrier.
     mutation.join().map_err(|_| "retention thread panicked")??;
     let request = ReadViewRequestV1::new(
         "lexical",
@@ -186,8 +181,10 @@ fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() 
         .acquire_read_view(&request, &RequestBudgetV1::unbounded())
         .err()
         .ok_or("reaped G1 unexpectedly acquired a read view")?;
-    if !matches!(refusal, CoreError::Typed { .. } | CoreError::NotReady(_)) {
-        return Err(format!("unexpected reaped-generation refusal: {refusal:?}").into());
+    match refusal {
+        CoreError::Typed { code, .. }
+            if code == quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration => {}
+        other => return Err(format!("expected UNKNOWN_GENERATION, got {other:?}").into()),
     }
     let opened = lexical_state.lock().map_err(|error| error.to_string())?;
     if !opened.opened_pins.is_empty() {

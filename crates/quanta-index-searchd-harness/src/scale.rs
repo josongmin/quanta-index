@@ -839,6 +839,14 @@ pub struct DeltaMeasurementV1 {
     pub reclaimed_bytes: u64,
 }
 
+/// A successor generation with no source replacements or tombstones. It still
+/// seals and activates a new publication event; this is not a zero-cost call.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoOpMeasurementV1 {
+    pub seal_ms: f64,
+    pub activation_ms: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeleteReopenMeasurementV1 {
     pub delete_seal_ms: f64,
@@ -877,6 +885,7 @@ pub struct TierMeasurement {
     pub daemon: DaemonPhaseTimingV1,
     pub adapter: AdapterPhaseTimingV1,
     pub delta: DeltaMeasurementV1,
+    pub noop: NoOpMeasurementV1,
     pub result_count: usize,
     pub model_revision: Option<String>,
     /// Effective client request deadline; raising it does not raise daemon
@@ -1728,6 +1737,38 @@ fn measure_delta(
     ))
 }
 
+fn measure_noop(
+    rt: &mut E2eRuntime,
+) -> AnyResult<(NoOpMeasurementV1, BTreeMap<&'static str, PhaseResourceV1>)> {
+    let expected_generation = rt.current_generation();
+    let (seal_ms, seal_resource) = observe_phase(|| {
+        let started = Instant::now();
+        let sealed = rt
+            .seal()
+            .map_err(|error| ScaleStageError::operation("noop_seal", error))?;
+        if sealed != expected_generation {
+            anyhow::bail!("scale: no-op seal published the wrong generation");
+        }
+        Ok(elapsed_ms(started))
+    })?;
+    let (activation_ms, activation_resource) = observe_phase(|| {
+        let started = Instant::now();
+        rt.activate_last_sealed_generation()
+            .map_err(|error| ScaleStageError::operation("noop_activate", error))?;
+        Ok(elapsed_ms(started))
+    })?;
+    let mut phases = BTreeMap::new();
+    record_phase(&mut phases, "noop_seal", seal_resource)?;
+    record_phase(&mut phases, "noop_activate", activation_resource)?;
+    Ok((
+        NoOpMeasurementV1 {
+            seal_ms,
+            activation_ms,
+        },
+        phases,
+    ))
+}
+
 /// Measure the SMALL tier phase by phase.
 ///
 /// Boot, seed, seal, activate, query cold and warm, open the generation
@@ -1835,7 +1876,16 @@ fn measure_small_tier_with_config(
             .map_err(|error| stage_or_preserve("adapter", error))?;
         let (delta, delta_resources) =
             measure_delta(&mut rt, seed).map_err(|error| stage_or_preserve("delta", error))?;
+        let (noop, noop_resources) =
+            measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
+        let after_noop =
+            served_query(&mut rt).map_err(|error| stage_or_preserve("noop_verify", error))?;
+        require_result_count(after_noop, expected_results, "no-op query")
+            .map_err(|error| stage_or_preserve("noop_verify", error))?;
         let mut phase_resources = delta_resources;
+        for (name, observation) in noop_resources {
+            record_phase(&mut phase_resources, name, observation)?;
+        }
         record_phase(&mut phase_resources, "full_ingest_seal", build_resource)?;
         record_phase(&mut phase_resources, "full_activate", activation_resource)?;
 
@@ -1861,6 +1911,7 @@ fn measure_small_tier_with_config(
             },
             adapter,
             delta,
+            noop,
             result_count,
             model_revision,
             client_request_timeout_ms: effective_timeout_ms,
@@ -2092,10 +2143,20 @@ pub fn measure_tier_with_runtime_config(
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
         verify_scoped_repositories(&mut rt, &oracle)
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
+        let (noop, noop_resources) =
+            measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
+        let after_noop = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
+        let _noop_result_count = validate_scoped_response(&oracle, None, &after_noop)
+            .map_err(|error| stage_or_preserve("noop_verify", error))?;
+        verify_scoped_repositories(&mut rt, &oracle)
+            .map_err(|error| stage_or_preserve("noop_verify", error))?;
         let (delete_reopen, delete_resources) =
             measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)
                 .map_err(|error| stage_or_preserve("delete_reopen", error))?;
         let mut phase_resources = delta_resources;
+        for (name, observation) in noop_resources {
+            record_phase(&mut phase_resources, name, observation)?;
+        }
         for (name, observation) in delete_resources {
             record_phase(&mut phase_resources, name, observation)?;
         }
@@ -2124,6 +2185,7 @@ pub fn measure_tier_with_runtime_config(
             },
             adapter,
             delta,
+            noop,
             result_count,
             model_revision,
             client_request_timeout_ms: effective_timeout_ms,
@@ -2438,6 +2500,11 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
             "activation_with_reclaim_ms": measurement.delta.activation_with_reclaim_ms,
             "reclaimed_bytes": measurement.delta.reclaimed_bytes,
         },
+        "noop": {
+            "seal_ms": measurement.noop.seal_ms,
+            "activation_ms": measurement.noop.activation_ms,
+            "scope": "new source publication event and generation with no source replacement or tombstone; result parity checked after activation",
+        },
         "delete_reopen": measurement.delete_reopen.map(|timing| json!({
             "delete_seal_ms": timing.delete_seal_ms,
             "delete_activation_ms": timing.delete_activation_ms,
@@ -2511,12 +2578,20 @@ pub fn artifact(
     if measurement.cpu.is_none() {
         anyhow::bail!("scale: measured tier has no process CPU observation");
     }
+    if ![measurement.noop.seal_ms, measurement.noop.activation_ms]
+        .iter()
+        .all(|value| value.is_finite() && *value >= 0.0)
+    {
+        anyhow::bail!("scale: measured tier has invalid no-op timings");
+    }
     let expected_phases: &[&str] = if measurement.tier == ScaleTier::Small {
         &[
             "full_ingest_seal",
             "full_activate",
             "delta_ingest_seal",
             "delta_activate",
+            "noop_seal",
+            "noop_activate",
         ]
     } else {
         &[
@@ -2525,6 +2600,8 @@ pub fn artifact(
             "full_activate",
             "delta_ingest_seal",
             "delta_activate",
+            "noop_seal",
+            "noop_activate",
             "delete_seal",
             "delete_activate",
             "same_process_reopen",
@@ -3631,11 +3708,17 @@ mod tests {
                 ("full_ingest_seal", sample_resource.clone()),
                 ("full_activate", sample_resource.clone()),
                 ("delta_ingest_seal", sample_resource.clone()),
-                ("delta_activate", sample_resource),
+                ("delta_activate", sample_resource.clone()),
+                ("noop_seal", sample_resource.clone()),
+                ("noop_activate", sample_resource),
             ]
             .into_iter()
             .collect(),
             delete_reopen: None,
+            noop: NoOpMeasurementV1 {
+                seal_ms: 0.2,
+                activation_ms: 0.1,
+            },
             tier: ScaleTier::Small,
             seed: 3,
             file_count: 16,
@@ -3684,6 +3767,13 @@ mod tests {
         let mut missing = sample_measurement();
         let _removed = missing.phase_resources.remove("delta_activate");
         assert!(artifact(&missing, head.clone(), host.clone()).is_err());
+        let mut missing_noop = sample_measurement();
+        let _removed = missing_noop.phase_resources.remove("noop_seal");
+        assert!(artifact(&missing_noop, head.clone(), host.clone()).is_err());
+
+        let mut invalid_noop = sample_measurement();
+        invalid_noop.noop.activation_ms = f64::NAN;
+        assert!(artifact(&invalid_noop, head.clone(), host.clone()).is_err());
 
         let mut nonfinite = sample_measurement();
         nonfinite
@@ -3734,6 +3824,8 @@ mod tests {
         assert_eq!(tier["daemon_phases_ms"]["cold_open_ms"], 1.0);
         assert_eq!(tier["adapter_only_phases_ms"]["execute_ms"], 0.05);
         assert_eq!(tier["delta"]["reclaimed_bytes"], 8_000);
+        assert_eq!(tier["noop"]["seal_ms"], 0.2);
+        assert_eq!(tier["noop"]["activation_ms"], 0.1);
         assert_eq!(tier["client_request_timeout_ms"], 30_000);
         assert!(tier["requested_client_request_timeout_ms"].is_null());
         assert_eq!(tier["history_max_bytes"], HARNESS_HISTORY_MAX_BYTES);
