@@ -142,7 +142,9 @@ def test_external_join_replays_each_root_before_and_after_existing_scorer(tmp_pa
 
 
 @pytest.mark.parametrize("fault", ["missing_product", "selection", "suite", "pack", "source"])
-def test_external_join_refuses_independent_coverage_and_binding_faults(tmp_path, monkeypatch, fault):
+def test_external_join_refuses_independent_coverage_and_binding_faults(
+    tmp_path, monkeypatch, fault
+):
     from tools.benchmark.retrieval import lexical_file_comparison as owner
     from tools.benchmark.retrieval import live_lexical_external as live
 
@@ -498,13 +500,14 @@ def test_native_nl_file_tasks_refuse_missing_mixed_or_wrong_unit_contract(tmp_pa
 
 
 def test_native_file_lock_accepts_nl_file_but_refuses_nl_chunk_policy():
-    assert _file_policy_from_lock(
-        {"execution_profiles": {"quanta": {"policy": "natural_language_file"}}}
-    ) == "natural_language_file"
-    with pytest.raises(ValueError, match="supported file policy"):
+    assert (
         _file_policy_from_lock(
-            {"execution_profiles": {"quanta": {"policy": "natural_language"}}}
+            {"execution_profiles": {"quanta": {"policy": "natural_language_file"}}}
         )
+        == "natural_language_file"
+    )
+    with pytest.raises(ValueError, match="supported file policy"):
+        _file_policy_from_lock({"execution_profiles": {"quanta": {"policy": "natural_language"}}})
 
 
 def test_file_diagnostic_accepts_small_repository_cell_but_refuses_empty(tmp_path):

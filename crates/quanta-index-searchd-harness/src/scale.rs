@@ -2152,10 +2152,15 @@ mod tests {
         })?;
         let owner = runtime.repo();
         runtime.ingest_text(owner.as_str(), "source.rs", "fn budget_fixture() {}\n")?;
-        let error = runtime.seal().expect_err("one byte cannot retain a lexical generation");
+        let error = runtime
+            .seal()
+            .expect_err("one byte cannot retain a lexical generation");
         let message = format!("{error:#}");
         runtime.stop()?;
-        assert!(message.contains("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED"), "{message}");
+        assert!(
+            message.contains("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED"),
+            "{message}"
+        );
         Ok(())
     }
 
