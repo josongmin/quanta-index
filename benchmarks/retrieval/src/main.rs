@@ -1895,7 +1895,37 @@ mod tests {
             serde_json::json!({
                 "schema_version": 1,
                 "retrieval_diagnostic_schema_version": DIAGNOSTIC_SCHEMA_VERSION,
+                "completed_response_output_validation": REQUIRED_RESPONSE_OUTPUT_VALIDATION,
             })
+        );
+    }
+
+    #[test]
+    fn repeated_measurement_requires_the_same_normalized_response() {
+        let mut ledger = MeasuredOutputLedger::default();
+        ledger
+            .observe("T1", "lexical", "cold", 0, "different")
+            .expect("cold does not establish measured baseline");
+        ledger
+            .observe("T1", "lexical", "measured", 0, "first")
+            .expect("first measured response establishes baseline");
+        ledger
+            .observe("T1", "lexical", "measured", 1, "first")
+            .expect("same required response may repeat");
+        assert!(
+            ledger
+                .observe("T1", "lexical", "measured", 2, "second")
+                .is_err_and(|error| error.to_string().contains("changed across repetitions"))
+        );
+        assert!(
+            ledger
+                .observe("T2", "lexical", "measured", 1, "first")
+                .is_err_and(|error| error.to_string().contains("no first-iteration baseline"))
+        );
+        assert!(
+            ledger
+                .observe("T1", "lexical", "measured", 0, "first")
+                .is_err_and(|error| error.to_string().contains("duplicate first measured"))
         );
     }
 

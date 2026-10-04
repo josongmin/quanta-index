@@ -3429,3 +3429,70 @@ with a new output root. The strict collection validator remains unchanged.
   confirmed live. Partial decisions do not increase issued counts. Final full
   admission, reviewed five-product capture and equal-API repeated performance
   remain **NOT_RUN**. Actual AI provenance remains explicit and unqualified.
+
+### 2026-10-04: admission closure, review restart and native NL grammar repair
+
+- **VERIFIED**, actual canonical issuance now covers bat, lo, mocha and zustand:
+  **80/240 tasks**, **1,683 expanded file judgments**. Original returned-pair
+  coverage is **343/1,324**, leaving 981 original pairs and 160 tasks unissued.
+  Rechecked all four suite bytes against their validation digests. Partial role
+  decisions are excluded from these totals; all reviewers are explicitly AI.
+- **VERIFIED**, full canonical `verify_admission_bundle` for lo, mocha and
+  zustand at clean `ee764318`, taking 272.424s, 372.738s and 429.365s respectively.
+  Rechecked each result's 16 input hashes. This closes those input gates only,
+  not product quality, human attestation or performance. Bat's full admission
+  subsequently passed in **347.290s**, with 20 tasks and 358 file judgments.
+  Four repository input bundles are now verified at that pinned source.
+- **FAILED**, the actual review chain stopped at uvicorn reviewer-2 batch 003:
+  `uvicorn.nl.19` / `uvicorn/_subprocess.py` was marked unresolved. Preserve
+  that raw call and refusal. The unchanged reviewer retried it as `003.retry-1`;
+  actual model provenance validates all 51 decisions, with the target now grade
+  1 and resolved. Other batches and adjudication still must finish before
+  uvicorn issuance. A new external orchestration wrapper isolates terminal
+  repository failures while continuing independent repositories. It does not
+  issue partial labels or weaken the unresolved guard.
+- **VERIFIED**, retained lo product executions: Quanta and Semble each executed
+  20 queries and returned ten distinct files for every query. Quanta's 20
+  `capped` rows are not execution failures. **FAILED**, complete scoring because
+  Semble returned 41 new unjudged task/file pairs across 19 tasks. The blinded
+  supplemental source pool is prepared, not judged. Wait for all external
+  outputs, review the new candidate union, then issue new immutable qrels.
+- The NL file-policy repair is committed as `6111c384`; focused contract
+  rechecks pass 5/5. The new native run at clean `d24747e4` passed task admission
+  and made actual requests, then **FAILED** at OpenGrok `lo.nl.07` HTTP400.
+  Retained partial rows are Sourcegraph 7, OpenGrok 6 and cs 6; these are not a
+  complete capture or score denominator.
+- Two controlled HTTP calls on the same frozen task establish raw query
+  HTTP400 versus literal-escaped query HTTP200. Lucene reserves forward slash
+  for regex and punctuation for query syntax. OpenGrok NL capture now escapes
+  those characters and quotes standalone AND/OR/NOT data only under the explicit
+  `natural_language_file_search` contract. Preserve original query bytes,
+  record effective `request_query`/mode and derive them again during replay.
+  Native syntax requests remain unchanged. Fixed escape goldens and direct
+  capture/replay tests pass 4/4; the three-product NL fixture passes 1/1.
+  Whole external-adapter command subsequently passed **90/90 in 143.46s**.
+  The first new full fixture was refused because its legacy chunk routes were
+  inconsistent with the declared file mode; fixing only the fixture route and
+  intent preserved the strict production guard. Native grammar repair is
+  committed in `c081a3ae`; fixture/format integration is in `499654fe`.
+- External roots below `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`:
+  `nl-final-admission-ee764318-2tnvgwzh/`,
+  `c3-shared-source-two-pass-tm8zadsm/`,
+  `c3-review-resume-isolated-nuaeah69/`,
+  `c3-reviewed-lo-pair-ee764318-y1v87ih4/`,
+  `c3-reviewed-lo-native-d24747e4-8rsor3db/`,
+  `opengrok-nl-grammar-control-lapj1kwd/`,
+  `c3-lo-supplemental-pool-9455fvbb/`.
+- Remaining: actual 160-task review/adjudication/issuance, supplemental returned
+  paths, full admission on the final common execution source, fresh reviewed
+  five-product capture/replay and controlled complete-public-API timing.
+  Existing ee764318 Contract/SDK evidence cannot attest later source changes.
+  B09's completed 4,363-query typo cohort and B07's busy-host timing/scale work
+  are distinct scopes and are not merged into this C3 result.
+
+- Uvicorn reviewer-2 subsequently refused batch 006 for a different unresolved
+  file (`uvicorn.nl.12`, `uvicorn/supervisors/multiprocess.py`). The isolated
+  pipeline preserved that terminal failure and started cli. A distinct uvicorn
+  retry reuses the five preceding validated batches; neither repository can
+  issue until its complete actual review and adjudication passes. The isolated
+  retry root is `c3-uvicorn-final-batch-retry-y0_u89jp/`.

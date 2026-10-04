@@ -7,31 +7,43 @@ use crate::{BenchError, BenchResult, sha256_hex};
 /// The timing-independent result representation shared with the Python phase
 /// reader. Only candidate scores may be floating point; their IEEE-754 bits
 /// are rendered as fixed-width lowercase hex before canonical JSON encoding.
-pub const REQUIRED_RESPONSE_OUTPUT_VALIDATION: &str =
-    "normalized_row_score_bits_sha256_v1";
+pub const REQUIRED_RESPONSE_OUTPUT_VALIDATION: &str = "normalized_row_score_bits_sha256_v1";
 
 pub fn required_response_sha256(row: &Value) -> BenchResult<String> {
+    Ok(sha256_hex(
+        required_response_canonical_json(row)?.as_bytes(),
+    ))
+}
+
+fn required_response_canonical_json(row: &Value) -> BenchResult<String> {
     let mut normalized = row.clone();
-    let object = normalized.as_object_mut().ok_or_else(|| {
-        BenchError::Protocol("required response is not an object".to_string())
-    })?;
+    let object = normalized
+        .as_object_mut()
+        .ok_or_else(|| BenchError::Protocol("required response is not an object".to_string()))?;
     object.remove("timings");
     let candidates = object
         .get_mut("candidates")
         .and_then(Value::as_array_mut)
-        .ok_or_else(|| BenchError::Protocol("required response candidates are missing".to_string()))?;
+        .ok_or_else(|| {
+            BenchError::Protocol("required response candidates are missing".to_string())
+        })?;
     for candidate in candidates {
         let candidate = candidate.as_object_mut().ok_or_else(|| {
             BenchError::Protocol("required response candidate is not an object".to_string())
         })?;
         if let Some(score) = candidate.get_mut("score") {
-            let score_bits = score.as_f64().filter(|value| value.is_finite()).ok_or_else(|| {
-                BenchError::Protocol("required response candidate score is not finite numeric".to_string())
-            })?;
+            let score_bits = score
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| {
+                    BenchError::Protocol(
+                        "required response candidate score is not finite numeric".to_string(),
+                    )
+                })?;
             *score = Value::String(format!("{:016x}", score_bits.to_bits()));
         }
     }
-    Ok(sha256_hex(canonical_json(&normalized)?.as_bytes()))
+    canonical_json(&normalized)
 }
 
 /// Canonical JSON: sorted keys, no whitespace, raw UTF-8, no floats.
@@ -124,12 +136,22 @@ mod tests {
         .expect("fixed response parses");
         let digest = required_response_sha256(&row).expect("fixed response hashes");
         assert_eq!(
+            required_response_canonical_json(&row).expect("fixed response canonicalizes"),
+            r#"{"candidates":[{"path":"café.go","score":"8000000000000000"},{"path":"雪.go","score":"3e7ad7f29abcaf48"},{"path":"b.go","score":"4000000000000000"}],"status":"success","task_id":"Té"}"#
+        );
+        assert_eq!(
             digest,
             "8b1dd6a4b49b147489e1f2a2a4460832df183732852d07982ce2a48f0e0695b5"
         );
         let mut without_timing = row.clone();
-        without_timing.as_object_mut().expect("object").remove("timings");
-        assert_eq!(required_response_sha256(&without_timing).expect("same response"), digest);
+        without_timing
+            .as_object_mut()
+            .expect("object")
+            .remove("timings");
+        assert_eq!(
+            required_response_sha256(&without_timing).expect("same response"),
+            digest
+        );
         assert_eq!(row["candidates"][0]["score"].as_f64(), Some(-0.0));
     }
 

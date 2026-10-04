@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+import struct
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,7 @@ TOKENIZER_BUDGET_VERSION = "qb-v1"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[^\x00-\x20]")
 OUTPUT_UNIT_POLICIES = ("rank_prefix",)
 SPAN_UNIT = "byte_span_with_line_projection_v1"
+COMPLETED_OUTPUT_VALIDATION = "normalized_row_score_bits_sha256_v1"
 
 
 def digest(data: bytes) -> str:
@@ -24,6 +27,48 @@ def canonical(value: Any) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
     ).encode("utf-8")
+
+
+def completed_output_sha256(row: dict) -> str:
+    """Bind normalized output across languages without guessing float formatting.
+
+    Only top-level timing is excluded. Candidate scores retain their exact f64
+    bits; the remaining value uses the existing integer/string JSON domain.
+    """
+    if not isinstance(row, dict) or not isinstance(row.get("candidates"), list):
+        raise ValueError("completed output must be a normalized result row")
+    value = {key: item for key, item in row.items() if key != "timings"}
+    candidates = []
+    for candidate in value["candidates"]:
+        if not isinstance(candidate, dict):
+            raise ValueError("completed output candidate must be an object")
+        candidate = dict(candidate)
+        if "score" in candidate:
+            score = candidate["score"]
+            if type(score) not in (int, float):
+                raise ValueError("completed output score must be finite f64")
+            try:
+                score = float(score)
+            except (OverflowError, ValueError) as exc:
+                raise ValueError("completed output score must be finite f64") from exc
+            if not math.isfinite(score):
+                raise ValueError("completed output score must be finite f64")
+            candidate["score"] = struct.pack(">d", score).hex()
+        candidates.append(candidate)
+    value["candidates"] = candidates
+
+    def reject_floats(item):
+        if isinstance(item, float):
+            raise ValueError("completed output has a float outside candidate score")
+        if isinstance(item, dict):
+            for child in item.values():
+                reject_floats(child)
+        elif isinstance(item, list):
+            for child in item:
+                reject_floats(child)
+
+    reject_floats(value)
+    return digest(canonical(value))
 
 
 def validate_comparison_contract(value: Any, where: str) -> dict[str, Any]:
