@@ -877,14 +877,14 @@ It does not replace pair admission or holdout qualification.
 
 ## Completed response verification
 
-Current captures bind every measured response with
+Current captures bind every timed cold, warmup and measured response with
 `query_timing.output_validation=normalized_row_score_bits_sha256_v1` and a
 per-observation `output_sha256`. Hashing and repetition checks run after the
 completed-response clock ends. The digest excludes only top-level `timings`;
 candidate scores use fixed-width IEEE-754 f64 bits before the existing canonical
 JSON encoding, so Rust and Python do not depend on decimal float formatting.
 
-Later measured repetitions must match the first normalized response, and replay
+All phases must match the first normalized response for each task and route, and replay
 recomputes each digest from the retained result row. A same-size, same-status
 response with different candidates, order or scores cannot qualify. Historical
 timing artifacts remain readable without this marker; they do not establish the

@@ -1101,6 +1101,17 @@ A second source audit found operation failures that still reached
 preserving typed inner stages, primary errors and cleanup failures.
 No new large-tier speed claim is made.
 
+The next independent negative check exposed a narrower remaining hole: cold
+and warmup output digests were present, but only measured digests were compared
+with the normalized row. Two fixed tests changed `a.go` to same-size `b.go`
+only in cold/warmup and both initially failed to reject it. Producer and replay
+validation now binds every timed phase to the same task/route output, including
+the independently retained row's status. Hashing remains after the timer.
+The focused completed-response selector passed 33 tests in 24.49 s; actual
+collection and the broader frozen-source execution remain separate checks.
+Rust phase-ledger and invalid-sidecar no-output tests are being executed after
+the scale owner's admitted slot; no fresh release capture is implied.
+
 ## Execution receipt (2026-09-30)
 
 `NOT_RUN`: host not quiet (load ~26 on 16 cores, concurrent builds). Producer `quanta-index@0d21914e` (clean worktree);

@@ -1,6 +1,8 @@
 {
   "python": [
     "tools.ci.tests.test_completed_response_timing.test_completed_clock_accepts_suite_route_order_and_capped_responses",
+    "tools.ci.tests.test_completed_response_timing.test_completed_clock_binds_cold_and_warmup_to_normalized_output[cold]",
+    "tools.ci.tests.test_completed_response_timing.test_completed_clock_binds_cold_and_warmup_to_normalized_output[warmup]",
     "tools.ci.tests.test_completed_response_timing.test_completed_clock_binds_every_repetition_to_normalized_output",
     "tools.ci.tests.test_completed_response_timing.test_completed_clock_refuses_partial_or_mismatched_proof[<lambda>-boundary]",
     "tools.ci.tests.test_completed_response_timing.test_completed_clock_refuses_partial_or_mismatched_proof[<lambda>-clock]",
@@ -25,7 +27,9 @@
     "tools.ci.tests.test_completed_response_timing.test_phase_digest_rejects_byte_tamper_with_identical_parsed_metrics[qualified-semble]",
     "tools.ci.tests.test_completed_response_timing.test_sdk_timing_children_preserve_outer_clock_and_reject_false_attribution",
     "tools.ci.tests.test_completed_response_timing.test_semble_parent_clock_ends_after_real_normalization",
-    "tools.ci.tests.test_completed_response_timing.test_semble_parent_refuses_changed_later_output_with_same_size_and_status",
+    "tools.ci.tests.test_completed_response_timing.test_semble_parent_refuses_changed_later_output_with_same_size_and_status[cold]",
+    "tools.ci.tests.test_completed_response_timing.test_semble_parent_refuses_changed_later_output_with_same_size_and_status[measured]",
+    "tools.ci.tests.test_completed_response_timing.test_semble_parent_refuses_changed_later_output_with_same_size_and_status[warmup]",
     "tools.ci.tests.test_holdout_review.test_answerable_may_be_outside_the_pooled_candidates",
     "tools.ci.tests.test_holdout_review.test_changed_source_is_refused",
     "tools.ci.tests.test_holdout_review.test_completed_forms_refuse_missing_decisions_or_source_drift[boolean_grade]",
