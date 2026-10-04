@@ -18,6 +18,13 @@
 
 현 run.py는 validate_admission_manifest와 verify_admission_bundle, corpus_binding은 validate_split_manifest를 이미 갖는다. NL-only diagnostic과 mixed-track decision을 구분한다. 과거 C5 4개 stale exclusion은 B08 cohort가 여전히 요구하는 경우에만 새 입력을 발행하며 B09 global12와 합치지 않는다.
 
+## 2026-10-05 canonical verdict readback 비용 관측
+
+- source0e6의 완료 warmup0 manifest를 읽기 전용 `uv run --frozen --extra dev python -m cProfile -o /private/tmp/qi-bat-w0-verdict-profile-20261005-v1.pstats -m tools.benchmark.retrieval.run verdict --repo /Users/songmin/Documents/code-new/qi-s30-b08-holdout-20261002/checkouts/bat --suite /Users/songmin/Documents/code-new/qi-bat-supplemental-admission-0e6-20261005-v2/bat/bat/suite.json --run-manifest /private/tmp/qbw0/bat/run-manifest.json --out /private/tmp/qi-bat-w0-verdict-profile-20261005-v1.json`으로 재생했다. exit0·원본 verdict JSON equality/동일 SHA `20a65be9b453f0e97cec710aff6ed0589de7cfd99ccc2761062ffd0e2bee5b7a`다.
+- profiler total320.566s, admission 검증318.159s/split317.483s, 두 release 검증247.003s였다.22 `freeze_repo`,242 owned Git executions,164,012 file digests와19,824 fingerprints가 관측됐다. mean_ci14calls/0.619s, uncached bootstrap6calls/0.618s다. cumulative parent/child를 합산하지 않는다.
+- 이는 instrumented readback의 비용·call-count 진단이다. 제품 query/index latency·fsync 원인 분리·quiet-host speed·1196-row numeric workload로 일반화하지 않는다. 현재 bat readback의 지배 비용은 complete split의 Git/source replay이며 bootstrap kernel 개선으로 전체 검증 시간을 해결한다는 근거는 없다.
+- 최적화를 선택한다면 기존 source/split authority에서 execution-scoped validated context와 complete source/control recheck를 유지해야 한다. stale cache·mtime-only 판정·검증 생략·실패 producer를 consumer가 보정하는 방법은 사용하지 않는다. 이 관측으로 source/generator/validator를 변경하지 않았으며 prepared0e6 admissions는 그대로 엄격한 replay를 수행한다.
+
 ## 2026-10-04 원본 검수와 current 발행 경계
 
 - first-six의 suite/pack/annotation/adjudication/license/corpus/split 원본 bytes를 결속한 외부 current admission input/issuer를 준비했다. 옛 source-bound admission/result/host/proof를 재사용하지 않으며 fresh matching Contract/SDK proof와 실제 model/cache/environment가 필요하다.
