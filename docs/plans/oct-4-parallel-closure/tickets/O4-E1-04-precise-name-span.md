@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P1 / `CODE_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | name-span producer/scorer 통합·Python owner fixtures `VERIFIED`; 새 실제 symbol capture는 `NOT_RUN` |
+| 실행 상태 | name-span producer/scorer·formal oracles 및 새 Gin4 exact-symbol/name capture·scoring `VERIFIED`; 전체 name/typo scoreboard qualification `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -27,6 +27,16 @@ evaluator에는 indexed_span_diagnostics와 declaration_recall_at_k/declaration_
 - 현재 exact symbol route는 OSA 오타를 교정하지 않는다. 기존 `go_declaration_name_osa1_v1`의 distinct-file scoreboard를 name-span recovery로 환산하지 않는다. 새 실제 SDK symbol capture와 지원 가능한 name lane의 전체 scoreboards는 `NOT_RUN`; fixture 통과를 benchmark 완료로 승격하지 않는다.
 
 ## 착수 입력
+
+## 2026-10-04 Gin4 실제 exact-name 진단
+
+- helper v1은 `responseWriter` receiver 내부의 `Write`를 함수명으로 선택해 witness assertion에서 실패했다. 실제 Go 선언 anchor와 독립 source oracle는 함수명 `[1797,1802)`를 가리킨다. 두 줄의 helper 수리 뒤 새 root에서 suite/pack을 생성했다. 제품/평가기 계약을 수정하지 않았다.
+- 긴 Documents output root는 control socket116 bytes/limit103 사전 점검에서 exit2로 거절됐다. 기존 실패 출력을 보존하고 짧은 `/private/tmp/qi-name4-v3`로 새 입력을 생성했다.
+- `VERIFIED`: clean source107에서 `uv run --frozen --extra dev python -m tools.benchmark.retrieval.run quanta --spec /private/tmp/qi-name4-v3/capture-spec.json` — exit0, 실제 matching fresh release runner/searchd, Gin99 Go files, `exact_symbol_name`/symbol 한 route, 4 completed results.
+- `VERIFIED`: `uv run --frozen --extra dev python -m tools.benchmark.retrieval evaluate-diagnostic --repo /Users/songmin/Documents/code-new/qi-large-scale-rerun-20260927/full-checkouts/gin --suite /private/tmp/qi-name4-v3/source-oracle/go-declaration-symbol-suite.json --runner /private/tmp/qi-name4-v3/capture/strategy-00-fw_strict/record.json --output /private/tmp/qi-name4-v3/name-report.json` — exit0. L0065/L0248/L0990/L1291의 declaration 및 name recovery MRR@10/Recall@10 모두1.0, coverage4/4, `source_oracle_complete_v1`.
+- report는 `diagnostic_unqualified`, oracle는 `go_exact_local_name_v3`, rank unit은 symbol이다. source-bound 좁은4-query 진단이며 전체 Gin/OSA typo, file-only 외부 제품, unseen gold, human review 또는 품질 비교 qualification을 주장하지 않는다.
+
+## 착수 입력과 남은 범위
 
 - 고정 same-line two declarations, same-name receiver, use-only, Unicode/case fixtures
 - source file hashes, declaration census name/definition spans, PublishedUnitRegistry 및 actual symbol capture

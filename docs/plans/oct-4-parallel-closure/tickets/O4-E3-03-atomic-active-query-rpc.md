@@ -27,7 +27,13 @@
 - Nextest는 `actual_runner_binary_emits_receipt_bound_v5_record`의 stdio handle leak1건을 표시했다. 해당 selector를 `-E 'test(=actual_runner_binary_emits_receipt_bound_v5_record)' --success-output final`로 단독 재실행한 결과 exit0,1 passed/26 skipped,9.236s이며 leak 표시는 없었다. 명백한 inherited-capture 경로를 정적 추적에서 찾지 못했고, 원래 leak 관측은 보존한다. 이것만으로 모든 process cleanup 또는 formal SDK qualification을 선언하지 않는다.
 - fixture는 hash-dev, secure local state와 실제 OS daemon/UDS scope다. learned semantic 품질·speedup·Linux 및 current-source formal release proof는 별도 결과가 필요하다. Structural Active refusal, SemanticWorkBounded exact-only, cursor/ancestor 도메인 계약은 유지한다.
 
-## 목적
+## 2026-10-04 source107 fresh release 검증
+
+- `VERIFIED`: clean source107의 `just retrieval-sdk-proof-fresh /Users/songmin/Documents/code-new/qi-oct4-sdk-proof-fresh-20261004-v2` 및 별도 `portable_proof.py verify --receipt .../execution-context.json` 모두 exit0. release SDK27 selected/run/passed,0 failed/skipped,19.140s이며 전체 배치에서 stdio leak 표시는 없었다.
+- 실제 remaining-route Active fixture는12.438s, receipt-bound runner record fixture는 ordinary PASS15.786s였다. 지원 route의 G41/G42 head/token/rows/1RPC와 stale-token refusal를 fresh release matching binaries에서 검증했다. 앞선 debug leak 관측은 보존한다.
+- learned semantic 품질, 모든 OS/process cleanup, speedup 및 Linux release는 이 scope에 포함되지 않는다.
+
+## 목적과 검증 경계
 
 SDK Active 요청에서 사전 resolve 왕복을 제거할 수 있는 원자적 선택/검색 계약을 만들되 generation/token/ABA 검증을 유지한다.
 

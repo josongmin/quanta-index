@@ -5,12 +5,18 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | full Clippy·current owner972·SDK27 assertions·daemon213/process26·bounded wire fuzz 및 source107 formal Contract v3 `VERIFIED`; SDK stdio leak1 관측/단독 ordinary PASS. SDK fresh v2 release build 중. hosted CI·release/scale `NOT_RUN` |
+| 실행 상태 | full Clippy·owner972·daemon213/process26·bounded wire fuzz 및 source107 formal Contract788/191·fresh release SDK27·receipt replay `VERIFIED`; hosted CI·release scale qualification `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
-## 목적
+## 2026-10-04 source107 fresh release SDK proof 완료
+
+- `VERIFIED`: clean `1071692b2dd4d5a77db54f79ecd0e80a1a20b2a7`에서 `just retrieval-sdk-proof-fresh /Users/songmin/Documents/code-new/qi-oct4-sdk-proof-fresh-20261004-v2` — exit0, 비어 있는 fresh target/release/all-features, SDK27 selected/run/passed,0 failed/skipped,tests19.140s. 전체 배치에서 Nextest stdio leak 표시는 없었다. 앞선 debug leak1 관측을 소급 삭제하지 않는다.
+- `VERIFIED`: 같은 checkout의 `uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py verify --receipt /Users/songmin/Documents/code-new/qi-oct4-sdk-proof-fresh-20261004-v2/execution-context.json` — 별도 재검증 exit0. matching runner SHA는 `e6c1ff016c13a374eb52378f52af4ea0b3afcee08f1b58284653a1f3eb294f51`, searchd SHA는 `8e8439ed3b439f5874089b0a3b2d2dcacc8ce29d0be9a40d9ca3112c55de27b5`다.
+- source107 Contract v3와 SDK fresh v2를 후속 admission/capture의 실제 입력으로 사용한다. Darwin/hash-dev SDK seam을 learned retrieval 품질·performance·Linux release 또는 hosted CI로 승격하지 않는다.
+
+## 목적과 증거 경계
 
 선택한 capture/performance/release epoch에 포함할 변경과 그 영향 범위를 먼저 고정한 뒤, 해당 source의 테스트·실제 SDK seam과 matching binaries를 발행한다. 미착수한 다른 에픽 전체를 capture 선행 조건으로 만들지 않는다.
 
