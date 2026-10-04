@@ -10494,9 +10494,7 @@ def test_pair_derives_binary_source_only_after_fresh_sdk_chain_verifies(tmp_path
         == (stage["manifest"]["provenance"]["quanta"]["source_sha"])
     )
     jsonschema.validate(verdict, _load_schema("verdict.schema.json"))
-    _replay_file_pair_verdict(
-        stage["repo"], stage["suite_path"], stage["manifest_path"], verdict
-    )
+    _replay_file_pair_verdict(stage["repo"], stage["suite_path"], stage["manifest_path"], verdict)
     forged = copy.deepcopy(verdict)
     forged["provenance"]["quanta"]["binary_build_source_revision"] = "e" * 40
     with pytest.raises(ValueError, match="verdict differs from canonical replay"):
