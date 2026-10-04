@@ -3081,6 +3081,53 @@ def test_pair_capture_preflight_requires_external_root_and_clean_pin(tmp_path, m
         pairrun.preflight_capture(spec)
 
 
+def test_runner_capability_probe_refuses_stale_and_malformed_binaries(monkeypatch, tmp_path):
+    binary = tmp_path / "runner"
+    observed = []
+
+    def response(argv, **kwargs):
+        observed.append((argv, kwargs["timeout"]))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            '{"schema_version":1,"retrieval_diagnostic_schema_version":8}',
+            "",
+        )
+
+    monkeypatch.setattr(pairrun.subprocess, "run", response)
+    assert pairrun.probe_runner_capabilities(binary)["retrieval_diagnostic_schema_version"] == 8
+    assert observed == [([str(binary), "capabilities"], 10)]
+
+    monkeypatch.setattr(
+        pairrun.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, '{"schema_version":1,"retrieval_diagnostic_schema_version":7}', ""
+        ),
+    )
+    with pytest.raises(pairrun.RunError, match="diagnostic contract differs"):
+        pairrun.probe_runner_capabilities(binary)
+    monkeypatch.setattr(
+        pairrun.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 2, "", "unknown command"),
+    )
+    with pytest.raises(pairrun.RunError, match="probe exited 2"):
+        pairrun.probe_runner_capabilities(binary)
+    monkeypatch.setattr(
+        pairrun.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv,
+            0,
+            '{"schema_version":1,"schema_version":1,"retrieval_diagnostic_schema_version":8}',
+            "",
+        ),
+    )
+    with pytest.raises(pairrun.RunError, match="duplicate JSON key"):
+        pairrun.probe_runner_capabilities(binary)
+
+
 @pytest.mark.parametrize("policy", ["code_search_file", "natural_language_file"])
 def test_qualified_default_file_preflight_refuses_mechanical_positive(
     tmp_path, monkeypatch, policy

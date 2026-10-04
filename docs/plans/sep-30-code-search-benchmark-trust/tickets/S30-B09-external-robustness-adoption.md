@@ -11,13 +11,17 @@ runner, source oracle and evaluator remain the execution authorities.
 - VERIFIED diagnostics: 2,624 native responses across CodeSearchNet six-language
   and CLARC original/neutral lanes; the original source-valid eight-repository
   typo cohort has 13,835 five-product responses and a fully replayed join.
-- In progress: the new global declaration-authority cohort for all 12
-  repositories. Its gold capsules and public 72-cell admission matrix are
-  complete. The new OSA1 lane contains4,363 tasks; ordinary-file projection
-  is complete. New product captures must complete before it receives a score.
+- VERIFIED diagnostics: the new global declaration-authority cohort for all12
+  repositories/11,695 code files. All4,363 OSA1 tasks completed on all5 products
+  (21,815 measured responses), followed by full raw/source replay and official
+  common-eligibility join. Gold, public72-cell input/admission matrix and
+  ordinary-file projection are complete. Other matrix lanes were not given
+  new five-product runs by this execution.
 - These are diagnostic captures. Local human relevance review, an unseen
   holdout, whole upstream corpus execution, and qualified performance remain
   separate gates. The eight-repository scores do not fill the new cohort.
+- Final report and exact source/command/input bindings:
+  `/Users/songmin/Documents/code-new/qi-b09-final-20261004-SQoHAA/RESULTS.md`.
 
 ## Adoption decisions
 
@@ -216,7 +220,8 @@ Resolved defects:
    paths/status with zero-filled operational scores and separate observed
    prefix scores. Timeout/unavailable, short capped, capped10, exhausted
    success and native/complete-file-collection abstention have fixed fixtures.
-   The completed records checked so far retain their official eligibility.
+   All12 completed native pairs retain4,363 eligible tasks per product in
+   the final official replay; excluded0.
 8. Global external preflight and typed raw-row fields are now checked against
    the actual bound preflight, producer bytes, source/profile, release and
    gold receipts. Missing or malformed query/path/status/timing fields and

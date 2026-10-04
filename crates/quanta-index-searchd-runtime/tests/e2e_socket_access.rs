@@ -213,6 +213,57 @@ fn a_group_shared_query_socket_serves_and_is_reported_while_the_others_stay_priv
     Ok(())
 }
 
+/// A same-process daemon reopen reuses the configured shared socket namespace
+/// and serves the persisted generation after the directory is recreated.
+#[test]
+fn shared_socket_namespace_survives_same_process_reopen() -> TestResult {
+    let policies = SocketAccessPolicies::new(
+        group_shared(self_gid()),
+        SocketAccessPolicy::Private,
+        SocketAccessPolicy::Private,
+    );
+    let mut rt = E2eRuntime::boot_with_socket_access(policies)?;
+    let directory = rt
+        .socket_directory()
+        .ok_or("shared socket policy must reserve a directory")?
+        .to_path_buf();
+    rt.ingest_text("repo-shared", "src/reopen.rs", "reopen_needle")?;
+    let _generation = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let before = rt.query_text(TextQuerySyntax::Native, "reopen_needle", 10);
+    if before.typed_error.is_some() || before.candidate_ids.len() != 1 {
+        return Err("shared socket query failed before reopen".into());
+    }
+
+    rt.try_reopen_in_place()?;
+    expect_eq(
+        "shared socket namespace after stop",
+        &rt.socket_directory().map(Path::to_path_buf),
+        &Some(directory.clone()),
+    )?;
+    if directory.exists() {
+        return Err("shared socket directory was not removed on stop".into());
+    }
+    rt.start()?;
+    expect_eq(
+        "shared socket namespace after restart",
+        &rt.socket_directory().map(Path::to_path_buf),
+        &Some(directory.clone()),
+    )?;
+    if !directory.is_dir() {
+        return Err("shared socket directory was not recreated on restart".into());
+    }
+    let after = rt.query_text(TextQuerySyntax::Native, "reopen_needle", 10);
+    if after.typed_error.is_some() || after.candidate_ids.len() != 1 {
+        return Err("shared socket query failed after reopen".into());
+    }
+    rt.stop()?;
+    if directory.exists() {
+        return Err("shared socket directory leaked after final stop".into());
+    }
+    Ok(())
+}
+
 /// A shared policy naming a group the daemon is not a member of refuses
 /// boot with a typed reason, before any socket — or the directory for
 /// them — exists.

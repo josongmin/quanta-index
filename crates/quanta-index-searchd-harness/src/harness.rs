@@ -3336,9 +3336,13 @@ impl Drop for E2eRuntime {
     )]
     fn drop(&mut self) {
         if let Err(error) = self.stop_driver() {
-            if thread::panicking() || self.explicit_stop_error_reported {
+            if thread::panicking() {
                 eprintln!(
                     "e2e-harness: daemon driver failed while another panic was unwinding: {error:#}"
+                );
+            } else if self.explicit_stop_error_reported {
+                eprintln!(
+                    "e2e-harness: additional cleanup failure after explicit stop error: {error:#}"
                 );
             } else {
                 panic!("e2e-harness: daemon driver failed during drop: {error:#}");
@@ -3901,6 +3905,54 @@ pub fn stamped_ingest_request(
         }
         request @ SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => request,
     })
+}
+
+#[cfg(test)]
+mod teardown_fault_tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use anyhow::Result as AnyResult;
+
+    use super::E2eRuntime;
+
+    fn runtime_with_non_directory_socket_path() -> AnyResult<E2eRuntime> {
+        let mut runtime = E2eRuntime::boot()?;
+        let socket_file = runtime.state_root().join("socket-path-is-a-file");
+        std::fs::write(&socket_file, b"not a directory")?;
+        runtime.socket_directory = Some(socket_file);
+        Ok(runtime)
+    }
+
+    #[test]
+    fn explicit_stop_reports_socket_cleanup_error_without_unwinding() -> AnyResult<()> {
+        let runtime = runtime_with_non_directory_socket_path()?;
+        let outcome = catch_unwind(AssertUnwindSafe(|| runtime.stop()));
+        let error = outcome
+            .expect("explicit stop must not panic")
+            .expect_err("socket cleanup must fail on a regular file");
+        assert!(format!("{error:#}").contains("removing socket directory"));
+        Ok(())
+    }
+
+    #[test]
+    fn implicit_drop_still_fails_fast_on_socket_cleanup_error() -> AnyResult<()> {
+        let runtime = runtime_with_non_directory_socket_path()?;
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(runtime))).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn successful_reopen_retains_the_shared_socket_directory_identity() -> AnyResult<()> {
+        let mut runtime = E2eRuntime::boot()?;
+        let directory = runtime.state_root().join("shared-socket-namespace");
+        std::fs::create_dir(&directory)?;
+        runtime.socket_directory = Some(directory.clone());
+        runtime.try_reopen_in_place()?;
+        assert_eq!(runtime.socket_directory(), Some(directory.as_path()));
+        assert!(!directory.exists());
+        runtime.stop()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

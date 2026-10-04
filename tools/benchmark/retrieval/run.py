@@ -3565,7 +3565,7 @@ def probe_runner_capabilities(binary: Path) -> dict:
         raise RunError(f"runner binary capability probe exited {result.returncode}")
     try:
         capabilities = _exact_keys(
-            json.loads(result.stdout),
+            parse_json(result.stdout),
             {"schema_version", "retrieval_diagnostic_schema_version"},
             "runner binary capabilities",
         )
