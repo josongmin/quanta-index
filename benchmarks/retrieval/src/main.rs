@@ -378,9 +378,12 @@ fn validated_protocol_latency(outcome: &QueryOutcome, phase: &str) -> BenchResul
 }
 
 #[derive(Default)]
-struct MeasuredOutputLedger(BTreeMap<(String, String), String>);
+struct CompletedOutputLedger {
+    first_output: BTreeMap<(String, String), String>,
+    first_measured: BTreeSet<(String, String)>,
+}
 
-impl MeasuredOutputLedger {
+impl CompletedOutputLedger {
     fn observe(
         &mut self,
         task_id: &str,
@@ -389,26 +392,30 @@ impl MeasuredOutputLedger {
         iteration: usize,
         output_sha256: &str,
     ) -> BenchResult<()> {
-        if phase != "measured" {
-            return Ok(());
-        }
         let key = (task_id.to_string(), route.to_string());
-        if iteration == 0 {
-            if self.0.insert(key, output_sha256.to_string()).is_some() {
+        if phase == "measured" {
+            if iteration == 0 && !self.first_measured.insert(key.clone()) {
                 return Err(BenchError::Protocol(format!(
                     "duplicate first measured response for {task_id}/{route}"
                 )));
             }
-            return Ok(());
-        }
-        let Some(expected) = self.0.get(&key) else {
+            if iteration != 0 && !self.first_measured.contains(&key) {
+                return Err(BenchError::Protocol(format!(
+                    "measured response {task_id}/{route} has no first-iteration baseline"
+                )));
+            }
+        } else if phase != "cold" && phase != "warmup" {
             return Err(BenchError::Protocol(format!(
-                "measured response {task_id}/{route} has no first-iteration baseline"
+                "unknown completed response phase {phase}"
             )));
+        }
+        let Some(expected) = self.first_output.get(&key) else {
+            self.first_output.insert(key, output_sha256.to_string());
+            return Ok(());
         };
         if expected != output_sha256 {
             return Err(BenchError::Protocol(format!(
-                "measured response changed across repetitions for {task_id}/{route} at iteration {iteration}"
+                "completed response changed across phases or repetitions for {task_id}/{route} at {phase} iteration {iteration}"
             )));
         }
         Ok(())
@@ -1324,7 +1331,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let mut cold_latencies_ms: BTreeMap<String, f64> = BTreeMap::new();
     let mut query_observations = Vec::new();
     let mut completed_results = BTreeMap::new();
-    let mut measured_outputs = MeasuredOutputLedger::default();
+    let mut completed_outputs = CompletedOutputLedger::default();
     let mut completed_query = |task_id: &str,
                                route: &'static str,
                                plan: &QueryPlan,
@@ -1403,7 +1410,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         // has no latency field, so repetitions compare the required response
         // without adding hashing cost to query latency.
         let output_sha256 = required_response_sha256(&row)?;
-        measured_outputs.observe(task_id, route, phase, iteration, &output_sha256)?;
+        completed_outputs.observe(task_id, route, phase, iteration, &output_sha256)?;
         query_observations.push(serde_json::json!({
             "task_id": task_id, "route": query.route, "phase": phase,
             "iteration": iteration, "start_ns": start_ns, "end_ns": end_ns,
@@ -2013,21 +2020,24 @@ mod tests {
     }
 
     #[test]
-    fn repeated_measurement_requires_the_same_normalized_response() {
-        let mut ledger = MeasuredOutputLedger::default();
+    fn every_timed_phase_requires_the_same_normalized_response() {
+        let mut ledger = CompletedOutputLedger::default();
         ledger
-            .observe("T1", "lexical", "cold", 0, "different")
-            .expect("cold does not establish measured baseline");
+            .observe("T1", "lexical", "cold", 0, "first")
+            .expect("cold establishes the output baseline");
+        ledger
+            .observe("T1", "lexical", "warmup", 0, "first")
+            .expect("same warmup response may repeat");
         ledger
             .observe("T1", "lexical", "measured", 0, "first")
-            .expect("first measured response establishes baseline");
+            .expect("first measured response matches cold and warmup");
         ledger
             .observe("T1", "lexical", "measured", 1, "first")
             .expect("same required response may repeat");
         assert!(
             ledger
                 .observe("T1", "lexical", "measured", 2, "second")
-                .is_err_and(|error| error.to_string().contains("changed across repetitions"))
+                .is_err_and(|error| error.to_string().contains("changed across phases or repetitions"))
         );
         assert!(
             ledger
@@ -2038,6 +2048,38 @@ mod tests {
             ledger
                 .observe("T1", "lexical", "measured", 0, "first")
                 .is_err_and(|error| error.to_string().contains("duplicate first measured"))
+        );
+
+        for changed_phase in ["warmup", "measured"] {
+            let mut changed = CompletedOutputLedger::default();
+            changed
+                .observe("T1", "lexical", "cold", 0, "first")
+                .expect("cold response");
+            if changed_phase == "measured" {
+                changed
+                    .observe("T1", "lexical", "warmup", 0, "first")
+                    .expect("warmup response");
+            }
+            assert!(
+                changed
+                    .observe("T1", "lexical", changed_phase, 0, "second")
+                    .is_err_and(|error| error.to_string().contains("changed across phases or repetitions")),
+                "{changed_phase} must match the cold response"
+            );
+        }
+        let mut warmup_first = CompletedOutputLedger::default();
+        warmup_first
+            .observe("T2", "lexical", "warmup", 0, "first")
+            .expect("warmup response establishes the output baseline");
+        assert!(
+            warmup_first
+                .observe("T2", "lexical", "measured", 0, "second")
+                .is_err_and(|error| error.to_string().contains("changed across phases or repetitions"))
+        );
+        assert!(
+            warmup_first
+                .observe("T2", "lexical", "measured", 1, "first")
+                .is_err_and(|error| error.to_string().contains("no first-iteration baseline"))
         );
     }
 

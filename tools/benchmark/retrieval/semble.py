@@ -1697,7 +1697,7 @@ def run_completed_worker(
     origin_ns = time.monotonic_ns()
     deadline = time.monotonic() + timeout_secs
     completed_rows = {}
-    measured_output_digests = {}
+    completed_output_digests = {}
     with open(stderr_path, "w", encoding="utf-8") as stderr:
         process = subprocess.Popen(
             command,
@@ -1771,10 +1771,9 @@ def run_completed_worker(
                 end_ns = time.monotonic_ns() - origin_ns
                 # Verification remains outside the completed-response timer.
                 output_sha256 = completed_output_sha256(required_output)
-                if ready["phase"] == "measured":
-                    previous = measured_output_digests.setdefault(task_id, output_sha256)
-                    if previous != output_sha256:
-                        raise AdapterError("Semble measured response changed between repetitions")
+                previous = completed_output_digests.setdefault(task_id, output_sha256)
+                if previous != output_sha256:
+                    raise AdapterError("Semble completed response changed between repetitions or phases")
                 observation = {
                     "task_id": task_id,
                     "route": route,

@@ -6085,7 +6085,7 @@ def validate_completed_query_timing(
     record_rows = (
         {(row["task_id"], row["route"]): row for row in record["results"]} if record else {}
     )
-    measured_digests = {}
+    observed_digests = {}
     record_digests = {}
     for index, entry in enumerate(observations):
         if (
@@ -6146,11 +6146,11 @@ def validate_completed_query_timing(
                 "completed-response timing observations differ from the complete schedule"
             )
         observed_keys.append(key)
-        if output_validated and entry["phase"] == "measured":
+        if output_validated:
             response_key = (entry["task_id"], entry["route"])
-            baseline = measured_digests.setdefault(response_key, entry["output_sha256"])
+            baseline = observed_digests.setdefault(response_key, entry["output_sha256"])
             if baseline != entry["output_sha256"]:
-                raise RunError("completed-response measured output differs between repetitions")
+                raise RunError("completed-response output differs between repetitions or phases")
             if record:
                 if response_key not in record_digests:
                     try:

@@ -411,6 +411,32 @@ def test_completed_output_digest_has_independent_cross_language_golden():
         rc.completed_output_sha256(row)
 
 
+@pytest.mark.parametrize("phase_name", ["cold", "warmup"])
+def test_completed_clock_binds_cold_and_warmup_to_normalized_output(phase_name):
+    protocol = pairrun.build_query_protocol(["T1"], 0, 1, 2)
+    metrics = {
+        "route_count": 1, "query_protocol": protocol,
+        "warm_latencies_ms": {"lexical": {"T1": [1.0, 1.0]}},
+        "cold_latencies_ms": {"lexical": 1.0},
+    }
+    record = {"results": [{
+        "task_id": "T1", "route": "lexical", "status": "success",
+        "candidates": [{"path": "a.go", "score": 1.0}],
+        "timings": {"query_latency_ms": 1.0},
+    }]}
+    metrics["query_timing"] = _timing(metrics, record)
+    pairrun.validate_completed_query_timing(metrics, record, require_output_validation=True)
+    changed = copy.deepcopy(record["results"][0])
+    changed["candidates"][0]["path"] = "b.go"
+    for observation in metrics["query_timing"]["observations"]:
+        if observation["phase"] == phase_name:
+            observation["output_sha256"] = rc.completed_output_sha256(changed)
+    with pytest.raises(pairrun.RunError, match="output.*differs"):
+        pairrun.validate_completed_query_timing(metrics, record, require_output_validation=True)
+    with pytest.raises(pairrun.RunError, match="output.*differs"):
+        pairrun.validate_completed_query_timing(metrics, require_output_validation=True)
+
+
 def test_completed_clock_binds_every_repetition_to_normalized_output():
     protocol = pairrun.build_query_protocol(["T1"], 0, 0, 2)
     metrics = {
@@ -482,12 +508,13 @@ def test_exploratory_replay_rejects_rebound_output_digests(tmp_path):
     assert "differs from normalized record" in verdict["state_evidence"]["PAIR_VALID"]["reason"]
 
 
-def test_semble_parent_refuses_changed_later_output_with_same_size_and_status(tmp_path):
+@pytest.mark.parametrize("first_phase", ["cold", "warmup", "measured"])
+def test_semble_parent_refuses_changed_later_output_with_same_size_and_status(tmp_path, first_phase):
     worker = tmp_path / "changed.py"
     worker.write_text(
         "import json,sys\n"
         "for i in range(2):\n"
-        " print(json.dumps({'kind':'request_ready','task_id':'T1','phase':'measured',"
+        f" print(json.dumps({{'kind':'request_ready','task_id':'T1','phase':{first_phase!r} if i==0 else 'measured',"
         "'iteration':i,'indexed_chunks':1}),flush=True)\n"
         " json.loads(sys.stdin.readline())\n"
         " print(json.dumps({'kind':'response','task_id':'T1','results':[{'score':1.0+i}]}),flush=True)\n"
