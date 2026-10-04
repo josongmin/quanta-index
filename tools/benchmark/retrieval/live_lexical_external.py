@@ -52,6 +52,8 @@ MAX_SOURCEGRAPH_REQUEST_TARGET_BYTES = 8 * 1024
 CS_FUZZY_CAPABILITY = "cs_fuzzy_osa1_file"
 CS_VERIFIED_VERSION = "cs version 3.2.0"
 PRODUCTS = ("sourcegraph", "opengrok", "cs")
+COMPLETED_BOUNDARY = "request_construction_to_normalized_response"
+COMPLETED_CLOCK = "same_process_monotonic_ns"
 
 
 @dataclass(frozen=True)
@@ -442,6 +444,47 @@ def _row(task: dict, gold: list[str], result_paths: list[str], elapsed: float, *
     }
 
 
+def _completed_row(row: dict, start_ns: int) -> dict:
+    """Close the request clock after required output serialization, before persistence."""
+    required = canonical_json(row).encode("utf-8")
+    end_ns = time.monotonic_ns()
+    if type(start_ns) is not int or type(end_ns) is not int or end_ns < start_ns:
+        raise ValueError("completed response clock moved backwards")
+    row["completed_response"] = {
+        "boundary": COMPLETED_BOUNDARY,
+        "clock": COMPLETED_CLOCK,
+        "duration_ns": end_ns - start_ns,
+        "output_bytes": len(required),
+        "output_sha256": _sha(required),
+    }
+    return row
+
+
+def _validate_completed_row(row: dict) -> None:
+    timing = row.get("completed_response")
+    if not isinstance(timing, dict) or set(timing) != {
+        "boundary", "clock", "duration_ns", "output_bytes", "output_sha256"
+    }:
+        raise ValueError("completed response metadata is absent or malformed")
+    required = dict(row)
+    del required["completed_response"]
+    encoded = canonical_json(required).encode("utf-8")
+    if (
+        type(row.get("elapsed_ms")) not in (int, float)
+        or not math.isfinite(row["elapsed_ms"])
+        or row["elapsed_ms"] < 0
+        or
+        timing["boundary"] != COMPLETED_BOUNDARY
+        or timing["clock"] != COMPLETED_CLOCK
+        or type(timing["duration_ns"]) is not int
+        or timing["duration_ns"] < 0
+        or type(timing["output_bytes"]) is not int
+        or timing["output_bytes"] != len(encoded)
+        or timing["output_sha256"] != _sha(encoded)
+    ):
+        raise ValueError("completed response clock or normalized output differs")
+
+
 def _sourcegraph(
     config: dict,
     task: dict,
@@ -458,6 +501,7 @@ def _sourcegraph(
             target.with_suffix(".capability.json"), json.dumps(row, sort_keys=True).encode() + b"\n"
         )
         return row
+    start_ns = time.monotonic_ns()
     extensions = sourcegraph.file_extensions([row["path"] for row in manifest["files"]])
     query = sourcegraph.query_expression(
         task["query"],
@@ -468,6 +512,10 @@ def _sourcegraph(
     status, content_type, raw, elapsed = _http(
         config, "/.api/search/stream", {"q": query, "v": "V3"}, "text/event-stream", "token"
     )
+    row = _sourcegraph_response(
+        config, task, gold, manifest, view, admitted, status, content_type, raw, elapsed
+    )
+    _completed_row(row, start_ns)
     _write(target, raw)
     _write(
         target.with_suffix(".transport.json"),
@@ -481,9 +529,7 @@ def _sourcegraph(
         ).encode()
         + b"\n",
     )
-    return _sourcegraph_response(
-        config, task, gold, manifest, view, admitted, status, content_type, raw, elapsed
-    )
+    return row
 
 
 def _unsupported_sourcegraph(task: dict, gold: list[str]) -> dict:
@@ -600,6 +646,7 @@ def _opengrok(
     *,
     literal_query: bool = False,
 ) -> dict:
+    start_ns = time.monotonic_ns()
     params = {
         "full": _opengrok_query(task["query"], literal_query=literal_query),
         "projects": config["project"],
@@ -608,6 +655,19 @@ def _opengrok(
         "sort": "relevancy",
     }
     status, content_type, raw, elapsed = _http(config, "/api/v1/search", params, "application/json")
+    row = _opengrok_response(
+        config,
+        task,
+        gold,
+        view,
+        admitted,
+        status,
+        content_type,
+        raw,
+        elapsed,
+        literal_query=literal_query,
+    )
+    _completed_row(row, start_ns)
     _write(target, raw)
     _write(
         target.with_suffix(".transport.json"),
@@ -621,18 +681,7 @@ def _opengrok(
         ).encode()
         + b"\n",
     )
-    return _opengrok_response(
-        config,
-        task,
-        gold,
-        view,
-        admitted,
-        status,
-        content_type,
-        raw,
-        elapsed,
-        literal_query=literal_query,
-    )
+    return row
 
 
 def _opengrok_response(
@@ -919,8 +968,13 @@ def _cs(
     *,
     literal_query: bool = False,
 ) -> dict:
+    start_ns = time.monotonic_ns()
     argv = _cs_argv(binary, task["query"], view, literal_query=literal_query)
     code, stdout, stderr, elapsed = _process(argv, 60)
+    row = _cs_response(
+        task, gold, view, admitted, code, stdout, stderr, elapsed, literal_query=literal_query
+    )
+    _completed_row(row, start_ns)
     _write(target, stdout)
     _write(target.with_suffix(".stderr"), stderr)
     _write(
@@ -935,9 +989,7 @@ def _cs(
         ).encode()
         + b"\n",
     )
-    return _cs_response(
-        task, gold, view, admitted, code, stdout, stderr, elapsed, literal_query=literal_query
-    )
+    return row
 
 
 def _cs_fuzzy_query(query: str) -> str:
@@ -1161,6 +1213,7 @@ def capture_cs_fuzzy(spec_path: Path, *, bound_release: BoundRelease | None = No
         "capability": CS_FUZZY_CAPABILITY,
         "request_mode": "explicit_osa1_typo",
         "status": "diagnostic_unqualified",
+        "completed_response_boundary": COMPLETED_BOUNDARY,
         "scoring_status": "not_scored",
         "tasks": len(tasks),
         "binding": binding,
@@ -1867,6 +1920,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     fields = {
         "schema_version",
         "status",
+        "completed_response_boundary",
         "release_digest",
         "binding",
         "tasks",
@@ -1895,6 +1949,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         or summary["schema_version"] != spec["schema_version"]
         or (spec["schema_version"] == 2 and summary.get("products") != list(products))
         or summary.get("status") != "diagnostic_unqualified"
+        or summary.get("completed_response_boundary") != COMPLETED_BOUNDARY
         or summary.get("indexed_universe_attested") is not False
         or summary.get("opengrok_indexed_universe_attested") is not False
         or not isinstance(summary.get("backend_snapshot_sha256"), dict)
@@ -2130,6 +2185,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                 ):
                     raise ValueError("Sourcegraph capability row differs from frozen query support")
                 return
+            _validate_completed_row(row)
             if name == "cs":
                 terminal = _json(_read_control_file(root / name / f"{task_id}.process.json"))
                 if (
@@ -2191,6 +2247,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                         terminal["elapsed_ms"],
                         literal_query=literal_file_query,
                     )
+            derived["completed_response"] = row["completed_response"]
             if canonical_json(row) != canonical_json(derived):
                 raise ValueError("external row disagrees with retained native response")
 
