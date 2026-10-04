@@ -3600,3 +3600,65 @@ with a new output root. The strict collection validator remains unchanged.
   `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`.
   The cli actual adjudication process remains live; no partial labels enter
   the 100/240 issued-task aggregate. Final comparison remains **NOT_RUN**.
+
+### 2026-10-04: half of C3 issued; positive-only report boundary repaired
+
+- **VERIFIED**, cli's complete actual two-pass review, adjudication, raw-call
+  replay and canonical issuance: **20 tasks / 519 file judgments**. Together
+  with the previous five repositories, **120/240 tasks** are issued. A fresh
+  independent original-packet/suite-digest recount finds **544/1,324** original
+  returned pairs issued, **780** unissued; **2,585** base expanded pairs or
+  **2,626** after substituting the supplemented lo revision. Partial typeorm
+  calls are excluded. Recount: `c3-issued-recount-4v5dc8f7/result.json`.
+- cli full canonical admission is dispatched using the existing immutable
+  `ee764318` preparation. Its result is not inferred from issuance. The actual
+  review pipeline continues on typeorm and the remaining five repositories.
+- **VERIFIED**, post-495-pair-freeze native lo capture and canonical replay:
+  **60/60** responses (20 Sourcegraph HTTP200, 20 OpenGrok HTTP200, 20 cs exit0),
+  **zero** unjudged returned pairs, **429.841s** whole owner workflow including
+  release/scope checks. Frozen inputs, retained OpenGrok snapshots and the
+  terminal result digests were independently rechecked. This wall time is not
+  the sum of query calls.
+- **FAILED**, lo's original strict pair producer at final report creation:
+  `complete scored file evidence needs no-answer controls`. Both actual
+  products nevertheless executed all 20 tasks with ten distinct files each.
+  A separate recovery validates and merges the unchanged frozen records on
+  `ee764318`, proves complete judged/scored coverage, issues the canonical
+  diagnostic report and independently replays it. The refused producer stays
+  refused and its original staging directory is not promoted or overwritten.
+- **CONFIRMED**, reporter scope defect: the unqualified ranked-file evidence
+  function required negative tasks, although its existing abstention summary
+  and uncertainty validator already support zero controls as `not_applicable`.
+  Main repair `b1fc4ac1` removes that report-only refusal. Positive-only cohorts
+  retain complete labels, ordering, score, unit and paired-coverage guards;
+  present but failed negative observations still refuse. The existing exact,
+  typo and NL parametrized fixtures pass **3/3**; fixed zero primary delta,
+  two positive ties, zero negative samples, absent abstention estimates and
+  canonical replay are asserted. Ruff and diff checks pass. This changes no
+  frozen task, label, query or product result and does not claim abstention.
+- **VERIFIED**, 100 product/task outputs in a separate lo diagnostic. Standard
+  relevant-file Hit@10 (grade >0) differs from answering-file Hit@10 (grade
+  >=2): Quanta **19/20 vs 14/20**, Semble **20/20 vs 19/20**, cs **2/20 vs
+  0/20**, Sourcegraph/OpenGrok **0/20 vs 0/20**. An independent exponential-gain
+  NDCG reference with fixed rank goldens agrees with canonical metrics within
+  1e-15. These are pooled AI judgments, not corpus-wide human gold.
+- This diagnostic explicitly binds the older Quanta phrase-OR planner to
+  `ee764318`, native adapters to `499654fe`, and the different producer timing
+  boundaries. Sourcegraph uses an AND of literal whitespace terms (including
+  punctuation); OpenGrok uses the escaped Lucene full-field request. It is not
+  a comparison of equivalent predicates or the newer Quanta keyword planner.
+  No product ranking, speed ratio or current-source quality claim follows.
+  Root: `c3-lo495-pair-terminal-recovery-1uzx6emk/`, with immutable recovery
+  and five-product scripts, original input digests and explicit limits.
+- Clean `4af06051` preflight passes the two NL contract tests and admits
+  **240/240** unchanged C3 queries; required Python inventory contains 727
+  identities. Its full Contract command **FAILED** at resource admission after
+  300s waiting for the build lock; Rust body/receipt remain **NOT_RUN**. The
+  same source's fresh SDK release build is live and completed the daemon build
+  in 7m59s; compilation is not SDK test success. Later source changes, including
+  the reporter repair, still need matching final-source proofs and captures.
+- All external paths above are under
+  `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`.
+  Remaining: 120 actual reviewed tasks; final matching proofs/admission;
+  successful final-source five-product capture and controlled complete-output
+  performance. The goal remains active and final qualification is unproven.
