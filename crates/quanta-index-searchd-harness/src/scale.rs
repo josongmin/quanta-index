@@ -631,7 +631,8 @@ impl ScaleStageError {
     }
 }
 
-fn stage_or_preserve(stage: &'static str, error: anyhow::Error) -> anyhow::Error {
+fn stage_or_preserve<E: Into<anyhow::Error>>(stage: &'static str, error: E) -> anyhow::Error {
+    let error = error.into();
     if error.downcast_ref::<ScaleStageError>().is_some() {
         error
     } else {
@@ -1387,8 +1388,8 @@ fn measure_small_tier_with_config(
         .map_err(|error| stage_or_preserve("source_fixture", error))?;
 
     // The search-corpus history contract requires at least two generations.
-    let cpu_started = CpuSnapshot::observe()
-        .map_err(|error| stage_or_preserve("resource_observation", error))?;
+    let cpu_started =
+        CpuSnapshot::observe().map_err(|error| stage_or_preserve("resource_observation", error))?;
     let mut rt = scale_runtime(config).map_err(|error| stage_or_preserve("runtime_boot", error))?;
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
@@ -1418,8 +1419,8 @@ fn measure_small_tier_with_config(
             .metrics_snapshot()
             .map_err(|error| stage_or_preserve("query_first", error))?;
         let first_started = Instant::now();
-        let result_count = served_query(&mut rt)
-            .map_err(|error| stage_or_preserve("query_first", error))?;
+        let result_count =
+            served_query(&mut rt).map_err(|error| stage_or_preserve("query_first", error))?;
         let first_query_ms = elapsed_ms(first_started);
         require_result_count(result_count, expected_results, "first query")
             .map_err(|error| stage_or_preserve("query_first", error))?;
@@ -1455,8 +1456,8 @@ fn measure_small_tier_with_config(
 
         let adapter = measure_adapter_phases(&rt, None)
             .map_err(|error| stage_or_preserve("adapter", error))?;
-        let delta = measure_delta(&mut rt, seed)
-            .map_err(|error| stage_or_preserve("delta", error))?;
+        let delta =
+            measure_delta(&mut rt, seed).map_err(|error| stage_or_preserve("delta", error))?;
 
         Ok(TierMeasurement {
             tier: ScaleTier::Small,
@@ -1493,7 +1494,9 @@ fn measure_small_tier_with_config(
         })
     })()
     .map_err(|error| stage_or_preserve("measurement", error));
-    let cleanup = rt.stop().map_err(|error| stage_or_preserve("cleanup", error));
+    let cleanup = rt
+        .stop()
+        .map_err(|error| stage_or_preserve("cleanup", error));
     let mut measurement = finish_runtime_measurement(measurement, cleanup)?;
     measurement.cpu = Some(
         CpuSnapshot::observe()
@@ -1588,8 +1591,8 @@ pub fn measure_tier_with_runtime_config(
         })
         .map_err(|error| stage_or_preserve("source_fixture", error))?;
 
-    let cpu_started = CpuSnapshot::observe()
-        .map_err(|error| stage_or_preserve("resource_observation", error))?;
+    let cpu_started =
+        CpuSnapshot::observe().map_err(|error| stage_or_preserve("resource_observation", error))?;
     let mut rt = scale_runtime(config).map_err(|error| stage_or_preserve("runtime_boot", error))?;
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
@@ -1612,7 +1615,8 @@ pub fn measure_tier_with_runtime_config(
             .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
             .collect::<Vec<_>>();
         let ingest_started = Instant::now();
-        let _ids = rt.ingest_text_files_one_batch(&batch_files)
+        let _ids = rt
+            .ingest_text_files_one_batch(&batch_files)
             .map_err(|error| stage_or_preserve("build_ingest", error))?;
         let ingest_ms = elapsed_ms(ingest_started);
         let (ingest_decoded_bytes, ingest_wire_bytes) = rt
@@ -1724,7 +1728,9 @@ pub fn measure_tier_with_runtime_config(
         })
     })()
     .map_err(|error| stage_or_preserve("measurement", error));
-    let cleanup = rt.stop().map_err(|error| stage_or_preserve("cleanup", error));
+    let cleanup = rt
+        .stop()
+        .map_err(|error| stage_or_preserve("cleanup", error));
     let mut measurement = finish_runtime_measurement(measurement, cleanup)?;
     measurement.cpu = Some(
         CpuSnapshot::observe()
@@ -2514,7 +2520,8 @@ mod tests {
         assert_eq!(unknown["status"], "failed");
         assert_eq!(unknown["failure"]["stage"], "execution_unclassified");
         assert!(unknown["failure"]["limit"].is_null());
-        let ingest_error = stage_or_preserve("build_ingest", anyhow::anyhow!("fixed ingest failure"));
+        let ingest_error =
+            stage_or_preserve("build_ingest", anyhow::anyhow!("fixed ingest failure"));
         let ingest = refusal_json(&binding, &head, &host, &ingest_error);
         assert_eq!(ingest["failure"]["stage"], "build_ingest");
         assert!(ingest["failure"]["limit"].is_null());
@@ -2523,17 +2530,22 @@ mod tests {
         let nested = stage_or_preserve(
             "delta",
             anyhow::Error::new(ScaleStageError::source_admission(anyhow::Error::new(
-                check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1)
-                    .expect_err("source bound"),
+                check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1).expect_err("source bound"),
             ))),
         );
         let preserved = refusal_json(&binding, &head, &host, &nested);
         assert_eq!(preserved["failure"]["stage"], "source_preflight");
-        assert_eq!(preserved["failure"]["limit"], "lexical_total_source_bytes_128m");
+        assert_eq!(
+            preserved["failure"]["limit"],
+            "lexical_total_source_bytes_128m"
+        );
 
         let cleanup = finish_runtime_measurement::<()>(
             Ok(()),
-            Err(stage_or_preserve("cleanup", anyhow::anyhow!("fixed cleanup failure"))),
+            Err(stage_or_preserve(
+                "cleanup",
+                anyhow::anyhow!("fixed cleanup failure"),
+            )),
         )
         .expect_err("cleanup failure must fail the tier");
         let cleanup_record = refusal_json(&binding, &head, &host, &cleanup);

@@ -1245,6 +1245,9 @@ def test_query_plan_oracle_enforces_utf8_term_boundary():
     assert qp.plan_lexical_request("natural_language", "\uac00" * 85)
     with pytest.raises(qp.QueryPlanError, match="258 bytes"):
         qp.plan_lexical_request("natural_language", "\uac00" * 86)
+    with pytest.raises(qp.QueryPlanError, match="258 bytes"):
+        qp.plan_lexical_request("natural_language", "\u0130" * 86)
+    assert qp.plan_lexical_request("natural_language", "\u039f\u03a3") == "case:no \u03bf\u03c3"
 
 
 def test_exact_symbol_name_policy_keeps_bare_query_identity_and_refuses_dsl():

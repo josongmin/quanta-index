@@ -316,6 +316,67 @@ fn repartition_code_scope(
 }
 
 #[test]
+fn explicit_typo_ranks_attested_declarations_and_preserves_literal_gate() -> TestResult {
+    use quanta_index_core::CodeSearchExecutionModeV1;
+    let mut declaration = code_scope("z_declaration.rs", "fn DOWN() {}", 1)?;
+    let mut symbol = scope("source-a", "z_declaration.rs", &[("down-def", "DOWN", "DOWN", None)])?
+        .symbols.remove(0);
+    symbol.definition_span.byte_end = u32::try_from(declaration.source_bytes.len())?;
+    declaration.symbols.push(symbol);
+    declaration.coverage.symbols = SymbolCoverage::Complete { symbol_count: 1 };
+    declaration.coverage.symbol_name_source_policy =
+        quanta_index_contract::SymbolNameSourcePolicyV1::RawAsciiLocalName;
+    declaration.coverage.unit_set_sha256 =
+        source_file_unit_set_sha256(&declaration.chunks, &declaration.symbols)?;
+    let mut scopes = vec![
+        code_scope("exact.rs", "DWN", 1)?,
+        code_scope("noise.rs", "rDwNtv", 1)?,
+        declaration,
+    ];
+    for index in 0..15 {
+        scopes.push(code_scope(&format!("a_reference_{index:02}.rs"), "DOWN DOWN DOWN DOWN", 1)?);
+    }
+    for index in 0..9 {
+        let mut unknown = code_scope(&format!("b_unknown_{index:02}.rs"), "DOWN", 1)?;
+        unknown.coverage.symbols = SymbolCoverage::NotRequested;
+        scopes.push(unknown);
+    }
+    let (_dir, searcher) = fixture_with_scopes(scopes)?;
+    let ordinary = code_query(&["DWN"], false);
+    let literal = searcher.search_constrained(
+        &ordinary, &QueryConstraintSetV1::default(), &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(literal.code_search_stats.expect("literal work").mode, CodeSearchExecutionModeV1::Ordinary);
+    assert_eq!(literal.candidates.len(), 2);
+    assert!(literal.candidates.iter().any(|row| row.repo_relative_path.as_str() == "noise.rs"));
+    let mut recovery = ordinary;
+    recovery.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "code_search.identifier_typo".into(),
+        args: vec![LqPredicateArg::RawString("DWN".into())],
+    });
+    let first = searcher.search_constrained(
+        &recovery, &QueryConstraintSetV1::default(), &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(first.code_search_stats.expect("explicit recovery").mode, CodeSearchExecutionModeV1::TypoExplicit);
+    assert_eq!(first.candidates.len(), 10);
+    assert_eq!(first.candidates.iter().map(|row| row.repo_relative_path.as_str()).collect::<std::collections::BTreeSet<_>>().len(), 10);
+    assert_eq!(first.candidates[0].repo_relative_path.as_str(), "exact.rs");
+    assert_eq!(first.candidates[1].repo_relative_path.as_str(), "z_declaration.rs",
+        "an attested declaration precedes frequent references at the same edit distance");
+    assert!(first.candidates.iter().all(|row| row.repo_relative_path.as_str() != "noise.rs"));
+    let all = searcher.search_constrained(
+        &recovery, &QueryConstraintSetV1::default(), &LexicalPageSpec::first(32),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(all.candidates.len(), 26, "unknown symbol coverage never removes content matches");
+    let unknown = all.candidates.iter().find(|row| row.repo_relative_path.as_str() == "b_unknown_00.rs").expect("unknown match");
+    assert_eq!(unknown.score, 100.0, "unknown declarations receive no invented evidence");
+    Ok(())
+}
+
+#[test]
 fn explicit_typo_search_uses_source_tokens_and_valid_spans() -> TestResult {
     use quanta_index_core::CodeSearchExecutionModeV1;
     let (_dir, searcher) = fixture_with_scopes(vec![
