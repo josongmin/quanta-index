@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_AND_REPORT` |
 | 기준 웨이브 | [W5 — 최종 검수·재채점·정책 판정](../waves/W5-final-scoring-and-policy.md) |
-| 실행 상태 | source0e6 bat409 fresh pair40rows·독립 verdict·native3 actual60요청/raw replay `VERIFIED`; canonical5제품 join 실행 중. 전체 cohort·unseen/human·속도 qualification 미완료 |
+| 실행 상태 | source0e6 bat409 fresh pair40rows·독립 verdict·native3 actual60요청/raw replay `VERIFIED`;5제품 join consumer scope 결함 수리/focused67 `VERIFIED`, 수정 scorer의 새 native capture/join은 미완료. 전체 cohort·unseen/human·속도 qualification 미완료 |
 | 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-04](O4-E2-04-fresh-five-product-captures.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,10 @@
 - report는 `graded:true`, `evidence_unqualified`, complete file judgments scope다. verdict QUALITY_DELTA는 `attested_only`, PERF_QUALIFIED는 `no_speed_claim`에 따른 not_applicable이며 독립 gold·human review·전체 repository/정식 속도 우열을 뜻하지 않는다. exact-name/typo/span과 이 NL20 분모를 합산하지 않는다.
 - canonical5제품 join spec `/private/tmp/qi-bat-five-product-0e6-join-spec-v1.json` SHA `a791602ec0855b5b7396dcb52e7f61cf9675d986888f1ddc509d4ce02ad64866`를 준비했다. actual corpus commit4608의 Git bundle36,170,355bytes/SHA `eedbaff650dd659c17207651e579c97f5bb762606985f2cb8bb5b3a7ee67f9bc`와 current raw pair를 결속한다. 새 SG/OG/cs capture 후 기존 `lexical_file_comparison --external-spec`으로 replay/join하며 현재 그 실행은 NOT_RUN이다.
 - 후속 새 `/private/tmp/qnb0e6/bat` native3 capture/independent verify가 각각 exit0이다. 세 제품 각각20 completed rows, SG/OG HTTP200·cs exit0·error0이며 returned files는 모두0이다. `uv run --frozen --extra dev python -m tools.benchmark.retrieval.lexical_file_comparison --external-spec /private/tmp/qi-bat-five-product-0e6-join-spec-v1.json --out /private/tmp/qi-bat-five-product-0e6-scoreboard-v1.json`으로 canonical join을 실행 중이다. 직접 script-path 실행의 import 실패는 module invocation으로 수정했고 product raw를 변경하지 않았다. 보고서 완료 전에는 common-eligible/최종5제품 score를 발행하지 않는다.
+- 후속 canonical join `FAILED`: exit2, `current file pair report differs from raw record replay`. pair producer의 qualified file capture는 `evaluate_complete_scored_file_evidence`/`paired_complete_scored_file_evidence_v1`를 발행했지만 consumer는 항상 `evaluate_paired_file_diagnostic`만 재계산했다. capture/standalone verdict는 유효하고 consumer의 도달 가능한 scope 처리 누락이다.
+- canonical owner를 수정했다. closed 두 report scopes 각각 기존 canonical evaluator로 exact JSON equality를 요구하며 외부 제품 join의 metric view는 여전히 diagnostic이다. unknown scope·변조 complete report·변조 raw 거절을 기존 독립 file/source fixture의 default/typo/NL3cases에 추가했다. `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_lexical_file_comparison.py -q -k 'code_search_file_pair_reports_only_independent_file_judgments or test_lexical_file_comparison' -o cache_dir=/private/tmp/qi-file-scope-pytest-cache-20261005-v1` — `VERIFIED`:67passed/576deselected/2.54s/exit0. 해당 두 파일 Ruff check/format도 exit0이다.
+- scorer SHA `900e2c8d2a1ff120a26f1aac8309693bdf8c446c0c5025d31b1bef0478e46c61`, regression SHA `81fd7f93b7d21f384c28ccc95ac8392f5d4b6ced60945a8b3fbb163dd3a4bd4a`다. main source 변경은 이 scorer/test2개뿐이며 frozen0e6 actual pair·proof·admissions를 새 HEAD 결과로 고쳐 쓰지 않는다.
+- 수정 scorer에서 old external capture join은 producer/runtime identity mismatch로 exit2였다. native producer는 scorer hash도 결속하고 source0e6 Python3.13.9와 main3.12.12도 다르므로 이 거절을 완화하지 않는다. same3.13.9 interpreter·새 scorer에서 fresh native spec `/private/tmp/qi-native-bat-scorer-v2-spec.json` SHA `71814c8d542aa351717df72f634ea6c8e89d49da5135772abe4095f0d53e1359`, 새 join spec `/private/tmp/qi-bat-five-product-scorer-v3-join-spec.json` SHA `55ec435d4c43a14d94aa96851890236a3b162111f8869dc370cd605d452a91ea`를 준비했다. 실제 새 capture/join은 이 시점 NOT_RUN이다.
 
 ## 목적
 

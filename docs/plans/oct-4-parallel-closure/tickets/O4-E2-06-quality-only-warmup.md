@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_AND_CONFIG` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | source0e6 bat409 warmup0/1 각40/40·독립 verdict replay `VERIFIED`; full normalized/protocol/phase parity 실행 중. source107 unjudged 실패는 과거 scope. warmup0 정책 채택은 미완료 |
+| 실행 상태 | source0e6 bat409 warmup0/1 각40/40·독립 verdict·full normalized/protocol/phase parity `VERIFIED`; bat 품질 실행에만0회 사용 근거 확보. 다른 cohort·정식 speed는 별도 scope |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -29,6 +29,8 @@ run.py는 query_warmup_passes=0을 이미 허용하고 qualified speed는 1회 �
 - `/tmp/quanta-e2-warmup-parity-readback-20261004-v3.py`는 single repository/first8/first9/all12를 정확한 selected inventory로 검사하도록 준비됐다. original와 fresh verdict replay, PAIR_VALID/Contract/SDK, normalized task/repetition별 score bits/order/status, 각 protocol의 timing ledger를 요구한다. 실제 비교는 `NOT_RUN`이다.
 - 후속 source0e6 bat409의 `/private/tmp/qbw1/bat`과 `/private/tmp/qbw0/bat` actual pair 및 standalone verdict replay가 모두 exit0이다. 각40rows/failed0·PAIR_VALID/Contract/SDK pass이며 producer/replay JSON equality를 확인했다. preliminary canonical completed-output digest40개는 task/repetition별로 일치했다.
 - `/private/tmp/qi-bat-warmup-parity-0e6-input-v1.json` SHA `3bea3a9e690d45ffa7ae054e52f7a40a720609209e286d1aa8c5ecc81c3aafe0`로 v3 full readback을 실제 실행 중이다. spec differences3개(warmup/output/run ID), 각 protocol/timing ledger와 fresh verdict 재계산을 함께 요구한다. 완료 전에는 full parity·정책 채택·속도 절감을 주장하지 않는다.
+- 후속 full readback `VERIFIED`: `uv run --frozen --extra dev python /tmp/quanta-e2-warmup-parity-readback-20261004-v3.py --packet /private/tmp/qi-bat-warmup-parity-0e6-input-v1.json --selection bat --out /private/tmp/qi-bat-warmup-parity-0e6-result-v1.json` — exit0, `parity_status:VERIFIED`,40rows, source0e6·selected bat1개다. output SHA `35543b3ebdc5ad71fa0a5d000183949f44a98ececc0ec3442bbf0e32e1337480`다. 원래 cold/warm/measured phase와 실제 schedule 차이를 유지하며 fresh verdict와 normalized status/order/score bits를 대조했다.
+- warmup0/1 protocol SHA는 각각 `e6c3dde65b29e74a83c078dec147c8223e695406d19eaa0490e9d690f30a96c8`/`fee7e75585c338f00262c5df2cd7d103b4c9793baa832f10923a942070677fcd`로 서로 다르다. bat의 해당 quality-only 실행은0회를 사용할 수 있지만 다른 repository는 실제 자체 parity 전까지1회를 유지한다. qualified_speed/qualification_issued는false이며 절감 wall이나 정식 latency 우열을 발행하지 않는다.
 - 검수 후보 확보를 위한 새 exploratory pair는 claims/admission authority를 낮춘 별도 fresh capture로 실행할 수 있다. strict scoring guard를 제거하거나 failed qualified root를 승격하는 방법으로 사용하지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
