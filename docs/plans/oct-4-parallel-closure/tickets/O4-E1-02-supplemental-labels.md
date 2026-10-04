@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | source/request PREPARE 가능; 과거 first-six native pool replay는 `BLOCKED`, actual supplemental model/merged labels는 `NOT_RUN` |
+| 실행 상태 | 새 bat2route raw canonical pool·18tasks/51pairs supplemental request binding `VERIFIED`; 과거 first-six raw replay `BLOCKED`. 새5제품 union·actual supplemental model/merged labels 미완료 |
 | 선행 결과 | [O4-E1-01](O4-E1-01-original-review-resume.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -35,7 +35,8 @@
 ## 2026-10-04 새 bat capture와 검수 순서
 
 - source107 bat actual pair의40 native rows가 `/private/tmp/qi-p0-v1/bat.staging`에 남았다. 기존 판단과의 차집합은51 `(task_id,path)`이며 과거 bat blind packet의 pair 집합과 같아도 record bytes는 다르므로 과거 producer receipt는 재사용하지 않는다.
-- 원 suite는2routes다. 기존 `run.project_pack_and_suite`로 route별 suite를 만들고 `holdout_review.capture_review_pool`을 현 raw에 다시 실행해야 한다. 그 후 이미 판정된 pair를 제외하고 `bind_supplemental_review_tasks`로 query/threshold/source bytes/미판정을 결속한다. 현재 준비 packet은 canonical 실행 전까지 `PREPARED_NOT_VERIFIED`다.
+- `VERIFIED`: root가 source107의 `uv run --frozen --extra dev python /tmp/qi-bat-current-pool-driver-20261004-v1.py --output /private/tmp/qi-bat-current-pool-107-v1`를 actual 실행해 exit0이었다. 기존 `run.project_pack_and_suite`→route별 `holdout_review.capture_review_pool`→judged 차집합→`bind_supplemental_review_tasks`로18tasks/51pairs/1batch가 결속됐다. 두 reviewer 요청을 준비했으며 실제 model call·adjudication은`NOT_RUN`이다.
+- 원 pair의 failed terminal과 source/record bytes는 보존했다. 새 native3제품 수집·재생 후 기존 binder에 다섯 반환 파일 union을 연결해 추가 미판정 여부를 판정한다. 이2route pool에 source/control diversity 또는 whole-corpus relevance를 부여하지 않는다.
 - 원 qualified pair의 complete-scored evaluation은 `FAILED`로 유지한다. 리뷰 후보 발행·AI 실제 판단·merged labels·새 admission·fresh final pair를 서로 다른 단계로 판정한다. 두 제품의 미판정51쌍은 새5제품 최종 union 완료를 뜻하지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지

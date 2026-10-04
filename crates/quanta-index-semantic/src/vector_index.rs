@@ -1637,6 +1637,19 @@ mod tests {
                 "{refused:?}"
             );
 
+            let mut changed_segment = base.clone();
+            let segment = changed_segment
+                .ann
+                .as_mut()
+                .and_then(|ann| ann.segments.first_mut())
+                .ok_or("fixture must seal a trained segment")?;
+            segment.uuid = "forged-segment-uuid".to_string();
+            let refused = seal_delta(&table, 2, &changed_segment).await;
+            assert!(
+                matches!(&refused, Err(CoreError::Storage(message)) if message.contains("segment")),
+                "a changed inherited segment identity must be refused: {refused:?}"
+            );
+
             let mut exact_base = base.clone();
             exact_base.mode = VECTOR_INDEX_MODE_EXACT.to_string();
             exact_base.ann = None;

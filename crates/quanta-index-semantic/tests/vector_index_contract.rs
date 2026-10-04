@@ -639,6 +639,65 @@ fn a_delta_inside_the_append_budget_appends_to_the_inherited_index() -> TestResu
     Ok(())
 }
 
+/// A tombstone that removes every row from an appended segment must produce a
+/// new seal over the surviving source, while preserving the already sealed
+/// base and delta. The library may retire the now-empty appended segment.
+#[test]
+fn deleting_every_row_of_an_appended_segment_reseals_the_survivors() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let base = ManifestGeneration::new(1);
+    let appended = ManifestGeneration::new(2);
+    let deleted = ManifestGeneration::new(3);
+    seal_with_scopes(
+        &adapter,
+        base,
+        None,
+        vec![scope("src/base.rs", records("base", "src/base.rs", 0..300)?)],
+        &[],
+    )?;
+    seal_with_scopes(
+        &adapter,
+        appended,
+        Some(base),
+        vec![scope("src/new.rs", records("new", "src/new.rs", 1_000..1_060)?)],
+        &[],
+    )?;
+    if library_view(&generation_dir(temp.path(), appended))?.stats != Some((360, 0, Some(2))) {
+        return Err("fixture must seal one trained and one appended segment".into());
+    }
+    let tombstones = (1_000..1_060)
+        .map(|seed| {
+            tombstone_scope_v1(SemanticSourceScopeKeyV1 {
+                corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+                owner_kind: OwnerDocKind::Chunk,
+                owner_id: format!("owner-new-{seed}"),
+            })
+        })
+        .collect::<Vec<_>>();
+    seal_with_scopes(&adapter, deleted, Some(appended), Vec::new(), &tombstones)?;
+
+    let view = library_view(&generation_dir(temp.path(), deleted))?;
+    if view.stats != Some((300, 0, Some(1))) {
+        return Err(format!("the survivor index must cover 300 rows in one segment, got {:?}", view.stats).into());
+    }
+    let served = adapter.open(&repo(), &revision(), deleted)?;
+    if served.dense_lane() != sealed_ann_lane(trained_at(3, 300)) {
+        return Err(format!("the survivor index must have a fresh seal, got {:?}", served.dense_lane()).into());
+    }
+    let hits = served.search(&unit_vector(7, DIMENSION), 3, &RequestBudgetV1::unbounded())?;
+    if hits.first().is_none_or(|hit| hit.candidate_id != "base-7" || (hit.score - 1.0).abs() > 1e-5) {
+        return Err(format!("retained self-vector was not served: {hits:?}").into());
+    }
+    if library_view(&generation_dir(temp.path(), appended))?.stats != Some((360, 0, Some(2))) {
+        return Err("sealed two-segment parent changed after successor delete".into());
+    }
+    if library_view(&generation_dir(temp.path(), base))?.stats != Some((300, 0, Some(1))) {
+        return Err("sealed one-segment base changed after successor delete".into());
+    }
+    Ok(())
+}
+
 /// Rewrite a current manifest as a format-8 manifest (the index contract
 /// without its lineage record) and re-commit it in the sealed manifest, so
 /// the generation is exactly what a pre-W3 seal left behind.

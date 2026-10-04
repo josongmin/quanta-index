@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P2 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | harness 회귀·source107 matching release build/CLI·default small16/medium256 actual scale `VERIFIED`; default large4096 `FAILED`(build_seal30s timeout), 별도 diagnostic 실행 중. open-loop·OS restart·qualified performance 미완료 |
+| 실행 상태 | harness 회귀·source107 release build·default small16/medium256 scale·small open-loop `VERIFIED`; large default/diagnostic `FAILED`(timeout/ANN segment contraction), 구조 수리 준비. 다른 tier·OS restart·qualified performance 미완료 |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E4-01](O4-E4-01-index-phase-profile.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -38,7 +38,9 @@
 - 같은 OS process의 재개방이며 실제 process restart를 증명하지 않는다. sampled RSS/allocated-root observations와 logical bytes는 true peak·physical I/O가 아니다. 큰 tier 및 open-loop 결과를 이 두 실행으로 합성하지 않는다.
 
 - `FAILED`: default large4096은 `/private/tmp/qi-scale-large-107-v1/result/refusal.json`에서 `status:failed`, `stage:build_seal`, `ipc Read timed out after 30000 ms`이며 producer exit1이었다. source107,16source repos,8,607,106source bytes, requested overrides null/effective30s·16MiB로 결속됐다. build 완료나 이후 lifecycle 성공을 합성하지 않는다.
-- 별도 `/private/tmp/qi-scale-large-diag-107-v1/result`에서 같은 tier/seed에 `--client-timeout-ms 300000 --history-max-bytes 268435456`를 명시한 실행을 시작했다. 아직 완료 전이며 diagnostic 결과가 default refusal를 대체하지 않는다.
+- `FAILED`: 별도 `/private/tmp/qi-scale-large-diag-107-v1/result`의 같은 tier/seed, `--client-timeout-ms 300000 --history-max-bytes 268435456` actual run도 exit1이다. refusal의 stage는`delete_seal`이며 `inherited index has 1 segments, the base generation sealed 2`로 semantic seal이 거절됐다. 기본30s timeout과 다른 실패이며 diagnostic을 default PASS로 합치지 않는다.
+- current harness는 delta로 바꾼 첫 파일을 다음 단계에서 삭제한다. 기존 ANN append admission은 segment count만 보존된다고 가정했다. 전체 appended segment의 live rows가 삭제될 때 library가 빈 segment를 제거하는 경계를 independent300+60→delete60 fixture 및 forged UUID negative로 좁혀 검증한다. 실제 fixture·수리는 완료 전이다. base seal 검증이나 coverage/UUID 검사를 약화하지 않는다.
+- `VERIFIED`: source107 small open-loop `--tier small --seed 5715144129723191120 --out-dir /private/tmp/qi-open-small-107-v1/result` actual exit0 및 summary readback을 확인했다. 기본25/50/100/200QPS·10s·32workers·queue256·2s timeout에서 offered/served254/490/1041/1958, 합계3743이며 typed/unexpected/timeout/transport/invalid/drop 모두0이다. 네 구간 unsaturated이며 공유 Darwin/hash-dev 단일 진단이다.
 
 ## 착수 입력과 실제 tier 실행
 
