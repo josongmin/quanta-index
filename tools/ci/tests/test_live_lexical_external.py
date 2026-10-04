@@ -27,6 +27,52 @@ pytest_plugins = ["tools.ci.tests.test_lexical_capture"]
 @pytest.mark.parametrize(
     ("query", "expected"),
     [
+        ("alpha or beta", '"alpha" "or" "beta"'),
+        ("AND\tNOT\nlow 123", '"AND" "NOT" "low" "123"'),
+        (
+            "path:pkg /name/ (x) token~1",
+            '"path:pkg" "/name/" "(x)" "token~1"',
+        ),
+        ('quote"value', '/quote"value/'),
+        ('a"b\\c/[x].*', r'/a"b\\c\/\[x\]\.\*/'),
+        ("value\\tail", '"value\\tail"'),
+    ],
+)
+def test_cs_nl_literal_query_has_independent_syntax_goldens(query, expected):
+    assert live._cs_literal_query(query) == expected
+
+
+@pytest.mark.parametrize("query", ["", " \t\n", "alpha\x00beta", None])
+def test_cs_nl_literal_query_refuses_unrepresentable_data(query):
+    with pytest.raises(ValueError, match="cs natural-language query"):
+        live._cs_literal_query(query)
+
+
+def test_cs_nl_capture_preserves_literal_request_and_argv(tmp_path, monkeypatch):
+    task = {"task_id": "N1", "query": "alpha or beta path:missing"}
+    effective = '"alpha" "or" "beta" "path:missing"'
+    binary = tmp_path / "cs"
+    target = tmp_path / "raw.json"
+    calls = []
+
+    def process(argv, timeout):
+        calls.append(argv)
+        assert argv[-1] == effective
+        assert timeout == 60
+        return 0, b"null", b"", 2.0
+
+    monkeypatch.setattr(live, "_process", process)
+    row = live._cs(binary, task, [], tmp_path, {}, target, literal_query=True)
+    assert row["submitted_query"] == task["query"]
+    assert row["request_query"] == effective
+    assert row["request_mode"] == "natural_language_file_search"
+    assert row["paths"] == []
+    assert json.loads(target.with_suffix(".process.json").read_bytes())["argv"] == calls[0]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
         ("math/rand and math/rand/v2?", r"math\/rand and math\/rand\/v2\?"),
         (
             'field:x +y (z) [a] {b} ^2 ~1 * ? ! && || \\"q"',
@@ -1269,13 +1315,14 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         Path(corpus["release_path"]) / "views" / corpus["repository"] / corpus["view"]
     )
     binary = tmp_path / "cs"
+    cs_version = "cs version 3.2.0" if nl_file_query else "cs-test"
     binary.write_text(
         f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
         "if '--version' in sys.argv:\n"
-        "    print('cs-test')\n"
+        f"    print({cs_version!r})\n"
         "else:\n"
         "    root = Path(sys.argv[sys.argv.index('--dir') + 1])\n"
-        "    hits = [{'location': str(root / 'src/0.go')}] if sys.argv[-1] == 'symbol_0' else []\n"
+        "    hits = [{'location': str(root / 'src/0.go')}] if sys.argv[-1] in ['symbol_0', '\"symbol_0\"'] else []\n"
         "    print(json.dumps(hits) if hits else 'null')\n"
     )
     binary.chmod(0o755)
@@ -1510,6 +1557,27 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     with monkeypatch.context() as patch:
         patch.setattr(live, "_read_control_file", control_only)
         assert live.verify(root) == result
+    if nl_file_query:
+        rows = [json.loads(line) for line in (root / "cs_rows.jsonl").read_text().splitlines()]
+        assert rows[-1]["submitted_query"] == "How does math/rand/v2 work?"
+        assert rows[-1]["request_query"] == '"How" "does" "math/rand/v2" "work?"'
+        assert all(row["request_mode"] == "natural_language_file_search" for row in rows)
+        process_path = root / "cs/S19.process.json"
+        capture_path = root / "capture.json"
+        original_process_bytes, original_capture = (
+            process_path.read_bytes(),
+            capture_path.read_bytes(),
+        )
+        terminal = json.loads(original_process_bytes)
+        terminal["argv"][-1] = "How does math/rand/v2 work?"
+        process_path.write_text(json.dumps(terminal))
+        rebound = json.loads(original_capture)
+        rebound["raw_capture_sha256"]["cs/S19.process.json"] = live._sha_file(process_path)
+        capture_path.write_text(json.dumps(rebound))
+        with pytest.raises(ValueError, match="cs terminal metadata differs"):
+            live.verify(root)
+        process_path.write_bytes(original_process_bytes)
+        capture_path.write_bytes(original_capture)
     if not any(
         (
             index_changes_during_queries,

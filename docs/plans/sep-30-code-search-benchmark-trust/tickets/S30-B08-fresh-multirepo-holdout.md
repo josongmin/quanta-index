@@ -3787,3 +3787,69 @@ with a new output root. The strict collection validator remains unchanged.
   product, preserves failed staging, and makes no human, final ranking or
   repeated-performance claim. The model quota-backoff controller is also
   confirmed live; its wait is not issued labels or completed model review.
+
+### 2026-10-04: literal cs data custody and fresh pair pool admission
+
+- **VERIFIED**, `41cceb67` fresh release SDK: **25/25**, exit 0 in
+  **666.877s**; canonical `portable_proof.py verify` succeeds. Its Contract
+  remains **732/732 Python + 186/186 Rust**. These receipts attest that pinned
+  source, not the concurrently changing main or its new grammar/timing work.
+- **VERIFIED**, the six-repository native capture/replay completed **120 tasks /
+  360 actual calls** in **1,085.260s**. Sourcegraph and OpenGrok each returned
+  HTTP 200 for all 120 tasks; cs returned exit 0 for all 120. Independently
+  rechecked 28 input digests and all 18 row-file digests. There are **37**
+  unjudged task/file pairs (bat 1, cli 29, mocha 7). Original raw-native query
+  interpretation and AI/unqualified provenance are preserved.
+- **CONFIRMED and repaired in main**, cs natural-language data must not become
+  native boolean/filter/fuzzy syntax. Existing `live_lexical_external.py`
+  now encodes each whitespace term as literal data while retaining native
+  default AND. cs 3.2.0 does not escape quotes inside phrase tokens, so terms
+  containing quotes use metacharacter-escaped literal RE2 patterns. The native
+  explicit fuzzy route keeps its syntax and reuses the same argv builder;
+  there is no duplicate command assembly or new search IR.
+- cs capture preserves actual argv, submitted query and effective query;
+  replay recomputes the declared argv and rejects raw DSL or changed flags
+  even if artifact hashes are rebound. The NL encoding capability is bounded
+  to the verified cs 3.2.0 version. Empty/NUL query data refuses before capture.
+  Historical captures retain their original source-bound replay; they are not
+  reinterpreted under the new policy.
+- **VERIFIED**, independent fixture RED **11/11** before the repair, then
+  complete owner module **101/101** in **131.91s**. Real cs 3.2.0 binary passes
+  **7/7** independently expected file-set controls, including OR/NOT words,
+  path filters as content, embedded quotes/backslashes/regex punctuation,
+  literal fuzzy-looking text and no-answer. All **240/240** unchanged authored
+  C3 queries encode successfully. Ruff and owned-path diff checks pass.
+  External controls: `cs-literal-encoding-control-e8fa0cxb/`,
+  `cs-nl-fixed-native-control-kgfdihug/`,
+  `cs-nl-240-request-preflight-kuoee8u7/`.
+- **FAILED and superseded**, the former pair controller chose a socket path of
+  **110 bytes**, beyond Darwin's **103-byte** pathname limit. It refused before
+  product execution. Its bat result and original controller bytes are retained.
+  A new immutable controller uses a fresh short root and the canonical socket
+  preflight for all twelve future staging paths before any product call.
+  The old controller was terminated while idle, with no child process; its
+  refusal is not promoted. New root:
+  `c3-common-pairs-short-41cceb67-of8l_3rn/`.
+- **VERIFIED**, fresh bat records after that path correction: **40/40** actual
+  product responses, Quanta 20 `capped`, Semble 20 `success`, each with ten
+  distinct ordered files and valid native scores. The strict producer still
+  **FAILED** at final scoring in **303.296s**. Canonical record validation and
+  diagnostic derivation prove the **sole exclusion is `unjudged_ranked_file`**:
+  Quanta 34 observations/16 tasks, Semble 22/14, union **51** task/file pairs.
+  This is missing relevance review for newly returned files, not an execution,
+  ordering or rank-unit defect; `capped` is not counted as execution failure.
+  A new full-source, hash-bound packet strips product/rank/score and leaves all
+  grades null. Audit root: `c3-bat-fresh-pool-audit-41cceb67-jruc5rv8/`.
+- Matching admission has completed bat (**307.714s**), cli (**227.572s**) and lo
+  (**313.829s**); subsequent repositories and the new pair controller remain
+  live. Actual review remains **120/240 tasks**, **544/1,324 original pairs**;
+  the one-shot service quota backoff still waits until **13:40 KST**. New pool
+  pairs are a separate denominator and need actual additional blind review.
+- Remaining: complete the other 120 actual reviewed tasks; freeze final source
+  after other owners' grammar/measurement changes; matching proofs/admission;
+  recapture with the corrected cs policy; review every newly returned unjudged
+  file, reissue qrels and capture against the frozen labels; independent final
+  five-product replay and controlled repeated complete-public-API performance.
+  No full quality ranking, human review or performance qualification is claimed.
+- All external roots above are under
+  `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`.

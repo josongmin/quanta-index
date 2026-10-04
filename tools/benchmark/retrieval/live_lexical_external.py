@@ -50,7 +50,7 @@ MAX_INDEXED_VIEW_SECONDS = 900
 HTTP_TIMEOUT = 50
 MAX_SOURCEGRAPH_REQUEST_TARGET_BYTES = 8 * 1024
 CS_FUZZY_CAPABILITY = "cs_fuzzy_osa1_file"
-CS_FUZZY_VERIFIED_VERSION = "cs version 3.2.0"
+CS_VERIFIED_VERSION = "cs version 3.2.0"
 PRODUCTS = ("sourcegraph", "opengrok", "cs")
 
 
@@ -871,54 +871,26 @@ def _process(argv: list[str], timeout: int) -> tuple[int, bytes, bytes, float]:
     )
 
 
-def _cs(
-    binary: Path, task: dict, gold: list[str], view: Path, admitted: dict[str, str], target: Path
-) -> dict:
-    argv = [
-        str(binary),
-        "--format",
-        "json",
-        "--result-limit",
-        "10",
-        "--dir",
-        str(view),
-        "--hidden",
-        "--no-gitignore",
-        "--no-ignore",
-        "--min",
-        "--max-read-size-bytes",
-        "10000000",
-        task["query"],
-    ]
-    code, stdout, stderr, elapsed = _process(argv, 60)
-    _write(target, stdout)
-    _write(target.with_suffix(".stderr"), stderr)
-    _write(
-        target.with_suffix(".process.json"),
-        json.dumps(
-            {
-                "exit_code": code,
-                "elapsed_ms": elapsed,
-            },
-            sort_keys=True,
-        ).encode()
-        + b"\n",
-    )
-    return _cs_response(task, gold, view, admitted, code, stdout, stderr, elapsed)
+def _cs_literal_query(query: str) -> str:
+    """Encode whitespace terms as data, preserving cs's native default AND.
+
+    cs 3.2.0's phrase lexer does not support quote escaping. A term containing
+    a quote therefore uses a literal RE2 pattern with all metacharacters and
+    the regex delimiter escaped; backslashes inside ordinary phrases are data.
+    """
+    if not isinstance(query, str) or not query.split() or "\x00" in query:
+        raise ValueError("cs natural-language query must be nonempty data without NUL")
+    terms = []
+    for term in query.split():
+        if '"' in term:
+            pattern = "".join("\\" + char if char in r"\.+*?()|[]{}^$/" else char for char in term)
+            terms.append(f"/{pattern}/")
+        else:
+            terms.append(f'"{term}"')
+    return " ".join(terms)
 
 
-def _cs_fuzzy_query(query: str) -> str:
-    """cs 3.2.0's explicit one-edit term syntax, separate from bare search."""
-    if not isinstance(query, str):
-        raise ValueError("cs fuzzy query must be a bare ASCII identifier")
-    try:
-        query_plan.plan_lexical_request("code_search_typo_file", query)
-    except query_plan.QueryPlanError as error:
-        raise ValueError("cs fuzzy query must be a bare ASCII identifier") from error
-    return query + "~1"
-
-
-def _cs_fuzzy_argv(binary: Path, query: str, view: Path) -> list[str]:
+def _cs_argv(binary: Path, query: str, view: Path, *, literal_query: bool = False) -> list[str]:
     return [
         str(binary),
         "--format",
@@ -933,8 +905,54 @@ def _cs_fuzzy_argv(binary: Path, query: str, view: Path) -> list[str]:
         "--min",
         "--max-read-size-bytes",
         "10000000",
-        _cs_fuzzy_query(query),
+        _cs_literal_query(query) if literal_query else query,
     ]
+
+
+def _cs(
+    binary: Path,
+    task: dict,
+    gold: list[str],
+    view: Path,
+    admitted: dict[str, str],
+    target: Path,
+    *,
+    literal_query: bool = False,
+) -> dict:
+    argv = _cs_argv(binary, task["query"], view, literal_query=literal_query)
+    code, stdout, stderr, elapsed = _process(argv, 60)
+    _write(target, stdout)
+    _write(target.with_suffix(".stderr"), stderr)
+    _write(
+        target.with_suffix(".process.json"),
+        json.dumps(
+            {
+                "argv": argv,
+                "exit_code": code,
+                "elapsed_ms": elapsed,
+            },
+            sort_keys=True,
+        ).encode()
+        + b"\n",
+    )
+    return _cs_response(
+        task, gold, view, admitted, code, stdout, stderr, elapsed, literal_query=literal_query
+    )
+
+
+def _cs_fuzzy_query(query: str) -> str:
+    """cs 3.2.0's explicit one-edit term syntax, separate from bare search."""
+    if not isinstance(query, str):
+        raise ValueError("cs fuzzy query must be a bare ASCII identifier")
+    try:
+        query_plan.plan_lexical_request("code_search_typo_file", query)
+    except query_plan.QueryPlanError as error:
+        raise ValueError("cs fuzzy query must be a bare ASCII identifier") from error
+    return query + "~1"
+
+
+def _cs_fuzzy_argv(binary: Path, query: str, view: Path) -> list[str]:
+    return _cs_argv(binary, _cs_fuzzy_query(query), view)
 
 
 def _cs_fuzzy_response(
@@ -1105,7 +1123,7 @@ def capture_cs_fuzzy(spec_path: Path, *, bound_release: BoundRelease | None = No
         raise ValueError("cs fuzzy binary must be executable")
     code, version_raw, stderr, _ = _process([str(binary), "--version"], 10)
     version = version_raw.decode().strip()
-    if code != 0 or stderr or version != CS_FUZZY_VERIFIED_VERSION:
+    if code != 0 or stderr or version != CS_VERIFIED_VERSION:
         raise ValueError("cs fuzzy capability is verified only for cs 3.2.0")
     binary_sha = _sha_file(binary)
     sources = _source_hashes()
@@ -1181,7 +1199,7 @@ def verify_cs_fuzzy(root: Path, *, bound_release: BoundRelease | None = None) ->
     binary = Path(spec["cs"]["binary"]).resolve(strict=True)
     code, version_raw, stderr, _ = _process([str(binary), "--version"], 10)
     version = version_raw.decode().strip()
-    if code != 0 or stderr or version != CS_FUZZY_VERIFIED_VERSION:
+    if code != 0 or stderr or version != CS_VERIFIED_VERSION:
         raise ValueError("cs fuzzy capability/version changed")
     fixed = {
         "spec.json",
@@ -1282,6 +1300,8 @@ def _cs_response(
     stdout: bytes,
     stderr: bytes,
     elapsed: float,
+    *,
+    literal_query: bool = False,
 ) -> dict:
     if code != 0 or stderr:
         raise ValueError(f"cs failed with exit {code} or nonempty stderr")
@@ -1308,6 +1328,14 @@ def _cs_response(
         paths=paths,
         stdout_sha256=_sha(stdout),
         stderr_sha256=_sha(stderr),
+        **(
+            {
+                "request_query": _cs_literal_query(task["query"]),
+                "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+            }
+            if literal_query
+            else {}
+        ),
     )
 
 
@@ -1580,7 +1608,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
     suite, pack = _json(suite_raw), _json(pack_raw)
     admitted = lexical._file_universe(suite, pack)
     tasks = lexical._tasks(suite, pack)
-    literal_opengrok_query = (
+    literal_file_query = (
         suite["tasks"][0].get("evaluation_contract", {}).get("request_mode")
         == query_plan.NATURAL_LANGUAGE_FILE_SEARCH
     )
@@ -1638,6 +1666,11 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         if code != 0 or stderr or not version.strip():
             raise ValueError("cs version command failed")
         binary_sha = _sha_file(binary)
+        if literal_file_query and version.decode().strip() != CS_VERIFIED_VERSION:
+            raise ValueError("cs natural-language data encoding is verified only for cs 3.2.0")
+        if literal_file_query:
+            for task in pack["tasks"]:
+                _cs_literal_query(task["query"])
     source_hashes = _source_hashes()
     stage.mkdir(parents=True)
     _write(stage / "spec.json", _read_control_file(spec_path))
@@ -1691,10 +1724,16 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
             view,
             files,
             stage / "opengrok" / f"{task['task_id']}.json",
-            literal_query=literal_opengrok_query,
+            literal_query=literal_file_query,
         ),
         "cs": lambda task, gold: _cs(
-            binary, task, gold, view, files, stage / "cs" / f"{task['task_id']}.json"
+            binary,
+            task,
+            gold,
+            view,
+            files,
+            stage / "cs" / f"{task['task_id']}.json",
+            literal_query=literal_file_query,
         ),
     }
     with ExitStack() as stack:
@@ -1895,10 +1934,12 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     suite, pack = _json(suite_raw), _json(pack_raw)
     admitted = lexical._file_universe(suite, pack)
     tasks = lexical._tasks(suite, pack)
-    literal_opengrok_query = (
+    literal_file_query = (
         suite["tasks"][0].get("evaluation_contract", {}).get("request_mode")
         == query_plan.NATURAL_LANGUAGE_FILE_SEARCH
     )
+    if "cs" in products and literal_file_query and summary["cs_version"] != CS_VERIFIED_VERSION:
+        raise ValueError("cs natural-language data encoding is verified only for cs 3.2.0")
     if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id) is None for task_id in tasks):
         raise ValueError("task IDs must be safe filename components")
     release = Path(spec["corpus"]["release_path"])
@@ -2092,8 +2133,15 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
             if name == "cs":
                 terminal = _json(_read_control_file(root / name / f"{task_id}.process.json"))
                 if (
-                    set(terminal) != {"exit_code", "elapsed_ms"}
+                    set(terminal) != {"argv", "exit_code", "elapsed_ms"}
                     or type(terminal["exit_code"]) is not int
+                    or terminal["argv"]
+                    != _cs_argv(
+                        Path(spec["cs"]["binary"]).resolve(strict=True),
+                        task["query"],
+                        view,
+                        literal_query=literal_file_query,
+                    )
                 ):
                     raise ValueError("cs terminal metadata differs")
                 derived = _cs_response(
@@ -2105,6 +2153,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                     _read_control_file(root / name / f"{task_id}.json"),
                     _read_control_file(root / name / f"{task_id}.stderr"),
                     terminal["elapsed_ms"],
+                    literal_query=literal_file_query,
                 )
             else:
                 terminal = _json(_read_control_file(root / name / f"{task_id}.transport.json"))
@@ -2140,7 +2189,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                         terminal["content_type"],
                         raw,
                         terminal["elapsed_ms"],
-                        literal_query=literal_opengrok_query,
+                        literal_query=literal_file_query,
                     )
             if canonical_json(row) != canonical_json(derived):
                 raise ValueError("external row disagrees with retained native response")
