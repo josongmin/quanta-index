@@ -920,6 +920,19 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             ));
         }
     }
+    let query_stage_observation = QueryStageObservationPolicy::parse(
+        args.flags
+            .get("query-stage-observation")
+            .map_or("enabled", String::as_str),
+    )
+    .map_err(|message| BenchError::Config(message.to_string()))?;
+    if request_events_out.is_some()
+        && query_stage_observation != QueryStageObservationPolicy::Enabled
+    {
+        return Err(BenchError::Config(
+            "--request-events-out requires enabled server query-stage observation".to_string(),
+        ));
+    }
     let rank_study_out = args.flags.get("rank-study-out").map(PathBuf::from);
     if let Some(path) = &rank_study_out {
         let _external_path = require_external_path(&repo, path, "--rank-study-out")?;
@@ -1154,19 +1167,6 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         verify_searchd_digest(&searchd_bin, &required(args, "searchd-expected-sha256")?)?;
     let profile = EmbedderProfile::resolve(args.flags.get("embedder").map(String::as_str))?;
     let model_dir = args.flags.get("model-dir").map(PathBuf::from);
-    let query_stage_observation = QueryStageObservationPolicy::parse(
-        args.flags
-            .get("query-stage-observation")
-            .map_or("enabled", String::as_str),
-    )
-    .map_err(|message| BenchError::Config(message.to_string()))?;
-    if request_events_out.is_some()
-        && query_stage_observation != QueryStageObservationPolicy::Enabled
-    {
-        return Err(BenchError::Config(
-            "--request-events-out requires enabled server query-stage observation".to_string(),
-        ));
-    }
     let hybrid_fetch_floor = HybridFetchFloorPolicy::parse(
         args.flags
             .get("experimental-hybrid-fetch-floor")

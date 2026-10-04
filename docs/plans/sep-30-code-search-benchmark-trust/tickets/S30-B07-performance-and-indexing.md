@@ -1041,8 +1041,13 @@ the new exploratory replay digest-binding check. The broader rerun executed
 725 passing tests and one failure caused by live HEAD changing while a receipt
 fixture was being built. That fixture now freezes its driver revision locally;
 the production source-closure/HEAD rejection remains unchanged. The corrected
-focused selector passed 30 tests in 26.06 s. A canonical Python rerun is running
-from clean frozen `570a5e39`; collection is not inferred test success.
+focused selector passed 30 tests in 26.06 s. The canonical Python rerun from
+clean frozen `570a5e39` executed 726 passing tests and one failure in 363.22 s:
+the natural-language file planner emitted a request that disagreed with its
+fixed contract expectation. Later main included the folded-language planner
+repair; the two affected planner/request-binding tests passed in 0.79 s at
+`bf10cdea`. That focused repair does not qualify the whole newer source. The
+final frozen-source full rail remains pending; collection is not test success.
 
 Rust all-features owner checks passed 119 library and 15 binary tests. The
 existing real-daemon SDK roundtrip test passed 1/1 in 9.37 s, exercising both

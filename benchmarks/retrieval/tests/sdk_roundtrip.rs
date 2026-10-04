@@ -2612,6 +2612,31 @@ fn verify_serial_request_events_runner(
         assert!(!root.join("record.json").exists());
         assert!(!root.join("state").exists());
     }
+    for stage_policy in ["disabled", "invalid"] {
+        let refused = Command::new(original_command.get_program())
+            .args(&args)
+            .arg("--request-events-out")
+            .arg(&artifact_path)
+            .arg("--query-stage-observation")
+            .arg(stage_policy)
+            .output()
+            .expect("invalid stage policy probe runs");
+        assert_eq!(refused.status.code(), Some(2));
+        for path in [
+            root.join("record.json"),
+            root.join("record.json.symbol-preflight.json"),
+            root.join("phase.json"),
+            root.join("diagnostic.json"),
+            root.join("refusal.json"),
+            root.join("state"),
+            artifact_path.clone(),
+        ] {
+            assert!(
+                !path.exists(),
+                "invalid stage policy {stage_policy} created {path:?}"
+            );
+        }
+    }
     let output = Command::new(original_command.get_program())
         .args(&args)
         .arg("--request-events-out")

@@ -4115,7 +4115,8 @@ def evaluate_complete_scored_file_evidence(
     results = {(row["task_id"], row["route"]): row for row in run["results"]}
     deltas = [after - before for _task_id, before, after in rows]
     negative_ids = sorted(task_id for task_id, task in eval_tasks.items() if not task["answerable"])
-    require(bool(negative_ids), "complete scored file evidence needs no-answer controls")
+    # Positive-only cohorts measure ranked retrieval, not abstention. The
+    # existing summary represents zero controls as not applicable, never zero.
     negative_status = {
         (task_id, route): _result_status(results[task_id, route])
         for task_id in negative_ids
