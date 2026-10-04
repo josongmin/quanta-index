@@ -1631,6 +1631,16 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         rows = (root / f"{name}_rows.jsonl").read_text().splitlines()
         assert len(rows) == 20
         assert sum(json.loads(row).get("file_hit_at_10", False) for row in rows) == 1
+        compared = live.lexical.product_result(
+            name, root / f"{name}_rows.jsonl", live.lexical._tasks(suite, pack),
+            {entry["path"] for entry in suite["file_universe"]},
+        )
+        assert compared["completed_response_latency_ms"]["count"] == 20
+        assert all(
+            row["completed_response_boundary"] == "request_construction_to_normalized_response"
+            and row["completed_query_latency_ms"] >= 0
+            for row in compared["per_query"]
+        )
     if reserved_query:
         rows = [
             json.loads(row) for row in (root / "sourcegraph_rows.jsonl").read_text().splitlines()

@@ -15,6 +15,113 @@ from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import source_oracle_suite
 
 
+def test_name_span_gold_is_independent_of_same_line_usage(tmp_path):
+    raw = b"package p\nfunc Same() { Same() }; func Peer() {}\n"
+    repo, commit, files = _source_repo(tmp_path, {"a.go": raw})
+    oracle = ev.source_oracle.SourceOracleIndex({"a.go": (raw, ev.digest(raw))}, {"Same"})
+    expected = [{
+        "path": "a.go", "file_sha256": ev.digest(raw), "grade": 3,
+        "start_byte": 10, "end_byte": 32,
+        "name_span": {"start_byte": 15, "end_byte": 19, "name": "Same"},
+    }]
+    assert oracle.expected_rows(
+        ev.source_oracle.GO_EXACT_LOCAL_NAME, "Same", "symbol", include_name_spans=True
+    ) == expected
+    baseline = _baseline(commit, files)
+    task = baseline["tasks"][0]
+    task.update(query="Same", query_sha256=ev.digest(b"Same"))
+    suite = source_oracle_suite.derive_suites(repo, baseline)["go-declaration-symbol"][0]
+    assert suite["tasks"][0]["declaration_judgments"] == expected
+    forged = copy.deepcopy(suite)
+    forged["tasks"][0]["declaration_judgments"][0]["name_span"] = {
+        "start_byte": 24, "end_byte": 28, "name": "Same",
+    }
+    # The usage has identical text inside the same definition and context.
+    # Only the independent parser census distinguishes it from the name.
+    with pytest.raises(ev.EvidenceError, match="source oracle judgments differ"):
+        ev.validate_suite(repo, forged)
+
+
+def test_name_recovery_does_not_promote_definition_or_same_context_hits():
+    judgment = {
+        "path": "same.go", "start_byte": 10, "end_byte": 32, "grade": 3,
+        "name_span": {"start_byte": 15, "end_byte": 19, "name": "Same"},
+    }
+    candidate = {
+        "path": "same.go", "rank": 1,
+        "span_accounting": {
+            "unit_kind": "symbol", "unit_id": "same-definition",
+            "indexed_start_byte": 10, "indexed_end_byte": 32,
+            "name_span": copy.deepcopy(judgment["name_span"]),
+        },
+    }
+    assert ev.declaration_name_recall_at_k([candidate], [judgment], 10) == 1.0
+    assert ev.declaration_name_mrr_at_k([candidate], [judgment], 10) == 1.0
+    usage = copy.deepcopy(candidate)
+    usage["span_accounting"]["name_span"] = {"start_byte": 24, "end_byte": 28, "name": "Same"}
+    assert ev.declaration_recall_at_k([usage], [judgment], 10) == 1.0
+    assert ev.declaration_name_recall_at_k([usage], [judgment], 10) == 0.0
+    assert ev.declaration_name_mrr_at_k([usage], [judgment], 10) == 0.0
+    sibling = copy.deepcopy(candidate)
+    sibling["span_accounting"].update(
+        unit_id="other-definition", indexed_start_byte=34, indexed_end_byte=48,
+        name_span={"start_byte": 39, "end_byte": 43, "name": "Peer"},
+    )
+    assert ev.declaration_name_recall_at_k([sibling], [judgment], 10) == 0.0
+    wrong_unit = copy.deepcopy(candidate)
+    wrong_unit["span_accounting"]["unit_kind"] = "chunk"
+    assert ev.declaration_name_recall_at_k([wrong_unit], [judgment], 10) == 0.0
+
+
+@pytest.mark.parametrize("missing", ["gold", "native"])
+def test_name_recovery_reports_missing_authority_without_synthesizing_zero(missing):
+    gold = {
+        "path": "same.go", "start_byte": 10, "end_byte": 32, "grade": 3,
+        "name_span": {"start_byte": 15, "end_byte": 19, "name": "Same"},
+    }
+    candidate = {
+        "path": "same.go", "rank": 1,
+        "span_accounting": {
+            "unit_kind": "symbol", "unit_id": "definition",
+            "indexed_start_byte": 10, "indexed_end_byte": 32,
+            "name_span": copy.deepcopy(gold["name_span"]),
+        },
+    }
+    (gold if missing == "gold" else candidate["span_accounting"]).pop("name_span")
+    suite = {"comparison_contract": {"top_k": 10}, "routes": ["symbol"]}
+    run = {
+        "span_accounting_version": 1,
+        "route_provenance": {"symbol": {"capture_id": "native"}},
+        "captures": {"native": {"system": "quanta"}},
+    }
+    tasks = {"task": {
+        "answerable": True, "declaration_judgments": [gold], "judgment_policy": ev.UNJUDGED_POLICY,
+    }}
+    results = {("task", "symbol"): {
+        "status": "success", "rank_unit": "symbol", "candidates": [candidate],
+    }}
+    report = ev.judgment_diagnostics(suite, run, results, tasks, "symbol", None)
+    assert report["declaration_judgments"]["routes"]["symbol"]["conditional_mean"]["recall_at_10"] == 1.0
+    names = report["declaration_name_recovery"]["routes"]["symbol"]
+    assert names["eligible_count"] == 0
+    assert names["operational_mean"]["recall_at_10"] == ev.NOT_APPLICABLE
+    assert names["operational_unavailable_reason"] == "incomplete_name_authority"
+    assert names["excluded"] == [{
+        "task_id": "task",
+        "reason": "missing_independent_name_gold" if missing == "gold" else "missing_published_name_authority",
+    }]
+
+
+@pytest.mark.parametrize("span,reason", [
+    ({"start_byte": 3, "end_byte": 7, "name": "caf"}, "UTF-8 boundary"),
+    ({"start_byte": 0, "end_byte": 8, "name": "fn café"}, "escapes"),
+    ({"start_byte": 3, "end_byte": 8, "name": "cafe"}, "differs from source"),
+])
+def test_name_span_refuses_utf8_cuts_context_expansion_and_wrong_text(span, reason):
+    with pytest.raises(ev.EvidenceError, match=reason):
+        ev.validate_name_span(span, "fn café() {}".encode(), 3, 13, "name proof")
+
+
 def test_batch_declaration_census_cache_preserves_gold_and_refuses_drift(monkeypatch):
     from tools.benchmark.retrieval import source_oracle as so
 

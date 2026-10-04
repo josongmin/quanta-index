@@ -16297,6 +16297,31 @@ def test_query_clock_comparator_validates_nested_typo_clocks_without_erasing_cou
             )
 
 
+@pytest.mark.parametrize("mode", ["ordinary", "typo_explicit", "typo_fallback"])
+def test_query_clock_comparator_refuses_enabled_mode_without_complete_clock_inventory(mode):
+    row = {"stage": "merge", "detail": f"code_search.execution.mode={mode}"}
+    with pytest.raises(ValueError, match="clock hierarchy"):
+        overhead._without_code_search_work_clocks([row])
+    assert overhead._without_code_search_work_clocks([row], allow_clocks=False) == [row]
+
+
+def test_query_clock_comparator_binds_explicit_mode_and_refuses_orphan_children():
+    def row(detail):
+        return {"stage": "merge", "detail": "code_search.execution." + detail}
+    parents = [row("candidate_ns=10"), row("sort_page_ns=0"), row("preview_ns=0")]
+    children = [row("typo_shortlist_admission_ns=2"), row("typo_source_token_scan_ns=4"), row("typo_materialize_ns=1")]
+    explicit = row("mode=typo_explicit")
+    assert overhead._without_code_search_work_clocks([explicit, *parents, *children]) == [explicit]
+    for mutant in (
+        [row("mode=ordinary"), *parents[1:]],
+        [row("mode=ordinary"), *parents, children[0]],
+        [row("mode=unknown"), *parents],
+        [explicit, explicit, *parents, *children],
+    ):
+        with pytest.raises(ValueError, match="clock hierarchy"):
+            overhead._without_code_search_work_clocks(mutant)
+
+
 def test_v8_authority_stage_replay_preserves_nullable_children_and_phase_contract(tmp_path):
     stage = _pair_stage(tmp_path, diagnostic_version=8)
     path = next(stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json"))

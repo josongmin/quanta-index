@@ -8373,6 +8373,12 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     if protocol_payload.get("semble_lockfile_sha256") != lockfile_digest:
         pair_note("protocol_lock_semble_pin_drift", ("T11", "T12"))
     if isinstance(adapter, dict):
+        if "parent_phase_profile" in adapter:
+            try:
+                semble_adapter.validate_parent_phase_profile(adapter["parent_phase_profile"])
+            except ValueError as exc:
+                phase_ok = False
+                pair_note(f"semble_parent_phase_profile_invalid:{exc}", ("T11", "T12"))
         if adapter.get("semble_version") != SEMBLE_PINNED_VERSION:
             pair_note("semble_version_drift", ("T11",))
         if semble_rep0 is not None:
@@ -11035,6 +11041,11 @@ def build_run_manifest(
     adapter_manifest = read_json(adapter_path)
     if not isinstance(adapter_manifest, dict):
         raise RunError("rep-0 adapter manifest is not an object")
+    if "parent_phase_profile" in adapter_manifest:
+        try:
+            semble_adapter.validate_parent_phase_profile(adapter_manifest["parent_phase_profile"])
+        except ValueError as exc:
+            raise RunError(f"rep-0 adapter parent phase profile is invalid: {exc}") from exc
     if adapter_manifest.get("semble_version") != SEMBLE_PINNED_VERSION:
         raise RunError(
             f"run requires Semble {SEMBLE_PINNED_VERSION}; adapter holds "
