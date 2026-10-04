@@ -300,6 +300,7 @@ fn a_replay_after_restart_is_still_a_replay() -> TestResult {
 }
 
 /// Two distinct searchd binary processes share one durable operation row.
+///
 /// This is the OS-process restart rail; the controlled timeout rail lives in
 /// the runtime library's private UDS fixture and reassembles a thread daemon.
 #[test]
@@ -357,7 +358,7 @@ fn binary_restart_replays_original_operation_and_refuses_conflicting_source_dige
         )?
         .payload,
     )?;
-    if replay != first.clone().replayed() {
+    if replay != first.replayed() {
         return Err(format!("binary restart changed the replay receipt: {replay:?}").into());
     }
     let mut conflicting = fixture.text_search_corpus_batch(
@@ -366,8 +367,7 @@ fn binary_restart_replays_original_operation_and_refuses_conflicting_source_dige
     )?;
     conflicting.source_event.stream_id = batch.source_event.stream_id.clone();
     conflicting.source_event.event_id = batch.source_event.event_id.clone();
-    conflicting.source_event.expected_base_event_id =
-        batch.source_event.expected_base_event_id.clone();
+    conflicting.source_event.expected_base_event_id = batch.source_event.expected_base_event_id;
     stamp_batch_digest_v1(&mut conflicting)?;
     let conflict_key = IdempotencyKeyV1 {
         batch_digest: conflicting.batch_digest.clone(),

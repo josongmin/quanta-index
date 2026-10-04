@@ -29,6 +29,41 @@ use quanta_index_searchd_harness::{E2eRuntime, private_tempdir};
 use super::{SearchdConfig, build_runtime_with_lexical_builder};
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+// Keep the original thread panic payload in the test error. String payloads
+// remain readable; other payloads retain their concrete type for inspection.
+struct ThreadPanic {
+    worker: &'static str,
+    payload: Box<dyn std::any::Any + Send + 'static>,
+}
+
+impl std::fmt::Display for ThreadPanic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(message) = self
+            .payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| self.payload.downcast_ref::<&str>().copied())
+        {
+            write!(f, "{} panicked: {message}", self.worker)
+        } else {
+            write!(
+                f,
+                "{} panicked with non-string payload of type {:?}",
+                self.worker,
+                self.payload.as_ref().type_id()
+            )
+        }
+    }
+}
+
+impl std::fmt::Debug for ThreadPanic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl Error for ThreadPanic {}
 const WAIT: Duration = Duration::from_secs(10);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -107,7 +142,10 @@ impl RunningRuntime {
     fn stop(mut self) -> TestResult {
         self.shutdown.store(true, Ordering::Release);
         let join = self.join.take().ok_or("runtime driver already joined")?;
-        join.join().map_err(|_| "runtime driver panicked")??;
+        join.join().map_err(|payload| ThreadPanic {
+            worker: "runtime driver",
+            payload,
+        })??;
         Ok(())
     }
 }
@@ -253,7 +291,10 @@ fn timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_r
     if !matches!(catalog.inspect(&key)?, OperationInspectV1::InFlight { .. }) {
         return Err("lexical gate did not hold an applying journal operation".into());
     }
-    let timed_out = caller.join().map_err(|_| "UDS caller panicked")?;
+    let timed_out = caller.join().map_err(|payload| ThreadPanic {
+        worker: "UDS caller",
+        payload,
+    })?;
     if !matches!(
         &timed_out,
         Err(IpcError::Timeout {
@@ -311,8 +352,7 @@ fn timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_r
     )?;
     conflicting.source_event.stream_id = batch.source_event.stream_id.clone();
     conflicting.source_event.event_id = batch.source_event.event_id.clone();
-    conflicting.source_event.expected_base_event_id =
-        batch.source_event.expected_base_event_id.clone();
+    conflicting.source_event.expected_base_event_id = batch.source_event.expected_base_event_id;
     stamp_batch_digest_v1(&mut conflicting)?;
     let conflict_key = operation_key(&conflicting);
     if conflict_key.batch_digest == key.batch_digest {

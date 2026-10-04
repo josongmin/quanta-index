@@ -47,11 +47,12 @@ fn seeded_runtime() -> Result<E2eRuntime, Box<dyn Error>> {
     Ok(rt)
 }
 
-/// A public resolve fixes G1 for the caller, then a two-generation
-/// retention window physically removes it before the caller's query.
-/// The supported boundary is an exact refusal for G1 and a complete G3
-/// result for a fresh Active request. The server-internal select/acquire
-/// interval is exercised separately in the dispatcher fixture.
+/// A public resolve fixes G1 for the caller.
+///
+/// A two-generation retention window physically removes it before the
+/// caller's query. The supported boundary is an exact refusal for G1 and
+/// a complete G3 result for a fresh Active request. The server-internal
+/// select/acquire interval is exercised separately in the dispatcher fixture.
 #[test]
 fn retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3() -> TestResult {
     let mut rt = E2eRuntime::boot_with_history_max_generations(2)?;
@@ -124,12 +125,16 @@ fn retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3(
         Some(selected_pin.clone()),
         Some(GenerationSelector::Pinned(selected_pin.clone())),
     )?;
-    match stale.payload {
+    if !matches!(
+        &stale.payload,
         SearchPlaneQueryIpcResponse::Error(error)
-            if error.code == SearchPlaneErrorCodeV2::UnknownGeneration => {}
-        other => {
-            return Err(format!("retired explicit G1 did not refuse unknown: {other:?}").into());
-        }
+            if error.code == SearchPlaneErrorCodeV2::UnknownGeneration
+    ) {
+        return Err(format!(
+            "retired explicit G1 did not refuse unknown: {:?}",
+            stale.payload
+        )
+        .into());
     }
     let tokened = send(
         0x3102,
@@ -140,10 +145,12 @@ fn retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3(
             activation_token: selected.activation_token,
         }),
     )?;
-    match tokened.payload {
+    if !matches!(
+        &tokened.payload,
         SearchPlaneQueryIpcResponse::Error(error)
-            if error.code == SearchPlaneErrorCodeV2::NotReady => {}
-        other => return Err(format!("stale activation token was served: {other:?}").into()),
+            if error.code == SearchPlaneErrorCodeV2::NotReady
+    ) {
+        return Err(format!("stale activation token was served: {:?}", tokened.payload).into());
     }
     let active = send(
         0x3103,

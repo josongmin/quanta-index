@@ -323,10 +323,6 @@ fn adopted_child_exit_is_a_required_child_loss() {
     );
 }
 
-fn controlled_shutdown_meter_panic() -> ! {
-    panic!("controlled disk-meter panic during shutdown");
-}
-
 /// An owned meter panic after the shutdown signal reaches the adopted timer's
 /// terminal receiver and prevents a clean drain outcome.
 #[test]
@@ -334,6 +330,10 @@ fn adopted_maintenance_meter_panic_during_shutdown_is_drain_failed() {
     use quanta_index_core::{CoreError, RequestBudgetV1, TrackDiskUsagePort, WriterIdleSweepPort};
     use quanta_index_searchd::app::maintenance::{MaintenanceParts, MaintenanceTimer};
     use std::sync::atomic::AtomicU64;
+
+    fn controlled_shutdown_meter_panic() -> ! {
+        panic!("controlled disk-meter panic during shutdown");
+    }
 
     struct Sweep;
     impl WriterIdleSweepPort for Sweep {
@@ -565,7 +565,7 @@ fn missing_report_during_drain_is_named_failure_not_escalation() {
         matches!(
             &outcome,
             SupervisionOutcome::DrainFailed { failed }
-                if failed.as_slice() == &[("drain-without-report", ChildExitKind::Failed)]
+                if failed.as_slice() == [("drain-without-report", ChildExitKind::Failed)]
         ),
         "missing report during drain must fail without escalation: {outcome:?}"
     );
