@@ -89,8 +89,8 @@ def test_large_inputs_bypass_cache_and_entry_count_is_bounded():
     for number in range(40):
         ev.mean_ci([float(number)] * 2, [("T1", "a"), ("T2", "a")])
     info = ev._bootstrap_bounds.cache_info()
-    assert info.currsize == info.maxsize == 32
-    result = ev.mean_ci([1.0, 1.0], [("x" * 65536, "a"), ("T2", "a")])
+    assert info.currsize == info.maxsize == 16
+    result = ev.mean_ci([1.0, 1.0], [("x" * 262144, "a"), ("T2", "a")])
     assert result["lower_95"] == 1.0
     assert ev._bootstrap_bounds.cache_info() == info
 

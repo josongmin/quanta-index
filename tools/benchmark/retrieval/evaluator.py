@@ -3076,8 +3076,8 @@ def mean_ci(
     resamples = 10_000
     # Cache only pure numeric work, never repository/evidence admission. Exact
     # canonical bytes distinguish signed zero, identities, strata and values.
-    # The 1,196-query diagnostic exceeds 64 KiB and is re-scored by the
-    # independent in-process verdict. Retain only bounded canonical keys;
+    # The 1,196-query diagnostic fits the 256 KiB per-key ceiling and is
+    # re-scored by the independent in-process verdict. Retain bounded keys;
     # source/evidence validation is never cached.
     bounds = _bootstrap_bounds if len(seed_bytes) <= 262_144 else _bootstrap_bounds.__wrapped__
     lower, upper = bounds(seed_bytes, resamples)

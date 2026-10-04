@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | 재개 driver·canonical form/cache preflight `VERIFIED`; 실제 후속 판단은 quota로 `BLOCKED` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -16,7 +16,16 @@ C3 240개 질의의 실제 판단을 완료하고 재사용 가능한 모델 cac
 
 ## 배경과 현재 상태
 
-원본 terminal은 7저장소 140/240질의 발행과 5저장소 실패를 기록한다. 이번 로그 재조회에서 TypeORM/Tailscale은 unresolved pair 발행 거절, Django/SQLAlchemy/Zellij는 batch process exit 1이었다. 후자 원인을 quota로 확정할 근거는 부족하다. supplemental 준비 함수와 readiness helper는 이미 main에 있다.
+원본 terminal의 7저장소 140/240질의 발행은 역사적 분모다. TypeORM/Tailscale의 unresolved pair 발행 거절은 보존한다. Django/SQLAlchemy/Zellij의 invalid native stdout 재조회에서는 `is_error:true`, `terminal_reason:api_error`와 session-limit 응답이 확인됐다. 현재 form의 candidate 분모와 역사적 issued 분모를 합산하지 않는다.
+
+## 2026-10-04 실행 갱신
+
+- `VERIFIED`: checkout 밖 `/tmp/qi-c3-current-resume-20261004-os8dvo11/resume.py`에서 현 `holdout_review.prepare`로 original form/custody를 재구성하고 frozen bytes equality를 확인했다. 기존 raw request/result/model/schema/decision identity를 검증한 cache만 재사용했다.
+- 명령: `uv run --frozen --extra dev python /tmp/qi-c3-current-resume-20261004-os8dvo11/resume.py django sqlalchemy zellij typeorm tailscale` — exit 0. 이는 미판단 pair를 분리한 preflight이며 신규 모델 판단을 실행한 결과가 아니다.
+- 현재 frozen form: 5저장소 100 tasks. 저장소별 candidate pairs는 Django509 / SQLAlchemy480 / Zellij476 / TypeORM572 / Tailscale544. reviewer·adjudicator별 누락은 해당 외부 root의 `preflight.json`에 별도로 기록했다.
+- `FAILED`: `uv run --frozen --extra dev python /tmp/qi-c3-current-resume-20261004-os8dvo11/resume.py --execute typeorm` — 실제 adjudicator batch013, exit 1. raw `calls/typeorm/adjudicator/013/stdout.json`은 `is_error:true`, `terminal_reason:api_error`, `You've hit your session limit`을 반환했다. 서비스가 알린 재개 시각은 2026-10-04 18:40 KST다. 모델 실행은 그때까지 `BLOCKED`이며 미판단 pair를 resolved/grade로 바꾸지 않았다.
+- 현 native CLI 2.1.288의 실제 version을 확인했다. 사라진 과거 2.1.286 경로를 사용하지 않는다. 재호출은 source binding을 새 외부 root에 재생하고 실패 root를 보존한다.
+- 최종 240-task disposition, 미판단 판단, actual finalization/suite issuance는 `NOT_RUN`이다.
 
 ## 착수 입력
 

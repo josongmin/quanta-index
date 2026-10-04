@@ -5,10 +5,17 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `CODE_AND_PROOF` |
 | 기준 웨이브 | [W2 — 확인된 결함 수리·선택 최적화](../waves/W2-repairs-and-selected-optimizations.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | DTO/producer/SDK/benchmark 단일 RPC 통합; 중앙 owner·wire·SDK 실행 검증 중 |
 | 선행 결과 | [O4-E3-01](O4-E3-01-active-selection-race.md), [O4-E3-02](O4-E3-02-admission-pin-transfer.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
+
+## 2026-10-04 통합 갱신
+
+- Text/Symbol/Semantic/Hybrid/HybridSeed/History/RuntimeMetadata의 optional `selected_active_head`를 선택 당시 catalog snapshot에서 materialize한다. SDK는 이 head와 response generation/token/secondary lane identity를 검사한다.
+- 지원 Active route의 사전 resolve RPC를 제거했다. Structural Active refusal, SemanticWorkBounded exact-generation 제한, Active cursor의 exact-pin 요구와 `rev:at.time` ancestor preflight는 별도 계약으로 보존한다.
+- strict wire 방문자, response literals, searchctl/harness, 실제 benchmark request-event consumer를 함께 수정했다. 선택 후 read-view admission 전에 G1이 폐기되면 기존 typed refusal이 가능하며 이 변경이 admission lease를 추가한 것은 아니다.
+- 초기 중앙 compile에서 Structural macro field와 SDK test import 누락을 확인해 수정했다. 통합 후 owner batch·actual SDK one-RPC·mandatory surface gates는 아직 최종 결과를 회수 중이다.
 
 ## 목적
 

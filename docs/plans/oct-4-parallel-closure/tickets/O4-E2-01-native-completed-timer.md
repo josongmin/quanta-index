@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `CODE_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | native producer/consumer 통합·owner fixture `VERIFIED`; 새 실제 캡처·정식 반복 시간은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -16,7 +16,14 @@ Sourcegraph/OpenGrok/cs 요청 생성부터 normalized required response 완성�
 
 ## 배경과 현재 상태
 
-현 _http는 Request 생성 뒤 시작해 raw body read 후 끝난다. _process는 process/stdout 종료까지다. _sourcegraph/_opengrok은 raw persistence 후 response normalization을 호출하므로 기존 elapsed_ms는 decode/normalization을 포함하지 않는다. Quanta/Semble의 completed clock은 이미 있다.
+과거 elapsed_ms는 transport/process 경계였다. 현재 standard Sourcegraph/OpenGrok/cs producer에는 request construction부터 normalized response materialization까지 연속 completed clock과 output binding을 추가했고, raw persistence·해시·채점은 그 경계 뒤로 배치했다. 역사적 transport timing은 별도 필드로 보존한다. cs fuzzy process 진단에는 completed-response qualification을 붙이지 않는다.
+
+## 2026-10-04 중앙 검증
+
+- 명령: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py tools/ci/tests/test_sourcegraph_parity_inventory.py tools/benchmark/retrieval/test_sourcegraph.py tools/ci/tests/test_lexical_file_comparison.py tools/ci/tests/test_completed_response_timing.py -q --tb=short`.
+- 결과: exit 0, **255 passed**, 351.03s. fake clock, native raw 재생, completed-output mutation, scope/consumer 연계를 포함한다.
+- normalized row와 그 digest를 함께 위조해도 원래 native raw와 다르면 거절한다. staged native replay는 summary 발행 전 수행하고 public consumer는 같은 native authority를 먼저 확인한다.
+- 제외: 실제 5제품 신규 캡처, 실제 warmup0 parity, admitted host의 반복 성능 및 speed verdict. 이 fixture 결과로 승격하지 않는다.
 
 ## 착수 입력
 
