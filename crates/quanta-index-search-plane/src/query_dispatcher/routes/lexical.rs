@@ -319,7 +319,8 @@ impl SearchPlaneDispatcher {
             let summary = execution.summary();
             return Ok((
                 TextQueryResponse {
-                    selected_active_head: cursor_active_head.or_else(|| planned.active_head.clone()),
+                    selected_active_head: cursor_active_head
+                        .or_else(|| planned.active_head.clone()),
                     generation: planned.pin.clone(),
                     rank_unit,
                     results: Vec::new(),

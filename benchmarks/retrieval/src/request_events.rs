@@ -124,35 +124,51 @@ pub(crate) fn check_serial_windows(
         .iter()
         .filter(|event| event.sequence >= before.next_sequence)
         .collect::<Vec<_>>();
+    let expected_events = expected_text_ids
+        .len()
+        .checked_mul(SUCCESS_STAGES.len())
+        .ok_or_else(|| BenchError::Protocol("query event count overflows".to_string()))?;
     if new_events.first().map(|event| event.sequence) != Some(before.next_sequence)
         || new_events
             .last()
             .and_then(|event| event.sequence.checked_add(1))
             != Some(after.next_sequence)
-        || new_events.len() != expected_text_ids.len() * SUCCESS_STAGES.len()
+        || new_events.len() != expected_events
     {
         return Err(BenchError::Protocol(
             "query event tail has a missing, extra or incomplete request".to_string(),
         ));
     }
     let mut pairs = Vec::with_capacity(expected_text_ids.len());
-    for (index, expected_id) in expected_text_ids.iter().copied().enumerate() {
-        let group = &new_events[index * SUCCESS_STAGES.len()..(index + 1) * SUCCESS_STAGES.len()];
-        let request_id = group[0].request_id.get();
-        let connection_id = group[0].connection_id;
-        if request_id != expected_id
-            || group.iter().enumerate().any(|(position, event)| {
-                event.request_id.get() != request_id
-                    || event.connection_id != connection_id
-                    || event.stage != SUCCESS_STAGES[position]
-                    || (position == 4
-                        && (event.route.as_deref() != Some("query.text") || event.error.is_some()))
-                    || (position > 0 && event.elapsed_micros < group[position - 1].elapsed_micros)
-            })
-        {
+    for (index, (group, expected_id)) in new_events
+        .chunks_exact(SUCCESS_STAGES.len())
+        .zip(expected_text_ids.iter().copied())
+        .enumerate()
+    {
+        let first = group.first().ok_or_else(|| {
+            BenchError::Protocol(format!("query event RPC {index} is incomplete"))
+        })?;
+        let request_id = first.request_id.get();
+        let connection_id = first.connection_id;
+        if request_id != expected_id {
             return Err(BenchError::Protocol(format!(
                 "query event RPC {index} is foreign, reordered or incomplete"
             )));
+        }
+        let mut previous_elapsed: Option<u64> = None;
+        for (event, expected_stage) in group.iter().zip(SUCCESS_STAGES.iter().copied()) {
+            if event.request_id.get() != request_id
+                || event.connection_id != connection_id
+                || event.stage != expected_stage
+                || (expected_stage == ProcessRequestEventStageV1::BackendOutcome
+                    && (event.route.as_deref() != Some("query.text") || event.error.is_some()))
+                || previous_elapsed.is_some_and(|previous| event.elapsed_micros < previous)
+            {
+                return Err(BenchError::Protocol(format!(
+                    "query event RPC {index} is foreign, reordered or incomplete"
+                )));
+            }
+            previous_elapsed = Some(event.elapsed_micros);
         }
         pairs.push(RequestPair {
             text_request_id: request_id,
@@ -192,19 +208,46 @@ mod tests {
     fn client_join_binds_the_only_text_request_and_nested_read_clock() {
         let (pair, observation) = fixture();
         let value = client_observation_value(pair, &observation, 150).expect("valid one-RPC trace");
-        assert_eq!(value["rpc_total_ns"], 100);
-        assert_eq!(value["sdk_unallocated_ns"], 50);
-        assert_eq!(value["rpcs"][0]["request_id"], 9);
-        assert_eq!(value["rpcs"][0]["decode_non_read_ns"], 20);
+        assert_eq!(
+            value
+                .get("rpc_total_ns")
+                .and_then(serde_json::Value::as_u64),
+            Some(100)
+        );
+        assert_eq!(
+            value
+                .get("sdk_unallocated_ns")
+                .and_then(serde_json::Value::as_u64),
+            Some(50)
+        );
+        let rpc = value
+            .get("rpcs")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|rpcs| rpcs.first())
+            .expect("one RPC payload");
+        assert_eq!(
+            rpc.get("request_id").and_then(serde_json::Value::as_u64),
+            Some(9)
+        );
+        assert_eq!(
+            rpc.get("decode_non_read_ns")
+                .and_then(serde_json::Value::as_u64),
+            Some(20)
+        );
         for mutate in 0..6 {
             let mut bad = observation.clone();
-            match mutate {
-                0 => bad.rpcs.push(bad.rpcs[0]),
-                1 => bad.rpcs[0].request_id = 11,
-                2 => bad.rpcs[0].kind = ClientQueryRpcKindV1::ResolveActiveGeneration,
-                3 => bad.rpcs[0].ipc.read_io = 61,
-                4 => bad.rpcs[0].ipc.total = 89,
-                _ => bad.rpcs[0].ipc.encode = u64::MAX,
+            if mutate == 0 {
+                let first = *bad.rpcs.first().expect("fixture has one RPC");
+                bad.rpcs.push(first);
+            } else {
+                let first = bad.rpcs.first_mut().expect("fixture has one RPC");
+                match mutate {
+                    1 => first.request_id = 11,
+                    2 => first.kind = ClientQueryRpcKindV1::ResolveActiveGeneration,
+                    3 => first.ipc.read_io = 61,
+                    4 => first.ipc.total = 89,
+                    _ => first.ipc.encode = u64::MAX,
+                }
             }
             assert!(client_observation_value(pair, &bad, 150).is_err());
         }
@@ -214,13 +257,15 @@ mod tests {
     fn window(request_count: usize) -> ProcessRequestEventsV1 {
         let mut events = Vec::new();
         for rpc in 0..request_count {
+            let ordinal = rpc.checked_add(1).expect("small request index");
             let request_id =
-                NonZeroU64::new(u64::try_from(rpc + 1).expect("small ID")).expect("nonzero ID");
+                NonZeroU64::new(u64::try_from(ordinal).expect("small ID")).expect("nonzero ID");
             for (index, stage) in SUCCESS_STAGES.iter().copied().enumerate() {
                 events.push(ProcessRequestEventV1 {
-                    sequence: u64::try_from(events.len() + 1).expect("small sequence"),
+                    sequence: u64::try_from(events.len().checked_add(1).expect("small sequence"))
+                        .expect("sequence fits u64"),
                     request_id,
-                    connection_id: u64::try_from(rpc + 1).expect("small connection"),
+                    connection_id: u64::try_from(ordinal).expect("small connection"),
                     stage,
                     elapsed_micros: u64::try_from(index).expect("small clock"),
                     route: (stage == ProcessRequestEventStageV1::BackendOutcome)
@@ -234,7 +279,8 @@ mod tests {
         ProcessRequestEventsV1 {
             process_instance: "0000000000000000000000000000002a".to_string(),
             plane: ProcessRequestEventPlaneV1::Query,
-            next_sequence: u64::try_from(events.len() + 1).expect("small tail"),
+            next_sequence: u64::try_from(events.len().checked_add(1).expect("small tail"))
+                .expect("tail fits u64"),
             oldest_retained_sequence: events.first().map(|event| event.sequence),
             events,
             dropped_before: 0,
@@ -264,9 +310,27 @@ mod tests {
         lost.dropped_after = 1;
         assert!(check_serial_windows(&before, &lost, &[1, 2]).is_err());
         let mut foreign = after.clone();
-        foreign.events[4].route = Some("query.symbol".to_string());
+        foreign
+            .events
+            .get_mut(4)
+            .expect("fixture has backend outcome event")
+            .route = Some("query.symbol".to_string());
         assert!(check_serial_windows(&before, &foreign, &[1, 2]).is_err());
-        let mut restarted = after.clone();
+        let mut reordered = after.clone();
+        reordered
+            .events
+            .get_mut(1)
+            .expect("fixture has queue-admitted event")
+            .stage = ProcessRequestEventStageV1::BackendStarted;
+        assert!(check_serial_windows(&before, &reordered, &[1, 2]).is_err());
+        let mut nonmonotonic = after.clone();
+        nonmonotonic
+            .events
+            .get_mut(5)
+            .expect("fixture has backend-returned event")
+            .elapsed_micros = 0;
+        assert!(check_serial_windows(&before, &nonmonotonic, &[1, 2]).is_err());
+        let mut restarted = after;
         restarted.process_instance = "0000000000000000000000000000002b".into();
         assert!(check_serial_windows(&before, &restarted, &[1, 2]).is_err());
     }
