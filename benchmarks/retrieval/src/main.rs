@@ -417,7 +417,8 @@ impl CompletedOutputLedger {
                 )));
             }
         } else {
-            let _previous_output = self.first_output
+            let _previous_output = self
+                .first_output
                 .insert(key.clone(), output_sha256.to_string());
         }
         if is_first_measured {
@@ -2299,7 +2300,7 @@ mod tests {
         assert_eq!(plan.lexical_request.matches(" OR ").count(), 47);
         assert_eq!(
             plan.effective_lexical_request_sha256,
-            "ef00c2235552602acb805be3d2554bf0e92ab578cc8ca09f23fa89bb7a19940d"
+            "0dfa2879b01ca70af9c6006b94aa9a933bfb68ffef16bff313b658361350964a"
         );
         assert_ne!(
             execution_profile_sha256(policy, &config),

@@ -319,7 +319,11 @@ fn repartition_code_scope(
 fn scored_natural_language_keywords_rank_rare_terms_before_common_word_overlap() -> TestResult {
     let mut scopes = vec![code_scope("z_relevant.rs", "unique padding", 0)?];
     for index in 0..24 {
-        scopes.push(code_scope(&format!("common_{index:02}.rs"), "common common", 0)?);
+        scopes.push(code_scope(
+            &format!("common_{index:02}.rs"),
+            "common common",
+            0,
+        )?);
     }
     let (_dir, searcher) = fixture_with_scopes(scopes)?;
     let mut query = code_query(&["unique", "common"], false);
@@ -328,13 +332,46 @@ fn scored_natural_language_keywords_rank_rare_terms_before_common_word_overlap()
         LqExpr::Leaf(LqLeaf::Keyword("unique".into())),
         LqExpr::Leaf(LqLeaf::Keyword("common".into())),
     ]);
-    let result = searcher.search_constrained(&query, &QueryConstraintSetV1::default(),
-        &LexicalPageSpec::first(10), &RequestBudgetV1::unbounded())?;
+    let result = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
     assert_eq!(result.candidates.len(), 10);
-    assert_eq!(result.candidates[0].repo_relative_path.as_str(), "z_relevant.rs",
-        "rare-term IDF dominates repeated corpus-wide common words");
+    assert_eq!(
+        result.candidates[0].repo_relative_path.as_str(),
+        "z_relevant.rs",
+        "rare-term IDF dominates repeated corpus-wide common words"
+    );
     assert!(result.candidates[0].score > result.candidates[1].score);
-    assert_eq!(result.candidates.iter().map(|row| row.repo_relative_path.as_str()).collect::<std::collections::BTreeSet<_>>().len(), 10);
+    assert_eq!(
+        result
+            .candidates
+            .iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        10
+    );
+    query.expr = LqExpr::Any(vec![
+        LqExpr::Leaf(LqLeaf::Phrase("unique".into())),
+        LqExpr::Leaf(LqLeaf::Phrase("common".into())),
+    ]);
+    let phrase_control = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(phrase_control.candidates.len(), 10);
+    assert!(
+        phrase_control
+            .candidates
+            .iter()
+            .all(|row| row.repo_relative_path.as_str() != "z_relevant.rs"),
+        "match-only phrase OR truncates the relevant file under path-order ties"
+    );
     Ok(())
 }
 
@@ -342,8 +379,13 @@ fn scored_natural_language_keywords_rank_rare_terms_before_common_word_overlap()
 fn explicit_typo_ranks_attested_declarations_and_preserves_literal_gate() -> TestResult {
     use quanta_index_core::CodeSearchExecutionModeV1;
     let mut declaration = code_scope("z_declaration.rs", "fn DOWN() {}", 1)?;
-    let mut symbol = scope("source-a", "z_declaration.rs", &[("down-def", "DOWN", "DOWN", None)])?
-        .symbols.remove(0);
+    let mut symbol = scope(
+        "source-a",
+        "z_declaration.rs",
+        &[("down-def", "DOWN", "DOWN", None)],
+    )?
+    .symbols
+    .remove(0);
     symbol.definition_span.byte_end = u32::try_from(declaration.source_bytes.len())?;
     declaration.symbols.push(symbol);
     declaration.coverage.symbols = SymbolCoverage::Complete { symbol_count: 1 };
@@ -357,7 +399,11 @@ fn explicit_typo_ranks_attested_declarations_and_preserves_literal_gate() -> Tes
         declaration,
     ];
     for index in 0..15 {
-        scopes.push(code_scope(&format!("a_reference_{index:02}.rs"), "DOWN DOWN DOWN DOWN", 1)?);
+        scopes.push(code_scope(
+            &format!("a_reference_{index:02}.rs"),
+            "DOWN DOWN DOWN DOWN",
+            1,
+        )?);
     }
     for index in 0..9 {
         let mut unknown = code_scope(&format!("b_unknown_{index:02}.rs"), "DOWN", 1)?;
@@ -367,35 +413,79 @@ fn explicit_typo_ranks_attested_declarations_and_preserves_literal_gate() -> Tes
     let (_dir, searcher) = fixture_with_scopes(scopes)?;
     let ordinary = code_query(&["DWN"], false);
     let literal = searcher.search_constrained(
-        &ordinary, &QueryConstraintSetV1::default(), &LexicalPageSpec::first(10),
+        &ordinary,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
         &RequestBudgetV1::unbounded(),
     )?;
-    assert_eq!(literal.code_search_stats.expect("literal work").mode, CodeSearchExecutionModeV1::Ordinary);
+    assert_eq!(
+        literal.code_search_stats.expect("literal work").mode,
+        CodeSearchExecutionModeV1::Ordinary
+    );
     assert_eq!(literal.candidates.len(), 2);
-    assert!(literal.candidates.iter().any(|row| row.repo_relative_path.as_str() == "noise.rs"));
+    assert!(
+        literal
+            .candidates
+            .iter()
+            .any(|row| row.repo_relative_path.as_str() == "noise.rs")
+    );
     let mut recovery = ordinary;
     recovery.expr = LqExpr::Leaf(LqLeaf::Predicate {
         name: "code_search.identifier_typo".into(),
         args: vec![LqPredicateArg::RawString("DWN".into())],
     });
     let first = searcher.search_constrained(
-        &recovery, &QueryConstraintSetV1::default(), &LexicalPageSpec::first(10),
+        &recovery,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10),
         &RequestBudgetV1::unbounded(),
     )?;
-    assert_eq!(first.code_search_stats.expect("explicit recovery").mode, CodeSearchExecutionModeV1::TypoExplicit);
+    assert_eq!(
+        first.code_search_stats.expect("explicit recovery").mode,
+        CodeSearchExecutionModeV1::TypoExplicit
+    );
     assert_eq!(first.candidates.len(), 10);
-    assert_eq!(first.candidates.iter().map(|row| row.repo_relative_path.as_str()).collect::<std::collections::BTreeSet<_>>().len(), 10);
+    assert_eq!(
+        first
+            .candidates
+            .iter()
+            .map(|row| row.repo_relative_path.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        10
+    );
     assert_eq!(first.candidates[0].repo_relative_path.as_str(), "exact.rs");
-    assert_eq!(first.candidates[1].repo_relative_path.as_str(), "z_declaration.rs",
-        "an attested declaration precedes frequent references at the same edit distance");
-    assert!(first.candidates.iter().all(|row| row.repo_relative_path.as_str() != "noise.rs"));
+    assert_eq!(
+        first.candidates[1].repo_relative_path.as_str(),
+        "z_declaration.rs",
+        "an attested declaration precedes frequent references at the same edit distance"
+    );
+    assert!(
+        first
+            .candidates
+            .iter()
+            .all(|row| row.repo_relative_path.as_str() != "noise.rs")
+    );
     let all = searcher.search_constrained(
-        &recovery, &QueryConstraintSetV1::default(), &LexicalPageSpec::first(32),
+        &recovery,
+        &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(32),
         &RequestBudgetV1::unbounded(),
     )?;
-    assert_eq!(all.candidates.len(), 26, "unknown symbol coverage never removes content matches");
-    let unknown = all.candidates.iter().find(|row| row.repo_relative_path.as_str() == "b_unknown_00.rs").expect("unknown match");
-    assert_eq!(unknown.score, 100.0, "unknown declarations receive no invented evidence");
+    assert_eq!(
+        all.candidates.len(),
+        26,
+        "unknown symbol coverage never removes content matches"
+    );
+    let unknown = all
+        .candidates
+        .iter()
+        .find(|row| row.repo_relative_path.as_str() == "b_unknown_00.rs")
+        .expect("unknown match");
+    assert_eq!(
+        unknown.score, 100.0,
+        "unknown declarations receive no invented evidence"
+    );
     Ok(())
 }
 

@@ -1483,10 +1483,7 @@ mod tests {
         let raw = "Find retry handling";
         let chunk = plan_query(QueryInputPolicy::NaturalLanguage, raw, &config).expect("chunk");
         let file = plan_query(QueryInputPolicy::NaturalLanguageFile, raw, &config).expect("file");
-        assert_eq!(
-            chunk.lexical_request,
-            "case:no find OR retry OR handling"
-        );
+        assert_eq!(chunk.lexical_request, "case:no find OR retry OR handling");
         assert_eq!(
             file.lexical_request,
             format!("select:file {}", chunk.lexical_request)
@@ -1522,17 +1519,26 @@ mod tests {
             &NlPlanConfig::default(),
         )
         .expect("dedup plan");
+        assert_eq!(plan.lexical_request, "case:no find OR the OR function");
+        let operators = plan_query(
+            QueryInputPolicy::NaturalLanguageFile,
+            "The the AND and repo:x \"retry\" ΟΣ",
+            &NlPlanConfig::default(),
+        )
+        .expect("safe atoms");
         assert_eq!(
-            plan.lexical_request,
-            "case:no find OR the OR function"
+            operators.lexical_request,
+            "select:file case:no the OR and OR repo OR x OR retry OR οσ"
         );
-        let operators = plan_query(QueryInputPolicy::NaturalLanguageFile,
-            "The the AND and repo:x \"retry\" ΟΣ", &NlPlanConfig::default()).expect("safe atoms");
-        assert_eq!(operators.lexical_request,
-            "select:file case:no the OR and OR repo OR x OR retry OR οσ");
         let parsed = validate_lexical_request(&operators.lexical_request).expect("public parse");
-        let LqExpr::Any(atoms) = parsed.expr else { panic!("expected flat scored OR") };
-        assert!(atoms.iter().all(|atom| matches!(atom, LqExpr::Leaf(LqLeaf::Keyword(_)))));
+        let LqExpr::Any(atoms) = parsed.expr else {
+            panic!("expected flat scored OR")
+        };
+        assert!(
+            atoms
+                .iter()
+                .all(|atom| matches!(atom, LqExpr::Leaf(LqLeaf::Keyword(_))))
+        );
     }
 
     #[test]

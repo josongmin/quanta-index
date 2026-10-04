@@ -220,14 +220,21 @@ pub(super) fn typo_declaration_distances(
     let mut files = BTreeSet::new();
     for key in selected {
         budget.checkpoint("lexical:typo-declaration-admission")?;
-        let Some(coverage) = owner.source_coverage.as_ref().and_then(|rows| rows.get(*key)) else {
+        let Some(coverage) = owner
+            .source_coverage
+            .as_ref()
+            .and_then(|rows| rows.get(*key))
+        else {
             continue;
         };
-        let file = authority.files.get(*key).ok_or_else(|| {
-            CoreError::Storage("lexical: declaration file is absent".into())
-        })?;
+        let file = authority
+            .files
+            .get(*key)
+            .ok_or_else(|| CoreError::Storage("lexical: declaration file is absent".into()))?;
         if coverage.source != file.source {
-            return Err(CoreError::Storage("lexical: declaration coverage has stale source".into()));
+            return Err(CoreError::Storage(
+                "lexical: declaration coverage has stale source".into(),
+            ));
         }
         if matches!(coverage.symbols, SymbolCoverage::Complete { symbol_count } if symbol_count > 0)
             && coverage.symbol_name_source_policy == SymbolNameSourcePolicyV1::RawAsciiLocalName
@@ -245,31 +252,49 @@ pub(super) fn typo_declaration_distances(
     };
     let needle = normalize::apply_case(identifier, case);
     let fuzzy = tantivy::query::FuzzyTermQuery::new(Term::from_field_text(field, &needle), 1, true);
-    let compiled = owner.with_doc_kind(Box::new(BooleanQuery::new(vec![
-        (Occur::Must, Box::new(fuzzy)),
-        (Occur::Must, owner.source_file_restriction_query(&files)),
-    ])), crate::SYMBOL_DOC_KIND);
+    let compiled = owner.with_doc_kind(
+        Box::new(BooleanQuery::new(vec![
+            (Occur::Must, Box::new(fuzzy)),
+            (Occur::Must, owner.source_file_restriction_query(&files)),
+        ])),
+        crate::SYMBOL_DOC_KIND,
+    );
     let searcher = owner.reader.searcher();
-    let rows = owner.collect_whole_set(&searcher, &*compiled, 1.0, "typo declaration evidence", budget)?;
+    let rows = owner.collect_whole_set(
+        &searcher,
+        &*compiled,
+        1.0,
+        "typo declaration evidence",
+        budget,
+    )?;
     for row in rows.iter() {
         budget.checkpoint("lexical:typo-declaration-verify")?;
-        let doc = searcher.doc::<TantivyDocument>(row.address).map_err(|error| {
-            CoreError::Storage(format!("lexical: typo declaration document: {error}"))
-        })?;
+        let doc = searcher
+            .doc::<TantivyDocument>(row.address)
+            .map_err(|error| {
+                CoreError::Storage(format!("lexical: typo declaration document: {error}"))
+            })?;
         let symbol = owner.document_to_symbol_candidate_identity(&doc, 0.0)?;
-        let source = symbol.source.ok_or_else(|| {
-            CoreError::Storage("lexical: typo declaration lacks source".into())
-        })?;
+        let source = symbol
+            .source
+            .ok_or_else(|| CoreError::Storage("lexical: typo declaration lacks source".into()))?;
         let file = authority.files.get(&source.file).ok_or_else(|| {
             CoreError::Storage("lexical: typo declaration has no file authority".into())
         })?;
         if source != file.source || !files.contains(&source.file) {
-            return Err(CoreError::Storage("lexical: typo declaration source differs".into()));
+            return Err(CoreError::Storage(
+                "lexical: typo declaration source differs".into(),
+            ));
         }
         let name = stored_text(&doc, owner.fields.symbol_local_name_original)?;
         if !name.is_ascii()
-            || !name.as_bytes().first().is_some_and(|ch| ch.is_ascii_alphabetic() || *ch == b'_')
-            || !name.bytes().all(|ch| ch.is_ascii_alphanumeric() || ch == b'_')
+            || !name
+                .as_bytes()
+                .first()
+                .is_some_and(|ch| ch.is_ascii_alphabetic() || *ch == b'_')
+            || !name
+                .bytes()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == b'_')
         {
             continue;
         }
@@ -279,7 +304,9 @@ pub(super) fn typo_declaration_distances(
             CoreError::Storage("lexical: typo declaration range is outside source".into())
         })?;
         if memchr::memmem::find(definition, name.as_bytes()).is_none() {
-            return Err(CoreError::Storage("lexical: promised declaration name is absent from source range".into()));
+            return Err(CoreError::Storage(
+                "lexical: promised declaration name is absent from source range".into(),
+            ));
         }
         if let Some(distance) = typo_distance(identifier.as_bytes(), name.as_bytes(), case) {
             let prior = distances.entry(source.file).or_insert(distance);

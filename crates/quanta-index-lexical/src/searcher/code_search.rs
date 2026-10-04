@@ -2254,8 +2254,11 @@ impl TantivySearcher {
             self, authority, &selected, identifier, case, budget,
         )?;
         // Source-bound symbol verification is part of candidate materialization.
-        add_observed_ns(&mut stats.typo_materialize_ns, declaration_started,
-            "typo declaration materialization")?;
+        add_observed_ns(
+            &mut stats.typo_materialize_ns,
+            declaration_started,
+            "typo declaration materialization",
+        )?;
         let mut comparisons = 0;
         let mut distance_cache = TypoDistanceCache::new();
         let mut ranked = Vec::new();
@@ -2294,7 +2297,11 @@ impl TantivySearcher {
                     // Lexicographic policy: edit distance, attested declaration,
                     // occurrence. Eight dominates the bounded occurrence 0..6
                     // while remaining strictly below the next distance tier.
-                    .saturating_add(if declarations.get(key) == Some(&distance) { 8 } else { 0 })
+                    .saturating_add(if declarations.get(key) == Some(&distance) {
+                        8
+                    } else {
+                        0
+                    })
                     .saturating_add(
                         u16::from(witness.occurrences.saturating_sub(1)).saturating_mul(2),
                     ),

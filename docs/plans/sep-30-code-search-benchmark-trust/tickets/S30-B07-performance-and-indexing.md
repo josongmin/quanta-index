@@ -1146,8 +1146,16 @@ validation now binds every timed phase to the same task/route output, including
 the independently retained row's status. Hashing remains after the timer.
 The focused completed-response selector passed 33 tests in 24.49 s; actual
 collection and the broader frozen-source execution remain separate checks.
-Rust phase-ledger and invalid-sidecar no-output tests are being executed after
-the scale owner's admitted slot; no fresh release capture is implied.
+The narrow Rust phase-ledger and actual-daemon SDK checks passed 2/2. The
+official contract selector now includes the retrieval binary unit tests; its
+actual Nextest collection contains 186 required tests. Collection does not
+mean that all 186 tests executed. On frozen clean source `37e38249`,
+`python -m pytest -q tools/ci/tests/test_retrieval_benchmark.py
+tools/ci/tests/test_source_oracle_suite.py tools/ci/tests/test_holdout_review.py
+tools/ci/tests/test_completed_response_timing.py` passed 732/732 in 377.83 s.
+The fresh release SDK proof at that source is still building. No new Gin
+diagnostic-8 capture, qualified speed measurement or successful large-tier
+runtime is implied by these contract results.
 
 ## Execution receipt (2026-09-30)
 
