@@ -45,6 +45,7 @@ try:
     )
     from tools.benchmark.retrieval import execution_batch as eb
     from tools.benchmark.retrieval import query_plan as qp
+    from tools.benchmark.retrieval import retrieval_contract as rc
     from tools.benchmark.retrieval import semble as semble_adapter
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
     from tools.benchmark.retrieval.evaluator import (
@@ -79,6 +80,7 @@ except ImportError:  # direct script invocation: import the sibling module
     import linux_process  # noqa: E402
     import portable_proof  # noqa: E402
     import query_plan as qp  # noqa: E402
+    import retrieval_contract as rc  # noqa: E402
     import semble as semble_adapter  # noqa: E402
     import source_oracle  # noqa: E402
     import symbol_coverage  # noqa: E402
@@ -3566,7 +3568,11 @@ def probe_runner_capabilities(binary: Path) -> dict:
     try:
         capabilities = _exact_keys(
             parse_json(result.stdout),
-            {"schema_version", "retrieval_diagnostic_schema_version"},
+            {
+                "schema_version",
+                "retrieval_diagnostic_schema_version",
+                "completed_response_output_validation",
+            },
             "runner binary capabilities",
         )
     except (ValueError, TypeError) as exc:
@@ -3577,6 +3583,7 @@ def probe_runner_capabilities(binary: Path) -> dict:
         or type(capabilities["retrieval_diagnostic_schema_version"]) is not int
         or capabilities["retrieval_diagnostic_schema_version"]
         != CURRENT_RETRIEVAL_DIAGNOSTIC_SCHEMA_VERSION
+        or capabilities["completed_response_output_validation"] != rc.COMPLETED_OUTPUT_VALIDATION
     ):
         raise RunError("runner binary diagnostic contract differs from the capture driver")
     return capabilities
@@ -5294,6 +5301,7 @@ def run_quanta_strategy(
     phase = _validate_phase_metrics(read_json(phase_path), f"Rust runner phase metrics for {name}")
     if phase["schema_version"] != 4:
         raise RunError("current Rust runner omitted SDK child clock phase schema v4")
+    validate_completed_query_timing(phase, read_json(record_path), require_output_validation=True)
     _validate_quanta_query_protocol_execution(requested_protocol, phase)
     if protocol_bytes is not None and Path(spec["_query_protocol"]).read_bytes() != protocol_bytes:
         raise RunError("Quanta query protocol changed during capture")
@@ -6009,11 +6017,22 @@ def _qualified_cluster_uncertainty(comparison: object) -> bool:
     )
 
 
-def validate_completed_query_timing(metrics: dict, record: dict | None = None) -> None:
+def validate_completed_query_timing(
+    metrics: dict, record: dict | None = None, *, require_output_validation: bool = False
+) -> None:
     """Bind one continuous client clock to every scheduled completed response."""
     timing = metrics.get("query_timing")
-    if not isinstance(timing, dict) or set(timing) != {"boundary", "clock", "observations"}:
+    timing_keys = {"boundary", "clock", "observations"}
+    if not isinstance(timing, dict) or set(timing) not in (
+        timing_keys,
+        timing_keys | {"output_validation"},
+    ):
         raise RunError("completed-response timing contract is missing or malformed")
+    output_validated = "output_validation" in timing
+    if output_validated and timing["output_validation"] != rc.COMPLETED_OUTPUT_VALIDATION:
+        raise RunError("completed-response output validation contract differs")
+    if require_output_validation and not output_validated:
+        raise RunError("completed-response timing lacks every measured output digest")
     if timing["boundary"] != semble_adapter.QUERY_TIMING_BOUNDARY:
         raise RunError("completed-response timing boundary differs from the canonical contract")
     if timing["clock"] != semble_adapter.QUERY_TIMING_CLOCK:
@@ -6060,6 +6079,8 @@ def validate_completed_query_timing(metrics: dict, record: dict | None = None) -
     record_rows = (
         {(row["task_id"], row["route"]): row for row in record["results"]} if record else {}
     )
+    measured_digests = {}
+    record_digests = {}
     for index, entry in enumerate(observations):
         if (
             not isinstance(entry, dict)
@@ -6075,6 +6096,7 @@ def validate_completed_query_timing(metrics: dict, record: dict | None = None) -
                 "output_bytes",
             }
             | sdk_child_keys
+            | ({"output_sha256"} if output_validated else set())
         ):
             raise RunError("completed-response timing observation is malformed")
         start, end = entry["start_ns"], entry["end_ns"]
@@ -6101,6 +6123,8 @@ def validate_completed_query_timing(metrics: dict, record: dict | None = None) -
             raise RunError("completed-response timing iteration is invalid")
         if type(entry["output_bytes"]) is not int or entry["output_bytes"] <= 0:
             raise RunError("completed-response timing required output is absent")
+        if output_validated and not _is_hex(entry["output_sha256"], 64):
+            raise RunError("completed-response output digest is malformed")
         if entry["status"] not in {
             "success",
             "abstained",
@@ -6116,6 +6140,21 @@ def validate_completed_query_timing(metrics: dict, record: dict | None = None) -
                 "completed-response timing observations differ from the complete schedule"
             )
         observed_keys.append(key)
+        if output_validated and entry["phase"] == "measured":
+            response_key = (entry["task_id"], entry["route"])
+            baseline = measured_digests.setdefault(response_key, entry["output_sha256"])
+            if baseline != entry["output_sha256"]:
+                raise RunError("completed-response measured output differs between repetitions")
+            if record:
+                if response_key not in record_digests:
+                    try:
+                        record_digests[response_key] = rc.completed_output_sha256(
+                            record_rows[response_key]
+                        )
+                    except (KeyError, ValueError, TypeError) as exc:
+                        raise RunError("completed-response normalized output is invalid") from exc
+                if record_digests[response_key] != entry["output_sha256"]:
+                    raise RunError("completed-response output digest differs from normalized record")
         elapsed_ms = (end - start) / 1e6
         if protocol and entry["phase"] in {"cold", "measured"}:
             if entry["phase"] == "cold":
@@ -8955,7 +8994,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 output_units = set()
                 for path, entry in validated.items():
                     phase = phase_by_record[sha_file(Path(path))]
-                    validate_completed_query_timing(phase, entry["run"])
+                    validate_completed_query_timing(
+                        phase, entry["run"], require_output_validation=True
+                    )
                     output_units.update(
                         row.get("rank_unit", "source_span") for row in entry["run"]["results"]
                     )
@@ -11598,6 +11639,14 @@ def _quality_batch_model_assets_unchanged(members: list[tuple], expected: str) -
             raise RunError(f"quality batch Semble model asset changed: {spec_path}")
 
 
+def _driver_phase_durations_ms(marks: list[tuple[str, int]]) -> dict[str, float]:
+    """Report contiguous monotonic intervals without changing capture evidence."""
+    return {
+        phase: (end - start) / 1_000_000
+        for (_, start), (phase, end) in zip(marks[:-1], marks[1:], strict=True)
+    }
+
+
 def run_quality_batch(
     batch: dict,
     *,
@@ -11753,10 +11802,7 @@ def run_quality_batch(
         raise RunError("quality batch output root appeared before promotion")
     os.rename(stage, out_root)
     timing_marks.append(("promotion", time.monotonic_ns()))
-    driver_phase_ms = {
-        phase: (end - start) / 1_000_000
-        for (_, start), (phase, end) in zip(timing_marks, timing_marks[1:], strict=True)
-    }
+    driver_phase_ms = _driver_phase_durations_ms(timing_marks)
     print(
         json.dumps(
             {

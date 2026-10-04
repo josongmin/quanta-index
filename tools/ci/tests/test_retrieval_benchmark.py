@@ -357,6 +357,12 @@ def test_quality_matrix_reuses_first_verified_driver_closure(tmp_path, monkeypat
     assert sum(phases.values()) == pytest.approx(result["driver_total_ms"])
 
 
+def test_driver_phase_durations_use_adjacent_clock_marks() -> None:
+    assert pairrun._driver_phase_durations_ms(
+        [("start", 0), ("setup", 1_000_000), ("capture", 4_000_000)]
+    ) == {"setup": 1.0, "capture": 3.0}
+
+
 def _clean_host_timeline_fixture():
     host = {
         "system": "Darwin",

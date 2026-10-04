@@ -36,10 +36,12 @@ from pathlib import Path
 try:
     from tools.benchmark.retrieval.finite_json import is_finite_json_number
     from tools.benchmark.retrieval.retrieval_contract import (
+        COMPLETED_OUTPUT_VALIDATION,
         TOKEN_RE,
         TOKENIZER,
         TOKENIZER_BUDGET_VERSION,
         canonical,
+        completed_output_sha256,
         digest,
         validate_comparison_contract,
         verify_repo,
@@ -48,10 +50,12 @@ except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from finite_json import is_finite_json_number  # noqa: E402
     from retrieval_contract import (  # noqa: E402
+        COMPLETED_OUTPUT_VALIDATION,
         TOKEN_RE,
         TOKENIZER,
         TOKENIZER_BUDGET_VERSION,
         canonical,
+        completed_output_sha256,
         digest,
         validate_comparison_contract,
         verify_repo,
@@ -517,6 +521,7 @@ def main() -> int:
         "query_timing": {
             "boundary": "request_construction_to_normalized_response",
             "clock": "capture_relative_monotonic_ns",
+            "output_validation": "normalized_row_score_bits_sha256_v1",
             "observations": completed_calls,
         },
         "worker_pid": os.getpid(),
@@ -1692,6 +1697,7 @@ def run_completed_worker(
     origin_ns = time.monotonic_ns()
     deadline = time.monotonic() + timeout_secs
     completed_rows = {}
+    measured_output_digests = {}
     with open(stderr_path, "w", encoding="utf-8") as stderr:
         process = subprocess.Popen(
             command,
@@ -1763,6 +1769,12 @@ def run_completed_worker(
                 required_output.pop("timings")
                 output_bytes = len(canonical(required_output))
                 end_ns = time.monotonic_ns() - origin_ns
+                # Verification remains outside the completed-response timer.
+                output_sha256 = completed_output_sha256(required_output)
+                if ready["phase"] == "measured":
+                    previous = measured_output_digests.setdefault(task_id, output_sha256)
+                    if previous != output_sha256:
+                        raise AdapterError("Semble measured response changed between repetitions")
                 observation = {
                     "task_id": task_id,
                     "route": route,
@@ -1772,6 +1784,7 @@ def run_completed_worker(
                     "end_ns": end_ns,
                     "status": row["status"],
                     "output_bytes": output_bytes,
+                    "output_sha256": output_sha256,
                 }
                 row["timings"]["query_latency_ms"] = (end_ns - start_ns) / 1e6
                 if ready["phase"] == "measured" and ready["iteration"] == 0:
