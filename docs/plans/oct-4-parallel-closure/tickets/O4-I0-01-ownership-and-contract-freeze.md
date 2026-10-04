@@ -27,7 +27,7 @@
 
 ## 2026-10-05 문서·원본 증거 가용성 재점검
 
-- 기존 계획과 oct-4 handoff50 Markdown의 상대 링크1,245개는 실제 대상이 모두 존재한다.29 ticket IDs는 INDEX/WAVES에 모두 있다. 이것은 문서 구조 점검이며 제품 proof가 아니다.
+- 기존 계획과 oct-4 handoff50 Markdown의 상대 링크1,246개는 실제 대상이 모두 존재한다.29 ticket IDs는 INDEX/WAVES에 모두 있다. 이것은 문서 구조 점검이며 제품 proof가 아니다.
 - 원본 agent-4의 절대 임시 증거17참조/15고유경로는 현재 없다. `g9-7m7inh5r`, `qg15`, `qg8-zzx504gf`, `qi-fullsync-rca-8v3e3mn_`, `i9-lhyxoxdp`, `a9-21c9z44a` 및 과거 Gin1196 binding/matrix 경로다. 원본 기록을 바꾸거나 파일을 합성하지 않는다. 해당 phase/performance/barrier/selection/operator/matrix 관측은 historical/non-replayable이며 후속 owning ticket의 실제 current 실행으로만 판정한다.
 
 ## 2026-10-05 후속 ANN 수리 source 고정
