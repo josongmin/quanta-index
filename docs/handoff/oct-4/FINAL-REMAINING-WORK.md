@@ -10,7 +10,7 @@
 
 | 순서 / 웨이브 | 해야 할 일 | 현재 경계 |
 | --- | --- | --- |
-| 1 / W3–W5 | derived provenance consumer 수리/정적 감사·focused 검증 → 새 fixed-source/control 결속 → 5제품 join | ae8f SG producer exit0/12receipts·독립 replay 진행, native3 actual/replay exit0. join v4는 정상 derived build revision을 manifest와 같다고 요구해 exit2; 추가 수리 검증 중 |
+| 1 / W3–W5 | derived provenance consumer 수리/정적 감사·focused 검증 → 새 fixed-source/control 결속 → 5제품 join | ae8f SG producer/독립 replay12repo·13,347files 및 native3 actual/replay `VERIFIED`. join v4는 정상 derived build revision의 raw equality로 exit2; 추가 수리 검증 중 |
 | 2 / W3 | current0e6 proof로 cli/lo/mocha/uvicorn/zustand/django/typeorm/nushell의 원본8 admission 발행 | canonical issuer 실제 실행 중. terminal 미발행 저장소는 ready 아님. bat409 current v4는 이미 strict consumer 검증됨 |
 | 3 / W4–W5 | 준비된 C3 저장소의 실제 Quanta/Semble·SG/OG/cs 캡처, required-cell outcomes·source-bound blind union 발행 | existing exploratory pre-review mode로 신규 후보 확보. 새 미검수 후보를 final quality나 0점으로 처리하지 않음 |
 | 4 / W1→W3→W5 | SQLAlchemy/Zellij 실제 조정 완료·suite/pack/admission 발행, Tailscale 미결 정책 적용 후 재검수 | actual Opus 주간 한도로 SQL146·Zellij476pairs `BLOCKED`. SQL334pairs 보존. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 입력도 `BLOCKED` |

@@ -14,7 +14,8 @@
 
 - 기존 v5의 실제 capture/replay 통과는 당시 source scope다. native control map이 mutable main의 이전 scorer SHA를 참조해 후속 scorer 수리 뒤 current replay가 거절됐다. control map/receipt를 새 hash로 고쳐 쓰지 않는다.
 - clean scorer source `ae8f96b`에서 `python -m tools.benchmark.retrieval.sourcegraph_index_scope --scope-batch /private/tmp/qi-sg-native-scorer-20261005-v1-batch.json --native-port 6071 --native-binary-path /usr/local/bin/zoekt-webserver` — producer `VERIFIED`: exit0,12개 receipt 경로 발행, stderr0bytes, source/clean/scorer SHA 전후 동일. 새 output은 `/private/tmp/qi-sg-native-scorer-20261005-v1`이다.
-- 별도 canonical replay `/private/tmp/qi-sg-scorer-ae8f-replay-v1.py --source-root /Users/songmin/.codex/worktrees/oct5-native-scorer/quanta-index --batch /private/tmp/qi-sg-native-scorer-20261005-v1-batch.json`은 실행 중이다. replay 완료 전에는 독립12repo 통과를 주장하지 않는다. 이 proof는 native stored bytes/path·owned process/index binding 범위이며 whole posting correctness/정식 qualification은 아니다.
+- 별도 canonical replay `/private/tmp/qi-sg-scorer-ae8f-replay-v1.py --source-root /Users/songmin/.codex/worktrees/oct5-native-scorer/quanta-index --batch /private/tmp/qi-sg-native-scorer-20261005-v1-batch.json` — `VERIFIED`: exit0,12repo/13,347files 모두 `owned_guest_translator_v1`, stderr0bytes, source/clean 전후 동일. 결과 SHA `75babe6a42ecc3d6662a9686dfdafe3dac163bb68d3ff8198837ef136b0ae00a`다. native stored bytes/path·owned process/index binding 범위이며 whole posting correctness/정식 qualification은 아니다.
+- 후속 derived-provenance consumer 수리로 scorer가900e→bff2로 변경됐다. 새 receipt의 ae8f control/path는 유지하고 새 scorer에서 이를 고쳐 쓰지 않는다. current producer에 필요한 scope/capture는 추가 static audit·focused 확인 뒤 새 fixed-source controls에 발행한다.
 
 ## 목적
 
