@@ -644,7 +644,9 @@ impl ScaleStageError {
 
 fn stage_or_preserve<E: Into<anyhow::Error>>(stage: &'static str, error: E) -> anyhow::Error {
     let error = error.into();
-    if error.downcast_ref::<ScaleStageError>().is_some() {
+    if error.downcast_ref::<ScaleStageError>().is_some()
+        || error.downcast_ref::<ScaleRuntimeFailure>().is_some()
+    {
         error
     } else {
         ScaleStageError::operation(stage, error).into()
@@ -2458,19 +2460,39 @@ pub fn artifact(
             "same_process_reopen",
         ]
     };
-    if measurement
+    let observed_phases = measurement
         .phase_resources
         .keys()
         .copied()
-        .collect::<Vec<_>>()
-        != expected_phases
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
-    {
+        .collect::<BTreeSet<_>>();
+    let expected_phases = expected_phases.iter().copied().collect::<BTreeSet<_>>();
+    if observed_phases != expected_phases {
         anyhow::bail!("scale: measured tier is missing a required phase resource observation");
+    }
+    for (phase, observation) in &measurement.phase_resources {
+        if observation.rss_start_bytes == 0
+            || observation.rss_end_bytes == 0
+            || observation.sampled_max_rss_bytes
+                < observation.rss_start_bytes.max(observation.rss_end_bytes)
+            || (observation.observation_span_ms
+                >= PHASE_RSS_INTERIOR_REQUIRED_AFTER.as_secs_f64() * 1_000.0
+                && observation.interior_samples == 0)
+            || ![
+                observation.cpu.user_ms,
+                observation.cpu.system_ms,
+                observation.observed_max_gap_ms,
+                observation.observation_span_ms,
+                observation.observer_setup_ms,
+                observation.observer_teardown_ms,
+                observation.observer_periodic_probe_wall_ms,
+            ]
+            .iter()
+            .all(|value| value.is_finite() && *value >= 0.0)
+            || observation.observation_span_ms == 0.0
+            || observation.observed_max_gap_ms > PHASE_RSS_MAX_GAP.as_secs_f64() * 1_000.0
+        {
+            anyhow::bail!("scale: phase {phase} has an invalid resource observation");
+        }
     }
     let params = params_for(measurement.tier);
     Ok(BenchArtifactV1 {
@@ -2974,7 +2996,7 @@ mod tests {
             hostname_hash: "sha256:host".to_string(),
         };
         let nested = finish_runtime_measurement::<()>(
-            Err(combined),
+            Err(stage_or_preserve("delta", combined)),
             Err(anyhow::anyhow!("driver stop fault")),
         )
         .expect_err("daemon cleanup also rejects the tier");
@@ -3436,6 +3458,39 @@ mod tests {
             result_count: 10,
             model_revision: Some("model@rev:d16".to_string()),
         }
+    }
+
+    #[test]
+    fn artifact_rejects_missing_or_malformed_phase_resource_proof() -> AnyResult<()> {
+        let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567")?;
+        let host = HostV1 {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            cpu_count: 4,
+            mem_bytes: 1 << 30,
+            hostname_hash: "sha256:host".to_string(),
+        };
+        let mut missing = sample_measurement();
+        missing.phase_resources.remove("delta_activate");
+        assert!(artifact(&missing, head.clone(), host.clone()).is_err());
+
+        let mut nonfinite = sample_measurement();
+        nonfinite
+            .phase_resources
+            .get_mut("full_activate")
+            .unwrap()
+            .cpu
+            .user_ms = f64::NAN;
+        assert!(artifact(&nonfinite, head.clone(), host.clone()).is_err());
+
+        let mut no_interior = sample_measurement();
+        no_interior
+            .phase_resources
+            .get_mut("full_ingest_seal")
+            .unwrap()
+            .interior_samples = 0;
+        assert!(artifact(&no_interior, head, host).is_err());
+        Ok(())
     }
 
     #[test]

@@ -209,9 +209,11 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
     let policy =
         ClientIoPolicy::try_new(Duration::from_secs(2)).map_err(|error| error.to_string())?;
     let plain: TestResponseEnvelope =
-        send_request(&socket, &request, policy).map_err(|error| error.to_string())?;
+        send_request(&socket, &request, policy)
+            .map_err(|error| format!("plain IPC request failed: {error}"))?;
     let (observed, timing): (TestResponseEnvelope, _) =
-        send_request_observed(&socket, &request, policy).map_err(|error| error.to_string())?;
+        send_request_observed(&socket, &request, policy)
+            .map_err(|error| format!("observed IPC request failed: {error}"))?;
     server
         .join()
         .map_err(|_panic_payload| "server panicked".to_string())??;
