@@ -423,6 +423,42 @@ behavior for invalid input; it does not qualify a 1,196-query pair capture or
 establish a timed speedup for a valid suite. Current-contract Gin gold must be
 reissued independently before a valid full pair run.
 
+### 2026-10-04 complete diagnostic pair and verdict-cost follow-up
+
+The source-oracle producer reissued the 1,196 Gin exact-name tasks under the
+current v3 contract. The result is mechanical gold, not independently reviewed
+relevance. A first pair attempt used a suite route set inconsistent with the
+Semble mode in its spec. That attempt ran both products before refusing at the
+merge, taking 55.70 s with no scored output. `run.py` now validates suite
+routes against configured product routes before the first product; the focused
+negative test, Ruff and diff check passed. This closes another late input
+refusal without relaxing the route contract.
+
+The corrected clean-`d2740319` optimized-debug pair at `/private/tmp/qg15`
+completed all 1,196 tasks per product. `PAIR_VALID=pass`; the report and
+verdict remain diagnostic, with no human gold review or performance claim.
+The busy-host driver took 134.75 s wall: product envelopes 90.775 s
+(Quanta 82.823 s, Semble 7.644 s), report scoring 15.808 s, verdict
+19.833 s, final source-closure verification 5.586 s, and smaller setup,
+protocol and promotion phases. Quanta's runner spent 41.243 s in publish,
+18.332 s in measured warm queries, and 18.313 s in warmup; host contention
+made its publish phase especially variable. This is an optimized **debug**
+capture, not release or an equal-work product latency comparison. An
+independent verdict replay produced byte-identical JSON and `PAIR_VALID=pass`.
+
+Profiling the replay located most repeated numeric work in the 10,000-resample
+paired bootstrap, not repository admission. The evaluator now caches exact
+canonical numeric samples up to 262,144 bytes with 16 entries; source and
+evidence validation remain uncached. A 1,196-row unit test proves one miss,
+then one hit, and parity with the uncached computation. On the saved qg15
+verdict, current-main `203ef446` produced byte-identical output. A same-process
+diagnostic comparison took 20.454 s with numeric caching disabled, 18.979 s
+with an empty cache (7 misses, 1 hit), and 5.551 s on a repeated call (8 more
+hits). File/OS cache and host contention can affect these wall times. The
+single-verdict saving is modest; the larger repeated-call difference must not
+be attributed wholly to the numeric cache. No current-main full pair timing
+or qualified release performance result was run.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
