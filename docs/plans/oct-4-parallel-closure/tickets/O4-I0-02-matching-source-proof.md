@@ -5,13 +5,14 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | source107 proof는 과거 scope. 최종source0e6 Contract788/191·fresh release SDK27·두 portable verifier·large4096 OS restart·matching scale/open-loop release build `VERIFIED`; semantic97·Clippy 동일 bytes 검증 유지. hosted CI `NOT_RUN` |
+| 실행 상태 | frozen source0e6 Contract788/191·fresh release SDK27·portable verifiers·semantic97·large restart/scale/load `VERIFIED`. 후속 Python file-report consumer/test만 변경/focused67 `VERIFIED`; frozen proof를 새 main 전체 proof로 승격하지 않음. hosted CI `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
 ## 2026-10-05 후속 ANN epoch의 현재 검증 경계
 
+- source0e6 actual bat five-product join에서 complete report scope를 처리하지 못하는 Python consumer 결함이 재현돼 main의 `lexical_file_comparison.py`와 existing file fixture2개 파일을 수정했다. Rust crates/runner/daemon/evaluator/run.py bytes는 source0e6과 동일하다. focused67/Ruff 결과 및 영향 fresh native/scoring은 [E1-06](O4-E1-06-final-pool-and-scoreboards.md)에서 판정한다. frozen0e6 proof/admissions/captures는 해당 clean root의 결과이며 후속 main 전체 source proof로 재표기하지 않는다.
 - 최종 fixture lint 수리를 포함한 clean source는 `0e6c7e7e9494b63fdb33f4594df059817459d3b1`이다. root-owned 관리 작업트리를 이 HEAD로 이동했고 `e2e_process_readiness.rs` SHA `1afc50f4863d4ed008b75ed5094ea9aef04009952fb1491a2fc6307911600ef9`를 확인했다. 해당 release large OS restart owner 재실행은 시작했으며 완료 전에는 sourcecef의 기존 PASS를 최종 fixture 실행으로 승격하지 않는다.
 - 후속 최종 owner 재실행 `VERIFIED`: 같은 exact release selector에서1/1 passed·70.352s/exit0,26개 제외. 최종 source0e6의 `gh run list --commit 0e6c7e7e9494b63fdb33f4594df059817459d3b1 --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`도 exit0/`[]`였다. 해당 hosted CI는 `NOT_RUN`이며 local owner 결과와 분리한다.
 - source0e6에서 `just retrieval-contract-proof /Users/songmin/Documents/code-new/qi-oct5-contract-proof-0e6-v1`을 fresh 외부 root로 시작했다. canonical Rust preparation은32.98s 뒤 완료됐고 Python/Rust identity collection을 생성했다. test execution/receipt/context 및 portable verifier가 끝나기 전에는 새 source formal PASS/admission readiness를 발행하지 않는다. 뒤의 source107 proof roots는 유지한다.

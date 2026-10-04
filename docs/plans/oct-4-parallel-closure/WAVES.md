@@ -19,14 +19,26 @@
 | W1 | owner regressions, Gin4 exact-name capture/scoring, Sourcegraph12repo replay, OpenGrok path-bearing 및 전체live17,615·source path/UID13,347 독립 replay `VERIFIED`; Zellij 두 reviewer20/476 완료 | SQLAlchemy/Zellij 대체 조정, Tailscale rubric 입력 `BLOCKED`; OpenGrok actual query 전후 whole-index/canonical qualification; untouched holdout license·사전 acceptance 입력/발행 |
 | W2 | 실제 반례의 live-BM25, maintenance fatal ownership/terminal, fixture 수리 및 지원 Active single-RPC 검증 완료 | bootstrap/scanner/barrier/token-authority 최적화는 실제 비용 조건 판정 대기. E3-02는 현 Accepted refusal 계약에서 근거 있는 `NOT_APPLICABLE` |
 | W3 | 최종source0e6 Contract Python788/Rust191·fresh SDK27·두 portable verifier 및 bat409 v4 issuance/strict consumer replay `VERIFIED`; v3 consumer 실패 보존, source107 원본9개는 과거 scope | 나머지 current admissions/SQLAlchemy·Zellij·Tailscale; source0e6 hosted CI `[]`/`NOT_RUN` |
-| W4 | 최종0e6 ANN97·Clippy·release·4096 OS restart1/1·large300s/256MiB·기본 small16/medium256 lifecycle, bat409 warmup0/1 각40/40·독립 verdict 및 새 native3 actual60요청/raw replay `VERIFIED`; default large timeout·xlarge posting-cap capacity gate `FAILED`. source107 결과는 과거 scope | full bat warmup parity·current load·remaining admissions/matrix와 qualification 계속 |
-| W5 | bat358+supplemental51=409 canonical merged/strict admission 및 fresh complete-file pair report `VERIFIED`; NDCG@10 delta−0.007473/CI crossing0 진단 | canonical current5제품 join 실행 중; 전체 cohort·독립 holdout·unseen/human/속도 정책 판정 |
+| W4 | frozen0e6 ANN97·Clippy·release·4096 OS restart1/1·large300s/256MiB·기본 small/medium lifecycle/load, bat409 warmup0/1 각40/40·독립 verdict/full parity 및 native3 actual60요청/raw replay `VERIFIED`; default large timeout·xlarge posting-cap capacity gate `FAILED` | remaining admissions/matrix와 qualification 계속; 후속 scorer bytes의 native capture는 새 root 필요 |
+| W5 | bat409 merged/strict admission 및 fresh complete-file pair report `VERIFIED`; NDCG@10 delta−0.007473/CI crossing0. 실제5제품 join의 consumer scope 결함 수리/focused67 `VERIFIED` | 수정 scorer에서 새 native3/join, 전체 cohort·독립 holdout·unseen/human/속도 정책 판정 |
 | W6 | local infrastructure/owner proof와 운영 qualification 경계를 기록 | actual authorized Linux target/config/state/rollback 입력 `BLOCKED`; exact producer pair·CI·배포/활성화/restore/rollback 미실행 |
 
 - ready 저장소 하나의 성공은 required8/12 전체 matrix 성공이 아니다. 개별 실행 driver의 required ledger에서 미선택 셀은 `NOT_RUN`으로 유지한다.
 - 2026-10-04 23:40 KST 이후 재개에서 Fable 개별 한도429가 별도로 확인됐다. 유효 reviewer raw를 검증해 재사용하고 새 Opus adjudicator identity/root를 준비했으며 기존 Fable 조정 결과는 새 조정 분모에서 제외한다. 무응답 pair를 grade/no-answer로 채우지 않는다. AI 실제 판단과 human provenance를 구분한다.
 - native/Gin/phase 진단과 Darwin/hash-dev owner proof를 독립 gold·learned quality·속도·Linux release qualification으로 승격하지 않는다.
 - current 문서 점검 `VERIFIED`:29 ticket files가 INDEX/WAVES에 모두 나타나고1181 relative links가 실제 대상에 연결되며 빈 section heading은 없었다. `git diff --check`도 exit0이다. 문서 점검을 제품 실행 결과로 합산하지 않는다.
+
+### 현재 남은 실행 순서
+
+| 웨이브 / 담당 | 다음 작업 | 현재 실행 또는 입력 경계 |
+| --- | --- | --- |
+| W1 / E1 | SQLAlchemy/Zellij fresh Opus 조정→canonical suite/pack 발행 | 실제 모델 batch 진행 중; Tailscale unresolved rubric 정책 답변 전 해당 저장소 발행 BLOCKED |
+| W3 / E1+I0 | frozen0e6 실제 proof로 나머지 원본8 admissions 발행, 후속 SQLAlchemy/Zellij admissions 연결 | prepared issuer/input; 실제 발행 NOT_RUN. source107 결과를 current로 재표기하지 않음 |
+| W4–W5 / E2+E1 | 수정 file-report scorer에서 native3 fresh capture→독립 replay→bat5제품 join, remaining C3 required matrix→final blind union/검수·재채점 | scorer/test focused67 VERIFIED; 기존 native capture는 scorer hash/runtime drift로 재사용 거절. bat 밖 warmup은 자체 parity 전1회 유지 |
+| W1–W4 / E2 | OG whole live auxiliary/source authority를 canonical query 전후 index/endpoint/consumer에 통합 | 관측 replay 완료; 현재 collector universe=false, named RW volume을 readonly snapshot으로 간주하지 않음 |
+| W1–W4 / E4 | full-call/scanner·fsync/barrier/token 비용을 분리한 실제 측정→조건별 변경 판정 | 현재 lifecycle/CPU 관측만 완료; isolated causal cost·conditional optimization NOT_RUN. 기본 large deadline/xlarge cap capacity gate FAILED |
+| W4–W5 / E1+E4 | untouched holdout의 license·사전 acceptance와 실제 independent gold/정식 반복 성능 | license approver/acceptance·critical strata 및 frequency authority 있는 host 입력 BLOCKED |
+| W6 / I0 | exact source pair·hosted CI·Linux release·실제 deploy/activate/restore/rollback | authorized host/path/config/state/retention/rollback 입력 BLOCKED; local proof와 별도 |
 
 ## 중앙 실행의 배치 규칙
 
