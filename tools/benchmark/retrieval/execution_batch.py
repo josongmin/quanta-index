@@ -47,6 +47,7 @@ def iter_repository_admissions(
     upstream_alive: Callable[[], bool],
     wait: Callable[[], None],
     repository_failure: Callable[[str], str | None] | None = None,
+    repository_cells: dict[str, Path] | None = None,
 ) -> Iterator[tuple[str, dict]]:
     """Drain every ready/failed repository before waiting for pending admissions.
 
@@ -67,11 +68,26 @@ def iter_repository_admissions(
         or len(set(pending)) != len(pending)
     ):
         raise BatchError("invalid admission repository list")
+    if repository_cells is not None and (
+        set(repository_cells) != set(pending)
+        or any(
+            not isinstance(path, Path) or not path.is_absolute()
+            for path in repository_cells.values()
+        )
+        or len({path.resolve() for path in repository_cells.values()}) != len(repository_cells)
+    ):
+        raise BatchError("invalid admission repository cell mapping")
+
+    def cell_for(repo: str) -> Path:
+        return repository_cells[repo] if repository_cells is not None else root / repo
+
     while pending:
         for repo in pending[:]:
-            cell = root / repo
+            cell = cell_for(repo)
             result, failure = cell / "result.json", cell / "failure.json"
-            if failure.exists():
+            if result.exists() and failure.exists():
+                outcome = {"status": "FAILED", "reason": "conflicting admission terminals"}
+            elif failure.exists():
                 outcome = {"status": "FAILED", "reason": "repository admission failure terminal"}
             elif result.exists():
                 try:
@@ -97,9 +113,8 @@ def iter_repository_admissions(
                 # Recheck once after observing termination, so a just-published
                 # successful admission is not misclassified as missing.
                 for repo in pending[:]:
-                    if (root / repo / "result.json").exists() or (
-                        root / repo / "failure.json"
-                    ).exists():
+                    cell = cell_for(repo)
+                    if (cell / "result.json").exists() or (cell / "failure.json").exists():
                         break
                 else:
                     for repo in pending:

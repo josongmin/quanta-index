@@ -130,6 +130,23 @@ def test_quality_batch_spec_and_product_contract_refuse_drift(tmp_path, monkeypa
     }
     batch_path.write_text(json.dumps(batch), encoding="utf-8")
     assert pairrun.load_quality_batch_spec(batch_path) == batch
+    assert pairrun.load_quality_matrix_spec(batch_path) == batch
+    admitted_matrix = {
+        **batch,
+        "member_admissions": {
+            name: str(tmp_path / f"admission-{index}" / "result.json")
+            for index, name in enumerate(batch["member_specs"])
+        },
+        "admission_deadline_seconds": 1,
+    }
+    batch_path.write_text(json.dumps(admitted_matrix), encoding="utf-8")
+    assert pairrun.load_quality_matrix_spec(batch_path) == admitted_matrix
+    with pytest.raises(pairrun.RunError, match="quality batch spec"):
+        pairrun.load_quality_batch_spec(batch_path)
+    with pytest.raises(pairrun.RunError, match="quality batch spec"):
+        pairrun.run_quality_batch(admitted_matrix)
+    with pytest.raises(pairrun.RunError, match="quality batch spec"):
+        pairrun.verify_quality_batch(admitted_matrix)
     for bad in (
         {**batch, "member_specs": [str(member_paths[0])]},
         {**batch, "member_specs": [str(member_paths[0])] * 2},
@@ -354,6 +371,165 @@ def test_quality_matrix_reuses_first_verified_driver_closure(tmp_path, monkeypat
     assert phases["prevalidation"] >= 0
     assert phases["batches_and_manifest"] >= 0
     assert sum(phases.values()) == pytest.approx(result["driver_total_ms"])
+
+
+def test_quality_matrix_admission_rejects_status_only_and_wrong_repository(tmp_path, monkeypatch):
+    repo = tmp_path / "source" / "fixture"
+    repo.mkdir(parents=True)
+    spec_path = tmp_path / "member.json"
+    result_path = tmp_path / "admissions" / "fixture" / "result.json"
+    result_path.parent.mkdir(parents=True)
+    monkeypatch.setattr(pairrun, "load_spec", lambda _path: {"repo": str(repo)})
+    monkeypatch.setattr(pairrun, "git_head_sha", lambda _path: "a" * 40)
+    result_path.write_text('{"status":"VERIFIED"}')
+    with pytest.raises(pairrun.RunError, match="result identity differs"):
+        pairrun._quality_matrix_verify_member_admission(spec_path, result_path, tmp_path)
+    result_path.write_text(
+        json.dumps(
+            {
+                "status": "VERIFIED",
+                "qualified": False,
+                "human_provenance_attested": False,
+                "source_revision": "a" * 40,
+                "repository": "foreign",
+                "tasks": 1,
+                "file_judgment_pairs": 1,
+                "seconds": 0.1,
+                "negative_source_controls": 1,
+                "input_sha256": {},
+                "scope": "admission",
+                "remaining": [],
+            }
+        )
+    )
+    with pytest.raises(pairrun.RunError, match="result identity differs"):
+        pairrun._quality_matrix_verify_member_admission(spec_path, result_path, tmp_path)
+
+
+def test_quality_batch_required_cells_bind_native_status_counts(tmp_path):
+    spec_path = tmp_path / "member.json"
+    suite_path = tmp_path / "suite.json"
+    spec_path.write_text("{}")
+    suite_path.write_text("{}")
+    spec = {
+        "repo": str(tmp_path / "repo"),
+        "suite": str(suite_path),
+        "strategies": [{"name": "fixed_window_strict"}],
+        "execution_profiles": {"semble": {"profile_id": "semble-lexical-file-v1"}},
+    }
+    member = (
+        spec_path,
+        spec,
+        {"suite_id": "cohort"},
+        {"repository_commit": "a" * 40, "tasks": [{"task_id": "T0"}, {"task_id": "T1"}]},
+        None,
+    )
+    view = {
+        "results": [
+            {"route": "lexical", "status": "success"},
+            {"route": "lexical", "status": "capped"},
+            {"route": "semble-lexical-file", "status": "abstained"},
+            {"route": "semble-lexical-file", "status": "success"},
+        ]
+    }
+    records = [
+        {"path": "quanta/record.json", "sha256": "b" * 64},
+        {"path": "semble/record.json", "sha256": "c" * 64},
+    ]
+    cells = pairrun._quality_batch_required_cells([member], records, [view])
+    assert {row["product"]: row["native_status_counts"] for row in cells} == {
+        "quanta": {"success": 1, "capped": 1},
+        "semble": {"abstained": 1, "success": 1},
+    }
+    with pytest.raises(pairrun.RunError, match="native task coverage differs"):
+        pairrun._quality_batch_required_cells(
+            [member], records, [{"results": view["results"][:-1]}]
+        )
+    with pytest.raises(pairrun.RunError, match="duplicate required cells"):
+        pairrun._quality_batch_required_cells([member, member], records, [view, view])
+
+
+def test_quality_matrix_admission_runs_ready_sibling_after_failed_terminal(tmp_path, monkeypatch):
+    matrix_root = tmp_path / "matrix"
+    prepared = []
+    member_admissions = {}
+    for group_index, name in enumerate(("failed", "ready")):
+        members = []
+        paths = []
+        for member_index in range(2):
+            spec_path = tmp_path / f"{name}-{member_index}.json"
+            paths.append(str(spec_path))
+            spec = {
+                "repo": str(tmp_path / name),
+                "strategies": [{"name": "fixed_window_strict"}],
+                "execution_profiles": {"semble": {"profile_id": "semble-lexical-file-v1"}},
+            }
+            suite = {"suite_id": f"{name}-{member_index}"}
+            pack = {"repository_commit": "a" * 40}
+            members.append((spec_path, spec, suite, pack, None))
+            admission = tmp_path / "admissions" / f"cohort-{member_index}" / name
+            admission.mkdir(parents=True)
+            result = admission / "result.json"
+            member_admissions[str(spec_path)] = str(result)
+            if group_index == 0 and member_index == 0:
+                (admission / "failure.json").write_text('{"status":"FAILED"}')
+            else:
+                result.write_text('{"status":"VERIFIED"}')
+        group = (name, str(tmp_path / name), paths)
+        batch = {"output_root": str(matrix_root / name)}
+        prepared.append((group, batch, (members, {})))
+    matrix = {
+        "schema_version": 1,
+        "member_specs": list(member_admissions),
+        "output_root": str(matrix_root),
+        "member_admissions": member_admissions,
+        "admission_deadline_seconds": 1,
+    }
+    monkeypatch.setattr(
+        pairrun,
+        "_quality_matrix_verify_member_admission",
+        lambda _spec, result, _repo: {"result_sha256": pairrun.sha_file(result)},
+    )
+    executed = []
+
+    def fake_batch(batch, *, prevalidated, closure_source):
+        executed.append(batch["output_root"])
+        output = Path(batch["output_root"])
+        output.mkdir()
+        (output / "driver-source-closure.json").write_text("{}")
+        (output / "batch-manifest.json").write_text("{}")
+
+    monkeypatch.setattr(pairrun, "run_quality_batch", fake_batch)
+    monkeypatch.setattr(pairrun, "git_head_sha", lambda _repo: "a" * 40)
+    specs = {
+        str(member[0]): {**member[1], "runner_binary": str(tmp_path / "runner")}
+        for _group, _batch, validated in prepared
+        for member in validated[0]
+    }
+    monkeypatch.setattr(pairrun, "load_spec", lambda path: specs[str(path)])
+    monkeypatch.setattr(pairrun, "probe_runner_capabilities", lambda _binary: None)
+
+    def prevalidate_ready(batch):
+        if batch["output_root"] == str(matrix_root / "failed"):
+            pytest.fail("failed admission must not prevalidate or block its ready sibling")
+        return next(
+            validated
+            for _group, prepared_batch, validated in prepared
+            if prepared_batch["output_root"] == batch["output_root"]
+        )
+
+    monkeypatch.setattr(pairrun, "_quality_batch_members", prevalidate_ready)
+    monkeypatch.setattr(pairrun, "_quality_batch_input_snapshot", lambda _members: [])
+    monkeypatch.setattr(pairrun, "preflight_daemon_socket_paths", lambda *_args: None)
+    assert pairrun._run_quality_matrix_admitted(matrix, matrix_root, prepared) == 0
+    assert executed == [str(matrix_root / "ready")]
+    manifest = json.loads((matrix_root / "matrix-manifest.json").read_text())
+    assert len(manifest["required_cells"]) == 8
+    assert {row["status"] for row in manifest["required_cells"]} == {
+        "VERIFIED",
+        "NOT_RUN",
+        "FAILED",
+    }
 
 
 def test_driver_phase_durations_use_adjacent_clock_marks() -> None:

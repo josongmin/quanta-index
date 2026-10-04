@@ -1006,3 +1006,35 @@ def test_admission_queue_observes_repository_review_failure_without_global_wait(
         ("typeorm", {"status": "FAILED", "reason": "original review failed"}),
         ("nushell", {"status": "VERIFIED"}),
     ]
+
+
+def test_admission_queue_drains_distinct_cohort_directories(tmp_path):
+    first = tmp_path / "cohort-a" / "fixture"
+    second = tmp_path / "cohort-b" / "fixture"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "failure.json").write_text('{"status":"FAILED"}')
+    (second / "result.json").write_text('{"status":"VERIFIED"}')
+    cells = {"member-a": first, "member-b": second}
+    assert list(
+        execution_batch.iter_repository_admissions(
+            tmp_path,
+            list(cells),
+            upstream_alive=lambda: True,
+            wait=lambda: pytest.fail("ready sibling must drain without polling"),
+            repository_cells=cells,
+        )
+    ) == [
+        ("member-a", {"status": "FAILED", "reason": "repository admission failure terminal"}),
+        ("member-b", {"status": "VERIFIED"}),
+    ]
+    with pytest.raises(execution_batch.BatchError, match="repository cell mapping"):
+        list(
+            execution_batch.iter_repository_admissions(
+                tmp_path,
+                list(cells),
+                upstream_alive=lambda: False,
+                wait=lambda: None,
+                repository_cells={"member-a": first, "member-b": first},
+            )
+        )

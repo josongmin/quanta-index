@@ -554,13 +554,12 @@ rust-verify-quality-snippet:
 # `declared-advisory`: their blocking latency is owned by the canonical Linux
 # perf runner, not this host. An empty/typed-error small-tier query is a non-zero
 # exit, never a fabricated zero-latency pass.
-# Artifacts: artifacts/search-quality/scale/latest/{summary,tier_manifest}.json
+# Artifacts: a fresh external /tmp root printed by the producer.
 rust-verify-quality-scale:
     python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib scale:: --all-features --locked -- --nocapture
-    mkdir -p artifacts/search-quality/scale/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin scale_matrix --all-features --locked
-    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/scale_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/scale/latest"'
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && SCALE_BIN="$CARGO_TARGET_DIR/debug/scale_matrix" && test -x "$SCALE_BIN" && SCALE_RUN_ROOT=$(mktemp -d /tmp/quanta-index-scale.XXXXXX) && "$SCALE_BIN" --out-dir "$SCALE_RUN_ROOT/result"'
 
 # Latency-tail rail (J7Q-04). Blocking dimension: tail (correctness-gated).
 # Proves: route-aware p50/p95/p99 budget manifest + percentile invariants, then
@@ -620,9 +619,8 @@ rust-verify-quality-freshness samples="20":
 # Scheduled arrivals over real query IPC; record offered/achieved QPS and tails.
 rust-verify-quality-open-loop:
     python3 tools/ci/timing/check_host_contention.py
-    mkdir -p artifacts/search-quality/open-loop/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin open_loop_matrix --all-features --locked
-    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/open_loop_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/open-loop/latest"'
+    env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && OPEN_LOOP_BIN="$CARGO_TARGET_DIR/debug/open_loop_matrix" && test -x "$OPEN_LOOP_BIN" && OPEN_LOOP_RUN_ROOT=$(mktemp -d /tmp/quanta-index-open-loop.XXXXXX) && "$OPEN_LOOP_BIN" --out-dir "$OPEN_LOOP_RUN_ROOT/result"'
 
 # Operator-ergonomics rail (J7Q-05). Blocking dimension: ops.
 # Proves: read-only operator-diagnosis surfaces are machine-readable and preserve

@@ -11613,21 +11613,59 @@ def run_semble_capture(
     return {"phase_metrics": str(phase_path), "resource_metrics": str(resource_path)}
 
 
+def _validate_quality_batch_fields(batch: dict, where: str) -> None:
+    members = batch["member_specs"]
+    if batch["schema_version"] != 1 or not isinstance(members, list) or len(members) < 2:
+        raise RunError(f"{where} requires version 1 and at least two member specs")
+    if any(not isinstance(value, str) or not Path(value).is_absolute() for value in members):
+        raise RunError(f"{where} member specs must be absolute paths")
+    if len(set(members)) != len(members):
+        raise RunError(f"{where} member specs must be distinct")
+    output = batch["output_root"]
+    if not isinstance(output, str) or not Path(output).is_absolute():
+        raise RunError(f"{where} output root must be an absolute path")
+
+
 def load_quality_batch_spec(path: Path) -> dict:
     batch = _exact_keys(
         read_json(path), {"schema_version", "member_specs", "output_root"}, "quality batch spec"
     )
-    members = batch["member_specs"]
-    if batch["schema_version"] != 1 or not isinstance(members, list) or len(members) < 2:
-        raise RunError("quality batch requires version 1 and at least two member specs")
-    if any(not isinstance(value, str) or not Path(value).is_absolute() for value in members):
-        raise RunError("quality batch member specs must be absolute paths")
-    if len(set(members)) != len(members):
-        raise RunError("quality batch member specs must be distinct")
-    output = batch["output_root"]
-    if not isinstance(output, str) or not Path(output).is_absolute():
-        raise RunError("quality batch output root must be an absolute path")
+    _validate_quality_batch_fields(batch, "quality batch")
     return batch
+
+
+def load_quality_matrix_spec(path: Path) -> dict:
+    return _validate_quality_matrix_spec(read_json(path))
+
+
+def _validate_quality_matrix_spec(matrix: dict) -> dict:
+    scheduled = isinstance(matrix, dict) and "member_admissions" in matrix
+    keys = {"schema_version", "member_specs", "output_root"} | (
+        {"member_admissions", "admission_deadline_seconds"} if scheduled else set()
+    )
+    matrix = _exact_keys(matrix, keys, "quality matrix spec")
+    # Reuse batch fields while admitting scheduling only at the matrix boundary.
+    base = {key: matrix[key] for key in ("schema_version", "member_specs", "output_root")}
+    _validate_quality_batch_fields(base, "quality matrix")
+    members = base["member_specs"]
+    if scheduled:
+        admissions = matrix["member_admissions"]
+        if (
+            not isinstance(admissions, dict)
+            or set(admissions) != set(members)
+            or any(
+                not isinstance(value, str)
+                or not Path(value).is_absolute()
+                or Path(value).name != "result.json"
+                for value in admissions.values()
+            )
+            or len(set(admissions.values())) != len(admissions)
+        ):
+            raise RunError("quality matrix member admissions must map every distinct member")
+        deadline = matrix["admission_deadline_seconds"]
+        if type(deadline) not in (int, float) or not math.isfinite(deadline) or deadline <= 0:
+            raise RunError("quality matrix admission deadline must be finite and positive")
+    return matrix
 
 
 def _quality_batch_members(
@@ -11713,6 +11751,58 @@ def _quality_batch_input_snapshot(members: list[tuple]) -> list[dict]:
     return snapshot
 
 
+def _quality_batch_required_cells(
+    members: list[tuple], native_records: list[dict], scoring_views: list[dict]
+) -> list[dict]:
+    """Bind each cohort/product diagnostic cell to its actual native union record."""
+    if len(native_records) != 2:
+        raise RunError("quality batch requires Quanta and Semble native records")
+    if len(scoring_views) != len(members):
+        raise RunError("quality batch required-cell scoring views differ")
+    records = dict(zip(("quanta", "semble"), native_records, strict=True))
+    cells = []
+    seen = set()
+    for (spec_path, spec, suite, pack, _source), view in zip(members, scoring_views, strict=True):
+        repo = str(Path(spec["repo"]).resolve())
+        for product, profile, route in (
+            ("quanta", spec["strategies"][0]["name"] + ":lexical", "lexical"),
+            ("semble", spec["execution_profiles"]["semble"]["profile_id"], "semble-lexical-file"),
+        ):
+            counts: dict[str, int] = {}
+            for row in view["results"]:
+                if row["route"] == route:
+                    counts[row["status"]] = counts.get(row["status"], 0) + 1
+            if sum(counts.values()) != len(pack["tasks"]):
+                raise RunError("quality batch required-cell native task coverage differs")
+            identity = {
+                "cohort": suite["suite_id"],
+                "repository": repo,
+                "repository_commit": pack["repository_commit"],
+                "product": product,
+                "profile": profile,
+                "unit": "distinct_file",
+            }
+            cell_id = digest(canonical(identity))
+            if cell_id in seen:
+                raise RunError("quality batch has duplicate required cells")
+            seen.add(cell_id)
+            cells.append(
+                {
+                    "cell_id": cell_id,
+                    **identity,
+                    "member_spec_path": str(spec_path),
+                    "member_spec_sha256": sha_file(spec_path),
+                    "suite_sha256": sha_file(Path(spec["suite"])),
+                    "blind_pack_sha256": digest(canonical(pack)),
+                    "status": "VERIFIED",
+                    "qualification": "diagnostic_unqualified",
+                    "native_record": records[product],
+                    "native_status_counts": counts,
+                }
+            )
+    return sorted(cells, key=lambda cell: cell["cell_id"])
+
+
 def _quality_batch_model_assets_unchanged(members: list[tuple], expected: str) -> None:
     for spec_path, spec, _suite, _pack, _source in members:
         try:
@@ -11747,6 +11837,8 @@ def run_quality_batch(
     revalidated against its original suite/pack; no projected view is saved
     or represented as a native capture.
     """
+    _exact_keys(batch, {"schema_version", "member_specs", "output_root"}, "quality batch spec")
+    _validate_quality_batch_fields(batch, "quality batch")
     timing_marks = [("start", time.monotonic_ns())]
     if prevalidated is None:
         first_spec = load_spec(Path(batch["member_specs"][0]))
@@ -11829,9 +11921,11 @@ def run_quality_batch(
         repo, execution_view, execution_pack, members[0][4], product_records
     )
     report_rows = []
+    scoring_views = []
     for index, (spec_path, _spec, suite, pack, source) in enumerate(members):
         view = eb.project_scoring_view(execution_pack, membership, pack, combined)
         validate_evidence_against_suite(repo, suite, pack, source, view)
+        scoring_views.append(view)
         report = evaluate_paired_file_diagnostic(
             suite, pack, view, "semble-lexical-file", "lexical"
         )
@@ -11850,6 +11944,10 @@ def run_quality_batch(
                 "report_sha256": sha_file(report_path),
             }
         )
+    native_records = [
+        {"path": path.relative_to(stage).as_posix(), "sha256": sha_file(path)}
+        for path in product_records
+    ]
     manifest = {
         "schema_version": 1,
         "kind": "retrieval_quality_execution_batch_v1",
@@ -11868,10 +11966,8 @@ def run_quality_batch(
         "execution_pack_sha256": membership["execution_pack_sha256"],
         "membership_sha256": sha_file(stage / "membership.json"),
         "product_packs": product_packs,
-        "native_records": [
-            {"path": path.relative_to(stage).as_posix(), "sha256": sha_file(path)}
-            for path in product_records
-        ],
+        "native_records": native_records,
+        "required_cells": _quality_batch_required_cells(members, native_records, scoring_views),
         "members": report_rows,
     }
     timing_marks.append(("report_and_manifest", time.monotonic_ns()))
@@ -11907,6 +12003,8 @@ def run_quality_batch(
 
 def verify_quality_batch(batch: dict) -> int:
     """Replay score views from saved native records and original member inputs."""
+    _exact_keys(batch, {"schema_version", "member_specs", "output_root"}, "quality batch spec")
+    _validate_quality_batch_fields(batch, "quality batch")
     root = Path(batch["output_root"]).resolve()
     if not root.is_dir():
         raise RunError("quality batch output root is missing")
@@ -11929,6 +12027,7 @@ def verify_quality_batch(batch: dict) -> int:
             "membership_sha256",
             "product_packs",
             "native_records",
+            "required_cells",
             "members",
         },
         "quality batch manifest",
@@ -12008,11 +12107,13 @@ def verify_quality_batch(batch: dict) -> int:
     )
     if not isinstance(manifest["members"], list) or len(manifest["members"]) != len(members):
         raise RunError("quality batch member report count changed")
+    scoring_views = []
     for index, ((spec_path, _spec, suite, pack, source), row) in enumerate(
         zip(members, manifest["members"], strict=True)
     ):
         view = eb.project_scoring_view(execution_pack, membership, pack, combined)
         validate_evidence_against_suite(repo, suite, pack, source, view)
+        scoring_views.append(view)
         report = evaluate_paired_file_diagnostic(
             suite, pack, view, "semble-lexical-file", "lexical"
         )
@@ -12028,6 +12129,10 @@ def verify_quality_batch(batch: dict) -> int:
         }
         if row != expected_row or read_json(report_path) != report:
             raise RunError(f"quality batch member {index} report or provenance changed")
+    if manifest["required_cells"] != _quality_batch_required_cells(
+        members, actual_records, scoring_views
+    ):
+        raise RunError("quality batch required cells differ from native records or inputs")
     print(json.dumps({"verified_members": len(members), "native_records": 2}))
     return 0
 
@@ -12058,14 +12163,389 @@ def _quality_matrix_batch(matrix: dict, group: tuple[str, str, list[str]]) -> di
     }
 
 
+def _quality_matrix_inventory_members(batch: dict) -> list[tuple]:
+    """Read enough frozen member identity to enumerate cells before admission waits."""
+    members = []
+    for name in batch["member_specs"]:
+        path = Path(name)
+        spec = load_spec(path)
+        suite = read_json(Path(spec["suite"]))
+        pack = read_json(Path(spec["query_pack"]))
+        if (
+            not isinstance(suite, dict)
+            or not isinstance(pack, dict)
+            or not isinstance(suite.get("suite_id"), str)
+            or not suite["suite_id"]
+            or suite.get("suite_id") != pack.get("suite_id")
+            or suite.get("repository_commit") != pack.get("repository_commit")
+            or not isinstance(pack.get("tasks"), list)
+            or not pack["tasks"]
+            or len(spec.get("strategies", [])) != 1
+            or not isinstance(spec.get("execution_profiles"), dict)
+            or not isinstance(spec["execution_profiles"].get("semble"), dict)
+        ):
+            raise RunError(f"quality matrix required-cell source is invalid: {path}")
+        members.append((path, spec, suite, pack, None))
+    return members
+
+
+def _quality_matrix_verify_member_admission(
+    spec_path: Path, result_path: Path, driver_repo: Path
+) -> dict:
+    """Consume the canonical E1 per-suite bundle, not a VERIFIED status alone."""
+    spec = load_spec(spec_path)
+    cell = result_path.parent
+    root = cell.parent
+    admission_path = cell / "admission.json"
+    result = read_json(result_path)
+    required_result = {
+        "status",
+        "qualified",
+        "human_provenance_attested",
+        "source_revision",
+        "repository",
+        "tasks",
+        "file_judgment_pairs",
+        "seconds",
+        "negative_source_controls",
+        "input_sha256",
+        "scope",
+        "remaining",
+    }
+    if (
+        not isinstance(result, dict)
+        or set(result) != required_result
+        or result["status"] != "VERIFIED"
+        or result["qualified"] is not False
+        or result["human_provenance_attested"] is not False
+        or result["repository"] != cell.name
+        or result["repository"] != Path(spec["repo"]).name
+        or result["source_revision"] != git_head_sha(driver_repo)
+        or type(result["tasks"]) is not int
+        or result["tasks"] <= 0
+        or type(result["file_judgment_pairs"]) is not int
+        or result["file_judgment_pairs"] < 0
+        or type(result["seconds"]) not in (int, float)
+        or not math.isfinite(result["seconds"])
+        or result["seconds"] < 0
+        or type(result["negative_source_controls"]) is not int
+        or result["negative_source_controls"] < 1
+        or not isinstance(result["scope"], str)
+        or not result["scope"]
+        or not isinstance(result["remaining"], list)
+    ):
+        raise RunError(f"quality matrix admission result identity differs: {spec_path}")
+    admission = validate_admission_manifest(read_json(admission_path))
+    proof_roles = {
+        "contract_python_receipt": "contract_python_receipt.json",
+        "contract_rust_receipt": "contract_rust_receipt.json",
+        "sdk_receipt": "sdk_receipt.json",
+    }
+    frozen = result["input_sha256"]
+    if not isinstance(frozen, dict):
+        raise RunError("quality matrix admission input map is invalid")
+    proof_paths = {}
+    for role, basename in proof_roles.items():
+        matched = [Path(name) for name in frozen if Path(name).name == basename]
+        if len(matched) != 1:
+            raise RunError(f"quality matrix admission {role} path is absent or ambiguous")
+        proof_paths[role] = matched[0]
+    expected_paths = {
+        *(
+            cell / name
+            for name in (
+                "admission.json",
+                "suite.json",
+                "blind-pack.json",
+                "corpus-manifest.json",
+                "license-receipt.json",
+                "annotation-receipt-1.json",
+                "annotation-receipt-2.json",
+                "adjudication-receipt.json",
+            )
+        ),
+        *(
+            root / name
+            for name in (
+                "decision-policy.json",
+                "split-manifest.json",
+                "split-releases.json",
+                "host-profile.json",
+                "semble-lockfile.txt",
+            )
+        ),
+        *proof_paths.values(),
+    }
+    if set(frozen) != {str(path) for path in expected_paths} or any(
+        not _is_hex(value, 64) or sha_file(Path(name)) != value for name, value in frozen.items()
+    ):
+        raise RunError("quality matrix admission frozen input bytes differ")
+    if (
+        frozen[str(cell / "suite.json")] != sha_file(Path(spec["suite"]))
+        or frozen[str(cell / "blind-pack.json")] != sha_file(Path(spec["query_pack"]))
+        or admission["models"]["semble_model_revision"] != spec["semble_model_revision"]
+        or admission.get("decision_policy_sha256") != sha_file(root / "decision-policy.json")
+    ):
+        raise RunError("quality matrix admission differs from member suite, pack or model")
+    try:
+        _, observed_asset = semble_adapter.resolve_model_revision(
+            Path(spec["semble_cache_root"]) / "hf",
+            semble_adapter.DEFAULT_MODEL_ID,
+            spec["semble_model_revision"],
+        )
+    except semble_adapter.AdapterError as exc:
+        raise RunError("quality matrix admitted model cache refused") from exc
+    if admission["models"]["semble_model_asset_sha256"] != observed_asset:
+        raise RunError("quality matrix admission model asset differs")
+    verified = verify_admission_bundle(
+        admission_path,
+        cell / "license-receipt.json",
+        [cell / "annotation-receipt-1.json", cell / "annotation-receipt-2.json"],
+        cell / "adjudication-receipt.json",
+        source_revision=result["source_revision"],
+        corpus_manifest_path=cell / "corpus-manifest.json",
+        suite_path=cell / "suite.json",
+        development_suite_path=None,
+        experiment_custody_path=None,
+        repo=Path(spec["repo"]),
+        query_pack_path=cell / "blind-pack.json",
+        lockfile_path=root / "semble-lockfile.txt",
+        host_profile_path=root / "host-profile.json",
+        cache_regime=admission["cache_regime"],
+        receipt_paths=proof_paths,
+        split_manifest_path=root / "split-manifest.json",
+        split_releases_path=root / "split-releases.json",
+        **admission["models"],
+    )
+    suite = read_json(cell / "suite.json")
+    if (
+        verified != admission
+        or result["tasks"] != len(suite["tasks"])
+        or result["file_judgment_pairs"]
+        != sum(len(task["file_judgments"]) for task in suite["tasks"])
+    ):
+        raise RunError("quality matrix admission result differs from canonical bundle")
+    return {"result_path": str(result_path), "result_sha256": sha_file(result_path)}
+
+
+def _quality_matrix_member_cells(member: tuple, status: str, reason: str) -> list[dict]:
+    spec_path, spec, suite, pack, _source = member
+    cells = []
+    for product, profile in (
+        ("quanta", spec["strategies"][0]["name"] + ":lexical"),
+        ("semble", spec["execution_profiles"]["semble"]["profile_id"]),
+    ):
+        identity = {
+            "cohort": suite["suite_id"],
+            "repository": str(Path(spec["repo"]).resolve()),
+            "repository_commit": pack["repository_commit"],
+            "product": product,
+            "profile": profile,
+            "unit": "distinct_file",
+        }
+        cells.append(
+            {
+                "cell_id": digest(canonical(identity)),
+                **identity,
+                "member_spec_path": str(spec_path),
+                "status": status,
+                "reason": reason,
+            }
+        )
+    return cells
+
+
+def _run_quality_matrix_admitted(matrix: dict, root: Path, prepared: list[tuple]) -> int:
+    """Drain canonical per-member admissions and run complete ready siblings."""
+    driver_repo = Path(__file__).resolve().parents[3]
+    member_admissions = matrix["member_admissions"]
+    by_key = {}
+    cells = {}
+    for group, _batch, validated in prepared:
+        for member in validated[0]:
+            spec_name = str(member[0])
+            key = "m-" + hashlib.sha256(spec_name.encode()).hexdigest()[:24]
+            if key in by_key:
+                raise RunError("quality matrix admission member key collision")
+            by_key[key] = group[0], member
+            cells[key] = Path(member_admissions[spec_name]).parent.resolve()
+    if len(set(cells.values())) != len(cells):
+        raise RunError("quality matrix admission directories must be distinct")
+    if any(root == cell or root in cell.parents or cell in root.parents for cell in cells.values()):
+        raise RunError("quality matrix output and admission roots must be disjoint")
+    if root.exists():
+        raise RunError("quality matrix output root already exists")
+    root.mkdir(parents=True)
+    deadline = time.monotonic() + matrix["admission_deadline_seconds"]
+    states: dict[str, dict] = {}
+    completed_groups: set[str] = set()
+    rows = []
+    closure_source: Path | None = None
+
+    def publish_group(group: tuple, batch: dict, validated: tuple) -> None:
+        nonlocal closure_source
+        name, repo, paths = group
+        member_keys = [key for key, (group_name, member) in by_key.items() if group_name == name]
+        if name in completed_groups or any(key not in states for key in member_keys):
+            return
+        completed_groups.add(name)
+        admitted = all(states[key]["status"] == "VERIFIED" for key in member_keys)
+        if not admitted:
+            rows.append(
+                {
+                    "name": name,
+                    "repo": repo,
+                    "member_specs": paths,
+                    "status": "NOT_RUN",
+                    "reason": "member admission failed or is missing",
+                    "batch_spec_sha256": None,
+                    "batch_manifest_sha256": None,
+                }
+            )
+            return
+        batch_path = root / f"{name}-spec.json"
+        batch_path.write_bytes(canonical_bytes(batch))
+        try:
+            first_spec = load_spec(Path(paths[0]))
+            probe_runner_capabilities(Path(first_spec["runner_binary"]))
+            members, model = _quality_batch_members(batch)
+            _quality_batch_input_snapshot(members)
+            preflight_daemon_socket_paths(
+                Path(batch["output_root"] + ".staging") / "quanta",
+                members[0][1]["strategies"],
+            )
+            run_quality_batch(batch, prevalidated=(members, model), closure_source=closure_source)
+        except (RunError, eb.BatchError, ValueError) as exc:
+            rows.append(
+                {
+                    "name": name,
+                    "repo": repo,
+                    "member_specs": paths,
+                    "status": "FAILED",
+                    "reason": str(exc),
+                    "batch_spec_sha256": sha_file(batch_path),
+                    "batch_manifest_sha256": None,
+                }
+            )
+            return
+        if closure_source is None:
+            closure_source = Path(batch["output_root"]) / "driver-source-closure.json"
+        rows.append(
+            {
+                "name": name,
+                "repo": repo,
+                "member_specs": paths,
+                "status": "VERIFIED",
+                "reason": "native batch and score views complete",
+                "batch_spec_sha256": sha_file(batch_path),
+                "batch_manifest_sha256": sha_file(
+                    Path(batch["output_root"]) / "batch-manifest.json"
+                ),
+            }
+        )
+
+    iterator = eb.iter_repository_admissions(
+        root,
+        list(by_key),
+        upstream_alive=lambda: time.monotonic() < deadline,
+        wait=lambda: time.sleep(min(0.25, max(0, deadline - time.monotonic()))),
+        repository_cells=cells,
+    )
+    for key, outcome in iterator:
+        group_name, member = by_key[key]
+        result_path = Path(member_admissions[str(member[0])])
+        if outcome.get("status") == "VERIFIED":
+            try:
+                proof = _quality_matrix_verify_member_admission(member[0], result_path, driver_repo)
+            except (OSError, RunError, ValueError, KeyError, TypeError) as exc:
+                states[key] = {
+                    "status": "FAILED",
+                    "reason": str(exc),
+                    "terminal_sha256": sha_file(result_path),
+                }
+            else:
+                states[key] = {
+                    "status": "VERIFIED",
+                    "reason": "canonical admission replay",
+                    "terminal_sha256": proof["result_sha256"],
+                }
+        else:
+            failure = result_path.with_name("failure.json")
+            states[key] = {
+                "status": "FAILED" if failure.exists() or result_path.exists() else "NOT_RUN",
+                "reason": outcome.get("reason", "admission unavailable"),
+                "terminal_sha256": sha_file(failure)
+                if failure.exists()
+                else (sha_file(result_path) if result_path.exists() else None),
+            }
+        for group, batch, validated in prepared:
+            if group[0] == group_name:
+                publish_group(group, batch, validated)
+                break
+    for group, batch, validated in prepared:
+        publish_group(group, batch, validated)
+    if len(completed_groups) != len(prepared) or len(states) != len(by_key):
+        raise RunError("quality matrix admission queue omitted required members")
+    required_cells = []
+    admission_rows = []
+    for key, (group_name, member) in by_key.items():
+        state = states[key]
+        group_state = next(row for row in rows if row["name"] == group_name)
+        cell_status = state["status"] if state["status"] != "VERIFIED" else group_state["status"]
+        reason = state["reason"] if state["status"] != "VERIFIED" else group_state["reason"]
+        required_cells.extend(_quality_matrix_member_cells(member, cell_status, reason))
+        admission_rows.append(
+            {
+                "member_spec_path": str(member[0]),
+                "result_path": member_admissions[str(member[0])],
+                **state,
+            }
+        )
+    if len({row["cell_id"] for row in required_cells}) != len(required_cells):
+        raise RunError("quality matrix duplicate required cell identity")
+    manifest = {
+        "schema_version": 2,
+        "kind": "retrieval_quality_matrix_v2",
+        "qualification": "diagnostic_unqualified",
+        "matrix_spec_sha256": digest(canonical(matrix)),
+        "groups": sorted(rows, key=lambda row: row["name"]),
+        "admissions": sorted(admission_rows, key=lambda row: row["member_spec_path"]),
+        "required_cells": sorted(required_cells, key=lambda row: row["cell_id"]),
+    }
+    (root / "matrix-manifest.json").write_bytes(canonical_bytes(manifest))
+    print(
+        json.dumps(
+            {
+                "output_root": str(root),
+                "repositories": len(rows),
+                "required_cells": len(required_cells),
+                "completed_groups": sum(row["status"] == "VERIFIED" for row in rows),
+            }
+        )
+    )
+    return 0
+
+
 def run_quality_matrix(matrix: dict) -> int:
     """Prevalidate all groups, then publish one diagnostic batch per repository."""
+    _validate_quality_matrix_spec(matrix)
     matrix_started_ns = time.monotonic_ns()
     root = Path(matrix["output_root"]).resolve()
     if root.exists():
         raise RunError("quality matrix output root already exists")
     driver_repo = Path(__file__).resolve().parents[3]
     groups = _quality_matrix_groups(matrix)
+    if "member_admissions" in matrix:
+        prepared = []
+        for group in groups:
+            batch = _quality_matrix_batch(matrix, group)
+            repo = Path(group[1])
+            if root in (repo, driver_repo) or repo in root.parents or driver_repo in root.parents:
+                raise RunError(
+                    "quality matrix output root must be outside source and driver repositories"
+                )
+            prepared.append((group, batch, (_quality_matrix_inventory_members(batch), {})))
+        return _run_quality_matrix_admitted(matrix, root, prepared)
     prepared = []
     for group in groups:
         batch = _quality_matrix_batch(matrix, group)
@@ -12132,9 +12612,12 @@ def run_quality_matrix(matrix: dict) -> int:
 
 
 def verify_quality_matrix(matrix: dict) -> int:
+    _validate_quality_matrix_spec(matrix)
     root = Path(matrix["output_root"]).resolve()
     if not root.is_dir():
         raise RunError("quality matrix output root is missing")
+    if "member_admissions" in matrix:
+        return _verify_quality_matrix_admitted(matrix, root)
     manifest = _exact_keys(
         read_json(root / "matrix-manifest.json"),
         {"schema_version", "kind", "qualification", "matrix_spec_sha256", "groups"},
@@ -12168,6 +12651,168 @@ def verify_quality_matrix(matrix: dict) -> int:
     return 0
 
 
+def _verify_quality_matrix_admitted(matrix: dict, root: Path) -> int:
+    manifest = _exact_keys(
+        read_json(root / "matrix-manifest.json"),
+        {
+            "schema_version",
+            "kind",
+            "qualification",
+            "matrix_spec_sha256",
+            "groups",
+            "admissions",
+            "required_cells",
+        },
+        "admitted quality matrix manifest",
+    )
+    groups = _quality_matrix_groups(matrix)
+    if (
+        manifest["schema_version"] != 2
+        or manifest["kind"] != "retrieval_quality_matrix_v2"
+        or manifest["qualification"] != "diagnostic_unqualified"
+        or manifest["matrix_spec_sha256"] != digest(canonical(matrix))
+        or not isinstance(manifest["groups"], list)
+        or len(manifest["groups"]) != len(groups)
+        or not isinstance(manifest["admissions"], list)
+        or not isinstance(manifest["required_cells"], list)
+    ):
+        raise RunError("admitted quality matrix manifest contract differs")
+    for row in manifest["groups"]:
+        _exact_keys(
+            row,
+            {
+                "name",
+                "repo",
+                "member_specs",
+                "status",
+                "reason",
+                "batch_spec_sha256",
+                "batch_manifest_sha256",
+            },
+            "admitted quality matrix group",
+        )
+    for row in manifest["admissions"]:
+        _exact_keys(
+            row,
+            {"member_spec_path", "result_path", "status", "reason", "terminal_sha256"},
+            "admitted quality matrix member admission",
+        )
+    admissions = manifest["admissions"]
+    by_spec = {row.get("member_spec_path"): row for row in admissions if isinstance(row, dict)}
+    if len(by_spec) != len(admissions) or set(by_spec) != set(matrix["member_specs"]):
+        raise RunError("admitted quality matrix member inventory differs")
+    driver_repo = Path(__file__).resolve().parents[3]
+    expected_cells = []
+    expected_groups = []
+    for group in groups:
+        name, repo, paths = group
+        batch = _quality_matrix_batch(matrix, group)
+        member_states = []
+        saved = next((row for row in manifest["groups"] if row.get("name") == name), None)
+        if saved is None or saved.get("repo") != repo or saved.get("member_specs") != paths:
+            raise RunError("admitted quality matrix repository group differs")
+        members = (
+            _quality_batch_members(batch)[0]
+            if saved.get("status") == "VERIFIED"
+            else _quality_matrix_inventory_members(batch)
+        )
+        for member in members:
+            spec_name = str(member[0])
+            row = by_spec[spec_name]
+            result_path = Path(matrix["member_admissions"][spec_name])
+            if row.get("result_path") != str(result_path):
+                raise RunError("admitted quality matrix result path differs")
+            if row.get("status") == "VERIFIED":
+                proof = _quality_matrix_verify_member_admission(member[0], result_path, driver_repo)
+                if row.get("terminal_sha256") != proof["result_sha256"]:
+                    raise RunError("admitted quality matrix result bytes changed")
+            else:
+                failure_path = result_path.with_name("failure.json")
+                if (row.get("status") == "NOT_RUN") != (
+                    not result_path.exists() and not failure_path.exists()
+                ):
+                    raise RunError("admitted quality matrix terminal status differs")
+                if result_path.exists() and not failure_path.exists():
+                    try:
+                        _quality_matrix_verify_member_admission(member[0], result_path, driver_repo)
+                    except (OSError, RunError, ValueError, KeyError, TypeError):
+                        pass
+                    else:
+                        raise RunError("admitted quality matrix omitted a ready member")
+                terminal = failure_path
+                if not terminal.exists():
+                    terminal = result_path
+                observed = sha_file(terminal) if terminal.exists() else None
+                if (
+                    row.get("status") not in ("FAILED", "NOT_RUN")
+                    or row.get("terminal_sha256") != observed
+                ):
+                    raise RunError("admitted quality matrix failure terminal changed")
+            member_states.append(row["status"])
+        batch_path = root / f"{name}-spec.json"
+        if saved.get("status") == "VERIFIED":
+            if member_states != ["VERIFIED"] * len(members):
+                raise RunError("admitted quality matrix ran an unadmitted member")
+            child_manifest = root / name / "batch-manifest.json"
+            if (
+                read_json(batch_path) != batch
+                or saved.get("batch_spec_sha256") != sha_file(batch_path)
+                or saved.get("batch_manifest_sha256") != sha_file(child_manifest)
+            ):
+                raise RunError("admitted quality matrix batch custody changed")
+            verify_quality_batch(batch)
+        elif saved.get("status") == "NOT_RUN":
+            if all(status == "VERIFIED" for status in member_states) or (root / name).exists():
+                raise RunError("admitted quality matrix omitted a ready repository")
+            if (
+                saved.get("batch_spec_sha256") is not None
+                or saved.get("batch_manifest_sha256") is not None
+            ):
+                raise RunError("admitted quality matrix not-run batch has evidence")
+        elif saved.get("status") == "FAILED":
+            if (
+                member_states != ["VERIFIED"] * len(members)
+                or saved.get("batch_manifest_sha256") is not None
+            ):
+                raise RunError("admitted quality matrix failure conflicts with admissions")
+            if read_json(batch_path) != batch or saved.get("batch_spec_sha256") != sha_file(
+                batch_path
+            ):
+                raise RunError("admitted quality matrix failed batch spec changed")
+        else:
+            raise RunError("admitted quality matrix group status is invalid")
+        expected_groups.append(saved)
+        for member in members:
+            admission_status = by_spec[str(member[0])]["status"]
+            cell_status = admission_status if admission_status != "VERIFIED" else saved["status"]
+            reason = (
+                by_spec[str(member[0])]["reason"]
+                if admission_status != "VERIFIED"
+                else saved["reason"]
+            )
+            expected_cells.extend(_quality_matrix_member_cells(member, cell_status, reason))
+    if (
+        manifest["groups"] != sorted(expected_groups, key=lambda row: row["name"])
+        or manifest["admissions"] != sorted(admissions, key=lambda row: row["member_spec_path"])
+        or manifest["required_cells"] != sorted(expected_cells, key=lambda row: row["cell_id"])
+        or len({row["cell_id"] for row in expected_cells}) != len(expected_cells)
+    ):
+        raise RunError("admitted quality matrix required-cell ledger differs")
+    print(
+        json.dumps(
+            {
+                "verified_repositories": sum(
+                    row["status"] == "VERIFIED" for row in expected_groups
+                ),
+                "failed_repositories": sum(row["status"] == "FAILED" for row in expected_groups),
+                "not_run_repositories": sum(row["status"] == "NOT_RUN" for row in expected_groups),
+                "required_cells": len(expected_cells),
+            }
+        )
+    )
+    return 0
+
+
 def cmd_quality_batch(args: argparse.Namespace) -> int:
     try:
         return run_quality_batch(load_quality_batch_spec(Path(args.spec)))
@@ -12186,7 +12831,7 @@ def cmd_quality_batch_verify(args: argparse.Namespace) -> int:
 
 def cmd_quality_matrix(args: argparse.Namespace, *, verify: bool) -> int:
     try:
-        matrix = load_quality_batch_spec(Path(args.spec))
+        matrix = load_quality_matrix_spec(Path(args.spec))
         return verify_quality_matrix(matrix) if verify else run_quality_matrix(matrix)
     except (RunError, eb.BatchError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
