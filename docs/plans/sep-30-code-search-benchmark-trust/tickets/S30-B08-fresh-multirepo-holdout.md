@@ -3882,3 +3882,60 @@ with a new output root. The strict collection validator remains unchanged.
   are live. Observed waits are not successful final five-product comparisons.
 - External paths are under
   `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`.
+
+### 2026-10-04: queued missing supplemental review and native product work
+
+- **VERIFIED**, matching `41cceb67` admission now covers all six currently
+  issued repositories. Uvicorn completed in **535.453s** and zustand in
+  **624.599s**. The other six still depend on actual original review; the
+  original issuance denominator remains **120/240 tasks**, **544/1,324 pairs**.
+- **VERIFIED**, corrected literal-policy cs captures/replay now cover those
+  six repositories: **120/120 actual calls with exit 0**. Independently
+  rechecked all **12 capture/row file hashes**, the canonical
+  `natural_language_file_search` request mode, and zero returned unjudged
+  pairs. Observed call sum is **4,723.632ms**, separate from capture/replay
+  wall time and not controlled performance qualification. An initial local
+  audit used the result-unit name as the request-mode enum and was corrected
+  against the canonical request contract; original product rows were unchanged.
+- **VERIFIED**, fresh Quanta/Semble raw pool validation now covers bat, cli,
+  lo and mocha: **160 actual responses**. New unjudged task/file unions are
+  **51 + 133 + 30 + 63 = 277**. Strict producer failures remain failures;
+  these canonical raw validations do not promote final quality reports.
+- The previously missing cli and lo follow-ons are now registered in
+  `c3-supplemental-queue-163-w6lwIs1x/`. A live sequential controller waits
+  for successful bat supplemental review/admission, then runs actual two-pass
+  review/adjudication, cached-only raw replay, canonical merged labels and
+  full matching admission. All old grades, query bytes/digests, family IDs,
+  category and split must remain unchanged. Expected merged counts are
+  **cli 519 + 133 = 652**, **lo 495 + 30 = 525**; lo retains the prior actual
+  41-pair supplement. These are expected counts, not newly issued judgments.
+- **VERIFIED**, input/source/disjointness and canonical merged-pool preflight
+  for both jobs; **8/8** independently rebound duplicate/query/grade/source
+  mutation controls refuse. Queue guards additionally refuse a missing
+  predecessor and changed input binding (**2/2**). All these checks made
+  **zero actual model calls**. Actual supplemental issuance remains
+  **NOT_RUN** while the service reset and predecessor are pending.
+- A second live controller serially registers later validated pools for
+  **mocha, uvicorn, zustand, typeorm, nushell, tailscale, django, sqlalchemy,
+  zellij** after that queue. It requires completed canonical original labels
+  and pool validation before creating any actual-review job. Failed/missing
+  dependencies stop progress without guessed grades or silent omissions;
+  zero-new-pair pools need no supplemental model calls.
+- **VERIFIED**, the former native controller ended after six repositories.
+  A new `c3-sg-og-remaining-41cceb67-vTkOyA4E/` controller is live, waiting
+  for typeorm admission, to cover the other **120 tasks / 240 calls** using
+  **Sourcegraph and OpenGrok only**. Its closed two-product spec and **2/2**
+  contradictory-spec refusal controls pass; no duplicate cs call is scheduled.
+  Actual new calls remain **NOT_RUN** until their matching admission exists.
+  Sourcegraph scope and OpenGrok before/after snapshots remain required.
+- Current queued actual reviews wait for the service-reported **13:40 KST**
+  reset. No new relevance grades, human review, final five-product ranking,
+  final-main proof or repeated controlled public-API performance is claimed.
+  Final capture/replay and judgment completeness must still be checked after
+  the new labels freeze, including any additional external-product files.
+- Commands/scopes: external `prepare.py`; `review.py --preflight`; canonical
+  `holdout_review.prepare` pool checks; offline semantic/queue controls;
+  `run_queue.py`, `watch_remaining.py`, and `capture_remaining.py` live waits.
+  Evidence: `offline-verification.json`, `driver-negative-controls.json`,
+  `cs120-byte-recheck.json`, `current-audit.json`, `remaining-precommit.json`
+  in the supplemental queue root; `spec-preflight.json` in the native root.
