@@ -4,6 +4,7 @@
 | --- | --- |
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P2 / `PROOF_THEN_CONDITIONAL_CODE` |
+| 기준 웨이브 | [W5 — 최종 검수·재채점·정책 판정](../waves/W5-final-scoring-and-policy.md) |
 | 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
 | 선행 결과 | [O4-E1-04](O4-E1-04-precise-name-span.md), [O4-E1-05](O4-E1-05-untouched-holdout.md), [O4-E1-06](O4-E1-06-final-pool-and-scoreboards.md) |
 

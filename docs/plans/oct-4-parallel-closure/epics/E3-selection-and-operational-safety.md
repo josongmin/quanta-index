@@ -4,6 +4,8 @@
 - 담당: E3 담당 1명.
 - 6개 티켓. [전체 지도](../README.md) · [티켓 인덱스](../tickets/INDEX.md).
 
+- 웨이브 배치: [W1](../waves/W1-evidence-and-producers.md), [W2](../waves/W2-repairs-and-selected-optimizations.md). [전체 웨이브 지도](../WAVES.md)의 같은 단계 내부 순서·인계 조건을 따른다.
+
 ## 목적
 
 선택→view acquisition→응답의 generation/token custody와 admitted publish·readiness·operator truth를 실제 counterexample에서 검증하고 확인된 결함을 소유 권위에서 수정한다.

@@ -4,6 +4,7 @@
 | --- | --- |
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P1 / `CONDITIONAL_CODE` |
+| 기준 웨이브 | [W2 — 확인된 결함 수리·선택 최적화](../waves/W2-repairs-and-selected-optimizations.md) |
 | 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
 | 선행 결과 | [O4-E4-01](O4-E4-01-index-phase-profile.md) |
 

@@ -4,6 +4,8 @@
 - 담당: 단일 통합 담당.
 - 3개 티켓. [전체 지도](../README.md) · [티켓 인덱스](../tickets/INDEX.md).
 
+- 웨이브 배치: [W0](../waves/W0-ownership-and-scope.md), [W3](../waves/W3-source-validation-and-admission.md), [W6](../waves/W6-release-and-final-closure.md). [전체 웨이브 지도](../WAVES.md)의 같은 단계 내부 순서·인계 조건을 따른다.
+
 ## 목적
 
 공용 계약/파일과 final source epoch를 한 담당자가 통합하고, 정확히 영향을 받은 contract·SDK·CI·release/operations 범위의 proof를 발행한다.

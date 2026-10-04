@@ -4,6 +4,7 @@
 | --- | --- |
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P1 / `RELEASE_GATE` |
+| 기준 웨이브 | [W6 — release·운영·전체 잔여 판정](../waves/W6-release-and-final-closure.md) |
 | 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 

@@ -4,6 +4,8 @@
 - 담당: E1 담당 1명.
 - 7개 티켓. [전체 지도](../README.md) · [티켓 인덱스](../tickets/INDEX.md).
 
+- 웨이브 배치: [W1](../waves/W1-evidence-and-producers.md), [W2](../waves/W2-repairs-and-selected-optimizations.md), [W3](../waves/W3-source-validation-and-admission.md), [W5](../waves/W5-final-scoring-and-policy.md). [전체 웨이브 지도](../WAVES.md)의 같은 단계 내부 순서·인계 조건을 따른다.
+
 ## 목적
 
 하나의 source/query/rubric 결속 라벨 권위에서 실제 검수와 admission을 발행하고, 파일 적중·정확한 선언 이름·NL relevance를 각 단위로 평가한다.

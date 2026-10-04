@@ -4,6 +4,8 @@
 
 세부 실행 기준: [OCT-04 병렬 종료 계획](../../plans/oct-4-parallel-closure/README.md). 목적·배경·파일/함수별 수정 방식은 4개 에픽과 I0 통합 문서에, 실행·검증·완료 조건은 [별도 티켓 29개](../../plans/oct-4-parallel-closure/tickets/INDEX.md)에 분리했다. 아래는 합집합 요약이며, 담당 분할·의존관계는 세부 계획에서 관리한다. 감사 시작 기준은 `main@f23af16f436c76ad4a700b75de4dd5b5771f56a6`, clean이다. `44bd68a1` 이후 감사 HEAD까지 차이는 문서뿐이고 product/benchmark source는 바뀌지 않았다. 초기 작성 기준 `0df06e0c`와 당시 한 파일 차이는 과거 관측이다.
 
+웨이브별 실행: [W0–W6 계획](../../plans/oct-4-parallel-closure/WAVES.md). 기존 29개 티켓을 빠짐없이 배치하고 선택 scope별 인계·순차 조건을 명시했다.
+
 ## 병렬 실행 에픽
 
 초기 분할 시점의 `main`은 `44bd68a1`, 당시 작업트리 clean이고 로컬 `origin/main`과 동일했다. 실행 때 현재 HEAD/dirty/ownership을 다시 확인한다. 앞선 81개 staged 경로와 vendor patch whitespace 문제는 이 커밋에서 정리됐다. 코드 출판은 벤치 실행이나 제품·성능 적격성의 완료가 아니다.

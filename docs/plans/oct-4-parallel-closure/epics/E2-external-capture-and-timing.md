@@ -4,6 +4,8 @@
 - 담당: E2 담당 1명.
 - 6개 티켓. [전체 지도](../README.md) · [티켓 인덱스](../tickets/INDEX.md).
 
+- 웨이브 배치: [W1](../waves/W1-evidence-and-producers.md), [W4](../waves/W4-native-capture-performance-and-scale.md). [전체 웨이브 지도](../WAVES.md)의 같은 단계 내부 순서·인계 조건을 따른다.
+
 ## 목적
 
 5제품의 실제 native source 범위와 completed-response 시간을 같은 계약에서 수집하고, 모든 필수 셀의 결과와 blind candidate union을 E1에 전달한다.

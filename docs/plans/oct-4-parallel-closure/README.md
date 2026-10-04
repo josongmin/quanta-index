@@ -8,6 +8,8 @@
 - 원본: [agent-1](../../handoff/oct-4/agent-1.md), [agent-2](../../handoff/oct-4/agent-2.md), [agent-3](../../handoff/oct-4/agent-3.md), [agent-4](../../handoff/oct-4/agent-4.md), [agent-5](../../handoff/oct-4/agent-5.md).
 - [기존 통합 잔여 목록](../../handoff/oct-4/FINAL-REMAINING-WORK.md)은 합집합 요약, **이 디렉터리와 [티켓 인덱스](tickets/INDEX.md)는 담당 분할·실행 상세의 기준**이다. 실제 실행 결과는 기존 B07/B08/B09·SEP21 owning tickets에 반영한다.
 
+**웨이브로 실행할 때:** [W0–W6 전체 계획](WAVES.md). 각 웨이브 문서에 담당별 작업·인계물·진입/종료 조건이 있다.
+
 ## 1. 에픽 담당 분할
 
 | 담당 | 목적과 소유 영역 | 티켓 수 | 바로 시작할 조사·fixture |
@@ -22,14 +24,15 @@
 
 ## 2. 실행 순서와 피드백
 
-| 단계 | 실제 종료 경계 |
+| 웨이브 | 실제 작업·진입 조건 |
 | --- | --- |
-| A — 병렬 준비 | I0 ownership/contract 관리, E1 원본 실패·name oracle·holdout, E2 timer/scope/controller/Semble/warmup, E3 결정적 safety proofs, E4 lifecycle/ASCII profile을 병렬 준비한다. |
-| B — 필요한 source 변경 | 재현된 계약 실패·측정된 병목만 수정한다. E3 selection decision→admission→single-RPC, E4 profiling→conditional durable/token 변경을 같은 권위에서 통합한다. |
-| C — 선택 source epoch 검증 | E1 admission producer·E2 controller/schema/collector까지 **먼저 PREPARE**한다. I0가 이번 실행에 들어갈 변경을 통합한 뒤 [O4-I0-02](tickets/O4-I0-02-matching-source-proof.md)에서 필요한 gates를 VALIDATE하고 matching binaries를 발행한다. 알려진 scope correctness 실패는 우회하지 않는다. |
-| D — admission ISSUE와 실제 셀 | C에서 검증된 같은 source의 [E1-03 admission](tickets/O4-E1-03-admission-and-split.md)을 repository별 ISSUE해 [E2-04](tickets/O4-E2-04-fresh-five-product-captures.md)가 소비한다. ready 저장소는 실패 sibling·새 holdout 전체를 기다리지 않는다. warmup0와 completed speed는 해당 추가 proof가 있을 때만 선택한다. cohort 전체 coverage도 보존한다. |
-| E — 마지막 union과 재채점 | [E1-06](tickets/O4-E1-06-final-pool-and-scoreboards.md)이 새 pair를 실제 검수하고 qrel/suite/admission revision을 발행한다. 준비된 file/NL replay와 name/unseen qualification을 분리한다. native binding이 재사용을 허용하면 immutable raw+기존 scoring projection, 허용하지 않으면 영향 셀 새 캡처다. |
-| F — 주장별 성능·정책·release | baseline 성능은 single-RPC/token/pack·XL tier 전체를 기다리지 않는다. 각 개선/대규모 claim에만 대응 proof를 추가 요구한다. 정책 변경은 독립 labels/미사용 holdout을 요구하며 source 수정 시 C–E를 다시 연다. [I0-03](tickets/O4-I0-03-release-operational-gates.md)의 CODE/release/actions는 registry별 prerequisites로 판정한다. |
+| [W0 — 소유권·실행 범위 고정](waves/W0-ownership-and-scope.md) | 담당·SHARED 파일·host resource와 이번 실행 scope를 먼저 고정한다. 다음 단계: 선택 scope의 파일/계약/출력 namespace·자원 담당 확정. |
+| [W1 — 근거·정답·producer 병렬 준비](waves/W1-evidence-and-producers.md) | 라벨/독립 oracle·native scope/timer/controller·safety 반례·전체 비용을 준비한다. 다음 단계: 선택 cohort의 code-ready proposals·라벨·독립 oracle와 실패 disposition 확보. |
+| [W2 — 확인된 결함 수리·선택 최적화](waves/W2-repairs-and-selected-optimizations.md) | 재현된 계약 실패를 수리하고 측정 근거가 있는 최적화를 선택한다. 다음 단계: 선택 source에 필수인 수리·owner proof 완료; 미선택 최적화는 후속 epoch 유지. |
+| [W3 — 소스 통합·검증·admission ISSUE](waves/W3-source-validation-and-admission.md) | producer까지 통합한 source를 검증하고 같은 source의 repository별 admission을 발행한다. 다음 단계: 영향 gates·matching binaries·suite/split/admission 결속. |
+| [W4 — 실제 캡처·성능·scale](waves/W4-native-capture-performance-and-scale.md) | 필요한 warmup parity 뒤 native captures·반복 성능·tier별 load/restart를 실행한다. 다음 단계: 선택 required cells의 immutable raw/coverage·clock/host·claim별 proof 확보. |
+| [W5 — 최종 검수·재채점·정책 판정](waves/W5-final-scoring-and-policy.md) | 새 candidate pool을 실제 검수하고 독립 gold/holdout에서 정책을 판정한다. 다음 단계: 해당 scope의 final qrel/scoreboard·분모/CI·정책 disposition; source 변경 시 재검증. |
+| [W6 — release·운영·전체 잔여 판정](waves/W6-release-and-final-closure.md) | CODE/release/actions를 별도 증거로 판정하고 모든 29개 티켓의 미완료를 남긴다. 다음 단계: 요청 qualification의 필수 proof 충족; BLOCKED/NOT_RUN이면 해당 작업 잔여. |
 
 - 티켓 선행 목록은 초기 ISSUE/실행 DAG다. 조사·독립 fixtures·code proposal PREPARE는 먼저 진행할 수 있다. I0-02는 선택한 scope의 code-ready 결과를 VALIDATE하며 모든 에픽 종료를 기다리는 global barrier가 아니다. ISSUE 이후 source 변경은 새 epoch로 재검증한다.
 - E1-07의 순수 numeric 변경은 scorer tests/report 재생을, E4-07의 planner/ranking/policy 변경은 affected SDK/Contract/binary/native cells를 다시 판정한다. 변경과 무관한 raw를 무조건 재실행하지 않는다.
