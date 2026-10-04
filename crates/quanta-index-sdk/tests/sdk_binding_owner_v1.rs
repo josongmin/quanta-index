@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use quanta_index_contract::{
-    ActiveGenerationResolutionV1, GenerationPin, GenerationSelector, GenerationSnapshot,
+    GenerationPin, GenerationSelector, GenerationSnapshot,
     ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
     SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
@@ -81,9 +81,12 @@ fn symbol_request() -> SymbolQueryRequest {
     }
 }
 
-fn text_response(generation: GenerationPin) -> SearchPlaneQueryIpcResponse {
-    SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
-        selected_active_head: None,
+fn text_page(
+    generation: GenerationPin,
+    selected_active_head: Option<SearchCorpusActiveHeadV1>,
+) -> quanta_index_contract::TextQueryResponse {
+    quanta_index_contract::TextQueryResponse {
+        selected_active_head,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation,
@@ -91,29 +94,21 @@ fn text_response(generation: GenerationPin) -> SearchPlaneQueryIpcResponse {
         window: quanta_index_contract::QueryResultWindowV2::exact_probe(0),
         file_owner_rows: None,
         next_cursor: None,
-    })
+    }
 }
 
-fn active_head(repo: RepoId) -> SearchCorpusActiveHeadV1 {
-    let SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(resolution) = active_snapshot(repo)
-    else {
-        unreachable!("fixture active snapshot")
-    };
-    resolution.head
+fn text_response(generation: GenerationPin) -> SearchPlaneQueryIpcResponse {
+    SearchPlaneQueryIpcResponse::Text(text_page(generation, None))
 }
 
 fn active_text_response(
     generation: GenerationPin,
     head: SearchCorpusActiveHeadV1,
 ) -> SearchPlaneQueryIpcResponse {
-    let SearchPlaneQueryIpcResponse::Text(mut page) = text_response(generation) else {
-        unreachable!("fixture text response")
-    };
-    page.selected_active_head = Some(head);
-    SearchPlaneQueryIpcResponse::Text(page)
+    SearchPlaneQueryIpcResponse::Text(text_page(generation, Some(head)))
 }
 
-fn active_snapshot(repo_id: RepoId) -> SearchPlaneQueryIpcResponse {
+fn active_head(repo_id: RepoId) -> SearchCorpusActiveHeadV1 {
     let lexical = GenerationSnapshot {
         repo_id,
         revision_id: revision_id(),
@@ -122,27 +117,24 @@ fn active_snapshot(repo_id: RepoId) -> SearchPlaneQueryIpcResponse {
         manifest_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .to_string(),
     };
-    SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(ActiveGenerationResolutionV1 {
-        track: SearchPlaneTrackKind::Lexical,
-        head: SearchCorpusActiveHeadV1 {
-            generation: SearchCorpusGenerationIdentityV1 {
-                semantic: GenerationSnapshot {
-                    track: SearchPlaneTrackKind::Semantic,
-                    ..lexical.clone()
-                },
-                lexical,
-                semantic_content: SemanticContentRootsV1 {
-                    row_root_digest: format!("sha256:{}", "a".repeat(64)),
-                    membership_root_digest: format!("sha256:{}", "b".repeat(64)),
-                },
+    SearchCorpusActiveHeadV1 {
+        generation: SearchCorpusGenerationIdentityV1 {
+            semantic: GenerationSnapshot {
+                track: SearchPlaneTrackKind::Semantic,
+                ..lexical.clone()
             },
-            activation_token: SearchCorpusActivationTokenV1::new(
-                [7; 16],
-                NonZeroU64::new(1).expect("fixture sequence is positive"),
-            )
-            .expect("fixture incarnation is nonzero"),
+            lexical,
+            semantic_content: SemanticContentRootsV1 {
+                row_root_digest: format!("sha256:{}", "a".repeat(64)),
+                membership_root_digest: format!("sha256:{}", "b".repeat(64)),
+            },
         },
-    })
+        activation_token: SearchCorpusActivationTokenV1::new(
+            [7; 16],
+            NonZeroU64::new(1).expect("fixture sequence is positive"),
+        )
+        .expect("fixture incarnation is nonzero"),
+    }
 }
 
 fn lexical_candidate(repo: RepoId) -> quanta_index_contract::LexicalCandidate {
