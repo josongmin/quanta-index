@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | exact live-BM25·migration/lifecycle oracles, Gin99 full-ingest clocks 및 source107 small/medium lifecycle resource readback `VERIFIED`; large lifecycle `FAILED`(ANN contraction), isolated seal-scan/physical I/O 미측정 |
+| 실행 상태 | exact live-BM25·migration/lifecycle oracles, Gin99 및 source107 small/medium readback `VERIFIED`; 최종source0e6 large300s/256MiB lifecycle readback `VERIFIED`, 기본30s large `FAILED`. isolated seal-scan/physical I/O 미측정 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -26,6 +26,12 @@ full/delta/delete/no-op/reopen의 저장·검증·shard 비용과 transient reso
 - E4-05의 matching release small16 및 medium256 actual scale/summary consistency가 통과했다. small6/medium10 phase-resource entries와 parent observation spans, requested/effective30s·16MiB, build/update mirror 및 result_count10을 검사했다. medium은 full ingest7.540ms와 full seal5549.593ms를 분리 발행했다. semantic ANN와 lexical 비용이 섞인 full seal envelope를 fsync 또는 vendor posting scan 비용으로 해석하지 않는다.
 - sampled allocated-root high-water가 관측되지 않은 phase는 small4/6, medium6/10이며 typed unavailable/null이다. 0 또는 true peak로 채우지 않는다. gc_ms는 reclaimed_bytes16을 동반한 delta activation envelope이며 isolated GC 시간이 아니다.
 - large default는30s build_seal timeout,300s/256MiB diagnostic은 delete_seal의 ANN segment2→1 mismatch로 실패했다. 실패 root에는 refusal만 있으므로 완료된 lifecycle phase times를 합성하지 않는다. 구조 수리와 source gate를 원래 E4-05에서 이어간다.
+
+## 2026-10-05 ANN 수리 후 large 관측
+
+- E4-05의 최종 source0e6 matching release actual large diagnostic은 producer/readback 모두 exit0이었다. `/private/tmp/qi-scale-large-diag-0e6-v1/result`에서4096files/16repos, result_count10, full→delta→no-op→delete→same-process reopen,10resource phases를 재검증했다. sampled allocated high-water가 없는1phase는 typed unavailable로 남았다.
+- full build49,287.270ms, activation840.024ms, delta6534.184ms, no-op seal6937.084ms, delete seal6942.890ms, reopen1141.540ms다. 이전 ANN contraction refusal은 수리 전 source107 결과로 보존한다. source0e6의 기본30s large는 build_seal timeout으로 실패해 이후 phase가 없다.
+- 300s/256MiB diagnostic, shared Darwin/hash-dev 관측이다. process CPU user20,279.317/system47,406.971ms는 harness+daemon+samplers 범위다. mixed seal/system cost를 fsync·posting scan의 독립 원인이나 physical I/O 증거로 해석하지 않는다. 별도4096 OS restart owner1/1은 E4-05의 기능 증거이며 이 resource artifact의 same-process reopen와 구별한다.
 
 ## 2026-10-04 계측·fixture 통합
 

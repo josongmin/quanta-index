@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | source107 first-eight 전체 + 별도 Nushell의9개 fresh admission `VERIFIED`; SQLAlchemy/Zellij/Tailscale·supplemented bat·새 ANN epoch admission 미완료. 전체 cohort qualification 미완료 |
+| 실행 상태 | source107 원본9개 admission `VERIFIED`; source0e6 bat409 v3 issuance exit0이나 canonical consumer `FAILED`. producer v4 재발급 중; SQLAlchemy/Zellij/Tailscale·전체 cohort qualification 미완료 |
 | 선행 결과 | [O4-E1-02](O4-E1-02-supplemental-labels.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -45,6 +45,13 @@
 - v2는 실제 sourcecef Contract/SDK context2개 및 Python/Rust/SDK receipts3개의 정확한 경로를 CLI 필수 입력으로 받으며 revision/context/co-location을 검증한 뒤만 발행한다. 현재 새 proof 발행과 이 admission 실행은 `NOT_RUN`이다. SQLAlchemy/Zellij/Tailscale의 다음 admission은 실제 alternate result와 canonical suite SHA가 존재한 뒤 입력을 고정한다.
 - 최종 product source0e6용 별도 v3 PREPARE를 고정했다: `/tmp/qi-bat-supplemental-admission-input-0e6-v3.json` SHA `45a7e62e9217651dc2e1fd9f572562e0b0bdc5d882f16fc06bafaa6b1cba9c54`, `/tmp/qi-bat-supplemental-admission-issuer-0e6-v3.py` SHA `d187ba9627b55c1e74a57fa12abb29c8e844b169b68e343d6d366251c3a90f7c`다. label producer107/corpus/query/rubric 원본 결속은 유지하고 product revision과 proof requirement 문구를 최종 epoch로 바꿨다. 실제 새 proof5경로가 없으므로 admission ISSUE는 아직 `NOT_RUN`이다. 기존 v2와 source107 admissions는 보존한다.
 - 후속 source0e6의 actual Contract/fresh SDK 및 두 portable verifier가 모두 exit0이었다. root가 v3 issuer의 `--contract-context/--sdk-context/--contract-python-receipt/--contract-rust-receipt/--sdk-receipt`에 실제 `qi-oct5-contract-proof-0e6-v1`/`qi-oct5-sdk-proof-fresh-0e6-v1`의2contexts/3receipts를 넣어 `/Users/songmin/Documents/code-new/qi-bat-supplemental-admission-0e6-20261005-v1` fresh parent에서 실행 중이다. result/summary 및 canonical freeze/replay 완료 전에는 bat409의 새 admission 통과를 주장하지 않는다.
+
+## 2026-10-05 strict consumer 거절과 producer 수리
+
+- source0e6 v3 issuance는 exit0, 20tasks/409judgments, stale-source negative control1,421.731s였다. `qi-bat-supplemental-admission-0e6-20261005-v1` 원본은 보존한다. 이어 pair v7 `--selection bat --query-warmup-passes 1` preflight를 `/private/tmp/qpbw1p`에서 실행하자 exit2, `quality matrix admission result identity differs`로 거절됐다. 제품 pair는 실행되지 않았다.
+- 원인은 external issuer의 canonical `result.json`에 label-producer 필드2개와 확장121-input closure를 추가한 것이다. 현 `run._quality_matrix_verify_member_admission`은 exact result keys와 canonical16-input closure를 요구한다. canonical consumer의 거절을 그대로 유지했다.
+- `/tmp/qi-bat-supplemental-admission-issuer-0e6-v4.py` SHA `dea7b2b6d7102e5c34a333dd236d7d6bed6a5483758d9a7fff64ca8021274f30`는 canonical result keys/16paths를 발행하고, label producer107·validation SHA·확장121paths는 별도 `admission-lineage.json`에 보존한다. 원본 v3/input/product source/proof bytes를 변경하지 않았다.
+- root가 같은 input v3와 actual Contract/fresh SDK2contexts/3receipts로 `/Users/songmin/Documents/code-new/qi-bat-supplemental-admission-0e6-20261005-v2`에서 v4를 재실행 중이다. 새 result와 canonical consumer replay 완료까지 bat409의 W4 admission은 미완료다.
 
 ## 어떤 파일을 어떻게 수정할지
 

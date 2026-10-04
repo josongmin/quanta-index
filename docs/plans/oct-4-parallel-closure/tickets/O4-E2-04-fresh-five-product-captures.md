@@ -34,6 +34,12 @@ Quanta33캡처/11,272응답과 historical5제품21,815행은 별도의 source/�
 - `VERIFIED`: root가 source107의 canonical native collector `--spec /private/tmp/qnp1/bat.capture-spec.json`→`--verify /private/tmp/qn/bat`를 실제 실행해 각각 exit0이었다. prepared E1 admission과 native template를 검증했으며 source/input hashes 전후 동일하다. `/private/tmp/qna1/terminal.json`은 producer/raw_replay VERIFIED, formal lexical comparison BLOCKED, qualified false다.
 - SG/OG/cs 각각20rows, HTTP200/200·cs exit0이다. 이번 NL query의 returned-file 수는 셋 모두0이다. Sourcegraph79-file owned native path/stored-document scope는 결속됐고 OpenGrok 전체 indexed-universe attestation은false로 유지됐다. 나머지 required7셀은 이 bat 결과로 실행 완료 처리하지 않는다.
 
+## 2026-10-05 source0e6 fresh pair 연결 점검
+
+- `/tmp/qi-bat-pair-0e6-w1-input-v1.json`은 actual source0e6 Contract/fresh SDK proof·binary와 bat409 v3 admission121paths를 결속했다. 다른11개 admission은 null로 두어 과거 source107 결과를 current readiness로 소비하지 않는다.
+- pair v7의 `/private/tmp/qpbw1p` preflight는 exit2, canonical E1 result identity 거절로 bat `BLOCKED`였다. 다른 required7개는 미선택 `NOT_RUN`이다. actual pair·warmup parity·scoring은 이 실행에서 `NOT_RUN`이다.
+- E1-03의 external producer v4가 canonical16paths/strict keys를 재발급한 뒤 새 packet/plan root에서 canonical preflight를 다시 수행한다. rejected v3 결과를 고쳐 쓰거나 consumer validator를 완화하지 않는다.
+
 ## 어떤 파일을 어떻게 수정할지
 
 `OWNED`는 에픽 담당 통합, `SHARED`는 I0 반영, `READ`는 기존 구현 소비다. 재현된 결함이나 채택된 계약 변경이 있을 때만 product source를 수정한다. 구현 파일과 독립 검증 파일을 함께 지정한다.
