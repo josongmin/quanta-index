@@ -5,6 +5,40 @@ runner, source oracle and evaluator remain the execution authorities.
 
 ## Current execution status
 
+- Structural RCA fixes implemented in shared main (2026-10-04): natural-language
+  planning now emits normalized scored keyword OR terms, with independent Rust
+  and Python identities and versioned execution profiles; match-only phrase
+  semantics remain available under their original contract. Explicit typo
+  ranking prefers source-attested declarations within the same edit distance,
+  preserves distance-zero priority and unknown-coverage content matches, and
+  versions cursor ordering. Default literal-first fallback remains a separate
+  request contract.
+- Robustness reports use `intended_name_file` for all exact original-name
+  declaration files and `intended_original_file` for representative source
+  recovery. Exact declaration authority is mandatory; historical captures are
+  replayed into a new v2 report without changing their bytes.
+- The verdict verifier uses the canonical Rust proof command rather than a
+  duplicated command string. The runner binary's natural-language identity
+  golden was updated independently with the scored-keyword profile.
+- Owner-local proof: 597 Python tests on a clean frozen source; 119 Rust
+  benchmark-library tests, 15 benchmark-binary tests, and 30 lexical integration
+  tests. A controlled keyword/phrase comparison demonstrates rare-term ranking
+  versus match-only ties. Fresh Gin 1,196 execution reproduces 1,192 hits under
+  complete declaration-file gold (representative first-span gold is 1,182).
+- Fresh natural-language preparation admits 444/526 CLARC queries under the new
+  explicit64 profile, versus the historical425. The new19 queries must be
+  reported separately from the shared425; CodeSearchNet remains462 submitted.
+  Existing semantic/hybrid APIs were exercised on two zero-overlap controls
+  with native chunk results, without admitting a semantic distinct-file claim.
+  Fresh12-repository default/explicit OSA executions and aggregate validation
+  are recorded under the external execution root below.
+- Structural fix inputs, exact clean execution source, binaries, commands and
+  fresh diagnostic results:
+  `/Users/songmin/Documents/code-new/qi-b09-structural-fix-20261004-ji1PLR/`.
+  Execution snapshot: `8ef15426e1bc740f9cd37a04dcf9ca8710099ae9`;
+  implementation remains in shared main. This does not replace the historical
+  B09 receipts or qualify human gold, unseen holdout, external indexed-universe
+  equivalence, or performance on the contended host.
 - Implemented: source-bound external intake, fractional qrels, explicit query
   admission, distinct-file scoring, parser pin preflight, and fresh five-product
   capture joins with mutation refusal tests.
