@@ -19,7 +19,7 @@ use quanta_index_contract::{
     SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck, TextRankUnit,
 };
 use quanta_index_sdk::{
-    BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SdkPublishActivateDurationsV1,
+    BatchReceipt, ClientLexicalQueryObservationV1, ConnectOptions, QuantaIndex, SdkError, SdkPublishActivateDurationsV1,
     SearchCorpusBatch,
 };
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
@@ -1359,10 +1359,11 @@ pub fn query_route_with_policy(
 /// Runner-only children of one SDK query. `sdk_execute` is the opaque product
 /// builder `.execute()` call (including any SDK transport/decode work), while
 /// `post_execute` covers benchmark response checks and hit normalization.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct RouteExecutionTiming {
     pub sdk_execute: Duration,
     pub post_execute: Duration,
+    pub client_observation: Option<ClientLexicalQueryObservationV1>,
 }
 
 fn time_route_execution<T>(
@@ -1380,6 +1381,7 @@ fn time_route_execution<T>(
         RouteExecutionTiming {
             sdk_execute,
             post_execute,
+            client_observation: None,
         },
     )
 }
@@ -1389,6 +1391,23 @@ fn time_route_execution<T>(
 pub fn query_route_with_policy_timed(
     query: &RouteQuery<'_>,
     policy: crate::query_plan::QueryInputPolicy,
+) -> (QueryOutcome, RouteExecutionTiming) {
+    query_route_with_policy_observation(query, policy, false)
+}
+
+/// Opt into request-local client IPC clocks for the bounded lexical diagnostic.
+/// The ordinary timed route uses the same execution path without observation.
+pub fn query_route_with_policy_client_observed(
+    query: &RouteQuery<'_>,
+    policy: crate::query_plan::QueryInputPolicy,
+) -> (QueryOutcome, RouteExecutionTiming) {
+    query_route_with_policy_observation(query, policy, true)
+}
+
+fn query_route_with_policy_observation(
+    query: &RouteQuery<'_>,
+    policy: crate::query_plan::QueryInputPolicy,
+    observe_client: bool,
 ) -> (QueryOutcome, RouteExecutionTiming) {
     let expected_pin = GenerationPin::new(
         query.repo_id.clone(),
@@ -1413,8 +1432,17 @@ pub fn query_route_with_policy_timed(
             let builder = builder
                 .active(query.repo_id.clone(), query.revision_id.clone())
                 .top_k(query.top_k);
-            time_route_execution(
-                || builder.execute(),
+            let mut client_observation = None;
+            let (outcome, mut timing) = time_route_execution(
+                || {
+                    if observe_client {
+                        let (response, observation) = builder.execute_observed()?;
+                        client_observation = Some(observation);
+                        Ok(response)
+                    } else {
+                        builder.execute()
+                    }
+                },
                 |response| match response {
                     Ok(response) => {
                         let expected_unit = expected_lexical_rank_unit(policy);
@@ -1468,7 +1496,9 @@ pub fn query_route_with_policy_timed(
                     }
                     Err(err) => failed_outcome(&err, start),
                 },
-            )
+            );
+            timing.client_observation = client_observation;
+            (outcome, timing)
         }
         "semantic" => {
             let builder = query

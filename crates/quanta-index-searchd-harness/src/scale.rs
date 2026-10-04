@@ -31,10 +31,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::process::{Command, Stdio};
+#[cfg(target_os = "macos")]
+use std::io::Read as _;
 use std::path::Path;
-use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -45,14 +48,14 @@ use quanta_index_contract::{
     LexicalCandidate, ManifestGeneration, MetricsSnapshotV1, QueryConstraintSetV1,
     TextQueryRequest, TextQuerySyntax,
 };
+#[cfg(target_os = "linux")]
+use quanta_index_core::ProcessMemoryProbePort as _;
 use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1};
 use quanta_index_ipc::DEFAULT_CLIENT_IO_TIMEOUT;
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_search_plane::lower_lexical_text_query;
 #[cfg(target_os = "linux")]
 use quanta_index_searchd::app::KernelResidentMemoryProbe;
-#[cfg(target_os = "linux")]
-use quanta_index_core::ProcessMemoryProbePort as _;
 use serde_json::{Value, json};
 
 use crate::artifact::{
@@ -883,6 +886,9 @@ pub struct TierMeasurement {
     /// RUSAGE_SELF around runtime boot through driver cleanup. The daemon is
     /// an in-process thread; this includes harness and daemon CPU time.
     pub cpu: Option<CpuUsageV1>,
+    /// Current-RSS samples and process CPU for the named timed operations.
+    /// Separate from the process high-water RSS in `BenchArtifactV1`.
+    pub phase_resources: BTreeMap<&'static str, PhaseResourceV1>,
     pub delete_reopen: Option<DeleteReopenMeasurementV1>,
 }
 
@@ -890,6 +896,252 @@ pub struct TierMeasurement {
 pub struct CpuUsageV1 {
     pub user_ms: f64,
     pub system_ms: f64,
+}
+
+const PHASE_RSS_INTERVAL: Duration = Duration::from_millis(100);
+const PHASE_RSS_MAX_GAP: Duration = Duration::from_millis(500);
+const PHASE_RSS_INTERIOR_REQUIRED_AFTER: Duration = Duration::from_millis(200);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhaseResourceV1 {
+    pub cpu: CpuUsageV1,
+    pub rss_start_bytes: u64,
+    pub rss_end_bytes: u64,
+    /// Greatest observed current RSS; sampling cannot establish a true peak.
+    pub sampled_max_rss_bytes: u64,
+    pub interior_samples: usize,
+    pub observed_max_gap_ms: f64,
+    pub observation_span_ms: f64,
+    pub observer_setup_ms: f64,
+    pub observer_teardown_ms: f64,
+}
+
+#[derive(Clone, Copy)]
+struct RssPoint {
+    at: Instant,
+    bytes: u64,
+}
+
+struct PhaseSampler {
+    started: Instant,
+    cpu_started: CpuSnapshot,
+    rss_start: RssPoint,
+    setup_ms: f64,
+    stopped: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<AnyResult<Vec<RssPoint>>>>,
+}
+
+impl PhaseSampler {
+    fn start() -> AnyResult<Self> {
+        let setup_started = Instant::now();
+        let rss_start = RssPoint {
+            at: Instant::now(),
+            bytes: current_rss_bytes()?,
+        };
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_stopped = Arc::clone(&stopped);
+        let worker = thread::Builder::new()
+            .name("scale-rss-sampler".to_string())
+            .spawn(move || {
+                let mut samples = Vec::new();
+                while !worker_stopped.load(Ordering::Acquire) {
+                    thread::park_timeout(PHASE_RSS_INTERVAL);
+                    if worker_stopped.load(Ordering::Acquire) {
+                        break;
+                    }
+                    samples.push(RssPoint {
+                        at: Instant::now(),
+                        bytes: current_rss_bytes()?,
+                    });
+                }
+                Ok(samples)
+            })?;
+        let cpu_started = match CpuSnapshot::observe() {
+            Ok(value) => value,
+            Err(error) => {
+                stopped.store(true, Ordering::Release);
+                worker.thread().unpark();
+                let _ = worker.join();
+                return Err(error);
+            }
+        };
+        let started = Instant::now();
+        let setup_ms = setup_started.elapsed().as_secs_f64() * 1_000.0;
+        Ok(Self {
+            started,
+            cpu_started,
+            rss_start,
+            setup_ms,
+            stopped,
+            worker: Some(worker),
+        })
+    }
+
+    fn stop(mut self) -> AnyResult<PhaseResourceV1> {
+        let ended = Instant::now();
+        let cpu_ended = CpuSnapshot::observe();
+        let teardown_started = Instant::now();
+        self.stopped.store(true, Ordering::Release);
+        let worker = self.worker.take().expect("phase sampler owns its worker");
+        worker.thread().unpark();
+        let samples = worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("scale: RSS sampler thread panicked"))??;
+        let rss_end = RssPoint {
+            at: Instant::now(),
+            bytes: current_rss_bytes()?,
+        };
+        let cpu = cpu_ended?.elapsed_since(self.cpu_started)?;
+        summarize_phase_resources(
+            self.started,
+            ended,
+            self.rss_start,
+            rss_end,
+            &samples,
+            cpu,
+            self.setup_ms,
+            teardown_started.elapsed().as_secs_f64() * 1_000.0,
+        )
+    }
+}
+
+impl Drop for PhaseSampler {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            self.stopped.store(true, Ordering::Release);
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
+    }
+}
+
+fn summarize_phase_resources(
+    started: Instant,
+    ended: Instant,
+    rss_start: RssPoint,
+    rss_end: RssPoint,
+    samples: &[RssPoint],
+    cpu: CpuUsageV1,
+    setup_ms: f64,
+    teardown_ms: f64,
+) -> AnyResult<PhaseResourceV1> {
+    if ended < started || rss_start.at > started || rss_end.at < ended {
+        anyhow::bail!("scale: RSS phase boundary timestamps are invalid");
+    }
+    if rss_start.bytes == 0 || rss_end.bytes == 0 {
+        anyhow::bail!("scale: RSS phase boundary sample is zero");
+    }
+    let mut previous = rss_start.at;
+    let mut sampled_max = rss_start.bytes.max(rss_end.bytes);
+    let mut interior_samples = 0;
+    for sample in samples {
+        if sample.bytes == 0 || sample.at <= previous {
+            anyhow::bail!("scale: RSS sample is zero or timestamps are not increasing");
+        }
+        previous = sample.at;
+        if sample.at > started && sample.at < ended {
+            interior_samples += 1;
+            sampled_max = sampled_max.max(sample.bytes);
+        } else if sample.at >= ended {
+            anyhow::bail!("scale: RSS sampler returned a sample after phase end");
+        }
+    }
+    // The endpoint gap, rather than average cadence, detects a stalled sampler.
+    let mut max_gap = Duration::ZERO;
+    let mut previous = rss_start.at;
+    for sample in samples {
+        max_gap = max_gap.max(sample.at.duration_since(previous));
+        previous = sample.at;
+    }
+    max_gap = max_gap.max(rss_end.at.duration_since(previous));
+    if ended.duration_since(started) >= PHASE_RSS_INTERIOR_REQUIRED_AFTER
+        && interior_samples == 0
+    {
+        anyhow::bail!("scale: long phase has no interior RSS sample");
+    }
+    if max_gap > PHASE_RSS_MAX_GAP {
+        anyhow::bail!("scale: RSS sampling gap exceeds 500 ms");
+    }
+    Ok(PhaseResourceV1 {
+        cpu,
+        rss_start_bytes: rss_start.bytes,
+        rss_end_bytes: rss_end.bytes,
+        sampled_max_rss_bytes: sampled_max,
+        interior_samples,
+        observed_max_gap_ms: max_gap.as_secs_f64() * 1_000.0,
+        observation_span_ms: ended.duration_since(started).as_secs_f64() * 1_000.0,
+        observer_setup_ms: setup_ms,
+        observer_teardown_ms: teardown_ms,
+    })
+}
+
+fn observe_phase<T>(work: impl FnOnce() -> AnyResult<T>) -> AnyResult<(T, PhaseResourceV1)> {
+    let sampler = PhaseSampler::start()
+        .map_err(|error| stage_or_preserve("resource_observation", error))?;
+    let measurement = work();
+    let observation = sampler
+        .stop()
+        .map_err(|error| stage_or_preserve("resource_observation", error));
+    match (measurement, observation) {
+        (Ok(value), Ok(resources)) => Ok((value, resources)),
+        (Err(error), Ok(_)) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(primary), Err(cleanup)) => Err(ScaleRuntimeFailure {
+            primary: Some(primary),
+            cleanup,
+        }
+        .into()),
+    }
+}
+
+fn current_rss_bytes() -> AnyResult<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let bytes = KernelResidentMemoryProbe.resident_bytes()?;
+        anyhow::ensure!(bytes > 0, "scale: Linux VmRSS is zero");
+        Ok(bytes)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        current_rss_bytes_via_ps()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        anyhow::bail!("scale: current RSS observation unsupported on this OS")
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn current_rss_bytes_via_ps() -> AnyResult<u64> {
+    let mut child = Command::new("/bin/ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            anyhow::ensure!(status.success(), "scale: ps RSS probe exited {status}");
+            let mut output = String::new();
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("scale: ps RSS stdout unavailable"))?
+                .read_to_string(&mut output)?;
+            let kib = output.trim().parse::<u64>()?;
+            anyhow::ensure!(kib > 0, "scale: ps RSS is zero");
+            return kib
+                .checked_mul(1024)
+                .ok_or_else(|| anyhow::anyhow!("scale: ps RSS overflows bytes"));
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            let _ = child.wait();
+            anyhow::bail!("scale: ps RSS probe exceeded 2 s deadline");
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[derive(Clone, Copy)]
