@@ -3853,3 +3853,32 @@ with a new output root. The strict collection validator remains unchanged.
   No full quality ranking, human review or performance qualification is claimed.
 - All external roots above are under
   `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`.
+
+### 2026-10-04: published cs fix and follow-on live controllers
+
+- Main commit **fae6924a** contains only this owner's cs adapter, native fixture
+  tests and B08 ticket changes; it was pushed to `origin/main`. Other owners'
+  staged grammar, Rust/parser, CI and measurement changes were preserved.
+- Fresh cs-only capture/replay is live in `c3-cs-literal-fae6924a-huom8q2j/`.
+  Its Python sources are an exact `git archive fae6924a`, with retained archive
+  SHA; no ignored binary or dirty-main overlay is represented as that source.
+  It consumes independently frozen input bytes after canonical admission on
+  `41cceb67`, recording both source authorities explicitly. This is native
+  request/response evidence; it does not borrow a final-source Quanta SDK proof.
+- A new `c3-fresh-pair-pool-collector-41cceb67-vtvk59k7/` controller reuses
+  canonical suite/record validation to inspect completed original producer
+  terminals without promoting failed staging. Bat and cli each have **40**
+  validated responses. Their new unjudged task/file unions are **51 + 133 =
+  184**, separate from the original 1,324-pair denominator. Each additional
+  packet strips product/rank/score and binds full frozen source bytes/hashes;
+  remaining repositories are audited after their actual producer terminals.
+- Actual supplemental bat review is prepared for **18 tasks / 51 pairs** in
+  `c3-bat-supplemental-actual-review-nx9v8k8n/`. Its live one-shot controller
+  waits for the same service-reported **13:40 KST** reset, then uses the retained
+  two independent model passes, adjudicator and raw-response replay validators.
+  No new model judgment, qrel or admission is claimed before completion.
+- Matching admission has completed bat, cli, lo and mocha. The pair controller
+  is executing lo; the cs producer, pool collector and model quota controllers
+  are live. Observed waits are not successful final five-product comparisons.
+- External paths are under
+  `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`.
