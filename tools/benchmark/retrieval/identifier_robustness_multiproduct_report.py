@@ -119,7 +119,9 @@ def _result(
 ) -> dict[str, Any]:
     authority = task.get("source_oracle", {})
     _require(
-        authority.get("unit") == "distinct_file"
+        isinstance(authority, dict)
+        and isinstance(authority.get("contract"), str)
+        and authority.get("unit") == "distinct_file"
         and source_oracle.NAME_CONTRACTS.get(authority.get("contract"), (None, None))[1] == "exact",
         "intended-name file metric requires exact declaration source authority",
     )
@@ -157,6 +159,8 @@ def _percentile(values: list[float], fraction: float) -> float | None:
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Report operational and successful-call cohorts using evaluator scores."""
+    _require(all(row.get("label_contract") == LABEL_CONTRACT for row in rows),
+             "mixed or missing file label authority")
     eligible = [row for row in rows if row["eligible"]]
     times = [row["latency_ms"] for row in rows if row["latency_ms"] is not None]
     output = {
