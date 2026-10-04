@@ -1475,7 +1475,10 @@ fn measure_scoped_delete_reopen(
     rt: &mut E2eRuntime,
     oracle: &ScopedOracle,
     file: &ScopedFile,
-) -> AnyResult<DeleteReopenMeasurementV1> {
+) -> AnyResult<(
+    DeleteReopenMeasurementV1,
+    BTreeMap<&'static str, PhaseResourceV1>,
+)> {
     if file.source_repo_id != "repo0" || file.repo_relative_path != "src/file_0.rs" {
         anyhow::bail!("scale: deletion fixture must be repo0/src/file_0.rs");
     }
@@ -1486,17 +1489,21 @@ fn measure_scoped_delete_reopen(
     let retained_before = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
     require_single_source_file(&retained_before, "repo1", &file.repo_relative_path)?;
 
-    let delete_started = Instant::now();
-    rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)
-        .map_err(|error| ScaleStageError::operation("delete", error))?;
-    let _generation = rt
-        .seal()
-        .map_err(|error| ScaleStageError::operation("delete_seal", error))?;
-    let delete_seal_ms = elapsed_ms(delete_started);
-    let activation_started = Instant::now();
-    rt.activate_last_sealed_generation()
-        .map_err(|error| ScaleStageError::operation("delete_activate", error))?;
-    let delete_activation_ms = elapsed_ms(activation_started);
+    let (delete_seal_ms, delete_resource) = observe_phase(|| {
+        let delete_started = Instant::now();
+        rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)
+            .map_err(|error| ScaleStageError::operation("delete", error))?;
+        let _generation = rt
+            .seal()
+            .map_err(|error| ScaleStageError::operation("delete_seal", error))?;
+        Ok(elapsed_ms(delete_started))
+    })?;
+    let (delete_activation_ms, activation_resource) = observe_phase(|| {
+        let activation_started = Instant::now();
+        rt.activate_last_sealed_generation()
+            .map_err(|error| ScaleStageError::operation("delete_activate", error))?;
+        Ok(elapsed_ms(activation_started))
+    })?;
     let successor = oracle.without_file("repo0", &file.repo_relative_path)?;
 
     let deleted_after = rt.query_text(TextQuerySyntax::Native, &deleted_token, SCALE_TOP_K);
@@ -1507,12 +1514,14 @@ fn measure_scoped_delete_reopen(
     let _count = validate_scoped_response(&successor, None, &global_after)?;
     verify_scoped_repositories(rt, &successor)?;
 
-    let reopen_started = Instant::now();
-    rt.try_reopen_in_place()
-        .map_err(|error| ScaleStageError::operation("reopen_stop", error))?;
-    rt.start()
-        .map_err(|error| ScaleStageError::operation("reopen_start", error))?;
-    let same_process_reopen_ms = elapsed_ms(reopen_started);
+    let (same_process_reopen_ms, reopen_resource) = observe_phase(|| {
+        let reopen_started = Instant::now();
+        rt.try_reopen_in_place()
+            .map_err(|error| ScaleStageError::operation("reopen_stop", error))?;
+        rt.start()
+            .map_err(|error| ScaleStageError::operation("reopen_start", error))?;
+        Ok(elapsed_ms(reopen_started))
+    })?;
     let first_query_started = Instant::now();
     let retained_reopened = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
     let reopened_first_query_ms = elapsed_ms(first_query_started);
@@ -1522,12 +1531,16 @@ fn measure_scoped_delete_reopen(
     let global_reopened = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
     let _count = validate_scoped_response(&successor, None, &global_reopened)?;
     verify_scoped_repositories(rt, &successor)?;
-    Ok(DeleteReopenMeasurementV1 {
+    let mut phase_resources = BTreeMap::new();
+    phase_resources.insert("delete_seal", delete_resource);
+    phase_resources.insert("delete_activate", activation_resource);
+    phase_resources.insert("same_process_reopen", reopen_resource);
+    Ok((DeleteReopenMeasurementV1 {
         delete_seal_ms,
         delete_activation_ms,
         same_process_reopen_ms,
         reopened_first_query_ms,
-    })
+    }, phase_resources))
 }
 
 /// Open the sealed generation the daemon serves through the lexical
@@ -1585,7 +1598,10 @@ fn measure_adapter_phases(
 
 /// Change one file, ingest and seal it as a delta, activate (reclaiming the
 /// predecessor), and measure each step against the byte oracle.
-fn measure_delta(rt: &mut E2eRuntime, seed: u64) -> AnyResult<DeltaMeasurementV1> {
+fn measure_delta(
+    rt: &mut E2eRuntime,
+    seed: u64,
+) -> AnyResult<(DeltaMeasurementV1, BTreeMap<&'static str, PhaseResourceV1>)> {
     let corpus = generate_corpus(ScaleTier::Small, seed);
     let Some((path, original)) = corpus.first() else {
         return Err(anyhow::anyhow!("scale: the corpus has no file to change"));
@@ -1593,26 +1609,33 @@ fn measure_delta(rt: &mut E2eRuntime, seed: u64) -> AnyResult<DeltaMeasurementV1
     let changed = format!("{original}// delta {SCALE_QUERY_TOKEN} touched\n");
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
-    let update_started = Instant::now();
     let serving_owner = rt.repo();
-    rt.ingest_text(serving_owner.as_str(), path, &changed)?;
-    let _generation = rt
-        .seal()
-        .map_err(|error| ScaleStageError::operation("delta_seal", error))?;
-    let update_ms = elapsed_ms(update_started);
+    let (update_ms, update_resource) = observe_phase(|| {
+        let update_started = Instant::now();
+        rt.ingest_text(serving_owner.as_str(), path, &changed)?;
+        let _generation = rt
+            .seal()
+            .map_err(|error| ScaleStageError::operation("delta_seal", error))?;
+        Ok(elapsed_ms(update_started))
+    })?;
     let after_build = directory_bytes(rt.state_root())?;
-    let activation_started = Instant::now();
-    rt.activate_last_sealed_generation()
-        .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
-    let activation_with_reclaim_ms = elapsed_ms(activation_started);
+    let (activation_with_reclaim_ms, activation_resource) = observe_phase(|| {
+        let activation_started = Instant::now();
+        rt.activate_last_sealed_generation()
+            .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
+        Ok(elapsed_ms(activation_started))
+    })?;
     let after_activation = directory_bytes(rt.state_root())?;
-    Ok(DeltaMeasurementV1 {
+    let mut phase_resources = BTreeMap::new();
+    phase_resources.insert("delta_ingest_seal", update_resource);
+    phase_resources.insert("delta_activate", activation_resource);
+    Ok((DeltaMeasurementV1 {
         update_ms,
         changed_bytes,
         bytes_written: after_build.saturating_sub(before_build),
         activation_with_reclaim_ms,
         reclaimed_bytes: after_build.saturating_sub(after_activation),
-    })
+    }, phase_resources))
 }
 
 /// Measure the SMALL tier phase by phase.
@@ -1656,24 +1679,28 @@ fn measure_small_tier_with_config(
 
         let before_build = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?;
-        let build_started = Instant::now();
         let serving_owner = rt.repo();
-        for (path, content) in &corpus {
-            rt.ingest_text(serving_owner.as_str(), path, content)
-                .map_err(|error| stage_or_preserve("build_ingest", error))?;
-        }
-        let _generation = rt
-            .seal()
-            .map_err(|error| ScaleStageError::operation("build_seal", error))?;
-        let build_ms = elapsed_ms(build_started);
+        let (build_ms, build_resource) = observe_phase(|| {
+            let build_started = Instant::now();
+            for (path, content) in &corpus {
+                rt.ingest_text(serving_owner.as_str(), path, content)
+                    .map_err(|error| stage_or_preserve("build_ingest", error))?;
+            }
+            let _generation = rt
+                .seal()
+                .map_err(|error| ScaleStageError::operation("build_seal", error))?;
+            Ok(elapsed_ms(build_started))
+        })?;
         let build_bytes_written = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?
             .saturating_sub(before_build);
 
-        let activation_started = Instant::now();
-        rt.activate_last_sealed_generation()
-            .map_err(|error| ScaleStageError::operation("build_activate", error))?;
-        let activation_ms = elapsed_ms(activation_started);
+        let (activation_ms, activation_resource) = observe_phase(|| {
+            let activation_started = Instant::now();
+            rt.activate_last_sealed_generation()
+                .map_err(|error| ScaleStageError::operation("build_activate", error))?;
+            Ok(elapsed_ms(activation_started))
+        })?;
 
         let scrape_before_first = rt
             .metrics_snapshot()
@@ -1716,8 +1743,11 @@ fn measure_small_tier_with_config(
 
         let adapter = measure_adapter_phases(&rt, None)
             .map_err(|error| stage_or_preserve("adapter", error))?;
-        let delta =
+        let (delta, delta_resources) =
             measure_delta(&mut rt, seed).map_err(|error| stage_or_preserve("delta", error))?;
+        let mut phase_resources = delta_resources;
+        phase_resources.insert("full_ingest_seal", build_resource);
+        phase_resources.insert("full_activate", activation_resource);
 
         Ok(TierMeasurement {
             tier: ScaleTier::Small,
@@ -1750,6 +1780,7 @@ fn measure_small_tier_with_config(
             history_max_bytes: effective_history_max_bytes,
             requested_history_max_bytes: config.history_max_bytes,
             cpu: None,
+            phase_resources,
             delete_reopen: None,
         })
     })()
@@ -1766,39 +1797,49 @@ fn measure_small_tier_with_config(
     Ok(measurement)
 }
 
-fn measure_scoped_delta(rt: &mut E2eRuntime, file: &ScopedFile) -> AnyResult<DeltaMeasurementV1> {
+fn measure_scoped_delta(
+    rt: &mut E2eRuntime,
+    file: &ScopedFile,
+) -> AnyResult<(DeltaMeasurementV1, BTreeMap<&'static str, PhaseResourceV1>)> {
     let changed = format!("{}// delta {SCALE_QUERY_TOKEN} touched\n", file.content);
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
-    let update_started = Instant::now();
     let serving_owner = rt.repo();
-    let _ids = rt.ingest_text_chunks(
-        serving_owner.as_str(),
-        &file.repo_relative_path,
-        &[E2eTextChunkSpec {
-            content: &changed,
-            start_line: 1,
-            end_line: 2,
-            source_repo_id: Some(&file.source_repo_id),
-        }],
-    )?;
-    let _generation = rt
-        .seal()
-        .map_err(|error| ScaleStageError::operation("delta_seal", error))?;
-    let update_ms = elapsed_ms(update_started);
+    let (update_ms, update_resource) = observe_phase(|| {
+        let update_started = Instant::now();
+        let _ids = rt.ingest_text_chunks(
+            serving_owner.as_str(),
+            &file.repo_relative_path,
+            &[E2eTextChunkSpec {
+                content: &changed,
+                start_line: 1,
+                end_line: 2,
+                source_repo_id: Some(&file.source_repo_id),
+            }],
+        )?;
+        let _generation = rt
+            .seal()
+            .map_err(|error| ScaleStageError::operation("delta_seal", error))?;
+        Ok(elapsed_ms(update_started))
+    })?;
     let after_build = directory_bytes(rt.state_root())?;
-    let activation_started = Instant::now();
-    rt.activate_last_sealed_generation()
-        .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
-    let activation_with_reclaim_ms = elapsed_ms(activation_started);
+    let (activation_with_reclaim_ms, activation_resource) = observe_phase(|| {
+        let activation_started = Instant::now();
+        rt.activate_last_sealed_generation()
+            .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
+        Ok(elapsed_ms(activation_started))
+    })?;
     let after_activation = directory_bytes(rt.state_root())?;
-    Ok(DeltaMeasurementV1 {
+    let mut phase_resources = BTreeMap::new();
+    phase_resources.insert("delta_ingest_seal", update_resource);
+    phase_resources.insert("delta_activate", activation_resource);
+    Ok((DeltaMeasurementV1 {
         update_ms,
         changed_bytes,
         bytes_written: after_build.saturating_sub(before_build),
         activation_with_reclaim_ms,
         reclaimed_bytes: after_build.saturating_sub(after_activation),
-    })
+    }, phase_resources))
 }
 
 /// Measure one declared scale tier.
@@ -1874,26 +1915,33 @@ pub fn measure_tier_with_runtime_config(
             .zip(&chunks)
             .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
             .collect::<Vec<_>>();
-        let ingest_started = Instant::now();
-        let _ids = rt
-            .ingest_text_files_one_batch(&batch_files)
-            .map_err(|error| stage_or_preserve("build_ingest", error))?;
-        let ingest_ms = elapsed_ms(ingest_started);
+        let (ingest_ms, ingest_resource) = observe_phase(|| {
+            let ingest_started = Instant::now();
+            let _ids = rt
+                .ingest_text_files_one_batch(&batch_files)
+                .map_err(|error| stage_or_preserve("build_ingest", error))?;
+            Ok(elapsed_ms(ingest_started))
+        })?;
         let (ingest_decoded_bytes, ingest_wire_bytes) = rt
             .preview_pending_search_corpus_wire_bytes()
             .map_err(ScaleStageError::wire_admission)?;
-        let seal_started = Instant::now();
-        let _generation = rt
-            .seal()
-            .map_err(|error| ScaleStageError::operation("build_seal", error))?;
-        let build_ms = ingest_ms + elapsed_ms(seal_started);
+        let (seal_ms, seal_resource) = observe_phase(|| {
+            let seal_started = Instant::now();
+            let _generation = rt
+                .seal()
+                .map_err(|error| ScaleStageError::operation("build_seal", error))?;
+            Ok(elapsed_ms(seal_started))
+        })?;
+        let build_ms = ingest_ms + seal_ms;
         let build_bytes_written = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?
             .saturating_sub(before_build);
-        let activation_started = Instant::now();
-        rt.activate_last_sealed_generation()
-            .map_err(|error| ScaleStageError::operation("build_activate", error))?;
-        let activation_ms = elapsed_ms(activation_started);
+        let (activation_ms, activation_resource) = observe_phase(|| {
+            let activation_started = Instant::now();
+            rt.activate_last_sealed_generation()
+                .map_err(|error| ScaleStageError::operation("build_activate", error))?;
+            Ok(elapsed_ms(activation_started))
+        })?;
 
         let scrape_before_first = rt
             .metrics_snapshot()
@@ -1944,15 +1992,20 @@ pub fn measure_tier_with_runtime_config(
         let delta_file = files
             .first()
             .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
-        let delta = measure_scoped_delta(&mut rt, delta_file)
+        let (delta, delta_resources) = measure_scoped_delta(&mut rt, delta_file)
             .map_err(|error| stage_or_preserve("delta", error))?;
         let after_delta = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
         verify_scoped_repositories(&mut rt, &oracle)
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
-        let delete_reopen = measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)
+        let (delete_reopen, delete_resources) = measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)
             .map_err(|error| stage_or_preserve("delete_reopen", error))?;
+        let mut phase_resources = delta_resources;
+        phase_resources.extend(delete_resources);
+        phase_resources.insert("full_ingest", ingest_resource);
+        phase_resources.insert("full_seal", seal_resource);
+        phase_resources.insert("full_activate", activation_resource);
         Ok(TierMeasurement {
             tier,
             seed,
@@ -1984,6 +2037,7 @@ pub fn measure_tier_with_runtime_config(
             history_max_bytes: effective_history_max_bytes,
             requested_history_max_bytes: config.history_max_bytes,
             cpu: None,
+            phase_resources,
             delete_reopen: Some(delete_reopen),
         })
     })()
@@ -2190,6 +2244,30 @@ pub fn tier_manifest_json() -> Value {
 /// The measured tier as the artifact's detail: every phase on its own,
 /// named for what measured it.
 fn measurement_json(measurement: &TierMeasurement) -> Value {
+    let phase_resources = measurement
+        .phase_resources
+        .iter()
+        .map(|(phase, observation)| {
+            (*phase, json!({
+                "cpu_process_user_ms": observation.cpu.user_ms,
+                "cpu_process_system_ms": observation.cpu.system_ms,
+                "rss_start_bytes": observation.rss_start_bytes,
+                "rss_end_bytes": observation.rss_end_bytes,
+                "sampled_max_rss_bytes": observation.sampled_max_rss_bytes,
+                "sampled_max_is_true_peak": false,
+                "rss_method": if cfg!(target_os = "linux") { "proc_self_status_vmrss" } else { "ps_rss_kib_self" },
+                "sample_interval_ms": PHASE_RSS_INTERVAL.as_millis(),
+                "maximum_allowed_gap_ms": PHASE_RSS_MAX_GAP.as_millis(),
+                "observed_max_gap_ms": observation.observed_max_gap_ms,
+                "interior_samples": observation.interior_samples,
+                "coverage": if observation.interior_samples == 0 { "boundaries_only" } else { "periodic_with_boundaries" },
+                "observation_span_ms": observation.observation_span_ms,
+                "observer_setup_ms": observation.observer_setup_ms,
+                "observer_teardown_ms": observation.observer_teardown_ms,
+                "scope": "same process harness plus in-process daemon; observation envelope surrounds the matching wall-timed operation",
+            }))
+        })
+        .collect::<BTreeMap<_, _>>();
     json!({
         "tier": measurement.tier.as_str(),
         "seed": measurement.seed,
@@ -2205,6 +2283,8 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
             "user_ms": measurement.cpu.map(|cpu| cpu.user_ms),
             "system_ms": measurement.cpu.map(|cpu| cpu.system_ms),
         },
+        "phase_resources": phase_resources,
+        "phase_resources_method": "RUSAGE_SELF CPU deltas and sampled current RSS; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
         "file_count": measurement.file_count,
         "serving_owner_count": 1,
         "source_repo_count": measurement.source_repo_count,
@@ -3109,6 +3189,7 @@ mod tests {
                 user_ms: 3.0,
                 system_ms: 2.0,
             }),
+            phase_resources: BTreeMap::new(),
             delete_reopen: None,
             tier: ScaleTier::Small,
             seed: 3,

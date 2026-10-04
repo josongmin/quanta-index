@@ -46,8 +46,8 @@ use quanta_index_retrieval_bench::record::{
 use quanta_index_retrieval_bench::schedule::QueryProtocol;
 use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
-    RouteQuery, publish_and_activate, query_route_with_policy_timed, resolve_searchd_binary,
-    verify_searchd_digest,
+    RouteQuery, publish_and_activate, query_route_with_policy_client_observed,
+    query_route_with_policy_timed, resolve_searchd_binary, verify_searchd_digest,
 };
 use quanta_index_retrieval_bench::symbols::{
     SymbolCoveragePolicy, SymbolPreflightOptions, preflight_corpus_symbols,
@@ -1338,6 +1338,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let mut query_observations = Vec::new();
     let mut completed_results = BTreeMap::new();
     let mut completed_outputs = CompletedOutputLedger::default();
+    let mut client_query_observations = BTreeMap::new();
     let mut completed_query = |task_id: &str,
                                route: &'static str,
                                plan: &QueryPlan,
@@ -1355,7 +1356,11 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             generation: identity.generation,
             top_k,
         };
-        let (mut outcome, route_timing) = query_route_with_policy_timed(&query, plan.policy);
+        let (mut outcome, route_timing) = if request_events_out.is_some() {
+            query_route_with_policy_client_observed(&query, plan.policy)
+        } else {
+            query_route_with_policy_timed(&query, plan.policy)
+        };
         let result_materialize_started = Instant::now();
         let mut row = result_value(
             task_id,
@@ -1417,6 +1422,21 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         // without adding hashing cost to query latency.
         let output_sha256 = required_response_sha256(&row)?;
         completed_outputs.observe(task_id, route, phase, iteration, &output_sha256)?;
+        if request_events_out.is_some() {
+            let observation = route_timing.client_observation.ok_or_else(|| {
+                BenchError::Protocol("query event probe lacks client RPC observation".to_string())
+            })?;
+            if phase != "measured"
+                || iteration != 0
+                || client_query_observations
+                    .insert(task_id.to_string(), (observation, sdk_execute_ns))
+                    .is_some()
+            {
+                return Err(BenchError::Protocol(
+                    "query event probe has a repeated or untimed client observation".to_string(),
+                ));
+            }
+        }
         query_observations.push(serde_json::json!({
             "task_id": task_id, "route": query.route, "phase": phase,
             "iteration": iteration, "start_ns": start_ns, "end_ns": end_ns,
@@ -1584,7 +1604,29 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             )
             .collect::<BenchResult<Vec<_>>>()?;
         let pairs = request_events::check_serial_windows(&before, &after, &expected_text_ids)?;
-        Some((before, after, pairs))
+        let tasks = pack
+            .tasks
+            .iter()
+            .zip(pairs)
+            .map(|(task, pair)| {
+                let (observation, sdk_execute_ns) = client_query_observations
+                    .get(&task.task_id)
+                    .ok_or_else(|| {
+                        BenchError::Protocol(
+                            "query event probe lost its client observation".to_string(),
+                        )
+                    })?;
+                let client =
+                    request_events::client_observation_value(pair, observation, *sdk_execute_ns)?;
+                Ok(serde_json::json!({
+                    "task_id": task.task_id,
+                    "resolve_request_id": pair.resolve_request_id,
+                    "text_request_id": pair.text_request_id,
+                    "client": client,
+                }))
+            })
+            .collect::<BenchResult<Vec<_>>>()?;
+        Some((before, after, tasks))
     } else {
         None
     };
@@ -1815,27 +1857,15 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     if let (Some(path), Some(value)) = (&diagnostics_out, &diagnostics) {
         write_json(path, value)?;
     }
-    if let (Some(path), Some((before, after, pairs))) = (&request_events_out, request_events_probe)
+    if let (Some(path), Some((before, after, tasks))) = (&request_events_out, request_events_probe)
     {
-        let tasks = pack
-            .tasks
-            .iter()
-            .zip(pairs)
-            .map(|(task, pair)| {
-                serde_json::json!({
-                    "task_id": task.task_id,
-                    "resolve_request_id": pair.resolve_request_id,
-                    "text_request_id": pair.text_request_id,
-                })
-            })
-            .collect::<Vec<_>>();
         write_json(
             path,
             &serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "kind": "quanta_serial_query_request_events",
                 "qualification": "diagnostic_unqualified",
-                "timing_boundary": "server_post_frame_decode_to_response_written",
+                "timing_boundary": "request_id_joined_client_and_server_local_intervals",
                 "record_sha256": record_digest,
                 "query_pack_sha256": pack.pack_sha256,
                 "runner_binary_sha256": runner_digest,

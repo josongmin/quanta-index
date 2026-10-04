@@ -675,6 +675,167 @@ fn lexical_query_request_resolves_active_before_forwarding() {
     assert_eq!(pinned.query_text, request.query_text);
 }
 
+fn observed_text_fixture() -> TextQueryResponse {
+    TextQueryResponse {
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
+        explanation: SearchExplanation::empty(),
+        generation: sample_generation_pin(),
+        results: vec![sample_hit()],
+        window: QueryResultWindowV2::exact_probe(1),
+        file_owner_rows: None,
+        next_cursor: None,
+    }
+}
+
+#[test]
+fn observed_lexical_active_trace_matches_plain_result_and_request_ids() {
+    let plain_transport = Arc::new(StubQueryTransport::active(
+        SearchPlaneQueryIpcResponse::Text(observed_text_fixture()),
+    ));
+    let observed_transport = Arc::new(StubQueryTransport::active(
+        SearchPlaneQueryIpcResponse::Text(observed_text_fixture()),
+    ));
+    let plain =
+        QuantaIndex::from_transports(plain_transport.clone(), unused_control(), unused_ingest());
+    let observed = QuantaIndex::from_transports(
+        observed_transport.clone(),
+        unused_control(),
+        unused_ingest(),
+    );
+    let expected = ok_or_fail!(
+        plain
+            .lexical()
+            .query()
+            .native("sample")
+            .active(repo_id(), revision_id())
+            .top_k(10)
+            .execute()
+    );
+    let (actual, trace) = ok_or_fail!(
+        observed
+            .lexical()
+            .query()
+            .native("sample")
+            .active(repo_id(), revision_id())
+            .top_k(10)
+            .execute_observed()
+    );
+    assert_eq!(actual, expected);
+    let requests = ok_or_fail!(observed_transport.requests.lock());
+    assert_eq!(requests.len(), 2);
+    assert_eq!(trace.rpcs.len(), 2);
+    assert_eq!(trace.rpcs[0].kind.as_str(), "query.resolve_active");
+    assert_eq!(trace.rpcs[1].kind.as_str(), "query.text");
+    assert_eq!(trace.rpcs[0].request_id, requests[0].request_id);
+    assert_eq!(trace.rpcs[1].request_id, requests[1].request_id);
+    assert_ne!(trace.rpcs[0].request_id, trace.rpcs[1].request_id);
+    for rpc in &trace.rpcs {
+        assert_eq!(rpc.ipc.total_ns, 20);
+        assert_eq!(rpc.ipc.read_io_ns, 4);
+        assert!(rpc.ipc.read_io_ns <= rpc.ipc.decode_call_ns);
+    }
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(pinned) = &requests[1].payload
+    else {
+        panic!("expected pinned lexical text request");
+    };
+    assert_eq!(pinned.generation, Some(sample_generation_pin()));
+    assert_resolved_active_selector(pinned.generation_selector.as_ref());
+}
+
+#[test]
+fn observed_lexical_binding_error_preserves_plain_error_and_exposes_no_trace() {
+    let mut wrong = observed_text_fixture();
+    wrong.generation = quanta_index_contract::GenerationPin::new(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(8),
+    );
+    let plain = QuantaIndex::from_transports(
+        Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
+            wrong.clone(),
+        ))),
+        unused_control(),
+        unused_ingest(),
+    );
+    let observed = QuantaIndex::from_transports(
+        Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
+            wrong,
+        ))),
+        unused_control(),
+        unused_ingest(),
+    );
+    let plain_error = plain
+        .lexical()
+        .query()
+        .native("sample")
+        .pinned(sample_generation_pin())
+        .top_k(10)
+        .execute()
+        .expect_err("stale generation must fail");
+    let observed_error = observed
+        .lexical()
+        .query()
+        .native("sample")
+        .pinned(sample_generation_pin())
+        .top_k(10)
+        .execute_observed()
+        .expect_err("stale generation must not yield an observation");
+    assert!(matches!(plain_error, crate::SdkError::Binding { .. }));
+    assert_eq!(plain_error.to_string(), observed_error.to_string());
+}
+
+#[test]
+fn observed_lexical_clones_keep_request_local_traces_distinct() {
+    let transport = Arc::new(StubQueryTransport::sequence([
+        SearchPlaneQueryIpcResponse::Text(observed_text_fixture()),
+        SearchPlaneQueryIpcResponse::Text(observed_text_fixture()),
+    ]));
+    let client = QuantaIndex::from_transports(transport.clone(), unused_control(), unused_ingest());
+    let left = client.clone();
+    let right = client.clone();
+    let first = std::thread::spawn(move || {
+        left.lexical()
+            .query()
+            .native("sample")
+            .pinned(sample_generation_pin())
+            .top_k(10)
+            .execute_observed()
+    });
+    let second = std::thread::spawn(move || {
+        right
+            .lexical()
+            .query()
+            .native("sample")
+            .pinned(sample_generation_pin())
+            .top_k(10)
+            .execute_observed()
+    });
+    let (first_result, first_trace) = ok_or_fail!(first.join().expect("first SDK thread panicked"));
+    let (second_result, second_trace) =
+        ok_or_fail!(second.join().expect("second SDK thread panicked"));
+    assert_eq!(first_result, second_result);
+    assert_eq!(first_trace.rpcs.len(), 1);
+    assert_eq!(second_trace.rpcs.len(), 1);
+    assert_eq!(first_trace.rpcs[0].kind.as_str(), "query.text");
+    assert_eq!(second_trace.rpcs[0].kind.as_str(), "query.text");
+    assert_ne!(
+        first_trace.rpcs[0].request_id,
+        second_trace.rpcs[0].request_id
+    );
+    let requests = ok_or_fail!(transport.requests.lock());
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.request_id == first_trace.rpcs[0].request_id)
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.request_id == second_trace.rpcs[0].request_id)
+    );
+}
+
 #[test]
 fn symbol_query_request_forwards_contract_dto_unchanged() {
     let query = Arc::new(StubQueryTransport::new(

@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use quanta_index_contract::{
     ProcessRequestEventPlaneV1, ProcessRequestEventStageV1, ProcessRequestEventsV1,
 };
+use quanta_index_sdk::{ClientLexicalQueryObservationV1, ClientQueryRpcKindV1};
 use serde::Serialize;
 
 use quanta_index_retrieval_bench::{BenchError, BenchResult};
@@ -24,6 +25,72 @@ const SUCCESS_STAGES: [ProcessRequestEventStageV1; 8] = [
 pub(crate) struct RequestPair {
     pub resolve_request_id: u64,
     pub text_request_id: u64,
+}
+
+/// Join measured client intervals to the lossless server IDs. All arithmetic
+/// uses durations from the client clock; server-local clocks are never subtracted.
+pub(crate) fn client_observation_value(
+    pair: RequestPair,
+    observation: &ClientLexicalQueryObservationV1,
+    sdk_execute_ns: u64,
+) -> BenchResult<serde_json::Value> {
+    if observation.rpcs.len() != 2 {
+        return Err(BenchError::Protocol(
+            "client query observation requires exactly resolve-active and text RPCs".to_string(),
+        ));
+    }
+    let mut total_ns = 0_u64;
+    let mut rpcs = Vec::with_capacity(2);
+    for (rpc, (kind, request_id)) in observation.rpcs.iter().zip([
+        (
+            ClientQueryRpcKindV1::ResolveActiveGeneration,
+            pair.resolve_request_id,
+        ),
+        (ClientQueryRpcKindV1::Text, pair.text_request_id),
+    ]) {
+        if request_id == 0 || rpc.kind != kind || rpc.request_id != request_id {
+            return Err(BenchError::Protocol(
+                "client query observation differs from server request identity or order"
+                    .to_string(),
+            ));
+        }
+        let timing = rpc.ipc;
+        let children_ns = timing
+            .encode_ns
+            .checked_add(timing.connect_ns)
+            .and_then(|sum| sum.checked_add(timing.write_ns))
+            .and_then(|sum| sum.checked_add(timing.decode_call_ns))
+            .ok_or_else(|| BenchError::Protocol("client RPC child clocks overflow".to_string()))?;
+        if children_ns > timing.total_ns || timing.read_io_ns > timing.decode_call_ns {
+            return Err(BenchError::Protocol(
+                "client RPC child clocks exceed their observed parent".to_string(),
+            ));
+        }
+        total_ns = total_ns
+            .checked_add(timing.total_ns)
+            .ok_or_else(|| BenchError::Protocol("client query RPC clocks overflow".to_string()))?;
+        rpcs.push(serde_json::json!({
+            "route": kind.as_str(), "request_id": request_id,
+            "total_ns": timing.total_ns, "encode_ns": timing.encode_ns,
+            "connect_ns": timing.connect_ns, "write_ns": timing.write_ns,
+            "decode_call_ns": timing.decode_call_ns, "read_io_ns": timing.read_io_ns,
+            "decode_non_read_ns": timing.decode_call_ns - timing.read_io_ns,
+            "unallocated_ns": timing.total_ns - children_ns,
+        }));
+    }
+    if pair.resolve_request_id == pair.text_request_id || total_ns > sdk_execute_ns {
+        return Err(BenchError::Protocol(
+            "client query RPC clocks or identity contradict SDK execution".to_string(),
+        ));
+    }
+    Ok(serde_json::json!({
+        "clock": "client_monotonic_duration_ns",
+        "timing_boundary": "successful_sdk_query_rpc_calls",
+        "sdk_execute_ns": sdk_execute_ns, "rpc_total_ns": total_ns,
+        "sdk_unallocated_ns": sdk_execute_ns - total_ns, "rpcs": rpcs,
+        "read_io_accounting": "nested_inside_decode_call",
+        "decode_non_read_accounting": "elapsed_local_work_not_cpu_time",
+    }))
 }
 
 /// Retain only a complete, lossless, exactly serial two-RPC trace per query.
@@ -132,8 +199,102 @@ mod tests {
     use std::num::NonZeroU64;
 
     use quanta_index_contract::ProcessRequestEventV1;
+    use quanta_index_sdk::{ClientIpcTimingV1, ClientQueryRpcObservationV1};
 
     use super::*;
+
+    fn client_fixture() -> (RequestPair, ClientLexicalQueryObservationV1) {
+        let pair = RequestPair {
+            resolve_request_id: 7,
+            text_request_id: 9,
+        };
+        let timing = ClientIpcTimingV1 {
+            total_ns: 100,
+            encode_ns: 5,
+            connect_ns: 10,
+            write_ns: 15,
+            decode_call_ns: 60,
+            read_io_ns: 40,
+        };
+        (
+            pair,
+            ClientLexicalQueryObservationV1 {
+                rpcs: vec![
+                    ClientQueryRpcObservationV1 {
+                        kind: ClientQueryRpcKindV1::ResolveActiveGeneration,
+                        request_id: 7,
+                        ipc: timing,
+                    },
+                    ClientQueryRpcObservationV1 {
+                        kind: ClientQueryRpcKindV1::Text,
+                        request_id: 9,
+                        ipc: timing,
+                    },
+                ],
+            },
+        )
+    }
+
+    #[test]
+    fn client_join_uses_nested_read_clocks_and_fixed_request_ids() {
+        let (pair, observation) = client_fixture();
+        let value = client_observation_value(pair, &observation, 250).expect("fixed valid trace");
+        assert_eq!(value["rpc_total_ns"], 200);
+        assert_eq!(value["sdk_unallocated_ns"], 50);
+        assert_eq!(value["rpcs"][0]["request_id"], 7);
+        assert_eq!(value["rpcs"][1]["request_id"], 9);
+        assert_eq!(value["rpcs"][1]["read_io_ns"], 40);
+        assert_eq!(value["rpcs"][1]["decode_non_read_ns"], 20);
+        assert_eq!(value["rpcs"][1]["unallocated_ns"], 10);
+        assert_eq!(value["read_io_accounting"], "nested_inside_decode_call");
+    }
+
+    #[test]
+    fn client_join_refuses_foreign_incomplete_reordered_and_overflowing_traces() {
+        let (pair, fixture) = client_fixture();
+        let mut mutants = Vec::new();
+        let mut row = fixture.clone();
+        row.rpcs.swap(0, 1);
+        mutants.push(row);
+        let mut row = fixture.clone();
+        row.rpcs[1].request_id = 11;
+        mutants.push(row);
+        let mut row = fixture.clone();
+        row.rpcs.pop();
+        mutants.push(row);
+        let mut row = fixture.clone();
+        row.rpcs.push(row.rpcs[0]);
+        mutants.push(row);
+        let mut row = fixture.clone();
+        row.rpcs[1].ipc.read_io_ns = 61;
+        mutants.push(row);
+        let mut row = fixture.clone();
+        row.rpcs[1].ipc.total_ns = 89;
+        mutants.push(row);
+        let mut row = fixture.clone();
+        row.rpcs[0].ipc.encode_ns = u64::MAX;
+        mutants.push(row);
+        let mut row = fixture.clone();
+        for rpc in &mut row.rpcs {
+            rpc.ipc.total_ns = u64::MAX;
+        }
+        mutants.push(row);
+        for mutant in mutants {
+            assert!(client_observation_value(pair, &mutant, u64::MAX).is_err());
+        }
+        assert!(client_observation_value(pair, &fixture, 199).is_err());
+        assert!(
+            client_observation_value(
+                RequestPair {
+                    resolve_request_id: 0,
+                    text_request_id: 9
+                },
+                &fixture,
+                250,
+            )
+            .is_err()
+        );
+    }
 
     fn window(request_count: usize) -> ProcessRequestEventsV1 {
         let mut events = Vec::new();

@@ -19,8 +19,8 @@ use quanta_index_contract::{
     SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck, TextRankUnit,
 };
 use quanta_index_sdk::{
-    BatchReceipt, ClientLexicalQueryObservationV1, ConnectOptions, QuantaIndex, SdkError, SdkPublishActivateDurationsV1,
-    SearchCorpusBatch,
+    BatchReceipt, ClientLexicalQueryObservationV1, ConnectOptions, QuantaIndex, SdkError,
+    SdkPublishActivateDurationsV1, SearchCorpusBatch,
 };
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
