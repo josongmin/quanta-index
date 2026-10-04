@@ -197,7 +197,11 @@ negative control with `/private/tmp/qmt3-spec.json` refused in **1.36 s** and
 created no `/private/tmp/qmt3` output root. Focused Python controls passed
 5/5, including malformed, v7 and unsupported-command refusals. A current
 release runner positive E2E remains `NOT_RUN` until the matching binary is
-built; the Rust CLI unit check is pending the shared build admission lock.
+built. The Rust CLI unit check passed **1/1** after 160.67 s waiting for the
+shared build lock and 212.88 s holding it; those waits/builds are developer
+verification cost, not a benchmark capture interval. The matrix now probes the
+runner before its gold preflight, with a focused test proving that stale binary
+refusal runs neither gold validation nor output creation.
 
 ## Work and boundaries
 
