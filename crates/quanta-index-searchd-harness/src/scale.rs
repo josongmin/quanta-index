@@ -57,6 +57,33 @@ use crate::harness::{E2eRuntime, E2eTextChunkSpec};
 
 /// The artifact dimension this rail writes.
 pub const DIMENSION: &str = "scale";
+const DEFAULT_SCALE_HISTORY_MAX_BYTES: u64 = 16 * 1024 * 1024;
+/// Operational ceiling for this diagnostic rail, not a product admission limit.
+const MAX_SCALE_HISTORY_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Explicit runtime policy for a scale measurement. Requested values remain
+/// separate from the effective defaults in both success and refusal records.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ScaleRuntimeConfig {
+    pub client_timeout: Option<Duration>,
+    pub history_max_bytes: Option<u64>,
+}
+
+impl ScaleRuntimeConfig {
+    fn effective_timeout_ms(self) -> AnyResult<u64> {
+        timeout_ms(self.client_timeout)
+    }
+
+    fn effective_history_max_bytes(self) -> AnyResult<u64> {
+        let bytes = self
+            .history_max_bytes
+            .unwrap_or(DEFAULT_SCALE_HISTORY_MAX_BYTES);
+        if !(1..=MAX_SCALE_HISTORY_MAX_BYTES).contains(&bytes) {
+            anyhow::bail!("scale: history max bytes must be in 1..={MAX_SCALE_HISTORY_MAX_BYTES}");
+        }
+        Ok(bytes)
+    }
+}
 
 /// The deterministic query the small-tier measurement issues.
 ///
@@ -811,6 +838,9 @@ pub struct TierMeasurement {
     /// Effective client request deadline; raising it does not raise daemon
     /// admission limits and must be recorded with each measured tier.
     pub client_request_timeout_ms: u64,
+    pub requested_client_request_timeout_ms: Option<u64>,
+    pub history_max_bytes: u64,
+    pub requested_history_max_bytes: Option<u64>,
     /// RUSAGE_SELF around runtime boot through driver cleanup. The daemon is
     /// an in-process thread; this includes harness and daemon CPU time.
     pub cpu: Option<CpuUsageV1>,
@@ -856,14 +886,15 @@ impl CpuSnapshot {
     }
 }
 
-fn scale_runtime(client_timeout: Option<Duration>) -> AnyResult<E2eRuntime> {
-    match client_timeout {
+fn scale_runtime(config: ScaleRuntimeConfig) -> AnyResult<E2eRuntime> {
+    let runtime = match config.client_timeout {
         Some(timeout) => {
             Ok(E2eRuntime::boot_with_client_request_timeout(timeout)?
                 .with_history_max_generations(2))
         }
         None => E2eRuntime::boot_with_history_max_generations(2),
-    }
+    }?;
+    Ok(runtime.with_history_max_bytes(config.effective_history_max_bytes()?))
 }
 
 fn timeout_ms(client_timeout: Option<Duration>) -> AnyResult<u64> {
@@ -1296,14 +1327,12 @@ fn measure_delta(rt: &mut E2eRuntime, seed: u64) -> AnyResult<DeltaMeasurementV1
 /// not show the expected samples in a window is a rail error, never a
 /// fabricated phase time.
 pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
-    measure_small_tier_with_timeout(seed, None)
+    measure_small_tier_with_config(seed, ScaleRuntimeConfig::default())
 }
 
-fn measure_small_tier_with_timeout(
-    seed: u64,
-    client_timeout: Option<Duration>,
-) -> AnyResult<TierMeasurement> {
-    let effective_timeout_ms = timeout_ms(client_timeout)?;
+fn measure_small_tier_with_config(seed: u64, config: ScaleRuntimeConfig) -> AnyResult<TierMeasurement> {
+    let effective_timeout_ms = config.effective_timeout_ms()?;
+    let effective_history_max_bytes = config.effective_history_max_bytes()?;
     let corpus = generate_corpus(ScaleTier::Small, seed);
     let corpus_digest = corpus_digest(DIMENSION, &corpus);
     let expected_results = expected_small_result_count(&corpus)?;
@@ -1316,7 +1345,7 @@ fn measure_small_tier_with_timeout(
 
     // The search-corpus history contract requires at least two generations.
     let cpu_started = CpuSnapshot::observe()?;
-    let mut rt = scale_runtime(client_timeout)?;
+    let mut rt = scale_runtime(config)?;
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
 
@@ -1389,6 +1418,9 @@ fn measure_small_tier_with_timeout(
             result_count,
             model_revision,
             client_request_timeout_ms: effective_timeout_ms,
+            requested_client_request_timeout_ms: config.client_timeout.map(|_| effective_timeout_ms),
+            history_max_bytes: effective_history_max_bytes,
+            requested_history_max_bytes: config.history_max_bytes,
             cpu: None,
             delete_reopen: None,
         })
@@ -1436,7 +1468,7 @@ fn measure_scoped_delta(rt: &mut E2eRuntime, file: &ScopedFile) -> AnyResult<Del
 /// distinct source-repository identities into one serving owner and
 /// independently probe every source repository.
 pub fn measure_tier(tier: ScaleTier, seed: u64) -> AnyResult<TierMeasurement> {
-    measure_tier_with_client_timeout(tier, seed, None)
+    measure_tier_with_runtime_config(tier, seed, ScaleRuntimeConfig::default())
 }
 
 pub fn measure_tier_with_client_timeout(
@@ -1444,9 +1476,18 @@ pub fn measure_tier_with_client_timeout(
     seed: u64,
     client_timeout: Option<Duration>,
 ) -> AnyResult<TierMeasurement> {
-    let effective_timeout_ms = timeout_ms(client_timeout)?;
+    measure_tier_with_runtime_config(tier, seed, ScaleRuntimeConfig { client_timeout, history_max_bytes: None })
+}
+
+pub fn measure_tier_with_runtime_config(
+    tier: ScaleTier,
+    seed: u64,
+    config: ScaleRuntimeConfig,
+) -> AnyResult<TierMeasurement> {
+    let effective_timeout_ms = config.effective_timeout_ms()?;
+    let effective_history_max_bytes = config.effective_history_max_bytes()?;
     if tier == ScaleTier::Small {
-        return measure_small_tier_with_timeout(seed, client_timeout);
+        return measure_small_tier_with_config(seed, config);
     }
     let files = generate_scoped_corpus(tier, seed)?;
     let corpus_digest = scoped_corpus_digest(DIMENSION, &files);
@@ -1462,7 +1503,7 @@ pub fn measure_tier_with_client_timeout(
         })?;
 
     let cpu_started = CpuSnapshot::observe()?;
-    let mut rt = scale_runtime(client_timeout)?;
+    let mut rt = scale_runtime(config)?;
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
         let before_build = directory_bytes(rt.state_root())?;
@@ -1562,6 +1603,9 @@ pub fn measure_tier_with_client_timeout(
             result_count,
             model_revision,
             client_request_timeout_ms: effective_timeout_ms,
+            requested_client_request_timeout_ms: config.client_timeout.map(|_| effective_timeout_ms),
+            history_max_bytes: effective_history_max_bytes,
+            requested_history_max_bytes: config.history_max_bytes,
             cpu: None,
             delete_reopen: Some(delete_reopen),
         })
