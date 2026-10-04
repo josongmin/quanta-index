@@ -20,7 +20,7 @@ fn required_response_canonical_json(row: &Value) -> BenchResult<String> {
     let object = normalized
         .as_object_mut()
         .ok_or_else(|| BenchError::Protocol("required response is not an object".to_string()))?;
-    object.remove("timings");
+    let _removed_timing = object.remove("timings");
     let candidates = object
         .get_mut("candidates")
         .and_then(Value::as_array_mut)
@@ -144,10 +144,13 @@ mod tests {
             "8b1dd6a4b49b147489e1f2a2a4460832df183732852d07982ce2a48f0e0695b5"
         );
         let mut without_timing = row.clone();
-        without_timing
-            .as_object_mut()
-            .expect("object")
-            .remove("timings");
+        assert!(
+            without_timing
+                .as_object_mut()
+                .expect("object")
+                .remove("timings")
+                .is_some()
+        );
         assert_eq!(
             required_response_sha256(&without_timing).expect("same response"),
             digest

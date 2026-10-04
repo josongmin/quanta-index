@@ -8,8 +8,8 @@ import time
 
 import pytest
 
-from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import retrieval_contract as rc
+from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble
 from tools.ci.tests import test_retrieval_benchmark as fixtures
 
@@ -408,7 +408,7 @@ def test_completed_output_digest_has_independent_cross_language_golden():
 
 
 def test_completed_clock_binds_every_repetition_to_normalized_output():
-    protocol = pairrun.build_query_protocol(["T1"], 0, 2, 1)
+    protocol = pairrun.build_query_protocol(["T1"], 0, 0, 2)
     metrics = {
         "route_count": 1,
         "query_protocol": protocol,
@@ -439,6 +439,11 @@ def test_completed_clock_binds_every_repetition_to_normalized_output():
         observation["output_sha256"] = rc.completed_output_sha256(changed)
     with pytest.raises(pairrun.RunError, match="differs from normalized record"):
         pairrun.validate_completed_query_timing(bad, record)
+    for value in (None, True, "0", "G" * 64):
+        bad = copy.deepcopy(metrics)
+        bad["query_timing"]["observations"][-1]["output_sha256"] = value
+        with pytest.raises(pairrun.RunError, match="digest is malformed"):
+            pairrun.validate_completed_query_timing(bad, record)
     historical = copy.deepcopy(metrics)
     historical["query_timing"].pop("output_validation")
     for observation in historical["query_timing"]["observations"]:

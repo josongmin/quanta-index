@@ -3195,6 +3195,19 @@ def test_runner_capability_probe_refuses_stale_and_malformed_binaries(monkeypatc
     assert pairrun.probe_runner_capabilities(binary)["retrieval_diagnostic_schema_version"] == 8
     assert observed == [([str(binary), "capabilities"], 10)]
 
+    for marker in (None, True, "unchecked"):
+        payload = {"schema_version": 1, "retrieval_diagnostic_schema_version": 8}
+        if marker is not None:
+            payload["completed_response_output_validation"] = marker
+        monkeypatch.setattr(
+            pairrun.subprocess, "run",
+            lambda argv, payload=payload, **_kwargs: subprocess.CompletedProcess(
+                argv, 0, json.dumps(payload), ""
+            ),
+        )
+        with pytest.raises(pairrun.RunError, match="capability response invalid|contract differs"):
+            pairrun.probe_runner_capabilities(binary)
+
     monkeypatch.setattr(
         pairrun.subprocess,
         "run",
@@ -10565,6 +10578,7 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
 
     # This test owns atomic stage promotion, not Unix socket path admission.
     # Its pytest-generated output path is deliberately long on macOS.
+    monkeypatch.setattr(pairrun, "probe_runner_capabilities", lambda _binary: {})
     monkeypatch.setattr(pairrun, "preflight_daemon_socket_paths", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(pairrun, "_source_closure", lambda *_args: None)
     monkeypatch.setattr(pairrun, "run_quanta", explode)

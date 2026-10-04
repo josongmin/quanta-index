@@ -54,8 +54,7 @@ fn parse_history_max_bytes(raw: &str) -> AnyResult<u64> {
         history_max_bytes: Some(parsed),
         client_timeout: None,
     }
-    .effective_history_max_bytes()?;
-    Ok(parsed)
+    .effective_history_max_bytes()
 }
 
 fn parse_args() -> AnyResult<CliArgs> {

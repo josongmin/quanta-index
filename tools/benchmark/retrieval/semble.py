@@ -521,7 +521,7 @@ def main() -> int:
         "query_timing": {
             "boundary": "request_construction_to_normalized_response",
             "clock": "capture_relative_monotonic_ns",
-            "output_validation": "normalized_row_score_bits_sha256_v1",
+            "output_validation": "@completed_output_validation@",
             "observations": completed_calls,
         },
         "worker_pid": os.getpid(),
@@ -552,7 +552,7 @@ def main() -> int:
 if __name__ == "__main__":
     with contextlib.redirect_stdout(sys.stderr):
         raise SystemExit(main())
-'''
+'''.replace("@completed_output_validation@", COMPLETED_OUTPUT_VALIDATION)
 
 
 SEMBLE_PROFILES = (
