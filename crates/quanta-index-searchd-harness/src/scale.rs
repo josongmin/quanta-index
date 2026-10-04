@@ -31,7 +31,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::process::{Command, Stdio};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result as AnyResult;
@@ -45,6 +49,10 @@ use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudge
 use quanta_index_ipc::DEFAULT_CLIENT_IO_TIMEOUT;
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_search_plane::lower_lexical_text_query;
+#[cfg(target_os = "linux")]
+use quanta_index_searchd::app::KernelResidentMemoryProbe;
+#[cfg(target_os = "linux")]
+use quanta_index_core::ProcessMemoryProbePort as _;
 use serde_json::{Value, json};
 
 use crate::artifact::{

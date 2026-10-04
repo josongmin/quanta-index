@@ -5,7 +5,8 @@ use super::{
     PeerCredentials, PeerWatch, PeerWatchOutcome, RequestEnvelope, RequestEventStageV1,
     ResponseEnvelope, SocketPathIdentity, UdsServer, WatchEvent, WatchObserver,
     connect_before_deadline, connect_requires_completion_wait, create_connect_socket,
-    decode_response, encode_request, handle_connection, send_request, wait_for_connect,
+    decode_response, encode_request, handle_connection, send_request, send_request_observed,
+    wait_for_connect,
 };
 use crate::socket_access::{PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE};
 use rustix::fs::{OFlags, fcntl_getfl};
@@ -168,6 +169,77 @@ fn client_read_timeout_closes_silent_peer_with_typed_error() -> TestRes {
         }) if observed == timeout
     ) {
         return Err(format!("expected typed read timeout, got {result:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> TestRes {
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("observed-client.sock");
+    let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
+    let server = thread::spawn(move || -> TestRes {
+        for _ in 0..2 {
+            let (mut stream, _address) = listener.accept().map_err(|error| error.to_string())?;
+            let request: TestRequestEnvelope =
+                super::decode_request(&mut stream).map_err(|error| error.to_string())?;
+            if request != (TestRequestEnvelope { request_id: 17, payload: 23 }) {
+                return Err(format!("request changed under observation: {request:?}"));
+            }
+            let frame = super::encode_response(&TestResponseEnvelope {
+                request_id: 17,
+                payload: 24,
+            })
+            .map_err(|error| error.to_string())?;
+            stream.write_all(&frame).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    });
+    let request = TestRequestEnvelope {
+        request_id: 17,
+        payload: 23,
+    };
+    let policy = ClientIoPolicy::try_new(Duration::from_secs(2))
+        .map_err(|error| error.to_string())?;
+    let plain: TestResponseEnvelope =
+        send_request(&socket, &request, policy).map_err(|error| error.to_string())?;
+    let (observed, timing): (TestResponseEnvelope, _) =
+        send_request_observed(&socket, &request, policy).map_err(|error| error.to_string())?;
+    server
+        .join()
+        .map_err(|_panic_payload| "server panicked".to_string())??;
+    if plain != (TestResponseEnvelope { request_id: 17, payload: 24 }) || observed != plain {
+        return Err(format!("observed response changed: {plain:?} vs {observed:?}"));
+    }
+    let disjoint = timing
+        .encode_ns
+        .checked_add(timing.connect_ns)
+        .and_then(|value| value.checked_add(timing.write_ns))
+        .and_then(|value| value.checked_add(timing.decode_call_ns))
+        .ok_or_else(|| "client timing children overflowed".to_string())?;
+    if timing.read_io_ns > timing.decode_call_ns || disjoint > timing.total_ns {
+        return Err(format!("client timing hierarchy is invalid: {timing:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn observed_client_request_preserves_expired_deadline_refusal() -> TestRes {
+    let deadline = Instant::now()
+        .checked_add(Duration::from_millis(1))
+        .ok_or_else(|| "deadline overflow".to_string())?;
+    let policy = ClientIoPolicy::try_with_deadline(deadline).map_err(|error| error.to_string())?;
+    thread::sleep(Duration::from_millis(2));
+    let result = send_request_observed::<_, TestResponseEnvelope>(
+        Path::new("/path/that/must/not/be-connected.sock"),
+        &TestRequestEnvelope {
+            request_id: 17,
+            payload: 23,
+        },
+        policy,
+    );
+    if !matches!(result, Err(IpcError::ClientIoDeadlineElapsed)) {
+        return Err(format!("observed deadline refusal changed: {result:?}"));
     }
     Ok(())
 }

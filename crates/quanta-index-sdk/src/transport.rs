@@ -10,7 +10,9 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponseEnvelope,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponseEnvelope,
 };
-use quanta_index_ipc::{ClientIoPolicy, send_request};
+use quanta_index_ipc::{
+    ClientIoPolicy, ClientIpcTimingV1, send_request, send_request_observed,
+};
 
 use crate::SdkError;
 
@@ -19,6 +21,15 @@ pub(crate) trait QueryTransport: Send + Sync {
         &self,
         request: SearchPlaneQueryIpcRequestEnvelope,
     ) -> Result<SearchPlaneQueryIpcResponseEnvelope, SdkError>;
+
+    fn send_observed(
+        &self,
+        _request: SearchPlaneQueryIpcRequestEnvelope,
+    ) -> Result<(SearchPlaneQueryIpcResponseEnvelope, ClientIpcTimingV1), SdkError> {
+        Err(SdkError::Protocol(
+            "query transport does not support request-local client observation".to_string(),
+        ))
+    }
 }
 
 pub(crate) trait ControlTransport: Send + Sync {
@@ -48,6 +59,13 @@ impl QueryTransport for UdsQueryTransport {
         request: SearchPlaneQueryIpcRequestEnvelope,
     ) -> Result<SearchPlaneQueryIpcResponseEnvelope, SdkError> {
         self.inner.send(&request)
+    }
+
+    fn send_observed(
+        &self,
+        request: SearchPlaneQueryIpcRequestEnvelope,
+    ) -> Result<(SearchPlaneQueryIpcResponseEnvelope, ClientIpcTimingV1), SdkError> {
+        self.inner.send_observed(&request)
     }
 }
 
@@ -133,5 +151,17 @@ impl UdsTransport {
         Response: serde::de::DeserializeOwned,
     {
         send_request(self.socket_path(), request, self.io_policy).map_err(SdkError::Transport)
+    }
+
+    fn send_observed<Request, Response>(
+        &self,
+        request: &Request,
+    ) -> Result<(Response, ClientIpcTimingV1), SdkError>
+    where
+        Request: serde::Serialize,
+        Response: serde::de::DeserializeOwned,
+    {
+        send_request_observed(self.socket_path(), request, self.io_policy)
+            .map_err(SdkError::Transport)
     }
 }

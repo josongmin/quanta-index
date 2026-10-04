@@ -3701,3 +3701,52 @@ with a new output root. The strict collection validator remains unchanged.
   answering-file (grade >=2) results explicit. Zero negative NL controls mean
   abstention is not applicable. Different lexical predicates stay diagnostic;
   quiet-host repeated complete-public-API performance remains **NOT_RUN**.
+
+### 2026-10-04: required binary golden RED/GREEN and actual quota backoff
+
+- **VERIFIED**, clean `37e38249` required Python proof body: **732/732** in
+  428.05s. **FAILED**, its actual Rust body: **185/186**, with the newly required
+  binary fixture `natural_language_token_budget_is_bounded_and_bound_to_the_plan`
+  comparing the new keyword-OR request digest against the former phrase-OR
+  golden. An independent SHA-256 calculation of the literal 48-token request
+  agrees with the observed Rust value `0dfa2879...`; the committed fixture
+  expected `ef00c223...`. Terminal Contract exit 1 in 739.447s. Fresh SDK was
+  **NOT_RUN**; the dependent admission pipeline refused before issuing inputs.
+  Failed root `common-proof-37e38249-gup6961_/` is preserved.
+- The concurrent owner integrated the already-inspected correction in main
+  commit `41cceb67`. No duplicate source fix was made. **VERIFIED**, that clean
+  source's exact Rust binary fixture passes **1/1** (0.01s body, 46.75s build,
+  36.525s resource wait); focused Python contracts pass **5/5** in 2.24s and
+  required collection matches **732** identities. All currently issued 120
+  tasks, suites, blind packs, actual review receipts and NL split families
+  validate unchanged on this source in 6.188s; the corpus generator digest is
+  unchanged, so no new release is generated for this source transition.
+- Matching clean-source Contract then fresh SDK proofs are live in the new
+  `common-proof-41cceb67-azrp2bpx/` root. The separately frozen
+  `nl-common-admission-41cceb67-4xzpkrd_/` waits on those exact proof results;
+  canonical admission cannot run on failed, missing or partial receipts.
+  Successful full proof/admission is **NOT_RUN** until terminal validation.
+- **FAILED**, the prior actual review pipeline terminated after the model
+  service returned HTTP/API **429**, explicitly `session limit`, reset
+  **2026-10-04 13:40 KST**. Typeorm stopped during adjudication; the subsequent
+  five repositories encountered the same zero-token API refusal. This is not
+  a source/label-validator failure. No partial typeorm labels were issued;
+  counts remain **120/240 tasks**, **544/1,324** original pairs.
+- A new one-shot quota-backoff controller is live at
+  `c3-review-resume-quota-qcshswey/`. It waits until the service-reported reset,
+  rechecks immutable helpers, reuses only fully validated raw responses and
+  resumes the same actual model/source/adjudication validators. Review helper
+  hashes, identities and criteria are unchanged. Prior quota failures remain
+  failed; no model call or label issuance before reset is counted as progress.
+- Same-source Sourcegraph/OpenGrok/cs capture and canonical replay for the six
+  already-issued repositories (120 tasks / 360 planned product calls) is live
+  in `c3-native-common-41cceb67-e_effz4o/`. The frozen input preflight and actual
+  native index-scope checks are its authority; it does not borrow a Quanta SDK
+  receipt or claim final comparison qualification. The retained OpenGrok
+  snapshot initially matches the full source/posting reference. Any new
+  unjudged returned file requires additional blinded review, not a zero grade.
+- All named roots are under
+  `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`.
+  Final reviewed five-product ranking and controlled repeated complete-output
+  performance remain **NOT_RUN**. AI provenance remains explicit and the full
+  goal remains active.
