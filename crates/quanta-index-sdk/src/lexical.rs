@@ -20,7 +20,10 @@ use quanta_index_contract::{
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
-use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError, stamp_batch_digest_v1};
+use crate::{
+    BatchMode, BatchReceipt, ClientLexicalQueryObservationV1, QuantaIndex, SdkError,
+    stamp_batch_digest_v1,
+};
 
 /// SDK wall time of the two successful control requests. These measurements
 /// are outside the server's ingest observation and exclude caller setup.
@@ -908,15 +911,41 @@ impl LexicalQueryBuilder<'_, true, true, true> {
     pub fn execute(self) -> Result<TextQueryResponse, SdkError> {
         dispatch_text_query_request_v1(self.client, self.state.build_request("lexical")?)
     }
+
+    /// Execute the same lexical request with request-local client IPC timing.
+    /// The normal `execute` path does not collect these clocks. An error has
+    /// no successful observation and retains its ordinary SDK error type.
+    pub fn execute_observed(
+        self,
+    ) -> Result<(TextQueryResponse, ClientLexicalQueryObservationV1), SdkError> {
+        let mut observation = ClientLexicalQueryObservationV1::default();
+        let response = dispatch_text_query_request_inner(
+            self.client,
+            self.state.build_request("lexical")?,
+            Some(&mut observation),
+        )?;
+        Ok((response, observation))
+    }
 }
 
 fn dispatch_text_query_request_v1(
     client: &QuantaIndex,
     request: TextQueryRequest,
 ) -> Result<TextQueryResponse, SdkError> {
-    let response = client.dispatch_query(
-        quanta_index_contract::SearchPlaneQueryIpcRequest::Text(request),
-    )?;
+    dispatch_text_query_request_inner(client, request, None)
+}
+
+fn dispatch_text_query_request_inner(
+    client: &QuantaIndex,
+    request: TextQueryRequest,
+    observation: Option<&mut ClientLexicalQueryObservationV1>,
+) -> Result<TextQueryResponse, SdkError> {
+    let payload = quanta_index_contract::SearchPlaneQueryIpcRequest::Text(request);
+    let response = if let Some(observation) = observation {
+        client.dispatch_query_observed(payload, observation)?
+    } else {
+        client.dispatch_query(payload)?
+    };
     match response {
         quanta_index_contract::SearchPlaneQueryIpcResponse::Text(results) => Ok(results),
         other @ (quanta_index_contract::SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(

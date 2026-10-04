@@ -183,7 +183,12 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
             let (mut stream, _address) = listener.accept().map_err(|error| error.to_string())?;
             let request: TestRequestEnvelope =
                 super::decode_request(&mut stream).map_err(|error| error.to_string())?;
-            if request != (TestRequestEnvelope { request_id: 17, payload: 23 }) {
+            if request
+                != (TestRequestEnvelope {
+                    request_id: 17,
+                    payload: 23,
+                })
+            {
                 return Err(format!("request changed under observation: {request:?}"));
             }
             let frame = super::encode_response(&TestResponseEnvelope {
@@ -191,7 +196,9 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
                 payload: 24,
             })
             .map_err(|error| error.to_string())?;
-            stream.write_all(&frame).map_err(|error| error.to_string())?;
+            stream
+                .write_all(&frame)
+                .map_err(|error| error.to_string())?;
         }
         Ok(())
     });
@@ -199,8 +206,8 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
         request_id: 17,
         payload: 23,
     };
-    let policy = ClientIoPolicy::try_new(Duration::from_secs(2))
-        .map_err(|error| error.to_string())?;
+    let policy =
+        ClientIoPolicy::try_new(Duration::from_secs(2)).map_err(|error| error.to_string())?;
     let plain: TestResponseEnvelope =
         send_request(&socket, &request, policy).map_err(|error| error.to_string())?;
     let (observed, timing): (TestResponseEnvelope, _) =
@@ -208,8 +215,16 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
     server
         .join()
         .map_err(|_panic_payload| "server panicked".to_string())??;
-    if plain != (TestResponseEnvelope { request_id: 17, payload: 24 }) || observed != plain {
-        return Err(format!("observed response changed: {plain:?} vs {observed:?}"));
+    if plain
+        != (TestResponseEnvelope {
+            request_id: 17,
+            payload: 24,
+        })
+        || observed != plain
+    {
+        return Err(format!(
+            "observed response changed: {plain:?} vs {observed:?}"
+        ));
     }
     let disjoint = timing
         .encode_ns

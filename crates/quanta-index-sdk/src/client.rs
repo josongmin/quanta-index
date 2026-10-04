@@ -10,6 +10,7 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneTrackKind,
 };
+use quanta_index_ipc::ClientIpcTimingV1;
 
 use crate::binding::{
     ControlCallBinding, IngestCallBinding, QueryCallBinding, bind_control_response,
@@ -31,6 +32,54 @@ struct QuantaIndexInner {
     control_transport: Option<Arc<dyn ControlTransport>>,
     ingest_transport: Option<Arc<dyn IngestTransport>>,
     next_request_id: AtomicU64,
+}
+
+/// The query-plane RPC made during one observed lexical SDK call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClientQueryRpcKindV1 {
+    ResolveActiveGeneration,
+    ResolveLexicalGeneration,
+    Text,
+}
+
+impl ClientQueryRpcKindV1 {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ResolveActiveGeneration => "query.resolve_active",
+            Self::ResolveLexicalGeneration => "query.resolve_lexical",
+            Self::Text => "query.text",
+        }
+    }
+
+    fn from_request(request: &SearchPlaneQueryIpcRequest) -> Result<Self, SdkError> {
+        match request {
+            SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_) => {
+                Ok(Self::ResolveActiveGeneration)
+            }
+            SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(_) => {
+                Ok(Self::ResolveLexicalGeneration)
+            }
+            SearchPlaneQueryIpcRequest::Text(_) => Ok(Self::Text),
+            _ => Err(SdkError::Protocol(
+                "lexical client observation reached a non-lexical RPC".to_string(),
+            )),
+        }
+    }
+}
+
+/// Request-ID-bound transport intervals for one successful query-plane RPC.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClientQueryRpcObservationV1 {
+    pub kind: ClientQueryRpcKindV1,
+    pub request_id: u64,
+    pub ipc: ClientIpcTimingV1,
+}
+
+/// Successful RPCs in the execution order of one lexical SDK query.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ClientLexicalQueryObservationV1 {
+    pub rpcs: Vec<ClientQueryRpcObservationV1>,
 }
 
 #[derive(Clone)]
@@ -141,20 +190,54 @@ impl QuantaIndex {
 
     pub(super) fn dispatch_query(
         &self,
-        mut payload: SearchPlaneQueryIpcRequest,
+        payload: SearchPlaneQueryIpcRequest,
     ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
-        self.pin_active_query(&mut payload)?;
-        let selected_lexical_pin = self.resolve_lexical_query_generation(&payload)?;
+        self.dispatch_query_inner(payload, None)
+    }
+
+    pub(super) fn dispatch_query_observed(
+        &self,
+        payload: SearchPlaneQueryIpcRequest,
+        observation: &mut ClientLexicalQueryObservationV1,
+    ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
+        self.dispatch_query_inner(payload, Some(&mut observation.rpcs))
+    }
+
+    fn dispatch_query_inner(
+        &self,
+        mut payload: SearchPlaneQueryIpcRequest,
+        mut observation: Option<&mut Vec<ClientQueryRpcObservationV1>>,
+    ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
+        self.pin_active_query(&mut payload, observation.as_deref_mut())?;
+        let selected_lexical_pin =
+            self.resolve_lexical_query_generation(&payload, observation.as_deref_mut())?;
         let mut binding = QueryCallBinding::from_request(&payload);
         if let Some(pin) = selected_lexical_pin {
             binding = binding.with_resolved_lexical_generation(pin);
         }
         let request_id = self.next_request_id();
+        let observed_kind = observation
+            .as_ref()
+            .map(|_| ClientQueryRpcKindV1::from_request(&payload))
+            .transpose()?;
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
             payload,
         };
-        let response = self.inner.query_transport.send(envelope)?;
+        let response = if let Some(trace) = observation.as_deref_mut() {
+            let (response, ipc) = self.inner.query_transport.send_observed(envelope)?;
+            let kind = observed_kind.ok_or_else(|| {
+                SdkError::Protocol("observed query RPC kind disappeared".to_string())
+            })?;
+            trace.push(ClientQueryRpcObservationV1 {
+                kind,
+                request_id,
+                ipc,
+            });
+            response
+        } else {
+            self.inner.query_transport.send(envelope)?
+        };
         if response.request_id != request_id {
             return Err(SdkError::Protocol(format!(
                 "query response request_id {} != request {}",
@@ -188,6 +271,7 @@ impl QuantaIndex {
     fn resolve_lexical_query_generation(
         &self,
         request: &SearchPlaneQueryIpcRequest,
+        observation: Option<&mut Vec<ClientQueryRpcObservationV1>>,
     ) -> Result<Option<GenerationPin>, SdkError> {
         let SearchPlaneQueryIpcRequest::Text(query) = request else {
             return Ok(None);
@@ -195,8 +279,9 @@ impl QuantaIndex {
         if !is_rev_at_time_query(query.syntax, &query.query_text) {
             return Ok(None);
         }
-        let response = self.dispatch_query(
+        let response = self.dispatch_query_inner(
             SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(query.clone()),
+            observation,
         )?;
         let SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(pin) = response else {
             return Err(SdkError::Protocol(
@@ -219,6 +304,7 @@ impl QuantaIndex {
         generation: &mut Option<GenerationPin>,
         selector: &mut Option<GenerationSelector>,
         track: SearchPlaneTrackKind,
+        observation: Option<&mut Vec<ClientQueryRpcObservationV1>>,
     ) -> Result<(), SdkError> {
         let (repo_id, revision_id, expected_token) = match selector.as_ref() {
             Some(GenerationSelector::Active {
@@ -237,8 +323,10 @@ impl QuantaIndex {
             revision_id: revision_id.clone(),
             track,
         };
-        let response =
-            self.dispatch_query(SearchPlaneQueryIpcRequest::ResolveActiveGeneration(request))?;
+        let response = self.dispatch_query_inner(
+            SearchPlaneQueryIpcRequest::ResolveActiveGeneration(request),
+            observation,
+        )?;
         let SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(resolution) = response else {
             return Err(SdkError::Protocol(
                 "active resolution did not return a generation snapshot".to_string(),
@@ -278,29 +366,37 @@ impl QuantaIndex {
         Ok(())
     }
 
-    fn pin_active_query(&self, request: &mut SearchPlaneQueryIpcRequest) -> Result<(), SdkError> {
+    fn pin_active_query(
+        &self,
+        request: &mut SearchPlaneQueryIpcRequest,
+        mut observation: Option<&mut Vec<ClientQueryRpcObservationV1>>,
+    ) -> Result<(), SdkError> {
         match request {
             SearchPlaneQueryIpcRequest::Text(query) => self.pin_active_selector(
                 &mut query.generation,
                 &mut query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
+                observation.as_deref_mut(),
             ),
             SearchPlaneQueryIpcRequest::Symbol(query) => self.pin_active_selector(
                 &mut query.generation,
                 &mut query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
+                observation.as_deref_mut(),
             ),
             SearchPlaneQueryIpcRequest::Semantic(query) => {
                 self.pin_active_selector(
                     &mut query.generation,
                     &mut query.generation_selector,
                     SearchPlaneTrackKind::Semantic,
+                    observation.as_deref_mut(),
                 )?;
                 if let Some(scope) = &mut query.lexical_scope {
                     self.pin_active_selector(
                         &mut scope.generation,
                         &mut scope.generation_selector,
                         SearchPlaneTrackKind::Lexical,
+                        observation.as_deref_mut(),
                     )?;
                 }
                 Ok(())
@@ -318,11 +414,13 @@ impl QuantaIndex {
                     &mut query.text_query.generation,
                     &mut query.text_query.generation_selector,
                     SearchPlaneTrackKind::Lexical,
+                    observation.as_deref_mut(),
                 )?;
                 self.pin_active_selector(
                     &mut query.generation,
                     &mut query.generation_selector,
                     SearchPlaneTrackKind::Semantic,
+                    observation.as_deref_mut(),
                 )
             }
             SearchPlaneQueryIpcRequest::HybridSeed(query) => {
@@ -330,22 +428,26 @@ impl QuantaIndex {
                     &mut query.text_query.generation,
                     &mut query.text_query.generation_selector,
                     SearchPlaneTrackKind::Lexical,
+                    observation.as_deref_mut(),
                 )?;
                 self.pin_active_selector(
                     &mut query.generation,
                     &mut query.generation_selector,
                     SearchPlaneTrackKind::Semantic,
+                    observation.as_deref_mut(),
                 )
             }
             SearchPlaneQueryIpcRequest::History(query) => self.pin_active_selector(
                 &mut query.text_query.generation,
                 &mut query.text_query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
+                observation.as_deref_mut(),
             ),
             SearchPlaneQueryIpcRequest::RuntimeMetadata(query) => self.pin_active_selector(
                 &mut query.text_query.generation,
                 &mut query.text_query.generation_selector,
                 SearchPlaneTrackKind::Lexical,
+                observation.as_deref_mut(),
             ),
             SearchPlaneQueryIpcRequest::Structural(query) => {
                 if matches!(

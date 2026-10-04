@@ -27,7 +27,10 @@ pub use batch::{BatchMode, BatchReceipt};
 pub use binding::{
     ExpectedQueryResponseV1, SDK_WIRE_ROUTE_EXCLUSIONS_V1, SDK_WIRE_ROUTES_V1, SdkWireRouteV1,
 };
-pub use client::{ControlClient, ProducerClient, QuantaIndex, ReaderClient};
+pub use client::{
+    ClientLexicalQueryObservationV1, ClientQueryRpcKindV1, ClientQueryRpcObservationV1,
+    ControlClient, ProducerClient, QuantaIndex, ReaderClient,
+};
 pub use config::{ClientProfile, ConnectOptions};
 pub use error::ResponseBindingAxis;
 pub use error::SdkError;
@@ -51,7 +54,9 @@ pub use quanta_index_contract::{
 /// The canonical batch digest (QI-BB-032): the SDK builders stamp it on
 /// every batch they send; producers that assemble wire batches themselves
 /// stamp them with the same function before publishing.
-pub use quanta_index_ipc::{IngestBatchBodyV1, canonical_batch_digest_v1, stamp_batch_digest_v1};
+pub use quanta_index_ipc::{
+    ClientIpcTimingV1, IngestBatchBodyV1, canonical_batch_digest_v1, stamp_batch_digest_v1,
+};
 pub use quarantine::QuarantineNamespace;
 pub use repomap::RepoMapNamespace;
 pub use runtime::{DirtyBatch, DirtyBatchMutation, RuntimeNamespace, RuntimeQueryBuilder};

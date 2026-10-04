@@ -10,9 +10,7 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponseEnvelope,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponseEnvelope,
 };
-use quanta_index_ipc::{
-    ClientIoPolicy, ClientIpcTimingV1, send_request, send_request_observed,
-};
+use quanta_index_ipc::{ClientIoPolicy, ClientIpcTimingV1, send_request, send_request_observed};
 
 use crate::SdkError;
 

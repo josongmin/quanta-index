@@ -44,8 +44,8 @@ pub use quanta_index_core::{
 };
 pub use server::{
     BoundSocketPathProbe, ClientIoPolicy, ClientIpcTimingV1, DEFAULT_CLIENT_IO_TIMEOUT,
-    DispatchContextV1, IpcDispatcher, RequestEnvelope, ResponseEnvelope, ShutdownHandle,
-    UdsServer, send_request, send_request_observed,
+    DispatchContextV1, IpcDispatcher, RequestEnvelope, ResponseEnvelope, ShutdownHandle, UdsServer,
+    send_request, send_request_observed,
 };
 pub use socket_access::{
     GROUP_DIRECTORY_MODE, GROUP_SOCKET_MODE, PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE,

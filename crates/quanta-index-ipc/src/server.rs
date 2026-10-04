@@ -1725,7 +1725,7 @@ where
     } else {
         decode_response::<ResponseEnvelopeT, _>(&mut stream)
     }
-        .map_err(|error| classify_client_decode_error(error, IpcIoOperation::Read, io_policy))?;
+    .map_err(|error| classify_client_decode_error(error, IpcIoOperation::Read, io_policy))?;
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), decode_started) {
         timing.decode_call_ns = observed_ns(started.elapsed())?;
         timing.read_io_ns = observed_ns(read_io)?;

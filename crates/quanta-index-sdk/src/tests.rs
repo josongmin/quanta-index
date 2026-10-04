@@ -117,6 +117,30 @@ impl QueryTransport for StubQueryTransport {
             payload,
         })
     }
+
+    fn send_observed(
+        &self,
+        request: SearchPlaneQueryIpcRequestEnvelope,
+    ) -> Result<
+        (
+            SearchPlaneQueryIpcResponseEnvelope,
+            quanta_index_ipc::ClientIpcTimingV1,
+        ),
+        crate::SdkError,
+    > {
+        let response = self.send(request)?;
+        Ok((
+            response,
+            quanta_index_ipc::ClientIpcTimingV1 {
+                total_ns: 20,
+                encode_ns: 1,
+                connect_ns: 2,
+                write_ns: 3,
+                decode_call_ns: 5,
+                read_io_ns: 4,
+            },
+        ))
+    }
 }
 
 struct StubControlTransport {
