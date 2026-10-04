@@ -30,6 +30,15 @@ full/delta/delete/no-op/reopen의 저장·검증·shard 비용과 transient reso
 
 현재 diagnostic9/protocol7/phase4, ingest preparation/coverage/source children, SDK request-local attribution과 sampled CPU/RSS가 있다. 과거 g9의 coverage+source2.346초/SDKpublish3.581초는 한 busy-host release 진단이다. compiler/model preparation와 index/publish/seal/activate 시간은 다른 경계다.
 
+## 2026-10-04 Tantivy 원인 수리와 중앙 검증
+
+- 기존 삭제 segment의 토큰 수가 quantized fieldnorm 역변환으로 추정되어, 같은 live source의 fresh rebuild와 `chunk_text` 총 토큰 수(178 대 188) 및 BM25 score bits가 달랐다. fixture의 기대값은 완화하지 않았다.
+- pinned Tantivy 0.22.1을 `vendor/tantivy-0.22.1`에서 고정하고 삭제가 있는 pure string frequency fields의 살아 있는 posting TF를 checked-u64로 합산하도록 producer를 수리했다. Basic/JSON 추정 및 no-delete shortcut은 유지한다. 정확한 resolved metadata에는 local Tantivy가 하나이며 registry twin이 없다.
+- lexical sealed format13/history epoch format2를 도입해 이전 approximate artifacts를 typed rebuild refusal로 처리한다. 새 index의 구버전 미봉인 재개 seam은 별도 감사에서 확인되어 수리 중이다.
+- `VERIFIED`: `./scripts/cargow --lane test-fast-lane test --workspace --test l2_file_mutation --all-features --locked tombstone_scoring_uses_only_live_source_docs -- --nocapture` — 1 passed, 29 filtered, 1.81s. full→delta→delete의 source/hash/order와 score bits가 fresh rebuild와 일치한다.
+- `VERIFIED`: MSRV-compatible equivalent helper 반영 뒤 `./scripts/cargow --lane test-fast-lane test --workspace --test l2_file_mutation --test sealed_manifest --all-features --locked` — L2 30, lexical sealed37, semantic sealed23 모두 passed. 실제 old-format12 base inheritance와 open refusal를 포함한다.
+- vendor 자체 regression은 offline dev-dependency `fail` 부재로 실행되지 않았고 online locked rail을 실행 중이다. full workspace/scale oracle/최종 daemon/format-migration seam 및 seal-time streaming-pass 비용은 `NOT_RUN`이다.
+
 ## 착수 입력
 
 - 현 source/driver schema와 matching release binaries; fresh same corpus roots
