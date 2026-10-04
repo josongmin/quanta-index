@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | source0e6 bat409 warmup0/1 각40/40·독립 verdict 및 native3 실제60요청/독립 raw replay `VERIFIED`. full warmup parity·5제품 join 실행 중; required matrix·정식 qualification 미완료 |
+| 실행 상태 | source0e6 bat409 warmup0/1 각40/40·독립 verdict/full parity 및 당시 native3 실제60요청/독립 raw replay `VERIFIED`. 수정 scorer의 SG scope receipts 재발행 중; fresh native3/5제품 join·required matrix·정식 qualification 미완료 |
 | 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-02](O4-E2-02-external-index-universe.md), [O4-E2-03](O4-E2-03-required-cells-and-scheduling.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -47,6 +47,8 @@ Quanta33캡처/11,272응답과 historical5제품21,815행은 별도의 source/�
 - 후속 current native3 `VERIFIED`: 위 spec으로 canonical collector 실제 실행 및 `--verify /private/tmp/qnb0e6/bat`가 각각 exit0이고 verifier stdout JSON과 saved capture가 일치했다. SG/OG 각각 HTTP200 20/20, cs exit0 20/20, completed response60/60, error0이며 세 제품의 returned-file 합계는 각각0이다. SG79-file owned native stored-document scope와 OG79-file served indexed view가 결속됐고 whole indexed-universe attestation은false다. 이 empty NL 결과는 실행 실패나 whole-universe qualification으로 바꾸지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
+
+- 후속 scorer consumer 수리는 [E1-06](O4-E1-06-final-pool-and-scoreboards.md)의 실제 RED/focused67로 검증됐다. 기존 SG scope가 mutable main의 old scorer control hash에 결속돼 fresh native v2는 exit2로 거절됐다. old capture를 현재 scorer에 재사용하거나 control hashes를 덮어쓰지 않는다. clean source `ae8f96b`에서 새12repo SG scope receipt를 발행한 뒤 same Python3.13.9/source의 native3 capture와 independent replay를 새 root에서 수행한다.
 
 `OWNED`는 에픽 담당 통합, `SHARED`는 I0 반영, `READ`는 기존 구현 소비다. 재현된 결함이나 채택된 계약 변경이 있을 때만 product source를 수정한다. 구현 파일과 독립 검증 파일을 함께 지정한다.
 

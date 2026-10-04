@@ -26,7 +26,7 @@
 - ready 저장소 하나의 성공은 required8/12 전체 matrix 성공이 아니다. 개별 실행 driver의 required ledger에서 미선택 셀은 `NOT_RUN`으로 유지한다.
 - 2026-10-04 23:40 KST 이후 재개에서 Fable 개별 한도429가 별도로 확인됐다. 유효 reviewer raw를 검증해 재사용하고 새 Opus adjudicator identity/root를 준비했으며 기존 Fable 조정 결과는 새 조정 분모에서 제외한다. 무응답 pair를 grade/no-answer로 채우지 않는다. AI 실제 판단과 human provenance를 구분한다.
 - native/Gin/phase 진단과 Darwin/hash-dev owner proof를 독립 gold·learned quality·속도·Linux release qualification으로 승격하지 않는다.
-- current 문서 점검 `VERIFIED`:29 ticket files가 INDEX/WAVES에 모두 나타나고1181 relative links가 실제 대상에 연결되며 빈 section heading은 없었다. `git diff --check`도 exit0이다. 문서 점검을 제품 실행 결과로 합산하지 않는다.
+- current 문서 점검 `VERIFIED`:29 ticket files가 INDEX/WAVES에 모두 나타나고1184 relative links가 실제 대상에 연결되며 빈 section heading은 없었다. `git diff --check`도 exit0이다. 문서 점검을 제품 실행 결과로 합산하지 않는다.
 
 ### 현재 남은 실행 순서
 
@@ -34,7 +34,7 @@
 | --- | --- | --- |
 | W1 / E1 | SQLAlchemy/Zellij fresh Opus 조정→canonical suite/pack 발행 | actual Opus weekly-limit 실패, SQL334pair 유효 보존/잔여146·Zellij476 BLOCKED. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 정책 답변 전 발행 BLOCKED |
 | W3 / E1+I0 | frozen0e6 실제 proof로 나머지 원본8 admissions 발행, 후속 SQLAlchemy/Zellij admissions 연결 | prepared issuer/input; 실제 발행 NOT_RUN. source107 결과를 current로 재표기하지 않음 |
-| W4–W5 / E2+E1 | 수정 file-report scorer에서 native3 fresh capture→독립 replay→bat5제품 join, remaining C3 required matrix→final blind union/검수·재채점 | scorer/test focused67 VERIFIED; 기존 native capture는 scorer hash/runtime drift로 재사용 거절. bat 밖 warmup은 자체 parity 전1회 유지 |
+| W4–W5 / E2+E1 | clean scorer ae8f의 새12repo SG scope receipts→native3 fresh capture→독립 replay→bat5제품 join, remaining C3 matrix→final blind union/검수·재채점 | focused67 VERIFIED; old SG receipts의 mutable main control drift로 새 capture v2 FAILED. 새 scope 실제 발행 중. bat 밖 warmup은 자체 parity 전1회 유지 |
 | W1–W4 / E2 | OG whole live auxiliary/source authority를 canonical query 전후 index/endpoint/consumer에 통합 | 관측 replay 완료; 현재 collector universe=false, named RW volume을 readonly snapshot으로 간주하지 않음 |
 | W1–W4 / E4 | full-call/scanner·fsync/barrier/token 비용을 분리한 실제 측정→조건별 변경 판정 | 현재 lifecycle/CPU 관측만 완료; isolated causal cost·conditional optimization NOT_RUN. 기본 large deadline/xlarge cap capacity gate FAILED |
 | W4–W5 / E1+E4 | untouched holdout의 license·사전 acceptance와 실제 independent gold/정식 반복 성능 | license approver/acceptance·critical strata 및 frequency authority 있는 host 입력 BLOCKED |
