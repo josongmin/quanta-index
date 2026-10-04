@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_AND_REPORT` |
 | 기준 웨이브 | [W5 — 최종 검수·재채점·정책 판정](../waves/W5-final-scoring-and-policy.md) |
-| 실행 상태 | source0e6 bat409 fresh pair40rows·독립 verdict·native3 actual60요청/raw replay `VERIFIED`;5제품 join consumer scope 수리/focused67 및 clean628541 canonical owner 수리 후 retained bat raw replay `VERIFIED`. 새 focused·native capture/join, 전체 cohort·unseen/human·속도 qualification 미완료 |
+| 실행 상태 | source0e6 bat409 fresh pair40rows·독립 verdict·native3 actual60요청/raw replay `VERIFIED`;5제품 join consumer scope 수리/focused67 및 clean628541 canonical owner 수리 후 retained bat raw replay `VERIFIED`. 후속97eedd focused203 VERIFIED; 새 SG/native capture/join, 전체 cohort·unseen/human·속도 qualification 미완료 |
 | 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-04](O4-E2-04-fresh-five-product-captures.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -37,6 +37,8 @@
 - 이 consumer source를 clean `628541e150192b4aaf0ff4ba54566ae28c6ca25f`/`/Users/songmin/.codex/worktrees/oct5-canonical-consumer/quanta-index`로 고정했고 actual readback의 helper bytes와 같다. ae8f native/SG 기록은 당시 scope로 보존하고 새 고정 consumer source/control epoch에서 후속 캡처한다. focused 회귀는 아직 `NOT_RUN`이다.
 
 ## 2026-10-05 JSON 타입 결속 수리
+
+- actual `VERIFIED`: clean `97eedd11b70e76c66985b15a968211a2faf92c6d`의 Python3.13.9에서 `python -m pytest tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_lexical_file_comparison.py tools/ci/tests/test_portable_proof.py -q --tb=short -k 'code_search_file_pair_reports_only_independent_file_judgments or test_lexical_file_comparison or test_portable_proof or pair_derives_binary_source_only_after_fresh_sdk_chain_verifies or pair_provenance_keeps_driver_revision_distinct_from_unattested_binary_source or verdict_refuses_bound_execution_context_tampering or verdict_full_receipts_all_green' -o cache_dir=/private/tmp/qi-canonical-json-97eedd-serial-v3/pytest-cache --junitxml=/private/tmp/qi-canonical-json-97eedd-serial-v3/pytest.xml` — exit0,203 selected/passed,0failed/skipped,563deselected,pytest82.93s/controller83.847s. JUnit의203cases 및 relocated Contract/SDK2cases를 별도로 읽었다. 기존 record_property/xunit2 warning1은 실패/skip이 아니며 Rust/full source formal proof나 새로운 native 결과가 아니다.
 
 - 실행 전 독립 controller 감사에서 saved verdict의 `os_portability.qualified:false→0`을 Python 객체 equality가 거절하지 못하는 경로를 확인했다. `_json`은 이 내부 타입을 검증하지 않으며 file-pair의 후속 count 검사도 해당 필드를 검사하지 않는다. complete report의 `graded:true→1`도 helper equality에서 같은 문제다.
 - canonical file-pair report/verdict 두 비교를 기존 canonical JSON serializer bytes equality로 변경했다. 기존 독립 report3-policy/fresh-SDK fixture에 bool→number 및 integer→float 변조 거절을 추가했다. scorer SHA `d4b54ffe715117b6ddfd4138ac60d1031c477b5333195bde1d6962264513aaf0`, regression SHA `545b83929e9cf64b4ec16b381a8b4b2552f8c04be12df653251112df7d0b0ceb`다. Ruff check/format·diff-check exit0이며 새 focused 회귀는 `NOT_RUN`이다.

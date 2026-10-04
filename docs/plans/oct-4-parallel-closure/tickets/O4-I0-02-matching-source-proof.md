@@ -5,12 +5,14 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | frozen source0e6 Contract788/191·fresh release SDK27·portable verifiers·semantic97·large restart/scale/load `VERIFIED`. 후속 report-scope 수리/focused67 및 clean628541 canonical owner 수리 후 retained bat raw·Contract/SDK 교차 checkout replay `VERIFIED`. 새 focused 회귀·SG/native·join `NOT_RUN`. frozen proof를 새 main 전체 proof로 승격하지 않음. hosted CI `NOT_RUN` |
+| 실행 상태 | frozen source0e6 Contract788/191·fresh release SDK27·portable verifiers·semantic97·large restart/scale/load `VERIFIED`. 후속 report-scope 수리/focused67 및 clean628541 canonical owner 수리 후 retained bat raw·Contract/SDK 교차 checkout replay `VERIFIED`. 후속97eedd focused203 `VERIFIED`; 새 SG/native·join 미완료. frozen proof를 새 main 전체 proof로 승격하지 않음. hosted CI `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
 ## 2026-10-05 후속 ANN epoch의 현재 검증 경계
+
+- actual `VERIFIED`: clean `97eedd11b70e76c66985b15a968211a2faf92c6d`의 Python3.13.9에서 `python -m pytest tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_lexical_file_comparison.py tools/ci/tests/test_portable_proof.py -q --tb=short -k 'code_search_file_pair_reports_only_independent_file_judgments or test_lexical_file_comparison or test_portable_proof or pair_derives_binary_source_only_after_fresh_sdk_chain_verifies or pair_provenance_keeps_driver_revision_distinct_from_unattested_binary_source or verdict_refuses_bound_execution_context_tampering or verdict_full_receipts_all_green' -o cache_dir=/private/tmp/qi-canonical-json-97eedd-serial-v3/pytest-cache --junitxml=/private/tmp/qi-canonical-json-97eedd-serial-v3/pytest.xml` — exit0,203 selected/passed,0failed/skipped,563deselected,pytest82.93s/controller83.847s. JUnit의203cases 및 relocated Contract/SDK2cases를 별도로 읽었다. 기존 record_property/xunit2 warning1은 실패/skip이 아니며 Rust/full source formal proof나 새로운 native 결과가 아니다.
 
 - 중앙 consumer 실행 controller의 정적 감사에서 Python `assert` 비활성화, PID 문자열 조회 실패를 종료로 오판하는 경로, guard 예외 시 terminal 누락 및 producer 성공을 독립 검증으로 승격하는 경로를 수정했다. `/private/tmp/qi-canonical-consumer-628541-serial-v2.py` SHA `99d7747a7bf7f120c76a3a31007581fb05934b7d0f43401cb43318f0e072a56b`는 명시적 거절·`os.kill(pid,0)`·phase terminal/미실행 ledger·producer `SUCCEEDED`/replay `VERIFIED`를 사용한다. 이전 대기 배치v1은 actual phase 시작 전 중단했고 원본을 보존했다. v2는 current issuer 종료를 대기 중이며 실제 테스트·capture 결과는 아직 아니다.
 - 준비된8 pair controller(`/private/tmp/qi-current-eight-pair-execute-prepared-v1.py` SHA `e299cb8e054cb74436663cd87b04416b0b83cdee08ce7d5bb795a216b4f19ff3`)와 native8 controller는 마지막 guard 실패를 aggregate ledger에 남기고 전체 성공을 거절한다. 정적 감사의 범위다. actual job 전체에 별도 wall-clock deadline을 추가한 것은 아니며 내부 timeout·root 실행 감시와 구분한다.
