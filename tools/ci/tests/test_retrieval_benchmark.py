@@ -10531,6 +10531,7 @@ def test_run_pair_promotes_complete_stage_and_public_verdict_replays(tmp_path, m
 def test_pair_staging_atomicity(tmp_path, monkeypatch):
     cache, revision = _pinned_semble_cache(tmp_path)
     repo, suite, _run, _sp, _rp, _files = fixture_v3(tmp_path / "src")
+    suite["routes"].append("semble-hybrid")
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
         json.dumps({"repository_commit": suite["repository_commit"]}), encoding="utf-8"
@@ -10573,6 +10574,7 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
             "quanta": qp.execution_profile("native"),
             "semble": semble_adapter.execution_profile("native-default", None),
         },
+        "routes": ["lexical", "hybrid"],
         "top_k": 10,
         "output_root": str(tmp_path / "out"),
         "runner_binary": "/unused/runner",
@@ -10620,6 +10622,13 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
         pairrun.run_pair(invalid)
     assert not Path(invalid["output_root"]).exists()
     assert not (tmp_path / "invalid-gold.staging" / "rep-00").exists()
+
+    monkeypatch.setattr(pairrun, "validate_suite", ev.validate_suite)
+    wrong_routes = dict(spec, output_root=str(tmp_path / "wrong-routes"), routes=["lexical"])
+    with pytest.raises(pairrun.RunError, match="frozen suite routes differ"):
+        pairrun.run_pair(wrong_routes)
+    assert not Path(wrong_routes["output_root"]).exists()
+    assert not (tmp_path / "wrong-routes.staging" / "rep-00").exists()
 
 
 def test_matrix_floor_no_cross_strategy_inflation():

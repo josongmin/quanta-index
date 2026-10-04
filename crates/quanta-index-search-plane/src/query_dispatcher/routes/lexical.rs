@@ -36,9 +36,9 @@ const LEXICAL_CURSOR_ORDER_V2: &str = "score_desc_source_repo_path_line_candidat
 // The signed cursor context must change when CodeSearch scoring changes,
 // even if the sealed generation and query text remain identical.
 pub(super) const CODE_SEARCH_CURSOR_ORDER: &str =
-    "code_search_file_overlap_score_v1_desc_source_repo_path_line_candidate";
+    "code_search_file_overlap_score_v2_desc_source_repo_path_line_candidate";
 const CODE_SEARCH_TYPO_CURSOR_ORDER: &str =
-    "code_search_identifier_typo_osa1_v1_desc_source_repo_path_line_candidate";
+    "code_search_identifier_typo_osa1_declaration_v2_desc_source_repo_path_line_candidate";
 const CODE_SEARCH_COMPONENT_CURSOR_ORDER: &str =
     "code_search_symbol_components_v1_desc_source_repo_path_line_candidate";
 

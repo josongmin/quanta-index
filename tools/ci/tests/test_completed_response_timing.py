@@ -426,6 +426,12 @@ def test_completed_clock_binds_cold_and_warmup_to_normalized_output(phase_name):
     }]}
     metrics["query_timing"] = _timing(metrics, record)
     pairrun.validate_completed_query_timing(metrics, record, require_output_validation=True)
+    wrong_status = copy.deepcopy(metrics)
+    for observation in wrong_status["query_timing"]["observations"]:
+        if observation["phase"] == phase_name:
+            observation["status"] = "capped"
+    with pytest.raises(pairrun.RunError, match="status differs"):
+        pairrun.validate_completed_query_timing(wrong_status, record, require_output_validation=True)
     changed = copy.deepcopy(record["results"][0])
     changed["candidates"][0]["path"] = "b.go"
     for observation in metrics["query_timing"]["observations"]:
@@ -515,7 +521,7 @@ def test_semble_parent_refuses_changed_later_output_with_same_size_and_status(tm
         "import json,sys\n"
         "for i in range(2):\n"
         f" print(json.dumps({{'kind':'request_ready','task_id':'T1','phase':{first_phase!r} if i==0 else 'measured',"
-        "'iteration':i,'indexed_chunks':1}),flush=True)\n"
+        f"'iteration':i if {first_phase!r}=='measured' else 0,'indexed_chunks':1}}),flush=True)\n"
         " json.loads(sys.stdin.readline())\n"
         " print(json.dumps({'kind':'response','task_id':'T1','results':[{'score':1.0+i}]}),flush=True)\n"
         " sys.stdin.readline()\n"

@@ -6176,13 +6176,13 @@ def validate_completed_query_timing(
         if record and require_completed_status:
             if entry["status"] not in {"success", "abstained", "capped"}:
                 raise RunError("completed-response timing includes incomplete or failed requests")
-        if record and entry["phase"] == "measured":
+        if record and (output_validated or entry["phase"] == "measured"):
             row = record_rows.get((entry["task_id"], entry["route"]))
             if row is None or row["status"] != entry["status"]:
                 raise RunError(
                     "completed-response timing status differs from the normalized response"
                 )
-            if entry["iteration"] == 0 and not math.isclose(
+            if entry["phase"] == "measured" and entry["iteration"] == 0 and not math.isclose(
                 row["timings"]["query_latency_ms"], elapsed_ms, rel_tol=1e-9, abs_tol=1e-9
             ):
                 raise RunError("completed-response timing differs from normalized row latency")
@@ -9567,6 +9567,15 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     suite, pack, source = validate_suite(repo, read_json(Path(spec["suite"])))
     if read_json(Path(spec["query_pack"])) != pack:
         raise RunError("frozen query pack differs from the validated suite")
+    expected_routes = set(spec.get("routes", ["lexical", "semantic", "hybrid"])) | set(
+        semble_routes
+    )
+    if set(suite["routes"]) != expected_routes:
+        raise RunError(
+            "frozen suite routes differ from configured product routes: "
+            f"missing={sorted(expected_routes - set(suite['routes']))} "
+            f"extra={sorted(set(suite['routes']) - expected_routes)}"
+        )
     suite_validation_finished_ns = time.monotonic_ns()
     rep_layouts: list[dict] = []
     product_ns = {"quanta": 0, "semble": 0}

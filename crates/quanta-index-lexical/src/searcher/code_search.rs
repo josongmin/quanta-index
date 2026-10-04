@@ -2249,6 +2249,13 @@ impl TantivySearcher {
             }
         }
         stats.typo_shortlist_admission_ns = observed_ns(typo_started)?;
+        let declaration_started = Instant::now();
+        let declarations = ranking::typo_declaration_distances(
+            self, authority, &selected, identifier, case, budget,
+        )?;
+        // Source-bound symbol verification is part of candidate materialization.
+        add_observed_ns(&mut stats.typo_materialize_ns, declaration_started,
+            "typo declaration materialization")?;
         let mut comparisons = 0;
         let mut distance_cache = TypoDistanceCache::new();
         let mut ranked = Vec::new();
@@ -2284,6 +2291,10 @@ impl TantivySearcher {
             let score = f32::from(
                 200_u16
                     .saturating_sub(u16::from(distance).saturating_mul(100))
+                    // Lexicographic policy: edit distance, attested declaration,
+                    // occurrence. Eight dominates the bounded occurrence 0..6
+                    // while remaining strictly below the next distance tier.
+                    .saturating_add(if declarations.get(key) == Some(&distance) { 8 } else { 0 })
                     .saturating_add(
                         u16::from(witness.occurrences.saturating_sub(1)).saturating_mul(2),
                     ),

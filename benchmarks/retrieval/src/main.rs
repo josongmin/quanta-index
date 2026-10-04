@@ -393,8 +393,9 @@ impl CompletedOutputLedger {
         output_sha256: &str,
     ) -> BenchResult<()> {
         let key = (task_id.to_string(), route.to_string());
+        let is_first_measured = phase == "measured" && iteration == 0;
         if phase == "measured" {
-            if iteration == 0 && !self.first_measured.insert(key.clone()) {
+            if is_first_measured && self.first_measured.contains(&key) {
                 return Err(BenchError::Protocol(format!(
                     "duplicate first measured response for {task_id}/{route}"
                 )));
@@ -409,14 +410,18 @@ impl CompletedOutputLedger {
                 "unknown completed response phase {phase}"
             )));
         }
-        let Some(expected) = self.first_output.get(&key) else {
-            self.first_output.insert(key, output_sha256.to_string());
-            return Ok(());
-        };
-        if expected != output_sha256 {
-            return Err(BenchError::Protocol(format!(
-                "completed response changed across phases or repetitions for {task_id}/{route} at {phase} iteration {iteration}"
-            )));
+        if let Some(expected) = self.first_output.get(&key) {
+            if expected != output_sha256 {
+                return Err(BenchError::Protocol(format!(
+                    "completed response changed across phases or repetitions for {task_id}/{route} at {phase} iteration {iteration}"
+                )));
+            }
+        } else {
+            self.first_output
+                .insert(key.clone(), output_sha256.to_string());
+        }
+        if is_first_measured {
+            let _inserted = self.first_measured.insert(key);
         }
         Ok(())
     }
@@ -2037,7 +2042,9 @@ mod tests {
         assert!(
             ledger
                 .observe("T1", "lexical", "measured", 2, "second")
-                .is_err_and(|error| error.to_string().contains("changed across phases or repetitions"))
+                .is_err_and(|error| error
+                    .to_string()
+                    .contains("changed across phases or repetitions"))
         );
         assert!(
             ledger
@@ -2063,7 +2070,9 @@ mod tests {
             assert!(
                 changed
                     .observe("T1", "lexical", changed_phase, 0, "second")
-                    .is_err_and(|error| error.to_string().contains("changed across phases or repetitions")),
+                    .is_err_and(|error| error
+                        .to_string()
+                        .contains("changed across phases or repetitions")),
                 "{changed_phase} must match the cold response"
             );
         }
@@ -2074,7 +2083,9 @@ mod tests {
         assert!(
             warmup_first
                 .observe("T2", "lexical", "measured", 0, "second")
-                .is_err_and(|error| error.to_string().contains("changed across phases or repetitions"))
+                .is_err_and(|error| error
+                    .to_string()
+                    .contains("changed across phases or repetitions"))
         );
         assert!(
             warmup_first
