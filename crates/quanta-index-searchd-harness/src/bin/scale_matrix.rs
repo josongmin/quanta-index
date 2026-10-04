@@ -262,10 +262,10 @@ fn main() -> ExitCode {
             println!(
                 "scale[{}] delete_reopen: delete_seal_ms={:.3} activation_ms={:.3} same_process_reopen_ms={:.3} reopened_first_query_ms={:.3}",
                 measurement.tier.as_str(),
-                delete.delete_seal_ms,
-                delete.delete_activation_ms,
-                delete.same_process_reopen_ms,
-                delete.reopened_first_query_ms,
+                delete.delete_seal,
+                delete.delete_activation,
+                delete.same_process_reopen,
+                delete.reopened_first_query,
             );
         }
     }

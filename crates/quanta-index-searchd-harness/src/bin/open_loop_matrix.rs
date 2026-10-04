@@ -326,7 +326,7 @@ mod tests {
         };
         let failure = anyhow::Error::new(ScaleStageError::operation(
             "build_seal",
-            anyhow::anyhow!("fixed retention fault"),
+            &anyhow::anyhow!("fixed retention fault"),
         ));
         let execution = execution_context(&config)?;
         let refusal = refusal_json_with_context(

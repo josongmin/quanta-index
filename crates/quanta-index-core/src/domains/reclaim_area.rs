@@ -641,7 +641,14 @@ mod tests {
         entered_rx.recv_timeout(Duration::from_secs(2))?;
         cancel.cancel();
         release_tx.send(())?;
-        let result = worker.join().map_err(|_| "walker thread panicked")?;
+        let result = worker.join().map_err(|panic| {
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            format!("walker thread panicked: {message}")
+        })?;
         if !matches!(
             result,
             Err(CoreError::Typed {

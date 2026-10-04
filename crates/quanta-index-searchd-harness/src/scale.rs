@@ -365,6 +365,7 @@ fn parse_source_repo_index(source_repo_id: &str) -> AnyResult<u32> {
 }
 
 /// Planted query token unique to one generated source repository.
+#[must_use]
 pub fn repo_query_token(repo_index: u32) -> String {
     format!("scalereponeedle{repo_index:03}")
 }
@@ -438,8 +439,9 @@ impl ScopedOracle {
                 .repo_relative_path
                 .strip_prefix("src/file_")
                 .and_then(|suffix| suffix.strip_suffix(".rs"))
-                .and_then(|digits| digits.parse::<u32>().ok())
-                .ok_or_else(|| anyhow::anyhow!("scale: invalid scoped file path"))?;
+                .ok_or_else(|| anyhow::anyhow!("scale: invalid scoped file path"))?
+                .parse::<u32>()
+                .map_err(|error| anyhow::anyhow!("scale: invalid scoped file path: {error}"))?;
             let file_anchor = format!("// {} anchor", file_query_token(repo_index, file_index));
             if !file.repo_relative_path.starts_with("src/")
                 || file.repo_relative_path.contains("..")
@@ -615,7 +617,8 @@ impl std::fmt::Display for ScaleStageError {
 impl std::error::Error for ScaleStageError {}
 
 impl ScaleStageError {
-    pub fn operation(stage: &'static str, error: anyhow::Error) -> Self {
+    #[must_use]
+    pub fn operation(stage: &'static str, error: &anyhow::Error) -> Self {
         Self {
             stage,
             limit: None,
@@ -625,7 +628,8 @@ impl ScaleStageError {
         }
     }
 
-    pub fn source_admission(error: anyhow::Error) -> Self {
+    #[must_use]
+    pub fn source_admission(error: &anyhow::Error) -> Self {
         let refusal = error.downcast_ref::<ScaleAdmissionRefusal>();
         Self {
             stage: "source_preflight",
@@ -636,7 +640,8 @@ impl ScaleStageError {
         }
     }
 
-    pub fn wire_admission(error: anyhow::Error) -> Self {
+    #[must_use]
+    pub fn wire_admission(error: &anyhow::Error) -> Self {
         Self {
             stage: "wire_preflight",
             limit: None,
@@ -654,7 +659,7 @@ fn stage_or_preserve<E: Into<anyhow::Error>>(stage: &'static str, error: E) -> a
     {
         error
     } else {
-        ScaleStageError::operation(stage, error).into()
+        ScaleStageError::operation(stage, &error).into()
     }
 }
 
@@ -825,8 +830,10 @@ pub struct AdapterPhaseTimingV1 {
 }
 
 /// One delta step: one file changed, ingested and sealed as a delta
-/// generation, then activated. Retention may reclaim an older generation;
-/// the recorded byte difference establishes whether physical bytes shrank.
+/// generation, then activated.
+///
+/// Retention may reclaim an older generation; the recorded byte difference
+/// establishes whether physical bytes shrank.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeltaMeasurementV1 {
     /// Ingest of the one changed file through seal.
@@ -852,15 +859,16 @@ pub struct NoOpMeasurementV1 {
     pub activation_ms: f64,
 }
 
+/// Delete and reopen durations, in milliseconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeleteReopenMeasurementV1 {
-    pub delete_seal_ms: f64,
-    pub delete_activation_ms: f64,
+    pub delete_seal: f64,
+    pub delete_activation: f64,
     /// Stops and restarts the daemon thread in the same OS process, then
     /// waits for readiness. This is not a cold process or cold page cache.
-    pub same_process_reopen_ms: f64,
+    pub same_process_reopen: f64,
     /// First served positive file query after the daemon thread is ready.
-    pub reopened_first_query_ms: f64,
+    pub reopened_first_query: f64,
 }
 
 /// Captured measurements for one measured tier run.
@@ -899,7 +907,7 @@ pub struct TierMeasurement {
     pub requested_client_request_timeout_ms: Option<u64>,
     pub history_max_bytes: u64,
     pub requested_history_max_bytes: Option<u64>,
-    /// RUSAGE_SELF around runtime boot through driver cleanup. The daemon is
+    /// `RUSAGE_SELF` around runtime boot through driver cleanup. The daemon is
     /// an in-process thread; this includes harness and daemon CPU time.
     pub cpu: Option<CpuUsageV1>,
     /// Current-RSS samples and process CPU for the named timed operations.
@@ -986,11 +994,13 @@ struct DiskPoint {
     snapshot: DiskSnapshotV1,
 }
 
-/// st_blocks is measured per unique inode, so inherited hard links are not
-/// multiplied. This is allocated storage observed under the state root, not
-/// host-wide disk consumption or bytes written by the phase.
-/// Cancellation is cooperative between directory entries; a blocked metadata,
-/// read_dir, iterator or statvfs syscall cannot be interrupted here.
+/// `st_blocks` is measured per unique inode, so inherited hard links are not
+/// multiplied.
+///
+/// This is allocated storage observed under the state root, not host-wide disk
+/// consumption or bytes written by the phase. Cancellation is cooperative
+/// between directory entries; a blocked metadata, `read_dir`, iterator or
+/// `statvfs` syscall cannot be interrupted here.
 #[cfg(unix)]
 fn allocated_root_bytes_with_cancel(
     root: &Path,
@@ -1034,14 +1044,18 @@ fn disk_snapshot_result(root: &Path, stopped: Option<&AtomicBool>) -> AnyResult<
         "disk_probe_cancelled"
     );
     let filesystem = statvfs(root)?;
-    let fragment_size = u64::try_from(filesystem.fragment_size())?;
+    let fragment_size = u128::from(filesystem.fragment_size());
     anyhow::ensure!(fragment_size > 0, "scale: filesystem fragment size is zero");
-    let filesystem_free_bytes = u64::try_from(filesystem.blocks_free())?
+    let filesystem_free_bytes = u128::from(filesystem.blocks_free())
         .checked_mul(fragment_size)
         .ok_or_else(|| anyhow::anyhow!("scale: filesystem free bytes overflow"))?;
-    let filesystem_available_bytes = u64::try_from(filesystem.blocks_available())?
+    let filesystem_available_bytes = u128::from(filesystem.blocks_available())
         .checked_mul(fragment_size)
         .ok_or_else(|| anyhow::anyhow!("scale: filesystem available bytes overflow"))?;
+    let filesystem_free_bytes = u64::try_from(filesystem_free_bytes)
+        .map_err(|error| anyhow::anyhow!("scale: filesystem free bytes overflow: {error}"))?;
+    let filesystem_available_bytes = u64::try_from(filesystem_available_bytes)
+        .map_err(|error| anyhow::anyhow!("scale: filesystem available bytes overflow: {error}"))?;
     Ok(DiskSnapshotV1 {
         allocated_bytes: Some(allocated_bytes),
         filesystem_free_bytes: Some(filesystem_free_bytes),
@@ -1056,12 +1070,15 @@ fn disk_snapshot_result(_root: &Path, _stopped: Option<&AtomicBool>) -> AnyResul
 }
 
 fn disk_point(root: &Path, stopped: Option<&AtomicBool>) -> DiskPoint {
-    let snapshot = disk_snapshot_result(root, stopped).unwrap_or_else(|error| DiskSnapshotV1 {
-        allocated_bytes: None,
-        filesystem_free_bytes: None,
-        filesystem_available_bytes: None,
-        unavailable_reason: Some(format!("probe_unavailable: {error:#}")),
-    });
+    let snapshot = match disk_snapshot_result(root, stopped) {
+        Ok(snapshot) => snapshot,
+        Err(error) => DiskSnapshotV1 {
+            allocated_bytes: None,
+            filesystem_free_bytes: None,
+            filesystem_available_bytes: None,
+            unavailable_reason: Some(format!("probe_unavailable: {error:#}")),
+        },
+    };
     DiskPoint {
         at: Instant::now(),
         snapshot,
@@ -1076,7 +1093,7 @@ fn summarize_phase_disk(
     samples: &[DiskPoint],
     periodic_probe_wall_ms: f64,
 ) -> PhaseDiskV1 {
-    let mut sampled = Vec::new();
+    let mut interior_samples = Vec::new();
     let mut high = start.snapshot.allocated_bytes;
     let mut observed_interior_allocation = false;
     let mut previous = started;
@@ -1089,7 +1106,7 @@ fn summarize_phase_disk(
                 observed_interior_allocation = true;
                 high = Some(high.map_or(bytes, |prior| prior.max(bytes)));
             }
-            sampled.push(PhaseDiskSampleV1 {
+            interior_samples.push(PhaseDiskSampleV1 {
                 offset_ms: point.at.duration_since(started).as_secs_f64() * 1_000.0,
                 snapshot: point.snapshot.clone(),
             });
@@ -1108,7 +1125,7 @@ fn summarize_phase_disk(
         start: start.snapshot,
         end: end.snapshot,
         sampled_max_allocated_bytes: high,
-        sampled,
+        sampled: interior_samples,
         observed_max_gap_ms: max_gap.as_secs_f64() * 1_000.0,
         periodic_probe_wall_ms,
         method: if cfg!(unix) {
@@ -1119,6 +1136,18 @@ fn summarize_phase_disk(
     }
 }
 
+type RssSamplerResultV1 = AnyResult<(Vec<RssPoint>, f64)>;
+type RssSamplerJoinV1 = thread::JoinHandle<RssSamplerResultV1>;
+
+fn sampler_panic(kind: &str, panic: &(dyn std::any::Any + Send)) -> anyhow::Error {
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("non-string panic payload");
+    anyhow::anyhow!("scale: {kind} sampler thread panicked: {message}")
+}
+
 struct PhaseSampler {
     started: Instant,
     cpu_started: CpuSnapshot,
@@ -1127,7 +1156,7 @@ struct PhaseSampler {
     disk_start: Option<DiskPoint>,
     setup_ms: f64,
     stopped: Arc<AtomicBool>,
-    worker: Option<thread::JoinHandle<AnyResult<(Vec<RssPoint>, f64)>>>,
+    worker: Option<RssSamplerJoinV1>,
     disk_worker: Option<thread::JoinHandle<(Vec<DiskPoint>, f64)>>,
 }
 
@@ -1224,10 +1253,10 @@ impl PhaseSampler {
             worker.join()
         });
         let (samples, observer_periodic_probe_wall_ms) =
-            rss_result.map_err(|_| anyhow::anyhow!("scale: RSS sampler thread panicked"))??;
+            rss_result.map_err(|panic| sampler_panic("RSS", panic.as_ref()))??;
         let (disk_samples, disk_probe_wall_ms) = disk_result
             .transpose()
-            .map_err(|_| anyhow::anyhow!("scale: disk sampler thread panicked"))?
+            .map_err(|panic| sampler_panic("disk", panic.as_ref()))?
             .unwrap_or_default();
         // The periodic worker is joined before this boundary walk so a phase
         // never runs two recursive state-root walkers at once.
@@ -1246,9 +1275,11 @@ impl PhaseSampler {
             rss_end,
             &samples,
             cpu,
-            self.setup_ms,
-            teardown_started.elapsed().as_secs_f64() * 1_000.0,
-            observer_periodic_probe_wall_ms,
+            PhaseObserverTimingV1 {
+                setup: self.setup_ms,
+                teardown: teardown_started.elapsed().as_secs_f64() * 1_000.0,
+                periodic_probe_wall: observer_periodic_probe_wall_ms,
+            },
         )?;
         if let (Some(_root), Some(start), Some(end)) =
             (self.disk_root.as_deref(), disk_start, disk_end)
@@ -1297,6 +1328,14 @@ impl Drop for PhaseSampler {
     }
 }
 
+/// Observer overhead around a timed phase, in milliseconds.
+#[derive(Clone, Copy)]
+struct PhaseObserverTimingV1 {
+    setup: f64,
+    teardown: f64,
+    periodic_probe_wall: f64,
+}
+
 fn summarize_phase_resources(
     started: Instant,
     ended: Instant,
@@ -1304,9 +1343,7 @@ fn summarize_phase_resources(
     rss_end: RssPoint,
     samples: &[RssPoint],
     cpu: CpuUsageV1,
-    setup_ms: f64,
-    teardown_ms: f64,
-    periodic_probe_wall_ms: f64,
+    observer: PhaseObserverTimingV1,
 ) -> AnyResult<PhaseResourceV1> {
     if ended < started || rss_start.at > started || rss_end.at < ended {
         anyhow::bail!("scale: RSS phase boundary timestamps are invalid");
@@ -1317,7 +1354,7 @@ fn summarize_phase_resources(
     let mut previous = rss_start.at;
     let mut sampled_max = rss_start.bytes.max(rss_end.bytes);
     let mut sampled_rss = Vec::new();
-    let mut discarded_outside_phase_samples = 0;
+    let mut discarded_outside_phase_samples = 0_usize;
     for sample in samples {
         if sample.bytes == 0 || sample.at <= previous || sample.at >= rss_end.at {
             anyhow::bail!("scale: RSS sample is zero or timestamps are not increasing");
@@ -1330,7 +1367,9 @@ fn summarize_phase_resources(
             });
             sampled_max = sampled_max.max(sample.bytes);
         } else {
-            discarded_outside_phase_samples += 1;
+            discarded_outside_phase_samples = discarded_outside_phase_samples
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("scale: discarded RSS sample count overflow"))?;
         }
     }
     // Use the timed operation boundaries; setup and teardown are reported
@@ -1362,9 +1401,9 @@ fn summarize_phase_resources(
         sampled_rss,
         observed_max_gap_ms: max_gap.as_secs_f64() * 1_000.0,
         observation_span_ms: ended.duration_since(started).as_secs_f64() * 1_000.0,
-        observer_setup_ms: setup_ms,
-        observer_teardown_ms: teardown_ms,
-        observer_periodic_probe_wall_ms: periodic_probe_wall_ms,
+        observer_setup_ms: observer.setup,
+        observer_teardown_ms: observer.teardown,
+        observer_periodic_probe_wall_ms: observer.periodic_probe_wall,
         discarded_outside_phase_samples,
         disk: None,
     })
@@ -1394,8 +1433,7 @@ fn combine_phase_result<T>(
 ) -> AnyResult<(T, PhaseResourceV1)> {
     match (measurement, observation) {
         (Ok(value), Ok(resources)) => Ok((value, resources)),
-        (Err(error), Ok(_)) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
         (Err(primary), Err(cleanup)) => Err(ScaleRuntimeFailure {
             primary: Some(primary),
             cleanup,
@@ -1441,7 +1479,9 @@ fn current_rss_bytes_via_ps() -> AnyResult<u64> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(2))
+        .ok_or_else(|| anyhow::anyhow!("scale: ps RSS probe deadline overflow"))?;
     loop {
         let status = match child.try_wait() {
             Ok(status) => status,
@@ -1526,9 +1566,10 @@ fn timeout_ms(client_timeout: Option<Duration>) -> AnyResult<u64> {
     Ok(millis)
 }
 
-/// Keep the measurement error and daemon teardown error separately. A failed
-/// driver must never turn a failed measurement into a successful tier, and a
-/// panic in `E2eRuntime::Drop` must not erase the primary error.
+/// Keep the measurement error and daemon teardown error separately.
+///
+/// A failed driver must never turn a failed measurement into a successful
+/// tier, and a panic in `E2eRuntime::Drop` must not erase the primary error.
 #[derive(Debug)]
 struct ScaleRuntimeFailure {
     primary: Option<anyhow::Error>,
@@ -1617,7 +1658,7 @@ fn optional_cold_open_window(
         .checked_sub(count_before)
         .ok_or_else(|| anyhow::anyhow!("scale: cold-open histogram count decreased"))?;
     match count {
-        0 if sum_after == sum_before => Ok(None),
+        0 if sum_after.partial_cmp(&sum_before) == Some(std::cmp::Ordering::Equal) => Ok(None),
         1 => Ok(Some(sum_after - sum_before)),
         _ => Err(anyhow::anyhow!(
             "scale: cold-open histogram recorded {count} samples for one query"
@@ -1829,17 +1870,17 @@ fn measure_scoped_delete_reopen(
     let (delete_seal_ms, delete_resource) = observe_phase_at_root(Some(&disk_root), || {
         let delete_started = Instant::now();
         rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)
-            .map_err(|error| ScaleStageError::operation("delete", error))?;
+            .map_err(|error| ScaleStageError::operation("delete", &error))?;
         let _generation = rt
             .seal()
-            .map_err(|error| ScaleStageError::operation("delete_seal", error))?;
+            .map_err(|error| ScaleStageError::operation("delete_seal", &error))?;
         Ok(elapsed_ms(delete_started))
     })?;
     let (delete_activation_ms, activation_resource) =
         observe_phase_at_root(Some(&disk_root), || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
-                .map_err(|error| ScaleStageError::operation("delete_activate", error))?;
+                .map_err(|error| ScaleStageError::operation("delete_activate", &error))?;
             Ok(elapsed_ms(activation_started))
         })?;
     let successor = oracle.without_file("repo0", &file.repo_relative_path)?;
@@ -1856,9 +1897,9 @@ fn measure_scoped_delete_reopen(
         observe_phase_at_root(Some(&disk_root), || {
             let reopen_started = Instant::now();
             rt.try_reopen_in_place()
-                .map_err(|error| ScaleStageError::operation("reopen_stop", error))?;
+                .map_err(|error| ScaleStageError::operation("reopen_stop", &error))?;
             rt.start()
-                .map_err(|error| ScaleStageError::operation("reopen_start", error))?;
+                .map_err(|error| ScaleStageError::operation("reopen_start", &error))?;
             Ok(elapsed_ms(reopen_started))
         })?;
     let first_query_started = Instant::now();
@@ -1876,10 +1917,10 @@ fn measure_scoped_delete_reopen(
     record_phase(&mut phase_resources, "same_process_reopen", reopen_resource)?;
     Ok((
         DeleteReopenMeasurementV1 {
-            delete_seal_ms,
-            delete_activation_ms,
-            same_process_reopen_ms,
-            reopened_first_query_ms,
+            delete_seal: delete_seal_ms,
+            delete_activation: delete_activation_ms,
+            same_process_reopen: same_process_reopen_ms,
+            reopened_first_query: reopened_first_query_ms,
         },
         phase_resources,
     ))
@@ -1958,7 +1999,7 @@ fn measure_delta(
         rt.ingest_text(serving_owner.as_str(), path, &changed)?;
         let _generation = rt
             .seal()
-            .map_err(|error| ScaleStageError::operation("delta_seal", error))?;
+            .map_err(|error| ScaleStageError::operation("delta_seal", &error))?;
         Ok(elapsed_ms(update_started))
     })?;
     let after_build = directory_bytes(rt.state_root())?;
@@ -1966,7 +2007,7 @@ fn measure_delta(
         observe_phase_at_root(Some(&disk_root), || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
-                .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
+                .map_err(|error| ScaleStageError::operation("delta_activate", &error))?;
             Ok(elapsed_ms(activation_started))
         })?;
     let after_activation = directory_bytes(rt.state_root())?;
@@ -1994,7 +2035,7 @@ fn measure_noop(
         let started = Instant::now();
         let sealed = rt
             .seal()
-            .map_err(|error| ScaleStageError::operation("noop_seal", error))?;
+            .map_err(|error| ScaleStageError::operation("noop_seal", &error))?;
         if sealed != expected_generation {
             anyhow::bail!("scale: no-op seal published the wrong generation");
         }
@@ -2003,7 +2044,7 @@ fn measure_noop(
     let (activation_ms, activation_resource) = observe_phase_at_root(Some(&disk_root), || {
         let started = Instant::now();
         rt.activate_last_sealed_generation()
-            .map_err(|error| ScaleStageError::operation("noop_activate", error))?;
+            .map_err(|error| ScaleStageError::operation("noop_activate", &error))?;
         Ok(elapsed_ms(started))
     })?;
     let mut phases = BTreeMap::new();
@@ -2092,7 +2133,7 @@ fn measure_small_tier_with_config(
             }
             let _generation = rt
                 .seal()
-                .map_err(|error| ScaleStageError::operation("build_seal", error))?;
+                .map_err(|error| ScaleStageError::operation("build_seal", &error))?;
             Ok(elapsed_ms(build_started))
         })?;
         let build_bytes_written = directory_bytes(rt.state_root())
@@ -2102,7 +2143,7 @@ fn measure_small_tier_with_config(
         let (activation_ms, activation_resource) = observe_phase_at_root(Some(&disk_root), || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
-                .map_err(|error| ScaleStageError::operation("build_activate", error))?;
+                .map_err(|error| ScaleStageError::operation("build_activate", &error))?;
             Ok(elapsed_ms(activation_started))
         })?;
 
@@ -2242,7 +2283,7 @@ fn measure_scoped_delta(
         )?;
         let _generation = rt
             .seal()
-            .map_err(|error| ScaleStageError::operation("delta_seal", error))?;
+            .map_err(|error| ScaleStageError::operation("delta_seal", &error))?;
         Ok(elapsed_ms(update_started))
     })?;
     let after_build = directory_bytes(rt.state_root())?;
@@ -2250,7 +2291,7 @@ fn measure_scoped_delta(
         observe_phase_at_root(Some(&disk_root), || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
-                .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
+                .map_err(|error| ScaleStageError::operation("delta_activate", &error))?;
             Ok(elapsed_ms(activation_started))
         })?;
     let after_activation = directory_bytes(rt.state_root())?;
@@ -2308,7 +2349,8 @@ pub fn measure_tier_with_runtime_config(
     let corpus_digest = scoped_corpus_digest(DIMENSION, &files);
     let oracle = ScopedOracle::from_source(&files, tier)
         .map_err(|error| stage_or_preserve("source_fixture", error))?;
-    let _admission = preflight_scoped_corpus(&files).map_err(ScaleStageError::source_admission)?;
+    let _admission = preflight_scoped_corpus(&files)
+        .map_err(|error| ScaleStageError::source_admission(&error))?;
     let file_count = files.len();
     let corpus_bytes = files
         .iter()
@@ -2352,12 +2394,12 @@ pub fn measure_tier_with_runtime_config(
         })?;
         let (ingest_decoded_bytes, ingest_wire_bytes) = rt
             .preview_pending_search_corpus_wire_bytes()
-            .map_err(ScaleStageError::wire_admission)?;
+            .map_err(|error| ScaleStageError::wire_admission(&error))?;
         let (seal_ms, seal_resource) = observe_phase_at_root(Some(&disk_root), || {
             let seal_started = Instant::now();
             let _generation = rt
                 .seal()
-                .map_err(|error| ScaleStageError::operation("build_seal", error))?;
+                .map_err(|error| ScaleStageError::operation("build_seal", &error))?;
             Ok(elapsed_ms(seal_started))
         })?;
         let build_ms = ingest_ms + seal_ms;
@@ -2367,7 +2409,7 @@ pub fn measure_tier_with_runtime_config(
         let (activation_ms, activation_resource) = observe_phase_at_root(Some(&disk_root), || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
-                .map_err(|error| ScaleStageError::operation("build_activate", error))?;
+                .map_err(|error| ScaleStageError::operation("build_activate", &error))?;
             Ok(elapsed_ms(activation_started))
         })?;
 
@@ -2556,6 +2598,7 @@ pub fn source_binding_for_failure_in_dimension(
     })
 }
 
+#[must_use]
 pub fn refusal_json(
     binding: &ScaleSourceBinding,
     git_head: &GitHeadV1,
@@ -2587,11 +2630,64 @@ pub fn refusal_json_with_context(
         primary = failure.primary.as_ref().unwrap_or(&failure.cleanup);
     }
     let stage = primary.downcast_ref::<ScaleStageError>();
-    let mut value = json!({
-        "kind": format!("quanta-index-{dimension}-failure"),
-        "schema_version": 1,
-        "status": if runtime_failure.is_none() && stage.and_then(|failure| failure.limit).is_some() { "refused" } else { "failed" },
-        "source": {
+    let mut failure = serde_json::Map::new();
+    let _previous = failure.insert(
+        "stage".to_string(),
+        json!(stage.map_or("execution_unclassified", |failure| failure.stage)),
+    );
+    let _previous = failure.insert(
+        "limit".to_string(),
+        json!(
+            stage
+                .and_then(|failure| failure.limit)
+                .map(ScaleAdmissionLimit::as_str)
+        ),
+    );
+    let _previous = failure.insert(
+        "observed".to_string(),
+        json!(stage.and_then(|failure| failure.observed)),
+    );
+    let _previous = failure.insert(
+        "maximum".to_string(),
+        json!(stage.and_then(|failure| failure.maximum)),
+    );
+    let _previous = failure.insert("message".to_string(), json!(format!("{primary:#}")));
+    if let Some(runtime_failure) = runtime_failure {
+        let _previous = failure.insert(
+            "primary".to_string(),
+            runtime_failure.primary.as_ref().map_or(
+                Value::Null,
+                |error| json!({ "message": format!("{error:#}") }),
+            ),
+        );
+        let _previous = failure.insert(
+            "cleanup".to_string(),
+            json!({
+                "context": runtime_failure.cleanup_context,
+                "message": format!("{:#}", runtime_failure.cleanup),
+            }),
+        );
+        let _previous = failure.insert("secondary_failures".to_string(), json!(secondary_failures));
+    }
+    let mut record = serde_json::Map::new();
+    let _previous = record.insert(
+        "kind".to_string(),
+        json!(format!("quanta-index-{dimension}-failure")),
+    );
+    let _previous = record.insert("schema_version".to_string(), json!(1));
+    let _previous = record.insert(
+        "status".to_string(),
+        json!(
+            if runtime_failure.is_none() && stage.and_then(|failure| failure.limit).is_some() {
+                "refused"
+            } else {
+                "failed"
+            }
+        ),
+    );
+    let _previous = record.insert(
+        "source".to_string(),
+        json!({
             "tier": binding.tier.as_str(),
             "seed": binding.seed,
             "serving_owner_count": binding.serving_owner_count,
@@ -2605,35 +2701,20 @@ pub fn refusal_json_with_context(
             } else {
                 "generated_chunk_content_source_repo_path_v1"
             },
-        },
-        "provenance": {
+        }),
+    );
+    let _previous = record.insert(
+        "provenance".to_string(),
+        json!({
             "git_head": git_head.as_str(),
             "host": host,
-        },
-        "failure": {
-            "stage": stage.map(|failure| failure.stage).unwrap_or("execution_unclassified"),
-            "limit": stage.and_then(|failure| failure.limit).map(ScaleAdmissionLimit::as_str),
-            "observed": stage.and_then(|failure| failure.observed),
-            "maximum": stage.and_then(|failure| failure.maximum),
-            "message": format!("{primary:#}"),
-        },
-    });
-    if let Some(runtime_failure) = runtime_failure {
-        value["failure"]["primary"] = runtime_failure
-            .primary
-            .as_ref()
-            .map(|error| json!({ "message": format!("{error:#}") }))
-            .unwrap_or(Value::Null);
-        value["failure"]["cleanup"] = json!({
-            "context": runtime_failure.cleanup_context,
-            "message": format!("{:#}", runtime_failure.cleanup),
-        });
-        value["failure"]["secondary_failures"] = json!(secondary_failures);
-    }
+        }),
+    );
+    let _previous = record.insert("failure".to_string(), Value::Object(failure));
     if let Some(execution) = execution {
-        value["execution"] = execution.clone();
+        let _previous = record.insert("execution".to_string(), execution.clone());
     }
-    value
+    Value::Object(record)
 }
 
 pub fn write_refusal_artifact(
@@ -2817,10 +2898,10 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
             "scope": "new source publication event and generation with no source replacement or tombstone; result parity checked after activation",
         },
         "delete_reopen": measurement.delete_reopen.map(|timing| json!({
-            "delete_seal_ms": timing.delete_seal_ms,
-            "delete_activation_ms": timing.delete_activation_ms,
-            "same_process_reopen_ms": timing.same_process_reopen_ms,
-            "reopened_first_query_ms": timing.reopened_first_query_ms,
+            "delete_seal_ms": timing.delete_seal,
+            "delete_activation_ms": timing.delete_activation,
+            "same_process_reopen_ms": timing.same_process_reopen,
+            "reopened_first_query_ms": timing.reopened_first_query,
             "scope": "same OS process and state root; daemon thread restarted; page cache not cleared",
         })),
         "result_count": measurement.result_count,
@@ -3101,12 +3182,63 @@ mod tests {
     //! Generator, artifact and narrow runtime behavior.
     use super::*;
 
+    // Result-returning tests retain each independent predicate and report the failed
+    // values through the test error, without panicking in a Result function.
+    macro_rules! ensure_predicate {
+        ($condition:expr $(,)?) => {
+            anyhow::ensure!($condition, "failed predicate: {}", stringify!($condition))
+        };
+        ($condition:expr, $($message:tt)+) => {
+            anyhow::ensure!($condition, $($message)+)
+        };
+    }
+
+    macro_rules! ensure_equal {
+        ($actual:expr, $expected:expr $(,)?) => {{
+            let actual = &$actual;
+            let expected = &$expected;
+            anyhow::ensure!(
+                *actual == *expected,
+                "actual={actual:?}, expected={expected:?}"
+            );
+        }};
+        ($actual:expr, $expected:expr, $($message:tt)+) => {{
+            let actual = &$actual;
+            let expected = &$expected;
+            anyhow::ensure!(
+                *actual == *expected,
+                "actual={actual:?}, expected={expected:?}; {}",
+                format_args!($($message)+)
+            );
+        }};
+    }
+
+    macro_rules! ensure_different {
+        ($actual:expr, $expected:expr $(,)?) => {{
+            let actual = &$actual;
+            let expected = &$expected;
+            anyhow::ensure!(
+                *actual != *expected,
+                "actual={actual:?} unexpectedly equals expected={expected:?}"
+            );
+        }};
+        ($actual:expr, $expected:expr, $($message:tt)+) => {{
+            let actual = &$actual;
+            let expected = &$expected;
+            anyhow::ensure!(
+                *actual != *expected,
+                "actual={actual:?} unexpectedly equals expected={expected:?}; {}",
+                format_args!($($message)+)
+            );
+        }};
+    }
+
     #[test]
     fn activated_snapshot_without_query_cold_open_is_unavailable() -> AnyResult<()> {
         use quanta_index_contract::MetricHistogramV1;
 
         let before = MetricsSnapshotV1::default();
-        assert_eq!(optional_cold_open_window(&before, &before)?, None);
+        ensure_equal!(optional_cold_open_window(&before, &before)?, None);
         let mut after = before.clone();
         after.histograms.push(MetricHistogramV1 {
             name: "lq_snapshot_lexical_cold_open_ms".to_string(),
@@ -3116,23 +3248,23 @@ mod tests {
             max: 3.0,
             buckets: Vec::new(),
         });
-        assert_eq!(optional_cold_open_window(&before, &after)?, Some(3.0));
+        ensure_equal!(optional_cold_open_window(&before, &after)?, Some(3.0));
         after.histograms[0].count = 2;
-        assert!(optional_cold_open_window(&before, &after).is_err());
+        ensure_predicate!(optional_cold_open_window(&before, &after).is_err());
         Ok(())
     }
 
     #[test]
     fn client_timeout_contract_requires_bounded_whole_milliseconds() -> AnyResult<()> {
-        assert_eq!(timeout_ms(None)?, 30_000);
-        assert_eq!(timeout_ms(Some(Duration::from_secs(300)))?, 300_000);
+        ensure_equal!(timeout_ms(None)?, 30_000);
+        ensure_equal!(timeout_ms(Some(Duration::from_secs(300)))?, 300_000);
         for invalid in [
             Duration::ZERO,
             Duration::from_micros(1),
             Duration::from_micros(1_001),
             Duration::from_millis(600_001),
         ] {
-            assert!(timeout_ms(Some(invalid)).is_err());
+            ensure_predicate!(timeout_ms(Some(invalid)).is_err());
         }
         Ok(())
     }
@@ -3140,24 +3272,24 @@ mod tests {
     #[test]
     fn runtime_config_records_requested_and_effective_policy() -> AnyResult<()> {
         let default = ScaleRuntimeConfig::default().execution_json()?;
-        assert_eq!(default["client_request_timeout_ms"], 30_000);
-        assert!(default["requested_client_request_timeout_ms"].is_null());
-        assert_eq!(default["history_max_bytes"], 16_777_216);
-        assert!(default["requested_history_max_bytes"].is_null());
-        assert_eq!(default["history_max_total_bytes"], 268_435_456);
-        assert_eq!(default["history_max_revision_pairs"], 128);
+        ensure_equal!(default["client_request_timeout_ms"], 30_000);
+        ensure_predicate!(default["requested_client_request_timeout_ms"].is_null());
+        ensure_equal!(default["history_max_bytes"], 16_777_216);
+        ensure_predicate!(default["requested_history_max_bytes"].is_null());
+        ensure_equal!(default["history_max_total_bytes"], 268_435_456);
+        ensure_equal!(default["history_max_revision_pairs"], 128);
 
         let explicit = ScaleRuntimeConfig {
             client_timeout: Some(Duration::from_secs(300)),
             history_max_bytes: Some(268_435_456),
         };
         let execution = explicit.execution_json()?;
-        assert_eq!(execution["client_request_timeout_ms"], 300_000);
-        assert_eq!(execution["requested_client_request_timeout_ms"], 300_000);
-        assert_eq!(execution["history_max_bytes"], 268_435_456);
-        assert_eq!(execution["requested_history_max_bytes"], 268_435_456);
+        ensure_equal!(execution["client_request_timeout_ms"], 300_000);
+        ensure_equal!(execution["requested_client_request_timeout_ms"], 300_000);
+        ensure_equal!(execution["history_max_bytes"], 268_435_456);
+        ensure_equal!(execution["requested_history_max_bytes"], 268_435_456);
         for invalid in [0, HARNESS_HISTORY_MAX_TOTAL_BYTES + 1] {
-            assert!(
+            ensure_predicate!(
                 ScaleRuntimeConfig {
                     history_max_bytes: Some(invalid),
                     ..explicit
@@ -3182,7 +3314,7 @@ mod tests {
             .expect_err("one byte cannot retain a lexical generation");
         let message = format!("{error:#}");
         runtime.stop()?;
-        assert!(
+        ensure_predicate!(
             message.contains("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED"),
             "{message}"
         );
@@ -3495,10 +3627,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "fixed one-megabyte fixture and checked phase offsets"
-    )]
     fn disk_samples_report_observed_high_water_and_unavailable_without_inference() -> AnyResult<()>
     {
         use std::os::unix::fs::MetadataExt as _;
@@ -3507,18 +3635,18 @@ mod tests {
         let file = root.path().join("source.bin");
         fs::write(&file, vec![7_u8; 1024 * 1024])?;
         let first = disk_snapshot_result(root.path(), None)?;
-        assert!(first.allocated_bytes.is_some_and(|bytes| bytes > 0));
-        assert!(first.filesystem_free_bytes.is_some());
-        assert!(first.filesystem_available_bytes.is_some());
+        ensure_predicate!(first.allocated_bytes.is_some_and(|bytes| bytes > 0));
+        ensure_predicate!(first.filesystem_free_bytes.is_some());
+        ensure_predicate!(first.filesystem_available_bytes.is_some());
         let unavailable = disk_point(&root.path().join("absent"), None).snapshot;
-        assert!(unavailable.allocated_bytes.is_none());
-        assert!(unavailable.unavailable_reason.is_some());
+        ensure_predicate!(unavailable.allocated_bytes.is_none());
+        ensure_predicate!(unavailable.unavailable_reason.is_some());
         let stopped = AtomicBool::new(true);
         let cancelled = disk_point(root.path(), Some(&stopped)).snapshot;
-        assert!(cancelled.allocated_bytes.is_none());
-        assert!(cancelled.filesystem_free_bytes.is_none());
-        assert!(cancelled.filesystem_available_bytes.is_none());
-        assert!(
+        ensure_predicate!(cancelled.allocated_bytes.is_none());
+        ensure_predicate!(cancelled.filesystem_free_bytes.is_none());
+        ensure_predicate!(cancelled.filesystem_available_bytes.is_none());
+        ensure_predicate!(
             cancelled
                 .unavailable_reason
                 .as_deref()
@@ -3533,12 +3661,12 @@ mod tests {
         let cancellation_error = cancelled_inside_walk
             .err()
             .ok_or_else(|| anyhow::anyhow!("entry-boundary cancellation did not stop walk"))?;
-        assert!(
+        ensure_predicate!(
             cancellation_error
                 .to_string()
                 .contains("disk_probe_cancelled")
         );
-        assert!(checks.get() >= 3, "walker did not reach an entry boundary");
+        ensure_predicate!(checks.get() >= 3, "walker did not reach an entry boundary");
         let before_link = first
             .allocated_bytes
             .ok_or_else(|| anyhow::anyhow!("allocated blocks absent"))?;
@@ -3549,7 +3677,7 @@ mod tests {
             .checked_mul(512)
             .ok_or_else(|| anyhow::anyhow!("file allocation overflow"))?;
         if file_allocation > 0 {
-            assert!(
+            ensure_predicate!(
                 after_link.saturating_sub(before_link) < file_allocation,
                 "hard link must not count the source file allocation twice"
             );
@@ -3590,10 +3718,10 @@ mod tests {
             ],
             2.0,
         );
-        assert_eq!(phase.sampled_max_allocated_bytes, Some(200));
-        assert_eq!(phase.sampled.len(), 2);
-        assert_eq!(phase.sampled[1].snapshot.allocated_bytes, None);
-        assert!(phase.sampled[1].snapshot.unavailable_reason.is_some());
+        ensure_equal!(phase.sampled_max_allocated_bytes, Some(200));
+        ensure_equal!(phase.sampled.len(), 2);
+        ensure_equal!(phase.sampled[1].snapshot.allocated_bytes, None);
+        ensure_predicate!(phase.sampled[1].snapshot.unavailable_reason.is_some());
         let no_interior = summarize_phase_disk(
             base + Duration::from_millis(10),
             base + Duration::from_millis(300),
@@ -3608,7 +3736,7 @@ mod tests {
             &[],
             0.0,
         );
-        assert_eq!(no_interior.sampled_max_allocated_bytes, None);
+        ensure_equal!(no_interior.sampled_max_allocated_bytes, None);
         Ok(())
     }
 
@@ -3652,11 +3780,11 @@ mod tests {
         let files = generate_scoped_corpus(ScaleTier::Medium, 11)?;
         let oracle = ScopedOracle::from_source(&files, ScaleTier::Medium)?;
         let after = oracle.without_file("repo0", "src/file_0.rs")?;
-        assert_eq!(after.paths_by_repo["repo0"].len(), 63);
-        assert_eq!(after.paths_by_repo["repo1"].len(), 64);
-        assert!(!after.paths_by_repo["repo0"].contains("src/file_0.rs"));
-        assert!(after.paths_by_repo["repo1"].contains("src/file_0.rs"));
-        assert!(after.without_file("repo0", "src/file_0.rs").is_err());
+        ensure_equal!(after.paths_by_repo["repo0"].len(), 63);
+        ensure_equal!(after.paths_by_repo["repo1"].len(), 64);
+        ensure_predicate!(!after.paths_by_repo["repo0"].contains("src/file_0.rs"));
+        ensure_predicate!(after.paths_by_repo["repo1"].contains("src/file_0.rs"));
+        ensure_predicate!(after.without_file("repo0", "src/file_0.rs").is_err());
 
         let before = CpuSnapshot {
             user_us: 1_000,
@@ -3666,14 +3794,14 @@ mod tests {
             user_us: 3_500,
             system_us: 2_750,
         };
-        assert_eq!(
+        ensure_equal!(
             later.elapsed_since(before)?,
             CpuUsageV1 {
                 user_ms: 2.5,
                 system_ms: 0.75,
             }
         );
-        assert!(before.elapsed_since(later).is_err());
+        ensure_predicate!(before.elapsed_since(later).is_err());
         Ok(())
     }
 
@@ -3696,44 +3824,52 @@ mod tests {
                 point(end_ms + 5, 2_048),
                 samples,
                 cpu,
-                1.0,
-                2.0,
-                3.0,
+                PhaseObserverTimingV1 {
+                    setup: 1.0,
+                    teardown: 2.0,
+                    periodic_probe_wall: 3.0,
+                },
             )
         };
         let observed = summarize(
             350,
             &[point(100, 3_072), point(200, 8_192), point(300, 1_024)],
         )?;
-        assert_eq!(observed.sampled_max_rss_bytes, 8_192);
-        assert_eq!(observed.rss_end_bytes, 2_048);
-        assert_eq!(observed.interior_samples, 3);
-        assert_eq!(observed.observed_max_gap_ms, 55.0_f64.max(100.0));
-        assert_eq!(observed.observer_setup_ms, 1.0);
-        assert_eq!(observed.observer_teardown_ms, 2.0);
-        assert_eq!(observed.observer_periodic_probe_wall_ms, 3.0);
-        assert_eq!(observed.discarded_outside_phase_samples, 0);
+        ensure_equal!(observed.sampled_max_rss_bytes, 8_192);
+        ensure_equal!(observed.rss_end_bytes, 2_048);
+        ensure_equal!(observed.interior_samples, 3);
+        ensure_equal!(
+            observed.observed_max_gap_ms.to_bits(),
+            55.0_f64.max(100.0).to_bits()
+        );
+        ensure_equal!(observed.observer_setup_ms.to_bits(), 1.0_f64.to_bits());
+        ensure_equal!(observed.observer_teardown_ms.to_bits(), 2.0_f64.to_bits());
+        ensure_equal!(
+            observed.observer_periodic_probe_wall_ms.to_bits(),
+            3.0_f64.to_bits()
+        );
+        ensure_equal!(observed.discarded_outside_phase_samples, 0);
 
-        assert!(
+        ensure_predicate!(
             summarize(350, &[]).is_err(),
             "long phase needs an interior sample"
         );
-        assert!(summarize(350, &[point(100, 1_024), point(100, 2_048)]).is_err());
-        assert!(summarize(350, &[point(200, 1_024), point(100, 2_048)]).is_err());
-        assert!(summarize(350, &[point(100, 0)]).is_err());
-        assert!(
+        ensure_predicate!(summarize(350, &[point(100, 1_024), point(100, 2_048)]).is_err());
+        ensure_predicate!(summarize(350, &[point(200, 1_024), point(100, 2_048)]).is_err());
+        ensure_predicate!(summarize(350, &[point(100, 0)]).is_err());
+        ensure_predicate!(
             summarize(900, &[point(100, 1_024)]).is_err(),
             "large sample gap is invalid"
         );
         let short = summarize(80, &[])?;
-        assert_eq!(short.interior_samples, 0);
-        assert_eq!(short.sampled_max_rss_bytes, 4_096);
+        ensure_equal!(short.interior_samples, 0);
+        ensure_equal!(short.sampled_max_rss_bytes, 4_096);
         let raced = summarize(
             350,
             &[point(100, 3_072), point(200, 8_192), point(351, 9_999)],
         )?;
-        assert_eq!(raced.discarded_outside_phase_samples, 1);
-        assert_eq!(raced.sampled_max_rss_bytes, 8_192);
+        ensure_equal!(raced.discarded_outside_phase_samples, 1);
+        ensure_equal!(raced.sampled_max_rss_bytes, 8_192);
         let boundary_dominates = summarize_phase_resources(
             origin + Duration::from_millis(5),
             origin + Duration::from_millis(355),
@@ -3741,41 +3877,46 @@ mod tests {
             point(360, 8_192),
             &[point(100, 1_024)],
             cpu,
-            1.0,
-            2.0,
-            3.0,
+            PhaseObserverTimingV1 {
+                setup: 1.0,
+                teardown: 2.0,
+                periodic_probe_wall: 3.0,
+            },
         )?;
-        assert_eq!(boundary_dominates.sampled_rss[0].rss_bytes, 1_024);
-        assert_eq!(boundary_dominates.rss_end_bytes, 8_192);
-        assert_eq!(boundary_dominates.sampled_max_rss_bytes, 8_192);
-        assert_eq!(boundary_dominates.rss_end_after_phase_ms, 5.0);
+        ensure_equal!(boundary_dominates.sampled_rss[0].rss_bytes, 1_024);
+        ensure_equal!(boundary_dominates.rss_end_bytes, 8_192);
+        ensure_equal!(boundary_dominates.sampled_max_rss_bytes, 8_192);
+        ensure_equal!(
+            boundary_dominates.rss_end_after_phase_ms.to_bits(),
+            5.0_f64.to_bits()
+        );
         let mut measured = sample_measurement();
-        assert!(
+        ensure_predicate!(
             measured
                 .phase_resources
                 .insert("full_ingest_seal", boundary_dominates)
                 .is_some()
         );
         let labeled = measurement_json(&measured);
-        assert_eq!(
+        ensure_equal!(
             labeled["phase_resources"]["full_ingest_seal"]["sampled_max_rss_bytes"],
             8_192
         );
-        assert_eq!(
+        ensure_equal!(
             labeled["phase_resources"]["full_ingest_seal"]["sampled_rss"][0]["rss_bytes"],
             1_024
         );
-        assert_eq!(
+        ensure_equal!(
             labeled["phase_resources"]["full_ingest_seal"]["sampled_max_is_true_peak"],
             false
         );
-        assert!(
+        ensure_predicate!(
             labeled["phase_resources"]["full_ingest_seal"]["scope"]
                 .as_str()
                 .expect("fixed phase scope")
                 .contains("sampled max includes both boundaries")
         );
-        assert!(
+        ensure_predicate!(
             summarize(350, &[point(360, 1_024)]).is_err(),
             "sample after end observation is invalid"
         );
@@ -3785,10 +3926,12 @@ mod tests {
     #[test]
     fn live_phase_observer_reads_current_rss_without_synthesizing_a_sample() -> AnyResult<()> {
         let ((), observed) = observe_phase(|| Ok(()))?;
-        assert!(observed.rss_start_bytes > 0);
-        assert!(observed.rss_end_bytes > 0);
-        assert_eq!(observed.interior_samples, observed.sampled_rss.len());
-        assert!(observed.observed_max_gap_ms <= PHASE_RSS_MAX_GAP.as_secs_f64() * 1_000.0);
+        ensure_predicate!(observed.rss_start_bytes > 0);
+        ensure_predicate!(observed.rss_end_bytes > 0);
+        ensure_equal!(observed.interior_samples, observed.sampled_rss.len());
+        ensure_predicate!(
+            observed.observed_max_gap_ms <= PHASE_RSS_MAX_GAP.as_secs_f64() * 1_000.0
+        );
         Ok(())
     }
 
@@ -3835,7 +3978,7 @@ mod tests {
     fn phase_observation_failure_does_not_mask_operation_stage() -> AnyResult<()> {
         let primary = anyhow::Error::new(ScaleStageError::operation(
             "build_seal",
-            anyhow::anyhow!("fixed operation fault"),
+            &anyhow::anyhow!("fixed operation fault"),
         ));
         let observation = stage_or_preserve(
             "resource_observation",
@@ -3858,22 +4001,22 @@ mod tests {
         )
         .expect_err("daemon cleanup also rejects the tier");
         let record = refusal_json(&binding, &head, &host, &nested);
-        assert_eq!(record["failure"]["stage"], "build_seal");
-        assert!(
+        ensure_equal!(record["failure"]["stage"], "build_seal");
+        ensure_predicate!(
             record["failure"]["primary"]["message"]
                 .as_str()
                 .unwrap()
                 .contains("fixed sampler fault")
         );
-        assert_eq!(record["failure"]["cleanup"]["message"], "driver stop fault");
-        assert_eq!(
+        ensure_equal!(record["failure"]["cleanup"]["message"], "driver stop fault");
+        ensure_equal!(
             record["failure"]["secondary_failures"]
                 .as_array()
                 .unwrap()
                 .len(),
             2
         );
-        assert_eq!(
+        ensure_equal!(
             record["failure"]["secondary_failures"][1]["context"],
             "phase resource observation"
         );
@@ -3883,10 +4026,10 @@ mod tests {
     #[test]
     fn refusal_record_binds_the_source_and_only_names_typed_limits() -> AnyResult<()> {
         let binding = source_binding_for_failure(ScaleTier::Medium, 13)?;
-        assert_eq!(binding.source_repo_count, 4);
-        assert_eq!(binding.file_count, 256);
-        assert_eq!(binding.source_bytes, binding.corpus_bytes + 256);
-        assert_eq!(
+        ensure_equal!(binding.source_repo_count, 4);
+        ensure_equal!(binding.file_count, 256);
+        ensure_equal!(binding.source_bytes, binding.corpus_bytes + 256);
+        ensure_equal!(
             binding.corpus_digest,
             scoped_corpus_digest(DIMENSION, &generate_scoped_corpus(ScaleTier::Medium, 13)?)
         );
@@ -3900,23 +4043,23 @@ mod tests {
         };
         let capacity =
             check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1).expect_err("source bound");
-        let typed = anyhow::Error::new(ScaleStageError::source_admission(anyhow::Error::new(
+        let typed = anyhow::Error::new(ScaleStageError::source_admission(&anyhow::Error::new(
             capacity,
         )));
         let refused = refusal_json(&binding, &head, &host, &typed);
-        assert_eq!(refused["status"], "refused");
-        assert_eq!(refused["failure"]["stage"], "source_preflight");
-        assert_eq!(
+        ensure_equal!(refused["status"], "refused");
+        ensure_equal!(refused["failure"]["stage"], "source_preflight");
+        ensure_equal!(
             refused["failure"]["limit"],
             "lexical_total_source_bytes_128m"
         );
-        assert_eq!(refused["failure"]["observed"], MAX_SCALE_SOURCE_BYTES + 1);
-        assert_eq!(refused["source"]["corpus_digest"], binding.corpus_digest);
-        assert!(refused.get("latency").is_none());
+        ensure_equal!(refused["failure"]["observed"], MAX_SCALE_SOURCE_BYTES + 1);
+        ensure_equal!(refused["source"]["corpus_digest"], binding.corpus_digest);
+        ensure_predicate!(refused.get("latency").is_none());
 
         let open_loop_binding =
             source_binding_for_failure_in_dimension("open-loop", ScaleTier::Medium, 13)?;
-        assert_ne!(open_loop_binding.corpus_digest, binding.corpus_digest);
+        ensure_different!(open_loop_binding.corpus_digest, binding.corpus_digest);
         let execution = json!({"arrival_model": "seeded_poisson", "rates_qps": [25, 50]});
         let open_loop = refusal_json_with_context(
             &open_loop_binding,
@@ -3926,35 +4069,35 @@ mod tests {
             "open-loop",
             Some(&execution),
         );
-        assert_eq!(open_loop["kind"], "quanta-index-open-loop-failure");
-        assert_eq!(open_loop["execution"], execution);
-        assert_eq!(
+        ensure_equal!(open_loop["kind"], "quanta-index-open-loop-failure");
+        ensure_equal!(open_loop["execution"], execution);
+        ensure_equal!(
             open_loop["source"]["corpus_digest"],
             open_loop_binding.corpus_digest
         );
-        assert_eq!(open_loop["failure"]["limit"], refused["failure"]["limit"]);
-        assert!(open_loop.get("latency").is_none());
+        ensure_equal!(open_loop["failure"]["limit"], refused["failure"]["limit"]);
+        ensure_predicate!(open_loop.get("latency").is_none());
 
         let unknown = refusal_json(&binding, &head, &host, &anyhow::anyhow!("runtime failure"));
-        assert_eq!(unknown["status"], "failed");
-        assert_eq!(unknown["failure"]["stage"], "execution_unclassified");
-        assert!(unknown["failure"]["limit"].is_null());
+        ensure_equal!(unknown["status"], "failed");
+        ensure_equal!(unknown["failure"]["stage"], "execution_unclassified");
+        ensure_predicate!(unknown["failure"]["limit"].is_null());
         let ingest_error =
             stage_or_preserve("build_ingest", anyhow::anyhow!("fixed ingest failure"));
         let ingest = refusal_json(&binding, &head, &host, &ingest_error);
-        assert_eq!(ingest["failure"]["stage"], "build_ingest");
-        assert!(ingest["failure"]["limit"].is_null());
-        assert_eq!(ingest["status"], "failed");
+        ensure_equal!(ingest["failure"]["stage"], "build_ingest");
+        ensure_predicate!(ingest["failure"]["limit"].is_null());
+        ensure_equal!(ingest["status"], "failed");
 
         let nested = stage_or_preserve(
             "delta",
-            anyhow::Error::new(ScaleStageError::source_admission(anyhow::Error::new(
+            anyhow::Error::new(ScaleStageError::source_admission(&anyhow::Error::new(
                 check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1).expect_err("source bound"),
             ))),
         );
         let preserved = refusal_json(&binding, &head, &host, &nested);
-        assert_eq!(preserved["failure"]["stage"], "source_preflight");
-        assert_eq!(
+        ensure_equal!(preserved["failure"]["stage"], "source_preflight");
+        ensure_equal!(
             preserved["failure"]["limit"],
             "lexical_total_source_bytes_128m"
         );
@@ -3968,18 +4111,18 @@ mod tests {
         )
         .expect_err("cleanup failure must fail the tier");
         let cleanup_record = refusal_json(&binding, &head, &host, &cleanup);
-        assert_eq!(cleanup_record["failure"]["stage"], "cleanup");
-        assert!(cleanup_record["failure"]["limit"].is_null());
-        assert_eq!(cleanup_record["status"], "failed");
+        ensure_equal!(cleanup_record["failure"]["stage"], "cleanup");
+        ensure_predicate!(cleanup_record["failure"]["limit"].is_null());
+        ensure_equal!(cleanup_record["status"], "failed");
         let build_error = anyhow::Error::new(ScaleStageError::operation(
             "build_seal",
-            anyhow::anyhow!("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED"),
+            &anyhow::anyhow!("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED"),
         ));
         let failed = refusal_json(&binding, &head, &host, &build_error);
-        assert_eq!(failed["status"], "failed");
-        assert_eq!(failed["failure"]["stage"], "build_seal");
-        assert!(failed["failure"]["limit"].is_null());
-        assert!(
+        ensure_equal!(failed["status"], "failed");
+        ensure_equal!(failed["failure"]["stage"], "build_seal");
+        ensure_predicate!(failed["failure"]["limit"].is_null());
+        ensure_predicate!(
             failed["failure"]["message"].as_str().is_some_and(
                 |message| message.contains("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED")
             )
@@ -4005,19 +4148,21 @@ mod tests {
             hostname_hash: "sha256:host".to_string(),
         };
         let record = refusal_json(&binding, &head, &host, &failure);
-        assert_eq!(record["status"], "failed");
-        assert_eq!(record["failure"]["message"], "primary measurement marker");
-        assert_eq!(
+        ensure_equal!(record["status"], "failed");
+        ensure_equal!(record["failure"]["message"], "primary measurement marker");
+        ensure_equal!(
             record["failure"]["primary"]["message"],
             "primary measurement marker"
         );
-        assert_eq!(
+        ensure_equal!(
             record["failure"]["cleanup"]["message"],
             "driver cleanup marker"
         );
-        assert!(record["failure"]["limit"].is_null());
-        assert!(record.get("latency").is_none());
-        assert!(finish_runtime_measurement(Ok(()), Err(anyhow::anyhow!("cleanup only"))).is_err());
+        ensure_predicate!(record["failure"]["limit"].is_null());
+        ensure_predicate!(record.get("latency").is_none());
+        ensure_predicate!(
+            finish_runtime_measurement(Ok(()), Err(anyhow::anyhow!("cleanup only"))).is_err()
+        );
         Ok(())
     }
 
@@ -4099,13 +4244,13 @@ mod tests {
         for repo_index in 0..2 {
             let response =
                 rt.query_text(TextQuerySyntax::Native, &repo_query_token(repo_index), 10);
-            assert!(response.typed_error.is_none());
-            assert_eq!(response.candidates.len(), 1);
-            assert_eq!(
+            ensure_predicate!(response.typed_error.is_none());
+            ensure_equal!(response.candidates.len(), 1);
+            ensure_equal!(
                 response.candidates[0].source_repo_id.as_str(),
                 format!("repo{repo_index}")
             );
-            assert_eq!(
+            ensure_equal!(
                 response.candidates[0].repo_relative_path.as_str(),
                 shared_path
             );
@@ -4136,10 +4281,10 @@ mod tests {
         let _delta = rt.seal()?;
         rt.activate_last_sealed_generation()?;
         let unaffected = rt.query_text(TextQuerySyntax::Native, &repo_query_token(1), 10);
-        assert!(unaffected.typed_error.is_none());
-        assert_eq!(unaffected.candidates.len(), 1);
-        assert_eq!(unaffected.candidates[0].source_repo_id.as_str(), "repo1");
-        assert_eq!(
+        ensure_predicate!(unaffected.typed_error.is_none());
+        ensure_equal!(unaffected.candidates.len(), 1);
+        ensure_equal!(unaffected.candidates[0].source_repo_id.as_str(), "repo1");
+        ensure_equal!(
             unaffected.candidates[0].repo_relative_path.as_str(),
             shared_path
         );
@@ -4148,12 +4293,12 @@ mod tests {
         let _delete = rt.seal()?;
         rt.activate_last_sealed_generation()?;
         let deleted = rt.query_text(TextQuerySyntax::Native, &repo_query_token(0), 10);
-        assert!(deleted.typed_error.is_none());
-        assert!(deleted.candidates.is_empty());
+        ensure_predicate!(deleted.typed_error.is_none());
+        ensure_predicate!(deleted.candidates.is_empty());
         let retained = rt.query_text(TextQuerySyntax::Native, &repo_query_token(1), 10);
-        assert!(retained.typed_error.is_none());
-        assert_eq!(retained.candidates.len(), 1);
-        assert_eq!(retained.candidates[0].source_repo_id.as_str(), "repo1");
+        ensure_predicate!(retained.typed_error.is_none());
+        ensure_equal!(retained.candidates.len(), 1);
+        ensure_equal!(retained.candidates[0].source_repo_id.as_str(), "repo1");
         require_no_source_file(&rt.query_text(
             TextQuerySyntax::Native,
             &file_query_token(0, 0),
@@ -4168,12 +4313,12 @@ mod tests {
         rt.try_reopen_in_place()?;
         rt.start()?;
         let still_deleted = rt.query_text(TextQuerySyntax::Native, &repo_query_token(0), 10);
-        assert!(still_deleted.typed_error.is_none());
-        assert!(still_deleted.candidates.is_empty());
+        ensure_predicate!(still_deleted.typed_error.is_none());
+        ensure_predicate!(still_deleted.candidates.is_empty());
         let still_retained = rt.query_text(TextQuerySyntax::Native, &repo_query_token(1), 10);
-        assert!(still_retained.typed_error.is_none());
-        assert_eq!(still_retained.candidates.len(), 1);
-        assert_eq!(
+        ensure_predicate!(still_retained.typed_error.is_none());
+        ensure_equal!(still_retained.candidates.len(), 1);
+        ensure_equal!(
             still_retained.candidates[0].source_repo_id.as_str(),
             "repo1"
         );
@@ -4359,14 +4504,14 @@ mod tests {
         };
         let mut missing = sample_measurement();
         let _removed = missing.phase_resources.remove("delta_activate");
-        assert!(artifact(&missing, head.clone(), host.clone()).is_err());
+        ensure_predicate!(artifact(&missing, head.clone(), host.clone()).is_err());
         let mut missing_noop = sample_measurement();
         let _removed = missing_noop.phase_resources.remove("noop_seal");
-        assert!(artifact(&missing_noop, head.clone(), host.clone()).is_err());
+        ensure_predicate!(artifact(&missing_noop, head.clone(), host.clone()).is_err());
 
         let mut invalid_noop = sample_measurement();
         invalid_noop.noop.activation_ms = f64::NAN;
-        assert!(artifact(&invalid_noop, head.clone(), host.clone()).is_err());
+        ensure_predicate!(artifact(&invalid_noop, head.clone(), host.clone()).is_err());
 
         let mut nonfinite = sample_measurement();
         nonfinite
@@ -4375,7 +4520,7 @@ mod tests {
             .unwrap()
             .cpu
             .user_ms = f64::NAN;
-        assert!(artifact(&nonfinite, head.clone(), host.clone()).is_err());
+        ensure_predicate!(artifact(&nonfinite, head.clone(), host.clone()).is_err());
 
         let mut no_interior = sample_measurement();
         no_interior
@@ -4383,7 +4528,7 @@ mod tests {
             .get_mut("full_ingest_seal")
             .unwrap()
             .interior_samples = 0;
-        assert!(artifact(&no_interior, head.clone(), host.clone()).is_err());
+        ensure_predicate!(artifact(&no_interior, head.clone(), host.clone()).is_err());
         let mut bad_offset = sample_measurement();
         bad_offset
             .phase_resources
@@ -4391,11 +4536,11 @@ mod tests {
             .unwrap()
             .sampled_rss[1]
             .offset_ms = 40.0;
-        assert!(artifact(&bad_offset, head, host).is_err());
+        ensure_predicate!(artifact(&bad_offset, head, host).is_err());
         let observation = sample_measurement().phase_resources["full_activate"].clone();
         let mut phases = BTreeMap::new();
         record_phase(&mut phases, "full_activate", observation.clone())?;
-        assert!(record_phase(&mut phases, "full_activate", observation).is_err());
+        ensure_predicate!(record_phase(&mut phases, "full_activate", observation).is_err());
         Ok(())
     }
 

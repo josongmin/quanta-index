@@ -490,7 +490,8 @@ fn binary_query_ring_reports_wrap_loss_and_retains_the_latest_request() -> TestR
             &before.process_instance,
             "ring wrap process instance",
         )?;
-        if after.dropped_before <= before.dropped_after
+        let previous_dropped = before.dropped_after;
+        if after.dropped_before <= previous_dropped
             || after.dropped_after < after.dropped_before
             || after
                 .oldest_retained_sequence
@@ -941,7 +942,7 @@ fn binary_daemon_restart_preserves_active_source_and_ranked_rows() -> TestResult
             if page.results.len() != 1 {
                 return Err(format!("expected one source-backed row: {:?}", page.results).into());
             }
-            let row = &page.results[0];
+            let row = page.results.first().ok_or("missing source-backed row")?;
             require_eq(&row.candidate_id, &candidate_id, "source candidate ID")?;
             require_eq(&row.source_repo_id, &pin.repo_id, "source repository")?;
             require_eq(
@@ -968,13 +969,13 @@ fn binary_daemon_restart_preserves_active_source_and_ranked_rows() -> TestResult
         };
 
     let first = SearchdBinaryProcess::start(&state_root)?;
-    let first_observed = observe(&first, 0x5eed_01);
+    let first_observed = observe(&first, 0x005e_ed01);
     let first_stopped = first.stop();
     let (first_instance, first_rows) = first_observed?;
     first_stopped?;
 
     let second = SearchdBinaryProcess::start(&state_root)?;
-    let second_observed = observe(&second, 0x5eed_02);
+    let second_observed = observe(&second, 0x005e_ed02);
     let second_stopped = second.stop();
     let (second_instance, second_rows) = second_observed?;
     second_stopped?;

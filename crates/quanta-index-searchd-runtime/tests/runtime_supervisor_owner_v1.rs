@@ -543,22 +543,32 @@ fn missing_report_during_drain_is_named_failure_not_escalation() {
         (),
         CancelRoot::clone(&root),
     );
+    // The child remains alive through startup observation. Only the drain's
+    // stop callback releases it, so a missing report belongs to the drain.
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
     supervisor
-        .spawn_child("drain-without-report", no_stop(), |context| {
-            Ok(std::thread::spawn(move || {
-                while !context.shutdown().load(Ordering::Acquire) {
-                    std::thread::sleep(CHILD_POLL);
-                }
-            }))
-        })
+        .spawn_child(
+            "drain-without-report",
+            Box::new(move || {
+                let _sent = stop_tx.send(());
+            }),
+            move |_context| {
+                Ok(std::thread::spawn(move || {
+                    let _stopped = stop_rx.recv();
+                }))
+            },
+        )
         .expect("fixture child spawns");
     root.request_shutdown();
     let outcome = supervisor.run(&root);
-    assert!(matches!(
-        outcome,
-        SupervisionOutcome::DrainFailed { failed }
-            if failed == vec![("drain-without-report", ChildExitKind::Failed)]
-    ));
+    assert!(
+        matches!(
+            &outcome,
+            SupervisionOutcome::DrainFailed { failed }
+                if failed.as_slice() == &[("drain-without-report", ChildExitKind::Failed)]
+        ),
+        "missing report during drain must fail without escalation: {outcome:?}"
+    );
 }
 
 /// The same finished-handle authority must be used during startup rollback;

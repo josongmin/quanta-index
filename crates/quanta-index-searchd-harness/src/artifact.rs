@@ -835,8 +835,10 @@ pub(crate) fn write_json_pretty(path: &Path, value: &serde_json::Value) -> anyho
 }
 
 /// Publish a complete JSON refusal at a new path without replacing a prior
-/// receipt. The sibling temporary file stays on the same filesystem;
-/// `persist_noclobber` uses an atomic no-replace publication step.
+/// receipt.
+///
+/// The sibling temporary file stays on the same filesystem; `persist_noclobber`
+/// uses an atomic no-replace publication step.
 pub(crate) fn write_json_pretty_noclobber(
     path: &Path,
     value: &serde_json::Value,
@@ -1092,11 +1094,18 @@ mod tests {
         let path = root.path().join("refusal.json");
         write_json_pretty_noclobber(&path, &serde_json::json!({"status": "refused"}))?;
         let first = std::fs::read(&path)?;
-        assert!(first.ends_with(b"\n"));
-        assert!(
-            write_json_pretty_noclobber(&path, &serde_json::json!({"status": "failed"})).is_err()
+        anyhow::ensure!(
+            first.ends_with(b"\n"),
+            "refusal JSON is missing its final newline"
         );
-        assert_eq!(std::fs::read(&path)?, first);
+        anyhow::ensure!(
+            write_json_pretty_noclobber(&path, &serde_json::json!({"status": "failed"})).is_err(),
+            "refusal writer replaced an existing receipt"
+        );
+        anyhow::ensure!(
+            std::fs::read(&path)? == first,
+            "refusal receipt changed after rejection"
+        );
         Ok(())
     }
 

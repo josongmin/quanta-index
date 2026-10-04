@@ -720,8 +720,8 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
     } else {
         let files = generate_scoped_corpus(config.tier, config.seed)?;
         let oracle = ScopedOracle::from_source(&files, config.tier)?;
-        let _admission =
-            preflight_scoped_corpus(&files).map_err(ScaleStageError::source_admission)?;
+        let _admission = preflight_scoped_corpus(&files)
+            .map_err(|error| ScaleStageError::source_admission(&error))?;
         Some((files, oracle))
     };
     let (source_paths, corpus_digest) = if let Some(corpus) = &legacy {
@@ -745,7 +745,7 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
     };
 
     let mut runtime = E2eRuntime::boot()
-        .map_err(|error| ScaleStageError::operation("runtime_boot", error))?
+        .map_err(|error| ScaleStageError::operation("runtime_boot", &error))?
         .with_history_max_bytes(config.effective_history_max_bytes()?);
     let model_revision = model_revision_of(runtime.embedder_profile());
     if let Some(corpus) = &legacy {
@@ -773,11 +773,11 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
         let _ids = runtime.ingest_text_files_one_batch(&batch_files)?;
         let _wire = runtime
             .preview_pending_search_corpus_wire_bytes()
-            .map_err(ScaleStageError::wire_admission)?;
+            .map_err(|error| ScaleStageError::wire_admission(&error))?;
     }
     let sealed = runtime
         .seal()
-        .map_err(|error| ScaleStageError::operation("build_seal", error))?;
+        .map_err(|error| ScaleStageError::operation("build_seal", &error))?;
     runtime.activate_last_sealed_generation()?;
     let pin = GenerationPin::new(runtime.repo(), runtime.revision(), sealed);
     let primed = runtime.query_text(TextQuerySyntax::Native, QUERY, TOP_K);
