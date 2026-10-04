@@ -43,7 +43,7 @@
 //! may exceed the current admission ceiling; it requires an explicit rebuild
 //! rather than being classified as corrupt.
 //! Format 8 added ranked-key tables; format 7 added flat source-file coverage.
-//! Formats 11 and earlier require an explicit rebuild for the current layout.
+//! Formats 12 and earlier require an explicit rebuild for the current layout.
 //! The index's text documents carry their
 //! text-authority doc id indexed and as a fast column, so a derived match
 //! set restricts a query as one bitmap (QI-BB-024), and whose documents
