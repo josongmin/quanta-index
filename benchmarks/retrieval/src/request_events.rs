@@ -190,6 +190,13 @@ mod tests {
                 }
             ]
         );
+        assert_eq!(
+            check_serial_windows(&window(2), &after, &[4]).expect("baseline excludes old RPCs"),
+            vec![RequestPair {
+                resolve_request_id: 3,
+                text_request_id: 4
+            }]
+        );
     }
 
     #[test]
@@ -208,5 +215,6 @@ mod tests {
         after = window(2);
         let _removed = after.events.remove(0);
         assert!(check_serial_windows(&before, &after, &[2]).is_err());
+        assert!(check_serial_windows(&before, &window(4), &[2]).is_err());
     }
 }
