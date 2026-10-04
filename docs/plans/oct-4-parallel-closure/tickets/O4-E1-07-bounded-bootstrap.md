@@ -44,7 +44,7 @@ evaluator.mean_ci/_bootstrap_bounds는 deterministic paired/within-stratum perce
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -k 'bootstrap or cluster_ci or numeric_cache'
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -k 'bootstrap or cluster_ci or numeric_cache'`
 - 실제 test collection에 맞는 selector를 확인하고 zero-selected를 pass로 취급하지 않는다.
 - Negative: NaN/Inf, duplicate task, wrong strata, huge cache payload, out-of-order draw, hidden memory growth 거절.
 

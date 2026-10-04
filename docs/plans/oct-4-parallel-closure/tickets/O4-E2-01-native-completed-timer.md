@@ -45,7 +45,7 @@ Sourcegraph/OpenGrok/cs 요청 생성부터 normalized required response 완성�
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py tools/ci/tests/test_completed_response_timing.py -q
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py tools/ci/tests/test_completed_response_timing.py -q`
 - Positive: 구성/전송/정규화 각 비용이 fake clock의 독립 expected interval에 포함되고 저장 지연은 제외된다.
 - Negative: clock 순서·task/path/status/output 변조, empty를 실패로 치환, partial top10 승격, 실패 표본을 제외한 전체 속도 주장 거절.
 

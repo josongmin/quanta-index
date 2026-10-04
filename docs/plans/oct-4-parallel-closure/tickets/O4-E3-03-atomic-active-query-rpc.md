@@ -48,9 +48,9 @@ SdkClient.pin_active_selector는 ResolveActiveGeneration을 먼저 보내고 exp
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- ./scripts/cargow test -p quanta-index-sdk --lib --all-features --locked
-- ./scripts/cargow test -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked
-- just rust-public-api; wire/decode 변경 시 just rust-fuzz-smoke; generation selection 변경 시 just rust-profile test-daemon.
+- `./scripts/cargow test -p quanta-index-sdk --lib --all-features --locked`
+- `./scripts/cargow test -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked`
+- `just rust-public-api; wire/decode 변경 시 just rust-fuzz-smoke; generation selection 변경 시 just rust-profile test-daemon.`
 - Negative: response token/variant/domain/row identity mutation, A→B→A stale token 및 cursor rebind 거절.
 
 ## 완료 조건

@@ -49,7 +49,7 @@ B07에는 complete output/phase clocks/host timeline/required observations 검�
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_completed_response_timing.py tools/ci/tests/test_retrieval_benchmark.py -q -k 'completed or qualified_speed or host_timeline or phase_digest'
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_completed_response_timing.py tools/ci/tests/test_retrieval_benchmark.py -q -k 'completed or qualified_speed or host_timeline or phase_digest'`
 - 실제 host-probe와 continuous timeline refusal controls: frequency unavailable/load/thermal/power drift/capture overlap/wrong phase bytes.
 - full expected schedule와 source closure를 independent verdict replay로 검증한다.
 

@@ -45,7 +45,7 @@ Semble worker 외부의 bootstrap/model/source/record 비용을 parent-bounded p
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_completed_response_timing.py tools/ci/tests/test_retrieval_benchmark.py -q -k 'semble or completed or worker_template'
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_completed_response_timing.py tools/ci/tests/test_retrieval_benchmark.py -q -k 'semble or completed or worker_template'`
 - Positive: normalized rows/status bytes 및 phase parent bounds 보존.
 - Negative: stale env/model assets, phase missing/reorder, request decode omission, worker output mutation, unrelated source cache reuse 거절.
 

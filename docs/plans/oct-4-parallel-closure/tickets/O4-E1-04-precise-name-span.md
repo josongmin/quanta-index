@@ -47,8 +47,8 @@ evaluator에는 indexed_span_diagnostics와 declaration_recall_at_k/declaration_
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_native_span_projection.py tools/ci/tests/test_source_oracle_suite.py tools/ci/tests/test_retrieval_benchmark.py -q
-- ./scripts/cargow test -p quanta-index-retrieval-bench --lib --locked
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_native_span_projection.py tools/ci/tests/test_source_oracle_suite.py tools/ci/tests/test_retrieval_benchmark.py -q`
+- `./scripts/cargow test -p quanta-index-retrieval-bench --lib --locked`
 - Negative: file-only row·잘못된 SymbolId/source hash·사용처·같은 줄의 다른 선언·context enlargement·case mismatch가 name recovery에 기여하면 실패.
 
 ## 완료 조건

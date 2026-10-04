@@ -36,7 +36,7 @@ full/delta/delete/no-op/reopen의 저장·검증·shard 비용과 transient reso
 | [benchmarks/retrieval/src/diagnostics.rs](../../../../benchmarks/retrieval/src/diagnostics.rs) | current ingest/query diagnostics | 현 schema field를 소비하며 parent bounds와 absent/invalid state를 보존한다. | SHARED |
 | [tools/benchmark/retrieval/query_timing_overhead.py](../../../../tools/benchmark/retrieval/query_timing_overhead.py) | observation profile | observation on/off output equality와 request work counter를 현 paths로 대조한다. | OWNED |
 | [crates/quanta-index-lexical/tests/l2_file_mutation.rs](../../../../crates/quanta-index-lexical/tests/l2_file_mutation.rs) | full/delta/delete/no-op fixture | 독립 fresh rebuild와 expected sources/windows/coverage로 parity를 증명한다. | OWNED |
-| [crates/quanta-index-ipc/src/server.rs](../../../../crates/quanta-index-ipc/src/server.rs) | RequestEventScope / DispatchContext.record_event_v1 | request/connection-bound 기존 events를 먼저 소비한다. prevalidation/ingress residual이 측정상 계속 클 때만 E3와 함께 최소 stage를 제안하고 I0가 반영한다. | SHARED |
+| [crates/quanta-index-ipc/src/server.rs](../../../../crates/quanta-index-ipc/src/server.rs) | RequestEventScope / DispatchContextV1.record_event_v1 | request/connection-bound 기존 events를 먼저 소비한다. prevalidation/ingress residual이 측정상 계속 클 때만 E3와 함께 최소 stage를 제안하고 I0가 반영한다. | SHARED |
 | [crates/quanta-index-ipc/src/server/tests.rs](../../../../crates/quanta-index-ipc/src/server/tests.rs) | request event / ingress/deadline controls | 계측이 바뀌면 request/connection 정확한 join·terminal1회·zero drops와 credentials/deadline/cancel/partial-response를 독립 fixture로 검사한다. | SHARED |
 
 ## 실행 단계
@@ -52,8 +52,8 @@ full/delta/delete/no-op/reopen의 저장·검증·shard 비용과 transient reso
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- ./scripts/cargow test -p quanta-index-lexical --test l2_file_mutation --locked
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_completed_response_timing.py -q -k 'ingest or detailed_file_authority or observation'
+- `./scripts/cargow test -p quanta-index-lexical --test l2_file_mutation --locked`
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_completed_response_timing.py -q -k 'ingest or detailed_file_authority or observation'`
 - Negative: child>parent, missing observer phase, process CPU scope 혼동, wrong source/delete/no-op result, sample gap을 peak으로 정상화 거절.
 - IPC 계측 변경 시 ./scripts/cargow test -p quanta-index-ipc --lib --all-features --locked 및 실제 SDK request/connection join fixture; decode/wire 변경은 just rust-fuzz-smoke.
 

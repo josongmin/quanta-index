@@ -46,8 +46,8 @@ selection.resolve_generation_selector_pin은 catalog head를 pin으로 해석하
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- ./scripts/cargow test -p quanta-index-search-plane --lib --all-features --locked read_view
-- ./scripts/cargow test -p quanta-index-searchd-runtime --test runtime_fast_suite --all-features --locked e2e_read_view
+- `./scripts/cargow test -p quanta-index-search-plane --lib --all-features --locked read_view`
+- `./scripts/cargow test -p quanta-index-searchd-runtime --test runtime_fast_suite --all-features --locked e2e_read_view`
 - Positive/negative: token drift, wrong explicit scope, retire-first refusal, active pair 수가 cache capacity 초과, panic/cancel handle release.
 - selection/generation/state surface 변경 시 최종 gate는 just rust-profile test-daemon + owning P04 scenario.
 

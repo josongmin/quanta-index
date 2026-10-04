@@ -47,9 +47,9 @@
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- ./scripts/cargow test -p quanta-index-ipc --lib --all-features --locked
-- ./scripts/cargow test -p quanta-index-sdk --lib --all-features --locked
-- ./scripts/cargow test -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked
+- `./scripts/cargow test -p quanta-index-ipc --lib --all-features --locked`
+- `./scripts/cargow test -p quanta-index-sdk --lib --all-features --locked`
+- `./scripts/cargow test -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked`
 - 재현된 public/decode/process surface 수정 시 AGENT_PLAYBOOK의 해당 escalation gate를 실행한다.
 
 ## 완료 조건

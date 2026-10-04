@@ -49,8 +49,8 @@ index_store.write_atomic_durable는 file sync→rename→parent sync다. coverag
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- ./scripts/cargow test -p quanta-index-lexical --test sealed_manifest --test l2_file_mutation --locked
-- ./scripts/cargow test -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked e2e_crash_matrix
+- `./scripts/cargow test -p quanta-index-lexical --test sealed_manifest --test l2_file_mutation --locked`
+- `./scripts/cargow test -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked e2e_crash_matrix`
 - state/generation 변경 시 just rust-profile test-daemon + actual release crash-cut scenario.
 - Positive: crash 후 old 또는 완전한 new root, 참조 file 존재/digest equality; Negative: barrier 실패 뒤 seal/activate, dangling hardlink/manifest, wrong inherited page 거절.
 

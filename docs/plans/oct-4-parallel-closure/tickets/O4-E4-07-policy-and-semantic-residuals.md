@@ -49,9 +49,9 @@ B09 frozen diagnostic에서 default23는 모두 ordinary literal-first suppressi
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- ./scripts/cargow test -p quanta-index-lexical --test l3_exact_source --locked
-- ./scripts/cargow test -p quanta-index-retrieval-bench --lib --bins --locked
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -k 'query_plan or natural_language or default'
+- `./scripts/cargow test -p quanta-index-lexical --test l3_exact_source --locked`
+- `./scripts/cargow test -p quanta-index-retrieval-bench --lib --bins --locked`
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -k 'query_plan or natural_language or default'`
 - Independent same-qrel/source/model ablation; wrong case/unit/source/model/generation, unjudged negatives와 literal regression refusal.
 
 ## 완료 조건

@@ -46,7 +46,7 @@ C3 240개 질의의 실제 판단을 완료하고 재사용 가능한 모델 cac
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_holdout_review.py -q
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_holdout_review.py -q`
 - Positive: 기존 valid raw를 재생하고 실제 3개 model identity·query/source/rubric을 동일하게 발행한다.
 - Negative: unresolved→grade 치환, reviewer 중복, cache source/query 변조, 일부 batch 누락, 프로세스만 살아 있는 상태를 완료로 취급하면 거절한다.
 

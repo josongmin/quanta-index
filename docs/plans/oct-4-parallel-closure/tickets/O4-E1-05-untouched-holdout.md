@@ -46,7 +46,7 @@ Gin exact1196, 원래 generated 300, B09 public/global12는 이미 진단·튜�
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_corpus_binding.py tools/ci/tests/test_source_oracle_suite.py -q
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_corpus_binding.py tools/ci/tests/test_source_oracle_suite.py -q`
 - Positive: split manifest를 release bytes로 replay하고 query/source/family의 독립성을 확인한다.
 - Negative: 기존 global12를 renamed holdout으로 수입, family 복제 1000개 채움, unknown→no-answer, corpus exposure 누락 거절.
 

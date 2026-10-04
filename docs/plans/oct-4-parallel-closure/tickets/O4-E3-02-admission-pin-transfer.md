@@ -47,9 +47,9 @@
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- ./scripts/cargow test -p quanta-index-search-plane --lib --all-features --locked read_view
-- ./scripts/cargow test -p quanta-index-search-plane --lib --all-features --locked retention
-- just rust-profile test-daemon
+- `./scripts/cargow test -p quanta-index-search-plane --lib --all-features --locked read_view`
+- `./scripts/cargow test -p quanta-index-search-plane --lib --all-features --locked retention`
+- `just rust-profile test-daemon`
 - 필요한 공개 surface가 변경되면 just rust-public-api; lock/module boundary 변경이면 just rust-hexagonal 및 just rust-cargo-modules.
 
 ## 완료 조건

@@ -20,7 +20,7 @@
 ## 착수 입력
 
 - I0-02 frozen source/release runner·daemon 외 matching scale/open_loop binaries
-- 실제 256/4096/32768 inputs, independent LifecycleOracle, serial resource host
+- 실제 256/4096/32768 inputs, ScopedOracle와 independent lifecycle 기대값, serial resource host
 - default와 explicit diagnostic timeout/history profile
 
 ## 어떤 파일을 어떻게 수정할지
@@ -29,7 +29,7 @@
 
 | 파일 | 함수 / 경계 | 구체적인 변경 또는 검증 | 모드 |
 | --- | --- | --- | --- |
-| [crates/quanta-index-searchd-harness/src/scale.rs](../../../../crates/quanta-index-searchd-harness/src/scale.rs) | Config / generate_scoped_corpus / LifecycleOracle / run lifecycle | 현 fixed source oracle/phase resource validation을 사용하고 actual OS restart proof의 누락만 보강한다. | OWNED |
+| [crates/quanta-index-searchd-harness/src/scale.rs](../../../../crates/quanta-index-searchd-harness/src/scale.rs) | ScaleRuntimeConfig / generate_scoped_corpus / ScopedOracle / lifecycle 실행 | 현 fixed source oracle/phase resource validation을 사용하고 actual OS restart proof의 누락만 보강한다. | OWNED |
 | [crates/quanta-index-searchd-harness/src/open_loop.rs](../../../../crates/quanta-index-searchd-harness/src/open_loop.rs) | schedule / measure_point / run / artifact | fixed arrivals, offered/success/error accounting, saturation vs correctness failure를 검증한다. | OWNED |
 | [crates/quanta-index-searchd-harness/src/bin/scale_matrix.rs](../../../../crates/quanta-index-searchd-harness/src/bin/scale_matrix.rs) | current CLI/output | fresh external --out-dir와 requested/effective config를 결속하고 refuse/timeout을 pass로 바꾸지 않는다. | OWNED |
 | [crates/quanta-index-searchd-harness/src/bin/open_loop_matrix.rs](../../../../crates/quanta-index-searchd-harness/src/bin/open_loop_matrix.rs) | current CLI/result gates | 동일 resource policy·default/override profile·terminal outcomes를 기록한다. | OWNED |
@@ -50,8 +50,8 @@
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- ./scripts/cargow test -p quanta-index-searchd-harness --lib --bins --all-features --locked
-- ./scripts/cargow test -p quanta-index-searchd-runtime --test runtime_risk_suite --all-features --locked e2e_restart_replay_determinism
+- `./scripts/cargow test -p quanta-index-searchd-harness --lib --bins --all-features --locked`
+- `./scripts/cargow test -p quanta-index-searchd-runtime --test runtime_risk_suite --all-features --locked e2e_restart_replay_determinism`
 - actual scale/open_loop CLI는 --help로 flags를 확인하고 output를 checkout 밖으로 지정한다.
 - Negative: wrong fixture identity, missed offered requests, history override concealment, nonfinite latency, phase sample gap·wrong count/source after delete refusal.
 

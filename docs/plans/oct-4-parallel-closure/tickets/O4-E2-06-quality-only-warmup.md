@@ -45,7 +45,7 @@ run.py는 query_warmup_passes=0을 이미 허용하고 qualified speed는 1회 �
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -k 'zero_warmups or qualified_speed or query_protocol'
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -k 'zero_warmups or qualified_speed or query_protocol'`
 - 실제 0/1 Quanta+Semble fixture capture: 동일 measured rows/status/score bits, 명시적 request/phase ledger, elapsed clock의 범위를 비교한다.
 - Negative: speed-mode warmup0, protocol/spec mismatch, 같은 row count지만 후보가 다른 응답, 누락 measured phase 거절.
 

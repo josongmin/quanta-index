@@ -46,8 +46,8 @@ iter_repository_admissions는 ready/failed를 drain하고 pending을 poll하는 
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_holdout_review.py -q -k 'admission_queue'
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py -q
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_holdout_review.py -q -k 'admission_queue'`
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py -q`
 - Positive: ready7+failed2 fixture에서 ready를 먼저 drain; final publish race 후 ready를 빠뜨리지 않음.
 - Negative: process live but terminal FAILED, malformed/wrong-repo result, upstream 종료 후 missing, duplicate cell/output 경합 refusal.
 

@@ -48,7 +48,7 @@ historical 21,815행 join과 fresh Quanta 11,272응답은 같은 시점의 5제�
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_identifier_robustness_fresh_join.py tools/ci/tests/test_identifier_robustness_multiproduct_report.py tools/ci/tests/test_lexical_five_product_oracle.py tools/ci/tests/test_retrieval_benchmark.py -q
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_identifier_robustness_fresh_join.py tools/ci/tests/test_identifier_robustness_multiproduct_report.py tools/ci/tests/test_lexical_five_product_oracle.py tools/ci/tests/test_retrieval_benchmark.py -q`
 - 독립 raw replay의 row/denominator/score/report equality 및 unit/case/span/status/qrel/source mutations를 검증한다.
 
 ## 완료 조건

@@ -45,7 +45,7 @@
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_holdout_review.py -q -k 'supplemental_request or holdout_review'
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_holdout_review.py -q -k 'supplemental_request or holdout_review'`
 - Positive: 원본 lo 41쌍 보존, suite threshold 2 유지, 신규 pair만 actual call로 판단.
 - Negative: explicit threshold mismatch, duplicate/already-judged pair, stale source text, supplied grade, invalid cached raw, subset-only no-answer 발행 거절.
 

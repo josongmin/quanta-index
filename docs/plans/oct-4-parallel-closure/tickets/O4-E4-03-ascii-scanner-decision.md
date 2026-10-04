@@ -46,8 +46,8 @@ typo_text_is_ascii는16384B 단위 cancellation prepass 후 byte scanner 또는 
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- ./scripts/cargow test -p quanta-index-lexical --lib --locked typo
-- ./scripts/cargow test -p quanta-index-lexical --test l3_exact_source --locked
+- `./scripts/cargow test -p quanta-index-lexical --lib --locked typo`
+- `./scripts/cargow test -p quanta-index-lexical --test l3_exact_source --locked`
 - Positive: 모든 byte span/source/case/order/status/cursor/work counters가 동일.
 - Negative: mixed Unicode join·short names·token cap·cancellation·cache stale identity가 틀리면 reject; substage만 개선된 whole-call 악화는 acceptance 실패.
 

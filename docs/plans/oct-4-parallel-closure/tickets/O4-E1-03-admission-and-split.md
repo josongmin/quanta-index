@@ -47,7 +47,7 @@
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- uv run --frozen --extra dev python -m pytest tools/ci/tests/test_corpus_binding.py tools/ci/tests/test_holdout_review.py tools/ci/tests/test_retrieval_benchmark.py -q
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_corpus_binding.py tools/ci/tests/test_holdout_review.py tools/ci/tests/test_retrieval_benchmark.py -q`
 - Positive: 실제 source-bound admitted repository 한 개를 preflight하고 입력과 receipts가 동일함을 확인한다.
 - Negative: threshold/query/grade/family/unit/source/runtime/receipt mismatch, stale exclusion, 일부 license 누락, NL-only의 mixed decision 승격을 거절한다.
 
