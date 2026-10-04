@@ -10,6 +10,13 @@
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
+## 2026-10-05 JSON 타입 결속 수리 후 새 입력
+
+- clean `97eedd11b70e76c66985b15a968211a2faf92c6d`/`/Users/songmin/.codex/worktrees/oct5-canonical-json/quanta-index`에 canonical serializer 비교와 독립 bool/number 변조 controls를 고정했다. actual focused 회귀는 중앙 배치 실행 중이며 terminal 전에는 통과로 계산하지 않는다.
+- 중앙 `/private/tmp/qi-canonical-json-97eedd-serial-v3.py` SHA `2f9a033416e7072058fa7bffee85c89d8c840afb102dc916f2a383877b803cd3`는 tests→SG12 scope producer/replay→bat native3 producer/replay→5제품 join을 직렬 실행한다. `/private/tmp/qi-sg-canonical-json-97eedd-20261005-v1-batch.json` SHA `8cde50989cc97628493cf5afc3051bf412a11da6cff3b442db5941be38447f05`, bat native specv5 SHA `9c60f1a742ba1fda7a1871f425d3000ee128e91ee8bb789c9c1ad2d8c3e1e66c`, joinv6 SHA `13e51f94f81b6840144f8ffad710d27716c1fd7a9d82c79134a69eaf3a448c44`다. 원본 namespaces를 보존한다.
+- 원본8 native 입력의 현재 준비본은 `/private/tmp/qi-current-native-eight-97eedd-prepare-v4`다. controller SHA `797c91355e88fcb9c31ddb1da7c7e881e2b2db5508f116f8307cbc845d7d0871`, unsealed template SHA `763dc7554f58efc76f2a7d2525febd6cabefcd5f0e4184dd9e4070373a9ebf20`이며 새 SG 독립 replay 뒤 bound packet을 발행한다. 이전97eedd-v3 입력 준비는 old spec filename 오류로 실패해 packet을 발행하지 않았고 보존했다. actual native8은 아직 NOT_RUN이다.
+- 독립 pair-verdict replay 준비본 `/private/tmp/qi-current-eight-canonical-verdict-replay-97eedd-v2.py` SHA `d27df9bbad216c9cd56ee12565d9df62e21e582f80dbc41be3d9c4690b34557a`는 canonical bytes equality·원본11 paths 전후 hash·40/40 states·required8 ledger를 검사하며 출력이 두 source 및 capture parent 아래에 생성되지 않게 canonical resolved path 경계를 확인한다. source-bundle/external join/final labels proof는 별도다. actual replay NOT_RUN이다.
+
 ## 2026-10-05 canonical consumer628541 PREPARE
 
 - 추가 derived provenance·frozen-context 경로 수리를 clean `628541e150192b4aaf0ff4ba54566ae28c6ca25f`/`/Users/songmin/.codex/worktrees/oct5-canonical-consumer/quanta-index`에 고정했다. source0e6 Rust product bytes는 그대로이며 새 Python canonical owner의 focused 회귀는 직렬 admission 종료 뒤 실행한다. 지금 `NOT_RUN`이다.
