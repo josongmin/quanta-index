@@ -8608,8 +8608,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 ),
                 "rust": (
                     "retrieval-contract-rust",
-                    "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
-                    "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked",
+                    portable_proof.RUST_COMMAND,
                     "nextest-jsonl",
                     nextest_summary,
                 ),

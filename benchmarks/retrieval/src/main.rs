@@ -417,7 +417,7 @@ impl CompletedOutputLedger {
                 )));
             }
         } else {
-            self.first_output
+            let _previous_output = self.first_output
                 .insert(key.clone(), output_sha256.to_string());
         }
         if is_first_measured {

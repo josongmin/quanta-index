@@ -191,3 +191,10 @@ compilation rejected one unused result; the parser was corrected and the
 3/3 binary test passed. A fresh release-profile build and a 4096-file run
 with an explicit larger history budget remain **NOT_RUN**. The 582cb7a5
 receipts above cannot be relabeled as results of this new runner policy.
+
+Subsequent owner verification after the total-cap and stage-context changes:
+the builder policy unit 1/1, full `scale::` units 24/24 and bounded CLI unit
+1/1 passed with `--all-features --locked`. The refusal unit covers an untyped
+ingest failure, preservation of an existing typed source limit, and a
+cleanup-only failure. These are code-path tests; a new large-tier runtime
+attempt and release-profile measurement remain **NOT_RUN**.
