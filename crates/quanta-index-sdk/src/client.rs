@@ -60,7 +60,17 @@ impl ClientQueryRpcKindV1 {
                 Ok(Self::ResolveLexicalGeneration)
             }
             SearchPlaneQueryIpcRequest::Text(_) => Ok(Self::Text),
-            _ => Err(SdkError::Protocol(
+            SearchPlaneQueryIpcRequest::Symbol(_)
+            | SearchPlaneQueryIpcRequest::Semantic(_)
+            | SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(_)
+            | SearchPlaneQueryIpcRequest::Hybrid(_)
+            | SearchPlaneQueryIpcRequest::HybridSeed(_)
+            | SearchPlaneQueryIpcRequest::History(_)
+            | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcRequest::Structural(_)
+            | SearchPlaneQueryIpcRequest::RepoMapQuery(_)
+            | SearchPlaneQueryIpcRequest::Explain(_)
+            | SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Err(SdkError::Protocol(
                 "lexical client observation reached a non-lexical RPC".to_string(),
             )),
         }
@@ -223,7 +233,7 @@ impl QuantaIndex {
             request_id,
             payload,
         };
-        let response = if let Some(trace) = observation.as_deref_mut() {
+        let response = if let Some(trace) = observation {
             let (response, ipc) = self.inner.query_transport.send_observed(envelope)?;
             let kind = observed_kind.ok_or_else(|| {
                 SdkError::Protocol("observed query RPC kind disappeared".to_string())
@@ -313,7 +323,20 @@ impl QuantaIndex {
                     "structural active generation is unsupported".to_string(),
                 ))
             }
-            _ => Ok(()),
+            SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
+            | SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(_)
+            | SearchPlaneQueryIpcRequest::Text(_)
+            | SearchPlaneQueryIpcRequest::Symbol(_)
+            | SearchPlaneQueryIpcRequest::Semantic(_)
+            | SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(_)
+            | SearchPlaneQueryIpcRequest::Hybrid(_)
+            | SearchPlaneQueryIpcRequest::HybridSeed(_)
+            | SearchPlaneQueryIpcRequest::History(_)
+            | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcRequest::Structural(_)
+            | SearchPlaneQueryIpcRequest::RepoMapQuery(_)
+            | SearchPlaneQueryIpcRequest::Explain(_)
+            | SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Ok(()),
         }
     }
 

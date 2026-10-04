@@ -557,15 +557,15 @@ fn check_selected_active_head(
     pin: &GenerationPin,
     head: Option<&SearchCorpusActiveHeadV1>,
 ) -> Result<(), SdkError> {
-    if let Some((Some(secondary_pin), _)) = &binding.secondary {
-        if secondary_pin != pin {
-            return Err(binding_error(
-                binding.expected.kind(),
-                ResponseBindingAxis::ReadIdentity,
-                "the second lane's requested pin",
-                "a different response pin",
-            ));
-        }
+    if let Some((Some(secondary_pin), _)) = &binding.secondary
+        && secondary_pin != pin
+    {
+        return Err(binding_error(
+            binding.expected.kind(),
+            ResponseBindingAxis::ReadIdentity,
+            "the second lane's requested pin",
+            "a different response pin",
+        ));
     }
     let domains = [
         binding.active_domain.as_ref(),
@@ -585,14 +585,14 @@ fn check_selected_active_head(
                 "missing selected active head",
             ));
         };
-        head.validate_v1().map_err(|_| {
-            binding_error(
+        if head.validate_v1().is_err() {
+            return Err(binding_error(
                 binding.expected.kind(),
                 ResponseBindingAxis::ReadIdentity,
                 "a valid selected active head",
                 "an invalid selected active head",
-            )
-        })?;
+            ));
+        }
         let lexical = &head.generation.lexical;
         let semantic = &head.generation.semantic;
         if lexical.repo_id != domain.0

@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_THEN_CONDITIONAL_CODE` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | source904 functional lexical296·independent L3 30 `VERIFIED`; whole-call A/B·scanner 최종 결정 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,9 @@ mixed A/B 결과에서 deletion lane 악화의 원인을 분해해 scanner를 �
 ## 배경과 현재 상태
 
 typo_text_is_ascii는16384B 단위 cancellation prepass 후 byte scanner 또는 Unicode tokenizer를 선택한다. 기존 20captures/17850 output comparisons는 동등성을 보였으나 deletion completed-call 평균+8.75%, host contended, arm당2roots였다. substage scan 감소는 whole-call 개선을 증명하지 않는다.
+
+- `VERIFIED`: source904 중앙 workspace rail의 lexical lib296와 `test-daemon-lane`의 `l3_exact_source` 30개가 실제 통과했다. independent source/Unicode/typo/declaration/literal-gate correctness scope다.
+- same binary/source 차이로 묶인 whole-call release A/B와 scanner 유지/수정/철회 결정은 `NOT_RUN`이다. current Darwin의 CPU frequency authority가 없어 현재 host의 latency/throughput은 diagnostic이며, 이를 qualified speed 비교로 승격하지 않는다.
 
 ## 착수 입력
 

@@ -189,7 +189,7 @@ impl SearchPlaneDispatcher {
             );
             explanation.stage_timings = stage_timings.finish();
             return Ok(SemanticQueryResponse {
-                selected_active_head: selection.active_head.clone(),
+                selected_active_head: selection.active_head,
                 generation: pin,
                 results: Vec::new(),
                 window: semantic_empty_scope_window_v2(&execution.summary())?,

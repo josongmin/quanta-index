@@ -20,6 +20,8 @@
 
 ## 착수 입력
 
+- 2026-10-04 current-source 정적 대조: independent full tokenizer/DP 및 실제 lexical296/L3 30 functional rails가 존재하고 통과했다. 현재 ASCII 이후 지속 token-scan 병목은 아직 측정하지 않았다. `typo_shortlist_admission_ns`, `typo_source_token_scan_ns`, `typo_materialize_ns`, `typo_token_comparisons`, `source_surface_bytes_considered`와 completed whole-call clock을 먼저 비교한다. persistent token authority의 조건 미충족을 `NOT_APPLICABLE` 완료로 표시하지 않는다.
+
 - E4-01/03 after-scanner profile에서 persistent token-scan bottleneck
 - 독립 exhaustive tokenizer+full-DP OSA1 oracle, source digest/name spans/declaration attestation
 - build/cold-open/residency/delta/delete budget와 accepted typo policy

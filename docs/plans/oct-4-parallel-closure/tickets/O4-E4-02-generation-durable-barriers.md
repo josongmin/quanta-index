@@ -20,6 +20,8 @@ index_store.write_atomic_durable는 file sync→rename→parent sync다. coverag
 
 ## 착수 입력
 
+- 2026-10-04 current-source 정적 대조: canonical `write_atomic_durable`은 artifact별 file sync→rename→parent sync이며 coverage-page dir sync도 별도다. 현재 child clocks는 syscall 외 작업을 포함한다. 실제 release profile에서 sync가 지배한다는 결과는 `NOT_RUN`이므로 group barrier 변경을 아직 채택하지 않았다. 조건 미충족을 `NOT_APPLICABLE` 완료로 표시하지 않는다.
+
 - E4-01 actual phase attribution 및 selected filesystem/Rust sync primitive
 - write/file-sync/rename/hardlink/directory barrier/root publish/cleanup 단계별 fault injection fixture
 - old/new root source commitments, independent reopen/fresh rebuild oracle

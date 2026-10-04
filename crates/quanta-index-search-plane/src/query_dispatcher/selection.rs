@@ -406,8 +406,9 @@ pub(super) fn resolve_lexical_request_selection(
     .ok_or_else(|| CoreError::InvalidContract(format!("{plane}: generation pin required")))
 }
 
-/// Cursor position is authoritative for the page. An Active selector also
-/// requires the current catalog selection to name that cursor's generation;
+/// Cursor position is authoritative for the page.
+///
+/// An Active selector also requires the current catalog selection to name that cursor's generation;
 /// the returned head is the same snapshot used for that comparison.
 pub(super) fn resolve_cursor_selection(
     activation_catalog: &ActivationCatalog,
