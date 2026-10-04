@@ -392,6 +392,37 @@ matrix-level atomic custody design and independent tamper/refusal tests prove
 an equivalent boundary. The matrix's existing closure reuse already avoids
 repeating the full *capture* stage.
 
+### 2026-10-04 stale-gold fail-fast RCA
+
+The historical Gin 1,196-query pair spec's original manifest path no longer
+exists. A frozen prior capture contains the same 99-file manifest; its pinned
+Gin checkout is clean at `d3ffc9985281dcf4d3bef604cce4e662b1a327a6`,
+and all 99 file hashes match. A new exploratory spec under
+`/private/tmp/qi-harness-gin1196-20261004-d274-spec.json` rebound only that
+manifest, the optimized-debug `d2740319` binaries and a fresh output root.
+The first attempt refused a too-long Unix socket path before output creation;
+the shortened `/private/tmp/qg12` attempt ran Quanta and then failed old suite
+task `L0325`: its `go_exact_local_name_v1` oracle contract is unsupported by
+the current producer (`go_exact_local_name_v3`). The pair took **54.92 s** and
+left only `/private/tmp/qg12.staging`; it has no scored result. The Quanta
+record nevertheless has **1,196/1,196** result rows and **2,393** complete
+query observations; independent phase/response-diagnostic validation passed.
+Its busy-host debug runner total was **50.195 s**: measured warm queries
+**18.614 s**, warmup **19.939 s**, publish/activate **9.008 s**, boot
+**0.858 s**, and `unattributed` **1.102 s**. These are diagnostic process
+phases, not a product speed comparison.
+
+The pair driver previously called `validate_suite` after every product run.
+Commit `7a046b55` moves validation of the frozen suite and its derived blind
+pack before the first product. Focused pair tests passed **4/4**, including a
+stale-gold refusal before any product call; Ruff and `git diff --check`
+passed. A clean `7a046b55` worktree reran the same stale Gin suite with a
+new `/private/tmp/qg13` root: refusal occurred in **4.35 s**, with no
+`rep-00`, product record, verdict, or promoted output. This proves fail-fast
+behavior for invalid input; it does not qualify a 1,196-query pair capture or
+establish a timed speedup for a valid suite. Current-contract Gin gold must be
+reissued independently before a valid full pair run.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
