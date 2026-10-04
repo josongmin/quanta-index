@@ -1153,9 +1153,28 @@ mean that all 186 tests executed. On frozen clean source `37e38249`,
 `python -m pytest -q tools/ci/tests/test_retrieval_benchmark.py
 tools/ci/tests/test_source_oracle_suite.py tools/ci/tests/test_holdout_review.py
 tools/ci/tests/test_completed_response_timing.py` passed 732/732 in 377.83 s.
-The fresh release SDK proof at that source is still building. No new Gin
-diagnostic-8 capture, qualified speed measurement or successful large-tier
-runtime is implied by these contract results.
+The fresh release SDK proof at that source passed 25/25, and independent
+`portable_proof.py verify --receipt execution-context.json` passed. Its
+runner/searchd hashes are `97e95be296b0400e46927da0626acad4490c328092931a14c4c3a490442dd5e2`
+and `457d3e7496ea7edcbc3ef324f8ea53b6c59f1109e0253e1caf5bf0857c95fb38`.
+Using that same release daemon, the ignored SDK full/delta/no-op/delete/restart
+test passed 1/1 in 5.26 s; this is a small fixed fixture, not Gin delta timing.
+
+The same-source diagnostic-8 Gin captures under
+`/private/tmp/qg8-zzx504gf` completed all five lanes: exact 1,196 and insertion /
+deletion / substitution / transposition 1,192 / 1,178 / 1,192 / 1,192 tasks.
+The driver validated all 11,905 cold/warmup/measured observations. Canonical
+single-route scoring rederived the lexical-only suite/pack projection and
+proved it equal to the captured pack without rewriting native records.
+`MEASUREMENTS.json` and `MEASUREMENTS.md` retain binding, costs and limits.
+These are single-root, host-contended diagnostics, not speed qualification.
+Token scanning accounts for roughly three quarters of typo candidate time;
+shortlist and sort are smaller. Clean full indexing measured text collection
+3.262 ms, preparation 2,468.065 ms and file-authority publication 2,561.811 ms.
+Do not prioritize all-document collection from the older broad parent clock.
+The remaining SDK/server difference is unattributed until the new client
+request observation is actually exercised. No successful large-tier runtime,
+five-product comparison or quiet-host qualification is established here.
 
 ## Execution receipt (2026-09-30)
 

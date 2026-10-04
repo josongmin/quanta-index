@@ -909,15 +909,25 @@ pub struct PhaseResourceV1 {
     pub cpu: CpuUsageV1,
     pub rss_start_bytes: u64,
     pub rss_end_bytes: u64,
+    pub rss_start_before_phase_ms: f64,
+    pub rss_end_after_phase_ms: f64,
     /// Greatest observed current RSS; sampling cannot establish a true peak.
     pub sampled_max_rss_bytes: u64,
     pub interior_samples: usize,
+    /// Monotonic offsets from the timed operation start, not wall-clock time.
+    pub sampled_rss: Vec<PhaseRssSampleV1>,
     pub observed_max_gap_ms: f64,
     pub observation_span_ms: f64,
     pub observer_setup_ms: f64,
     pub observer_teardown_ms: f64,
     pub observer_periodic_probe_wall_ms: f64,
     pub discarded_outside_phase_samples: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhaseRssSampleV1 {
+    pub offset_ms: f64,
+    pub rss_bytes: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -1047,7 +1057,7 @@ fn summarize_phase_resources(
     }
     let mut previous = rss_start.at;
     let mut sampled_max = rss_start.bytes.max(rss_end.bytes);
-    let mut interior_samples = 0;
+    let mut sampled_rss = Vec::new();
     let mut discarded_outside_phase_samples = 0;
     for sample in samples {
         if sample.bytes == 0 || sample.at <= previous || sample.at >= rss_end.at {
@@ -1055,7 +1065,10 @@ fn summarize_phase_resources(
         }
         previous = sample.at;
         if sample.at > started && sample.at < ended {
-            interior_samples += 1;
+            sampled_rss.push(PhaseRssSampleV1 {
+                offset_ms: sample.at.duration_since(started).as_secs_f64() * 1_000.0,
+                rss_bytes: sample.bytes,
+            });
             sampled_max = sampled_max.max(sample.bytes);
         } else {
             discarded_outside_phase_samples += 1;
@@ -1072,7 +1085,8 @@ fn summarize_phase_resources(
         }
     }
     max_gap = max_gap.max(ended.duration_since(previous));
-    if ended.duration_since(started) >= PHASE_RSS_INTERIOR_REQUIRED_AFTER && interior_samples == 0 {
+    if ended.duration_since(started) >= PHASE_RSS_INTERIOR_REQUIRED_AFTER && sampled_rss.is_empty()
+    {
         anyhow::bail!("scale: long phase has no interior RSS sample");
     }
     if max_gap > PHASE_RSS_MAX_GAP {
@@ -1082,8 +1096,11 @@ fn summarize_phase_resources(
         cpu,
         rss_start_bytes: rss_start.bytes,
         rss_end_bytes: rss_end.bytes,
+        rss_start_before_phase_ms: started.duration_since(rss_start.at).as_secs_f64() * 1_000.0,
+        rss_end_after_phase_ms: rss_end.at.duration_since(ended).as_secs_f64() * 1_000.0,
         sampled_max_rss_bytes: sampled_max,
-        interior_samples,
+        interior_samples: sampled_rss.len(),
+        sampled_rss,
         observed_max_gap_ms: max_gap.as_secs_f64() * 1_000.0,
         observation_span_ms: ended.duration_since(started).as_secs_f64() * 1_000.0,
         observer_setup_ms: setup_ms,
@@ -2325,6 +2342,8 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
                 "cpu_process_system_ms": observation.cpu.system_ms,
                 "rss_start_bytes": observation.rss_start_bytes,
                 "rss_end_bytes": observation.rss_end_bytes,
+                "rss_start_before_phase_ms": observation.rss_start_before_phase_ms,
+                "rss_end_after_phase_ms": observation.rss_end_after_phase_ms,
                 "sampled_max_rss_bytes": observation.sampled_max_rss_bytes,
                 "sampled_max_is_true_peak": false,
                 "rss_method": if cfg!(target_os = "linux") { "proc_self_status_vmrss" } else { "ps_rss_kib_self" },
@@ -2333,6 +2352,10 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
                 "interior_required_after_ms": PHASE_RSS_INTERIOR_REQUIRED_AFTER.as_millis(),
                 "observed_max_gap_ms": observation.observed_max_gap_ms,
                 "interior_samples": observation.interior_samples,
+                "sampled_rss": observation.sampled_rss.iter().map(|sample| json!({
+                    "offset_ms": sample.offset_ms,
+                    "rss_bytes": sample.rss_bytes,
+                })).collect::<Vec<_>>(),
                 "discarded_outside_phase_samples": observation.discarded_outside_phase_samples,
                 "coverage": if observation.interior_samples == 0 { "boundaries_only" } else { "periodic_with_boundaries" },
                 "observation_span_ms": observation.observation_span_ms,
@@ -2501,16 +2524,38 @@ pub fn artifact(
         anyhow::bail!("scale: measured tier is missing a required phase resource observation");
     }
     for (phase, observation) in &measurement.phase_resources {
+        let mut previous_offset_ms = 0.0_f64;
+        let mut derived_max_gap_ms = 0.0_f64;
+        let mut derived_sampled_max_rss =
+            observation.rss_start_bytes.max(observation.rss_end_bytes);
+        for sample in &observation.sampled_rss {
+            if sample.rss_bytes == 0
+                || !sample.offset_ms.is_finite()
+                || sample.offset_ms <= previous_offset_ms
+                || sample.offset_ms >= observation.observation_span_ms
+            {
+                anyhow::bail!(
+                    "scale: phase {phase} has an invalid RSS sample offset or byte count"
+                );
+            }
+            derived_max_gap_ms = derived_max_gap_ms.max(sample.offset_ms - previous_offset_ms);
+            previous_offset_ms = sample.offset_ms;
+            derived_sampled_max_rss = derived_sampled_max_rss.max(sample.rss_bytes);
+        }
+        derived_max_gap_ms =
+            derived_max_gap_ms.max(observation.observation_span_ms - previous_offset_ms);
         if observation.rss_start_bytes == 0
             || observation.rss_end_bytes == 0
-            || observation.sampled_max_rss_bytes
-                < observation.rss_start_bytes.max(observation.rss_end_bytes)
+            || observation.sampled_max_rss_bytes != derived_sampled_max_rss
+            || observation.interior_samples != observation.sampled_rss.len()
             || (observation.observation_span_ms
                 >= PHASE_RSS_INTERIOR_REQUIRED_AFTER.as_secs_f64() * 1_000.0
                 && observation.interior_samples == 0)
             || ![
                 observation.cpu.user_ms,
                 observation.cpu.system_ms,
+                observation.rss_start_before_phase_ms,
+                observation.rss_end_after_phase_ms,
                 observation.observed_max_gap_ms,
                 observation.observation_span_ms,
                 observation.observer_setup_ms,
@@ -2521,6 +2566,7 @@ pub fn artifact(
             .all(|value| value.is_finite() && *value >= 0.0)
             || observation.observation_span_ms == 0.0
             || observation.observed_max_gap_ms > PHASE_RSS_MAX_GAP.as_secs_f64() * 1_000.0
+            || (observation.observed_max_gap_ms - derived_max_gap_ms).abs() > 0.000_001
         {
             anyhow::bail!("scale: phase {phase} has an invalid resource observation");
         }
@@ -3445,8 +3491,20 @@ mod tests {
             },
             rss_start_bytes: 1_024,
             rss_end_bytes: 2_048,
+            rss_start_before_phase_ms: 1.0,
+            rss_end_after_phase_ms: 2.0,
             sampled_max_rss_bytes: 3_072,
             interior_samples: 2,
+            sampled_rss: vec![
+                PhaseRssSampleV1 {
+                    offset_ms: 50.0,
+                    rss_bytes: 3_072,
+                },
+                PhaseRssSampleV1 {
+                    offset_ms: 150.0,
+                    rss_bytes: 1_024,
+                },
+            ],
             observed_max_gap_ms: 100.0,
             observation_span_ms: 200.0,
             observer_setup_ms: 1.0,
@@ -3536,7 +3594,15 @@ mod tests {
             .get_mut("full_ingest_seal")
             .unwrap()
             .interior_samples = 0;
-        assert!(artifact(&no_interior, head, host).is_err());
+        assert!(artifact(&no_interior, head.clone(), host.clone()).is_err());
+        let mut bad_offset = sample_measurement();
+        bad_offset
+            .phase_resources
+            .get_mut("full_activate")
+            .unwrap()
+            .sampled_rss[1]
+            .offset_ms = 40.0;
+        assert!(artifact(&bad_offset, head, host).is_err());
         let observation = sample_measurement().phase_resources["full_activate"].clone();
         let mut phases = BTreeMap::new();
         record_phase(&mut phases, "full_activate", observation.clone())?;
@@ -3576,6 +3642,10 @@ mod tests {
         assert_eq!(
             tier["phase_resources"]["full_ingest_seal"]["interior_samples"],
             2
+        );
+        assert_eq!(
+            tier["phase_resources"]["full_ingest_seal"]["sampled_rss"][0]["offset_ms"],
+            50.0
         );
         assert!(tier["requested_history_max_bytes"].is_null());
         assert_eq!(

@@ -179,7 +179,6 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
     let socket = dir.path().join("observed-client.sock");
     let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
     let (status_tx, status_rx) = mpsc::channel();
-    let (release_tx, release_rx) = mpsc::channel();
     let server = thread::spawn(move || -> TestRes {
         for _ in 0..2 {
             let result = (|| -> TestRes {
@@ -203,9 +202,6 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
                 stream
                     .write_all(&frame)
                     .map_err(|error| error.to_string())?;
-                release_rx
-                    .recv_timeout(Duration::from_secs(2))
-                    .map_err(|error| format!("client did not finish response read: {error}"))?;
                 Ok(())
             })();
             status_tx
@@ -222,14 +218,12 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
     let policy =
         ClientIoPolicy::try_new(Duration::from_secs(2)).map_err(|error| error.to_string())?;
     let plain_result = send_request(&socket, &request, policy);
-    release_tx.send(()).map_err(|error| error.to_string())?;
     status_rx
         .recv_timeout(Duration::from_secs(2))
         .map_err(|error| format!("plain server did not finish: {error}"))??;
     let plain: TestResponseEnvelope =
         plain_result.map_err(|error| format!("plain IPC request failed: {error}"))?;
     let observed_result = send_request_observed(&socket, &request, policy);
-    release_tx.send(()).map_err(|error| error.to_string())?;
     status_rx
         .recv_timeout(Duration::from_secs(2))
         .map_err(|error| format!("observed server did not finish: {error}"))??;
@@ -257,6 +251,50 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
         .ok_or_else(|| "client timing children overflowed".to_string())?;
     if timing.read_io_ns > timing.decode_call_ns || disjoint > timing.total_ns {
         return Err(format!("client timing hierarchy is invalid: {timing:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn observed_client_request_rejects_truncated_frame_after_peer_close() -> TestRes {
+    let dir = private_tempdir()?;
+    let socket = dir.path().join("observed-truncated.sock");
+    let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
+    let server = thread::spawn(move || -> TestRes {
+        let (mut stream, _address) = listener.accept().map_err(|error| error.to_string())?;
+        let request: TestRequestEnvelope =
+            super::decode_request(&mut stream).map_err(|error| error.to_string())?;
+        if request.request_id != 18 || request.payload != 23 {
+            return Err(format!("truncated fixture request changed: {request:?}"));
+        }
+        let frame = super::encode_response(&TestResponseEnvelope {
+            request_id: 18,
+            payload: 24,
+        })
+        .map_err(|error| error.to_string())?;
+        if frame.len() < 2 {
+            return Err("encoded response is too short to truncate".to_string());
+        }
+        stream
+            .write_all(&frame[..frame.len() - 1])
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+    let policy =
+        ClientIoPolicy::try_new(Duration::from_secs(2)).map_err(|error| error.to_string())?;
+    let observed = send_request_observed::<_, TestResponseEnvelope>(
+        &socket,
+        &TestRequestEnvelope {
+            request_id: 18,
+            payload: 23,
+        },
+        policy,
+    );
+    server
+        .join()
+        .map_err(|_panic_payload| "server panicked".to_string())??;
+    if !matches!(observed, Err(IpcError::Truncated)) {
+        return Err(format!("truncated frame was not rejected: {observed:?}"));
     }
     Ok(())
 }

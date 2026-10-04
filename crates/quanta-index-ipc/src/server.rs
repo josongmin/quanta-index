@@ -1869,7 +1869,27 @@ impl DeadlineStream {
 impl Read for DeadlineStream {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         let remaining = self.remaining()?;
-        self.stream.set_read_timeout(Some(remaining))?;
+        match self.stream.set_read_timeout(Some(remaining)) {
+            Ok(()) => {}
+            Err(error) if cfg!(target_os = "macos") && error.kind() == ErrorKind::InvalidInput => {
+                // Darwin can reject SO_RCVTIMEO after the peer has closed,
+                // even when a complete response is still buffered. Poll the
+                // same socket under the original absolute deadline and let
+                // read/decode distinguish buffered bytes from a truncated EOF.
+                let mut poll_fd = [PollFd::new(&self.stream, PollFlags::IN | PollFlags::HUP)];
+                loop {
+                    let timeout = Timespec::try_from(self.remaining()?)
+                        .map_err(|reason| std::io::Error::new(ErrorKind::InvalidInput, reason))?;
+                    match poll(&mut poll_fd, Some(&timeout)) {
+                        Ok(0) => return Err(deadline_elapsed_error()),
+                        Ok(_) => break,
+                        Err(Errno::INTR) => {}
+                        Err(reason) => return Err(reason.into()),
+                    }
+                }
+            }
+            Err(error) => return Err(error),
+        }
         self.stream.read(buffer)
     }
 }
