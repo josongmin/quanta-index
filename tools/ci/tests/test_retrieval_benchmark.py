@@ -3043,7 +3043,8 @@ def test_pair_driver_refuses_ambiguous_json(tmp_path):
         pairrun.read_json(path)
 
 
-def test_pair_capture_preflight_requires_external_root_and_clean_pin(tmp_path):
+def test_pair_capture_preflight_requires_external_root_and_clean_pin(tmp_path, monkeypatch):
+    monkeypatch.setattr(pairrun, "probe_runner_capabilities", lambda _binary: {})
     repo, suite, _run, _sp, _rp, _files = fixture_v3(tmp_path)
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
@@ -3061,6 +3062,7 @@ def test_pair_capture_preflight_requires_external_root_and_clean_pin(tmp_path):
         "output_root": str(repo / "capture"),
         "searchd_binary": str(searchd),
         "searchd_expected_sha256": ev.digest(b"searchd-binary"),
+        "runner_binary": str(tmp_path / "runner"),
     }
     with pytest.raises(pairrun.RunError, match="outside the frozen repository"):
         pairrun.preflight_capture(spec)
@@ -3080,7 +3082,10 @@ def test_pair_capture_preflight_requires_external_root_and_clean_pin(tmp_path):
 
 
 @pytest.mark.parametrize("policy", ["code_search_file", "natural_language_file"])
-def test_qualified_default_file_preflight_refuses_mechanical_positive(tmp_path, policy):
+def test_qualified_default_file_preflight_refuses_mechanical_positive(
+    tmp_path, monkeypatch, policy
+):
+    monkeypatch.setattr(pairrun, "probe_runner_capabilities", lambda _binary: {})
     repo, suite, _run, _sp, _rp, _files = fixture_v3(tmp_path)
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"repository_commit": suite["repository_commit"]}))
@@ -3095,6 +3100,7 @@ def test_qualified_default_file_preflight_refuses_mechanical_positive(tmp_path, 
         "output_root": str(tmp_path / "capture"),
         "searchd_binary": str(searchd),
         "searchd_expected_sha256": ev.digest(b"searchd-binary"),
+        "runner_binary": str(tmp_path / "runner"),
         "scope": "qualified",
         "execution_profiles": {"quanta": {"policy": policy}},
     }

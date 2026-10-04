@@ -384,6 +384,7 @@ class ProcessRootAbsent(RunError):
 
 
 QUERY_PROTOCOL_VERSION = 1
+CURRENT_RETRIEVAL_DIAGNOSTIC_SCHEMA_VERSION = 8
 
 
 def _protocol_digest(payload: dict) -> str:
@@ -3548,6 +3549,39 @@ def require_reviewed_file_labels(suite: dict, policy: str) -> None:
             )
 
 
+def probe_runner_capabilities(binary: Path) -> dict:
+    """Reject a stale runner before indexing; captured diagnostics remain authority."""
+    try:
+        result = subprocess.run(
+            [str(binary), "capabilities"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RunError(f"runner binary capability probe failed: {exc}") from exc
+    if result.returncode != 0:
+        raise RunError(f"runner binary capability probe exited {result.returncode}")
+    try:
+        capabilities = _exact_keys(
+            json.loads(result.stdout),
+            {"schema_version", "retrieval_diagnostic_schema_version"},
+            "runner binary capabilities",
+        )
+    except (ValueError, TypeError) as exc:
+        raise RunError(f"runner binary capability response invalid: {exc}") from exc
+    if (
+        type(capabilities["schema_version"]) is not int
+        or capabilities["schema_version"] != 1
+        or type(capabilities["retrieval_diagnostic_schema_version"]) is not int
+        or capabilities["retrieval_diagnostic_schema_version"]
+        != CURRENT_RETRIEVAL_DIAGNOSTIC_SCHEMA_VERSION
+    ):
+        raise RunError("runner binary diagnostic contract differs from the capture driver")
+    return capabilities
+
+
 def preflight_capture(spec: dict) -> Path:
     """Refuse dirty/wrong-HEAD inputs, contract drift and unpinned binaries."""
     manifest = read_json(Path(spec["manifest"]))
@@ -3592,6 +3626,7 @@ def preflight_capture(spec: dict) -> Path:
     out_root = Path(spec["output_root"]).resolve()
     if out_root == repo or repo in out_root.parents:
         raise RunError("output root must be outside the frozen repository")
+    probe_runner_capabilities(Path(spec["runner_binary"]))
     return out_root
 
 
@@ -5238,7 +5273,7 @@ def run_quanta_strategy(
         sha_file(record_path),
         read_json(pack_path),
     )
-    if diagnostic["schema_version"] != 8 or diagnostic[
+    if diagnostic["schema_version"] != CURRENT_RETRIEVAL_DIAGNOSTIC_SCHEMA_VERSION or diagnostic[
         "server_observation"
     ] != server_observation_configuration(spec.get("query_stage_observation", "enabled")):
         raise RunError(
@@ -11876,6 +11911,7 @@ def run_quality_matrix(matrix: dict) -> int:
             )
         members, model = _quality_batch_members(batch)
         _quality_batch_input_snapshot(members)
+        probe_runner_capabilities(Path(members[0][1]["runner_binary"]))
         preflight_daemon_socket_paths(
             Path(batch["output_root"] + ".staging") / "quanta",
             members[0][1]["strategies"],

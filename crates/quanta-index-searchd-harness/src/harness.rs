@@ -227,6 +227,9 @@ pub struct E2eRuntime {
     /// mode and group, and that the harness removes on stop. `None` keeps
     /// the sockets loose in the process temp dir.
     socket_directory: Option<PathBuf>,
+    /// An explicit `stop` has already returned its teardown error to the
+    /// caller. `Drop` may retry cleanup but must not panic over that error.
+    explicit_stop_error_reported: bool,
     /// The window the daemon's semantic track embeds and appends a batch in
     /// (QI-BB-021). The production default holds any fixture in one window;
     /// streaming tests narrow it through
@@ -660,6 +663,7 @@ impl E2eRuntime {
             ingest_resource_policy: IngestResourcePolicy::DEFAULT,
             socket_access: SocketAccessPolicies::PRIVATE,
             socket_directory: None,
+            explicit_stop_error_reported: false,
             semantic_stream_window_policy: SemanticStreamWindowPolicy::DEFAULT,
             integrity_scrub_policy: IntegrityScrubPolicyV1::new(
                 HARNESS_DORMANT_SCRUB_INTERVAL_MILLIS,
@@ -719,7 +723,10 @@ impl E2eRuntime {
     /// a driver failure as their error; `Drop` remains the unwind path
     /// that never masks a scenario failure already in flight.
     pub fn stop(mut self) -> AnyResult<()> {
-        self.stop_driver()?;
+        if let Err(error) = self.stop_driver() {
+            self.explicit_stop_error_reported = true;
+            return Err(error);
+        }
         drop(self.tempdir.take());
         Ok(())
     }
@@ -3329,7 +3336,7 @@ impl Drop for E2eRuntime {
     )]
     fn drop(&mut self) {
         if let Err(error) = self.stop_driver() {
-            if thread::panicking() {
+            if thread::panicking() || self.explicit_stop_error_reported {
                 eprintln!(
                     "e2e-harness: daemon driver failed while another panic was unwinding: {error:#}"
                 );

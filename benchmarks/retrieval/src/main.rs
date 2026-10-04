@@ -27,7 +27,7 @@ use quanta_index_retrieval_bench::corpus::{
     CorpusLimits, Manifest, SourceFile, load_corpus, load_manifest, verify_checkout,
     verify_materialized_corpus,
 };
-use quanta_index_retrieval_bench::diagnostics::diagnostic_value;
+use quanta_index_retrieval_bench::diagnostics::{DIAGNOSTIC_SCHEMA_VERSION, diagnostic_value};
 use quanta_index_retrieval_bench::profile::EmbedderProfile;
 use quanta_index_retrieval_bench::published_units::PublishedUnitRegistry;
 use quanta_index_retrieval_bench::query_plan::{
@@ -60,7 +60,7 @@ fn usage_error(mut message: String) -> BenchError {
 fn print_help() -> BenchResult<()> {
     std::io::stdout()
         .write_all(
-            b"quanta-index-retrieval-bench run|chunk|preflight [flags]\n\
+            b"quanta-index-retrieval-bench run|chunk|preflight|capabilities [flags]\n\
          \n\
          run: manifest -> chunks -> real searchd publish/activate -> SDK queries -> v5 record\n\
          chunk: manifest -> chunks + coverage JSON (no daemon)\n\
@@ -102,6 +102,17 @@ fn stdout_line(message: &str) -> BenchResult<()> {
         path: "stdout".to_string(),
         message: err.to_string(),
     })
+}
+
+fn runner_capabilities() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "retrieval_diagnostic_schema_version": DIAGNOSTIC_SCHEMA_VERSION,
+    })
+}
+
+fn print_runner_capabilities() -> BenchResult<()> {
+    stdout_line(&runner_capabilities().to_string())
 }
 
 struct Args {
@@ -1795,13 +1806,15 @@ fn run_cli(argv: &[String]) -> BenchResult<()> {
     if parsed.positional.len() != 1 {
         print_help()?;
         return Err(usage_error(
-            "expected exactly one subcommand: run|chunk|preflight".to_string(),
+            "expected exactly one subcommand: run|chunk|preflight|capabilities".to_string(),
         ));
     }
     match parsed.positional.first().map(String::as_str) {
         Some("run") => run_capture(&parsed),
         Some("chunk") => run_chunk(&parsed),
         Some("preflight") => run_symbol_preflight(&parsed),
+        Some("capabilities") if parsed.flags.is_empty() => print_runner_capabilities(),
+        Some("capabilities") => Err(usage_error("capabilities takes no flags".to_string())),
         Some(other) => {
             print_help()?;
             Err(usage_error(format!("unknown subcommand: {other}")))
@@ -1824,6 +1837,17 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capabilities_identify_the_actual_diagnostic_contract() {
+        assert_eq!(
+            runner_capabilities(),
+            serde_json::json!({
+                "schema_version": 1,
+                "retrieval_diagnostic_schema_version": DIAGNOSTIC_SCHEMA_VERSION,
+            })
+        );
+    }
 
     #[test]
     fn protocol_preserves_typed_query_refusal_and_rejects_malformed_failure() {
