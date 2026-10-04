@@ -1,0 +1,74 @@
+# O4-E4-05 — matching release scale·load·restart 실행
+
+| 항목 | 값 |
+| --- | --- |
+| 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
+| 우선순위 / 종류 | P2 / `EXECUTION_AND_PROOF` |
+| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E4-01](O4-E4-01-index-phase-profile.md) |
+
+[전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
+
+## 목적
+
+현재 release harness가 실제 규모·overload·lifecycle에서 동작하는 범위와 제한 거절을 구분한다.
+
+## 배경과 현재 상태
+
+현 scale history2, open-loop8, default16MiB이며 explicit300s/256MiB는 별도 diagnostic profile이다. old256 lifecycle은 과거 source,4096 timeout/retention exhaustion,32768 posting-cap refusal였다. SDK proof는 scale/open-loop binary를 build/execute한 증거가 아니다.
+
+## 착수 입력
+
+- I0-02 frozen source/release runner·daemon 외 matching scale/open_loop binaries
+- 실제 256/4096/32768 inputs, independent LifecycleOracle, serial resource host
+- default와 explicit diagnostic timeout/history profile
+
+## 어떤 파일을 어떻게 수정할지
+
+`OWNED`는 에픽 담당 통합, `SHARED`는 I0 반영, `READ`는 기존 구현 소비다. 재현된 결함이나 채택된 계약 변경이 있을 때만 product source를 수정한다. 구현 파일과 독립 검증 파일을 함께 지정한다.
+
+| 파일 | 함수 / 경계 | 구체적인 변경 또는 검증 | 모드 |
+| --- | --- | --- | --- |
+| [crates/quanta-index-searchd-harness/src/scale.rs](../../../../crates/quanta-index-searchd-harness/src/scale.rs) | Config / generate_scoped_corpus / LifecycleOracle / run lifecycle | 현 fixed source oracle/phase resource validation을 사용하고 actual OS restart proof의 누락만 보강한다. | OWNED |
+| [crates/quanta-index-searchd-harness/src/open_loop.rs](../../../../crates/quanta-index-searchd-harness/src/open_loop.rs) | schedule / measure_point / run / artifact | fixed arrivals, offered/success/error accounting, saturation vs correctness failure를 검증한다. | OWNED |
+| [crates/quanta-index-searchd-harness/src/bin/scale_matrix.rs](../../../../crates/quanta-index-searchd-harness/src/bin/scale_matrix.rs) | current CLI/output | fresh external --out-dir와 requested/effective config를 결속하고 refuse/timeout을 pass로 바꾸지 않는다. | OWNED |
+| [crates/quanta-index-searchd-harness/src/bin/open_loop_matrix.rs](../../../../crates/quanta-index-searchd-harness/src/bin/open_loop_matrix.rs) | current CLI/result gates | 동일 resource policy·default/override profile·terminal outcomes를 기록한다. | OWNED |
+| [crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs](../../../../crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs) | runtime_risk_suite restart | same-process reopen와 실제 process restart의 row/source/pin parity를 분리 검증한다. | SHARED |
+| [docs/plans/jun-7-search-product-quality/tickets-wave2/J7Q-03-large-corpus-scale-tiers.md](../../../../docs/plans/jun-7-search-product-quality/tickets-wave2/J7Q-03-large-corpus-scale-tiers.md) | scale verdict | current source별 success/refusal/not_run을 갱신한다. | OWNED |
+| [docs/plans/jun-7-search-product-quality/tickets-wave2/J7Q-04-latency-tail-hardening.md](../../../../docs/plans/jun-7-search-product-quality/tickets-wave2/J7Q-04-latency-tail-hardening.md) | load verdict | offered/executed/failed/saturation과 tail/resource limits를 갱신한다. | OWNED |
+
+## 실행 단계
+
+1. owner-local harness oracle와 override refusal을 실행한 뒤 matching release harness binaries를 별도로 freeze한다.
+2. 256부터 full/delta/delete/no-op/reopen을 실행하고 각 단계에서 independent source expected count/order/hash를 확인한다.
+3. default4096/32768를 실행해 success/refusal/timeout capacity boundary를 측정한다.
+4. explicit300s/256MiB 필요 시 별도 root/profile로 실행하며 default 통과와 합치지 않는다.
+5. real OS process restart/cold-open과 open-loop fixed offered schedule을 실행하고 offered requests를 완전 회계한다.
+6. sampled RSS/CPU/gap·logical vs allocated disk·transient high water와 saturation point를 보고한다.
+
+## 검증 계획 — NOT_RUN
+
+아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
+
+- ./scripts/cargow test -p quanta-index-searchd-harness --lib --bins --all-features --locked
+- ./scripts/cargow test -p quanta-index-searchd-runtime --test runtime_risk_suite --all-features --locked e2e_restart_replay_determinism
+- actual scale/open_loop CLI는 --help로 flags를 확인하고 output를 checkout 밖으로 지정한다.
+- Negative: wrong fixture identity, missed offered requests, history override concealment, nonfinite latency, phase sample gap·wrong count/source after delete refusal.
+
+## 완료 조건
+
+- matching release binary의 각 tier/profile/lifecycle에 independent result와 terminal outcome이 있다.
+- successful runtime capacity와 enforced resource refusal, diagnostic override·OS restart를 따로 표시한다.
+
+## 중단·거절·재개 조건
+
+- 실패 tier는 성공 timing으로 기록하지 않는다. sampled max를 true peak·logical delta를 physical write I/O로 표시하지 않는다.
+- 필요한 입력 부재는 `BLOCKED`, 미실행은 `NOT_RUN`, 실제 실행 실패는 `FAILED`로 기록한다. 조건 미성립 `NOT_APPLICABLE`에는 실제 판단 근거가 필요하다.
+- 변경이 source/input/query/unit/result에 영향을 주면 [I0 source gate](O4-I0-02-matching-source-proof.md)와 영향받는 capture/report를 다시 판정한다.
+- 일회성 raw/log/capture/receipt는 checkout 밖 새 root에 둔다. 기존 외부 terminal을 덮어쓰지 않는다.
+
+## 인계 결과
+
+- 실제 source/dirty ownership, 변경 파일과 계약, 실행한 명령/selector, 관측 결과 및 제외 범위.
+- raw/model/runtime/binary/input identity는 해당 실행 계약이 요구하는 범위에서 기록한다.
+- 완료 조건별 `VERIFIED`/`FAILED`/`BLOCKED`/`NOT_RUN`/`NOT_APPLICABLE`과 후속 티켓에 넘길 입력을 발행한다.

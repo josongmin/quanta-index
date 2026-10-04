@@ -2,6 +2,8 @@
 
 입력: 같은 디렉터리의 `agent-1.md`부터 `agent-5.md`까지 5개 핸드오프. 이 문서는 중복 작업과 과거의 완료된 수정을 제거한 실행 목록이다. 제품 품질·성능·배포 적격성 영수증은 아니다. 각 작업 착수 시 [B07](../../plans/sep-30-code-search-benchmark-trust/tickets/S30-B07-performance-and-indexing.md), [B08](../../plans/sep-30-code-search-benchmark-trust/tickets/S30-B08-fresh-multirepo-holdout.md), [B09](../../plans/sep-30-code-search-benchmark-trust/tickets/S30-B09-external-robustness-adoption.md)의 현재 상태와 원본 실행 terminal을 다시 읽는다.
 
+세부 실행 기준: [OCT-04 병렬 종료 계획](../../plans/oct-4-parallel-closure/README.md). 목적·배경·파일/함수별 수정 방식은 4개 에픽과 I0 통합 문서에, 실행·검증·완료 조건은 [별도 티켓 29개](../../plans/oct-4-parallel-closure/tickets/INDEX.md)에 분리했다. 아래는 합집합 요약이며, 담당 분할·의존관계는 세부 계획에서 관리한다. 세부 계획 작성 기준 HEAD는 `0df06e0c`이고 `44bd68a1` 이후 변경은 이 요약 문서 한 파일뿐이었다.
+
 ## 병렬 실행 에픽
 
 이번 분할 시점의 `main`은 `44bd68a1`, 작업트리 clean, 로컬 `origin/main`과 동일하다. 앞선 81개 staged 경로와 vendor patch whitespace 문제는 이 커밋에서 정리됐다. 코드 출판은 벤치 실행이나 제품·성능 적격성의 완료가 아니다.
