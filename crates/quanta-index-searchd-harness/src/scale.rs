@@ -980,8 +980,7 @@ impl PhaseSampler {
             Err(error) => {
                 stopped.store(true, Ordering::Release);
                 worker.thread().unpark();
-                let _ = worker.join();
-                return Err(error);
+                return Err(finish_sampler_start_failure(error, worker.join()));
             }
         };
         let started = Instant::now();
@@ -1028,12 +1027,29 @@ impl PhaseSampler {
     }
 }
 
+fn finish_sampler_start_failure(
+    primary: anyhow::Error,
+    joined: thread::Result<AnyResult<(Vec<RssPoint>, f64)>>,
+) -> anyhow::Error {
+    let cleanup = match joined {
+        Ok(Ok(_)) => return primary,
+        Ok(Err(error)) => error,
+        Err(_) => anyhow::anyhow!("scale: RSS sampler thread panicked"),
+    };
+    ScaleRuntimeFailure {
+        primary: Some(primary),
+        cleanup,
+        cleanup_context: "RSS sampler startup cleanup",
+    }
+    .into()
+}
+
 impl Drop for PhaseSampler {
     fn drop(&mut self) {
         if let Some(worker) = self.worker.take() {
             self.stopped.store(true, Ordering::Release);
             worker.thread().unpark();
-            let _ = worker.join();
+            let _joined = worker.join();
         }
     }
 }
@@ -1178,15 +1194,15 @@ fn current_rss_bytes_via_ps() -> AnyResult<u64> {
         let status = match child.try_wait() {
             Ok(status) => status,
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _killed = child.kill();
+                let _reaped = child.wait();
                 return Err(error.into());
             }
         };
         if let Some(status) = status {
             anyhow::ensure!(status.success(), "scale: ps RSS probe exited {status}");
             let mut output = String::new();
-            child
+            let _bytes_read = child
                 .stdout
                 .take()
                 .ok_or_else(|| anyhow::anyhow!("scale: ps RSS stdout unavailable"))?
@@ -1198,8 +1214,8 @@ fn current_rss_bytes_via_ps() -> AnyResult<u64> {
                 .ok_or_else(|| anyhow::anyhow!("scale: ps RSS overflows bytes"));
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _killed = child.kill();
+            let _reaped = child.wait();
             anyhow::bail!("scale: ps RSS probe exceeded 2 s deadline");
         }
         thread::sleep(Duration::from_millis(5));
@@ -2362,7 +2378,7 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
                 "observer_setup_ms": observation.observer_setup_ms,
                 "observer_teardown_ms": observation.observer_teardown_ms,
                 "observer_periodic_probe_wall_ms": observation.observer_periodic_probe_wall_ms,
-                "scope": "same process harness plus in-process daemon; observation envelope surrounds the matching wall-timed operation",
+                "scope": "same-process harness plus in-process daemon; RSS start and end samples are outside the matching wall-timed operation; sampled max includes both boundaries and interior samples",
             }))
         })
         .collect::<BTreeMap<_, _>>();
@@ -2377,12 +2393,12 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
         "history_max_revision_pairs": HARNESS_HISTORY_MAX_REVISION_PAIRS,
         "history_max_total_bytes": HARNESS_HISTORY_MAX_TOTAL_BYTES,
         "cpu_process": {
-            "scope": "RUSAGE_SELF, harness and in-process daemon, runtime boot through cleanup",
+            "scope": "RUSAGE_SELF whole process from runtime boot through cleanup: harness, in-process daemon, RSS sampler thread, and parent-side RSS probe management; macOS ps child CPU excluded",
             "user_ms": measurement.cpu.map(|cpu| cpu.user_ms),
             "system_ms": measurement.cpu.map(|cpu| cpu.system_ms),
         },
         "phase_resources": phase_resources,
-        "phase_resources_method": "RUSAGE_SELF CPU deltas for harness plus in-process daemon; sampled current RSS; macOS ps probe child CPU is excluded; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
+        "phase_resources_method": "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, and parent-side RSS probe management; macOS ps child CPU excluded; RSS sampled max includes boundary probes outside the timed operation and is not a true peak; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
         "file_count": measurement.file_count,
         "serving_owner_count": 1,
         "source_repo_count": measurement.source_repo_count,
@@ -3049,11 +3065,101 @@ mod tests {
         )?;
         assert_eq!(raced.discarded_outside_phase_samples, 1);
         assert_eq!(raced.sampled_max_rss_bytes, 8_192);
+        let boundary_dominates = summarize_phase_resources(
+            origin + Duration::from_millis(5),
+            origin + Duration::from_millis(355),
+            point(0, 4_096),
+            point(360, 8_192),
+            &[point(100, 1_024)],
+            cpu,
+            1.0,
+            2.0,
+            3.0,
+        )?;
+        assert_eq!(boundary_dominates.sampled_rss[0].rss_bytes, 1_024);
+        assert_eq!(boundary_dominates.rss_end_bytes, 8_192);
+        assert_eq!(boundary_dominates.sampled_max_rss_bytes, 8_192);
+        assert_eq!(boundary_dominates.rss_end_after_phase_ms, 5.0);
+        let mut measured = sample_measurement();
+        assert!(
+            measured
+                .phase_resources
+                .insert("full_ingest_seal", boundary_dominates)
+                .is_some()
+        );
+        let labeled = measurement_json(&measured);
+        assert_eq!(
+            labeled["phase_resources"]["full_ingest_seal"]["sampled_max_rss_bytes"],
+            8_192
+        );
+        assert_eq!(
+            labeled["phase_resources"]["full_ingest_seal"]["sampled_rss"][0]["rss_bytes"],
+            1_024
+        );
+        assert_eq!(
+            labeled["phase_resources"]["full_ingest_seal"]["sampled_max_is_true_peak"],
+            false
+        );
+        assert!(
+            labeled["phase_resources"]["full_ingest_seal"]["scope"]
+                .as_str()
+                .expect("fixed phase scope")
+                .contains("sampled max includes both boundaries")
+        );
         assert!(
             summarize(350, &[point(360, 1_024)]).is_err(),
             "sample after end observation is invalid"
         );
         Ok(())
+    }
+
+    #[test]
+    fn live_phase_observer_reads_current_rss_without_synthesizing_a_sample() -> AnyResult<()> {
+        let ((), observed) = observe_phase(|| Ok(()))?;
+        assert!(observed.rss_start_bytes > 0);
+        assert!(observed.rss_end_bytes > 0);
+        assert_eq!(observed.interior_samples, observed.sampled_rss.len());
+        assert!(observed.observed_max_gap_ms <= PHASE_RSS_MAX_GAP.as_secs_f64() * 1_000.0);
+        Ok(())
+    }
+
+    #[test]
+    fn sampler_start_preserves_cpu_and_worker_cleanup_failures() {
+        let primary = anyhow::anyhow!("fixed CPU snapshot fault");
+        let cleanup = anyhow::anyhow!("fixed RSS worker fault");
+        let both = finish_sampler_start_failure(primary, Ok(Err(cleanup)));
+        let failure = both
+            .downcast_ref::<ScaleRuntimeFailure>()
+            .expect("both startup errors must remain structured");
+        assert_eq!(
+            failure.primary.as_ref().map(ToString::to_string),
+            Some("fixed CPU snapshot fault".to_string())
+        );
+        assert_eq!(failure.cleanup.to_string(), "fixed RSS worker fault");
+        assert_eq!(failure.cleanup_context, "RSS sampler startup cleanup");
+
+        let only_primary = finish_sampler_start_failure(
+            anyhow::anyhow!("fixed CPU snapshot fault"),
+            Ok(Ok((Vec::new(), 0.0))),
+        );
+        assert!(only_primary.downcast_ref::<ScaleRuntimeFailure>().is_none());
+        assert_eq!(only_primary.to_string(), "fixed CPU snapshot fault");
+
+        let panicked = finish_sampler_start_failure(
+            anyhow::anyhow!("fixed CPU snapshot fault"),
+            Err(Box::new("fixed worker panic")),
+        );
+        let failure = panicked
+            .downcast_ref::<ScaleRuntimeFailure>()
+            .expect("worker panic must retain the CPU fault");
+        assert_eq!(
+            failure.primary.as_ref().map(ToString::to_string),
+            Some("fixed CPU snapshot fault".to_string())
+        );
+        assert_eq!(
+            failure.cleanup.to_string(),
+            "scale: RSS sampler thread panicked"
+        );
     }
 
     #[test]
@@ -3576,7 +3682,7 @@ mod tests {
             hostname_hash: "sha256:host".to_string(),
         };
         let mut missing = sample_measurement();
-        missing.phase_resources.remove("delta_activate");
+        let _removed = missing.phase_resources.remove("delta_activate");
         assert!(artifact(&missing, head.clone(), host.clone()).is_err());
 
         let mut nonfinite = sample_measurement();
@@ -3638,6 +3744,18 @@ mod tests {
         assert_eq!(
             tier["phase_resources"]["full_ingest_seal"]["sampled_max_is_true_peak"],
             false
+        );
+        assert_eq!(
+            tier["phase_resources"]["full_ingest_seal"]["scope"],
+            "same-process harness plus in-process daemon; RSS start and end samples are outside the matching wall-timed operation; sampled max includes both boundaries and interior samples"
+        );
+        assert_eq!(
+            tier["cpu_process"]["scope"],
+            "RUSAGE_SELF whole process from runtime boot through cleanup: harness, in-process daemon, RSS sampler thread, and parent-side RSS probe management; macOS ps child CPU excluded"
+        );
+        assert_eq!(
+            tier["phase_resources_method"],
+            "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, and parent-side RSS probe management; macOS ps child CPU excluded; RSS sampled max includes boundary probes outside the timed operation and is not a true peak; observer setup and teardown are outside operation wall timers; physical write I/O is not measured"
         );
         assert_eq!(
             tier["phase_resources"]["full_ingest_seal"]["interior_samples"],

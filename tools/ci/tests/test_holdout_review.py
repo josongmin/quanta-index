@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.benchmark.retrieval import evaluator, holdout_review, query_plan
+from tools.benchmark.retrieval import evaluator, execution_batch, holdout_review, query_plan
 
 
 def _fixture(tmp_path: Path):
@@ -808,3 +808,201 @@ def test_nl_projection_writer_refuses_overwrite_and_input_race(tmp_path, monkeyp
             checkout, suite_path, racing_output, suite_id="new-nl-file-diagnostic"
         )
     assert not racing_output.exists()
+
+
+def _supplemental_fixture(tmp_path, threshold=2):
+    checkout, suite = _reviewed_suite_fixture(tmp_path)
+    frozen = suite["tasks"][0]
+    frozen["answerability_min_grade"] = threshold
+    path = "alternative.py"
+    raw = (checkout / path).read_bytes()
+    task = {
+        **{key: frozen[key] for key in ("task_id", "query", "query_sha256")},
+        "intent": "File relevance",
+        "provenance": "Independent fixture context",
+        "rubric": "0 irrelevant; 1 partial clue; 2 sufficient; 3 directly answers",
+        "files": [
+            {
+                "path": path,
+                "file_sha256": evaluator.digest(raw),
+                "source_text": raw.decode(),
+                "grade": None,
+                "unresolved": None,
+            }
+        ],
+    }
+    return checkout, suite, task
+
+
+@pytest.mark.parametrize("threshold", [1, 2, 3])
+def test_supplemental_request_binds_frozen_threshold_without_decisions(tmp_path, threshold):
+    checkout, suite, task = _supplemental_fixture(tmp_path, threshold)
+    before = copy.deepcopy(task)
+    suite_raw = evaluator.canonical(suite)
+    bound = holdout_review.bind_supplemental_review_tasks(checkout, suite_raw, [task])
+    assert bound == [{**before, "answerability_min_grade": threshold}]
+    assert task == before
+    assert evaluator.canonical(suite) == suite_raw
+    bound[0]["files"][0]["grade"] = 3
+    assert task["files"][0]["grade"] is None
+
+
+def test_supplemental_request_materializes_historical_default_from_suite(tmp_path):
+    checkout, suite, task = _supplemental_fixture(tmp_path)
+    del suite["tasks"][0]["answerability_min_grade"]
+    bound = holdout_review.bind_supplemental_review_tasks(
+        checkout, evaluator.canonical(suite), [task]
+    )
+    assert bound[0]["answerability_min_grade"] == 1
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "threshold",
+        "bool_threshold",
+        "query",
+        "unknown_task",
+        "duplicate_task",
+        "duplicate_pair",
+        "already_judged",
+        "source_hash",
+        "source_text",
+        "grade",
+        "unresolved",
+        "empty_files",
+        "suite_threshold",
+    ],
+)
+def test_supplemental_request_refuses_unbound_or_decided_input(tmp_path, fault):
+    checkout, suite, task = _supplemental_fixture(tmp_path)
+    tasks = [task]
+    if fault == "threshold":
+        task["answerability_min_grade"] = 1
+    elif fault == "bool_threshold":
+        task["answerability_min_grade"] = True
+    elif fault == "query":
+        task["query"] += " changed"
+        task["query_sha256"] = evaluator.digest(task["query"].encode())
+    elif fault == "unknown_task":
+        task["task_id"] = "absent"
+    elif fault == "duplicate_task":
+        tasks.append(copy.deepcopy(task))
+    elif fault == "duplicate_pair":
+        task["files"].append(copy.deepcopy(task["files"][0]))
+    elif fault == "already_judged":
+        path = suite["tasks"][0]["file_judgments"][0]["path"]
+        raw = (checkout / path).read_bytes()
+        task["files"][0].update(
+            path=path, file_sha256=evaluator.digest(raw), source_text=raw.decode()
+        )
+    elif fault == "source_hash":
+        task["files"][0]["file_sha256"] = "0" * 64
+    elif fault == "source_text":
+        task["files"][0]["source_text"] += " changed"
+    elif fault == "grade":
+        task["files"][0]["grade"] = 0
+    elif fault == "unresolved":
+        task["files"][0]["unresolved"] = False
+    elif fault == "empty_files":
+        task["files"] = []
+    elif fault == "suite_threshold":
+        suite["tasks"][0]["answerability_min_grade"] = 0
+    with pytest.raises(evaluator.EvidenceError):
+        holdout_review.bind_supplemental_review_tasks(checkout, evaluator.canonical(suite), tasks)
+
+
+def test_admission_queue_runs_later_ready_repository_before_waiting(tmp_path):
+    (tmp_path / "ready").mkdir()
+    (tmp_path / "ready/result.json").write_text('{"status":"VERIFIED","binding":"fixed"}')
+    waits = []
+
+    def wait():
+        waits.append("polled")
+        (tmp_path / "pending").mkdir()
+        (tmp_path / "pending/failure.json").write_text('{"status":"FAILED"}')
+
+    queue = execution_batch.iter_repository_admissions(
+        tmp_path, ["pending", "ready"], upstream_alive=lambda: True, wait=wait
+    )
+    assert next(queue) == ("ready", {"status": "VERIFIED", "binding": "fixed"})
+    assert waits == []
+    assert list(queue) == [
+        ("pending", {"status": "FAILED", "reason": "repository admission failure terminal"})
+    ]
+    assert waits == ["polled"]
+
+
+@pytest.mark.parametrize(
+    "fault", ["failure", "malformed", "wrong_status", "missing", "conflicting"]
+)
+def test_admission_queue_preserves_failed_cells_and_drains_ready_cells(tmp_path, fault):
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "good").mkdir()
+    (tmp_path / "good/result.json").write_text('{"status":"VERIFIED"}')
+    if fault in {"failure", "conflicting"}:
+        (tmp_path / "bad/failure.json").write_text('{"status":"FAILED"}')
+    if fault == "conflicting":
+        (tmp_path / "bad/result.json").write_text('{"status":"VERIFIED"}')
+    elif fault == "malformed":
+        (tmp_path / "bad/result.json").write_text("{")
+    elif fault == "wrong_status":
+        (tmp_path / "bad/result.json").write_text('{"status":"FAILED"}')
+    rows = list(
+        execution_batch.iter_repository_admissions(
+            tmp_path,
+            ["bad", "good"],
+            upstream_alive=lambda: False,
+            wait=lambda: pytest.fail("must not wait on terminated upstream"),
+        )
+    )
+    outcomes = dict(rows)
+    assert outcomes["bad"]["status"] == "FAILED"
+    assert outcomes["good"] == {"status": "VERIFIED"}
+    assert set(outcomes) == {"bad", "good"}
+
+
+def test_admission_queue_rechecks_final_publish_after_upstream_exit(tmp_path):
+    def ended():
+        (tmp_path / "last").mkdir()
+        (tmp_path / "last/result.json").write_text('{"status":"VERIFIED"}')
+        return False
+
+    assert list(
+        execution_batch.iter_repository_admissions(
+            tmp_path,
+            ["last"],
+            upstream_alive=ended,
+            wait=lambda: pytest.fail("must not wait after final publish"),
+        )
+    ) == [("last", {"status": "VERIFIED"})]
+
+
+@pytest.mark.parametrize("repos", [[], ["same", "same"], ["../escape"], ["."], "repo", [{}]])
+def test_admission_queue_rejects_invalid_repository_identity(tmp_path, repos):
+    with pytest.raises(execution_batch.BatchError, match="invalid admission repository"):
+        list(
+            execution_batch.iter_repository_admissions(
+                tmp_path,
+                repos,
+                upstream_alive=lambda: False,
+                wait=lambda: None,
+            )
+        )
+
+
+def test_admission_queue_observes_repository_review_failure_without_global_wait(tmp_path):
+    (tmp_path / "nushell").mkdir()
+    (tmp_path / "nushell/result.json").write_text('{"status":"VERIFIED"}')
+    assert list(
+        execution_batch.iter_repository_admissions(
+            tmp_path,
+            ["typeorm", "nushell"],
+            upstream_alive=lambda: True,
+            wait=lambda: pytest.fail("failed repository must not block ready repository"),
+            repository_failure=lambda repo: "original review failed" if repo == "typeorm" else None,
+        )
+    ) == [
+        ("typeorm", {"status": "FAILED", "reason": "original review failed"}),
+        ("nushell", {"status": "VERIFIED"}),
+    ]

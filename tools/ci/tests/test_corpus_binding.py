@@ -87,6 +87,9 @@ def test_gold_producer_binds_the_actual_vendored_parser_sources():
     digests = binding._gold_producer_source_digests()
     assert "declaration_parsers" in digests
     for relative in (
+        "vendor/tree-sitter-javascript/src/parser.c",
+        "vendor/tree-sitter-javascript/src/scanner.c",
+        "vendor/tree-sitter-javascript/src/tree_sitter/parser.h",
         "vendor/tree-sitter-typescript/typescript/src/parser.c",
         "vendor/tree-sitter-typescript/tsx/src/parser.c",
         "vendor/tree-sitter-typescript/common/scanner.h",
@@ -147,8 +150,8 @@ def test_gold_capsule_validation_refuses_changed_source_pinfile(inputs, tmp_path
 def test_gold_runtime_requires_source_locked_parser_versions():
     assert binding.require_gold_runtime() == {
         "regex": "2025.10.23",
-        "tree-sitter": "0.23.2",
-        "tree-sitter-language-pack": "0.9.1",
+        "tree-sitter": "0.25.2",
+        "tree-sitter-language-pack": "0.10.0",
         "unicodedata2": "17.0.0",
     }
 
@@ -180,18 +183,16 @@ def test_gold_runtime_rejects_project_lock_disagreement(tmp_path, monkeypatch):
     source_root = Path(__file__).resolve().parents[3]
     project = (source_root / "pyproject.toml").read_bytes()
     lock = (source_root / "uv.lock").read_bytes()
-    assert b'name = "tree-sitter-language-pack"\nversion = "0.9.1"' in lock
     (tmp_path / "pyproject.toml").write_bytes(project)
-    (tmp_path / "uv.lock").write_bytes(
-        lock.replace(
-            b'name = "tree-sitter-language-pack"\nversion = "0.9.1"',
-            b'name = "tree-sitter-language-pack"\nversion = "0.13.0"',
-            1,
-        )
-    )
     monkeypatch.setattr(binding, "GOLD_RUNTIME_SOURCE_ROOT", tmp_path)
-    with pytest.raises(EvidenceError, match="project/lock pin differs: tree-sitter-language-pack"):
-        binding.require_gold_runtime()
+    for name, pinned in (("tree-sitter-language-pack", "0.10.0"), ("tree-sitter", "0.25.2")):
+        original = f'name = "{name}"\nversion = "{pinned}"'.encode()
+        assert original in lock
+        (tmp_path / "uv.lock").write_bytes(
+            lock.replace(original, f'name = "{name}"\nversion = "0.13.0"'.encode(), 1)
+        )
+        with pytest.raises(EvidenceError, match=f"project/lock pin differs: {name}"):
+            binding.require_gold_runtime()
 
 
 @pytest.mark.parametrize(

@@ -24,6 +24,82 @@ POOL_KINDS = ("retrieval", "source_alternative", "random_control")
 MAX_REVIEW_BYTES = 64 * 1024 * 1024
 
 
+def bind_supplemental_review_tasks(
+    checkout: Path, suite_bytes: bytes, tasks: list[dict]
+) -> list[dict]:
+    """Bind unjudged supplemental files to the original suite's query and threshold.
+
+    The returned subset cannot establish overall answerability. No judgments or
+    original artifacts are changed, and no model is called. An explicit incoming
+    threshold must agree with the frozen suite; omission is filled from that suite.
+    """
+    suite = parse_json(suite_bytes.decode("utf-8"))
+    suite, _pack, source = evaluator.validate_suite(checkout, suite)
+    original = {task["task_id"]: task for task in suite["tasks"]}
+    universe = {row["path"]: row["file_sha256"] for row in suite["file_universe"]}
+    require = evaluator.require
+    require(isinstance(tasks, list) and bool(tasks), "supplemental tasks missing")
+    bound, seen, exported = [], set(), 0
+    for task in tasks:
+        evaluator.object_keys_optional(
+            task,
+            ["task_id", "query", "query_sha256", "intent", "provenance", "rubric", "files"],
+            ["answerability_min_grade"],
+            "supplemental task",
+        )
+        task_id = evaluator.string(task["task_id"], "supplemental task ID")
+        require(task_id not in seen, "duplicate supplemental task")
+        seen.add(task_id)
+        require(task_id in original, "unknown supplemental task")
+        frozen = original[task_id]
+        require("file_judgments" in frozen, "supplemental task requires file judgments")
+        require(
+            all(task[key] == frozen[key] for key in ("query", "query_sha256")),
+            "supplemental query differs from frozen suite",
+        )
+        threshold = evaluator.answerability_min_grade(frozen, task_id)
+        if "answerability_min_grade" in task:
+            require(
+                evaluator.answerability_min_grade(task, task_id) == threshold,
+                "supplemental answerability_min_grade differs from frozen suite",
+            )
+        for key in ("intent", "provenance", "rubric"):
+            evaluator.string(task[key], "supplemental " + key)
+        files = task["files"]
+        require(isinstance(files, list) and bool(files), "supplemental files missing")
+        judged = {row["path"] for row in frozen["file_judgments"]}
+        paths = set()
+        for file in files:
+            evaluator.object_keys(
+                file,
+                ["path", "file_sha256", "source_text", "grade", "unresolved"],
+                "supplemental file",
+            )
+            path = evaluator.string(file["path"], "supplemental path")
+            require(path not in paths, "duplicate supplemental pair")
+            paths.add(path)
+            require(path not in judged, "supplemental pair already judged")
+            require(
+                path in universe and file["file_sha256"] == universe[path],
+                "supplemental source hash/universe mismatch",
+            )
+            raw = source.file(path)[0]
+            exported += len(raw)
+            require(exported <= MAX_REVIEW_BYTES, "supplemental source export byte limit exceeded")
+            require(
+                isinstance(file["source_text"], str) and file["source_text"].encode("utf-8") == raw,
+                "supplemental source text differs",
+            )
+            require(
+                file["grade"] is None and file["unresolved"] is None,
+                "supplemental input contains decisions",
+            )
+        row = copy.deepcopy(task)
+        row["answerability_min_grade"] = threshold
+        bound.append(row)
+    return bound
+
+
 def project_natural_language_file_diagnostic(
     checkout: Path, suite_bytes: bytes, *, suite_id: str
 ) -> tuple[dict, dict, dict]:

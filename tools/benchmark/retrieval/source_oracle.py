@@ -423,7 +423,6 @@ def has_identifier_word_in_span(raw: bytes, token: bytes, start: int, end: int) 
 def census_parser_identity() -> str:
     """Bind shared census rows to the loaded oracle and parser source/grammar."""
     import tree_sitter._binding as tree_sitter_binding
-    import tree_sitter_language_pack.bindings.javascript as javascript_binding
 
     from tools.benchmark.retrieval import declaration_parsers
 
@@ -437,9 +436,6 @@ def census_parser_identity() -> str:
         "tree_sitter_language_pack": importlib.metadata.version("tree-sitter-language-pack"),
         "tree_sitter_binary_sha256": hashlib.sha256(
             Path(tree_sitter_binding.__file__).read_bytes()
-        ).hexdigest(),
-        "javascript_grammar_binary_sha256": hashlib.sha256(
-            Path(javascript_binding.__file__).read_bytes()
         ).hexdigest(),
         "census_contracts": DECLARATION_CENSUS,
     }

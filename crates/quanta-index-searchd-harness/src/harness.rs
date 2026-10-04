@@ -3590,7 +3590,8 @@ fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
     ))
 }
 
-const DEFAULT_HISTORY_MAX_GENERATIONS: usize = 8;
+/// Generation retention used by the default harness runtime boot path.
+pub const DEFAULT_HISTORY_MAX_GENERATIONS: usize = 8;
 /// Index bytes the retained generations of a pair may hold together in a
 /// harness daemon unless a test widens it.
 pub const HARNESS_HISTORY_MAX_BYTES: u64 = 16 * 1024 * 1024;

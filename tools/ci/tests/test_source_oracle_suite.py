@@ -159,8 +159,14 @@ def test_go_126_expression_operands_preserve_declaration_spans_and_refuse_malfor
             b'def Locate():\n    return t"value {1 + 2}"\n',
             b'def Broken():\n    return t"unterminated\n',
         ),
+        (
+            "javascript",
+            "input.js",
+            b"function Locate() {} export { Locate as const };\n",
+            b"function const() {}",
+        ),
     ],
-    ids=["rust", "python"],
+    ids=["rust", "python", "javascript"],
 )
 def test_producer_grammar_raw_references_and_template_strings_have_exact_spans(
     grammar, path, raw, invalid
@@ -171,7 +177,11 @@ def test_producer_grammar_raw_references_and_template_strings_have_exact_spans(
     assert [raw[start:end] for start, end, *_ in rows] == [b"Locate"]
     spans, refusal = gold_oracle._definition_spans(raw, b"Locate", grammar, path=path)
     assert refusal is None
-    kind = "function_item" if grammar == "rust" else "function_definition"
+    kind = {
+        "rust": "function_item",
+        "python": "function_definition",
+        "javascript": "function_declaration",
+    }[grammar]
     assert spans == [(raw.index(b"Locate"), raw.index(b"Locate") + len(b"Locate"), kind)]
     with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
         source_oracle.declaration_census(grammar, path, invalid)
@@ -219,6 +229,53 @@ def test_vendored_parser_cache_refuses_identity_and_binary_tampering(tmp_path):
     marker.write_text("null")
     with pytest.raises(ValueError, match="identity differs"):
         declaration_parsers._checked_library(tmp_path, identity)
+
+
+def test_loaded_parser_refuses_new_source_identity_in_same_process(tmp_path):
+    # Exercise the real process-local language cache with isolated grammar
+    # files. A provenance call must never attest new bytes to a loaded old AST.
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import os, shutil, sys
+        from pathlib import Path
+        from tools.benchmark.retrieval import declaration_parsers as dp, source_oracle as so
+
+        root = Path(sys.argv[1])
+        os.environ['QUANTA_CENSUS_PARSER_CACHE'] = str(root / 'parser-cache')
+        for field in ('VENDOR', 'GO_VENDOR', 'RUST_VENDOR', 'PYTHON_VENDOR', 'JAVASCRIPT_VENDOR'):
+            original = getattr(dp, field)
+            target = root / 'source/vendor' / original.name
+            shutil.copytree(original, target)
+            setattr(dp, field, target)
+        dp.ROOT = root / 'source'
+        raw = b'export function Locate() {}'
+        first = dp.get_parser('javascript').parse(raw)
+        assert first.root_node.named_children[0].named_children[0].type == 'function_declaration'
+        original_identity = so.census_parser_identity()
+        source = dp.JAVASCRIPT_VENDOR / 'src/parser.c'
+        original = source.read_bytes()
+        changed = original.replace(b'"function_declaration"', b'"changed_declaration"')
+        assert changed != original
+        source.write_bytes(changed)
+        try:
+            so.census_parser_identity()
+        except ValueError as error:
+            assert 'loaded parser source identity changed' in str(error), str(error)
+        else:
+            assert dp.get_parser('javascript').parse(raw).root_node.named_children[0].named_children[0].type == 'function_declaration'
+            raise AssertionError('new source bytes were attested to the old loaded parser')
+        source.write_bytes(original)
+        assert so.census_parser_identity() == original_identity
+        assert dp.get_parser('javascript').parse(raw).root_node.named_children[0].named_children[0].type == 'function_declaration'
+        """
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)], capture_output=True, text=True, timeout=120
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_vendored_parser_has_no_unpatched_fallback_when_compiler_is_missing(tmp_path, monkeypatch):

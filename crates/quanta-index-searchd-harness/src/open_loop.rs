@@ -23,10 +23,14 @@ use quanta_index_searchd_harness::artifact::{
     corpus_digest, model_revision_of,
 };
 use quanta_index_searchd_harness::scale::{
-    ScaleStageError, ScaleTier, ScopedOracle, generate_corpus, generate_scoped_corpus, params_for,
-    preflight_scoped_corpus, repo_query_token, scoped_corpus_digest,
+    ScaleRuntimeConfig, ScaleStageError, ScaleTier, ScopedOracle, generate_corpus,
+    generate_scoped_corpus, params_for, preflight_scoped_corpus, repo_query_token,
+    scoped_corpus_digest,
 };
-use quanta_index_searchd_harness::{E2eRuntime, E2eTextChunkSpec};
+use quanta_index_searchd_harness::{
+    DEFAULT_HISTORY_MAX_GENERATIONS, E2eRuntime, E2eTextChunkSpec,
+    HARNESS_HISTORY_MAX_REVISION_PAIRS, HARNESS_HISTORY_MAX_TOTAL_BYTES,
+};
 use serde_json::{Value, json};
 
 pub(crate) const DIMENSION: &str = "open-loop";
@@ -63,10 +67,31 @@ pub(crate) struct Config {
     pub workers: usize,
     pub queue_capacity: usize,
     pub request_timeout: Duration,
+    /// Explicit per-pair history budget; `None` retains the harness default.
+    pub history_max_bytes: Option<u64>,
 }
 
 impl Config {
+    fn effective_history_max_bytes(&self) -> AnyResult<u64> {
+        ScaleRuntimeConfig {
+            client_timeout: None,
+            history_max_bytes: self.history_max_bytes,
+        }
+        .effective_history_max_bytes()
+    }
+
+    pub(crate) fn history_policy_json(&self) -> AnyResult<Value> {
+        Ok(json!({
+            "history_max_generations": DEFAULT_HISTORY_MAX_GENERATIONS,
+            "history_max_bytes": self.effective_history_max_bytes()?,
+            "requested_history_max_bytes": self.history_max_bytes,
+            "history_max_total_bytes": HARNESS_HISTORY_MAX_TOTAL_BYTES,
+            "history_max_revision_pairs": HARNESS_HISTORY_MAX_REVISION_PAIRS,
+        }))
+    }
+
     pub(crate) fn validate(&self) -> AnyResult<()> {
+        let _effective_history_max_bytes = self.effective_history_max_bytes()?;
         ensure!(
             !self.rates_qps.is_empty(),
             "at least one offered QPS is required"
@@ -719,7 +744,9 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
         anyhow::bail!("open-loop has no prepared source fixture");
     };
 
-    let mut runtime = E2eRuntime::boot()?;
+    let mut runtime = E2eRuntime::boot()
+        .map_err(|error| ScaleStageError::operation("runtime_boot", error))?
+        .with_history_max_bytes(config.effective_history_max_bytes()?);
     let model_revision = model_revision_of(runtime.embedder_profile());
     if let Some(corpus) = &legacy {
         let serving_owner = runtime.repo();
@@ -748,7 +775,9 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
             .preview_pending_search_corpus_wire_bytes()
             .map_err(ScaleStageError::wire_admission)?;
     }
-    let sealed = runtime.seal()?;
+    let sealed = runtime
+        .seal()
+        .map_err(|error| ScaleStageError::operation("build_seal", error))?;
     runtime.activate_last_sealed_generation()?;
     let pin = GenerationPin::new(runtime.repo(), runtime.revision(), sealed);
     let primed = runtime.query_text(TextQuerySyntax::Native, QUERY, TOP_K);
@@ -862,6 +891,7 @@ pub(crate) fn artifact(
 ) -> AnyResult<BenchArtifactV1> {
     let resources = ResourceUsageV1::observe_self()?;
     let config = &report.config;
+    let history_policy = config.history_policy_json()?;
     let rows = report
         .points
         .iter()
@@ -919,6 +949,26 @@ pub(crate) fn artifact(
                         config.request_timeout.as_millis().to_string(),
                     ),
                     ("tier", config.tier.as_str().to_string()),
+                    (
+                        "history_max_generations",
+                        DEFAULT_HISTORY_MAX_GENERATIONS.to_string(),
+                    ),
+                    (
+                        "history_max_bytes",
+                        config.effective_history_max_bytes()?.to_string(),
+                    ),
+                    (
+                        "requested_history_max_bytes",
+                        format!("{:?}", config.history_max_bytes),
+                    ),
+                    (
+                        "history_max_total_bytes",
+                        HARNESS_HISTORY_MAX_TOTAL_BYTES.to_string(),
+                    ),
+                    (
+                        "history_max_revision_pairs",
+                        HARNESS_HISTORY_MAX_REVISION_PAIRS.to_string(),
+                    ),
                     ("query", QUERY.to_string()),
                     ("top_k", TOP_K.to_string()),
                 ],
@@ -940,6 +990,7 @@ pub(crate) fn artifact(
             "queue_capacity": config.queue_capacity,
             "workers": config.workers,
             "tier": config.tier.as_str(),
+            "history_policy": history_policy,
             "serving_owner_count": 1,
             "source_repo_count": quanta_index_searchd_harness::scale::params_for(config.tier).repo_count,
             "saturation_onset_qps": report.saturation_onset_qps(),
@@ -980,6 +1031,7 @@ mod tests {
             workers: 1,
             queue_capacity: 1,
             request_timeout: Duration::from_secs(1),
+            history_max_bytes: None,
         };
         let first = scheduled_offsets(&config, 10)?;
         assert_eq!(first, scheduled_offsets(&config, 10)?);
@@ -1008,6 +1060,7 @@ mod tests {
             workers: 1,
             queue_capacity: 1,
             request_timeout: Duration::from_secs(1),
+            history_max_bytes: None,
         };
         assert!(scheduled_offsets(&empty, 1)?.is_empty());
         assert!(empty.validate().is_err());
@@ -1298,6 +1351,7 @@ mod tests {
                     workers: 1,
                     queue_capacity: 1,
                     request_timeout: Duration::from_secs(1),
+                    history_max_bytes: None,
                 },
                 corpus_digest: String::new(),
                 model_revision: None,
@@ -1355,6 +1409,7 @@ mod tests {
                 workers: 1,
                 queue_capacity: 1,
                 request_timeout: Duration::from_secs(1),
+                history_max_bytes: None,
             },
             corpus_digest: String::new(),
             model_revision: None,
@@ -1387,6 +1442,7 @@ mod tests {
             workers: 2,
             queue_capacity: 2,
             request_timeout: Duration::from_secs(2),
+            history_max_bytes: None,
         })?;
         assert_eq!(report.points.len(), 1);
         let point = report.points.first().context("missing load point")?;
@@ -1401,6 +1457,105 @@ mod tests {
                 + point.dropped_scheduler_late
                 + point.dropped_deadline,
             2
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn history_budget_uses_scale_policy_bounds_and_reaches_real_seal() -> AnyResult<()> {
+        let config = Config {
+            seed: 1,
+            tier: ScaleTier::Small,
+            arrival_model: ArrivalModel::DeterministicPeriodic,
+            rates_qps: vec![10],
+            duration: Duration::from_millis(200),
+            workers: 2,
+            queue_capacity: 2,
+            request_timeout: Duration::from_secs(2),
+            history_max_bytes: Some(1),
+        };
+        assert_eq!(config.effective_history_max_bytes()?, 1);
+        let error = run(config.clone()).expect_err("one byte cannot retain the planted index");
+        let stage = error
+            .downcast_ref::<ScaleStageError>()
+            .context("typed seal stage")?;
+        assert_eq!(stage.stage, "build_seal");
+        assert!(
+            stage
+                .message
+                .contains("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED")
+        );
+
+        let mut invalid = config;
+        invalid.history_max_bytes = Some(0);
+        assert!(invalid.validate().is_err());
+        invalid.history_max_bytes = Some(HARNESS_HISTORY_MAX_TOTAL_BYTES + 1);
+        assert!(invalid.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn open_loop_artifact_binds_requested_and_effective_history() -> AnyResult<()> {
+        let point = summarize(
+            10,
+            Duration::from_secs(1),
+            1,
+            0,
+            0,
+            vec![Completion {
+                outcome: Outcome::Served { result_count: 10 },
+                elapsed_ms: Some(1.0),
+                dispatch_lag_ms: 0.0,
+            }],
+            1.0,
+        )?;
+        let mut report = Report {
+            config: Config {
+                seed: 7,
+                tier: ScaleTier::Small,
+                arrival_model: ArrivalModel::DeterministicPeriodic,
+                rates_qps: vec![10],
+                duration: Duration::from_secs(1),
+                workers: 1,
+                queue_capacity: 8,
+                request_timeout: Duration::from_secs(1),
+                history_max_bytes: None,
+            },
+            corpus_digest: "sha256:fixed-source".to_string(),
+            model_revision: None,
+            points: vec![point],
+        };
+        let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567")?;
+        let host = HostV1 {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            cpu_count: 4,
+            mem_bytes: 1 << 30,
+            hostname_hash: "sha256:host".to_string(),
+        };
+        let default = artifact(&report, head.clone(), host.clone())?.to_json()?;
+        assert_eq!(
+            default["detail"]["history_policy"]["history_max_bytes"],
+            16_777_216
+        );
+        assert_eq!(
+            default["detail"]["history_policy"]["history_max_generations"],
+            8
+        );
+        assert!(default["detail"]["history_policy"]["requested_history_max_bytes"].is_null());
+        report.config.history_max_bytes = Some(268_435_456);
+        let explicit = artifact(&report, head, host)?.to_json()?;
+        assert_eq!(
+            explicit["detail"]["history_policy"]["history_max_bytes"],
+            268_435_456
+        );
+        assert_eq!(
+            explicit["detail"]["history_policy"]["requested_history_max_bytes"],
+            268_435_456
+        );
+        assert_ne!(
+            default["provenance"]["config_digest"],
+            explicit["provenance"]["config_digest"]
         );
         Ok(())
     }

@@ -2662,6 +2662,11 @@ fn verify_serial_request_events_runner(
         serde_json::from_slice(&std::fs::read(&artifact_path).expect("event bytes"))
             .expect("event JSON");
     assert_eq!(events["kind"], "quanta_serial_query_request_events");
+    assert_eq!(events["schema_version"], 2);
+    assert_eq!(
+        events["timing_boundary"],
+        "request_id_joined_client_and_server_local_intervals"
+    );
     assert_eq!(events["qualification"], "diagnostic_unqualified");
     assert_eq!(events["record_sha256"], sha256_hex(&record_bytes));
     assert_eq!(events["query_pack_sha256"], record["query_pack_sha256"]);
@@ -2706,6 +2711,39 @@ fn verify_serial_request_events_runner(
         new_events[0].request_id.get()
     );
     assert_eq!(new_events[8].request_id.get(), text_id);
+    let client = &events["tasks"][0]["client"];
+    assert_eq!(client["clock"], "client_monotonic_duration_ns");
+    assert_eq!(client["read_io_accounting"], "nested_inside_decode_call");
+    let rpcs = client["rpcs"].as_array().expect("client RPC observations");
+    assert_eq!(rpcs.len(), 2);
+    let mut rpc_total_ns = 0_u64;
+    for (index, route) in ["query.resolve_active", "query.text"].iter().enumerate() {
+        let rpc = &rpcs[index];
+        assert_eq!(rpc["route"], *route);
+        assert_eq!(rpc["request_id"], new_events[index * 8].request_id.get());
+        let value = |key| rpc[key].as_u64().expect("observed client duration");
+        let children = value("encode_ns")
+            .checked_add(value("connect_ns"))
+            .and_then(|sum| sum.checked_add(value("write_ns")))
+            .and_then(|sum| sum.checked_add(value("decode_call_ns")))
+            .expect("small client intervals");
+        assert!(children <= value("total_ns"));
+        assert!(value("read_io_ns") <= value("decode_call_ns"));
+        rpc_total_ns = rpc_total_ns
+            .checked_add(value("total_ns"))
+            .expect("small RPC total");
+    }
+    assert_eq!(client["rpc_total_ns"], rpc_total_ns);
+    let execute_ns = client["sdk_execute_ns"].as_u64().expect("SDK clock");
+    assert!(rpc_total_ns <= execute_ns);
+    assert_eq!(
+        client["sdk_unallocated_ns"],
+        execute_ns.saturating_sub(rpc_total_ns)
+    );
+    assert_eq!(
+        client["sdk_execute_ns"],
+        phase["query_timing"]["observations"][0]["sdk_execute_ns"]
+    );
     assert_eq!(
         phase["query_timing"]["observations"]
             .as_array()
@@ -2713,6 +2751,26 @@ fn verify_serial_request_events_runner(
             .len(),
         1
     );
+    if let Some(dir) = std::env::var_os("QUANTA_BENCH_SDK_EVIDENCE_DIR") {
+        let destination = PathBuf::from(dir).join("actual-serial-request-events");
+        std::fs::create_dir(&destination).expect("fresh serial evidence output dir");
+        for source in [
+            pack_path,
+            artifact_path,
+            root.join("record.json"),
+            root.join("diagnostic.json"),
+            root.join("phase.json"),
+        ] {
+            let filename = source.file_name().expect("serial artifact filename");
+            let bytes = std::fs::read(&source).expect("validated serial artifact bytes");
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(destination.join(filename))
+                .expect("new serial evidence artifact");
+            std::io::Write::write_all(&mut file, &bytes).expect("serial evidence write");
+        }
+    }
 }
 
 /// Exercise the separately pinned runner and daemon.

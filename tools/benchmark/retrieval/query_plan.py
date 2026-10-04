@@ -18,6 +18,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from functools import lru_cache
+from pathlib import Path
 
 import regex
 import unicodedata2
@@ -27,6 +29,35 @@ PLANNING_COST_IN_LATENCY = False
 TEXT_NORMALIZER_VERSION = "2.0"
 MAX_TOKEN_BYTES = 256
 MAX_INPUT_BYTES = 16 * 1024
+UNICODE_LOWERCASE_TABLE = (
+    Path(__file__).resolve().parents[3] / "vendor/unicode/17.0.0/lowercase.json"
+)
+UNICODE_LOWERCASE_SHA256 = "816553919f8ef756f202f475d00455c4de7039aaf72d934bbbeb81b1c0e870f6"
+
+
+@lru_cache(maxsize=1)
+def _unicode_lowercase_mapping() -> dict[int, str]:
+    """Pinned default lowercase, independent of the host CPython Unicode data."""
+    try:
+        raw = UNICODE_LOWERCASE_TABLE.read_bytes()
+    except OSError as error:
+        raise QueryPlanError("pinned Unicode lowercase table unavailable") from error
+    if (
+        UNICODE_LOWERCASE_TABLE.is_symlink()
+        or hashlib.sha256(raw).hexdigest() != UNICODE_LOWERCASE_SHA256
+    ):
+        raise QueryPlanError("pinned Unicode lowercase table differs")
+    return {
+        int(scalar, 16): "".join(chr(int(part, 16)) for part in lowered.split())
+        for scalar, lowered in json.loads(raw)["mappings"].items()
+    }
+
+
+def _unicode_lowercase(text: str) -> str:
+    # Preserve Rust's per-character rule, including ordinary sigma and dotted
+    # I; locale/context rules and full case folding are different contracts.
+    return text.lower() if text.isascii() else text.translate(_unicode_lowercase_mapping())
+
 
 #: Pinned natural-language plan profile (Rust ``NlPlanConfig::default()``).
 DEFAULT_NL_CONFIG = {"max_token_chars": 96, "max_tokens": 32, "min_token_chars": 1}
@@ -503,10 +534,8 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
                 continue
             if not _validate_indexable_text(token):
                 continue
-            # Independently mirror the index's per-character lowercase, not
-            # Python's contextual whole-string lower (e.g. Greek final sigma).
             for term in regex.findall(r"[\p{Alphabetic}\p{Number}\p{Mark}_]+", token):
-                folded = "".join(ch.lower() for ch in term)
+                folded = _unicode_lowercase(term)
                 _validate_indexable_text(folded)
                 if len(folded) >= resolved["min_token_chars"] and folded not in distinct:
                     distinct.append(folded)

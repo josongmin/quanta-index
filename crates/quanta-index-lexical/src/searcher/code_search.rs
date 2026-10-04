@@ -736,6 +736,42 @@ fn typo_distance(needle: &[u8], token: &[u8], case: CaseMode) -> Option<u8> {
         .then_some(1)
 }
 
+fn scan_typo_token_spans(
+    chars: impl Iterator<Item = (usize, bool)>,
+    text_len: usize,
+    budget: &RequestBudgetV1,
+    mut check_token: impl FnMut(Range<usize>) -> Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    let mut start = None;
+    for (ordinal, (index, is_token)) in chars.enumerate() {
+        if ordinal.is_multiple_of(16_384) {
+            budget.checkpoint("lexical:code-search-typo-scan")?;
+        }
+        match (start, is_token) {
+            (None, true) => start = Some(index),
+            (Some(from), false) => {
+                check_token(from..index)?;
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(from) = start {
+        check_token(from..text_len)?;
+    }
+    Ok(())
+}
+
+fn typo_text_is_ascii(text: &str, budget: &RequestBudgetV1) -> Result<bool, CoreError> {
+    for chunk in text.as_bytes().chunks(16_384) {
+        budget.checkpoint("lexical:code-search-typo-ascii-detect")?;
+        if !chunk.is_ascii() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn typo_witness(
     text: &str,
     needle: &str,
@@ -744,7 +780,6 @@ fn typo_witness(
     distance_cache: &mut TypoDistanceCache,
     budget: &RequestBudgetV1,
 ) -> Result<Option<(Witness, u8)>, CoreError> {
-    let mut start = None;
     let mut best: Option<(Witness, u8)> = None;
     let mut check_token = |span: Range<usize>| -> Result<(), CoreError> {
         let token = text
@@ -800,21 +835,26 @@ fn typo_witness(
         Ok(())
     };
     budget.checkpoint("lexical:code-search-typo-file-start")?;
-    for (ordinal, (index, ch)) in text.char_indices().enumerate() {
-        if ordinal.is_multiple_of(16_384) {
-            budget.checkpoint("lexical:code-search-typo-scan")?;
-        }
-        match (start, normalize::is_token_char(ch)) {
-            (None, true) => start = Some(index),
-            (Some(from), false) => {
-                check_token(from..index)?;
-                start = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(from) = start {
-        check_token(from..text.len())?;
+    if typo_text_is_ascii(text, budget)? {
+        // ASCII byte offsets are scalar ordinals, and the token predicate is
+        // exactly ASCII alphanumeric or underscore. A non-ASCII scalar may
+        // join an ASCII run, so mixed text retains the Unicode tokenizer.
+        scan_typo_token_spans(
+            text.bytes()
+                .enumerate()
+                .map(|(index, byte)| (index, byte.is_ascii_alphanumeric() || byte == b'_')),
+            text.len(),
+            budget,
+            &mut check_token,
+        )?;
+    } else {
+        scan_typo_token_spans(
+            text.char_indices()
+                .map(|(index, ch)| (index, normalize::is_token_char(ch))),
+            text.len(),
+            budget,
+            &mut check_token,
+        )?;
     }
     budget.checkpoint("lexical:code-search-typo-file-end")?;
     Ok(best)
@@ -2615,8 +2655,9 @@ mod tests {
         CodeSearchTerm, HitSurface, MAX_TYPO_POSTING_VISITS, MAX_TYPO_TOKEN_COMPARISONS,
         OverlappingMatches, Scope, TermsToScore, TypoDistanceCache, best_in, boundary_score,
         candidate_ids, content_witness_lines, file_candidate_id, language_eligible_ids,
-        min_cover_gap, nfc_identity_focus, path_highlight, regex_scan_scope, scanned_bytes,
-        score_terms, source_bytes_checked, typo_candidates, typo_distance, typo_witness,
+        min_cover_gap, nfc_identity_focus, path_highlight, regex_scan_scope, scan_typo_token_spans,
+        scanned_bytes, score_terms, source_bytes_checked, typo_candidates, typo_distance,
+        typo_text_is_ascii, typo_witness,
     };
     use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
@@ -2627,6 +2668,7 @@ mod tests {
     use quanta_index_lq_regex::RegexExecutor;
     use quanta_index_lq_trigram::{DocId, TrigramIndexBuilder, TrigramIntersectionError};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::ops::Range;
 
     use crate::file_authority::{FileAuthority, SourceFile, from_verified_files};
     use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText};
@@ -2650,6 +2692,199 @@ mod tests {
             }
         }
         rows[left.len()][right.len()]
+    }
+
+    fn reference_typo_witness(
+        text: &str,
+        needle: &str,
+        case: CaseMode,
+    ) -> (Option<(Range<usize>, u8, u8)>, usize) {
+        let mut spans = Vec::new();
+        let mut start = None;
+        for (index, ch) in text.char_indices() {
+            if normalize::is_token_char(ch) {
+                if start.is_none() {
+                    start = Some(index);
+                }
+            } else if let Some(from) = start.take() {
+                spans.push(from..index);
+            }
+        }
+        if let Some(from) = start {
+            spans.push(from..text.len());
+        }
+
+        let mut distinct = BTreeSet::new();
+        let mut best: Option<(Range<usize>, u8, u8)> = None;
+        for span in spans {
+            let token = text
+                .get(span.clone())
+                .expect("reference char_indices spans are UTF-8 boundaries");
+            if !token.is_ascii()
+                || !token
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+                || token.len().abs_diff(needle.len()) > 1
+            {
+                continue;
+            }
+            let _inserted = distinct.insert(token.as_bytes().to_vec());
+            let (left, right) = if case == CaseMode::Folded {
+                (
+                    token.to_ascii_lowercase().into_bytes(),
+                    needle.to_ascii_lowercase().into_bytes(),
+                )
+            } else {
+                (token.as_bytes().to_vec(), needle.as_bytes().to_vec())
+            };
+            let distance = osa_oracle(&left, &right);
+            if distance > 1 {
+                continue;
+            }
+            let distance = u8::try_from(distance).expect("one-edit oracle distance fits u8");
+            match &mut best {
+                Some((_, prior, occurrences)) if distance == *prior => {
+                    *occurrences = occurrences.saturating_add(1).min(4);
+                }
+                Some((_, prior, _)) if distance > *prior => {}
+                _ => best = Some((span, distance, 1)),
+            }
+        }
+        (best, distinct.len())
+    }
+
+    #[test]
+    fn typo_ascii_scan_matches_char_tokenizer_and_exhaustive_osa_goldens() {
+        let cases = [
+            ("load_json", "load_jjson", CaseMode::Folded),
+            ("load_json", "load_jso", CaseMode::Folded),
+            ("load_json", "load_jsom", CaseMode::Folded),
+            ("load_json", "laod_json", CaseMode::Folded),
+            (
+                "2load_json load_json2 _load_json",
+                "load_json",
+                CaseMode::Folded,
+            ),
+            ("x POST", "POST", CaseMode::Sensitive),
+            ("LOAD_JSON load_json", "load_jsom", CaseMode::Sensitive),
+            ("LOAD_JSON load_json", "load_jsom", CaseMode::Folded),
+            ("fooαbar", "foo", CaseMode::Folded),
+            ("foo\u{0301}bar", "foo", CaseMode::Folded),
+            ("한load_json", "load_json", CaseMode::Folded),
+            (
+                "load_json load_json load_json load_json load_json",
+                "load_jsom",
+                CaseMode::Folded,
+            ),
+        ];
+        let budget = RequestBudgetV1::unbounded();
+        for (text, needle, case) in cases {
+            let (expected, expected_comparisons) = reference_typo_witness(text, needle, case);
+            let mut comparisons = 0;
+            let actual = typo_witness(
+                text,
+                needle,
+                case,
+                &mut comparisons,
+                &mut TypoDistanceCache::new(),
+                &budget,
+            )
+            .expect("bounded fixture scan");
+            let actual = actual
+                .map(|(witness, distance)| (witness.normalized, distance, witness.occurrences));
+            assert_eq!(actual, expected, "{text:?} {needle:?} {case:?}");
+            assert_eq!(comparisons, expected_comparisons, "{text:?} {needle:?}");
+        }
+        // Every ASCII scalar must yield the same whole-token result as the
+        // independent char_indices/Unicode-token reference, including NUL,
+        // whitespace, punctuation, digits, and underscore at the boundary.
+        for separator in 0_u8..=127 {
+            let text = format!("foo{}bar", char::from(separator));
+            let (expected, expected_comparisons) =
+                reference_typo_witness(&text, "foo", CaseMode::Folded);
+            let mut comparisons = 0;
+            let actual = typo_witness(
+                &text,
+                "foo",
+                CaseMode::Folded,
+                &mut comparisons,
+                &mut TypoDistanceCache::new(),
+                &budget,
+            )
+            .expect("ASCII boundary scan")
+            .map(|(witness, distance)| (witness.normalized, distance, witness.occurrences));
+            assert_eq!(actual, expected, "separator {separator}");
+            assert_eq!(comparisons, expected_comparisons, "separator {separator}");
+        }
+    }
+
+    #[test]
+    fn typo_ascii_long_cached_scan_keeps_cap_and_cancel_checkpoint() {
+        let text = "load_json ".repeat(4_096);
+        let budget = RequestBudgetV1::unbounded();
+        assert!(typo_text_is_ascii(&text, &budget).expect("ASCII prepass"));
+        assert!(
+            !typo_text_is_ascii(&(text.clone() + "αbar"), &budget).expect("Unicode tail prepass")
+        );
+        let mut comparisons = 0;
+        let (witness, distance) = typo_witness(
+            &text,
+            "load_jsom",
+            CaseMode::Folded,
+            &mut comparisons,
+            &mut TypoDistanceCache::new(),
+            &budget,
+        )
+        .expect("long ASCII fixture")
+        .expect("one-edit witness");
+        assert_eq!(witness.normalized, 0.."load_json".len());
+        assert_eq!(witness.occurrences, 4);
+        assert_eq!(distance, 1);
+        assert_eq!(comparisons, 1, "repeated tokens share one distance check");
+
+        let cancelled = RequestBudgetV1::unbounded();
+        cancelled.cancel_handle().cancel();
+        assert!(matches!(
+            typo_witness(
+                &text,
+                "load_jsom",
+                CaseMode::Folded,
+                &mut 0,
+                &mut TypoDistanceCache::new(),
+                &cancelled,
+            ),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::RequestCancelled,
+                ..
+            })
+        ));
+
+        let mid_scan_budget = RequestBudgetV1::unbounded();
+        let cancel_mid_scan = mid_scan_budget.cancel_handle();
+        let mut visited_spans = 0_usize;
+        let interrupted = scan_typo_token_spans(
+            text.bytes()
+                .enumerate()
+                .map(|(index, byte)| (index, byte.is_ascii_alphanumeric() || byte == b'_')),
+            text.len(),
+            &mid_scan_budget,
+            |_span| {
+                visited_spans += 1;
+                if visited_spans == 1 {
+                    cancel_mid_scan.cancel();
+                }
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            interrupted,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::RequestCancelled,
+                ..
+            })
+        ));
+        assert!(visited_spans > 1 && visited_spans < 4_096);
     }
 
     #[test]

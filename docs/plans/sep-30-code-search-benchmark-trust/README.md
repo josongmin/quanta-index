@@ -1,7 +1,10 @@
 # Sep 30 — code-search benchmark trust execution plan
 
-Status: `EXECUTED_DIAGNOSTIC` (partial; per-ticket receipts in [tickets/INDEX.md](tickets/INDEX.md);
-B07 and B08 `NOT_RUN`). Execution does not claim independent human labels,
+Status: `EXECUTED_DIAGNOSTIC` (partial; per-ticket receipts in [tickets/INDEX.md](tickets/INDEX.md)).
+B07 has implemented instrumentation, fresh release SDK proof and diagnostic A/B;
+qualified performance remains `NOT_RUN`. B08 has diagnostic admission/capture
+work; its qualified multi-repository decision remains `NOT_RUN`.
+Execution does not claim independent human labels,
 product quality, speed, or release qualification.
 Planning baseline: `quanta-index@0d21914e53b85e13b8e3c2ec644a9a0112faf5be`
 on 2026-09-30. The shared checkout had pre-existing dirty code changes outside

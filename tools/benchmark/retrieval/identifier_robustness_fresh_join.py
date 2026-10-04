@@ -24,10 +24,12 @@ from typing import Any
 try:
     from tools.benchmark.retrieval import evaluator, identifier_robustness_suite, run
     from tools.benchmark.retrieval import identifier_robustness_multiproduct_report as scoring
+    from tools.benchmark.retrieval.retrieval_contract import GOLD_RUNTIME_PACKAGES
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.benchmark.retrieval import evaluator, identifier_robustness_suite, run
     from tools.benchmark.retrieval import identifier_robustness_multiproduct_report as scoring
+    from tools.benchmark.retrieval.retrieval_contract import GOLD_RUNTIME_PACKAGES
 
 PRODUCTS = ("quanta", "semble", "sourcegraph", "cs", "opengrok")
 EXTERNAL_PRODUCTS = ("sourcegraph", "cs", "opengrok")
@@ -348,6 +350,15 @@ def _source_admission(
     projection = read(projection_receipt_path)
     gold = read(gold_receipt_path)
     runtime_binding = read(runtime_binding_path)
+    # Replay follows the source-locked producer of this capture, not the
+    # reviewer's installed runtime or a second set of frozen version literals.
+    parser_runtime = prepared.get("parser_runtime_versions")
+    require(
+        isinstance(parser_runtime, dict)
+        and set(parser_runtime) == set(GOLD_RUNTIME_PACKAGES)
+        and all(isinstance(value, str) and value.strip() for value in parser_runtime.values()),
+        "global parser runtime requires all source-locked pins",
+    )
     require(
         matrix_receipt.get("status") == "factory_derived_diagnostic_unqualified"
         and matrix_receipt.get("matrix_sha256") == sha(authority_path)
@@ -381,12 +392,6 @@ def _source_admission(
         == gold.get("dependency_versions")
         and manifest.get("gold_producer_runtime", {}).get("parser_runtime_versions")
         == prepared.get("parser_runtime_versions")
-        == {
-            "tree-sitter": "0.23.2",
-            "tree-sitter-language-pack": "0.9.1",
-            "regex": "2025.10.23",
-            "unicodedata2": "17.0.0",
-        }
         and manifest.get("external_collector_runtime", {}).get("parser_runtime_versions")
         == prepared.get("parser_runtime_versions")
         and manifest.get("external_collector_runtime", {}).get("python_executable_sha256")

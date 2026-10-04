@@ -40,7 +40,9 @@ pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
     "go@0.25.0+quanta-go-compatibility-1;vendored-source-sha256=",
     env!("QI_GO_GRAMMAR_SHA256"),
     ";",
-    "javascript@0.25.0;",
+    "javascript@0.25.0+quanta-javascript-export-names-1;vendored-source-sha256=",
+    env!("QI_JAVASCRIPT_GRAMMAR_SHA256"),
+    ";",
     "python@0.25.0+quanta-abi14-1;vendored-source-sha256=",
     env!("QI_PYTHON_GRAMMAR_SHA256"),
     ";",
@@ -54,6 +56,7 @@ const _: &str = tree_sitter_typescript::QUANTA_COMPATIBILITY_PATCH_ID;
 const _: &str = tree_sitter_go::QUANTA_COMPATIBILITY_PATCH_ID;
 const _: &str = tree_sitter_rust::QUANTA_GRAMMAR_BUILD_ID;
 const _: &str = tree_sitter_python::QUANTA_GRAMMAR_BUILD_ID;
+const _: &str = tree_sitter_javascript::QUANTA_GRAMMAR_BUILD_ID;
 
 /// Producer identity for batch digests.
 pub const SYMBOL_PRODUCER_IDENTITY: &str = "source-bound-symbols-v2";
@@ -1188,8 +1191,8 @@ mod tests {
     #[test]
     fn javascript_and_typescript_definitions() {
         for exported in [
-            "const", "var", "true", "false", "for", "function", "return", "if", "this",
-            "null", "debugger", "new",
+            "const", "var", "true", "false", "for", "function", "return", "if", "this", "null",
+            "debugger", "new",
         ] {
             let source = format!("function local() {{}} export {{ local as {exported} }};");
             let definitions = extract_symbols("exports.js", &source)

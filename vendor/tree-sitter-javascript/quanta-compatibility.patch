@@ -1,0 +1,7 @@
+--- a/grammar.js
++++ b/grammar.js
+@@ -217,3 +217,3 @@
+     _module_export_name: $ => choice(
+-      $.identifier,
++      reserved('properties', $.identifier),
+       $.string,

@@ -53,6 +53,10 @@ pub struct IngestStageReport {
 )]
 pub struct LexicalBuildStageDurationsV1 {
     pub preparation_ns: u64,
+    /// The build-phase file-authority preflight, excluding earlier admission passes.
+    pub prep_file_authority_preflight_ns: Option<u64>,
+    /// Durable coverage-page and coverage-root publication during preparation.
+    pub prep_coverage_write_ns: Option<u64>,
     pub writer_mutation_ns: u64,
     pub text_authority_ns: u64,
     /// Present for a full rebuild; a touched-shard delta does not enumerate live docs.
@@ -62,6 +66,8 @@ pub struct LexicalBuildStageDurationsV1 {
     /// Present for rebuilds and deltas; includes encode, durable writes, and cleanup.
     pub text_authority_publish_ns: Option<u64>,
     pub file_authority_ns: u64,
+    /// Source-byte write loop, including existence checks; manifest and cleanup remain in the parent.
+    pub file_authority_source_write_ns: Option<u64>,
     pub seal_ns: Option<u64>,
     pub seal_writer_commit_ns: Option<u64>,
     pub seal_merge_wait_ns: Option<u64>,
@@ -258,12 +264,15 @@ impl_observation_struct_serde!(IngestStageReport {
 
 impl_observation_struct_serde!(LexicalBuildStageDurationsV1 {
     preparation_ns: u64 => "preparation_ns",
+    prep_file_authority_preflight_ns: Option<u64> => "prep_file_authority_preflight_ns",
+    prep_coverage_write_ns: Option<u64> => "prep_coverage_write_ns",
     writer_mutation_ns: u64 => "writer_mutation_ns",
     text_authority_ns: u64 => "text_authority_ns",
     text_authority_collect_ns: Option<u64> => "text_authority_collect_ns",
     text_authority_shard_build_ns: Option<u64> => "text_authority_shard_build_ns",
     text_authority_publish_ns: Option<u64> => "text_authority_publish_ns",
     file_authority_ns: u64 => "file_authority_ns",
+    file_authority_source_write_ns: Option<u64> => "file_authority_source_write_ns",
     seal_ns: Option<u64> => "seal_ns",
     seal_writer_commit_ns: Option<u64> => "seal_writer_commit_ns",
     seal_merge_wait_ns: Option<u64> => "seal_merge_wait_ns",
@@ -407,6 +416,26 @@ impl SearchCorpusIngestObservation {
             .ok_or_else(|| "lexical stage duration sum overflow".to_string())?;
             if outer > total {
                 return Err("lexical stages exceed containing build".to_string());
+            }
+            let (Some(preflight), Some(coverage)) = (
+                stages.prep_file_authority_preflight_ns,
+                stages.prep_coverage_write_ns,
+            ) else {
+                return Err("lexical preparation child clocks are unavailable".to_string());
+            };
+            let preparation_children = preflight
+                .checked_add(coverage)
+                .ok_or_else(|| "lexical preparation child duration sum overflow".to_string())?;
+            if preparation_children > stages.preparation_ns {
+                return Err("lexical preparation children exceed containing stage".to_string());
+            }
+            if stages
+                .file_authority_source_write_ns
+                .is_some_and(|source_write| source_write > stages.file_authority_ns)
+            {
+                return Err(
+                    "lexical file authority source writes exceed containing stage".to_string(),
+                );
             }
             let text_children = [
                 stages.text_authority_collect_ns,
@@ -883,12 +912,15 @@ mod tests {
         let mut observation = outcome.observation.ok_or("missing observation")?;
         let stages = LexicalBuildStageDurationsV1 {
             preparation_ns: 1,
+            prep_file_authority_preflight_ns: Some(0),
+            prep_coverage_write_ns: Some(1),
             writer_mutation_ns: 1,
             text_authority_ns: 0,
             text_authority_collect_ns: None,
             text_authority_shard_build_ns: None,
             text_authority_publish_ns: None,
             file_authority_ns: 0,
+            file_authority_source_write_ns: None,
             seal_ns: Some(1),
             seal_writer_commit_ns: Some(0),
             seal_merge_wait_ns: Some(0),
@@ -900,6 +932,22 @@ mod tests {
         for mutation in [
             LexicalBuildStageDurationsV1 {
                 preparation_ns: 2,
+                ..stages
+            },
+            LexicalBuildStageDurationsV1 {
+                prep_file_authority_preflight_ns: Some(1),
+                ..stages
+            },
+            LexicalBuildStageDurationsV1 {
+                prep_coverage_write_ns: None,
+                ..stages
+            },
+            LexicalBuildStageDurationsV1 {
+                prep_file_authority_preflight_ns: Some(u64::MAX),
+                ..stages
+            },
+            LexicalBuildStageDurationsV1 {
+                file_authority_source_write_ns: Some(1),
                 ..stages
             },
             LexicalBuildStageDurationsV1 {
@@ -943,12 +991,15 @@ mod tests {
         let mut observation = outcome.observation.ok_or("missing observation")?;
         let mut stages = LexicalBuildStageDurationsV1 {
             preparation_ns: 1,
+            prep_file_authority_preflight_ns: Some(0),
+            prep_coverage_write_ns: Some(1),
             writer_mutation_ns: 0,
             text_authority_ns: 1,
             text_authority_collect_ns: Some(0),
             text_authority_shard_build_ns: Some(0),
             text_authority_publish_ns: Some(1),
             file_authority_ns: 0,
+            file_authority_source_write_ns: None,
             seal_ns: Some(1),
             seal_writer_commit_ns: Some(0),
             seal_merge_wait_ns: Some(0),
@@ -992,6 +1043,18 @@ mod tests {
             serde_json::from_value::<LexicalBuildStageDurationsV1>(serde_json::to_value(&stages)?)?,
             stages
         );
+        for key in [
+            "prep_file_authority_preflight_ns",
+            "prep_coverage_write_ns",
+            "file_authority_source_write_ns",
+        ] {
+            let mut wire = serde_json::to_value(&stages)?;
+            let _removed = wire
+                .as_object_mut()
+                .ok_or("missing stage object")?
+                .remove(key);
+            assert!(serde_json::from_value::<LexicalBuildStageDurationsV1>(wire).is_err());
+        }
         let mut wire = serde_json::to_value(&stages)?;
         let _removed = wire
             .as_object_mut()

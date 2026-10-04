@@ -1,0 +1,40 @@
+{
+  "files": {
+    "Cargo.toml": "424f2a3176e64503609d6dfc53e5c7e81f0900255412c32b44b602b41a9eb949",
+    "Cargo.toml.orig": "00c047f354a97883c34e6336b1db56dc6fbae658740b49841d39d1d7129468a0",
+    "LICENSE": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1",
+    "QUANTA.md": "3247c979fcccf4232ce93130b45607fda6703b630d101e9e9dd8fe28d44198ff",
+    "README.md": "1cd898586f38dccb86b53cb38806dbde2cace16b3131dd5a162d63babe420c84",
+    "bindings/rust/build.rs": "3b3eb16f02f402ab88518f8366baf27d270bd8024f3d667737958dadd92e17be",
+    "bindings/rust/lib.rs": "77f0c7ede39e1416f6d5f18437e3b5ccbee82169f20004d808740af97675a89c",
+    "grammar.js": "de2cd020aa91fc8c981ebe2165ffe9808800230da2cbca4b522ad10fcfd80f65",
+    "quanta-compatibility.patch": "808f3421b74e62300ecf8f34d99b84bffd9299a191e1fda9ebad7b2ce855ed84",
+    "queries/highlights-jsx.scm": "0cad1712acaf40804bc5dc7c8476858752c1f549cdf7d8c63c747317be0f8fa6",
+    "queries/highlights-params.scm": "bbe7a58cacfb1c954cb0eab44779fd80421ed59b762b975723447207635de50d",
+    "queries/highlights.scm": "d3630ae6dc9b2b27b230b5f8bb92b05cd491fb12bff353dae62a0a6d780461ee",
+    "queries/injections.scm": "bea345407ce1f24bccf2b3c1a128acc14e19301327074285368586e793dcb86d",
+    "queries/locals.scm": "c1dd2cfa1400d397fa974208fc9edfe817be4a3c8b42bb99af5c8d193b1bb753",
+    "queries/tags.scm": "6ef988cce5a428a15b5460e3ee96f1478705f965fc6e848a91a18bfa6c6f0212",
+    "src/grammar.json": "51cb466be16a2f04b61ae680aa47560a67f98d74443e9b86a728847349f3ece7",
+    "src/node-types.json": "188a8baa97018edaf63bf7ece372c07bc0d74d1301004bc8f211eb7dee5a6e70",
+    "src/parser.c": "352d35f98e4c72e5c1a8b363f898f005c2347f173fa417bbc4ed26ae60d33670",
+    "src/scanner.c": "b3d3f64284d97bf80749c026862427782cf7ecc0b7dc094e6698ab311c9a42c7",
+    "src/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+    "src/tree_sitter/array.h": "5bdf6ed1a78e3409fd443e085ca967a64c188a5d082aaf7f819bccd53a471c94",
+    "src/tree_sitter/parser.h": "180b893c8734778fd32f372dfbc27bd6ad1cd2221f26150b31256ff6716320d2",
+    "tree-sitter.json": "43f1abe79d69601f9699d292ccbdcf04c8c836911984bd6e466c8368711a1d65"
+  },
+  "generator": "tree-sitter 0.25.10 (da6fe9beb4f7f67beb75914ca8e0d48ae48d6406)",
+  "generator_abi": 15,
+  "generator_binding": {
+    "archive_sha256": "a6295d469669f6e901b6029ae6c129bd094df582d278c237fada413505cb9c42",
+    "binary_sha256": "374f6f9733a3f3e2dff72fcc1640b35c7d75ab60f531c8dc5865af3a12a28411",
+    "generator_abi": 15,
+    "url": "https://github.com/tree-sitter/tree-sitter/releases/download/v0.25.10/tree-sitter-macos-arm64.gz"
+  },
+  "patch_identity": "quanta-javascript-export-names-1",
+  "schema": "quanta-javascript-grammar-patch-v1",
+  "upstream_commit": "44c892e0be055ac465d5eeddae6d3e194424e7de",
+  "upstream_crate_checksum": "68204f2abc0627a90bdf06e605f5c470aa26fdcb2081ea553a04bdad756693f5",
+  "upstream_version": "0.25.0"
+}

@@ -20,7 +20,16 @@ def test_github_actions_has_no_automatic_trigger_and_circleci_is_default() -> No
         assert set(workflow["on"]) == {"workflow_dispatch"}
     config = yaml.safe_load(CIRCLECI.read_text(encoding="utf-8"))
     assert config["parameters"]["run_heavy"]["default"] is False
-    assert config["workflows"]["regular"]["jobs"] == ["verify", "verify-python"]
+    regular_jobs = config["workflows"]["regular"]["jobs"]
+    assert regular_jobs[:2] == ["verify", "verify-python"]
+    assert regular_jobs[2:] == [
+        {
+            "verify-pr-coverage": {
+                "requires": ["verify"],
+                "filters": 'pipeline.event.name == "pull_request"',
+            }
+        }
+    ]
     assert config["workflows"]["manual-heavy"]["jobs"] == ["heavy-correctness"]
 
 
@@ -395,7 +404,7 @@ def test_ci_python_jobs_install_only_their_runtime_imports() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
     expected = {
-        "rust-policy": "python -m pip install 'jsonschema>=4.23.0' 'pyyaml>=6.0.2' 'tree-sitter-language-pack==0.9.1'",
+        "rust-policy": "python -m pip install 'jsonschema>=4.23.0' 'pyyaml>=6.0.2' 'tree-sitter==0.25.2' 'tree-sitter-language-pack==0.10.0'",
         "proof-authority-current-gate": "python -m pip install 'jsonschema>=4.23.0' 'pytest>=8.3.0'",
         "agent-output": "python -m pip install 'jsonschema>=4.23.0'",
     }

@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from pathlib import Path
 from typing import Any
 
 try:
+    from tools.benchmark.evidence import _read_control_file, parse_json
     from tools.benchmark.retrieval.evaluator import canonical, digest
 except ImportError:  # direct run.py invocation from an external working directory
     from evaluator import canonical, digest
+    from evidence import _read_control_file, parse_json
 
 
 class BatchError(ValueError):
@@ -35,6 +38,78 @@ SHARED_FIELDS = (
 )
 PACK_FIELDS = set(SHARED_FIELDS) | {"suite_id", "suite_commitment_sha256", "tasks"}
 TASK_FIELDS = {"task_id", "query", "query_sha256"}
+
+
+def iter_repository_admissions(
+    root: Path,
+    repositories: Sequence[str],
+    *,
+    upstream_alive: Callable[[], bool],
+    wait: Callable[[], None],
+    repository_failure: Callable[[str], str | None] | None = None,
+) -> Iterator[tuple[str, dict]]:
+    """Drain every ready/failed repository before waiting for pending admissions.
+
+    Readiness is not admission validation: the consumer must verify the returned
+    authority and its source/input bindings before execution. A failed or missing
+    admission is always a failed outcome, never a successful empty product cell.
+    The caller owns its poll/deadline policy and durable per-cell result writing.
+    """
+    if isinstance(repositories, (str, bytes)):
+        raise BatchError("invalid admission repository list")
+    pending = list(repositories)
+    if (
+        not pending
+        or any(
+            not isinstance(repo, str) or not repo or Path(repo).name != repo or repo in {".", ".."}
+            for repo in pending
+        )
+        or len(set(pending)) != len(pending)
+    ):
+        raise BatchError("invalid admission repository list")
+    while pending:
+        for repo in pending[:]:
+            cell = root / repo
+            result, failure = cell / "result.json", cell / "failure.json"
+            if failure.exists():
+                outcome = {"status": "FAILED", "reason": "repository admission failure terminal"}
+            elif result.exists():
+                try:
+                    outcome = parse_json(_read_control_file(result).decode("utf-8"))
+                    if not isinstance(outcome, dict) or outcome.get("status") != "VERIFIED":
+                        raise ValueError("admission result is not VERIFIED")
+                except (OSError, ValueError, UnicodeDecodeError) as error:
+                    outcome = {
+                        "status": "FAILED",
+                        "reason": "invalid admission result: " + str(error),
+                    }
+            else:
+                reason = repository_failure(repo) if repository_failure is not None else None
+                if reason is None:
+                    continue
+                if not isinstance(reason, str) or not reason:
+                    raise BatchError("invalid repository failure reason")
+                outcome = {"status": "FAILED", "reason": reason}
+            pending.remove(repo)
+            yield repo, outcome
+        if pending:
+            if (root / "pipeline-terminal.json").exists() or not upstream_alive():
+                # Recheck once after observing termination, so a just-published
+                # successful admission is not misclassified as missing.
+                for repo in pending[:]:
+                    if (root / repo / "result.json").exists() or (
+                        root / repo / "failure.json"
+                    ).exists():
+                        break
+                else:
+                    for repo in pending:
+                        yield (
+                            repo,
+                            {"status": "FAILED", "reason": "upstream ended without admission"},
+                        )
+                    return
+                continue
+            wait()
 
 
 def build_execution_pack(packs: Sequence[dict[str, Any]]) -> tuple[dict, dict]:

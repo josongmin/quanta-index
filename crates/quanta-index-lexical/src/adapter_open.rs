@@ -47,6 +47,7 @@ pub(crate) struct LexicalMutationTimings {
     pub(crate) text_authority_shard_build_ns: Option<u64>,
     pub(crate) text_authority_publish_ns: Option<u64>,
     pub(crate) file_authority_ns: u64,
+    pub(crate) file_authority_source_write_ns: Option<u64>,
 }
 
 struct TextAuthorityMutation {
@@ -119,7 +120,8 @@ impl LexicalAdapter {
         let written = self.write_text_authority(&generation_dir, key, &guarded.index, plan)?;
         let text_authority_ns = crate::adapter_ingest::elapsed_stage_ns(text_authority_started)?;
         let file_authority_started = Instant::now();
-        crate::file_authority::apply_plan(&generation_dir, file_plan)?;
+        let file_authority_source_write_ns =
+            crate::file_authority::apply_plan(&generation_dir, file_plan)?;
         let file_authority_ns = crate::adapter_ingest::elapsed_stage_ns(file_authority_started)?;
         drop(guarded);
         if let Some(written) = &written {
@@ -132,6 +134,7 @@ impl LexicalAdapter {
             text_authority_shard_build_ns: written.as_ref().map(|value| value.shard_build_ns),
             text_authority_publish_ns: written.as_ref().map(|value| value.publish_ns),
             file_authority_ns,
+            file_authority_source_write_ns: Some(file_authority_source_write_ns),
         })
     }
 

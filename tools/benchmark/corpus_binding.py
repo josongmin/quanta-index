@@ -37,19 +37,13 @@ from raw_archive import ArchiveLimits
 from raw_archive import pack as pack_archive
 from raw_archive import unpack as unpack_archive
 
-from tools.benchmark.retrieval.retrieval_contract import canonical
+from tools.benchmark.retrieval.retrieval_contract import GOLD_RUNTIME_PACKAGES, canonical
 
 MAX_CAPSULE_BYTES = 256 * 1024 * 1024
 GOLD_DOCUMENT_BYTES = 32 * 1024 * 1024
 MAX_SPLIT_REPOSITORIES = 64
 MAX_SPLIT_FAMILIES = 100_000
 GOLD_RUNTIME_SOURCE_ROOT = Path(__file__).resolve().parents[2]
-GOLD_RUNTIME_PACKAGES = (
-    "regex",
-    "tree-sitter",
-    "tree-sitter-language-pack",
-    "unicodedata2",
-)
 # Cross-split source leakage is checked over code_only bytes. Exact copies are
 # refused from a byte floor that skips empty package stubs; near duplicates use
 # winnowed token k-gram fingerprints (Schleimer et al., SIGMOD 2003) and refuse
@@ -619,19 +613,18 @@ def require_gold_runtime() -> dict[str, str]:
         if len(versions) != 1 or not isinstance(versions[0], str):
             raise EvidenceError(f"gold runtime lock has no unique exact pin: {name}")
         pinned = versions[0]
-        if name != "tree-sitter":
-            direct = [
-                match.group(1)
-                for requirement in requirements
-                if isinstance(requirement, str)
-                and (
-                    match := re.fullmatch(
-                        rf"{re.escape(name)}==([A-Za-z0-9][A-Za-z0-9._+-]*)", requirement
-                    )
+        direct = [
+            match.group(1)
+            for requirement in requirements
+            if isinstance(requirement, str)
+            and (
+                match := re.fullmatch(
+                    rf"{re.escape(name)}==([A-Za-z0-9][A-Za-z0-9._+-]*)", requirement
                 )
-            ]
-            if direct != [pinned]:
-                raise EvidenceError(f"gold runtime project/lock pin differs: {name}")
+            )
+        ]
+        if direct != [pinned]:
+            raise EvidenceError(f"gold runtime project/lock pin differs: {name}")
         try:
             active = version(name)
         except PackageNotFoundError as error:

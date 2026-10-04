@@ -3939,3 +3939,222 @@ with a new output root. The strict collection validator remains unchanged.
   Evidence: `offline-verification.json`, `driver-negative-controls.json`,
   `cs120-byte-recheck.json`, `current-audit.json`, `remaining-precommit.json`
   in the supplemental queue root; `spec-preflight.json` in the native root.
+
+### 2026-10-04: canonical five-product pool and natural-language zero-result RCA
+
+- **VERIFIED**, the first six C3 repositories now have **120 tasks / 600
+  retained measured response rows** across all five products. Paired rows use
+  canonical suite/record validation; native rows are independently re-derived
+  from retained HTTP/process bytes with their pinned response owners, declared
+  request argv, projection revision and source-file hashes. The source scopes
+  remain `41cceb67` for Quanta/Semble and SG/OG, and `fae6924a` for literal cs.
+  This does not count warmup requests as extra scored tasks.
+- Their five-product unjudged union is **375** task/file pairs:
+  bat **51**, cli **133**, lo **30**, mocha **63**, uvicorn **54**, zustand **44**.
+  For every repository the source-bound five-product blind packet is identical
+  to the paired-only packet. Quanta has **216** unjudged observations and
+  Semble **226**, with **67** shared pairs. There is no additional native-only
+  file in these six completed cells. Original **1,324-pair** coverage and these
+  new returned-file judgments remain separate denominators.
+- **VERIFIED**, **8/8** independent offline negative controls refuse duplicate
+  or out-of-universe paths, changed task/query, unsuccessful process, boolean
+  timing, and hash-rebound native rows for each of SG/OG/cs. A successful empty
+  response is accepted as execution success. Native re-derivation cannot be
+  replaced by trusting a producer status string or recomputed row-file hash.
+  This audit made no new network or model calls.
+- **VERIFIED**, SG, OG and corrected literal cs each returned empty results
+  for **120/120** original NL questions, with successful HTTP/process status.
+  A separate two-query control uses the independently source-defined Rust
+  function `append_to_acknowledgements` at
+  `src/assets/build_assets/acknowledgements.rs:126`, present in exactly one
+  source file. All three actual native APIs return that file for the single
+  identifier. Adding a frozen term absent from every source file produces an
+  empty response for all three: **6/6 actual controls** completed. Original C3
+  queries, labels and captures were unchanged; controls are not benchmark rows.
+- **VERIFIED**, an independent source-byte scan finds **0/120** original NL
+  questions with a file containing all submitted whitespace surface terms,
+  even under casefolded substring matching. This is a relaxed necessary
+  condition for literal-term AND, not an OpenGrok analyzer reference. The
+  pinned Sourcegraph compiler declares literal content-term AND, and literal
+  cs retains native AND. These data corroborate the declared workflow
+  difference from Quanta NL token-OR and Semble BM25 retrieval; they do not
+  establish a general product semantic-search quality ranking. The one-symbol
+  control does not replace the full native index-scope evidence.
+- **VERIFIED**, the common timing seam remains open: native `elapsed_ms`
+  ends at HTTP response bytes or process/stdout completion; paired clocks
+  require `request_construction_to_normalized_response`. The new union audit
+  marks common five-product performance **NOT_RUN**, with the precise boundary
+  reason. Existing native transport durations cannot become completed-response
+  durations by re-labeling or summing an unrelated decoder measurement.
+- A live `c3-all-five-pool-audit-gsZWij9u/watch_remaining.py` waits for all
+  three independently verified capture producers for the other six repositories
+  before canonical pool analysis. Partial/missing/failed products refuse;
+  no quality score, unknown grade or common-clock performance is synthesized.
+  Any later native-only unjudged file still requires actual blind review.
+- Roots under the existing external BASE:
+  `c3-all-five-pool-audit-gsZWij9u/` (`six-repository-summary.json`, canonical
+  per-repository results, `negative-controls.json`, `remaining-precommit.json`);
+  `c3-native-nl-zero-control-4QVkyBQg/` (`precommit.json`, `result.json`,
+  `literal-and-feasibility.json`, original HTTP/process control bytes).
+  Executed: `audit.py --repository <repo> --output <fresh-root>` for six repos;
+  isolated `replay_native_rows.py`; offline negative fixtures; `control.py`;
+  source-only surface-AND scan. Remaining actual review, new qrels/admission,
+  final frozen-label captures and controlled repeated common-clock performance
+  retain their earlier uncompleted status.
+
+### 2026-10-04 14:45 KST: live inventory correction and confirmed queue gaps
+
+- Current main is `e43cda8c`; the shared staged overlay is owned by multiple
+  sessions. C3 execution source remains clean `41cceb67`. B09's fresh diagnostic
+  source `d1a1b709` and performance A/B sources are separate proof scopes.
+- **VERIFIED**, current canonical issuance is **140/240 tasks**, with
+  **670/1,324 original returned pairs** covered. Nushell's additional 20 tasks
+  and 126 original pairs were recounted from original packet membership against
+  current suite judgments; its full matching admission also completed.
+- **FAILED**, bat supplemental actual-review preparation raises
+  `KeyError: answerability_min_grade` before a model call. The same actual
+  request-builder failure was independently reproduced for cli and lo.
+  Their earlier preflights stopped before constructing the model request and
+  therefore missed the required suite metadata. An offline reconstruction from
+  each frozen suite's task threshold serializes all two-reviewer batch requests
+  successfully; this is zero model calls and zero new relevance grades, not a
+  repaired actual-review run.
+- **FAILED**, bat's dependent cli/lo queue and subsequent nine-repository
+  review watcher now have terminal failures and their processes ended. The
+  earlier live-wait description is historical. The first-six new union of
+  **375 task/file pairs** remains unissued. Fix request metadata propagation and
+  exercise the actual request-builder in preflight before restarting a fresh
+  supplemental review/admission namespace; retain failed originals.
+- **FAILED**, typeorm's actual adjudicator returned an unresolved pair in batch
+  012. The canonical validator refused issuance. Retain valid cached batches;
+  independently adjudicate the unresolved source evidence without coercing a
+  grade or treating a partial review as a completed repository.
+- Original review is executing tailscale, followed by django, sqlalchemy and
+  zellij. Admission skips a known failed original repository, but the sequential
+  capture controllers still wait on missing typeorm admission until their
+  upstream pipeline terminates. This delays already admitted nushell capture.
+  Product-cell scheduling should inspect per-repository failure terminals and
+  advance other ready cells without promoting missing cells to success.
+- Other chats: `벤치 - 엔진문제` completed 33 diagnostic executions / 11,272
+  responses at `d1a1b709`; `ㅔ벤치 준비 - 코퍼스` is conducting a separate
+  release scanner A/B across Gin exact and four typo lanes. Neither replaces
+  final C3 reviewed all-five scoring or common completed-response timing.
+- **FAILED**, shared staged whitespace validation reports
+  `vendor/tree-sitter-javascript/quanta-compatibility.patch:5`. This is a unified
+  diff context line whose leading space must not be blindly stripped. Its owner
+  must preserve patch applicability and refresh provenance if changing the
+  artifact, or use an explicit appropriate whitespace policy. The automatic
+  commit/push task stopped; shared source publication remains pending.
+- Still **NOT_RUN**: final frozen supplemental qrels and scoring, five-product
+  repeated `request_construction_to_normalized_response` timing, qualification
+  of the eventual integrated main. This inventory made no new product/model
+  calls and did not change shared product source, original captures or labels.
+
+### 2026-10-04: main integration versus external execution snapshots
+
+- **VERIFIED**, all nine currently present B08 verification worktrees inspected
+  (`b08-integrated-admission-proof` through `b08-final-keyword-proof`) are clean
+  and their commits are ancestors of shared main `e43cda8c`. No branch-only
+  implementation change remains in those worktrees. The stale attached
+  `b08-nl-file-runtime-proof` path is absent, not a live checkout.
+- **VERIFIED**, cs literal-query repair `fae6924a` is already in main history;
+  its source/tests and canonical holdout review source/tests have no main
+  working-tree delta from HEAD. Main and cached origin/main both resolve to
+  `e43cda8c` at this inspection; no fresh remote fetch is claimed.
+- **VERIFIED**, B09 clean execution snapshot `d1a1b709` is in an independent
+  snapshot Git repository. Compared all 56 bound source files with main:
+  52 byte-identical, none absent. The four changed main files contain later
+  ASCII typo scanning, diagnostic v9 and matching proof/test additions.
+  Copying the older snapshot over main would remove those changes.
+- Per-run actual-review drivers, payloads, raw responses and result custody
+  remain in the external closeout root. Their missing-threshold bug is an
+  external orchestration defect, not an unmerged engine branch. These scripts
+  were not copied wholesale into the product repository or counted as a
+  completed canonical tooling repair.
+- Focused current-main verification of diagnostic v9/ingest children:
+  `.venv/bin/python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q
+  -k 'diagnostic_v9_replay_requires_new_children or
+  direct_quanta_capture_accepts_current_ingest_children or
+  ingest_preparation_file_children'`: **5 passed / 565 deselected**.
+  No additional cherry-pick is required for the compared implemented source;
+  pending shared staged changes and final runtime qualification remain separate.
+
+- **VERIFIED**, current-main external native capture and canonical review tests:
+  `.venv/bin/python -m pytest tools/ci/tests/test_live_lexical_external.py
+  tools/ci/tests/test_holdout_review.py -q`: **180 passed in 139.41s**.
+  Together with the five diagnostic checks above, 185 selected tests passed.
+  This does not execute or repair the external supplemental-review driver and
+  does not qualify the full dirty main or a new benchmark capture.
+
+### 2026-10-04: latest-main session closure inventory
+
+Baseline: main `e43cda8c` plus the explicitly observed shared staged overlay.
+Current original review: 140/240 issued tasks, 670/1324 original pairs.
+Typeorm and tailscale both have terminal unresolved-decision failures; django
+is running, with sqlalchemy/zellij pending. Bat supplemental preparation and
+its dependent queues failed; the 375 newly returned first-six pairs are not
+issued. Live capture/pool controllers are waits, not completed product cells.
+
+Required closure order and owners:
+
+1. Review metadata owner: bind supplemental answerability threshold to frozen
+   canonical suite, preserve query/rubric/source identity, and construct actual
+   model request payloads in preflight. Fix external producers, reuse canonical
+   holdout-review validation, and retain tests for missing/changed thresholds,
+   duplicate pairs, source drift and injected judgments.
+2. Original review owner: resolve the actual typeorm/tailscale unresolved
+   source evidence, preserve valid cached calls, finish django/sqlalchemy/zellij
+   and replay final actual judgments before issuing labels.
+3. Product scheduling owner: detect per-repository terminal failure, execute
+   other ready admitted cells, and record exact failed/missing cell inventory.
+   Preserve serial product execution and immutable failed roots.
+4. B09 owner (active in another chat): remove obsolete literal dependency-pin
+   authority from fresh join in favor of matching source-lock/runtime/receipt
+   identities. Current join still requires tree-sitter 0.23.2 and language-pack
+   0.9.1 while main pins 0.25.2 and 0.10.0. Actual new-source positive and
+   rebound-runtime/grammar negative tests are required before fresh joins.
+5. Integration/review owner: complete all newly returned five-product blind
+   union judgments, issue qrels and mixed-suite/split/manifest/receipt admission
+   on final source. Check existing objective and no-answer strata alongside
+   reviewed NL tasks; a diagnostic NL-only suite is not a mixed-track decision.
+6. Capture owner: execute the remaining C3 cells and the affected fresh exact,
+   prefix/infix/components, four typo-operation and no-answer product matrix.
+   Generate an explicit required-cell inventory rather than reuse a historical
+   remaining-cell count. Rebind actual native indexed scope before/after each
+   new capture; prior B08 13347-file index evidence and B09 11695-file evidence
+   remain different source universes.
+7. Reporting owner: replay all raw rows under final frozen judgments, publish
+   separate lane/profile/unit scoreboards, common eligible task IDs, operational
+   coverage, cap/partial/error states, unjudged count and clustered uncertainty.
+   Retain file hit versus exact declaration-name-span distinction; precise span
+   recovery is still unexecuted and whole-file/context spans cannot prove it.
+8. Native timing owner: continuous request construction through normalized
+   response materialization clock in live_lexical_external.py, raw persistence
+   after clock, old transport timing explicitly historical; independent fake
+   clocks and output mutation/refusal tests before actual repeated timing.
+9. B07 owner (active in another chat): actual repeated equal-boundary release
+   query/full/delta/delete/no-op/reopen measurements on admitted host and exact
+   source; new scale successes/refusals remain separate. The 20 ABBA captures
+   established output equivalence and mixed timing, not speed acceptance.
+10. External pilot owner: finish the gin20 all-five blind union and current
+    native-mode case series; keep ARB88 original-text admission distinct from
+    its already completed adapted88 diagnostic. Preserve upstream snapshots,
+    all-files and original query/adapter identities.
+11. Integration owner: resolve unified-patch whitespace without destroying
+    context or provenance, publish the owned main changes, freeze final source,
+    run matching contract/SDK and affected fixture checks, reconcile ticket
+    states. Older clean proof does not attest later source changes.
+12. Product-decision owner: audit tuning exposure before an unseen-holdout
+    claim and admit a replacement release if this data selected a policy.
+    Default typo's 23 remaining literal-first misses and weak NL relevance are
+    measured quality/policy work, not unproved ingestion omissions. Any policy
+    change needs independent ambiguity/no-answer and critical-stratum checks.
+
+Already implemented items are not new work: benchmark rank/gold/status units,
+file scoring and empty-result treatment, scored NL OR, declaration-aware typo
+ranking/cursors, JS ABI15 grammar, completed Quanta/Semble clocks, original v5
+sample audit, and integrated B08 source. Current-main 185 selected tests passed
+in the preceding integration turn; no new runtime benchmark was run by this
+inventory. No whole-CoIR/CORE import, new Semantica API or new search IR is added
+to this closure scope. AI judgments remain AI and diagnostic unless their
+separate decision contract is admitted; no human provenance is synthesized.

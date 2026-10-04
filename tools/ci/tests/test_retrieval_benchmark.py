@@ -1231,6 +1231,85 @@ def test_ingest_lexical_stage_intervals_reject_overcount_and_missing_measurement
             pairrun._validate_ingest_diagnostic(changed, record, lexical_stage_contract=True)
 
 
+def test_ingest_preparation_file_children_require_observations_and_parent_bounds():
+    record = {"captures": {"capture": {}}}
+    raw = _diagnostic_ingest_fixture(record)
+    raw["observation"].update(
+        lexical_build_ns=100,
+        lexical_stages={
+            "preparation_ns": 10,
+            "prep_file_authority_preflight_ns": 2,
+            "prep_coverage_write_ns": 3,
+            "writer_mutation_ns": 20,
+            "text_authority_ns": 10,
+            "text_authority_collect_ns": 2,
+            "text_authority_shard_build_ns": 3,
+            "text_authority_publish_ns": 4,
+            "file_authority_ns": 10,
+            "file_authority_source_write_ns": 4,
+            "seal_ns": 40,
+            "seal_writer_commit_ns": 10,
+            "seal_merge_wait_ns": 5,
+            "seal_commitment_ns": 20,
+            "seal_file_admission_ns": 15,
+        },
+    )
+
+    def validate(value):
+        return pairrun._validate_ingest_diagnostic(
+            value, record, lexical_stage_contract=True,
+            detailed_authority=True, detailed_file_authority=True,
+        )
+
+    validate(raw)
+    children = (
+        "prep_file_authority_preflight_ns",
+        "prep_coverage_write_ns",
+        "file_authority_source_write_ns",
+    )
+    for key in children:
+        for invalid in (None, True, -1, 2**64, "0"):
+            forged = copy.deepcopy(raw)
+            forged["observation"]["lexical_stages"][key] = invalid
+            with pytest.raises(pairrun.RunError):
+                validate(forged)
+        missing = copy.deepcopy(raw)
+        del missing["observation"]["lexical_stages"][key]
+        with pytest.raises(pairrun.RunError):
+            validate(missing)
+    for key, invalid in ((children[0], 8), (children[1], 9), (children[2], 11)):
+        forged = copy.deepcopy(raw)
+        forged["observation"]["lexical_stages"][key] = invalid
+        with pytest.raises(pairrun.RunError, match="child clocks exceed parent"):
+            validate(forged)
+    measured_zero = copy.deepcopy(raw)
+    measured_zero["observation"]["lexical_stages"].update(dict.fromkeys(children, 0))
+    validate(measured_zero)
+    with pytest.raises(pairrun.RunError):
+        pairrun._validate_ingest_diagnostic(
+            raw, record, lexical_stage_contract=True, detailed_authority=True,
+        )
+
+
+def test_diagnostic_v9_replay_requires_new_children_and_preserves_v8(tmp_path):
+    for version in (8, 9):
+        stage = _pair_stage(tmp_path / str(version), diagnostic_version=version)
+        assert _stage_verdict(stage)["states"]["PAIR_VALID"] == "pass"
+        path = next(stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json"))
+        diagnostic = json.loads(path.read_text())
+        record_path = path.with_name("record.json")
+        record = json.loads(record_path.read_text())
+        pack = pairrun.read_json(stage["stage"] / "query-pack.json")
+        suite = pairrun.read_json(stage["suite_path"])
+        pack, _ = pairrun.project_pack_and_suite(pack, suite, ["lexical"])
+        if version == 9:
+            del diagnostic["ingest"]["observation"]["lexical_stages"]["prep_coverage_write_ns"]
+            with pytest.raises(pairrun.RunError, match="ingest lexical stages"):
+                pairrun.validate_retrieval_diagnostic(
+                    diagnostic, record, pairrun.sha_file(record_path), pack,
+                )
+
+
 def test_query_plan_oracle_uses_nfc_and_rejects_unindexable_runs():
     composed = qp.plan_lexical_request("natural_language", "caf\u00e9")
     decomposed = qp.plan_lexical_request("natural_language", "cafe\u0301")
@@ -1247,6 +1326,21 @@ def test_query_plan_oracle_enforces_utf8_term_boundary():
     with pytest.raises(qp.QueryPlanError, match="258 bytes"):
         qp.plan_lexical_request("natural_language", "\u0130" * 86)
     assert qp.plan_lexical_request("natural_language", "\u039f\u03a3") == "case:no \u03bf\u03c3"
+
+
+def test_query_plan_oracle_uses_pinned_unicode_lowercase_pairs():
+    assert qp.plan_lexical_request("natural_language_file", "\u1c89 \U00010d50 \ua7cb") == (
+        "select:file case:no \u1c8a OR \U00010d70 OR \u0264"
+    )
+    assert qp._unicode_lowercase("ΟΣ Straße İ") == "οσ straße i\u0307"
+
+
+def test_query_plan_refuses_tampered_unicode_lowercase_table(tmp_path, monkeypatch):
+    table = tmp_path / "lowercase.json"
+    table.write_bytes(qp.UNICODE_LOWERCASE_TABLE.read_bytes() + b" ")
+    monkeypatch.setattr(qp, "UNICODE_LOWERCASE_TABLE", table)
+    with pytest.raises(qp.QueryPlanError, match="lowercase table differs"):
+        qp._unicode_lowercase_mapping.__wrapped__()
 
 
 def test_exact_symbol_name_policy_keeps_bare_query_identity_and_refuses_dsl():
@@ -3207,17 +3301,17 @@ def test_runner_capability_probe_refuses_stale_and_malformed_binaries(monkeypatc
         return subprocess.CompletedProcess(
             argv,
             0,
-            '{"schema_version":1,"retrieval_diagnostic_schema_version":8,'
+            '{"schema_version":1,"retrieval_diagnostic_schema_version":9,'
             '"completed_response_output_validation":"normalized_row_score_bits_sha256_v1"}',
             "",
         )
 
     monkeypatch.setattr(pairrun.subprocess, "run", response)
-    assert pairrun.probe_runner_capabilities(binary)["retrieval_diagnostic_schema_version"] == 8
+    assert pairrun.probe_runner_capabilities(binary)["retrieval_diagnostic_schema_version"] == 9
     assert observed == [([str(binary), "capabilities"], 10)]
 
     for marker in (None, True, "unchecked"):
-        payload = {"schema_version": 1, "retrieval_diagnostic_schema_version": 8}
+        payload = {"schema_version": 1, "retrieval_diagnostic_schema_version": 9}
         if marker is not None:
             payload["completed_response_output_validation"] = marker
         monkeypatch.setattr(
@@ -3252,7 +3346,7 @@ def test_runner_capability_probe_refuses_stale_and_malformed_binaries(monkeypatc
         lambda argv, **_kwargs: subprocess.CompletedProcess(
             argv,
             0,
-            '{"schema_version":1,"schema_version":1,"retrieval_diagnostic_schema_version":8}',
+            '{"schema_version":1,"schema_version":1,"retrieval_diagnostic_schema_version":9}',
             "",
         ),
     )
@@ -4575,6 +4669,52 @@ def test_quanta_driver_defaults_to_potion_and_binary_digest(tmp_path, monkeypatc
             pairrun.run_quanta_strategy(
                 spec, {"name": legacy}, 0, tmp_path, ["lexical"], tmp_path / "pack.json", "a" * 64
             )
+
+
+@pytest.mark.parametrize("control", ["valid", "missing_clock", "wrong_generation"])
+def test_direct_quanta_capture_accepts_current_ingest_children_and_binds_identity(
+    tmp_path, monkeypatch, control
+):
+    stage = _pair_stage(tmp_path / "fixture", diagnostic_version=9)
+    original = Path(stage["rep_layouts"][0]["quanta"]["whole_file"]).parent
+    diagnostic = json.loads((original / "retrieval-diagnostic.json").read_text())
+    if control == "missing_clock":
+        del diagnostic["ingest"]["observation"]["lexical_stages"]["prep_coverage_write_ns"]
+    pack, _ = pairrun.project_pack_and_suite(
+        json.loads((stage["stage"] / "query-pack.json").read_text()), stage["suite"], ["lexical"]
+    )
+    pack_path = tmp_path / "pack.json"
+    pack_path.write_bytes(cp.canonical(pack))
+    spec = {**_g0_spec(), **stage["spec"], "top_k": pack["comparison_contract"]["top_k"]}
+    if control == "wrong_generation":
+        spec["generation"] = spec.get("generation", 7) + 1
+
+    def fake_run(command, **kwargs):
+        Path(command[command.index("--out") + 1]).write_bytes((original / "record.json").read_bytes())
+        Path(command[command.index("--metrics-out") + 1]).write_bytes(
+            (original / "phase-metrics.json").read_bytes()
+        )
+        Path(command[command.index("--diagnostics-out") + 1]).write_bytes(cp.canonical(diagnostic))
+        return {"exit_code": 0, "timed_out": False, "elapsed_ms": 1.0}
+
+    class ReachedPhaseValidation(Exception):
+        pass
+
+    def reached_phase(*_args, **_kwargs):
+        raise ReachedPhaseValidation
+
+    # Execute the real capture admission path through ingest validation. Later
+    # phase/storage work is outside this regression's contract.
+    monkeypatch.setattr(pairrun, "run_monitored_process", fake_run)
+    monkeypatch.setattr(pairrun, "_validate_phase_metrics", reached_phase)
+    expected = ReachedPhaseValidation if control == "valid" else pairrun.RunError
+    match = None if control == "valid" else (
+        "ingest lexical stages must hold exactly" if control == "missing_clock" else "ingest identity"
+    )
+    with pytest.raises(expected, match=match):
+        pairrun.run_quanta_strategy(
+            spec, {"name": "whole_file"}, 0, tmp_path / "capture", ["lexical"], pack_path, "a" * 64
+        )
 
 
 @pytest.mark.parametrize("budget", [0, -1, True, 1.5, 2**64])
@@ -6590,8 +6730,8 @@ def _pair_stage(
         qdir.mkdir(parents=True)
         sdir.mkdir(parents=True)
         qrec = record(lex_rows, lex_sha, "quanta", f"q-r{rep}", f"run-q-r{rep}")
-        ingest = _diagnostic_ingest_fixture(qrec) if diagnostic_version in (5, 6, 7, 8) else None
-        if diagnostic_version in (7, 8):
+        ingest = _diagnostic_ingest_fixture(qrec) if diagnostic_version in (5, 6, 7, 8, 9) else None
+        if diagnostic_version in (7, 8, 9):
             ingest["observation"].update(
                 lexical_build_ns=100,
                 lexical_stages={
@@ -6606,11 +6746,17 @@ def _pair_stage(
                     "seal_file_admission_ns": 15,
                 },
             )
-            if diagnostic_version == 8:
+            if diagnostic_version in (8, 9):
                 ingest["observation"]["lexical_stages"].update(
                     text_authority_collect_ns=2,
                     text_authority_shard_build_ns=3,
                     text_authority_publish_ns=4,
+                )
+            if diagnostic_version == 9:
+                ingest["observation"]["lexical_stages"].update(
+                    prep_file_authority_preflight_ns=2,
+                    prep_coverage_write_ns=3,
+                    file_authority_source_write_ns=4,
                 )
         srec = record(sem_rows, sem_sha, "semble", f"s-r{rep}", f"run-s-r{rep}")
         qpath = qdir / "record.json"
@@ -6679,7 +6825,7 @@ def _pair_stage(
         qphase.write_text(
             json.dumps(
                 {
-                    "schema_version": 3 if diagnostic_version in (7, 8) else 2,
+                    "schema_version": 3 if diagnostic_version in (7, 8, 9) else 2,
                     "system": "quanta",
                     "timing_layer": "runner_monotonic_wall_v1",
                     "strategy": "whole_file",
@@ -6719,12 +6865,12 @@ def _pair_stage(
                         "discovery": 1.0,
                         "chunk": 1.0,
                         "daemon_boot_and_readiness"
-                        if diagnostic_version in (7, 8)
+                        if diagnostic_version in (7, 8, 9)
                         else "model_provider_prepare": 1.0,
                         "embed_publish_seal_activate": 1.0,
                         **(
                             {"sdk_publish": 0.6, "sdk_activate": 0.3}
-                            if diagnostic_version in (7, 8)
+                            if diagnostic_version in (7, 8, 9)
                             else {}
                         ),
                         "cold_query": 1.0,
@@ -7003,10 +7149,10 @@ def _pair_stage(
                 }
             )
         diagnostic_path = qdir / "retrieval-diagnostic.json"
-        if diagnostic_version in (5, 6, 7, 8) and query_observation == "disabled":
+        if diagnostic_version in (5, 6, 7, 8, 9) and query_observation == "disabled":
             for row in diagnostic_rows:
                 row["response"]["explanation"]["stage_timings"] = None
-        if diagnostic_version in (6, 7, 8):
+        if diagnostic_version in (6, 7, 8, 9):
             for row in diagnostic_rows:
                 row["response"]["explanation"]["planner_trace"] = []
         diagnostic_path.write_text(
@@ -7019,7 +7165,7 @@ def _pair_stage(
                                 hybrid_floor
                             )
                         }
-                        if diagnostic_version in (6, 7, 8)
+                        if diagnostic_version in (6, 7, 8, 9)
                         else {}
                     ),
                     **(
@@ -7029,7 +7175,7 @@ def _pair_stage(
                             ),
                             "ingest": ingest,
                         }
-                        if diagnostic_version in (5, 6, 7, 8)
+                        if diagnostic_version in (5, 6, 7, 8, 9)
                         else {}
                     ),
                     "kind": "quanta_returned_window_diagnostic",
@@ -7044,7 +7190,7 @@ def _pair_stage(
                         "sdk_publish_and_activate_opaque": 1.0,
                         **(
                             {"sdk_publish": 0.6, "sdk_activate": 0.3}
-                            if diagnostic_version in (7, 8)
+                            if diagnostic_version in (7, 8, 9)
                             else {}
                         ),
                         "runner_record_assembly": 0.1,
@@ -7422,12 +7568,12 @@ def _pair_stage(
     (stage / "protocol-lock.json").write_text(
         json.dumps(
             {
-                "lock_version": {4: 2, 5: 3, 6: 4, 7: 5, 8: 6}[diagnostic_version],
+                "lock_version": {4: 2, 5: 3, 6: 4, 7: 5, 8: 6, 9: 7}[diagnostic_version],
                 "retrieval_diagnostic_version": diagnostic_version,
                 "symbol_coverage_policy": "allow-incomplete",
                 **(
                     {"hybrid_fetch_policy": pairrun.hybrid_fetch_policy_configuration(hybrid_floor)}
-                    if diagnostic_version in (6, 7, 8)
+                    if diagnostic_version in (6, 7, 8, 9)
                     else {}
                 ),
                 **(
@@ -7437,7 +7583,7 @@ def _pair_stage(
                         ),
                         "ingest_request_identity": pairrun.ingest_request_identity({}),
                     }
-                    if diagnostic_version in (5, 6, 7, 8)
+                    if diagnostic_version in (5, 6, 7, 8, 9)
                     else {}
                 ),
                 "rank_metric_k_policy": "declared_top_k_v1",
@@ -7491,7 +7637,7 @@ def _pair_stage(
         "binary_digest": binary_digest,
         "commit": suite["repository_commit"],
     }
-    if diagnostic_version == 8:
+    if diagnostic_version in (8, 9):
         from tools.ci.tests.test_completed_response_timing import _add_timing
 
         _add_timing(result, sdk_children=True)

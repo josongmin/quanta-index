@@ -2377,6 +2377,9 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::IngestSt
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::IngestStageReport
 pub struct quanta_index_contract::ipc::LexicalBuildStageDurationsV1
 pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::file_authority_ns: u64
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::file_authority_source_write_ns: core::option::Option<u64>
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::prep_coverage_write_ns: core::option::Option<u64>
+pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::prep_file_authority_preflight_ns: core::option::Option<u64>
 pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::preparation_ns: u64
 pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::seal_commitment_ns: core::option::Option<u64>
 pub quanta_index_contract::ipc::LexicalBuildStageDurationsV1::seal_file_admission_ns: core::option::Option<u64>
@@ -12536,6 +12539,9 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::IngestSt
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::IngestStageReport
 pub struct quanta_index_contract::LexicalBuildStageDurationsV1
 pub quanta_index_contract::LexicalBuildStageDurationsV1::file_authority_ns: u64
+pub quanta_index_contract::LexicalBuildStageDurationsV1::file_authority_source_write_ns: core::option::Option<u64>
+pub quanta_index_contract::LexicalBuildStageDurationsV1::prep_coverage_write_ns: core::option::Option<u64>
+pub quanta_index_contract::LexicalBuildStageDurationsV1::prep_file_authority_preflight_ns: core::option::Option<u64>
 pub quanta_index_contract::LexicalBuildStageDurationsV1::preparation_ns: u64
 pub quanta_index_contract::LexicalBuildStageDurationsV1::seal_commitment_ns: core::option::Option<u64>
 pub quanta_index_contract::LexicalBuildStageDurationsV1::seal_file_admission_ns: core::option::Option<u64>

@@ -3,6 +3,7 @@ pub use quanta_index_sdk::AuxEpochV1
 pub use quanta_index_sdk::ChunkId
 pub use quanta_index_sdk::ChunkRecord
 pub use quanta_index_sdk::ChunkStructuralMetadata
+pub use quanta_index_sdk::ClientIpcTimingV1
 pub use quanta_index_sdk::CommitRecord
 pub use quanta_index_sdk::CommitSha
 pub use quanta_index_sdk::DiffHunkRecord
@@ -212,6 +213,28 @@ impl core::marker::Unpin for quanta_index_sdk::ClientProfile
 impl core::marker::UnsafeUnpin for quanta_index_sdk::ClientProfile
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ClientProfile
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ClientProfile
+pub enum quanta_index_sdk::ClientQueryRpcKindV1
+pub quanta_index_sdk::ClientQueryRpcKindV1::ResolveActiveGeneration
+pub quanta_index_sdk::ClientQueryRpcKindV1::ResolveLexicalGeneration
+pub quanta_index_sdk::ClientQueryRpcKindV1::Text
+impl quanta_index_sdk::ClientQueryRpcKindV1
+pub const fn quanta_index_sdk::ClientQueryRpcKindV1::as_str(self) -> &'static str
+impl core::clone::Clone for quanta_index_sdk::ClientQueryRpcKindV1
+pub fn quanta_index_sdk::ClientQueryRpcKindV1::clone(&self) -> quanta_index_sdk::ClientQueryRpcKindV1
+impl core::cmp::Eq for quanta_index_sdk::ClientQueryRpcKindV1
+impl core::cmp::PartialEq for quanta_index_sdk::ClientQueryRpcKindV1
+pub fn quanta_index_sdk::ClientQueryRpcKindV1::eq(&self, other: &quanta_index_sdk::ClientQueryRpcKindV1) -> bool
+impl core::fmt::Debug for quanta_index_sdk::ClientQueryRpcKindV1
+pub fn quanta_index_sdk::ClientQueryRpcKindV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::ClientQueryRpcKindV1
+impl core::marker::StructuralPartialEq for quanta_index_sdk::ClientQueryRpcKindV1
+impl core::marker::Freeze for quanta_index_sdk::ClientQueryRpcKindV1
+impl core::marker::Send for quanta_index_sdk::ClientQueryRpcKindV1
+impl core::marker::Sync for quanta_index_sdk::ClientQueryRpcKindV1
+impl core::marker::Unpin for quanta_index_sdk::ClientQueryRpcKindV1
+impl core::marker::UnsafeUnpin for quanta_index_sdk::ClientQueryRpcKindV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ClientQueryRpcKindV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ClientQueryRpcKindV1
 pub enum quanta_index_sdk::DirtyBatchMutation
 pub quanta_index_sdk::DirtyBatchMutation::Delete
 pub quanta_index_sdk::DirtyBatchMutation::Delete::doc_id: quanta_index_contract::channel::ids::ChunkId
@@ -350,6 +373,45 @@ impl core::marker::Unpin for quanta_index_sdk::SdkError
 impl core::marker::UnsafeUnpin for quanta_index_sdk::SdkError
 impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::SdkError
 impl !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::SdkError
+pub struct quanta_index_sdk::ClientLexicalQueryObservationV1
+pub quanta_index_sdk::ClientLexicalQueryObservationV1::rpcs: alloc::vec::Vec<quanta_index_sdk::ClientQueryRpcObservationV1>
+impl core::clone::Clone for quanta_index_sdk::ClientLexicalQueryObservationV1
+pub fn quanta_index_sdk::ClientLexicalQueryObservationV1::clone(&self) -> quanta_index_sdk::ClientLexicalQueryObservationV1
+impl core::cmp::Eq for quanta_index_sdk::ClientLexicalQueryObservationV1
+impl core::cmp::PartialEq for quanta_index_sdk::ClientLexicalQueryObservationV1
+pub fn quanta_index_sdk::ClientLexicalQueryObservationV1::eq(&self, other: &quanta_index_sdk::ClientLexicalQueryObservationV1) -> bool
+impl core::default::Default for quanta_index_sdk::ClientLexicalQueryObservationV1
+pub fn quanta_index_sdk::ClientLexicalQueryObservationV1::default() -> quanta_index_sdk::ClientLexicalQueryObservationV1
+impl core::fmt::Debug for quanta_index_sdk::ClientLexicalQueryObservationV1
+pub fn quanta_index_sdk::ClientLexicalQueryObservationV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_sdk::ClientLexicalQueryObservationV1
+impl core::marker::Freeze for quanta_index_sdk::ClientLexicalQueryObservationV1
+impl core::marker::Send for quanta_index_sdk::ClientLexicalQueryObservationV1
+impl core::marker::Sync for quanta_index_sdk::ClientLexicalQueryObservationV1
+impl core::marker::Unpin for quanta_index_sdk::ClientLexicalQueryObservationV1
+impl core::marker::UnsafeUnpin for quanta_index_sdk::ClientLexicalQueryObservationV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ClientLexicalQueryObservationV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ClientLexicalQueryObservationV1
+pub struct quanta_index_sdk::ClientQueryRpcObservationV1
+pub quanta_index_sdk::ClientQueryRpcObservationV1::ipc: quanta_index_ipc::server::ClientIpcTimingV1
+pub quanta_index_sdk::ClientQueryRpcObservationV1::kind: quanta_index_sdk::ClientQueryRpcKindV1
+pub quanta_index_sdk::ClientQueryRpcObservationV1::request_id: u64
+impl core::clone::Clone for quanta_index_sdk::ClientQueryRpcObservationV1
+pub fn quanta_index_sdk::ClientQueryRpcObservationV1::clone(&self) -> quanta_index_sdk::ClientQueryRpcObservationV1
+impl core::cmp::Eq for quanta_index_sdk::ClientQueryRpcObservationV1
+impl core::cmp::PartialEq for quanta_index_sdk::ClientQueryRpcObservationV1
+pub fn quanta_index_sdk::ClientQueryRpcObservationV1::eq(&self, other: &quanta_index_sdk::ClientQueryRpcObservationV1) -> bool
+impl core::fmt::Debug for quanta_index_sdk::ClientQueryRpcObservationV1
+pub fn quanta_index_sdk::ClientQueryRpcObservationV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::ClientQueryRpcObservationV1
+impl core::marker::StructuralPartialEq for quanta_index_sdk::ClientQueryRpcObservationV1
+impl core::marker::Freeze for quanta_index_sdk::ClientQueryRpcObservationV1
+impl core::marker::Send for quanta_index_sdk::ClientQueryRpcObservationV1
+impl core::marker::Sync for quanta_index_sdk::ClientQueryRpcObservationV1
+impl core::marker::Unpin for quanta_index_sdk::ClientQueryRpcObservationV1
+impl core::marker::UnsafeUnpin for quanta_index_sdk::ClientQueryRpcObservationV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ClientQueryRpcObservationV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ClientQueryRpcObservationV1
 pub struct quanta_index_sdk::ConnectOptions
 impl quanta_index_sdk::ConnectOptions
 pub fn quanta_index_sdk::ConnectOptions::from_state_root(path: impl core::convert::Into<std::path::PathBuf>) -> Self
@@ -664,6 +726,7 @@ impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::LexicalName
 pub struct quanta_index_sdk::LexicalQueryBuilder<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl quanta_index_sdk::LexicalQueryBuilder<'_, true, true, true>
 pub fn quanta_index_sdk::LexicalQueryBuilder<'_, true, true, true>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::TextQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::LexicalQueryBuilder<'_, true, true, true>::execute_observed(self) -> core::result::Result<(quanta_index_contract::results::query_responses::TextQueryResponse, quanta_index_sdk::ClientLexicalQueryObservationV1), quanta_index_sdk::SdkError>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::active(self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, true, HAS_TOP_K>
 pub fn quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>::after(self, cursor: quanta_index_contract_base::results::continuation_token::ContinuationTokenV2) -> Self

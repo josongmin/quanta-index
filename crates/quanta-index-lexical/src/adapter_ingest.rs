@@ -345,13 +345,17 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             return Ok(None);
         }
         let ops = legacy_ops_for_batch(batch, batch.seal)?;
+        let preflight_started = Instant::now();
         self.preflight_file_authority_batch(batch)?;
+        let prep_file_authority_preflight_ns = elapsed_stage_ns(preflight_started)?;
         let coverage =
             self.plan_batch_coverage(batch, &candidate, &generation_dir, CoverageReadPhase::Build)?;
         // The prepared coverage marks this target as bound before any index
         // mutation. It is query-invisible until the index and artifact seal.
+        let coverage_write_started = Instant::now();
         let coverage_root =
             write_staged_coverage(&generation_dir, &candidate, &batch.source_event, &coverage)?;
+        let prep_coverage_write_ns = elapsed_stage_ns(coverage_write_started)?;
         self.prepare_generation_from_base(&key, batch.base_generation)?;
         let preparation_ns = elapsed_stage_ns(preparation_started)?;
         let mutation = self.build_ops(
@@ -363,12 +367,15 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         )?;
         let mut stages = LexicalBuildStageDurationsV1 {
             preparation_ns,
+            prep_file_authority_preflight_ns: Some(prep_file_authority_preflight_ns),
+            prep_coverage_write_ns: Some(prep_coverage_write_ns),
             writer_mutation_ns: mutation.writer_mutation_ns,
             text_authority_ns: mutation.text_authority_ns,
             text_authority_collect_ns: mutation.text_authority_collect_ns,
             text_authority_shard_build_ns: mutation.text_authority_shard_build_ns,
             text_authority_publish_ns: mutation.text_authority_publish_ns,
             file_authority_ns: mutation.file_authority_ns,
+            file_authority_source_write_ns: mutation.file_authority_source_write_ns,
             ..LexicalBuildStageDurationsV1::default()
         };
         if batch.seal {

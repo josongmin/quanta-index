@@ -288,6 +288,24 @@ that silently drops `answerability_min_grade`.
 Keep its capture custody in the owner area. Revised labels require a new suite
 commitment and capture; never rebind an old runner record to new qrels.
 
+For supplemental returned-file review, call
+`holdout_review.bind_supplemental_review_tasks(checkout, suite_bytes, tasks)`
+before constructing model requests. It validates the original suite, binds each
+query and answerability threshold, and rejects already-judged pairs, duplicate
+pairs, source drift and supplied decisions. A missing request threshold is
+materialized from the frozen suite (including its historical default of 1);
+an explicit conflicting threshold is refused. The returned subset cannot
+establish overall answerability. Preflight must construct the actual reviewer
+request, model input and response schema, without making model calls.
+
+External repository controllers can use
+`execution_batch.iter_repository_admissions` to drain ready and failed cells
+before waiting. Supply upstream liveness, the existing poll/deadline policy,
+and known per-repository review failures. Consumers must still validate the
+admission's source/input bindings and product proofs. Failed or missing cells
+remain unsuccessful, and the final aggregate must report them; later ready
+repositories must not wait behind an earlier unresolved repository.
+
 For objective lexical checks, a task may instead declare `source_oracle` with
 `contract: go_exact_local_name_v3` and `unit: symbol` or `distinct_file`, or
 `contract: ascii_identifier_word_v1` and `unit: distinct_file`. Set

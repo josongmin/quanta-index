@@ -1,6 +1,7 @@
 # J7Q-03 — Measured scale acceptance
 
-Status: `ACTIVE_RESIDUAL`
+Status: `ACTIVE_RESIDUAL` (current-source audit 2026-10-04). Implementation and
+focused tests are present; new release tier execution remains `NOT_RUN`.
 Parent: [quality index](INDEX.md)
 Owner: seeded corpus generator, storage/runtime and benchmark harness
 
@@ -24,8 +25,10 @@ delta. A selectable rail is not measured capacity until its actual run succeeds.
   retained in the same process. The runner now measures whole-process CPU,
   exact-file deletion and same-process daemon-thread reopen, with a fresh
   positive query after reopen; the 256-file diagnostic below exercised them.
-  Daemon-only or per-phase RSS, physical write I/O, OS process restart and
-  quiet-host performance qualification remain unmeasured.
+  Current source additionally implements phase CPU and 100-ms RSS sampling
+  with gap/coverage checks. Fresh release runtime evidence for these phase
+  observations, daemon-only attribution, physical write I/O, OS process restart
+  and quiet-host performance qualification remain open.
 - Report the supported limit and any failure per tier. Do not infer restart,
   memory or large-corpus behavior from small-tier query latency or scan-vs-index.
 - Re-run another host with matching input/configuration where portability is
@@ -34,6 +37,30 @@ delta. A selectable rail is not measured capacity until its actual run succeeds.
 Output owner: registered `scale_matrix`, with `summary.json` and
 `tier_manifest.json`. Canonical host/performance and comparator acceptance also
 remain in [CS-BENCH-04](../../sep-27-code-search-remediation/rfcs/CS-BENCH-04-comparators-performance-and-incremental.md).
+
+## Current-source audit and actionable residuals (2026-10-04)
+
+Audit baseline: main `e43cda8c` with the owned staged overlay. Current `scale::`
+tests passed 29/29, including missing/invalid samples, maximum gap, CPU arithmetic,
+primary/cleanup failures and source identity/delete/reopen oracles. The latest
+metadata golden explicitly states that RSS maximum includes start/end probes
+outside the timed operation and process CPU includes sampler/parent probe work;
+it excludes macOS `ps` child CPU. These are functional checks, not scale timings.
+
+Run actual medium 256, large 4,096 and XL 32,768 tiers in separate new external
+roots from one clean source with matching release harness binaries. Preserve
+the scale default of two history generations and 16 MiB. A large run with
+`--client-timeout-ms 300000 --history-max-bytes 268435456` is a separate explicit
+diagnostic profile; do not alter defaults or relabel older refusals. Open-loop
+retains eight generations and cannot inherit scale's two-generation policy.
+Use the existing `scale_matrix` and `open_loop_matrix`; no new harness is needed.
+
+Current-main scale execution refused `BENCH_WORKTREE_DIRTY` before product
+execution. A fixed engine snapshot `7ff8251e` exists, but its release SDK proof
+does not build or execute the separate scale harness. Fresh release scale
+execution, per-phase resource measurements, OS-process restart qualification
+and portability remain `NOT_RUN`. Historical snapshots and receipts below
+must retain their own source/configuration labels.
 
 ## 2026-10-04 measured-response hardening
 

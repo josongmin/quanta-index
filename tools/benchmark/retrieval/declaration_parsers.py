@@ -23,6 +23,10 @@ VENDOR = ROOT / "vendor/tree-sitter-typescript"
 GO_VENDOR = ROOT / "vendor/tree-sitter-go"
 RUST_VENDOR = ROOT / "vendor/tree-sitter-rust"
 PYTHON_VENDOR = ROOT / "vendor/tree-sitter-python"
+JAVASCRIPT_VENDOR = ROOT / "vendor/tree-sitter-javascript"
+# Loaded grammar pointers are process-local. A later source commitment must
+# bind those same bytes; a new grammar generation needs a fresh process.
+_LOADED_SOURCE_DIGESTS: dict[str, str] | None = None
 
 
 def _grammar_sources() -> dict[str, Path]:
@@ -30,6 +34,7 @@ def _grammar_sources() -> dict[str, Path]:
         "go": GO_VENDOR / "src",
         "rust": RUST_VENDOR / "src",
         "python": PYTHON_VENDOR / "src",
+        "javascript": JAVASCRIPT_VENDOR / "src",
         "typescript": VENDOR / "typescript/src",
         "tsx": VENDOR / "tsx/src",
     }
@@ -37,7 +42,7 @@ def _grammar_sources() -> dict[str, Path]:
 
 def component_source_digests() -> dict[str, str]:
     paths = []
-    for vendor in (VENDOR, GO_VENDOR, RUST_VENDOR, PYTHON_VENDOR):
+    for vendor in (VENDOR, GO_VENDOR, RUST_VENDOR, PYTHON_VENDOR, JAVASCRIPT_VENDOR):
         if vendor.is_symlink() or vendor.parent.is_symlink() or not vendor.is_dir():
             raise ValueError("vendored parser sources missing or linked")
         entries = sorted(vendor.rglob("*"))
@@ -47,10 +52,13 @@ def component_source_digests() -> dict[str, str]:
         if not components:
             raise ValueError("vendored parser sources missing or linked")
         paths.extend(components)
-    return {
+    digests = {
         path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in paths
     }
+    if _LOADED_SOURCE_DIGESTS is not None and digests != _LOADED_SOURCE_DIGESTS:
+        raise ValueError("loaded parser source identity changed; restart the producer")
+    return digests
 
 
 def _checked_library(directory: Path, expected: dict) -> Path:
@@ -143,17 +151,26 @@ def _library(grammar: str) -> Path:
             shutil.rmtree(stage)
 
 
-@lru_cache(maxsize=5)
+@lru_cache(maxsize=6)
 def _language(grammar: str):
+    global _LOADED_SOURCE_DIGESTS
+
     from tree_sitter import Language
 
-    library = ctypes.CDLL(str(_library(grammar)))
+    library_path = _library(grammar)
+    sources = json.loads((library_path.parent / "ready.json").read_text())["identity"]["sources"]
+    if component_source_digests() != sources:
+        raise ValueError("loaded parser source identity changed before loading")
+    library = ctypes.CDLL(str(library_path))
     entry = getattr(library, "tree_sitter_" + grammar)
     entry.restype = ctypes.c_void_p
     capsule = ctypes.pythonapi.PyCapsule_New
     capsule.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
     capsule.restype = ctypes.py_object
     language = Language(capsule(entry(), b"tree_sitter.Language", None))
+    if component_source_digests() != sources:
+        raise ValueError("loaded parser source identity changed during loading")
+    _LOADED_SOURCE_DIGESTS = sources
     # Retain the dynamic library for the lifetime of its grammar pointers.
     return language, library
 

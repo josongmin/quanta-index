@@ -10,19 +10,30 @@ use std::time::Duration;
 use anyhow::{Context, Result as AnyResult};
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::scale::{
-    ScaleTier, source_binding_for_failure_in_dimension, write_refusal_artifact_with_context,
+    ScaleRuntimeConfig, ScaleTier, source_binding_for_failure_in_dimension,
+    write_refusal_artifact_with_context,
 };
 use serde_json::{Value, json};
 
-fn execution_context(config: &open_loop::Config) -> Value {
-    json!({
+fn execution_context(config: &open_loop::Config) -> AnyResult<Value> {
+    Ok(json!({
         "arrival_model": config.arrival_model.as_str(),
         "rates_qps": config.rates_qps,
         "duration_ms": config.duration.as_millis(),
         "workers": config.workers,
         "queue_capacity": config.queue_capacity,
         "request_timeout_ms": config.request_timeout.as_millis(),
-    })
+        "history_policy": config.history_policy_json()?,
+    }))
+}
+
+fn parse_history_max_bytes(raw: &str) -> AnyResult<u64> {
+    let bytes = raw.parse::<u64>()?;
+    ScaleRuntimeConfig {
+        client_timeout: None,
+        history_max_bytes: Some(bytes),
+    }
+    .effective_history_max_bytes()
 }
 
 fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
@@ -35,6 +46,7 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
         workers: 32,
         queue_capacity: 256,
         request_timeout: Duration::from_secs(2),
+        history_max_bytes: None,
     };
     let mut out_dir = PathBuf::from("artifacts/search-quality/open-loop/latest");
     let mut out_dir_explicit = false;
@@ -73,6 +85,9 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
             "--workers" => config.workers = raw.parse()?,
             "--queue-capacity" => config.queue_capacity = raw.parse()?,
             "--request-timeout-ms" => config.request_timeout = Duration::from_millis(raw.parse()?),
+            "--history-max-bytes" => {
+                config.history_max_bytes = Some(parse_history_max_bytes(&raw)?)
+            }
             "--out-dir" => {
                 out_dir = PathBuf::from(raw);
                 out_dir_explicit = true;
@@ -121,7 +136,7 @@ fn run(
                 config.tier,
                 config.seed,
             )?;
-            let execution = execution_context(&config);
+            let execution = execution_context(&config)?;
             write_refusal_artifact_with_context(
                 &binding,
                 out_dir,
@@ -201,8 +216,12 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{execution_context, format_latency, open_loop};
-    use quanta_index_searchd_harness::scale::ScaleTier;
+    use super::{execution_context, format_latency, open_loop, parse_history_max_bytes};
+    use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
+    use quanta_index_searchd_harness::scale::{
+        ScaleStageError, ScaleTier, refusal_json_with_context,
+        source_binding_for_failure_in_dimension,
+    };
     use std::time::Duration;
 
     #[test]
@@ -222,13 +241,103 @@ mod tests {
             workers: 4,
             queue_capacity: 8,
             request_timeout: Duration::from_millis(250),
+            history_max_bytes: None,
         };
-        let value = execution_context(&config);
+        let value = execution_context(&config).expect("valid execution context");
         assert_eq!(value["arrival_model"], "seeded_poisson");
         assert_eq!(value["rates_qps"], serde_json::json!([25, 50]));
         assert_eq!(value["duration_ms"], 10_000);
         assert_eq!(value["workers"], 4);
         assert_eq!(value["queue_capacity"], 8);
         assert_eq!(value["request_timeout_ms"], 250);
+        assert_eq!(value["history_policy"]["history_max_bytes"], 16_777_216);
+        assert!(value["history_policy"]["requested_history_max_bytes"].is_null());
+        assert_eq!(value["history_policy"]["history_max_generations"], 8);
+    }
+
+    #[test]
+    fn explicit_history_budget_is_bounded_and_bound_to_refusal_context() {
+        for invalid in ["0", "268435457", "-1", "nan"] {
+            assert!(parse_history_max_bytes(invalid).is_err());
+        }
+        let bytes = parse_history_max_bytes("268435456").expect("harness total cap");
+        let config = open_loop::Config {
+            seed: 7,
+            tier: ScaleTier::Large,
+            arrival_model: open_loop::ArrivalModel::SeededPoisson,
+            rates_qps: vec![25],
+            duration: Duration::from_secs(1),
+            workers: 1,
+            queue_capacity: 8,
+            request_timeout: Duration::from_millis(250),
+            history_max_bytes: Some(bytes),
+        };
+        config.validate().expect("explicit bounded budget");
+        let value = execution_context(&config).expect("failure execution context");
+        assert_eq!(value["history_policy"]["history_max_bytes"], bytes);
+        assert_eq!(
+            value["history_policy"]["requested_history_max_bytes"],
+            bytes
+        );
+        assert_eq!(value["history_policy"]["history_max_total_bytes"], bytes);
+        assert_eq!(value["history_policy"]["history_max_revision_pairs"], 128);
+    }
+
+    #[test]
+    fn refusal_artifact_keeps_requested_policy_and_original_operation_stage() -> anyhow::Result<()>
+    {
+        let config = open_loop::Config {
+            seed: 7,
+            tier: ScaleTier::Medium,
+            arrival_model: open_loop::ArrivalModel::SeededPoisson,
+            rates_qps: vec![25],
+            duration: Duration::from_secs(1),
+            workers: 1,
+            queue_capacity: 8,
+            request_timeout: Duration::from_millis(250),
+            history_max_bytes: Some(268_435_456),
+        };
+        let binding = source_binding_for_failure_in_dimension(
+            open_loop::DIMENSION,
+            config.tier,
+            config.seed,
+        )?;
+        let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567")?;
+        let host = HostV1 {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            cpu_count: 4,
+            mem_bytes: 1 << 30,
+            hostname_hash: "sha256:host".to_string(),
+        };
+        let failure = anyhow::Error::new(ScaleStageError::operation(
+            "build_seal",
+            anyhow::anyhow!("fixed retention fault"),
+        ));
+        let execution = execution_context(&config)?;
+        let refusal = refusal_json_with_context(
+            &binding,
+            &head,
+            &host,
+            &failure,
+            open_loop::DIMENSION,
+            Some(&execution),
+        );
+        assert_eq!(refusal["status"], "failed");
+        assert_eq!(refusal["failure"]["stage"], "build_seal");
+        assert_eq!(
+            refusal["failure"]["message"],
+            "scale build_seal: fixed retention fault"
+        );
+        assert_eq!(
+            refusal["execution"]["history_policy"]["history_max_bytes"],
+            268_435_456
+        );
+        assert_eq!(
+            refusal["execution"]["history_policy"]["requested_history_max_bytes"],
+            268_435_456
+        );
+        assert!(refusal.get("latency").is_none());
+        Ok(())
     }
 }

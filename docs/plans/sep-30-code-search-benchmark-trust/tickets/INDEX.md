@@ -1,5 +1,58 @@
 # Sep 30 benchmark trust — ticket index
 
+## Current state (2026-10-04)
+
+Current audit baseline is main `e43cda8c` plus the shared overlay. B07 implements
+diagnostic 9 / protocol lock 7 / phase 4, completed-response validation, SDK RPC
+attribution and detailed ingest clocks. Two frozen release SDK proofs passed
+25/25 each. Its 20-capture scanner A/B passed independent output/work-counter
+equivalence but showed mixed whole-request timing; quiet-host performance and
+new release scale runs remain open. See [B07](S30-B07-performance-and-indexing.md)
+for source-bound evidence and exact residuals. B08 diagnostic work is separate
+from its qualified decision; follow its owner ticket rather than the historical
+September execution labels below. Existing collectors, scorers and registries
+remain the implementation owners.
+
+The current B08 owner inventory records an actual supplemental-review failure:
+the external batch request builder omitted `answerability_min_grade`. Its
+preserved bat stderr and follow-on terminal confirm failure before new label
+issuance. Threshold propagation and actual-request preflight are repaired below;
+unresolved adjudication, supplemental qrels/admission and final all-five scoring
+remain. Per-repository terminal failures are now isolated from other ready cells
+in the repaired controller. This is external orchestration and
+unfinished label coverage, not evidence of a Quanta search defect. See
+[B08's latest inventory](S30-B08-fresh-multirepo-holdout.md); its original captures
+and failed review namespace remain immutable.
+
+### Supplemental execution defect repair (2026-10-04)
+
+At main `8ee2f1ea` plus the owned overlay, the canonical review adapter now
+binds supplemental task thresholds from the fully validated frozen suite.
+Explicit conflicting thresholds, changed queries/source, duplicate or already
+judged pairs and supplied decisions are refused. The existing execution-batch
+module now drains ready and failed repository admissions before polling pending
+ones; known repository review failures are terminal without blocking siblings.
+Both are connected to fresh copies of the external review/capture controllers.
+
+Focused owner verification passed 111 tests (including 31 new controls).
+Actual bat/cli/lo preflights constructed 14 reviewer request/model-input/schema
+payloads with threshold 2 and zero model calls.
+The actual external request preflight also refused threshold/query/grade/source
+text mutations in four separately bound negative controls.
+The actual capture-controller preflight drained seven ready repositories plus
+failed typeorm and tailscale,
+leaving django/sqlalchemy/zellij pending at observation. It validated ready
+admission input-byte bindings and made zero product calls. Sources, commands
+and outputs are under `/private/tmp/qi-bench-defect-fix-20261004-46iq_iok`;
+old scripts, captured responses and labels were not overwritten.
+
+These checks close request preparation and queue readiness defects. Actual new
+review completion, unresolved adjudication, revised qrels/admission and final
+five-product scoring remain `NOT_RUN` here. Canonical preparation and preflight
+are not relevance decisions or benchmark qualification.
+
+## Historical execution snapshots
+
 [Parent plan](../README.md). Rows were `PLANNED`; each ticket now carries its 2026-09-30 execution receipt
 (B01–B03, B05 diagnostic; B04, B06 partial; B07, B08 `NOT_RUN`). A 2026-10-01 v2
 rerun from clean `quanta-index@f318e832` added the `keyword_file`/`substring_file`

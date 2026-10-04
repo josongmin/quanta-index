@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::LanguageCode;
@@ -349,7 +350,10 @@ pub(crate) fn plan_ops(
 
 /// Persist the prevalidated delta after the Tantivy commit. The writer lock
 /// spans both writes; a crash between them leaves an unsealed generation.
-pub(crate) fn apply_plan(generation_dir: &Path, plan: FileAuthorityDelta) -> Result<(), CoreError> {
+pub(crate) fn apply_plan(
+    generation_dir: &Path,
+    plan: FileAuthorityDelta,
+) -> Result<u64, CoreError> {
     let FileAuthorityDelta {
         sources,
         writes,
@@ -362,12 +366,14 @@ pub(crate) fn apply_plan(generation_dir: &Path, plan: FileAuthorityDelta) -> Res
             dir.display()
         ))
     })?;
+    let source_write_started = Instant::now();
     for (digest, bytes) in &writes {
         let path = dir.join(file_name(digest));
         if !path.is_file() {
             crate::index_store::write_atomic_durable(&path, bytes, "file authority source")?;
         }
     }
+    let source_write_ns = crate::adapter_ingest::elapsed_stage_ns(source_write_started)?;
     crate::index_store::write_atomic_durable(
         &manifest_path(generation_dir),
         &encoded,
@@ -393,7 +399,7 @@ pub(crate) fn apply_plan(generation_dir: &Path, plan: FileAuthorityDelta) -> Res
             })?;
         }
     }
-    Ok(())
+    Ok(source_write_ns)
 }
 
 pub(crate) fn expected_names(sources: &[SourceFileRevision]) -> BTreeSet<String> {

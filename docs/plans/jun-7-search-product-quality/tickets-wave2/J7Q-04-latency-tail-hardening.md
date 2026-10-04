@@ -4,6 +4,21 @@ Status: `ACTIVE_RESIDUAL`
 Parent: [quality index](INDEX.md)
 Owner: benchmark harness, comparator and canonical performance host
 
+Current-source audit (2026-10-04, main `e43cda8c` plus owned overlay): tail
+response validation is implemented; existing tail owner checks passed 7/7.
+Open-loop CLI checks subsequently passed 20/20, including explicit history
+policy, bounded configuration and actual small-fixture seal refusal. Earlier
+`NOT_RUN` labels below refer to their historical extension stage. Current
+open-loop generation retention is eight and its default history byte budget
+is 16 MiB, distinct from scale's two generations. Query request timeout does
+not extend the seal transport timeout.
+
+Actual admitted route-tail runs, new release offered-load runs and justified
+performance blockers remain open. Use the existing tail/open-loop rails and
+continuous host observations; focused tests and the frozen retrieval SDK proof
+do not close this acceptance. Measured outcomes must retain arrival-to-completion,
+service timing, errors/drops and post-timer golden validation separately.
+
 DSL p50 and p95 blocking rules are already implemented;
 [JUN-08-001](../../../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md)
 owns them. `tail.rs` emits route budgets and correctness-gated representative
@@ -57,6 +72,7 @@ no-replace `refusal.json` through the scale rail's existing writer. It binds
 the `open-loop` source digest and exact arrival settings, and names a limit
 only for typed source admission; unknown wire/runtime errors keep `limit: null`.
 Missing latency prints as `unavailable`, rather than a fabricated zero.
-Focused `open_loop_matrix` tests and
-the real offered-load rail remain `NOT_RUN` for this extension. No capacity
-limit is qualified from these unit checks.
+Focused `open_loop_matrix` tests were `NOT_RUN` at this extension stage; the
+latest owner run above passed 20/20. The new release offered-load rail and
+capacity qualification remain `NOT_RUN`. No capacity limit is qualified from
+these unit checks.

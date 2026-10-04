@@ -1542,6 +1542,58 @@ mod tests {
     }
 
     #[test]
+    fn natural_language_plan_uses_current_unicode_lowercase_pairs() {
+        let plan = plan_query(
+            QueryInputPolicy::NaturalLanguageFile,
+            "\u{1c89} \u{10d50} \u{a7cb}",
+            &NlPlanConfig::default(),
+        )
+        .expect("Unicode 16 uppercase terms admitted by UCD 17");
+        assert_eq!(
+            plan.lexical_request,
+            "select:file case:no \u{1c8a} OR \u{10d70} OR \u{264}"
+        );
+    }
+
+    #[test]
+    fn unicode_lowercase_matches_pinned_reference_for_every_scalar() {
+        let reference: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../vendor/unicode/17.0.0/lowercase.json"
+        ))
+        .expect("Unicode reference JSON");
+        assert_eq!(reference["unicode_version"], "17.0.0");
+        let pairs: std::collections::BTreeMap<char, String> = reference["mappings"]
+            .as_object()
+            .expect("lowercase mappings")
+            .iter()
+            .map(|(code, lowered)| {
+                let parse = |hex: &str| {
+                    char::from_u32(u32::from_str_radix(hex, 16).expect("hex scalar"))
+                        .expect("Unicode scalar")
+                };
+                let lower = lowered
+                    .as_str()
+                    .expect("lowercase sequence")
+                    .split_whitespace()
+                    .map(parse)
+                    .collect();
+                (parse(code), lower)
+            })
+            .collect();
+        assert_eq!(pairs.len(), 1488);
+        for scalar in (0..0x110000).filter_map(char::from_u32) {
+            let original = scalar.to_string();
+            let expected = pairs.get(&scalar).unwrap_or(&original);
+            assert_eq!(
+                quanta_index_lq_text_normalizer::fold(&original),
+                *expected,
+                "U+{:04X}",
+                u32::from(scalar)
+            );
+        }
+    }
+
+    #[test]
     fn natural_language_plan_splits_joined_punctuation_into_scored_terms() {
         let plan = plan_query(
             QueryInputPolicy::NaturalLanguage,

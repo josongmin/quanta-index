@@ -1,13 +1,19 @@
 # S30-B07 — equal-boundary performance and indexing measurement
 
-Status: `ACTIVE` (2026-10-04): instrumentation and focused validation in progress;
-qualified performance measurement remains `NOT_RUN`. Priority: P1. Depends on B04's
+Status: `ACTIVE` (2026-10-04): current instrumentation and focused tests are
+implemented; two fresh release SDK proofs and a 20-capture diagnostic A/B are
+verified. Optimization effects, new scale execution and qualified performance
+remain open. Priority: P1. Depends on B04's
 correct, complete capture contract and a quiet admitted host. Parent:
 [Sep 30 plan](../README.md). Contract owners:
 [CS-BENCH-04](../../sep-27-code-search-remediation/rfcs/CS-BENCH-04-comparators-performance-and-incremental.md)
 and [MISC-06](../../sep-27-misc/tickets/INDEX.md).
 
 ## 2026-10-04 harness cost RCA and next actions
+
+The current-state sections under "Latest owner decisions and execution gates"
+supersede earlier outstanding implementation labels below. Earlier source-bound
+receipts remain historical evidence; they are not claims about current main.
 
 One exploratory attrs pair (one fresh root, debug Quanta binaries, 3.12 driver,
 busy macOS host) passed `PAIR_VALID`. The diagnostic driver timer measured
@@ -856,6 +862,125 @@ and query time. These implementation/proof items are not completed by the
 current diagnostic captures.
 
 ## Parallel improvement order (2026-10-04)
+
+### Latest owner decisions and execution gates
+
+Current audited main is `e43cda8c` with a shared staged overlay. The immutable
+verification checkout is `7ff8251e` under
+`/private/tmp/qi-perf-final-source-20261004-2bkgywrr/quanta-index`; it includes
+the complete tracked overlay and is not a reviewed publication of every
+other owner's change. Current producer diagnostic schema is **9**, protocol
+lock **7**, phase schema **4**. Earlier schema-8/lock-6 entries below are
+historical. Do not combine those historical timings with current patch effects.
+
+| Priority / owner | Concrete next action | Decision and completion gate |
+| --- | --- | --- |
+| P0 completed / integration | Existing `retrieval-sdk-proof-fresh` passed 25/25 on each frozen baseline/candidate source with independently verified release binary bindings. The 20-capture diagnostic A/B below is complete. | These proofs cover the pinned sources, not every later shared-main change. Quiet-host speed acceptance and matching new scale binaries remain separate gates. |
+| P1 / search, typo | Measure the implemented ASCII token scanner against its original Unicode scanner. Own `searcher/code_search.rs`; retain shared OSA/cache/witness logic. Read token-scan and materialization clocks separately. | Independent character-tokenizer/exhaustive OSA1 equivalence, four edits, all ASCII separators, mixed Unicode, case, spans, counts, cursor and cancellation. Keep the patch only if repeated whole-request timing improves under the predeclared decision; revert it if its prepass harms total time. |
+| P1 / indexing | Measure new preparation preflight, coverage-write and file-source-write children in actual Gin full/delta/delete/no-op/reopen runs. Own `adapter_ingest.rs`, `adapter_open.rs`, `file_authority.rs`; profile only the repeatedly dominant child before changing it. | Child availability and sums bounded by parents. Compare delta/delete/reopen with an independent fresh rebuild. Existing touched shards, coverage inheritance/cache and digest skip are reused; lock-specific TOCTOU checks and durable file/directory sync remain required. |
+| P2 / search, ordinary | If current release repeats the preview dominance, split selected-page source/witness/normalization/copy costs and remove demonstrated repeated work. Preview-after-page already exists. | Fixed snippet/highlight/source-span goldens, equal-score ties, late winning candidate, exact totals, all cursor pages and response-budget outcomes unchanged. Existing sort timing does not justify a top-k rewrite. |
+| P2 / integration, IPC | Use existing `execute_observed` and request-event sidecar for representative release queries. If the gap persists, add opt-in connection accept-to-first-validation and per-frame ingress intervals with connection/request identity. | Zero dropped events and exact joins. Client read duration includes server waiting and local decode/read machinery; server events begin after frame decode. Neither cross-process subtraction nor preceding idle sleep establishes transport cost. Change listener/reuse only after a controlled causal test; retain pinning, credentials, caps, deadlines and shutdown behavior. |
+| P3 / scale and comparison | Reuse scale/open-loop and the existing five-product collectors. Run actual 256, 4,096, 32,768 tiers sequentially; admit real multirepository suites separately. | Full/delta/delete/reopen identities, CPU, sampled RSS, disk sizes, load, latency and refusal coverage. Report exact/prefix/infix/components/four typo edits/no-answer separately. File hit and exact declaration recovery remain different judgments. |
+
+Scale retains **2** history generations; open-loop retains **8**. Both default
+to **16 MiB**. A 300-second client deadline / 256-MiB history run is an explicit
+diagnostic profile, not a default change or evidence that the original limits
+passed. Posting-cap refusal at 32,768 files is not successful scale timing.
+Resource samples are not true RSS peaks or physical write-I/O measurements.
+
+Current completed checks: Python benchmark/timing **597/597**, actual debug
+SDK/join **3/3**, ASCII correctness **6/6**, ingest contract **8/8**, tiny
+full/delta/empty checks **2/2**, scale **29/29**, open-loop **20/20**, public API,
+hexagonal and cargo-modules. Canonical four fuzz targets each ran 60 seconds
+with exit 0; external output is
+`/private/tmp/qi-index-fuzz-20261004-pkv5cl21`, and existing seed/artifact byte
+fingerprints were unchanged. The 6,194-document test was interrupted, not
+passed. Rust/Python inventories collected 188/738 identities; collection is
+not execution of all identities.
+
+The new debug SDK raw join is under
+`/private/tmp/qi-goal-runtime-20261004-fp5_s19l/actual-serial-request-events`.
+Its single toy query validates observation plumbing, not Gin cost attribution.
+The live-main scale attempt refused `BENCH_WORKTREE_DIRTY` before product
+execution. New-source release diagnostic A/B subsequently completed as recorded
+below; actual new scale runs and qualified performance remain **NOT_RUN**.
+
+#### Fresh release and real Gin follow-up
+
+Fresh release SDK proof at engine source `7ff8251e` completed **25/25**, failed
+0, and independent `portable_proof.py verify --receipt` passed. Output:
+`/private/tmp/qi-perf-release-20261004-7ff8251e-r4u4jix4/sdk`.
+Daemon build took 512.300 s, runner/test preparation 109.407 s, and test-command
+execution 14.841 s; compilation is outside indexing/query measurements.
+
+The direct-capture path had one omitted schema-9 child-contract flag in its
+second ingest validation call. A valid fixture failed there before the fix;
+adding `detailed_file_authority=True` restored positive capture admission and
+retained missing-clock and wrong-generation rejection. Six selected direct,
+v8/v9 replay and child-contract tests passed. Actual Python collection now has
+738 identities, including the three new parameterized controls; the full
+738-test selector has not been executed. The fixed driver snapshot is
+`33f8f16d`, differing from the engine checkout only in the Python driver,
+associated tests and registry. Preserve these separate source bindings.
+
+Actual fixed-driver Gin diagnostic under `/private/tmp/g9-7m7inh5r/capture`
+completed with **99 files / 2 tasks**, using a separately validated two-task
+suite and full 99-file universe. Schema 9 capture validation passed. In this
+single busy-host run, preparation was 1,020.992 ms (preflight 29.642 ms,
+coverage write 975.685 ms); file authority was 1,386.603 ms (source write
+1,370.929 ms). Text authority was 398.059 ms (collection 6.179 ms, shard
+construction 331.405 ms, durable publication 58.631 ms). This points to
+coverage/source persistence for further attribution; it does not prove sync
+dominance or a speedup. SDK publish 3,581.142 ms contains the lexical work and
+must not be added to its children.
+
+A separate native Gin request-local trace under `/private/tmp/i9-lhyxoxdp`
+completed with the same release binaries, 99 files and two queries. Pack/record
+binding, diagnostic/phase contracts, child-clock bounds and zero dropped events
+were verified. SDK execute was 3.855/3.384 ms; client read intervals totaled
+3.620/3.259 ms. Server resolve/text validated-to-written intervals were
+84/707 us and 29/262 us. These clocks still omit server prevalidation and do
+not attribute the difference to IPC. Long socket-path and missing required-flag
+attempts were refused before product execution and are not timing samples.
+
+ASCII baseline source `18187058` is clean and differs from `7ff8251e` in one
+lexical file's scanner branch only. Its fresh release proof completed 25/25
+and independent context verification passed under
+`/private/tmp/qi-perf-ascii-base-20261004-18187058-3pnkvuuh/sdk`.
+The actual ABBA matrix under `/private/tmp/a9-21c9z44a` completed all 20 native
+captures with exit 0: exact 1,196 plus insertion/deletion/substitution/
+transposition lanes, two fresh roots per arm per lane. Host samples were saved
+through the existing timeline. Current-source offline audit independently
+validated all 20 diagnostic/phase/completed-output contracts and compared each
+lane's first capture with its other three: **17,850/17,850** normalized output
+hashes and raw non-clock diagnostic rows matched, including window/count and
+work counters. All captures contain 23,800 scored rows in total. Audit output:
+`/private/tmp/a9-21c9z44a/audit-current/REPORT.json`.
+
+Mean completed-call sums per root changed by -1.58% exact, -1.69% insertion,
++8.75% deletion, -2.70% substitution and -6.11% transposition. Token-scan sums
+fell in all four typo lanes, but the deletion lane's completed-request total
+increased. These two-root/arm observations on a busy host do not establish a
+speedup or a causal regression. Host frequency was unavailable. Keep the ASCII
+change unqualified until targeted deletion repeats and the admitted paired
+protocol resolve the mixed end-to-end result; do not label the patch a proven
+optimization. Two roots per arm do not meet the five-root qualification floor.
+Qualified performance and new scale runs remain `NOT_RUN`.
+
+The scale resource metadata now explicitly describes boundary-inclusive sampled
+RSS and process CPU including the sampler/parent probe management, excluding
+the macOS probe child's CPU. Fixed boundary/interior RSS values and metadata
+goldens passed in the existing 29-test scale selector on main's owned overlay.
+This description/test change is not in the frozen engine A/B source and is not
+a release scale measurement.
+
+Parallel source work uses search, indexing and scale owners with one integration
+owner for shared schema/reader/proof changes. Heavy builds and performance runs
+are serial. After decisive functional tests, use five fresh roots and at least
+1,000 warm observations per route, randomized paired blocks, continuous admitted
+host observations and predeclared uncertainty/effect decisions. Missing host
+observations refuse qualification. Reuse B07/J7Q-03/J7Q-04; do not create another
+harness or overwrite original Gin captures.
 
 This is an implementation plan, not a speedup receipt. The frozen five-lane
 diagnostic shows typo candidate generation consuming 94–96% of fallback

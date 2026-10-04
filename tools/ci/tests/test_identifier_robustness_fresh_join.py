@@ -336,7 +336,14 @@ def test_fresh_join_global_status_binds_driver_binary_build_and_postrun(tmp_path
             fresh._select_native_status(cell, prepared)
 
 
-def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
+@pytest.mark.parametrize(
+    "parser_versions",
+    [
+        {"tree-sitter": "0.23.2", "tree-sitter-language-pack": "0.9.1"},
+        {"tree-sitter": "0.25.2", "tree-sitter-language-pack": "0.10.0"},
+    ],
+)
+def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path, parser_versions):
     def write(path, value):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(value, sort_keys=True))
@@ -357,8 +364,8 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
             },
         )
         parser_runtime = {
-            "tree_sitter": "0.23.2",
-            "tree_sitter_language_pack": "0.9.1",
+            "tree_sitter": parser_versions["tree-sitter"],
+            "tree_sitter_language_pack": parser_versions["tree-sitter-language-pack"],
         }
         identity = write(
             tmp_path / "gold-v10" / repo / "identity.json",
@@ -449,8 +456,7 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
         "driver_python": "/pinned/python",
         "parser_dependency_versions": {"parser": "pinned"},
         "parser_runtime_versions": {
-            "tree-sitter": "0.23.2",
-            "tree-sitter-language-pack": "0.9.1",
+            **parser_versions,
             "regex": "2025.10.23",
             "unicodedata2": "17.0.0",
         },
@@ -517,6 +523,36 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path):
     admission, custody = fresh._source_admission(matrix_path, prepared, manifest)
     assert len(admission) == 12 and all(row["status"] == "VALID" for row in admission)
     assert custody["cohort_contract"] == "c5_global_c4_ordinary_osa1_v1"
+    for bad_versions in (
+        {
+            key: value
+            for key, value in prepared["parser_runtime_versions"].items()
+            if key != "regex"
+        },
+        {**prepared["parser_runtime_versions"], "regex": ""},
+        {**prepared["parser_runtime_versions"], "regex": 1},
+        {**prepared["parser_runtime_versions"], "unbound-package": "1.0"},
+    ):
+        with pytest.raises(fresh.FreshJoinError, match="requires all source-locked pins"):
+            fresh._source_admission(
+                matrix_path, {**prepared, "parser_runtime_versions": bad_versions}, manifest
+            )
+    # Rebinding receipt bytes still cannot hide active/source-lock disagreement.
+    runtime_binding = fresh.read(runtime_binding_path)
+    changed_binding = copy.deepcopy(runtime_binding)
+    changed_binding["source_lock_pins"]["tree-sitter"] = "0.0.0"
+    write(runtime_binding_path, changed_binding)
+    changed_prepared = {
+        **prepared,
+        "runtime_four_pin_binding_sha256": fresh.sha(runtime_binding_path),
+    }
+    changed_manifest = {
+        **manifest,
+        "runtime_four_pin_binding_sha256": fresh.sha(runtime_binding_path),
+    }
+    with pytest.raises(fresh.FreshJoinError, match="global gold, matrix, projection"):
+        fresh._source_admission(matrix_path, changed_prepared, changed_manifest)
+    write(runtime_binding_path, runtime_binding)
     changed = copy.deepcopy(manifest)
     changed["cells"][0]["blind_pack_commitment_sha256"] = "wrong"
     with pytest.raises(fresh.FreshJoinError, match="global source admission task"):

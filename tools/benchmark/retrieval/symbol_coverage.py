@@ -104,6 +104,7 @@ def grammar_identity(root: Path = ROOT) -> str:
             "tree-sitter-typescript",
             "tree-sitter-rust",
             "tree-sitter-python",
+            "tree-sitter-javascript",
         } and ("source" in rows[0] or "checksum" in rows[0]):
             raise ValueError(f"{name} grammar must resolve to the source-bound path dependency")
     manifest = tomllib.loads(regular_bytes(root / "Cargo.toml").decode())
@@ -112,6 +113,7 @@ def grammar_identity(root: Path = ROOT) -> str:
         ("go", "0.25.0"),
         ("rust", "0.24.2"),
         ("python", "0.25.0"),
+        ("javascript", "0.25.0"),
     ]:
         if manifest["workspace"]["dependencies"]["tree-sitter-" + tag] != {
             "version": "=" + version,
@@ -124,7 +126,9 @@ def grammar_identity(root: Path = ROOT) -> str:
         + ";"
         "go@0.25.0+quanta-go-compatibility-1;vendored-source-sha256="
         + _vendor_digest(root / "vendor/tree-sitter-go", "go")
-        + ";javascript@0.25.0;python@0.25.0+quanta-abi14-1;vendored-source-sha256="
+        + ";javascript@0.25.0+quanta-javascript-export-names-1;vendored-source-sha256="
+        + _vendor_digest(root / "vendor/tree-sitter-javascript", "javascript")
+        + ";python@0.25.0+quanta-abi14-1;vendored-source-sha256="
         + _vendor_digest(root / "vendor/tree-sitter-python", "python")
         + ";"
         "typescript@0.23.2+quanta-typescript-compatibility-2;vendored-source-sha256="

@@ -640,10 +640,36 @@ fn malformed_bundle_after_a_raw_replacement_refuses_before_any_write() -> TestRe
 
 #[test]
 fn combined_replacement_retires_old_symbols_and_preserves_pinned_view() -> TestResult {
+    fn assert_authority_stage_children(
+        stages: &quanta_index_contract::LexicalBuildStageDurationsV1,
+    ) -> TestResult {
+        let preflight = stages
+            .prep_file_authority_preflight_ns
+            .ok_or("missing file preflight timing")?;
+        let coverage = stages
+            .prep_coverage_write_ns
+            .ok_or("missing coverage write timing")?;
+        assert!(
+            preflight
+                .checked_add(coverage)
+                .ok_or("preparation child overflow")?
+                <= stages.preparation_ns
+        );
+        assert!(
+            stages
+                .file_authority_source_write_ns
+                .ok_or("missing source write timing")?
+                <= stages.file_authority_ns
+        );
+        Ok(())
+    }
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
-    let _stages = adapter.build_batch(&base)?;
+    let base_stages = adapter
+        .build_batch(&base)?
+        .ok_or("missing base stage timing")?;
+    assert_authority_stage_children(&base_stages)?;
     let pinned = adapter.open(
         &base.repo_id,
         &base.revision_id,
@@ -651,7 +677,10 @@ fn combined_replacement_retires_old_symbols_and_preserves_pinned_view() -> TestR
         &quanta_index_core::RequestBudgetV1::unbounded(),
     )?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
-    let _stages = adapter.build_batch(&delta)?;
+    let delta_stages = adapter
+        .build_batch(&delta)?
+        .ok_or("missing delta stage timing")?;
+    assert_authority_stage_children(&delta_stages)?;
     assert_units(&adapter, &delta, "oldmarker", &[], &[])?;
     assert_units(
         &adapter,
@@ -821,6 +850,9 @@ fn empty_full_generation_and_empty_delta_retain_admission() -> TestResult {
     let full_stages = adapter
         .build_batch(&empty)?
         .ok_or("missing full-build timing")?;
+    assert!(full_stages.prep_file_authority_preflight_ns.is_some());
+    assert!(full_stages.prep_coverage_write_ns.is_some());
+    assert!(full_stages.file_authority_source_write_ns.is_none());
     assert!(full_stages.seal_ns.is_some());
     assert!(full_stages.seal_writer_commit_ns.is_some());
     assert!(full_stages.seal_merge_wait_ns.is_some());
@@ -830,6 +862,9 @@ fn empty_full_generation_and_empty_delta_retain_admission() -> TestResult {
     assert!(full_stages.text_authority_publish_ns.is_none());
     let delta = batch(2, Some(1), Vec::new())?;
     let delta_stages = adapter.build_batch(&delta)?.ok_or("missing delta timing")?;
+    assert!(delta_stages.prep_file_authority_preflight_ns.is_some());
+    assert!(delta_stages.prep_coverage_write_ns.is_some());
+    assert!(delta_stages.file_authority_source_write_ns.is_none());
     assert!(delta_stages.seal_file_admission_ns.is_some());
     assert!(delta_stages.text_authority_collect_ns.is_none());
     assert!(delta_stages.text_authority_shard_build_ns.is_none());

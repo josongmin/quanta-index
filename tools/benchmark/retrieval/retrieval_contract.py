@@ -11,6 +11,15 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+# Gold production and replay share package identities; exact versions belong
+# to the producer's source-locked runtime, including historical captures.
+GOLD_RUNTIME_PACKAGES = (
+    "regex",
+    "tree-sitter",
+    "tree-sitter-language-pack",
+    "unicodedata2",
+)
+
 TOKENIZER = "qi-regex-v1"
 TOKENIZER_BUDGET_VERSION = "qb-v1"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[^\x00-\x20]")
