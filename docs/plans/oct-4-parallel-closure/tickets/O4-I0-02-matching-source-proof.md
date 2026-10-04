@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | source904 workspace·daemon213·process/L3 56 `VERIFIED`; 후속 Clippy 실제 source 실패 수리 중. formal Contract/SDK 첫 명령 admission timeout `FAILED`, proof `NOT_RUN`; hosted CI·release/scale `NOT_RUN` |
+| 실행 상태 | source904 workspace·daemon213·process/L3 56 및 후속 full Clippy `VERIFIED`; current owner/daemon/SDK27 영향 재검증 중. formal Contract/SDK 첫 명령 admission timeout `FAILED`, proof `NOT_RUN`; hosted CI·release/scale `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -56,6 +56,13 @@
 - `FAILED`: runtime/SDK/IPC 후속 Nextest 배치는 231 selected 중 runtime supervisor의 `missing_report_during_drain_is_named_failure_not_escalation`이 실패했고 10개가 실행되지 않았다. 새 shutdown disk-meter panic owner는 실제로 통과했다. 좁힌 실패 selector의 재실행은 1 passed/24 filtered였지만, 이것만으로 전체 실패를 대체하지 않는다. fixture가 startup 이전 child 종료와 drain 도중 종료를 경합시키는 것을 확인했다. 기존 startup `RequiredChildLost` oracle를 유지하고 drain stop callback 뒤에만 fixture child가 종료하도록 고정했다. 전체 영향 재검증은 진행 중이다.
 - harness sampler의 오류 문맥·checked count/시간 경계와 typed refusal JSON을 수리했다. 새 resource timing bundle은 millisecond 값을 유지하며 JSON `*_ms`/IPC `*_ns` 출력 키와 기존 exact predicate는 바꾸지 않았다. 후속 full Clippy는 추가 compile/lint 오류를 계속 수리 중이며 아직 PASS가 아니다.
 - Semantic/Hybrid/HybridSeed/History/RuntimeMetadata의 새 실제-daemon Active fixture는 G41/G42 positive 결과와 stale G41 token refusal를 모두 요구한다. registry는 SDK27로 갱신했다. `nextest list -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --message-format json`은 actual test-count27을 수집했고 `proof_inventory.py --verify /private/tmp/qi-oct4-sdk27-inventory-20261004-v1.json --role sdk`도 exit0으로 source authority equality를 확인했다. 새 live scenario 및 final-source formal proof는 아직 `NOT_RUN`이다.
+
+## 2026-10-04 full Clippy 수리 완료
+
+- `VERIFIED`: `just rust-clippy` — exit0, build10.09s. 시작 HEAD `10d6379c7ecabdefcfedc3a849db326118d77312`와 open-loop cfg(test) 두 파일의 root-owned overlay를 검사했다. upstream Tantivy dependency의 기존 warning8개는 남고 workspace lint 오류는 없었다. 앞선 실패 결과를 보존하며 lint allowance를 추가하지 않았다.
+- open-loop negative fixture의 대상·기대값은 유지했다. JSON `pointer` 조회는 필드 누락을 거절하고 explicit null만 null oracle를 만족한다. 마지막 Clippy 실패는 test helper의 불필요한 `Value` 소유 인수1개였고 borrowed expected value로 수리했다.
+- `VERIFIED`: 같은 source의 `just fmt-check` 및 `git diff --check` — exit0. 이 결과는 behavioral/release 검증이 아니다.
+- current matching debug daemon build는 exit0이었다. 영향을 받은 core/harness/SDK/IPC/runtime/lexical owner 배치는 실행 중이며, 이전 runtime231 실패를 아직 전체 PASS로 대체하지 않는다. 새 SDK27·daemon/process·formal proof 결과는 완료 후 별도로 기록한다.
 
 ## 착수 입력
 

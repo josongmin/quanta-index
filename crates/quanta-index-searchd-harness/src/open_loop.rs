@@ -1007,6 +1007,12 @@ pub(crate) fn artifact(
 mod tests {
     use super::*;
 
+    fn required_json<'a>(value: &'a Value, pointer: &str) -> AnyResult<&'a Value> {
+        value
+            .pointer(pointer)
+            .with_context(|| format!("missing JSON field {pointer}"))
+    }
+
     #[test]
     fn zero_request_id_keeps_its_protocol_failure_kind() {
         assert_eq!(transport_kind(&IpcError::ZeroRequestId), "zero_request_id");
@@ -1099,7 +1105,10 @@ mod tests {
             .is_err()
         );
         let mut wrong_path = rows.clone();
-        wrong_path[0].1 = "foreign.rs".to_string();
+        wrong_path
+            .first_mut()
+            .context("missing first candidate row")?
+            .1 = "foreign.rs".to_string();
         assert!(
             fixture_candidate_ids(
                 &paths,
@@ -1110,7 +1119,15 @@ mod tests {
             .is_err()
         );
         let mut duplicate_id = rows.clone();
-        duplicate_id[1].0 = duplicate_id[0].0.clone();
+        let first_id = duplicate_id
+            .first()
+            .context("missing first candidate row")?
+            .0
+            .clone();
+        duplicate_id
+            .get_mut(1)
+            .context("missing second candidate row")?
+            .0 = first_id;
         assert!(
             fixture_candidate_ids(
                 &paths,
@@ -1121,7 +1138,15 @@ mod tests {
             .is_err()
         );
         let mut duplicate_path = rows.clone();
-        duplicate_path[1].1 = duplicate_path[0].1.clone();
+        let first_path = duplicate_path
+            .first()
+            .context("missing first candidate row")?
+            .1
+            .clone();
+        duplicate_path
+            .get_mut(1)
+            .context("missing second candidate row")?
+            .1 = first_path;
         assert!(
             fixture_candidate_ids(
                 &paths,
@@ -1131,8 +1156,11 @@ mod tests {
             )
             .is_err()
         );
-        let mut missing_needle = corpus.clone();
-        missing_needle[0].1 = missing_needle[0].1.replace(QUERY, "absent");
+        let mut missing_needle = corpus;
+        let first_file = missing_needle
+            .first_mut()
+            .context("missing first source file")?;
+        first_file.1 = first_file.1.replace(QUERY, "absent");
         assert!(source_fixture_paths(&missing_needle).is_err());
         Ok(())
     }
@@ -1164,7 +1192,10 @@ mod tests {
             10
         );
         let mut wrong_repo = rows;
-        wrong_repo[0].1 = "repo4/src/file_0.rs".to_string();
+        wrong_repo
+            .first_mut()
+            .context("missing first candidate row")?
+            .1 = "repo4/src/file_0.rs".to_string();
         assert!(
             fixture_candidate_ids(
                 &paths,
@@ -1534,28 +1565,40 @@ mod tests {
             hostname_hash: "sha256:host".to_string(),
         };
         let default = artifact(&report, head.clone(), host.clone())?.to_json()?;
-        assert_eq!(
-            default["detail"]["history_policy"]["history_max_bytes"],
-            16_777_216
+        ensure!(
+            required_json(&default, "/detail/history_policy/history_max_bytes")?
+                == &json!(16_777_216),
+            "default history max bytes changed"
         );
-        assert_eq!(
-            default["detail"]["history_policy"]["history_max_generations"],
-            8
+        ensure!(
+            required_json(&default, "/detail/history_policy/history_max_generations")? == &json!(8),
+            "default history generations changed"
         );
-        assert!(default["detail"]["history_policy"]["requested_history_max_bytes"].is_null());
+        ensure!(
+            required_json(
+                &default,
+                "/detail/history_policy/requested_history_max_bytes"
+            )? == &Value::Null,
+            "default history request must be null"
+        );
         report.config.history_max_bytes = Some(268_435_456);
         let explicit = artifact(&report, head, host)?.to_json()?;
-        assert_eq!(
-            explicit["detail"]["history_policy"]["history_max_bytes"],
-            268_435_456
+        ensure!(
+            required_json(&explicit, "/detail/history_policy/history_max_bytes")?
+                == &json!(268_435_456),
+            "explicit history max bytes changed"
         );
-        assert_eq!(
-            explicit["detail"]["history_policy"]["requested_history_max_bytes"],
-            268_435_456
+        ensure!(
+            required_json(
+                &explicit,
+                "/detail/history_policy/requested_history_max_bytes"
+            )? == &json!(268_435_456),
+            "explicit requested history bytes changed"
         );
-        assert_ne!(
-            default["provenance"]["config_digest"],
-            explicit["provenance"]["config_digest"]
+        ensure!(
+            required_json(&default, "/provenance/config_digest")?
+                != required_json(&explicit, "/provenance/config_digest")?,
+            "history override did not change config digest"
         );
         Ok(())
     }

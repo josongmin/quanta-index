@@ -244,8 +244,23 @@ mod tests {
         assert_eq!(format_latency(Some(0.0)), "0.000");
     }
 
+    fn expect_json_eq(
+        value: &serde_json::Value,
+        pointer: &str,
+        expected: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let actual = value
+            .pointer(pointer)
+            .ok_or_else(|| anyhow::anyhow!("missing JSON field {pointer}"))?;
+        anyhow::ensure!(
+            actual == expected,
+            "JSON field {pointer}: expected {expected}, found {actual}"
+        );
+        Ok(())
+    }
+
     #[test]
-    fn refusal_context_names_the_exact_arrival_contract() {
+    fn refusal_context_names_the_exact_arrival_contract() -> anyhow::Result<()> {
         let config = open_loop::Config {
             seed: 7,
             tier: ScaleTier::Medium,
@@ -257,24 +272,44 @@ mod tests {
             request_timeout: Duration::from_millis(250),
             history_max_bytes: None,
         };
-        let value = execution_context(&config).expect("valid execution context");
-        assert_eq!(value["arrival_model"], "seeded_poisson");
-        assert_eq!(value["rates_qps"], serde_json::json!([25, 50]));
-        assert_eq!(value["duration_ms"], 10_000);
-        assert_eq!(value["workers"], 4);
-        assert_eq!(value["queue_capacity"], 8);
-        assert_eq!(value["request_timeout_ms"], 250);
-        assert_eq!(value["history_policy"]["history_max_bytes"], 16_777_216);
-        assert!(value["history_policy"]["requested_history_max_bytes"].is_null());
-        assert_eq!(value["history_policy"]["history_max_generations"], 8);
+        let value = execution_context(&config)?;
+        expect_json_eq(
+            &value,
+            "/arrival_model",
+            &serde_json::json!("seeded_poisson"),
+        )?;
+        expect_json_eq(&value, "/rates_qps", &serde_json::json!([25, 50]))?;
+        expect_json_eq(&value, "/duration_ms", &serde_json::json!(10_000))?;
+        expect_json_eq(&value, "/workers", &serde_json::json!(4))?;
+        expect_json_eq(&value, "/queue_capacity", &serde_json::json!(8))?;
+        expect_json_eq(&value, "/request_timeout_ms", &serde_json::json!(250))?;
+        expect_json_eq(
+            &value,
+            "/history_policy/history_max_bytes",
+            &serde_json::json!(16_777_216),
+        )?;
+        expect_json_eq(
+            &value,
+            "/history_policy/requested_history_max_bytes",
+            &serde_json::Value::Null,
+        )?;
+        expect_json_eq(
+            &value,
+            "/history_policy/history_max_generations",
+            &serde_json::json!(8),
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn explicit_history_budget_is_bounded_and_bound_to_refusal_context() {
+    fn explicit_history_budget_is_bounded_and_bound_to_refusal_context() -> anyhow::Result<()> {
         for invalid in ["0", "268435457", "-1", "nan"] {
-            assert!(parse_history_max_bytes(invalid).is_err());
+            anyhow::ensure!(
+                parse_history_max_bytes(invalid).is_err(),
+                "accepted invalid history budget {invalid}"
+            );
         }
-        let bytes = parse_history_max_bytes("268435456").expect("harness total cap");
+        let bytes = parse_history_max_bytes("268435456")?;
         let config = open_loop::Config {
             seed: 7,
             tier: ScaleTier::Large,
@@ -286,15 +321,29 @@ mod tests {
             request_timeout: Duration::from_millis(250),
             history_max_bytes: Some(bytes),
         };
-        config.validate().expect("explicit bounded budget");
-        let value = execution_context(&config).expect("failure execution context");
-        assert_eq!(value["history_policy"]["history_max_bytes"], bytes);
-        assert_eq!(
-            value["history_policy"]["requested_history_max_bytes"],
-            bytes
-        );
-        assert_eq!(value["history_policy"]["history_max_total_bytes"], bytes);
-        assert_eq!(value["history_policy"]["history_max_revision_pairs"], 128);
+        config.validate()?;
+        let value = execution_context(&config)?;
+        expect_json_eq(
+            &value,
+            "/history_policy/history_max_bytes",
+            &serde_json::json!(bytes),
+        )?;
+        expect_json_eq(
+            &value,
+            "/history_policy/requested_history_max_bytes",
+            &serde_json::json!(bytes),
+        )?;
+        expect_json_eq(
+            &value,
+            "/history_policy/history_max_total_bytes",
+            &serde_json::json!(bytes),
+        )?;
+        expect_json_eq(
+            &value,
+            "/history_policy/history_max_revision_pairs",
+            &serde_json::json!(128),
+        )?;
+        Ok(())
     }
 
     #[test]
@@ -337,21 +386,24 @@ mod tests {
             open_loop::DIMENSION,
             Some(&execution),
         );
-        assert_eq!(refusal["status"], "failed");
-        assert_eq!(refusal["failure"]["stage"], "build_seal");
-        assert_eq!(
-            refusal["failure"]["message"],
-            "scale build_seal: fixed retention fault"
-        );
-        assert_eq!(
-            refusal["execution"]["history_policy"]["history_max_bytes"],
-            268_435_456
-        );
-        assert_eq!(
-            refusal["execution"]["history_policy"]["requested_history_max_bytes"],
-            268_435_456
-        );
-        assert!(refusal.get("latency").is_none());
+        expect_json_eq(&refusal, "/status", &serde_json::json!("failed"))?;
+        expect_json_eq(&refusal, "/failure/stage", &serde_json::json!("build_seal"))?;
+        expect_json_eq(
+            &refusal,
+            "/failure/message",
+            &serde_json::json!("scale build_seal: fixed retention fault"),
+        )?;
+        expect_json_eq(
+            &refusal,
+            "/execution/history_policy/history_max_bytes",
+            &serde_json::json!(268_435_456),
+        )?;
+        expect_json_eq(
+            &refusal,
+            "/execution/history_policy/requested_history_max_bytes",
+            &serde_json::json!(268_435_456),
+        )?;
+        anyhow::ensure!(refusal.get("latency").is_none(), "refusal emitted latency");
         Ok(())
     }
 }
