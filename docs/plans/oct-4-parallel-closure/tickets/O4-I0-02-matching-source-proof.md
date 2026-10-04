@@ -79,6 +79,13 @@
 - 수정 후 matching debug daemon을 pin한 SDK27 전체 Nextest는 exit0,27 passed,0 skipped,19.169s였다. Nextest stdio leak1건은 runner record test에서 관측했고, 해당 test 단독 재실행은 ordinary PASS1/26 skipped,9.236s였다. original leak 관측과 causal uncertainty를 보존하며 formal proof의 machine result와 구분한다.
 - sourcebf는 이 fixture 수정이 포함되기 전 epoch다. 관리 checkout을 최종 수정 commit으로 다시 retarget한 뒤 formal proof를 발행한다. product source가 바뀌지 않은 owner972의 scope를 무조건 무효화하지 않는다.
 
+## 2026-10-04 formal 실행 source 고정
+
+- 관리 checkout을 clean `f3f7c68993f383e4ac5fdca761c111fe3d0edc3b`로 retarget했다. 이 source에는 실제 History tag shard를 게시하는 SDK fixture가 포함된다. 후속 main의 ticket 문서 변경은 이 source의 proof SHA를 바꾸지 않는다.
+- `VERIFIED`: fixture 수정 뒤 `just rust-clippy`는 exit0, full workspace/all-targets scope였다. `just fmt-check` 및 `git diff --check`도 exit0이다. 기존 vendor warnings를 workspace lint 성공으로 제거하거나 숨기지 않았다.
+- current daemon profile은213 selected/1 skipped로 실행 중이다. process owner 및 bounded wire fuzz는 그 뒤 순차 실행한다. 완료 전에는 통과로 판정하지 않는다.
+- 새 Contract/SDK fresh proof 출력은 각각 `/Users/songmin/Documents/code-new/qi-oct4-contract-proof-20261004-v2`, `/Users/songmin/Documents/code-new/qi-oct4-sdk-proof-fresh-20261004-v2`를 사용한다. 아직 실행 결과가 없으며 기존 v1 실패 root를 재사용하지 않는다.
+
 ## 착수 입력
 
 - I0-01의 epoch 범위: 포함할 product/driver/scorer 변경, 해당 patch-ready owner 결과·독립 oracle·mandatory surfaces, 미포함 티켓의 이유와 후속 epoch
