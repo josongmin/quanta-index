@@ -4,16 +4,16 @@
 
 - 담당·파일/함수·독립 검증·완료 조건: [4개 에픽 + I0](../../plans/oct-4-parallel-closure/README.md), [29개 티켓](../../plans/oct-4-parallel-closure/tickets/INDEX.md).
 - 실행 순서·실제 상태: [W0–W6](../../plans/oct-4-parallel-closure/WAVES.md). 개별 명령·관측·증거 범위는 기존 owning ticket이 기준이다.
-- 제품 proof/binaries/admissions는 frozen `0e6c7e7e9494b63fdb33f4594df059817459d3b1` 기준이다. 완료된 scope 수리/SG/native3는 clean `ae8f96bae1a0db1fc0378861b228cd5359080fa1` 범위다. derived provenance·frozen-context 경로 수리는 clean `628541e150192b4aaf0ff4ba54566ae28c6ca25f`에 고정했고 retained bat canonical raw replay가 통과했다. 후속 report/verdict JSON 타입 결속을 수리한 clean `97eedd11b70e76c66985b15a968211a2faf92c6d`의 focused 회귀203/203·0failed/skipped가 통과했다. 새 SG12repo/13,347files 독립 replay는 통과했고 새 native epoch·5제품 join은 남아 있다. mutable main이나 과거 receipt를 새 source 결과로 재표기하지 않는다.
+- 제품 proof/binaries/admissions는 frozen `0e6c7e7e9494b63fdb33f4594df059817459d3b1` 기준이다. 완료된 scope 수리/SG/native3는 clean `ae8f96bae1a0db1fc0378861b228cd5359080fa1` 범위다. derived provenance·frozen-context 경로 수리는 clean `628541e150192b4aaf0ff4ba54566ae28c6ca25f`에 고정했고 retained bat canonical raw replay가 통과했다. 후속 report/verdict JSON 타입 결속을 수리한 clean `97eedd11b70e76c66985b15a968211a2faf92c6d`의 focused 회귀203/203·0failed/skipped가 통과했다. 새 SG12repo/13,347files 독립 replay·bat native3 actual/replay·retained full5제품 join은 통과했다. remaining8 actual captures/replays/joins와 final qualification은 남아 있다. mutable main이나 과거 receipt를 새 source 결과로 재표기하지 않는다.
 - 원본 agent-4의 과거 임시 증거15고유경로는 현재 없어 replay 가능한 current proof로 사용하지 않는다. 기존50 Markdown의 상대 링크1,246개·29 ticket 배치는 확인했으며 증거 가용성 경계는 [I0-01](../../plans/oct-4-parallel-closure/tickets/O4-I0-01-ownership-and-contract-freeze.md)에 기록했다.
 
 ## 1. 현재 실행 순서
 
 | 순서 / 웨이브 | 해야 할 일 | 현재 경계 |
 | --- | --- | --- |
-| 1 / W3–W5 | 새 fixed-source97eedd full5제품 join | 후속97eedd focused203·SG12repo/13,347files·bat native3 actual60요청/독립 replay VERIFIED. full5 join 실행 중. 과거 join v4 FAILED는 보존 |
+| 1 / W3–W5 | required8의 current native·pair 독립 replay와 full5제품 join | source97 bat full5 join VERIFIED/공통20tasks/diagnostic_unqualified. required8 native v4는 잘못된 historical validator source guard로 호출 전 거절; v5 입력 preflight8/8 완료. Q/S producer 진행 중. 과거 실패 보존 |
 | 2 / W3 | current0e6 admission에 후속 final merged revisions 연결 | canonical issuer exit0/8 terminal·aggregate 및 각16-input hash readback VERIFIED. bat 포함9repo/180tasks/4,262judgments의 admission 범위; 후속 final revisions·나머지3개는 미완료 |
-| 3 / W4–W5 | 준비된 C3 저장소의 실제 Quanta/Semble·SG/OG/cs 캡처, required-cell outcomes·source-bound blind union 발행 | all12 PREPARE 종료:9 PREPARED/3 BLOCKED, aggregate exit2. 후속8개 직렬 큐는 현재 SG/native/bat 배치 종료 대기. 새 미검수 후보를 final quality나0점으로 처리하지 않음 |
+| 3 / W4–W5 | 준비된 C3 저장소의 실제 Quanta/Semble·SG/OG/cs 캡처, required-cell outcomes·source-bound blind union 발행 | all12 PREPARE 종료:9 PREPARED/3 BLOCKED, aggregate exit2. 후속8개 직렬 큐에서 Q/S producer 진행 중; native v4 preflight 거절은 v5의 current canonical issuance binding으로 복구 준비했다. 새 미검수 후보를 final quality나0점으로 처리하지 않음 |
 | 4 / W1→W3→W5 | SQLAlchemy/Zellij 실제 조정 완료·suite/pack/admission 발행, Tailscale 미결 정책 적용 후 재검수 | actual Opus 주간 한도로 SQL146·Zellij476pairs `BLOCKED`. SQL334pairs 보존. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 입력도 `BLOCKED` |
 | 5 / W1–W5 | 다른 lane의 fresh required cells와 독립 name/holdout 평가, 최종 합집합 검수·scoreboard·정책 판정 | 아래 에픽별 잔여와 입력 경계 적용. C3 NL·exact/typo/span·ARB·B09 분모를 합산하지 않음 |
 | 6 / W6 | exact producer/source pair·hosted CI·Linux release·실제 운영 gate | authorized host/path/config/state/retention/rollback 입력 `BLOCKED`. local proof를 배포/복구 증거로 승격하지 않음 |
