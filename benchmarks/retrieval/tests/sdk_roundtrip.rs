@@ -581,6 +581,103 @@ fn real_daemon_sdk_active_text_and_symbol_bind_one_selected_head_without_resolve
         event.request_id == symbol_request.request_id
             && event.stage == ProcessRequestEventStageV1::ResponseWritten
     }));
+
+    let next_identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        32,
+        "manifest:active-one-rpc-next".to_string(),
+    )
+    .expect("next identity");
+    let (next_batch, _) =
+        assemble_fixture_batch(&next_identity, &chunks, &files).expect("next batch");
+    let next_batch = next_batch.source_event(quanta_index_contract::SourcePublicationEvent {
+        stream_id: "sdk-roundtrip-fixture".to_string(),
+        event_id: "source-fixture-next".to_string(),
+        expected_base_event_id: Some("source-fixture-initial".to_string()),
+        payload_sha256: [0; 32],
+    });
+    let (_next_receipt, next_ack, _next_observation, _next_timings) =
+        publish_and_activate(&session, &next_batch, &next_identity, Some(&ack.active))
+            .expect("publish+activate G32");
+    assert_eq!(
+        next_ack.active.generation.lexical.manifest_generation,
+        next_identity.generation
+    );
+    assert_ne!(
+        next_ack.active.activation_token, ack.active.activation_token,
+        "G32 activation must change the token"
+    );
+
+    let stale = query_only
+        .lexical()
+        .query_request(quanta_index_contract::TextQueryRequest {
+            syntax: quanta_index_contract::TextQuerySyntax::Native,
+            query_text: "sphinx_riddle".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            generation: Some(expected_pin),
+            generation_selector: Some(quanta_index_contract::GenerationSelector::ResolvedActive {
+                repo_id: identity.repo_id.clone(),
+                revision_id: identity.revision_id.clone(),
+                activation_token: ack.active.activation_token,
+            }),
+            top_k: 5,
+            cursor: None,
+        });
+    assert!(
+        matches!(
+            stale,
+            Err(quanta_index_sdk::SdkError::Remote {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::NotReady,
+                ..
+            })
+        ),
+        "SDK ResolvedActive accepted the G31 token after G32: {stale:?}"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let after_stale = loop {
+        let window = session
+            .client()
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 1024)
+            .expect("query ring after stale token");
+        if window.events.iter().any(|event| {
+            event.sequence >= after_symbol.next_sequence
+                && event.stage == ProcessRequestEventStageV1::ResponseWritten
+        }) {
+            break window;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "stale-token terminal event absent"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let new_stale: Vec<_> = after_stale
+        .events
+        .iter()
+        .filter(|event| event.sequence >= after_symbol.next_sequence)
+        .collect();
+    assert_eq!(
+        new_stale
+            .iter()
+            .filter(|event| event.stage == ProcessRequestEventStageV1::QueueAdmitted)
+            .count(),
+        1,
+        "ResolvedActive refusal made an extra query-plane request"
+    );
+    let refused_request = new_stale
+        .iter()
+        .find(|event| {
+            event.stage == ProcessRequestEventStageV1::BackendOutcome
+                && event.route.as_deref() == Some("query.text")
+                && event.error == Some(quanta_index_contract::SearchPlaneErrorCodeV2::NotReady)
+        })
+        .expect("one typed backend refusal for the stale token");
+    assert!(new_stale.iter().any(|event| {
+        event.request_id == refused_request.request_id
+            && event.stage == ProcessRequestEventStageV1::ResponseWritten
+    }));
     session.stop().expect("bounded shutdown");
 }
 
