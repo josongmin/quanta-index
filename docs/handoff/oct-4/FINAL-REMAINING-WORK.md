@@ -41,7 +41,7 @@
 
 - [E3-01](../../plans/oct-4-parallel-closure/tickets/O4-E3-01-active-selection-race.md): 별도 OS-child의 같은 retention race 범위를 기존 supported refusal/view 계약에서 판정한다. dispatcher/runtime owner·daemon proof를 그 OS 시나리오로 재명명하지 않는다.
 - [E3-04](../../plans/oct-4-parallel-closure/tickets/O4-E3-04-maintenance-health-metering.md)·[E3-05](../../plans/oct-4-parallel-closure/tickets/O4-E3-05-publish-timeout-replay.md): actual daemon slow-disk3-cadence, 기본30초 별도 OS-process admitted publish timeout→operation inspect→exact replay 범위를 검증한다.
-- [E3-06](../../plans/oct-4-parallel-closure/tickets/O4-E3-06-operator-event-proof.md): 다른 OS UID와 Linux process-truth 범위는 미실행이다. 실제 입력·지원 seam을 정적 대조하고 가능한 proof를 준비한다.
+- [E3-06](../../plans/oct-4-parallel-closure/tickets/O4-E3-06-operator-event-proof.md): 별도 worktree의 Linux 두 UID UDS component fixture·독립 policy 등록·fmt/policy lint는 준비됐다. 실제 Linux build/test는 `NOT_RUN`이다. P11 운영 process-truth는 authorized host/path/config/state/retention/rollback 입력 `BLOCKED`로 별도 유지한다.
 - [E3-02](../../plans/oct-4-parallel-closure/tickets/O4-E3-02-admission-pin-transfer.md)는 현 Accepted 계약에서 `NOT_APPLICABLE`; 강화 계약 채택·새 실제 반례가 있을 때만 재개한다. [E3-03](../../plans/oct-4-parallel-closure/tickets/O4-E3-03-atomic-active-query-rpc.md)의 지원7 Active variant single-RPC 구현은 재작성하지 않는다. 후속 효과/운영 qualification만 해당 scope에서 수행한다.
 
 ### E4 — 비용 원인·조건부 변경·성능·scale

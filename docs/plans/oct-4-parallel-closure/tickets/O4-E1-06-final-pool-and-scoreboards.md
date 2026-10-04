@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_AND_REPORT` |
 | 기준 웨이브 | [W5 — 최종 검수·재채점·정책 판정](../waves/W5-final-scoring-and-policy.md) |
-| 실행 상태 | source0e6 bat409 fresh pair40rows·독립 verdict·native3 actual60요청/raw replay `VERIFIED`;5제품 join consumer scope 결함 수리/focused67 `VERIFIED`, 수정 scorer의 새 native capture/join은 미완료. 전체 cohort·unseen/human·속도 qualification 미완료 |
+| 실행 상태 | source0e6 bat409 fresh pair40rows·독립 verdict·native3 actual60요청/raw replay `VERIFIED`;5제품 join consumer scope 수리/focused67 및 clean628541 canonical owner 수리 후 retained bat raw replay `VERIFIED`. 새 focused·native capture/join, 전체 cohort·unseen/human·속도 qualification 미완료 |
 | 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-04](O4-E2-04-fresh-five-product-captures.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
