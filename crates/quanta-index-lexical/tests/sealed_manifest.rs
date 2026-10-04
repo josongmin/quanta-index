@@ -2271,17 +2271,16 @@ fn format_twelve_base_is_refused_before_index_inheritance() -> TestResult {
     delta.mode = BatchIngestMode::Delta;
     current_source_fixture::finish_batch(&mut delta)?;
     let result = adapter.build_batch(&delta);
-    assert!(
-        matches!(result, Err(CoreError::Typed { code, ref message })
+    if !matches!(&result, Err(CoreError::Typed { code, message })
             if code.as_wire_str() == "GENERATION_MANIFEST_FORMAT_UNSUPPORTED"
                 && message.contains("format 12")
-                && message.contains("must be rebuilt")),
-        "format-12 base must refuse typed before cloning: {result:?}"
-    );
-    assert!(
-        !generation_dir(&root, target).join(TANTIVY_META).exists(),
-        "unsupported base must not be inherited into a new index"
-    );
+                && message.contains("must be rebuilt"))
+    {
+        return Err(format!("format-12 base must refuse typed before cloning: {result:?}").into());
+    }
+    if generation_dir(&root, target).join(TANTIVY_META).exists() {
+        return Err("unsupported base must not be inherited into a new index".into());
+    }
     Ok(())
 }
 

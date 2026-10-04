@@ -1167,9 +1167,12 @@ mod tests {
         let tallies = timer.tallies();
         let entered = {
             let (lock, ready) = &*gate;
-            let state = lock.lock().expect("fixture gate");
             let (state, timeout) = ready
-                .wait_timeout_while(state, Duration::from_secs(2), |state| !state.0)
+                .wait_timeout_while(
+                    lock.lock().expect("fixture gate"),
+                    Duration::from_secs(2),
+                    |state| !state.0,
+                )
                 .expect("fixture wait");
             let observed = state.0 && !timeout.timed_out();
             drop(state);

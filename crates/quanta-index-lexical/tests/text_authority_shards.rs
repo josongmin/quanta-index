@@ -316,7 +316,9 @@ fn one_scope_delta_rewrites_touched_shards_and_links_the_rest() -> TestResult {
             .text_authority_publish_ns
             .ok_or("missing full publish timing")?,
     ];
-    assert!(base_text_children.iter().sum::<u64>() <= base_stages.text_authority_ns);
+    if base_text_children.iter().sum::<u64>() > base_stages.text_authority_ns {
+        return Err("base text-authority child durations exceed the parent duration".into());
+    }
     let base_files = text_authority_files(&generation_dir(&root, g1))?;
     let base_shards = shard_files(&base_files);
     let expected_shards = u64::try_from(COST_DOCS)?.div_ceil(SHARD_DOCS);
@@ -345,7 +347,9 @@ fn one_scope_delta_rewrites_touched_shards_and_links_the_rest() -> TestResult {
             true,
         )?)?
         .ok_or("missing delta timing")?;
-    assert!(delta_stages.text_authority_collect_ns.is_none());
+    if delta_stages.text_authority_collect_ns.is_some() {
+        return Err("delta text-authority collection must remain unmeasured".into());
+    }
     let delta_text_children = [
         delta_stages
             .text_authority_shard_build_ns
@@ -354,7 +358,9 @@ fn one_scope_delta_rewrites_touched_shards_and_links_the_rest() -> TestResult {
             .text_authority_publish_ns
             .ok_or("missing delta publish timing")?,
     ];
-    assert!(delta_text_children.iter().sum::<u64>() <= delta_stages.text_authority_ns);
+    if delta_text_children.iter().sum::<u64>() > delta_stages.text_authority_ns {
+        return Err("delta text-authority child durations exceed the parent duration".into());
+    }
     let after = adapter.text_authority_update_stats()?;
     let delta_files = text_authority_files(&generation_dir(&root, g2))?;
     let delta_shards = shard_files(&delta_files);

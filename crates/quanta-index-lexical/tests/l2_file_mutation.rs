@@ -735,7 +735,9 @@ fn tombstone_removes_its_file_and_inherits_other_file_units() -> TestResult {
 }
 
 /// Three distinct source files share one search term, but have independent
-/// candidate IDs and source hashes. The oracle is the two retained source
+/// candidate IDs and source hashes.
+///
+/// The oracle is the two retained source
 /// files, constructed without the replaced/deleted file's indexing history.
 fn scored_file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let mut scope = file_scope(path, marker)?;
@@ -1016,7 +1018,7 @@ fn compactor_admission_failure_leaves_only_discardable_unsealed_delta() -> TestR
     }
     drop(failing);
 
-    let restarted = LexicalAdapter::with_state_root(root.clone());
+    let restarted = LexicalAdapter::with_state_root(root);
     let identity = quanta_index_contract::GenerationSnapshot {
         repo_id: deleted.repo_id.clone(),
         revision_id: deleted.revision_id.clone(),
