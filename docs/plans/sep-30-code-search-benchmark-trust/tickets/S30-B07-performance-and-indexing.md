@@ -373,6 +373,25 @@ versus **5.374 s**. Consequently these wall differences are diagnostic, not
 a qualified speedup or an equal-boundary product comparison. Release-profile,
 quiet-host, repeated-scale B07 timing remains `NOT_RUN`.
 
+### 2026-10-04 closure verification cost audit
+
+`python3 -m cProfile -s cumulative tools/ci/source_closure.py verify --manifest
+/private/tmp/qmt10/r-ad9b41e932a6/driver-source-closure.json` ran from the
+clean `d2740319` checkout and passed for all **1,125** bound files. The
+profiled total was **4.783 s** on the contended host: root resolution
+**3.725 s**, including Cargo metadata **1.742 s** and static Python import
+closure **1.924 s**. Python AST parsing was **0.485 s** and AST walking
+**0.752 s**; file read calls across the profile totaled **2.205 s** and
+overlap with those parent stages. SHA-1 and SHA-256 primitives were only
+**0.071 s** and **0.024 s** respectively. These cumulative times overlap and
+must not be summed. The result locates repeated dependency analysis, not
+cryptographic hashing, as the largest avoidable-looking portion of final
+verification. It does not prove that skipping dependency re-derivation would
+preserve closure completeness. Keep the per-batch full verification until a
+matrix-level atomic custody design and independent tamper/refusal tests prove
+an equivalent boundary. The matrix's existing closure reuse already avoids
+repeating the full *capture* stage.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
