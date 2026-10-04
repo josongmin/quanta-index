@@ -40,6 +40,7 @@ MAX_NATIVE_CAPTURE_SECONDS = 3600
 MAX_NATIVE_ROW_SECONDS = 120
 MAX_NATIVE_STDERR_BYTES = 64 * 1024
 MAX_NATIVE_JOBS_BYTES = 16 * 1024 * 1024
+MAX_TRANSLATOR_BYTES = 256 * 1024 * 1024
 
 _NATIVE_WORKER = """import base64, hashlib, json, os, signal, sys, time, urllib.parse, urllib.request
 limit = 16 * 1024 * 1024
@@ -1183,6 +1184,194 @@ def _native_stored_content(
     return binary_sha, rows_sha, owned
 
 
+
+def _capture_translator_bytes(
+    root: Path, container_id: str, server_process: dict, invocation_id: str
+) -> None:
+    """Export a bound proc executable through an owned regular file."""
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    remote = "/tmp/qi-sg-owned-translator-" + invocation_id
+    script = """import hashlib,json,os,re,signal,stat,sys
+pid,ticks,token,expected,limit=sys.argv[1:]
+pid=int(pid);ticks=int(ticks);limit=int(limit)
+if not re.fullmatch(r"[0-9a-f]{32}",token) or not re.fullmatch(r"[0-9a-f]{64}",expected):
+    raise SystemExit(2)
+path="/tmp/qi-sg-owned-translator-"+token
+cancel=path+".cancel"
+proc="/proc/"+str(pid)
+def same():
+    try:
+        row=open(proc+"/stat").read().rpartition(") ")[2].split()
+        return row[0]!="Z" and int(row[19])==ticks
+    except (OSError,ValueError,IndexError):
+        return False
+def deadline(_signum,_frame):
+    raise TimeoutError("translator export timed out")
+signal.signal(signal.SIGALRM,deadline)
+signal.setitimer(signal.ITIMER_REAL,50)
+if os.path.exists(cancel) or not same():
+    raise SystemExit(3)
+process_fd=os.pidfd_open(pid)
+created=False
+try:
+    with open(proc+"/exe","rb",buffering=0) as source:
+        initial=os.fstat(source.fileno())
+        if not stat.S_ISREG(initial.st_mode) or not 0<initial.st_size<=limit:
+            raise SystemExit(4)
+        if os.path.exists(cancel):
+            raise SystemExit(3)
+        fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        created=True
+        h=hashlib.sha256();total=0
+        with os.fdopen(fd,"wb") as output:
+            if os.path.exists(cancel):
+                raise SystemExit(3)
+            while block:=source.read(1048576):
+                if os.path.exists(cancel):
+                    raise SystemExit(3)
+                total+=len(block)
+                if total>limit:
+                    raise SystemExit(5)
+                output.write(block);h.update(block)
+            output.flush();os.fsync(output.fileno())
+        after=os.fstat(source.fileno())
+    written=os.stat(path,follow_symlinks=False)
+    if (total!=initial.st_size or total!=after.st_size or h.hexdigest()!=expected
+            or not same() or os.path.exists(cancel) or written.st_size!=total
+            or not stat.S_ISREG(written.st_mode)):
+        raise SystemExit(6)
+    print(json.dumps({"path":path,"sha256":h.hexdigest(),"bytes":total,
+        "device":written.st_dev,"inode":written.st_ino,"pid":pid,"start_ticks":ticks},sort_keys=True))
+    created=False
+finally:
+    if created:
+        try: os.unlink(path)
+        except FileNotFoundError: pass
+    os.close(process_fd)
+"""
+    cleanup = """import hashlib,json,os,re,signal,stat,sys,time
+token,script_sha,limit=sys.argv[1:]
+limit=int(limit)
+if not re.fullmatch(r"[0-9a-f]{32}",token) or not re.fullmatch(r"[0-9a-f]{64}",script_sha):
+    raise SystemExit(2)
+path="/tmp/qi-sg-owned-translator-"+token
+cancel=path+".cancel"
+try:
+    marker=os.open(cancel,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+except FileExistsError:
+    with open(cancel,"rb") as prior:
+        if prior.read()!=token.encode():
+            raise SystemExit(3)
+else:
+    try:
+        if os.write(marker,token.encode())!=len(token):
+            raise SystemExit(4)
+        os.fsync(marker)
+    finally: os.close(marker)
+def workers():
+    found=[]
+    for name in os.listdir("/proc"):
+        if not name.isdigit(): continue
+        try:
+            argv=open("/proc/"+name+"/cmdline","rb").read().split(b"\\0")[:-1]
+            if (len(argv)==8 and argv[1]==b"-c"
+                    and hashlib.sha256(argv[2]).hexdigest()==script_sha
+                    and argv[5]==token.encode()):
+                state=open("/proc/"+name+"/stat").read().rpartition(") ")[2].split()[0]
+                if state!="Z": found.append(int(name))
+        except (OSError,IndexError): pass
+    return found
+def remove():
+    try: fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    except FileNotFoundError: return
+    try:
+        row=os.fstat(fd)
+        if (not stat.S_ISREG(row.st_mode) or row.st_uid!=os.geteuid()
+                or row.st_nlink!=1 or row.st_size>limit):
+            raise SystemExit(5)
+        current=os.stat(path,follow_symlinks=False)
+        if (current.st_dev,current.st_ino)!=(row.st_dev,row.st_ino):
+            raise SystemExit(7)
+        os.unlink(path)
+    finally: os.close(fd)
+end=time.monotonic()+65
+while True:
+    remove()
+    active=workers()
+    if not active:
+        remove()
+        if not os.path.lexists(path) and not workers(): break
+    if time.monotonic()>=end: raise SystemExit(6)
+    time.sleep(0.1)
+print(json.dumps({"tombstone_created":True,"removed":not os.path.lexists(path),
+    "owned_worker_stopped":True,"path":path},sort_keys=True))
+"""
+    error = None
+    try:
+        code, output, stderr, _ = live._process(
+            ["docker", "exec", container_id, "python3", "-c", script,
+             str(server_process["pid"]), str(server_process["start_ticks"]),
+             invocation_id, server_process["exe_sha256"], str(MAX_TRANSLATOR_BYTES)],
+            60,
+        )
+        if code != 0 or stderr:
+            raise ValueError("native Zoekt translator proc executable export failed")
+        exported = parse_json(output.decode("utf-8", "strict"))
+        if (
+            not isinstance(exported, dict)
+            or set(exported) != {"path", "sha256", "bytes", "device", "inode", "pid", "start_ticks"}
+            or exported["path"] != remote
+            or exported["sha256"] != server_process["exe_sha256"]
+            or exported["pid"] != server_process["pid"]
+            or exported["start_ticks"] != server_process["start_ticks"]
+            or any(type(exported[key]) is not int or exported[key] <= 0
+                   for key in ("bytes", "device", "inode"))
+            or exported["bytes"] > MAX_TRANSLATOR_BYTES
+        ):
+            raise ValueError("native Zoekt translator export identity differs")
+        copied, _stdout, _stderr, _ = live._process(
+            ["docker", "cp", f"{container_id}:{remote}", str(root / "native-translator")],
+            60,
+        )
+        if (
+            copied != 0
+            or not (root / "native-translator").is_file()
+            or (root / "native-translator").is_symlink()
+            or (root / "native-translator").stat().st_size != exported["bytes"]
+            or RawFile.capture(root / "native-translator").sha256
+            != "sha256:" + server_process["exe_sha256"]
+        ):
+            raise ValueError("native Zoekt translator executable bytes differ")
+    except BaseException as caught:
+        error = caught
+    finally:
+        # Cancellation precedes the scan. A delayed exec sees the tombstone
+        # before creation or immediately after O_EXCL and removes only its file.
+        try:
+            code, output, stderr, _ = live._process(
+                ["docker", "exec", container_id, "python3", "-c", cleanup,
+                 invocation_id, sourcegraph.sha256(script.encode()),
+                 str(MAX_TRANSLATOR_BYTES)],
+                80,
+            )
+            result = (
+                parse_json(output.decode("utf-8", "strict"))
+                if code == 0 and not stderr
+                else None
+            )
+            if result != {
+                "tombstone_created": True,
+                "removed": True,
+                "owned_worker_stopped": True,
+                "path": remote,
+            }:
+                raise ValueError("native Zoekt translator export cleanup is unverified")
+        except BaseException as cleanup_error:
+            raise ValueError("native Zoekt translator export cleanup is unverified") from cleanup_error
+    if error is not None:
+        raise error
+
 def _native_stored_content_running(
     root: Path,
     *,
@@ -1234,22 +1423,9 @@ def _native_stored_content_running(
         or RawFile.capture(binary_file).sha256 != "sha256:" + binary_sha
     ):
         raise ValueError("deployed Zoekt binary bytes differ")
-    translated_code, _translated_stdout, _translated_stderr, _elapsed = live._process(
-        [
-            "docker",
-            "cp",
-            "-L",
-            f"{container_id}:/proc/{server_process['pid']}/exe",
-            str(root / "native-translator"),
-        ],
-        60,
+    _capture_translator_bytes(
+        root, container_id, server_process, owned_service["invocation_id"]
     )
-    if (
-        translated_code != 0
-        or RawFile.capture(root / "native-translator").sha256
-        != "sha256:" + server_process["exe_sha256"]
-    ):
-        raise ValueError("native Zoekt translator executable bytes differ")
     with (root / "native-worker.py").open("x", encoding="utf-8") as worker_file:
         worker_file.write(_NATIVE_WORKER)
     script_file = root / "probe_native_contents.py"
