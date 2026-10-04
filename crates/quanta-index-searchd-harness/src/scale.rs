@@ -3476,9 +3476,10 @@ mod tests {
         }
         let _fresh_generation = fresh.seal()?;
         fresh.activate_last_sealed_generation()?;
+        let fresh_rows = query_projection(&mut fresh, &successor)?;
         anyhow::ensure!(
-            query_projection(&mut fresh, &successor)? == final_rows,
-            "fresh rebuild differs from lifecycle rows"
+            fresh_rows == final_rows,
+            "fresh rebuild differs from lifecycle rows: lifecycle={final_rows:?}; fresh={fresh_rows:?}"
         );
         for (index, file) in files.iter().enumerate().skip(1) {
             let index = u32::try_from(index)?;
