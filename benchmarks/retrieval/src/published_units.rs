@@ -13,7 +13,7 @@ use quanta_index_contract::lex::SymbolRecord;
 
 use crate::chunking::Chunk;
 use crate::corpus::{SourceFile, split_line_starts};
-use crate::symbols::SYMBOL_PRODUCER_IDENTITY;
+use crate::symbols::{SYMBOL_PRODUCER_IDENTITY, SymbolNameSpan};
 use crate::{BenchError, BenchResult, sha256_hex};
 
 /// Which published namespace a unit belongs to.
@@ -57,6 +57,8 @@ pub struct PublishedUnit {
     /// Chunk text, present only for chunk units: the sole authority that
     /// can prove an unanchored SDK hit.
     pub chunk_text: Option<String>,
+    /// Present only when bound to the parser's exact local-name capture.
+    pub name_span: Option<SymbolNameSpan>,
 }
 
 /// The typed registry over every unit the batch published.
@@ -131,6 +133,7 @@ impl PublishedUnitRegistry {
                     source_sha256: source.sha256.clone(),
                     producer_identity: chunk.strategy.clone(),
                     chunk_text: Some(chunk.text.clone()),
+                    name_span: None,
                 })?;
             }
         }
@@ -164,10 +167,50 @@ impl PublishedUnitRegistry {
                     source_sha256: source.sha256.clone(),
                     producer_identity: SYMBOL_PRODUCER_IDENTITY.to_string(),
                     chunk_text: None,
+                    name_span: None,
                 })?;
             }
         }
         Ok(registry)
+    }
+
+    /// Bind all symbol names from the same preflight extraction, refusing
+    /// partial inventories, foreign ids, and spans outside admitted definitions.
+    pub fn with_symbol_names(
+        mut self,
+        names: &BTreeMap<String, BTreeMap<String, SymbolNameSpan>>,
+        sources: &BTreeMap<String, SourceFile>,
+    ) -> BenchResult<Self> {
+        let supplied = names.values().map(BTreeMap::len).sum::<usize>();
+        if supplied != self.symbol_count {
+            return Err(BenchError::Protocol("symbol name inventory differs from published units".into()));
+        }
+        for (path, file_names) in names {
+            let source = sources.get(path).ok_or_else(|| {
+                BenchError::Protocol(format!("symbol name source is not admitted: {path}"))
+            })?;
+            validate_source(path, source)?;
+            for (id, name) in file_names {
+                let unit = self.by_id.get_mut(id).ok_or_else(|| {
+                    BenchError::Protocol(format!("symbol name id is not published: {id}"))
+                })?;
+                if unit.kind != PublishedUnitKind::Symbol
+                    || unit.path != *path
+                    || unit.source_sha256 != source.sha256
+                    || !(usize::try_from(unit.byte_start).is_ok_and(|start| start <= name.start_byte)
+                        && name.start_byte < name.end_byte
+                        && usize::try_from(unit.byte_end).is_ok_and(|end| name.end_byte <= end))
+                    || source.text.get(name.start_byte..name.end_byte) != Some(name.name.as_str())
+                {
+                    return Err(BenchError::Protocol(format!("symbol name span differs from published source definition: {id}")));
+                }
+                unit.name_span = Some(name.clone());
+            }
+        }
+        if self.by_id.values().any(|unit| unit.kind == PublishedUnitKind::Symbol && unit.name_span.is_none()) {
+            return Err(BenchError::Protocol("published symbol lacks a parser name capture".into()));
+        }
+        Ok(self)
     }
 
     fn insert(&mut self, unit: PublishedUnit) -> BenchResult<()> {

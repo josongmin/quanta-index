@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     SYMBOL_PRODUCER_GRAMMARS, SYMBOL_PRODUCER_IDENTITY, SymbolExtractError, SymbolLanguage,
-    SymbolRecord, extract_parsed_symbols, parse_tree,
+    ExtractedSymbols, SymbolNameSpan, SymbolRecord, extract_parsed_symbols, parse_tree,
 };
 use crate::corpus::SourceFile;
 use crate::{BenchError, BenchResult, sha256_hex};
@@ -236,6 +236,7 @@ impl Serialize for SymbolPreflightReport {
 pub struct SymbolPreflight {
     report: SymbolPreflightReport,
     symbols: BTreeMap<String, Vec<SymbolRecord>>,
+    names: BTreeMap<String, BTreeMap<String, SymbolNameSpan>>,
     producer_policy: [u8; 32],
 }
 
@@ -247,6 +248,11 @@ impl SymbolPreflight {
     #[must_use]
     pub fn symbols(&self) -> &BTreeMap<String, Vec<SymbolRecord>> {
         &self.symbols
+    }
+
+    #[must_use]
+    pub fn names(&self) -> &BTreeMap<String, BTreeMap<String, SymbolNameSpan>> {
+        &self.names
     }
 
     pub(super) fn into_symbols(self) -> BTreeMap<String, Vec<SymbolRecord>> {
@@ -482,7 +488,7 @@ fn inspect_file(
     options: &SymbolPreflightOptions<'_>,
     deadline: Instant,
     remaining_symbols: usize,
-) -> Result<(SymbolFileReport, Vec<SymbolRecord>), SymbolExtractError> {
+) -> Result<(SymbolFileReport, ExtractedSymbols), SymbolExtractError> {
     let control = ExtractionControl {
         path,
         deadline: Instant::now()
@@ -576,11 +582,11 @@ fn inspect_file(
                     }
                     report.diagnostics_truncated =
                         report.diagnostics_total > report.diagnostics.len();
-                    return Ok((report, Vec::new()));
+                    return Ok((report, ExtractedSymbols::default()));
                 }
                 let symbols =
                     extract_parsed_symbols(language, path, &file.text, &tree, Some(&control))?;
-                let symbol_count = u64::try_from(symbols.len()).map_err(|_overflow| {
+                let symbol_count = u64::try_from(symbols.records.len()).map_err(|_overflow| {
                     SymbolExtractError::ResourceLimit {
                         path: path.to_string(),
                     }
@@ -635,6 +641,7 @@ pub fn preflight_corpus_symbols(
         incomplete_files: 0,
     };
     let mut symbols = BTreeMap::new();
+    let mut names = BTreeMap::new();
     let mut retained = 0usize;
     let mut retained_symbols = 0usize;
     for (path, file) in files {
@@ -646,7 +653,7 @@ pub fn preflight_corpus_symbols(
             options.max_symbols_total.saturating_sub(retained_symbols),
         ) {
             Ok(value) => value,
-            Err(error) => (failure_report(path, file, &error), Vec::new()),
+            Err(error) => (failure_report(path, file, &error), ExtractedSymbols::default()),
         };
         row.diagnostics.truncate(
             options
@@ -664,13 +671,15 @@ pub fn preflight_corpus_symbols(
         }
         report.files.push(row);
         retained_symbols = retained_symbols
-            .checked_add(records.len())
+            .checked_add(records.records.len())
             .ok_or_else(|| BenchError::Protocol("symbol record count overflow".to_string()))?;
-        let _previous = symbols.insert(path.clone(), records);
+        let _previous = names.insert(path.clone(), records.names);
+        let _previous = symbols.insert(path.clone(), records.records);
     }
     Ok(SymbolPreflight {
         report,
         symbols,
+        names,
         producer_policy: policy,
     })
 }

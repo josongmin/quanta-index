@@ -758,6 +758,26 @@ def _file_candidate_block(
     return item
 
 
+def validate_name_span(
+    value: Any, raw: bytes, definition_start: int, definition_end: int, where: str
+) -> dict[str, Any]:
+    """Validate explicit name bytes inside a definition; never infer from context."""
+    span = object_keys(value, ["start_byte", "end_byte", "name"], where)
+    start = nonnegative_int(span["start_byte"], where + ".start_byte")
+    end = positive_int(span["end_byte"], where + ".end_byte")
+    name = string(span["name"], where + ".name")
+    require(
+        definition_start <= start < end <= definition_end,
+        where + " name span escapes its definition",
+    )
+    try:
+        actual = raw[start:end].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise EvidenceError(where + " name span cuts a UTF-8 boundary") from exc
+    require(actual == name, where + " name differs from source bytes")
+    return span
+
+
 def block(
     source: SourceSnapshot,
     value: Any,
@@ -840,7 +860,7 @@ def block(
         if "score" in item:
             require(is_finite_json_number(item["score"]), where + ".score must be finite")
         if "span_accounting" in item:
-            accounting = object_keys(
+            accounting = object_keys_optional(
                 item["span_accounting"],
                 [
                     "unit_kind",
@@ -852,6 +872,7 @@ def block(
                     "sdk_end_line",
                     "extra_context_bytes",
                 ],
+                ["name_span"],
                 where + ".span_accounting",
             )
             require(
@@ -883,6 +904,11 @@ def block(
                 == (end_byte - start_byte) - (indexed_end - indexed_start),
                 where + " context expansion differs from source spans",
             )
+            if "name_span" in accounting:
+                require(accounting["unit_kind"] == "symbol", where + " name span requires symbol unit")
+                validate_name_span(
+                    accounting["name_span"], raw, indexed_start, indexed_end, where + ".name_span"
+                )
     if "grade" in item:
         grade_value(item["grade"], where)
     return item
@@ -953,7 +979,11 @@ def validate_judgments(
             fields = ["path", "file_sha256", "grade"]
             if kind == "declaration_judgments":
                 fields.extend(["start_byte", "end_byte"])
-            item = object_keys(value, fields, where)
+            item = (
+                object_keys_optional(value, fields, ["name_span"], where)
+                if kind == "declaration_judgments"
+                else object_keys(value, fields, where)
+            )
             path = string(item["path"], where + ".path")
             require(path in universe, f"{where} file excluded from file universe: {path}")
             raw, _lines, file_digest = source.file(path)
@@ -972,6 +1002,8 @@ def validate_judgments(
                 except UnicodeDecodeError as exc:
                     raise EvidenceError(f"{where} cuts a UTF-8 boundary") from exc
                 require(bool(TOKEN_RE.search(selected)), f"{where} has no retrievable token")
+                if "name_span" in item:
+                    validate_name_span(item["name_span"], raw, start, end, where + ".name_span")
                 key = (path, start, end)
             require(key not in seen, f"duplicate {kind}: {task_id} {key}")
             seen.add(key)
@@ -1420,8 +1452,16 @@ def validate_suite(
                             and not partition["query_is_declaration_name"],
                             f"intended_name query collides with a source identifier: {task_id}",
                         )
-                expected = active_oracle.expected_rows(
+                oracle_args = (
                     task["source_oracle"]["contract"], oracle_query, task["source_oracle"]["unit"]
+                )
+                with_names = task["source_oracle"]["unit"] == "symbol" and any(
+                    "name_span" in row for row in task.get("declaration_judgments", [])
+                )
+                expected = (
+                    active_oracle.expected_rows(*oracle_args, include_name_spans=True)
+                    if with_names
+                    else active_oracle.expected_rows(*oracle_args)
                 )
             except (
                 source_oracle.SourceOracleError,
@@ -2711,6 +2751,36 @@ def declaration_mrr_at_k(
     return 0.0
 
 
+def _declaration_name_match(candidate: dict[str, Any], judgment: dict[str, Any]) -> bool:
+    span = candidate.get("span_accounting", {})
+    return (
+        _declaration_match(candidate, judgment)
+        and isinstance(judgment.get("name_span"), dict)
+        and span.get("name_span") == judgment["name_span"]
+    )
+
+
+def declaration_name_recall_at_k(
+    candidates: list[dict[str, Any]], judgments: list[dict[str, Any]], k: int
+) -> float:
+    positive = [row for row in judgments if row["grade"] > 0]
+    if not positive:
+        return 0.0
+    return sum(
+        any(_declaration_name_match(item, label) for item in candidates[:k]) for label in positive
+    ) / len(positive)
+
+
+def declaration_name_mrr_at_k(
+    candidates: list[dict[str, Any]], judgments: list[dict[str, Any]], k: int
+) -> float:
+    positive = [row for row in judgments if row["grade"] > 0]
+    for rank, item in enumerate(candidates[:k], 1):
+        if any(_declaration_name_match(item, label) for label in positive):
+            return 1.0 / rank
+    return 0.0
+
+
 def judgment_diagnostics(
     suite: dict[str, Any],
     run: dict[str, Any],
@@ -2727,6 +2797,8 @@ def judgment_diagnostics(
     ]
     if not kinds:
         return None
+    if "declaration_judgments" in kinds:
+        kinds.append("declaration_name_recovery")
     require(
         suite["comparison_contract"]["top_k"] >= NDCG_K,
         "independent judgment diagnostics require top_k >= 10",
@@ -2746,6 +2818,7 @@ def judgment_diagnostics(
         }
     evaluation_contract = declared_evaluation_contract(list(tasks.values()))
     for kind in kinds:
+        judgment_kind = "declaration_judgments" if kind == "declaration_name_recovery" else kind
         if kind == "file_judgments":
             expected_unit = "distinct_file"
             # Hit/recall read the observed top 10 under any ordering; NDCG is a
@@ -2763,6 +2836,11 @@ def judgment_diagnostics(
                 "recall_at_10": declaration_recall_at_k,
                 "mrr_at_10": declaration_mrr_at_k,
             }
+            if kind == "declaration_name_recovery":
+                metrics = {
+                    "recall_at_10": declaration_name_recall_at_k,
+                    "mrr_at_10": declaration_name_mrr_at_k,
+                }
         by_route: dict[str, Any] = {}
         eligible_scores: dict[str, dict[str, dict[str, float]]] = {}
         per_query: list[dict[str, Any]] = []
@@ -2787,13 +2865,19 @@ def judgment_diagnostics(
                     and result.get("file_collection") is not None
                 )
                 reason = None
-                if rank_unit != expected_unit:
+                if judgment_kind not in tasks[task_id]:
+                    reason = "missing_independent_judgments"
+                elif kind == "declaration_name_recovery" and not all(
+                    "name_span" in row for row in tasks[task_id][judgment_kind]
+                ):
+                    reason = "missing_independent_name_gold"
+                elif rank_unit != expected_unit:
                     reason = "rank_unit_mismatch"
                 elif status not in SCORED_STATUSES and not (
                     status == "abstained" and (system == "quanta" or complete_semble_file)
                 ):
                     reason = "execution_status_" + status
-                elif kind == "declaration_judgments" and (
+                elif judgment_kind == "declaration_judgments" and (
                     run.get("span_accounting_version") != 1
                     or system != "quanta"
                     or any(
@@ -2802,13 +2886,18 @@ def judgment_diagnostics(
                     )
                 ):
                     reason = "missing_published_symbol_authority"
+                elif kind == "declaration_name_recovery" and any(
+                    not isinstance(item.get("span_accounting", {}).get("name_span"), dict)
+                    for item in ranked
+                ):
+                    reason = "missing_published_name_authority"
                 elif len(ranked) < NDCG_K and not (
                     status in ("success", "abstained")
                     and (system == "quanta" or complete_semble_file)
                 ):
                     reason = "insufficient_depth_without_exhaustion"
                 elif tasks[task_id].get("judgment_policy") == COMPLETE_JUDGMENT_POLICY:
-                    judgments = tasks[task_id][kind]
+                    judgments = tasks[task_id][judgment_kind]
                     if kind == "file_judgments":
                         judged_files = {item["path"] for item in judgments}
                         if any(item["path"] not in judged_files for item in ranked[:NDCG_K]):
@@ -2835,7 +2924,7 @@ def judgment_diagnostics(
                     )
                     continue
                 values = {
-                    metric: scorer(ranked, tasks[task_id][kind], NDCG_K)
+                    metric: scorer(ranked, tasks[task_id][judgment_kind], NDCG_K)
                     for metric, scorer in metrics.items()
                 }
                 score_by_task[task_id] = values

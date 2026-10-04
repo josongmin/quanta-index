@@ -99,6 +99,15 @@
         "grade": {"type": "integer", "minimum": 0, "maximum": 3}
       }
     },
+    "name_span": {
+      "type": "object", "additionalProperties": false,
+      "required": ["start_byte", "end_byte", "name"],
+      "properties": {
+        "start_byte": {"type": "integer", "minimum": 0},
+        "end_byte": {"type": "integer", "minimum": 1},
+        "name": {"type": "string", "minLength": 1}
+      }
+    },
     "declaration_judgment": {
       "type": "object", "additionalProperties": false,
       "required": ["path", "file_sha256", "start_byte", "end_byte", "grade"],
@@ -107,6 +116,7 @@
         "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "start_byte": {"type": "integer", "minimum": 0},
         "end_byte": {"type": "integer", "minimum": 1},
+        "name_span": {"$ref": "#/$defs/name_span"},
         "grade": {"type": "integer", "minimum": 0, "maximum": 3}
       }
     },

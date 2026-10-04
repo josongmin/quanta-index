@@ -848,7 +848,7 @@ fn prove_hit(
         .map_err(|err| BenchError::Protocol(format!("SDK hit start byte cannot fit u64: {err}")))?;
     let end_byte = u64::try_from(end)
         .map_err(|err| BenchError::Protocol(format!("SDK hit end byte cannot fit u64: {err}")))?;
-    let candidate = serde_json::json!({
+    let mut candidate = serde_json::json!({
         "path": hit.path,
         "start_byte": start_byte,
         "end_byte": end_byte,
@@ -869,6 +869,10 @@ fn prove_hit(
             "extra_context_bytes": extra_context_bytes,
         },
     });
+    if let Some(name_span) = &unit.name_span {
+        candidate["span_accounting"]["name_span"] = serde_json::to_value(name_span)
+            .map_err(|err| BenchError::Protocol(format!("cannot encode symbol name span: {err}")))?;
+    }
     Ok(ProvenHit {
         candidate,
         scored_span: (hit.path.clone(), start_byte, end_byte),

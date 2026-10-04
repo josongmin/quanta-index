@@ -108,12 +108,9 @@ def test_opengrok_nl_capture_preserves_submitted_and_effective_query(tmp_path, m
     assert row["request_mode"] == "natural_language_file_search"
     assert len(calls) == 1
     assert (tmp_path / "raw.json").read_bytes() == raw
-    assert (
-        live._opengrok_response(
-            config, task, [], tmp_path, {}, 200, "application/json", raw, 2.0, literal_query=True
-        )
-        == {key: value for key, value in row.items() if key != "completed_response"}
-    )
+    assert live._opengrok_response(
+        config, task, [], tmp_path, {}, 200, "application/json", raw, 2.0, literal_query=True
+    ) == {key: value for key, value in row.items() if key != "completed_response"}
     live._validate_completed_row(row, row["file_paths_top_10"])
 
 
@@ -185,9 +182,7 @@ def test_completed_clock_covers_request_and_normalization_but_excludes_persisten
         live._validate_completed_row(row, ["forged.go"])
 
 
-def test_sourcegraph_completed_clock_excludes_evidence_replay_and_raw_writes(
-    tmp_path, monkeypatch
-):
+def test_sourcegraph_completed_clock_excludes_evidence_replay_and_raw_writes(tmp_path, monkeypatch):
     ticks = [0]
     task = {"task_id": "T1", "query": "symbol"}
     config = {"repository": "benchmark/fixture", "server_image_digest": "a" * 64}
@@ -223,9 +218,7 @@ def test_sourcegraph_completed_clock_excludes_evidence_replay_and_raw_writes(
     monkeypatch.setattr(live, "_http", http)
     monkeypatch.setattr(live, "_sourcegraph_response", replay)
     monkeypatch.setattr(live, "_write", write)
-    row = live._sourcegraph(
-        config, task, [], manifest, tmp_path, {}, tmp_path / "raw.stream"
-    )
+    row = live._sourcegraph(config, task, [], manifest, tmp_path, {}, tmp_path / "raw.stream")
     assert row["completed_response"]["duration_ns"] == 10_000_000
     assert ticks[0] == 39_000_000
     live._validate_completed_row(row, [])

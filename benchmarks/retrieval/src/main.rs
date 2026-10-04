@@ -1172,7 +1172,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         &selection.chunks,
         symbol_preflight.symbols(),
         &by_path,
-    )?;
+    )?
+    .with_symbol_names(symbol_preflight.names(), &by_path)?;
 
     let searchd_bin =
         resolve_searchd_binary(args.flags.get("searchd-bin").map(PathBuf::from).as_deref())?;

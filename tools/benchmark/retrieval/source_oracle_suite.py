@@ -81,7 +81,9 @@ def derive_suites(repo: Path, baseline: dict[str, Any]) -> dict[str, tuple[dict,
             task["query_intent"] = "bare_symbol"
             task["source_oracle"] = {"contract": contract, "unit": unit}
             task["judgment_policy"] = evaluator.SOURCE_ORACLE_JUDGMENT_POLICY
-            task[kind] = oracle.expected_rows(contract, task["query"], unit)
+            task[kind] = oracle.expected_rows(
+                contract, task["query"], unit, include_name_spans=(unit == "symbol")
+            )
             task["gold"] = evaluator.source_oracle_gold(source, oracle, contract, task["query"])
             task["answerable"] = bool(task[kind])
             evaluator.require(

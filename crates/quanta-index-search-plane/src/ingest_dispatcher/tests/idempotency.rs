@@ -7,7 +7,8 @@
 //! finalizes without re-embedding.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
+use std::time::Duration;
 
 use quanta_index_contract::lex::DirtyRecord;
 use quanta_index_contract::{
@@ -1023,6 +1024,105 @@ fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
         != first_stages
     {
         return Err("cold journal replay must not issue provider stages".into());
+    }
+    Ok(())
+}
+
+/// Pause after actual source materialization has returned but before the
+/// dispatcher commits the journal. Cancelling the transport budget here
+/// must not turn a completed, admitted mutation into a rollback claim.
+#[test]
+fn cancelled_peer_after_admitted_apply_still_commits_and_replays_exactly() -> TestRes {
+    use quanta_index_core::{IdempotencyCatalogPort as _, OperationInspectV1};
+
+    struct PauseAfterApply {
+        inner: DirectSearchCorpusMaterializer,
+        entered: mpsc::Sender<bool>,
+        release: Mutex<mpsc::Receiver<()>>,
+        applies: AtomicUsize,
+    }
+
+    impl SearchCorpusIngestPort for PauseAfterApply {
+        fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+            self.inner.preflight_batch(batch)
+        }
+
+        fn publish_batch(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            budget: &RequestBudgetV1,
+        ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+            let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
+            let outcome = self.inner.publish_batch(batch, budget);
+            self.entered.send(outcome.is_ok()).map_err(|error| {
+                CoreError::Storage(format!("post-apply fixture lost observer: {error}"))
+            })?;
+            self.release
+                .lock()
+                .map_err(|error| CoreError::Storage(format!("fixture gate poisoned: {error}")))?
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| {
+                    CoreError::Storage(format!("post-apply gate not released: {error}"))
+                })?;
+            outcome
+        }
+    }
+
+    let catalog = memory_catalog();
+    let (inner, _fakes) = search_corpus_materializer(Arc::clone(&catalog), true, false);
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let port = Arc::new(PauseAfterApply {
+        inner,
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+        applies: AtomicUsize::new(0),
+    });
+    let dispatcher = search_corpus_dispatcher_with_port(port.clone(), Arc::clone(&catalog));
+    let batch = fixture_search_corpus_batch()?;
+    let key = IdempotencyKeyV1 {
+        kind: IngestOperationKindV1::SearchCorpus,
+        repo_id: batch.repo_id.clone(),
+        revision_id: batch.revision_id.clone(),
+        generation: batch.generation,
+        batch_digest: batch.batch_digest.clone(),
+    };
+    let budget = RequestBudgetV1::unbounded();
+    let cancel = budget.cancel_handle();
+    let first_batch = batch.clone();
+    let first = std::thread::spawn(move || {
+        dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(first_batch),
+            &budget,
+        )
+    });
+    let materialized = entered_rx.recv_timeout(Duration::from_secs(5))?;
+    let in_flight = catalog.inspect(&key)?;
+    cancel.cancel();
+    release_tx.send(())?;
+    let first_response = first.join().map_err(|_| "publish thread panicked")?;
+    if !materialized || !matches!(in_flight, OperationInspectV1::InFlight { .. }) {
+        return Err(
+            format!("fixture did not reach admitted post-apply state: {in_flight:?}").into(),
+        );
+    }
+    let receipt = receipt_of(first_response)?;
+    if !receipt.applied || receipt.durable_sequence == 0 {
+        return Err(
+            format!("cancelled peer lost the admitted terminal receipt: {receipt:?}").into(),
+        );
+    }
+    if !matches!(catalog.inspect(&key)?, OperationInspectV1::Committed { .. }) {
+        return Err("admitted publish did not settle committed".into());
+    }
+    let replay = receipt_of(
+        search_corpus_dispatcher_with_port(port.clone(), Arc::clone(&catalog)).dispatch(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
+            &RequestBudgetV1::unbounded(),
+        ),
+    )?;
+    if replay != receipt.replayed() || port.applies.load(Ordering::SeqCst) != 1 {
+        return Err(format!("exact replay re-applied or changed receipt: {replay:?}").into());
     }
     Ok(())
 }

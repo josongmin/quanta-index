@@ -11,7 +11,7 @@
 //! Anonymous definitions never receive an invented public name; they are
 //! simply not emitted as named symbols.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolRecord, SymbolRelationship, SymbolSpan,
@@ -60,6 +60,21 @@ const _: &str = tree_sitter_javascript::QUANTA_GRAMMAR_BUILD_ID;
 
 /// Producer identity for batch digests.
 pub const SYMBOL_PRODUCER_IDENTITY: &str = "source-bound-symbols-v2";
+
+/// Parser-captured local-name bytes, retained for benchmark proof without
+/// changing the product SymbolRecord wire contract.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SymbolNameSpan {
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub name: String,
+}
+
+#[derive(Default)]
+struct ExtractedSymbols {
+    records: Vec<SymbolRecord>,
+    names: BTreeMap<String, SymbolNameSpan>,
+}
 
 /// One supported extraction language.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -512,6 +527,8 @@ struct RawDefinition {
     containers: Vec<String>,
     byte_start: usize,
     byte_end: usize,
+    name_start_byte: usize,
+    name_end_byte: usize,
 }
 
 /// Classify the owner of a TypeScript method signature.
@@ -659,7 +676,7 @@ fn query_definitions(
         let def_node = def_node.ok_or_else(|| SymbolExtractError::ProducerDefect {
             detail: "definition query matched without its required @def capture".to_string(),
         })?;
-        let name_node = name_node.ok_or_else(|| SymbolExtractError::ProducerDefect {
+        let mut name_node = name_node.ok_or_else(|| SymbolExtractError::ProducerDefect {
             detail: "definition query matched without its required @name capture".to_string(),
         })?;
         if matches!(language, SymbolLanguage::TypeScript { .. })
@@ -687,6 +704,17 @@ fn query_definitions(
                     detail: "dotted namespace has no local identifier".to_string(),
                 })?;
             containers.extend(parts.into_iter().rev());
+            while matches!(name_node.kind(), "nested_identifier" | "member_expression") {
+                if let Some(control) = control {
+                    control.check()?;
+                }
+                name_node = required_child(name_node, "property", "dotted namespace local name")?;
+            }
+            if node_text(name_node, source, "namespace local name")? != local_name {
+                return Err(SymbolExtractError::ProducerDefect {
+                    detail: "dotted namespace local-name capture differs from its identity".into(),
+                });
+            }
         }
         // Named ancestors qualify definitions without inventing names for
         // anonymous scopes. Python class bodies share their namespace through
@@ -785,6 +813,8 @@ fn query_definitions(
             containers,
             byte_start: def_node.start_byte(),
             byte_end: def_node.end_byte(),
+            name_start_byte: name_node.start_byte(),
+            name_end_byte: name_node.end_byte(),
         });
     }
     if let Some(control) = control {
@@ -827,7 +857,7 @@ pub fn extract_symbols(path: &str, source: &str) -> Result<Vec<SymbolRecord>, Sy
         });
     };
     let tree = parse(language, path, source)?;
-    extract_parsed_symbols(language, path, source, &tree, None)
+    Ok(extract_parsed_symbols(language, path, source, &tree, None)?.records)
 }
 
 fn extract_parsed_symbols(
@@ -836,7 +866,7 @@ fn extract_parsed_symbols(
     source: &str,
     tree: &tree_sitter::Tree,
     control: Option<&ExtractionControl<'_>>,
-) -> Result<Vec<SymbolRecord>, SymbolExtractError> {
+) -> Result<ExtractedSymbols, SymbolExtractError> {
     let definitions = query_definitions(language, tree, source, control)?;
     let line_index = LineIndex::new(source);
     let language_code = LanguageCode::from_code_str(language.language_code()).ok_or_else(|| {
@@ -846,6 +876,7 @@ fn extract_parsed_symbols(
     })?;
     let repo_path = RepoRelativePath::new(path.to_string());
     let mut records = Vec::with_capacity(definitions.len());
+    let mut names = BTreeMap::new();
     let mut seen_ids: BTreeSet<String> = BTreeSet::new();
     let mut raw = definitions;
     raw.sort_by(|left, right| {
@@ -895,6 +926,24 @@ fn extract_parsed_symbols(
                 symbol_id,
             });
         }
+        if !(definition.byte_start <= definition.name_start_byte
+            && definition.name_start_byte < definition.name_end_byte
+            && definition.name_end_byte <= definition.byte_end)
+            || source.get(definition.name_start_byte..definition.name_end_byte)
+                != Some(definition.local_name.as_str())
+        {
+            return Err(SymbolExtractError::ProducerDefect {
+                detail: format!("local-name capture escapes definition or differs from source: {path}"),
+            });
+        }
+        names.insert(
+            symbol_id.clone(),
+            SymbolNameSpan {
+                start_byte: definition.name_start_byte,
+                end_byte: definition.name_end_byte,
+                name: definition.local_name.clone(),
+            },
+        );
         records.push(SymbolRecord {
             symbol_id: SymbolId::new(symbol_id),
             repo_relative_path: repo_path.clone(),
@@ -938,7 +987,7 @@ fn extract_parsed_symbols(
             relationship: SymbolRelationship::Def,
         });
     }
-    Ok(records)
+    Ok(ExtractedSymbols { records, names })
 }
 
 /// Extract symbols for a whole admitted corpus.

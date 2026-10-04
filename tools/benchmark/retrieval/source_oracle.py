@@ -721,7 +721,11 @@ class SourceOracleIndex:
         self._name_match_cache[(contract, query)] = tuple(matches)
         return matches
 
-    def expected_rows(self, contract: str, query: str, unit: str) -> list[dict[str, Any]]:
+    def expected_rows(
+        self, contract: str, query: str, unit: str, *, include_name_spans: bool = False
+    ) -> list[dict[str, Any]]:
+        if include_name_spans and not (contract in DECLARATION_NAME_CONTRACTS and unit == "symbol"):
+            raise SourceOracleError("name-span gold requires a declaration-name symbol contract")
         if contract in DECLARATION_NAME_CONTRACTS and unit in ("symbol", "distinct_file"):
             matches = self._name_matches(contract, query)
             if unit == "symbol":
@@ -732,8 +736,16 @@ class SourceOracleIndex:
                         "start_byte": start,
                         "end_byte": end,
                         "grade": 3,
+                        **(
+                            {"name_span": {
+                                "start_byte": name_start,
+                                "end_byte": name_end,
+                                "name": self.files[path][0][name_start:name_end].decode("utf-8"),
+                            }}
+                            if include_name_spans else {}
+                        ),
                     }
-                    for path, _name_start, _name_end, start, end in sorted(matches)
+                    for path, name_start, name_end, start, end in sorted(matches)
                 ]
             paths = {path for path, *_spans in matches}
         elif contract == ASCII_IDENTIFIER_WORD and unit == "distinct_file":

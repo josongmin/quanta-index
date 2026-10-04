@@ -1020,6 +1020,12 @@
         "span_accounting": {
           "type": "object",
           "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {"required": ["name_span"]},
+              "then": {"properties": {"unit_kind": {"const": "symbol"}}}
+            }
+          ],
           "required": [
             "unit_kind",
             "unit_id",
@@ -1065,6 +1071,16 @@
             "extra_context_bytes": {
               "type": "integer",
               "minimum": 0
+            },
+            "name_span": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["start_byte", "end_byte", "name"],
+              "properties": {
+                "start_byte": {"type": "integer", "minimum": 0},
+                "end_byte": {"type": "integer", "minimum": 1},
+                "name": {"type": "string", "minLength": 1}
+              }
             },
             "source_repo_id": {
               "type": "string",

@@ -462,7 +462,11 @@ def _completed_native(paths: list[str], start_ns: int) -> dict:
 def _validate_completed_row(row: dict, paths: list[str]) -> None:
     timing = row.get("completed_response")
     if not isinstance(timing, dict) or set(timing) != {
-        "boundary", "clock", "duration_ns", "output_bytes", "output_sha256"
+        "boundary",
+        "clock",
+        "duration_ns",
+        "output_bytes",
+        "output_sha256",
     }:
         raise ValueError("completed response metadata is absent or malformed")
     encoded = canonical_json({"status": "success", "file_paths_top_10": paths}).encode("utf-8")
