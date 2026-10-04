@@ -22,6 +22,12 @@
 - actual binary ring wrap(300 requests), process-instance restart/prior-window discard, payload-free query correlation, active-root loss, inventory-read failure/reopen, 1-file ranked-row OS restart를 포함한다. child는 matching `CARGO_BIN_EXE`와 hash-dev embedder, private0700 state를 사용한다. learned semantic 품질, 모든 scale tier의 OS restart, 다른 실제 OS UID refusal 및 Linux release qualification은 `NOT_RUN`이다.
 - `VERIFIED`: 유지보수 fatal ownership 및 process fixture Clippy 수리 뒤 `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked --test-threads 4` — exit0,26 selected/run/passed,0 skipped,tests16.869s. 실제 backend-root loss는16.868s, inventory failure/reopen은11.821s에 통과했다. 이 owner 파일과 product bytes는 formal source `f3f7c68993f383e4ac5fdca761c111fe3d0edc3b`와 같다. source904의 과거 결과를 재사용한 것이 아니며 위 제외 범위를 유지한다.
 
+## 2026-10-05 정적 잔여 판정
+
+- 실제 binary child의 request-ID/queue/backend/terminal correlation, provider ticket, 300-request ring wrap과 dropped window, process-instance restart, active-root loss는 `process_readiness_owner_v1`의 기존 fixtures가 소유한다. injected peer credentials와 같은 UID의 shared socket 검증은 다른 실제 OS UID의 증거가 아니다. 기록된 PASS를 이번에 재실행하지 않았다.
+- **다른 실제 OS UID의 operator refusal 및 Linux release 실행은 입력 미확보로 `BLOCKED`**, 이 환경에서 `NOT_RUN`이다. Linux runner에 실제 owner·다른 UID, 해당 UID로 실행할 matching client binary, 경로 traversal 권한이 필요하다. 기존 `E2eRuntime::boot_with_socket_access`는 공유 socket을 접근 가능한 `/tmp` 아래에 두고 기존 `SearchdConfig::with_socket_overrides`를 사용하므로 새 production API는 필요 없다. OS credential을 가진 다른 UID의 Admin `events` 거절과 무노출, owner 성공, 허용된 non-Admin 요청 성공을 각각 검증해야 한다. 기본 `--state-root`의 0700 경로 아래 socket만으로는 다른 UID의 accept 경계를 검증할 수 없다.
+- 정확한 현재 owner selector: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked --test-threads 4`. shared socket 기존 fixture selector: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked -E 'test(e2e_socket_access)'`. 둘 다 이번 정적 판정에서는 `NOT_RUN`이며 real two-UID/Linux case의 대체 증거가 아니다.
+
 ## 배경과 현재 상태
 
 현재 split.rs의 ProcessRequestEventsV1 request/response, control dispatcher의 ProcessRequestEventsPort, SDK observability.request_events와 searchctl rendering이 존재한다. IpcServerCounters도 process_instance/sequence/drop window를 제공한다. SEP21 옛 계획의 새 endpoint 구현 항목을 그대로 재구현하면 중복된다.

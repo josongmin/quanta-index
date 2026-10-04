@@ -18,6 +18,12 @@ client timeout 이후 durable publish 상태와 exact operation replay를 검증
 
 SDK default I/O deadline30s, ingest budget120s, process-wide serial ingest admission과 query admission은 별도다. runtime lib `timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_reassembly`는 2초 client policy의 실제 UDS read timeout, peer hangup metric, journal Committed, runtime 재조립 뒤 exact replay와 physical build 0회를 확인한다. 기본30초 timeout과 별도 OS process daemon 결과로 확대하지 않는다. async ACK/parallel dispatch를 새로 도입할 근거는 없다.
 
+## 2026-10-05 정적 잔여 판정
+
+- runtime lib의 controlled lexical build-port gate는 admitted operation을 멈춘 상태에서 실제 UDS의 2초 read timeout·peer hangup, Committed inspect, 재조립 후 exact replay와 conflicting digest refusal을 검사한다. `runtime_fast_suite`의 `binary_restart_replays_original_operation_and_refuses_conflicting_source_digest`는 두 별도 daemon child 사이의 durable replay를 검사하되 timeout을 유도하지 않는다. 기록된 PASS를 이번에 재실행하지 않았다.
+- **기본 30초 SDK deadline을 넘는 별도 OS-child admitted publish 결합 case는 `NOT_RUN`**이다. controlled build-port wrapper는 runtime lib에만 주입되며 production binary에는 해당 gate가 없다. 임의 대용량 입력이나 OS I/O 지연으로 30초 초과를 기대하면 admission 시점과 결과가 비결정적이다. child-visible admitted build gate가 없다면 동일 계약의 결정적 OS-process proof를 만들 수 없다. 이 잔여 증명만을 위한 production hook은 추가하지 않는다.
+- 정확한 owner selectors: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --lib --all-features --locked -E 'test(timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_reassembly)'`; `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_fast_suite --all-features --locked -E 'test(binary_restart_replays_original_operation_and_refuses_conflicting_source_digest)'`. 둘 다 이번 정적 판정에서는 `NOT_RUN`이다.
+
 ## 착수 입력
 
 - controlled slow publish port·operation identity/digest, actual SDK timeout/hangup

@@ -49,6 +49,12 @@ selection.resolve_generation_selector_pin은 catalog head를 pin으로 해석하
 - 이 fixture는 실제 UDS/runtime과 양 track의 physical retirement를 검사하지만 daemon은 같은 test process에서 구동한다. 별도 OS-child combined race 또는 Linux release proof로 승격하지 않는다. Accepted 계약의 retire-first typed refusal은 강한 pin-transfer 보장을 새로 채택했다는 뜻이 아니다.
 - 유지보수 fatal ownership 수리 뒤 current `just rust-profile test-daemon`도 exit0,213 passed/1 skipped,tests231.161s였다. 후속 formal source는 clean `f3f7c68993f383e4ac5fdca761c111fe3d0edc3b`다. 위 동일-process fixture의 실제 범위를 확장하지 않는다.
 
+## 2026-10-05 정적 잔여 판정
+
+- dispatcher의 `active_selection_reaped_before_view_acquisition_refuses_without_opening_g1`은 G1 선택→G2/G3 퇴역→view 획득 순서를 barrier로 고정하고 typed refusal 및 lexical open 0회를 검사한다. `runtime_fast_suite`의 `retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3`는 실제 UDS와 양 track의 물리적 G1 퇴역·G3 head/token을 검사하지만 daemon은 같은 test process에서 구동한다. 기록된 PASS를 이번에 재실행하지 않았다.
+- **별도 OS child 내부의 동일 select/acquire 경합은 `NOT_RUN`**이다. 기존 `SearchdBinaryProcess`는 child 기동·종료와 UDS 요청만 제어하며 Active 선택 직후/read-view 획득 직전의 child-visible barrier가 없다. 순차적으로 G1을 퇴역시킨 뒤 child에 질의하는 case는 이 경합을 증명하지 않는다. 현 Accepted 계약의 retire-first refusal을 넘는 pin-transfer 보장이나 production hook은 이 잔여 증명을 위해 새로 채택하지 않는다.
+- 정확한 owner selectors: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-search-plane --lib --all-features --locked -E 'test(active_selection_reaped_before_view_acquisition_refuses_without_opening_g1)'`; `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_fast_suite --all-features --locked -E 'test(retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3)'`. 둘 다 이번 정적 판정에서는 `NOT_RUN`이다.
+
 ## 검증 계획 — 위 실행 scope 외 NOT_RUN
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.

@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | 새 bat5제품 union·18tasks/51pairs·실제3 AI 역할 판단/raw 재생·원본358+신규51=409 canonical merged 발행 `VERIFIED`; 새 admission/final capture 미완료. 과거 first-six raw replay `BLOCKED` |
+| 실행 상태 | bat5제품 union·18tasks/51pairs·실제3 AI 역할 판단/raw 재생·원본358+신규51=409 merged, current0e6 admission 및 warmup0/1 final pair/독립 verdict/parity `VERIFIED`. 수정 scorer의 새 native3/join·다른 저장소 union 검수 미완료; 과거 first-six raw replay `BLOCKED` |
 | 선행 결과 | [O4-E1-01](O4-E1-01-original-review-resume.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)

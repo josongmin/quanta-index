@@ -30,6 +30,12 @@
 - `VERIFIED`: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd --lib --all-features --locked -E 'test(/^app::(maintenance|supervisor)::/)' --success-output final` — exit0, 13 selected/13 passed/97 filtered, tests0.174s. controlled worker panic, poison, terminal 없음, 실제 filesystem walker가 시작한 뒤 timer callback panic, long walk 동안 heartbeat, handoff/정상 stop을 포함한다. source는 `561e5eb96c3fa52fa863d721b48447f047b110e8`의 maintenance/supervisor이며 동시 dirty SDK/harness 테스트는 이 selector의 입력이 아니다.
 - `VERIFIED`: sourcebf 중앙 owner972 배치의 runtime supervisor25가 모두 통과했고, current `just rust-profile test-daemon`은 exit0,213 passed/1 skipped,tests231.161s였다. 후속 `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked --test-threads 4`도 exit0,26 passed/0 skipped,tests16.869s였다. 이 결과는 OS-child slow-disk injection이나 Linux release qualification이 아니다.
 
+## 2026-10-05 정적 잔여 판정
+
+- `a_disk_walk_longer_than_three_cadences_does_not_stale_the_health_timer`는 controlled port를 20ms cadence 3회보다 길게 막고 5 ticks, fresh heartbeat, skipped meter를 검사한다. `process_readiness_owner_v1`의 실제 binary child는 active backend root loss/restoration을 별도로 검사한다. 이 둘을 OS-child slow walk 한 건으로 합성하지 않으며 기록된 PASS를 이번에 재실행하지 않았다.
+- **실제 daemon child의 controlled slow-disk 3-cadence case는 `NOT_RUN`**이다. production binary config에는 cadence 설정만 있고 filesystem walker를 child에서 결정적으로 멈추는 seam은 없다. 큰 디렉터리나 느린 매체에 의존한 elapsed-time case는 독립 oracle가 아니다. 이를 요구하려면 기존 disk-meter owner가 child에서 제어할 수 있는 walker gate와 종료 custody가 필요하지만, 이 증명만을 위해 새 operational API나 test-only production hook은 추가하지 않는다.
+- 정확한 owner selectors: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd --lib --all-features --locked -E 'test(a_disk_walk_longer_than_three_cadences_does_not_stale_the_health_timer)'`; `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked -E 'test(binary_daemon_detects_lost_active_backend_root)'`. 둘 다 이번 정적 판정에서는 `NOT_RUN`이다.
+
 ## 배경과 현재 상태
 
 변경 전 maintenance.tick은 observe_backend 뒤 refresh_disk_usage를 동기 실행하고 tick 끝에서 heartbeat를 기록했다. heartbeat_fresh/required_backend_fresh는 3cadence를 사용한다. disk walk는 logical regular-file bytes이며 physical allocation/merge high water가 아니다. 현재 구현은 아래 worker 분리와 소유권 수리를 반영했다.

@@ -10,6 +10,11 @@
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
+## 2026-10-05 scorer source control 재발행
+
+- 기존 v5의 실제 capture/replay 통과는 당시 source scope다. native control map이 mutable main의 이전 scorer SHA를 참조해 후속 scorer 수리 뒤 current replay가 거절됐다. control map/receipt를 새 hash로 고쳐 쓰지 않는다.
+- clean scorer source `ae8f96b`에서 `/private/tmp/qi-sg-native-scorer-20261005-v1-batch.json`의12repo를 새 `/private/tmp/qi-sg-native-scorer-20261005-v1`에 실제 재발행 중이다. completed receipt·canonical independent replay와 실제 process/index bindings를 확인한 범위만 후속 native capture에 소비한다. 전체12개 완료/whole posting correctness/정식 qualification은 아직 발행하지 않는다.
+
 ## 목적
 
 해당 manifest의 모든 source file이 실제 service index에 있고 요청 전후 동일한 index identity였는지 입증한다.
