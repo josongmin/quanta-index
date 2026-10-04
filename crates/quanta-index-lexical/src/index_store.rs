@@ -21,6 +21,7 @@ use tantivy::Index;
 
 const MAX_SEALED_IDENTITY_BYTES: usize = 4096;
 /// Format of a writable index whose merge engine records exact live BM25 totals.
+///
 /// This marker is written before creating the first index commit, and the
 /// sealed manifest takes over as the serving authority after publication.
 const LEXICAL_UNSEALED_INDEX_FORMAT_FILE_NAME: &str = "search-corpus-index-format.cbor";

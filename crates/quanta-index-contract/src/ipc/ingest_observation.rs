@@ -444,8 +444,11 @@ impl SearchCorpusIngestObservation {
             ];
             if stages.text_authority_shard_build_ns.is_some()
                 != stages.text_authority_publish_ns.is_some()
-                || stages.text_authority_collect_ns.is_some()
-                    && stages.text_authority_shard_build_ns.is_none()
+            {
+                return Err("lexical text authority stage availability is inconsistent".to_string());
+            }
+            if stages.text_authority_collect_ns.is_some()
+                && stages.text_authority_shard_build_ns.is_none()
             {
                 return Err("lexical text authority stage availability is inconsistent".to_string());
             }

@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | Django20/509·TypeORM20/572 실제 3-role 검수 `VERIFIED`; SQLAlchemy/Zellij/Tailscale 실행 중 |
+| 실행 상태 | Django20/509·TypeORM20/572 실제 3-role 검수 `VERIFIED`; SQLAlchemy/Zellij/Tailscale 실제 호출 `FAILED`(429), 공급자 입력 `BLOCKED` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -39,7 +39,9 @@ C3 240개 질의의 실제 판단을 완료하고 재사용 가능한 모델 cac
 ## 현재 실제 실행 결과
 
 - `VERIFIED`: `uv run --frozen --extra dev python /private/tmp/qi-c3-review-after-reset-20261004-iskn2d46/resume.py --execute django` — exit 0. reviewer-1/reviewer-2/adjudicator 각 20 tasks/509 pairs, missing batches 0; raw replay와 현 canonical finalization PASS. `qualified:false`, `human_provenance_attested:false`다. 240-task 최종 suite/admission은 아직 발행하지 않았다.
-- `/private/tmp/qi-c3-review-next-20261004-1zzpet86/resume.py --execute typeorm sqlalchemy zellij tailscale`를 새 root에서 실행 중이다. TypeORM은 reviewer-1/reviewer-2/adjudicator 각20 tasks/572 pairs, missing0으로 canonical finalization을 통과했다. 이전 unresolved stdout은 보존했고 미완료 pair에 grade를 합성하지 않았다.
+- `/private/tmp/qi-c3-review-next-20261004-1zzpet86/resume.py --execute typeorm sqlalchemy zellij tailscale`는 exit 1로 종료됐다. TypeORM은 reviewer-1/reviewer-2/adjudicator 각20 tasks/572 pairs, missing0으로 canonical finalization을 통과했다. 이전 unresolved stdout은 보존했고 미완료 pair에 grade를 합성하지 않았다.
+- SQLAlchemy는 reviewer 두 역할 각각20 tasks 및 adjudicator 유효 batch000–016을 보존했다. adjudicator017, Zellij reviewer-1/000, Tailscale reviewer-1/011은 모두 native raw의 `api_error_status:429`, `terminal_reason:api_error`, `duration_api_ms:0`으로 실패했다. 공급자가 알린 reset은 **2026-10-04 23:40 KST**다. 서비스 입력 회복 뒤 동일 immutable driver/input으로 재개하며 실패 raw를 덮어쓰지 않는다. 세 저장소의 finalization/issuance는 `NOT_RUN`이다.
+- Django/TypeORM은 `/Users/songmin/Documents/code-new/qi-e1-django-typeorm-issued-20261004-v1`에서 canonical suite·blind pack·review receipts를 실제 재발행/검증했다. 20/509 및20/572 분모를 유지했고 `qualified:false`, `human_provenance_attested:false`다. current-source admission 및 product capture는 별도다.
 
 ## 어떤 파일을 어떻게 수정할지
 

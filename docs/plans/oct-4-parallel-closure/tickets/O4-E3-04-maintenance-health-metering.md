@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_THEN_CONDITIONAL_CODE` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | cooperative metering·supervisor ownership owner lib `VERIFIED`; 실제 daemon profile/process proof는 `NOT_RUN` |
+| 실행 상태 | cooperative metering owner lib·daemon213·process owner26 `VERIFIED`; 실제 OS-child slow-disk injection은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -20,6 +20,7 @@
 - 중앙 workspace 실행에서 `into_supervised_parts` 뒤 원래 timer의 Drop이 live worker를 취소해 harness 8건이 `RequiredChildLost maintenance-timer`로 실패했다. Drop은 자신이 thread를 보유할 때만 stop/join하고, 실제 timer owner가 worker cancellation을 맡도록 수리했다.
 - 독립 controlled walker fixture `supervised_handoff_keeps_meter_live_until_its_owner_stops_and_joins`와 기존 in-flight shutdown cancellation fixture가 중앙 workspace lib/bin 실행에서 PASS했다(searchd lib 105 passed/1 ignored). 실제 process readiness/slow-walk scenario는 아직 `NOT_RUN`이다.
 - cancellation은 cooperative하다. 이미 막힌 filesystem syscall 또는 외부의 비협조적 callback을 강제 중단한다는 계약은 없다.
+- source904의 `just rust-profile test-daemon`은213 passed/1 skipped였고 별도 `process_readiness_owner_v1`은26 passed였다. 실제 active backend root loss는16.38s에 통과했고 inventory-read failure/reopen도 통과했다. controlled slow walker의 heartbeat/stop 증거는 unit scope이며 OS-child slow-disk injection을 실행했다는 뜻은 아니다.
 
 ## 배경과 현재 상태
 

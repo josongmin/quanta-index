@@ -20,8 +20,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tantivy::{Index, IndexWriter};
 
-/// Tantivy's default BM25 statistics count deleted documents until their
-/// segments are rewritten. Keep untouched segments shared with the base
+/// Tantivy's default BM25 statistics count deleted documents until rewriting.
+///
+/// Keep untouched segments shared with the base
 /// generation; only a committed segment with deletions needs compaction.
 fn segments_with_deleted_docs(index: &Index) -> Result<Vec<tantivy::SegmentId>, CoreError> {
     Ok(index

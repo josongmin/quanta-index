@@ -408,8 +408,9 @@ fn validate_selected_active_head(
     head: Option<&SearchCorpusActiveHeadV1>,
 ) -> Result<(), &'static str> {
     if let Some(head) = head {
-        head.validate_v1()
-            .map_err(|_| "invalid selected active head")?;
+        if head.validate_v1().is_err() {
+            return Err("invalid selected active head");
+        }
         let lexical = &head.generation.lexical;
         if lexical.repo_id != pin.repo_id
             || lexical.revision_id != pin.revision_id
@@ -1032,8 +1033,14 @@ impl Serialize for SearchPlaneHistoryQueryResponse {
     where
         S: Serializer,
     {
-        let field_count = (if self.next_cursor.is_some() { 8 } else { 7 })
-            + usize::from(self.selected_active_head.is_some());
+        let field_count = match (
+            self.next_cursor.is_some(),
+            self.selected_active_head.is_some(),
+        ) {
+            (true, true) => 9,
+            (true, false) | (false, true) => 8,
+            (false, false) => 7,
+        };
         let mut state =
             serializer.serialize_struct("SearchPlaneHistoryQueryResponse", field_count)?;
         validate_selected_active_head(&self.generation, self.selected_active_head.as_ref())
@@ -1251,8 +1258,14 @@ macro_rules! impl_ranked_lexical_page_serde {
                     self.next_cursor.as_ref(),
                 )
                 .map_err(serde::ser::Error::custom)?;
-                let field_count = (if self.next_cursor.is_some() { 4 } else { 3 })
-                    + usize::from(self.selected_active_head.is_some());
+                let field_count = match (
+                    self.next_cursor.is_some(),
+                    self.selected_active_head.is_some(),
+                ) {
+                    (true, true) => 5,
+                    (true, false) | (false, true) => 4,
+                    (false, false) => 3,
+                };
                 let mut state = serializer.serialize_struct(stringify!($ty), field_count)?;
                 validate_selected_active_head(&self.generation, self.selected_active_head.as_ref())
                     .map_err(serde::ser::Error::custom)?;
@@ -1393,7 +1406,11 @@ macro_rules! impl_keyset_page_response_serde {
                 } else {
                     $fields.len().saturating_sub(1)
                 };
-                $(let field_count = field_count - usize::from(self.$active_head.is_none());)?
+                $(let field_count = field_count
+                    .checked_sub(usize::from(self.$active_head.is_none()))
+                    .ok_or_else(|| <S::Error as serde::ser::Error>::custom(
+                        "field count excludes optional active head",
+                    ))?;)?
                 let mut state = serializer.serialize_struct(stringify!($ty), field_count)?;
                 $(validate_selected_active_head(&self.generation, self.$active_head.as_ref()).map_err(serde::ser::Error::custom)?;)?
                 state.serialize_field("generation", &self.generation)?;
@@ -1578,10 +1595,12 @@ macro_rules! impl_generation_results_explanation_response_serde {
                 S: Serializer,
             {
                 ($validate_results)(&self.results).map_err(serde::ser::Error::custom)?;
-                let mut state = serializer.serialize_struct(
-                    stringify!($ty),
-                    4 + usize::from(self.selected_active_head.is_some()),
-                )?;
+                let field_count = if self.selected_active_head.is_some() {
+                    5
+                } else {
+                    4
+                };
+                let mut state = serializer.serialize_struct(stringify!($ty), field_count)?;
                 validate_selected_active_head(&self.generation, self.selected_active_head.as_ref())
                     .map_err(serde::ser::Error::custom)?;
                 state.serialize_field("generation", &self.generation)?;
@@ -2507,10 +2526,12 @@ impl Serialize for HybridSeedQueryResponse {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct(
-            "HybridSeedQueryResponse",
-            5 + usize::from(self.selected_active_head.is_some()),
-        )?;
+        let field_count = if self.selected_active_head.is_some() {
+            6
+        } else {
+            5
+        };
+        let mut state = serializer.serialize_struct("HybridSeedQueryResponse", field_count)?;
         validate_selected_active_head(&self.generation, self.selected_active_head.as_ref())
             .map_err(serde::ser::Error::custom)?;
         state.serialize_field("generation", &self.generation)?;

@@ -211,6 +211,298 @@ fn selected_head() -> quanta_index_contract::SearchCorpusActiveHeadV1 {
     }
 }
 
+fn assert_selected_head_wire_fields<T>(
+    response: &T,
+    expected_fields: &[&str],
+    expected_head: Option<&quanta_index_contract::SearchCorpusActiveHeadV1>,
+) -> TestRes
+where
+    T: serde::Serialize + for<'de> serde::Deserialize<'de> + core::fmt::Debug + PartialEq,
+{
+    let json = serde_json::to_value(response)?;
+    let object = json.as_object().ok_or("response JSON must be an object")?;
+    let mut actual_json: Vec<_> = object.keys().map(String::as_str).collect();
+    actual_json.sort_unstable();
+    let mut expected = expected_fields.to_vec();
+    expected.sort_unstable();
+    assert_eq!(actual_json, expected, "JSON response fields");
+    let head_json = expected_head.map(serde_json::to_value).transpose()?;
+    assert_eq!(object.get("selected_active_head"), head_json.as_ref());
+    let decoded_json: T = serde_json::from_value(json)?;
+    assert_eq!(&decoded_json, response, "JSON response round trip");
+
+    let bytes = encode(response)?;
+    let wire: ciborium::Value = decode(&bytes)?;
+    let ciborium::Value::Map(fields) = wire else {
+        return Err("response CBOR must be a map".into());
+    };
+    let mut actual_cbor = Vec::new();
+    for (key, _) in &fields {
+        let ciborium::Value::Text(name) = key else {
+            return Err(format!("response CBOR has non-text field: {key:?}").into());
+        };
+        actual_cbor.push(name.as_str());
+    }
+    actual_cbor.sort_unstable();
+    assert_eq!(actual_cbor, expected, "CBOR response fields");
+    let decoded_cbor: T = decode(&bytes)?;
+    assert_eq!(&decoded_cbor, response, "CBOR response round trip");
+    Ok(())
+}
+
+/// Public response maps omit absent optional fields. Present active heads
+/// carry the exact generation and activation token on both encodings; the
+/// pageable variants add a cursor only when the window authorizes one.
+#[test]
+fn selected_active_head_response_fields_are_exact_across_variants() -> TestRes {
+    use quanta_index_contract::{CandidateCountV1, HistoryOrderV1};
+
+    let head = selected_head();
+    let exact_empty = QueryResultWindowV2::exact_probe(0);
+    let continued_one =
+        QueryResultWindowV2::pageable(1, CandidateCountV1::AtLeast(2), true, Vec::new())?;
+
+    let text_without = quanta_index_contract::TextQueryResponse {
+        generation: generation_pin(),
+        selected_active_head: None,
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
+        results: Vec::new(),
+        window: exact_empty.clone(),
+        explanation: SearchExplanation::empty(),
+        file_owner_rows: None,
+        next_cursor: None,
+    };
+    assert_selected_head_wire_fields(
+        &text_without,
+        &[
+            "generation",
+            "rank_unit",
+            "results",
+            "window",
+            "explanation",
+        ],
+        None,
+    )?;
+    let text_with = quanta_index_contract::TextQueryResponse {
+        selected_active_head: Some(head.clone()),
+        results: vec![lexical_candidate()],
+        window: continued_one.clone(),
+        next_cursor: Some(token("active-text")?),
+        ..text_without
+    };
+    assert_selected_head_wire_fields(
+        &text_with,
+        &[
+            "generation",
+            "selected_active_head",
+            "rank_unit",
+            "results",
+            "window",
+            "explanation",
+            "next_cursor",
+        ],
+        Some(&head),
+    )?;
+
+    let symbol_without = quanta_index_contract::SymbolQueryResponse {
+        generation: generation_pin(),
+        selected_active_head: None,
+        results: Vec::new(),
+        window: exact_empty.clone(),
+        next_cursor: None,
+    };
+    assert_selected_head_wire_fields(&symbol_without, &["generation", "results", "window"], None)?;
+    let symbol_with = quanta_index_contract::SymbolQueryResponse {
+        selected_active_head: Some(head.clone()),
+        results: vec![symbol_candidate()?],
+        window: continued_one.clone(),
+        next_cursor: Some(token("active-symbol")?),
+        ..symbol_without
+    };
+    assert_selected_head_wire_fields(
+        &symbol_with,
+        &[
+            "generation",
+            "selected_active_head",
+            "results",
+            "window",
+            "next_cursor",
+        ],
+        Some(&head),
+    )?;
+
+    let semantic_without = SemanticQueryResponse {
+        generation: generation_pin(),
+        selected_active_head: None,
+        results: Vec::new(),
+        window: exact_empty.clone(),
+        explanation: SearchExplanation::empty(),
+    };
+    assert_selected_head_wire_fields(
+        &semantic_without,
+        &["generation", "results", "window", "explanation"],
+        None,
+    )?;
+    let semantic_with = SemanticQueryResponse {
+        selected_active_head: Some(head.clone()),
+        ..semantic_without
+    };
+    assert_selected_head_wire_fields(
+        &semantic_with,
+        &[
+            "generation",
+            "selected_active_head",
+            "results",
+            "window",
+            "explanation",
+        ],
+        Some(&head),
+    )?;
+
+    let hybrid_without = HybridQueryResponse {
+        generation: generation_pin(),
+        selected_active_head: None,
+        results: Vec::new(),
+        window: exact_empty.clone(),
+        explanation: SearchExplanation::empty(),
+    };
+    assert_selected_head_wire_fields(
+        &hybrid_without,
+        &["generation", "results", "window", "explanation"],
+        None,
+    )?;
+    let hybrid_with = HybridQueryResponse {
+        selected_active_head: Some(head.clone()),
+        ..hybrid_without
+    };
+    assert_selected_head_wire_fields(
+        &hybrid_with,
+        &[
+            "generation",
+            "selected_active_head",
+            "results",
+            "window",
+            "explanation",
+        ],
+        Some(&head),
+    )?;
+
+    let history_without = quanta_index_contract::SearchPlaneHistoryQueryResponse {
+        generation: generation_pin(),
+        selected_active_head: None,
+        order: HistoryOrderV1::Recency,
+        commits: vec![history_commit_candidate()],
+        diffs: Vec::new(),
+        window: QueryResultWindowV2::exact_probe(1),
+        read_epoch: AuxEpochV1::new(9),
+        examined: 1,
+        next_cursor: None,
+    };
+    assert_selected_head_wire_fields(
+        &history_without,
+        &[
+            "generation",
+            "order",
+            "commits",
+            "diffs",
+            "window",
+            "read_epoch",
+            "examined",
+        ],
+        None,
+    )?;
+    let history_with = quanta_index_contract::SearchPlaneHistoryQueryResponse {
+        selected_active_head: Some(head.clone()),
+        window: continued_one,
+        next_cursor: Some(token("active-history")?),
+        ..history_without
+    };
+    assert_selected_head_wire_fields(
+        &history_with,
+        &[
+            "generation",
+            "selected_active_head",
+            "order",
+            "commits",
+            "diffs",
+            "window",
+            "read_epoch",
+            "examined",
+            "next_cursor",
+        ],
+        Some(&head),
+    )?;
+
+    let runtime_without = runtime_final_page();
+    assert_selected_head_wire_fields(
+        &runtime_without,
+        &[
+            "generation",
+            "results",
+            "window",
+            "read_epoch",
+            "universe_epoch",
+            "examined",
+        ],
+        None,
+    )?;
+    let runtime_with = quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+        selected_active_head: Some(head.clone()),
+        ..runtime_page_with_continuation()?
+    };
+    assert_selected_head_wire_fields(
+        &runtime_with,
+        &[
+            "generation",
+            "selected_active_head",
+            "results",
+            "window",
+            "read_epoch",
+            "universe_epoch",
+            "examined",
+            "next_cursor",
+        ],
+        Some(&head),
+    )?;
+
+    let seed_without = quanta_index_contract::HybridSeedQueryResponse {
+        generation: generation_pin(),
+        selected_active_head: None,
+        manifest_digest: "a".repeat(64),
+        seed_candidates: Vec::new(),
+        window: exact_empty,
+        explanation: SearchExplanation::empty(),
+    };
+    assert_selected_head_wire_fields(
+        &seed_without,
+        &[
+            "generation",
+            "manifest_digest",
+            "seed_candidates",
+            "window",
+            "explanation",
+        ],
+        None,
+    )?;
+    let seed_with = quanta_index_contract::HybridSeedQueryResponse {
+        selected_active_head: Some(head.clone()),
+        ..seed_without
+    };
+    assert_selected_head_wire_fields(
+        &seed_with,
+        &[
+            "generation",
+            "selected_active_head",
+            "manifest_digest",
+            "seed_candidates",
+            "window",
+            "explanation",
+        ],
+        Some(&head),
+    )?;
+    Ok(())
+}
+
 #[test]
 fn active_text_response_binds_selected_head_on_strict_wire() -> TestRes {
     let head = selected_head();

@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_FIRST` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | dispatcher G1→G2→G3 barrier owner fixture `VERIFIED` (search-plane lib 537 PASS, root 중앙 관측). runtime physical-retirement fixture는 source 통합; daemon profile `NOT_RUN` |
+| 실행 상태 | dispatcher G1→G2→G3 barrier 및 runtime physical-retirement fixture `VERIFIED`; source904 daemon profile213 passed/1 skipped. 별도 OS-child에서 같은 retention race는 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -43,7 +43,12 @@ selection.resolve_generation_selector_pin은 catalog head를 pin으로 해석하
 4. already-acquired view case와 select-before-acquire case를 각각 실행한다.
 5. 현재 관측된 typed refusal이 Accepted 계약의 허용 경계임을 E3-02에 넘긴다. 제안된 serve-after-selection 보장은 별도 채택 전까지 expected oracle로 사용하지 않는다.
 
-## 남은 검증 계획 — daemon profile NOT_RUN
+## 2026-10-04 실제 daemon profile 결과
+
+- Source `904043302f1db8406302a5a62bcffdc0d9412267`의 `just rust-profile test-daemon`은 exit0, 213 passed/1 skipped, tests259.597s였다. `runtime_fast_suite`의 `retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3`를 포함한다.
+- 이 fixture는 실제 UDS/runtime과 양 track의 physical retirement를 검사하지만 daemon은 같은 test process에서 구동한다. 별도 OS-child combined race 또는 Linux release proof로 승격하지 않는다. Accepted 계약의 retire-first typed refusal은 강한 pin-transfer 보장을 새로 채택했다는 뜻이 아니다.
+
+## 검증 계획 — 위 실행 scope 외 NOT_RUN
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 

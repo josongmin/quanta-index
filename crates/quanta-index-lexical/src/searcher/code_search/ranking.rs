@@ -206,8 +206,9 @@ fn stored_offset(doc: &TantivyDocument, field: tantivy::schema::Field) -> Result
         .map_err(|error| CoreError::Storage(format!("lexical: declaration range: {error}")))
 }
 
-/// Optional declaration evidence for already admitted content files. A single
-/// dictionary query replaces a per-file symbol search; the source witness and
+/// Optional declaration evidence for already admitted content files.
+///
+/// A single dictionary query replaces a per-file symbol search; the source witness and
 /// OSA verifier remain authoritative. Unknown coverage contributes no evidence.
 pub(super) fn typo_declaration_distances(
     owner: &TantivySearcher,
@@ -223,7 +224,7 @@ pub(super) fn typo_declaration_distances(
         let Some(coverage) = owner
             .source_coverage
             .as_ref()
-            .and_then(|rows| rows.get(*key))
+            .and_then(|rows| rows.get(key))
         else {
             continue;
         };
