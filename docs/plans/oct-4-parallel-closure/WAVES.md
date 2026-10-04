@@ -32,7 +32,7 @@
 
 | 웨이브 / 담당 | 다음 작업 | 현재 실행 또는 입력 경계 |
 | --- | --- | --- |
-| W1 / E1 | SQLAlchemy/Zellij fresh Opus 조정→canonical suite/pack 발행 | 실제 모델 batch 진행 중; Tailscale unresolved rubric 정책 답변 전 해당 저장소 발행 BLOCKED |
+| W1 / E1 | SQLAlchemy/Zellij fresh Opus 조정→canonical suite/pack 발행 | actual Opus weekly-limit 실패, SQL334pair 유효 보존/잔여146·Zellij476 BLOCKED. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 정책 답변 전 발행 BLOCKED |
 | W3 / E1+I0 | frozen0e6 실제 proof로 나머지 원본8 admissions 발행, 후속 SQLAlchemy/Zellij admissions 연결 | prepared issuer/input; 실제 발행 NOT_RUN. source107 결과를 current로 재표기하지 않음 |
 | W4–W5 / E2+E1 | 수정 file-report scorer에서 native3 fresh capture→독립 replay→bat5제품 join, remaining C3 required matrix→final blind union/검수·재채점 | scorer/test focused67 VERIFIED; 기존 native capture는 scorer hash/runtime drift로 재사용 거절. bat 밖 warmup은 자체 parity 전1회 유지 |
 | W1–W4 / E2 | OG whole live auxiliary/source authority를 canonical query 전후 index/endpoint/consumer에 통합 | 관측 replay 완료; 현재 collector universe=false, named RW volume을 readonly snapshot으로 간주하지 않음 |

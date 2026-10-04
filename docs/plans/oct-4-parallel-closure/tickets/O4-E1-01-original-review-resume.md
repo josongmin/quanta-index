@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | Django20/509·TypeORM20/572 실제 3-role 검수 `VERIFIED`; SQLAlchemy·Zellij 두 reviewer 각각20/480·20/476 완료, Fable조정429 뒤 Opus 대체 실제 실행 중. Tailscale 동일 pair actual retry2도 unresolved `FAILED`, rubric 정책 입력/발행 `BLOCKED` |
+| 실행 상태 | Django20/509·TypeORM20/572 실제3-role 및 SQLAlchemy/Zellij 두 reviewer 완료. Opus 대체 actual weekly limit로 `FAILED`; SQL334/480 유효 조정 보존, SQL/Zellij final 발행 `BLOCKED`. Tailscale unresolved rubric 입력 `BLOCKED` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -21,6 +21,8 @@ C3 240개 질의의 실제 판단을 완료하고 재사용 가능한 모델 cac
 ## 2026-10-04 실행 갱신
 
 - 2026-10-05 root가 `/private/tmp/qi-c3-alternate-adjudicator-prepare-v2/resume.py --source-root /Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index --output-root /private/tmp/qi-c3-alternate-adjudicator-actual-20261005-v1 --adjudicator-model claude-opus-5-5 --execute sqlalchemy zellij`를 canonical uv 환경에서 실제 실행 중이다. SQLAlchemy adjudicator000의39pairs가98.348s/API96.345s 뒤 actual AI raw validation/replay를 통과했다. 요청/실제 모델은 Opus5.5이며 human_provenance_attested=false다. SQL39/Zellij32 총71 fresh adjudicator batches 중 완료 subset만으로 repository labels를 발행하지 않는다. old Fable adjudications는 새 조정 분모에서 제외한다.
+- 후속 실제 명령 `FAILED`: exit1. SQL adjudicator000–020의21batches/334pairs는 actual validation/동일 raw replay를 통과했고021에서 CLI exit1이었다. Zellij000도 CLI exit1이었다. 두 envelope 모두 `is_error:true`, `terminal_reason:api_error`, 주간 한도/reset `Oct 7 at 1am (Asia/Seoul)` 응답이고 modelUsage는 비어 있다. reset은2026-10-07 01:00KST라는 서비스 관측이며 정시 복구 성공을 보장하지 않는다.
+- SQL021 raw SHA `9475e225b505d70cffeba28bd85ac695689605152028743aa85c4f0a194f995b`, invalid SHA `0821f9d27107eeb38b01372cde5c4e61ade3519c2c87c5046f25ca23e0a2dbbc`; Zellij000 raw SHA `825496eb6bfde397b76d8ce6b1668767b3f2ed0ba858957bbd5ab2bc87b88226`다. 외부 root의 repository failure를 유지하며 유효334pair를 버리거나 partial final receipt로 승격하지 않는다. SQL146/Zellij476pair의 새 조정과 두 suite issuer는 현재 BLOCKED/NOT_RUN이다. 서비스 한도가 풀리기 전 같은 모델의 맹목적 재시도나 모델 교체로 주간 한도를 우회하지 않는다.
 - `VERIFIED`: checkout 밖 `/tmp/qi-c3-current-resume-20261004-os8dvo11/resume.py`에서 현 `holdout_review.prepare`로 original form/custody를 재구성하고 frozen bytes equality를 확인했다. 기존 raw request/result/model/schema/decision identity를 검증한 cache만 재사용했다.
 - 명령: `uv run --frozen --extra dev python /tmp/qi-c3-current-resume-20261004-os8dvo11/resume.py django sqlalchemy zellij typeorm tailscale` — exit 0. 이는 미판단 pair를 분리한 preflight이며 신규 모델 판단을 실행한 결과가 아니다.
 - 현재 frozen form: 5저장소 100 tasks. 저장소별 candidate pairs는 Django509 / SQLAlchemy480 / Zellij476 / TypeORM572 / Tailscale544. reviewer·adjudicator별 누락은 해당 외부 root의 `preflight.json`에 별도로 기록했다.
