@@ -309,6 +309,49 @@ def test_quality_matrix_rejects_stale_runner_before_gold_or_output(tmp_path, mon
     assert not (tmp_path / "batch").exists()
 
 
+def test_quality_matrix_reuses_first_verified_driver_closure(tmp_path, monkeypatch) -> None:
+    specs = [tmp_path / f"member-{index}.json" for index in range(4)]
+    for index, path in enumerate(specs):
+        path.write_text(
+            json.dumps(
+                {
+                    "repo": str(tmp_path / f"repo-{index // 2}"),
+                    "runner_binary": str(tmp_path / "runner"),
+                }
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(pairrun, "load_spec", lambda path: json.loads(path.read_text()))
+    monkeypatch.setattr(pairrun, "probe_runner_capabilities", lambda _binary: None)
+    monkeypatch.setattr(
+        pairrun,
+        "_quality_batch_members",
+        lambda _batch: ([(None, {"strategies": [{"name": "whole_file"}]})], {}),
+    )
+    monkeypatch.setattr(pairrun, "_quality_batch_input_snapshot", lambda _members: [])
+    monkeypatch.setattr(pairrun, "preflight_daemon_socket_paths", lambda *_args: None)
+    observed = []
+
+    def run_batch(batch, *, prevalidated, closure_source):
+        assert prevalidated[0]
+        out = Path(batch["output_root"])
+        out.mkdir()
+        (out / "driver-source-closure.json").write_text("{}", encoding="utf-8")
+        (out / "batch-manifest.json").write_text("{}", encoding="utf-8")
+        observed.append((out, closure_source))
+
+    monkeypatch.setattr(pairrun, "run_quality_batch", run_batch)
+    matrix = {
+        "schema_version": 1,
+        "member_specs": [str(path) for path in specs],
+        "output_root": str(tmp_path / "matrix"),
+    }
+    assert pairrun.run_quality_matrix(matrix) == 0
+    assert len(observed) == 2
+    assert observed[0][1] is None
+    assert observed[1][1] == observed[0][0] / "driver-source-closure.json"
+
+
 def _clean_host_timeline_fixture():
     host = {
         "system": "Darwin",

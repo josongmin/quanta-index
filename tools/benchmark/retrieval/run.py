@@ -11602,6 +11602,7 @@ def run_quality_batch(
     batch: dict,
     *,
     prevalidated: tuple[list[tuple[Path, dict, dict, dict, SourceSnapshot]], dict] | None = None,
+    closure_source: Path | None = None,
 ) -> int:
     """Run compatible blind packs through one index per product, then score separately.
 
@@ -11638,7 +11639,10 @@ def run_quality_batch(
     preflight_daemon_socket_paths(stage / "quanta", first_spec["strategies"])
     stage.mkdir(parents=True)
     closure_path = stage / "driver-source-closure.json"
-    _source_closure(driver_repo, "capture", closure_path)
+    if closure_source is None:
+        _source_closure(driver_repo, "capture", closure_path)
+    else:
+        _source_closure(driver_repo, "reuse", closure_path, reuse_from=closure_source)
     (stage / "execution-pack.json").write_bytes(canonical_bytes(execution_pack))
     (stage / "membership.json").write_bytes(canonical_bytes(membership))
     task_ids = [task["task_id"] for task in execution_pack["tasks"]]
@@ -11923,11 +11927,14 @@ def run_quality_matrix(matrix: dict) -> int:
         prepared.append((group, batch, (members, model)))
     root.mkdir(parents=True)
     rows = []
+    closure_source: Path | None = None
     for group, batch, validated in prepared:
         name, repo, paths = group
         batch_path = root / f"{name}-spec.json"
         batch_path.write_bytes(canonical_bytes(batch))
-        run_quality_batch(batch, prevalidated=validated)
+        run_quality_batch(batch, prevalidated=validated, closure_source=closure_source)
+        if closure_source is None:
+            closure_source = Path(batch["output_root"]) / "driver-source-closure.json"
         manifest_path = Path(batch["output_root"]) / "batch-manifest.json"
         rows.append(
             {

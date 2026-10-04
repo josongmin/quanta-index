@@ -234,7 +234,9 @@ artifact validation and report work. It is not a measured Python-GC bucket.
 The Quanta `unattributed` field is a residual of its existing phase clocks,
 not evidence of idle time or a particular engine defect. Its diagnostic
 detail separately records record assembly, corpus reverification and shutdown;
-none accounts for most of that residual.
+none accounts for most of that residual. A separate probe below identifies
+large debug-binary hashing as a likely contributor, without equating its
+contended-host time to the earlier capture's residual.
 
 Next measurement change: time driver preflight, source closure, each product
 subprocess, artifact verification and report projection with monotonic clocks;
@@ -243,6 +245,31 @@ post-publication binding and result materialization. Keep source/gold checks
 and independent replay. Then run a fixed-input release-profile A/B on a quiet
 host to assess wall-time gains; do not compare the debug Quanta envelope to
 Semble's in-process function timer as an equal-work product ranking.
+
+### 2026-10-04 debug hash and closure probes
+
+The runner's unmeasured interval calls `verify_searchd_digest` before daemon
+boot. It reads the entire pinned binary and hashes it with Rust `sha2` in the
+runner build profile. A standalone probe compiled against a debug `sha2`
+artifact from the same `test-daemon-lane` hashed the exact 364,870,944-byte
+searchd binary to the pinned digest above: file read **0.20 s**, SHA-256
+**19.79 s** wall. The shell's separately optimized `shasum` took **0.77 s**
+under a different tool boundary. Host load was about 40, so these timings are
+diagnostic; the debug hash is a plausible cause of the approximately 10 s
+per-repository runner residual, not a proved full attribution. Do not remove
+the runner's independent binary check: direct runner invocation and mid-capture
+binary replacement must still be refused. Prefer release binaries for timed
+captures. If the debug development loop itself needs improvement, measure an
+optimized `sha2` dependency profile against this fixed binary before changing
+the workspace profile.
+
+An independent `source_closure.py capture --profile retrieval` read and bound
+**1,125 files in 4.91 s** on the same busy host. `scripts/cargow` explicitly
+exempts `metadata` from resource admission; C5 exploratory specs also do not
+request admission. This profile intentionally includes executable and
+verification source; dropping tests or documentation to avoid a dirty-main
+refusal would change provenance, not just speed. Measure each closure stage
+before revising the bound inventory.
 
 ## Work and boundaries
 
