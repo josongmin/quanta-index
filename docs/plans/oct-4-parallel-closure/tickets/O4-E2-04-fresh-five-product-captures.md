@@ -10,6 +10,12 @@
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
+## 2026-10-05 canonical consumer628541 PREPARE
+
+- 추가 derived provenance·frozen-context 경로 수리를 clean `628541e150192b4aaf0ff4ba54566ae28c6ca25f`/`/Users/songmin/.codex/worktrees/oct5-canonical-consumer/quanta-index`에 고정했다. source0e6 Rust product bytes는 그대로이며 새 Python canonical owner의 focused 회귀는 직렬 admission 종료 뒤 실행한다. 지금 `NOT_RUN`이다.
+- 새 SG batch `/private/tmp/qi-sg-canonical-consumer-628541-20261005-v1-batch.json` SHA `b94aad19ac82a37c257b496095cedcad016ba44105aa08aef3e23ad9e108bdde`, bat native3 spec `/private/tmp/qi-native-bat-consumer-628541-v4-spec.json` SHA `b9aeabf0cf88e509d056299fc9d754e7621d518f43484ef47eb2ca47722293c0`, bat join v5 spec SHA `2b3c95e41e043c276e7b30ed4c25a0f7c58794cc1f30fcc84cb0dc21839fbca3`를 fresh namespaces로 준비했다. 실제 SG/native/join은 `NOT_RUN`이며 ae8f의 완료 raw/receipt를 수정하지 않았다.
+- 원본8 external-native PREPARE `/private/tmp/qi-current-native-eight-628541-prepare-v2`는 controller SHA `55efc63a5a7a91c2725c6abaf2dafb8c73800947b62bdd5a533f023141d9c8f0`, packet SHA `d8188bc40155d955f6a3d919a60753660adbc4b965267bb2d01f17facc8986d6`다. AST·exact source/spec/source-helper binding만 확인했다. packet unsealed·SG receipt hashes null·issuance terminal 미완료이므로 READY/capture/replay 결과가 아니다. 실제 issuance 결과 및 새 SG 독립 replay 후 새 bound packet을 발행한다.
+
 ## 목적
 
 최종 admitted cells를 실제 제품에 실행해 최신 비교용 raw를 만들고 새로운 미검수 candidates를 E1로 전달한다.

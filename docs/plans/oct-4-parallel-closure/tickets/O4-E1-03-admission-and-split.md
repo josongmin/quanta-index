@@ -21,6 +21,7 @@
 - completed result/terminal 전에는 readiness/8개 통과를 발행하지 않는다. 새 모델 호출·human review·전체 cohort qualification 범위가 아니다. SQLAlchemy/Zellij/Tailscale 미결은 이8개에 합산하지 않는다.
 - cli terminal `VERIFIED`:20tasks/519judgments,572.429s, actual result source0e6·canonical16 input paths·stale-source negative1, qualified/humanfalse다. 나머지7개 및 aggregate 완료 전에는 current9repo/180tasks 전체 완료를 주장하지 않는다.
 - lo terminal도 `VERIFIED`:20tasks/495judgments,617.628s, canonical16 input paths·stale-source negative1·qualified/humanfalse다. 다음 mocha issuance를 실행 중이며8개 aggregate는 미완료다.
+- mocha terminal `VERIFIED`:20tasks/511judgments,531.716s다. 다음 uvicorn issuance를 실행 중이며 나머지5개·8개 aggregate는 미완료다.
 
 ## 배경과 현재 상태
 
