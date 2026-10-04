@@ -578,11 +578,20 @@ def _preflight_sourcegraph_request_targets(
     return extensions, max_target_bytes
 
 
+def _opengrok_query(query: str, *, literal_query: bool = False) -> str:
+    """Keep declared natural-language input out of Lucene query syntax."""
+    if not literal_query:
+        return query
+    escaped = re.sub(r'([+\-!(){}\[\]^"~*?:\\|&/])', r"\\\1", query)
+    return re.sub(r"(?<!\S)(?:AND|OR|NOT)(?!\S)", lambda m: '"' + m[0] + '"', escaped)
+
+
 def _opengrok(
-    config: dict, task: dict, gold: list[str], view: Path, admitted: dict[str, str], target: Path
+    config: dict, task: dict, gold: list[str], view: Path, admitted: dict[str, str], target: Path,
+    *, literal_query: bool = False,
 ) -> dict:
     params = {
-        "full": task["query"],
+        "full": _opengrok_query(task["query"], literal_query=literal_query),
         "projects": config["project"],
         "maxresults": 10,
         "start": 0,
@@ -603,7 +612,8 @@ def _opengrok(
         + b"\n",
     )
     return _opengrok_response(
-        config, task, gold, view, admitted, status, content_type, raw, elapsed
+        config, task, gold, view, admitted, status, content_type, raw, elapsed,
+        literal_query=literal_query,
     )
 
 
@@ -617,6 +627,8 @@ def _opengrok_response(
     content_type: str,
     raw: bytes,
     elapsed: float,
+    *,
+    literal_query: bool = False,
 ) -> dict:
     if status != 200 or content_type != "application/json":
         raise ValueError(f"OpenGrok returned HTTP {status} / {content_type}")
@@ -674,6 +686,10 @@ def _opengrok_response(
         file_paths_top_10=paths,
         response_sha256=_sha(raw),
         server_image_digest=config["server_image_digest"],
+        **({
+            "request_query": _opengrok_query(task["query"], literal_query=True),
+            "request_mode": query_plan.NATURAL_LANGUAGE_FILE_SEARCH,
+        } if literal_query else {}),
     )
 
 
@@ -1542,6 +1558,10 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
     suite, pack = _json(suite_raw), _json(pack_raw)
     admitted = lexical._file_universe(suite, pack)
     tasks = lexical._tasks(suite, pack)
+    literal_opengrok_query = (
+        suite["tasks"][0].get("evaluation_contract", {}).get("request_mode")
+        == query_plan.NATURAL_LANGUAGE_FILE_SEARCH
+    )
     if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id) is None for task_id in tasks):
         raise ValueError("task IDs must be safe filename components")
     document = (
@@ -1634,6 +1654,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         "opengrok": lambda task, gold: _opengrok(
             spec["opengrok"], task, gold, view, files,
             stage / "opengrok" / f"{task['task_id']}.json",
+            literal_query=literal_opengrok_query,
         ),
         "cs": lambda task, gold: _cs(
             binary, task, gold, view, files, stage / "cs" / f"{task['task_id']}.json"
@@ -1832,6 +1853,10 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     suite, pack = _json(suite_raw), _json(pack_raw)
     admitted = lexical._file_universe(suite, pack)
     tasks = lexical._tasks(suite, pack)
+    literal_opengrok_query = (
+        suite["tasks"][0].get("evaluation_contract", {}).get("request_mode")
+        == query_plan.NATURAL_LANGUAGE_FILE_SEARCH
+    )
     if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id) is None for task_id in tasks):
         raise ValueError("task IDs must be safe filename components")
     release = Path(spec["corpus"]["release_path"])
@@ -2062,6 +2087,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                         terminal["content_type"],
                         raw,
                         terminal["elapsed_ms"],
+                        literal_query=literal_opengrok_query,
                     )
             if canonical_json(row) != canonical_json(derived):
                 raise ValueError("external row disagrees with retained native response")

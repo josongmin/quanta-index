@@ -24,6 +24,46 @@ from tools.ci.tests.test_lexical_capture import inputs
 pytest_plugins = ["tools.ci.tests.test_lexical_capture"]
 
 
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("math/rand and math/rand/v2?", r"math\/rand and math\/rand\/v2\?"),
+        ('field:x +y (z) [a] {b} ^2 ~1 * ? ! && || \\"q"',
+         r'field\:x \+y \(z\) \[a\] \{b\} \^2 \~1 \* \? \! \&\& \|\| \\\"q\"'),
+        ("AND\tOR\nNOT and or not", '"AND"\t"OR"\n"NOT" and or not'),
+    ],
+)
+def test_opengrok_nl_literal_query_has_fixed_lucene_escape_goldens(query, expected):
+    assert live._opengrok_query(query, literal_query=True) == expected
+    assert live._opengrok_query(query) == query
+
+
+def test_opengrok_nl_capture_preserves_submitted_and_effective_query(tmp_path, monkeypatch):
+    query = "How does math/rand/v2 work?"
+    effective = r"How does math\/rand\/v2 work\?"
+    config = {"project": "fixture", "server_image_digest": "a" * 64}
+    task = {"task_id": "N1", "query": query}
+    raw = json.dumps({"time": 1, "resultCount": 0, "results": {},
+                      "startDocument": 0, "endDocument": 0}).encode()
+    calls = []
+
+    def http(_config, endpoint, params, accept):
+        calls.append((endpoint, params, accept))
+        assert params["full"] == effective
+        return 200, "application/json", raw, 2.0
+
+    monkeypatch.setattr(live, "_http", http)
+    row = live._opengrok(config, task, [], tmp_path, {}, tmp_path / "raw.json",
+                         literal_query=True)
+    assert row["submitted_query"] == query
+    assert row["request_query"] == effective
+    assert row["request_mode"] == "natural_language_file_search"
+    assert len(calls) == 1
+    assert (tmp_path / "raw.json").read_bytes() == raw
+    assert live._opengrok_response(config, task, [], tmp_path, {}, 200,
+                                  "application/json", raw, 2.0, literal_query=True) == row
+
+
 def index_scope_fixture(
     tmp_path,
     *,
