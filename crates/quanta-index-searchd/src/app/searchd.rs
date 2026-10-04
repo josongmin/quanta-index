@@ -261,19 +261,26 @@ fn spawn_provider_child(
     )
 }
 
-/// Register the maintenance timer as a supervised child (S21-09): the
-/// stop closure sends the timer's stop signal, the adapted body joins
-/// the timer thread and reports its terminal kind.
+/// Register the maintenance timer as a supervised child (S21-09).
+///
+/// The stop closure sends the timer's stop signal; the original timer thread
+/// joins its meter and publishes the terminal kind before it exits.
 fn spawn_maintenance_child(
     supervisor: &mut SearchdSupervisor<RuntimeGuards>,
     maintenance: MaintenanceTimer,
 ) -> Result<(), ChildSpawnFailure> {
-    let (stop, join) = maintenance
-        .into_supervised_parts()
-        .map_err(|_handed_over_twice| ChildSpawnFailure {
-            name: "maintenance-timer",
-        })?;
-    supervisor.adopt_child("maintenance-timer", Box::new(move || stop.stop()), join);
+    let (stop, join, terminal) =
+        maintenance
+            .into_supervised_parts()
+            .map_err(|_handed_over_twice| ChildSpawnFailure {
+                name: "maintenance-timer",
+            })?;
+    supervisor.adopt_child(
+        "maintenance-timer",
+        Box::new(move || stop.stop()),
+        join,
+        terminal,
+    );
     Ok(())
 }
 

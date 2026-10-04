@@ -286,8 +286,8 @@ fn required_child_exit_propagates_and_drains_peers() {
 }
 
 /// A directly adopted child, such as the already-running maintenance
-/// timer, is observed through its own join handle without a second
-/// adapter thread or a synthetic terminal event.
+/// timer, is observed through its own join handle and terminal report
+/// without a second adapter thread.
 #[test]
 fn adopted_child_exit_is_a_required_child_loss() {
     let log: DropLog = Arc::new(Mutex::new(Vec::new()));
@@ -301,10 +301,12 @@ fn adopted_child_exit_is_a_required_child_loss() {
         },
         CancelRoot::clone(&root),
     );
+    let (terminal_tx, terminal_rx) = mpsc::channel();
     let join = std::thread::spawn(move || {
         release_rx.recv().expect("test releases the adopted child");
+        let _reported = terminal_tx.send(ChildExitKind::Completed);
     });
-    supervisor.adopt_child("maintenance-timer", no_stop(), join);
+    supervisor.adopt_child("maintenance-timer", no_stop(), join, terminal_rx);
     release_tx.send(()).expect("adopted child is running");
     let outcome = supervisor.run(&root);
     assert!(matches!(
@@ -318,6 +320,89 @@ fn adopted_child_exit_is_a_required_child_loss() {
     assert_eq!(
         log.lock().expect("drop log is not poisoned").as_slice(),
         &["guards-dropped"]
+    );
+}
+
+fn controlled_shutdown_meter_panic() -> ! {
+    panic!("controlled disk-meter panic during shutdown");
+}
+
+/// An owned meter panic after the shutdown signal reaches the adopted timer's
+/// terminal receiver and prevents a clean drain outcome.
+#[test]
+fn adopted_maintenance_meter_panic_during_shutdown_is_drain_failed() {
+    use quanta_index_core::{CoreError, RequestBudgetV1, TrackDiskUsagePort, WriterIdleSweepPort};
+    use quanta_index_searchd::app::maintenance::{MaintenanceParts, MaintenanceTimer};
+    use std::sync::atomic::AtomicU64;
+
+    struct Sweep;
+    impl WriterIdleSweepPort for Sweep {
+        fn sweep_idle_writers(&self) -> Result<u64, CoreError> {
+            Ok(0)
+        }
+    }
+
+    struct Disk {
+        calls: AtomicU64,
+        entered: mpsc::Sender<()>,
+    }
+    impl TrackDiskUsagePort for Disk {
+        fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
+            if self.calls.fetch_add(1, Ordering::AcqRel) > 0 {
+                let _entered = self.entered.send(());
+                while !budget.is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                controlled_shutdown_meter_panic();
+            }
+            Ok(1)
+        }
+    }
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let timer = MaintenanceTimer::start(
+        MaintenanceParts {
+            writer_sweep: Arc::new(Sweep),
+            lexical_disk_usage: Arc::new(Disk {
+                calls: AtomicU64::new(0),
+                entered: entered_tx,
+            }),
+            semantic_disk_usage: Arc::new(Disk {
+                calls: AtomicU64::new(0),
+                entered: mpsc::channel().0,
+            }),
+            backend_probe: None,
+            inventory_admission: None,
+            integrity_scrub: None,
+        },
+        Duration::from_millis(10),
+    )
+    .expect("boot scan succeeds");
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("owned meter entered the cancellable scan");
+    let (stop, join, terminal) = timer
+        .into_supervised_parts()
+        .expect("supervisor takes timer ownership");
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+        (),
+        CancelRoot::clone(&root),
+    );
+    supervisor.adopt_child(
+        "maintenance-timer",
+        Box::new(move || stop.stop()),
+        join,
+        terminal,
+    );
+    root.request_shutdown();
+    assert_eq!(
+        supervisor.run(&root),
+        SupervisionOutcome::DrainFailed {
+            failed: vec![("maintenance-timer", ChildExitKind::Panicked)],
+        }
     );
 }
 
@@ -618,12 +703,15 @@ fn cooperative_checkpoint_does_not_restart_the_hard_drain_deadline() {
             CancelRoot::clone(&root),
         );
         if kind == "adopted" {
+            let (terminal_tx, terminal_rx) = mpsc::channel();
             supervisor.adopt_child(
                 "deadline-held",
                 no_stop(),
                 std::thread::spawn(move || {
                     let _released = release_rx.recv();
+                    let _reported = terminal_tx.send(ChildExitKind::Completed);
                 }),
+                terminal_rx,
             );
         } else {
             let stop: Box<dyn FnOnce() + Send> = if kind == "reported" {

@@ -4,9 +4,9 @@
 //! — the query, control and ingest accept loops, the maintenance timer,
 //! and any provider executor registered later — plus the runtime guards
 //! (maintenance, corpus lifecycle, state-root lease). No child holds a
-//! detached `JoinHandle`: every spawned child is registered with a stop
-//! closure and a join handle, reports its terminal result through one
-//! channel. An escalated child is transferred with the runtime guards to
+//! detached `JoinHandle`: spawned children report through the exit channel;
+//! the directly adopted maintenance timer publishes terminal status from its
+//! original thread. An escalated child is transferred with the runtime guards to
 //! a custody reaper, so the state-root lease cannot be released while a
 //! child is still running.
 //!
@@ -257,7 +257,7 @@ struct RegisteredChild {
     join: Option<JoinHandle<()>>,
     stop: Option<Box<dyn FnOnce() + Send>>,
     kind: Option<ChildExitKind>,
-    reports_exit: bool,
+    adopted_terminal: Option<Receiver<ChildExitKind>>,
 }
 
 /// How a supervised runtime ended.
@@ -486,7 +486,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
                     join: Some(join),
                     stop: Some(stop),
                     kind: None,
-                    reports_exit: true,
+                    adopted_terminal: None,
                 });
                 Ok(())
             }
@@ -494,21 +494,22 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         }
     }
 
-    /// Register an already-running child whose join handle is transferred
-    /// directly to the supervisor. The maintenance timer uses this path:
-    /// no second adapter spawn may strand its original timer thread.
+    /// Register an already-running child and its terminal authority.
+    /// The original thread publishes after all owned work has joined;
+    /// missing status is a failure, never inferred completion.
     pub fn adopt_child(
         &mut self,
         name: &'static str,
         stop: Box<dyn FnOnce() + Send>,
         join: JoinHandle<()>,
+        terminal: Receiver<ChildExitKind>,
     ) {
         self.children.push(RegisteredChild {
             name,
             join: Some(join),
             stop: Some(stop),
             kind: None,
-            reports_exit: false,
+            adopted_terminal: Some(terminal),
         });
     }
 
@@ -778,7 +779,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     /// before sending it. Observe every finished handle and fail closed when
     /// a reporting child returns without its required report. Drain reports
     /// after observing completion, so a queued typed failure is never replaced
-    /// with inferred success. Directly adopted children need no report.
+    /// with inferred success. Adopted children carry their own terminal status.
     fn observe_finished_children(&mut self) -> Option<ChildExit> {
         self.pending.extend(self.exits.try_iter());
         let mut first = self.take_pending_exits();
@@ -819,11 +820,16 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     fn join_finished_child(child: &mut RegisteredChild) -> ChildExitKind {
         let kind = match child.join.take().map(JoinHandle::join) {
             Some(Err(_panic)) => ChildExitKind::Panicked,
-            Some(Ok(())) => child.kind.unwrap_or(if child.reports_exit {
-                ChildExitKind::Failed
-            } else {
-                ChildExitKind::Completed
-            }),
+            Some(Ok(())) => child.adopted_terminal.as_ref().map_or_else(
+                || child.kind.unwrap_or(ChildExitKind::Failed),
+                |terminal| match terminal.try_recv() {
+                    Ok(kind) => kind,
+                    Err(
+                        std::sync::mpsc::TryRecvError::Empty
+                        | std::sync::mpsc::TryRecvError::Disconnected,
+                    ) => ChildExitKind::Failed,
+                },
+            ),
             None => child.kind.unwrap_or(ChildExitKind::Failed),
         };
         child.kind = Some(kind);
@@ -888,31 +894,20 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         }
     }
 
-    /// Join only children that both reported and actually finished.
-    /// A child still running after its event is escalated to the custody
-    /// reaper, so a misleading event cannot bypass the hard deadline.
-    /// A join that caught a panic reclassifies the child as panicked.
+    /// Join every finished child through the same terminal classifier.
+    /// A still-running child retains its handle for the custody reaper.
     fn join_children_with_known_exits(&mut self) -> DrainTally {
         let mut tally = DrainTally::default();
         for child in &mut self.children {
-            match (
-                child.kind,
-                child.join.as_ref().is_none_or(JoinHandle::is_finished),
-            ) {
-                (Some(kind), true) => {
-                    let joined = child.join.take().map_or(Ok(()), JoinHandle::join);
-                    let kind = match (kind, joined) {
-                        (_, Err(_panic_at_join)) => ChildExitKind::Panicked,
-                        (kind, Ok(())) => kind,
-                    };
-                    child.kind = Some(kind);
-                    if matches!(kind, ChildExitKind::Completed) {
-                        tally.drained.push(child.name);
-                    } else {
-                        tally.failed.push((child.name, kind));
-                    }
-                }
-                (None, _) | (Some(_), false) => tally.unfinished.push(child.name),
+            if child.join.as_ref().is_some_and(|join| !join.is_finished()) {
+                tally.unfinished.push(child.name);
+                continue;
+            }
+            let kind = Self::join_finished_child(child);
+            if matches!(kind, ChildExitKind::Completed) {
+                tally.drained.push(child.name);
+            } else {
+                tally.failed.push((child.name, kind));
             }
         }
         tally
@@ -992,10 +987,8 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             };
             std::thread::sleep(remaining.min(SUPERVISOR_POLL));
         }
-        if let Some(join) = child.join.take()
-            && join.join().is_err()
-        {
-            child.kind = Some(ChildExitKind::Panicked);
+        if child.join.is_some() {
+            let _kind = Self::join_finished_child(child);
         }
         true
     }
@@ -1018,6 +1011,63 @@ impl DrainTally {
 #[cfg(test)]
 mod tests {
     use super::{SupervisorPhase, SupervisorStatus};
+
+    #[test]
+    fn adopted_child_terminal_status_decides_drain_including_missing_report() {
+        use super::{CancelRoot, ChildExitKind, SearchdSupervisor, SupervisionOutcome};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        for (reported, expected) in [
+            (Some(ChildExitKind::Completed), None),
+            (Some(ChildExitKind::Failed), Some(ChildExitKind::Failed)),
+            (Some(ChildExitKind::Panicked), Some(ChildExitKind::Panicked)),
+            (None, Some(ChildExitKind::Failed)),
+        ] {
+            let cancel = CancelRoot::new();
+            let mut supervisor = SearchdSupervisor::new(
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                (),
+                cancel.clone(),
+            );
+            let gate = Arc::new(AtomicBool::new(false));
+            let worker_gate = Arc::clone(&gate);
+            let (terminal_tx, terminal) = std::sync::mpsc::channel();
+            let join = std::thread::spawn(move || {
+                while !worker_gate.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                if let Some(kind) = reported {
+                    let _reported = terminal_tx.send(kind);
+                }
+            });
+            supervisor.adopt_child(
+                "adopted-test",
+                Box::new(move || gate.store(true, Ordering::Release)),
+                join,
+                terminal,
+            );
+            cancel.request_shutdown();
+            let outcome = supervisor.run(&cancel);
+            match expected {
+                None => assert_eq!(
+                    outcome,
+                    SupervisionOutcome::StoppedClean {
+                        drained: vec!["adopted-test"],
+                        cooperative_overdue: Vec::new(),
+                    }
+                ),
+                Some(kind) => assert_eq!(
+                    outcome,
+                    SupervisionOutcome::DrainFailed {
+                        failed: vec![("adopted-test", kind)],
+                    }
+                ),
+            }
+        }
+    }
 
     #[test]
     fn status_publishes_phase_and_required_child_loss() {

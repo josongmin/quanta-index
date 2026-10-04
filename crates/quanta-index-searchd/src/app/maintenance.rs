@@ -31,46 +31,136 @@ use quanta_index_search_plane::readiness::ActivationCatalog;
 use quanta_index_search_plane::{SearchCorpusGenerationV1, SnapshotInventoryAdmission};
 
 use crate::app::integrity_scrub::PacedIntegrityScrubV1;
+use crate::app::supervisor::ChildExitKind;
 
 const DISK_METER_SCAN_BUDGET: Duration = Duration::from_secs(30);
 
-#[derive(Default)]
 struct DiskMeterStop {
     stopping: AtomicBool,
     active: Mutex<Option<CancelHandleV1>>,
+    tallies: Arc<MaintenanceTallies>,
 }
 
 impl DiskMeterStop {
+    fn new(tallies: Arc<MaintenanceTallies>) -> Self {
+        Self {
+            stopping: AtomicBool::new(false),
+            active: Mutex::new(None),
+            tallies,
+        }
+    }
+
+    fn fail(&self, reason: &'static str) -> CoreError {
+        self.tallies.disk_meter_fatal.store(true, Ordering::Release);
+        CoreError::Storage(reason.to_string())
+    }
+
     fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
-        let cancel = self
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+        let cancel = match self.active.lock() {
+            Ok(active) => active.clone(),
+            Err(poisoned) => {
+                // Keep custody of the cancel handle even after a poisoned
+                // lock, but publish a persistent typed readiness failure.
+                let _failure = self.fail("maintenance disk meter stop lock poisoned");
+                poisoned.into_inner().clone()
+            }
+        };
         if let Some(cancel) = cancel {
             cancel.cancel();
         }
     }
 
-    fn begin(&self, budget: &RequestBudgetV1) -> bool {
+    fn begin(&self, budget: &RequestBudgetV1) -> Result<bool, CoreError> {
         let mut active = self
             .active
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .map_err(|_poisoned| self.fail("maintenance disk meter begin lock poisoned"))?;
         if self.stopping.load(Ordering::Acquire) {
-            return false;
+            return Ok(false);
+        }
+        if active.is_some() {
+            return Err(self.fail("maintenance disk meter active budget already owned"));
         }
         *active = Some(budget.cancel_handle());
-        true
+        drop(active);
+        Ok(true)
     }
 
-    fn finish(&self) {
-        let mut active = self
+    fn finish(&self) -> Result<(), CoreError> {
+        let missing = self
             .active
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *active = None;
+            .map_err(|_poisoned| self.fail("maintenance disk meter finish lock poisoned"))?
+            .take()
+            .is_none();
+        if missing {
+            return Err(self.fail("maintenance disk meter active budget owner lost"));
+        }
+        Ok(())
+    }
+}
+
+/// Take the only disk-meter join handle. A poisoned owner lock is never
+/// treated as success, but still yields its handle so shutdown can join it.
+fn take_disk_meter(
+    owner: &Mutex<Option<JoinHandle<()>>>,
+    tallies: &MaintenanceTallies,
+) -> Option<JoinHandle<()>> {
+    let meter = match owner.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => {
+            tallies.disk_meter_fatal.store(true, Ordering::Release);
+            let mut guard = poisoned.into_inner();
+            guard.take()
+        }
+    };
+    if meter.is_none() {
+        tallies.disk_meter_fatal.store(true, Ordering::Release);
+    }
+    meter
+}
+
+/// Own the meter sender and join handle while the timer runs. On unwind,
+/// close the sender, cancel the scan, and join before the timer can finish.
+struct DiskMeterJoinGuard {
+    sender: Option<mpsc::SyncSender<()>>,
+    owner: Arc<Mutex<Option<JoinHandle<()>>>>,
+    stop: Arc<DiskMeterStop>,
+    tallies: Arc<MaintenanceTallies>,
+    joined: bool,
+}
+
+impl DiskMeterJoinGuard {
+    fn join(&mut self) -> ChildExitKind {
+        self.stop.stop();
+        drop(self.sender.take());
+        let meter = take_disk_meter(&self.owner, &self.tallies);
+        self.joined = true;
+        match meter {
+            Some(meter) => {
+                if meter.join().is_err() {
+                    self.tallies.disk_meter_fatal.store(true, Ordering::Release);
+                    ChildExitKind::Panicked
+                } else if self.tallies.disk_meter_fatal.load(Ordering::Acquire) {
+                    ChildExitKind::Failed
+                } else {
+                    ChildExitKind::Completed
+                }
+            }
+            None => ChildExitKind::Failed,
+        }
+    }
+}
+
+impl Drop for DiskMeterJoinGuard {
+    fn drop(&mut self) {
+        if !self.joined {
+            if std::thread::panicking() {
+                self.tallies.disk_meter_fatal.store(true, Ordering::Release);
+            }
+            let _kind = self.join();
+        }
     }
 }
 
@@ -87,6 +177,7 @@ pub struct MaintenanceTallies {
     disk_refreshes: AtomicU64,
     disk_refresh_failures: AtomicU64,
     disk_refresh_skipped: AtomicU64,
+    disk_meter_fatal: AtomicBool,
     lexical_generation_disk_bytes: AtomicU64,
     semantic_generation_disk_bytes: AtomicU64,
     lexical_disk_measured_at: Mutex<Option<Instant>>,
@@ -106,6 +197,11 @@ struct BackendObservation {
 impl MaintenanceTallies {
     /// A stalled or dead timer is unhealthy even when earlier ticks succeeded.
     pub fn heartbeat_fresh(&self, cadence: Duration) -> Result<bool, CoreError> {
+        if self.disk_meter_fatal.load(Ordering::Acquire) {
+            return Err(CoreError::Storage(
+                "maintenance disk meter worker failed".to_string(),
+            ));
+        }
         let Some(limit) = cadence.checked_mul(3) else {
             return Ok(false);
         };
@@ -330,6 +426,7 @@ pub struct MaintenanceTimer {
     stop: Sender<()>,
     meter_stop: Arc<DiskMeterStop>,
     thread: Option<JoinHandle<()>>,
+    terminal: mpsc::Receiver<ChildExitKind>,
     tallies: Arc<MaintenanceTallies>,
 }
 
@@ -355,7 +452,7 @@ impl MaintenanceTimer {
         // One owned worker and a single pending request bound both execution
         // and queued work without delaying identity probes or heartbeat.
         let (meter_tx, meter_rx) = mpsc::sync_channel::<()>(1);
-        let meter_stop = Arc::new(DiskMeterStop::default());
+        let meter_stop = Arc::new(DiskMeterStop::new(Arc::clone(&tallies)));
         let meter = {
             let lexical = Arc::clone(&parts.lexical_disk_usage);
             let semantic = Arc::clone(&parts.semantic_disk_usage);
@@ -366,11 +463,14 @@ impl MaintenanceTimer {
                 .spawn(move || {
                     while meter_rx.recv().is_ok() {
                         let budget = RequestBudgetV1::for_duration(DISK_METER_SCAN_BUDGET);
-                        if !meter_stop.begin(&budget) {
-                            break;
+                        match meter_stop.begin(&budget) {
+                            Ok(true) => {}
+                            Ok(false) | Err(_) => break,
                         }
                         refresh_disk_usage(&lexical, &semantic, &tallies, &budget);
-                        meter_stop.finish();
+                        if meter_stop.finish().is_err() {
+                            break;
+                        }
                     }
                 })
                 .map_err(|error| {
@@ -379,42 +479,54 @@ impl MaintenanceTimer {
         };
         let (stop, stop_rx) = mpsc::channel();
         let meter_owner = Arc::new(Mutex::new(Some(meter)));
+        let (terminal_tx, terminal) = mpsc::channel();
         let thread = {
-            let tallies = Arc::clone(&tallies);
+            let timer_tallies = Arc::clone(&tallies);
             let meter_for_timer = Arc::clone(&meter_owner);
             let meter_stop_for_timer = Arc::clone(&meter_stop);
+
             let spawned = std::thread::Builder::new()
                 .name("searchd-maintenance".to_string())
                 .spawn(move || {
+                    let mut meter_guard = DiskMeterJoinGuard {
+                        sender: Some(meter_tx),
+                        owner: meter_for_timer,
+                        stop: meter_stop_for_timer,
+                        tallies: Arc::clone(&timer_tallies),
+                        joined: false,
+                    };
                     loop {
                         match stop_rx.recv_timeout(cadence) {
                             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
                             Err(RecvTimeoutError::Timeout) => {
-                                tick(&parts, &tallies);
-                                match meter_tx.try_send(()) {
+                                tick(&parts, &timer_tallies);
+                                let Some(sender) = meter_guard.sender.as_ref() else {
+                                    timer_tallies
+                                        .disk_meter_fatal
+                                        .store(true, Ordering::Release);
+                                    break;
+                                };
+                                match sender.try_send(()) {
                                     Ok(()) => {}
                                     Err(TrySendError::Full(())) => {
-                                        let _prior = tallies
+                                        let _prior = timer_tallies
                                             .disk_refresh_skipped
                                             .fetch_add(1, Ordering::AcqRel);
                                     }
                                     Err(TrySendError::Disconnected(())) => {
-                                        if meter_stop_for_timer.stopping.load(Ordering::Acquire) {
-                                            break;
+                                        if !meter_guard.stop.stopping.load(Ordering::Acquire) {
+                                            timer_tallies
+                                                .disk_meter_fatal
+                                                .store(true, Ordering::Release);
                                         }
-                                        panic!("maintenance disk meter stopped unexpectedly");
+                                        break;
                                     }
                                 }
                             }
                         }
                     }
-                    drop(meter_tx);
-                    let meter = meter_for_timer
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .take()
-                        .expect("maintenance disk meter owner lost");
-                    meter.join().expect("maintenance disk meter panicked");
+                    let kind = meter_guard.join();
+                    let _reported = terminal_tx.send(kind);
                 });
             match spawned {
                 Ok(thread) => thread,
@@ -422,12 +534,13 @@ impl MaintenanceTimer {
                     meter_stop.stop();
                     // The failed spawn drops its channel sender. Retain and
                     // join the meter before returning the startup failure.
-                    let meter = meter_owner
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .take()
-                        .expect("maintenance disk meter owner lost");
-                    let _joined = meter.join();
+                    let meter_failed = take_disk_meter(&meter_owner, &tallies)
+                        .is_none_or(|meter| meter.join().is_err());
+                    if meter_failed || tallies.disk_meter_fatal.load(Ordering::Acquire) {
+                        return Err(CoreError::Storage(format!(
+                            "maintenance timer: spawn thread: {error}; disk meter ownership or join failed"
+                        )));
+                    }
                     return Err(CoreError::Storage(format!(
                         "maintenance timer: spawn thread: {error}"
                     )));
@@ -438,6 +551,7 @@ impl MaintenanceTimer {
             stop,
             meter_stop,
             thread: Some(thread),
+            terminal,
             tallies,
         })
     }
@@ -449,15 +563,24 @@ impl MaintenanceTimer {
     }
 
     /// Hand the timer to a supervisor (SEP-21 P08): the stop signal is
-    /// sent now-or-by-the-closure and the join becomes the supervisor's
-    /// to own, so the timer is never a detached thread and never joined
+    /// sent now-or-by-the-closure and the join plus terminal authority become
+    /// the supervisor's to own, so the timer is never a detached thread or joined
     /// after the runtime guards drop.
     ///
     /// The stop closure is idempotent with [`Drop`]: whichever runs
     /// first signals; the join handle is out of this value so a later
     /// drop of the timer stops nothing and joins nothing. A second
     /// hand-off is a typed error, not a silent stub.
-    pub fn into_supervised_parts(mut self) -> Result<(MaintenanceStop, JoinHandle<()>), CoreError> {
+    pub fn into_supervised_parts(
+        mut self,
+    ) -> Result<
+        (
+            MaintenanceStop,
+            JoinHandle<()>,
+            mpsc::Receiver<ChildExitKind>,
+        ),
+        CoreError,
+    > {
         let (dummy, _dummy_rx) = mpsc::channel();
         let stop = std::mem::replace(&mut self.stop, dummy);
         let Some(handle) = self.thread.take() else {
@@ -471,6 +594,7 @@ impl MaintenanceTimer {
                 meter_stop: Arc::clone(&self.meter_stop),
             },
             handle,
+            std::mem::replace(&mut self.terminal, mpsc::channel().1),
         ))
     }
 }
@@ -501,7 +625,9 @@ impl Drop for MaintenanceTimer {
         if let Some(thread) = self.thread.take() {
             self.meter_stop.stop();
             let _stop_result = self.stop.send(());
-            let _joined = thread.join();
+            if thread.join().is_err() {
+                self.tallies.disk_meter_fatal.store(true, Ordering::Release);
+            }
         }
     }
 }
@@ -590,7 +716,10 @@ impl MetricSourcePort for MaintenanceMetricSource {
 
 #[cfg(test)]
 mod tests {
-    use super::{MaintenanceParts, MaintenanceTallies, MaintenanceTimer};
+    use super::{
+        ChildExitKind, DiskMeterStop, MaintenanceParts, MaintenanceTallies, MaintenanceTimer,
+        take_disk_meter,
+    };
     use quanta_index_core::{
         CoreError, RequestBudgetV1, TrackDiskUsagePort, WriterIdleSweepPort,
         unique_inode_tree_bytes_in_track,
@@ -628,6 +757,214 @@ mod tests {
         assert!(
             matches!(error, CoreError::Storage(message) if message.contains("heartbeat lock poisoned"))
         );
+    }
+
+    #[test]
+    fn poisoned_or_missing_disk_meter_owner_is_a_typed_readiness_failure() {
+        let tallies = Arc::new(MaintenanceTallies::default());
+        let meter_stop = DiskMeterStop::new(Arc::clone(&tallies));
+        let _caught = std::panic::catch_unwind(|| {
+            let _guard = meter_stop.active.lock().expect("fixture owner lock");
+            panic!("poison the active meter owner");
+        });
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(1));
+        let error = meter_stop
+            .begin(&budget)
+            .expect_err("poisoned meter owner must refuse a new scan");
+        assert!(
+            matches!(error, CoreError::Storage(message) if message.contains("begin lock poisoned"))
+        );
+        assert!(matches!(
+            tallies.heartbeat_fresh(Duration::from_secs(1)),
+            Err(CoreError::Storage(message)) if message.contains("disk meter worker failed")
+        ));
+        meter_stop.stop();
+
+        let missing = MaintenanceTallies::default();
+        let owner = Mutex::<Option<std::thread::JoinHandle<()>>>::new(None);
+        assert!(take_disk_meter(&owner, &missing).is_none());
+        assert!(matches!(
+            missing.heartbeat_fresh(Duration::from_secs(1)),
+            Err(CoreError::Storage(message)) if message.contains("disk meter worker failed")
+        ));
+    }
+
+    fn controlled_disk_meter_failure() -> ! {
+        panic!("controlled disk meter worker failure");
+    }
+
+    #[test]
+    fn unexpected_disk_meter_panic_ends_required_timer_and_fails_readiness() {
+        struct PanicOnSecondScan {
+            calls: AtomicU64,
+            entered: mpsc::Sender<()>,
+        }
+
+        impl TrackDiskUsagePort for PanicOnSecondScan {
+            fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
+                budget.checkpoint("panic-on-second-scan")?;
+                if self.calls.fetch_add(1, Ordering::AcqRel) > 0 {
+                    let _sent = self.entered.send(());
+                    controlled_disk_meter_failure();
+                }
+                Ok(1)
+            }
+        }
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let timer = MaintenanceTimer::start(
+            MaintenanceParts {
+                writer_sweep: Arc::new(CountingSweep(AtomicU64::new(0))),
+                lexical_disk_usage: Arc::new(PanicOnSecondScan {
+                    calls: AtomicU64::new(0),
+                    entered: entered_tx,
+                }),
+                semantic_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(0))),
+                backend_probe: None,
+                inventory_admission: None,
+                integrity_scrub: None,
+            },
+            Duration::from_millis(10),
+        )
+        .expect("boot scan succeeds");
+        let tallies = timer.tallies();
+        let (stop, thread, terminal) = timer.into_supervised_parts().expect("supervised transfer");
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker entered failing scan");
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .expect("test deadline");
+        while !thread.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let exited_without_stop = thread.is_finished();
+        stop.stop();
+        thread.join().expect("timer joins the failed worker");
+        assert_eq!(
+            terminal.try_recv().expect("timer reports terminal kind"),
+            ChildExitKind::Panicked
+        );
+        assert!(
+            exited_without_stop,
+            "required timer did not exit after meter loss"
+        );
+        assert!(matches!(
+            tallies.heartbeat_fresh(Duration::from_secs(1)),
+            Err(CoreError::Storage(message)) if message.contains("disk meter worker failed")
+        ));
+    }
+
+    fn controlled_timer_callback_failure() -> ! {
+        panic!("controlled timer callback failure");
+    }
+
+    #[test]
+    fn timer_callback_panic_cancels_and_joins_the_owned_walker_before_timer_exits() {
+        struct PanicAfterWalkEntered {
+            calls: AtomicU64,
+            entered: Arc<AtomicBool>,
+        }
+
+        impl WriterIdleSweepPort for PanicAfterWalkEntered {
+            fn sweep_idle_writers(&self) -> Result<u64, CoreError> {
+                if self.calls.fetch_add(1, Ordering::AcqRel) > 0 {
+                    let waiting = Instant::now();
+                    while !self.entered.load(Ordering::Acquire)
+                        && waiting.elapsed() < Duration::from_secs(2)
+                    {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    controlled_timer_callback_failure();
+                }
+                Ok(0)
+            }
+        }
+
+        struct ObservedWalker {
+            root: PathBuf,
+            calls: AtomicU64,
+            entered: Arc<AtomicBool>,
+            entered_tx: mpsc::Sender<()>,
+            exited_tx: mpsc::Sender<bool>,
+        }
+
+        impl TrackDiskUsagePort for ObservedWalker {
+            fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
+                let pause = self.calls.fetch_add(1, Ordering::AcqRel) > 0;
+                let announced = AtomicBool::new(false);
+                unique_inode_tree_bytes_in_track(
+                    &self.root,
+                    &|_| {
+                        if pause && !announced.swap(true, Ordering::AcqRel) {
+                            self.entered.store(true, Ordering::Release);
+                            let _sent = self.entered_tx.send(());
+                            let waiting = Instant::now();
+                            while !budget.is_cancelled()
+                                && waiting.elapsed() < Duration::from_secs(2)
+                            {
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                            let _exited = self.exited_tx.send(budget.is_cancelled());
+                        }
+                        false
+                    },
+                    budget,
+                )
+            }
+        }
+
+        let root = tempfile::tempdir().expect("track fixture");
+        std::fs::write(root.path().join("file"), b"payload").expect("track bytes");
+        let entered = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (exited_tx, exited_rx) = mpsc::channel();
+        let timer = MaintenanceTimer::start(
+            MaintenanceParts {
+                writer_sweep: Arc::new(PanicAfterWalkEntered {
+                    calls: AtomicU64::new(0),
+                    entered: Arc::clone(&entered),
+                }),
+                lexical_disk_usage: Arc::new(ObservedWalker {
+                    root: root.path().to_path_buf(),
+                    calls: AtomicU64::new(0),
+                    entered,
+                    entered_tx,
+                    exited_tx,
+                }),
+                semantic_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(0))),
+                backend_probe: None,
+                inventory_admission: None,
+                integrity_scrub: None,
+            },
+            Duration::from_millis(10),
+        )
+        .expect("boot scan succeeds");
+        let tallies = timer.tallies();
+        let (stop, timer_thread, terminal) = timer
+            .into_supervised_parts()
+            .expect("supervisor takes timer ownership");
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("real walker entered before callback panic");
+        let joined = timer_thread.join();
+        let walker_cancelled = exited_rx
+            .try_recv()
+            .expect("walker exited before timer join returned");
+        stop.stop();
+        assert!(joined.is_err(), "callback panic must reach the timer owner");
+        assert!(
+            walker_cancelled,
+            "walker exit must follow budget cancellation"
+        );
+        assert!(
+            terminal.try_recv().is_err(),
+            "panicked timer cannot publish completion"
+        );
+        assert!(matches!(
+            tallies.heartbeat_fresh(Duration::from_secs(1)),
+            Err(CoreError::Storage(message)) if message.contains("disk meter worker failed")
+        ));
     }
 
     #[test]
@@ -758,7 +1095,7 @@ mod tests {
             Duration::from_millis(10),
         )
         .expect("boot measurement completes");
-        let (stop, thread) = timer.into_supervised_parts().expect("transfer ownership");
+        let (stop, thread, terminal) = timer.into_supervised_parts().expect("transfer ownership");
         entered_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("handed-off meter entered the real walker");
@@ -767,6 +1104,10 @@ mod tests {
         thread
             .join()
             .expect("supervised timer and meter stop cleanly");
+        assert_eq!(
+            terminal.try_recv().expect("timer reports terminal kind"),
+            ChildExitKind::Completed
+        );
         assert!(
             stopped.elapsed() < Duration::from_secs(2),
             "supervised directory walk outlived shutdown"
@@ -797,6 +1138,7 @@ mod tests {
                         })?
                         .0;
                 }
+                drop(state);
             }
             Ok(10)
         }
@@ -829,7 +1171,9 @@ mod tests {
             let (state, timeout) = ready
                 .wait_timeout_while(state, Duration::from_secs(2), |state| !state.0)
                 .expect("fixture wait");
-            state.0 && !timeout.timed_out()
+            let observed = state.0 && !timeout.timed_out();
+            drop(state);
+            observed
         };
         let deadline = Instant::now() + Duration::from_secs(2);
         while tallies.ticks() < 5 && Instant::now() < deadline {
@@ -842,6 +1186,7 @@ mod tests {
             let (lock, ready) = &*gate;
             let mut state = lock.lock().expect("fixture gate");
             state.1 = true;
+            drop(state);
             ready.notify_all();
         }
         drop(timer);
