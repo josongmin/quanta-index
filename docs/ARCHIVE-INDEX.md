@@ -2,6 +2,21 @@
 
 Status: `HISTORICAL RECOVERY INDEX`
 
+## Oct-04 source-count snapshot retirement
+
+At `8ee2f1ea82c6dcb991b633d9282ca2ca2bf0aff3`,
+`docs/ssot/expect-reachability.md` was a dated `2026-10-03` call-site audit.
+Recover it with `git show 8ee2f1ea:docs/ssot/expect-reachability.md`.
+Its lexical `code_search.rs` count was 93 matching lines; the selected source
+has 97. The two non-test `ann.rs` calls remain at lines 182 and 190; the two
+`harness.rs` calls moved from lines 875/883 to 894/902. The audit's production
+reachability conclusion must be rechecked against current callers before reuse.
+The live SSOT index
+keeps the recheck method rather than a source-bound count. Stale file/line
+counts were also removed from `docs/ssot/crate-ownership.md`; the original
+numbers remain in Git at the same revision. This retirement does not assert
+that every panic site or crate boundary has been re-audited.
+
 ## Oct-04 current-source RFC replacement
 
 The clean `e43cda8c87b4a06fecac82a266011e30f84a2986` pre-deletion revision

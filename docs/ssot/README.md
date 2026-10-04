@@ -10,7 +10,7 @@ residuals do not establish missing engine implementations. Inspect
 | --- | --- |
 | Live search engine path | [engine-status-v1.md](engine-status-v1.md), `search-plane` / `searchd` / `sdk` source |
 | Workspace crate ownership and entry points | [crate-ownership.md](crate-ownership.md) |
-| `expect` production reachability audit | [expect-reachability.md](expect-reachability.md) |
+| `.expect()` reachability | Search current call sites, then inspect production module boundaries and callers; the dated audit is recoverable through the [history index](../ARCHIVE-INDEX.md#oct-04-source-count-snapshot-retirement). |
 | Host/release evidence still open | [CURRENT-RESIDUAL](../plans/sep-21-search-plane-sota-hardening/tickets/CURRENT-RESIDUAL-2026-09-26.md) |
 | CI provider and release coverage | [QIT-09](../plans/jul-15-sota-test-hardening/tickets/QIT-09-circleci-provider-coverage.md) and [release evidence](../plans/sep-21-search-plane-sota-hardening/tickets/S21-13-release-evidence-and-sota-qualification.md) |
 | DSL and Sourcegraph support | [DSL capabilities](../reference/dsl-capabilities.md) and [filter parity](../reference/sourcegraph-filter-parity.md) |
