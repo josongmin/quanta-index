@@ -14,6 +14,12 @@
 
 검수된 라벨, objective/no-answer strata, split과 실행 receipt를 하나의 기존 admission 경로에서 일치시킨다.
 
+## 2026-10-05 나머지8 current0e6 발행
+
+- clean source `0e6c7e7e9494b63fdb33f4594df059817459d3b1`에서 `uv run --frozen --extra dev python /tmp/qi-e1-other-eight-0e6-issuer-v1.py --output-parent /Users/songmin/Documents/code-new/qi-e1-other-eight-admission-0e6-20261005-v1`을 실제 실행 중이다. cli/lo/mocha/uvicorn/zustand/django/typeorm/nushell을 저장소별로 canonical issuance하며 bat409 완료 결과를 반복하지 않는다.
+- packet SHA `2d50ec6b6fe53598ebbc834c4d5cb4b366377ab497c51a57c6d3e45d8657ad46`, wrapper SHA `349e1afd37beac5bc8d0fb86711a3863452c6ba480bf12e62efb205ee26643c3`, canonical issuer SHA `1a14f09d58064cfdf238ac5a17ee65f66d7130273e07b854103347753145cf39`다. 실제 Contract/SDK proof·immutable 원본 labels·source107과 동등한5helpers/template를 전후 검증하며 과거 admission을 current로 바꾸지 않는다.
+- completed result/terminal 전에는 readiness/8개 통과를 발행하지 않는다. 새 모델 호출·human review·전체 cohort qualification 범위가 아니다. SQLAlchemy/Zellij/Tailscale 미결은 이8개에 합산하지 않는다.
+
 ## 배경과 현재 상태
 
 현 run.py는 validate_admission_manifest와 verify_admission_bundle, corpus_binding은 validate_split_manifest를 이미 갖는다. NL-only diagnostic과 mixed-track decision을 구분한다. 과거 C5 4개 stale exclusion은 B08 cohort가 여전히 요구하는 경우에만 새 입력을 발행하며 B09 global12와 합치지 않는다.

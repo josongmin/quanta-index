@@ -11,7 +11,7 @@
 | 순서 / 웨이브 | 해야 할 일 | 현재 경계 |
 | --- | --- | --- |
 | 1 / W4–W5 | 수정 scorer의 새 Sourcegraph 12repo 독립 scope replay → bat native3 새 캡처 → 독립 raw replay → 5제품 join | scope producer exit0/12receipts, 독립 replay와 native3 실제 실행 중. old receipt control drift의 native v2 exit2는 보존 |
-| 2 / W3 | current0e6 proof로 cli/lo/mocha/uvicorn/zustand/django/typeorm/nushell의 원본8 admission 발행 | 입력·canonical issuer 준비, 실제 실행 `NOT_RUN`. bat409 current v4는 이미 발행/strict consumer 검증됨 |
+| 2 / W3 | current0e6 proof로 cli/lo/mocha/uvicorn/zustand/django/typeorm/nushell의 원본8 admission 발행 | canonical issuer 실제 실행 중. terminal 미발행 저장소는 ready 아님. bat409 current v4는 이미 strict consumer 검증됨 |
 | 3 / W4–W5 | 준비된 C3 저장소의 실제 Quanta/Semble·SG/OG/cs 캡처, required-cell outcomes·source-bound blind union 발행 | existing exploratory pre-review mode로 신규 후보 확보. 새 미검수 후보를 final quality나 0점으로 처리하지 않음 |
 | 4 / W1→W3→W5 | SQLAlchemy/Zellij 실제 조정 완료·suite/pack/admission 발행, Tailscale 미결 정책 적용 후 재검수 | actual Opus 주간 한도로 SQL146·Zellij476pairs `BLOCKED`. SQL334pairs 보존. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 입력도 `BLOCKED` |
 | 5 / W1–W5 | 다른 lane의 fresh required cells와 독립 name/holdout 평가, 최종 합집합 검수·scoreboard·정책 판정 | 아래 에픽별 잔여와 입력 경계 적용. C3 NL·exact/typo/span·ARB·B09 분모를 합산하지 않음 |

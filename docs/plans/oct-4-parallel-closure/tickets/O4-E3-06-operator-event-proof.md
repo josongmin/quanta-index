@@ -28,6 +28,13 @@
 - **다른 실제 OS UID의 operator refusal 및 Linux release 실행은 입력 미확보로 `BLOCKED`**, 이 환경에서 `NOT_RUN`이다. Linux runner에 실제 owner·다른 UID, 해당 UID로 실행할 matching client binary, 경로 traversal 권한이 필요하다. 기존 `E2eRuntime::boot_with_socket_access`는 공유 socket을 접근 가능한 `/tmp` 아래에 두고 기존 `SearchdConfig::with_socket_overrides`를 사용하므로 새 production API는 필요 없다. OS credential을 가진 다른 UID의 Admin `events` 거절과 무노출, owner 성공, 허용된 non-Admin 요청 성공을 각각 검증해야 한다. 기본 `--state-root`의 0700 경로 아래 socket만으로는 다른 UID의 accept 경계를 검증할 수 없다.
 - 정확한 현재 owner selector: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked --test-threads 4`. shared socket 기존 fixture selector: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked -E 'test(e2e_socket_access)'`. 둘 다 이번 정적 판정에서는 `NOT_RUN`이며 real two-UID/Linux case의 대체 증거가 아니다.
 
+## 2026-10-05 실제 두 UID component fixture PREPARE
+
+- 별도 `/Users/songmin/.codex/worktrees/oct5-linux-uid/quanta-index`의 base0e6 위에 Linux-only ignored parent/helper를 준비했다. 기존 shared `/tmp` socket harness와 실제 `setpriv` client를 사용하며 다른 UID의 typed Admin refusal·query ring 무노출, owner read 성공·허용된 Active Text query/terminal event를 검사한다. production API 변경은 없다.
+- 변경은 `e2e_socket_access.rs`(SHA `ba44cd556313771b4a83a6f31c83af21465802119191247702308de1d43f8124`)와 ignored-policy2예외(SHA `149181b1123f014d0561566c585137d5e5fa1c277d570569906d0d50d00ad7a6`)뿐이다. canonical `./scripts/cargow fmt --check`의 import2곳 실패를 `cargow fmt`로 수리한 뒤 check exit0, Python3.13의 `tools/ci/lint/check-ignored-test-policy.py` exit0, diff-check exit0이다. Linux typecheck/test는 `NOT_RUN`이다.
+- owned disposable container image `sha256:9c558534f4e4aa4b08a94ed27de00410dfa2b5b1a9003081c37de9c3a5ff2ed2`의 사전 inventory는 Linux/aarch64·root·Python3.11.2·setpriv·cc·`/tmp`1777 및 실제 UID/GID65534 전환을 관측했다. 이 실행에서 Rust/cargo 도구를 찾지 못했으며 root/다른UID IPC test를 통과한 것이 아니다. 별도 build-capable image를 확인한 뒤 정확한 root 전용 selector로 실행한다.
+- selector: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked --run-ignored only -E 'test(linux_two_real_uids_enforce_operator_events_and_serve_listed_query)' --success-output final`. 이 Linux UDS credential component 범위와 P11 실제 release/deploy/config/rollback 범위는 별개다.
+
 ## 배경과 현재 상태
 
 현재 split.rs의 ProcessRequestEventsV1 request/response, control dispatcher의 ProcessRequestEventsPort, SDK observability.request_events와 searchctl rendering이 존재한다. IpcServerCounters도 process_instance/sequence/drop window를 제공한다. SEP21 옛 계획의 새 endpoint 구현 항목을 그대로 재구현하면 중복된다.
