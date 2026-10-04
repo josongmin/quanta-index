@@ -43,7 +43,7 @@
 ## 중앙 실행의 배치 규칙
 
 - **먼저 코드·독립 fixture·정적 점검을 병렬로 준비하고, 실행 검증은 I0가 모아서 수행한다.** 에픽별로 pytest/Rust tests·builds·실제 capture·모델/성능 jobs를 따로 시작하지 않는다.
-- 현재 4개 실행 슬롯은 **root가 E1+I0**, 나머지 3개가 **E2/E3/E4**를 맡는다. 에픽 소유권은 유지하고 SHARED 파일은 root가 통합한다. I0는 별도 다섯 번째 실행 슬롯을 요구하지 않는다.
+- 최대4개 슬롯의 역할 배치는 **root가 E1+I0**, 나머지3개가 **E2/E3/E4 PREPARE**다. 에픽 소유권은 유지하고 SHARED 파일은 root가 통합한다. 이 역할 배치는 workers가 현재 모두 실행 중이라는 상태 주장이 아니다. I0는 별도 다섯 번째 실행 슬롯을 요구하지 않는다.
 - W1에서는 source 조사·producer/consumer 구현·반례 fixture·실행 입력 준비를 우선한다. source에서 확정할 수 없는 재현·병목·역할 검수는 중앙 실행 배치 전까지 `NOT_RUN`이며, 입력이 없으면 해당 scope만 `BLOCKED`다.
 - W2의 조건부 변경은 이미 확보한 실제 반례/측정 또는 채택한 계약에 근거한다. 새 실행 증거가 필요한 경우, 준비된 W1 fixture/profile을 I0가 한 배치로 판정한 뒤 **필요한 W2만 재개**한다. 추정으로 pin/token/storage/scanner 변경을 선행하지 않는다.
 - W3에서는 **통합 → 정적 점검 → owner regressions → 영향 surface gates → matching binary/input → admission ISSUE**를 순서대로 수행한다. 재현 배치에서 새 결함이 확인되면 해당 W2 수리 후 W3 영향 범위를 다시 검증한다.
