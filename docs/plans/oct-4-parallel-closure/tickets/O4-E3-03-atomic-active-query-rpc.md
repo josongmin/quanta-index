@@ -16,7 +16,8 @@
 - 지원 Active route의 사전 resolve RPC를 제거했다. Structural Active refusal, SemanticWorkBounded exact-generation 제한, Active cursor의 exact-pin 요구와 `rev:at.time` ancestor preflight는 별도 계약으로 보존한다.
 - strict wire 방문자, response literals, searchctl/harness, 실제 benchmark request-event consumer를 함께 수정했다. 선택 후 read-view admission 전에 G1이 폐기되면 기존 typed refusal이 가능하며 이 변경이 admission lease를 추가한 것은 아니다.
 - 초기 중앙 compile에서 Structural macro field와 SDK test import 누락을 확인해 수정했다. 통합 후 owner batch·actual SDK one-RPC·mandatory surface gates는 아직 최종 결과를 회수 중이다.
-- `real_daemon_sdk_active_text_and_symbol_bind_one_selected_head_without_resolve`를 실제 daemon SDK integration에 추가했다. query-only SDK의 Text/Symbol 각 1RPC, ACK와 selected generation/token 결속, query-ring admission/terminal을 검사한다. G31→G32 실제 successor activation 뒤 G31 token 요청의 typed `NotReady`도 같은 fixture에서 검증한다. 실행은 `NOT_RUN`이다.
+- `real_daemon_sdk_active_text_and_symbol_bind_one_selected_head_without_resolve`를 실제 daemon SDK integration에 추가했다. query-only SDK의 Text/Symbol 각 1RPC, ACK와 selected generation/token 결속, query-ring admission/terminal을 검사한다. G31→G32 실제 successor activation 뒤 G31 token 요청의 typed `NotReady`도 같은 fixture에서 검증한다.
+- `VERIFIED`: test-fast-lane env를 source하고 같은 lane의 debug `quanta-index-searchd`를 `QUANTA_INDEX_SEARCHD_BIN`으로 pin한 뒤 `./scripts/cargow --lane test-fast-lane test --workspace --test sdk_roundtrip --all-features --locked` —26 passed /0 failed /25.07초, exit0. 새 live Active/stale-token case도 통과했다. 이 결과는 Linux/fresh-release formal SDK proof가 아니다.
 - 중앙 workspace 실행에서 stale SDK positive mocks 2건을 수리한 뒤 SDK lib와 search-plane lib는 통과했다. 이 결과는 새 live SDK integration 실행을 대신하지 않는다. wire 4-target fuzz smoke와 public API baseline check는 `VERIFIED`다.
 
 ## 목적

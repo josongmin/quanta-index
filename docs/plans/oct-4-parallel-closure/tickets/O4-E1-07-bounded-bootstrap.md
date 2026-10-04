@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P2 / `CONDITIONAL_CODE` |
 | 기준 웨이브 | [W2 — 확인된 결함 수리·선택 최적화](../waves/W2-repairs-and-selected-optimizations.md) |
-| 실행 상태 | current cache-bound 회귀 `VERIFIED`; cold numeric profile·kernel 최적화 판정은 `NOT_RUN` |
+| 실행 상태 | cache-bound 회귀와1196-row cold numeric profile `VERIFIED`; independent reference·kernel 최적화 판정은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -22,7 +22,10 @@ evaluator.mean_ci/_bootstrap_bounds는 deterministic paired/within-stratum perce
 
 - current producer의 pure numeric cache는 최대 16 entries, canonical key당 256 KiB다. 기존 32 entries/64 KiB 가정에 묶인 stale fixture를 현재 bounds에 맞춰 수정했다. bootstrap RNG/reduction/kernel은 변경하지 않았다.
 - `VERIFIED`: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_bootstrap_cache.py tools/ci/tests/test_retrieval_default_decision.py -q --tb=short` — 23 passed, 3.63s, exit 0. 관련 bootstrap/cluster fixtures는 E1/controller 중앙 786-pass 배치에도 포함된다.
-- cold numeric-only wall/RSS profile과 independent fixed-index reference에 따른 최적화 선택은 `NOT_RUN`이다. cache regression 통과를 cold compute 개선으로 표시하지 않는다.
+- `VERIFIED`: 외부 `/tmp/qi-e1-bootstrap-cold-profile.py prepare-two`가 기존 Gin source와 두 single-route suite/runner를 현재 `load_evidence`·`evaluate_diagnostic`로 재검증했다. 실제1196개 동일 task/source judgment의 NDCG deltas/strata를 사용했고 20 rows 반복으로 population을 만들지 않았다. 이 join은 numeric workload이며 새 paired quality verdict가 아니다.
+- fresh-process `measure`는 `_bootstrap_bounds.__wrapped__(seed,10000)`만 측정했다. 입력/admission 준비16.202초와 별도로 numeric wall7.026초 / process CPU2.927초, process lifetime RSS high-water delta458,752 bytes를 관측했다. host가 혼잡해 이 한 번의 wall을 정식 성능으로 비교하지 않는다. RSS delta는 해당 계산의 독립 allocation 측정이 아니다.
+- 외부 입력은 `/Users/songmin/Documents/code-new/qi-e1-cold-gin1196-04f3c6p4/{seed,manifest}.json`, seed SHA `0fe7a453b108d29fbd314770ddd34b6bce19f388604f2f1f20a7c47feff9512a`, 79,146 bytes다. 결과 bounds는 current-source prepare와 일치한다. 이는 동일 구현 재생이고 independent fixed-index/scalar reference는 아직 `NOT_RUN`이다.
+- bootstrap RNG/reduction/kernel 변경과 cold compute 개선 주장은 없다. 독립 reference와 별도 목표·측정이 확보된 뒤 조건부 최적화를 판정한다.
 
 ## 착수 입력
 

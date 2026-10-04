@@ -20,7 +20,9 @@ full/delta/delete/no-op/reopen의 저장·검증·shard 비용과 transient reso
 - high water는 관측한 표본의 최댓값이며 true peak가 아니다. interior allocation 표본이 없으면 high water를 null로 남긴다. probe 실패는 수치 없이 unavailable로 기록하고 observer wall/gap/setup/teardown을 보존한다.
 - disk worker는 cooperative cancel 후 join하고 end boundary를 읽어 동시 recursive walker를 피한다. 막힌 filesystem syscall 자체는 중단하지 못한다.
 - `small_source_lifecycle_matches_independent_bytes_and_fresh_rebuild`가 full→delta→no-op→delete→same-process reopen의 source hash, deleted-token negative, final path/rank/score parity를 검사한다. fresh rebuild parity는 독립 ranking gold나 OS restart 증거가 아니다.
-- Rust compile에서 unused `usize` 반환값 refusal을 수리했다. 중앙 workspace 재실행 중이며 release phase capture·실제 physical I/O·tier scale은 `NOT_RUN`이다.
+- Rust compile에서 unused `usize` 반환값 refusal을 수리했다. 중앙 workspace lib/bin은146 harness tests 통과 후 새 lifecycle fresh-rebuild score 비교1건이 실패했다. focused 재현에서 top10 paths/order는 같고 모든 score bits가 달랐다.
+- 일반 lexical seal은 tombstoned Tantivy 문서를 commit/wait만 하고, history index는 같은 BM25 N/df/length 잔여를 stale-segment compaction으로 제거한다. 일반 seal에도 stale segment만 purge하고 잔여0을 검증하는 구조 수리와 직접 L2 regression을 준비 중이다. source hash/no-op/reopen 검사를 완화하지 않는다.
+- release phase capture·실제 physical I/O·tier scale은 `NOT_RUN`이다.
 
 ## 배경과 현재 상태
 

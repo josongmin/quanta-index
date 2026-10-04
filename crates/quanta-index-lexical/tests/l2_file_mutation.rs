@@ -734,6 +734,108 @@ fn tombstone_removes_its_file_and_inherits_other_file_units() -> TestResult {
     )
 }
 
+/// Three distinct source files share one search term, but have independent
+/// candidate IDs and source hashes. The oracle is the two retained source
+/// files, constructed without the deleted file or its indexing history.
+fn scored_file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
+    let mut scope = file_scope(path, marker)?;
+    let content = format!("{marker} livebm25needle");
+    scope.source_bytes = content.as_bytes().to_vec();
+    scope.coverage.source.source_sha256 = Sha256::digest(content.as_bytes()).into();
+    let chunk = scope.chunks.first_mut().ok_or("missing scored chunk")?;
+    chunk.text = content.into();
+    chunk.end_byte = u32::try_from(chunk.text.len())?;
+    scope.coverage.unit_set_sha256 = source_file_unit_set_sha256(&scope.chunks, &scope.symbols)?;
+    Ok(scope)
+}
+
+#[test]
+fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let retired = scored_file_scope("a.rs", "retiredmarker")?;
+    let kept_b = scored_file_scope("b.rs", "keptbmarker")?;
+    let kept_c = scored_file_scope("c.rs", "keptcmarker")?;
+    let base = batch(1, None, vec![retired, kept_b.clone(), kept_c.clone()])?;
+    let _stages = adapter.build_batch(&base)?;
+    let mut delta = batch(2, Some(1), Vec::new())?;
+    delta.tombstone_scopes.push(SearchCorpusTombstoneScope {
+        file: SourceFileKey {
+            source_repo_id: RepoId::new("l2-mutation-repo")?,
+            repo_relative_path: RepoRelativePath::new("a.rs"),
+        },
+    });
+    delta.source_event.payload_sha256 = source_event_payload_sha256(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
+
+    let fresh_dir = tempfile::tempdir()?;
+    let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
+    let rebuilt = batch(2, None, vec![kept_b, kept_c])?;
+    let _stages = fresh.build_batch(&rebuilt)?;
+    let budget = RequestBudgetV1::unbounded();
+    let live_view = adapter.open(
+        &delta.repo_id,
+        &delta.revision_id,
+        delta.generation,
+        &budget,
+    )?;
+    let fresh_view = fresh.open(
+        &rebuilt.repo_id,
+        &rebuilt.revision_id,
+        rebuilt.generation,
+        &budget,
+    )?;
+    assert_eq!(
+        live_view.source_file_coverage(),
+        fresh_view.source_file_coverage()
+    );
+    let live = live_view.search(&query("livebm25needle"), 10, &budget)?;
+    let expected = fresh_view.search(&query("livebm25needle"), 10, &budget)?;
+    let project = |rows: &[quanta_index_contract::LexicalCandidate]| {
+        rows.iter()
+            .map(|row| {
+                (
+                    row.repo_relative_path.as_str().to_string(),
+                    row.candidate_id.clone(),
+                    row.source.as_ref().map(|source| source.source_sha256),
+                    row.score.to_bits(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let live_rows = project(&live);
+    let expected_rows = project(&expected);
+    assert_eq!(live_rows.len(), 2);
+    assert_eq!(
+        live_rows
+            .iter()
+            .map(|row| row.0.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["b.rs", "c.rs"]),
+        "only retained source paths may score"
+    );
+    assert_eq!(
+        live_rows, expected_rows,
+        "deleted source must not change retained BM25 scores"
+    );
+    let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+        &delta.repo_id,
+        &delta.revision_id,
+    )
+    .generation_dir(dir.path(), delta.generation);
+    let index = tantivy::Index::open_in_dir(&target)?;
+    assert_eq!(
+        index
+            .searchable_segment_metas()?
+            .iter()
+            .map(tantivy::SegmentMeta::num_deleted_docs)
+            .sum::<u32>(),
+        0,
+        "a sealed lexical generation must not retain deleted documents in BM25 statistics"
+    );
+    Ok(())
+}
+
 #[test]
 fn same_path_sources_replace_and_tombstone_independently() -> TestResult {
     let dir = tempfile::tempdir()?;
