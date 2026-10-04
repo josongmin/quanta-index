@@ -41,6 +41,8 @@
 
 - E1-02 merged judgments, frozen suite/pack, repository license decision
 - corpus release/checkouts, development/holdout family assignments, source/runtime lock 및 matching Contract/SDK proof
+- 2026-10-05 static PREPARE: `/tmp/qi-bat-supplemental-admission-input-cef-v2.json`과 `/tmp/qi-bat-supplemental-admission-issuer-cef-v2.py`는 bat409 labels의 source107 producer와 sourcecef 제품 proof/admission을 독립 결속한다. canonical helper5파일의 SHA가 두 checkout에서 같고 라벨은 같은 corpus/query/rubric에 결속돼 있다. 기존 source107 제품 proof/capture를 sourcecef proof로 재사용하지 않는다.
+- v2는 실제 sourcecef Contract/SDK context2개 및 Python/Rust/SDK receipts3개의 정확한 경로를 CLI 필수 입력으로 받으며 revision/context/co-location을 검증한 뒤만 발행한다. 현재 새 proof 발행과 이 admission 실행은 `NOT_RUN`이다. SQLAlchemy/Zellij/Tailscale의 다음 admission은 실제 alternate result와 canonical suite SHA가 존재한 뒤 입력을 고정한다.
 
 ## 어떤 파일을 어떻게 수정할지
 

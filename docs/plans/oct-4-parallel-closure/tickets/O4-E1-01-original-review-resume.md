@@ -46,6 +46,7 @@ C3 240개 질의의 실제 판단을 완료하고 재사용 가능한 모델 cac
 - 대체 adjudicator는 별도 `/private/tmp/qi-c3-alternate-adjudicator-prepare-v2`의 명시적 `claude-opus-5-5` 모델/`ai:claude-opus-5-5:adjudicator` ID와 fresh output root를 사용하도록 준비했다. 기존 Opus pass-A/Sonnet pass-B reviewer ID와 구별하며 기존 Fable adjudicator raw는 보존하되 재사용하지 않는다. 제품 계약은 역할 ID3개를 구별하고 모델 제품3종을 요구하지 않는다. 선택 답변이 없으면 이 기본값을 적용한다고 사용자에게 알렸다. 새 모델 실제 호출과 후속 suite issuer는 `NOT_RUN`이다.
 - 후속 원본 driver 실행은 exit1로 끝났다. Zellij 두 reviewer의 completed-tasks를 실제 읽어 각각20 tasks/476 pairs를 확인했다. Zellij adjudicator000도 duration_api0·Fable limit429다. Tailscale reviewer-1/011.retry-1은 exit0/API completed/60,858ms였지만23 decisions 중 `tailscale.nl.20` / `net/tstun/wrap_test.go` 1쌍이 unresolved라 batch 전체 발행을 거절했다. 22쌍 partial receipt나 grade를 합성하지 않았다.
 - Tailscale의 이번 실패 이유는 과거429 failure.json과 달랐다. immutable save가 기존 failure overwrite를 거절하면서 driver가 종료했다. 새 raw/invalid.json과 이전 failure를 모두 유지하며 후속 실행의 terminal/finalization은 새 output root로 분리한다. rubric/source를 조사해 근거를 보완하거나 explicit exclusion을 판정하기 전 unresolved를 resolved로 바꾸지 않는다.
+- reviewer-only v1 preflight도 모델 호출 전에 exit1이었다(`/private/tmp/qi-c3-tailscale-reviewers-20261005-v1/failure.json`). old input/model-input/schema와 prepared objects는 동일했지만 checker가 원본 `plan.canonical`의 끝 LF를 포함하지 않는 `ev.canonical`로 bytes equality를 요구했다. raw와 실패를 보존하고 원본 writer serializer로 exact 비교하는 v2를 별도 준비한다. JSON-only equality로 계약을 완화하지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
 

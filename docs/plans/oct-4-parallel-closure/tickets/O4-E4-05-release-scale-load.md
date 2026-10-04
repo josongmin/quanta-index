@@ -60,6 +60,7 @@
 - `top_k256`의 byte-cut 짧은 페이지를 허용하되 모든 페이지가 nonempty/새 identity여야 하고4096 independent source count 이내에 정확히 종료해야 한다. chunk line bound는 `content.lines().count()`의 fallible u32 변환이다. query terminal ResponseWritten 이벤트는5초 안에 관측해야 한다.
 - `VERIFIED`: 통합 뒤 `just fmt-check` — exit0. 실제 release owner 테스트와 영향 harness/runtime Clippy는 `NOT_RUN`이다.300s request/readiness·256MiB history는 별도 diagnostic profile이며 기본30s·16MiB PASS나 semantic relevance/ANN recall·cold page cache·Linux performance를 뜻하지 않는다.
 - 다음 owner 명령은 root 단일 실행의 `./scripts/cargow --lane release-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked --release -E 'test(=e2e_process_readiness::binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page)' --test-threads 1 --success-output final`이다. source107의 same-process reopen와 기존 single-source OS restart proof를 이 새 large owner의 결과로 합성하지 않는다.
+- `VERIFIED`: clean sourcecef의 `just rust-test-authority` — exit0, 기존 process owner/extended suite의 source-to-suite authority를 확인했다. 위 release owner 실제 실행은 의존성 빌드 단계이며 테스트 결과는 아직 `NOT_RUN`이다.
 
 ## 착수 입력과 실제 tier 실행
 
