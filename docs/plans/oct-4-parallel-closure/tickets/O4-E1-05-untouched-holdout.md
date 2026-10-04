@@ -23,6 +23,8 @@ Gin exact1196, 원래 generated 300, B09 public/global12는 이미 진단·튜�
 - 기존 development/C3/C5/선택된 Semble roster와 이름·URL이 겹치지 않는 Go/Rust/Python/TypeScript 각 3개 후보를 exact 40-hex remote commit으로 fetch했다. 확인 범위 밖의 과거 사용 이력이나 query/intent 독립성은 증명하지 않는다.
 - `VERIFIED`: `uv run --frozen --extra dev python -m tools.benchmark.retrieval.corpus_set --spec /tmp/qi-e1-05-cohort-draft-20261004/candidate-corpus-set-spec.bound-prepare.json --checkouts /Users/songmin/Documents/code-new/qi-oct4-unseen-prepare-k7exyv41/checkouts --out /Users/songmin/Documents/code-new/qi-oct4-unseen-prepare-k7exyv41/candidate-freeze` — exit 0, 12 repositories / 5,684 admitted code files; canonical `corpus-set.json` SHA-256 `eb4c80ff958a77f86a2051febfc34ad375171c2a20004dd37a97b8951a1325cc`.
 - canonical 결과 상태는 `candidate_not_admitted_no_gold_no_pair`다. root license bytes/hash를 수집했지만 승인으로 간주하지 않는다. draft 입력과 제한된 overlap 조사 근거는 `/tmp/qi-e1-05-cohort-draft-20261004/`에 있다.
+- canonical `corpus_release.create`도 완료했다. `/Users/songmin/Documents/code-new/qi-oct4-unseen-prepare-k7exyv41/release-candidate`, digest `sha256:f792bba955048affec3c101d130cfa856d11f983d737eca0f7d6ecc5040b2b18`, 12 repositories / 6,079 code_only files / `frozen_not_admitted`. corpus_set 5,684와 release 6,079는 서로 다른 canonical selection policy의 분모이며 합산·치환하지 않는다. 모든 license approval은 `not_attested`다.
+- 기존 development와 노출된 C3를 development side에 배치한 canonical source split preflight를 실행 중이다. query families는 아직 authoring 전이므로 비어 있고 source-only PREPARE 결과가 query/intent 독립성을 발행하지 않는다.
 - license 승인 주체·사전 품질 기준/critical-stratum 허용 회귀는 사용자 입력 대기다. source/near-copy split·query exposure·parser coverage·독립 gold/review·admission·untouched qualification은 `NOT_RUN`이다.
 
 ## 착수 입력

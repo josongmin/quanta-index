@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | lifecycle fixture·allocated/free disk sampler 통합; 중앙 Rust 검증 중, release profile은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -13,6 +13,14 @@
 ## 목적
 
 full/delta/delete/no-op/reopen의 저장·검증·shard 비용과 transient resource를 분해해 필요한 최적화와 capacity 거절을 결정한다.
+
+## 2026-10-04 계측·fixture 통합
+
+- 기존 scale harness의 phase resource에 unique-inode `st_blocks*512` allocation과 `statvfs` free/available, 500ms interior samples를 추가했다. logical directory bytes 및 physical write I/O와 구분한다.
+- high water는 관측한 표본의 최댓값이며 true peak가 아니다. interior allocation 표본이 없으면 high water를 null로 남긴다. probe 실패는 수치 없이 unavailable로 기록하고 observer wall/gap/setup/teardown을 보존한다.
+- disk worker는 cooperative cancel 후 join하고 end boundary를 읽어 동시 recursive walker를 피한다. 막힌 filesystem syscall 자체는 중단하지 못한다.
+- `small_source_lifecycle_matches_independent_bytes_and_fresh_rebuild`가 full→delta→no-op→delete→same-process reopen의 source hash, deleted-token negative, final path/rank/score parity를 검사한다. fresh rebuild parity는 독립 ranking gold나 OS restart 증거가 아니다.
+- Rust compile에서 unused `usize` 반환값 refusal을 수리했다. 중앙 workspace 재실행 중이며 release phase capture·실제 physical I/O·tier scale은 `NOT_RUN`이다.
 
 ## 배경과 현재 상태
 

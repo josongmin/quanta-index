@@ -16,6 +16,8 @@
 - 지원 Active route의 사전 resolve RPC를 제거했다. Structural Active refusal, SemanticWorkBounded exact-generation 제한, Active cursor의 exact-pin 요구와 `rev:at.time` ancestor preflight는 별도 계약으로 보존한다.
 - strict wire 방문자, response literals, searchctl/harness, 실제 benchmark request-event consumer를 함께 수정했다. 선택 후 read-view admission 전에 G1이 폐기되면 기존 typed refusal이 가능하며 이 변경이 admission lease를 추가한 것은 아니다.
 - 초기 중앙 compile에서 Structural macro field와 SDK test import 누락을 확인해 수정했다. 통합 후 owner batch·actual SDK one-RPC·mandatory surface gates는 아직 최종 결과를 회수 중이다.
+- `real_daemon_sdk_active_text_and_symbol_bind_one_selected_head_without_resolve`를 실제 daemon SDK integration에 추가했다. query-only SDK의 Text/Symbol 각 1RPC, ACK와 selected generation/token 결속, query-ring admission/terminal을 검사한다. G31→G32 실제 successor activation 뒤 G31 token 요청의 typed `NotReady`도 같은 fixture에서 검증한다. 실행은 `NOT_RUN`이다.
+- 중앙 workspace 실행에서 stale SDK positive mocks 2건을 수리한 뒤 SDK lib와 search-plane lib는 통과했다. 이 결과는 새 live SDK integration 실행을 대신하지 않는다. wire 4-target fuzz smoke와 public API baseline check는 `VERIFIED`다.
 
 ## 목적
 
@@ -60,7 +62,9 @@ SDK pin_active_selector는 ResolveActiveGeneration을 먼저 보내고 explicit 
 4. ABA, concurrent activate, explicit conflict, cursor continuation, stale generation, ancestor domain, credential/deadline/cancel/reconnect cases를 실행한다.
 5. representative fixed fixture→full exact1196 순서로 row/order/count/status/byte/unit parity를 검증하고 E4-06에 source change를 넘긴다.
 
-## 지원 variant와 실제 RPC 수 inventory
+## 변경 전 RPC 비용 inventory와 현재 검증 범위
+
+아래 추가 요청 수는 변경 전 baseline이다. 현재 SDK는 지원 Active variant를 단일 query로 구성하며 실제 daemon Text/Symbol count는 위 integration 실행으로 확인해야 한다. 나머지 variant의 unit binding을 live roundtrip 증거로 승격하지 않는다.
 
 | 현재 경로 | 현 source에서 확인할 추가 요청 | 단일 선택 변경의 요구 |
 | --- | --- | --- |

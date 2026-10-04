@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | 재개 driver·canonical form/cache preflight `VERIFIED`; 실제 후속 판단은 quota로 `BLOCKED` |
+| 실행 상태 | form/cache preflight `VERIFIED`; quota 후 실제 TypeORM batch는 unresolved로 `FAILED`, Django 후속 판단 실행 중 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -25,6 +25,8 @@ C3 240개 질의의 실제 판단을 완료하고 재사용 가능한 모델 cac
 - 현재 frozen form: 5저장소 100 tasks. 저장소별 candidate pairs는 Django509 / SQLAlchemy480 / Zellij476 / TypeORM572 / Tailscale544. reviewer·adjudicator별 누락은 해당 외부 root의 `preflight.json`에 별도로 기록했다.
 - `FAILED`: `uv run --frozen --extra dev python /tmp/qi-c3-current-resume-20261004-os8dvo11/resume.py --execute typeorm` — 실제 adjudicator batch013, exit 1. raw `calls/typeorm/adjudicator/013/stdout.json`은 `is_error:true`, `terminal_reason:api_error`, `You've hit your session limit`을 반환했다. 서비스가 알린 재개 시각은 2026-10-04 18:40 KST다. 모델 실행은 그때까지 `BLOCKED`이며 미판단 pair를 resolved/grade로 바꾸지 않았다.
 - 현 native CLI 2.1.288의 실제 version을 확인했다. 사라진 과거 2.1.286 경로를 사용하지 않는다. 재호출은 source binding을 새 외부 root에 재생하고 실패 root를 보존한다.
+- 18:40 이후 `/private/tmp/qi-c3-review-after-reset-20261004-iskn2d46/resume.py --execute typeorm`에서 실제 batch013 응답은 `is_error:false`, `terminal_reason:completed`였다. 54 decisions 중 `typeorm.nl.19` / `packages/typeorm/test/github-issues/6265/issue-6265.test.ts` 1쌍이 unresolved라 canonical validator가 전체 batch 발행을 거절했다. raw와 invalid 결과를 보존했으며 53쌍 부분 receipt나 수동 grade를 만들지 않았다. 현재 실패 원인은 quota가 아니라 미해결 판단이다.
+- 같은 fresh driver의 `--execute django`로 독립 ready repository의 실제 adjudicator 판단을 진행 중이다. 최종 240-task issuance/admission은 아직 완료되지 않았다.
 - 최종 240-task disposition, 미판단 판단, actual finalization/suite issuance는 `NOT_RUN`이다.
 
 ## 착수 입력
