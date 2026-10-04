@@ -1184,7 +1184,6 @@ def _native_stored_content(
     return binary_sha, rows_sha, owned
 
 
-
 def _capture_translator_bytes(
     root: Path, container_id: str, server_process: dict, invocation_id: str
 ) -> None:
@@ -1310,9 +1309,19 @@ print(json.dumps({"tombstone_created":True,"removed":not os.path.lexists(path),
     error = None
     try:
         code, output, stderr, _ = live._process(
-            ["docker", "exec", container_id, "python3", "-c", script,
-             str(server_process["pid"]), str(server_process["start_ticks"]),
-             invocation_id, server_process["exe_sha256"], str(MAX_TRANSLATOR_BYTES)],
+            [
+                "docker",
+                "exec",
+                container_id,
+                "python3",
+                "-c",
+                script,
+                str(server_process["pid"]),
+                str(server_process["start_ticks"]),
+                invocation_id,
+                server_process["exe_sha256"],
+                str(MAX_TRANSLATOR_BYTES),
+            ],
             60,
         )
         if code != 0 or stderr:
@@ -1325,8 +1334,10 @@ print(json.dumps({"tombstone_created":True,"removed":not os.path.lexists(path),
             or exported["sha256"] != server_process["exe_sha256"]
             or exported["pid"] != server_process["pid"]
             or exported["start_ticks"] != server_process["start_ticks"]
-            or any(type(exported[key]) is not int or exported[key] <= 0
-                   for key in ("bytes", "device", "inode"))
+            or any(
+                type(exported[key]) is not int or exported[key] <= 0
+                for key in ("bytes", "device", "inode")
+            )
             or exported["bytes"] > MAX_TRANSLATOR_BYTES
         ):
             raise ValueError("native Zoekt translator export identity differs")
@@ -1350,15 +1361,21 @@ print(json.dumps({"tombstone_created":True,"removed":not os.path.lexists(path),
         # before creation or immediately after O_EXCL and removes only its file.
         try:
             code, output, stderr, _ = live._process(
-                ["docker", "exec", container_id, "python3", "-c", cleanup,
-                 invocation_id, sourcegraph.sha256(script.encode()),
-                 str(MAX_TRANSLATOR_BYTES)],
+                [
+                    "docker",
+                    "exec",
+                    container_id,
+                    "python3",
+                    "-c",
+                    cleanup,
+                    invocation_id,
+                    sourcegraph.sha256(script.encode()),
+                    str(MAX_TRANSLATOR_BYTES),
+                ],
                 80,
             )
             result = (
-                parse_json(output.decode("utf-8", "strict"))
-                if code == 0 and not stderr
-                else None
+                parse_json(output.decode("utf-8", "strict")) if code == 0 and not stderr else None
             )
             if result != {
                 "tombstone_created": True,
@@ -1368,9 +1385,12 @@ print(json.dumps({"tombstone_created":True,"removed":not os.path.lexists(path),
             }:
                 raise ValueError("native Zoekt translator export cleanup is unverified")
         except BaseException as cleanup_error:
-            raise ValueError("native Zoekt translator export cleanup is unverified") from cleanup_error
+            raise ValueError(
+                "native Zoekt translator export cleanup is unverified"
+            ) from cleanup_error
     if error is not None:
         raise error
+
 
 def _native_stored_content_running(
     root: Path,
@@ -1423,9 +1443,7 @@ def _native_stored_content_running(
         or RawFile.capture(binary_file).sha256 != "sha256:" + binary_sha
     ):
         raise ValueError("deployed Zoekt binary bytes differ")
-    _capture_translator_bytes(
-        root, container_id, server_process, owned_service["invocation_id"]
-    )
+    _capture_translator_bytes(root, container_id, server_process, owned_service["invocation_id"])
     with (root / "native-worker.py").open("x", encoding="utf-8") as worker_file:
         worker_file.write(_NATIVE_WORKER)
     script_file = root / "probe_native_contents.py"

@@ -682,41 +682,135 @@ mod adapter_tests {
     #[test]
     fn unproved_preupgrade_unsealed_index_cannot_be_reopened_as_current() {
         let old = tempfile::tempdir().expect("legacy unsealed generation");
+        let old_path = old.path().canonicalize().expect("canonical old path");
         let fields = SchemaFields::build();
-        let index = Index::create_in_dir(old.path(), fields.schema.clone())
+        let index = Index::create_in_dir(&old_path, fields.schema.clone())
             .expect("create old same-schema index without current producer marker");
         let mut writer: IndexWriter = index.writer(15_000_000).expect("writer");
         let _opstamp = writer.commit().expect("commit old index");
         drop(writer);
         drop(index);
-        let refused = open_or_create_index(&fields, old.path())
+        let refused = open_or_create_index(&fields, &old_path)
             .expect_err("unproved old index cannot acquire a current writer");
         assert!(
             matches!(
                 refused,
                 CoreError::Typed { ref code, ref message }
                     if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
-                        && message.contains("discard the incomplete generation")
+                        && message.contains("format marker is missing")
             ),
             "{refused:?}"
         );
         assert!(
-            !old.path().join("search-corpus-index-format.cbor").exists(),
+            !old_path.join("search-corpus-index-format.cbor").exists(),
             "refusal must not launder old index content with a current marker"
         );
 
         let current = tempfile::tempdir().expect("current unsealed generation");
-        let index = open_or_create_index(&fields, current.path()).expect("new index");
+        let current_path = current
+            .path()
+            .canonicalize()
+            .expect("canonical current path");
+        let index = open_or_create_index(&fields, &current_path).expect("new index");
         drop(index);
         assert!(
-            current
-                .path()
+            current_path
                 .join("search-corpus-index-format.cbor")
                 .is_file(),
             "producer marker must precede the first index commit"
         );
         let _reopened =
-            open_or_create_index(&fields, current.path()).expect("marked current index may resume");
+            open_or_create_index(&fields, &current_path).expect("marked current index may resume");
+    }
+
+    #[test]
+    fn unsealed_index_rejects_wrong_malformed_and_symlinked_format_markers() {
+        let fields = SchemaFields::build();
+        let temp = tempfile::tempdir().expect("current index");
+        let canonical = temp.path().canonicalize().expect("canonical index path");
+        let index = open_or_create_index(&fields, &canonical).expect("create current index");
+        drop(index);
+        let marker = canonical.join("search-corpus-index-format.cbor");
+
+        for (bytes, expected_detail) in [
+            (&[0x02][..], "format 2, expected 1"),
+            (&[0x01, 0x00][..], "invalid format marker"),
+            (&[0xff][..], "invalid format marker"),
+            (&[0; 10][..], "cannot read format marker"),
+        ] {
+            std::fs::write(&marker, bytes).expect("replace marker");
+            let refused = open_or_create_index(&fields, &canonical)
+                .expect_err("unproved format cannot reopen a materialized index");
+            assert!(
+                matches!(
+                    refused,
+                    CoreError::Typed { ref code, ref message }
+                        if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
+                            && message.contains(expected_detail)
+                ),
+                "{refused:?}"
+            );
+        }
+
+        let target = canonical.join("other-format.cbor");
+        std::fs::write(&target, [0x01]).expect("valid bytes outside marker path");
+        std::fs::remove_file(&marker).expect("remove marker before symlink");
+        std::os::unix::fs::symlink(&target, &marker).expect("symlinked marker");
+        let refused = open_or_create_index(&fields, &canonical)
+            .expect_err("a symlink cannot prove format provenance");
+        assert!(
+            matches!(
+                refused,
+                CoreError::Typed { ref code, ref message }
+                    if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
+                        && message.contains("cannot open format marker")
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn empty_seal_cannot_promote_unproved_preupgrade_index() {
+        let temp = tempfile::tempdir().expect("state root");
+        let canonical = temp.path().canonicalize().expect("canonical state root");
+        let adapter = LexicalAdapter::with_state_root(canonical);
+        let candidate = sample_identity(8, "digest-empty-seal");
+        let key = GenKey {
+            repo_id: candidate.repo_id,
+            revision_id: candidate.revision_id,
+            generation: candidate.manifest_generation,
+        };
+        let generation_dir = adapter.index_path(&key);
+        std::fs::create_dir_all(&generation_dir).expect("generation directory");
+        let index = Index::create_in_dir(&generation_dir, SchemaFields::build().schema)
+            .expect("old same-schema index without current marker");
+        let mut writer: IndexWriter = index.writer(15_000_000).expect("writer");
+        let _opstamp = writer.commit().expect("commit empty index");
+        drop(writer);
+        drop(index);
+
+        let refused = adapter
+            .finalize_index_for_seal(&key)
+            .expect_err("empty seal must acquire the same proved writer");
+        assert!(
+            matches!(
+                refused,
+                CoreError::Typed { ref code, ref message }
+                    if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
+                        && message.contains("format marker is missing")
+            ),
+            "{refused:?}"
+        );
+        assert!(
+            !generation_dir
+                .join("search-corpus-index-format.cbor")
+                .exists()
+        );
+        assert!(
+            !generation_dir
+                .join("search-corpus-generation-manifest.cbor")
+                .exists()
+        );
     }
 
     #[test]

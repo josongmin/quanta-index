@@ -64,12 +64,19 @@ def test_owned_translator_export_custody_and_cleanup(tmp_path, monkeypatch, case
         assert argv[8] == str(scope.MAX_TRANSLATOR_BYTES)
         if case == "cleanup_failure":
             return 6, b"", b"cleanup unverified", 0.01
-        return 0, json.dumps({
-            "tombstone_created": True,
-            "removed": True,
-            "owned_worker_stopped": True,
-            "path": remote,
-        }).encode(), b"", 0.01
+        return (
+            0,
+            json.dumps(
+                {
+                    "tombstone_created": True,
+                    "removed": True,
+                    "owned_worker_stopped": True,
+                    "path": remote,
+                }
+            ).encode(),
+            b"",
+            0.01,
+        )
 
     monkeypatch.setattr(live, "_process", fake_process)
     if refusal is None:

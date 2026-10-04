@@ -267,6 +267,17 @@ name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
 value = 2
 
 [[artifact]]
+id = "lexical-unsealed-index-format"
+owner = "quanta-index-lexical"
+path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-index-format.cbor"
+reproduction = "producer-rebuild"
+notes = "CBOR u32 format 1, bounded to 9 bytes. The lexical producer writes and fsyncs this marker before creating the first Tantivy meta.json commit. It resumes an unsealed materialized index only with this current marker; missing, malformed, oversized, symlinked or wrong-version markers cause typed rebuild refusal. A delta target inherits an index only after its base proves sealed format 13 or current unsealed format. The sealed manifest is the serving authority after publication; this marker does not migrate old indexes."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/index_store.rs"
+name = "LEXICAL_UNSEALED_INDEX_FORMAT_VERSION"
+value = 1
+
+[[artifact]]
 id = "lexical-source-file-coverage"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/source-file-coverage.cbor"
