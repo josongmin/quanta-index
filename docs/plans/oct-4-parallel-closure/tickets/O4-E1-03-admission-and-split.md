@@ -20,6 +20,7 @@
 - packet SHA `2d50ec6b6fe53598ebbc834c4d5cb4b366377ab497c51a57c6d3e45d8657ad46`, wrapper SHA `349e1afd37beac5bc8d0fb86711a3863452c6ba480bf12e62efb205ee26643c3`, canonical issuer SHA `1a14f09d58064cfdf238ac5a17ee65f66d7130273e07b854103347753145cf39`다. 실제 Contract/SDK proof·immutable 원본 labels·source107과 동등한5helpers/template를 전후 검증하며 과거 admission을 current로 바꾸지 않는다.
 - completed result/terminal 전에는 readiness/8개 통과를 발행하지 않는다. 새 모델 호출·human review·전체 cohort qualification 범위가 아니다. SQLAlchemy/Zellij/Tailscale 미결은 이8개에 합산하지 않는다.
 - cli terminal `VERIFIED`:20tasks/519judgments,572.429s, actual result source0e6·canonical16 input paths·stale-source negative1, qualified/humanfalse다. 나머지7개 및 aggregate 완료 전에는 current9repo/180tasks 전체 완료를 주장하지 않는다.
+- lo terminal도 `VERIFIED`:20tasks/495judgments,617.628s, canonical16 input paths·stale-source negative1·qualified/humanfalse다. 다음 mocha issuance를 실행 중이며8개 aggregate는 미완료다.
 
 ## 배경과 현재 상태
 
