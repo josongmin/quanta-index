@@ -213,6 +213,10 @@ for table in ("/proc/net/tcp", "/proc/net/tcp6"):
         fields = line.split()
         if len(fields) > 9 and int(fields[1].rsplit(":", 1)[1], 16) == port and fields[3] == "0A":
             inodes.add(fields[9])
+if not inodes:
+    raise SystemExit(10)
+if len(inodes) != 1:
+    raise SystemExit(11)
 owners = []
 for name in os.listdir("/proc"):
     if not name.isdigit():
@@ -230,16 +234,29 @@ for name in os.listdir("/proc"):
             h.update(block)
     stat = open("/proc/" + name + "/stat").read().rpartition(") ")[2].split()
     owners.append({"pid": int(name), "start_ticks": int(stat[19]), "exe_sha256": h.hexdigest()})
-if len(inodes) != 1 or len(owners) != 1 or (expected != "-" and owners[0]["exe_sha256"] != expected):
-    raise SystemExit(2)
+if not owners:
+    raise SystemExit(12)
+if len(owners) != 1:
+    raise SystemExit(13)
+if expected != "-" and owners[0]["exe_sha256"] != expected:
+    raise SystemExit(14)
 print(json.dumps({"port": port, **owners[0]}, sort_keys=True))
 """
     code, stdout, stderr, _elapsed = live._process(
         ["docker", "exec", container_id, "python3", "-c", script, str(port), binary_sha or "-"],
         60,
     )
+    refusal = {
+        10: "native Zoekt listener absent on requested port",
+        11: "native Zoekt requested port has ambiguous listening sockets",
+        12: "native Zoekt listener socket has no inspectable process owner",
+        13: "native Zoekt listener socket has multiple process owners",
+        14: "native Zoekt listener executable differs from prior identity",
+    }
     if code != 0 or stderr:
-        raise ValueError("native Zoekt listener is not bound to the deployed binary")
+        raise ValueError(
+            refusal.get(code, "native Zoekt listener process or binary could not be inspected")
+        )
     row = parse_json(stdout.decode("utf-8", "strict"))
     if (
         not isinstance(row, dict)
@@ -436,7 +453,35 @@ def _drain_native_worker(
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            process.wait()
+            except PermissionError:
+                # Darwin can report EPERM when the short-lived group leader
+                # exits between poll and killpg. Reap the owned direct child,
+                # then require that its process group is no longer present.
+                if process.poll() is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError as cleanup_error:
+                        raise ValueError(
+                            "native Zoekt worker direct child cleanup unverified"
+                        ) from cleanup_error
+        try:
+            process.wait(timeout=5)
+        except (PermissionError, subprocess.TimeoutExpired) as cleanup_error:
+            raise ValueError(
+                "native Zoekt worker direct child cleanup unverified"
+            ) from cleanup_error
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            pass
+        except PermissionError as cleanup_error:
+            raise ValueError(
+                "native Zoekt worker process group cleanup unverified"
+            ) from cleanup_error
+        else:
+            raise ValueError("native Zoekt worker process group cleanup unverified")
         raise
     finally:
         for stream in (process.stdin, process.stdout, process.stderr):

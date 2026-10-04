@@ -3368,7 +3368,7 @@ mod tests {
             oracle: &ScopedOracle,
         ) -> AnyResult<Vec<(String, String, u32)>> {
             let result = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
-            validate_scoped_response(oracle, None, &result)?;
+            let _validated_rows = validate_scoped_response(oracle, None, &result)?;
             Ok(result
                 .candidates
                 .iter()

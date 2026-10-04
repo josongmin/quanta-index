@@ -7,6 +7,7 @@ import json
 import os
 import selectors
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -455,6 +456,44 @@ def test_native_index_scope_replays_exact_paths_and_stored_bytes(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("exit_code", "reason"),
+    [
+        (10, "listener absent on requested port"),
+        (11, "ambiguous listening sockets"),
+        (12, "no inspectable process owner"),
+        (13, "multiple process owners"),
+        (14, "executable differs from prior identity"),
+        (1, "could not be inspected"),
+    ],
+)
+def test_native_listener_probe_refuses_with_specific_bound_failure(monkeypatch, exit_code, reason):
+    monkeypatch.setattr(live, "_process", lambda *_args: (exit_code, b"", b"", 0.01))
+    with pytest.raises(ValueError, match=reason):
+        live.sourcegraph_index_scope._native_server_process("c" * 64, 6071)
+
+
+def test_native_listener_probe_rejects_empty_proc_socket_inventory(tmp_path, monkeypatch):
+    proc_root = tmp_path / "proc"
+    (proc_root / "net").mkdir(parents=True)
+    for table in ("tcp", "tcp6"):
+        (proc_root / "net" / table).write_text("sl local_address rem_address st inode\n")
+
+    def process(argv, _timeout):
+        script = argv[5].replace("/proc", str(proc_root))
+        completed = subprocess.run(
+            [sys.executable, "-c", script, "6071", "-"],
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+        return completed.returncode, completed.stdout, completed.stderr, 0.01
+
+    monkeypatch.setattr(live, "_process", process)
+    with pytest.raises(ValueError, match="listener absent on requested port"):
+        live.sourcegraph_index_scope._native_server_process("c" * 64, 6071)
+
+
+@pytest.mark.parametrize(
     "fault", ["duplicate", "foreign", "skipped", "count", "missing", "oversize"]
 )
 def test_native_path_inventory_producer_uses_terminal_complete_raw_stream(tmp_path, fault):
@@ -676,6 +715,44 @@ else:
             job["path"] = "a" * (1024 * 1024)
         with pytest.raises(ValueError):
             scope._drain_native_worker(argv, [job], tmp_path, capture_seconds=0.5, row_seconds=0.15)
+
+
+@pytest.mark.parametrize("group_remains", [False, True])
+def test_native_reader_cleanup_handles_darwin_group_kill_race(tmp_path, monkeypatch, group_remains):
+    scope = live.sourcegraph_index_scope
+    body = b"stored native bytes\n"
+    job = {"repository": "fixture", "path": "a.go", "file_sha256": live._sha(body)}
+    row = {
+        **job,
+        "http_status": 200,
+        "actual_sha256": live._sha(body),
+        "bytes": len(body),
+        "matches": True,
+        "seconds": 0.01,
+        "body_base64": base64.b64encode(body).decode(),
+    }
+    child = "import sys,time;sys.stdin.readline();sys.stdout.write(sys.argv[1]*2);sys.stdout.flush();time.sleep(5)"
+
+    def killpg(_pid, sig):
+        if sig == signal.SIGKILL:
+            raise PermissionError("exited group leader")
+        if not group_remains:
+            raise ProcessLookupError("group absent after direct child reap")
+
+    monkeypatch.setattr(scope.os, "killpg", killpg)
+    expected = (
+        "native Zoekt worker process group cleanup unverified"
+        if group_remains
+        else "native Zoekt worker (returned extra or oversized row|response is missing or exceeds bound)"
+    )
+    with pytest.raises(ValueError, match=expected):
+        scope._drain_native_worker(
+            [sys.executable, "-c", child, json.dumps(row) + "\n"],
+            [job],
+            tmp_path,
+            capture_seconds=2,
+            row_seconds=1,
+        )
 
 
 @pytest.mark.parametrize(
