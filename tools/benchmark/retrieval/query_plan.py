@@ -507,7 +507,8 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
             # Python's contextual whole-string lower (e.g. Greek final sigma).
             for term in regex.findall(r"[\p{Alphabetic}\p{Number}\p{Mark}_]+", token):
                 folded = "".join(ch.lower() for ch in term)
-                if len(term) >= resolved["min_token_chars"] and folded not in distinct:
+                _validate_indexable_text(folded)
+                if len(folded) >= resolved["min_token_chars"] and folded not in distinct:
                     distinct.append(folded)
         if not distinct:
             raise QueryPlanError("natural-language plan produced no tokens")

@@ -631,6 +631,14 @@ impl ScaleStageError {
     }
 }
 
+fn stage_or_preserve(stage: &'static str, error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<ScaleStageError>().is_some() {
+        error
+    } else {
+        ScaleStageError::operation(stage, error).into()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScopedCorpusAdmission {
     pub source_bytes: u64,
@@ -1378,56 +1386,74 @@ fn measure_small_tier_with_config(
 
     // The search-corpus history contract requires at least two generations.
     let cpu_started = CpuSnapshot::observe()?;
-    let mut rt = scale_runtime(config)?;
+    let mut rt = scale_runtime(config).map_err(|error| stage_or_preserve("runtime_boot", error))?;
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
 
-        let before_build = directory_bytes(rt.state_root())?;
+        let before_build = directory_bytes(rt.state_root())
+            .map_err(|error| stage_or_preserve("build_io", error))?;
         let build_started = Instant::now();
         let serving_owner = rt.repo();
         for (path, content) in &corpus {
-            rt.ingest_text(serving_owner.as_str(), path, content)?;
+            rt.ingest_text(serving_owner.as_str(), path, content)
+                .map_err(|error| stage_or_preserve("build_ingest", error))?;
         }
         let _generation = rt
             .seal()
             .map_err(|error| ScaleStageError::operation("build_seal", error))?;
         let build_ms = elapsed_ms(build_started);
-        let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
+        let build_bytes_written = directory_bytes(rt.state_root())
+            .map_err(|error| stage_or_preserve("build_io", error))?
+            .saturating_sub(before_build);
 
         let activation_started = Instant::now();
         rt.activate_last_sealed_generation()
             .map_err(|error| ScaleStageError::operation("build_activate", error))?;
         let activation_ms = elapsed_ms(activation_started);
 
-        let scrape_before_first = rt.metrics_snapshot()?;
+        let scrape_before_first = rt
+            .metrics_snapshot()
+            .map_err(|error| stage_or_preserve("query_first", error))?;
         let first_started = Instant::now();
-        let result_count = served_query(&mut rt)?;
+        let result_count = served_query(&mut rt)
+            .map_err(|error| stage_or_preserve("query_first", error))?;
         let first_query_ms = elapsed_ms(first_started);
-        require_result_count(result_count, expected_results, "first query")?;
-        let scrape_after_first = rt.metrics_snapshot()?;
-        let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)?;
+        require_result_count(result_count, expected_results, "first query")
+            .map_err(|error| stage_or_preserve("query_first", error))?;
+        let scrape_after_first = rt
+            .metrics_snapshot()
+            .map_err(|error| stage_or_preserve("query_first", error))?;
+        let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)
+            .map_err(|error| stage_or_preserve("query_first", error))?;
         let first_route_ms = histogram_window(
             &scrape_before_first,
             &scrape_after_first,
             "lq_route_lexical_latency_ms",
             1,
-        )?;
+        )
+        .map_err(|error| stage_or_preserve("query_first", error))?;
 
         let warm_samples = collect_warm_samples(expected_results, WARM_QUERY_SAMPLES, || {
             served_query(&mut rt)
-        })?;
-        let scrape_after_warm = rt.metrics_snapshot()?;
+        })
+        .map_err(|error| stage_or_preserve("query_warm", error))?;
+        let scrape_after_warm = rt
+            .metrics_snapshot()
+            .map_err(|error| stage_or_preserve("query_warm", error))?;
         let warm_route_total_ms = histogram_window(
             &scrape_after_first,
             &scrape_after_warm,
             "lq_route_lexical_latency_ms",
             u64::try_from(WARM_QUERY_SAMPLES)?,
-        )?;
+        )
+        .map_err(|error| stage_or_preserve("query_warm", error))?;
         let warm_query = LatencySummary::from_samples_ms(&warm_samples)
             .ok_or_else(|| anyhow::anyhow!("scale: no warm samples"))?;
 
-        let adapter = measure_adapter_phases(&rt, None)?;
-        let delta = measure_delta(&mut rt, seed)?;
+        let adapter = measure_adapter_phases(&rt, None)
+            .map_err(|error| stage_or_preserve("adapter", error))?;
+        let delta = measure_delta(&mut rt, seed)
+            .map_err(|error| stage_or_preserve("delta", error))?;
 
         Ok(TierMeasurement {
             tier: ScaleTier::Small,
@@ -1462,9 +1488,15 @@ fn measure_small_tier_with_config(
             cpu: None,
             delete_reopen: None,
         })
-    })();
-    let mut measurement = finish_runtime_measurement(measurement, rt.stop())?;
-    measurement.cpu = Some(CpuSnapshot::observe()?.elapsed_since(cpu_started)?);
+    })()
+    .map_err(|error| stage_or_preserve("measurement", error));
+    let cleanup = rt.stop().map_err(|error| stage_or_preserve("cleanup", error));
+    let mut measurement = finish_runtime_measurement(measurement, cleanup)?;
+    measurement.cpu = Some(
+        CpuSnapshot::observe()
+            .and_then(|snapshot| snapshot.elapsed_since(cpu_started))
+            .map_err(|error| stage_or_preserve("resource_observation", error))?,
+    );
     Ok(measurement)
 }
 

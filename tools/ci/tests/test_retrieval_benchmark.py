@@ -1235,8 +1235,8 @@ def test_ingest_lexical_stage_intervals_reject_overcount_and_missing_measurement
 def test_query_plan_oracle_uses_nfc_and_rejects_unindexable_runs():
     composed = qp.plan_lexical_request("natural_language", "caf\u00e9")
     decomposed = qp.plan_lexical_request("natural_language", "cafe\u0301")
-    assert composed == decomposed == '"caf\u00e9"'
-    assert qp.plan_lexical_request("natural_language", "foo --- bar") == '"foo" OR "bar"'
+    assert composed == decomposed == 'case:no caf\u00e9'
+    assert qp.plan_lexical_request("natural_language", "foo --- bar") == 'case:no foo OR bar'
     with pytest.raises(qp.QueryPlanError, match="no tokens"):
         qp.plan_lexical_request("natural_language", "--- ... ///")
 
@@ -12988,13 +12988,13 @@ def test_bounded_natural_language_budget_binds_request_profile_and_replay():
     with pytest.raises(qp.QueryPlanError, match="48 tokens.*max 32"):
         qp.plan_lexical_request("natural_language_file", query)
     request = qp.plan_lexical_request("natural_language_file", query, config)
-    assert request == "select:file " + " OR ".join(f'"w{i:02}"' for i in range(48))
+    assert request == "select:file case:no " + " OR ".join(f"w{i:02}" for i in range(48))
     assert hashlib.sha256(request.encode()).hexdigest() == (
-        "ef00c2235552602acb805be3d2554bf0e92ab578cc8ca09f23fa89bb7a19940d"
+        "0dfa2879b01ca70af9c6006b94aa9a933bfb68ffef16bff313b658361350964a"
     )
     identity = qp.derive_query_identity("natural_language_file", query, config)
     assert identity["effective_lexical_request_sha256"] == (
-        "ef00c2235552602acb805be3d2554bf0e92ab578cc8ca09f23fa89bb7a19940d"
+        "0dfa2879b01ca70af9c6006b94aa9a933bfb68ffef16bff313b658361350964a"
     )
     profile = qp.execution_profile("natural_language_file", config)
     assert ev.validate_execution_profile(profile, "quanta", "profile") == profile

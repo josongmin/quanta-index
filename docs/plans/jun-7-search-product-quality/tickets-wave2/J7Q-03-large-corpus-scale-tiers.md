@@ -21,9 +21,11 @@ delta. A selectable rail is not measured capacity until its actual run succeeds.
   `ResourceUsageV1::observe_self` reads process-high-water RSS with
   `getrusage(RUSAGE_SELF)`: the E2E daemon runs in a thread in the same
   process, so this includes daemon, harness and generated fixture allocations
-  retained in the same process. It cannot
-  isolate daemon RSS or per-phase peaks. CPU time, reopen/restart and delete
-  behavior are not measured by the current selected-tier runner.
+  retained in the same process. The runner now measures whole-process CPU,
+  exact-file deletion and same-process daemon-thread reopen, with a fresh
+  positive query after reopen; the 256-file diagnostic below exercised them.
+  Daemon-only or per-phase RSS, physical write I/O, OS process restart and
+  quiet-host performance qualification remain unmeasured.
 - Report the supported limit and any failure per tier. Do not infer restart,
   memory or large-corpus behavior from small-tier query latency or scan-vs-index.
 - Re-run another host with matching input/configuration where portability is

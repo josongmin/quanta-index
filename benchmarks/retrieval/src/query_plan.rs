@@ -771,6 +771,14 @@ pub fn plan_query(
                     }
                 };
                 for term in terms {
+                    if let Err(TextQueryError::TokenTooLong { bytes, max }) =
+                        query_tokens(&term.text, CaseMode::Folded)
+                    {
+                        return Err(QueryPlanError::IndexTokenTooLong {
+                            bytes,
+                            max_bytes: max,
+                        });
+                    }
                     if term.text.chars().count() >= config.min_token_chars
                         && !distinct.iter().any(|seen| seen == &term.text)
                     {
@@ -1421,7 +1429,7 @@ mod tests {
             .expect("nonempty query plans");
         assert_eq!(
             plan.lexical_request,
-            "\"Where\" OR \"does\" OR \"parse_and_expression\" OR \"handle\" OR \"AND\" OR \"tokens\" OR \"See\""
+            "case:no where OR does OR parse_and_expression OR handle OR and OR tokens OR see"
         );
         // Semantic text stays the raw query.
         assert_eq!(plan.semantic_text, raw);
@@ -1477,7 +1485,7 @@ mod tests {
         let file = plan_query(QueryInputPolicy::NaturalLanguageFile, raw, &config).expect("file");
         assert_eq!(
             chunk.lexical_request,
-            "\"Find\" OR \"retry\" OR \"handling\""
+            "case:no find OR retry OR handling"
         );
         assert_eq!(
             file.lexical_request,
@@ -1494,15 +1502,15 @@ mod tests {
         );
         assert_eq!(
             execution_profile_id(QueryInputPolicy::NaturalLanguageFile),
-            "quanta-natural-language-file-ucd17-v1"
+            "quanta-natural-language-file-ucd17-v2"
         );
         assert_eq!(
             file.policy_config_sha256,
-            "555fc411960f7f9915c1829a2bb71750fc4cf4e0db93d3faced06638943664e6"
+            "9be731005b1d2b51adc01e2b758a0ecbaeafa55291f07de304bf3acd49477a56"
         );
         assert_eq!(
             file.effective_lexical_request_sha256,
-            "eca8faf61ffd7f1b97d7e1135394c38bc137afca51f20d913ddcd2c7df979048"
+            "5b3a3c91a417e19882715b939c311920a616d40bda81195045477987764ad5b2"
         );
     }
 
@@ -1516,7 +1524,7 @@ mod tests {
         .expect("dedup plan");
         assert_eq!(
             plan.lexical_request,
-            "\"Find\" OR \"find\" OR \"FIND\" OR \"the\" OR \"THE\" OR \"function\""
+            "case:no find OR the OR function"
         );
     }
 
@@ -1530,7 +1538,7 @@ mod tests {
         .expect("path-like tokens plan");
         assert_eq!(
             plan.lexical_request,
-            "\"open\" OR \"crates/quanta-index-lexical/src/lib.rs\" OR \"and\" OR \"src/query.rs\""
+            "case:no open OR crates OR quanta OR index OR lexical OR src OR lib OR rs OR and OR query"
         );
     }
 
@@ -1553,7 +1561,7 @@ mod tests {
             &NlPlanConfig::default(),
         )
         .expect("indexable terms remain");
-        assert_eq!(plan.lexical_request, "\"foo\" OR \"bar\"");
+        assert_eq!(plan.lexical_request, "case:no foo OR bar");
 
         let err = plan_query(
             QueryInputPolicy::NaturalLanguage,
@@ -1578,7 +1586,7 @@ mod tests {
             &NlPlanConfig::default(),
         )
         .expect("decomposed input plans");
-        assert_eq!(composed.lexical_request, "\"caf\u{e9}\"");
+        assert_eq!(composed.lexical_request, "case:no caf\u{e9}");
         assert_eq!(decomposed.lexical_request, composed.lexical_request);
         assert_eq!(
             decomposed.effective_lexical_request_sha256,
@@ -1676,7 +1684,7 @@ mod tests {
         };
         let plan = plan_query(QueryInputPolicy::NaturalLanguage, "a bb ccc a", &config)
             .expect("filtered plan remains nonempty");
-        assert_eq!(plan.lexical_request, "\"ccc\"");
+        assert_eq!(plan.lexical_request, "case:no ccc");
     }
 
     #[test]
@@ -1819,7 +1827,7 @@ mod tests {
         let profile = execution_profile_value(QueryInputPolicy::NaturalLanguage, &config);
         assert_eq!(
             profile.get("profile_id"),
-            Some(&serde_json::json!("quanta-natural-language-ucd17-v2"))
+            Some(&serde_json::json!("quanta-natural-language-ucd17-v3"))
         );
         assert_eq!(
             profile.pointer("/config/max_tokens"),

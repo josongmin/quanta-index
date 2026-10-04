@@ -1036,16 +1036,34 @@ requested one repetition instead of two; the corrected two-repetition fixture
 passes. The broader Python check first found an atomicity fixture using a
 nonexistent runner after capability preflight was added; it now isolates that
 fixture's stage-promotion boundary, while capability refusal has separate tests.
-Actual collection regenerated the Python authority to 726 identities; the full
-rerun and Rust digest/runtime checks remain pending, not inferred from collection.
+Actual collection regenerated the Python authority to 727 identities, including
+the new exploratory replay digest-binding check. The broader rerun executed
+725 passing tests and one failure caused by live HEAD changing while a receipt
+fixture was being built. That fixture now freezes its driver revision locally;
+the production source-closure/HEAD rejection remains unchanged. The corrected
+focused selector passed 30 tests in 26.06 s. A canonical Python rerun is running
+from clean frozen `570a5e39`; collection is not inferred test success.
+
+Rust all-features owner checks passed 119 library and 15 binary tests. The
+existing real-daemon SDK roundtrip test passed 1/1 in 9.37 s, exercising both
+its original three-route execution and a serial one-query event sidecar. The
+debug daemon SHA-256 was
+`66a93f38a28090b5619f3c67325162834716df927242f3657e380bbbeca5480b`.
+Main advanced during the owner build/run, so this is functional evidence,
+not a clean same-source release/performance proof. Exact nextest inventory
+collection and a fresh release capture remain separate pending checks.
 
 Scale owner checks now pass: 24 library tests, three CLI tests, three teardown
 fault tests and one real shared-socket reopen. The CLI first failed compilation
 because a validated budget result was discarded under `unused-results`; the
 corrected parser returns that validated value. A further read-only audit found
 the allowed per-pair budget could exceed the harness's fixed total history
-budget. Its bounds/provenance repair is in progress and needs new focused tests
-before the next exact-source snapshot. No new large-tier speed claim is made.
+budget. The bounds/provenance repair now uses the harness's canonical total
+cap, and needs new focused execution before the next exact-source snapshot.
+A second source audit found operation failures that still reached
+`execution_unclassified`; narrow phase-boundary wrapping is being added while
+preserving typed inner stages, primary errors and cleanup failures.
+No new large-tier speed claim is made.
 
 ## Execution receipt (2026-09-30)
 
