@@ -1023,6 +1023,38 @@ pub fn extract_corpus_symbols(
 mod tests {
     use super::*;
 
+    #[test]
+    fn local_name_capture_distinguishes_same_line_declarations_and_usage() {
+        let source = "package p\nfunc Pick() { Pick() }; func Other() {}\n";
+        let language = SymbolLanguage::Go;
+        let tree = parse(language, "same.go", source).expect("valid Go fixture");
+        let extracted = extract_parsed_symbols(language, "same.go", source, &tree, None)
+            .expect("source extraction");
+        let pick = find(&extracted.records, "Pick");
+        let name = &extracted.names[pick.symbol_id.as_str()];
+        assert_eq!(name, &SymbolNameSpan { start_byte: 15, end_byte: 19, name: "Pick".into() });
+        assert_eq!(extracted.records.len(), 2);
+        assert_eq!(extracted.names.len(), 2);
+        assert_ne!(name.start_byte, source.rfind("Pick").expect("usage"));
+    }
+
+    #[test]
+    fn local_name_capture_retains_utf8_bytes_and_dotted_namespace_terminal() {
+        for (path, source, local_name, start, end) in [
+            ("source.rs", "fn café() { café(); }", "café", 3, 8),
+            ("source.ts", "namespace Outer.Inner { export function inner() {} }", "Inner", 16, 21),
+        ] {
+            let language = SymbolLanguage::from_path(path).expect("language");
+            let tree = parse(language, path, source).expect("valid source");
+            let extracted = extract_parsed_symbols(language, path, source, &tree, None)
+                .expect("source extraction");
+            let record = find(&extracted.records, local_name);
+            assert_eq!(extracted.names[record.symbol_id.as_str()], SymbolNameSpan {
+                start_byte: start, end_byte: end, name: local_name.into(),
+            });
+        }
+    }
+
     fn qualified(record: &SymbolRecord) -> &str {
         &record.qualified_name
     }

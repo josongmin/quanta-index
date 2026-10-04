@@ -355,6 +355,35 @@ mod tests {
 
     const RUST_SOURCE: &str = "pub fn alpha() {}\nstruct Beta;\n";
 
+    #[test]
+    fn name_inventory_binds_preflight_and_refuses_partial_foreign_or_wrong_bytes() {
+        use crate::symbols::{SymbolPreflightOptions, preflight_corpus_symbols};
+        let source = sources("src/lib.rs", RUST_SOURCE);
+        let preflight = preflight_corpus_symbols(&source, &SymbolPreflightOptions::default())
+            .expect("preflight");
+        let registry = PublishedUnitRegistry::from_chunks_and_symbols(
+            &BTreeMap::new(), preflight.symbols(), &source,
+        ).expect("published units");
+        let bound = registry.clone().with_symbol_names(preflight.names(), &source)
+            .expect("source-bound name inventory");
+        let alpha = preflight.symbols()["src/lib.rs"].iter()
+            .find(|record| record.local_name.as_ref() == "alpha").expect("alpha declaration");
+        assert_eq!(bound.get(alpha.symbol_id.as_str()).expect("unit").name_span,
+            Some(SymbolNameSpan { start_byte: 7, end_byte: 12, name: "alpha".into() }));
+        let mut missing = preflight.names().clone();
+        missing.get_mut("src/lib.rs").expect("file").remove(alpha.symbol_id.as_str());
+        assert!(registry.clone().with_symbol_names(&missing, &source).is_err());
+        let mut wrong = preflight.names().clone();
+        wrong.get_mut("src/lib.rs").expect("file").get_mut(alpha.symbol_id.as_str())
+            .expect("name").name = "usage".into();
+        assert!(registry.clone().with_symbol_names(&wrong, &source).is_err());
+        let mut foreign = preflight.names().clone();
+        let file = foreign.get_mut("src/lib.rs").expect("file");
+        let name = file.remove(alpha.symbol_id.as_str()).expect("name");
+        file.insert("foreign-symbol".into(), name);
+        assert!(registry.with_symbol_names(&foreign, &source).is_err());
+    }
+
     fn sources(path: &str, text: &str) -> BTreeMap<String, SourceFile> {
         let (line_starts, _) = split_line_starts(text);
         BTreeMap::from([(

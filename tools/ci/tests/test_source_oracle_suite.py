@@ -495,12 +495,20 @@ def test_go_indexed_local_name_includes_interface_methods_and_aliases(tmp_path):
         assert tasks["Hidden"]["answerable"] is False
         assert tasks["Hidden"]["gold"] == []
         if mode.endswith("symbol"):
+            def named_declaration(fragment: bytes, name: bytes) -> dict:
+                row = declaration(fragment)
+                start = row["start_byte"] + fragment.index(name)
+                row["name_span"] = {
+                    "start_byte": start, "end_byte": start + len(name), "name": name.decode(),
+                }
+                return row
+
             assert tasks["Push"]["declaration_judgments"] == [
-                declaration(b"Push()"),
-                declaration(b"func (w *Writer) Push() {}"),
+                named_declaration(b"Push()", b"Push"),
+                named_declaration(b"func (w *Writer) Push() {}", b"Push"),
             ]
-            assert tasks["Alias"]["declaration_judgments"] == [declaration(b"Alias = Reader")]
-            assert tasks["Flush"]["declaration_judgments"] == [declaration(b"Flush()")]
+            assert tasks["Alias"]["declaration_judgments"] == [named_declaration(b"Alias = Reader", b"Alias")]
+            assert tasks["Flush"]["declaration_judgments"] == [named_declaration(b"Flush()", b"Flush")]
             assert tasks["Hidden"]["declaration_judgments"] == []
         else:
             assert tasks["Push"]["file_judgments"] == [
