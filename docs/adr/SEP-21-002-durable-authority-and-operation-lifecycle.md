@@ -23,6 +23,15 @@ Gate owner: S21-00; blocks S21-02, S21-03, S21-04, S21-05 and S21-11
 - The state root has one process lease and one global `MutationCoordinatorV1`. Ingest, control and background durable
   mutations all pass through it. Per-socket serialization is not authority.
 
+Implementation divergence observed at clean `main@e43cda8c` (2026-10-04):
+production wires the durable port through `AuxiliaryMutationCoordinator`.
+Search-corpus auxiliary finalization takes that guard, but preceding track
+build uses separate operation locks and journal fences. The accepted sentence
+is broader than one whole-publish guard. This note does not revise the
+decision or prove an unsafe cross-process write. Reconcile the exact authority
+and concurrent-ingest proof before widening serial dispatch; see the
+[open proposal](OCT-04-001-search-corpus-selection-and-ingest-pressure.md).
+
 ## Candidate and activation protocol
 
 Publish:

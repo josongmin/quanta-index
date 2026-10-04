@@ -2,6 +2,18 @@
 
 Status: `HISTORICAL RECOVERY INDEX`
 
+## Oct-04 current-source RFC replacement
+
+The clean `e43cda8c87b4a06fecac82a266011e30f84a2986` pre-deletion revision
+retains `docs/rfcs/SEP-30-search-corpus-serving-and-ingest-rfc.md`. Recover it
+with `git show e43cda8c:docs/rfcs/SEP-30-search-corpus-serving-and-ingest-rfc.md`.
+The old source-bound findings and external reference survey are historical;
+the still-open design questions were re-audited and reduced to
+[OCT-04-001](adr/OCT-04-001-search-corpus-selection-and-ingest-pressure.md).
+In particular, current IPC peer watching and lexical stage observations
+supersede two old RFC statements. No race, resource-pressure or speed claim
+is qualified by this replacement.
+
 Pre-deletion revision: `eff53181b2ab7a3d017a5c613574b12e4000b52e`.
 The 26 completed or superseded non-plan Markdown records below were removed
 from the live tree. Recover an exact file with

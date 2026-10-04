@@ -65,6 +65,10 @@ old-view GC/compaction/quarantine, panic/cancel reference release, cross-reposit
 churn and auxiliary-epoch changes. Require one evidence per declared domain,
 explicit shared resource groups, identical physical identity throughout a request,
 no ambient latest reads and no deletion until every live handle/flight permits it.
+Add a deterministic un-tokened `Active` select-G1 / activate-G2 / retain-G3 /
+acquire-view interleaving before changing the admission boundary; a view already
+acquired proves a different lifetime. Keep tokened and explicit-pin refusals
+separate. See [OCT-04-001](../../../adr/OCT-04-001-search-corpus-selection-and-ingest-pressure.md).
 
 DoD per node: a concrete registered target and independent negative oracle;
 no staged-to-executable flip based only on a broad `test-daemon` recipe or a
@@ -87,6 +91,9 @@ Owners: `crates/quanta-index-searchd/src/app/readiness.rs`,
   cadence, stale/missing/wrong-identity refusal, authorized root restoration and
   zero-active behavior on the actual selected daemon. Root/identity probes do
   not establish full backend-content liveness; retain deep-open/scrub coverage.
+  Script a disk-byte walk longer than three maintenance cadences and verify
+  whether backend freshness is delayed; decide health/meter separation from
+  that result, not from a disk-gauge value alone.
 - Define a bounded control DTO and adapter projection from the *existing*
   `IpcServerCounters` ring. Bound event count and encoded bytes below the
   transport's 16 MiB frame cap; carry process instance, plane, sequence gap

@@ -1,8 +1,10 @@
 # quanta-index documentation index
 
-This directory is the living status index. Historical plans and ADRs stay in
-`docs/plans/` and `docs/adr/`. Qualification residuals are **not** missing
-engine implementations unless [engine status](engine-status-v1.md) says so.
+This directory is the living status index. Completed and superseded plans are
+recoverable from Git history through the archive indexes. Accepted ADRs own
+decisions; proposed ADRs are not implementation authority. Qualification
+residuals do not establish missing engine implementations. Inspect
+[engine status](engine-status-v1.md) and current source for code behavior.
 
 | Question | Owner |
 | --- | --- |
@@ -13,6 +15,7 @@ engine implementations unless [engine status](engine-status-v1.md) says so.
 | CI provider and release coverage | [QIT-09](../plans/jul-15-sota-test-hardening/tickets/QIT-09-circleci-provider-coverage.md) and [release evidence](../plans/sep-21-search-plane-sota-hardening/tickets/S21-13-release-evidence-and-sota-qualification.md) |
 | DSL and Sourcegraph support | [DSL capabilities](../reference/dsl-capabilities.md) and [filter parity](../reference/sourcegraph-filter-parity.md) |
 | Benchmark acceptance | [code-search trust tickets](../plans/sep-30-code-search-benchmark-trust/tickets/INDEX.md) |
+| Open architecture proposals | [ADR index](../adr/README.md) (Proposed section) |
 | Operator backup/restore | [state-cutover-runbook](../operator/state-cutover-runbook.md) |
 | CLI | [searchctl README](../../crates/quanta-index-searchctl/README.md) |
 

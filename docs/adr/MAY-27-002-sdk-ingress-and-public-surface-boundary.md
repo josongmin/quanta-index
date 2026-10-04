@@ -92,7 +92,7 @@ source or the later semantic-generation ADR.
 - [SEP-21-001](SEP-21-001-canonical-identity-and-digest-domains.md)
 - [SEP-21-002](SEP-21-002-durable-authority-and-operation-lifecycle.md)
 - [SEP-21-003](SEP-21-003-read-view-continuation-and-provider-policy.md)
-- [Sep-24 SDK DSL draft](../plans/sep-24-sdk-dsl-rfc.md)
+- [Optional source-preparation SDK proposal](OCT-04-003-source-preparation-sdk.md)
 
 ## Historical record
 

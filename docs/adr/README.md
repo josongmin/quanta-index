@@ -9,6 +9,12 @@ campaign-local 기록은 Git 이력에서 회수하며, 현재 구현을 구속�
 - `Accepted`: blocking consumer가 구현할 수 있는 frozen decision
 - `Superseded`: 후속 ADR 링크가 필수인 폐기 결정
 
+Current proposals (not accepted decisions or implementation authority):
+
+- [Search-corpus selection and ingest pressure](OCT-04-001-search-corpus-selection-and-ingest-pressure.md)
+- [Effective configuration and generation policy](OCT-04-002-configuration-and-generation-policy.md)
+- [Optional source-preparation SDK](OCT-04-003-source-preparation-sdk.md)
+
 ADR 변경은 decision을 바꾸는 breaking change다. 같은 commit에서 downstream contract, inventory, migration
 class와 proof authority를 갱신한다. optional compatibility field나 dual live decoder로 decision drift를 숨기지 않는다.
 
@@ -50,7 +56,7 @@ May–Jun 2026 accepted set:
 - [Verification, quality gates and benchmark separation](JUN-08-001-verification-hellgate-and-benchmark-separation.md)
 - [Decision registry](MAY-JUN-2026-DECISION-REGISTRY.md)
 
-Historical implementation packets absorbed by these ADRs are indexed in
-[the completed-plan archive](../plans/ARCHIVE-INDEX.md). Historical audits,
+Historical implementation packets and superseded drafts are indexed in
+[the plan history index](../plans/ARCHIVE-INDEX.md). Historical audits,
 bugbash records, old SSOTs, and receipts outside plan packets are indexed in
 [the documentation archive](../ARCHIVE-INDEX.md).

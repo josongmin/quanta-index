@@ -1,6 +1,22 @@
-# Completed Plan History Index
+# Plan History Index
 
 Status: `HISTORICAL RECOVERY INDEX`
+
+## Oct-04 stale draft consolidation
+
+The six Sep-23/24 draft bodies below are recoverable from clean
+`e43cda8c87b4a06fecac82a266011e30f84a2986` with
+`git show e43cda8c:<path>`. They were proposals, not implemented or accepted
+decisions. Their old source/format numbers and file-level execution orders do
+not apply to the current checkout. Re-audited open questions are compressed
+into the non-authoritative [configuration proposal](../adr/OCT-04-002-configuration-and-generation-policy.md)
+and [source SDK proposal](../adr/OCT-04-003-source-preparation-sdk.md).
+
+| Removed draft | Current disposition |
+| --- | --- |
+| `docs/plans/sep-23-search-config-profiles/{rfc,implementation-plan}.md` | Configuration and generation admission remain proposed; semantic format is now 12. |
+| `docs/plans/sep-24-{sdk-dsl,repository-format-sdk,source-preparation-sdk}-rfc.md` | Existing SDK/batch path is authoritative; optional adapter/format design remains proposed. |
+| `docs/plans/sep-24-source-preparation-execution-plan.md` | Old gate/file ownership and Semantica assumptions require a new source-bound plan. |
 
 Pre-deletion revision: `eff53181b2ab7a3d017a5c613574b12e4000b52e`.
 The completed or superseded plan bodies are not live documentation. Recover an exact file with

@@ -1,7 +1,10 @@
 # Search-plane engine status
 
-Authority: **code**. Audited 2026-10-03. Residual markdown is host/release
-evidence unless a row below names a typed refusal.
+Authority: **code**. Re-audited at clean `main@e43cda8c` on 2026-10-04.
+The SEP-21 residual ledger owns host/release evidence; a separate
+[proposal](../adr/OCT-04-001-search-corpus-selection-and-ingest-pressure.md)
+records code-level selection and resource risks that still require controlled
+reproduction. Neither document is a current-source execution receipt.
 
 ## Live path
 
@@ -15,7 +18,8 @@ evidence unless a row below names a typed refusal.
 4. Serve: `searchd` `drive` binds query/control/ingest sockets.
    `ipc_dispatcher` maps query 14 / control 12 / ingest 12 variants; no
    unimplemented match arm.
-5. Query: lexical Tantivy planner; semantic Lance ANN; hybrid RRF
+5. Query: lexical Tantivy planner; semantic Lance exact/ANN per sealed policy;
+   hybrid RRF
    (`dispatch_hybrid`).
 
 Catalog `open` recovers unfinished journal rows and stale mutation leases.
@@ -38,6 +42,20 @@ tests do not qualify a neural provider.
 
 Structural ingest/query routes and `TruthfulSubsetAuthorityMatcher` are live
 subset authority, not a missing producer crate.
+
+## Static risks requiring controlled proof
+
+- Un-tokened `Active` selection precedes read-view acquisition without an
+  admission pin spanning both. Acquired views retain handles; the proposed
+  three-generation transition counterexample has not been executed.
+- Maintenance boot and each tick perform full-tree disk-byte refreshes in the
+  same cadence as backend freshness. Slow-root impact has not been measured.
+- The SDK default I/O deadline is shorter than the ingest dispatch budget.
+  Peer hang-up now cancels a budget, but an admitted publish settles durably;
+  test timeout plus replay before claiming rollback or exactly-once delivery.
+
+Current ingest observations include lexical substage and semantic phase timing.
+Do not use the Sep-30 RFC's older one-field lexical timing description.
 
 ## What CURRENT-RESIDUAL still means
 
