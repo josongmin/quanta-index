@@ -1144,7 +1144,15 @@ fn current_rss_bytes_via_ps() -> AnyResult<u64> {
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        if let Some(status) = child.try_wait()? {
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.into());
+            }
+        };
+        if let Some(status) = status {
             anyhow::ensure!(status.success(), "scale: ps RSS probe exited {status}");
             let mut output = String::new();
             child
@@ -1159,7 +1167,7 @@ fn current_rss_bytes_via_ps() -> AnyResult<u64> {
                 .ok_or_else(|| anyhow::anyhow!("scale: ps RSS overflows bytes"));
         }
         if Instant::now() >= deadline {
-            child.kill()?;
+            let _ = child.kill();
             let _ = child.wait();
             anyhow::bail!("scale: ps RSS probe exceeded 2 s deadline");
         }
@@ -2173,7 +2181,12 @@ pub fn refusal_json_with_context(
 ) -> Value {
     let runtime_failure = error.downcast_ref::<ScaleRuntimeFailure>();
     let mut primary = error;
+    let mut secondary_failures = Vec::new();
     while let Some(failure) = primary.downcast_ref::<ScaleRuntimeFailure>() {
+        secondary_failures.push(json!({
+            "context": failure.cleanup_context,
+            "message": format!("{:#}", failure.cleanup),
+        }));
         primary = failure.primary.as_ref().unwrap_or(&failure.cleanup);
     }
     let stage = primary.downcast_ref::<ScaleStageError>();
@@ -2218,6 +2231,7 @@ pub fn refusal_json_with_context(
             "context": runtime_failure.cleanup_context,
             "message": format!("{:#}", runtime_failure.cleanup),
         });
+        value["failure"]["secondary_failures"] = json!(secondary_failures);
     }
     if let Some(execution) = execution {
         value["execution"] = execution.clone();
@@ -2957,6 +2971,7 @@ mod tests {
             "long phase needs an interior sample"
         );
         assert!(summarize(350, &[point(100, 1_024), point(100, 2_048)]).is_err());
+        assert!(summarize(350, &[point(200, 1_024), point(100, 2_048)]).is_err());
         assert!(summarize(350, &[point(100, 0)]).is_err());
         assert!(
             summarize(900, &[point(100, 1_024)]).is_err(),
@@ -2971,6 +2986,10 @@ mod tests {
         )?;
         assert_eq!(raced.discarded_outside_phase_samples, 1);
         assert_eq!(raced.sampled_max_rss_bytes, 8_192);
+        assert!(
+            summarize(350, &[point(360, 1_024)]).is_err(),
+            "sample after end observation is invalid"
+        );
         Ok(())
     }
 
@@ -3009,6 +3028,8 @@ mod tests {
                 .contains("fixed sampler fault")
         );
         assert_eq!(record["failure"]["cleanup"]["message"], "driver stop fault");
+        assert_eq!(record["failure"]["secondary_failures"].as_array().unwrap().len(), 2);
+        assert_eq!(record["failure"]["secondary_failures"][1]["context"], "phase resource observation");
         Ok(())
     }
 
