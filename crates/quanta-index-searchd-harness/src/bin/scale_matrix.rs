@@ -31,6 +31,13 @@ use quanta_index_searchd_harness::scale::{
 /// operator overrides it via `--seed`.
 const DEFAULT_SEED: u64 = 0x5161_5343_414c_4531;
 
+const USAGE: &str = "Usage: scale_matrix [--tier small|medium|large|xlarge | --all-tiers]
+    [--seed U64] [--client-timeout-ms 1..=600000]
+    [--history-max-bytes 1..=268435456] [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
+    Default tier: small (16 files). medium=256, large=4096, xlarge=32768.
+    Default timeout/history profile is separate from explicit diagnostic overrides.
+    --help, -h  Print this usage without running the rail.";
+
 struct CliArgs {
     out_dir: PathBuf,
     seed: u64,
@@ -203,6 +210,11 @@ fn format_cold_open_ms(value: Option<f64>) -> String {
     reason = "rail binary reports rail status on stdout/stderr by design"
 )]
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
     let cli = match parse_args() {
         Ok(cli) => cli,
         Err(err) => {

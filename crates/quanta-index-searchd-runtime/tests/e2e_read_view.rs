@@ -156,6 +156,13 @@ fn retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3(
     let SearchPlaneQueryIpcResponse::Text(page) = active.payload else {
         return Err(format!("fresh Active did not serve text: {:?}", active.payload).into());
     };
+    let head = page
+        .selected_active_head
+        .as_ref()
+        .ok_or("fresh Active response omitted its selected head")?;
+    if head.generation != current.generation || head.activation_token != current.activation_token {
+        return Err("fresh Active response did not bind the selected G3 head and token".into());
+    }
     if page.generation.manifest_generation != g3
         || page.results.len() != 1
         || page.results.iter().any(|row| row.manifest_generation != g3)

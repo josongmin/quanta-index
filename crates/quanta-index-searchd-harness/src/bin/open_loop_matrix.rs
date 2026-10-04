@@ -15,6 +15,15 @@ use quanta_index_searchd_harness::scale::{
 };
 use serde_json::{Value, json};
 
+const USAGE: &str = "Usage: open_loop_matrix [--tier small|medium|large|xlarge]
+    [--seed U64] [--arrival-model seeded-poisson|deterministic-periodic]
+    [--rates-qps COMMA_SEPARATED_U32] [--duration-ms U64] [--workers USIZE]
+    [--queue-capacity USIZE] [--request-timeout-ms U64]
+    [--history-max-bytes 1..=268435456] [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
+    Default tier: small (16 files). medium=256, large=4096, xlarge=32768.
+    Default history profile is separate from explicit diagnostic overrides.
+    --help, -h  Print this usage without running the rail.";
+
 fn execution_context(config: &open_loop::Config) -> AnyResult<Value> {
     Ok(json!({
         "arrival_model": config.arrival_model.as_str(),
@@ -163,6 +172,11 @@ fn format_latency(value: Option<f64>) -> String {
     reason = "benchmark CLI reports measured results"
 )]
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
     let (config, out_dir, fresh_output) = match parse_args() {
         Ok(value) => value,
         Err(error) => {
