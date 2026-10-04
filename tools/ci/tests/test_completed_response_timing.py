@@ -62,7 +62,7 @@ def _timing(phase, record):
     }
 
 
-def _add_timing(stage, *, sdk_children=False):
+def _add_timing(stage, *, sdk_children=False, output_mutator=None):
     for layout in stage["rep_layouts"]:
         for strategy, record_path in layout["quanta"].items():
             path = fixtures.Path(layout["quanta_phase_metrics"][strategy])
@@ -77,12 +77,16 @@ def _add_timing(stage, *, sdk_children=False):
                         sdk_post_execute_ns=duration // 4,
                         runner_result_materialize_ns=duration // 8,
                     )
+            if output_mutator is not None:
+                output_mutator("quanta", phase)
             path.write_text(json.dumps(phase))
         native_path = fixtures.Path(layout["semble"]).parent / "native.json"
         native = pairrun.read_json(native_path)
         path = fixtures.Path(layout["semble_phase_metrics"])
         phase = pairrun.read_json(path)
         phase["query_timing"] = _timing(phase, pairrun.read_json(fixtures.Path(layout["semble"])))
+        if output_mutator is not None:
+            output_mutator("semble", phase)
         native["query_timing"] = phase["query_timing"]
         route = next(iter(phase["warm_latencies_ms"]))
         native["cold_latency_ms"] = phase["cold_latencies_ms"][route]
@@ -451,6 +455,31 @@ def test_completed_clock_binds_every_repetition_to_normalized_output():
     pairrun.validate_completed_query_timing(historical, record)
     with pytest.raises(pairrun.RunError, match="every measured output digest"):
         pairrun.validate_completed_query_timing(historical, record, require_output_validation=True)
+    failed = copy.deepcopy(record)
+    failed["results"][0]["status"] = "timeout"
+    failed_metrics = copy.deepcopy(metrics)
+    failed_metrics["query_timing"] = _timing(failed_metrics, failed)
+    pairrun.validate_completed_query_timing(
+        failed_metrics, failed, require_completed_status=False
+    )
+    with pytest.raises(pairrun.RunError, match="incomplete or failed requests"):
+        pairrun.validate_completed_query_timing(failed_metrics, failed)
+
+
+def test_exploratory_replay_rejects_rebound_output_digests(tmp_path):
+    stage = fixtures._pair_stage(tmp_path)
+
+    def mutate(system, phase):
+        if system == "quanta":
+            for observation in phase["query_timing"]["observations"]:
+                observation["output_sha256"] = "a" * 64
+
+    # Native phase, capture manifest and run manifest SHA bindings are all
+    # internally consistent. The independent retained row still rejects it.
+    _add_timing(stage, output_mutator=mutate)
+    verdict = fixtures._stage_verdict(stage)
+    assert verdict["states"]["PAIR_VALID"] == "fail"
+    assert "differs from normalized record" in verdict["state_evidence"]["PAIR_VALID"]["reason"]
 
 
 def test_semble_parent_refuses_changed_later_output_with_same_size_and_status(tmp_path):

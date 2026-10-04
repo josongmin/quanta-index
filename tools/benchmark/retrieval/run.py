@@ -5301,7 +5301,9 @@ def run_quanta_strategy(
     phase = _validate_phase_metrics(read_json(phase_path), f"Rust runner phase metrics for {name}")
     if phase["schema_version"] != 4:
         raise RunError("current Rust runner omitted SDK child clock phase schema v4")
-    validate_completed_query_timing(phase, read_json(record_path), require_output_validation=True)
+    validate_completed_query_timing(
+        phase, read_json(record_path), require_output_validation=True, require_completed_status=False
+    )
     _validate_quanta_query_protocol_execution(requested_protocol, phase)
     if protocol_bytes is not None and Path(spec["_query_protocol"]).read_bytes() != protocol_bytes:
         raise RunError("Quanta query protocol changed during capture")
@@ -6018,7 +6020,11 @@ def _qualified_cluster_uncertainty(comparison: object) -> bool:
 
 
 def validate_completed_query_timing(
-    metrics: dict, record: dict | None = None, *, require_output_validation: bool = False
+    metrics: dict,
+    record: dict | None = None,
+    *,
+    require_output_validation: bool = False,
+    require_completed_status: bool = True,
 ) -> None:
     """Bind one continuous client clock to every scheduled completed response."""
     timing = metrics.get("query_timing")
@@ -6167,7 +6173,7 @@ def validate_completed_query_timing(
                 raise RunError(
                     "completed-response timing sample differs from its own clock interval"
                 )
-        if record:
+        if record and require_completed_status:
             if entry["status"] not in {"success", "abstained", "capped"}:
                 raise RunError("completed-response timing includes incomplete or failed requests")
         if record and entry["phase"] == "measured":
@@ -8048,6 +8054,19 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         record_digests
     ):
         phase_ok = False
+    for path, entry in validated.items():
+        metrics = phase_by_record.get(sha_file(Path(path)))
+        if isinstance(metrics, dict) and "output_validation" in metrics.get("query_timing", {}):
+            try:
+                # Bind current observations even in exploratory replay. Failed
+                # requests remain operational evidence; only performance
+                # qualification requires completed statuses throughout.
+                validate_completed_query_timing(
+                    metrics, entry["run"], require_completed_status=False
+                )
+            except (RunError, ValueError, KeyError, TypeError) as exc:
+                phase_ok = False
+                pair_note(f"phase_metrics_invalid:{exc}", ("T12",))
     protocol_root_drifts: list[str] = []
     for index, rep in enumerate(sorted(rep_records, key=_rep_sort_key)):
         protocols = []
