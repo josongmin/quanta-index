@@ -1089,10 +1089,11 @@ pub struct ValidatedPersistedSemanticGenerationV2 {
 /// Prove one inventoried current-format generation's durable content and
 /// mint the witness used by boot and explicit validation.
 ///
-/// This is the deep step the inventory deliberately does not take: it opens
-/// the generation, which verifies the schema, the row count, the row root
-/// and the membership commitment against the manifest. Callers run it for
-/// exactly the generations they need proven.
+/// This opens the generation and verifies its sealed sidecars and dataset
+/// layout, schema, row count, vector index and membership row count against
+/// the manifest. The recorded row root is not recomputed by this cheap door;
+/// callers use the semantic row commitment or the dataset scrub when they
+/// need payload integrity. Callers run this for the generations they need.
 pub fn validate_persisted_generation_v2(
     semantic_root: &Path,
     record: &PersistedSemanticGeneration,
@@ -1157,8 +1158,9 @@ impl ValidatedPersistedSemanticGenerationV2 {
 /// Returns one record per `(repo, revision, generation)` directory that
 /// carries a SEALED marker, a scope-consistent manifest, and a current-format
 /// sealed manifest bound to the same digest. This reads three bounded control
-/// files per generation and opens no dataset: content (schema, row count, row root, membership) is proven by
-/// [`validate_persisted_generation_v2`] and by every open, not here. A
+/// files per generation and opens no dataset. The open door checks layout,
+/// schema, row count, index identity and membership count; it does not
+/// recompute the semantic row root or hash dataset payload bytes. An
 /// invalid identity is quarantined with its path and reason; in-progress
 /// generations are skipped. I/O failures propagate rather than masquerading
 /// as proven corruption or a successful inventory.

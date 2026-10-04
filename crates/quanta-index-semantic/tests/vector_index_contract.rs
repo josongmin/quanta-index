@@ -653,14 +653,20 @@ fn deleting_every_row_of_an_appended_segment_reseals_the_survivors() -> TestResu
         &adapter,
         base,
         None,
-        vec![scope("src/base.rs", records("base", "src/base.rs", 0..300)?)],
+        vec![scope(
+            "src/base.rs",
+            records("base", "src/base.rs", 0..300)?,
+        )],
         &[],
     )?;
     seal_with_scopes(
         &adapter,
         appended,
         Some(base),
-        vec![scope("src/new.rs", records("new", "src/new.rs", 1_000..1_060)?)],
+        vec![scope(
+            "src/new.rs",
+            records("new", "src/new.rs", 1_000..1_060)?,
+        )],
         &[],
     )?;
     if library_view(&generation_dir(temp.path(), appended))?.stats != Some((360, 0, Some(2))) {
@@ -679,14 +685,25 @@ fn deleting_every_row_of_an_appended_segment_reseals_the_survivors() -> TestResu
 
     let view = library_view(&generation_dir(temp.path(), deleted))?;
     if view.stats != Some((300, 0, Some(1))) {
-        return Err(format!("the survivor index must cover 300 rows in one segment, got {:?}", view.stats).into());
+        return Err(format!(
+            "the survivor index must cover 300 rows in one segment, got {:?}",
+            view.stats
+        )
+        .into());
     }
     let served = adapter.open(&repo(), &revision(), deleted)?;
     if served.dense_lane() != sealed_ann_lane(trained_at(3, 300)) {
-        return Err(format!("the survivor index must have a fresh seal, got {:?}", served.dense_lane()).into());
+        return Err(format!(
+            "the survivor index must have a fresh seal, got {:?}",
+            served.dense_lane()
+        )
+        .into());
     }
     let hits = served.search(&unit_vector(7, DIMENSION), 3, &RequestBudgetV1::unbounded())?;
-    if hits.first().is_none_or(|hit| hit.candidate_id != "base-7" || (hit.score - 1.0).abs() > 1e-5) {
+    if hits
+        .first()
+        .is_none_or(|hit| hit.candidate_id != "base-7" || (hit.score - 1.0).abs() > 1e-5)
+    {
         return Err(format!("retained self-vector was not served: {hits:?}").into());
     }
     if library_view(&generation_dir(temp.path(), appended))?.stats != Some((360, 0, Some(2))) {
@@ -712,7 +729,10 @@ fn identical_replacement_of_an_appended_segment_can_reseal() -> TestResult {
         &adapter,
         base,
         None,
-        vec![scope("src/base.rs", records("base", "src/base.rs", 0..300)?)],
+        vec![scope(
+            "src/base.rs",
+            records("base", "src/base.rs", 0..300)?,
+        )],
         &[],
     )?;
     let same_rows = records("new", "src/new.rs", 1_000..1_060)?;
@@ -735,20 +755,251 @@ fn identical_replacement_of_an_appended_segment_can_reseal() -> TestResult {
     )?;
     let view = library_view(&generation_dir(temp.path(), replaced))?;
     if view.stats != Some((360, 0, Some(1))) {
-        return Err(format!("identical replacement did not reindex all live rows: {:?}", view.stats).into());
+        return Err(format!(
+            "identical replacement did not reindex all live rows: {:?}",
+            view.stats
+        )
+        .into());
     }
     let served = adapter.open(&repo(), &revision(), replaced)?;
     if served.dense_lane() != sealed_ann_lane(trained_at(3, 360)) {
-        return Err(format!("identical replacement retained stale lineage: {:?}", served.dense_lane()).into());
+        return Err(format!(
+            "identical replacement retained stale lineage: {:?}",
+            served.dense_lane()
+        )
+        .into());
     }
     for (seed, id) in [(7, "base-7"), (1_042, "new-1042")] {
-        let hits = served.search(&unit_vector(seed, DIMENSION), 3, &RequestBudgetV1::unbounded())?;
-        if hits.first().is_none_or(|hit| hit.candidate_id != id || (hit.score - 1.0).abs() > 1e-5) {
+        let hits = served.search(
+            &unit_vector(seed, DIMENSION),
+            3,
+            &RequestBudgetV1::unbounded(),
+        )?;
+        if hits
+            .first()
+            .is_none_or(|hit| hit.candidate_id != id || (hit.score - 1.0).abs() > 1e-5)
+        {
             return Err(format!("retained {id} was not served: {hits:?}").into());
         }
     }
     if library_view(&generation_dir(temp.path(), appended))?.stats != Some((360, 0, Some(2))) {
         return Err("sealed parent changed during identical replacement".into());
+    }
+    Ok(())
+}
+
+/// Mutation and seal may arrive in separate batches. After an appended
+/// segment is fully tombstoned and new rows are pending, the later seal must
+/// validate the original sealed base and train over all current live rows.
+#[test]
+fn multibatch_delete_and_append_retrains_after_segment_contraction() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let base = ManifestGeneration::new(1);
+    let appended = ManifestGeneration::new(2);
+    let successor = ManifestGeneration::new(3);
+    seal_with_scopes(
+        &adapter,
+        base,
+        None,
+        vec![scope(
+            "src/base.rs",
+            records("base", "src/base.rs", 0..300)?,
+        )],
+        &[],
+    )?;
+    seal_with_scopes(
+        &adapter,
+        appended,
+        Some(base),
+        vec![scope(
+            "src/new.rs",
+            records("new", "src/new.rs", 1_000..1_060)?,
+        )],
+        &[],
+    )?;
+    let tombstones = (1_000..1_060)
+        .map(|seed| {
+            tombstone_scope_v1(SemanticSourceScopeKeyV1 {
+                corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+                owner_kind: OwnerDocKind::Chunk,
+                owner_id: format!("owner-new-{seed}"),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut first = sealed_replace_batch_v1(
+        repo(),
+        revision(),
+        successor,
+        "src/mixed.rs",
+        records("mixed", "src/mixed.rs", 2_000..2_010)?,
+        dimension_u32()?,
+    );
+    first.base_generation = Some(appended);
+    first.mode = BatchIngestMode::Delta;
+    first.tombstone_scopes = tombstones;
+    first.seal = false;
+    build_resident_batch_v1(&adapter, &first)?;
+    if library_view(&generation_dir(temp.path(), successor))?.stats != Some((300, 10, Some(1))) {
+        return Err(
+            "unsealed mixed fixture must have one surviving segment and ten pending rows".into(),
+        );
+    }
+    let mut last = sealed_replace_batch_v1(
+        repo(),
+        revision(),
+        successor,
+        "src/seal.rs",
+        Vec::new(),
+        dimension_u32()?,
+    );
+    last.base_generation = Some(appended);
+    last.mode = BatchIngestMode::Delta;
+    last.replace_scopes.clear();
+    build_resident_batch_v1(&adapter, &last)?;
+
+    let view = library_view(&generation_dir(temp.path(), successor))?;
+    if view.stats != Some((310, 0, Some(1))) {
+        return Err(format!(
+            "mixed successor did not retrain 310 live rows: {:?}",
+            view.stats
+        )
+        .into());
+    }
+    let served = adapter.open(&repo(), &revision(), successor)?;
+    if served.dense_lane() != sealed_ann_lane(trained_at(3, 310)) {
+        return Err(format!(
+            "mixed successor retained stale lineage: {:?}",
+            served.dense_lane()
+        )
+        .into());
+    }
+    for (seed, id) in [(7, "base-7"), (2_005, "mixed-2005")] {
+        let hits = served.search(
+            &unit_vector(seed, DIMENSION),
+            3,
+            &RequestBudgetV1::unbounded(),
+        )?;
+        if hits
+            .first()
+            .is_none_or(|hit| hit.candidate_id != id || (hit.score - 1.0).abs() > 1e-5)
+        {
+            return Err(format!("retained {id} was not served: {hits:?}").into());
+        }
+    }
+    if library_view(&generation_dir(temp.path(), appended))?.stats != Some((360, 0, Some(2))) {
+        return Err("sealed parent changed during mixed successor retrain".into());
+    }
+    Ok(())
+}
+
+/// Base row authority is checked on an ordinary append as well as on
+/// contraction; the same forged base cannot be inherited through either path.
+#[test]
+fn ordinary_delta_refuses_a_forged_base_row_root() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let base = ManifestGeneration::new(1);
+    let successor = ManifestGeneration::new(2);
+    seal_with_scopes(
+        &adapter,
+        base,
+        None,
+        vec![scope(
+            "src/base.rs",
+            records("base", "src/base.rs", 0..300)?,
+        )],
+        &[],
+    )?;
+    forge_row_root(&generation_dir(temp.path(), base))?;
+    let _cheap_open = adapter.open(&repo(), &revision(), base)?;
+    let refused = seal_with_scopes(
+        &adapter,
+        successor,
+        Some(base),
+        vec![scope(
+            "src/new.rs",
+            records("new", "src/new.rs", 1_000..1_010)?,
+        )],
+        &[],
+    );
+    if refused.as_ref().err().is_none_or(|error| {
+        !error
+            .to_string()
+            .contains("sealed base row commitment differs")
+    }) {
+        return Err(format!("ordinary delta accepted a forged base root: {refused:?}").into());
+    }
+    if generation_dir(temp.path(), successor)
+        .join("MARKER_SEALED")
+        .exists()
+    {
+        return Err("a refused ordinary delta published a sealed marker".into());
+    }
+    Ok(())
+}
+
+/// The cheap base open accepts a self-consistent, re-committed sidecar with
+/// a false row root. A segment-contraction retrain must recompute the sealed
+/// base's canonical row commitment before accepting it as training authority.
+#[test]
+fn contracted_successor_refuses_a_forged_base_row_root() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let base = ManifestGeneration::new(1);
+    let appended = ManifestGeneration::new(2);
+    let successor = ManifestGeneration::new(3);
+    seal_with_scopes(
+        &adapter,
+        base,
+        None,
+        vec![scope(
+            "src/base.rs",
+            records("base", "src/base.rs", 0..300)?,
+        )],
+        &[],
+    )?;
+    seal_with_scopes(
+        &adapter,
+        appended,
+        Some(base),
+        vec![scope(
+            "src/new.rs",
+            records("new", "src/new.rs", 1_000..1_060)?,
+        )],
+        &[],
+    )?;
+    if library_view(&generation_dir(temp.path(), appended))?.stats != Some((360, 0, Some(2))) {
+        return Err("fixture must have two indexed segments before forging the root".into());
+    }
+    let appended_dir = generation_dir(temp.path(), appended);
+    forge_row_root(&appended_dir)?;
+    let _cheap_open = adapter.open(&repo(), &revision(), appended)?;
+
+    let tombstones = (1_000..1_060)
+        .map(|seed| {
+            tombstone_scope_v1(SemanticSourceScopeKeyV1 {
+                corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
+                owner_kind: OwnerDocKind::Chunk,
+                owner_id: format!("owner-new-{seed}"),
+            })
+        })
+        .collect::<Vec<_>>();
+    let refused = seal_with_scopes(&adapter, successor, Some(appended), Vec::new(), &tombstones);
+    if refused.as_ref().err().is_none_or(|error| {
+        !error
+            .to_string()
+            .contains("sealed base row commitment differs")
+    }) {
+        return Err(
+            format!("forged base row root did not refuse successor retrain: {refused:?}").into(),
+        );
+    }
+    if generation_dir(temp.path(), successor)
+        .join("MARKER_SEALED")
+        .exists()
+    {
+        return Err("a refused successor published a sealed marker".into());
     }
     Ok(())
 }
@@ -798,6 +1049,31 @@ fn downgrade_to_v8(generation_dir: &Path) -> TestResult {
     ciborium::into_writer(&value, &mut legacy)?;
     std::fs::write(&manifest_path, &legacy)?;
     recommit_scope_manifest(generation_dir, &legacy)
+}
+
+/// Re-commit a canonical but false row root so the cheap open still passes.
+fn forge_row_root(generation_dir: &Path) -> TestResult {
+    let manifest_path = generation_dir.join(SCOPE_MANIFEST);
+    let mut manifest: ciborium::value::Value =
+        ciborium::from_reader(&std::fs::read(&manifest_path)?[..])?;
+    let ciborium::value::Value::Map(entries) = &mut manifest else {
+        return Err("scope manifest is not a map".into());
+    };
+    let root = entries
+        .iter_mut()
+        .find(|(key, _)| key.as_text() == Some("semantic_row_root_digest"))
+        .map(|(_, value)| value)
+        .ok_or("scope manifest has no semantic row root")?;
+    let forged = format!("sha256:{}", "0".repeat(64));
+    if root.as_text() == Some(forged.as_str()) {
+        return Err("fixture row root unexpectedly equals the forged digest".into());
+    }
+    *root = ciborium::value::Value::Text(forged);
+    let mut manifest_bytes = Vec::new();
+    ciborium::into_writer(&manifest, &mut manifest_bytes)?;
+    std::fs::write(&manifest_path, &manifest_bytes)?;
+    recommit_scope_manifest(generation_dir, &manifest_bytes)?;
+    Ok(())
 }
 
 /// Re-commit `manifest_bytes` in the sealed manifest's scope commitment.

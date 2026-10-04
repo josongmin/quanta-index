@@ -56,6 +56,7 @@ use crate::manifest::{
     AnnIndexLineageV1, AnnIndexSealV1, AnnIndexSegmentSealV1, VECTOR_INDEX_MODE_EXACT,
     VECTOR_INDEX_MODE_IVF_HNSW_SQ, VectorIndexSealV1,
 };
+use crate::semantic_row_integrity_v1::SemanticRowFingerprintV1;
 
 /// The library that builds and serves the index, as recorded in every seal.
 pub(crate) const ANN_LIBRARY: &str = "lancedb";
@@ -356,6 +357,205 @@ async fn read_index_segments_v1(
     Ok(out)
 }
 
+/// Count physical row removals and appends relative to a sealed base.
+/// Byte-identical scope replacement still replaces Lance native row IDs.
+/// An in-place payload change under one physical ID is a custody violation.
+fn row_change_counts_v1(
+    base: &[SemanticRowFingerprintV1],
+    current: &[SemanticRowFingerprintV1],
+) -> Result<(u64, u64), CoreError> {
+    let ordered = |rows: &[SemanticRowFingerprintV1]| {
+        rows.windows(2).all(|pair| {
+            pair.first()
+                .zip(pair.get(1))
+                .is_some_and(|(left, right)| left.record_id < right.record_id)
+        })
+    };
+    if !ordered(base) || !ordered(current) {
+        return Err(seal_refused(
+            "semantic row fingerprints are not in unique record-ID order",
+        ));
+    }
+    // A physical row carried forward from the base must retain its logical
+    // identity and canonical payload, even when the record-ID merge below
+    // would otherwise count the change as one removal and one insertion.
+    let mut base_by_native_id = std::collections::BTreeMap::new();
+    for row in base {
+        if base_by_native_id.insert(row.native_row_id, row).is_some() {
+            return Err(seal_refused(
+                "the sealed base repeats a Lance native row ID",
+            ));
+        }
+    }
+    let mut current_native_ids = std::collections::BTreeSet::new();
+    for row in current {
+        if !current_native_ids.insert(row.native_row_id) {
+            return Err(seal_refused("the successor repeats a Lance native row ID"));
+        }
+        if let Some(base_row) = base_by_native_id.get(&row.native_row_id) {
+            if base_row.record_id != row.record_id || base_row.leaf_digest != row.leaf_digest {
+                return Err(seal_refused(
+                    "an inherited physical row changed identity or payload without a new Lance row ID",
+                ));
+            }
+        }
+    }
+    let mut base_rows = base.iter().peekable();
+    let mut current_rows = current.iter().peekable();
+    let mut deleted = 0_u64;
+    let mut added = 0_u64;
+    let mut count = |is_deleted: bool| -> Result<(), CoreError> {
+        let slot = if is_deleted { &mut deleted } else { &mut added };
+        *slot = slot
+            .checked_add(1)
+            .ok_or_else(|| seal_refused("row-change count overflow"))?;
+        Ok(())
+    };
+    loop {
+        match (base_rows.peek(), current_rows.peek()) {
+            (None, None) => break,
+            (Some(_), None) => {
+                count(true)?;
+                let _removed = base_rows.next();
+            }
+            (None, Some(_)) => {
+                count(false)?;
+                let _added = current_rows.next();
+            }
+            (Some(base_row), Some(current_row)) => {
+                match base_row.record_id.cmp(&current_row.record_id) {
+                    std::cmp::Ordering::Less => {
+                        count(true)?;
+                        let _removed = base_rows.next();
+                    }
+                    std::cmp::Ordering::Greater => {
+                        count(false)?;
+                        let _added = current_rows.next();
+                    }
+                    std::cmp::Ordering::Equal => {
+                        if base_row.native_row_id == current_row.native_row_id {
+                            if base_row.leaf_digest != current_row.leaf_digest {
+                                return Err(seal_refused(
+                                    "an inherited physical row changed payload without a new Lance row ID",
+                                ));
+                            }
+                        } else {
+                            count(true)?;
+                            count(false)?;
+                        }
+                        let _base = base_rows.next();
+                        let _current = current_rows.next();
+                    }
+                }
+            }
+        }
+    }
+    Ok((deleted, added))
+}
+
+/// Bind the index's lost coverage to actual canonical row changes.
+/// Index loss with unchanged rows cannot masquerade as a delete, and newly
+/// inserted or replaced rows must be exactly the rows the index calls pending.
+fn verify_contraction_row_changes_v1(
+    ann: &AnnIndexSealV1,
+    report: IndexReportV1,
+    row_count: u64,
+    base_rows: &[SemanticRowFingerprintV1],
+    current_rows: &[SemanticRowFingerprintV1],
+) -> Result<(), CoreError> {
+    if report.indexed_rows.checked_add(report.unindexed_rows) != Some(row_count) {
+        return Err(seal_refused(&format!(
+            "the contracted index reports {} indexed and {} unindexed rows, the dataset holds {row_count}",
+            report.indexed_rows, report.unindexed_rows
+        )));
+    }
+    let Some(indexed_decrease) = ann.indexed_rows.checked_sub(report.indexed_rows) else {
+        return Err(seal_refused(
+            "the contracted index covers more indexed rows than the sealed base",
+        ));
+    };
+    if indexed_decrease == 0 {
+        return Err(seal_refused(
+            "the inherited segment count contracted without a positive indexed-row deletion",
+        ));
+    }
+    if u64::try_from(base_rows.len()) != Ok(ann.indexed_rows)
+        || u64::try_from(current_rows.len()) != Ok(row_count)
+    {
+        return Err(seal_refused(
+            "the canonical row fingerprint counts disagree with the base or current row count",
+        ));
+    }
+    let (deleted_rows, added_rows) = row_change_counts_v1(base_rows, current_rows)?;
+    if deleted_rows != indexed_decrease || added_rows != report.unindexed_rows {
+        return Err(seal_refused(&format!(
+            "the contracted index reports {indexed_decrease} removed indexed and {} unindexed rows, but canonical row changes prove {deleted_rows} removed and {added_rows} new rows",
+            report.unindexed_rows
+        )));
+    }
+    Ok(())
+}
+
+/// A deletion can retire a complete inherited segment. A contracted index
+/// cannot retain the old lineage: a caller must verify the sealed base and
+/// retrain the current live rows before publishing a successor seal.
+///
+/// The remaining segment identities and parameters must be an ordered subset
+/// of the base's exact record. A changed or newly introduced segment is a
+/// disagreement with the base, not a deletion-only contraction.
+pub(crate) async fn inherited_index_contracted_v1(
+    table: &lancedb::Table,
+    inherited: &VectorIndexSealV1,
+    row_count: u64,
+    base_rows: &[SemanticRowFingerprintV1],
+    current_rows: &[SemanticRowFingerprintV1],
+) -> Result<bool, CoreError> {
+    let Some(ann) = inherited.ann.as_ref() else {
+        return Ok(false);
+    };
+    if !matches!(
+        plan_for_rows_v1(row_count),
+        VectorIndexPlanV1::IvfHnswSq { .. }
+    ) {
+        return Ok(false);
+    }
+    let report = read_index_report_v1(table, "before contracted-index seal").await?;
+    if report.segments >= ann.index_segments {
+        return Ok(false);
+    }
+    verify_contraction_row_changes_v1(ann, report, row_count, base_rows, current_rows)?;
+    let present = table
+        .list_indices()
+        .await
+        .map_err(|err| lancedb_err("list_indices before contracted-index seal", err))?;
+    let present = vector_indices(&present)?;
+    if present.len() != 1
+        || present.first().is_none_or(|index| {
+            index.name != ann.index_name || index.index_type != IndexType::IvfHnswSq
+        })
+    {
+        return Err(seal_refused(
+            "the contracted dataset does not carry exactly the inherited vector index",
+        ));
+    }
+    let segments =
+        read_index_segments_v1(table, VECTOR_INDEX_NAME, "before contracted-index seal").await?;
+    if u32::try_from(segments.len()).ok() != Some(report.segments) {
+        return Err(seal_refused(
+            "the contracted index report and segment identity list disagree",
+        ));
+    }
+    let mut inherited_segments = ann.segments.iter();
+    for segment in &segments {
+        if !inherited_segments.any(|sealed| sealed == segment) {
+            return Err(seal_refused(&format!(
+                "the contracted index carries a segment absent from the sealed base: {segment:?}"
+            )));
+        }
+    }
+    Ok(true)
+}
+
 /// The policy's seal record for an index the library reports as covering
 /// `report` rows in `segments`, with `lineage` behind it.
 fn ann_seal_record_v1(
@@ -460,9 +660,6 @@ async fn append_plan_v1(
         return Ok(None);
     };
     let base_lineage = ann.lineage;
-    if !inherited_matches_policy_v1(inherited, ann, num_partitions) {
-        return Ok(None);
-    }
     let names: Vec<&str> = present
         .iter()
         .map(|listing| listing.name.as_str())
@@ -484,11 +681,24 @@ async fn append_plan_v1(
             before.segments, ann.index_segments
         )));
     }
+    let inherited_segments =
+        read_index_segments_v1(table, VECTOR_INDEX_NAME, "before the append").await?;
+    if inherited_segments != ann.segments {
+        return Err(seal_refused(&format!(
+            "the inherited index segments {inherited_segments:?} differ from the base seal {:?}",
+            ann.segments
+        )));
+    }
     if before.indexed_rows.saturating_add(before.unindexed_rows) != input.row_count {
         return Err(seal_refused(&format!(
             "the inherited index reports {} indexed and {} unindexed rows, the dataset holds {}",
             before.indexed_rows, before.unindexed_rows, input.row_count
         )));
+    }
+    // A policy or library change may retrain, but it cannot legitimize a
+    // physical index that no longer matches the sealed base.
+    if !inherited_matches_policy_v1(inherited, ann, num_partitions) {
+        return Ok(None);
     }
     let Some(deleted_now) = ann.indexed_rows.checked_sub(before.indexed_rows) else {
         return Err(seal_refused(&format!(
@@ -987,10 +1197,11 @@ mod tests {
 
     use super::{
         ANN_APPEND_RATIO_MAX_PER_MILLE, ANN_APPEND_ROWS_MAX, ANN_APPEND_SEGMENTS_MAX,
-        ANN_LIBRARY_VERSION, HNSW_EF_CONSTRUCTION, HNSW_M, LoadedVectorIndexV1, MAX_PARTITIONS,
-        TARGET_PARTITION_ROWS, VECTOR_INDEX_MIN_ROWS, VECTOR_INDEX_NAME, VectorIndexPlanV1,
-        VectorIndexSealInputV1, plan_for_rows_v1, read_index_segments_v1, seal_vector_index_v1,
-        verify_vector_index_v1,
+        ANN_LIBRARY_VERSION, HNSW_EF_CONSTRUCTION, HNSW_M, IndexReportV1, LoadedVectorIndexV1,
+        MAX_PARTITIONS, SemanticRowFingerprintV1, TARGET_PARTITION_ROWS, VECTOR_INDEX_MIN_ROWS,
+        VECTOR_INDEX_NAME, VectorIndexPlanV1, VectorIndexSealInputV1,
+        inherited_index_contracted_v1, plan_for_rows_v1, read_index_segments_v1,
+        seal_vector_index_v1, verify_contraction_row_changes_v1, verify_vector_index_v1,
     };
 
     /// The graph parameters the library's incremental builder uses for a
@@ -1579,24 +1790,24 @@ mod tests {
     #[test]
     fn a_base_that_is_not_the_policy_retrains() -> TestResult {
         run(async {
-            let temp = tempfile::tempdir()?;
-            let table = vector_table(temp.path(), 400, DIMENSION).await?;
-            let base = seal_fresh(&table, 1).await?;
-            let variants: Vec<(&str, VectorIndexSealV1)> = vec![
-                ("another library version", {
-                    let mut seal = base.clone();
-                    seal.library_version = "0.29.0".to_string();
-                    seal
-                }),
-                ("another graph recipe", {
-                    let mut seal = base.clone();
-                    if let Some(ann) = seal.ann.as_mut() {
+            for label in ["another library version", "another graph recipe"] {
+                // A train replaces the index. Each variant needs its own
+                // physical base so the next one cannot inherit an old seal
+                // over the previous variant's newly trained index.
+                let temp = tempfile::tempdir()?;
+                let table = vector_table(temp.path(), 400, DIMENSION).await?;
+                let base = seal_fresh(&table, 1).await?;
+                let mut inherited = base.clone();
+                match label {
+                    "another library version" => {
+                        inherited.library_version = "0.29.0".to_string();
+                    }
+                    "another graph recipe" => {
+                        let ann = inherited.ann.as_mut().ok_or("fixture has no index")?;
                         ann.hnsw_ef_construction = ann.hnsw_ef_construction.saturating_add(1);
                     }
-                    seal
-                }),
-            ];
-            for (label, inherited) in variants {
+                    _ => return Err("unexpected policy variant".into()),
+                }
                 append_rows(&table, 1_000..1_010, DIMENSION).await?;
                 let rows = row_count(&table).await?;
                 let sealed = seal_delta(&table, 2, &inherited).await?;
@@ -1606,11 +1817,6 @@ mod tests {
                     "{label} must retrain"
                 );
                 assert_eq!(report_of(&sealed), Some((rows, 1)), "{label}");
-                // Remove the delta rows again so every variant starts from
-                // the same 400 live rows; the variants never reach the
-                // dataset checks, so the retrained index beside the
-                // original base record does not matter to them.
-                delete_ids(&table, &(1_000..1_010).collect::<Vec<_>>()).await?;
             }
             Ok(())
         })
@@ -1664,6 +1870,145 @@ mod tests {
             assert!(
                 matches!(&refused, Err(CoreError::Storage(message)) if message.contains("inherited dataset lists")),
                 "{refused:?}"
+            );
+            Ok(())
+        })
+    }
+
+    /// A fully deleted index segment is a strict subset of the base record.
+    /// The contraction gate rejects missing rows, a forged surviving UUID,
+    /// and a count decrease without any deleted indexed rows.
+    #[test]
+    fn a_contracted_index_requires_exact_survivor_identity_and_deleted_rows() -> TestResult {
+        run(async {
+            let temp = tempfile::tempdir()?;
+            let table = vector_table(temp.path(), 400, DIMENSION).await?;
+            let base = seal_fresh(&table, 1).await?;
+            append_rows(&table, 1_000..1_060, DIMENSION).await?;
+            let appended = seal_delta(&table, 2, &base).await?;
+            assert_eq!(report_of(&appended), Some((460, 2)));
+            delete_ids(&table, &(1_000..1_060).collect::<Vec<_>>()).await?;
+            assert_eq!(library_report(&table).await?, (400, 0, Some(1)));
+            let fingerprint = |id: u64| SemanticRowFingerprintV1 {
+                record_id: format!("{id:04}"),
+                leaf_digest: [0; 32],
+                native_row_id: id,
+            };
+            let mut base_rows = (0..400)
+                .chain(1_000..1_060)
+                .map(fingerprint)
+                .collect::<Vec<_>>();
+            base_rows.sort_unstable_by(|left, right| left.record_id.cmp(&right.record_id));
+            let current_rows = (0..400).map(fingerprint).collect::<Vec<_>>();
+            assert!(
+                inherited_index_contracted_v1(&table, &appended, 400, &base_rows, &current_rows)
+                    .await?
+            );
+
+            let ann = appended
+                .ann
+                .as_ref()
+                .ok_or("fixture has no appended index")?;
+            let missing_index_segment_without_row_deletion = verify_contraction_row_changes_v1(
+                ann,
+                IndexReportV1 {
+                    indexed_rows: 400,
+                    unindexed_rows: 60,
+                    segments: 1,
+                },
+                460,
+                &base_rows,
+                &base_rows,
+            );
+            assert!(
+                matches!(&missing_index_segment_without_row_deletion, Err(CoreError::Storage(message)) if message.contains("canonical row changes prove")),
+                "{missing_index_segment_without_row_deletion:?}"
+            );
+
+            // Identical payload replacement has no logical row delta, but
+            // Lance allocates new physical row IDs after delete plus append.
+            let mut replacement_rows = base_rows.clone();
+            for row in replacement_rows
+                .iter_mut()
+                .filter(|row| row.record_id.as_str() >= "1000")
+            {
+                row.native_row_id = row
+                    .native_row_id
+                    .checked_add(10_000)
+                    .ok_or("fixture row ID overflow")?;
+            }
+            verify_contraction_row_changes_v1(
+                ann,
+                IndexReportV1 {
+                    indexed_rows: 400,
+                    unindexed_rows: 60,
+                    segments: 1,
+                },
+                460,
+                &base_rows,
+                &replacement_rows,
+            )?;
+            let mut changed_payload = base_rows.clone();
+            let row = changed_payload.first_mut().ok_or("fixture has no rows")?;
+            row.leaf_digest = [1; 32];
+            let same_physical_id_changed_payload = verify_contraction_row_changes_v1(
+                ann,
+                IndexReportV1 {
+                    indexed_rows: 400,
+                    unindexed_rows: 60,
+                    segments: 1,
+                },
+                460,
+                &base_rows,
+                &changed_payload,
+            );
+            assert!(
+                matches!(&same_physical_id_changed_payload, Err(CoreError::Storage(message)) if message.contains("inherited physical row changed identity or payload")),
+                "{same_physical_id_changed_payload:?}"
+            );
+
+            let mut changed_uuid = appended.clone();
+            let survivor = changed_uuid
+                .ann
+                .as_mut()
+                .and_then(|ann| ann.segments.first_mut())
+                .ok_or("fixture has no trained segment")?;
+            survivor.uuid = "forged-survivor-uuid".to_string();
+            let mismatch = inherited_index_contracted_v1(
+                &table,
+                &changed_uuid,
+                400,
+                &base_rows,
+                &current_rows,
+            )
+            .await;
+            assert!(
+                matches!(&mismatch, Err(CoreError::Storage(message)) if message.contains("segment")),
+                "{mismatch:?}"
+            );
+
+            let wrong_row_count =
+                inherited_index_contracted_v1(&table, &appended, 399, &base_rows, &current_rows)
+                    .await;
+            assert!(
+                matches!(&wrong_row_count, Err(CoreError::Storage(message)) if message.contains("dataset holds")),
+                "{wrong_row_count:?}"
+            );
+
+            let mut no_deleted_rows = appended.clone();
+            let ann = no_deleted_rows.ann.as_mut().ok_or("fixture has no index")?;
+            ann.indexed_rows = 400;
+            let no_deletion = inherited_index_contracted_v1(
+                &table,
+                &no_deleted_rows,
+                400,
+                &current_rows,
+                &current_rows,
+            )
+            .await;
+            assert!(
+                matches!(&no_deletion, Err(CoreError::Storage(message)) if message.contains("positive indexed-row deletion")),
+                "{no_deletion:?}"
             );
             Ok(())
         })

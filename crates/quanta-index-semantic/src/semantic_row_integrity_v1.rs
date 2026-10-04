@@ -5,9 +5,10 @@ use std::fmt::Write as _;
 
 use arrow_array::{
     Array, BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, StringArray, UInt32Array,
+    UInt64Array,
 };
 use futures::TryStreamExt as _;
-use lancedb::query::ExecutableQuery as _;
+use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_core::CoreError;
 use sha2::{Digest as _, Sha256};
 
@@ -26,6 +27,17 @@ pub(crate) struct SemanticRowCommitmentV1 {
     pub(crate) root_digest: String,
     pub(crate) row_count: u64,
     pub(crate) coverage: SemanticRowCoverageV1,
+    /// Canonical row identities and payload fingerprints in record-ID order.
+    /// Moved from the existing root scan; no second dataset read is needed.
+    pub(crate) row_fingerprints: Vec<SemanticRowFingerprintV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SemanticRowFingerprintV1 {
+    pub(crate) record_id: String,
+    pub(crate) leaf_digest: [u8; 32],
+    /// Lance physical row identity, used only for delta index custody.
+    pub(crate) native_row_id: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,6 +52,7 @@ struct CanonicalSemanticRowV1 {
     embedding_id: String,
     record_id: String,
     leaf_digest: [u8; 32],
+    native_row_id: u64,
 }
 
 fn column_as<'a, T: Array + 'static>(
@@ -139,6 +152,7 @@ pub(crate) async fn semantic_row_commitment_v1(
     let mut render_policy_digests = BTreeSet::new();
     let mut stream = table
         .query()
+        .with_row_id()
         .execute()
         .await
         .map_err(|error| lancedb_err("query semantic rows for root", error))?;
@@ -156,6 +170,7 @@ pub(crate) async fn semantic_row_commitment_v1(
                 "semantic row root: stream exceeded counted row bound".to_string(),
             ));
         }
+        let native_row_ids = column_as::<UInt64Array>(&batch, "_rowid", "UInt64")?;
         let embedding_ids = column_as::<StringArray>(&batch, COLUMN_EMBEDDING_ID, "Utf8")?;
         let record_ids = column_as::<StringArray>(&batch, COLUMN_RECORD_ID, "Utf8")?;
         let required = REQUIRED_NAMES
@@ -175,7 +190,8 @@ pub(crate) async fn semantic_row_commitment_v1(
         let ends = column_as::<UInt32Array>(&batch, COLUMN_END_LINE, "UInt32")?;
         let vectors = column_as::<FixedSizeListArray>(&batch, COLUMN_VECTOR, "FixedSizeList")?;
         for row in 0..batch.num_rows() {
-            if generated.is_null(row)
+            if native_row_ids.is_null(row)
+                || generated.is_null(row)
                 || card_schema.is_null(row)
                 || starts.is_null(row)
                 || ends.is_null(row)
@@ -235,6 +251,7 @@ pub(crate) async fn semantic_row_commitment_v1(
                 embedding_id: embedding_id.to_owned(),
                 record_id: record_id.to_owned(),
                 leaf_digest: leaf.finalize().into(),
+                native_row_id: native_row_ids.value(row),
             });
         }
     }
@@ -247,6 +264,14 @@ pub(crate) async fn semantic_row_commitment_v1(
     // Candidate lookup and exact scoring use embedding_id alone inside one
     // generation. Check uniqueness before the canonical root ordering; this
     // also catches a collision carried forward from a delta base.
+    let mut seen_native_row_ids = BTreeSet::new();
+    for row in &rows {
+        if !seen_native_row_ids.insert(row.native_row_id) {
+            return Err(CoreError::Storage(
+                "semantic row root: duplicate Lance native row ID in generation".to_string(),
+            ));
+        }
+    }
     rows.sort_unstable_by(|left, right| left.embedding_id.cmp(&right.embedding_id));
     if rows
         .iter()
@@ -280,10 +305,17 @@ pub(crate) async fn semantic_row_commitment_v1(
             })?
             .to_le_bytes(),
     );
+    let mut row_fingerprints = Vec::with_capacity(rows.len());
     for row in rows {
         root.update(row.leaf_digest);
+        row_fingerprints.push(SemanticRowFingerprintV1 {
+            record_id: row.record_id,
+            leaf_digest: row.leaf_digest,
+            native_row_id: row.native_row_id,
+        });
     }
     Ok(SemanticRowCommitmentV1 {
+        row_fingerprints,
         root_digest: encode_sha256_v1(root.finalize()),
         row_count: u64::try_from(capacity).map_err(|error| {
             CoreError::Storage(format!("semantic row root: row count overflow: {error}"))

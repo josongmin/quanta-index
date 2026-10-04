@@ -61,14 +61,15 @@ use crate::layout::{
 };
 use crate::manifest::{
     ClusterMembershipSealV1, SemanticCorpusCoverageV1, SemanticManifest, SemanticRowSealV1,
-    VectorIndexSealV1,
 };
 use crate::membership_integrity::{
     ClusterMembershipCommitmentV1, ClusterMembershipStoredRowV1, cluster_membership_commitment_v1,
 };
 use crate::sealed_manifest::{build_sealed_manifest_bytes, sealed_manifest_path};
 use crate::semantic_row_integrity_v1::semantic_row_commitment_v1;
-use crate::vector_index::{VectorIndexSealInputV1, seal_vector_index_v1};
+use crate::vector_index::{
+    VectorIndexSealInputV1, inherited_index_contracted_v1, seal_vector_index_v1,
+};
 
 /// Sibling-of-`dataset/` staging dir used to make delta-base cloning
 /// crash-atomic — see `prepare_generation_dir`.
@@ -1526,45 +1527,28 @@ fn rollback_promoted_dataset(generation_dir: &Path) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// The sealed index contract of the base generation a delta inherited its
-/// dataset from (QI-BB-027 W3).
+/// The verified index contract of the sealed base a delta inherited.
 ///
-/// Read from the base's scope manifest and validated against the base's
-/// own scope. `None` when the generation has no base or the base's
-/// manifest predates the contract.
-///
-/// The base's manifest is a required input of a delta seal: without it the
-/// seal cannot tell whether the index the dataset carries is the policy's
-/// own, or what lineage it has. A base that has vanished or become
-/// unreadable since the delta's first batch therefore refuses the seal
-/// rather than retraining as if nothing had been inherited.
-fn inherited_vector_index_seal_v1(
+/// The base's canonical open validates its committed sidecars, layout,
+/// schema, row count and exact index identity. Its row commitment is then
+/// recomputed against the sealed root. Every delta index decision uses this
+/// same base authority, including append, budget retrain and contraction.
+async fn inherited_vector_index_seal_v1(
     semantic_root: &Path,
     header: &SemanticIngestHeaderV1,
     generation_contract: &GenerationContract,
-) -> Result<Option<VectorIndexSealV1>, CoreError> {
+) -> Result<Option<crate::search::VerifiedInheritedVectorIndexV1>, CoreError> {
     let Some(base_generation) = generation_contract.base_generation else {
         return Ok(None);
     };
-    let base_dir = layout::generation_dir(
+    let verified = crate::search::verified_base_vector_index_seal_v1(
         semantic_root,
         &header.pin.repo_id,
         &header.pin.revision_id,
         base_generation,
-    );
-    let manifest_path = layout::manifest_path(&base_dir);
-    let bytes = crate::control_file::read_bounded(
-        &manifest_path,
-        crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
     )
-    .map_err(|err| fs_err("read delta base scope manifest", &manifest_path, &err))?;
-    let manifest = SemanticManifest::decode(&bytes)?;
-    manifest.validate_scope(
-        &header.pin.repo_id,
-        &header.pin.revision_id,
-        base_generation,
-    )?;
-    Ok(Some(manifest.vector_index))
+    .await?;
+    Ok(Some(verified))
 }
 
 /// The base generation directory a delta seal inherits digests from, if
@@ -1604,13 +1588,35 @@ async fn build_manifest_bytes(
     // admits it and trains otherwise. The index is approximate; what the
     // seal makes deterministic is its recipe, effort and lineage, not its
     // top-k.
-    let inherited = inherited_vector_index_seal_v1(semantic_root, header, generation_contract)?;
+    let inherited =
+        inherited_vector_index_seal_v1(semantic_root, header, generation_contract).await?;
+    let contracted = match inherited.as_ref() {
+        Some(base) => {
+            inherited_index_contracted_v1(
+                table,
+                &base.seal,
+                row_count_u64,
+                &base.row_fingerprints,
+                &semantic_rows.row_fingerprints,
+            )
+            .await?
+        }
+        None => false,
+    };
+    // A complete segment deletion changes the physical ANN topology. Only a
+    // proven subset of an intact base may retrain over the current live rows;
+    // it must never inherit the old segment count or lineage.
+    let inherited_for_seal = if contracted {
+        None
+    } else {
+        inherited.as_ref().map(|base| &base.seal)
+    };
     let vector_index = seal_vector_index_v1(
         table,
         VectorIndexSealInputV1 {
             generation: header.pin.manifest_generation.get(),
             row_count: row_count_u64,
-            inherited: inherited.as_ref(),
+            inherited: inherited_for_seal,
         },
     )
     .await?;

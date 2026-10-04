@@ -62,8 +62,9 @@ use crate::layout::{
     COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_RECORD_ID, COLUMN_REPO_RELATIVE_PATH,
     COLUMN_SNIPPET, COLUMN_START_LINE, TABLE_NAME, dataset_uri,
 };
-use crate::manifest::SemanticManifest;
+use crate::manifest::{SemanticManifest, VectorIndexSealV1};
 use crate::sealed_manifest::verify_sealed_manifest;
+use crate::semantic_row_integrity_v1::{SemanticRowFingerprintV1, semantic_row_commitment_v1};
 use crate::sql::build_id_in_filter;
 use crate::vector_index::{LoadedVectorIndexV1, verify_vector_index_v1};
 
@@ -225,6 +226,18 @@ pub(crate) async fn open_generation(
     revision: &RevisionId,
     generation: ManifestGeneration,
 ) -> Result<LoadedGeneration, CoreError> {
+    let (loaded, _manifest) =
+        open_generation_with_manifest(semantic_root, repo, revision, generation).await?;
+    Ok(loaded)
+}
+
+/// Open the generation and retain the exact manifest validated by that open.
+async fn open_generation_with_manifest(
+    semantic_root: &Path,
+    repo: &RepoId,
+    revision: &RevisionId,
+    generation: ManifestGeneration,
+) -> Result<(LoadedGeneration, SemanticManifest), CoreError> {
     let generation_dir = layout::generation_dir(semantic_root, repo, revision, generation);
     let marker_path = layout::sealed_marker_path(&generation_dir);
     if !crate::control_file::regular_file_present(&marker_path).map_err(|error| {
@@ -379,20 +392,63 @@ pub(crate) async fn open_generation(
     verify_cluster_membership_row_count_v1(&membership_table, &manifest).await?;
 
     drop(connection);
-    Ok(LoadedGeneration {
-        repo_id: repo.clone(),
-        revision_id: revision.clone(),
-        generation,
-        dimension,
-        sealed_row_count: manifest.row_count,
-        normalization,
-        model_id: manifest.model_id.clone(),
-        model_version: manifest.model_version.clone(),
-        table,
-        cluster_membership: membership_table,
-        vector_index,
-        resident_bytes_estimate: sealed_manifest.dataset_bytes(),
-        manifest_digest: sealed_digest,
+    Ok((
+        LoadedGeneration {
+            repo_id: repo.clone(),
+            revision_id: revision.clone(),
+            generation,
+            dimension,
+            sealed_row_count: manifest.row_count,
+            normalization,
+            model_id: manifest.model_id.clone(),
+            model_version: manifest.model_version.clone(),
+            table,
+            cluster_membership: membership_table,
+            vector_index,
+            resident_bytes_estimate: sealed_manifest.dataset_bytes(),
+            manifest_digest: sealed_digest,
+        },
+        manifest,
+    ))
+}
+
+/// The inherited ANN contract and canonical row identities from one
+/// fully verified sealed base generation.
+pub(crate) struct VerifiedInheritedVectorIndexV1 {
+    pub(crate) seal: VectorIndexSealV1,
+    pub(crate) row_fingerprints: Vec<SemanticRowFingerprintV1>,
+}
+
+/// Read the verified vector seal of a delta's immutable base.
+///
+/// The normal open checks sealed sidecars, dataset layout, schema, row count
+/// and index identity. Recomputing the canonical row commitment also binds
+/// the payload to the sealed row root before any append or retrain decision.
+/// The caller holds the adapter's generation and lifecycle guards, so this
+/// private function must not acquire them again.
+pub(crate) async fn verified_base_vector_index_seal_v1(
+    semantic_root: &Path,
+    repo: &RepoId,
+    revision: &RevisionId,
+    generation: ManifestGeneration,
+) -> Result<VerifiedInheritedVectorIndexV1, CoreError> {
+    let (loaded, manifest) =
+        open_generation_with_manifest(semantic_root, repo, revision, generation).await?;
+    let actual = semantic_row_commitment_v1(&loaded.table).await?;
+    if actual.row_count != manifest.row_count
+        || actual.root_digest != manifest.semantic_row_root_digest
+    {
+        return Err(CoreError::Storage(format!(
+            "semantic: sealed base row commitment differs before successor seal: rows {} versus {}, root {} versus {}",
+            actual.row_count,
+            manifest.row_count,
+            actual.root_digest,
+            manifest.semantic_row_root_digest
+        )));
+    }
+    Ok(VerifiedInheritedVectorIndexV1 {
+        seal: manifest.vector_index,
+        row_fingerprints: actual.row_fingerprints,
     })
 }
 
