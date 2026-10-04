@@ -285,6 +285,31 @@ byte-identical manifests. These are busy-host diagnostics, so the matrix
 wall difference from qmt6's 74.60 s is not a qualified speedup. Focused
 matrix and source-closure controls passed 4/4 and 2/2, respectively.
 
+A controlled standalone `sha2` 0.10.9 development-profile A/B then hashed the
+same 364,870,944-byte binary with the same Rust toolchain and returned the
+same SHA-256 digest. Unoptimized `sha2` took **33.08 s** wall/**15.01 s** user
+CPU; optimizing only that dependency took **0.90 s** wall/**0.74 s** user CPU.
+The host remained contended, but the CPU-work difference supports a narrow
+`[profile.dev.package.sha2] opt-level = 3` change at `2c3feaf9`. The runner
+still independently hashes the pinned binary. Repository-profile build and
+release capture after that change remain `NOT_RUN`.
+
+The first driver-phase instrumentation attempt at `/private/tmp/qmt8` failed
+after product execution because adjacent timing lists were zipped with unequal
+lengths under `strict=True`; it produced no matrix manifest and is not a scored
+capture. The corrected isolated `e096abab` run at `/private/tmp/qmt9` completed
+2/2 repositories in **49.35 s** and replayed 2/2 in **7.50 s**. All four
+judgment/status reports matched qmt7. Its matrix prevalidation was **0.65 s**.
+For attrs, the **29.31 s** batch included Quanta capture **20.47 s**, Semble
+capture **2.44 s**, fresh source closure **2.68 s**, final verification
+**2.46 s**, and report/manifest construction **0.86 s**. For zoxide, the
+**19.07 s** batch included Quanta **13.78 s**, Semble **1.36 s**, reused
+closure **0.20 s**, final verification **2.60 s**, and report/manifest
+**0.81 s**. These intervals are contiguous driver wall clocks and still
+include debug binaries and host contention. The fix and focused timing test
+were incorporated in main at `56ba8416`; the new completed-output capability
+contract on main was not exercised by this older pinned runner.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
