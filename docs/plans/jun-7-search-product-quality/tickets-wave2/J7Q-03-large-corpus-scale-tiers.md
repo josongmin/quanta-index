@@ -170,3 +170,20 @@ Successful large-tier performance requires a separate, explicitly configured
 history-retention budget with provenance and a fresh source/binary binding.
 Changing the configured budget is a new experiment; neither refusal should
 be counted as a successful tier or an intrinsic product size ceiling.
+
+## Explicit history-budget rail follow-up
+
+The scale runner now accepts `--history-max-bytes` in 1..=1 GiB and passes
+it through the existing harness history policy. The default remains 16 MiB
+and two generations. Success details and configuration digest bind both the
+requested and effective history/timeout values; refusal `execution` binds
+the same values. Build, activation, delta, deletion and reopen errors carry
+their operation stage without inferring a product limit from error text.
+
+Focused verification: harness `scale::` 24/24, `scale_matrix` binary 3/3,
+teardown fault units 3/3, shared socket reopen E2E 1/1. The 1-byte history
+budget unit observes a real seal refusal from the daemon. Initial binary
+compilation rejected one unused result; the parser was corrected and the
+3/3 binary test passed. A fresh release-profile build and a 4096-file run
+with an explicit larger history budget remain **NOT_RUN**. The 582cb7a5
+receipts above cannot be relabeled as results of this new runner policy.
