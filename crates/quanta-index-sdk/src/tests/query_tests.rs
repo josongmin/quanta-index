@@ -727,36 +727,16 @@ fn observed_lexical_active_trace_matches_plain_result_and_request_ids() {
     let requests = ok_or_fail!(observed_transport.requests.lock()).clone();
     assert_eq!(requests.len(), 1);
     assert_eq!(trace.rpcs.len(), 1);
-    assert_eq!(
-        trace
-            .rpcs
-            .first()
-            .expect("one observed query RPC")
-            .kind
-            .as_str(),
-        "query.text"
-    );
-    assert_eq!(
-        trace
-            .rpcs
-            .first()
-            .expect("one observed query RPC")
-            .request_id,
-        requests
-            .first()
-            .expect("one recorded query request")
-            .request_id
-    );
+    let rpc = trace.rpcs.first().expect("one observed query RPC");
+    let recorded = requests.first().expect("one recorded query request");
+    assert_eq!(rpc.kind.as_str(), "query.text");
+    assert_eq!(rpc.request_id, recorded.request_id);
     for rpc in &trace.rpcs {
         assert_eq!(rpc.ipc.total, 20);
         assert_eq!(rpc.ipc.read_io, 4);
         assert!(rpc.ipc.read_io <= rpc.ipc.decode_call);
     }
-    let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(pinned) = &requests
-        .first()
-        .expect("one recorded query request")
-        .payload
-    else {
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(pinned) = &recorded.payload else {
         panic!("expected pinned lexical text request");
     };
     assert_eq!(pinned.generation, None);
@@ -837,54 +817,23 @@ fn observed_lexical_clones_keep_request_local_traces_distinct() {
     assert_eq!(first_result, second_result);
     assert_eq!(first_trace.rpcs.len(), 1);
     assert_eq!(second_trace.rpcs.len(), 1);
-    assert_eq!(
-        first_trace
-            .rpcs
-            .first()
-            .expect("one observed query RPC")
-            .kind
-            .as_str(),
-        "query.text"
-    );
-    assert_eq!(
-        second_trace
-            .rpcs
-            .first()
-            .expect("one observed query RPC")
-            .kind
-            .as_str(),
-        "query.text"
-    );
-    assert_ne!(
-        first_trace
-            .rpcs
-            .first()
-            .expect("one observed query RPC")
-            .request_id,
-        second_trace
-            .rpcs
-            .first()
-            .expect("one observed query RPC")
-            .request_id
-    );
+    let first_rpc = first_trace.rpcs.first().expect("one observed query RPC");
+    let second_rpc = second_trace.rpcs.first().expect("one observed query RPC");
+    assert_eq!(first_rpc.kind.as_str(), "query.text");
+    assert_eq!(second_rpc.kind.as_str(), "query.text");
+    assert_ne!(first_rpc.request_id, second_rpc.request_id);
     let requests = ok_or_fail!(transport.requests.lock()).clone();
     assert_eq!(requests.len(), 2);
-    assert!(requests.iter().any(|request| {
-        request.request_id
-            == first_trace
-                .rpcs
-                .first()
-                .expect("one observed query RPC")
-                .request_id
-    }));
-    assert!(requests.iter().any(|request| {
-        request.request_id
-            == second_trace
-                .rpcs
-                .first()
-                .expect("one observed query RPC")
-                .request_id
-    }));
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.request_id == first_rpc.request_id)
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.request_id == second_rpc.request_id)
+    );
 }
 
 #[test]

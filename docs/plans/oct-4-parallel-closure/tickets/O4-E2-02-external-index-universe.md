@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `DATA_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | Sourcegraph current owner tests169개·실제 owned guest/translator pilot `VERIFIED`; v5 12repo fresh native scope batch 실행 중 |
+| 실행 상태 | Sourcegraph owner169·v5 12repo/13,347파일 owned native scope와 독립 replay `VERIFIED`; 새 query 전후 bracket 및 OpenGrok fresh scope는 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -34,7 +34,10 @@ B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 
 - `VERIFIED`: 실제 Docker owned translator pilot `qi-e2-translator-pilot-20261004-ux7nyh6w` — 1,726,424 bytes, SHA `723a1aee626399b5620cbf46f11637d6b7fa79777b23e0ad4d1c9ae2a45f241b`; guest bytes/mapping identity 유지, host SHA 일치, worker/file 및 owned service cleanup 완료. corpus scope/query bracket proof는 아니다.
 - `VERIFIED`: producer format을 끝낸 뒤 고정한 source로 current full E2 regression 169 passed/347.08s. 앞선 전체 실행은 producer bytes가 중간에 바뀌어 168 pass/1 fail이었고, 해당 case fresh replay와 새 전체 배치로 source-stable 결과를 확인했다.
 - v4 root `qi-e2-sg-native-owned-v4-20261004-r5aasda9`는 format 반영을 위해 canonical `BoundRelease.begin` 도중 중단했다. native capture/service는 시작되지 않았으며 interrupted terminal을 외부 root에 보존했다.
-- current root는 `qi-e2-sg-native-owned-v5-20261004-d5al5tlg/batch.json`이다. C3 12repo/13,347파일의 complete release validation 후 owned native scope를 실행하며 현재 진행 중이다. pilot/fixtures를 full corpus/query bracket 결과로 선표시하지 않는다.
+- current root는 `/Users/songmin/Documents/code-new/qi-e2-sg-native-owned-v5-20261004-d5al5tlg/batch.json`이다. C3 12repo/13,347파일의 complete release validation 및 owned native scope producer는 exit0으로 끝났고 각 repository receipt를 보존했다.
+- `VERIFIED`: clean source904의 uv CPython3.13.9에서 `uv run --frozen --extra dev python /tmp/quanta-e2-sg-v5-replay-20261004.py --source-root /Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index --batch /Users/songmin/Documents/code-new/qi-e2-sg-native-owned-v5-20261004-d5al5tlg/batch.json` — exit0. canonical `BoundRelease.begin`, 각 cell 전후 complete release recheck 및 `sourcegraph_index_scope.verify(require_owned_service=True)`가 12개 모두 `owned_guest_translator_v1`을 확인했다. bat79/cli1014/django2368/lo130/mocha473/nushell1947/sqlalchemy652/tailscale2532/typeorm3608/uvicorn72/zellij422/zustand50, 합계13,347파일이다.
+- replay 출력은 `qualified:false`, scope `Sourcegraph native stored-byte and path replay only`다. 이 실행은 새 benchmark query before/after bracket, analyzer/posting equivalence, ranking/speed qualification을 발행하지 않는다. B09 11,695파일 universe에도 적용하지 않는다. owned reader cleanup 후 새 live capture가 service를 restart하면 기존 runtime/index identity를 자동 승계하지 않는다.
+- 최초 system Python3.9 replay는 `zip(strict=True)` 미지원으로 실패했다. 원본 producer/receipt bytes를 바꾸지 않고 frozen uv 환경에서 전체 replay를 다시 실행했다.
 
 ## 착수 입력
 
