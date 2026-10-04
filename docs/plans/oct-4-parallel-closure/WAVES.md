@@ -16,7 +16,7 @@
 | 웨이브 | 확보한 실행 결과 | 남은 실제 작업 |
 | --- | --- | --- |
 | W0 | root 단일 통합/중앙 실행, source107 matching proof 및 후속 ANN·OS restart fixture의 clean `cefb28fa` 고정 | 후속 product 변경 시 영향 proof 재발행 |
-| W1 | owner regressions, Gin4 exact-name 실제 capture/scoring, Sourcegraph12repo native replay, OpenGrok24 sweeps/path-bearing posting replay `VERIFIED` | SQLAlchemy/Zellij/Tailscale 실제 role 판단 재개; whole OpenGrok UID/auxiliary/endpoint bracket; untouched holdout license·사전 acceptance 입력/발행 |
+| W1 | owner regressions, Gin4 exact-name 실제 capture/scoring, Sourcegraph12repo native replay, OpenGrok24 sweeps/path-bearing posting replay `VERIFIED`; Zellij 두 reviewer20/476 실제 완료 | SQLAlchemy/Zellij 조정 Fable429 및 Tailscale unresolved batch 후속 판단; whole OpenGrok UID/auxiliary/endpoint bracket; untouched holdout license·사전 acceptance 입력/발행 |
 | W2 | 실제 반례의 live-BM25, maintenance fatal ownership/terminal, fixture 수리 및 지원 Active single-RPC 검증 완료 | bootstrap/scanner/barrier/token-authority 최적화는 실제 비용 조건 판정 대기. E3-02는 현 Accepted refusal 계약에서 근거 있는 `NOT_APPLICABLE` |
 | W3 | source107 Contract Python788/Rust191·fresh SDK27·context 및 first-eight+Nushell9개 admission `VERIFIED` | SQLAlchemy/Zellij/Tailscale·supplemented bat·새 ANN epoch admission; source107 hosted CI `[]`/`NOT_RUN` |
 | W4 | source107 small/medium scale·small load3743requests·native3제품60rows·5제품 union51pairs·Semble phase replay `VERIFIED`; large timeout/ANN seal `FAILED`. 후속27 ANN 수리 집중8/affected97 및 Clippy passed; sourcecef large OS restart fixture 통합/fmt passed | 새 epoch matching release/large lifecycle·실제4096 OS restart와 formal source gate. bat409 merged→새 admission/fresh final pair; parity/remaining tiers/qualification 계속 |

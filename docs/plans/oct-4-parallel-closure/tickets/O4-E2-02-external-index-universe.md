@@ -57,6 +57,8 @@ B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 
 
 ## 착수 입력과 추가 qualification
 
+- 2026-10-05 static PREPARE: `/private/tmp/qi-e2-opengrok-next-20261005/bat-og-only-spec.json`은 기존 canonical v2의 OG-only `indexed_view_probe:full`을 사용한다. source107 원본 bat admission에 결속하며 actual query 전후 API inventory/served bytes를 새 root에서 관측하도록 준비했다. 실행은 `NOT_RUN`; supplemented bat409나 새 sourcecef의 spec이 아니다. auxiliary4,268/whole UID/native readonly backend 결속을 이 API bracket으로 승격하지 않는다.
+
 - 외부 BASE의 sourcegraph-native-content-8l9gxy35, opengrok-source-posting-reference-full-moyyggn_ 역사적 증거
 - 새 capture의 정확한 release/manifest/file hashes, live service/runtime/config/image/index tree identity
 - native revision/path/content 또는 posting/reference 접근 권한

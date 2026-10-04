@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | Django20/509·TypeORM20/572 실제 3-role 검수 `VERIFIED`; SQLAlchemy/Zellij/Tailscale 실제 호출 `FAILED`(429), 공급자 입력 `BLOCKED` |
+| 실행 상태 | Django20/509·TypeORM20/572 실제 3-role 검수 `VERIFIED`; SQLAlchemy·Zellij 조정 `FAILED`(Fable429), Zellij 두 reviewer20/476 완료. Tailscale reviewer batch `FAILED`(unresolved); 후속 조정/발행 미완료 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -44,6 +44,8 @@ C3 240개 질의의 실제 판단을 완료하고 재사용 가능한 모델 cac
 - Django/TypeORM은 `/Users/songmin/Documents/code-new/qi-e1-django-typeorm-issued-20261004-v1`에서 canonical suite·blind pack·review receipts를 실제 재발행/검증했다. 20/509 및20/572 분모를 유지했고 `qualified:false`, `human_provenance_attested:false`다. current-source admission 및 product capture는 별도다.
 - reset 이후 동일 immutable driver의 `--execute sqlalchemy zellij tailscale`를 다시 실행 중이다. SQLAlchemy의 새 `adjudicator/017.retry-1/stdout.json`은 duration_api0·429와 `You've reached your Fable limit`을 반환했다. 과거 session reset과 다른 모델 개별 한도이며 조정 결과를 발행하지 않았다. Zellij reviewer-1의 추가 batch000–031이 실제 완료됐고 reviewer-2가 진행 중이다. 세 저장소 finalization은 아직 `NOT_RUN`이다.
 - 대체 adjudicator는 별도 `/private/tmp/qi-c3-alternate-adjudicator-prepare-v2`의 명시적 `claude-opus-5-5` 모델/`ai:claude-opus-5-5:adjudicator` ID와 fresh output root를 사용하도록 준비했다. 기존 Opus pass-A/Sonnet pass-B reviewer ID와 구별하며 기존 Fable adjudicator raw는 보존하되 재사용하지 않는다. 제품 계약은 역할 ID3개를 구별하고 모델 제품3종을 요구하지 않는다. 선택 답변이 없으면 이 기본값을 적용한다고 사용자에게 알렸다. 새 모델 실제 호출과 후속 suite issuer는 `NOT_RUN`이다.
+- 후속 원본 driver 실행은 exit1로 끝났다. Zellij 두 reviewer의 completed-tasks를 실제 읽어 각각20 tasks/476 pairs를 확인했다. Zellij adjudicator000도 duration_api0·Fable limit429다. Tailscale reviewer-1/011.retry-1은 exit0/API completed/60,858ms였지만23 decisions 중 `tailscale.nl.20` / `net/tstun/wrap_test.go` 1쌍이 unresolved라 batch 전체 발행을 거절했다. 22쌍 partial receipt나 grade를 합성하지 않았다.
+- Tailscale의 이번 실패 이유는 과거429 failure.json과 달랐다. immutable save가 기존 failure overwrite를 거절하면서 driver가 종료했다. 새 raw/invalid.json과 이전 failure를 모두 유지하며 후속 실행의 terminal/finalization은 새 output root로 분리한다. rubric/source를 조사해 근거를 보완하거나 explicit exclusion을 판정하기 전 unresolved를 resolved로 바꾸지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
 
