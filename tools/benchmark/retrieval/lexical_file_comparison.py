@@ -819,9 +819,30 @@ def pair_result_raw(raw: list[bytes], pack: dict, suite: dict, task_count: int) 
     }
 
 
+def _replay_file_pair_report(suite: dict, pack: dict, merged: dict, report: dict) -> dict:
+    """Verify the producer's declared file report and retain diagnostic metrics."""
+    from tools.benchmark.retrieval import evaluator
+
+    diagnostic = evaluator.evaluate_paired_file_diagnostic(
+        suite, pack, merged, "semble-lexical-file", "lexical"
+    )
+    scope = report.get("report_scope")
+    if scope == "paired_independent_file_judgment_diagnostic_v1":
+        rebuilt = diagnostic
+    elif scope == "paired_complete_scored_file_evidence_v1":
+        rebuilt = evaluator.evaluate_complete_scored_file_evidence(
+            suite, pack, merged, "semble-lexical-file", "lexical"
+        )
+    else:
+        raise ValueError("current file pair report has an unsupported scope")
+    if report != rebuilt:
+        raise ValueError("current file pair report differs from raw record replay")
+    return diagnostic
+
+
 def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) -> dict:
     """Revalidate the current file pair from its retained Git bundle and raw records."""
-    from tools.benchmark.retrieval import evaluator, run
+    from tools.benchmark.retrieval import run
 
     missing = set(FILE_INPUT_ROLES) - set(paths)
     if missing:
@@ -907,11 +928,7 @@ def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) 
         checked_suite, checked_pack, merged = run.merge_records(repo, suite_path, record_paths)
         if checked_suite != suite or checked_pack != pack:
             raise ValueError("raw pair record source, suite, or pack identity differs")
-        rebuilt = evaluator.evaluate_paired_file_diagnostic(
-            suite, pack, merged, "semble-lexical-file", "lexical"
-        )
-    if values["pair_report"] != rebuilt:
-        raise ValueError("current file pair report differs from raw record replay")
+        diagnostic = _replay_file_pair_report(suite, pack, merged, values["pair_report"])
     manifest = values["pair_manifest"]
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict):
@@ -1074,7 +1091,7 @@ def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) 
         raise ValueError(
             "Semble native file execution events differ from the frozen lexical profile/query inventory"
         )
-    metrics = rebuilt["judgment_metrics"]["file_judgments"]
+    metrics = diagnostic["judgment_metrics"]["file_judgments"]
     scored = {(row["task_id"], row["route"]): row for row in metrics["per_query"]}
     result = {}
     for route, label in (

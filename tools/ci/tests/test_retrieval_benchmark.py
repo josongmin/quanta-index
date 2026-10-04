@@ -17794,6 +17794,8 @@ def test_code_search_file_refuses_context_metric_from_full_file_identity():
     ],
 )
 def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path, policy, queries):
+    from tools.benchmark.retrieval.lexical_file_comparison import _replay_file_pair_report
+
     repo, suite, run, _suite_path, _runner_path = _file_projection_run(
         tmp_path, policy, queries=queries
     )
@@ -17825,6 +17827,9 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
     ]
     assert report["judgment_metrics"]["file_judgments"]["comparison"]["sample_count"] == 2
     assert report["no_answer"]["routes"]["lexical"]["sample_count"] == 0
+    assert _replay_file_pair_report(suite, {}, run, report) == report
+    with pytest.raises(ValueError, match="unsupported scope"):
+        _replay_file_pair_report(suite, {}, run, {**report, "report_scope": "unknown"})
     replayed = pairrun.replay_paired_file_diagnostic_report(
         suite, {}, run, report, "whole_file", "a" * 64
     )
@@ -17889,6 +17894,18 @@ def test_code_search_file_pair_reports_only_independent_file_judgments(tmp_path,
     file_evidence = ev.evaluate_complete_scored_file_evidence(
         suite, pack, run, "semble-lexical-file", "lexical"
     )
+    replayed_diagnostic = _replay_file_pair_report(suite, pack, run, file_evidence)
+    assert replayed_diagnostic == ev.evaluate_paired_file_diagnostic(
+        suite, pack, run, "semble-lexical-file", "lexical"
+    )
+    forged_evidence = copy.deepcopy(file_evidence)
+    forged_evidence["rank_metrics"]["comparison"]["sample_count"] += 1
+    with pytest.raises(ValueError, match="differs from raw record replay"):
+        _replay_file_pair_report(suite, pack, run, forged_evidence)
+    changed_run = copy.deepcopy(run)
+    next(row for row in changed_run["results"] if row["task_id"] == "T1")["candidates"] = []
+    with pytest.raises(ValueError, match="differs from raw record replay"):
+        _replay_file_pair_report(suite, pack, changed_run, file_evidence)
     assert file_evidence["status"] == "evidence_unqualified"
     assert file_evidence["rank_metric_version"] == "file-judgments-complete-v1"
     assert file_evidence["rank_metrics"]["comparison"]["sample_count"] == 2
