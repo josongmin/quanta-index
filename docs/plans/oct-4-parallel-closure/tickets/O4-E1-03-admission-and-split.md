@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | first-six current reissue PREPARE 및 Django/TypeORM suite·review receipt 발행 `VERIFIED`; matching proof를 소비한 fresh admission ISSUE는 `NOT_RUN` |
 | 선행 결과 | [O4-E1-02](O4-E1-02-supplemental-labels.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,13 @@
 ## 배경과 현재 상태
 
 현 run.py는 validate_admission_manifest와 verify_admission_bundle, corpus_binding은 validate_split_manifest를 이미 갖는다. NL-only diagnostic과 mixed-track decision을 구분한다. 과거 C5 4개 stale exclusion은 B08 cohort가 여전히 요구하는 경우에만 새 입력을 발행하며 B09 global12와 합치지 않는다.
+
+## 2026-10-04 원본 검수와 current 발행 경계
+
+- first-six의 suite/pack/annotation/adjudication/license/corpus/split 원본 bytes를 결속한 외부 current admission input/issuer를 준비했다. 옛 source-bound admission/result/host/proof를 재사용하지 않으며 fresh matching Contract/SDK proof와 실제 model/cache/environment가 필요하다.
+- `VERIFIED`: `/tmp/quanta-e1-django-typeorm-suite-issuer-20261004.py --input /tmp/quanta-e1-django-typeorm-suite-input-20261004.json --output-root /Users/songmin/Documents/code-new/qi-e1-django-typeorm-issued-20261004-v1`를 source `90404330`에서 실제 실행해 exit 0이었다. Django20 tasks/509 pairs, TypeORM20/572를 completed forms→기존 `holdout_review.finalize_file_review_labels`→`evaluator.validate_suite`→기존 review receipt verifier로 다시 발행했다.
+- 새 root에는 각 repository의 suite/blind pack/annotation2/adjudication/validation이 있다. `qualified:false`, `human_provenance_attested:false`; 새 모델 호출·수동 grade·human review 승인·제품 capture/admission 증거가 아니다.
+- SQLAlchemy/Zellij/Tailscale의 original review와 canonical suite 발행, actual fresh admission 및 supplemental merged revision은 완료 전이다. 과거 supplemental union은 E1-02의 missing capture record blocker를 유지한다.
 
 ## 착수 입력
 

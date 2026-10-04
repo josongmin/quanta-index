@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P1 / `RELEASE_GATE` |
 | 기준 웨이브 | [W6 — release·운영·전체 잔여 판정](../waves/W6-release-and-final-closure.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | current registry/source-pair static inventory 확인; local infrastructure owner 실행 중. release/paired/Linux/action qualification은 `NOT_RUN`/입력 `BLOCKED` |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,13 @@
 ## 배경과 현재 상태
 
 SEP21 R0–R6는 proof-result authority, P03–P08, P09, semantic omission source oracle, P10 restore, P11 source pair/LINUX/operations와 P12 aggregate를 다룬다. 이미 있는 owners/targets는 재구현하지 않고 current-source gaps만 닫는다. lexical-only benchmark 수리에 새 Semantica API/E2E를 선행 조건으로 끼워 넣지 않는다.
+
+## 2026-10-04 current local/release 구분
+
+- current registry에는 executable local P00/P01/P02A/P02B, P03–P10 owner 및 P12A가 있다. P03–P10 release nodes와 P11 cross-repo/actions는 `staged`이며 `linux-production-like` host를 요구한다. workspace/daemon PASS나 registry lint만으로 `CODE_QUALIFIED`를 발행하지 않는다.
+- `just proof-p12a-proof-infrastructure`를 외부 `QUANTA_PROOF_RAW_DIR=/Users/songmin/Documents/code-new/qi-oct4-p12a-proof-20261004-v1`로 실행 중이다. registry-only lint는 25 proofs/0 validated manifests였다. 실제 owner 결과와 exact-source manifest 발행은 구분한다.
+- root가 조회한 Semantica live HEAD는 `811a7a49b582cb10e76b5d03baf67e24f77b5a05`이고 수정 파일22개가 있다. 다른 작업 소유이며 exact clean pair가 아니다. `rust-verify-hellgate-cross-repo`를 이 상태로 실행해 즉시 거절되는 것을 qualification으로 사용하지 않는다.
+- P11 deployment/activation/rollback의 registry command strings에 대응하는 recipes는 현재 없다. actual authorized Linux host/path/config/state/retention/rollback window 및 typed pre/post action authority는 입력/설계 `BLOCKED`다. 기존 pending 사용자 입력을 임의로 채우거나 실행 target을 만들지 않는다.
 
 ## 착수 입력
 

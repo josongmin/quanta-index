@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | lifecycle 및 직접 L2 oracle가 BM25 삭제 이력 결함 재현 `FAILED`; seal 수리 통합·재검증 중, release profile은 `NOT_RUN` |
+| 실행 상태 | exact live-BM25 producer·artifact migration seam 수리 및 workspace lifecycle oracle `VERIFIED`; release phase profile·scale·seal streaming-pass 비용은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -38,6 +38,15 @@ full/delta/delete/no-op/reopen의 저장·검증·shard 비용과 transient reso
 - `VERIFIED`: `./scripts/cargow --lane test-fast-lane test --workspace --test l2_file_mutation --all-features --locked tombstone_scoring_uses_only_live_source_docs -- --nocapture` — 1 passed, 29 filtered, 1.81s. full→delta→delete의 source/hash/order와 score bits가 fresh rebuild와 일치한다.
 - `VERIFIED`: MSRV-compatible equivalent helper 반영 뒤 `./scripts/cargow --lane test-fast-lane test --workspace --test l2_file_mutation --test sealed_manifest --all-features --locked` — L2 30, lexical sealed37, semantic sealed23 모두 passed. 실제 old-format12 base inheritance와 open refusal를 포함한다.
 - vendor 자체 regression은 offline dev-dependency `fail` 부재로 실행되지 않았고 online locked rail을 실행 중이다. full workspace/scale oracle/최종 daemon/format-migration seam 및 seal-time streaming-pass 비용은 `NOT_RUN`이다.
+
+## 2026-10-04 exact BM25 및 미봉인 재개 수리 검증
+
+- 일반 seal은 tombstone이 있는 segment만 purge하고 잔여 deleted docs 0을 확인한다. vendor pure-string frequency fields는 quantized fieldnorm 역변환 대신 살아 있는 posting TF를 checked-u64로 합산한다. no-delete shortcut과 Basic/JSON 의미를 유지한다. 추가 seal-time CPU/I/O 비용은 아직 측정하지 않았다.
+- lexical format13/history epoch2와 함께 미봉인 index marker `search-corpus-index-format.cbor` version1을 first meta 생성 전에 durable publish한다. 구버전 materialized index에 marker가 없거나 잘못된 경우 resume/base inheritance/seal 전에 typed rebuild refusal한다. verified sealed13 authority는 유지한다.
+- `VERIFIED`: vendor `test_deleted_long_text_merge_keeps_exact_live_bm25_token_total` 1 passed/866 filtered. 현재 root resolved graph에 Tantivy 0.22.1 local path dependency 하나가 있으며 registry twin은 없다.
+- `VERIFIED`: source `90404330`의 중앙 workspace lib/bin + L2/sealed 실행 exit 0; lexical296, L2 31, lexical sealed37, semantic sealed23, harness147을 포함한다. 최초 harness146/1 및 long-source178/188 failure는 수리 전 반례다.
+- 새 L2 compactor admission failure fixture는 두 번째 writer admission을 거절해 manifest/identity 부재, inventory 제외, discard 후 재구축과 독립 fresh source/hash/candidate/order/score bits parity를 확인했다. 이 fixture는 pre-merge admission failure 및 같은 프로세스 adapter 재조립 범위이며 실제 mid-merge OS kill/power loss 증거는 아니다.
+- daemon profile은 실행 중이다. 실제 release tier·OS restart·physical I/O/streaming-pass overhead 및 qualified performance는 `NOT_RUN`이다.
 
 ## 착수 입력
 
