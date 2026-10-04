@@ -628,7 +628,9 @@ mod adapter_tests {
     use tantivy::schema::{STORED, STRING};
 
     use super::*;
-    use crate::index_store::{open_sealed_index, persist_lexical_sealed_identity};
+    use crate::index_store::{
+        open_or_create_index, open_sealed_index, persist_lexical_sealed_identity,
+    };
 
     fn sample_identity(generation: u64, digest: &str) -> GenerationSnapshot {
         GenerationSnapshot {
@@ -675,6 +677,46 @@ mod adapter_tests {
             open_sealed_index(current.path()).is_ok(),
             "this build's schema opens"
         );
+    }
+
+    #[test]
+    fn unproved_preupgrade_unsealed_index_cannot_be_reopened_as_current() {
+        let old = tempfile::tempdir().expect("legacy unsealed generation");
+        let fields = SchemaFields::build();
+        let index = Index::create_in_dir(old.path(), fields.schema.clone())
+            .expect("create old same-schema index without current producer marker");
+        let mut writer: IndexWriter = index.writer(15_000_000).expect("writer");
+        let _opstamp = writer.commit().expect("commit old index");
+        drop(writer);
+        drop(index);
+        let refused = open_or_create_index(&fields, old.path())
+            .expect_err("unproved old index cannot acquire a current writer");
+        assert!(
+            matches!(
+                refused,
+                CoreError::Typed { ref code, ref message }
+                    if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
+                        && message.contains("discard the incomplete generation")
+            ),
+            "{refused:?}"
+        );
+        assert!(
+            !old.path().join("search-corpus-index-format.cbor").exists(),
+            "refusal must not launder old index content with a current marker"
+        );
+
+        let current = tempfile::tempdir().expect("current unsealed generation");
+        let index = open_or_create_index(&fields, current.path()).expect("new index");
+        drop(index);
+        assert!(
+            current
+                .path()
+                .join("search-corpus-index-format.cbor")
+                .is_file(),
+            "producer marker must precede the first index commit"
+        );
+        let _reopened =
+            open_or_create_index(&fields, current.path()).expect("marked current index may resume");
     }
 
     #[test]

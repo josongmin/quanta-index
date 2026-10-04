@@ -936,6 +936,161 @@ fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
 }
 
 #[test]
+fn compactor_admission_failure_leaves_only_discardable_unsealed_delta() -> TestResult {
+    use quanta_index_core::{
+        CoreError, GenerationIdentityValidatePort as _, IncompleteGenerationDiscardOutcomeV1,
+        IncompleteGenerationDiscardPort as _, SealedGenerationScanPort as _, WriterAdmissionPort,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct RefuseSecondWriterOpen {
+        opens: AtomicUsize,
+    }
+
+    impl WriterAdmissionPort for RefuseSecondWriterOpen {
+        fn admit_writer_open(&self) -> Result<(), CoreError> {
+            if self.opens.fetch_add(1, Ordering::SeqCst) == 1 {
+                return Err(CoreError::Storage(
+                    "test: pre-merge compactor writer admission refused".into(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    let base_adapter = LexicalAdapter::with_state_root(root.clone());
+    let kept_b = scored_file_scope("b.rs", "keptbmarker")?;
+    let kept_c = scored_file_scope("c.rs", "keptcmarker")?;
+    let base = batch(
+        1,
+        None,
+        vec![
+            scored_file_scope("a.rs", "retiredmarker")?,
+            kept_b.clone(),
+            kept_c.clone(),
+        ],
+    )?;
+    let _stages = base_adapter.build_batch(&base)?;
+    drop(base_adapter);
+
+    let mut deleted = batch(2, Some(1), Vec::new())?;
+    deleted.tombstone_scopes.push(SearchCorpusTombstoneScope {
+        file: SourceFileKey {
+            source_repo_id: RepoId::new("l2-mutation-repo")?,
+            repo_relative_path: RepoRelativePath::new("a.rs"),
+        },
+    });
+    deleted.source_event.payload_sha256 = source_event_payload_sha256(&deleted)?;
+    let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+        &deleted.repo_id,
+        &deleted.revision_id,
+    )
+    .generation_dir(&root, deleted.generation);
+    let admission = Arc::new(RefuseSecondWriterOpen {
+        opens: AtomicUsize::new(0),
+    });
+    let gate: Arc<dyn WriterAdmissionPort> = admission.clone();
+    let failing = LexicalAdapter::with_state_root(root.clone()).with_writer_admission(gate)?;
+    let failed = failing.build_batch(&deleted);
+    assert!(
+        matches!(&failed, Err(CoreError::Storage(message))
+            if message.contains("pre-merge compactor writer admission refused")),
+        "the failure must occur after the delta writer open and at compactor admission: {failed:?}"
+    );
+    assert_eq!(admission.opens.load(Ordering::SeqCst), 2);
+    assert!(
+        target.is_dir(),
+        "the failed delta has an incomplete directory"
+    );
+    for seal_file in [
+        "search-corpus-generation-manifest.cbor",
+        "search-corpus-generation-identity.cbor",
+    ] {
+        assert!(
+            !target.join(seal_file).exists(),
+            "pre-merge failure cannot publish {seal_file}"
+        );
+    }
+    drop(failing);
+
+    let restarted = LexicalAdapter::with_state_root(root.clone());
+    let identity = quanta_index_contract::GenerationSnapshot {
+        repo_id: deleted.repo_id.clone(),
+        revision_id: deleted.revision_id.clone(),
+        track: quanta_index_contract::SearchPlaneTrackKind::Lexical,
+        manifest_generation: deleted.generation,
+        manifest_digest: deleted.manifest_digest.clone(),
+    };
+    let inventory = restarted.inventory_sealed_generations()?;
+    assert!(
+        inventory
+            .sealed
+            .iter()
+            .any(|entry| entry.identity.manifest_generation == base.generation),
+        "the base generation remains sealed in the boot inventory"
+    );
+    assert!(
+        inventory
+            .sealed
+            .iter()
+            .all(|entry| entry.identity != identity),
+        "an unsealed delta cannot enter the boot sealed inventory"
+    );
+    assert!(restarted.validate_generation_identity(&identity).is_err());
+    assert_eq!(
+        restarted.discard_incomplete_generation(&identity)?,
+        IncompleteGenerationDiscardOutcomeV1::Discarded
+    );
+    assert!(!target.exists());
+
+    let _stages = restarted.build_batch(&deleted)?;
+    let fresh_dir = tempfile::tempdir()?;
+    let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
+    let rebuilt = batch(2, None, vec![kept_b, kept_c])?;
+    let _stages = fresh.build_batch(&rebuilt)?;
+    let budget = RequestBudgetV1::unbounded();
+    let recovered_view = restarted.open(
+        &deleted.repo_id,
+        &deleted.revision_id,
+        deleted.generation,
+        &budget,
+    )?;
+    let fresh_view = fresh.open(
+        &rebuilt.repo_id,
+        &rebuilt.revision_id,
+        rebuilt.generation,
+        &budget,
+    )?;
+    assert_eq!(
+        recovered_view.source_file_coverage(),
+        fresh_view.source_file_coverage()
+    );
+    let project = |rows: Vec<quanta_index_contract::LexicalCandidate>| {
+        rows.into_iter()
+            .map(|row| {
+                (
+                    row.repo_relative_path.as_str().to_string(),
+                    row.candidate_id,
+                    row.source.map(|source| source.source_sha256),
+                    row.score.to_bits(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let recovered = project(recovered_view.search(&query("livebm25needle"), 10, &budget)?);
+    let expected = project(fresh_view.search(&query("livebm25needle"), 10, &budget)?);
+    assert_eq!(recovered.len(), 2);
+    assert_eq!(
+        recovered, expected,
+        "recovered delta differs from fresh live source"
+    );
+    Ok(())
+}
+
+#[test]
 fn same_path_sources_replace_and_tombstone_independently() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());

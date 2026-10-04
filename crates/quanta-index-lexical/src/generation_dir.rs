@@ -5,7 +5,10 @@
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
-use crate::index_store::{sealed_identity_entry_present, write_atomic_durable};
+use crate::index_store::{
+    require_current_unsealed_index_format_if_materialized, sealed_identity_entry_present,
+    write_atomic_durable,
+};
 use crate::sealed_generation::{
     LEXICAL_QUARANTINE_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FILE_NAME,
     LEXICAL_SEALED_MANIFEST_FILE_NAME,
@@ -166,6 +169,8 @@ pub(crate) fn inherit_generation_entry(source: &Path, target: &Path) -> Result<(
 pub(crate) fn ensure_base_generation_is_servable(base_dir: &Path) -> Result<(), CoreError> {
     if sealed_generation::manifest_path(base_dir).is_file() {
         let _manifest = sealed_generation::read_manifest(base_dir)?;
+    } else {
+        require_current_unsealed_index_format_if_materialized(base_dir)?;
     }
     Ok(())
 }

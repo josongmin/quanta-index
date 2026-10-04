@@ -17,7 +17,10 @@ use crate::generation_dir::{
     clone_generation_directory_preserving_existing, ensure_base_generation_is_servable,
     lexical_index_content_exists, persist_lexical_delta_base, read_lexical_delta_base,
 };
-use crate::index_store::{read_lexical_sealed_identity, validate_lexical_sealed_identity};
+use crate::index_store::{
+    ensure_current_unsealed_index_format_for_writer, read_lexical_sealed_identity,
+    validate_lexical_sealed_identity,
+};
 use crate::overlay_codec::OverlayFamily;
 use crate::overlay_codec::{decode_repo_metadata_payload, encode_repo_metadata_payload};
 use crate::regex::RegexPolicy;
@@ -418,6 +421,10 @@ impl LexicalAdapter {
         };
         let base_path = self.index_path(&base_key);
         ensure_base_generation_is_servable(&base_path)?;
+        // The base manifest (or an unsealed producer marker) proves its index
+        // format. Stamp the empty delta target before copying its index commit;
+        // a crash after the copy must never relabel an unproved old index.
+        ensure_current_unsealed_index_format_for_writer(&target_path)?;
         clone_generation_directory_preserving_existing(&base_path, &target_path)?;
         persist_lexical_delta_base(&target_path, requested_base)
     }

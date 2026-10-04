@@ -7,7 +7,10 @@
 
 use crate::analyzer::register_analyzers;
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
-use crate::{DURABLE_WRITE_TEMPORARY_MARKER, LEXICAL_SEALED_IDENTITY_FILE_NAME, SchemaFields};
+use crate::{
+    DURABLE_WRITE_TEMPORARY_MARKER, LEXICAL_SEALED_IDENTITY_FILE_NAME, SchemaFields,
+    TANTIVY_INDEX_META_FILE_NAME,
+};
 use quanta_index_contract::GenerationSnapshot;
 use quanta_index_core::CoreError;
 use std::fs::{File, OpenOptions};
@@ -17,6 +20,118 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tantivy::Index;
 
 const MAX_SEALED_IDENTITY_BYTES: usize = 4096;
+/// Format of a writable index whose merge engine records exact live BM25 totals.
+/// This marker is written before creating the first index commit, and the
+/// sealed manifest takes over as the serving authority after publication.
+const LEXICAL_UNSEALED_INDEX_FORMAT_FILE_NAME: &str = "search-corpus-index-format.cbor";
+const LEXICAL_UNSEALED_INDEX_FORMAT_VERSION: u32 = 1;
+const MAX_UNSEALED_INDEX_FORMAT_BYTES: usize = 9;
+
+fn unsealed_index_format_refusal(generation_dir: &Path, detail: &str) -> CoreError {
+    CoreError::Typed {
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+        message: format!(
+            "lexical: unsealed index {} cannot prove exact live BM25 token totals ({detail}); discard the incomplete generation and rebuild it",
+            generation_dir.display()
+        ),
+    }
+}
+
+fn unsealed_index_format_path(generation_dir: &Path) -> PathBuf {
+    generation_dir.join(LEXICAL_UNSEALED_INDEX_FORMAT_FILE_NAME)
+}
+
+fn read_unsealed_index_format(generation_dir: &Path) -> Result<Option<u32>, CoreError> {
+    let marker = Path::new(LEXICAL_UNSEALED_INDEX_FORMAT_FILE_NAME);
+    let mut file = match crate::sealed_generation::open_regular_nofollow(generation_dir, marker) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(unsealed_index_format_refusal(
+                generation_dir,
+                &format!("cannot open format marker: {error}"),
+            ));
+        }
+    };
+    let bytes =
+        crate::sealed_generation::read_opened_bounded(&mut file, MAX_UNSEALED_INDEX_FORMAT_BYTES)
+            .map_err(|error| {
+            unsealed_index_format_refusal(
+                generation_dir,
+                &format!("cannot read format marker: {error}"),
+            )
+        })?;
+    let version: u32 = crate::channel_payloads::decode_cbor_exact(&bytes).map_err(|error| {
+        unsealed_index_format_refusal(generation_dir, &format!("invalid format marker: {error}"))
+    })?;
+    Ok(Some(version))
+}
+
+fn index_meta_entry_present(generation_dir: &Path) -> Result<bool, CoreError> {
+    match std::fs::symlink_metadata(generation_dir.join(TANTIVY_INDEX_META_FILE_NAME)) {
+        Ok(_metadata) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(CoreError::Storage(format!(
+            "lexical: inspect unsealed index commit at {}: {error}",
+            generation_dir.display()
+        ))),
+    }
+}
+
+/// An existing unsealed index may be resumed only when this producer wrote it.
+/// A pre-upgrade no-delete segment can still carry an approximate BM25 header.
+pub(crate) fn require_current_unsealed_index_format_if_materialized(
+    generation_dir: &Path,
+) -> Result<(), CoreError> {
+    if !index_meta_entry_present(generation_dir)? {
+        return Ok(());
+    }
+    match read_unsealed_index_format(generation_dir)? {
+        Some(LEXICAL_UNSEALED_INDEX_FORMAT_VERSION) => Ok(()),
+        Some(version) => Err(unsealed_index_format_refusal(
+            generation_dir,
+            &format!("format {version}, expected {LEXICAL_UNSEALED_INDEX_FORMAT_VERSION}"),
+        )),
+        None => Err(unsealed_index_format_refusal(
+            generation_dir,
+            "format marker is missing",
+        )),
+    }
+}
+
+/// Establish current producer provenance durably before an index is created
+/// or a proved current-format base is copied into an empty delta target.
+pub(crate) fn ensure_current_unsealed_index_format_for_writer(
+    generation_dir: &Path,
+) -> Result<(), CoreError> {
+    require_current_unsealed_index_format_if_materialized(generation_dir)?;
+    match read_unsealed_index_format(generation_dir)? {
+        Some(LEXICAL_UNSEALED_INDEX_FORMAT_VERSION) => Ok(()),
+        Some(version) => Err(unsealed_index_format_refusal(
+            generation_dir,
+            &format!("format {version}, expected {LEXICAL_UNSEALED_INDEX_FORMAT_VERSION}"),
+        )),
+        None => {
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&LEXICAL_UNSEALED_INDEX_FORMAT_VERSION, &mut bytes).map_err(
+                |error| {
+                    CoreError::Storage(format!("lexical: encode unsealed index format: {error}"))
+                },
+            )?;
+            std::fs::create_dir_all(generation_dir).map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: create generation directory {} for index format: {error}",
+                    generation_dir.display()
+                ))
+            })?;
+            write_atomic_durable(
+                &unsealed_index_format_path(generation_dir),
+                &bytes,
+                "unsealed index format",
+            )
+        }
+    }
+}
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Open an existing generation's index strictly, never creating or
@@ -100,6 +215,7 @@ pub(crate) fn open_or_create_index(fields: &SchemaFields, path: &Path) -> Result
             path.display()
         ))
     })?;
+    ensure_current_unsealed_index_format_for_writer(path)?;
     let directory = tantivy::directory::MmapDirectory::open(path).map_err(|err| {
         CoreError::Storage(format!(
             "lexical: open generation directory {}: {err}",
