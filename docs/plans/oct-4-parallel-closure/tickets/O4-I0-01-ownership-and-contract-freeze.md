@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W0 — 소유권·실행 범위 고정](../waves/W0-ownership-and-scope.md) |
-| 실행 상태 | 에픽별 static PREPARE·root 단일 integration/중앙 실행; source107 matching Contract/SDK 및 후속 ANN·OS restart fixture의 clean sourcecef freeze `VERIFIED`. 새 epoch formal/release 검증과 전체29개 qualification 종료는 미완료 |
+| 실행 상태 | 에픽별 static PREPARE·root 단일 integration/중앙 실행; source107 Contract/SDK 및 최종 ANN·OS restart fixture의 clean source0e6 freeze `VERIFIED`. 후속 release/large 기능 결과는 owning ticket 기준; 새 formal proof와 전체29개 qualification 종료 미완료 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)

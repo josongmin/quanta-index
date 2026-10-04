@@ -9,14 +9,14 @@
 - 웨이브는 **주된 수행 단계와 인계 순서**다. 모든 repository/티켓을 한꺼번에 기다리는 전역 장벽이 아니다. 준비된 repository·claim별로 다음 단계에 진입한다.
 - W2에서 미선택한 최적화와 모든 FAILED/BLOCKED/NOT_RUN 범위는 원래 티켓에 남는다. baseline을 발행한 것과 전체 29개 종료를 구분한다.
 
-## 2026-10-04 실행 스냅샷 — source107
+## 2026-10-04–05 실행 스냅샷 — source107 및 후속0e6
 
 이 표는 초기 티켓 배치를 바꾸지 않으며 전체29개 종료를 뜻하지 않는다. 실제 명령·출력 경로·scope는 owning ticket이 기준이다.
 
 | 웨이브 | 확보한 실행 결과 | 남은 실제 작업 |
 | --- | --- | --- |
 | W0 | root 단일 통합/중앙 실행, source107 matching proof 및 후속 ANN·최종 OS restart fixture의 clean `0e6c7e7e` 고정 | 후속 product 변경 시 영향 proof 재발행 |
-| W1 | owner regressions, Gin4 exact-name 실제 capture/scoring, Sourcegraph12repo native replay, OpenGrok24 sweeps/path-bearing posting replay `VERIFIED`; Zellij 두 reviewer20/476 실제 완료 | SQLAlchemy/Zellij 조정 Fable429 및 Tailscale unresolved batch 후속 판단; whole OpenGrok UID/auxiliary/endpoint bracket; untouched holdout license·사전 acceptance 입력/발행 |
+| W1 | owner regressions, Gin4 exact-name capture/scoring, Sourcegraph12repo replay, OpenGrok path-bearing 및 전체live17,615·source path/UID13,347 독립 replay `VERIFIED`; Zellij 두 reviewer20/476 완료 | SQLAlchemy/Zellij 대체 조정, Tailscale rubric 입력 `BLOCKED`; OpenGrok actual query 전후 whole-index/canonical qualification; untouched holdout license·사전 acceptance 입력/발행 |
 | W2 | 실제 반례의 live-BM25, maintenance fatal ownership/terminal, fixture 수리 및 지원 Active single-RPC 검증 완료 | bootstrap/scanner/barrier/token-authority 최적화는 실제 비용 조건 판정 대기. E3-02는 현 Accepted refusal 계약에서 근거 있는 `NOT_APPLICABLE` |
 | W3 | source107 Contract Python788/Rust191·fresh SDK27·context 및 first-eight+Nushell9개 admission `VERIFIED` | SQLAlchemy/Zellij/Tailscale·supplemented bat·새 ANN epoch admission; source107 hosted CI `[]`/`NOT_RUN` |
 | W4 | source107 small/medium scale·small load3743requests·native3제품60rows·5제품 union51pairs·Semble phase replay `VERIFIED`; old large timeout/ANN seal `FAILED`. 후속 ANN 집중8/affected97·Clippy passed; 최종0e6 release·4096 OS restart1/1·large300s/256MiB lifecycle `VERIFIED`; default large30s timeout `FAILED` | 기본 capacity 판정과 formal source gate. bat409 merged→새 admission/fresh final pair; parity/remaining tiers/qualification 계속 |

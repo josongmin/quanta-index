@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P2 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | source107 small/medium scale·small open-loop `VERIFIED`, large timeout/ANN seal `FAILED`; ANN 수리 집중8·affected97 및 최종source0e6 large4096 OS restart·matching release build `VERIFIED`. 새 large lifecycle 실행 중; 다른 tier·qualified performance 미완료 |
+| 실행 상태 | ANN 수리 집중8·affected97·Clippy 및 최종source0e6 release build·large4096 OS restart·300s/256MiB lifecycle `VERIFIED`; default large30s timeout `FAILED`. source107 small/medium/load는 과거 scope; 다른 tier·qualified performance 미완료 |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E4-01](O4-E4-01-index-phase-profile.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)

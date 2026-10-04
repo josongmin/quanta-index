@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | source107 formal Contract788/191·fresh release SDK27 및 앞선 owner/daemon/process/fuzz `VERIFIED`; 후속 semantic97·Clippy 및 최종source0e6 large4096 OS restart·matching scale/open-loop release build `VERIFIED`. source0e6 formal proof 미실행, hosted CI `NOT_RUN` |
+| 실행 상태 | source107 proof는 과거 scope. 최종source0e6 Contract788/191·portable verifier·large4096 OS restart·matching scale/open-loop release build `VERIFIED`; semantic97·Clippy 동일 bytes 검증 유지. 최종fresh SDK 실행 중, hosted CI `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -14,6 +14,9 @@
 
 - 최종 fixture lint 수리를 포함한 clean source는 `0e6c7e7e9494b63fdb33f4594df059817459d3b1`이다. root-owned 관리 작업트리를 이 HEAD로 이동했고 `e2e_process_readiness.rs` SHA `1afc50f4863d4ed008b75ed5094ea9aef04009952fb1491a2fc6307911600ef9`를 확인했다. 해당 release large OS restart owner 재실행은 시작했으며 완료 전에는 sourcecef의 기존 PASS를 최종 fixture 실행으로 승격하지 않는다.
 - 후속 최종 owner 재실행 `VERIFIED`: 같은 exact release selector에서1/1 passed·70.352s/exit0,26개 제외. 최종 source0e6의 `gh run list --commit 0e6c7e7e9494b63fdb33f4594df059817459d3b1 --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`도 exit0/`[]`였다. 해당 hosted CI는 `NOT_RUN`이며 local owner 결과와 분리한다.
+- source0e6에서 `just retrieval-contract-proof /Users/songmin/Documents/code-new/qi-oct5-contract-proof-0e6-v1`을 fresh 외부 root로 시작했다. canonical Rust preparation은32.98s 뒤 완료됐고 Python/Rust identity collection을 생성했다. test execution/receipt/context 및 portable verifier가 끝나기 전에는 새 source formal PASS/admission readiness를 발행하지 않는다. 뒤의 source107 proof roots는 유지한다.
+- 후속 source0e6 Contract actual `VERIFIED`: 위 명령이 exit0으로 끝났고 Python788 selected/executed/passed,272.74s 및 Rust191 selected/executed/passed,0skip,0.728s였다. source-controlled identity equality, raw JUnit/Nextest events 및 schema-v2 execution-context/두 receipt를 발행했다. 같은 checkout의 `uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py verify --receipt /Users/songmin/Documents/code-new/qi-oct5-contract-proof-0e6-v1/execution-context.json`도 별도 exit0이었다. 이것을 전체 workspace/hosted CI·학습 모델 quality·Linux release proof로 승격하지 않는다.
+- 같은 source0e6에서 `just retrieval-sdk-proof-fresh /Users/songmin/Documents/code-new/qi-oct5-sdk-proof-fresh-0e6-v1`를 fresh 외부 root로 시작했다. 빈 target/0700·release/all-features·compiler cache 비활성 프로파일이다. SDK tests/actual runner record/context/binary 결속 및 portable verifier 완료 전에는 source0e6 SDK PASS나 admission ISSUE를 발행하지 않는다.
 - ANN 수리 clean source27의 실제 owner command/result는 [E4-05](O4-E4-05-release-scale-load.md)에 기록했다. 해당 semantic bytes의 lib/vector contract97/97·Clippy all-targets 및 `just fmt-check`가 exit0이었다. 현재 동일 관리 작업트리 `/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index`는 OS restart fixture까지 포함한 clean `cefb28fa0f6c678d9035cf53c5b89d20581c18a7`로 이동했다.
 - 아래 source107 formal Contract/fresh SDK/admission은 source107만 검증한다. 새 semantic epoch의 formal proof·matching release scale와 필요한 affected gates는 아직 `NOT_RUN`이며 과거 hosted CI `[]`도 새 source의 CI로 합성하지 않는다.
 - 새 source27의 `gh run list --commit 27c21d07ca79772da820b9b46fd00071732746d6 --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`도 실제 exit0/`[]`였다. 해당 exact source의 hosted CI는 `NOT_RUN`이다.

@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | Django20/509·TypeORM20/572 실제 3-role 검수 `VERIFIED`; SQLAlchemy·Zellij 조정 `FAILED`(Fable429), Zellij 두 reviewer20/476 완료. Tailscale reviewer batch `FAILED`(unresolved); 후속 조정/발행 미완료 |
+| 실행 상태 | Django20/509·TypeORM20/572 실제 3-role 검수 `VERIFIED`; SQLAlchemy·Zellij 두 reviewer 각각20/480·20/476 완료, Fable조정429 뒤 Opus 대체 preflight 준비. Tailscale 동일 pair actual retry2도 unresolved `FAILED`, rubric 정책 입력/발행 `BLOCKED` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
