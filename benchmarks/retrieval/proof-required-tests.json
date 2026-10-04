@@ -349,6 +349,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_isolation_boundary_denies_suite_and_allows_blind_pack",
     "tools.ci.tests.test_retrieval_benchmark.test_isolation_proof_refuses_tampered_frozen_runner_tool",
     "tools.ci.tests.test_retrieval_benchmark.test_keyword_file_native_score_evidence_is_complete_and_ordered",
+    "tools.ci.tests.test_retrieval_benchmark.test_large_paired_bootstrap_reuses_bounded_numeric_cache",
     "tools.ci.tests.test_retrieval_benchmark.test_linux_host_profile_rejects_unbounded_policy",
     "tools.ci.tests.test_retrieval_benchmark.test_linux_isolation_reads_pinned_model_cache_without_write_grant",
     "tools.ci.tests.test_retrieval_benchmark.test_linux_speed_probe_requires_profile_bounds_and_complete_telemetry",
