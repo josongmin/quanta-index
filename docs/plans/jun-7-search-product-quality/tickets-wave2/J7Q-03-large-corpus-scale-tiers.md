@@ -173,11 +173,13 @@ be counted as a successful tier or an intrinsic product size ceiling.
 
 ## Explicit history-budget rail follow-up
 
-The scale runner now accepts `--history-max-bytes` in 1..=1 GiB and passes
-it through the existing harness history policy. The default remains 16 MiB
-and two generations. Success details and configuration digest bind both the
+The scale runner now accepts `--history-max-bytes` in 1..=256 MiB and passes
+it through the existing harness history policy. The upper bound matches the
+harness's fixed total history budget; the default remains 16 MiB and two
+generations. Success details and configuration digest bind both the
 requested and effective history/timeout values; refusal `execution` binds
-the same values. Build, activation, delta, deletion and reopen errors carry
+the same values and records the fixed total budget and revision-pair cap.
+Build, activation, delta, deletion and reopen errors carry
 their operation stage without inferring a product limit from error text.
 
 Focused verification: harness `scale::` 24/24, `scale_matrix` binary 3/3,

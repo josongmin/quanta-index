@@ -931,6 +931,40 @@ or client transport/decode. A representative serial capture must verify the
 process instance, complete event sequence and zero drop/omission before
 joining resolve-active and text RPCs; no new observation API is needed.
 
+#### Repeated-response verification follow-up
+
+The next audit found a reachable gap: both producers normalized every response,
+but retained only the first measured result. Later observations carried only
+status and output length, so a same-size response with different candidates
+could enter the latency distribution. Current Rust and Semble producers now
+hash normalized output after the timer and refuse changed measured repetitions.
+The shared `normalized_row_score_bits_sha256_v1` representation excludes only
+top-level timings and encodes candidate scores by exact f64 bits. Replay binds
+every measured digest to the retained row; historical timing remains readable,
+but lacks this additional performance proof. Current runner capabilities declare
+the contract before product work.
+
+`python -m pytest -q tools/ci/tests/test_completed_response_timing.py
+tools/ci/tests/test_retrieval_benchmark.py -k 'completed or
+runner_capability_probe or pair_staging_atomicity or v8_sdk_child or v7_on_off'`
+passed 28 tests in 24.63 s. Fixed cross-language Unicode/numeric/signed-zero
+goldens, same-size changed outputs, legacy-reader/current-gate separation and
+hash work outside the timer are covered. An initial new test accidentally
+requested one repetition instead of two; the corrected two-repetition fixture
+passes. The broader Python check first found an atomicity fixture using a
+nonexistent runner after capability preflight was added; it now isolates that
+fixture's stage-promotion boundary, while capability refusal has separate tests.
+Actual collection regenerated the Python authority to 726 identities; the full
+rerun and Rust digest/runtime checks remain pending, not inferred from collection.
+
+Scale owner checks now pass: 24 library tests, three CLI tests, three teardown
+fault tests and one real shared-socket reopen. The CLI first failed compilation
+because a validated budget result was discarded under `unused-results`; the
+corrected parser returns that validated value. A further read-only audit found
+the allowed per-pair budget could exceed the harness's fixed total history
+budget. Its bounds/provenance repair is in progress and needs new focused tests
+before the next exact-source snapshot. No new large-tier speed claim is made.
+
 ## Execution receipt (2026-09-30)
 
 `NOT_RUN`: host not quiet (load ~26 on 16 cores, concurrent builds). Producer `quanta-index@0d21914e` (clean worktree);

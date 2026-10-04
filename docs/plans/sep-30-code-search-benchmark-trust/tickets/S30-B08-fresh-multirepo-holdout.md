@@ -3496,3 +3496,35 @@ with a new output root. The strict collection validator remains unchanged.
   retry reuses the five preceding validated batches; neither repository can
   issue until its complete actual review and adjudication passes. The isolated
   retry root is `c3-uvicorn-final-batch-retry-y0_u89jp/`.
+
+### 2026-10-04: actual native NL repair closure and supplemental review dispatch
+
+- **VERIFIED**, clean `499654fe` native lo capture: Sourcegraph and OpenGrok
+  each returned HTTP200 for 20/20 requests; cs exited zero for 20/20. Canonical
+  `capture` and `verify` completed with equal summaries, and the retained
+  OpenGrok before/after snapshots match. The same previously refused
+  `lo.nl.07` now executes under the declared literal NL request policy.
+- **FAILED**, only the external owner script's later unknown-candidate loop:
+  it assumed cs has `file_paths_top_10`, whereas native cs rows use `paths`.
+  Preserve that script and terminal failure. Product calls and canonical replay
+  are not repeated or discarded. A separate assessment rechecks all product
+  rows through `lexical.product_result`, recorded row digests, frozen inputs and
+  OG snapshots using the correct native fields. `capture-readiness.json` is
+  the recovery assessment; `postprocessing-failure.json` preserves its limit.
+- All three external products introduce **zero** new lo task/file pairs. The
+  five-product supplemental union therefore remains **41 pairs / 19 tasks**
+  from Semble. Its full frozen texts occupy 383,407 source characters across
+  31 unique files; every pair remains in a single bounded shared-source batch.
+- Actual supplemental two-pass review is now dispatched, followed by the third
+  model only after both passes. It reuses the unchanged strict actual-call,
+  model-usage, source-line and cached-raw replay helpers in an isolated output
+  namespace. Candidate text/rubric/query hashes and original-suite membership
+  are checked before calls. Product identity, rank, score and prior grades are
+  excluded from blinded input. A supplemental subset cannot establish an
+  overall no-answer decision. **NOT_RUN**, canonical merged qrels/receipts and
+  subsequent fresh captures until actual assessments finish.
+- Native root: `c3-reviewed-lo-native-499654fe-wyhc8770/`; actual supplemental
+  root: `c3-lo-supplemental-actual-review-fzs2bigu/`, both under the external
+  closeout root. The native input admission remains explicitly `ee764318`;
+  this newer driver's matching full Contract/SDK proof is still required for
+  final qualification. Existing captures and original labels are unchanged.

@@ -288,7 +288,7 @@ mod tests {
             parse_history_max_bytes("268435456").expect("256 MiB"),
             268_435_456
         );
-        for invalid in ["0", "1073741825", "nan", "-1"] {
+        for invalid in ["0", "268435457", "nan", "-1"] {
             assert!(parse_history_max_bytes(invalid).is_err());
         }
     }

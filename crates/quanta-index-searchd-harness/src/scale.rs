@@ -53,13 +53,13 @@ use crate::artifact::{
     config_digest, corpus_digest, corpus_digest_refs, directory_bytes, model_revision_of,
     saturating_u64,
 };
-use crate::harness::{E2eRuntime, E2eTextChunkSpec};
+use crate::harness::{
+    E2eRuntime, E2eTextChunkSpec, HARNESS_HISTORY_MAX_BYTES, HARNESS_HISTORY_MAX_REVISION_PAIRS,
+    HARNESS_HISTORY_MAX_TOTAL_BYTES,
+};
 
 /// The artifact dimension this rail writes.
 pub const DIMENSION: &str = "scale";
-const DEFAULT_SCALE_HISTORY_MAX_BYTES: u64 = 16 * 1024 * 1024;
-/// Operational ceiling for this diagnostic rail, not a product admission limit.
-const MAX_SCALE_HISTORY_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Explicit runtime policy for a scale measurement. Requested values remain
 /// separate from the effective defaults in both success and refusal records.
@@ -75,11 +75,11 @@ impl ScaleRuntimeConfig {
     }
 
     pub fn effective_history_max_bytes(self) -> AnyResult<u64> {
-        let bytes = self
-            .history_max_bytes
-            .unwrap_or(DEFAULT_SCALE_HISTORY_MAX_BYTES);
-        if !(1..=MAX_SCALE_HISTORY_MAX_BYTES).contains(&bytes) {
-            anyhow::bail!("scale: history max bytes must be in 1..={MAX_SCALE_HISTORY_MAX_BYTES}");
+        let bytes = self.history_max_bytes.unwrap_or(HARNESS_HISTORY_MAX_BYTES);
+        if !(1..=HARNESS_HISTORY_MAX_TOTAL_BYTES).contains(&bytes) {
+            anyhow::bail!(
+                "scale: history max bytes must be in 1..={HARNESS_HISTORY_MAX_TOTAL_BYTES} (harness total retention cap)"
+            );
         }
         Ok(bytes)
     }
@@ -91,6 +91,8 @@ impl ScaleRuntimeConfig {
             "history_max_generations": 2,
             "history_max_bytes": self.effective_history_max_bytes()?,
             "requested_history_max_bytes": self.history_max_bytes,
+            "history_max_revision_pairs": HARNESS_HISTORY_MAX_REVISION_PAIRS,
+            "history_max_total_bytes": HARNESS_HISTORY_MAX_TOTAL_BYTES,
         }))
     }
 }
@@ -1864,6 +1866,8 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
         "history_max_generations": 2,
         "history_max_bytes": measurement.history_max_bytes,
         "requested_history_max_bytes": measurement.requested_history_max_bytes,
+        "history_max_revision_pairs": HARNESS_HISTORY_MAX_REVISION_PAIRS,
+        "history_max_total_bytes": HARNESS_HISTORY_MAX_TOTAL_BYTES,
         "cpu_process": {
             "scope": "RUSAGE_SELF, harness and in-process daemon, runtime boot through cleanup",
             "user_ms": measurement.cpu.map(|cpu| cpu.user_ms),
@@ -2019,6 +2023,14 @@ pub fn artifact(
                     ("warm_query_samples", WARM_QUERY_SAMPLES.to_string()),
                     ("history_max_generations", "2".to_string()),
                     (
+                        "history_max_revision_pairs",
+                        HARNESS_HISTORY_MAX_REVISION_PAIRS.to_string(),
+                    ),
+                    (
+                        "history_max_total_bytes",
+                        HARNESS_HISTORY_MAX_TOTAL_BYTES.to_string(),
+                    ),
+                    (
                         "history_max_bytes",
                         measurement.history_max_bytes.to_string(),
                     ),
@@ -2121,6 +2133,8 @@ mod tests {
         assert!(default["requested_client_request_timeout_ms"].is_null());
         assert_eq!(default["history_max_bytes"], 16_777_216);
         assert!(default["requested_history_max_bytes"].is_null());
+        assert_eq!(default["history_max_total_bytes"], 268_435_456);
+        assert_eq!(default["history_max_revision_pairs"], 128);
 
         let explicit = ScaleRuntimeConfig {
             client_timeout: Some(Duration::from_secs(300)),
@@ -2131,7 +2145,7 @@ mod tests {
         assert_eq!(execution["requested_client_request_timeout_ms"], 300_000);
         assert_eq!(execution["history_max_bytes"], 268_435_456);
         assert_eq!(execution["requested_history_max_bytes"], 268_435_456);
-        for invalid in [0, MAX_SCALE_HISTORY_MAX_BYTES + 1] {
+        for invalid in [0, HARNESS_HISTORY_MAX_TOTAL_BYTES + 1] {
             assert!(
                 ScaleRuntimeConfig {
                     history_max_bytes: Some(invalid),
@@ -2725,7 +2739,7 @@ mod tests {
         TierMeasurement {
             client_request_timeout_ms: 30_000,
             requested_client_request_timeout_ms: None,
-            history_max_bytes: DEFAULT_SCALE_HISTORY_MAX_BYTES,
+            history_max_bytes: HARNESS_HISTORY_MAX_BYTES,
             requested_history_max_bytes: None,
             cpu: Some(CpuUsageV1 {
                 user_ms: 3.0,
@@ -2787,8 +2801,16 @@ mod tests {
         assert_eq!(tier["delta"]["reclaimed_bytes"], 8_000);
         assert_eq!(tier["client_request_timeout_ms"], 30_000);
         assert!(tier["requested_client_request_timeout_ms"].is_null());
-        assert_eq!(tier["history_max_bytes"], DEFAULT_SCALE_HISTORY_MAX_BYTES);
+        assert_eq!(tier["history_max_bytes"], HARNESS_HISTORY_MAX_BYTES);
         assert!(tier["requested_history_max_bytes"].is_null());
+        assert_eq!(
+            tier["history_max_total_bytes"],
+            HARNESS_HISTORY_MAX_TOTAL_BYTES
+        );
+        assert_eq!(
+            tier["history_max_revision_pairs"],
+            HARNESS_HISTORY_MAX_REVISION_PAIRS
+        );
         assert_eq!(tier["cpu_process"]["user_ms"], 3.0);
         assert_eq!(tier["cpu_process"]["system_ms"], 2.0);
         assert!(tier["delete_reopen"].is_null());

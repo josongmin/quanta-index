@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod rank_study;
+mod request_events;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -51,6 +52,7 @@ use quanta_index_retrieval_bench::symbols::{
     SymbolCoveragePolicy, SymbolPreflightOptions, preflight_corpus_symbols,
 };
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
+use quanta_index_contract::ProcessRequestEventPlaneV1;
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
 const KNOWN_ROUTES: [&str; 4] = ["lexical", "semantic", "hybrid", "symbol"];
@@ -89,6 +91,7 @@ fn print_help() -> BenchResult<()> {
          [--source-stream-id ID] [--source-event-id ID] [--source-base-event-id ID]\n\
          [--symbol-preflight-out PATH]\n\
          --out PATH --refusal-out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|potion-code-full-v2|hash-dev]\n\
+         [--request-events-out PATH] (diagnostic only; 1-2 serial lexical queries)\n\
          [--rank-study-out PATH --rank-study-max-files N --rank-study-max-pages N --rank-study-timeout-ms N] (optional post-measurement ordinary CodeSearch study)\n\
          potion-code: historical effective 512-token V1; potion-code-full-v2: no 512-token truncation, 16 KiB/text and 4 MiB/model batch admission, rebuild required\n\
          [--max-file-bytes N]\n\
@@ -809,6 +812,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "access-block-log",
             "metrics-out",
             "diagnostics-out",
+            "request-events-out",
             "rank-study-out",
             "rank-study-max-files",
             "rank-study-max-pages",
@@ -895,6 +899,27 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             )));
         }
     }
+    let request_events_out = args.flags.get("request-events-out").map(PathBuf::from);
+    if let Some(path) = &request_events_out {
+        let _external_path = require_external_path(&repo, path, "--request-events-out")?;
+        if path.exists() {
+            return Err(BenchError::Config(format!(
+                "--request-events-out already exists: {}",
+                path.display()
+            )));
+        }
+        if metrics_out.is_none()
+            || diagnostics_out.is_none()
+            || query_protocol.is_some()
+            || routes != ["lexical"]
+            || !(1..=2).contains(&pack.tasks.len())
+        {
+            return Err(BenchError::Config(
+                "--request-events-out requires phase metrics, diagnostics, no query protocol and one or two lexical tasks"
+                    .to_string(),
+            ));
+        }
+    }
     let rank_study_out = args.flags.get("rank-study-out").map(PathBuf::from);
     if let Some(path) = &rank_study_out {
         let _external_path = require_external_path(&repo, path, "--rank-study-out")?;
@@ -979,6 +1004,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         ("--out", Some(&out)),
         ("--metrics-out", metrics_out.as_ref()),
         ("--diagnostics-out", diagnostics_out.as_ref()),
+        ("--request-events-out", request_events_out.as_ref()),
         ("--rank-study-out", rank_study_out.as_ref()),
         ("--refusal-out", Some(&refusal_out)),
         ("--symbol-preflight-out", Some(&symbol_preflight_out)),
@@ -1134,6 +1160,13 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             .map_or("enabled", String::as_str),
     )
     .map_err(|message| BenchError::Config(message.to_string()))?;
+    if request_events_out.is_some()
+        && query_stage_observation != QueryStageObservationPolicy::Enabled
+    {
+        return Err(BenchError::Config(
+            "--request-events-out requires enabled server query-stage observation".to_string(),
+        ));
+    }
     let hybrid_fetch_floor = HybridFetchFloorPolicy::parse(
         args.flags
             .get("experimental-hybrid-fetch-floor")
@@ -1273,6 +1306,17 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             )));
         }
     }
+    let request_events_before = if request_events_out.is_some() {
+        Some(
+            session
+                .client()
+                .observability()
+                .request_events(ProcessRequestEventPlaneV1::Query, 1024)
+                .map_err(|error| BenchError::Sdk(format!("query event baseline failed: {error}")))?,
+        )
+    } else {
+        None
+    };
     let mut outcomes: BTreeMap<(String, String), QueryOutcome> = BTreeMap::new();
     let mut warm_latencies_ms: BTreeMap<String, BTreeMap<String, Vec<f64>>> = BTreeMap::new();
     let mut cold_latencies_ms: BTreeMap<String, f64> = BTreeMap::new();
@@ -1493,6 +1537,39 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         }
         first_query_elapsed = first;
         query_start.elapsed().saturating_sub(first)
+    };
+
+    let request_events_probe = if let Some(before) = request_events_before {
+        let after = session
+            .client()
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 1024)
+            .map_err(|error| BenchError::Sdk(format!("query event terminal read failed: {error}")))?;
+        let expected_text_ids = pack
+            .tasks
+            .iter()
+            .map(|task| {
+                match outcomes.get(&(task.task_id.clone(), "lexical".to_string())) {
+                    Some(QueryOutcome::ReturnedWindow {
+                        explanation: Some(explanation),
+                        ..
+                    }) => explanation.request_id.filter(|id| *id > 0).ok_or_else(|| {
+                        BenchError::Protocol(format!(
+                            "query event probe lacks response request ID for {}",
+                            task.task_id
+                        ))
+                    }),
+                    _ => Err(BenchError::Protocol(format!(
+                        "query event probe requires returned lexical response for {}",
+                        task.task_id
+                    ))),
+                }
+            })
+            .collect::<BenchResult<Vec<_>>>()?;
+        let pairs = request_events::check_serial_windows(&before, &after, &expected_text_ids)?;
+        Some((before, after, pairs))
+    } else {
+        None
     };
 
     let record_start = Instant::now();
@@ -1720,6 +1797,36 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     }
     if let (Some(path), Some(value)) = (&diagnostics_out, &diagnostics) {
         write_json(path, value)?;
+    }
+    if let (Some(path), Some((before, after, pairs))) = (&request_events_out, request_events_probe) {
+        let tasks = pack
+            .tasks
+            .iter()
+            .zip(pairs)
+            .map(|(task, pair)| {
+                serde_json::json!({
+                    "task_id": task.task_id,
+                    "resolve_request_id": pair.resolve_request_id,
+                    "text_request_id": pair.text_request_id,
+                })
+            })
+            .collect::<Vec<_>>();
+        write_json(
+            path,
+            &serde_json::json!({
+                "schema_version": 1,
+                "kind": "quanta_serial_query_request_events",
+                "qualification": "diagnostic_unqualified",
+                "timing_boundary": "server_post_frame_decode_to_response_written",
+                "record_sha256": record_digest,
+                "query_pack_sha256": pack.pack_sha256,
+                "runner_binary_sha256": runner_digest,
+                "searchd_binary_sha256": searchd_digest,
+                "tasks": tasks,
+                "before": before,
+                "after": after,
+            }),
+        )?;
     }
     if let (Some(path), Some(results)) = (&rank_study_out, rank_study_rows) {
         write_json(

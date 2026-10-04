@@ -816,6 +816,27 @@ impl E2eRuntime {
         self.driver.as_ref().map(|driver| &driver.semantic_boot)
     }
 
+    fn driver_spec(&self) -> DriverSpec<'_> {
+        DriverSpec {
+            state_root: &self.state_root,
+            embedder_profile: &self.embedder_profile,
+            provider_egress_grant: &self.provider_egress_grant,
+            history_max_generations: self.history_max_generations,
+            history_max_bytes: self.history_max_bytes,
+            ingest_resource_policy: self.ingest_resource_policy,
+            semantic_stream_window_policy: self.semantic_stream_window_policy,
+            query_admission_policy: self.query_admission_policy,
+            lexical_writer_policy: self.lexical_writer_policy,
+            process_memory_ceilings: self.process_memory_ceilings,
+            memory_probe: &self.memory_probe,
+            maintenance_policy: self.maintenance_policy,
+            integrity_scrub_policy: self.integrity_scrub_policy,
+            query_response_budget: self.query_response_budget,
+            socket_access: &self.socket_access,
+            socket_directory: self.socket_directory.as_deref(),
+        }
+    }
+
     fn ensure_driver(&mut self) -> AnyResult<PathBuf> {
         if self.driver.is_none() {
             let (
@@ -827,24 +848,7 @@ impl E2eRuntime {
                 query_obs_store,
                 boot_inventory,
                 semantic_boot,
-            ) = start_driver(&DriverSpec {
-                state_root: &self.state_root,
-                embedder_profile: &self.embedder_profile,
-                provider_egress_grant: &self.provider_egress_grant,
-                history_max_generations: self.history_max_generations,
-                history_max_bytes: self.history_max_bytes,
-                ingest_resource_policy: self.ingest_resource_policy,
-                semantic_stream_window_policy: self.semantic_stream_window_policy,
-                query_admission_policy: self.query_admission_policy,
-                lexical_writer_policy: self.lexical_writer_policy,
-                process_memory_ceilings: self.process_memory_ceilings,
-                memory_probe: &self.memory_probe,
-                maintenance_policy: self.maintenance_policy,
-                integrity_scrub_policy: self.integrity_scrub_policy,
-                query_response_budget: self.query_response_budget,
-                socket_access: &self.socket_access,
-                socket_directory: self.socket_directory.as_deref(),
-            })?;
+            ) = start_driver(&self.driver_spec())?;
             self.query_obs_store = Some(Arc::clone(&query_obs_store));
             self.driver = Some(DriverState {
                 query_socket,
@@ -3589,7 +3593,11 @@ fn start_driver(spec: &DriverSpec<'_>) -> AnyResult<DriverHandles> {
 const DEFAULT_HISTORY_MAX_GENERATIONS: usize = 8;
 /// Index bytes the retained generations of a pair may hold together in a
 /// harness daemon unless a test widens it.
-const HARNESS_HISTORY_MAX_BYTES: u64 = 16 * 1024 * 1024;
+pub const HARNESS_HISTORY_MAX_BYTES: u64 = 16 * 1024 * 1024;
+/// Total retained index bytes across all revision pairs in a harness daemon.
+pub const HARNESS_HISTORY_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+/// Maximum revision pairs retained by a harness daemon.
+pub const HARNESS_HISTORY_MAX_REVISION_PAIRS: usize = 128;
 /// The maintenance tick every harness daemon runs on: short enough that
 /// an idle sweep or disk refresh lands within a test's bounded wait.
 const HARNESS_MAINTENANCE_TICK: Duration = Duration::from_millis(50);
@@ -3602,8 +3610,8 @@ fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
         .try_with_search_corpus_history_retention_limits(
             spec.history_max_generations,
             spec.history_max_bytes,
-            128,
-            256 * 1024 * 1024,
+            HARNESS_HISTORY_MAX_REVISION_PAIRS,
+            HARNESS_HISTORY_MAX_TOTAL_BYTES,
         )?;
     let (query_socket, control_socket, ingest_socket) =
         spec.socket_directory
@@ -3914,7 +3922,27 @@ mod teardown_fault_tests {
 
     use anyhow::Result as AnyResult;
 
-    use super::E2eRuntime;
+    use super::{
+        E2eRuntime, HARNESS_HISTORY_MAX_REVISION_PAIRS, HARNESS_HISTORY_MAX_TOTAL_BYTES,
+        build_config,
+    };
+
+    #[test]
+    fn history_builder_applies_pair_and_total_budgets() -> AnyResult<()> {
+        let runtime =
+            E2eRuntime::boot_with_history_max_generations(2)?.with_history_max_bytes(268_435_456);
+        let config = build_config(&runtime.driver_spec())?;
+        let policy = config.search_corpus_history_retention_policy()?;
+        assert_eq!(policy.max_generations(), 2);
+        assert_eq!(policy.max_bytes(), 268_435_456);
+        assert_eq!(
+            policy.max_revision_pairs(),
+            HARNESS_HISTORY_MAX_REVISION_PAIRS
+        );
+        assert_eq!(policy.max_total_bytes(), HARNESS_HISTORY_MAX_TOTAL_BYTES);
+        runtime.stop()?;
+        Ok(())
+    }
 
     fn runtime_with_non_directory_socket_path() -> AnyResult<E2eRuntime> {
         let mut runtime = E2eRuntime::boot()?;
