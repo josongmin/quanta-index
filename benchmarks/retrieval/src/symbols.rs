@@ -938,7 +938,7 @@ fn extract_parsed_symbols(
                 ),
             });
         }
-        names.insert(
+        let _previous = names.insert(
             symbol_id.clone(),
             SymbolNameSpan {
                 start_byte: definition.name_start_byte,

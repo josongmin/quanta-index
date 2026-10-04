@@ -1890,7 +1890,9 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         raise ValueError("Sourcegraph index scope evidence changed during queries")
     for name in products:
         destination = stage / f"{name}_rows.jsonl"
-        lexical.product_result(name, destination, tasks, admitted)
+        # The capture is still in staging; complete native replay runs after
+        # capture.json and the final raw inventory are written.
+        lexical.product_result(name, destination, tasks, admitted, _native_replay=True)
     if (
         (
             corpus_release.validate(release)

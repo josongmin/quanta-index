@@ -395,7 +395,7 @@ mod tests {
             })
         );
         let mut missing = preflight.names().clone();
-        missing
+        let _removed = missing
             .get_mut("src/lib.rs")
             .expect("file")
             .remove(alpha.symbol_id.as_str());
@@ -416,7 +416,7 @@ mod tests {
         let mut foreign = preflight.names().clone();
         let file = foreign.get_mut("src/lib.rs").expect("file");
         let name = file.remove(alpha.symbol_id.as_str()).expect("name");
-        file.insert("foreign-symbol".into(), name);
+        let _previous = file.insert("foreign-symbol".into(), name);
         assert!(registry.with_symbol_names(&foreign, &source).is_err());
     }
 
