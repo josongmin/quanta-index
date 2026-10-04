@@ -27,6 +27,11 @@ PRODUCTS = ("quanta", "semble", "sourcegraph", "cs", "opengrok")
 INTENT = "declaration_name_osa1_casefold"
 PAIR_REPORT = "report-semble-lexical-file-vs-lexical-fixed_window_strict.json"
 SCORES = ("hit_at_10", "mrr_at_10", "ndcg_at_10")
+FILE_METRICS = ("intended_name_file", "intended_original_file")
+LABEL_CONTRACT = {
+    "intended_name_file": "exact_original_name_declaration_files",
+    "intended_original_file": "representative_original_source_file",
+}
 
 
 class OfflineReportError(ValueError):
@@ -112,6 +117,12 @@ def _result(
     status: str,
     latency_ms: float | None,
 ) -> dict[str, Any]:
+    authority = task.get("source_oracle", {})
+    _require(
+        authority.get("unit") == "distinct_file"
+        and source_oracle.NAME_CONTRACTS.get(authority.get("contract"), (None, None))[1] == "exact",
+        "intended-name file metric requires exact declaration source authority",
+    )
     _require(eligible or not paths, "failed result has partial top-10 candidates")
     _require(
         latency_ms is None
@@ -125,7 +136,8 @@ def _result(
         "eligible": eligible,
         "top10_paths": paths,
         "latency_ms": latency_ms,
-        "near_name_file": _score(paths, task["file_judgments"]),
+        "label_contract": dict(LABEL_CONTRACT),
+        "intended_name_file": _score(paths, task["file_judgments"]),
         "intended_original_file": _score(paths, task["gold"]),
     }
 
@@ -148,6 +160,8 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     eligible = [row for row in rows if row["eligible"]]
     times = [row["latency_ms"] for row in rows if row["latency_ms"] is not None]
     output = {
+        "primary_metric": "intended_name_file",
+        "label_contract": dict(LABEL_CONTRACT),
         "selected": len(rows),
         "eligible": len(eligible),
         "status_counts": dict(sorted(Counter(row["status"] for row in rows).items())),
@@ -158,7 +172,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "p95": _percentile(times, 0.95),
         },
     }
-    for label in ("near_name_file", "intended_original_file"):
+    for label in FILE_METRICS:
         output[label] = {
             "operational": {
                 metric: _mean([row[label][metric] for row in rows]) for metric in SCORES
@@ -453,7 +467,9 @@ def build(
         for group, products in sorted(groups.items())
     }
     return {
-        "schema": "identifier_robustness_five_product_offline_strata_v1",
+        "schema": "identifier_robustness_five_product_offline_strata_v2",
+        "primary_metric": "intended_name_file",
+        "label_contract": dict(LABEL_CONTRACT),
         "status": "diagnostic_unqualified",
         "execution": "offline_replay_of_existing_captures",
         "native_split_timing_scope": "split_cell_query_timings_excluded",

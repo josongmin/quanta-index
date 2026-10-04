@@ -62,7 +62,7 @@ use quanta_index_lq_text_normalizer::{
 
 /// Fixed natural-language plan profile identifier (part of the policy
 /// config identity).
-pub const NL_PLAN_PROFILE: &str = "nl-token-or-v2";
+pub const NL_PLAN_PROFILE: &str = "nl-scored-keyword-or-v3";
 /// A flat OR plan must fit the public parser and normalizer fanout guard.
 pub const MAX_NL_PLAN_TOKENS: usize = MAX_FANOUT_PER_NODE;
 
@@ -117,8 +117,8 @@ pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
         QueryInputPolicy::CodeSearchExactContentFile => "quanta-code-search-exact-content-file-v1",
         QueryInputPolicy::CodeSearchTypoFile => "quanta-code-search-typo-file-v1",
         QueryInputPolicy::CodeSearchComponentsFile => "quanta-code-search-components-file-v1",
-        QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v2",
-        QueryInputPolicy::NaturalLanguageFile => "quanta-natural-language-file-ucd17-v1",
+        QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v3",
+        QueryInputPolicy::NaturalLanguageFile => "quanta-natural-language-file-ucd17-v2",
         QueryInputPolicy::ExactSymbolName => "quanta-exact-symbol-name-v1",
     }
 }
@@ -229,7 +229,7 @@ impl NlPlanConfig {
             "\"max_token_chars\":{},\"max_tokens\":{},\"min_token_chars\":{},\
              \"profile\":\"{NL_PLAN_PROFILE}\",\
              \"text_normalizer_version\":\"{TEXT_NORMALIZER_VERSION}\",\
-             \"tokenization\":\"lexical-ssot-nfc-with-path-joiners\"",
+             \"tokenization\":\"lexical-ssot-nfc-folded-terms\"",
             self.max_token_chars, self.max_tokens, self.min_token_chars
         )
     }
@@ -471,11 +471,11 @@ pub fn policy_config_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) 
              \"syntax\":\"{CODE_SEARCH_SYNTAX}\"}}"
         ),
         QueryInputPolicy::NaturalLanguage => format!(
-            "{{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"natural_language\",{}}}",
+            "{{\"escaping\":\"lq-norm-normalized-keyword-v1\",\"policy\":\"natural_language\",{}}}",
             config.canonical_fields()
         ),
         QueryInputPolicy::NaturalLanguageFile => format!(
-            "{{\"escaping\":\"lq-norm-phrase-v1\",\"ordering\":\"{ORDERING_SCORE_DESC}\",\
+            "{{\"escaping\":\"lq-norm-normalized-keyword-v1\",\"ordering\":\"{ORDERING_SCORE_DESC}\",\
              \"policy\":\"natural_language_file\",\"projection\":\"file\",{}}}",
             config.canonical_fields()
         ),
@@ -760,8 +760,8 @@ pub fn plan_query(
                 if chars < config.min_token_chars {
                     continue;
                 }
-                match query_tokens(&token, CaseMode::Folded) {
-                    Ok(_) => {}
+                let terms = match query_tokens(&token, CaseMode::Folded) {
+                    Ok(terms) => terms,
                     Err(TextQueryError::NoTokens) => continue,
                     Err(TextQueryError::TokenTooLong { bytes, max }) => {
                         return Err(QueryPlanError::IndexTokenTooLong {
@@ -769,9 +769,13 @@ pub fn plan_query(
                             max_bytes: max,
                         });
                     }
-                }
-                if !distinct.iter().any(|seen| seen == &token) {
-                    distinct.push(token);
+                };
+                for term in terms {
+                    if term.text.chars().count() >= config.min_token_chars
+                        && !distinct.iter().any(|seen| seen == &term.text)
+                    {
+                        distinct.push(term.text);
+                    }
                 }
             }
             if distinct.is_empty() {
@@ -783,11 +787,10 @@ pub fn plan_query(
                     max_tokens: config.max_tokens,
                 });
             }
-            let plan = distinct
-                .iter()
-                .map(|token| literalize(token))
-                .collect::<Vec<String>>()
-                .join(" OR ");
+            // Only folded normalized terms become bare Keyword atoms. Their
+            // alphabet cannot inject filters, quotes, or uppercase operators.
+            // Keyword lowering retains BM25 instead of phrase-set constants.
+            let plan = format!("case:no {}", distinct.join(" OR "));
             if policy == QueryInputPolicy::NaturalLanguageFile {
                 format!("select:file {plan}")
             } else {

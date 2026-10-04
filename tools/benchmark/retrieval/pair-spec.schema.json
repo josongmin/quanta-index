@@ -741,7 +741,7 @@
           ],
           "properties": {
             "profile_id": {
-              "const": "quanta-natural-language-ucd17-v2"
+              "const": "quanta-natural-language-ucd17-v3"
             },
             "policy": {
               "const": "natural_language"
@@ -784,7 +784,7 @@
           ],
           "properties": {
             "profile_id": {
-              "const": "quanta-natural-language-file-ucd17-v1"
+              "const": "quanta-natural-language-file-ucd17-v2"
             },
             "policy": {
               "const": "natural_language_file"

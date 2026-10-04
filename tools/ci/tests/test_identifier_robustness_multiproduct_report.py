@@ -41,6 +41,16 @@ def test_source_strata_and_evaluator_score_have_independent_fixed_expected_value
     assert row["intended_original_file"]["hit_at_10"] == 1.0
     assert row["intended_original_file"]["mrr_at_10"] == 0.5
     assert row["top10_paths"] == ["b.go", "a.go"]
+    same_name = report._result(task, ["b.go"], eligible=True, status="success", latency_ms=1)
+    assert same_name["intended_name_file"]["hit_at_10"] == 1.0
+    assert same_name["intended_original_file"]["hit_at_10"] == 0.0
+    for authority in (
+        {},
+        {"contract": "declaration_name_osa1_casefold", "unit": "distinct_file"},
+        {"contract": "declaration_name_exact", "unit": "symbol"},
+    ):
+        with pytest.raises(report.OfflineReportError, match="exact declaration source authority"):
+            report._result({**task, "source_oracle": authority}, [], eligible=True, status="success", latency_ms=1)
 
 
 @pytest.mark.parametrize(

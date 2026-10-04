@@ -177,6 +177,7 @@ def test_fresh_join_uses_published_evaluator_topk_eligibility(
         "split": "eval",
         "answerable": True,
         "judgment_policy": "source_oracle_complete_v1",
+        "source_oracle": {"contract": "declaration_name_exact", "unit": "distinct_file"},
         "file_judgments": [{"path": "gold.go", "grade": 1}],
         "gold": [{"path": "gold.go", "grade": 1}],
     }
@@ -629,6 +630,7 @@ def test_fresh_join_rejects_evidence_change_between_parse_digest_and_completion(
 def test_fresh_join_external_rows_reject_malformed_typed_fields(tmp_path):
     task = {
         "query": "foo",
+        "source_oracle": {"contract": "declaration_name_exact", "unit": "distinct_file"},
         "gold": [{"path": "a.go", "grade": 1.0}],
         "file_judgments": [{"path": "a.go", "grade": 1.0}],
     }

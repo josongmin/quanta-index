@@ -22,7 +22,7 @@ import re
 import regex
 import unicodedata2
 
-NL_PLAN_PROFILE = "nl-token-or-v2"
+NL_PLAN_PROFILE = "nl-scored-keyword-or-v3"
 PLANNING_COST_IN_LATENCY = False
 TEXT_NORMALIZER_VERSION = "2.0"
 MAX_TOKEN_BYTES = 256
@@ -110,8 +110,8 @@ _LQ_OPERATOR_WORDS = frozenset({"AND", "OR", "NOT"})
 PROFILE_IDS = {
     "native": "quanta-native-v1",
     "literal": "quanta-literal-v1",
-    "natural_language": "quanta-natural-language-ucd17-v2",
-    "natural_language_file": "quanta-natural-language-file-ucd17-v1",
+    "natural_language": "quanta-natural-language-ucd17-v3",
+    "natural_language_file": "quanta-natural-language-file-ucd17-v2",
     "exact_symbol_name": "quanta-exact-symbol-name-v1",
     "literal_file": "quanta-literal-file-v1",
     "keyword_file": "quanta-keyword-file-v1",
@@ -226,7 +226,7 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
             else '"policy":"natural_language",'
         )
         return (
-            '{"escaping":"lq-norm-phrase-v1",'
+            '{"escaping":"lq-norm-normalized-keyword-v1",'
             + projection
             + (
                 f'"max_token_chars":{resolved["max_token_chars"]},'
@@ -234,7 +234,7 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
                 f'"min_token_chars":{resolved["min_token_chars"]},'
                 f'"profile":"{NL_PLAN_PROFILE}",'
                 f'"text_normalizer_version":"{TEXT_NORMALIZER_VERSION}",'
-                '"tokenization":"lexical-ssot-nfc-with-path-joiners"}'
+                '"tokenization":"lexical-ssot-nfc-folded-terms"}'
             )
         )
     raise QueryPlanError(f"unsupported query input policy: {policy}")
@@ -503,15 +503,21 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
                 continue
             if not _validate_indexable_text(token):
                 continue
-            if token not in distinct:
-                distinct.append(token)
+            # Independently mirror the index's per-character lowercase, not
+            # Python's contextual whole-string lower (e.g. Greek final sigma).
+            for term in regex.findall(r"[\p{Alphabetic}\p{Number}\p{Mark}_]+", token):
+                folded = "".join(ch.lower() for ch in term)
+                if len(term) >= resolved["min_token_chars"] and folded not in distinct:
+                    distinct.append(folded)
         if not distinct:
             raise QueryPlanError("natural-language plan produced no tokens")
         if len(distinct) > resolved["max_tokens"]:
             raise QueryPlanError(
                 f"natural-language plan has {len(distinct)} tokens (max {resolved['max_tokens']})"
             )
-        request = " OR ".join(literalize(token) for token in distinct)
+        # Only normalized token characters can enter an atom. Reserved
+        # uppercase operators become lowercase data, with no raw DSL ingress.
+        request = "case:no " + " OR ".join(distinct)
         if policy == "natural_language_file":
             request = "select:file " + request
         if len(request.encode()) > MAX_INPUT_BYTES:

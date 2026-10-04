@@ -643,7 +643,7 @@ def _native_scored_result(
         row["top10_paths"] = paths
         if paths:
             row["observed_top10_scores"] = {
-                "near_name_file": scoring._score(paths, task["file_judgments"]),
+                "intended_name_file": scoring._score(paths, task["file_judgments"]),
                 "intended_original_file": scoring._score(paths, task["gold"]),
             }
     return row
@@ -1123,7 +1123,7 @@ def _build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
         }
     macro = {
         label: {product: _macro(paired, product, label) for product in PRODUCTS}
-        for label in ("near_name_file", "intended_original_file")
+        for label in scoring.FILE_METRICS
     }
     repository_commits = {row["repository"]: row["repository_commit"] for row in per_query}
     cluster_rows = [
@@ -1131,8 +1131,8 @@ def _build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
             row["repository"],
             row["task_id"],
             row["query_family_id"],
-            row["products"]["quanta"]["intended_original_file"]["hit_at_10"]
-            - row["products"]["semble"]["intended_original_file"]["hit_at_10"],
+            row["products"]["quanta"]["intended_name_file"]["hit_at_10"]
+            - row["products"]["semble"]["intended_name_file"]["hit_at_10"],
         )
         for row in paired
     ]
@@ -1150,7 +1150,9 @@ def _build(pairs: list[tuple[Path, Path, Path]]) -> dict[str, Any]:
         }
     )
     return {
-        "schema": "identifier_robustness_fresh_five_product_join_v1",
+        "schema": "identifier_robustness_fresh_five_product_join_v2",
+        "primary_metric": "intended_name_file",
+        "label_contract": dict(scoring.LABEL_CONTRACT),
         "status": "diagnostic_unqualified",
         "request_contract": "default_file_search_across_five_products; distinct_file_top10; underlying_match_policies_differ",
         "execution": "offline_join_of_fresh_native_and_external_captures",
