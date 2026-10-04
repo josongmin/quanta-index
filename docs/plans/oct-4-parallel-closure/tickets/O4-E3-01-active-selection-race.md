@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_FIRST` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | dispatcher G1→G2→G3 barrier 및 runtime physical-retirement fixture `VERIFIED`; source904 daemon profile213 passed/1 skipped. 별도 OS-child에서 같은 retention race는 `NOT_RUN` |
+| 실행 상태 | dispatcher G1→G2→G3 barrier 및 runtime physical-retirement fixture `VERIFIED`; 유지보수 수리 뒤 current daemon profile213 passed/1 skipped 재검증. 별도 OS-child에서 같은 retention race는 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -47,6 +47,7 @@ selection.resolve_generation_selector_pin은 catalog head를 pin으로 해석하
 
 - Source `904043302f1db8406302a5a62bcffdc0d9412267`의 `just rust-profile test-daemon`은 exit0, 213 passed/1 skipped, tests259.597s였다. `runtime_fast_suite`의 `retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3`를 포함한다.
 - 이 fixture는 실제 UDS/runtime과 양 track의 physical retirement를 검사하지만 daemon은 같은 test process에서 구동한다. 별도 OS-child combined race 또는 Linux release proof로 승격하지 않는다. Accepted 계약의 retire-first typed refusal은 강한 pin-transfer 보장을 새로 채택했다는 뜻이 아니다.
+- 유지보수 fatal ownership 수리 뒤 current `just rust-profile test-daemon`도 exit0,213 passed/1 skipped,tests231.161s였다. 후속 formal source는 clean `f3f7c68993f383e4ac5fdca761c111fe3d0edc3b`다. 위 동일-process fixture의 실제 범위를 확장하지 않는다.
 
 ## 검증 계획 — 위 실행 scope 외 NOT_RUN
 

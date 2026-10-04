@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_ONLY` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | source904 process_readiness_owner_v1 실제26 passed(14 OS-child scenario·12 helper); 다른 OS UID 및 Linux release proof `NOT_RUN` |
+| 실행 상태 | 구조 수리 뒤 current process_readiness_owner_v1 실제26 passed(14 OS-child scenario·12 helper); 다른 OS UID 및 Linux release proof `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -20,6 +20,7 @@
 - 기존 real UDS + injected peer의 authorization-before-ring-read, 같은 UID binary operator 성공과 다른 OS UID process refusal은 별도 범위다. 다른 OS 사용자 실행은 아직 `NOT_RUN`이며 injected principal을 실제 OS UID 증거로 승격하지 않는다.
 - `VERIFIED`: source `904043302f1db8406302a5a62bcffdc0d9412267`에서 `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime -p quanta-index-lexical --test process_readiness_owner_v1 --test l3_exact_source --all-features --locked --test-threads 4 --success-output final` — exit0, 전체56 passed/0 skipped, tests26.073s. process owner는26개 중14 OS-child scenario와12 helper다. L3 exact source30개는 별도 lexical scope다.
 - actual binary ring wrap(300 requests), process-instance restart/prior-window discard, payload-free query correlation, active-root loss, inventory-read failure/reopen, 1-file ranked-row OS restart를 포함한다. child는 matching `CARGO_BIN_EXE`와 hash-dev embedder, private0700 state를 사용한다. learned semantic 품질, 모든 scale tier의 OS restart, 다른 실제 OS UID refusal 및 Linux release qualification은 `NOT_RUN`이다.
+- `VERIFIED`: 유지보수 fatal ownership 및 process fixture Clippy 수리 뒤 `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked --test-threads 4` — exit0,26 selected/run/passed,0 skipped,tests16.869s. 실제 backend-root loss는16.868s, inventory failure/reopen은11.821s에 통과했다. 이 owner 파일과 product bytes는 formal source `f3f7c68993f383e4ac5fdca761c111fe3d0edc3b`와 같다. source904의 과거 결과를 재사용한 것이 아니며 위 제외 범위를 유지한다.
 
 ## 배경과 현재 상태
 

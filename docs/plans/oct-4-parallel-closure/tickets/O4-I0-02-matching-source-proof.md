@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | source904 workspace·daemon213·process/L3 56 및 후속 full Clippy/current owner972·SDK27 assertions `VERIFIED`; SDK stdio leak1 관측/단독 재실행 ordinary PASS, current daemon 영향 재검증 중. formal Contract/SDK proof `NOT_RUN`; hosted CI·release/scale `NOT_RUN` |
+| 실행 상태 | full Clippy·current owner972·SDK27 assertions·daemon213/process26 `VERIFIED`; SDK stdio leak1 관측/단독 재실행 ordinary PASS. wire fuzz 후속 검증 중. formal Contract/SDK proof `NOT_RUN`; hosted CI·release/scale `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -83,7 +83,8 @@
 
 - 관리 checkout을 clean `f3f7c68993f383e4ac5fdca761c111fe3d0edc3b`로 retarget했다. 이 source에는 실제 History tag shard를 게시하는 SDK fixture가 포함된다. 후속 main의 ticket 문서 변경은 이 source의 proof SHA를 바꾸지 않는다.
 - `VERIFIED`: fixture 수정 뒤 `just rust-clippy`는 exit0, full workspace/all-targets scope였다. `just fmt-check` 및 `git diff --check`도 exit0이다. 기존 vendor warnings를 workspace lint 성공으로 제거하거나 숨기지 않았다.
-- current daemon profile은213 selected/1 skipped로 실행 중이다. process owner 및 bounded wire fuzz는 그 뒤 순차 실행한다. 완료 전에는 통과로 판정하지 않는다.
+- `VERIFIED`: current `just rust-profile test-daemon` — exit0, 213 run/passed, 1 skipped, tests231.161s. 유지보수 fatal ownership 수리 뒤 실제 selected head/retirement 및 runtime lifecycle 범위를 다시 실행했다. SDK fixture commit은 이 daemon selector의 product bytes를 바꾸지 않는다. process owner 및 bounded wire fuzz는 뒤에서 순차 실행하며 완료 전에는 통과로 판정하지 않는다.
+- `VERIFIED`: current `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked --test-threads 4` — exit0,26 passed/0 skipped,tests16.869s. 별도 daemon OS-child14와 helper12의 owner 범위이며 learned semantic·Linux release·모든 scale tier restart를 판정한 결과가 아니다.
 - 새 Contract/SDK fresh proof 출력은 각각 `/Users/songmin/Documents/code-new/qi-oct4-contract-proof-20261004-v2`, `/Users/songmin/Documents/code-new/qi-oct4-sdk-proof-fresh-20261004-v2`를 사용한다. 아직 실행 결과가 없으며 기존 v1 실패 root를 재사용하지 않는다.
 
 ## 착수 입력

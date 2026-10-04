@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_THEN_CONDITIONAL_CODE` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | cooperative metering·fatal ownership/terminal 전달 owner13 `VERIFIED`; source904 daemon213·process owner26 통과, 구조 수리 뒤 daemon/process 재검증 및 OS-child slow-disk injection은 `NOT_RUN` |
+| 실행 상태 | cooperative metering·fatal ownership/terminal 전달 owner13·runtime supervisor25·수리 뒤 daemon213/process26 `VERIFIED`. OS-child slow-disk injection은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -28,7 +28,7 @@
 - timer가 owned `DiskMeterJoinGuard`를 보유한다. 정상 종료와 callback unwind 모두 budget cancel·sender close·worker join을 완료한 뒤 timer thread가 종료된다. worker panic, owner 소실, terminal report 누락은 정상 `Completed`로 변환되지 않는다.
 - 기존 `ChildExitKind`를 원래 timer의 terminal channel로 supervisor에 전달한다. 실제 timer panic은 `Panicked`, worker/ownership fatal은 `Failed`, 정상 cooperative join은 `Completed`다. 별도 감시 thread나 새 terminal enum을 추가하지 않았다.
 - `VERIFIED`: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd --lib --all-features --locked -E 'test(/^app::(maintenance|supervisor)::/)' --success-output final` — exit0, 13 selected/13 passed/97 filtered, tests0.174s. controlled worker panic, poison, terminal 없음, 실제 filesystem walker가 시작한 뒤 timer callback panic, long walk 동안 heartbeat, handoff/정상 stop을 포함한다. source는 `561e5eb96c3fa52fa863d721b48447f047b110e8`의 maintenance/supervisor이며 동시 dirty SDK/harness 테스트는 이 selector의 입력이 아니다.
-- runtime supervisor drain 및 실제 daemon/process owner의 후속 실행은 진행 중이다. 위 unit 결과는 OS-child slow-disk injection이나 전체 daemon qualification이 아니다.
+- `VERIFIED`: sourcebf 중앙 owner972 배치의 runtime supervisor25가 모두 통과했고, current `just rust-profile test-daemon`은 exit0,213 passed/1 skipped,tests231.161s였다. 후속 `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked --test-threads 4`도 exit0,26 passed/0 skipped,tests16.869s였다. 이 결과는 OS-child slow-disk injection이나 Linux release qualification이 아니다.
 
 ## 배경과 현재 상태
 
