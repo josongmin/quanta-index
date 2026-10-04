@@ -4,14 +4,14 @@
 
 - 담당·파일/함수·독립 검증·완료 조건: [4개 에픽 + I0](../../plans/oct-4-parallel-closure/README.md), [29개 티켓](../../plans/oct-4-parallel-closure/tickets/INDEX.md).
 - 실행 순서·실제 상태: [W0–W6](../../plans/oct-4-parallel-closure/WAVES.md). 개별 명령·관측·증거 범위는 기존 owning ticket이 기준이다.
-- 제품 proof/binaries/admissions는 frozen `0e6c7e7e9494b63fdb33f4594df059817459d3b1` 기준이다. 완료된 scope 수리/SG/native3는 clean `ae8f96bae1a0db1fc0378861b228cd5359080fa1` 범위다. derived provenance·frozen-context 경로 수리는 clean `628541e150192b4aaf0ff4ba54566ae28c6ca25f`에 고정했고 retained bat canonical raw replay가 통과했다. 후속 report/verdict JSON 타입 결속을 수리한 clean `97eedd11b70e76c66985b15a968211a2faf92c6d`의 focused 회귀203/203·0failed/skipped가 통과했다. 해당 새 SG/native epoch·5제품 join은 남아 있다. mutable main이나 과거 receipt를 새 source 결과로 재표기하지 않는다.
+- 제품 proof/binaries/admissions는 frozen `0e6c7e7e9494b63fdb33f4594df059817459d3b1` 기준이다. 완료된 scope 수리/SG/native3는 clean `ae8f96bae1a0db1fc0378861b228cd5359080fa1` 범위다. derived provenance·frozen-context 경로 수리는 clean `628541e150192b4aaf0ff4ba54566ae28c6ca25f`에 고정했고 retained bat canonical raw replay가 통과했다. 후속 report/verdict JSON 타입 결속을 수리한 clean `97eedd11b70e76c66985b15a968211a2faf92c6d`의 focused 회귀203/203·0failed/skipped가 통과했다. 새 SG12repo/13,347files 독립 replay는 통과했고 새 native epoch·5제품 join은 남아 있다. mutable main이나 과거 receipt를 새 source 결과로 재표기하지 않는다.
 - 원본 agent-4의 과거 임시 증거15고유경로는 현재 없어 replay 가능한 current proof로 사용하지 않는다. 기존50 Markdown의 상대 링크1,246개·29 ticket 배치는 확인했으며 증거 가용성 경계는 [I0-01](../../plans/oct-4-parallel-closure/tickets/O4-I0-01-ownership-and-contract-freeze.md)에 기록했다.
 
 ## 1. 현재 실행 순서
 
 | 순서 / 웨이브 | 해야 할 일 | 현재 경계 |
 | --- | --- | --- |
-| 1 / W3–W5 | 새 fixed-source97eedd SG/native/control 결속 → 5제품 join | ae8f SG12/13,347files·native3 actual/replay 및 수정 후 retained bat canonical raw replay `VERIFIED`. join v4의 실패는 보존. 후속97eedd focused203 VERIFIED; 새 SG producer 진행 중/native·join은 미완료 |
+| 1 / W3–W5 | 새 fixed-source97eedd native/control 결속 → 5제품 join | 후속97eedd focused203·SG12repo/13,347files 독립 replay VERIFIED. bat native3 producer 진행 중/독립 replay·join 미완료. 과거 join v4 FAILED는 보존 |
 | 2 / W3 | current0e6 admission에 후속 final merged revisions 연결 | canonical issuer exit0/8 terminal·aggregate 및 각16-input hash readback VERIFIED. bat 포함9repo/180tasks/4,262judgments의 admission 범위; 후속 final revisions·나머지3개는 미완료 |
 | 3 / W4–W5 | 준비된 C3 저장소의 실제 Quanta/Semble·SG/OG/cs 캡처, required-cell outcomes·source-bound blind union 발행 | all12 PREPARE 종료:9 PREPARED/3 BLOCKED, aggregate exit2. 후속8개 직렬 큐는 현재 SG/native/bat 배치 종료 대기. 새 미검수 후보를 final quality나0점으로 처리하지 않음 |
 | 4 / W1→W3→W5 | SQLAlchemy/Zellij 실제 조정 완료·suite/pack/admission 발행, Tailscale 미결 정책 적용 후 재검수 | actual Opus 주간 한도로 SQL146·Zellij476pairs `BLOCKED`. SQL334pairs 보존. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 입력도 `BLOCKED` |
@@ -33,7 +33,7 @@
 
 ### E2 — native 범위·응답·캡처
 
-- [E2-02](../../plans/oct-4-parallel-closure/tickets/O4-E2-02-external-index-universe.md): 새 fixed-source SG scope epoch를 닫는다. OpenGrok의 전체 live-doc/source UID·auxiliary 관측을 canonical actual query 전후의 immutable index/endpoint/consumer binding으로 연결한다. 현재 whole indexed-universe flag는false다.
+- [E2-02](../../plans/oct-4-parallel-closure/tickets/O4-E2-02-external-index-universe.md): fixed-source97eedd SG12/13,347files native replay는 완료됐다. OpenGrok의 전체 live-doc/source UID·auxiliary 관측을 canonical actual query 전후의 immutable index/endpoint/consumer binding으로 연결한다. 현재 whole indexed-universe flag는false다.
 - [E2-03](../../plans/oct-4-parallel-closure/tickets/O4-E2-03-required-cells-and-scheduling.md)·[E2-04](../../plans/oct-4-parallel-closure/tickets/O4-E2-04-fresh-five-product-captures.md): current required cells별 실제 completion/refusal/missing과 blind union을 발행한다. exact1196, prefix/infix/components, default/explicit typo, no-answer, C3 NL240, Gin20, ARB original/adapted, B09 OSA/CLARC/CSN은 각 입력·unit별로 유지한다.
 - [E2-01](../../plans/oct-4-parallel-closure/tickets/O4-E2-01-native-completed-timer.md)·[E2-05](../../plans/oct-4-parallel-closure/tickets/O4-E2-05-semble-process-attribution.md): 정식 반복 실행에서 completed-response boundary와 Semble parent/process 비용 귀속을 검증한다. 기존 timer/phase 구현을 다시 만들지 않는다.
 - [E2-06](../../plans/oct-4-parallel-closure/tickets/O4-E2-06-quality-only-warmup.md): bat 밖에서 warmup0을 채택할 경우에만 자체 protocol/normalized rows/status/f64 parity를 실행한다. 그 전에는1회 유지하며 정식 speed에는0회 정책을 적용하지 않는다.

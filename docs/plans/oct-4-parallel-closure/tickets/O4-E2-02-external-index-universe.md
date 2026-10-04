@@ -5,10 +5,16 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `DATA_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | Sourcegraph owner169·v5 및 OpenGrok v2 path-bearing replay `VERIFIED`; 후속 전체 live17,615 문서·auxiliary 필드 형태·source13,347 path/UID term 독립 replay `VERIFIED`. 실제 query 전후 whole-index 결속과 canonical universe qualification 미완료 |
+| 실행 상태 | Sourcegraph owner169·v5·후속 clean97eedd12repo/13,347files owned native replay `VERIFIED`; OpenGrok 전체 live17,615 문서·auxiliary 필드 형태·source13,347 path/UID term 독립 replay `VERIFIED`. 실제 query 전후 whole-index 결속과 canonical universe qualification 미완료 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
+
+## 2026-10-05 JSON 타입 결속 수리 후 source97 실제 재발행
+
+- clean `97eedd11b70e76c66985b15a968211a2faf92c6d`, Python3.13.9에서 `python -m tools.benchmark.retrieval.sourcegraph_index_scope --scope-batch /private/tmp/qi-sg-canonical-json-97eedd-20261005-v1-batch.json --native-port 6071 --native-binary-path /usr/local/bin/zoekt-webserver` — `SUCCEEDED`: actual exit0,12개 native receipt,2726.705s,stderr0bytes. source/controls 전후 guard를 통과했다.
+- 별도 `python /private/tmp/qi-sg-canonical-json-97eedd-replay-v1.py --source-root /Users/songmin/.codex/worktrees/oct5-canonical-json/quanta-index --batch /private/tmp/qi-sg-canonical-json-97eedd-20261005-v1-batch.json` — `VERIFIED`: actual exit0,1227.758s,stderr0bytes. 12repo 모두 `owned_guest_translator_v1`, 합계13,347files·qualified=false를 root가 결과 JSON에서 독립 readback했다. counts는 bat79/cli1014/django2368/lo130/mocha473/nushell1947/SQLAlchemy652/Tailscale2532/TypeORM3608/Uvicorn72/Zellij422/Zustand50이다.
+- 결과 `/private/tmp/qi-canonical-json-97eedd-serial-v3/sg-replay.stdout` SHA `02d8272bc73ef70bc9fbf3dfbd81a9586afe61a0ec8c346a951922e733ea3a45`. output root는 `/private/tmp/qi-sg-canonical-json-97eedd-20261005-v1`이다. native stored bytes/path·owned process/index binding만 검증했으며 analyzer/posting equivalence, OpenGrok whole-index/query bracket, 속도/품질 qualification은 포함하지 않는다. 과거 ae8f receipt를 수정하거나 새 결과로 재표기하지 않았다.
 
 ## 2026-10-05 scorer source control 재발행
 

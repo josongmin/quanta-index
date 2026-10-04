@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | frozen source0e6 Contract788/191·fresh release SDK27·portable verifiers·semantic97·large restart/scale/load `VERIFIED`. 후속 report-scope 수리/focused67 및 clean628541 canonical owner 수리 후 retained bat raw·Contract/SDK 교차 checkout replay `VERIFIED`. 후속97eedd focused203 `VERIFIED`; 새 SG/native·join 미완료. frozen proof를 새 main 전체 proof로 승격하지 않음. hosted CI `NOT_RUN` |
+| 실행 상태 | frozen source0e6 Contract788/191·fresh release SDK27·portable verifiers·semantic97·large restart/scale/load `VERIFIED`. 후속 report-scope 수리/focused67 및 clean628541 canonical owner 수리 후 retained bat raw·Contract/SDK 교차 checkout replay `VERIFIED`. 후속97eedd focused203·SG12/13,347files 독립 replay `VERIFIED`; 새 native·join 미완료. frozen proof를 새 main 전체 proof로 승격하지 않음. hosted CI `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
