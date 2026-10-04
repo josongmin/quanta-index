@@ -1094,7 +1094,10 @@ fn code_search_explanation_uses_the_same_file_score_outside_top_k() -> TestResul
                 assert_eq!(components.boundary_and_path, 100);
                 assert_eq!(components.exact_case, 5);
             }
-            other => panic!("indexed matching file must be explained: {other:?}"),
+            other @ (LexicalCandidateExplanationV1::NotIndexed
+            | LexicalCandidateExplanationV1::NotMatched { .. }) => {
+                panic!("indexed matching file must be explained: {other:?}")
+            }
         }
     }
     Ok(())

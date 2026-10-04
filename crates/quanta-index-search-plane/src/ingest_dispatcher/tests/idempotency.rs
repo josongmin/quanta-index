@@ -1029,8 +1029,10 @@ fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
 }
 
 /// Pause after actual source materialization has returned but before the
-/// dispatcher commits the journal. Cancelling the transport budget here
-/// must not turn a completed, admitted mutation into a rollback claim.
+/// dispatcher commits the journal.
+///
+/// Cancelling the transport budget here must not turn a completed, admitted
+/// mutation into a rollback claim.
 #[test]
 fn cancelled_peer_after_admitted_apply_still_commits_and_replays_exactly() -> TestRes {
     use quanta_index_core::{IdempotencyCatalogPort as _, OperationInspectV1};
@@ -1100,7 +1102,14 @@ fn cancelled_peer_after_admitted_apply_still_commits_and_replays_exactly() -> Te
     let in_flight = catalog.inspect(&key)?;
     cancel.cancel();
     release_tx.send(())?;
-    let first_response = first.join().map_err(|_| "publish thread panicked")?;
+    let first_response = first.join().map_err(|panic| {
+        let detail = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("non-string panic payload");
+        format!("publish thread panicked: {detail}")
+    })?;
     if !materialized || !matches!(in_flight, OperationInspectV1::InFlight { .. }) {
         return Err(
             format!("fixture did not reach admitted post-apply state: {in_flight:?}").into(),

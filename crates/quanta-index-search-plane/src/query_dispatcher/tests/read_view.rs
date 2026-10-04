@@ -79,8 +79,10 @@ fn text_request(query_text: &str, pin: GenerationPin) -> TextQueryRequest {
 
 /// The catalog selection and the ledger serving check are separate. Force
 /// the exact G1 selection -> G2/G3 activation -> G1 retirement schedule
-/// without relying on a scheduler race. This fixes the current refusal
-/// boundary; it does not assert that a selected G1 is guaranteed to serve.
+/// without relying on a scheduler race.
+///
+/// This fixes the current refusal boundary; it does not assert that a
+/// selected G1 is guaranteed to serve.
 #[test]
 fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() -> TestResult {
     let g1 = ready_pin();
@@ -106,7 +108,9 @@ fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() 
         "lexical",
     )?
     .ok_or("active selection returned no generation")?;
-    assert_eq!(selected, g1);
+    if selected != g1 {
+        return Err(format!("active selection returned {selected:?}, expected {g1:?}").into());
+    }
 
     let ledger = ready_ledger();
     let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
@@ -128,8 +132,8 @@ fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() 
     let mutation = {
         let catalog = Arc::clone(&catalog);
         let ledger = Arc::clone(&ledger);
-        let repo = g1.repo_id.clone();
-        let revision = g1.revision_id.clone();
+        let repo = g1.repo_id;
+        let revision = g1.revision_id;
         let release_retention = Arc::clone(&release_retention);
         std::thread::spawn(move || -> Result<(), String> {
             let _rendezvous = release_retention.wait();
@@ -171,7 +175,14 @@ fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() 
     let _rendezvous = release_retention.wait();
     // The completed mutation thread is the second rendezvous. A failure
     // returns instead of leaving the view acquisition waiting on a barrier.
-    mutation.join().map_err(|_| "retention thread panicked")??;
+    mutation.join().map_err(|panic| {
+        let detail = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("non-string panic payload");
+        format!("retention thread panicked: {detail}")
+    })??;
     let request = ReadViewRequestV1::new(
         "lexical",
         &selected,
@@ -182,12 +193,25 @@ fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() 
         .err()
         .ok_or("reaped G1 unexpectedly acquired a read view")?;
     match refusal {
-        CoreError::Typed { code, .. }
-            if code == quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration => {}
-        other => return Err(format!("expected UNKNOWN_GENERATION, got {other:?}").into()),
+        CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration,
+            ..
+        } => {}
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => {
+            return Err(format!("expected UNKNOWN_GENERATION, got {other:?}").into());
+        }
     }
-    let opened = lexical_state.lock().map_err(|error| error.to_string())?;
-    if !opened.opened_pins.is_empty() {
+    let opened_count = lexical_state
+        .lock()
+        .map_err(|error| error.to_string())?
+        .opened_pins
+        .len();
+    if opened_count != 0 {
         return Err("retired G1 reached the lexical opener".into());
     }
     Ok(())
