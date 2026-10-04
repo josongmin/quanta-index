@@ -3569,3 +3569,34 @@ with a new output root. The strict collection validator remains unchanged.
   Remaining: 140 actual reviewed tasks; final common execution-source proofs;
   new reviewed five-product captures/replay; controlled complete-public-API
   performance. AI provenance is explicit and every result remains unqualified.
+
+### 2026-10-04: supplemented admission verified and source preflight refusal
+
+- **VERIFIED**, full lo 495-pair admission on clean `ee764318` in **291.976s**;
+  independently rechecked its 16 frozen input digests. The new root is
+  `nl-lo495-admission-ee764318-2bluvw9b/`, separate from the old 454-pair root.
+  This closes the supplemented input gate only.
+- Fresh post-freeze products are dispatched, not yet declared complete:
+  `c3-lo495-fresh-pair-okicq610/` (native Quanta/Semble strict input rail,
+  source `ee764318`, new `/private/tmp/nlfqoi60rdb/0` output and model-only
+  cache copy); `c3-lo495-fresh-native-cv8x8ky5/` (Sourcegraph/OpenGrok/cs,
+  literal-data adapter `499654fe`). Both retain exact source/input identities
+  and AI provenance. Different-source captures are diagnostic; they cannot
+  substitute for final common-source qualification or repeated performance.
+- **VERIFIED**, committed `570a5e39` Python preflight collection matches all
+  **727** required identities. **FAILED**, focused execution: **26 passed /
+  1 failed** in 31.10s. The failing NL planner fixture expects normalized
+  `select:file case:no find OR retry OR handling`, while that committed source
+  still returns quoted phrase OR. A separate single-test command reproduces
+  the same refusal. Full Contract and fresh SDK rails were **NOT_RUN** for
+  this source; do not spend a build or issue receipts from a failed preflight.
+- The concurrent owner subsequently committed the keyword planner direction
+  (`bb86fcdb`) and is continuing its normalization changes. The focused NL
+  fixture passes on the inspected dirty main overlay (1 passed / 1.38s), which
+  is not clean committed-source proof. Freeze a new source only after those
+  owned changes are integrated, then repeat preflight and matching proofs.
+  Preserved failure: `common-proof-570a5e39-seus4ydc/preflight-failure.json`.
+- External roots are under
+  `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`.
+  The cli actual adjudication process remains live; no partial labels enter
+  the 100/240 issued-task aggregate. Final comparison remains **NOT_RUN**.

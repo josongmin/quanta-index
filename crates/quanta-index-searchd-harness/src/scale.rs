@@ -1376,16 +1376,19 @@ fn measure_small_tier_with_config(
     let effective_history_max_bytes = config.effective_history_max_bytes()?;
     let corpus = generate_corpus(ScaleTier::Small, seed);
     let corpus_digest = corpus_digest(DIMENSION, &corpus);
-    let expected_results = expected_small_result_count(&corpus)?;
+    let expected_results = expected_small_result_count(&corpus)
+        .map_err(|error| stage_or_preserve("source_fixture", error))?;
     let file_count = corpus.len();
     let corpus_bytes = corpus
         .iter()
         .try_fold(0_u64, |total, (_, content)| -> AnyResult<u64> {
             Ok(total.saturating_add(u64::try_from(content.len())?))
-        })?;
+        })
+        .map_err(|error| stage_or_preserve("source_fixture", error))?;
 
     // The search-corpus history contract requires at least two generations.
-    let cpu_started = CpuSnapshot::observe()?;
+    let cpu_started = CpuSnapshot::observe()
+        .map_err(|error| stage_or_preserve("resource_observation", error))?;
     let mut rt = scale_runtime(config).map_err(|error| stage_or_preserve("runtime_boot", error))?;
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
@@ -1569,9 +1572,11 @@ pub fn measure_tier_with_runtime_config(
     if tier == ScaleTier::Small {
         return measure_small_tier_with_config(seed, config);
     }
-    let files = generate_scoped_corpus(tier, seed)?;
+    let files = generate_scoped_corpus(tier, seed)
+        .map_err(|error| stage_or_preserve("source_fixture", error))?;
     let corpus_digest = scoped_corpus_digest(DIMENSION, &files);
-    let oracle = ScopedOracle::from_source(&files, tier)?;
+    let oracle = ScopedOracle::from_source(&files, tier)
+        .map_err(|error| stage_or_preserve("source_fixture", error))?;
     let _admission = preflight_scoped_corpus(&files).map_err(ScaleStageError::source_admission)?;
     let file_count = files.len();
     let corpus_bytes = files
@@ -1580,13 +1585,16 @@ pub fn measure_tier_with_runtime_config(
             total
                 .checked_add(u64::try_from(file.content.len())?)
                 .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
-        })?;
+        })
+        .map_err(|error| stage_or_preserve("source_fixture", error))?;
 
-    let cpu_started = CpuSnapshot::observe()?;
-    let mut rt = scale_runtime(config)?;
+    let cpu_started = CpuSnapshot::observe()
+        .map_err(|error| stage_or_preserve("resource_observation", error))?;
+    let mut rt = scale_runtime(config).map_err(|error| stage_or_preserve("runtime_boot", error))?;
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
-        let before_build = directory_bytes(rt.state_root())?;
+        let before_build = directory_bytes(rt.state_root())
+            .map_err(|error| stage_or_preserve("build_io", error))?;
         let chunks = files
             .iter()
             .map(|file| {
@@ -1604,7 +1612,8 @@ pub fn measure_tier_with_runtime_config(
             .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
             .collect::<Vec<_>>();
         let ingest_started = Instant::now();
-        let _ids = rt.ingest_text_files_one_batch(&batch_files)?;
+        let _ids = rt.ingest_text_files_one_batch(&batch_files)
+            .map_err(|error| stage_or_preserve("build_ingest", error))?;
         let ingest_ms = elapsed_ms(ingest_started);
         let (ingest_decoded_bytes, ingest_wire_bytes) = rt
             .preview_pending_search_corpus_wire_bytes()
@@ -1614,53 +1623,72 @@ pub fn measure_tier_with_runtime_config(
             .seal()
             .map_err(|error| ScaleStageError::operation("build_seal", error))?;
         let build_ms = ingest_ms + elapsed_ms(seal_started);
-        let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
+        let build_bytes_written = directory_bytes(rt.state_root())
+            .map_err(|error| stage_or_preserve("build_io", error))?
+            .saturating_sub(before_build);
         let activation_started = Instant::now();
         rt.activate_last_sealed_generation()
             .map_err(|error| ScaleStageError::operation("build_activate", error))?;
         let activation_ms = elapsed_ms(activation_started);
 
-        let scrape_before_first = rt.metrics_snapshot()?;
+        let scrape_before_first = rt
+            .metrics_snapshot()
+            .map_err(|error| stage_or_preserve("query_first", error))?;
         let first_started = Instant::now();
         let first = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         let first_query_ms = elapsed_ms(first_started);
-        let result_count = validate_scoped_response(&oracle, None, &first)?;
-        let scrape_after_first = rt.metrics_snapshot()?;
-        let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)?;
+        let result_count = validate_scoped_response(&oracle, None, &first)
+            .map_err(|error| stage_or_preserve("query_first", error))?;
+        let scrape_after_first = rt
+            .metrics_snapshot()
+            .map_err(|error| stage_or_preserve("query_first", error))?;
+        let cold_open_ms = optional_cold_open_window(&scrape_before_first, &scrape_after_first)
+            .map_err(|error| stage_or_preserve("query_first", error))?;
         let first_route_ms = histogram_window(
             &scrape_before_first,
             &scrape_after_first,
             "lq_route_lexical_latency_ms",
             1,
-        )?;
+        )
+        .map_err(|error| stage_or_preserve("query_first", error))?;
         let warm_samples = collect_validated_samples(
             WARM_QUERY_SAMPLES,
             || rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K),
             |response| validate_scoped_response(&oracle, None, response).map(|_| ()),
-        )?;
-        let scrape_after_warm = rt.metrics_snapshot()?;
+        )
+        .map_err(|error| stage_or_preserve("query_warm", error))?;
+        let scrape_after_warm = rt
+            .metrics_snapshot()
+            .map_err(|error| stage_or_preserve("query_warm", error))?;
         let warm_route_total_ms = histogram_window(
             &scrape_after_first,
             &scrape_after_warm,
             "lq_route_lexical_latency_ms",
             u64::try_from(WARM_QUERY_SAMPLES)?,
-        )?;
+        )
+        .map_err(|error| stage_or_preserve("query_warm", error))?;
         let warm_query = LatencySummary::from_samples_ms(&warm_samples)
             .ok_or_else(|| anyhow::anyhow!("scale: no warm samples"))?;
 
         // The global top-10 can be dominated by one source repo. These independent
         // probes prove that every declared repo's source files reached the index.
-        verify_scoped_repositories(&mut rt, &oracle)?;
+        verify_scoped_repositories(&mut rt, &oracle)
+            .map_err(|error| stage_or_preserve("repo_probe", error))?;
 
-        let adapter = measure_adapter_phases(&rt, Some(&oracle))?;
+        let adapter = measure_adapter_phases(&rt, Some(&oracle))
+            .map_err(|error| stage_or_preserve("adapter", error))?;
         let delta_file = files
             .first()
             .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
-        let delta = measure_scoped_delta(&mut rt, delta_file)?;
+        let delta = measure_scoped_delta(&mut rt, delta_file)
+            .map_err(|error| stage_or_preserve("delta", error))?;
         let after_delta = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
-        let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)?;
-        verify_scoped_repositories(&mut rt, &oracle)?;
-        let delete_reopen = measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)?;
+        let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)
+            .map_err(|error| stage_or_preserve("delta_verify", error))?;
+        verify_scoped_repositories(&mut rt, &oracle)
+            .map_err(|error| stage_or_preserve("delta_verify", error))?;
+        let delete_reopen = measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)
+            .map_err(|error| stage_or_preserve("delete_reopen", error))?;
         Ok(TierMeasurement {
             tier,
             seed,
@@ -1694,9 +1722,15 @@ pub fn measure_tier_with_runtime_config(
             cpu: None,
             delete_reopen: Some(delete_reopen),
         })
-    })();
-    let mut measurement = finish_runtime_measurement(measurement, rt.stop())?;
-    measurement.cpu = Some(CpuSnapshot::observe()?.elapsed_since(cpu_started)?);
+    })()
+    .map_err(|error| stage_or_preserve("measurement", error));
+    let cleanup = rt.stop().map_err(|error| stage_or_preserve("cleanup", error));
+    let mut measurement = finish_runtime_measurement(measurement, cleanup)?;
+    measurement.cpu = Some(
+        CpuSnapshot::observe()
+            .and_then(|snapshot| snapshot.elapsed_since(cpu_started))
+            .map_err(|error| stage_or_preserve("resource_observation", error))?,
+    );
     Ok(measurement)
 }
 
@@ -1779,9 +1813,9 @@ pub fn refusal_json_with_context(
     execution: Option<&Value>,
 ) -> Value {
     let runtime_failure = error.downcast_ref::<ScaleRuntimeFailure>();
-    let primary = runtime_failure
-        .and_then(|failure| failure.primary.as_ref())
-        .unwrap_or(error);
+    let primary = runtime_failure.map_or(error, |failure| {
+        failure.primary.as_ref().unwrap_or(&failure.cleanup)
+    });
     let stage = primary.downcast_ref::<ScaleStageError>();
     let mut value = json!({
         "kind": format!("quanta-index-{dimension}-failure"),
@@ -2480,6 +2514,32 @@ mod tests {
         assert_eq!(unknown["status"], "failed");
         assert_eq!(unknown["failure"]["stage"], "execution_unclassified");
         assert!(unknown["failure"]["limit"].is_null());
+        let ingest_error = stage_or_preserve("build_ingest", anyhow::anyhow!("fixed ingest failure"));
+        let ingest = refusal_json(&binding, &head, &host, &ingest_error);
+        assert_eq!(ingest["failure"]["stage"], "build_ingest");
+        assert!(ingest["failure"]["limit"].is_null());
+        assert_eq!(ingest["status"], "failed");
+
+        let nested = stage_or_preserve(
+            "delta",
+            anyhow::Error::new(ScaleStageError::source_admission(anyhow::Error::new(
+                check_admission_counts(1, MAX_SCALE_SOURCE_BYTES + 1, 1)
+                    .expect_err("source bound"),
+            ))),
+        );
+        let preserved = refusal_json(&binding, &head, &host, &nested);
+        assert_eq!(preserved["failure"]["stage"], "source_preflight");
+        assert_eq!(preserved["failure"]["limit"], "lexical_total_source_bytes_128m");
+
+        let cleanup = finish_runtime_measurement::<()>(
+            Ok(()),
+            Err(stage_or_preserve("cleanup", anyhow::anyhow!("fixed cleanup failure"))),
+        )
+        .expect_err("cleanup failure must fail the tier");
+        let cleanup_record = refusal_json(&binding, &head, &host, &cleanup);
+        assert_eq!(cleanup_record["failure"]["stage"], "cleanup");
+        assert!(cleanup_record["failure"]["limit"].is_null());
+        assert_eq!(cleanup_record["status"], "failed");
         let build_error = anyhow::Error::new(ScaleStageError::operation(
             "build_seal",
             anyhow::anyhow!("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED"),
