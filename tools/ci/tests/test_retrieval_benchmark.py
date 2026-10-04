@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import copy
 import ctypes
 import hashlib
@@ -6104,10 +6103,7 @@ def _canonical_log_zip(entries: dict[str, bytes]) -> bytes:
 
 def _full_receipts(commit, binary_digest, binary_dir, *, sdk_build_profile=None):
     py_cmd = portable_proof.PYTHON_COMMAND
-    rs_cmd = (
-        "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
-        "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked"
-    )
+    rs_cmd = portable_proof.RUST_COMMAND
     sdk_cmd = (
         "just retrieval-sdk-proof-fresh"
         if sdk_build_profile == "release-fresh"
@@ -12287,23 +12283,14 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
     assert "-q" in local_pytest[0]
     assert "--test chunking_contract" in local
     assert "--test l5_parser_regressions" in local
+    assert "--bin quanta-index-retrieval-bench" in local
     portable_source = (root / "tools/benchmark/retrieval/portable_proof.py").read_text()
     assert "proof_inventory.PYTHON_SELECTORS" in portable_source
-    selectors = [
-        [item.value for item in node.value.elts if isinstance(item, ast.Constant)]
-        for node in ast.walk(ast.parse(portable_source))
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "selector" for target in node.targets)
-        and isinstance(node.value, ast.List)
-    ]
-    assert (
-        sum(
-            ["--test", "chunking_contract"] == selector[index : index + 2]
-            and ["--test", "l5_parser_regressions"] == selector[index + 2 : index + 4]
-            for selector in selectors
-            for index in range(len(selector) - 3)
-        )
-        == 2
+    assert portable_proof.proof_inventory.RUST_SELECTOR == (
+        "-p", "quanta-index-retrieval-bench", "--lib",
+        "--bin", "quanta-index-retrieval-bench",
+        "--test", "chunking_contract", "--test", "l5_parser_regressions",
+        "--all-features", "--locked",
     )
 
 

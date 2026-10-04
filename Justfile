@@ -408,7 +408,7 @@ benchmark-prep-local:
 # rail on a clean source to produce source-bound JUnit/nextest receipts.
 retrieval-contract-local:
     uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_source_oracle_suite.py tools/ci/tests/test_holdout_review.py tools/ci/tests/test_completed_response_timing.py -q
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --lib --test chunking_contract --test l5_parser_regressions --all-features --locked
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --lib --bin quanta-index-retrieval-bench --test chunking_contract --test l5_parser_regressions --all-features --locked
 
 # Retrieval benchmark: real-daemon SDK proof (T05-T07, T10). Builds the
 # pinned searchd + runner binaries first, then runs the live roundtrip and

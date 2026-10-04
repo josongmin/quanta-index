@@ -34,6 +34,13 @@ PYTHON_SELECTORS = (
     "tools/ci/tests/test_completed_response_timing.py",
 )
 PYTHON_SELECTOR = " ".join(PYTHON_SELECTORS)
+RUST_SELECTOR = (
+    "-p", "quanta-index-retrieval-bench", "--lib",
+    "--bin", "quanta-index-retrieval-bench",
+    "--test", "chunking_contract", "--test", "l5_parser_regressions",
+    "--all-features", "--locked",
+)
+RUST_COMMAND = "./scripts/cargow nextest run " + " ".join(RUST_SELECTOR)
 DEFAULT_AUTHORITY = (
     Path(__file__).resolve().parents[3] / "benchmarks/retrieval/proof-required-tests.json"
 )

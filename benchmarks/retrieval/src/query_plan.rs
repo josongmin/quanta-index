@@ -12,7 +12,7 @@
 //!   lexical lane receives a deterministic token-OR plan built from the
 //!   query alone (fixed tokenization, dedup, limits, escaping). Empty or
 //!   over-limit plans are typed refusals; there is no match-all fallback.
-//! * `natural_language_file` — the same token-OR plan with the public
+//! * `natural_language_file` — the same scored keyword-OR plan with the public
 //!   `select:file` projection, scored and deduplicated before top-k.
 //! * `exact_symbol_name` — one bare ASCII identifier becomes a case-sensitive
 //!   exact local-name predicate for the symbol route. Other text refuses.

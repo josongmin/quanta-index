@@ -1165,6 +1165,14 @@ def test_validator_rejects_rewritten_command_and_missing_evidence(fake_execution
     with pytest.raises(ValueError, match="prescribed rail"):
         portable_proof.validate(receipt)
     command["argv"][4] = original
+    build = next(row for row in data["commands"] if row["name"] == "rust-build")
+    original_build = list(build["argv"])
+    bin_index = build["argv"].index("--bin")
+    del build["argv"][bin_index : bin_index + 2]
+    receipt.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="prescribed rail"):
+        portable_proof.validate(receipt)
+    build["argv"] = original_build
     data["raw_evidence"].pop("python-junit.xml")
     receipt.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="raw evidence set"):

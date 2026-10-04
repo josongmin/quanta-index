@@ -53,10 +53,7 @@ SOURCE_CLOSURE_SCRIPT = ROOT / "tools/ci/source_closure.py"
 RECEIPT_WRITER = ROOT / "tools/ci/write-verification-receipt.py"
 WRAPPER = ROOT / "scripts/cargow"
 PYTHON_COMMAND = f"python3 -m pytest {proof_inventory.PYTHON_SELECTOR} -q"
-RUST_COMMAND = (
-    "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
-    "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked"
-)
+RUST_COMMAND = proof_inventory.RUST_COMMAND
 SDK_COMMAND = "just retrieval-sdk-proof"
 SDK_FRESH_COMMAND = "just retrieval-sdk-proof-fresh"
 _ACTIVE_CUSTODY: contextvars.ContextVar[tuple[ToolCustody, dict[str, str]] | None] = (
@@ -771,16 +768,7 @@ def _expected_commands(
         base,
     )
     if rail == "contract":
-        selector = [
-            "-p",
-            PACKAGE,
-            "--lib",
-            "--test",
-            "chunking_contract",
-            "--test",
-            "l5_parser_regressions",
-            *FLAGS,
-        ]
+        selector = list(proof_inventory.RUST_SELECTOR)
         return [
             source,
             (
@@ -1027,16 +1015,7 @@ def _produce(
         )
         python_inventory = _artifact(out, "python-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(python_inventory, "python")
-        selector = [
-            "-p",
-            PACKAGE,
-            "--lib",
-            "--test",
-            "chunking_contract",
-            "--test",
-            "l5_parser_regressions",
-            *FLAGS,
-        ]
+        selector = list(proof_inventory.RUST_SELECTOR)
         build_raw = _run(
             "rust-build",
             _cargo(

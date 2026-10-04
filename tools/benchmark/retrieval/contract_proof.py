@@ -12,6 +12,7 @@ from pathlib import Path
 try:
     from tools.benchmark.retrieval.proof_inventory import (
         PYTHON_SELECTOR,
+        RUST_COMMAND,
         verify_inventory_authority,
     )
     from tools.ci.junit_events import JUnitEvidenceError, parse_pytest_junit_bytes
@@ -25,6 +26,7 @@ except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.benchmark.retrieval.proof_inventory import (
         PYTHON_SELECTOR,
+        RUST_COMMAND,
         verify_inventory_authority,
     )
     from tools.ci.junit_events import JUnitEvidenceError, parse_pytest_junit_bytes
@@ -103,10 +105,7 @@ def nextest_summary(
     except NextestEvidenceError as error:
         raise SystemExit(f"{error}: {path}") from error
     return {
-        "command": (
-            "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
-            "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked"
-        ),
+        "command": RUST_COMMAND,
         "selected": evidence.selected,
         "executed": evidence.executed,
         "passed": evidence.passed,

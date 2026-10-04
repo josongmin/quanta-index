@@ -1,4 +1,4 @@
-//! Source-bound feature extraction and diagnostic rank ablations.
+//! Source-bound typo declaration evidence and ordinary diagnostic rank ablations.
 //!
 //! The selected file scorer remains owned by the parent; study scores are never
 //! silently substituted for its output. Symbol evidence is file-level only.

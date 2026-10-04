@@ -209,7 +209,7 @@ def test_retrieval_local_runs_both_rust_targets_once() -> None:
     )
     commands = completed.stdout + completed.stderr
     assert commands.count("test -p quanta-index-retrieval-bench") == 1
-    assert "--lib --test chunking_contract" in commands
+    assert "--lib --bin quanta-index-retrieval-bench --test chunking_contract" in commands
 
 
 def test_retrieval_source_closure_binds_the_shared_junit_owner() -> None:
