@@ -202,6 +202,12 @@ shared build lock and 212.88 s holding it; those waits/builds are developer
 verification cost, not a benchmark capture interval. The matrix now probes the
 runner before its gold preflight, with a focused test proving that stale binary
 refusal runs neither gold validation nor output creation.
+The actual all-features debug runner built in `test-daemon-lane` (SHA256
+`b036945e4755982fbc66e9ef8a0a14745548b0f389538f076f1abe3d554eb888`)
+returned diagnostic schema 8 through the Python capability probe. A read-only
+attrs `preflight_capture` accepted that binary without creating its prospective
+output root. This proves the positive handshake, not a current-main product
+capture or release-profile performance result.
 
 ## Work and boundaries
 
