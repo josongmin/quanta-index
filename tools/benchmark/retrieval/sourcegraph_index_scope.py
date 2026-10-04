@@ -6,8 +6,18 @@ set. It does not prove every posting, relevance labels, or fair performance.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import math
+import os
 import re
+import secrets
+import selectors
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 from tools.benchmark.evidence import RawFile, _read_control_file, canonical_json, parse_json
@@ -15,6 +25,953 @@ from tools.benchmark.retrieval import sourcegraph
 
 SCOPE = "indexed_path_inventory_and_native_stored_document_bytes"
 MAX_STREAM_BYTES = 16 * 1024 * 1024
+MAX_NATIVE_BODY_BYTES = 16 * 1024 * 1024
+MAX_TOTAL_NATIVE_BYTES = 512 * 1024 * 1024
+MAX_NATIVE_CAPTURE_SECONDS = 3600
+MAX_NATIVE_ROW_SECONDS = 120
+MAX_NATIVE_STDERR_BYTES = 64 * 1024
+MAX_NATIVE_JOBS_BYTES = 16 * 1024 * 1024
+
+_NATIVE_WORKER = """import base64, hashlib, json, os, signal, sys, time, urllib.parse, urllib.request
+limit = 16 * 1024 * 1024
+port = int(sys.argv[1])
+invocation = sys.argv[2]
+cancel_path = "/tmp/qi-sg-owned-reader-" + invocation + ".cancel"
+if os.path.exists(cancel_path):
+    raise SystemExit(7)
+stat = open("/proc/self/stat").read().rpartition(") ")[2].split()
+print(json.dumps({"kind": "native_worker_start", "invocation_id": invocation, "pid": __import__("os").getpid(), "start_ticks": int(stat[19])}, sort_keys=True), file=sys.stderr, flush=True)
+jobs = json.loads(sys.stdin.readline())
+if os.path.exists(cancel_path):
+    raise SystemExit(7)
+def deadline(_signum, _frame):
+    raise TimeoutError("native document read exceeded 120 seconds")
+signal.signal(signal.SIGALRM, deadline)
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, url):
+        return None
+opener = urllib.request.build_opener(NoRedirect)
+for job in jobs:
+    if os.path.exists(cancel_path):
+        raise SystemExit(7)
+    started = time.monotonic()
+    url = "http://127.0.0.1:" + str(port) + "/print?" + urllib.parse.urlencode({"r": "benchmark/" + job["repository"], "f": job["path"], "format": "raw"})
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 120)
+        with opener.open(url, timeout=60) as response:
+            status = response.status
+            body = response.read(limit + 1)
+        if len(body) > limit:
+            raise ValueError("native stored body exceeds 16 MiB")
+        actual = hashlib.sha256(body).hexdigest()
+        row = {**job, "http_status": status, "actual_sha256": actual, "bytes": len(body), "matches": status == 200 and actual == job["file_sha256"], "seconds": time.monotonic() - started, "body_base64": base64.b64encode(body).decode("ascii")}
+    except Exception as error:
+        row = {**job, "matches": False, "error_type": type(error).__name__, "error": str(error), "seconds": time.monotonic() - started}
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    print(json.dumps(row, sort_keys=True, separators=(",", ":")), flush=True)
+"""
+
+
+def _path_stream_inventory(
+    stream: bytes,
+    *,
+    repository: str,
+    revision: str,
+    expected: set[str],
+) -> int:
+    """Use the same terminal/path contract while producing and replaying proof."""
+    if len(stream) > MAX_STREAM_BYTES:
+        raise ValueError("indexed path audit stream exceeds 16 MiB")
+    events = sourcegraph._events(stream)
+    found: list[str] = []
+    progress = None
+    for index, (kind, data) in enumerate(events):
+        if kind == "done":
+            if index != len(events) - 1 or data != {}:
+                raise ValueError("indexed path audit invalid terminal event")
+        elif kind == "alert":
+            raise ValueError("indexed path audit stream alert")
+        elif kind == "progress":
+            if (
+                not isinstance(data, dict)
+                or data.get("skipped")
+                or type(data.get("done")) is not bool
+                or type(data.get("matchCount")) is not int
+                or data["matchCount"] < len(found)
+                or (
+                    progress is not None
+                    and (progress["done"] or data["matchCount"] < progress["matchCount"])
+                )
+            ):
+                raise ValueError("indexed path audit incomplete progress")
+            progress = data
+        elif kind == "matches":
+            if (
+                not isinstance(data, list)
+                or not data
+                or (progress is not None and progress["done"])
+            ):
+                raise ValueError("indexed path audit invalid matches")
+            for hit in data:
+                if (
+                    not isinstance(hit, dict)
+                    or hit.get("type") != "path"
+                    or hit.get("repository") != repository
+                    or hit.get("commit") != revision
+                ):
+                    raise ValueError("indexed path audit hit identity differs")
+                found.append(sourcegraph._path(hit.get("path")))
+    if (
+        not events
+        or events[-1] != ("done", {})
+        or progress is None
+        or progress["done"] is not True
+        or progress["matchCount"] != len(found)
+        or len(found) != len(set(found))
+        or set(found) != expected
+    ):
+        raise ValueError("indexed path audit incomplete or foreign inventory")
+    return len(found)
+
+
+def _write_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as output:
+        output.write(canonical_json(value).encode("utf-8") + b"\n")
+
+
+def _bounded_path_request(config: dict, query: str) -> tuple[int, str, bytes]:
+    """Run the authenticated request in an owned, wall-bounded child process."""
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    child = """import json,sys
+sys.path.insert(0, sys.argv[1])
+from tools.benchmark.retrieval import live_lexical_external as live
+config = json.loads(sys.argv[2]); query = sys.argv[3]
+status, content_type, raw, _elapsed = live._http(config, "/.api/search/stream", {"q": query, "v": "V3"}, "text/event-stream", "token")
+sys.stdout.buffer.write(json.dumps({"status": status, "content_type": content_type, "bytes": len(raw)}, separators=(",", ":")).encode() + b"\\n" + raw)
+"""
+    code, output, stderr, _elapsed = live._process(
+        [
+            sys.executable,
+            "-c",
+            child,
+            str(Path(__file__).resolve().parents[3]),
+            json.dumps(config, separators=(",", ":")),
+            query,
+        ],
+        120,
+    )
+    header, separator, raw = output.partition(b"\n")
+    if code != 0 or stderr or not separator:
+        raise ValueError("indexed path request process failed or was incomplete")
+    metadata = parse_json(header.decode("utf-8", "strict"))
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != {"status", "content_type", "bytes"}
+        or type(metadata["status"]) is not int
+        or not isinstance(metadata["content_type"], str)
+        or type(metadata["bytes"]) is not int
+        or metadata["bytes"] != len(raw)
+    ):
+        raise ValueError("indexed path request transport metadata differs")
+    return metadata["status"], metadata["content_type"], raw
+
+
+def _container_binary_sha(container_id: str, binary_path: str) -> str:
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    script = (
+        "import hashlib,sys; h=hashlib.sha256(); "
+        "f=open(sys.argv[1],'rb'); "
+        "[h.update(b) for b in iter(lambda:f.read(1048576),b'')]; "
+        "print(h.hexdigest())"
+    )
+    code, stdout, stderr, _elapsed = live._process(
+        ["docker", "exec", container_id, "python3", "-c", script, binary_path], 60
+    )
+    value = stdout.decode("ascii", "strict").strip()
+    if code != 0 or stderr or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError("deployed Zoekt binary cannot be bound")
+    return value
+
+
+def _native_server_process(container_id: str, port: int, binary_sha: str | None = None) -> dict:
+    """Bind the in-container listening socket to its executable and PID."""
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    script = """import hashlib,json,os,sys
+port = int(sys.argv[1]); expected = sys.argv[2]
+inodes = set()
+for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    try:
+        rows = open(table).read().splitlines()[1:]
+    except OSError:
+        continue
+    for line in rows:
+        fields = line.split()
+        if len(fields) > 9 and int(fields[1].rsplit(":", 1)[1], 16) == port and fields[3] == "0A":
+            inodes.add(fields[9])
+owners = []
+for name in os.listdir("/proc"):
+    if not name.isdigit():
+        continue
+    directory = "/proc/" + name + "/fd"
+    try:
+        linked = {os.readlink(directory + "/" + fd) for fd in os.listdir(directory)}
+    except OSError:
+        continue
+    if not any("socket:[" + inode + "]" in linked for inode in inodes):
+        continue
+    h = hashlib.sha256()
+    with open("/proc/" + name + "/exe", "rb") as binary:
+        for block in iter(lambda: binary.read(1048576), b""):
+            h.update(block)
+    stat = open("/proc/" + name + "/stat").read().rpartition(") ")[2].split()
+    owners.append({"pid": int(name), "start_ticks": int(stat[19]), "exe_sha256": h.hexdigest()})
+if len(inodes) != 1 or len(owners) != 1 or (expected != "-" and owners[0]["exe_sha256"] != expected):
+    raise SystemExit(2)
+print(json.dumps({"port": port, **owners[0]}, sort_keys=True))
+"""
+    code, stdout, stderr, _elapsed = live._process(
+        ["docker", "exec", container_id, "python3", "-c", script, str(port), binary_sha or "-"],
+        60,
+    )
+    if code != 0 or stderr:
+        raise ValueError("native Zoekt listener is not bound to the deployed binary")
+    row = parse_json(stdout.decode("utf-8", "strict"))
+    if (
+        not isinstance(row, dict)
+        or set(row) != {"port", "pid", "start_ticks", "exe_sha256"}
+        or type(row["port"]) is not int
+        or row["port"] != port
+        or type(row["pid"]) is not int
+        or row["pid"] <= 0
+        or type(row["start_ticks"]) is not int
+        or row["start_ticks"] <= 0
+        or re.fullmatch(r"[0-9a-f]{64}", row["exe_sha256"]) is None
+        or (binary_sha is not None and row["exe_sha256"] != binary_sha)
+    ):
+        raise ValueError("native Zoekt listener process identity differs")
+    return row
+
+
+def _native_worker_row(line: bytes, job: dict) -> tuple[dict, bytes]:
+    max_line = (MAX_NATIVE_BODY_BYTES * 4 // 3) + 8192
+    if not line or len(line) > max_line:
+        raise ValueError("native Zoekt worker response is missing or exceeds bound")
+    item = parse_json(line.decode("utf-8", "strict"))
+    if not isinstance(item, dict) or set(item) != {
+        "repository",
+        "path",
+        "file_sha256",
+        "http_status",
+        "actual_sha256",
+        "bytes",
+        "matches",
+        "seconds",
+        "body_base64",
+    }:
+        raise ValueError("native Zoekt worker row shape differs")
+    encoded = item.pop("body_base64")
+    if not isinstance(encoded, str):
+        raise ValueError("native Zoekt worker omitted stored bytes")
+    try:
+        body = base64.b64decode(encoded, validate=True)
+    except binascii.Error as error:
+        raise ValueError("native Zoekt worker body encoding differs") from error
+    if (
+        len(body) > MAX_NATIVE_BODY_BYTES
+        or item["repository"] != job["repository"]
+        or item["path"] != job["path"]
+        or item["file_sha256"] != job["file_sha256"]
+        or type(item["http_status"]) is not int
+        or item["http_status"] != 200
+        or item["matches"] is not True
+        or item["actual_sha256"] != sourcegraph.sha256(body)
+        or item["actual_sha256"] != job["file_sha256"]
+        or type(item["bytes"]) is not int
+        or item["bytes"] != len(body)
+        or type(item["seconds"]) not in (int, float)
+        or not math.isfinite(item["seconds"])
+        or item["seconds"] < 0
+    ):
+        raise ValueError("native Zoekt stored bytes differ from manifest")
+    return item, body
+
+
+def _drain_native_worker(
+    argv: list[str],
+    jobs: list[dict],
+    root: Path,
+    *,
+    capture_seconds: float = MAX_NATIVE_CAPTURE_SECONDS,
+    row_seconds: float = MAX_NATIVE_ROW_SECONDS,
+    invocation_id: str | None = None,
+) -> tuple[int, dict | None]:
+    """Drain only the owned reader process with actual wall and byte bounds."""
+    payload = json.dumps(jobs, separators=(",", ":")).encode() + b"\n"
+    if len(payload) > MAX_NATIVE_JOBS_BYTES or capture_seconds <= 0 or row_seconds <= 0:
+        raise ValueError("native Zoekt worker input or deadline exceeds bound")
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        process.kill()
+        process.wait()
+        raise ValueError("native Zoekt worker pipes are unavailable")
+    started = time.monotonic()
+    deadline = started + capture_seconds
+    row_deadline = started + row_seconds
+    input_offset = 0
+    row_index = 0
+    total_body_bytes = 0
+    total_stdout_bytes = 0
+    stderr = bytearray()
+    line_buffer = bytearray()
+    max_line = (MAX_NATIVE_BODY_BYTES * 4 // 3) + 8192
+    max_stdout = (MAX_TOTAL_NATIVE_BYTES * 4 // 3) + len(jobs) * 8192
+    bodies_root = root / "native-file-bodies" / jobs[0]["repository"]
+    bodies_root.mkdir(parents=True)
+    try:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            os.set_blocking(stream.fileno(), False)
+        with (
+            selectors.DefaultSelector() as selector,
+            (root / "native-rows.jsonl").open("xb") as rows_file,
+        ):
+            selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+            while selector.get_map():
+                remaining = min(deadline, row_deadline) - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError("native Zoekt worker exceeded wall or row deadline")
+                for key, _events in selector.select(remaining):
+                    stream = key.fileobj
+                    if key.data == "stdin":
+                        try:
+                            written = os.write(
+                                stream.fileno(), payload[input_offset : input_offset + 65536]
+                            )
+                        except BrokenPipeError as error:
+                            raise ValueError("native Zoekt worker closed before input") from error
+                        if written <= 0:
+                            raise ValueError("native Zoekt worker accepted no input")
+                        input_offset += written
+                        if input_offset == len(payload):
+                            selector.unregister(stream)
+                            stream.close()
+                        continue
+                    chunk = os.read(stream.fileno(), 65536)
+                    if not chunk:
+                        selector.unregister(stream)
+                        continue
+                    if key.data == "stderr":
+                        stderr.extend(chunk)
+                        if len(stderr) > MAX_NATIVE_STDERR_BYTES:
+                            raise ValueError("native Zoekt worker stderr exceeds bound")
+                        continue
+                    total_stdout_bytes += len(chunk)
+                    if total_stdout_bytes > max_stdout:
+                        raise ValueError("native Zoekt worker total output exceeds bound")
+                    line_buffer.extend(chunk)
+                    while newline := line_buffer.find(b"\n") + 1:
+                        if newline > max_line or row_index >= len(jobs):
+                            raise ValueError("native Zoekt worker returned extra or oversized row")
+                        line = bytes(line_buffer[:newline])
+                        del line_buffer[:newline]
+                        item, body = _native_worker_row(line, jobs[row_index])
+                        total_body_bytes += len(body)
+                        if total_body_bytes > MAX_TOTAL_NATIVE_BYTES:
+                            raise ValueError("native Zoekt audit exceeds total byte bound")
+                        body_path = bodies_root / jobs[row_index]["path"]
+                        body_path.parent.mkdir(parents=True, exist_ok=True)
+                        with body_path.open("xb") as body_file:
+                            body_file.write(body)
+                        rows_file.write(canonical_json(item).encode() + b"\n")
+                        row_index += 1
+                        row_deadline = time.monotonic() + row_seconds
+                    if len(line_buffer) > max_line:
+                        raise ValueError("native Zoekt worker unterminated row exceeds bound")
+            if line_buffer or row_index != len(jobs) or input_offset != len(payload):
+                raise ValueError("native Zoekt worker omitted or truncated rows")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError("native Zoekt worker exceeded wall deadline")
+        try:
+            code = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as error:
+            raise ValueError("native Zoekt worker exceeded wall deadline") from error
+        if code != 0:
+            raise ValueError("native Zoekt worker failed")
+        identity = None
+        if invocation_id is None:
+            if stderr:
+                raise ValueError("native Zoekt worker wrote unexpected stderr")
+        else:
+            try:
+                identity = parse_json(stderr.decode("utf-8", "strict"))
+            except (ValueError, UnicodeDecodeError) as error:
+                raise ValueError("native Zoekt worker omitted start identity") from error
+            if (
+                not isinstance(identity, dict)
+                or set(identity) != {"kind", "invocation_id", "pid", "start_ticks"}
+                or identity["kind"] != "native_worker_start"
+                or identity["invocation_id"] != invocation_id
+                or type(identity["pid"]) is not int
+                or identity["pid"] <= 0
+                or type(identity["start_ticks"]) is not int
+                or identity["start_ticks"] <= 0
+            ):
+                raise ValueError("native Zoekt worker start identity differs")
+    except BaseException:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+        raise
+    finally:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            stream.close()
+    return row_index, identity
+
+
+def _cleanup_owned_reader(
+    container_id: str,
+    invocation_id: str,
+    port: int,
+    worker_sha: str,
+    identity: dict | None,
+) -> dict:
+    """Inspect and stop only the exact in-container Python reader invocation."""
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    script = """import hashlib,json,os,signal,sys,time
+token, port, worker_sha = sys.argv[1:4]
+expected_pid, expected_ticks = int(sys.argv[4]), int(sys.argv[5])
+cancel_path = "/tmp/qi-sg-owned-reader-" + token + ".cancel"
+try:
+    cancel_fd = os.open(cancel_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+except FileExistsError:
+    raise SystemExit(8)
+try:
+    os.write(cancel_fd, token.encode())
+    os.fsync(cancel_fd)
+finally:
+    os.close(cancel_fd)
+def identity(pid):
+    try:
+        raw = open("/proc/" + str(pid) + "/stat").read()
+    except OSError:
+        return None
+    fields = raw.rpartition(") ")[2].split()
+    return {"start_ticks": int(fields[19]), "state": fields[0]}
+def worker_argv(pid):
+    try:
+        argv = open("/proc/" + str(pid) + "/cmdline", "rb").read().split(b"\\0")
+    except OSError:
+        return None
+    return (len(argv) >= 5 and argv[1] == b"-c" and argv[3] == port.encode()
+            and argv[4] == token.encode()
+            and hashlib.sha256(argv[2]).hexdigest() == worker_sha)
+matches = []
+for name in os.listdir("/proc"):
+    if not name.isdigit():
+        continue
+    if worker_argv(int(name)) is not True:
+        continue
+    observed = identity(int(name))
+    if observed is not None:
+        matches.append({"pid": int(name), **observed})
+if len(matches) > 1:
+    raise SystemExit(3)
+if matches and expected_pid and (matches[0]["pid"], matches[0]["start_ticks"]) != (expected_pid, expected_ticks):
+    raise SystemExit(4)
+for row in matches:
+    if row["state"] != "Z":
+        try:
+            process_fd = os.pidfd_open(row["pid"])
+        except ProcessLookupError:
+            continue
+        try:
+            current = identity(row["pid"])
+            if current is None or current["state"] == "Z":
+                continue
+            if current["start_ticks"] != row["start_ticks"] or worker_argv(row["pid"]) is not True:
+                raise SystemExit(9)
+            try:
+                signal.pidfd_send_signal(process_fd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        finally:
+            os.close(process_fd)
+for _ in range(50):
+    if all((current := identity(row["pid"])) is None or current["start_ticks"] != row["start_ticks"] or current["state"] == "Z" for row in matches):
+        break
+    time.sleep(0.1)
+else:
+    raise SystemExit(5)
+if expected_pid:
+    current = identity(expected_pid)
+    if current is not None and current["start_ticks"] == expected_ticks and current["state"] != "Z":
+        raise SystemExit(6)
+print(json.dumps({"invocation_id": token, "matched": matches, "stopped": True, "tombstone_created": True}, sort_keys=True))
+"""
+    expected_pid = identity["pid"] if identity is not None else 0
+    expected_ticks = identity["start_ticks"] if identity is not None else 0
+    code, output, stderr, _elapsed = live._process(
+        [
+            "docker",
+            "exec",
+            container_id,
+            "python3",
+            "-c",
+            script,
+            invocation_id,
+            str(port),
+            worker_sha,
+            str(expected_pid),
+            str(expected_ticks),
+        ],
+        30,
+    )
+    if code != 0 or stderr:
+        raise ValueError("owned remote Zoekt reader cleanup could not be proved")
+    result = parse_json(output.decode("utf-8", "strict"))
+    if (
+        not isinstance(result, dict)
+        or set(result) != {"invocation_id", "matched", "stopped", "tombstone_created"}
+        or result["invocation_id"] != invocation_id
+        or result["stopped"] is not True
+        or result["tombstone_created"] is not True
+        or not isinstance(result["matched"], list)
+        or len(result["matched"]) > 1
+    ):
+        raise ValueError("owned remote Zoekt reader cleanup differs")
+    return result
+
+
+def _native_stored_content(
+    root: Path,
+    *,
+    config: dict,
+    manifest_path: Path,
+    manifest_raw: bytes,
+    files: list[dict],
+    repository: str,
+    release_digest: str,
+    snapshot: dict,
+    native_port: int,
+    native_binary_path: str | None,
+    control_sha256: dict[str, str],
+) -> tuple[str, str]:
+    """Read bounded raw documents from the current container's Zoekt print API."""
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    runtime = snapshot["runtime"]
+    container_id = runtime["container_id"]
+    native = {
+        "container_id": container_id,
+        "image_id": "sha256:" + runtime["image_sha256"],
+        "started_at": runtime["started_at"],
+        "restart_count": runtime["restart_count"],
+        "pid": runtime["pid"],
+        "mounts": [
+            {
+                "Type": "bind",
+                "Source": runtime["mount_source"],
+                "Destination": runtime["mount_destination"],
+                "RW": False,
+            }
+        ],
+    }
+    native_index = {"runtime": native, "files": snapshot["files"]}
+    _write_json(root / "native-index-before.json", native_index)
+    server_process = _native_server_process(container_id, native_port)
+    binary_sha = server_process["exe_sha256"]
+    if (
+        native_binary_path is not None
+        and _container_binary_sha(container_id, native_binary_path) != binary_sha
+    ):
+        raise ValueError("operator supplied Zoekt binary differs from listening executable")
+    binary_source = native_binary_path or f"/proc/{server_process['pid']}/exe"
+    copied_code, _copied_stdout, _copied_stderr, _elapsed = live._process(
+        ["docker", "cp", "-L", f"{container_id}:{binary_source}", str(root / "zoekt-webserver")],
+        60,
+    )
+    binary_file = root / "zoekt-webserver"
+    if (
+        copied_code != 0
+        or not binary_file.is_file()
+        or binary_file.is_symlink()
+        or RawFile.capture(binary_file).sha256 != "sha256:" + binary_sha
+    ):
+        raise ValueError("deployed Zoekt binary bytes differ")
+    with (root / "native-worker.py").open("x", encoding="utf-8") as worker_file:
+        worker_file.write(_NATIVE_WORKER)
+    script_file = root / "probe_native_contents.py"
+    producer_source = Path(__file__).read_bytes()
+    with script_file.open("xb") as script_output:
+        script_output.write(producer_source)
+    jobs = [{"repository": repository, **row} for row in files]
+    invocation_id = secrets.token_hex(16)
+    worker_sha = sourcegraph.sha256(_NATIVE_WORKER.encode())
+    _write_json(
+        root / "precommit.json",
+        {
+            "scope": "Zoekt indexed document payload, not gitserver source",
+            "qualified": False,
+            "manifest_sha256": {str(manifest_path): sourcegraph.sha256(manifest_raw)},
+            "control_sha256": control_sha256,
+            "script_sha256": sourcegraph.sha256(script_file.read_bytes()),
+            "worker_sha256": worker_sha,
+            "reader_invocation_id": invocation_id,
+            "native_binary_sha256": binary_sha,
+            "native_server_process": server_process,
+            "native_runtime": native,
+            "tasks": len(jobs),
+            "worker_concurrency": 1,
+        },
+    )
+    try:
+        rows, reader_identity = _drain_native_worker(
+            [
+                "docker",
+                "exec",
+                "-i",
+                container_id,
+                "python3",
+                "-c",
+                _NATIVE_WORKER,
+                str(native_port),
+                invocation_id,
+            ],
+            jobs,
+            root,
+            invocation_id=invocation_id,
+        )
+    except BaseException as worker_error:
+        try:
+            _cleanup_owned_reader(container_id, invocation_id, native_port, worker_sha, None)
+        except (OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
+            raise ValueError(
+                "native reader failed and remote cleanup is unverified"
+            ) from cleanup_error
+        raise worker_error
+    cleanup = _cleanup_owned_reader(
+        container_id, invocation_id, native_port, worker_sha, reader_identity
+    )
+    current = live._backend_snapshot(config)
+    if (
+        rows != len(files)
+        or (
+            native_binary_path is not None
+            and _container_binary_sha(container_id, native_binary_path) != binary_sha
+        )
+        or _native_server_process(container_id, native_port, binary_sha) != server_process
+        or current != snapshot
+        or Path(__file__).read_bytes() != producer_source
+    ):
+        raise ValueError("native Zoekt worker coverage, binary or producer changed")
+    current_runtime = current["runtime"]
+    after_native = {
+        "runtime": {
+            **native,
+            "container_id": current_runtime["container_id"],
+            "image_id": "sha256:" + current_runtime["image_sha256"],
+            "started_at": current_runtime["started_at"],
+            "restart_count": current_runtime["restart_count"],
+            "pid": current_runtime["pid"],
+        },
+        "files": current["files"],
+    }
+    _write_json(root / "native-index-after.json", after_native)
+    rows_sha = sourcegraph.sha256((root / "native-rows.jsonl").read_bytes())
+    _write_json(
+        root / "owned-probe-cleanup.json",
+        {
+            "deployed_binary_sha256": binary_sha,
+            "only_owned_reader_stopped": True,
+            "reader_invocation_id": invocation_id,
+            "reader_identity": reader_identity,
+            "remote_cleanup": cleanup,
+        },
+    )
+    _write_json(
+        root / "result.json",
+        {
+            "status": "VERIFIED",
+            "qualified": False,
+            "bindings_unchanged": True,
+            "failures": [],
+            "worker_exit": 0,
+            "release_digest": release_digest,
+            "rows_sha256": rows_sha,
+            "control_sha256": control_sha256,
+            "native_server_process": server_process,
+            "reader_invocation_id": invocation_id,
+            "reader_identity": reader_identity,
+            "expected_files": len(files),
+            "observed_files": rows,
+            "matched_files": rows,
+        },
+    )
+    return binary_sha, rows_sha
+
+
+def capture_from_live_spec(
+    live_spec_path: Path,
+    output_root: Path,
+    *,
+    native_port: int,
+    native_binary_path: str | None = None,
+    scope_spec: bool = False,
+) -> Path:
+    """Produce the existing v1 scope receipt from a live Sourcegraph/Zoekt service.
+
+    The live query spec supplies the corpus, authenticated Sourcegraph endpoint,
+    exact projection, and Docker/index authority. The caller supplies the
+    observed in-container Zoekt print port; the listener executable is read
+    from its procfs PID. An optional binary path is checked against that PID.
+    No receipt is issued if any
+    request, native body, or before/after identity is incomplete.
+    """
+    from tools.benchmark.retrieval import lexical_file_comparison as lexical
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    corpus_binding = live.corpus_binding
+    corpus_release = live.corpus_release
+
+    if type(native_port) is not int or not 1 <= native_port <= 65535:
+        raise ValueError("native Zoekt print port is invalid")
+    if native_binary_path is not None and (
+        not isinstance(native_binary_path, str)
+        or not native_binary_path.startswith("/")
+        or ".." in Path(native_binary_path).parts
+    ):
+        raise ValueError("native Zoekt binary path must be canonical absolute")
+    output_root = _absolute(str(output_root))
+    spec_before = RawFile.capture(live_spec_path)
+    if scope_spec:
+        selected = parse_json(_read_control_file(live_spec_path).decode("utf-8"))
+        if (
+            not isinstance(selected, dict)
+            or set(selected)
+            != {
+                "schema_version",
+                "corpus",
+                "sourcegraph",
+            }
+            or selected["schema_version"] != 1
+        ):
+            raise ValueError("Sourcegraph index scope input spec differs")
+        corpus_binding._selection(selected["corpus"])
+        selected["sourcegraph"] = live._service(
+            selected["sourcegraph"],
+            {"base_url", "repository", "server_image_digest"},
+            {"backend_snapshot", "projection_git_root"},
+        )
+        spec = selected
+    else:
+        spec = live._spec(live_spec_path)
+        if "sourcegraph" not in live._selected_products(spec):
+            raise ValueError("index scope capture requires a selected Sourcegraph product")
+    config = spec["sourcegraph"]
+    if (
+        "backend_snapshot" not in config
+        or "projection_git_root" not in config
+        or "token_file" not in config
+        or "indexed_scope_receipt" in config
+    ):
+        raise ValueError("index scope capture requires fresh backend, projection and token inputs")
+    release = Path(spec["corpus"]["release_path"])
+    driver_root = Path(__file__).resolve().parents[3]
+    input_paths = [
+        live_spec_path,
+        release,
+        Path(config["backend_snapshot"]["root"]),
+        Path(config["projection_git_root"]),
+    ]
+    if not scope_spec:
+        input_paths.extend((Path(spec["suite"]), Path(spec["query_pack"])))
+    for input_path in input_paths:
+        if input_path.resolve().is_relative_to(driver_root):
+            raise ValueError("index scope inputs must stay outside the driver checkout")
+    if (
+        output_root.exists()
+        or output_root.is_symlink()
+        or output_root.resolve().is_relative_to(driver_root)
+        or any(
+            output_root.resolve().is_relative_to(input_path.resolve())
+            or input_path.resolve().is_relative_to(output_root.resolve())
+            for input_path in (
+                release,
+                *((Path(spec["output_root"]),) if not scope_spec else ()),
+                Path(config["backend_snapshot"]["root"]),
+                Path(config["projection_git_root"]),
+            )
+        )
+    ):
+        raise ValueError("index scope output must be fresh and disjoint")
+    document = corpus_release.validate(release)
+    if document["digest"] != spec["corpus"]["release_digest"]:
+        raise ValueError("index scope release digest differs")
+    repo = spec["corpus"]["repository"]
+    matches = [row for row in document["repositories"] if row["recipe"]["name"] == repo]
+    if len(matches) != 1 or config["repository"] != "benchmark/" + repo:
+        raise ValueError("index scope selected repository differs")
+    view = spec["corpus"]["view"]
+    manifest_path = release / matches[0]["views"][view]["manifest"]
+    manifest_raw = _read_control_file(manifest_path)
+    manifest = parse_json(manifest_raw.decode("utf-8"))
+    files = sourcegraph._files(manifest["files"], "index scope manifest")
+    if not scope_spec:
+        suite_raw = _read_control_file(Path(spec["suite"]))
+        pack_raw = _read_control_file(Path(spec["query_pack"]))
+        corpus_binding._bind(document, manifest_raw, spec["corpus"], suite_raw, pack_raw)
+        if set(row["path"] for row in files) != lexical._file_universe(
+            parse_json(suite_raw.decode()), parse_json(pack_raw.decode())
+        ):
+            raise ValueError("index scope manifest differs from live query universe")
+    projection = live._projection_binding(config, manifest)
+    if projection is None or projection["source_revision"] != manifest["repository_commit"]:
+        raise ValueError("index scope projection differs from source")
+    control_paths = (
+        live_spec_path,
+        release / "release.json",
+        manifest_path,
+        *((Path(spec["suite"]), Path(spec["query_pack"])) if not scope_spec else ()),
+        Path(config["token_file"]),
+        Path(__file__),
+        Path(live.__file__),
+        Path(sourcegraph.__file__),
+        Path(corpus_binding.__file__),
+        Path(corpus_release.__file__),
+        Path(lexical.__file__),
+    )
+    controls = {
+        str(path.resolve(strict=True)): RawFile.capture(path).sha256.removeprefix("sha256:")
+        for path in control_paths
+    }
+    if len(controls) != len(control_paths):
+        raise ValueError("index scope control files overlap")
+    before = live._backend_snapshot(config)
+    live._validate_backend_snapshot(config, before)
+    output_root.mkdir(parents=True)
+    path_root = output_root / "path-audit"
+    native_root = output_root / "native-audit"
+    path_root.mkdir()
+    native_root.mkdir()
+    _write_json(path_root / "native-index-before.json", before)
+    revision = projection["projection_revision"]
+    query = f".* repo:^benchmark/{repo}$ rev:{revision} type:path patternType:regexp count:all"
+    status, content_type, stream = _bounded_path_request(config, query)
+    if status != 200 or content_type != "text/event-stream":
+        raise ValueError("indexed path audit HTTP response differs")
+    count = _path_stream_inventory(
+        stream,
+        repository=config["repository"],
+        revision=revision,
+        expected={row["path"] for row in files},
+    )
+    with (path_root / f"{repo}.stream").open("xb") as stream_file:
+        stream_file.write(stream)
+    path_after = live._backend_snapshot(config)
+    live._validate_backend_snapshot(config, path_after)
+    _write_json(path_root / "native-index-after.json", path_after)
+    if path_after != before:
+        raise ValueError("index or process changed during path inventory")
+    _write_json(
+        path_root / "summary.json",
+        {
+            "qualified": False,
+            "status": "path_index_observed",
+            "release_digest": document["digest"],
+            "server_image_digest": config["server_image_digest"],
+            "native_index_sha256": before["tree_sha256"],
+            "repositories": [
+                {
+                    "repository": repo,
+                    "source_commit": manifest["repository_commit"],
+                    "projection_commit": revision,
+                    "files": count,
+                    "native_match_count": count,
+                    "raw_stream_sha256": sourcegraph.sha256(stream),
+                    "query": query,
+                }
+            ],
+        },
+    )
+    binary_sha, rows_sha = _native_stored_content(
+        native_root,
+        config=config,
+        manifest_path=manifest_path,
+        manifest_raw=manifest_raw,
+        files=files,
+        repository=repo,
+        release_digest=document["digest"],
+        snapshot=before,
+        native_port=native_port,
+        native_binary_path=native_binary_path,
+        control_sha256=controls,
+    )
+    after = live._backend_snapshot(config)
+    live._validate_backend_snapshot(config, after)
+    if after != before:
+        raise ValueError("index or process changed during native body audit")
+    if RawFile.capture(live_spec_path) != spec_before:
+        raise ValueError("live Sourcegraph capture spec changed during native audit")
+    if (
+        {name: RawFile.capture(Path(name)).sha256.removeprefix("sha256:") for name in controls}
+        != controls
+        or corpus_release.validate(release) != document
+        or live._projection_binding(config, manifest) != projection
+    ):
+        raise ValueError("index scope source or control files changed during native audit")
+    native_before_path = native_root / "native-index-before.json"
+    receipt = native_root / "receipt.json"
+    _write_json(
+        receipt,
+        {
+            "schema": "external_index_scope_v1",
+            "backend": "sourcegraph_zoekt",
+            "scope": SCOPE,
+            "qualified_comparison": False,
+            "release_digest": document["digest"],
+            "repository": repo,
+            "repository_commit": manifest["repository_commit"],
+            "corpus_manifest_sha256": sourcegraph.sha256(manifest_raw),
+            "files": files,
+            "native_index_inventory_sha256": sourcegraph.sha256(native_before_path.read_bytes()),
+            "native_runtime": parse_json(native_before_path.read_text())["runtime"],
+            "native_binary_sha256": binary_sha,
+            "native_capture_root": str(native_root),
+            "native_rows_sha256": rows_sha,
+            "path_inventory_proof": str(path_root / "summary.json"),
+            "limitations": [
+                "No assertion of every posting's correctness",
+                "No human qrels claim",
+                "No speed qualification",
+            ],
+        },
+    )
+    verify(
+        receipt,
+        manifest_raw=manifest_raw,
+        release_digest=document["digest"],
+        config=config,
+        projection=projection,
+        snapshot=before,
+    )
+    return receipt
 
 
 def _absolute(value: object) -> Path:
@@ -159,6 +1116,73 @@ def _verify(
     precommit = document(root / "precommit.json")
     result = document(root / "result.json")
     cleanup = document(root / "owned-probe-cleanup.json")
+    server_process = precommit.get("native_server_process")
+    if server_process is not None or "native_server_process" in result:
+        if (
+            not isinstance(server_process, dict)
+            or set(server_process) != {"port", "pid", "start_ticks", "exe_sha256"}
+            or type(server_process["port"]) is not int
+            or not 1 <= server_process["port"] <= 65535
+            or type(server_process["pid"]) is not int
+            or server_process["pid"] <= 0
+            or type(server_process["start_ticks"]) is not int
+            or server_process["start_ticks"] <= 0
+            or server_process["exe_sha256"] != receipt["native_binary_sha256"]
+            or result.get("native_server_process") != server_process
+        ):
+            raise ValueError("native Zoekt listener process proof differs")
+    controls = precommit.get("control_sha256")
+    if controls is not None or "control_sha256" in result:
+        if (
+            not isinstance(controls, dict)
+            or not controls
+            or result.get("control_sha256") != controls
+            or any(
+                not isinstance(name, str)
+                or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                or RawFile.capture(_absolute(name)).sha256 != "sha256:" + value
+                for name, value in controls.items()
+            )
+        ):
+            raise ValueError("native content audit control bytes differ")
+    invocation = precommit.get("reader_invocation_id")
+    if (
+        invocation is not None
+        or "reader_invocation_id" in result
+        or "reader_invocation_id" in cleanup
+    ):
+        reader = result.get("reader_identity")
+        remote = cleanup.get("remote_cleanup")
+        if (
+            not isinstance(invocation, str)
+            or re.fullmatch(r"[0-9a-f]{32}", invocation) is None
+            or result.get("reader_invocation_id") != invocation
+            or cleanup.get("reader_invocation_id") != invocation
+            or not isinstance(reader, dict)
+            or set(reader) != {"kind", "invocation_id", "pid", "start_ticks"}
+            or reader["kind"] != "native_worker_start"
+            or reader["invocation_id"] != invocation
+            or type(reader["pid"]) is not int
+            or reader["pid"] <= 0
+            or type(reader["start_ticks"]) is not int
+            or reader["start_ticks"] <= 0
+            or cleanup.get("reader_identity") != reader
+            or not isinstance(remote, dict)
+            or set(remote) != {"invocation_id", "matched", "stopped", "tombstone_created"}
+            or remote["invocation_id"] != invocation
+            or remote["stopped"] is not True
+            or remote["tombstone_created"] is not True
+            or not isinstance(remote["matched"], list)
+            or len(remote["matched"]) > 1
+            or any(
+                not isinstance(match, dict)
+                or match.get("pid") != reader["pid"]
+                or match.get("start_ticks") != reader["start_ticks"]
+                or match.get("state") not in ("R", "S", "D", "I", "T", "Z")
+                for match in remote["matched"]
+            )
+        ):
+            raise ValueError("native content audit owned reader cleanup differs")
     if (
         precommit["native_runtime"] != native
         or precommit["native_binary_sha256"] != receipt["native_binary_sha256"]
@@ -279,53 +1303,14 @@ def _verify(
         != f".* repo:^benchmark/{repo}$ rev:{revision} type:path patternType:regexp count:all"
     ):
         raise ValueError("indexed path audit request identity differs")
-    events = sourcegraph._events(stream)
-    found: list[str] = []
-    progress = None
-    for index, (kind, data) in enumerate(events):
-        if kind == "done":
-            if index != len(events) - 1 or data != {}:
-                raise ValueError("indexed path audit invalid terminal event")
-        elif kind == "alert":
-            raise ValueError("indexed path audit stream alert")
-        elif kind == "progress":
-            if (
-                not isinstance(data, dict)
-                or data.get("skipped")
-                or type(data.get("done")) is not bool
-                or type(data.get("matchCount")) is not int
-                or data["matchCount"] < len(found)
-                or (
-                    progress is not None
-                    and (progress["done"] or data["matchCount"] < progress["matchCount"])
-                )
-            ):
-                raise ValueError("indexed path audit incomplete progress")
-            progress = data
-        elif kind == "matches":
-            if (
-                not isinstance(data, list)
-                or not data
-                or (progress is not None and progress["done"])
-            ):
-                raise ValueError("indexed path audit invalid matches")
-            for hit in data:
-                if (
-                    not isinstance(hit, dict)
-                    or hit.get("type") != "path"
-                    or hit.get("repository") != config["repository"]
-                    or hit.get("commit") != revision
-                ):
-                    raise ValueError("indexed path audit hit identity differs")
-                found.append(sourcegraph._path(hit.get("path")))
     if (
-        events[-1][0] != "done"
-        or progress is None
-        or progress["done"] is not True
-        or progress["matchCount"] != path_row["native_match_count"]
-        or progress["matchCount"] != len(found)
-        or len(found) != len(set(found))
-        or set(found) != set(expected)
+        _path_stream_inventory(
+            stream,
+            repository=config["repository"],
+            revision=revision,
+            expected=set(expected),
+        )
+        != path_row["native_match_count"]
     ):
         raise ValueError("indexed path audit incomplete or foreign inventory")
     for item in commitments.values():
@@ -348,3 +1333,32 @@ def _verify(
         "projection_revision": revision,
         "native_binary_sha256": receipt["native_binary_sha256"],
     }
+
+
+def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Capture bounded Sourcegraph native index scope")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--live-spec", type=Path)
+    source.add_argument("--scope-spec", type=Path)
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--native-port", type=int, required=True)
+    parser.add_argument("--native-binary-path")
+    args = parser.parse_args()
+    try:
+        receipt = capture_from_live_spec(
+            args.live_spec if args.live_spec is not None else args.scope_spec,
+            args.output_root,
+            native_port=args.native_port,
+            native_binary_path=args.native_binary_path,
+            scope_spec=args.scope_spec is not None,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        parser.exit(2, f"ERROR: {error}\n")
+    print(receipt)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

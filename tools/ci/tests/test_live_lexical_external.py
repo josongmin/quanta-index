@@ -1,5 +1,6 @@
 """Local fake services prove that live rows come from HTTP/process responses."""
 
+import base64
 import copy
 import hashlib
 import json
@@ -454,6 +455,230 @@ def test_native_index_scope_replays_exact_paths_and_stored_bytes(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "fault", ["duplicate", "foreign", "skipped", "count", "missing", "oversize"]
+)
+def test_native_path_inventory_producer_uses_terminal_complete_raw_stream(tmp_path, fault):
+    receipt, args = index_scope_fixture(tmp_path)
+    repo = args["config"]["repository"]
+    revision = args["projection"]["projection_revision"]
+    stream = (
+        Path(json.loads(receipt.read_bytes())["path_inventory_proof"]).parent / "fixture.stream"
+    ).read_bytes()
+    events = live.sourcegraph._events(stream)
+    if fault == "duplicate":
+        events[0][1].append(copy.deepcopy(events[0][1][0]))
+        events[1][1]["matchCount"] += 1
+    elif fault == "foreign":
+        events[0][1][0]["repository"] = "benchmark/foreign"
+    elif fault == "skipped":
+        events[1][1]["skipped"] = [{"reason": "limit"}]
+    elif fault == "count":
+        events[1][1]["matchCount"] += 1
+    elif fault == "missing":
+        events[0][1].pop()
+        events[1][1]["matchCount"] -= 1
+    if fault != "oversize":
+        stream = b"".join(
+            b"event: " + kind.encode() + b"\ndata: " + json.dumps(data).encode() + b"\n\n"
+            for kind, data in events
+        )
+    else:
+        stream = stream + b"x" * live.sourcegraph_index_scope.MAX_STREAM_BYTES
+    with pytest.raises(ValueError):
+        live.sourcegraph_index_scope._path_stream_inventory(
+            stream, repository=repo, revision=revision, expected={"a.go", "b.go"}
+        )
+
+
+@pytest.mark.parametrize("fault", ["foreign", "wrong_hash", "boolean_status", "extra", "oversize"])
+def test_native_stored_body_producer_refuses_raw_worker_drift(fault, monkeypatch):
+    scope = live.sourcegraph_index_scope
+    body = b"func A() {}\n"
+    job = {"repository": "fixture", "path": "a.go", "file_sha256": live._sha(body)}
+    row = {
+        **job,
+        "http_status": 200,
+        "actual_sha256": live._sha(body),
+        "bytes": len(body),
+        "matches": True,
+        "seconds": 0.01,
+        "body_base64": base64.b64encode(body).decode("ascii"),
+    }
+    assert scope._native_worker_row(json.dumps(row).encode(), job)[1] == body
+    if fault == "foreign":
+        row["repository"] = "foreign"
+    elif fault == "wrong_hash":
+        row["actual_sha256"] = "0" * 64
+    elif fault == "boolean_status":
+        row["http_status"] = True
+    elif fault == "extra":
+        row["unknown"] = True
+    else:
+        monkeypatch.setattr(scope, "MAX_NATIVE_BODY_BYTES", len(body) - 1)
+    with pytest.raises(ValueError):
+        scope._native_worker_row(json.dumps(row).encode(), job)
+
+
+def test_native_index_scope_replays_listener_process_binding(tmp_path):
+    receipt, args = index_scope_fixture(tmp_path)
+    root = receipt.parent
+    binary_sha = live._sha_file(root / "zoekt-webserver")
+    process = {"port": 6071, "pid": 217, "start_ticks": 123456, "exe_sha256": binary_sha}
+    for name in ("precommit.json", "result.json"):
+        path = root / name
+        document = json.loads(path.read_bytes())
+        document["native_server_process"] = process
+        path.write_text(json.dumps(document))
+    live.sourcegraph_index_scope.verify(receipt, **args)
+    path = root / "result.json"
+    document = json.loads(path.read_bytes())
+    document["native_server_process"]["pid"] += 1
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="listener process proof differs"):
+        live.sourcegraph_index_scope.verify(receipt, **args)
+    document["native_server_process"]["pid"] -= 1
+    document["native_server_process"]["start_ticks"] += 1
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="listener process proof differs"):
+        live.sourcegraph_index_scope.verify(receipt, **args)
+
+
+def test_native_index_scope_replays_control_file_bytes(tmp_path):
+    receipt, args = index_scope_fixture(tmp_path)
+    control = tmp_path / "control.json"
+    control.write_text('{"source":"fixed"}')
+    controls = {str(control): live._sha_file(control)}
+    for name in ("precommit.json", "result.json"):
+        path = receipt.parent / name
+        document = json.loads(path.read_bytes())
+        document["control_sha256"] = controls
+        path.write_text(json.dumps(document))
+    live.sourcegraph_index_scope.verify(receipt, **args)
+    control.write_text('{"source":"changed"}')
+    with pytest.raises(ValueError, match="control bytes differ"):
+        live.sourcegraph_index_scope.verify(receipt, **args)
+
+
+def test_native_index_scope_requires_exact_owned_reader_cleanup(tmp_path):
+    receipt, args = index_scope_fixture(tmp_path)
+    invocation = "a" * 32
+    reader = {
+        "kind": "native_worker_start",
+        "invocation_id": invocation,
+        "pid": 321,
+        "start_ticks": 98765,
+    }
+    precommit = receipt.parent / "precommit.json"
+    result = receipt.parent / "result.json"
+    cleanup = receipt.parent / "owned-probe-cleanup.json"
+    for path, update in (
+        (precommit, {"reader_invocation_id": invocation}),
+        (result, {"reader_invocation_id": invocation, "reader_identity": reader}),
+        (
+            cleanup,
+            {
+                "reader_invocation_id": invocation,
+                "reader_identity": reader,
+                "remote_cleanup": {
+                    "invocation_id": invocation,
+                    "matched": [],
+                    "stopped": True,
+                    "tombstone_created": True,
+                },
+            },
+        ),
+    ):
+        document = json.loads(path.read_bytes())
+        document.update(update)
+        path.write_text(json.dumps(document))
+    live.sourcegraph_index_scope.verify(receipt, **args)
+    document = json.loads(cleanup.read_bytes())
+    document["remote_cleanup"]["invocation_id"] = "b" * 32
+    cleanup.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="owned reader cleanup differs"):
+        live.sourcegraph_index_scope.verify(receipt, **args)
+    document["remote_cleanup"]["invocation_id"] = invocation
+    document["remote_cleanup"]["tombstone_created"] = False
+    cleanup.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="owned reader cleanup differs"):
+        live.sourcegraph_index_scope.verify(receipt, **args)
+
+
+def test_native_worker_refuses_late_start_after_cleanup(tmp_path):
+    scope = live.sourcegraph_index_scope
+    invocation = "f" * 32
+    cancel_path = tmp_path / ("qi-sg-owned-reader-" + invocation + ".cancel")
+    # The worker uses the container's /tmp. Run under an isolated TMPDIR only
+    # after replacing that literal path with the fixture's explicit directory.
+    worker = scope._NATIVE_WORKER.replace(
+        '"/tmp/qi-sg-owned-reader-"',
+        repr(str(tmp_path / "qi-sg-owned-reader-")),
+    )
+    cancel_path.write_text(invocation)
+    completed = subprocess.run(
+        [sys.executable, "-c", worker, "6071", invocation],
+        input="[]\n",
+        text=True,
+        capture_output=True,
+        timeout=2,
+        check=False,
+    )
+    assert completed.returncode == 7
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["ok", "stall", "stdin_stall", "no_newline", "trickle", "stderr_overflow", "extra_row"],
+)
+def test_native_reader_pump_enforces_deadline_and_stream_bounds(tmp_path, fault):
+    scope = live.sourcegraph_index_scope
+    body = b"stored native bytes\n"
+    job = {"repository": "fixture", "path": "a.go", "file_sha256": live._sha(body)}
+    row = {
+        **job,
+        "http_status": 200,
+        "actual_sha256": live._sha(body),
+        "bytes": len(body),
+        "matches": True,
+        "seconds": 0.01,
+        "body_base64": base64.b64encode(body).decode("ascii"),
+    }
+    source = """import sys, time
+mode = sys.argv[2]
+if mode == "stdin_stall":
+    time.sleep(2)
+sys.stdin.readline()
+raw = sys.argv[1].encode()
+if mode == "stall":
+    time.sleep(2)
+elif mode == "no_newline":
+    sys.stdout.buffer.write(raw[:-1]); sys.stdout.flush(); time.sleep(2)
+elif mode == "trickle":
+    for byte in raw:
+        sys.stdout.buffer.write(bytes([byte])); sys.stdout.flush(); time.sleep(0.03)
+elif mode == "stderr_overflow":
+    sys.stderr.buffer.write(b"x" * 65537); sys.stderr.flush()
+elif mode == "extra_row":
+    sys.stdout.buffer.write(raw * 2); sys.stdout.flush()
+else:
+    sys.stdout.buffer.write(raw); sys.stdout.flush()
+"""
+    argv = [sys.executable, "-c", source, json.dumps(row) + "\n", fault]
+    if fault == "ok":
+        assert scope._drain_native_worker(
+            argv, [job], tmp_path, capture_seconds=2, row_seconds=1
+        ) == (1, None)
+        assert (tmp_path / "native-file-bodies/fixture/a.go").read_bytes() == body
+    else:
+        if fault == "stdin_stall":
+            job["path"] = "a" * (1024 * 1024)
+        with pytest.raises(ValueError):
+            scope._drain_native_worker(argv, [job], tmp_path, capture_seconds=0.5, row_seconds=0.15)
+
+
+@pytest.mark.parametrize(
     "fault",
     [
         "body",
@@ -564,6 +789,35 @@ def test_native_index_scope_refuses_evidence_change_during_replay(tmp_path, monk
     monkeypatch.setattr(live.sourcegraph, "_events", changed_during_replay)
     with pytest.raises(ValueError, match="evidence changed during replay"):
         live.sourcegraph_index_scope.verify(receipt, **args)
+
+
+def test_native_scope_cli_reaches_input_validation_in_a_fresh_process(tmp_path):
+    spec = tmp_path / "invalid-scope.json"
+    spec.write_text("{}", encoding="utf-8")
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tools.benchmark.retrieval.sourcegraph_index_scope",
+            "--scope-spec",
+            str(spec),
+            "--output-root",
+            str(tmp_path / "capture"),
+            "--native-port",
+            "6071",
+        ],
+        cwd=Path(live.__file__).resolve().parents[3],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert completed.returncode == 2, completed.stderr
+    assert "Sourcegraph index scope input spec differs" in completed.stderr
+    assert "ModuleNotFoundError" not in completed.stderr
+    assert not (tmp_path / "capture").exists()
 
 
 def test_index_scope_spec_requires_backend_and_projection_binding(tmp_path):

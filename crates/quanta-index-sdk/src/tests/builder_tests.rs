@@ -32,16 +32,12 @@ fn text_query_builder_refuses_out_of_range_top_k_before_any_round_trip() {
 
 #[test]
 fn text_query_builder_accepts_the_public_maximum_top_k() {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
+    let query = Arc::new(StubQueryTransport::active(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
             selected_active_head: None,
             rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
-            generation: quanta_index_contract::GenerationPin::new(
-                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
-                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
-                ManifestGeneration::new(7),
-            ),
+            generation: sample_generation_pin(),
             results: vec![],
             window: QueryResultWindowV2::exact_probe(0),
             file_owner_rows: None,
@@ -54,10 +50,7 @@ fn text_query_builder_accepts_the_public_maximum_top_k() {
             .lexical()
             .query()
             .native("needle")
-            .active(
-                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
-                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy")
-            )
+            .active(repo_id(), revision_id())
             .top_k(quanta_index_contract::PUBLIC_TOP_K_MAX)
             .execute()
     );

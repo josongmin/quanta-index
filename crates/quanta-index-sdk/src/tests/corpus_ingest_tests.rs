@@ -381,7 +381,7 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
 
 #[test]
 fn reader_client_routes_lexical_query_surface() {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
+    let query = Arc::new(StubQueryTransport::active(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
             selected_active_head: None,
             rank_unit: quanta_index_contract::TextRankUnit::Chunk,
