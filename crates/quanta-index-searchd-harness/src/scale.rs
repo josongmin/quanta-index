@@ -597,6 +597,16 @@ impl std::fmt::Display for ScaleStageError {
 impl std::error::Error for ScaleStageError {}
 
 impl ScaleStageError {
+    pub fn operation(stage: &'static str, error: anyhow::Error) -> Self {
+        Self {
+            stage,
+            limit: None,
+            observed: None,
+            maximum: None,
+            message: format!("{error:#}"),
+        }
+    }
+
     pub fn source_admission(error: anyhow::Error) -> Self {
         let refusal = error.downcast_ref::<ScaleAdmissionRefusal>();
         Self {
@@ -1207,11 +1217,12 @@ fn measure_scoped_delete_reopen(
     require_single_source_file(&retained_before, "repo1", &file.repo_relative_path)?;
 
     let delete_started = Instant::now();
-    rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)?;
-    let _generation = rt.seal()?;
+    rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)
+        .map_err(|error| ScaleStageError::operation("delete", error))?;
+    let _generation = rt.seal().map_err(|error| ScaleStageError::operation("delete_seal", error))?;
     let delete_seal_ms = elapsed_ms(delete_started);
     let activation_started = Instant::now();
-    rt.activate_last_sealed_generation()?;
+    rt.activate_last_sealed_generation().map_err(|error| ScaleStageError::operation("delete_activate", error))?;
     let delete_activation_ms = elapsed_ms(activation_started);
     let successor = oracle.without_file("repo0", &file.repo_relative_path)?;
 
@@ -1224,8 +1235,8 @@ fn measure_scoped_delete_reopen(
     verify_scoped_repositories(rt, &successor)?;
 
     let reopen_started = Instant::now();
-    rt.try_reopen_in_place()?;
-    rt.start()?;
+    rt.try_reopen_in_place().map_err(|error| ScaleStageError::operation("reopen_stop", error))?;
+    rt.start().map_err(|error| ScaleStageError::operation("reopen_start", error))?;
     let same_process_reopen_ms = elapsed_ms(reopen_started);
     let first_query_started = Instant::now();
     let retained_reopened = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
@@ -1310,11 +1321,11 @@ fn measure_delta(rt: &mut E2eRuntime, seed: u64) -> AnyResult<DeltaMeasurementV1
     let update_started = Instant::now();
     let serving_owner = rt.repo();
     rt.ingest_text(serving_owner.as_str(), path, &changed)?;
-    let _generation = rt.seal()?;
+    let _generation = rt.seal().map_err(|error| ScaleStageError::operation("delta_seal", error))?;
     let update_ms = elapsed_ms(update_started);
     let after_build = directory_bytes(rt.state_root())?;
     let activation_started = Instant::now();
-    rt.activate_last_sealed_generation()?;
+    rt.activate_last_sealed_generation().map_err(|error| ScaleStageError::operation("delta_activate", error))?;
     let activation_with_reclaim_ms = elapsed_ms(activation_started);
     let after_activation = directory_bytes(rt.state_root())?;
     Ok(DeltaMeasurementV1 {
@@ -1365,12 +1376,12 @@ fn measure_small_tier_with_config(seed: u64, config: ScaleRuntimeConfig) -> AnyR
         for (path, content) in &corpus {
             rt.ingest_text(serving_owner.as_str(), path, content)?;
         }
-        let _generation = rt.seal()?;
+        let _generation = rt.seal().map_err(|error| ScaleStageError::operation("build_seal", error))?;
         let build_ms = elapsed_ms(build_started);
         let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
 
         let activation_started = Instant::now();
-        rt.activate_last_sealed_generation()?;
+        rt.activate_last_sealed_generation().map_err(|error| ScaleStageError::operation("build_activate", error))?;
         let activation_ms = elapsed_ms(activation_started);
 
         let scrape_before_first = rt.metrics_snapshot()?;
@@ -1456,11 +1467,11 @@ fn measure_scoped_delta(rt: &mut E2eRuntime, file: &ScopedFile) -> AnyResult<Del
             source_repo_id: Some(&file.source_repo_id),
         }],
     )?;
-    let _generation = rt.seal()?;
+    let _generation = rt.seal().map_err(|error| ScaleStageError::operation("delta_seal", error))?;
     let update_ms = elapsed_ms(update_started);
     let after_build = directory_bytes(rt.state_root())?;
     let activation_started = Instant::now();
-    rt.activate_last_sealed_generation()?;
+    rt.activate_last_sealed_generation().map_err(|error| ScaleStageError::operation("delta_activate", error))?;
     let activation_with_reclaim_ms = elapsed_ms(activation_started);
     let after_activation = directory_bytes(rt.state_root())?;
     Ok(DeltaMeasurementV1 {
@@ -1540,11 +1551,11 @@ pub fn measure_tier_with_runtime_config(
             .preview_pending_search_corpus_wire_bytes()
             .map_err(ScaleStageError::wire_admission)?;
         let seal_started = Instant::now();
-        let _generation = rt.seal()?;
+        let _generation = rt.seal().map_err(|error| ScaleStageError::operation("build_seal", error))?;
         let build_ms = ingest_ms + elapsed_ms(seal_started);
         let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
         let activation_started = Instant::now();
-        rt.activate_last_sealed_generation()?;
+        rt.activate_last_sealed_generation().map_err(|error| ScaleStageError::operation("build_activate", error))?;
         let activation_ms = elapsed_ms(activation_started);
 
         let scrape_before_first = rt.metrics_snapshot()?;
@@ -2065,6 +2076,29 @@ mod tests {
     }
 
     #[test]
+    fn runtime_config_records_requested_and_effective_policy() -> AnyResult<()> {
+        let default = ScaleRuntimeConfig::default().execution_json()?;
+        assert_eq!(default["client_request_timeout_ms"], 30_000);
+        assert!(default["requested_client_request_timeout_ms"].is_null());
+        assert_eq!(default["history_max_bytes"], 16_777_216);
+        assert!(default["requested_history_max_bytes"].is_null());
+
+        let explicit = ScaleRuntimeConfig {
+            client_timeout: Some(Duration::from_secs(300)),
+            history_max_bytes: Some(268_435_456),
+        };
+        let execution = explicit.execution_json()?;
+        assert_eq!(execution["client_request_timeout_ms"], 300_000);
+        assert_eq!(execution["requested_client_request_timeout_ms"], 300_000);
+        assert_eq!(execution["history_max_bytes"], 268_435_456);
+        assert_eq!(execution["requested_history_max_bytes"], 268_435_456);
+        for invalid in [0, MAX_SCALE_HISTORY_MAX_BYTES + 1] {
+            assert!(ScaleRuntimeConfig { history_max_bytes: Some(invalid), ..explicit }.execution_json().is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn manifest_has_one_row_per_tier() {
         for tier in [
             ScaleTier::Small,
@@ -2334,6 +2368,17 @@ mod tests {
         assert_eq!(unknown["status"], "failed");
         assert_eq!(unknown["failure"]["stage"], "execution_unclassified");
         assert!(unknown["failure"]["limit"].is_null());
+        let build_error = anyhow::Error::new(ScaleStageError::operation(
+            "build_seal",
+            anyhow::anyhow!("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED"),
+        ));
+        let failed = refusal_json(&binding, &head, &host, &build_error);
+        assert_eq!(failed["status"], "failed");
+        assert_eq!(failed["failure"]["stage"], "build_seal");
+        assert!(failed["failure"]["limit"].is_null());
+        assert!(failed["failure"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED")));
         Ok(())
     }
 
