@@ -9,6 +9,7 @@ import time
 import pytest
 
 from tools.benchmark.retrieval import run as pairrun
+from tools.benchmark.retrieval import retrieval_contract as rc
 from tools.benchmark.retrieval import semble
 from tools.ci.tests import test_retrieval_benchmark as fixtures
 
@@ -49,12 +50,14 @@ def _timing(phase, record):
                     "end_ns": previous_end + duration_ns,
                     "status": row["status"],
                     "output_bytes": len(pairrun.canonical(row)),
+                    "output_sha256": rc.completed_output_sha256(row),
                 }
             )
             previous_end += duration_ns
     return {
         "boundary": semble.QUERY_TIMING_BOUNDARY,
         "clock": semble.QUERY_TIMING_CLOCK,
+        "output_validation": rc.COMPLETED_OUTPUT_VALIDATION,
         "observations": observations,
     }
 
@@ -351,6 +354,14 @@ def test_semble_parent_clock_ends_after_real_normalization(tmp_path, monkeypatch
     def normalization_work():
         clock["now"] += 7_000_000
 
+    original_digest = semble.completed_output_sha256
+
+    def verification_work(row):
+        clock["now"] += 11_000_000
+        return original_digest(row)
+
+    monkeypatch.setattr(semble, "completed_output_sha256", verification_work)
+
     completed = fixtures._run_protocol_worker_fixture(
         worker, spec, normalization_hook=normalization_work
     )
@@ -361,7 +372,108 @@ def test_semble_parent_clock_ends_after_real_normalization(tmp_path, monkeypatch
     assert observation["end_ns"] == 7_000_000
     assert observation["status"] == "success"
     assert observation["output_bytes"] > 0
+    assert observation["output_sha256"]
+    assert native["query_timing"]["output_validation"] == rc.COMPLETED_OUTPUT_VALIDATION
+    assert clock["now"] == 18_001_000
     assert native["latencies_ms"] == {"T1": [7.0]}
+
+
+def test_completed_output_digest_has_independent_cross_language_golden():
+    row = {
+        "task_id": "Té",
+        "timings": {"query_latency_ms": 1.25},
+        "status": "success",
+        "candidates": [
+            {"path": "café.go", "score": -0.0},
+            {"score": 1e-7, "path": "雪.go"},
+            {"score": 2, "path": "b.go"},
+        ],
+    }
+    before = copy.deepcopy(row)
+    expected = "8b1dd6a4b49b147489e1f2a2a4460832df183732852d07982ce2a48f0e0695b5"
+    assert rc.completed_output_sha256(row) == expected
+    assert row == before
+    row["timings"]["query_latency_ms"] = 999.0
+    assert rc.completed_output_sha256(row) == expected
+    row.pop("timings")
+    assert rc.completed_output_sha256(row) == expected
+    for invalid in (True, "2", float("inf"), float("nan"), 10**400):
+        mutant = copy.deepcopy(row)
+        mutant["candidates"][0]["score"] = invalid
+        with pytest.raises(ValueError, match="finite f64"):
+            rc.completed_output_sha256(mutant)
+    row["extra_float"] = 1.0
+    with pytest.raises(ValueError, match="float outside"):
+        rc.completed_output_sha256(row)
+
+
+def test_completed_clock_binds_every_repetition_to_normalized_output():
+    protocol = pairrun.build_query_protocol(["T1"], 0, 2, 1)
+    metrics = {
+        "route_count": 1,
+        "query_protocol": protocol,
+        "warm_latencies_ms": {"lexical": {"T1": [1.0, 1.0]}},
+        "cold_latencies_ms": {"lexical": 1.0},
+    }
+    record = {
+        "results": [{
+            "task_id": "T1", "route": "lexical", "status": "success",
+            "candidates": [{"path": "a.go", "score": 1.0}],
+            "timings": {"query_latency_ms": 1.0},
+        }]
+    }
+    metrics["query_timing"] = _timing(metrics, record)
+    pairrun.validate_completed_query_timing(metrics, record, require_output_validation=True)
+    changed = copy.deepcopy(record["results"][0])
+    changed["candidates"][0]["path"] = "b.go"
+    changed.pop("timings")
+    original = dict(record["results"][0])
+    original.pop("timings")
+    assert len(pairrun.canonical(changed)) == len(pairrun.canonical(original))
+    bad = copy.deepcopy(metrics)
+    bad["query_timing"]["observations"][-1]["output_sha256"] = rc.completed_output_sha256(changed)
+    with pytest.raises(pairrun.RunError, match="between repetitions"):
+        pairrun.validate_completed_query_timing(bad, record)
+    bad = copy.deepcopy(metrics)
+    for observation in bad["query_timing"]["observations"]:
+        observation["output_sha256"] = rc.completed_output_sha256(changed)
+    with pytest.raises(pairrun.RunError, match="differs from normalized record"):
+        pairrun.validate_completed_query_timing(bad, record)
+    historical = copy.deepcopy(metrics)
+    historical["query_timing"].pop("output_validation")
+    for observation in historical["query_timing"]["observations"]:
+        observation.pop("output_sha256")
+    pairrun.validate_completed_query_timing(historical, record)
+    with pytest.raises(pairrun.RunError, match="every measured output digest"):
+        pairrun.validate_completed_query_timing(historical, record, require_output_validation=True)
+
+
+def test_semble_parent_refuses_changed_later_output_with_same_size_and_status(tmp_path):
+    worker = tmp_path / "changed.py"
+    worker.write_text(
+        "import json,sys\n"
+        "for i in range(2):\n"
+        " print(json.dumps({'kind':'request_ready','task_id':'T1','phase':'measured',"
+        "'iteration':i,'indexed_chunks':1}),flush=True)\n"
+        " json.loads(sys.stdin.readline())\n"
+        " print(json.dumps({'kind':'response','task_id':'T1','results':[{'score':1.0+i}]}),flush=True)\n"
+        " sys.stdin.readline()\n"
+        "print(json.dumps({'kind':'finished'}),flush=True)\n"
+    )
+
+    def normalize(task_id, hits, _indexed_chunks):
+        return {
+            "task_id": task_id, "route": "lexical", "status": "success",
+            "candidates": [{"path": "a.go", "score": hits[0]["score"]}],
+            "timings": {"query_latency_ms": 0.0},
+        }
+
+    with pytest.raises(semble.AdapterError, match="changed between repetitions"):
+        semble.run_completed_worker(
+            [sys.executable, str(worker)], env=dict(os.environ), timeout_secs=5,
+            tasks={"T1": "q"}, top_k=1, route="lexical", normalize_response=normalize,
+            stderr_path=tmp_path / "changed.stderr",
+        )
 
 
 def test_completed_worker_deadline_covers_a_partial_protocol_line(tmp_path):

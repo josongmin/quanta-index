@@ -3186,7 +3186,8 @@ def test_runner_capability_probe_refuses_stale_and_malformed_binaries(monkeypatc
         return subprocess.CompletedProcess(
             argv,
             0,
-            '{"schema_version":1,"retrieval_diagnostic_schema_version":8}',
+            '{"schema_version":1,"retrieval_diagnostic_schema_version":8,'
+            '"completed_response_output_validation":"normalized_row_score_bits_sha256_v1"}',
             "",
         )
 
@@ -3198,7 +3199,8 @@ def test_runner_capability_probe_refuses_stale_and_malformed_binaries(monkeypatc
         pairrun.subprocess,
         "run",
         lambda argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 0, '{"schema_version":1,"retrieval_diagnostic_schema_version":7}', ""
+            argv, 0, '{"schema_version":1,"retrieval_diagnostic_schema_version":7,'
+            '"completed_response_output_validation":"normalized_row_score_bits_sha256_v1"}', ""
         ),
     )
     with pytest.raises(pairrun.RunError, match="diagnostic contract differs"):
