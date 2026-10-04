@@ -65,6 +65,19 @@ pub fn build_runtime_with_memory_probe(
     config: SearchdConfig,
     memory_probe: Arc<dyn ProcessMemoryProbePort>,
 ) -> Result<SearchdRuntime> {
+    build_runtime_with_lexical_builder(config, memory_probe, |builder| builder)
+}
+
+// Keep the production composition unchanged. A crate-local test can wrap the
+// real lexical build port to hold one admitted UDS publish at a precise point;
+// this is not a daemon option, environment switch, or exported API.
+fn build_runtime_with_lexical_builder(
+    config: SearchdConfig,
+    memory_probe: Arc<dyn ProcessMemoryProbePort>,
+    wrap_lexical_builder: impl FnOnce(
+        Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
+    ) -> Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
+) -> Result<SearchdRuntime> {
     let search_corpus_history_retention = config.search_corpus_history_retention_policy()?;
     // The one envelope (QI-BB-016) is validated before any adapter exists,
     // and its resident-memory ceiling becomes the lexical writer gate.
@@ -145,7 +158,7 @@ pub fn build_runtime_with_memory_probe(
     let repo_map_open_report = opened_repo_map.report;
 
     let search_corpus_build_port: Arc<dyn SearchCorpusBatchBuildPort + Send + Sync> =
-        lex_adapter.clone();
+        wrap_lexical_builder(lex_adapter.clone());
     let lexical_generation_scanner: Arc<dyn SealedGenerationScanPort + Send + Sync> =
         lex_adapter.clone();
     let lexical_integrity_scrub: Arc<dyn IntegrityScrubPort + Send + Sync> = lex_adapter.clone();
@@ -336,3 +349,6 @@ pub fn run_supervised(command: SearchdCommand) -> Result<quanta_index_searchd::S
         &root,
     ))
 }
+
+#[cfg(test)]
+mod admitted_publish_timeout_tests;

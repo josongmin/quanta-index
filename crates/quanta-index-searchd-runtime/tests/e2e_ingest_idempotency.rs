@@ -26,13 +26,16 @@ use std::time::{Duration, Instant};
 
 use crate::e2e_harness;
 use quanta_index_contract::{
-    BatchPublishReceipt, ERR_SERVER_OVERLOADED, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
+    BatchPublishReceipt, ERR_SERVER_OVERLOADED, IngestOperationKindV1, SearchPlaneErrorCodeV2,
+    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, TextQuerySyntax,
 };
-use quanta_index_core::BATCH_DIGEST_MISMATCH_CODE;
-use quanta_index_ipc::{ClientIoPolicy, send_request};
+use quanta_index_core::{
+    BATCH_DIGEST_MISMATCH_CODE, IdempotencyCatalogPort as _, IdempotencyKeyV1, OperationInspectV1,
+};
+use quanta_index_ipc::{ClientIoPolicy, send_request, stamp_batch_digest_v1};
 
+use crate::searchd_binary_process::{SearchdBinaryProcess, daemon_socket_paths};
 use e2e_harness::E2eRuntime;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -294,4 +297,102 @@ fn a_replay_after_restart_is_still_a_replay() -> TestResult {
         .into());
     }
     Ok(())
+}
+
+/// Two distinct searchd binary processes share one durable operation row.
+/// This is the OS-process restart rail; the controlled timeout rail lives in
+/// the runtime library's private UDS fixture and reassembles a thread daemon.
+#[test]
+fn binary_restart_replays_original_operation_and_refuses_conflicting_source_digest() -> TestResult {
+    let parent = e2e_harness::private_tempdir()?;
+    let root = parent.path().join("state");
+    let fixture = E2eRuntime::boot_in(&root)?;
+    let batch = fixture.text_search_corpus_batch(
+        "src/process-replay.rs",
+        "fn original_source() { os_restart_replay }",
+    )?;
+    let key = IdempotencyKeyV1 {
+        kind: IngestOperationKindV1::SearchCorpus,
+        repo_id: batch.repo_id.clone(),
+        revision_id: batch.revision_id.clone(),
+        generation: batch.generation,
+        batch_digest: batch.batch_digest.clone(),
+    };
+    let socket = daemon_socket_paths(&root)[2].clone();
+    let first_process = SearchdBinaryProcess::start(&root)?;
+    let first = receipt_of(
+        send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
+            &socket,
+            &SearchPlaneIngestIpcRequestEnvelope {
+                request_id: 901,
+                payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+            },
+            ClientIoPolicy::default(),
+        )?
+        .payload,
+    )?;
+    if !first.applied || first.durable_sequence == 0 {
+        return Err(format!("first binary did not commit its source: {first:?}").into());
+    }
+    first_process.stop()?;
+    let catalog = quanta_index_catalog::SqliteCatalog::open(&root, Duration::from_secs(2))?;
+    if !matches!(
+        catalog.inspect(&key)?,
+        OperationInspectV1::Committed { durable_sequence, .. }
+            if durable_sequence == first.durable_sequence
+    ) {
+        return Err("first binary did not leave a committed operation row".into());
+    }
+    drop(catalog);
+
+    let second_process = SearchdBinaryProcess::start(&root)?;
+    let replay = receipt_of(
+        send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
+            &socket,
+            &SearchPlaneIngestIpcRequestEnvelope {
+                request_id: 902,
+                payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+            },
+            ClientIoPolicy::default(),
+        )?
+        .payload,
+    )?;
+    if replay != first.clone().replayed() {
+        return Err(format!("binary restart changed the replay receipt: {replay:?}").into());
+    }
+    let mut conflicting = fixture.text_search_corpus_batch(
+        "src/process-replay.rs",
+        "fn alternate_source() { os_restart_replay }",
+    )?;
+    conflicting.source_event.stream_id = batch.source_event.stream_id.clone();
+    conflicting.source_event.event_id = batch.source_event.event_id.clone();
+    conflicting.source_event.expected_base_event_id =
+        batch.source_event.expected_base_event_id.clone();
+    stamp_batch_digest_v1(&mut conflicting)?;
+    let conflict_key = IdempotencyKeyV1 {
+        batch_digest: conflicting.batch_digest.clone(),
+        ..key.clone()
+    };
+    if conflict_key.batch_digest == key.batch_digest {
+        return Err("different canonical source did not change the batch digest".into());
+    }
+    let conflict = send_request::<_, SearchPlaneIngestIpcResponseEnvelope>(
+        &socket,
+        &SearchPlaneIngestIpcRequestEnvelope {
+            request_id: 903,
+            payload: SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(conflicting),
+        },
+        ClientIoPolicy::default(),
+    )?
+    .payload;
+    if typed_code(&conflict) != Some(SearchPlaneErrorCodeV2::BatchDigestConflict.as_wire_str()) {
+        return Err(format!("wrong source digest was not a typed conflict: {conflict:?}").into());
+    }
+    let catalog = quanta_index_catalog::SqliteCatalog::open(&root, Duration::from_secs(2))?;
+    if !matches!(catalog.inspect(&conflict_key)?, OperationInspectV1::Absent)
+        || idempotency_rows(&fixture)? != 1
+    {
+        return Err("conflict appended or changed the original operation journal".into());
+    }
+    second_process.stop()
 }

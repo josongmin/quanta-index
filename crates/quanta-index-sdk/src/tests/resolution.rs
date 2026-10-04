@@ -1,4 +1,5 @@
 use super::*;
+use quanta_index_contract::GenerationPin;
 
 #[test]
 fn active_query_requires_a_selected_head_from_the_query_rpc() {
