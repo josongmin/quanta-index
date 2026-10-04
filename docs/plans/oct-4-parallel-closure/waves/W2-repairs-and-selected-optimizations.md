@@ -45,6 +45,7 @@
 
 ## 종료 조건
 
+- 구현 인계는 producer/consumer·독립 회귀 fixture·정적 점검까지 준비한 상태다. 아래 실행 증거는 중앙 배치에서 판정하고, W3 admission ISSUE의 선행으로 소비한다.
 - 선택 source의 알려진 correctness 결함이 독립 oracle에서 해결됐다.
 - 채택한 최적화의 출력·lifecycle·비용 tradeoff가 owner 범위에서 검증됐다.
 - immutable pack은 batch barrier 뒤에도 content full-sync가 지배할 때 별도 설계다. process crash proof를 실제 storage power-loss qualification으로 표시하지 않는다.

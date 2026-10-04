@@ -13,8 +13,8 @@
 
 | 티켓 | 담당 | 작업 | 이 웨이브의 실행 범위 |
 | --- | --- | --- | --- |
-| [O4-E1-01](../tickets/O4-E1-01-original-review-resume.md) | E1 | 원본 C3 검수 실패 복구와 실제 판단 발행 | 원본 FAILED별 raw/cache/source를 재대조하고 실제 reviewer 역할 실행을 재개한다. |
-| [O4-E1-02](../tickets/O4-E1-02-supplemental-labels.md) | E1 | 미검수 합집합 검수와 원본 라벨 병합 | 해당 repository 원본 결과 뒤에 supplemental pair를 실제 검수·adjudication해 merged qrels를 발행한다. |
+| [O4-E1-01](../tickets/O4-E1-01-original-review-resume.md) | E1 | 원본 C3 검수 실패 복구와 실제 판단 발행 | 원본 FAILED별 raw/cache/source와 재개 driver를 준비하고 중앙 배치에서 실제 reviewer 역할 실행을 재개한다. |
+| [O4-E1-02](../tickets/O4-E1-02-supplemental-labels.md) | E1 | 미검수 합집합 검수와 원본 라벨 병합 | supplemental binding·pair inventory를 준비한다. 해당 repository 원본 결과 뒤 중앙 배치의 실제 검수·adjudication에서 merged qrels를 발행한다. |
 | [O4-E1-04](../tickets/O4-E1-04-precise-name-span.md) | E1 | 정확한 선언 이름 span과 unit 회수 평가 | name byte-span 독립 oracle·negative cases·native witness/evaluator proposal를 준비한다. |
 | [O4-E1-05](../tickets/O4-E1-05-untouched-holdout.md) | E1 | 독립 relevance와 미사용 holdout 발행 | 미사용 corpus/family·license·exposure·quota/underfill을 고정하고 독립 relevance를 준비한다. |
 | [O4-E2-01](../tickets/O4-E2-01-native-completed-timer.md) | E2 | 외부 제품의 completed-response 시간 경계 | request construction→normalized response 완료 clock을 기존 transport clock과 별도 구현·검증한다. |
@@ -47,6 +47,7 @@
 
 ## 종료와 다음 웨이브
 
+- 준비된 scope는 [중앙 검증 배치](../WAVES.md#중앙-검증-배치를-넣는-위치)에 넘긴다. W2 착수에 필요한 최소 owner 재현·역할 검수·병목 판정은 이때 실행하며, 최종 source gates는 W3에서 수행한다.
 - 준비된 repository/claim마다 labels·scope·producer patch와 독립 fixture를 I0에 넘긴다. 모든 repository·holdout·최적화가 끝날 때까지 global wait를 하지 않는다.
 - 선택 scope에 실제 correctness 결함이 있으면 W2 수리 후 W3로 간다. 결함이 없고 W2 최적화를 포함하지 않는 baseline은 W3로 진행한다.
 - 새 실행 증거가 필요한 조건은 fixture/profile 준비 후 I0 중앙 배치에서 판정한다. 그 결과 수리가 필요하면 W2→W3 영향 재검증으로 돌아간다. 미실행 반례를 확인된 결함으로 표시하지 않는다.

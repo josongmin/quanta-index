@@ -1334,6 +1334,7 @@ def verify_cs_fuzzy(root: Path, *, bound_release: BoundRelease | None = None) ->
             "capability",
             "request_mode",
             "status",
+            "completed_response_boundary",
             "scoring_status",
             "tasks",
             "binding",
@@ -1349,6 +1350,7 @@ def verify_cs_fuzzy(root: Path, *, bound_release: BoundRelease | None = None) ->
         or summary["capability"] != CS_FUZZY_CAPABILITY
         or summary["request_mode"] != "explicit_osa1_typo"
         or summary["status"] != "diagnostic_unqualified"
+        or summary["completed_response_boundary"] != COMPLETED_BOUNDARY
         or summary["scoring_status"] != "not_scored"
         or summary["indexed_universe_attested"] is not False
         or summary["tasks"] != len(tasks)
@@ -1917,6 +1919,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         "schema_version": spec["schema_version"],
         **({"products": list(products)} if spec["schema_version"] == 2 else {}),
         "status": "diagnostic_unqualified",
+        "completed_response_boundary": COMPLETED_BOUNDARY,
         "release_digest": document["digest"],
         "binding": binding,
         "tasks": len(tasks),

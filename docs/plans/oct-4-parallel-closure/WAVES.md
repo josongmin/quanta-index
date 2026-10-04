@@ -31,6 +31,20 @@
 | [W5 — 최종 검수·재채점·정책 판정](waves/W5-final-scoring-and-policy.md) | 2개 | 새 candidate pool을 실제 검수하고 독립 gold/holdout에서 정책을 판정한다. | 해당 scope의 final qrel/scoreboard·분모/CI·정책 disposition; source 변경 시 재검증 |
 | [W6 — release·운영·전체 잔여 판정](waves/W6-release-and-final-closure.md) | 1개 | CODE/release/actions를 별도 증거로 판정하고 모든 29개 티켓의 미완료를 남긴다. | 요청 qualification의 필수 proof 충족; BLOCKED/NOT_RUN이면 해당 작업 잔여 |
 
+### 중앙 검증 배치를 넣는 위치
+
+검증을 모으되, W2의 착수에 필요한 반례·병목 판정까지 마지막으로 미루지 않는다. 준비된 scope마다 아래 배치를 수행하고, 같은 host의 무거운 실행은 직렬로 배정한다.
+
+| 위치 | root / I0가 실행할 배치 | 다음 작업 |
+| --- | --- | --- |
+| W1 준비 뒤 | 독립 fixture의 최소 owner 재현, 필요한 실제 역할 검수·native scope 확인·whole-call profile | 확인된 correctness 실패와 채택한 계약은 W2 수리. 병목이 미확인인 최적화는 판정 대기 |
+| W2 통합 뒤 / W3 | 정적 점검→영향 owner regressions→public API·wire·selection 등 mandatory gates→matching binary/input 검증 | 통과한 같은 source에서만 admission ISSUE, W4 진입 |
+| W4 | 실제 5제품 캡처·raw replay, 조건부 warmup parity, 반복 성능·tier/load/OS restart | 필수 셀 outcome과 blind union을 W5에 인계 |
+| W5 | 실제 final-pool 검수→독립 qrels 재채점→name/NL/holdout·정책 acceptance | source 변경이면 W3와 영향 W4 재개; 결과가 고정되면 W6 |
+| W6 | CI·exact source pair·provider/Linux·backup/restore·실제 운영 gate | 모든 29개 티켓의 요청 scope를 실제 결과로 종료 판정 |
+
+W1 재현 배치는 W3의 전체 source gate를 대신하지 않는다. 실패한 scope는 수리 owner에게 돌려주고, 다음 중앙 배치에서 해당 반례와 영향 검증을 다시 실행한다. 다른 ready scope의 구현·입력 준비는 계속한다.
+
 ## 2. 실행 경로와 같은 웨이브 내부 순서
 
 | 목표 | 경로 | 반드시 지킬 조건 |

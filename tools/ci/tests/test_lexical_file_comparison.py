@@ -584,6 +584,8 @@ def test_product_result_separates_answerable_recall_and_no_gold_empty_rate(tmp_p
         "file_recall_at_10": "not_applicable",
         "no_gold_empty_at_10": True,
         "query_latency_ms": 1.0,
+        "completed_query_latency_ms": None,
+        "completed_response_boundary": None,
     }
     rows[1]["file_paths_top_10"] = ["other.go"]
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")

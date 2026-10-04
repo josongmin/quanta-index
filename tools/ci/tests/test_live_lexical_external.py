@@ -786,7 +786,13 @@ def test_cs_fuzzy_native_request_and_separate_replay(
     summary = live.capture_cs_fuzzy(spec_path, bound_release=bound_release)
     assert summary["tasks"] == 20
     assert summary["scoring_status"] == "not_scored"
+    assert summary["completed_response_boundary"] == live.COMPLETED_BOUNDARY
     assert live.verify_cs_fuzzy(root, bound_release=bound_release) == summary
+    capture_path = root / "capture.json"
+    capture_path.write_text(json.dumps({**summary, "completed_response_boundary": "wrong"}))
+    with pytest.raises(ValueError, match="cs fuzzy capture binding"):
+        live.verify_cs_fuzzy(root, bound_release=bound_release)
+    capture_path.write_text(json.dumps(summary))
     rows = [json.loads(line) for line in (root / "cs_fuzzy_rows.jsonl").read_bytes().splitlines()]
     assert rows[0]["native_query"] == "symbol_0~1"
     assert rows[0]["paths"] == ["src/0.go"]
@@ -1690,6 +1696,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         assert Path(spec["output_root"] + ".staging/sourcegraph-index-scope.json").exists()
         return
     assert result["indexed_universe_attested"] is False
+    assert result["completed_response_boundary"] == live.COMPLETED_BOUNDARY
     assert result["opengrok_indexed_universe_attested"] is False
     if not reserved_query:
         assert set(result["backend_snapshot_sha256"]) == {"sourcegraph", "opengrok"}
@@ -1862,8 +1869,6 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         rows[1]["paths" if product == "cs" else "file_paths_top_10"] = rows[1]["gold_paths"]
         rows[1]["file_hit_at_10"] = True
         row_path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in rows))
-        # The standalone diagnostic validates only normalized consistency.
-        assert live.lexical.product_result(product, row_path, expected, universe)["hits"] == 2
         summary_path.write_text(
             json.dumps(
                 {
@@ -1879,6 +1884,10 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             ValueError, match="external row disagrees with retained native response"
         ):
             live.verify(root)
+        with pytest.raises(
+            ValueError, match="external row disagrees with retained native response"
+        ):
+            live.lexical.product_result(product, row_path, expected, universe)
         assert all((root / name).read_bytes() == raw for name, raw in native_before.items())
         row_path.write_bytes(original)
         summary_path.write_text(json.dumps(result))
@@ -1888,6 +1897,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         {"tasks": True},
         {"quality_qualified": True},
         {"exclusions": []},
+        {"completed_response_boundary": "wrong"},
         {"python_executable_sha256": "0" * 64},
         {"python_version": "wrong-runtime"},
         {"cs_binary_sha256": "0" * 64},
@@ -2045,6 +2055,7 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
         thread.join()
     root = Path(spec["output_root"])
     assert summary["schema_version"] == 2
+    assert summary["completed_response_boundary"] == live.COMPLETED_BOUNDARY
     assert summary["products"] == [product]
     assert set(summary["rows_sha256"]) == {product}
     assert live.verify(root) == summary
