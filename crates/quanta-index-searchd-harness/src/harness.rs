@@ -3933,20 +3933,39 @@ mod teardown_fault_tests {
         let default = E2eRuntime::boot_with_history_max_generations(2)?;
         let default_policy =
             build_config(&default.driver_spec())?.search_corpus_history_retention_policy()?;
-        assert_eq!(default_policy.max_bytes(), 16_777_216);
+        anyhow::ensure!(
+            default_policy.max_bytes() == 16_777_216,
+            "default history max bytes: expected 16777216, got {}",
+            default_policy.max_bytes()
+        );
         default.stop()?;
 
         let runtime =
             E2eRuntime::boot_with_history_max_generations(2)?.with_history_max_bytes(268_435_456);
         let config = build_config(&runtime.driver_spec())?;
         let policy = config.search_corpus_history_retention_policy()?;
-        assert_eq!(policy.max_generations(), 2);
-        assert_eq!(policy.max_bytes(), 268_435_456);
-        assert_eq!(
-            policy.max_revision_pairs(),
-            HARNESS_HISTORY_MAX_REVISION_PAIRS
+        anyhow::ensure!(
+            policy.max_generations() == 2,
+            "history max generations: expected 2, got {}",
+            policy.max_generations()
         );
-        assert_eq!(policy.max_total_bytes(), HARNESS_HISTORY_MAX_TOTAL_BYTES);
+        anyhow::ensure!(
+            policy.max_bytes() == 268_435_456,
+            "history max bytes: expected 268435456, got {}",
+            policy.max_bytes()
+        );
+        anyhow::ensure!(
+            policy.max_revision_pairs() == HARNESS_HISTORY_MAX_REVISION_PAIRS,
+            "history max revision pairs: expected {}, got {}",
+            HARNESS_HISTORY_MAX_REVISION_PAIRS,
+            policy.max_revision_pairs()
+        );
+        anyhow::ensure!(
+            policy.max_total_bytes() == HARNESS_HISTORY_MAX_TOTAL_BYTES,
+            "history max total bytes: expected {}, got {}",
+            HARNESS_HISTORY_MAX_TOTAL_BYTES,
+            policy.max_total_bytes()
+        );
         runtime.stop()?;
         Ok(())
     }
@@ -3963,17 +3982,26 @@ mod teardown_fault_tests {
     fn explicit_stop_reports_socket_cleanup_error_without_unwinding() -> AnyResult<()> {
         let runtime = runtime_with_non_directory_socket_path()?;
         let outcome = catch_unwind(AssertUnwindSafe(|| runtime.stop()));
-        let error = outcome
-            .expect("explicit stop must not panic")
-            .expect_err("socket cleanup must fail on a regular file");
-        assert!(format!("{error:#}").contains("removing socket directory"));
+        let error = match outcome {
+            Ok(Err(error)) => error,
+            Ok(Ok(())) => anyhow::bail!("socket cleanup must fail on a regular file"),
+            Err(_panic) => anyhow::bail!("explicit stop must not panic"),
+        };
+        let detail = format!("{error:#}");
+        anyhow::ensure!(
+            detail.contains("removing socket directory"),
+            "explicit stop error lacks socket cleanup context: {detail}"
+        );
         Ok(())
     }
 
     #[test]
     fn implicit_drop_still_fails_fast_on_socket_cleanup_error() -> AnyResult<()> {
         let runtime = runtime_with_non_directory_socket_path()?;
-        assert!(catch_unwind(AssertUnwindSafe(|| drop(runtime))).is_err());
+        anyhow::ensure!(
+            catch_unwind(AssertUnwindSafe(|| drop(runtime))).is_err(),
+            "implicit drop must fail fast on socket cleanup error"
+        );
         Ok(())
     }
 
@@ -3984,8 +4012,16 @@ mod teardown_fault_tests {
         std::fs::create_dir(&directory)?;
         runtime.socket_directory = Some(directory.clone());
         runtime.try_reopen_in_place()?;
-        assert_eq!(runtime.socket_directory(), Some(directory.as_path()));
-        assert!(!directory.exists());
+        anyhow::ensure!(
+            runtime.socket_directory() == Some(directory.as_path()),
+            "reopen changed shared socket directory identity: expected {}",
+            directory.display()
+        );
+        anyhow::ensure!(
+            !directory.exists(),
+            "reopen retained stale shared socket directory at {}",
+            directory.display()
+        );
         runtime.stop()?;
         Ok(())
     }

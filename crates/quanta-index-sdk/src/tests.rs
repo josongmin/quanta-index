@@ -92,9 +92,16 @@ impl StubQueryTransport {
             SearchPlaneQueryIpcResponse::HybridSeed(page) => page.selected_active_head = Some(head),
             SearchPlaneQueryIpcResponse::History(page) => page.selected_active_head = Some(head),
             SearchPlaneQueryIpcResponse::RuntimeMetadata(page) => {
-                page.selected_active_head = Some(head)
+                page.selected_active_head = Some(head);
             }
-            _ => {}
+            SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+            | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+            | SearchPlaneQueryIpcResponse::Error(_) => {}
         }
         Self::new(response)
     }

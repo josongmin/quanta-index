@@ -275,8 +275,9 @@ fn observed_client_request_rejects_truncated_frame_after_peer_close() -> TestRes
         if frame.len() < 2 {
             return Err("encoded response is too short to truncate".to_string());
         }
+        let (_last_byte, truncated) = frame.split_last().ok_or("response frame is empty")?;
         stream
-            .write_all(&frame[..frame.len() - 1])
+            .write_all(truncated)
             .map_err(|error| error.to_string())?;
         Ok(())
     });

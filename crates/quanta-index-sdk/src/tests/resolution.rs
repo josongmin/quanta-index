@@ -74,10 +74,10 @@ fn active_query_is_one_rpc_and_rejects_wrong_same_domain_generation() {
         client.lexical().query_request(request.clone()),
         Err(crate::SdkError::Binding { .. })
     ));
-    let requests = ok_or_fail!(query.requests.lock());
+    let requests = ok_or_fail!(query.requests.lock()).clone();
     assert_eq!(requests.len(), 1);
     assert!(
-        matches!(&requests[0].payload, quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent) if sent == &request)
+        matches!(&requests.first().expect("recorded first request").payload, quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent) if sent == &request)
     );
 }
 
@@ -118,10 +118,10 @@ fn resolved_active_binds_generation_and_activation_token_in_one_rpc() {
         };
         let result = client.lexical().query_request(request.clone());
         assert_eq!(result.is_ok(), expected_ok);
-        let requests = ok_or_fail!(query.requests.lock());
+        let requests = ok_or_fail!(query.requests.lock()).clone();
         assert_eq!(requests.len(), 1);
         assert!(
-            matches!(&requests[0].payload, quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent) if sent == &request)
+            matches!(&requests.first().expect("recorded first request").payload, quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent) if sent == &request)
         );
     }
 }
@@ -209,7 +209,7 @@ fn lexical_time_resolution_binds_the_final_ancestor_pin() {
         } else {
             assert!(matches!(result, Err(crate::SdkError::Binding { .. })));
         }
-        let requests = ok_or_fail!(query.requests.lock());
+        let requests = ok_or_fail!(query.requests.lock()).clone();
         assert!(matches!(
             requests.first().map(|request| &request.payload),
             Some(quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(resolved))
@@ -261,13 +261,13 @@ fn active_rev_at_time_keeps_ancestor_resolution_and_exact_final_binding() {
         ok_or_fail!(client.lexical().query_request(request.clone())).generation,
         ancestor
     );
-    let requests = ok_or_fail!(query.requests.lock());
+    let requests = ok_or_fail!(query.requests.lock()).clone();
     assert_eq!(requests.len(), 2);
     assert!(
-        matches!(&requests[0].payload, quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(sent) if sent == &request)
+        matches!(&requests.first().expect("recorded first request").payload, quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(sent) if sent == &request)
     );
     assert!(
-        matches!(&requests[1].payload, quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent) if sent == &request)
+        matches!(&requests.get(1).expect("recorded second request").payload, quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent) if sent == &request)
     );
 }
 
@@ -315,7 +315,7 @@ fn quoted_timeref_literals_do_not_resolve_or_relax_text_response_pins() {
         .query_request(request.clone())
         .expect_err("a code-search literal cannot authorize another response pin");
     assert!(matches!(error, crate::SdkError::Binding { .. }));
-    let requests = ok_or_fail!(query.requests.lock());
+    let requests = ok_or_fail!(query.requests.lock()).clone();
     assert_eq!(requests.len(), 1, "a literal must not trigger resolution");
     assert!(matches!(
         requests.first().map(|request| &request.payload),
@@ -377,7 +377,7 @@ fn lexical_time_resolution_rejects_foreign_repo_before_query() {
         .query_request(request)
         .expect_err("foreign lexical resolution must be refused");
     assert!(matches!(error, crate::SdkError::Binding { .. }));
-    let requests = ok_or_fail!(query.requests.lock());
+    let requests = ok_or_fail!(query.requests.lock()).clone();
     assert_eq!(requests.len(), 1, "final query must not be dispatched");
     drop(requests);
 }
