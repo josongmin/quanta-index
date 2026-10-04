@@ -18,6 +18,7 @@ def _task(query="Typ", intended="Type"):
             "gold_unit": "distinct_file",
             "result_unit": "distinct_file",
         },
+        "source_oracle": {"contract": "declaration_name_exact", "unit": "distinct_file"},
         "file_judgments": [
             {"path": "a.go", "grade": 3},
             {"path": "b.go", "grade": 1},
@@ -33,8 +34,10 @@ def test_source_strata_and_evaluator_score_have_independent_fixed_expected_value
         "surviving_components": "none",
     }
     row = report._result(task, ["b.go", "a.go"], eligible=True, status="capped", latency_ms=4)
-    assert row["near_name_file"]["hit_at_10"] == 1.0
-    assert row["near_name_file"]["mrr_at_10"] == 1.0
+    assert row["intended_name_file"]["hit_at_10"] == 1.0
+    assert row["intended_name_file"]["mrr_at_10"] == 1.0
+    assert row["label_contract"]["intended_name_file"] == "exact_original_name_declaration_files"
+    assert "near_name_file" not in row
     assert row["intended_original_file"]["hit_at_10"] == 1.0
     assert row["intended_original_file"]["mrr_at_10"] == 0.5
     assert row["top10_paths"] == ["b.go", "a.go"]

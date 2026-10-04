@@ -3528,3 +3528,44 @@ with a new output root. The strict collection validator remains unchanged.
   closeout root. The native input admission remains explicitly `ee764318`;
   this newer driver's matching full Contract/SDK proof is still required for
   final qualification. Existing captures and original labels are unchanged.
+
+### 2026-10-04: 100-task issuance and actual supplemental label closure
+
+- **VERIFIED**, uvicorn's separate actual retry, two-pass review, adjudication,
+  retained-response replay and canonical issuance: 20 tasks / 383 file
+  judgments. The earlier isolated pipeline failures remain historical; they
+  are not overwritten by the recovered result. Canonical base issuance now
+  covers bat, lo, mocha, uvicorn and zustand: **100/240 tasks / 2,066 expanded
+  task/file judgments**. The remaining pipeline is live on cli adjudication;
+  partial review decisions are excluded from issued totals.
+- **VERIFIED**, independent original returned-pair recount: **407/1,324**
+  issued, **917** unissued. Each original packet digest and each issued suite
+  digest is checked. This denominator is separate from expanded review pools.
+  Recount: `c3-issued-recount-1jwi4i1_/result.json` under the closeout root.
+- **VERIFIED**, full uvicorn canonical admission at clean `ee764318` in
+  **263.991s**. The five base repository input bundles are now verified on
+  that source, with no human, performance or final comparison qualification.
+- **VERIFIED**, lo's actual supplemental two independent model calls and
+  subsequent third-model adjudication, followed by retained raw-call replay:
+  **41 pairs / 19 tasks**. New canonical merged labels, NL-only suite, blind
+  pack, two annotation receipts and adjudication receipt validate at clean
+  `499654fe`. Independent comparison preserves all **454** previous file
+  judgments and all 20 task/query/hash/family identities; adds exactly 41
+  judgments. The latest expanded total is **2,107** when the lo revision is
+  substituted, not added as another 20 tasks.
+- Merged lo suite SHA:
+  `33cc9b0a011a63c78f17625bd7d53eaeaf76dbe99a7ff8fb96c3aff45ab3ac51`.
+  Root: `c3-lo-supplemental-actual-review-fzs2bigu/issued-merged/`.
+  A first external issuance attempt was refused for an incorrectly constructed
+  annotation payload. It remains preserved; the second immutable driver used
+  the canonical payload keys without changing or weakening product validators.
+- New 495-pair input admission is dispatched in a separate immutable root,
+  `nl-lo495-admission-ee764318-2bluvw9b/`. Label-issuance source `499654fe`
+  and admission execution source `ee764318` are explicit. **NOT_RUN** until
+  its terminal result: successful 495-pair full admission and subsequent fresh
+  product captures. The old 454-pair admission/captures are not rebound.
+- All paths above are under
+  `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/`.
+  Remaining: 140 actual reviewed tasks; final common execution-source proofs;
+  new reviewed five-product captures/replay; controlled complete-public-API
+  performance. AI provenance is explicit and every result remains unqualified.

@@ -12952,8 +12952,14 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
 def test_natural_language_file_planner_has_distinct_scored_file_contract():
     raw = "Find retry handling"
     policy = "natural_language_file"
-    assert qp.plan_lexical_request(policy, raw) == 'select:file "Find" OR "retry" OR "handling"'
-    assert qp.plan_lexical_request("natural_language", raw) == '"Find" OR "retry" OR "handling"'
+    assert qp.plan_lexical_request(policy, raw) == 'select:file case:no find OR retry OR handling'
+    assert qp.plan_lexical_request("natural_language", raw) == 'case:no find OR retry OR handling'
+    assert qp.plan_lexical_request(policy, 'The the AND and repo:x "retry"') == (
+        'select:file case:no the OR and OR repo OR x OR retry'
+    )
+    assert qp.plan_lexical_request(policy, 'foo-bar/path.go') == (
+        'select:file case:no foo OR bar OR path OR go'
+    )
     assert qp.derive_query_identity(policy, raw) != qp.derive_query_identity(
         "natural_language", raw
     )
