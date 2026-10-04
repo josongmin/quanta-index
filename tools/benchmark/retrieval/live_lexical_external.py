@@ -1270,7 +1270,6 @@ def capture_cs_fuzzy(spec_path: Path, *, bound_release: BoundRelease | None = No
         "capability": CS_FUZZY_CAPABILITY,
         "request_mode": "explicit_osa1_typo",
         "status": "diagnostic_unqualified",
-        "completed_response_boundary": COMPLETED_BOUNDARY,
         "scoring_status": "not_scored",
         "tasks": len(tasks),
         "binding": binding,
@@ -1334,7 +1333,6 @@ def verify_cs_fuzzy(root: Path, *, bound_release: BoundRelease | None = None) ->
             "capability",
             "request_mode",
             "status",
-            "completed_response_boundary",
             "scoring_status",
             "tasks",
             "binding",
@@ -1350,7 +1348,6 @@ def verify_cs_fuzzy(root: Path, *, bound_release: BoundRelease | None = None) ->
         or summary["capability"] != CS_FUZZY_CAPABILITY
         or summary["request_mode"] != "explicit_osa1_typo"
         or summary["status"] != "diagnostic_unqualified"
-        or summary["completed_response_boundary"] != COMPLETED_BOUNDARY
         or summary["scoring_status"] != "not_scored"
         or summary["indexed_universe_attested"] is not False
         or summary["tasks"] != len(tasks)
@@ -1825,7 +1822,6 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
     probe_indexed_view = (
         "opengrok" in products and spec["opengrok"].get("indexed_view_probe") == "full"
     )
-    indexed_batches = _opengrok_index_batches(manifest, view) if probe_indexed_view else []
     if probe_indexed_view:
         _opengrok_indexed_view(spec["opengrok"], manifest, view, stage / "opengrok-view")
     capture_product = {
@@ -2111,6 +2107,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     probe_indexed_view = (
         "opengrok" in products and spec["opengrok"].get("indexed_view_probe") == "full"
     )
+    indexed_batches = _opengrok_index_batches(manifest, view) if probe_indexed_view else []
     if type(summary.get("opengrok_indexed_view_files")) is not int or summary[
         "opengrok_indexed_view_files"
     ] != (len(manifest["files"]) if probe_indexed_view else 0):

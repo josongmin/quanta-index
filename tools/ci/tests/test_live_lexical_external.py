@@ -786,7 +786,7 @@ def test_cs_fuzzy_native_request_and_separate_replay(
     summary = live.capture_cs_fuzzy(spec_path, bound_release=bound_release)
     assert summary["tasks"] == 20
     assert summary["scoring_status"] == "not_scored"
-    assert summary["completed_response_boundary"] == live.COMPLETED_BOUNDARY
+    assert "completed_response_boundary" not in summary
     assert live.verify_cs_fuzzy(root, bound_release=bound_release) == summary
     capture_path = root / "capture.json"
     capture_path.write_text(json.dumps({**summary, "completed_response_boundary": "wrong"}))
