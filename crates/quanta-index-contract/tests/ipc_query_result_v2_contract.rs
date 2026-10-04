@@ -181,7 +181,8 @@ fn generation_pin() -> GenerationPin {
     )
 }
 
-fn selected_head() -> quanta_index_contract::SearchCorpusActiveHeadV1 {
+fn selected_head()
+-> Result<quanta_index_contract::SearchCorpusActiveHeadV1, Box<dyn std::error::Error>> {
     use quanta_index_contract::{
         GenerationSnapshot, SearchCorpusActivationTokenV1, SearchCorpusGenerationIdentityV1,
         SearchPlaneTrackKind, SemanticContentRootsV1,
@@ -194,7 +195,7 @@ fn selected_head() -> quanta_index_contract::SearchCorpusActiveHeadV1 {
         manifest_generation: pin.manifest_generation,
         manifest_digest: format!("sha256:{}", "a".repeat(64)),
     };
-    quanta_index_contract::SearchCorpusActiveHeadV1 {
+    Ok(quanta_index_contract::SearchCorpusActiveHeadV1 {
         generation: SearchCorpusGenerationIdentityV1 {
             lexical: snapshot(SearchPlaneTrackKind::Lexical),
             semantic: snapshot(SearchPlaneTrackKind::Semantic),
@@ -205,10 +206,9 @@ fn selected_head() -> quanta_index_contract::SearchCorpusActiveHeadV1 {
         },
         activation_token: SearchCorpusActivationTokenV1::new(
             [7; 16],
-            std::num::NonZeroU64::new(1).expect("positive sequence"),
-        )
-        .expect("valid activation token"),
-    }
+            std::num::NonZeroU64::new(1).ok_or("activation sequence must be nonzero")?,
+        )?,
+    })
 }
 
 fn assert_selected_head_wire_fields<T>(
@@ -225,11 +225,28 @@ where
     actual_json.sort_unstable();
     let mut expected = expected_fields.to_vec();
     expected.sort_unstable();
-    assert_eq!(actual_json, expected, "JSON response fields");
+    if actual_json != expected {
+        return Err(format!(
+            "JSON response fields differ: actual={actual_json:?}, expected={expected:?}"
+        )
+        .into());
+    }
     let head_json = expected_head.map(serde_json::to_value).transpose()?;
-    assert_eq!(object.get("selected_active_head"), head_json.as_ref());
+    if object.get("selected_active_head") != head_json.as_ref() {
+        return Err(format!(
+            "JSON selected_active_head differs: actual={:?}, expected={:?}",
+            object.get("selected_active_head"),
+            head_json.as_ref()
+        )
+        .into());
+    }
     let decoded_json: T = serde_json::from_value(json)?;
-    assert_eq!(&decoded_json, response, "JSON response round trip");
+    if &decoded_json != response {
+        return Err(format!(
+            "JSON response round trip differs: decoded={decoded_json:?}, expected={response:?}"
+        )
+        .into());
+    }
 
     let bytes = encode(response)?;
     let wire: ciborium::Value = decode(&bytes)?;
@@ -244,20 +261,31 @@ where
         actual_cbor.push(name.as_str());
     }
     actual_cbor.sort_unstable();
-    assert_eq!(actual_cbor, expected, "CBOR response fields");
+    if actual_cbor != expected {
+        return Err(format!(
+            "CBOR response fields differ: actual={actual_cbor:?}, expected={expected:?}"
+        )
+        .into());
+    }
     let decoded_cbor: T = decode(&bytes)?;
-    assert_eq!(&decoded_cbor, response, "CBOR response round trip");
+    if &decoded_cbor != response {
+        return Err(format!(
+            "CBOR response round trip differs: decoded={decoded_cbor:?}, expected={response:?}"
+        )
+        .into());
+    }
     Ok(())
 }
 
-/// Public response maps omit absent optional fields. Present active heads
-/// carry the exact generation and activation token on both encodings; the
+/// Public response maps omit absent optional fields.
+///
+/// Present active heads carry the exact generation and activation token on both encodings; the
 /// pageable variants add a cursor only when the window authorizes one.
 #[test]
 fn selected_active_head_response_fields_are_exact_across_variants() -> TestRes {
     use quanta_index_contract::{CandidateCountV1, HistoryOrderV1};
 
-    let head = selected_head();
+    let head = selected_head()?;
     let exact_empty = QueryResultWindowV2::exact_probe(0);
     let continued_one =
         QueryResultWindowV2::pageable(1, CandidateCountV1::AtLeast(2), true, Vec::new())?;
@@ -624,10 +652,10 @@ fn selected_active_head_response_fields_are_exact_across_variants() -> TestRes {
 
 #[test]
 fn active_text_response_binds_selected_head_on_strict_wire() -> TestRes {
-    let head = selected_head();
+    let head = selected_head()?;
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
         generation: generation_pin(),
-        selected_active_head: Some(head.clone()),
+        selected_active_head: Some(head),
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         results: vec![],
         window: QueryResultWindowV2::exact_probe(0),

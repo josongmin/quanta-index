@@ -609,30 +609,33 @@ fn real_daemon_sdk_active_text_and_symbol_bind_one_selected_head_without_resolve
         "G32 activation must change the token"
     );
 
-    let stale = query_only
-        .lexical()
-        .query_request(quanta_index_contract::TextQueryRequest {
-            syntax: quanta_index_contract::TextQuerySyntax::Native,
-            query_text: "sphinx_riddle".to_string(),
-            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-            generation: Some(expected_pin),
-            generation_selector: Some(quanta_index_contract::GenerationSelector::ResolvedActive {
-                repo_id: identity.repo_id.clone(),
-                revision_id: identity.revision_id.clone(),
-                activation_token: ack.active.activation_token,
-            }),
-            top_k: 5,
-            cursor: None,
-        });
+    let stale_result =
+        query_only
+            .lexical()
+            .query_request(quanta_index_contract::TextQueryRequest {
+                syntax: quanta_index_contract::TextQuerySyntax::Native,
+                query_text: "sphinx_riddle".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(expected_pin),
+                generation_selector: Some(
+                    quanta_index_contract::GenerationSelector::ResolvedActive {
+                        repo_id: identity.repo_id.clone(),
+                        revision_id: identity.revision_id,
+                        activation_token: ack.active.activation_token,
+                    },
+                ),
+                top_k: 5,
+                cursor: None,
+            });
     assert!(
         matches!(
-            stale,
+            stale_result,
             Err(quanta_index_sdk::SdkError::Remote {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::NotReady,
                 ..
             })
         ),
-        "SDK ResolvedActive accepted the G31 token after G32: {stale:?}"
+        "SDK ResolvedActive accepted the G31 token after G32: {stale_result:?}"
     );
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let after_stale = loop {
@@ -694,7 +697,9 @@ fn one_query_rpc_for_route<T>(
         .request_events(ProcessRequestEventPlaneV1::Query, 1024)
         .expect("query ring before route");
     let result = query();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now()
+        .checked_add(Duration::from_secs(5))
+        .expect("query event deadline");
     let after = loop {
         let window = session
             .client()
@@ -732,46 +737,30 @@ fn one_query_rpc_for_route<T>(
     result
 }
 
-#[test]
-fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token() {
+/// Publish genuine auxiliary state for the exact search-corpus chunk in one generation.
+fn publish_active_auxiliary_fixture(
+    session: &DaemonSession,
+    identity: &BatchIdentity,
+    chunks: &BTreeMap<String, Vec<quanta_index_retrieval_bench::chunking::Chunk>>,
+) -> (quanta_index_contract::lex::CommitSha, String) {
     use quanta_index_contract::lex::{
         CommitRecord, CommitSha, DirtyRecord, ParseNode, ParseRoleTag, ParseTreeRecord,
         compute_parse_tree_source_hash,
     };
-    use quanta_index_contract::{
-        ChunkId, GenerationPin, GenerationSelector, HistoryOrderV1, HistoryQueryRequest,
-        HybridQueryRequest, HybridSeedQueryRequest, QueryConstraintSetV1, RepoRelativePath,
-        RuntimeMetadataQueryRequest, SearchPlaneErrorCodeV2, SearchScopeKey, SearchScopeSurface,
-        SemanticCorpusKindV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1, TextQueryRequest,
-        TextQuerySyntax,
-    };
-    use quanta_index_sdk::{ConnectOptions, DirtyBatch, QuantaIndex, SdkError, StructuralBatch};
+    use quanta_index_contract::{ChunkId, RepoRelativePath, SearchScopeKey, SearchScopeSurface};
+    use quanta_index_sdk::{DirtyBatch, StructuralBatch};
 
-    let repo = tempfile::tempdir().expect("repo root");
-    write_tiny_repo(repo.path());
-    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
-    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
-    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunks");
-    let identity = BatchIdentity::new(
-        "bench-repo",
-        "bench-rev",
-        41,
-        "manifest:active-vector-routes".to_string(),
-    )
-    .expect("identity");
-    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
-    let state = tempfile::tempdir().expect("state root");
-    let state_root = state.path().join("daemon");
-    let session = boot_session(&state_root, &identity);
-    let (_receipt, ack, _observation, _timings) =
-        publish_and_activate(&session, &batch, &identity, None).expect("publish+activate G41");
-    let commit_sha = CommitSha::from_bytes([0x41; 20]);
+    let generation_byte = u8::try_from(identity.generation.get()).expect("tiny fixture generation");
+    let commit_sha = CommitSha::from_bytes([generation_byte; 20]);
     let history_batch = quanta_index_sdk::HistoryBatch::new(
         identity.repo_id.clone(),
         identity.revision_id.clone(),
         identity.generation,
     )
-    .manifest_digest("manifest:active-history-fixture")
+    .manifest_digest(format!(
+        "manifest:active-history-fixture:{}",
+        identity.generation.get()
+    ))
     .commit(CommitRecord {
         wire_version: 1,
         sha: commit_sha,
@@ -794,7 +783,7 @@ fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token(
         .client()
         .history()
         .publish(&history_batch)
-        .expect("publish admitted G41 history");
+        .expect("publish admitted generation history");
     // The whole-file chunk is the exact source unit already admitted by the
     // search-corpus batch. Both auxiliary authorities name that unit.
     let owned_chunk = chunks
@@ -841,7 +830,7 @@ fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token(
         .client()
         .structural()
         .publish(&structural_batch)
-        .expect("publish source-bound G41 structural authority");
+        .expect("publish source-bound structural authority");
     let dirty_batch = DirtyBatch::new(
         identity.repo_id.clone(),
         identity.revision_id.clone(),
@@ -850,7 +839,7 @@ fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token(
     )
     .upsert(DirtyRecord {
         wire_version: 1,
-        doc_id: chunk_id.clone(),
+        doc_id: chunk_id,
         applied_at_ms: 55,
         payload_hash: [7; 32],
     });
@@ -858,15 +847,27 @@ fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token(
         .client()
         .runtime()
         .publish_dirty(&dirty_batch)
-        .expect("publish source-bound G41 dirty authority");
-    let query_only = QuantaIndex::connect_query_only(ConnectOptions::from_state_root(&state_root))
-        .expect("query-only SDK");
+        .expect("publish source-bound dirty authority");
+    (commit_sha, owned_chunk.chunk_id.clone())
+}
+
+/// Every successful Active route must use the published generation and one query RPC.
+fn assert_active_remaining_routes(
+    session: &DaemonSession,
+    query_only: &quanta_index_sdk::QuantaIndex,
+    identity: &BatchIdentity,
+    expected_head: &quanta_index_contract::SearchCorpusActiveHeadV1,
+    commit_sha: quanta_index_contract::lex::CommitSha,
+    owned_chunk_id: &str,
+) {
+    use quanta_index_contract::{GenerationPin, HistoryOrderV1, SemanticCorpusKindV1};
+
     let pin = GenerationPin::new(
         identity.repo_id.clone(),
         identity.revision_id.clone(),
         identity.generation,
     );
-    let semantic = one_query_rpc_for_route(&session, "query.semantic", || {
+    let semantic = one_query_rpc_for_route(session, "query.semantic", || {
         query_only
             .semantic()
             .query()
@@ -876,14 +877,14 @@ fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token(
             .execute()
             .expect("SDK Active Semantic")
     });
-    assert_eq!(semantic.selected_active_head.as_ref(), Some(&ack.active));
+    assert_eq!(semantic.selected_active_head.as_ref(), Some(expected_head));
     assert_eq!(semantic.generation, pin);
     assert!(
         !semantic.results.is_empty(),
         "fixture Semantic query has no result"
     );
 
-    let hybrid = one_query_rpc_for_route(&session, "query.hybrid", || {
+    let hybrid = one_query_rpc_for_route(session, "query.hybrid", || {
         query_only
             .search()
             .hybrid()
@@ -894,14 +895,14 @@ fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token(
             .execute()
             .expect("SDK Active Hybrid")
     });
-    assert_eq!(hybrid.selected_active_head.as_ref(), Some(&ack.active));
+    assert_eq!(hybrid.selected_active_head.as_ref(), Some(expected_head));
     assert_eq!(hybrid.generation, pin);
     assert!(
         !hybrid.results.is_empty(),
         "fixture Hybrid query has no result"
     );
 
-    let seed = one_query_rpc_for_route(&session, "query.hybrid_seed", || {
+    let seed = one_query_rpc_for_route(session, "query.hybrid_seed", || {
         query_only
             .search()
             .hybrid_seed()
@@ -913,14 +914,14 @@ fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token(
             .execute()
             .expect("SDK Active HybridSeed")
     });
-    assert_eq!(seed.selected_active_head.as_ref(), Some(&ack.active));
+    assert_eq!(seed.selected_active_head.as_ref(), Some(expected_head));
     assert_eq!(seed.generation, pin);
     assert!(
         !seed.seed_candidates.is_empty(),
         "fixture HybridSeed query has no seed"
     );
 
-    let history = one_query_rpc_for_route(&session, "query.history", || {
+    let history = one_query_rpc_for_route(session, "query.history", || {
         query_only
             .history()
             .query()
@@ -931,12 +932,12 @@ fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token(
             .execute()
             .expect("SDK Active History")
     });
-    assert_eq!(history.selected_active_head.as_ref(), Some(&ack.active));
+    assert_eq!(history.selected_active_head.as_ref(), Some(expected_head));
     assert_eq!(history.generation, pin);
     assert_eq!(history.commits.len(), 1);
     assert_eq!(history.commits[0].sha, commit_sha);
 
-    let runtime = one_query_rpc_for_route(&session, "query.runtime_metadata", || {
+    let runtime = one_query_rpc_for_route(session, "query.runtime_metadata", || {
         query_only
             .runtime()
             .query()
@@ -946,10 +947,52 @@ fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token(
             .execute()
             .expect("SDK Active RuntimeMetadata")
     });
-    assert_eq!(runtime.selected_active_head.as_ref(), Some(&ack.active));
+    assert_eq!(runtime.selected_active_head.as_ref(), Some(expected_head));
     assert_eq!(runtime.generation, pin);
     assert_eq!(runtime.results.len(), 1);
-    assert_eq!(runtime.results[0].candidate_id, owned_chunk.chunk_id);
+    assert_eq!(runtime.results[0].candidate_id.as_str(), owned_chunk_id);
+}
+
+#[test]
+fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token() {
+    use quanta_index_contract::{
+        GenerationPin, GenerationSelector, HistoryOrderV1, HistoryQueryRequest, HybridQueryRequest,
+        HybridSeedQueryRequest, QueryConstraintSetV1, RuntimeMetadataQueryRequest,
+        SearchPlaneErrorCodeV2, SemanticCorpusKindV1, SemanticQueryRequest,
+        SemanticSeedCorpusBudgetV1, TextQueryRequest, TextQuerySyntax,
+    };
+    use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError};
+
+    let repo = tempfile::tempdir().expect("repo root");
+    write_tiny_repo(repo.path());
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunks");
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        41,
+        "manifest:active-vector-routes".to_string(),
+    )
+    .expect("identity");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
+    let state = tempfile::tempdir().expect("state root");
+    let state_root = state.path().join("daemon");
+    let session = boot_session(&state_root, &identity);
+    let (_receipt, ack, _observation, _timings) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish+activate G41");
+    let (commit_sha, owned_chunk_id) =
+        publish_active_auxiliary_fixture(&session, &identity, &chunks);
+    let query_only = QuantaIndex::connect_query_only(ConnectOptions::from_state_root(&state_root))
+        .expect("query-only SDK");
+    assert_active_remaining_routes(
+        &session,
+        &query_only,
+        &identity,
+        &ack.active,
+        commit_sha,
+        &owned_chunk_id,
+    );
 
     let next_identity = BatchIdentity::new(
         "bench-repo",
@@ -973,9 +1016,25 @@ fn real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token(
         next_ack.active.activation_token,
         ack.active.activation_token
     );
+    let (next_commit_sha, next_owned_chunk_id) =
+        publish_active_auxiliary_fixture(&session, &next_identity, &chunks);
+    assert_active_remaining_routes(
+        &session,
+        &query_only,
+        &next_identity,
+        &next_ack.active,
+        next_commit_sha,
+        &next_owned_chunk_id,
+    );
+
+    let pin = GenerationPin::new(
+        identity.repo_id.clone(),
+        identity.revision_id.clone(),
+        identity.generation,
+    );
     let stale_selector = GenerationSelector::ResolvedActive {
         repo_id: identity.repo_id.clone(),
-        revision_id: identity.revision_id.clone(),
+        revision_id: identity.revision_id,
         activation_token: ack.active.activation_token,
     };
     let stale_text = || TextQueryRequest {
@@ -3296,7 +3355,8 @@ fn verify_serial_request_events_runner(
         ] {
             assert!(
                 !path.exists(),
-                "invalid stage policy {stage_policy} created {path:?}"
+                "invalid stage policy {stage_policy} created {}",
+                path.display()
             );
         }
     }
@@ -3375,23 +3435,18 @@ fn verify_serial_request_events_runner(
     assert_eq!(client["read_io_accounting"], "nested_inside_decode_call");
     let rpcs = client["rpcs"].as_array().expect("client RPC observations");
     assert_eq!(rpcs.len(), 1);
-    let mut rpc_total_ns = 0_u64;
-    for (index, route) in ["query.text"].iter().enumerate() {
-        let rpc = &rpcs[index];
-        assert_eq!(rpc["route"], *route);
-        assert_eq!(rpc["request_id"], new_events[index * 8].request_id.get());
-        let value = |key| rpc[key].as_u64().expect("observed client duration");
-        let children = value("encode_ns")
-            .checked_add(value("connect_ns"))
-            .and_then(|sum| sum.checked_add(value("write_ns")))
-            .and_then(|sum| sum.checked_add(value("decode_call_ns")))
-            .expect("small client intervals");
-        assert!(children <= value("total_ns"));
-        assert!(value("read_io_ns") <= value("decode_call_ns"));
-        rpc_total_ns = rpc_total_ns
-            .checked_add(value("total_ns"))
-            .expect("small RPC total");
-    }
+    let rpc = &rpcs[0];
+    assert_eq!(rpc["route"], "query.text");
+    assert_eq!(rpc["request_id"], new_events[0].request_id.get());
+    let value = |key| rpc[key].as_u64().expect("observed client duration");
+    let children = value("encode_ns")
+        .checked_add(value("connect_ns"))
+        .and_then(|sum| sum.checked_add(value("write_ns")))
+        .and_then(|sum| sum.checked_add(value("decode_call_ns")))
+        .expect("small client intervals");
+    let rpc_total_ns = value("total_ns");
+    assert!(children <= rpc_total_ns);
+    assert!(value("read_io_ns") <= value("decode_call_ns"));
     assert_eq!(client["rpc_total_ns"], rpc_total_ns);
     let execute_ns = client["sdk_execute_ns"].as_u64().expect("SDK clock");
     assert!(rpc_total_ns <= execute_ns);
