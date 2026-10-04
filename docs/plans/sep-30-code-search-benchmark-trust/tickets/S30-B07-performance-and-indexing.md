@@ -420,8 +420,9 @@ passed. A clean `7a046b55` worktree reran the same stale Gin suite with a
 new `/private/tmp/qg13` root: refusal occurred in **4.35 s**, with no
 `rep-00`, product record, verdict, or promoted output. This proves fail-fast
 behavior for invalid input; it does not qualify a 1,196-query pair capture or
-establish a timed speedup for a valid suite. Current-contract Gin gold must be
-reissued independently before a valid full pair run.
+establish a timed speedup for a valid suite. A current-contract suite is
+required for a full pair run; independently reviewed relevance remains
+required for a qualified quality claim.
 
 ### 2026-10-04 complete diagnostic pair and verdict-cost follow-up
 
