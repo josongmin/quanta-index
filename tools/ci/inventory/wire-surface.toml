@@ -256,11 +256,11 @@ id = "lexical-sealed-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Seal commitment binds identity digest, normalizer, Tantivy commit and segment components, text authority, overlays, optional source coverage and ranked keys. Format 9 added bounded coverage pages; format 10 added full-file authority and immutable source bytes with four-surface posting counts; format 11 counts folded content and path postings only; format 12 binds explicit symbol-name source policy. Formats 1-11 are refused typed and require a producer rebuild."
+notes = "Seal commitment binds identity digest, normalizer, Tantivy commit and segment components, text authority, overlays, optional source coverage and ranked keys. Format 9 added bounded coverage pages; format 10 added full-file authority and immutable source bytes with four-surface posting counts; format 11 counts folded content and path postings only; format 12 binds explicit symbol-name source policy; format 13 requires exact live BM25 token totals for frequency-bearing text fields and zero deleted documents at seal. Formats 1-12 are refused typed and require a producer rebuild."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
-value = 12
+value = 13
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
@@ -340,11 +340,11 @@ id = "history-text-epoch-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/authorities/history-text/generation-v1-<sha256(repo,revision)>/g<N>/e<epoch>/{history-text-manifest.cbor,commits/,diffs/}"
 reproduction = "producer-rebuild"
-notes = "Epoch-bound Tantivy history index (QI-BB-023 relevance order). Not rebuilt at boot: a restored generation serves HISTORY_TEXT_INDEX_NOT_READY on the relevance order until the next history batch triggers a full build."
+notes = "Epoch-bound Tantivy history index (QI-BB-023 relevance order). Format 2 requires exact live BM25 token totals after deleted-document compaction; format 1 is refused typed and requires a full producer rebuild before serving or incremental inheritance. Not rebuilt at boot: a restored generation serves HISTORY_TEXT_INDEX_NOT_READY on the relevance order until the next history batch triggers a full build."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/history_text_index/manifest.rs"
 name = "MANIFEST_FORMAT_VERSION"
-value = 1
+value = 2
 
 [[artifact]]
 id = "semantic-manifest"

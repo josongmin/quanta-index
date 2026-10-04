@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `CODE_AND_PROOF` |
 | 기준 웨이브 | [W2 — 확인된 결함 수리·선택 최적화](../waves/W2-repairs-and-selected-optimizations.md) |
-| 실행 상태 | DTO/producer/SDK/benchmark 단일 RPC 통합; 중앙 owner·wire·SDK 실행 검증 중 |
+| 실행 상태 | DTO/producer/SDK/benchmark 통합; 실제 daemon SDK `sdk_roundtrip` 26 PASS로 Text/Symbol 1RPC·stale token `VERIFIED`. 전체 variant live parity·daemon profile·release qualification은 `NOT_RUN` |
 | 선행 결과 | [O4-E3-01](O4-E3-01-active-selection-race.md), [O4-E3-02](O4-E3-02-admission-pin-transfer.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -15,7 +15,7 @@
 - Text/Symbol/Semantic/Hybrid/HybridSeed/History/RuntimeMetadata의 optional `selected_active_head`를 선택 당시 catalog snapshot에서 materialize한다. SDK는 이 head와 response generation/token/secondary lane identity를 검사한다.
 - 지원 Active route의 사전 resolve RPC를 제거했다. Structural Active refusal, SemanticWorkBounded exact-generation 제한, Active cursor의 exact-pin 요구와 `rev:at.time` ancestor preflight는 별도 계약으로 보존한다.
 - strict wire 방문자, response literals, searchctl/harness, 실제 benchmark request-event consumer를 함께 수정했다. 선택 후 read-view admission 전에 G1이 폐기되면 기존 typed refusal이 가능하며 이 변경이 admission lease를 추가한 것은 아니다.
-- 초기 중앙 compile에서 Structural macro field와 SDK test import 누락을 확인해 수정했다. 통합 후 owner batch·actual SDK one-RPC·mandatory surface gates는 아직 최종 결과를 회수 중이다.
+- 초기 중앙 compile에서 Structural macro field와 SDK test import 누락을 확인해 수정했다. owner batch, 실제 Text/Symbol one-RPC, wire fuzz smoke 및 public API baseline은 아래 실행 범위에서 통과했다.
 - `real_daemon_sdk_active_text_and_symbol_bind_one_selected_head_without_resolve`를 실제 daemon SDK integration에 추가했다. query-only SDK의 Text/Symbol 각 1RPC, ACK와 selected generation/token 결속, query-ring admission/terminal을 검사한다. G31→G32 실제 successor activation 뒤 G31 token 요청의 typed `NotReady`도 같은 fixture에서 검증한다.
 - `VERIFIED`: test-fast-lane env를 source하고 같은 lane의 debug `quanta-index-searchd`를 `QUANTA_INDEX_SEARCHD_BIN`으로 pin한 뒤 `./scripts/cargow --lane test-fast-lane test --workspace --test sdk_roundtrip --all-features --locked` —26 passed /0 failed /25.07초, exit0. 새 live Active/stale-token case도 통과했다. 이 결과는 Linux/fresh-release formal SDK proof가 아니다.
 - 중앙 workspace 실행에서 stale SDK positive mocks 2건을 수리한 뒤 SDK lib와 search-plane lib는 통과했다. 이 결과는 새 live SDK integration 실행을 대신하지 않는다. wire 4-target fuzz smoke와 public API baseline check는 `VERIFIED`다.
@@ -26,7 +26,7 @@ SDK Active 요청에서 사전 resolve 왕복을 제거할 수 있는 원자적 
 
 ## 배경과 현재 상태
 
-SDK pin_active_selector는 ResolveActiveGeneration을 먼저 보내고 explicit pin+ResolvedActive token으로 다음 query를 구성한다. server는 Active selector를 지원하지만 기존 응답 pin만으로 A→B→A token identity를 검증할 수 있다고 가정할 수 없다. 과거 2개 query의 resolve1.5–1.6ms는 비용 위치일 뿐 절감 보장이 아니다.
+변경 전 SDK pin_active_selector는 ResolveActiveGeneration을 먼저 보내고 explicit pin+ResolvedActive token으로 다음 query를 구성했다. 현재 지원 Active 경로는 선택 당시 head/token을 query response로 받아 검증한다. 기존 응답 pin만으로 A→B→A token identity를 검증할 수 있다고 가정하지 않는다. 과거 2개 query의 resolve1.5–1.6ms는 비용 위치일 뿐 절감 보장이 아니다.
 
 ## 착수 입력
 
@@ -65,7 +65,7 @@ SDK pin_active_selector는 ResolveActiveGeneration을 먼저 보내고 explicit 
 
 ## 변경 전 RPC 비용 inventory와 현재 검증 범위
 
-아래 추가 요청 수는 변경 전 baseline이다. 현재 SDK는 지원 Active variant를 단일 query로 구성하며 실제 daemon Text/Symbol count는 위 integration 실행으로 확인해야 한다. 나머지 variant의 unit binding을 live roundtrip 증거로 승격하지 않는다.
+아래 추가 요청 수는 변경 전 baseline이다. 현재 SDK는 지원 Active variant를 단일 query로 구성하며 실제 daemon Text/Symbol count는 위 integration 실행에서 확인했다. 나머지 variant의 unit binding을 live roundtrip 증거로 승격하지 않는다.
 
 | 현재 경로 | 현 source에서 확인할 추가 요청 | 단일 선택 변경의 요구 |
 | --- | --- | --- |
@@ -79,7 +79,7 @@ SDK pin_active_selector는 ResolveActiveGeneration을 먼저 보내고 explicit 
 - contract/results/query_responses.rs의 현재 generation 필드와 strict serializers를 기준으로 selected token 증거를 설계한다. 필요한 영향을 받는 History/RuntimeMetadata/HybridSeed 응답 producer도 같은 변경에서 inventory한다.
 - 실제 SDK trace의 request_id+RPC kind로 route별 전후 count를 검증한다. 각 route의 domain/generation/token/variant/rows와 ancestor/cursor semantics가 독립 expected snapshot을 만족해야 해당 one-RPC claim을 발행한다.
 
-## 검증 계획 — NOT_RUN
+## 남은 검증 계획 — 전체 variant live parity/daemon profile NOT_RUN
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 

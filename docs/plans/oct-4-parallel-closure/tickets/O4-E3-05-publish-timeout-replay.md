@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_THEN_CONDITIONAL_CODE` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | runtime lib 실제 UDS timeout→peer hangup→Committed inspect→재조립 후 exact replay fixture `VERIFIED` (중앙 Nextest 1 selected/1 PASS). 기본30초·OS process·daemon profile은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -16,7 +16,7 @@ client timeout 이후 durable publish 상태와 exact operation replay를 검증
 
 ## 배경과 현재 상태
 
-SDK default I/O deadline30s, ingest budget120s, process-wide serial ingest admission과 query admission은 별도다. peer_watch는 hangup cancel을 전달하고 ingest dispatcher는 entry budget check 후 admitted publish를 durable settle한다. async ACK/parallel dispatch를 새로 도입할 근거는 없다.
+SDK default I/O deadline30s, ingest budget120s, process-wide serial ingest admission과 query admission은 별도다. runtime lib `timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_reassembly`는 2초 client policy의 실제 UDS read timeout, peer hangup metric, journal Committed, runtime 재조립 뒤 exact replay와 physical build 0회를 확인한다. 기본30초 timeout과 별도 OS process daemon 결과로 확대하지 않는다. async ACK/parallel dispatch를 새로 도입할 근거는 없다.
 
 ## 착수 입력
 
@@ -44,7 +44,7 @@ SDK default I/O deadline30s, ingest budget120s, process-wide serial ingest admis
 4. 같은 op의 wrong source digest/다른 payload를 거절하고 중복 seal/publish나 implicit activate가 없음을 검증한다.
 5. query admission·shutdown·source custody 실패 경계를 확인하고 재현된 오류만 canonical operation owner에서 고친다.
 
-## 검증 계획 — NOT_RUN
+## 남은 검증 계획 — default30s/OS process/daemon profile NOT_RUN
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 

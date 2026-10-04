@@ -2219,14 +2219,14 @@ fn scrub_quarantines_a_tampered_coverage_root_before_page_expansion() -> TestRes
 
 #[test]
 fn older_formats_require_explicit_rebuild() -> TestResult {
-    for format in [8, 9, 10, 11] {
+    for format in [8, 9, 10, 11, 12] {
         let temp = tempfile::tempdir()?;
         let root = temp.path().to_path_buf();
         let adapter = LexicalAdapter::with_state_root(root.clone());
         let generation = ManifestGeneration::new(1);
         let _stages =
             adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
-        expect_admitted(&knock(&adapter, generation), "current format twelve")?;
+        expect_admitted(&knock(&adapter, generation), "current format thirteen")?;
         let manifest = generation_dir(&root, generation).join(MANIFEST);
         let raw = std::fs::read(&manifest)?;
         let mut value: ciborium::Value = ciborium::from_reader(raw.as_slice())?;
@@ -2244,6 +2244,44 @@ fn older_formats_require_explicit_rebuild() -> TestResult {
             "GENERATION_MANIFEST_FORMAT_UNSUPPORTED",
         )?;
     }
+    Ok(())
+}
+
+#[test]
+fn format_twelve_base_is_refused_before_index_inheritance() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let base = ManifestGeneration::new(1);
+    let target = ManifestGeneration::new(2);
+    let _stages = adapter.build_batch(&sealed_batch(base, "fn one() { sealed_needle }")?)?;
+    let manifest = generation_dir(&root, base).join(MANIFEST);
+    let raw = std::fs::read(&manifest)?;
+    let mut value: ciborium::Value = ciborium::from_reader(raw.as_slice())?;
+    let ciborium::Value::Array(fields) = &mut value else {
+        return Err("manifest is not an array".into());
+    };
+    *fields.first_mut().ok_or("missing manifest version")? = ciborium::Value::Integer(12.into());
+    let mut legacy = Vec::new();
+    ciborium::into_writer(&value, &mut legacy)?;
+    std::fs::write(&manifest, legacy)?;
+
+    let mut delta = sealed_batch(target, "fn two() { sealed_needle }")?;
+    delta.base_generation = Some(base);
+    delta.mode = BatchIngestMode::Delta;
+    current_source_fixture::finish_batch(&mut delta)?;
+    let result = adapter.build_batch(&delta);
+    assert!(
+        matches!(result, Err(CoreError::Typed { code, ref message })
+            if code.as_wire_str() == "GENERATION_MANIFEST_FORMAT_UNSUPPORTED"
+                && message.contains("format 12")
+                && message.contains("must be rebuilt")),
+        "format-12 base must refuse typed before cloning: {result:?}"
+    );
+    assert!(
+        !generation_dir(&root, target).join(TANTIVY_META).exists(),
+        "unsupported base must not be inherited into a new index"
+    );
     Ok(())
 }
 

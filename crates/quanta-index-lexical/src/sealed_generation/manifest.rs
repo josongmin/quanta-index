@@ -27,6 +27,10 @@
 //!   universe and producer event, both decoded from the same proved bytes.
 //!   Absence means unavailable capability, not complete coverage.
 //!
+//! Format 13 requires sealed lexical generations to have no deleted Tantivy
+//! documents and exact live-token totals for frequency-bearing text fields.
+//! Format 12 could retain deleted documents or approximate BM25 token totals
+//! after a merge, so those generations require a producer rebuild.
 //! Format 12 binds source coverage to the explicit symbol-name source policy.
 //! Format 11 coverage lacks this field and must be rebuilt before component
 //! queries can use an incomplete-census exclusion proof.
@@ -72,7 +76,7 @@ pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-genera
 const MAX_SEALED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 12;
+pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 13;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -250,7 +254,7 @@ impl LexicalSealedManifest {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
-                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: explicit symbol-name source policy, folded-only file posting counts and bounded committed coverage pages); the generation must be rebuilt",
+                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: exact live BM25 token totals and no retained deleted documents at seal, plus explicit symbol-name source policy, folded-only file posting counts and bounded committed coverage pages); the generation must be rebuilt",
                     path.display()
                 ),
             });
@@ -776,6 +780,7 @@ mod tests {
             9,
             10,
             11,
+            12,
             LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1,
         ] {
             let other_format: SealedManifestRow = (
@@ -834,9 +839,29 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 10")
-                    && message.contains("serves 12")
+                    && message.contains("serves 13")
                     && message.contains("explicit symbol-name source policy")
                     && message.contains("folded-only file posting counts")
+                    && message.contains("must be rebuilt")
+        ));
+    }
+
+    #[test]
+    fn format_twelve_approximate_bm25_requires_typed_rebuild_before_body_decode() {
+        // Independent legacy-version oracle: its payload is deliberately not
+        // a current-format body, so the decoder must reject on version first.
+        let bytes = crate::channel_payloads::encode_cbor(&vec![12_u32], "test")
+            .expect("legacy version encodes");
+        let error = LexicalSealedManifest::decode(&bytes, Path::new("/g12/m"))
+            .expect_err("format twelve requires rebuild");
+        assert!(matches!(
+            error,
+            quanta_index_core::CoreError::Typed { code, message }
+                if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
+                    && message.contains("format 12")
+                    && message.contains("serves 13")
+                    && message.contains("exact live BM25 token totals")
+                    && message.contains("no retained deleted documents")
                     && message.contains("must be rebuilt")
         ));
     }

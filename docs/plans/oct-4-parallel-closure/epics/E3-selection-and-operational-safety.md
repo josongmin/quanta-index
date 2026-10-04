@@ -1,6 +1,6 @@
 # E3 — Active 선택·read-view lifetime·운영 계약
 
-- 상태: `PLANNED`. 구현·모델 실행·제품 캡처·verification은 이 계획 작성에서 `NOT_RUN`.
+- 상태: 부분 구현·owner 검증. E3-01 search-plane owner fixture, E3-03 실제 SDK Text/Symbol, E3-05 runtime lib timeout/replay fixture는 실행 증거가 있다. daemon profile·OS process·전체 E3 및 29티켓 release qualification은 별도다.
 - 담당: E3 담당 1명.
 - 6개 티켓. [전체 지도](../README.md) · [티켓 인덱스](../tickets/INDEX.md).
 
@@ -12,16 +12,16 @@
 
 ## 배경과 현재 구현
 
-- un-tokened Active 선택과 acquire_read_view 사이 retirement 가능성은 정적 조사에 있다. 이미 획득한 view의 lifetime tests는 선택 전 구간의 결정적 G1→G2→G3 재현을 대체하지 않는다.
-- SDK는 Active resolve 이후 query를 보낸다. Text/Symbol/History/RuntimeMetadata는 보통2RPC, Semantic+lexical scope·Hybrid/HybridSeed는 track별 resolve로3RPC까지 가능하고 rev:at.time에는 별도 ancestor resolve가 있다. pre-resolve 삭제는 variant별 selected token·ABA·joint snapshot·response DTO/binding 계약과 함께 설계한다.
-- maintenance tick은 동기 full-tree disk gauge 갱신 뒤 heartbeat를 완료한다. readiness는 freshness를 사용한다. 느린 disk walk가 readiness를 잘못 낮추는 실제 실험은 미실행이다.
+- un-tokened Active 선택과 acquire_read_view 사이 G1 retirement를 dispatcher barrier fixture로 재현했다. 현 계약에서는 read-view 획득 전에 `UNKNOWN_GENERATION`으로 거절하고 G1 opener를 호출하지 않는다. 별도 runtime fixture는 G1의 양 track physical retirement, stale explicit/tokened refusal, fresh G3 Active 응답 결속을 검사한다. runtime daemon profile 결과는 아직 별도 확인 대상이다.
+- SDK는 지원 Active route에서 사전 resolve를 제거하고 선택 당시 snapshot/token을 응답 DTO와 binding에 결속했다. 실제 daemon SDK Text/Symbol 각 1RPC 및 stale token 거절은 `sdk_roundtrip` 26-test 실행에서 확인했다. 다른 route의 live parity와 `rev:at.time` ancestor preflight는 별도 범위다.
+- maintenance metering은 cooperative walker와 supervisor ownership으로 분리했다. owner lib 검증은 있으나 실제 daemon profile에서 느린 disk walk/readiness 영향은 별도 판정 대상이다.
 - SDK 기본30초, dispatch120초, peer hangup budget cancel과 admitted publish settlement가 공존한다. client timeout은 operation rollback 증거가 아니다.
 - operator ring·SDK/searchctl와 실제 owner-binary의 payload 없는 request correlation/lost root/read-failure cases는 이미 있다. process_readiness_owner_v1은 e2e_process_readiness.rs 등을 포함하는 wrapper다. 기존 cases를 소비하고 누락된 seam·authorization·부정 경로만 보완하며 Linux fresh release는 별도 범위다.
 - OCT-04-001은 Proposed다. Accepted SEP-21-002/003·SEP-27-005와 현재 source를 먼저 대조한다.
 
 ## 목표 계약과 변경 원칙
 
-- 선택 linearization과 bounded admission claim을 actual catalog/retention authority에서 정의한다. claim은 실제 view handle에 이전되고 실패/panic/cancel에서 해제된다.
+- Accepted 계약의 선택 후 retirement는 view 획득 전 typed refusal로 처리한다. bounded admission claim을 view handle로 이전하는 강화 계약은 OCT-04-001이 Proposed인 동안 구현 선행 조건이 아니다.
 - atomic Active query는 단일 선택 snapshot을 search와 response에 결속한다. ambient latest 재조회·무제한 active handle pin·retry masking을 추가하지 않는다.
 - health/freshness와 disk metering의 pacing은 measured slow-walk 결과에 따라 결정한다. gauge는 logical/allocated/physical-write/transient high-water 의미를 분리한다.
 - publish는 durable operation identity로 inspect/replay하고 duplicate ACK/state convergence를 검증한다. 진단 DTO와 operator facade는 기존 구현을 소비한다.

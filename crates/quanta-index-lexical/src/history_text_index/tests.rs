@@ -838,6 +838,61 @@ fn an_index_stamped_with_another_normalizer_is_unsupported_until_rebuilt() -> Te
 }
 
 #[test]
+fn format_one_history_epoch_refuses_open_and_incremental_base() -> TestRes {
+    let root = tempfile::tempdir()?;
+    let port = adapter(root.path())?;
+    let generation = generation();
+    let first = AuxEpochV1::new(1);
+    let second = AuxEpochV1::new(2);
+    let _receipt = port.publish_epoch(
+        &generation,
+        first,
+        HistoryTextBuildV1::Full {
+            docs: vec![commit_doc(1, 1, "needle")],
+        },
+    )?;
+    let path = epoch_dir(root.path(), &generation, first).join("history-text-manifest.cbor");
+    let bytes = std::fs::read(&path)?;
+    let mut row: (u32, (u16, u16), u64, [u8; 32], [u8; 32]) =
+        ciborium::de::from_reader(bytes.as_slice())?;
+    row.0 = 1;
+    let mut old_bytes = Vec::new();
+    ciborium::ser::into_writer(&row, &mut old_bytes)?;
+    std::fs::write(&path, old_bytes)?;
+
+    let expect_old_format = |result: Result<(), CoreError>| -> TestRes {
+        match result {
+            Err(CoreError::Typed { code, message })
+                if code == HISTORY_TEXT_INDEX_CORRUPT_CODE
+                    && message.contains("format 1")
+                    && message.contains("supported 2")
+                    && message.contains("full producer rebuild") =>
+            {
+                Ok(())
+            }
+            other => Err(format!("old history epoch must refuse typed: {:?}", other.err()).into()),
+        }
+    };
+    expect_old_format(port.epoch_status(&generation, first).map(|_status| ()))?;
+    expect_old_format(port.open_epoch(&generation, first).map(|_searcher| ()))?;
+    expect_old_format(
+        port.publish_epoch(
+            &generation,
+            second,
+            HistoryTextBuildV1::Incremental {
+                base: first,
+                upserts: Vec::new(),
+            },
+        )
+        .map(|_receipt| ()),
+    )?;
+    if epoch_dir(root.path(), &generation, second).exists() {
+        return Err("unsupported base must not create the incremental epoch".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn a_directory_that_contradicts_its_manifest_is_refused_corrupt() -> TestRes {
     let root = tempfile::tempdir()?;
     let port = adapter(root.path())?;

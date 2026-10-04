@@ -28,7 +28,7 @@ members = [
     "benchmarks/retrieval",
     "benchmarks/bench-protocol",
 ]
-exclude = ["vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python", "vendor/tree-sitter-javascript"]
+exclude = ["vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python", "vendor/tree-sitter-javascript", "vendor/tantivy-0.22.1"]
 resolver = "2"
 
 [workspace.package]
@@ -163,7 +163,7 @@ serde = { version = "1.0", default-features = false, features = ["std"] }
 serde_json = "1.0"
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup"] }
 sha2 = "0.10"
-tantivy = "0.22"
+tantivy = "=0.22.1"
 tantivy-fst = "=0.5.0"
 tempfile = "3.16.0"
 thiserror = "1.0.69"
@@ -220,3 +220,8 @@ inherits = "release"
 # the command surface.
 lto = false
 codegen-units = 16
+
+[patch.crates-io]
+# The pinned 0.22.1 merger counts surviving posting frequencies exactly after
+# deletes; upstream approximates token totals from quantized fieldnorms.
+tantivy = { path = "vendor/tantivy-0.22.1" }

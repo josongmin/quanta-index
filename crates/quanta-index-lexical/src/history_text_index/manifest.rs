@@ -5,7 +5,9 @@
 //! records the text normalizer the index was built under — an index
 //! built under any other normalizer is never served, it is rebuilt — and
 //! the digest of each kind's index commit file so a directory whose
-//! files do not match its manifest is refused rather than searched.
+//! files do not match its manifest is refused rather than searched. Format 2
+//! requires exact live BM25 token totals after deleted-document compaction;
+//! format 1 epochs need a full producer rebuild before serving or inheritance.
 
 use std::path::{Path, PathBuf};
 
@@ -16,8 +18,8 @@ use crate::history_text_index::layout::{fsync_parent, kind_dir};
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 
 const MANIFEST_FILE_NAME: &str = "history-text-manifest.cbor";
-/// Manifest format; there is no readable earlier format.
-const MANIFEST_FORMAT_VERSION: u32 = 1;
+/// Manifest format; earlier epochs cannot prove exact live BM25 statistics.
+const MANIFEST_FORMAT_VERSION: u32 = 2;
 /// The index engine's commit file, whose digest commits the index content.
 const INDEX_COMMIT_FILE_NAME: &str = "meta.json";
 
@@ -89,7 +91,7 @@ impl HistoryTextManifest {
             row;
         if format_version != MANIFEST_FORMAT_VERSION {
             return Err(corrupt(format!(
-                "history text index: manifest format {format_version} is not the supported {MANIFEST_FORMAT_VERSION}"
+                "history text index: manifest format {format_version} is not the supported {MANIFEST_FORMAT_VERSION} with exact live BM25 token totals; a full producer rebuild is required"
             )));
         }
         Ok(Self {

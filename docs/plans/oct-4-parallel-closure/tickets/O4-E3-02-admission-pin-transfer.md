@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P0 / `CONDITIONAL_CODE` |
 | 기준 웨이브 | [W2 — 확인된 결함 수리·선택 최적화](../waves/W2-repairs-and-selected-optimizations.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | 현 Accepted 계약에서 구현 조건 미성립: `NOT_APPLICABLE` (E3-01 dispatcher refusal oracle). OCT-04-001 강화 계약은 `Proposed`; 채택·실제 반례가 있으면 재개 |
 | 선행 결과 | [O4-E3-01](O4-E3-01-active-selection-race.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -16,7 +16,7 @@
 
 ## 배경과 현재 상태
 
-현재 composite active selection과 read view/snapshot registry는 이미 있다. 필요한 것은 그 사이의 custody다. 모든 active handle을 영구 pin하거나 SDK retry로 race를 덮으면 cache/retention와 정확한 token semantics가 깨질 수 있다.
+현재 composite active selection과 read view/snapshot registry는 이미 있다. E3-01의 G1 selection→retirement→view acquisition은 `UNKNOWN_GENERATION`으로 거절하고 opener를 호출하지 않아 현 Accepted 계약상 serve-from-retired 결함이 관측되지 않았다. SEP-21-003은 획득한 view의 handle lifetime과 typed unavailable을 요구하며, 선택만 된 G1의 성공 보장은 명시하지 않는다. OCT-04-001의 admission transfer는 Proposed이므로 현재 구현 조건이 성립하지 않는다. 모든 active handle의 영구 pin이나 SDK retry는 여전히 금지한다.
 
 ## 착수 입력
 
@@ -38,13 +38,13 @@
 
 ## 실행 단계
 
-1. E3-01에서 현 계약상 결함 또는 채택된 더 강한 선택 계약의 실패가 확인된 경우만 implementation branch를 선택한다. 현 계약을 충족하고 제안도 채택되지 않았으면 proof로 NOT_APPLICABLE 처리한다.
+1. E3-01에서 현 Accepted 계약의 typed refusal을 확인했으므로 현재 implementation branch는 `NOT_APPLICABLE`이다. 강화 계약이 채택되거나 Accepted 계약의 별도 실패가 재현될 때만 이 단계를 재개한다.
 2. 현재 catalog/retention/registry/mutation-coordinator caller의 lock acquisition graph를 먼저 작성해 기존 순서·역방향 호출을 확인한다. acyclic order와 bounded claim 수명을 정하고 I/O/backend open을 guard 안에 넣지 않는다. 이름 순서만 보고 catalog→retention→registry를 강제하지 않는다.
 3. 최소 admission claim을 선택과 함께 획득하고 read-view acquisition 후 기존 live handle 보호로 이전한다.
 4. explicit pin/token conflict·joint lexical+semantic snapshot·aux epochs의 refusal 계약을 유지한다.
 5. retire/GC/cancel/panic/cache-churn counterexamples와 real daemon case를 re-run한다.
 
-## 검증 계획 — NOT_RUN
+## 채택 시 검증 계획 — NOT_RUN
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 

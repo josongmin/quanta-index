@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_FIRST` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | dispatcher G1→G2→G3 barrier owner fixture `VERIFIED` (search-plane lib 537 PASS, root 중앙 관측). runtime physical-retirement fixture는 source 통합; daemon profile `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -16,7 +16,7 @@
 
 ## 배경과 현재 상태
 
-selection.resolve_generation_selector_pin은 catalog head를 pin으로 해석하고 acquire_read_view는 이후 ledger/track handle을 획득한다. acquired view lifetime tests는 이 앞 구간을 증명하지 않는다. G1 선택→G2 activate→G3 retention→G1 acquire의 결합 재현은 아직 없다.
+selection.resolve_generation_selector_pin은 catalog head를 pin으로 해석하고 acquire_read_view는 이후 ledger/track handle을 획득한다. dispatcher barrier fixture `active_selection_reaped_before_view_acquisition_refuses_without_opening_g1`은 G1 선택→G2/G3 활성화·retention→G1 acquire를 고정한다. 관측 oracle는 `UNKNOWN_GENERATION` 및 lexical opener 0회다. `e2e_read_view::retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3`는 별도 실제 daemon에서 양 track의 G1 physical retirement와 fresh G3 selected head/token을 검사하도록 통합됐으며 daemon profile 실행은 별도다.
 
 ## 착수 입력
 
@@ -41,9 +41,9 @@ selection.resolve_generation_selector_pin은 catalog head를 pin으로 해석하
 2. barrier로 G1 selection을 멈추고 G2/G3 activation+retention을 완료한 뒤 G1 acquisition을 진행한다.
 3. selected generation, token, physical handle, ledger/retained set, result rows를 독립 oracle와 비교한다.
 4. already-acquired view case와 select-before-acquire case를 각각 실행한다.
-5. baseline의 실제 failure 또는 계약 충족을 기록해 E3-02의 수정/NOT_APPLICABLE 판단 입력으로 넘긴다.
+5. 현재 관측된 typed refusal이 Accepted 계약의 허용 경계임을 E3-02에 넘긴다. 제안된 serve-after-selection 보장은 별도 채택 전까지 expected oracle로 사용하지 않는다.
 
-## 검증 계획 — NOT_RUN
+## 남은 검증 계획 — daemon profile NOT_RUN
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
