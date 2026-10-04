@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | full Clippy·current owner972·SDK27 assertions·daemon213/process26·bounded wire fuzz `VERIFIED`; SDK stdio leak1 관측/단독 재실행 ordinary PASS. formal Contract v2 collection `FAILED`(누락3 수리), clean source107 Contract v3 실행 중. hosted CI·release/scale `NOT_RUN` |
+| 실행 상태 | full Clippy·current owner972·SDK27 assertions·daemon213/process26·bounded wire fuzz 및 source107 formal Contract v3 `VERIFIED`; SDK stdio leak1 관측/단독 ordinary PASS. SDK fresh v2 release build 중. hosted CI·release/scale `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -94,6 +94,13 @@
 - 위3개의 source fixtures를 확인했다. declaration/usage 구분, UTF-8 byte offset 및 dotted namespace terminal의 고정 oracle와 partial/foreign/wrong-byte inventory 거절을 유지한다. required registry에 그3 ID만 추가하며 기존188을 제거·완화하지 않았다.
 - `VERIFIED`: current `uv run --frozen --extra dev python tools/benchmark/retrieval/proof_inventory.py --verify /Users/songmin/Documents/code-new/qi-oct4-contract-proof-20261004-v2/rust-collection.stdout --role rust` — exit0, 실제191과 수정 registry의 정확한 equality. 이는 collection 검증이며 미실행 test를 PASS로 바꾸지 않는다. registry commit을 새 source로 고정하고 fresh Contract v3 및 SDK fresh v2를 순차 실행한다. 실패 v2 root를 보존한다.
 - source 고정: 관리 checkout은 clean `1071692b2dd4d5a77db54f79ecd0e80a1a20b2a7`이다. `just retrieval-contract-proof /Users/songmin/Documents/code-new/qi-oct4-contract-proof-20261004-v3`는 실제 Python788/Rust191 collection equality를 통과한 뒤 tests를 실행 중이다. 완료 receipt 전에는 formal proof가 아니다. 후속 SDK fresh v2·admission·matching captures도 이 source를 사용하며 main의 ticket 문서 SHA로 대체하지 않는다.
+
+## 2026-10-04 source107 Contract proof 완료
+
+- `VERIFIED`: clean source107의 `just retrieval-contract-proof /Users/songmin/Documents/code-new/qi-oct4-contract-proof-20261004-v3` — exit0, Python788 selected/executed/passed(308.04s), Rust191 selected/executed/passed(0.723s), failures0/skipped0. source-controlled required identity equality, raw JUnit/Nextest inventory/events와 source closure를 결속해 schema-v2 execution-context 및 두 receipts를 발행했다.
+- `VERIFIED`: 같은 checkout의 `uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py verify --receipt /Users/songmin/Documents/code-new/qi-oct4-contract-proof-20261004-v3/execution-context.json` — exit0. 기존 v2 collection 실패는 보존하며 새 root의 결과로만 판정한다.
+- 이어 `just retrieval-sdk-proof-fresh /Users/songmin/Documents/code-new/qi-oct4-sdk-proof-fresh-20261004-v2`를 같은 source에서 실행 중이다. isolated fresh target·SCCACHE0·release/all-features daemon 및 SDK tests/runner의 source/binary 결속이 완료되기 전 SDK formal PASS나 matching capture 가능 상태를 발행하지 않는다.
+- Contract proof는 이 선택의 Python/Rust 계약 범위이며 hosted CI, 실제 모델/외부 native query, five-product qualification, Linux release 및 operations proof를 포함하지 않는다.
 
 ## 착수 입력
 

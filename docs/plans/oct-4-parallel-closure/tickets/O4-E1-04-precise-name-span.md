@@ -22,7 +22,9 @@ evaluator에는 indexed_span_diagnostics와 declaration_recall_at_k/declaration_
 
 - `VERIFIED`: parser의 선언 이름 witness를 runner-local symbol registry와 연결하고 evaluator에서 file/definition/name 회수를 구분했다. context 확대나 같은 파일의 다른 선언을 name 회수로 계산하지 않는다.
 - 명령: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_native_span_projection.py tools/ci/tests/test_source_oracle_suite.py tools/ci/tests/test_holdout_review.py tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_retrieval_latency_status.py -q --tb=short` — 786 passed, 618.45s, exit 0. 이 수는 전체 선택 배치이며 name-span 전용 테스트 수가 아니다.
-- Rust 통합 테스트는 중앙 workspace 배치 진행 중이다. 새 실제 SDK symbol capture와 OSA/name lane의 전체 scoreboards는 `NOT_RUN`; fixture 통과를 benchmark 완료로 승격하지 않는다.
+- `VERIFIED`: clean source107의 formal Contract proof는 Rust191을 모두 실행해 통과했다. name-inventory의 partial/foreign/wrong-byte 거절1 및 local-name의 same-line usage/Unicode/dotted namespace 고정 oracle2를 포함한다. 처음 required registry에서 이3 IDs가 빠져 거절됐고, 기존188을 유지하며 추가한 뒤 전체 proof와 별도 context verify를 통과했다.
+- 실제 Gin checkout `d3ffc9985281dcf4d3bef604cce4e662b1a327a6`의99 Go files 및 exact-name4개에 대해 source SHA/byte witnesses를 읽어 PREPARE했다. matching release binaries 뒤 canonical source oracle의 symbol/name judgments로 새 suite/pack을 생성하고 실제 단독 `exact_symbol_name` 캡처를 할 계획이다. 아직 input 생성/capture/replay는 `NOT_RUN`이다. 과거 file-only controls를 새 name-span gold로 재결속하지 않는다.
+- 현재 exact symbol route는 OSA 오타를 교정하지 않는다. 기존 `go_declaration_name_osa1_v1`의 distinct-file scoreboard를 name-span recovery로 환산하지 않는다. 새 실제 SDK symbol capture와 지원 가능한 name lane의 전체 scoreboards는 `NOT_RUN`; fixture 통과를 benchmark 완료로 승격하지 않는다.
 
 ## 착수 입력
 
