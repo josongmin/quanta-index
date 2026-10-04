@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P2 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | current harness lib/bin oracle 및 bound/refusal 회귀 `VERIFIED`; matching release build·tier/load/restart 실행 `NOT_RUN` |
+| 실행 상태 | harness lib/bin oracle·bound/refusal 회귀 및 source107 matching release build/CLI `VERIFIED`; 실제 tier/load/restart 실행 `NOT_RUN` |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E4-01](O4-E4-01-index-phase-profile.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -25,7 +25,13 @@
 - 현재 `delete_reopen`은 same-process runtime 재개방이다. OS child restart, cold page cache, physical write I/O 및 4,096/32,768문서 독립 ranking gold는 이 harness artifact로 증명하지 않는다.
 - matching release build/run과 artifact readback은 `NOT_RUN`이다. 공유 macOS host의 diagnostic 실행에서 frequency/thermal/quiet qualification을 합성하지 않는다.
 
-## 착수 입력
+## 2026-10-04 source107 matching release binaries
+
+- `VERIFIED`: clean `/Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index`의 `./scripts/cargow --lane release-lane build -p quanta-index-searchd-harness --bin scale_matrix --bin open_loop_matrix --all-features --locked --release` — exit0,14m50s. 실제 binaries의 `--help`도 각각 exit0으로 current CLI를 확인했다. 빌드/usage만으로 tier qualification을 주장하지 않는다.
+- target은 `/Users/songmin/Library/Caches/quanta-index/target/222449791cf7286e/release-lane/release`다. scale_matrix SHA `2181bd0c047976859b516d6002220189f073ac83efabf22567d5a9af6cf5d2b0`, open_loop_matrix SHA `8a10e58e2b81f406cf856c3f2e5977f4491ec340ed5236fddab146d1eca37c31`를 실제 bytes에서 계산했다.
+- default 각 tier와 diagnostic override는 별도 fresh external root에서 직렬 실행한다. summary 존재·producer exit만 보지 않고 실제 passed/config/tier/phase/point accounting 및 resource refusal를 판독한다. same-process reopen와 OS-process restart를 구분한다.
+
+## 착수 입력과 실제 tier 실행
 
 - I0-02 frozen source/release runner·daemon 외 matching scale/open_loop binaries
 - 실제 256/4096/32768 inputs, ScopedOracle와 independent lifecycle 기대값, serial resource host
