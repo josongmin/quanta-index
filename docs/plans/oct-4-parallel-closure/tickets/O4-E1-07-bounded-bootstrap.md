@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P2 / `CONDITIONAL_CODE` |
 | 기준 웨이브 | [W2 — 확인된 결함 수리·선택 최적화](../waves/W2-repairs-and-selected-optimizations.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | current cache-bound 회귀 `VERIFIED`; cold numeric profile·kernel 최적화 판정은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,12 @@
 ## 배경과 현재 상태
 
 evaluator.mean_ci/_bootstrap_bounds는 deterministic paired/within-stratum percentile bootstrap과 bounded numeric cache를 이미 구현한다. cache-hit wall만으로 cold cost는 해결되지 않는다. 이 파일의 소유자는 E1이며 E4가 별도로 수정하지 않는다.
+
+## 2026-10-04 중앙 검증
+
+- current producer의 pure numeric cache는 최대 16 entries, canonical key당 256 KiB다. 기존 32 entries/64 KiB 가정에 묶인 stale fixture를 현재 bounds에 맞춰 수정했다. bootstrap RNG/reduction/kernel은 변경하지 않았다.
+- `VERIFIED`: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_bootstrap_cache.py tools/ci/tests/test_retrieval_default_decision.py -q --tb=short` — 23 passed, 3.63s, exit 0. 관련 bootstrap/cluster fixtures는 E1/controller 중앙 786-pass 배치에도 포함된다.
+- cold numeric-only wall/RSS profile과 independent fixed-index reference에 따른 최적화 선택은 `NOT_RUN`이다. cache regression 통과를 cold compute 개선으로 표시하지 않는다.
 
 ## 착수 입력
 

@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P2 / `CODE_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | parent phase instrumentation·검증 fixtures `VERIFIED`; 실제 current-source phase capture는 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,12 @@ Semble worker 외부의 bootstrap/model/source/record 비용을 parent-bounded p
 ## 배경과 현재 상태
 
 과거 qg15는 process resource7.511초 vs worker1.447초 약6.064초 gap을 보였다. env/import/pip-freeze, model snapshot/digest, corpus copy, worker startup, validation/assembly가 후보다. query complete parent clock은 이미 있어 재구현하지 않는다.
+
+## 2026-10-04 중앙 검증
+
+- parent monotonic clock에서 admission/environment/corpus/spec/model/source/worker/output/record 단계를 연속 측정하고 누락·재정렬·중복 경계를 거절하도록 통합했다. child timestamp를 parent timestamp에서 빼지 않는다.
+- `VERIFIED`: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py tools/ci/tests/test_sourcegraph_parity_inventory.py tools/benchmark/retrieval/test_sourcegraph.py tools/ci/tests/test_lexical_file_comparison.py tools/ci/tests/test_completed_response_timing.py -q --tb=short` — 255 passed, 351.03s, exit 0. E1/controller 중앙 배치 786 passed에도 관련 adapter fixtures가 포함된다.
+- 실제 package/model/source에서 phase 비용과 residual 측정은 `NOT_RUN`이다. 과거 6.064초 gap의 해소나 immutable cache speedup은 주장하지 않는다.
 
 ## 착수 입력
 

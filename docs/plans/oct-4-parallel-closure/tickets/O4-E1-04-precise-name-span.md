@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P1 / `CODE_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | name-span producer/scorer 통합·Python owner fixtures `VERIFIED`; 새 실제 symbol capture는 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,12 @@
 ## 배경과 현재 상태
 
 evaluator에는 indexed_span_diagnostics와 declaration_recall_at_k/declaration_mrr_at_k가 이미 있다. 현재 _declaration_match는 symbol unit의 정확한 indexed definition span과 judgment를 비교한다. source_oracle.declaration_name_spans는 별도의 name bytes를 제공하고 Rust RawDefinition은 definition bytes를 보유한다. 이 두 범위를 같다고 가정할 수 없다.
+
+## 2026-10-04 중앙 검증
+
+- `VERIFIED`: parser의 선언 이름 witness를 runner-local symbol registry와 연결하고 evaluator에서 file/definition/name 회수를 구분했다. context 확대나 같은 파일의 다른 선언을 name 회수로 계산하지 않는다.
+- 명령: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_native_span_projection.py tools/ci/tests/test_source_oracle_suite.py tools/ci/tests/test_holdout_review.py tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_retrieval_latency_status.py -q --tb=short` — 786 passed, 618.45s, exit 0. 이 수는 전체 선택 배치이며 name-span 전용 테스트 수가 아니다.
+- Rust 통합 테스트는 중앙 workspace 배치 진행 중이다. 새 실제 SDK symbol capture와 OSA/name lane의 전체 scoreboards는 `NOT_RUN`; fixture 통과를 benchmark 완료로 승격하지 않는다.
 
 ## 착수 입력
 

@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P1 / `DATA_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | 신규 12repo commit/source freeze `VERIFIED`; license 승인·노출/gold/holdout 발행은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,13 @@
 ## 배경과 현재 상태
 
 Gin exact1196, 원래 generated 300, B09 public/global12는 이미 진단·튜닝에 노출됐다. frozen corpus는 unseen relevance를 증명하지 않는다. 현 holdout_sampling/corpus_set와 split validator를 재사용한다.
+
+## 2026-10-04 PREPARE 결과
+
+- 기존 development/C3/C5/선택된 Semble roster와 이름·URL이 겹치지 않는 Go/Rust/Python/TypeScript 각 3개 후보를 exact 40-hex remote commit으로 fetch했다. 확인 범위 밖의 과거 사용 이력이나 query/intent 독립성은 증명하지 않는다.
+- `VERIFIED`: `uv run --frozen --extra dev python -m tools.benchmark.retrieval.corpus_set --spec /tmp/qi-e1-05-cohort-draft-20261004/candidate-corpus-set-spec.bound-prepare.json --checkouts /Users/songmin/Documents/code-new/qi-oct4-unseen-prepare-k7exyv41/checkouts --out /Users/songmin/Documents/code-new/qi-oct4-unseen-prepare-k7exyv41/candidate-freeze` — exit 0, 12 repositories / 5,684 admitted code files; canonical `corpus-set.json` SHA-256 `eb4c80ff958a77f86a2051febfc34ad375171c2a20004dd37a97b8951a1325cc`.
+- canonical 결과 상태는 `candidate_not_admitted_no_gold_no_pair`다. root license bytes/hash를 수집했지만 승인으로 간주하지 않는다. draft 입력과 제한된 overlap 조사 근거는 `/tmp/qi-e1-05-cohort-draft-20261004/`에 있다.
+- license 승인 주체·사전 품질 기준/critical-stratum 허용 회귀는 사용자 입력 대기다. source/near-copy split·query exposure·parser coverage·독립 gold/review·admission·untouched qualification은 `NOT_RUN`이다.
 
 ## 착수 입력
 

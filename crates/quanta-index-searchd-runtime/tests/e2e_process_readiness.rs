@@ -423,6 +423,101 @@ fn binary_restart_replaces_request_event_instance_and_discards_prior_window() ->
 }
 
 #[test]
+fn binary_query_ring_reports_wrap_loss_and_retains_the_latest_request() -> TestResult {
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let mut prepared = E2eRuntime::boot_in(&state_root)?;
+    prepared.ingest_text("repo-ring-wrap", "src/wrap.rs", "needle ring wrap")?;
+    let sealed = prepared.seal()?;
+    prepared.activate_last_sealed_generation()?;
+    let pin = GenerationPin::new(prepared.repo(), prepared.revision(), sealed);
+    prepared.stop()?;
+
+    let process = SearchdBinaryProcess::start(&state_root)?;
+    let outcome = (|| -> TestResult {
+        let client = process.connect()?;
+        let before = client
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+        let socket = &daemon_socket_paths(&state_root)[0];
+        let first_id = 0x7100_u64;
+        let request_count = 300_u64;
+        for offset in 0..request_count {
+            let request_id = first_id + offset;
+            let request = SearchPlaneQueryIpcRequestEnvelope {
+                request_id,
+                payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "needle".to_owned(),
+                    constraints: QueryConstraintSetV1::unconstrained(),
+                    generation: Some(pin.clone()),
+                    generation_selector: None,
+                    top_k: 1,
+                    cursor: None,
+                }),
+            };
+            let response: SearchPlaneQueryIpcResponseEnvelope = quanta_index_ipc::send_request(
+                socket,
+                &request,
+                quanta_index_ipc::ClientIoPolicy::default(),
+            )?;
+            if response.request_id != request_id
+                || !matches!(response.payload, SearchPlaneQueryIpcResponse::Text(_))
+            {
+                return Err(format!("ring wrap query {request_id} failed: {response:?}").into());
+            }
+        }
+        let after = wait_for(
+            &RealTicker::new(),
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            "latest query terminal event",
+            || {
+                client
+                    .observability()
+                    .request_events(ProcessRequestEventPlaneV1::Query, 1024)
+            },
+            |window| {
+                window.events.iter().any(|event| {
+                    event.request_id.get() == first_id + request_count - 1
+                        && event.stage == ProcessRequestEventStageV1::ResponseWritten
+                })
+            },
+            |_| false,
+        )?;
+        require_eq(
+            &after.process_instance,
+            &before.process_instance,
+            "ring wrap process instance",
+        )?;
+        if after.dropped_before <= before.dropped_after
+            || after.dropped_after < after.dropped_before
+            || after
+                .oldest_retained_sequence
+                .is_none_or(|oldest| oldest <= before.next_sequence)
+            || after.next_sequence <= after.oldest_retained_sequence.unwrap_or(0)
+        {
+            return Err(format!("ring wrap did not disclose bounded loss: {after:?}").into());
+        }
+        let last_id = first_id + request_count - 1;
+        if after
+            .events
+            .iter()
+            .any(|event| event.request_id.get() == first_id)
+            || !after.events.iter().any(|event| {
+                event.request_id.get() == last_id
+                    && event.stage == ProcessRequestEventStageV1::ResponseWritten
+            })
+        {
+            return Err("ring wrap retained an evicted request or lost the latest terminal".into());
+        }
+        Ok(())
+    })();
+    let stopped = process.stop();
+    outcome.and(stopped)
+}
+
+#[test]
 fn zero_active_repositories_do_not_require_existing_track_roots() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     for track in ["lexical", "semantic"] {

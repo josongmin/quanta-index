@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | Python owner 배치·구조/API gates `VERIFIED`; Rust 통합/fuzz 진행 중, formal Contract/SDK·CI는 `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,15 @@
 ## 배경과 현재 상태
 
 과거 frozen7ff/181 SDK25/25, d1a1b709 captures·hardening owner tests는 현재 successor source의 증거가 아니다. current registry collection은 test 실행과 별개다. SDK proof는 scale harness binaries도 증명하지 않는다.
+
+## 2026-10-04 중앙 검증 epoch
+
+- 포함 구현: native completed timers, Semble parent phases, name-span producer/scorer, repository admission/required-cell controller, atomic Active response/SDK binding, admitted publish timeout/restart fixtures, cooperative maintenance disk budget.
+- Python 중앙 배치: E2 255 passed / E1-controller 786 passed / cache-policy 23 passed. 각 owning ticket에 실제 명령·scope를 기록했다. 같은 테스트가 배치 사이에 중복되므로 1,064 unique tests로 계산하지 않는다.
+- `VERIFIED`: `just rust-hexagonal`, `just rust-wire-inventory`, `just rust-cargo-modules`. `just rust-public-api`는 7 selected-active-head response fields의 intended drift로 먼저 실패했다. 해당 14 reexport lines만 baseline에 반영한 뒤 재실행은 PASS였고 SDK public API bytes는 변하지 않았다.
+- Python required identity registry는 실제 collection 772→788로 반영했다. collection은 실행/proof receipt가 아니다. Rust/SDK registry와 final-source formal proofs는 아직 `NOT_RUN`이다.
+- `./scripts/cargow test --workspace --lib --bins --all-features --locked` 및 `just rust-fuzz-smoke`는 중앙 실행 중이다. daemon profile·SDK roundtrip/integration·fresh Contract/SDK·hosted CI·release/scale gates는 아직 결과가 없다.
+- 코드 입력이 실제로 바뀐 scope만 재검증한다. 위 owner 결과를 전체 suite, final benchmark, 배포/운영 qualification으로 승격하지 않는다.
 
 ## 착수 입력
 

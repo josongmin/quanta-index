@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | admission consumer·required-cell controller 통합 및 fixtures `VERIFIED`; 실제 ready matrix 실행은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,13 @@
 ## 배경과 현재 상태
 
 iter_repository_admissions는 ready/failed를 drain하고 pending을 poll하는 기능이 이미 있다. original failed controller와 repaired external driver는 같은 실행이 아니다. compatibility별 native union indexing/membership projection도 이미 있다.
+
+## 2026-10-04 중앙 검증
+
+- 현재 controller는 repository별 canonical admission 결과와 입력 bundle을 검증하고 distinct output roots를 사용한다. failed member의 prevalidation은 ready sibling 실행을 막지 않으며 deadline/upstream failure와 not_run을 구분한다.
+- child batch의 strict 입력과 matrix의 member-admission 입력을 분리했다. 실제 completed/failed/not_run count와 required-cell ledger를 발행한다. 현재 matrix의 Quanta/Semble 소비는 5제품 external capture 전체를 대신하지 않는다.
+- `VERIFIED`: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_native_span_projection.py tools/ci/tests/test_source_oracle_suite.py tools/ci/tests/test_holdout_review.py tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_retrieval_latency_status.py -q --tb=short` — 786 passed, 618.45s, exit 0. admission queue·matrix 반례가 포함된 중앙 배치 결과다.
+- 실제 cohort admission/ready matrix 및 E2-04의 새 5제품 캡처는 `NOT_RUN`이다. historical helper 통과나 synthetic fixture를 actual controller execution으로 표시하지 않는다.
 
 ## 착수 입력
 
