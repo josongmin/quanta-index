@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | bat5제품 union·18tasks/51pairs·실제3 AI 역할 판단/raw 재생·원본358+신규51=409 merged, current0e6 admission 및 warmup0/1 final pair/독립 verdict/parity `VERIFIED`. 수정 scorer의 새 native3/join·다른 저장소 union 검수 미완료; 과거 first-six raw replay `BLOCKED` |
+| 실행 상태 | bat5제품 union·18tasks/51pairs·실제3 AI 역할 판단/raw 재생·원본358+신규51=409 merged, current0e6 admission 및 warmup0/1 final pair/독립 verdict/parity `VERIFIED`. source97 bat full5 join 완료; current9 보충 입력 어댑터 PREPARE 완료·actual pool/model 검수 미완료; 과거 first-six raw replay `BLOCKED` |
 | 선행 결과 | [O4-E1-01](O4-E1-01-original-review-resume.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,13 @@
 ## 배경과 현재 상태
 
 첫 6저장소의 신규 union은 375쌍, 그중 bat/cli/lo 214쌍의 repaired preflight가 과거에 기록됐다. 이 숫자는 전체 최종 분모가 아니다. 기존 lo 발행 41쌍과 신규 lo 30쌍은 별도다. bind_supplemental_review_tasks는 frozen suite의 threshold/query/source를 검증해 이미 구현되어 있다.
+
+## 2026-10-05 current9 보충 입력 PREPARE
+
+- 외부 `/private/tmp/qi-current-nine-supplemental-pool-97eedd-v1.py`(SHA `3a293673b036e5e4bc66ee2b90a1a3cdd8858273add5f6bd0983648b9885d71b`)를 준비했다. bat와 required8의 canonical five-product reports·native normalized rows·frozen suite/query/source를 결속하고, 기존 판단과의 차집합만 원 `bind_supplemental_review_tasks`에 전달한다. adapter/pool actual은 `NOT_RUN`이며 required8 full joins 완료 뒤 실행한다.
+- 독립 정적 검토에서 bat summary에 report digest가 없는데 현재 report bytes를 신뢰하는 결속 누락을 확인했다. 실행 전 bat report SHA `eac4755c54da23e6fbe64c5b2119f20ec1fbfa673a1a91aee92fe490a920989f`를 고정하고, current8도 각 join ledger의 result SHA를 확인하도록 보완했다. suite/pack은 canonical JSON bytes로 비교해 bool/int 동등 비교를 허용하지 않는다.
+- 제품명·순위·점수는 reviewer 입력에서 가리고 owner-only custody에만 보존한다. 원 query/rubric/threshold와 전체 file source를 유지하고 `grade`/`unresolved`는 null이다. 이미 판단된 pair는 재검수하지 않는다. explicit unsupported는 후보0개로만 처리하며 missing/error를 fabricated empty로 바꾸지 않는다. 이 입력은 observed retrieval union이고 source/control diversity·independent gold·human provenance를 뜻하지 않는다.
+- actual 두 reviewer와 adjudicator는 모델 quota 입력이 필요하다. 보충 입력 PREPARE, actual 판단, canonical label/admission 발행 및 final scoreboard를 별도 상태로 유지한다.
 
 ## 2026-10-04 현재 바이트 custody 재검증
 
