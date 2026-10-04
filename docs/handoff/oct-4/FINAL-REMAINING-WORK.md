@@ -2,11 +2,23 @@
 
 입력: 같은 디렉터리의 `agent-1.md`부터 `agent-5.md`까지 5개 핸드오프. 이 문서는 중복 작업과 과거의 완료된 수정을 제거한 실행 목록이다. 제품 품질·성능·배포 적격성 영수증은 아니다. 각 작업 착수 시 [B07](../../plans/sep-30-code-search-benchmark-trust/tickets/S30-B07-performance-and-indexing.md), [B08](../../plans/sep-30-code-search-benchmark-trust/tickets/S30-B08-fresh-multirepo-holdout.md), [B09](../../plans/sep-30-code-search-benchmark-trust/tickets/S30-B09-external-robustness-adoption.md)의 현재 상태와 원본 실행 terminal을 다시 읽는다.
 
+## 병렬 실행 에픽
+
+이번 분할 시점의 `main`은 `44bd68a1`, 작업트리 clean, 로컬 `origin/main`과 동일하다. 앞선 81개 staged 경로와 vendor patch whitespace 문제는 이 커밋에서 정리됐다. 코드 출판은 벤치 실행이나 제품·성능 적격성의 완료가 아니다.
+
+| 에픽 / 단일 소유 영역 | 지금 병렬로 시작할 일 | 다른 에픽을 기다리는 경계와 종료 조건 |
+| --- | --- | --- |
+| **E1 — 정답·검수·admission**. `holdout_review.py`, `execution_batch.py`, `evaluator.py`, identifier report/join, B08 입력·qrels. | 원본 5저장소 `FAILED` 로그/유효 cache를 분해하고 실제 AI 2회+조정 검수를 재개한다. supplemental union, independent same-name/대표 파일·ambiguity/no-answer 판단, declaration-name span oracle, 미사용 holdout을 한 라벨 권위에서 발행한다. cold bootstrap 최적화가 필요해도 이 evaluator 소유자가 담당한다. | E2의 fresh raw union을 받으면 추가 검수→최종 qrels/suite/pack/admission을 재발행한다. 미검수/unknown을 0점으로 만들지 않는다. 완료: raw/model/source/query/rubric/grade 결속, unresolved·제외 집합, 해당 cohort의 ready/failed/pending inventory와 독립 재생. |
+| **E2 — 외부 제품·캡처**. `live_lexical_external.py`, Sourcegraph/OpenGrok index-scope 검증, 기존 native collectors. | 요청 생성부터 normalized response 완료까지 외부 timer를 기존 transport clock과 별도로 구현·검증한다. 제품별 native indexed-file universe와 before/after 가능 범위를 확인하고 required-cell inventory를 만든다. 현재 raw의 재사용 가능성을 입력별로 판정한다. | E1의 issued admission을 받은 ready 저장소부터 제품 호출을 직렬 실행한다. union을 E1에 돌려주고 최종 qrels로 raw replay·lane별 보고를 닫는다. 완료: 다섯 제품의 모든 필수 셀이 success/empty/unsupported/cap/partial/error/missing으로 설명되고 source·request·response가 재생됨. |
+| **E3 — 선택·운영 안전성**. SDK `client.rs`, search-plane selection/read-view/retention, P09 readiness·maintenance. | G1→G2→G3 interleaving과 timeout/replay·slow disk-walk를 결정적 fixture에서 재현한다. 결함이 확인되면 catalog 선택→view acquisition→응답 pin을 한 권위로 고치고 SDK 사전 resolve 제거를 같은 계약에서 판단한다. | E4가 SDK/query 성능을 확정하기 전 변경을 통합한다. 완료: Active/explicit/token/cursor/GC/ABA/cancel, operation replay, readiness의 독립 negative oracle 및 실제 daemon seam. 재현되지 않은 위험을 수정 완료로 표시하지 않음. |
+| **E4 — 인덱싱·검색 성능**. lexical `index_store.rs`/`file_authority.rs`/`code_search.rs`, 기존 B07 ingest·scale/open-loop 계측. | full/delta/delete/no-op/reopen 비용을 자식 clock으로 분해하고 ASCII deletion의 전체 호출 변화를 판정한다. 필요한 경우 durable directory barrier를 canonical writer에서 fault-injection과 old/new root oracle로 구현한다. token index는 재측정된 병목이 남을 때만 착수한다. | E3의 최종 SDK 경계와 E1/E2의 출력 계약이 고정된 뒤, 동일 release binary/host admission으로 반복 성능·scale 실행. 완료: 출력·crash 동등성, build/memory/disk 비용, whole-call effect와 불확실성; 제한 거절을 성공으로 세지 않음. |
+
+**통합 담당은 한 명으로 고정한다.** `run.py`, proof registry/schema, CI/dependency/lockfile, 공통 ticket 상태 및 최종 source freeze는 E1–E4가 동시에 수정하지 않는다. 이 담당자가 각 에픽의 owned diff와 영향을 받은 좁은 rail을 합친 뒤 final source/binary/input을 고정한다. E1·E2·E3·E4의 준비·owner tests는 병렬 가능하지만, E2의 최종 제품 실행은 E1 admission 이후, E4의 정식 속도 실행은 E3 통합과 E2의 응답 경계 확인 이후에 직렬로 진행한다. SEP-21 release/배포 영수증은 그 다음 별도 게이트다.
+
 ## 0. 먼저 고정할 경계
 
-- 현재 확인한 `main` HEAD는 `2062fed3ff86287a0914ece99dc2fe0af829c29b`다. 81개 경로가 staged다. `origin/main...HEAD`의 로컬 ref 비교는 `0 2`이며 원격 fetch 결과가 아니다. HEAD만 실행 소스로 표시하거나 공유 index 전체를 한 작업자의 변경으로 취급하지 않는다.
-- staged `git diff --cached --check`는 `vendor/tree-sitter-javascript/quanta-compatibility.patch:5`의 trailing whitespace에서 실패한다. patch context와 provenance를 보존하면서 원본 소유자가 수정하고 diff를 재검증해야 한다.
-- 각 hunk의 소유권, source/lockfile/proof registry의 단일 통합 담당, 실제 실행 중인 driver를 확인한다. 핸드오프에 기록된 pair controller PID 32335와 collector PID 88605는 이번 재조회에서 존재하지 않았다. 원본 failed root를 재사용·덮어쓰기 전에 terminal과 새 namespace의 중복 여부를 확인한다.
+- 이번 분할에서 확인한 `main` HEAD는 `44bd68a1f41e15e7366adead56d825f8259ef46b`다. 작업트리는 clean이고 로컬 `origin/main...HEAD`는 `0 0`이다. 원격 서버를 새로 fetch한 결과는 아니다. 앞선 `2062fed3`의 staged 변경 전체가 현재 commit에 들어갔으나, 소유별 좁은 검증을 전체 소스·제품 적격성으로 승격하지 않는다.
+- 최종 실행 전에 각 에픽의 파일·hunk 소유권, 공통 registry의 단일 통합 담당, 실제 실행 중인 driver를 다시 확인한다. 앞선 핸드오프의 pair controller PID 32335와 collector PID 88605는 이전 재조회에서 존재하지 않았다. 원본 failed root를 재사용·덮어쓰기 전에 terminal과 새 namespace의 중복 여부를 확인한다.
 - 공유 변경을 소유 범위별로 통합하고 영향받는 좁은 rail을 실행한 뒤 실행 source/binary/input/query/qrel/unit/profile을 고정한다. 기존 clean export를 `main`에 복사하거나 과거 receipt를 새 source의 증거로 승격하지 않는다. 일회성 실행 산출물은 checkout 밖 새 root에 둔다.
 
 ## 1. 벤치 결과를 닫는 필수 경로
@@ -48,6 +60,5 @@
 
 ## 이번 통합의 검증 범위
 
-- `VERIFIED`: 5개 핸드오프, 관련 현재 티켓·선택된 소스, `git status`/HEAD/로컬 ref, staged whitespace check, 위 3개 원본 terminal, 기록된 두 PID 부재를 읽기 전용으로 확인했다.
-- `FAILED`: 현재 `git diff --cached --check`의 vendor patch whitespace.
+- `VERIFIED`: 5개 핸드오프와 선택된 소스·티켓 확인. 이번 분할에서 `git status`, HEAD/로컬 ref, `git show --check HEAD` 및 위 3개 원본 terminal을 재확인했다. 앞선 staged vendor patch whitespace 실패는 현재 HEAD의 diff check에서는 재현되지 않는다.
 - `NOT_RUN`: 이 문서 작성 중 Rust/Python tests, 새 AI 검수·제품 호출·대규모 캡처, 정식 성능/scale, CI/release/deployment. 과거 handoff의 좁은 통과 숫자를 현재 overlay 전체의 검증으로 합산하지 않았다.
