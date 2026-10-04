@@ -554,8 +554,9 @@ impl E2eRuntime {
 
     /// The directory the sockets live in when a shared policy placed them
     /// under `/tmp`; `None` while the sockets are loose in the process temp
-    /// dir. Exists only once the daemon has bound (it creates the
-    /// directory), and a refused boot leaves nothing behind.
+    /// dir. The path remains reserved across same-process reopen, while the
+    /// directory exists on disk only while the daemon has bound it. A refused
+    /// boot leaves no directory behind.
     #[must_use]
     pub fn socket_directory(&self) -> Option<&Path> {
         self.socket_directory.as_deref()

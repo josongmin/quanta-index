@@ -182,6 +182,23 @@ The gold-oracle and C4 caller tests subsequently passed **130/130** in 190.18 s.
 A separate SymPy four-suite preflight observed **263.9 MiB** process peak RSS;
 both are busy-host diagnostics, not memory or speed qualification.
 
+### 2026-10-04 stale-runner preflight
+
+A fresh current-main two-repository matrix using the older `ff940010` release
+runner was refused only after its first product execution: the runner emitted
+retrieval diagnostic schema 7 while the current driver requires 8. The failed
+attempt took **9.35 s** and left `/private/tmp/qmt2/` partial, without a
+matrix manifest. It is not a scored or timed product comparison. The runner
+now exposes a side-effect-free `capabilities` subcommand reporting its actual
+diagnostic schema. The capture preflight and matrix-wide validation require
+that contract before indexing or creating the matrix output root; the captured
+diagnostic still receives its own strict check. Repeating the stale-binary
+negative control with `/private/tmp/qmt3-spec.json` refused in **1.36 s** and
+created no `/private/tmp/qmt3` output root. Focused Python controls passed
+5/5, including malformed, v7 and unsupported-command refusals. A current
+release runner positive E2E remains `NOT_RUN` until the matching binary is
+built; the Rust CLI unit check is pending the shared build admission lock.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble

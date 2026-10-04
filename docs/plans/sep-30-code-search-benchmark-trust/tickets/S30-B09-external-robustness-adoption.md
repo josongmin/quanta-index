@@ -413,3 +413,54 @@ Receipt, exact requests, source/file/script hashes and screenshots are outside
 the checkout: `/private/tmp/qsgui-fIADFv/ui-receipt.json` and the adjacent
 `ui-osa1-*-{cold,warm}.json` files. This UI diagnostic is separate from ordinary
 Stream file-search scores; a regex expansion must not be labeled Fuzzy Finder.
+
+### Final fresh global12 results
+
+The new cohort is12 repositories/11,695 code files/4,363 OSA1 queries.
+All21,815 measured responses pass the source/request/raw replay path;
+common-eligible4,363, excluded0, source-blocked0. The exact official join is
+`/Users/songmin/Documents/code-new/qi-b09-final-20261004-SQoHAA/five-product-global12-v1.json`,
+SHA-256 `d4bdd41e68795e01a721b5c0b09365241b2fbe97d34c6a2f3ff4e39cb27fda46`.
+`join-execution.json` binds the exact frozen6f3 command and single helper overlay.
+These are selected ordinary-file request policies, not fuzzy-UI population
+scores or a qualified product ranking.
+
+| Product/request | Intended-file Hit@10 | Near-name-file Hit@10 | Intended-file MRR@10 | Call sum seconds | Call p50 / p95 milliseconds |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Quanta code_search_file |4289/4363|4298/4363|0.8387|82.012|7.430 /64.620|
+| Semble lexical-file adapter |3037/4363|3087/4363|0.4801|120.571|6.188 /131.278|
+| Sourcegraph keyword/file |140/4363|143/4363|0.0282|647.702|125.691 /315.650|
+| cs |138/4363|141/4363|0.0238|587.764|92.900 /367.836|
+| OpenGrok full |0/4363|0/4363|0.0000|75.104|12.565 /42.449|
+
+| Edit operation | Selected | Q intended hits | S intended hits | SG intended hits | cs intended hits | OG intended hits |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Insertion |1114|1098|812|1|1|0|
+| Deletion |1073|1046|753|139|137|0|
+| Substitution |1087|1072|773|0|0|0|
+| Transposition |1089|1073|699|0|0|0|
+
+Sourcegraph/cs hits concentrate in deletion cases that can retain a literal
+substring. This is a query/result observation; it does not establish their
+overall fuzzy capabilities. The official paired repository bootstrap reports
+Quanta-minus-Semble equal-family/equal-repository Hit@10 difference0.2878,
+95% interval[0.2412,0.3291]. Purposely selected repositories do not establish
+a market-wide ranking.
+
+Native verdict actual sums selected/executed/passed/failed are
+8726/8726/8155/0. `passed` is not Hit@10. Native pair wall5500.863s,
+external capture+verify wall6527.366s, initial full release preflight557.060s,
+final official join323.800s. Native/external ran in parallel; wall sums are
+not added into an elapsed-time claim. Q lexical build593.223s is inside
+publish/seal/activate727.975s; S from_path188.792s includes BM25/vector index
+construction over different chunks. Their timer boundaries and host load
+do not support a speed ranking. Per-repository source/chunk/index/wall tables,
+all8 external NL lanes and label-sensitivity results are in `RESULTS.md`.
+
+Final verification:39 owner units passed in10.10s, test-authority/Ruff/diff
+checks passed. Larger historical focused test slices are not summed.
+Remaining qualification gates are local human relevance review, declaration
+span recovery, unseen holdout, this cohort's query-bracketed Sourcegraph full
+index scope, whole upstream CoIR/CORE/CSN execution, the other72-matrix lanes'
+new product calls, quiet-host performance and current-main engine qualification.
+These are NOT_RUN; the diagnostic work above is complete.
