@@ -338,6 +338,41 @@ source revisions, not a controlled release speedup or product ranking.
 Qualified B07 release-profile, quiet-host and repeated-scale measurements
 remain `NOT_RUN`.
 
+### 2026-10-04 same-source debug SHA-profile control
+
+The optimized control used clean `d2740319`; the unoptimized control used
+clean `9325a1ad`. Their Git diff is only the five-line removal of
+`[profile.dev.package.sha2]` from `Cargo.toml`; Rust and Python sources are
+identical. Both all-features debug runner/searchd binaries were built with
+`./scripts/cargow --lane <lane> build -p quanta-index-searchd-runtime --bin
+quanta-index-searchd -p quanta-index-retrieval-bench --bin
+quanta-index-retrieval-bench --all-features --locked`. The unoptimized lane
+waited **51.97 s** for resource admission and then built in **180.11 s**;
+these developer build costs are outside capture time. Unoptimized runner and
+searchd SHA256 were respectively
+`78722a7e0fc8ba34e62ebae2fa531ad66e31d6dfb6551ec156fea84058260806`
+and `7c6711e5c40c9c9bffb04c0457e5e212d88d99057a25d1d9bacc76300fe1cb70`.
+
+`/private/tmp/qmt11-inputs/{b,c}.json` rebounded the same two attrs suites
+from `/private/tmp/qmt10-inputs/{b,c}.json` only to the control run IDs,
+output paths and binaries. `quality-batch --spec /private/tmp/qmt11-spec.json`
+completed in **30.66 s** wall, and independent `quality-batch-verify` passed
+**2/2** members in **4.31 s**. The optimized attrs control is
+`/private/tmp/qmt10/r-ad9b41e932a6`; the unoptimized control is
+`/private/tmp/qmt11`. Both products' native `results` arrays match **118/118**
+rows after excluding only timing fields; both suite reports match on suite ID,
+judgment metrics, no-answer, status, quality gate and evaluation contract.
+
+The unoptimized Quanta runner reports **21.676 s** total and **8.431 s**
+`unattributed`; the optimized runner reports **10.443 s** total and
+**1.006 s** `unattributed`. Driver Quanta capture is **21.952 s** versus
+**10.780 s**. The source/profile contrast and exact result agreement support
+the debug SHA dependency optimization as a real reduction in runner overhead.
+Host contention changed between runs: publish/activate alone was **8.174 s**
+versus **5.374 s**. Consequently these wall differences are diagnostic, not
+a qualified speedup or an equal-boundary product comparison. Release-profile,
+quiet-host, repeated-scale B07 timing remains `NOT_RUN`.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
