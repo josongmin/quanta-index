@@ -5,10 +5,17 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_AND_REPORT` |
 | 기준 웨이브 | [W5 — 최종 검수·재채점·정책 판정](../waves/W5-final-scoring-and-policy.md) |
-| 실행 상태 | source0e6 bat409 fresh pair의 complete scored file report40rows `VERIFIED`(producer); 독립 replay·새 native3 join/final scoreboard 진행. 전체 cohort·unseen/human·속도 qualification 미완료 |
+| 실행 상태 | source0e6 bat409 fresh pair40rows 및 독립 verdict replay `VERIFIED`; 새 native3 join/final scoreboard 준비. 전체 cohort·unseen/human·속도 qualification 미완료 |
 | 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-04](O4-E2-04-fresh-five-product-captures.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
+
+## 2026-10-05 source0e6 bat complete file report
+
+- `/private/tmp/qbw1/bat`의 actual warmup1 pair는 exit0,40/40rows·failed0·PAIR_VALID/Contract/SDK pass다. 별도 `run.py verdict --run-manifest /private/tmp/qbw1/bat/run-manifest.json --out /private/tmp/qi-bat-w1-0e6-verdict-replay-v1.json`도 exit0이었고 producer verdict와 JSON equality를 확인했다. replay SHA `ae4e4ee7ab23d359bf76e46e6889f481e589929dfcb475233da0e1bef86d58a4`다.
+- source0e6·원본358+supplemental51=409판단·20NL tasks의 `file_ndcg_at_10`은 Quanta lexical0.606856, Semble lexical-file0.614329다. primary delta−0.007473, paired stratified bootstrap10,000회95% CI[−0.052681,+0.041625],11wins/9losses다. category별2–4표본은 insufficient_sample이다.
+- report는 `graded:true`, `evidence_unqualified`, complete file judgments scope다. verdict QUALITY_DELTA는 `attested_only`, PERF_QUALIFIED는 `no_speed_claim`에 따른 not_applicable이며 독립 gold·human review·전체 repository/정식 속도 우열을 뜻하지 않는다. exact-name/typo/span과 이 NL20 분모를 합산하지 않는다.
+- canonical5제품 join spec `/private/tmp/qi-bat-five-product-0e6-join-spec-v1.json` SHA `a791602ec0855b5b7396dcb52e7f61cf9675d986888f1ddc509d4ce02ad64866`를 준비했다. actual corpus commit4608의 Git bundle36,170,355bytes/SHA `eedbaff650dd659c17207651e579c97f5bb762606985f2cb8bb5b3a7ee67f9bc`와 current raw pair를 결속한다. 새 SG/OG/cs capture 후 기존 `lexical_file_comparison --external-spec`으로 replay/join하며 현재 그 실행은 NOT_RUN이다.
 
 ## 목적
 

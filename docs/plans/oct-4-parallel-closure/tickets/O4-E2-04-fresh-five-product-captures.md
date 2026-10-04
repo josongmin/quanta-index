@@ -42,6 +42,7 @@ Quanta33캡처/11,272응답과 historical5제품21,815행은 별도의 source/�
 - 후속 `/tmp/qi-bat-pair-0e6-w1-input-v2.json` SHA `83d6eca47328fe7f9d230beacb54fb94295e5ba795f2f44f8461ddbd20111dc2`로 `/private/tmp/qpbw1p2` preflight를 완료했다. bat PREPARED, 다른 required7개 NOT_RUN이다. canonical consumer 전체 replay 통과 뒤 root가 동일 prepared spec으로 `run.py pair --spec /private/tmp/qpbw1p2/bat.json`을 실행 중이다. output은 새 `/private/tmp/qbw1/bat`, source0e6·409판단·warmup1·quality-only/no-speed 조건이다.
 - 후속 warmup1 producer `VERIFIED`: 실제 exit0, input binding 전후 동일, `/private/tmp/qbw1/bat`으로 atomic promotion됐다. verdict는 selected/executed/passed40/40/40, failed0, PAIR_VALID/CONTRACT_GREEN/SDK_PATH_GREEN pass, QUALITY_DELTA not_applicable(`attested_only`), PERF_QUALIFIED not_applicable(`no_speed_claim`)다. Quanta20 capped/Semble20 success를 정상 status 의미로 유지했다. 독립 `run.py verdict`를 별도 외부 replay path에서 실행 중이며 아직 그 통과를 주장하지 않는다.
 - 동일 source/suite/pack/binaries의 warmup0 control을 `/private/tmp/qpbw0/bat.json`→`/private/tmp/qbw0/bat`에서 실행 중이다. 차이는 warmup 횟수/output root/run ID3개뿐이고 warmup0 정책 채택이나 속도 qualification을 발행하지 않는다.
+- warmup1 독립 `run.py verdict` 후속 `VERIFIED`: exit0, producer verdict와 JSON equality를 확인했다. SHA `ae4e4ee7ab23d359bf76e46e6889f481e589929dfcb475233da0e1bef86d58a4`,40/40passed·failed0·동일5states다. source0e6 새 native3 spec은 `/private/tmp/qi-native-bat-0e6-spec-v1.json` SHA `f60ce4c1bcd0bdcb07344e740f3078dfbf638e9a09968a11381273e592d39e5e`로 suite/pack409를 참조하며 actual capture는 아직 NOT_RUN이다.
 
 ## 어떤 파일을 어떻게 수정할지
 

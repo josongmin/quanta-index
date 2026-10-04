@@ -54,6 +54,8 @@
 - root가 같은 input v3와 actual Contract/fresh SDK2contexts/3receipts로 `/Users/songmin/Documents/code-new/qi-bat-supplemental-admission-0e6-20261005-v2`에서 v4를 재실행 중이다. 새 result와 canonical consumer replay 완료까지 bat409의 W4 admission은 미완료다.
 - 후속 v4 actual issuance `VERIFIED`: exit0,375.874s,20tasks/409judgments, stale-source control1이었다. strict result12keys/canonical16paths와 sidecar121paths를 독립 SHA replay했다. `admission-lineage.json` SHA `271e904529316505c2ae5676d6131c0bcbb9ce8c82f81ac07a35c11e7cd08597`; source0e6 제품과 source107 label producer를 별도 결속한다.
 - 이어 pair v7 preflight의 `/private/tmp/qpbw1p2/prepare.json`에서 bat `PREPARED`를 확인했다. 기존 `run._quality_matrix_verify_member_admission`의 전체 replay를 통과했으며, aggregate exit2는 미선택 required7개 `NOT_RUN` 때문이다. `/private/tmp/qpbw1p2/bat.json` SHA `ef763fbd247e6af49180edb62fee78b14e90d33cd78603c9da9cc3179865937f`의 actual warmup1 pair를 시작했다. capture/verdict 완료 전에는 제품 비교 성공으로 승격하지 않는다.
+- 나머지 원본8개(cli/lo/mocha/uvicorn/zustand/django/typeorm/nushell)의 current0e6 발행을 준비했다. `/tmp/qi-e1-other-eight-0e6-actual-proof-input-v1.json` SHA `2d50ec6b6fe53598ebbc834c4d5cb4b366377ab497c51a57c6d3e45d8657ad46`는 original review inputs를 byte identity로 유지하고 actual source0e6 proof paths를 소비한다. admission template107/current0e6의 canonical helper5개 SHA equality도 결속했다.
+- `/tmp/qi-e1-other-eight-0e6-issuer-v1.py` SHA `349e1afd37beac5bc8d0fb86711a3863452c6ba480bf12e62efb205ee26643c3`는 기존 canonical issuer `issue`를 그대로 호출하고 각 result16paths와 source guard를 검사한다. 선택8개 각각 독립 terminal을 발행하며 actual 실행은 아직 NOT_RUN이다. bat409 v4나 old source107 제품 result를 재작성하지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
 

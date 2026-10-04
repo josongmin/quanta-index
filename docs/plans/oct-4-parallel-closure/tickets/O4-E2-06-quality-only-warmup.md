@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_AND_CONFIG` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | canonical protocol·readback helper 준비; bat warmup0 actual pair final comparison `FAILED`(unjudged). 실제0/1 parity `NOT_RUN`, warmup0 품질 정책 채택 미완료 |
+| 실행 상태 | source0e6 bat409 warmup1 pair40/40·독립 verdict replay `VERIFIED`; matching warmup0 actual control 실행 중. source107 unjudged 실패는 과거 scope. 실제0/1 parity와 warmup0 정책 채택은 미완료 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
