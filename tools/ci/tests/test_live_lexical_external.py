@@ -28,8 +28,10 @@ pytest_plugins = ["tools.ci.tests.test_lexical_capture"]
     ("query", "expected"),
     [
         ("math/rand and math/rand/v2?", r"math\/rand and math\/rand\/v2\?"),
-        ('field:x +y (z) [a] {b} ^2 ~1 * ? ! && || \\"q"',
-         r'field\:x \+y \(z\) \[a\] \{b\} \^2 \~1 \* \? \! \&\& \|\| \\\"q\"'),
+        (
+            'field:x +y (z) [a] {b} ^2 ~1 * ? ! && || \\"q"',
+            r"field\:x \+y \(z\) \[a\] \{b\} \^2 \~1 \* \? \! \&\& \|\| \\\"q\"",
+        ),
         ("AND\tOR\nNOT and or not", '"AND"\t"OR"\n"NOT" and or not'),
     ],
 )
@@ -43,8 +45,9 @@ def test_opengrok_nl_capture_preserves_submitted_and_effective_query(tmp_path, m
     effective = r"How does math\/rand\/v2 work\?"
     config = {"project": "fixture", "server_image_digest": "a" * 64}
     task = {"task_id": "N1", "query": query}
-    raw = json.dumps({"time": 1, "resultCount": 0, "results": {},
-                      "startDocument": 0, "endDocument": 0}).encode()
+    raw = json.dumps(
+        {"time": 1, "resultCount": 0, "results": {}, "startDocument": 0, "endDocument": 0}
+    ).encode()
     calls = []
 
     def http(_config, endpoint, params, accept):
@@ -53,15 +56,18 @@ def test_opengrok_nl_capture_preserves_submitted_and_effective_query(tmp_path, m
         return 200, "application/json", raw, 2.0
 
     monkeypatch.setattr(live, "_http", http)
-    row = live._opengrok(config, task, [], tmp_path, {}, tmp_path / "raw.json",
-                         literal_query=True)
+    row = live._opengrok(config, task, [], tmp_path, {}, tmp_path / "raw.json", literal_query=True)
     assert row["submitted_query"] == query
     assert row["request_query"] == effective
     assert row["request_mode"] == "natural_language_file_search"
     assert len(calls) == 1
     assert (tmp_path / "raw.json").read_bytes() == raw
-    assert live._opengrok_response(config, task, [], tmp_path, {}, 200,
-                                  "application/json", raw, 2.0, literal_query=True) == row
+    assert (
+        live._opengrok_response(
+            config, task, [], tmp_path, {}, 200, "application/json", raw, 2.0, literal_query=True
+        )
+        == row
+    )
 
 
 def index_scope_fixture(
@@ -1212,15 +1218,17 @@ class SearchHandler(BaseHTTPRequestHandler):
         "use_bound_release",
         "use_index_scope",
         "scope_changes_during_queries",
+        "nl_file_query",
     ),
     [
-        (False, False, False, False, False, False),
-        (False, False, False, True, False, False),
-        (True, False, False, False, False, False),
-        (False, True, False, False, False, False),
-        (False, False, True, False, False, False),
-        (False, False, False, True, True, False),
-        (False, False, False, False, True, True),
+        (False, False, False, False, False, False, False),
+        (False, False, False, True, False, False, False),
+        (True, False, False, False, False, False, False),
+        (False, True, False, False, False, False, False),
+        (False, False, True, False, False, False, False),
+        (False, False, False, True, True, False, False),
+        (False, False, False, False, True, True, False),
+        pytest.param(False, False, False, True, False, False, True, id="nl-file-literal"),
     ],
 )
 def test_live_capture_makes_three_product_requests_and_retains_raw(
@@ -1232,15 +1240,26 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     use_bound_release,
     use_index_scope,
     scope_changes_during_queries,
+    nl_file_query,
     monkeypatch,
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
-    if reserved_query:
+    if reserved_query or nl_file_query:
         suite = json.loads(paths["suite"].read_bytes())
         pack = json.loads(paths["query_pack"].read_bytes())
         for value in (suite, pack):
-            value["tasks"][-1]["query"] = "not"
-            value["tasks"][-1]["query_sha256"] = hashlib.sha256(b"not").hexdigest()
+            query = "How does math/rand/v2 work?" if nl_file_query else "not"
+            value["tasks"][-1]["query"] = query
+            value["tasks"][-1]["query_sha256"] = hashlib.sha256(query.encode()).hexdigest()
+        if nl_file_query:
+            suite["routes"] = pack["routes"] = ["lexical", "semble-lexical-file"]
+            for task in suite["tasks"]:
+                task["query_intent"] = "semantic_intent"
+                task["evaluation_contract"] = {
+                    "request_mode": "natural_language_file_search",
+                    "gold_unit": "distinct_file",
+                    "result_unit": "distinct_file",
+                }
         pack["suite_commitment_sha256"] = live._sha(live.lexical.canonical(suite))
         paths["suite"].write_bytes(live.lexical.canonical(suite))
         paths["query_pack"].write_bytes(live.lexical.canonical(pack))
@@ -1474,6 +1493,13 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         assert "capability_coverage" not in scored
         assert len(scored["per_query"]) == 20
         assert scored["latency_ms"]["count"] == 20
+    if nl_file_query:
+        rows = [
+            json.loads(line) for line in (root / "opengrok_rows.jsonl").read_text().splitlines()
+        ]
+        assert all(row["request_mode"] == "natural_language_file_search" for row in rows)
+        assert rows[-1]["submitted_query"] == "How does math/rand/v2 work?"
+        assert rows[-1]["request_query"] == r"How does math\/rand\/v2 work\?"
     original_read = live._read_control_file
 
     def control_only(path):
@@ -1492,6 +1518,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
             use_bound_release,
             use_index_scope,
             scope_changes_during_queries,
+            nl_file_query,
         )
     ):
         native_paths = {name: path for name, path in paths.items() if not name.endswith("_rows")}

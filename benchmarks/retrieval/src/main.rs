@@ -17,6 +17,9 @@ use std::time::{Duration, Instant};
 use quanta_index_retrieval_bench::batch::{
     BatchIdentity, activation_digest, assemble_batch, receipt_digest,
 };
+use quanta_index_retrieval_bench::canonical::{
+    REQUIRED_RESPONSE_OUTPUT_VALIDATION, required_response_sha256,
+};
 use quanta_index_retrieval_bench::chunking::{
     Chunker, CoverageReport, STRATEGY_BRACE_HEURISTIC, STRATEGY_FIXED_WINDOW_LINE_ALIGNED,
     STRATEGY_FIXED_WINDOW_STRICT, STRATEGY_WHOLE_FILE, chunk_corpus,
@@ -108,6 +111,7 @@ fn runner_capabilities() -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
         "retrieval_diagnostic_schema_version": DIAGNOSTIC_SCHEMA_VERSION,
+        "completed_response_output_validation": REQUIRED_RESPONSE_OUTPUT_VALIDATION,
     })
 }
 
@@ -368,6 +372,44 @@ fn validated_protocol_latency(outcome: &QueryOutcome, phase: &str) -> BenchResul
         .classification()
         .map(|_classification| outcome.latency())
         .map_err(|message| BenchError::Protocol(format!("invalid {phase} outcome: {message}")))
+}
+
+#[derive(Default)]
+struct MeasuredOutputLedger(BTreeMap<(String, String), String>);
+
+impl MeasuredOutputLedger {
+    fn observe(
+        &mut self,
+        task_id: &str,
+        route: &str,
+        phase: &str,
+        iteration: usize,
+        output_sha256: &str,
+    ) -> BenchResult<()> {
+        if phase != "measured" {
+            return Ok(());
+        }
+        let key = (task_id.to_string(), route.to_string());
+        if iteration == 0 {
+            if self.0.insert(key, output_sha256.to_string()).is_some() {
+                return Err(BenchError::Protocol(format!(
+                    "duplicate first measured response for {task_id}/{route}"
+                )));
+            }
+            return Ok(());
+        }
+        let Some(expected) = self.0.get(&key) else {
+            return Err(BenchError::Protocol(format!(
+                "measured response {task_id}/{route} has no first-iteration baseline"
+            )));
+        };
+        if expected != output_sha256 {
+            return Err(BenchError::Protocol(format!(
+                "measured response changed across repetitions for {task_id}/{route} at iteration {iteration}"
+            )));
+        }
+        Ok(())
+    }
 }
 
 fn write_query_plan_refusal(
@@ -1236,6 +1278,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let mut cold_latencies_ms: BTreeMap<String, f64> = BTreeMap::new();
     let mut query_observations = Vec::new();
     let mut completed_results = BTreeMap::new();
+    let mut measured_outputs = MeasuredOutputLedger::default();
     let mut completed_query = |task_id: &str,
                                route: &'static str,
                                plan: &QueryPlan,
@@ -1310,10 +1353,16 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                 "query child clocks exceed outer query wall clock".to_string(),
             ));
         }
+        // Hash after the timed interval. The row is already normalized and
+        // has no latency field, so repetitions compare the required response
+        // without adding hashing cost to query latency.
+        let output_sha256 = required_response_sha256(&row)?;
+        measured_outputs.observe(task_id, route, phase, iteration, &output_sha256)?;
         query_observations.push(serde_json::json!({
             "task_id": task_id, "route": query.route, "phase": phase,
             "iteration": iteration, "start_ns": start_ns, "end_ns": end_ns,
             "status": status, "output_bytes": output.len(),
+            "output_sha256": output_sha256,
             "sdk_execute_ns": sdk_execute_ns,
             "sdk_post_execute_ns": sdk_post_execute_ns,
             "runner_result_materialize_ns": runner_result_materialize_ns,
@@ -1563,6 +1612,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         "query_timing": {
             "boundary": "request_construction_to_normalized_response",
             "clock": "capture_relative_monotonic_ns",
+            "output_validation": REQUIRED_RESPONSE_OUTPUT_VALIDATION,
             "observations": query_observations,
         },
         "strategy": selection.name,

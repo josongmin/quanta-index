@@ -2,7 +2,37 @@
 
 use serde_json::Value;
 
-use crate::{BenchError, BenchResult};
+use crate::{BenchError, BenchResult, sha256_hex};
+
+/// The timing-independent result representation shared with the Python phase
+/// reader. Only candidate scores may be floating point; their IEEE-754 bits
+/// are rendered as fixed-width lowercase hex before canonical JSON encoding.
+pub const REQUIRED_RESPONSE_OUTPUT_VALIDATION: &str =
+    "normalized_row_score_bits_sha256_v1";
+
+pub fn required_response_sha256(row: &Value) -> BenchResult<String> {
+    let mut normalized = row.clone();
+    let object = normalized.as_object_mut().ok_or_else(|| {
+        BenchError::Protocol("required response is not an object".to_string())
+    })?;
+    object.remove("timings");
+    let candidates = object
+        .get_mut("candidates")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| BenchError::Protocol("required response candidates are missing".to_string()))?;
+    for candidate in candidates {
+        let candidate = candidate.as_object_mut().ok_or_else(|| {
+            BenchError::Protocol("required response candidate is not an object".to_string())
+        })?;
+        if let Some(score) = candidate.get_mut("score") {
+            let score_bits = score.as_f64().filter(|value| value.is_finite()).ok_or_else(|| {
+                BenchError::Protocol("required response candidate score is not finite numeric".to_string())
+            })?;
+            *score = Value::String(format!("{:016x}", score_bits.to_bits()));
+        }
+    }
+    Ok(sha256_hex(canonical_json(&normalized)?.as_bytes()))
+}
 
 /// Canonical JSON: sorted keys, no whitespace, raw UTF-8, no floats.
 /// Matches `evaluator.canonical` for the pack's string/int-only domain;
@@ -84,5 +114,34 @@ mod tests {
     fn canonical_form_refuses_floats() {
         let value: Value = serde_json::from_str(r#"{"a":1.5}"#).expect("fixture parses");
         assert!(canonical_json(&value).is_err());
+    }
+
+    #[test]
+    fn required_response_has_independent_unicode_numeric_and_signed_zero_golden() {
+        let row: Value = serde_json::from_str(
+            r#"{"task_id":"Té","timings":{"query_latency_ms":1.25},"status":"success","candidates":[{"path":"café.go","score":-0.0},{"score":1e-7,"path":"雪.go"},{"score":2,"path":"b.go"}]}"#,
+        )
+        .expect("fixed response parses");
+        let digest = required_response_sha256(&row).expect("fixed response hashes");
+        assert_eq!(
+            digest,
+            "8b1dd6a4b49b147489e1f2a2a4460832df183732852d07982ce2a48f0e0695b5"
+        );
+        let mut without_timing = row.clone();
+        without_timing.as_object_mut().expect("object").remove("timings");
+        assert_eq!(required_response_sha256(&without_timing).expect("same response"), digest);
+        assert_eq!(row["candidates"][0]["score"].as_f64(), Some(-0.0));
+    }
+
+    #[test]
+    fn required_response_rejects_unrelated_float_and_bad_scores() {
+        for row in [
+            serde_json::json!({"candidates": [], "unrelated": 1.25}),
+            serde_json::json!({"candidates": [{"score": "1.0"}]}),
+            serde_json::json!({"candidates": [false]}),
+            serde_json::json!({"status": "success"}),
+        ] {
+            assert!(required_response_sha256(&row).is_err());
+        }
     }
 }

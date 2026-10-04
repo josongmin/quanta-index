@@ -9,9 +9,10 @@
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, QueryConstraintSetV1, RepoId,
-    RepoRelativePath, RevisionId, SearchPlaneErrorCodeV2, SourceFileCoverage, SourceFileKey,
-    SourceFileRevision, SourcePublicationEvent, SymbolCoverage, TextQueryRequest, TextQuerySyntax,
+    ChunkId, ChunkRecord, GenerationPin, IngestObservationStatus, ManifestGeneration,
+    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchCorpusPublishOutcome,
+    SearchPlaneErrorCodeV2, SourceFileCoverage, SourceFileKey, SourceFileRevision,
+    SourcePublicationEvent, SymbolCoverage, TextQueryRequest, TextQuerySyntax,
     source_file_unit_set_sha256,
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
@@ -276,6 +277,29 @@ fn assert_incomplete_symbols(client: &QuantaIndex, generation: u64) -> TestResul
     reason = "the process proof records its retained artifact root"
 )]
 fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResult {
+    let assert_stages = |outcome: &SearchCorpusPublishOutcome, full: bool, text_write: bool| {
+        let observation = outcome.observation.as_ref().expect("executed observation");
+        assert_eq!(observation.status, IngestObservationStatus::Executed);
+        assert!(observation.activation_ns.is_none());
+        let lexical_build_ns = observation.lexical_build_ns.expect("lexical build clock");
+        let stages = observation
+            .lexical_stages
+            .as_ref()
+            .expect("lexical stage clocks");
+        assert_eq!(stages.text_authority_collect_ns.is_some(), full);
+        assert_eq!(stages.text_authority_shard_build_ns.is_some(), text_write);
+        assert_eq!(stages.text_authority_publish_ns.is_some(), text_write);
+        let children = [
+            stages.text_authority_collect_ns,
+            stages.text_authority_shard_build_ns,
+            stages.text_authority_publish_ns,
+        ]
+        .into_iter()
+        .flatten()
+        .sum::<u64>();
+        assert!(children <= stages.text_authority_ns);
+        assert!(stages.text_authority_ns <= lexical_build_ns);
+    };
     let requested_binary = std::env::var_os("QUANTA_INDEX_L2_TEST_BINARY")
         .ok_or("QUANTA_INDEX_L2_TEST_BINARY is required")?;
     let root = tempfile::Builder::new()
@@ -296,6 +320,8 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
         .client
         .producer()
         .publish_search_corpus_observed(&original)?;
+    assert_stages(&first, true, true);
+    assert_eq!(first.receipt.accepted_replace_scopes, 2);
     let other_revision = RevisionId::new("retargeted")?;
     let retargeted = corpus(
         99,
@@ -350,10 +376,12 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
         Some("event-one"),
         &[("a.rs", "a-new", "newneedle")],
     )?;
-    let (_, second_active) = daemon
+    let (second_outcome, second_active, _sdk_timings) = daemon
         .client
         .search_corpus()
-        .publish_and_activate(&second, Some(activated.active))?;
+        .publish_and_activate_observed(&second, Some(activated.active))?;
+    assert_stages(&second_outcome, false, true);
+    assert_eq!(second_outcome.receipt.accepted_replace_scopes, 1);
     assert!(query(&daemon.client, 2, "oldneedle")?.is_empty());
     assert_eq!(query(&daemon.client, 2, "newneedle")?, ["a-new"]);
     assert_eq!(query(&daemon.client, 2, "untouchedneedle")?, ["b-stable"]);
@@ -385,12 +413,37 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
         Some("event-two"),
         &[],
     )?;
-    let (_, third_active) = daemon
+    let (third_outcome, third_active, _sdk_timings) = daemon
         .client
         .search_corpus()
-        .publish_and_activate(&correct_base, Some(second_active.active))?;
+        .publish_and_activate_observed(&correct_base, Some(second_active.active))?;
+    assert_stages(&third_outcome, false, false);
+    assert_eq!(third_outcome.receipt.accepted_replace_scopes, 0);
+    assert_eq!(third_outcome.receipt.accepted_tombstone_scopes, 0);
     assert_eq!(query(&daemon.client, 3, "newneedle")?, ["a-new"]);
     assert_eq!(query(&daemon.client, 3, "untouchedneedle")?, ["b-stable"]);
+    let deleted = corpus(
+        4,
+        Some(3),
+        revision()?,
+        "event-four",
+        Some("event-three"),
+        &[],
+    )?
+    .tombstone_scope(SourceFileKey {
+        source_repo_id: repo()?,
+        repo_relative_path: RepoRelativePath::new("a.rs"),
+    });
+    let (deleted_outcome, fourth_active, _sdk_timings) = daemon
+        .client
+        .search_corpus()
+        .publish_and_activate_observed(&deleted, Some(third_active.active))?;
+    assert_stages(&deleted_outcome, false, true);
+    assert_eq!(deleted_outcome.receipt.accepted_replace_scopes, 0);
+    assert_eq!(deleted_outcome.receipt.accepted_tombstone_scopes, 1);
+    assert!(query(&daemon.client, 4, "newneedle")?.is_empty());
+    assert_eq!(query(&daemon.client, 4, "untouchedneedle")?, ["b-stable"]);
+    assert_eq!(query(&daemon.client, 3, "newneedle")?, ["a-new"]);
     daemon.stop()?;
 
     let restarted = Daemon::start(Path::new(&binary), state_root.as_path(), "restart")?;
@@ -405,7 +458,7 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
             .client
             .generations()
             .active_head(repo()?, revision()?)?,
-        Some(third_active.active)
+        Some(fourth_active.active)
     );
     assert!(
         restarted
@@ -417,6 +470,11 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
     assert_eq!(query(&restarted.client, 3, "newneedle")?, ["a-new"]);
     assert_incomplete_symbols(&restarted.client, 3)?;
     assert_eq!(query(&restarted.client, 1, "oldneedle")?, ["a-old"]);
+    assert!(query(&restarted.client, 4, "newneedle")?.is_empty());
+    assert_eq!(
+        query(&restarted.client, 4, "untouchedneedle")?,
+        ["b-stable"]
+    );
     assert_eq!(
         query(&restarted.client, 3, "untouchedneedle")?,
         ["b-stable"]
