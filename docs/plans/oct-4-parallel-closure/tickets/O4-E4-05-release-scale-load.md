@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P2 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | source107 small/medium scale·small open-loop `VERIFIED`, large timeout/ANN seal `FAILED`; 새 ANN 수리 집중8·affected97 regressions `VERIFIED`. matching release 재실행·다른 tier·OS restart·qualified performance 미완료 |
+| 실행 상태 | source107 small/medium scale·small open-loop `VERIFIED`, large timeout/ANN seal `FAILED`; 새 ANN 수리 집중8·affected97 및 sourcecef large4096 OS restart `VERIFIED`. matching release lifecycle 재실행·다른 tier·qualified performance 미완료 |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E4-01](O4-E4-01-index-phase-profile.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -61,6 +61,10 @@
 - `VERIFIED`: 통합 뒤 `just fmt-check` — exit0. 실제 release owner 테스트와 영향 harness/runtime Clippy는 `NOT_RUN`이다.300s request/readiness·256MiB history는 별도 diagnostic profile이며 기본30s·16MiB PASS나 semantic relevance/ANN recall·cold page cache·Linux performance를 뜻하지 않는다.
 - 다음 owner 명령은 root 단일 실행의 `./scripts/cargow --lane release-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked --release -E 'test(=e2e_process_readiness::binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page)' --test-threads 1 --success-output final`이다. source107의 same-process reopen와 기존 single-source OS restart proof를 이 새 large owner의 결과로 합성하지 않는다.
 - `VERIFIED`: clean sourcecef의 `just rust-test-authority` — exit0, 기존 process owner/extended suite의 source-to-suite authority를 확인했다. 위 release owner 실제 실행은 의존성 빌드 단계이며 테스트 결과는 아직 `NOT_RUN`이다.
+- 후속 actual result `VERIFIED`: 위 exact owner 명령이 clean sourcecef에서 exit0으로 끝났다. release build20m30s, selected1/1 passed/66.736s, 나머지 owner26개 filtered out이다. Nextest의60초 slow 표시는 남고 실패0이다. caller-owned large4096 state를 실제 seal/activate/stop한 후 두 binary OS child에서 모든 source SHA·generation pin·strict page order·candidate ID·score bits 및 서로 다른 process instance를 검증했다.
+- 이 결과는256MiB history/300s diagnostic의 기능 검증이다. default large30s/16MiB lifecycle, ANN semantic recall/relevance, cold page cache, 정식 latency 비교, 전체 process owner27 및 Linux release를 검증한 결과가 아니다. sourcecef 영향 harness/runtime Clippy는 후속 실행 중이며 아직 PASS를 주장하지 않는다.
+- 후속 `FAILED`: `./scripts/cargow --lane clippy-lane clippy -p quanta-index-searchd-harness -p quanta-index-searchd-runtime --all-targets --all-features --locked -- -D warnings` — exit101. 새 fixture의 type_complexity/collapsible_if2건이었다. tuple projection의 local type alias와 같은 predicate의 let-chain으로 정리했으며 lint allowance를 추가하지 않았다.
+- 최종 style bytes에서 같은 Clippy 명령 `VERIFIED`: exit0,7.12s. 기존 Tantivy vendor warning8개는 남는다. `just fmt-check`, `just rust-public-api`, `just rust-cargo-modules`, `just rust-hexagonal` 및 `git diff --check`도 exit0이다. 이 검사는 sourcecef 이후 main의 root-owned fixture overlay(SHA `1afc50f4863d4ed008b75ed5094ea9aef04009952fb1491a2fc6307911600ef9`)에 대한 결과다. assertion/query/source 조건은 유지했고 최종 clean source/owner release 재검증을 다음 실행에서 고정한다.
 
 ## 착수 입력과 실제 tier 실행
 

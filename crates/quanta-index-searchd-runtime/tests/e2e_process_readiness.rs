@@ -1004,6 +1004,8 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
 
     use crate::searchd_binary_process::searchd_command;
 
+    type RankedSourceRow = (String, String, [u8; 32], String, u32);
+
     const SEED: u64 = 5_864_059_738_136_528_177;
     const HISTORY_MAX_BYTES: u64 = 268_435_456;
     const PAGE_SIZE: u32 = 256;
@@ -1087,10 +1089,7 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
 
     let observe = |process: &SearchdBinaryProcess,
                    request_id_base: u64|
-     -> Result<
-        (String, Vec<(String, String, [u8; 32], String, u32)>),
-        Box<dyn Error>,
-    > {
+     -> Result<(String, Vec<RankedSourceRow>), Box<dyn Error>> {
         let client = process.connect()?;
         let ready = wait_for(
             &RealTicker::new(),
@@ -1174,10 +1173,10 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
                     &pin.manifest_generation,
                     "row generation",
                 )?;
-                if let Some(prior) = &previous {
-                    if prior.order_key().order(&row.order_key()) != std::cmp::Ordering::Less {
-                        return Err("large rows violate strict ranked page order".into());
-                    }
+                if let Some(prior) = &previous
+                    && prior.order_key().order(&row.order_key()) != std::cmp::Ordering::Less
+                {
+                    return Err("large rows violate strict ranked page order".into());
                 }
                 previous = Some(row.clone());
                 ranked.push((

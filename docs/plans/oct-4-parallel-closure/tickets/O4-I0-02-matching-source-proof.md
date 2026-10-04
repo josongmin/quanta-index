@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | source107 formal Contract788/191·fresh release SDK27 및 앞선 owner/daemon/process/fuzz `VERIFIED`; 후속 source27 semantic97·Clippy `VERIFIED`. 현재 sourcecef OS restart fixture·formal proof·matching release·hosted CI 미완료 |
+| 실행 상태 | source107 formal Contract788/191·fresh release SDK27 및 앞선 owner/daemon/process/fuzz `VERIFIED`; 후속 source27 semantic97·Clippy 및 sourcecef large4096 OS restart `VERIFIED`. 현재 sourcecef formal proof·matching scale/open-loop release·hosted CI 미완료 |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -16,6 +16,8 @@
 - 아래 source107 formal Contract/fresh SDK/admission은 source107만 검증한다. 새 semantic epoch의 formal proof·matching release scale와 필요한 affected gates는 아직 `NOT_RUN`이며 과거 hosted CI `[]`도 새 source의 CI로 합성하지 않는다.
 - 새 source27의 `gh run list --commit 27c21d07ca79772da820b9b46fd00071732746d6 --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`도 실제 exit0/`[]`였다. 해당 exact source의 hosted CI는 `NOT_RUN`이다.
 - `VERIFIED`: sourcecef의 두 fixture/helper 파일 통합 뒤 `just fmt-check` — exit0. 새 OS restart owner 실행·영향 harness/runtime lint·sourcecef Contract/fresh SDK·matching release는 아직 `NOT_RUN`이며, source27의 CI 조회를 sourcecef 조회로 표시하지 않는다.
+- 후속 `VERIFIED`: clean sourcecef의 large4096 OS restart owner actual1/1 passed,66.736s·exit0; owner26개는 이번 선택에서 제외됐다. exact command/scope는 [E4-05](O4-E4-05-release-scale-load.md)에 있다. matching code bytes가 같은 main에서 영향 harness/runtime Clippy를 실행 중이다. sourcecef Contract/fresh SDK 및 scale/open-loop matching release는 별도이며 아직 `NOT_RUN`이다.
+- 영향 harness/runtime Clippy의 새 fixture lint2건을 local type alias/let-chain으로 수리한 main root-owned overlay에서 같은 all-targets 명령이 exit0/7.12s였다. `just fmt-check`, 공개 contract/SDK API, contract/core module tree 및 hexagonal 경계도 exit0이었다. 최종 test fixture bytes는 sourcecef와 다르므로 clean source 고정과 해당 release owner 재실행을 요구하며 이전66.736s 실행을 새 fixture SHA의 실행으로 재표기하지 않는다.
 
 ## 2026-10-04 source107 fresh release SDK proof 완료
 
