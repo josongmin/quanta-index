@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W0 — 소유권·실행 범위 고정](../waves/W0-ownership-and-scope.md) |
-| 실행 상태 | 에픽별 static PREPARE·root 단일 integration/중앙 실행; clean source107 및 matching Contract/SDK proof epoch `VERIFIED`. 전체29개 qualification 종료는 미완료 |
+| 실행 상태 | 에픽별 static PREPARE·root 단일 integration/중앙 실행; source107 matching Contract/SDK 및 후속 clean ANN 수리 source27 freeze `VERIFIED`. 새 epoch formal/release 검증과 전체29개 qualification 종료는 미완료 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -23,7 +23,12 @@
 - E1/root: actual model review, canonical label/split/admission input; E2: native/timer/controller proposals; E3: selection/SDK/maintenance/timeout proposals; E4: scale/profile and confirmed lexical statistics repair. worker는 source/fixture/static만 준비하고 actual Rust/Python/model/Docker는 root가 실행한다.
 - shared run.py·registry·Cargo/lock/public API baseline과 main patch 적용은 root 단일 owner다. root가 HEAD/dirty를 재조회하고 unrelated changes를 reset/stage/commit하지 않는다. 자동 외부 commit으로 HEAD가 진전되므로 과거 HEAD를 current proof로 재표기하지 않는다.
 - output은 checkout 밖 fresh namespace다. native Sourcegraph scope는 Python producer/control/release/index identity에 결속하고, Rust lexical format/dependency 수리는 matching Rust/SDK/Contract/scale source epoch를 다시 요구한다. model judgments는 frozen source/query/form/model identity에 결속하며 product qualification과 구별한다.
-- current product failure인 long-source BM25 score drift를 수리하는 동안 final source freeze와 admission ISSUE는 아직 `NOT_RUN`이다.
+- long-source BM25 수리 이후 source107을 고정해 formal proof와 원본9개 admission을 발행했다. 새 ANN segment contraction 수리는 별도 source27이며 이전 proof/admission을 새 product source의 것으로 재표기하지 않는다.
+
+## 2026-10-05 후속 ANN 수리 source 고정
+
+- clean 관리 작업트리 `/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index`를 exact `27c21d07ca79772da820b9b46fd00071732746d6`으로 생성했다. 최종 lint 수정까지 포함한 semantic6파일 SHA가 root 실제97-test 실행 source와 일치한다. source107 작업트리와 결과는 유지한다.
+- source107→27의 product 변경은 semantic6파일이며 나머지는 ticket 문서다. 새 matching release build/large lifecycle와 필요한 formal source proof는 이 작업트리에서 발행한다. root build/test/model/제품 실행은 같은 host에서 직렬로 진행하며 에픽별 별도 실행을 시작하지 않는다.
 
 ## 착수 입력
 

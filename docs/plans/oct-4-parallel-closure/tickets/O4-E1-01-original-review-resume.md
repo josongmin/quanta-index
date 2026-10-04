@@ -42,6 +42,7 @@ C3 240개 질의의 실제 판단을 완료하고 재사용 가능한 모델 cac
 - `/private/tmp/qi-c3-review-next-20261004-1zzpet86/resume.py --execute typeorm sqlalchemy zellij tailscale`는 exit 1로 종료됐다. TypeORM은 reviewer-1/reviewer-2/adjudicator 각20 tasks/572 pairs, missing0으로 canonical finalization을 통과했다. 이전 unresolved stdout은 보존했고 미완료 pair에 grade를 합성하지 않았다.
 - SQLAlchemy는 reviewer 두 역할 각각20 tasks 및 adjudicator 유효 batch000–016을 보존했다. adjudicator017, Zellij reviewer-1/000, Tailscale reviewer-1/011은 모두 native raw의 `api_error_status:429`, `terminal_reason:api_error`, `duration_api_ms:0`으로 실패했다. 공급자가 알린 reset은 **2026-10-04 23:40 KST**다. 서비스 입력 회복 뒤 동일 immutable driver/input으로 재개하며 실패 raw를 덮어쓰지 않는다. 세 저장소의 finalization/issuance는 `NOT_RUN`이다.
 - Django/TypeORM은 `/Users/songmin/Documents/code-new/qi-e1-django-typeorm-issued-20261004-v1`에서 canonical suite·blind pack·review receipts를 실제 재발행/검증했다. 20/509 및20/572 분모를 유지했고 `qualified:false`, `human_provenance_attested:false`다. current-source admission 및 product capture는 별도다.
+- reset 이후 동일 immutable driver의 `--execute sqlalchemy zellij tailscale`를 다시 실행 중이다. SQLAlchemy의 새 `adjudicator/017.retry-1/stdout.json`은 duration_api0·429와 `You've reached your Fable limit`을 반환했다. 과거 session reset과 다른 모델 개별 한도이며 조정 결과를 발행하지 않았다. 다른 모델로 바꾸면 원 Fable 영수증과 새 역할 provenance를 섞지 않는 새 입력이 필요하다. Zellij는 reviewer-1 새 batches를 실제 처리 중이다.
 
 ## 어떤 파일을 어떻게 수정할지
 
