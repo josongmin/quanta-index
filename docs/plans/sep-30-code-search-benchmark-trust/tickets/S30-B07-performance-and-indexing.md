@@ -310,6 +310,34 @@ include debug binaries and host contention. The fix and focused timing test
 were incorporated in main at `56ba8416`; the new completed-output capability
 contract on main was not exercised by this older pinned runner.
 
+### 2026-10-04 optimized debug runner confirmation
+
+The all-features debug runner/searchd built from clean isolated `d2740319`
+with the optimized `sha2` development dependency in a new
+`harness-sha-proof-lane`. The first build exposed a committed Rust
+`unused_results` error in `canonical.rs`; the one-line fix and its test
+assertion are part of that isolated commit and main `b5d555bd`. The resumed
+build passed in **1m 50s** after the failed build's **105.59 s** lock hold.
+The build times are separate from benchmark execution. Runner SHA256 was
+`6fb9245b9aec020c3cb237c2cdf1aec49580cafb9f997f4c1212e30f4cfd11a2`;
+searchd SHA256 was
+`4ac885b4ec5cf2e0b8a23d95831b37e9dc03b1c16858ae5a78a6969501ca886c`.
+The runner advertised the current diagnostic and completed-output validation
+capabilities.
+
+The exact four-suite attrs/zoxide input, rebound only to these new binaries,
+completed at `/private/tmp/qmt10` in **32.02 s**. Its independent matrix
+replay passed **2/2** repositories in **7.64 s**, and all **4/4** suite
+judgment/status reports matched qmt9. Quanta runner `unattributed` fell from
+**9.45 to 1.01 s** for attrs and **9.44 to 0.89 s** for zoxide. The driver
+reported Quanta capture **10.78 s** and **5.16 s**, source closure **2.62 s**
+and **0.19 s** (fresh/reused), and final verification **3.98 s** and
+**2.70 s**. The Rust canonical-output golden tests passed **2/2**.
+This is a diagnostic debug-build observation under changing host load and
+source revisions, not a controlled release speedup or product ranking.
+Qualified B07 release-profile, quiet-host and repeated-scale measurements
+remain `NOT_RUN`.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
