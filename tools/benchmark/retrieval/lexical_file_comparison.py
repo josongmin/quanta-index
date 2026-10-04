@@ -840,6 +840,16 @@ def _replay_file_pair_report(suite: dict, pack: dict, merged: dict, report: dict
     return diagnostic
 
 
+def _replay_file_pair_verdict(
+    repo: Path, suite_path: Path, manifest_path: Path, verdict: dict
+) -> None:
+    """Verify derived provenance through the canonical frozen-artifact authority."""
+    from tools.benchmark.retrieval import run
+
+    if run.build_verdict(repo, suite_path, manifest_path) != verdict:
+        raise ValueError("current file pair verdict differs from canonical replay")
+
+
 def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) -> dict:
     """Revalidate the current file pair from its retained Git bundle and raw records."""
     from tools.benchmark.retrieval import run
@@ -929,6 +939,7 @@ def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) 
         if checked_suite != suite or checked_pack != pack:
             raise ValueError("raw pair record source, suite, or pack identity differs")
         diagnostic = _replay_file_pair_report(suite, pack, merged, values["pair_report"])
+        _replay_file_pair_verdict(repo, suite_path, paths["pair_manifest"], verdict)
     manifest = values["pair_manifest"]
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict):
@@ -1017,12 +1028,6 @@ def file_pair_result(paths: dict[str, Path], suite_raw: bytes, pack_raw: bytes) 
         not isinstance(provenance, dict)
         or any(not isinstance(provenance.get(key), dict) for key in ("quanta", "suite", "semble"))
         or not isinstance(verdict.get("provenance"), dict)
-        or any(
-            not isinstance(values, dict)
-            or not isinstance(provenance.get(section), dict)
-            or any(provenance[section].get(key) != value for key, value in values.items())
-            for section, values in verdict.get("provenance", {}).items()
-        )
         or provenance.get("quanta", {}).get("binary_digest") != qbinary
         or re.fullmatch(r"[0-9a-f]{40}", provenance.get("quanta", {}).get("source_sha", "")) is None
         or provenance.get("suite", {}).get("suite_digest") != lock["suite_digest"]

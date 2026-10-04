@@ -10481,6 +10481,8 @@ def test_pair_provenance_keeps_driver_revision_distinct_from_unattested_binary_s
 
 
 def test_pair_derives_binary_source_only_after_fresh_sdk_chain_verifies(tmp_path):
+    from tools.benchmark.retrieval.lexical_file_comparison import _replay_file_pair_verdict
+
     stage = _pair_stage(tmp_path, receipts="full", sdk_build_profile="release-fresh")
     assert stage["manifest"]["provenance"]["quanta"]["binary_build_source_revision"] is None
     verdict = _stage_verdict(stage)
@@ -10492,8 +10494,21 @@ def test_pair_derives_binary_source_only_after_fresh_sdk_chain_verifies(tmp_path
         == (stage["manifest"]["provenance"]["quanta"]["source_sha"])
     )
     jsonschema.validate(verdict, _load_schema("verdict.schema.json"))
+    _replay_file_pair_verdict(
+        stage["repo"], stage["suite_path"], stage["manifest_path"], verdict
+    )
+    forged = copy.deepcopy(verdict)
+    forged["provenance"]["quanta"]["binary_build_source_revision"] = "e" * 40
+    with pytest.raises(ValueError, match="verdict differs from canonical replay"):
+        _replay_file_pair_verdict(
+            stage["repo"], stage["suite_path"], stage["manifest_path"], forged
+        )
     raw = stage["stage"] / stage["manifest"]["artifacts"]["sdk_nextest_raw"]
     raw.write_bytes(raw.read_bytes() + b"tampered")
+    with pytest.raises(ValueError, match="verdict differs from canonical replay"):
+        _replay_file_pair_verdict(
+            stage["repo"], stage["suite_path"], stage["manifest_path"], verdict
+        )
     rejected = _stage_verdict(stage)
     assert rejected["states"]["SDK_PATH_GREEN"] == "fail"
     assert rejected["provenance"]["quanta"]["binary_build_source_revision"] is None
