@@ -727,6 +727,59 @@ def _native_stored_content(
     return binary_sha, rows_sha
 
 
+def _capture_spec(path: Path, *, scope_spec: bool, live) -> dict:
+    if scope_spec:
+        selected = parse_json(_read_control_file(path).decode("utf-8"))
+        if (
+            not isinstance(selected, dict)
+            or set(selected) != {"schema_version", "corpus", "sourcegraph"}
+            or selected["schema_version"] != 1
+        ):
+            raise ValueError("Sourcegraph index scope input spec differs")
+        live.corpus_binding._selection(selected["corpus"])
+        selected["sourcegraph"] = live._service(
+            selected["sourcegraph"],
+            {"base_url", "repository", "server_image_digest"},
+            {"backend_snapshot", "projection_git_root"},
+        )
+        return selected
+    selected = live._spec(path)
+    if "sourcegraph" not in live._selected_products(selected):
+        raise ValueError("index scope capture requires a selected Sourcegraph product")
+    return selected
+
+
+def _early_control_sha256(path: Path, spec: dict, *, scope_spec: bool, live) -> dict[str, str]:
+    from tools.benchmark.retrieval import lexical_file_comparison as lexical
+
+    config = spec["sourcegraph"]
+    paths = (
+        path,
+        *((Path(spec["suite"]), Path(spec["query_pack"])) if not scope_spec else ()),
+        Path(config["token_file"]),
+        Path(__file__),
+        Path(live.__file__),
+        Path(sourcegraph.__file__),
+        Path(live.corpus_binding.__file__),
+        Path(live.corpus_release.__file__),
+        Path(lexical.__file__),
+    )
+    controls = {
+        str(item.resolve(strict=True)): RawFile.capture(item).sha256.removeprefix("sha256:")
+        for item in paths
+    }
+    if len(controls) != len(paths):
+        raise ValueError("index scope control files overlap")
+    return controls
+
+
+def _unchanged_controls(controls: dict[str, str]) -> bool:
+    return all(
+        RawFile.capture(Path(path)).sha256 == "sha256:" + digest
+        for path, digest in controls.items()
+    )
+
+
 def capture_from_live_spec(
     live_spec_path: Path,
     output_root: Path,
@@ -734,6 +787,8 @@ def capture_from_live_spec(
     native_port: int,
     native_binary_path: str | None = None,
     scope_spec: bool = False,
+    bound_release=None,
+    preflight_controls: dict[str, str] | None = None,
 ) -> Path:
     """Produce the existing v1 scope receipt from a live Sourcegraph/Zoekt service.
 
@@ -760,30 +815,7 @@ def capture_from_live_spec(
         raise ValueError("native Zoekt binary path must be canonical absolute")
     output_root = _absolute(str(output_root))
     spec_before = RawFile.capture(live_spec_path)
-    if scope_spec:
-        selected = parse_json(_read_control_file(live_spec_path).decode("utf-8"))
-        if (
-            not isinstance(selected, dict)
-            or set(selected)
-            != {
-                "schema_version",
-                "corpus",
-                "sourcegraph",
-            }
-            or selected["schema_version"] != 1
-        ):
-            raise ValueError("Sourcegraph index scope input spec differs")
-        corpus_binding._selection(selected["corpus"])
-        selected["sourcegraph"] = live._service(
-            selected["sourcegraph"],
-            {"base_url", "repository", "server_image_digest"},
-            {"backend_snapshot", "projection_git_root"},
-        )
-        spec = selected
-    else:
-        spec = live._spec(live_spec_path)
-        if "sourcegraph" not in live._selected_products(spec):
-            raise ValueError("index scope capture requires a selected Sourcegraph product")
+    spec = _capture_spec(live_spec_path, scope_spec=scope_spec, live=live)
     config = spec["sourcegraph"]
     if (
         "backend_snapshot" not in config
@@ -793,6 +825,11 @@ def capture_from_live_spec(
     ):
         raise ValueError("index scope capture requires fresh backend, projection and token inputs")
     release = Path(spec["corpus"]["release_path"])
+    early_controls = _early_control_sha256(live_spec_path, spec, scope_spec=scope_spec, live=live)
+    if (preflight_controls is not None and early_controls != preflight_controls) or RawFile.capture(
+        live_spec_path
+    ) != spec_before:
+        raise ValueError("index scope preflight control files changed")
     driver_root = Path(__file__).resolve().parents[3]
     input_paths = [
         live_spec_path,
@@ -821,7 +858,10 @@ def capture_from_live_spec(
         )
     ):
         raise ValueError("index scope output must be fresh and disjoint")
-    document = corpus_release.validate(release)
+    bound = bound_release if bound_release is not None else live.BoundRelease.begin(release)
+    document = bound.recheck(release)
+    if not _unchanged_controls(early_controls):
+        raise ValueError("index scope preflight control files changed")
     if document["digest"] != spec["corpus"]["release_digest"]:
         raise ValueError("index scope release digest differs")
     repo = spec["corpus"]["repository"]
@@ -863,6 +903,8 @@ def capture_from_live_spec(
     }
     if len(controls) != len(control_paths):
         raise ValueError("index scope control files overlap")
+    if any(controls.get(path) != digest for path, digest in early_controls.items()):
+        raise ValueError("index scope preflight control files changed")
     before = live._backend_snapshot(config)
     live._validate_backend_snapshot(config, before)
     output_root.mkdir(parents=True)
@@ -932,7 +974,7 @@ def capture_from_live_spec(
     if (
         {name: RawFile.capture(Path(name)).sha256.removeprefix("sha256:") for name in controls}
         != controls
-        or corpus_release.validate(release) != document
+        or bound.recheck(release) != document
         or live._projection_binding(config, manifest) != projection
     ):
         raise ValueError("index scope source or control files changed during native audit")
@@ -981,6 +1023,125 @@ def _absolute(value: object) -> Path:
     if not path.is_absolute() or str(path) != value or ".." in path.parts:
         raise ValueError("index scope path must be canonical absolute")
     return path
+
+
+def capture_scope_batch(
+    batch_spec_path: Path,
+    *,
+    native_port: int,
+    native_binary_path: str | None = None,
+) -> list[Path]:
+    """Reuse one bound corpus release across independent v1 scope receipts."""
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    if type(native_port) is not int or not 1 <= native_port <= 65535:
+        raise ValueError("native Zoekt print port is invalid")
+    if native_binary_path is not None and (
+        not isinstance(native_binary_path, str)
+        or not native_binary_path.startswith("/")
+        or ".." in Path(native_binary_path).parts
+    ):
+        raise ValueError("native Zoekt binary path must be canonical absolute")
+    driver_root = Path(__file__).resolve().parents[3]
+    batch_before = RawFile.capture(batch_spec_path)
+    if batch_spec_path.resolve().is_relative_to(driver_root):
+        raise ValueError("index scope batch inputs must stay outside the driver checkout")
+    batch = parse_json(_read_control_file(batch_spec_path).decode("utf-8"))
+    if (
+        not isinstance(batch, dict)
+        or set(batch) != {"schema_version", "cells"}
+        or batch["schema_version"] != 1
+        or not isinstance(batch["cells"], list)
+        or not batch["cells"]
+    ):
+        raise ValueError("Sourcegraph index scope batch input differs")
+    cells = []
+    release_root = None
+    repositories: set[str] = set()
+    inputs = {batch_spec_path.resolve(strict=True)}
+    outputs: list[Path] = []
+    for row in batch["cells"]:
+        if not isinstance(row, dict) or set(row) != {"scope_spec", "output_root"}:
+            raise ValueError("Sourcegraph index scope batch cell differs")
+        path = _absolute(row["scope_spec"])
+        output = _absolute(row["output_root"])
+        if path.resolve().is_relative_to(driver_root) or output.resolve().is_relative_to(
+            driver_root
+        ):
+            raise ValueError(
+                "index scope batch inputs and outputs must stay outside the driver checkout"
+            )
+        spec = _capture_spec(path, scope_spec=True, live=live)
+        config = spec["sourcegraph"]
+        if (
+            "backend_snapshot" not in config
+            or "projection_git_root" not in config
+            or "token_file" not in config
+            or "indexed_scope_receipt" in config
+        ):
+            raise ValueError(
+                "index scope batch requires fresh backend, projection and token inputs"
+            )
+        repo = spec["corpus"]["repository"]
+        release = Path(spec["corpus"]["release_path"])
+        resolved_release = release.resolve(strict=True)
+        if repo in repositories or (release_root is not None and release_root != resolved_release):
+            raise ValueError("index scope batch has duplicate repository or different release root")
+        repositories.add(repo)
+        release_root = resolved_release
+        early = _early_control_sha256(path, spec, scope_spec=True, live=live)
+        inputs.update(Path(name) for name in early)
+        inputs.update(
+            (
+                resolved_release,
+                Path(config["backend_snapshot"]["root"]).resolve(strict=True),
+                Path(config["projection_git_root"]).resolve(strict=True),
+            )
+        )
+        cells.append((path, output, release, early))
+        outputs.append(output.resolve())
+    if any(
+        output.exists()
+        or output.is_symlink()
+        or any(
+            output == item or output.is_relative_to(item) or item.is_relative_to(output)
+            for item in inputs
+        )
+        or any(
+            output == other or output.is_relative_to(other) or other.is_relative_to(output)
+            for other in outputs[index + 1 :]
+        )
+        for index, output in enumerate(outputs)
+    ):
+        raise ValueError("index scope batch outputs must be fresh and disjoint")
+
+    def recheck_inputs() -> None:
+        if RawFile.capture(batch_spec_path) != batch_before or any(
+            not _unchanged_controls(early) for _, _, _, early in cells
+        ):
+            raise ValueError("index scope batch input or control files changed")
+
+    recheck_inputs()
+    bound = live.BoundRelease.begin(release_root)
+    recheck_inputs()
+    receipts = []
+    for path, output, release, early in cells:
+        bound.recheck(release)
+        recheck_inputs()
+        receipts.append(
+            capture_from_live_spec(
+                path,
+                output,
+                native_port=native_port,
+                native_binary_path=native_binary_path,
+                scope_spec=True,
+                bound_release=bound,
+                preflight_controls=early,
+            )
+        )
+        bound.recheck(release)
+        recheck_inputs()
+    return receipts
 
 
 def verify(
@@ -1342,21 +1503,36 @@ def main() -> int:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--live-spec", type=Path)
     source.add_argument("--scope-spec", type=Path)
-    parser.add_argument("--output-root", type=Path, required=True)
+    source.add_argument("--scope-batch", type=Path)
+    parser.add_argument("--output-root", type=Path)
     parser.add_argument("--native-port", type=int, required=True)
     parser.add_argument("--native-binary-path")
     args = parser.parse_args()
     try:
-        receipt = capture_from_live_spec(
-            args.live_spec if args.live_spec is not None else args.scope_spec,
-            args.output_root,
-            native_port=args.native_port,
-            native_binary_path=args.native_binary_path,
-            scope_spec=args.scope_spec is not None,
-        )
+        if args.scope_batch is not None:
+            if args.output_root is not None:
+                raise ValueError("index scope batch defines output roots per cell")
+            receipts = capture_scope_batch(
+                args.scope_batch,
+                native_port=args.native_port,
+                native_binary_path=args.native_binary_path,
+            )
+        else:
+            if args.output_root is None:
+                raise ValueError("index scope capture requires --output-root")
+            receipts = [
+                capture_from_live_spec(
+                    args.live_spec if args.live_spec is not None else args.scope_spec,
+                    args.output_root,
+                    native_port=args.native_port,
+                    native_binary_path=args.native_binary_path,
+                    scope_spec=args.scope_spec is not None,
+                )
+            ]
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         parser.exit(2, f"ERROR: {error}\n")
-    print(receipt)
+    for receipt in receipts:
+        print(receipt, flush=True)
     return 0
 
 

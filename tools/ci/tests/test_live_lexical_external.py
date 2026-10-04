@@ -922,6 +922,146 @@ def test_bound_release_refuses_mutation_during_full_validation(
         live.BoundRelease.begin(release)
 
 
+def _index_scope_batch_fixture(tmp_path, lexical_release_seed, monkeypatch):
+    scope = live.sourcegraph_index_scope
+    release = tmp_path / "release"
+    shutil.copytree(lexical_release_seed, release)
+    backend = tmp_path / "backend"
+    projection = tmp_path / "projection"
+    backend.mkdir()
+    projection.mkdir()
+    token = tmp_path / "token"
+    token.write_text("fixture-token")
+    cells = []
+    selected = {}
+    for repo in ("first", "second"):
+        spec_path = tmp_path / f"{repo}.json"
+        spec_path.write_text(json.dumps({"repository": repo}))
+        selected[spec_path] = {
+            "corpus": {"release_path": str(release), "repository": repo},
+            "sourcegraph": {
+                "token_file": str(token),
+                "backend_snapshot": {"root": str(backend)},
+                "projection_git_root": str(projection),
+            },
+        }
+        cells.append({"scope_spec": str(spec_path), "output_root": str(tmp_path / f"{repo}-out")})
+    batch_path = tmp_path / "batch.json"
+    batch_path.write_text(json.dumps({"schema_version": 1, "cells": cells}))
+    monkeypatch.setattr(scope, "_capture_spec", lambda path, **_kwargs: selected[path])
+    return scope, batch_path, cells, selected, release, token
+
+
+def test_index_scope_batch_reuses_one_release_and_rechecks_each_cell(
+    tmp_path, lexical_release_seed, monkeypatch
+):
+    scope, batch_path, cells, _, release, _ = _index_scope_batch_fixture(
+        tmp_path, lexical_release_seed, monkeypatch
+    )
+    original = live.corpus_release.validate
+    validations = []
+
+    def counted(root):
+        validations.append(root)
+        return original(root)
+
+    monkeypatch.setattr(live.corpus_release, "validate", counted)
+    observed = []
+
+    def capture(path, output, **kwargs):
+        bound = kwargs["bound_release"]
+        assert bound.recheck(release) == bound.document
+        assert kwargs["preflight_controls"]
+        observed.append(path)
+        return output / "native-audit/receipt.json"
+
+    monkeypatch.setattr(scope, "capture_from_live_spec", capture)
+    receipts = scope.capture_scope_batch(batch_path, native_port=6071)
+    assert validations == [release.resolve()]
+    assert observed == [Path(cell["scope_spec"]) for cell in cells]
+    assert receipts == [Path(cell["output_root"]) / "native-audit/receipt.json" for cell in cells]
+
+
+@pytest.mark.parametrize("fault", ["release_bytes", "next_spec", "batch_spec"])
+def test_index_scope_batch_refuses_mutation_before_next_cell(
+    tmp_path, lexical_release_seed, monkeypatch, fault
+):
+    scope, batch_path, cells, _, release, _ = _index_scope_batch_fixture(
+        tmp_path, lexical_release_seed, monkeypatch
+    )
+
+    def capture(_path, output, **_kwargs):
+        target = {
+            "release_bytes": release / "release.json",
+            "next_spec": Path(cells[1]["scope_spec"]),
+            "batch_spec": batch_path,
+        }[fault]
+        target.write_bytes(target.read_bytes() + b" ")
+        return output / "native-audit/receipt.json"
+
+    monkeypatch.setattr(scope, "capture_from_live_spec", capture)
+    with pytest.raises(ValueError, match="changed"):
+        scope.capture_scope_batch(batch_path, native_port=6071)
+
+
+def test_index_scope_batch_refuses_different_release_root_and_preflight_drift(
+    tmp_path, lexical_release_seed, monkeypatch
+):
+    scope, batch_path, cells, selected, release, token = _index_scope_batch_fixture(
+        tmp_path, lexical_release_seed, monkeypatch
+    )
+    second = Path(cells[1]["scope_spec"])
+    other = tmp_path / "other-release"
+    shutil.copytree(release, other)
+    selected[second]["corpus"]["release_path"] = str(other)
+    with pytest.raises(ValueError, match="different release root"):
+        scope.capture_scope_batch(batch_path, native_port=6071)
+    selected[second]["corpus"]["release_path"] = str(release)
+    original_begin = live.BoundRelease.begin
+
+    def changed_during_begin(root):
+        token.write_text("changed-token")
+        return original_begin(root)
+
+    monkeypatch.setattr(live.BoundRelease, "begin", changed_during_begin)
+    with pytest.raises(ValueError, match="control files changed"):
+        scope.capture_scope_batch(batch_path, native_port=6071)
+
+
+def test_index_scope_single_freezes_controls_before_full_release_replay(
+    tmp_path, lexical_release_seed, monkeypatch
+):
+    scope, _, cells, _, _, token = _index_scope_batch_fixture(
+        tmp_path, lexical_release_seed, monkeypatch
+    )
+    original_begin = live.BoundRelease.begin
+
+    def changed_during_begin(root):
+        token.write_text("changed-token")
+        return original_begin(root)
+
+    monkeypatch.setattr(live.BoundRelease, "begin", changed_during_begin)
+    with pytest.raises(ValueError, match="preflight control files changed"):
+        scope.capture_from_live_spec(
+            Path(cells[0]["scope_spec"]),
+            Path(cells[0]["output_root"]),
+            native_port=6071,
+            scope_spec=True,
+        )
+
+
+def test_index_scope_batch_refuses_output_overlapping_another_cell_input(
+    tmp_path, lexical_release_seed, monkeypatch
+):
+    scope, batch_path, cells, _, _, _ = _index_scope_batch_fixture(
+        tmp_path, lexical_release_seed, monkeypatch
+    )
+    cells[0]["output_root"] = str(Path(cells[1]["scope_spec"]).parent)
+    batch_path.write_text(json.dumps({"schema_version": 1, "cells": cells}))
+    with pytest.raises(ValueError, match="outputs must be fresh and disjoint"):
+        scope.capture_scope_batch(batch_path, native_port=6071)
+
+
 def test_external_row_replay_streams_large_jsonl_and_refuses_invalid_order(tmp_path):
     path = tmp_path / "sourcegraph_rows.jsonl"
     tasks = [{"task_id": f"S{index:02d}"} for index in range(20)]

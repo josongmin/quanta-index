@@ -31,9 +31,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::fs;
 #[cfg(target_os = "macos")]
 use std::io::Read as _;
-use std::path::Path;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt as _;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -43,6 +46,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result as AnyResult;
 use nix::sys::resource::{UsageWho, getrusage};
+#[cfg(unix)]
+use nix::sys::statvfs::statvfs;
 use nix::sys::time::TimeValLike as _;
 use quanta_index_contract::{
     LexicalCandidate, ManifestGeneration, MetricsSnapshotV1, QueryConstraintSetV1,
@@ -910,6 +915,7 @@ pub struct CpuUsageV1 {
 }
 
 const PHASE_RSS_INTERVAL: Duration = Duration::from_millis(100);
+const PHASE_DISK_INTERVAL: Duration = Duration::from_millis(500);
 const PHASE_RSS_MAX_GAP: Duration = Duration::from_millis(500);
 const PHASE_RSS_INTERIOR_REQUIRED_AFTER: Duration = Duration::from_millis(200);
 
@@ -931,6 +937,35 @@ pub struct PhaseResourceV1 {
     pub observer_teardown_ms: f64,
     pub observer_periodic_probe_wall_ms: f64,
     pub discarded_outside_phase_samples: usize,
+    /// Root allocation and filesystem availability are sampled independently
+    /// of logical directory bytes. Neither is physical write I/O.
+    pub disk: Option<PhaseDiskV1>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiskSnapshotV1 {
+    pub allocated_bytes: Option<u64>,
+    pub filesystem_free_bytes: Option<u64>,
+    pub filesystem_available_bytes: Option<u64>,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhaseDiskSampleV1 {
+    pub offset_ms: f64,
+    pub snapshot: DiskSnapshotV1,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhaseDiskV1 {
+    pub start: DiskSnapshotV1,
+    pub end: DiskSnapshotV1,
+    /// Greatest observed allocated-block sample, not a continuous peak.
+    pub sampled_max_allocated_bytes: Option<u64>,
+    pub sampled: Vec<PhaseDiskSampleV1>,
+    pub observed_max_gap_ms: f64,
+    pub periodic_probe_wall_ms: f64,
+    pub method: &'static str,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -945,23 +980,170 @@ struct RssPoint {
     bytes: u64,
 }
 
+#[derive(Clone)]
+struct DiskPoint {
+    at: Instant,
+    snapshot: DiskSnapshotV1,
+}
+
+/// st_blocks is measured per unique inode, so inherited hard links are not
+/// multiplied. This is allocated storage observed under the state root, not
+/// host-wide disk consumption or bytes written by the phase.
+/// Cancellation is cooperative between directory entries; a blocked metadata,
+/// read_dir, iterator or statvfs syscall cannot be interrupted here.
+#[cfg(unix)]
+fn allocated_root_bytes_with_cancel(
+    root: &Path,
+    mut cancelled: impl FnMut() -> bool,
+) -> AnyResult<u64> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut seen = BTreeSet::new();
+    let mut total = 0_u64;
+    while let Some(path) = pending.pop() {
+        anyhow::ensure!(!cancelled(), "disk_probe_cancelled");
+        let metadata = fs::symlink_metadata(&path)?;
+        if !seen.insert((metadata.dev(), metadata.ino())) {
+            continue;
+        }
+        total = total
+            .checked_add(
+                metadata
+                    .blocks()
+                    .checked_mul(512)
+                    .ok_or_else(|| anyhow::anyhow!("scale: allocated-block byte count overflow"))?,
+            )
+            .ok_or_else(|| anyhow::anyhow!("scale: allocated root byte count overflow"))?;
+        if metadata.is_dir() {
+            anyhow::ensure!(!cancelled(), "disk_probe_cancelled");
+            for entry in fs::read_dir(path)? {
+                anyhow::ensure!(!cancelled(), "disk_probe_cancelled");
+                pending.push(entry?.path());
+            }
+        }
+    }
+    Ok(total)
+}
+
+#[cfg(unix)]
+fn disk_snapshot_result(root: &Path, stopped: Option<&AtomicBool>) -> AnyResult<DiskSnapshotV1> {
+    let allocated_bytes = allocated_root_bytes_with_cancel(root, || {
+        stopped.is_some_and(|flag| flag.load(Ordering::Acquire))
+    })?;
+    anyhow::ensure!(
+        !stopped.is_some_and(|flag| flag.load(Ordering::Acquire)),
+        "disk_probe_cancelled"
+    );
+    let filesystem = statvfs(root)?;
+    let fragment_size = u64::try_from(filesystem.fragment_size())?;
+    anyhow::ensure!(fragment_size > 0, "scale: filesystem fragment size is zero");
+    let filesystem_free_bytes = u64::try_from(filesystem.blocks_free())?
+        .checked_mul(fragment_size)
+        .ok_or_else(|| anyhow::anyhow!("scale: filesystem free bytes overflow"))?;
+    let filesystem_available_bytes = u64::try_from(filesystem.blocks_available())?
+        .checked_mul(fragment_size)
+        .ok_or_else(|| anyhow::anyhow!("scale: filesystem available bytes overflow"))?;
+    Ok(DiskSnapshotV1 {
+        allocated_bytes: Some(allocated_bytes),
+        filesystem_free_bytes: Some(filesystem_free_bytes),
+        filesystem_available_bytes: Some(filesystem_available_bytes),
+        unavailable_reason: None,
+    })
+}
+
+#[cfg(not(unix))]
+fn disk_snapshot_result(_root: &Path, _stopped: Option<&AtomicBool>) -> AnyResult<DiskSnapshotV1> {
+    anyhow::bail!("unsupported_platform")
+}
+
+fn disk_point(root: &Path, stopped: Option<&AtomicBool>) -> DiskPoint {
+    let snapshot = disk_snapshot_result(root, stopped).unwrap_or_else(|error| DiskSnapshotV1 {
+        allocated_bytes: None,
+        filesystem_free_bytes: None,
+        filesystem_available_bytes: None,
+        unavailable_reason: Some(format!("probe_unavailable: {error:#}")),
+    });
+    DiskPoint {
+        at: Instant::now(),
+        snapshot,
+    }
+}
+
+fn summarize_phase_disk(
+    started: Instant,
+    ended: Instant,
+    start: DiskPoint,
+    end: DiskPoint,
+    samples: &[DiskPoint],
+    periodic_probe_wall_ms: f64,
+) -> PhaseDiskV1 {
+    let mut sampled = Vec::new();
+    let mut high = start.snapshot.allocated_bytes;
+    let mut observed_interior_allocation = false;
+    let mut previous = started;
+    let mut max_gap = Duration::ZERO;
+    for point in samples {
+        if point.at > started && point.at < ended {
+            max_gap = max_gap.max(point.at.duration_since(previous));
+            previous = point.at;
+            if let Some(bytes) = point.snapshot.allocated_bytes {
+                observed_interior_allocation = true;
+                high = Some(high.map_or(bytes, |prior| prior.max(bytes)));
+            }
+            sampled.push(PhaseDiskSampleV1 {
+                offset_ms: point.at.duration_since(started).as_secs_f64() * 1_000.0,
+                snapshot: point.snapshot.clone(),
+            });
+        }
+    }
+    max_gap = max_gap.max(ended.duration_since(previous));
+    if let Some(bytes) = end.snapshot.allocated_bytes {
+        high = Some(high.map_or(bytes, |prior| prior.max(bytes)));
+    }
+    // Boundaries alone do not establish any transient high-water, even for a
+    // short operation. They remain separate observations in the artifact.
+    if !observed_interior_allocation {
+        high = None;
+    }
+    PhaseDiskV1 {
+        start: start.snapshot,
+        end: end.snapshot,
+        sampled_max_allocated_bytes: high,
+        sampled,
+        observed_max_gap_ms: max_gap.as_secs_f64() * 1_000.0,
+        periodic_probe_wall_ms,
+        method: if cfg!(unix) {
+            "unique_inode_st_blocks_512_plus_statvfs"
+        } else {
+            "unavailable_unsupported_platform"
+        },
+    }
+}
+
 struct PhaseSampler {
     started: Instant,
     cpu_started: CpuSnapshot,
     rss_start: RssPoint,
+    disk_root: Option<PathBuf>,
+    disk_start: Option<DiskPoint>,
     setup_ms: f64,
     stopped: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<AnyResult<(Vec<RssPoint>, f64)>>>,
+    disk_worker: Option<thread::JoinHandle<(Vec<DiskPoint>, f64)>>,
 }
 
 impl PhaseSampler {
-    fn start() -> AnyResult<Self> {
+    fn start(disk_root: Option<&Path>) -> AnyResult<Self> {
         let setup_started = Instant::now();
+        let disk_root = disk_root.map(Path::to_path_buf);
+        // Boundary probes remain owned by setup/teardown even if the periodic
+        // worker is cancelled; their blocked syscall limit is explicit above.
+        let disk_start = disk_root.as_deref().map(|root| disk_point(root, None));
         let rss_start_bytes = current_rss_bytes()?;
         let rss_start = RssPoint {
             at: Instant::now(),
             bytes: rss_start_bytes,
         };
+        let cpu_started = CpuSnapshot::observe()?;
         let stopped = Arc::new(AtomicBool::new(false));
         let worker_stopped = Arc::clone(&stopped);
         let worker = thread::Builder::new()
@@ -984,13 +1166,33 @@ impl PhaseSampler {
                 }
                 Ok((samples, probe_wall_ms))
             })?;
-        let cpu_started = match CpuSnapshot::observe() {
-            Ok(value) => value,
-            Err(error) => {
-                stopped.store(true, Ordering::Release);
-                worker.thread().unpark();
-                return Err(finish_sampler_start_failure(error, worker.join()));
+        let disk_worker = if let Some(root) = disk_root.clone() {
+            let worker_stopped = Arc::clone(&stopped);
+            match thread::Builder::new()
+                .name("scale-disk-sampler".to_owned())
+                .spawn(move || {
+                    let mut points = Vec::new();
+                    let mut probe_wall_ms = 0.0;
+                    while !worker_stopped.load(Ordering::Acquire) {
+                        thread::park_timeout(PHASE_DISK_INTERVAL);
+                        if worker_stopped.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let started = Instant::now();
+                        points.push(disk_point(&root, Some(&worker_stopped)));
+                        probe_wall_ms += started.elapsed().as_secs_f64() * 1_000.0;
+                    }
+                    (points, probe_wall_ms)
+                }) {
+                Ok(worker) => Some(worker),
+                Err(error) => {
+                    stopped.store(true, Ordering::Release);
+                    worker.thread().unpark();
+                    return Err(finish_sampler_start_failure(error.into(), worker.join()));
+                }
             }
+        } else {
+            None
         };
         let started = Instant::now();
         let setup_ms = setup_started.elapsed().as_secs_f64() * 1_000.0;
@@ -998,9 +1200,12 @@ impl PhaseSampler {
             started,
             cpu_started,
             rss_start,
+            disk_root,
+            disk_start,
             setup_ms,
             stopped,
             worker: Some(worker),
+            disk_worker,
         })
     }
 
@@ -1013,16 +1218,28 @@ impl PhaseSampler {
             anyhow::bail!("scale: RSS sampler worker missing at stop");
         };
         worker.thread().unpark();
-        let (samples, observer_periodic_probe_wall_ms) = worker
-            .join()
-            .map_err(|_| anyhow::anyhow!("scale: RSS sampler thread panicked"))??;
+        let rss_result = worker.join();
+        let disk_result = self.disk_worker.take().map(|worker| {
+            worker.thread().unpark();
+            worker.join()
+        });
+        let (samples, observer_periodic_probe_wall_ms) =
+            rss_result.map_err(|_| anyhow::anyhow!("scale: RSS sampler thread panicked"))??;
+        let (disk_samples, disk_probe_wall_ms) = disk_result
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("scale: disk sampler thread panicked"))?
+            .unwrap_or_default();
+        // The periodic worker is joined before this boundary walk so a phase
+        // never runs two recursive state-root walkers at once.
+        let disk_end = self.disk_root.as_deref().map(|root| disk_point(root, None));
+        let disk_start = self.disk_start.take();
         let rss_end_bytes = current_rss_bytes()?;
         let rss_end = RssPoint {
             at: Instant::now(),
             bytes: rss_end_bytes,
         };
         let cpu = cpu_ended?.elapsed_since(self.cpu_started)?;
-        summarize_phase_resources(
+        let mut resources = summarize_phase_resources(
             self.started,
             ended,
             self.rss_start,
@@ -1032,7 +1249,20 @@ impl PhaseSampler {
             self.setup_ms,
             teardown_started.elapsed().as_secs_f64() * 1_000.0,
             observer_periodic_probe_wall_ms,
-        )
+        )?;
+        if let (Some(_root), Some(start), Some(end)) =
+            (self.disk_root.as_deref(), disk_start, disk_end)
+        {
+            resources.disk = Some(summarize_phase_disk(
+                self.started,
+                ended,
+                start,
+                end,
+                &disk_samples,
+                disk_probe_wall_ms,
+            ));
+        }
+        Ok(resources)
     }
 }
 
@@ -1055,8 +1285,12 @@ fn finish_sampler_start_failure(
 
 impl Drop for PhaseSampler {
     fn drop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
-            self.stopped.store(true, Ordering::Release);
+            worker.thread().unpark();
+            let _joined = worker.join();
+        }
+        if let Some(worker) = self.disk_worker.take() {
             worker.thread().unpark();
             let _joined = worker.join();
         }
@@ -1132,12 +1366,21 @@ fn summarize_phase_resources(
         observer_teardown_ms: teardown_ms,
         observer_periodic_probe_wall_ms: periodic_probe_wall_ms,
         discarded_outside_phase_samples,
+        disk: None,
     })
 }
 
+#[cfg(test)]
 fn observe_phase<T>(work: impl FnOnce() -> AnyResult<T>) -> AnyResult<(T, PhaseResourceV1)> {
-    let sampler =
-        PhaseSampler::start().map_err(|error| stage_or_preserve("resource_observation", error))?;
+    observe_phase_at_root(None, work)
+}
+
+fn observe_phase_at_root<T>(
+    root: Option<&Path>,
+    work: impl FnOnce() -> AnyResult<T>,
+) -> AnyResult<(T, PhaseResourceV1)> {
+    let sampler = PhaseSampler::start(root)
+        .map_err(|error| stage_or_preserve("resource_observation", error))?;
     let measurement = work();
     let observation = sampler
         .stop()
@@ -1572,6 +1815,7 @@ fn measure_scoped_delete_reopen(
     DeleteReopenMeasurementV1,
     BTreeMap<&'static str, PhaseResourceV1>,
 )> {
+    let disk_root = rt.state_root().to_path_buf();
     if file.source_repo_id != "repo0" || file.repo_relative_path != "src/file_0.rs" {
         anyhow::bail!("scale: deletion fixture must be repo0/src/file_0.rs");
     }
@@ -1582,7 +1826,7 @@ fn measure_scoped_delete_reopen(
     let retained_before = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
     require_single_source_file(&retained_before, "repo1", &file.repo_relative_path)?;
 
-    let (delete_seal_ms, delete_resource) = observe_phase(|| {
+    let (delete_seal_ms, delete_resource) = observe_phase_at_root(Some(&disk_root), || {
         let delete_started = Instant::now();
         rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)
             .map_err(|error| ScaleStageError::operation("delete", error))?;
@@ -1591,12 +1835,13 @@ fn measure_scoped_delete_reopen(
             .map_err(|error| ScaleStageError::operation("delete_seal", error))?;
         Ok(elapsed_ms(delete_started))
     })?;
-    let (delete_activation_ms, activation_resource) = observe_phase(|| {
-        let activation_started = Instant::now();
-        rt.activate_last_sealed_generation()
-            .map_err(|error| ScaleStageError::operation("delete_activate", error))?;
-        Ok(elapsed_ms(activation_started))
-    })?;
+    let (delete_activation_ms, activation_resource) =
+        observe_phase_at_root(Some(&disk_root), || {
+            let activation_started = Instant::now();
+            rt.activate_last_sealed_generation()
+                .map_err(|error| ScaleStageError::operation("delete_activate", error))?;
+            Ok(elapsed_ms(activation_started))
+        })?;
     let successor = oracle.without_file("repo0", &file.repo_relative_path)?;
 
     let deleted_after = rt.query_text(TextQuerySyntax::Native, &deleted_token, SCALE_TOP_K);
@@ -1607,14 +1852,15 @@ fn measure_scoped_delete_reopen(
     let _count = validate_scoped_response(&successor, None, &global_after)?;
     verify_scoped_repositories(rt, &successor)?;
 
-    let (same_process_reopen_ms, reopen_resource) = observe_phase(|| {
-        let reopen_started = Instant::now();
-        rt.try_reopen_in_place()
-            .map_err(|error| ScaleStageError::operation("reopen_stop", error))?;
-        rt.start()
-            .map_err(|error| ScaleStageError::operation("reopen_start", error))?;
-        Ok(elapsed_ms(reopen_started))
-    })?;
+    let (same_process_reopen_ms, reopen_resource) =
+        observe_phase_at_root(Some(&disk_root), || {
+            let reopen_started = Instant::now();
+            rt.try_reopen_in_place()
+                .map_err(|error| ScaleStageError::operation("reopen_stop", error))?;
+            rt.start()
+                .map_err(|error| ScaleStageError::operation("reopen_start", error))?;
+            Ok(elapsed_ms(reopen_started))
+        })?;
     let first_query_started = Instant::now();
     let retained_reopened = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
     let reopened_first_query_ms = elapsed_ms(first_query_started);
@@ -1698,6 +1944,7 @@ fn measure_delta(
     rt: &mut E2eRuntime,
     seed: u64,
 ) -> AnyResult<(DeltaMeasurementV1, BTreeMap<&'static str, PhaseResourceV1>)> {
+    let disk_root = rt.state_root().to_path_buf();
     let corpus = generate_corpus(ScaleTier::Small, seed);
     let Some((path, original)) = corpus.first() else {
         return Err(anyhow::anyhow!("scale: the corpus has no file to change"));
@@ -1706,7 +1953,7 @@ fn measure_delta(
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let serving_owner = rt.repo();
-    let (update_ms, update_resource) = observe_phase(|| {
+    let (update_ms, update_resource) = observe_phase_at_root(Some(&disk_root), || {
         let update_started = Instant::now();
         rt.ingest_text(serving_owner.as_str(), path, &changed)?;
         let _generation = rt
@@ -1715,12 +1962,13 @@ fn measure_delta(
         Ok(elapsed_ms(update_started))
     })?;
     let after_build = directory_bytes(rt.state_root())?;
-    let (activation_with_reclaim_ms, activation_resource) = observe_phase(|| {
-        let activation_started = Instant::now();
-        rt.activate_last_sealed_generation()
-            .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
-        Ok(elapsed_ms(activation_started))
-    })?;
+    let (activation_with_reclaim_ms, activation_resource) =
+        observe_phase_at_root(Some(&disk_root), || {
+            let activation_started = Instant::now();
+            rt.activate_last_sealed_generation()
+                .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
+            Ok(elapsed_ms(activation_started))
+        })?;
     let after_activation = directory_bytes(rt.state_root())?;
     let mut phase_resources = BTreeMap::new();
     record_phase(&mut phase_resources, "delta_ingest_seal", update_resource)?;
@@ -1740,8 +1988,9 @@ fn measure_delta(
 fn measure_noop(
     rt: &mut E2eRuntime,
 ) -> AnyResult<(NoOpMeasurementV1, BTreeMap<&'static str, PhaseResourceV1>)> {
+    let disk_root = rt.state_root().to_path_buf();
     let expected_generation = rt.current_generation();
-    let (seal_ms, seal_resource) = observe_phase(|| {
+    let (seal_ms, seal_resource) = observe_phase_at_root(Some(&disk_root), || {
         let started = Instant::now();
         let sealed = rt
             .seal()
@@ -1751,7 +2000,7 @@ fn measure_noop(
         }
         Ok(elapsed_ms(started))
     })?;
-    let (activation_ms, activation_resource) = observe_phase(|| {
+    let (activation_ms, activation_resource) = observe_phase_at_root(Some(&disk_root), || {
         let started = Instant::now();
         rt.activate_last_sealed_generation()
             .map_err(|error| ScaleStageError::operation("noop_activate", error))?;
@@ -1828,13 +2077,14 @@ fn measure_small_tier_with_config(
     let cpu_started =
         CpuSnapshot::observe().map_err(|error| stage_or_preserve("resource_observation", error))?;
     let mut rt = scale_runtime(config).map_err(|error| stage_or_preserve("runtime_boot", error))?;
+    let disk_root = rt.state_root().to_path_buf();
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
 
         let before_build = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?;
         let serving_owner = rt.repo();
-        let (build_ms, build_resource) = observe_phase(|| {
+        let (build_ms, build_resource) = observe_phase_at_root(Some(&disk_root), || {
             let build_started = Instant::now();
             for (path, content) in &corpus {
                 rt.ingest_text(serving_owner.as_str(), path, content)
@@ -1849,7 +2099,7 @@ fn measure_small_tier_with_config(
             .map_err(|error| stage_or_preserve("build_io", error))?
             .saturating_sub(before_build);
 
-        let (activation_ms, activation_resource) = observe_phase(|| {
+        let (activation_ms, activation_resource) = observe_phase_at_root(Some(&disk_root), || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
                 .map_err(|error| ScaleStageError::operation("build_activate", error))?;
@@ -1973,11 +2223,12 @@ fn measure_scoped_delta(
     rt: &mut E2eRuntime,
     file: &ScopedFile,
 ) -> AnyResult<(DeltaMeasurementV1, BTreeMap<&'static str, PhaseResourceV1>)> {
+    let disk_root = rt.state_root().to_path_buf();
     let changed = format!("{}// delta {SCALE_QUERY_TOKEN} touched\n", file.content);
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let serving_owner = rt.repo();
-    let (update_ms, update_resource) = observe_phase(|| {
+    let (update_ms, update_resource) = observe_phase_at_root(Some(&disk_root), || {
         let update_started = Instant::now();
         let _ids = rt.ingest_text_chunks(
             serving_owner.as_str(),
@@ -1995,12 +2246,13 @@ fn measure_scoped_delta(
         Ok(elapsed_ms(update_started))
     })?;
     let after_build = directory_bytes(rt.state_root())?;
-    let (activation_with_reclaim_ms, activation_resource) = observe_phase(|| {
-        let activation_started = Instant::now();
-        rt.activate_last_sealed_generation()
-            .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
-        Ok(elapsed_ms(activation_started))
-    })?;
+    let (activation_with_reclaim_ms, activation_resource) =
+        observe_phase_at_root(Some(&disk_root), || {
+            let activation_started = Instant::now();
+            rt.activate_last_sealed_generation()
+                .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
+            Ok(elapsed_ms(activation_started))
+        })?;
     let after_activation = directory_bytes(rt.state_root())?;
     let mut phase_resources = BTreeMap::new();
     record_phase(&mut phase_resources, "delta_ingest_seal", update_resource)?;
@@ -2070,6 +2322,7 @@ pub fn measure_tier_with_runtime_config(
     let cpu_started =
         CpuSnapshot::observe().map_err(|error| stage_or_preserve("resource_observation", error))?;
     let mut rt = scale_runtime(config).map_err(|error| stage_or_preserve("runtime_boot", error))?;
+    let disk_root = rt.state_root().to_path_buf();
     let measurement = (|| -> AnyResult<TierMeasurement> {
         let model_revision = model_revision_of(rt.embedder_profile());
         let before_build = directory_bytes(rt.state_root())
@@ -2090,7 +2343,7 @@ pub fn measure_tier_with_runtime_config(
             .zip(&chunks)
             .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
             .collect::<Vec<_>>();
-        let (ingest_ms, ingest_resource) = observe_phase(|| {
+        let (ingest_ms, ingest_resource) = observe_phase_at_root(Some(&disk_root), || {
             let ingest_started = Instant::now();
             let _ids = rt
                 .ingest_text_files_one_batch(&batch_files)
@@ -2100,7 +2353,7 @@ pub fn measure_tier_with_runtime_config(
         let (ingest_decoded_bytes, ingest_wire_bytes) = rt
             .preview_pending_search_corpus_wire_bytes()
             .map_err(ScaleStageError::wire_admission)?;
-        let (seal_ms, seal_resource) = observe_phase(|| {
+        let (seal_ms, seal_resource) = observe_phase_at_root(Some(&disk_root), || {
             let seal_started = Instant::now();
             let _generation = rt
                 .seal()
@@ -2111,7 +2364,7 @@ pub fn measure_tier_with_runtime_config(
         let build_bytes_written = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?
             .saturating_sub(before_build);
-        let (activation_ms, activation_resource) = observe_phase(|| {
+        let (activation_ms, activation_resource) = observe_phase_at_root(Some(&disk_root), || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
                 .map_err(|error| ScaleStageError::operation("build_activate", error))?;
@@ -2444,6 +2697,15 @@ pub fn tier_manifest_json() -> Value {
 /// The measured tier as the artifact's detail: every phase on its own,
 /// named for what measured it.
 fn measurement_json(measurement: &TierMeasurement) -> Value {
+    fn disk_snapshot_json(snapshot: &DiskSnapshotV1) -> Value {
+        json!({
+            "status": if snapshot.unavailable_reason.is_some() { "unavailable" } else { "observed" },
+            "allocated_root_bytes": snapshot.allocated_bytes,
+            "filesystem_free_bytes": snapshot.filesystem_free_bytes,
+            "filesystem_available_bytes": snapshot.filesystem_available_bytes,
+            "unavailable_reason": snapshot.unavailable_reason,
+        })
+    }
     let phase_resources = measurement
         .phase_resources
         .iter()
@@ -2459,6 +2721,7 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
                 "sampled_max_is_true_peak": false,
                 "rss_method": if cfg!(target_os = "linux") { "proc_self_status_vmrss" } else { "ps_rss_kib_self" },
                 "sample_interval_ms": PHASE_RSS_INTERVAL.as_millis(),
+                "disk_sample_interval_ms": PHASE_DISK_INTERVAL.as_millis(),
                 "maximum_allowed_gap_ms": PHASE_RSS_MAX_GAP.as_millis(),
                 "interior_required_after_ms": PHASE_RSS_INTERIOR_REQUIRED_AFTER.as_millis(),
                 "observed_max_gap_ms": observation.observed_max_gap_ms,
@@ -2473,6 +2736,21 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
                 "observer_setup_ms": observation.observer_setup_ms,
                 "observer_teardown_ms": observation.observer_teardown_ms,
                 "observer_periodic_probe_wall_ms": observation.observer_periodic_probe_wall_ms,
+                "disk": observation.disk.as_ref().map(|disk| json!({
+                    "method": disk.method,
+                    "scope": "same state root; unique inode allocated blocks and filesystem statvfs; not physical write I/O; periodic samples can miss peaks and external filesystem users affect free/available bytes",
+                    "start": disk_snapshot_json(&disk.start),
+                    "end": disk_snapshot_json(&disk.end),
+                    "sampled_max_allocated_root_bytes": disk.sampled_max_allocated_bytes,
+                    "sampled_high_water_status": if disk.sampled_max_allocated_bytes.is_some() { "observed" } else { "unavailable_no_interior_allocation_sample" },
+                    "sampled_max_is_true_peak": false,
+                    "observed_max_gap_ms": disk.observed_max_gap_ms,
+                    "periodic_probe_wall_ms": disk.periodic_probe_wall_ms,
+                    "sampled": disk.sampled.iter().map(|sample| json!({
+                        "offset_ms": sample.offset_ms,
+                        "snapshot": disk_snapshot_json(&sample.snapshot),
+                    })).collect::<Vec<_>>(),
+                })),
                 "scope": "same-process harness plus in-process daemon; RSS start and end samples are outside the matching wall-timed operation; sampled max includes both boundaries and interior samples",
             }))
         })
@@ -2493,7 +2771,7 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
             "system_ms": measurement.cpu.map(|cpu| cpu.system_ms),
         },
         "phase_resources": phase_resources,
-        "phase_resources_method": "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, and parent-side RSS probe management; macOS ps child CPU excluded; RSS sampled max includes boundary probes outside the timed operation and is not a true peak; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
+        "phase_resources_method": "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, disk sampler and parent-side probes; macOS ps child CPU excluded; RSS and allocated-root maxima are sampled, not true peaks; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
         "file_count": measurement.file_count,
         "serving_owner_count": 1,
         "source_repo_count": measurement.source_repo_count,
@@ -2736,6 +3014,10 @@ pub fn artifact(
                     (
                         "phase_rss_interval_ms",
                         PHASE_RSS_INTERVAL.as_millis().to_string(),
+                    ),
+                    (
+                        "phase_disk_interval_ms",
+                        PHASE_DISK_INTERVAL.as_millis().to_string(),
                     ),
                     (
                         "phase_rss_max_gap_ms",
@@ -3051,6 +3333,282 @@ mod tests {
                 .is_err(),
             "duplicate returned identity cannot satisfy top 10"
         );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixture carries the five lifecycle steps and fresh rebuild comparison"
+    )]
+    fn small_source_lifecycle_matches_independent_bytes_and_fresh_rebuild() -> AnyResult<()> {
+        use sha2::Digest as _;
+
+        fn source_probe(rt: &mut E2eRuntime, index: u32, content: &str) -> AnyResult<[u8; 32]> {
+            let path = format!("src/file_{index}.rs");
+            let result = rt.query_text(
+                TextQuerySyntax::Native,
+                &file_query_token(0, index),
+                SCALE_TOP_K,
+            );
+            require_single_source_file(&result, "repo0", &path)?;
+            let source = result.candidates[0]
+                .source
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("scale: unique file query has no source"))?;
+            let expected: [u8; 32] = sha2::Sha256::digest(format!("{content}\n").as_bytes()).into();
+            anyhow::ensure!(
+                source.source_sha256 == expected,
+                "source bytes differ from fixture"
+            );
+            Ok(source.source_sha256)
+        }
+
+        fn query_projection(
+            rt: &mut E2eRuntime,
+            oracle: &ScopedOracle,
+        ) -> AnyResult<Vec<(String, String, u32)>> {
+            let result = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
+            validate_scoped_response(oracle, None, &result)?;
+            Ok(result
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    (
+                        candidate.source_repo_id.as_str().to_owned(),
+                        candidate.repo_relative_path.as_str().to_owned(),
+                        candidate.score.to_bits(),
+                    )
+                })
+                .collect())
+        }
+
+        let files = generate_scoped_corpus(ScaleTier::Small, 0x51_4c_43)?;
+        let oracle = ScopedOracle::from_source(&files, ScaleTier::Small)?;
+        let mut live = scale_runtime(ScaleRuntimeConfig::default())?;
+        let chunks = files
+            .iter()
+            .map(|file| {
+                [E2eTextChunkSpec {
+                    content: &file.content,
+                    start_line: 1,
+                    end_line: 2,
+                    source_repo_id: Some(&file.source_repo_id),
+                }]
+            })
+            .collect::<Vec<_>>();
+        let batch = files
+            .iter()
+            .zip(&chunks)
+            .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
+            .collect::<Vec<_>>();
+        let _ids = live.ingest_text_files_one_batch(&batch)?;
+        let _full_generation = live.seal()?;
+        live.activate_last_sealed_generation()?;
+        verify_scoped_repositories(&mut live, &oracle)?;
+        for (index, file) in files.iter().enumerate() {
+            let _hash = source_probe(&mut live, u32::try_from(index)?, &file.content)?;
+        }
+
+        let changed = format!("{}// delta {SCALE_QUERY_TOKEN} touched\n", files[0].content);
+        let _ids = live.ingest_text_chunks(
+            "repo0",
+            &files[0].repo_relative_path,
+            &[E2eTextChunkSpec {
+                content: &changed,
+                start_line: 1,
+                end_line: 2,
+                source_repo_id: Some("repo0"),
+            }],
+        )?;
+        let _delta_generation = live.seal()?;
+        live.activate_last_sealed_generation()?;
+        let _changed_hash = source_probe(&mut live, 0, &changed)?;
+        for (index, file) in files.iter().enumerate().skip(1) {
+            let _hash = source_probe(&mut live, u32::try_from(index)?, &file.content)?;
+        }
+
+        let before_noop = query_projection(&mut live, &oracle)?;
+        let _noop_generation = live.seal()?;
+        live.activate_last_sealed_generation()?;
+        anyhow::ensure!(
+            query_projection(&mut live, &oracle)? == before_noop,
+            "no-op changed source-ranked rows"
+        );
+        let _hash = source_probe(&mut live, 0, &changed)?;
+
+        live.delete_chunk_for_source_file("repo0", &files[0].repo_relative_path)?;
+        let _delete_generation = live.seal()?;
+        live.activate_last_sealed_generation()?;
+        let successor = oracle.without_file("repo0", &files[0].repo_relative_path)?;
+        let deleted = live.query_text(
+            TextQuerySyntax::Native,
+            &file_query_token(0, 0),
+            SCALE_TOP_K,
+        );
+        require_no_source_file(&deleted)?;
+        let final_rows = query_projection(&mut live, &successor)?;
+        verify_scoped_repositories(&mut live, &successor)?;
+        live.try_reopen_in_place()?;
+        live.start()?;
+        anyhow::ensure!(
+            query_projection(&mut live, &successor)? == final_rows,
+            "reopen changed source-ranked rows"
+        );
+        let deleted_reopened = live.query_text(
+            TextQuerySyntax::Native,
+            &file_query_token(0, 0),
+            SCALE_TOP_K,
+        );
+        require_no_source_file(&deleted_reopened)?;
+
+        let mut fresh = scale_runtime(ScaleRuntimeConfig::default())?;
+        for file in files.iter().skip(1) {
+            let _ids = fresh.ingest_text_chunks(
+                "repo0",
+                &file.repo_relative_path,
+                &[E2eTextChunkSpec {
+                    content: &file.content,
+                    start_line: 1,
+                    end_line: 2,
+                    source_repo_id: Some("repo0"),
+                }],
+            )?;
+        }
+        let _fresh_generation = fresh.seal()?;
+        fresh.activate_last_sealed_generation()?;
+        anyhow::ensure!(
+            query_projection(&mut fresh, &successor)? == final_rows,
+            "fresh rebuild differs from lifecycle rows"
+        );
+        for (index, file) in files.iter().enumerate().skip(1) {
+            let index = u32::try_from(index)?;
+            anyhow::ensure!(
+                source_probe(&mut live, index, &file.content)?
+                    == source_probe(&mut fresh, index, &file.content)?,
+                "fresh rebuild source hash differs"
+            );
+        }
+        live.stop()?;
+        fresh.stop()?;
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "fixed one-megabyte fixture and checked phase offsets"
+    )]
+    fn disk_samples_report_observed_high_water_and_unavailable_without_inference() -> AnyResult<()>
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let root = tempfile::tempdir()?;
+        let file = root.path().join("source.bin");
+        fs::write(&file, vec![7_u8; 1024 * 1024])?;
+        let first = disk_snapshot_result(root.path(), None)?;
+        assert!(first.allocated_bytes.is_some_and(|bytes| bytes > 0));
+        assert!(first.filesystem_free_bytes.is_some());
+        assert!(first.filesystem_available_bytes.is_some());
+        let unavailable = disk_point(&root.path().join("absent"), None).snapshot;
+        assert!(unavailable.allocated_bytes.is_none());
+        assert!(unavailable.unavailable_reason.is_some());
+        let stopped = AtomicBool::new(true);
+        let cancelled = disk_point(root.path(), Some(&stopped)).snapshot;
+        assert!(cancelled.allocated_bytes.is_none());
+        assert!(cancelled.filesystem_free_bytes.is_none());
+        assert!(cancelled.filesystem_available_bytes.is_none());
+        assert!(
+            cancelled
+                .unavailable_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("disk_probe_cancelled"))
+        );
+        let checks = std::cell::Cell::new(0_u32);
+        let cancelled_inside_walk = allocated_root_bytes_with_cancel(root.path(), || {
+            let next = checks.get().saturating_add(1);
+            checks.set(next);
+            next >= 3
+        });
+        let cancellation_error = cancelled_inside_walk
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("entry-boundary cancellation did not stop walk"))?;
+        assert!(
+            cancellation_error
+                .to_string()
+                .contains("disk_probe_cancelled")
+        );
+        assert!(checks.get() >= 3, "walker did not reach an entry boundary");
+        let before_link = first
+            .allocated_bytes
+            .ok_or_else(|| anyhow::anyhow!("allocated blocks absent"))?;
+        fs::hard_link(&file, root.path().join("second-name.bin"))?;
+        let after_link = allocated_root_bytes_with_cancel(root.path(), || false)?;
+        let file_allocation = fs::metadata(&file)?
+            .blocks()
+            .checked_mul(512)
+            .ok_or_else(|| anyhow::anyhow!("file allocation overflow"))?;
+        if file_allocation > 0 {
+            assert!(
+                after_link.saturating_sub(before_link) < file_allocation,
+                "hard link must not count the source file allocation twice"
+            );
+        }
+
+        let base = Instant::now();
+        let observed = |bytes| DiskSnapshotV1 {
+            allocated_bytes: Some(bytes),
+            filesystem_free_bytes: Some(10_000),
+            filesystem_available_bytes: Some(8_000),
+            unavailable_reason: None,
+        };
+        let phase = summarize_phase_disk(
+            base + Duration::from_millis(10),
+            base + Duration::from_millis(300),
+            DiskPoint {
+                at: base,
+                snapshot: observed(100),
+            },
+            DiskPoint {
+                at: base + Duration::from_millis(310),
+                snapshot: observed(80),
+            },
+            &[
+                DiskPoint {
+                    at: base + Duration::from_millis(100),
+                    snapshot: observed(200),
+                },
+                DiskPoint {
+                    at: base + Duration::from_millis(200),
+                    snapshot: DiskSnapshotV1 {
+                        allocated_bytes: None,
+                        filesystem_free_bytes: None,
+                        filesystem_available_bytes: None,
+                        unavailable_reason: Some("probe_unavailable: raced rename".to_owned()),
+                    },
+                },
+            ],
+            2.0,
+        );
+        assert_eq!(phase.sampled_max_allocated_bytes, Some(200));
+        assert_eq!(phase.sampled.len(), 2);
+        assert_eq!(phase.sampled[1].snapshot.allocated_bytes, None);
+        assert!(phase.sampled[1].snapshot.unavailable_reason.is_some());
+        let no_interior = summarize_phase_disk(
+            base + Duration::from_millis(10),
+            base + Duration::from_millis(300),
+            DiskPoint {
+                at: base,
+                snapshot: observed(100),
+            },
+            DiskPoint {
+                at: base + Duration::from_millis(310),
+                snapshot: observed(80),
+            },
+            &[],
+            0.0,
+        );
+        assert_eq!(no_interior.sampled_max_allocated_bytes, None);
+        Ok(())
     }
 
     #[test]
@@ -3727,6 +4285,7 @@ mod tests {
             observer_teardown_ms: 2.0,
             observer_periodic_probe_wall_ms: 3.0,
             discarded_outside_phase_samples: 0,
+            disk: None,
         };
         TierMeasurement {
             client_request_timeout_ms: 30_000,
@@ -3880,7 +4439,7 @@ mod tests {
         );
         assert_eq!(
             tier["phase_resources_method"],
-            "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, and parent-side RSS probe management; macOS ps child CPU excluded; RSS sampled max includes boundary probes outside the timed operation and is not a true peak; observer setup and teardown are outside operation wall timers; physical write I/O is not measured"
+            "RUSAGE_SELF phase CPU includes harness, in-process daemon, RSS sampler thread, disk sampler and parent-side probes; macOS ps child CPU excluded; RSS and allocated-root maxima are sampled, not true peaks; observer setup and teardown are outside operation wall timers; physical write I/O is not measured"
         );
         assert_eq!(
             tier["phase_resources"]["full_ingest_seal"]["interior_samples"],
