@@ -26,6 +26,7 @@
 - ready 저장소 하나의 성공은 required8/12 전체 matrix 성공이 아니다. 개별 실행 driver의 required ledger에서 미선택 셀은 `NOT_RUN`으로 유지한다.
 - provider quota 응답의 재개 시각은2026-10-04 23:40 KST다. 무응답 pair를 grade/no-answer로 채우지 않는다. AI 실제 판단과 human provenance를 구분한다.
 - native/Gin/phase 진단과 Darwin/hash-dev owner proof를 독립 gold·learned quality·속도·Linux release qualification으로 승격하지 않는다.
+- current 문서 점검 `VERIFIED`:29 ticket files가 INDEX/WAVES에 모두 나타나고1177 relative links가 실제 대상에 연결되며 빈 section heading은 없었다. `git diff --check`도 exit0이다. 문서 점검을 제품 실행 결과로 합산하지 않는다.
 
 ## 중앙 실행의 배치 규칙
 

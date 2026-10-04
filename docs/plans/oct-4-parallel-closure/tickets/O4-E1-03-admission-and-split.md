@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | Django/TypeORM suite·review receipt 및 source107 bat fresh admission `VERIFIED`; 나머지 ready7 admission 중앙 발행 진행 중. 전체 cohort qualification 미완료 |
+| 실행 상태 | Django/TypeORM suite·review receipt 및 source107 bat/cli fresh admission `VERIFIED`; 다른 ready admission 중앙 발행 진행 중, Nushell 추가 source-bound 검증. 전체 cohort qualification 미완료 |
 | 선행 결과 | [O4-E1-02](O4-E1-02-supplemental-labels.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -31,6 +31,8 @@
 - `VERIFIED`: 먼저 발행된 `bat/bat/result.json`은20 tasks/358 file judgments, source107, stale-source negative control1, qualified/human provenance false다. canonical suite/pack/review/license/split/model/environment 및 actual Contract Python/Rust/SDK3 receipts를 소비했다. 기존 local AI benchmark ingestion/internal metrics license scope를 human/legal 승인으로 승격하지 않는다.
 - isolated issuer의 host profiles는 저장소별 profile_id 때문에 bytes가 다르다. paired spec은 해당 issuer의 host-profile path/hash를 사용하고 canonical admission 및 current host fingerprint를 다시 검사한다. 공통 profile로 덮어써 hash mismatch를 무시하지 않는다.
 - 다른7 issuer 결과가 실제로 발행되기 전에는 ready/PASS로 합성하지 않는다. 준비된 저장소별로 W4에 진입하고 전체8 또는 C3 240 completion은 별도다.
+- `VERIFIED`: 후속 `cli/cli/result.json`은20 tasks/519 judgments,source107,stale-source negative control1이며 qualified/human provenance false다. 다른6개가 완료되기 전에는 전체 issuer exit0을 주장하지 않는다.
+- first-eight에서 제외된 Nushell도 현재 source/검수/split 입력을 재조사했다. 20 tasks/504 judgments·1947-file manifest와 existing receipts가 있으며, current forms/validation 결속과 과거 raw execution provenance를 구별한다. 별도 `/tmp/quanta-e1-current-admission-isolated-v3-20261004.py --input /tmp/qi-e1-nine-actual-proof-1071692b-20261004-v2.json --output-parent /Users/songmin/Documents/code-new/qi-e1-nushell-admission-20261004-v1 --selection nushell`의 canonical current issuance는 진행 중이다. input 존재나 static SHA 확인을 admission PASS로 표시하지 않는다.
 
 ## 착수 입력과 후속 발행
 
