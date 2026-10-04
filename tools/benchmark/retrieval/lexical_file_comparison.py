@@ -31,7 +31,8 @@ from tools.benchmark.retrieval.evaluator import (
 )
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
 from tools.benchmark.retrieval.query_plan import (
-    CODE_SEARCH_FILE_POLICIES,
+    FILE_PAIR_POLICIES,
+    NATURAL_LANGUAGE_FILE_SEARCH,
     QUANTA_EVALUATION_POLICIES,
     execution_profile,
 )
@@ -87,8 +88,8 @@ def _file_policy_from_lock(lock: dict) -> str:
     profiles = lock.get("execution_profiles")
     quanta = profiles.get("quanta") if isinstance(profiles, dict) else None
     policy = quanta.get("policy") if isinstance(quanta, dict) else None
-    if policy not in CODE_SEARCH_FILE_POLICIES:
-        raise ValueError("current file pair requires a code-search file policy")
+    if policy not in FILE_PAIR_POLICIES:
+        raise ValueError("current file pair requires a supported file policy")
     return policy
 
 
@@ -205,7 +206,7 @@ def _tasks(
     suite: dict,
     pack: dict,
     *,
-    file_policy: str = "code_search_file",
+    file_policy: str | None = None,
     allow_single_lexical: bool = False,
 ) -> dict[str, tuple[str, list[str]]]:
     if pack.get("suite_commitment_sha256") != digest(canonical(suite)):
@@ -251,6 +252,20 @@ def _tasks(
     if any(not isinstance(task, dict) for task in suite_tasks):
         raise ValueError("malformed suite task")
     declared = [task.get("evaluation_contract") for task in suite_tasks]
+    if file_policy is None:
+        # Native external products use the declared task mode, never query shape.
+        # Explicit typo/component requests still require their dedicated caller.
+        file_policy = (
+            "natural_language_file"
+            if all(
+                isinstance(value, dict)
+                and value.get("request_mode") == NATURAL_LANGUAGE_FILE_SEARCH
+                for value in declared
+            )
+            else "code_search_file"
+        )
+    if file_policy == "natural_language_file" and any(value is None for value in declared):
+        raise ValueError("natural-language file policy requires explicit evaluation contracts")
     if any(value is not None for value in declared):
         if any(
             not isinstance(value, dict)
@@ -1125,7 +1140,9 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
     result = {
         "status": "diagnostic_unqualified",
         "query_form": (
-            "code_search_typo_identifier_v1"
+            "natural_language_file_v1"
+            if file_policy == "natural_language_file"
+            else "code_search_typo_identifier_v1"
             if file_policy == "code_search_typo_file"
             else "code_search_atoms_v1"
         )

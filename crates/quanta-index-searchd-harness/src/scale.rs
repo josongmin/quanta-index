@@ -907,13 +907,12 @@ impl CpuSnapshot {
 }
 
 fn scale_runtime(config: ScaleRuntimeConfig) -> AnyResult<E2eRuntime> {
-    let runtime = match config.client_timeout {
-        Some(timeout) => {
-            Ok(E2eRuntime::boot_with_client_request_timeout(timeout)?
-                .with_history_max_generations(2))
-        }
-        None => E2eRuntime::boot_with_history_max_generations(2),
-    }?;
+    let runtime =
+        match config.client_timeout {
+            Some(timeout) => Ok(E2eRuntime::boot_with_client_request_timeout(timeout)?
+                .with_history_max_generations(2)),
+            None => E2eRuntime::boot_with_history_max_generations(2),
+        }?;
     Ok(runtime.with_history_max_bytes(config.effective_history_max_bytes()?))
 }
 
@@ -1219,10 +1218,13 @@ fn measure_scoped_delete_reopen(
     let delete_started = Instant::now();
     rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)
         .map_err(|error| ScaleStageError::operation("delete", error))?;
-    let _generation = rt.seal().map_err(|error| ScaleStageError::operation("delete_seal", error))?;
+    let _generation = rt
+        .seal()
+        .map_err(|error| ScaleStageError::operation("delete_seal", error))?;
     let delete_seal_ms = elapsed_ms(delete_started);
     let activation_started = Instant::now();
-    rt.activate_last_sealed_generation().map_err(|error| ScaleStageError::operation("delete_activate", error))?;
+    rt.activate_last_sealed_generation()
+        .map_err(|error| ScaleStageError::operation("delete_activate", error))?;
     let delete_activation_ms = elapsed_ms(activation_started);
     let successor = oracle.without_file("repo0", &file.repo_relative_path)?;
 
@@ -1235,8 +1237,10 @@ fn measure_scoped_delete_reopen(
     verify_scoped_repositories(rt, &successor)?;
 
     let reopen_started = Instant::now();
-    rt.try_reopen_in_place().map_err(|error| ScaleStageError::operation("reopen_stop", error))?;
-    rt.start().map_err(|error| ScaleStageError::operation("reopen_start", error))?;
+    rt.try_reopen_in_place()
+        .map_err(|error| ScaleStageError::operation("reopen_stop", error))?;
+    rt.start()
+        .map_err(|error| ScaleStageError::operation("reopen_start", error))?;
     let same_process_reopen_ms = elapsed_ms(reopen_started);
     let first_query_started = Instant::now();
     let retained_reopened = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
@@ -1321,11 +1325,14 @@ fn measure_delta(rt: &mut E2eRuntime, seed: u64) -> AnyResult<DeltaMeasurementV1
     let update_started = Instant::now();
     let serving_owner = rt.repo();
     rt.ingest_text(serving_owner.as_str(), path, &changed)?;
-    let _generation = rt.seal().map_err(|error| ScaleStageError::operation("delta_seal", error))?;
+    let _generation = rt
+        .seal()
+        .map_err(|error| ScaleStageError::operation("delta_seal", error))?;
     let update_ms = elapsed_ms(update_started);
     let after_build = directory_bytes(rt.state_root())?;
     let activation_started = Instant::now();
-    rt.activate_last_sealed_generation().map_err(|error| ScaleStageError::operation("delta_activate", error))?;
+    rt.activate_last_sealed_generation()
+        .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
     let activation_with_reclaim_ms = elapsed_ms(activation_started);
     let after_activation = directory_bytes(rt.state_root())?;
     Ok(DeltaMeasurementV1 {
@@ -1351,7 +1358,10 @@ pub fn measure_small_tier(seed: u64) -> AnyResult<TierMeasurement> {
     measure_small_tier_with_config(seed, ScaleRuntimeConfig::default())
 }
 
-fn measure_small_tier_with_config(seed: u64, config: ScaleRuntimeConfig) -> AnyResult<TierMeasurement> {
+fn measure_small_tier_with_config(
+    seed: u64,
+    config: ScaleRuntimeConfig,
+) -> AnyResult<TierMeasurement> {
     let effective_timeout_ms = config.effective_timeout_ms()?;
     let effective_history_max_bytes = config.effective_history_max_bytes()?;
     let corpus = generate_corpus(ScaleTier::Small, seed);
@@ -1376,12 +1386,15 @@ fn measure_small_tier_with_config(seed: u64, config: ScaleRuntimeConfig) -> AnyR
         for (path, content) in &corpus {
             rt.ingest_text(serving_owner.as_str(), path, content)?;
         }
-        let _generation = rt.seal().map_err(|error| ScaleStageError::operation("build_seal", error))?;
+        let _generation = rt
+            .seal()
+            .map_err(|error| ScaleStageError::operation("build_seal", error))?;
         let build_ms = elapsed_ms(build_started);
         let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
 
         let activation_started = Instant::now();
-        rt.activate_last_sealed_generation().map_err(|error| ScaleStageError::operation("build_activate", error))?;
+        rt.activate_last_sealed_generation()
+            .map_err(|error| ScaleStageError::operation("build_activate", error))?;
         let activation_ms = elapsed_ms(activation_started);
 
         let scrape_before_first = rt.metrics_snapshot()?;
@@ -1439,7 +1452,9 @@ fn measure_small_tier_with_config(seed: u64, config: ScaleRuntimeConfig) -> AnyR
             result_count,
             model_revision,
             client_request_timeout_ms: effective_timeout_ms,
-            requested_client_request_timeout_ms: config.client_timeout.map(|_| effective_timeout_ms),
+            requested_client_request_timeout_ms: config
+                .client_timeout
+                .map(|_| effective_timeout_ms),
             history_max_bytes: effective_history_max_bytes,
             requested_history_max_bytes: config.history_max_bytes,
             cpu: None,
@@ -1467,11 +1482,14 @@ fn measure_scoped_delta(rt: &mut E2eRuntime, file: &ScopedFile) -> AnyResult<Del
             source_repo_id: Some(&file.source_repo_id),
         }],
     )?;
-    let _generation = rt.seal().map_err(|error| ScaleStageError::operation("delta_seal", error))?;
+    let _generation = rt
+        .seal()
+        .map_err(|error| ScaleStageError::operation("delta_seal", error))?;
     let update_ms = elapsed_ms(update_started);
     let after_build = directory_bytes(rt.state_root())?;
     let activation_started = Instant::now();
-    rt.activate_last_sealed_generation().map_err(|error| ScaleStageError::operation("delta_activate", error))?;
+    rt.activate_last_sealed_generation()
+        .map_err(|error| ScaleStageError::operation("delta_activate", error))?;
     let activation_with_reclaim_ms = elapsed_ms(activation_started);
     let after_activation = directory_bytes(rt.state_root())?;
     Ok(DeltaMeasurementV1 {
@@ -1497,7 +1515,14 @@ pub fn measure_tier_with_client_timeout(
     seed: u64,
     client_timeout: Option<Duration>,
 ) -> AnyResult<TierMeasurement> {
-    measure_tier_with_runtime_config(tier, seed, ScaleRuntimeConfig { client_timeout, history_max_bytes: None })
+    measure_tier_with_runtime_config(
+        tier,
+        seed,
+        ScaleRuntimeConfig {
+            client_timeout,
+            history_max_bytes: None,
+        },
+    )
 }
 
 pub fn measure_tier_with_runtime_config(
@@ -1551,11 +1576,14 @@ pub fn measure_tier_with_runtime_config(
             .preview_pending_search_corpus_wire_bytes()
             .map_err(ScaleStageError::wire_admission)?;
         let seal_started = Instant::now();
-        let _generation = rt.seal().map_err(|error| ScaleStageError::operation("build_seal", error))?;
+        let _generation = rt
+            .seal()
+            .map_err(|error| ScaleStageError::operation("build_seal", error))?;
         let build_ms = ingest_ms + elapsed_ms(seal_started);
         let build_bytes_written = directory_bytes(rt.state_root())?.saturating_sub(before_build);
         let activation_started = Instant::now();
-        rt.activate_last_sealed_generation().map_err(|error| ScaleStageError::operation("build_activate", error))?;
+        rt.activate_last_sealed_generation()
+            .map_err(|error| ScaleStageError::operation("build_activate", error))?;
         let activation_ms = elapsed_ms(activation_started);
 
         let scrape_before_first = rt.metrics_snapshot()?;
@@ -1624,7 +1652,9 @@ pub fn measure_tier_with_runtime_config(
             result_count,
             model_revision,
             client_request_timeout_ms: effective_timeout_ms,
-            requested_client_request_timeout_ms: config.client_timeout.map(|_| effective_timeout_ms),
+            requested_client_request_timeout_ms: config
+                .client_timeout
+                .map(|_| effective_timeout_ms),
             history_max_bytes: effective_history_max_bytes,
             requested_history_max_bytes: config.history_max_bytes,
             cpu: None,
@@ -1988,13 +2018,22 @@ pub fn artifact(
                     ("top_k", SCALE_TOP_K.to_string()),
                     ("warm_query_samples", WARM_QUERY_SAMPLES.to_string()),
                     ("history_max_generations", "2".to_string()),
-                    ("history_max_bytes", measurement.history_max_bytes.to_string()),
-                    ("requested_history_max_bytes", format!("{:?}", measurement.requested_history_max_bytes)),
+                    (
+                        "history_max_bytes",
+                        measurement.history_max_bytes.to_string(),
+                    ),
+                    (
+                        "requested_history_max_bytes",
+                        format!("{:?}", measurement.requested_history_max_bytes),
+                    ),
                     (
                         "client_request_timeout_ms",
                         measurement.client_request_timeout_ms.to_string(),
                     ),
-                    ("requested_client_request_timeout_ms", format!("{:?}", measurement.requested_client_request_timeout_ms)),
+                    (
+                        "requested_client_request_timeout_ms",
+                        format!("{:?}", measurement.requested_client_request_timeout_ms),
+                    ),
                 ],
             ),
             model_revision: measurement.model_revision.clone(),
@@ -2093,8 +2132,30 @@ mod tests {
         assert_eq!(execution["history_max_bytes"], 268_435_456);
         assert_eq!(execution["requested_history_max_bytes"], 268_435_456);
         for invalid in [0, MAX_SCALE_HISTORY_MAX_BYTES + 1] {
-            assert!(ScaleRuntimeConfig { history_max_bytes: Some(invalid), ..explicit }.execution_json().is_err());
+            assert!(
+                ScaleRuntimeConfig {
+                    history_max_bytes: Some(invalid),
+                    ..explicit
+                }
+                .execution_json()
+                .is_err()
+            );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_history_budget_reaches_the_daemon_seal() -> AnyResult<()> {
+        let mut runtime = scale_runtime(ScaleRuntimeConfig {
+            client_timeout: None,
+            history_max_bytes: Some(1),
+        })?;
+        let owner = runtime.repo();
+        runtime.ingest_text(owner.as_str(), "source.rs", "fn budget_fixture() {}\n")?;
+        let error = runtime.seal().expect_err("one byte cannot retain a lexical generation");
+        let message = format!("{error:#}");
+        runtime.stop()?;
+        assert!(message.contains("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED"), "{message}");
         Ok(())
     }
 
@@ -2376,9 +2437,11 @@ mod tests {
         assert_eq!(failed["status"], "failed");
         assert_eq!(failed["failure"]["stage"], "build_seal");
         assert!(failed["failure"]["limit"].is_null());
-        assert!(failed["failure"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED")));
+        assert!(
+            failed["failure"]["message"].as_str().is_some_and(
+                |message| message.contains("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED")
+            )
+        );
         Ok(())
     }
 
@@ -2785,7 +2848,10 @@ mod tests {
             .expect("observable")
             .to_json()
             .expect("serializes");
-        assert_ne!(value["provenance"]["config_digest"], changed["provenance"]["config_digest"]);
+        assert_ne!(
+            value["provenance"]["config_digest"],
+            changed["provenance"]["config_digest"]
+        );
         let mut missing_cpu = sample_measurement();
         missing_cpu.cpu = None;
         assert!(artifact(&missing_cpu, head, host).is_err());

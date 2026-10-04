@@ -23,8 +23,8 @@ use std::time::Duration;
 use anyhow::Result as AnyResult;
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::scale::{
-    ScaleRuntimeConfig, ScaleTier, TierMeasurement, measure_tier_with_runtime_config, source_binding_for_failure,
-    write_artifacts, write_refusal_artifact_with_context,
+    ScaleRuntimeConfig, ScaleTier, TierMeasurement, measure_tier_with_runtime_config,
+    source_binding_for_failure, write_artifacts, write_refusal_artifact_with_context,
 };
 
 /// Deterministic default seed so the rail is reproducible run-to-run unless an
@@ -50,8 +50,11 @@ fn parse_client_timeout_ms(raw: &str) -> AnyResult<u64> {
 
 fn parse_history_max_bytes(raw: &str) -> AnyResult<u64> {
     let parsed = raw.parse::<u64>()?;
-    ScaleRuntimeConfig { history_max_bytes: Some(parsed), client_timeout: None }
-        .effective_history_max_bytes()?;
+    ScaleRuntimeConfig {
+        history_max_bytes: Some(parsed),
+        client_timeout: None,
+    }
+    .effective_history_max_bytes()?;
     Ok(parsed)
 }
 
@@ -282,7 +285,10 @@ mod tests {
 
     #[test]
     fn history_budget_override_is_explicit_and_bounded() {
-        assert_eq!(parse_history_max_bytes("268435456").expect("256 MiB"), 268_435_456);
+        assert_eq!(
+            parse_history_max_bytes("268435456").expect("256 MiB"),
+            268_435_456
+        );
         for invalid in ["0", "1073741825", "nan", "-1"] {
             assert!(parse_history_max_bytes(invalid).is_err());
         }

@@ -14,6 +14,7 @@ import pytest
 from tools.benchmark.retrieval.evaluator import canonical, digest
 from tools.benchmark.retrieval.lexical_external_oracle import verify_capture_manifest
 from tools.benchmark.retrieval.lexical_file_comparison import (
+    _file_policy_from_lock,
     _file_universe,
     _tasks,
     latency_summary,
@@ -449,6 +450,61 @@ def test_file_pair_task_admission_uses_bound_typo_policy(tmp_path):
     pack["suite_commitment_sha256"] = digest(canonical(suite))
     with pytest.raises(ValueError, match="3..=64 bytes"):
         _tasks(suite, pack, file_policy="code_search_typo_file")
+
+
+def nl_file_inputs(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    suite["routes"] = pack["routes"] = ["lexical", "semble-lexical-file"]
+    for task, blinded in zip(suite["tasks"], pack["tasks"], strict=True):
+        query = f"How does the implementation route incoming requests to the correct handler {task['task_id']}?"
+        task["query"] = blinded["query"] = query
+        task["query_sha256"] = blinded["query_sha256"] = hashlib.sha256(query.encode()).hexdigest()
+        task["query_intent"] = "semantic_intent"
+        task["evaluation_contract"] = {
+            "request_mode": "natural_language_file_search",
+            "gold_unit": "distinct_file",
+            "result_unit": "distinct_file",
+        }
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    return suite, pack
+
+
+def test_native_file_tasks_admit_declared_nl_mode_without_rewriting_queries(tmp_path):
+    suite, pack = nl_file_inputs(tmp_path)
+    expected = _tasks(suite, pack)
+    assert len(expected) == 20
+    assert expected["S00"] == (
+        "How does the implementation route incoming requests to the correct handler S00?",
+        ["src/0.go"],
+    )
+    assert _tasks(suite, pack, file_policy="natural_language_file") == expected
+    with pytest.raises(ValueError, match="native file policy differs"):
+        _tasks(suite, pack, file_policy="code_search_file")
+
+
+@pytest.mark.parametrize("fault", ["missing_mode", "mixed_mode", "chunk_unit"])
+def test_native_nl_file_tasks_refuse_missing_mixed_or_wrong_unit_contract(tmp_path, fault):
+    suite, pack = nl_file_inputs(tmp_path)
+    task = suite["tasks"][0]
+    if fault == "missing_mode":
+        task.pop("evaluation_contract")
+    elif fault == "mixed_mode":
+        task["evaluation_contract"]["request_mode"] = "default_code_search"
+    else:
+        task["evaluation_contract"]["result_unit"] = "chunk"
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    with pytest.raises(ValueError, match="evaluation contract|native file policy"):
+        _tasks(suite, pack, file_policy="natural_language_file")
+
+
+def test_native_file_lock_accepts_nl_file_but_refuses_nl_chunk_policy():
+    assert _file_policy_from_lock(
+        {"execution_profiles": {"quanta": {"policy": "natural_language_file"}}}
+    ) == "natural_language_file"
+    with pytest.raises(ValueError, match="supported file policy"):
+        _file_policy_from_lock(
+            {"execution_profiles": {"quanta": {"policy": "natural_language"}}}
+        )
 
 
 def test_file_diagnostic_accepts_small_repository_cell_but_refuses_empty(tmp_path):
