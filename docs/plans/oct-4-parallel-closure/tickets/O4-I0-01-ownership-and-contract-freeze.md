@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W0 — 소유권·실행 범위 고정](../waves/W0-ownership-and-scope.md) |
-| 실행 상태 | 에픽별 static PREPARE·root 단일 integration/중앙 실행; source107 matching Contract/SDK 및 후속 clean ANN 수리 source27 freeze `VERIFIED`. 새 epoch formal/release 검증과 전체29개 qualification 종료는 미완료 |
+| 실행 상태 | 에픽별 static PREPARE·root 단일 integration/중앙 실행; source107 matching Contract/SDK 및 후속 ANN·OS restart fixture의 clean sourcecef freeze `VERIFIED`. 새 epoch formal/release 검증과 전체29개 qualification 종료는 미완료 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -29,6 +29,12 @@
 
 - clean 관리 작업트리 `/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index`를 exact `27c21d07ca79772da820b9b46fd00071732746d6`으로 생성했다. 최종 lint 수정까지 포함한 semantic6파일 SHA가 root 실제97-test 실행 source와 일치한다. source107 작업트리와 결과는 유지한다.
 - source107→27의 product 변경은 semantic6파일이며 나머지는 ticket 문서다. 새 matching release build/large lifecycle와 필요한 formal source proof는 이 작업트리에서 발행한다. root build/test/model/제품 실행은 같은 host에서 직렬로 진행하며 에픽별 별도 실행을 시작하지 않는다.
+
+### 2026-10-05 OS restart fixture 통합 뒤 sourcecef
+
+- 위 source27 생성은 과거 단계다. 동일 clean 관리 작업트리를 `git checkout --detach cefb28fa0f6c678d9035cf53c5b89d20581c18a7`로 이동했고 exact HEAD 및 empty status를 확인했다. source107 작업트리는 유지했다.
+- source107→cef의 crates 변경은 semantic6파일과 harness의 caller-owned state-root/timeout helper, runtime OS restart fixture2파일이다. fixture는 large4096 source/path/SHA 및 두 OS child의 전체 ranked-page parity를 검사한다. 이 fixture의 실제 실행과 sourcecef formal/release proof는 아직 `NOT_RUN`이다.
+- sourcecef의 harness.rs SHA는 `be5226a6240386640430ad29861808adf9dac03adebeb6a649e6e5a231d154cb`, e2e_process_readiness.rs는 `17008c68a0d4980ea24be2468ee93e5854e2adffc7ca77516eccee493720f67d`다. 앞선 semantic97 proof는 동일 semantic bytes의 owner 결과이며 새 fixture PASS로 합산하지 않는다.
 
 ## 착수 입력
 

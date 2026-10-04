@@ -54,6 +54,13 @@
 
 - `VERIFIED`: source107 small open-loop `--tier small --seed 5715144129723191120 --out-dir /private/tmp/qi-open-small-107-v1/result` actual exit0 및 summary readback을 확인했다. 기본25/50/100/200QPS·10s·32workers·queue256·2s timeout에서 offered/served254/490/1041/1958, 합계3743이며 typed/unexpected/timeout/transport/invalid/drop 모두0이다. 네 구간 unsaturated이며 공유 Darwin/hash-dev 단일 진단이다.
 
+## 2026-10-05 large OS process restart fixture 통합
+
+- clean sourcecef `cefb28fa0f6c678d9035cf53c5b89d20581c18a7`에 `binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page`를 반영했다. 기존 large seed5864059738136528177의16×256 sources를 별도 repo/path 열거·whole source SHA로 대조하고, caller-owned state를 seal/activate/stop한 뒤 실제 binary child 두 개에서 전체4096 rows를 순회한다. 두 process_instance는 달라야 하며 source/pin/count/strict order/candidate ID/score bits는 같아야 한다.
+- `top_k256`의 byte-cut 짧은 페이지를 허용하되 모든 페이지가 nonempty/새 identity여야 하고4096 independent source count 이내에 정확히 종료해야 한다. chunk line bound는 `content.lines().count()`의 fallible u32 변환이다. query terminal ResponseWritten 이벤트는5초 안에 관측해야 한다.
+- `VERIFIED`: 통합 뒤 `just fmt-check` — exit0. 실제 release owner 테스트와 영향 harness/runtime Clippy는 `NOT_RUN`이다.300s request/readiness·256MiB history는 별도 diagnostic profile이며 기본30s·16MiB PASS나 semantic relevance/ANN recall·cold page cache·Linux performance를 뜻하지 않는다.
+- 다음 owner 명령은 root 단일 실행의 `./scripts/cargow --lane release-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked --release -E 'test(=e2e_process_readiness::binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page)' --test-threads 1 --success-output final`이다. source107의 same-process reopen와 기존 single-source OS restart proof를 이 새 large owner의 결과로 합성하지 않는다.
+
 ## 착수 입력과 실제 tier 실행
 
 - I0-02 frozen source/release runner·daemon 외 matching scale/open_loop binaries
@@ -70,6 +77,8 @@
 | [crates/quanta-index-searchd-harness/src/open_loop.rs](../../../../crates/quanta-index-searchd-harness/src/open_loop.rs) | schedule / measure_point / run / artifact | fixed arrivals, offered/success/error accounting, saturation vs correctness failure를 검증한다. | OWNED |
 | [crates/quanta-index-searchd-harness/src/bin/scale_matrix.rs](../../../../crates/quanta-index-searchd-harness/src/bin/scale_matrix.rs) | current CLI/output | fresh external --out-dir와 requested/effective config를 결속하고 refuse/timeout을 pass로 바꾸지 않는다. | OWNED |
 | [crates/quanta-index-searchd-harness/src/bin/open_loop_matrix.rs](../../../../crates/quanta-index-searchd-harness/src/bin/open_loop_matrix.rs) | current CLI/result gates | 동일 resource policy·default/override profile·terminal outcomes를 기록한다. | OWNED |
+| [crates/quanta-index-searchd-harness/src/harness.rs](../../../../crates/quanta-index-searchd-harness/src/harness.rs) | boot_in_with_client_request_timeout | lazy daemon 시작 전에 bounded deadline과 caller-owned persisted root를 설정한다. | SHARED |
+| [crates/quanta-index-searchd-runtime/tests/e2e_process_readiness.rs](../../../../crates/quanta-index-searchd-runtime/tests/e2e_process_readiness.rs) | large binary restart owner | 독립4096 source oracle·전체 페이지·별도 OS child parity를 실제 검증한다. | SHARED |
 | [crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs](../../../../crates/quanta-index-searchd-runtime/tests/e2e_restart_replay_determinism.rs) | runtime_risk_suite restart | same-process reopen와 실제 process restart의 row/source/pin parity를 분리 검증한다. | SHARED |
 | [docs/plans/jun-7-search-product-quality/tickets-wave2/J7Q-03-large-corpus-scale-tiers.md](../../../../docs/plans/jun-7-search-product-quality/tickets-wave2/J7Q-03-large-corpus-scale-tiers.md) | scale verdict | current source별 success/refusal/not_run을 갱신한다. | OWNED |
 | [docs/plans/jun-7-search-product-quality/tickets-wave2/J7Q-04-latency-tail-hardening.md](../../../../docs/plans/jun-7-search-product-quality/tickets-wave2/J7Q-04-latency-tail-hardening.md) | load verdict | offered/executed/failed/saturation과 tail/resource limits를 갱신한다. | OWNED |
