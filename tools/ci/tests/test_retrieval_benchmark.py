@@ -2611,6 +2611,25 @@ def test_bootstrap_is_order_independent_and_rejects_invalid_pairs(monkeypatch):
         ev.mean_ci([0.0, 1.0, float("nan"), 2.0], strata)
 
 
+def test_large_paired_bootstrap_reuses_bounded_numeric_cache():
+    strata = [(f"T{i:04d}-{'x' * 40}", "symbol") for i in range(1196)]
+    deltas = [((i * 7) % 11 - 5) / 10 for i in range(1196)]
+    seed_bytes = ev.canonical(
+        [
+            {"task_id": task_id, "stratum": category, "delta": delta}
+            for (task_id, category), delta in zip(strata, deltas, strict=True)
+        ]
+    )
+    assert 65_536 < len(seed_bytes) <= 262_144
+    ev._bootstrap_bounds.cache_clear()
+    first = ev.mean_ci(deltas, strata)
+    assert ev._bootstrap_bounds.cache_info().misses == 1
+    assert ev.mean_ci(deltas, strata) == first
+    assert ev._bootstrap_bounds.cache_info().hits == 1
+    uncached_lower, uncached_upper = ev._bootstrap_bounds.__wrapped__(seed_bytes, 10_000)
+    assert (first["lower_95"], first["upper_95"]) == (uncached_lower, uncached_upper)
+
+
 def test_qualified_cluster_interval_refuses_correlated_task_pseudoreplication():
     rows = [(f"T{i:02d}", "one-family", "symbol", 0.5 if i % 2 else -0.5) for i in range(20)]
     ci = ev.query_family_cluster_ci(rows, "a" * 40)

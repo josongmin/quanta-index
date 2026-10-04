@@ -2968,8 +2968,10 @@ def mean_ci(
     resamples = 10_000
     # Cache only pure numeric work, never repository/evidence admission. Exact
     # canonical bytes distinguish signed zero, identities, strata and values.
-    # Large inputs bypass retention, bounding the cache to 32 * 64 KiB of keys.
-    bounds = _bootstrap_bounds if len(seed_bytes) <= 65_536 else _bootstrap_bounds.__wrapped__
+    # The 1,196-query diagnostic exceeds 64 KiB and is re-scored by the
+    # independent in-process verdict. Retain only bounded canonical keys;
+    # source/evidence validation is never cached.
+    bounds = _bootstrap_bounds if len(seed_bytes) <= 262_144 else _bootstrap_bounds.__wrapped__
     lower, upper = bounds(seed_bytes, resamples)
     return {
         "sample_count": n,
@@ -2983,7 +2985,7 @@ def mean_ci(
     }
 
 
-@lru_cache(maxsize=32)
+@lru_cache(maxsize=16)
 def _bootstrap_bounds(seed_bytes: bytes, resamples: int) -> tuple[float, float]:
     """Immutable percentile values for an already validated canonical sample."""
     grouped: dict[str, list[float]] = {}
