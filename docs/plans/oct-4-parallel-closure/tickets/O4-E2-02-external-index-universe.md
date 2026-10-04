@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `DATA_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | Sourcegraph fresh producer/batch와 selected fixtures65개 `VERIFIED`; 첫 실제 native capture는 reader 부재로 `FAILED`, owned lifecycle 보완 중 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -13,6 +13,14 @@
 ## 목적
 
 해당 manifest의 모든 source file이 실제 service index에 있고 요청 전후 동일한 index identity였는지 입증한다.
+
+## 2026-10-04 producer와 실제 실행
+
+- existing v1 receipt/verifier에 full V3 path inventory와 bounded native stored-byte reader를 연결했다. 전후 index/runtime/projection/source/control identity를 검사하며 payload hash를 manifest와 대조한다. posting/analyzer equivalence나 성능 qualification을 발행하지 않는다.
+- `--scope-batch`는 같은 release의 distinct repositories에서 `BoundRelease.begin`을 1회 실행하고 cell 전후 complete release bytes를 recheck한다. expensive replay 전에 spec/token/producer/owner bytes를 고정하며 next-cell 변경도 거절한다.
+- `VERIFIED`: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py -q --tb=short -k 'sourcegraph or native_index_scope or native_stored_body or native_worker or native_reader or index_scope_spec or native_scope_cli or scope_batch or native_listener'` — 65 passed / 81 deselected / 36.66s, exit 0. 최초 실행의 cleanup EPERM과 새 fixture의 순서 의존 기대값을 수리한 뒤 결과다.
+- `FAILED`: 실제 bat scope CLI, output `/Users/songmin/Documents/code-new/qi-e2-sg-native-20261004-khoe7ry_/bat`. 6071에 listener가 없었다. 과거 6071은 별도로 띄운 native reader 포트이고 container restart가 이 reader를 재생하지 않았다. 현 6072는 indexserver이며 read endpoint로 치환하지 않는다.
+- amd64 container의 `/proc/PID/exe`가 Rosetta translator임을 실제 확인했다. guest reader binary/mapping과 translator identity를 분리 결속하는 owned start/read/stop lifecycle를 보완 중이다. 전체12repo fresh native scope와 OpenGrok fresh before/after는 `NOT_RUN`이다.
 
 ## 배경과 현재 상태
 

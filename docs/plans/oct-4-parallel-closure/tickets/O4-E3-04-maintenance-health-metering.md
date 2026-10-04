@@ -23,7 +23,7 @@
 
 ## 배경과 현재 상태
 
-maintenance.tick은 observe_backend 뒤 refresh_disk_usage를 동기 실행하고 tick 끝에서 heartbeat를 기록한다. heartbeat_fresh/required_backend_fresh는 3cadence를 사용한다. disk walk는 logical regular-file bytes이며 physical allocation/merge high water가 아니다. 실제 slow-walk 실험은 남아 있다.
+변경 전 maintenance.tick은 observe_backend 뒤 refresh_disk_usage를 동기 실행하고 tick 끝에서 heartbeat를 기록했다. heartbeat_fresh/required_backend_fresh는 3cadence를 사용한다. disk walk는 logical regular-file bytes이며 physical allocation/merge high water가 아니다. 현재 구현은 아래 worker 분리와 소유권 수리를 반영했다.
 
 ## 착수 입력
 
