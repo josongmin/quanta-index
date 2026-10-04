@@ -1619,6 +1619,38 @@ use peer_watch::{PeerWatch, PeerWatchOutcome};
 #[cfg(test)]
 use peer_watch::{WatchEvent, WatchObserver};
 
+/// Request-local client timings for one successful one-shot IPC call.
+/// `read_io_ns` is included in `decode_call_ns`; their sum is not a total.
+/// The unallocated part of `total_ns` includes deadline checks and local work.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ClientIpcTimingV1 {
+    pub total_ns: u64,
+    pub encode_ns: u64,
+    pub connect_ns: u64,
+    pub write_ns: u64,
+    pub decode_call_ns: u64,
+    pub read_io_ns: u64,
+}
+
+struct TimedResponseReader<'a, R> {
+    inner: &'a mut R,
+    read_io: Duration,
+}
+
+impl<R: Read> Read for TimedResponseReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let started = Instant::now();
+        let result = self.inner.read(buf);
+        self.read_io = self.read_io.saturating_add(started.elapsed());
+        result
+    }
+}
+
+fn observed_ns(duration: Duration) -> Result<u64, IpcError> {
+    u64::try_from(duration.as_nanos())
+        .map_err(|error| IpcError::Decode(format!("client timing nanoseconds exceed u64: {error}")))
+}
+
 /// One-shot client: open a stream, send `request`, read one response.
 pub fn send_request<RequestEnvelopeT, ResponseEnvelopeT>(
     socket: &Path,
@@ -1629,18 +1661,80 @@ where
     RequestEnvelopeT: serde::Serialize,
     ResponseEnvelopeT: serde::de::DeserializeOwned,
 {
+    send_request_inner(socket, request, io_policy, None)
+}
+
+/// The same one-shot request with opt-in, request-local client attribution.
+/// Failed calls return their original transport error without a successful
+/// observation. Normal callers use [`send_request`] and read no extra clocks.
+pub fn send_request_observed<RequestEnvelopeT, ResponseEnvelopeT>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    io_policy: ClientIoPolicy,
+) -> Result<(ResponseEnvelopeT, ClientIpcTimingV1), IpcError>
+where
+    RequestEnvelopeT: serde::Serialize,
+    ResponseEnvelopeT: serde::de::DeserializeOwned,
+{
+    let mut timing = ClientIpcTimingV1::default();
+    let response = send_request_inner(socket, request, io_policy, Some(&mut timing))?;
+    Ok((response, timing))
+}
+
+fn send_request_inner<RequestEnvelopeT, ResponseEnvelopeT>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    io_policy: ClientIoPolicy,
+    mut timing: Option<&mut ClientIpcTimingV1>,
+) -> Result<ResponseEnvelopeT, IpcError>
+where
+    RequestEnvelopeT: serde::Serialize,
+    ResponseEnvelopeT: serde::de::DeserializeOwned,
+{
+    let total_started = timing.as_ref().map(|_| Instant::now());
     let deadline = io_policy.request_deadline()?;
+    let encode_started = timing.as_ref().map(|_| Instant::now());
     let frame = encode_request(request)?;
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), encode_started) {
+        timing.encode_ns = observed_ns(started.elapsed())?;
+    }
+    let connect_started = timing.as_ref().map(|_| Instant::now());
     let stream = connect_before_deadline(socket, deadline)
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Connect, io_policy))?;
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), connect_started) {
+        timing.connect_ns = observed_ns(started.elapsed())?;
+    }
     let mut stream = DeadlineStream::new(stream, deadline);
+    let write_started = timing.as_ref().map(|_| Instant::now());
     stream
         .write_all(&frame)
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Write, io_policy))?;
-    let response = decode_response::<ResponseEnvelopeT, _>(&mut stream)
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), write_started) {
+        timing.write_ns = observed_ns(started.elapsed())?;
+    }
+    let decode_started = timing.as_ref().map(|_| Instant::now());
+    let mut read_io = Duration::ZERO;
+    let response = if timing.is_some() {
+        let mut reader = TimedResponseReader {
+            inner: &mut stream,
+            read_io: Duration::ZERO,
+        };
+        let result = decode_response::<ResponseEnvelopeT, _>(&mut reader);
+        read_io = reader.read_io;
+        result
+    } else {
+        decode_response::<ResponseEnvelopeT, _>(&mut stream)
+    }
         .map_err(|error| classify_client_decode_error(error, IpcIoOperation::Read, io_policy))?;
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), decode_started) {
+        timing.decode_call_ns = observed_ns(started.elapsed())?;
+        timing.read_io_ns = observed_ns(read_io)?;
+    }
     ensure_deadline_remaining(deadline)
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Read, io_policy))?;
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), total_started) {
+        timing.total_ns = observed_ns(started.elapsed())?;
+    }
     Ok(response)
 }
 

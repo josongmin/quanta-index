@@ -158,7 +158,7 @@ fn code_search_pages_bind_the_overlap_ranking_order() -> TestResult {
     let token = first.next_cursor.clone().ok_or("first page continues")?;
     let opened = dispatcher.cursors()?.open::<LexicalCursor>(&token)?;
     if opened.binding().order
-        != "code_search_file_overlap_score_v1_desc_source_repo_path_line_candidate"
+        != "code_search_file_overlap_score_v2_desc_source_repo_path_line_candidate"
     {
         return Err(format!(
             "unexpected code search cursor order: {}",
@@ -192,22 +192,31 @@ fn code_search_pages_bind_the_overlap_ranking_order() -> TestResult {
         QueryRouteV1::Lexical,
         &RequestBudgetV1::unbounded(),
     )?;
-    let old_context = CursorRequestContextV2 {
-        route: quanta_index_contract::CursorRouteV2::Lexical,
-        pin: &planned.pin,
-        query: &planned.query,
-        constraints: &planned.constraints,
-        order: "code_search_file_score_v1_desc_source_repo_path_line_candidate",
-        cap: 2,
-    };
-    let old_token = dispatcher
-        .cursors()?
-        .mint(&opened.boundary, &old_context, Vec::new())?;
-    request_text.cursor = Some(old_token);
-    let (code, _) =
-        ipc_error_from(dispatcher.dispatch(first_request, &RequestBudgetV1::unbounded()))?;
-    if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch {
-        return Err(format!("old scoring cursor answered {code}").into());
+    for order in [
+        "code_search_file_score_v1_desc_source_repo_path_line_candidate",
+        "code_search_file_overlap_score_v1_desc_source_repo_path_line_candidate",
+    ] {
+        let old_context = CursorRequestContextV2 {
+            route: quanta_index_contract::CursorRouteV2::Lexical,
+            pin: &planned.pin,
+            query: &planned.query,
+            constraints: &planned.constraints,
+            order,
+            cap: 2,
+        };
+        let old_token = dispatcher
+            .cursors()?
+            .mint(&opened.boundary, &old_context, Vec::new())?;
+        let mut stale_request = first_request.clone();
+        let SearchPlaneQueryIpcRequest::Text(stale_text) = &mut stale_request else {
+            return Err("text fixture drifted".into());
+        };
+        stale_text.cursor = Some(old_token);
+        let (code, _) =
+            ipc_error_from(dispatcher.dispatch(stale_request, &RequestBudgetV1::unbounded()))?;
+        if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch {
+            return Err(format!("old scoring cursor answered {code}").into());
+        }
     }
     Ok(())
 }
@@ -229,9 +238,39 @@ fn typo_cursor_uses_its_own_order_and_rejects_exact_reuse() -> TestResult {
     let token = first.next_cursor.ok_or("typo page continues")?;
     let opened = dispatcher.cursors()?.open::<LexicalCursor>(&token)?;
     if opened.binding().order
-        != "code_search_identifier_typo_osa1_v1_desc_source_repo_path_line_candidate"
+        != "code_search_identifier_typo_osa1_declaration_v2_desc_source_repo_path_line_candidate"
     {
         return Err(format!("wrong typo cursor order: {}", opened.binding().order).into());
+    }
+    let SearchPlaneQueryIpcRequest::Text(planning_request) = &request else {
+        return Err("text fixture drifted".into());
+    };
+    let planned = dispatcher.plan_lexical_text_query(
+        planning_request,
+        QueryRouteV1::Lexical,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let old_context = CursorRequestContextV2 {
+        route: quanta_index_contract::CursorRouteV2::Lexical,
+        pin: &planned.pin,
+        query: &planned.query,
+        constraints: &planned.constraints,
+        order: "code_search_identifier_typo_osa1_v1_desc_source_repo_path_line_candidate",
+        cap: 2,
+    };
+    let mut stale_request = request.clone();
+    let SearchPlaneQueryIpcRequest::Text(stale_text) = &mut stale_request else {
+        return Err("text fixture drifted".into());
+    };
+    stale_text.cursor = Some(dispatcher.cursors()?.mint(
+        &opened.boundary,
+        &old_context,
+        Vec::new(),
+    )?);
+    let (code, _) =
+        ipc_error_from(dispatcher.dispatch(stale_request, &RequestBudgetV1::unbounded()))?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::CursorContextMismatch {
+        return Err(format!("old typo ranking cursor answered {code}").into());
     }
     let SearchPlaneQueryIpcRequest::Text(text_request) = &mut request else {
         return Err("text fixture drifted".into());
