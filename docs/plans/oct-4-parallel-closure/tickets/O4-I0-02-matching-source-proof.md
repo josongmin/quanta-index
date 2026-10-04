@@ -12,6 +12,7 @@
 
 ## 2026-10-05 후속 ANN epoch의 현재 검증 경계
 
+- 최종 fixture lint 수리를 포함한 clean source는 `0e6c7e7e9494b63fdb33f4594df059817459d3b1`이다. root-owned 관리 작업트리를 이 HEAD로 이동했고 `e2e_process_readiness.rs` SHA `1afc50f4863d4ed008b75ed5094ea9aef04009952fb1491a2fc6307911600ef9`를 확인했다. 해당 release large OS restart owner 재실행은 시작했으며 완료 전에는 sourcecef의 기존 PASS를 최종 fixture 실행으로 승격하지 않는다.
 - ANN 수리 clean source27의 실제 owner command/result는 [E4-05](O4-E4-05-release-scale-load.md)에 기록했다. 해당 semantic bytes의 lib/vector contract97/97·Clippy all-targets 및 `just fmt-check`가 exit0이었다. 현재 동일 관리 작업트리 `/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index`는 OS restart fixture까지 포함한 clean `cefb28fa0f6c678d9035cf53c5b89d20581c18a7`로 이동했다.
 - 아래 source107 formal Contract/fresh SDK/admission은 source107만 검증한다. 새 semantic epoch의 formal proof·matching release scale와 필요한 affected gates는 아직 `NOT_RUN`이며 과거 hosted CI `[]`도 새 source의 CI로 합성하지 않는다.
 - 새 source27의 `gh run list --commit 27c21d07ca79772da820b9b46fd00071732746d6 --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`도 실제 exit0/`[]`였다. 해당 exact source의 hosted CI는 `NOT_RUN`이다.

@@ -48,6 +48,7 @@ C3 240개 질의의 실제 판단을 완료하고 재사용 가능한 모델 cac
 - Tailscale의 이번 실패 이유는 과거429 failure.json과 달랐다. immutable save가 기존 failure overwrite를 거절하면서 driver가 종료했다. 새 raw/invalid.json과 이전 failure를 모두 유지하며 후속 실행의 terminal/finalization은 새 output root로 분리한다. rubric/source를 조사해 근거를 보완하거나 explicit exclusion을 판정하기 전 unresolved를 resolved로 바꾸지 않는다.
 - reviewer-only v1 preflight도 모델 호출 전에 exit1이었다(`/private/tmp/qi-c3-tailscale-reviewers-20261005-v1/failure.json`). old input/model-input/schema와 prepared objects는 동일했지만 checker가 원본 `plan.canonical`의 끝 LF를 포함하지 않는 `ev.canonical`로 bytes equality를 요구했다. raw와 실패를 보존하고 원본 writer serializer로 exact 비교하는 v2를 별도 준비한다. JSON-only equality로 계약을 완화하지 않는다.
 - `VERIFIED`: `uv run --frozen --extra dev python /private/tmp/qi-c3-tailscale-reviewers-prepare-v2/resume.py --source-root /Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index --output-root /private/tmp/qi-c3-tailscale-reviewers-20261005-v2 tailscale` preflight — exit0. 원본 `plan.canonical`의 exact input/model-input/schema 비교를 유지했고 두 reviewer 각각342 valid pairs를 재생했다. 남은 각각202pairs/10batches는 `NOT_RUN`;20개 complete tasks도 아직0이다. adjudicator는 호출하지 않았으며 label 발행 결과가 아니다.
+- 후속 실제 `--execute tailscale`은 exit1/`FAILED`였다. `reviewer-1/011.retry-2`가 다시 `unresolved pair cannot be issued`로 거절됐다. 새 terminal은 `/private/tmp/qi-c3-tailscale-reviewers-20261005-v2/tailscale/failure.json`에 보존했다. 동일 입력의 맹목적 재시도는 중단하고 frozen task/rubric/source의 근거 보완 또는 명시적 제외가 필요하다. batch의 resolved subset을 발행하지 않았으며 adjudicator도 호출하지 않았다. SQLAlchemy/Zellij의 완료 reviewer와 후속 조정은 이 실패와 별도 scope다.
 
 ## 어떤 파일을 어떻게 수정할지
 
