@@ -271,6 +271,20 @@ verification source; dropping tests or documentation to avoid a dirty-main
 refusal would change provenance, not just speed. Measure each closure stage
 before revising the bound inventory.
 
+The quality matrix now captures the first repository's driver closure once
+and passes that verified closure through the existing `reuse` preflight to
+later repository batches. Each batch still independently verifies all closure
+bytes before promotion, and standalone batch capture still creates a fresh
+closure. A clean `0aeed2aa` two-repository repeat at `/private/tmp/qmt7`
+completed in **72.59 s**; replay passed **2/2** repositories in **12.18 s**.
+Both child closures had the same digest, and all four reports matched the
+earlier `/private/tmp/qmt6` run on suite ID, judgment metrics, no-answer,
+status, quality gate and evaluation contract. In a separate same-commit
+probe, fresh closure capture took **3.33 s** and reuse **0.22 s**, producing
+byte-identical manifests. These are busy-host diagnostics, so the matrix
+wall difference from qmt6's 74.60 s is not a qualified speedup. Focused
+matrix and source-closure controls passed 4/4 and 2/2, respectively.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
