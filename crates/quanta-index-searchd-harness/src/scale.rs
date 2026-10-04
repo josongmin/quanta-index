@@ -36,8 +36,8 @@ use std::io::Read as _;
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -914,6 +914,7 @@ pub struct PhaseResourceV1 {
     pub observation_span_ms: f64,
     pub observer_setup_ms: f64,
     pub observer_teardown_ms: f64,
+    pub observer_periodic_probe_wall_ms: f64,
     pub discarded_outside_phase_samples: usize,
 }
 
@@ -929,7 +930,7 @@ struct PhaseSampler {
     rss_start: RssPoint,
     setup_ms: f64,
     stopped: Arc<AtomicBool>,
-    worker: Option<thread::JoinHandle<AnyResult<Vec<RssPoint>>>>,
+    worker: Option<thread::JoinHandle<AnyResult<(Vec<RssPoint>, f64)>>>,
 }
 
 impl PhaseSampler {
@@ -946,18 +947,21 @@ impl PhaseSampler {
             .name("scale-rss-sampler".to_string())
             .spawn(move || {
                 let mut samples = Vec::new();
+                let mut probe_wall_ms = 0.0;
                 while !worker_stopped.load(Ordering::Acquire) {
                     thread::park_timeout(PHASE_RSS_INTERVAL);
                     if worker_stopped.load(Ordering::Acquire) {
                         break;
                     }
+                    let probe_started = Instant::now();
                     let bytes = current_rss_bytes()?;
+                    probe_wall_ms += probe_started.elapsed().as_secs_f64() * 1_000.0;
                     samples.push(RssPoint {
                         at: Instant::now(),
                         bytes,
                     });
                 }
-                Ok(samples)
+                Ok((samples, probe_wall_ms))
             })?;
         let cpu_started = match CpuSnapshot::observe() {
             Ok(value) => value,
@@ -987,7 +991,7 @@ impl PhaseSampler {
         self.stopped.store(true, Ordering::Release);
         let worker = self.worker.take().expect("phase sampler owns its worker");
         worker.thread().unpark();
-        let samples = worker
+        let (samples, observer_periodic_probe_wall_ms) = worker
             .join()
             .map_err(|_| anyhow::anyhow!("scale: RSS sampler thread panicked"))??;
         let rss_end_bytes = current_rss_bytes()?;
@@ -1005,6 +1009,7 @@ impl PhaseSampler {
             cpu,
             self.setup_ms,
             teardown_started.elapsed().as_secs_f64() * 1_000.0,
+            observer_periodic_probe_wall_ms,
         )
     }
 }
@@ -1028,6 +1033,7 @@ fn summarize_phase_resources(
     cpu: CpuUsageV1,
     setup_ms: f64,
     teardown_ms: f64,
+    periodic_probe_wall_ms: f64,
 ) -> AnyResult<PhaseResourceV1> {
     if ended < started || rss_start.at > started || rss_end.at < ended {
         anyhow::bail!("scale: RSS phase boundary timestamps are invalid");
@@ -1040,7 +1046,7 @@ fn summarize_phase_resources(
     let mut interior_samples = 0;
     let mut discarded_outside_phase_samples = 0;
     for sample in samples {
-        if sample.bytes == 0 || sample.at <= previous {
+        if sample.bytes == 0 || sample.at <= previous || sample.at >= rss_end.at {
             anyhow::bail!("scale: RSS sample is zero or timestamps are not increasing");
         }
         previous = sample.at;
@@ -1061,9 +1067,7 @@ fn summarize_phase_resources(
         }
     }
     max_gap = max_gap.max(rss_end.at.duration_since(previous));
-    if ended.duration_since(started) >= PHASE_RSS_INTERIOR_REQUIRED_AFTER
-        && interior_samples == 0
-    {
+    if ended.duration_since(started) >= PHASE_RSS_INTERIOR_REQUIRED_AFTER && interior_samples == 0 {
         anyhow::bail!("scale: long phase has no interior RSS sample");
     }
     if max_gap > PHASE_RSS_MAX_GAP {
@@ -1079,13 +1083,14 @@ fn summarize_phase_resources(
         observation_span_ms: ended.duration_since(started).as_secs_f64() * 1_000.0,
         observer_setup_ms: setup_ms,
         observer_teardown_ms: teardown_ms,
+        observer_periodic_probe_wall_ms: periodic_probe_wall_ms,
         discarded_outside_phase_samples,
     })
 }
 
 fn observe_phase<T>(work: impl FnOnce() -> AnyResult<T>) -> AnyResult<(T, PhaseResourceV1)> {
-    let sampler = PhaseSampler::start()
-        .map_err(|error| stage_or_preserve("resource_observation", error))?;
+    let sampler =
+        PhaseSampler::start().map_err(|error| stage_or_preserve("resource_observation", error))?;
     let measurement = work();
     let observation = sampler
         .stop()
@@ -1231,7 +1236,11 @@ impl std::fmt::Display for ScaleRuntimeFailure {
                 self.cleanup_context, self.cleanup
             )
         } else {
-            write!(formatter, "scale {} failed: {:#}", self.cleanup_context, self.cleanup)
+            write!(
+                formatter,
+                "scale {} failed: {:#}",
+                self.cleanup_context, self.cleanup
+            )
         }
     }
 }
@@ -1553,12 +1562,15 @@ fn measure_scoped_delete_reopen(
     phase_resources.insert("delete_seal", delete_resource);
     phase_resources.insert("delete_activate", activation_resource);
     phase_resources.insert("same_process_reopen", reopen_resource);
-    Ok((DeleteReopenMeasurementV1 {
-        delete_seal_ms,
-        delete_activation_ms,
-        same_process_reopen_ms,
-        reopened_first_query_ms,
-    }, phase_resources))
+    Ok((
+        DeleteReopenMeasurementV1 {
+            delete_seal_ms,
+            delete_activation_ms,
+            same_process_reopen_ms,
+            reopened_first_query_ms,
+        },
+        phase_resources,
+    ))
 }
 
 /// Open the sealed generation the daemon serves through the lexical
@@ -1647,13 +1659,16 @@ fn measure_delta(
     let mut phase_resources = BTreeMap::new();
     phase_resources.insert("delta_ingest_seal", update_resource);
     phase_resources.insert("delta_activate", activation_resource);
-    Ok((DeltaMeasurementV1 {
-        update_ms,
-        changed_bytes,
-        bytes_written: after_build.saturating_sub(before_build),
-        activation_with_reclaim_ms,
-        reclaimed_bytes: after_build.saturating_sub(after_activation),
-    }, phase_resources))
+    Ok((
+        DeltaMeasurementV1 {
+            update_ms,
+            changed_bytes,
+            bytes_written: after_build.saturating_sub(before_build),
+            activation_with_reclaim_ms,
+            reclaimed_bytes: after_build.saturating_sub(after_activation),
+        },
+        phase_resources,
+    ))
 }
 
 /// Measure the SMALL tier phase by phase.
@@ -1851,13 +1866,16 @@ fn measure_scoped_delta(
     let mut phase_resources = BTreeMap::new();
     phase_resources.insert("delta_ingest_seal", update_resource);
     phase_resources.insert("delta_activate", activation_resource);
-    Ok((DeltaMeasurementV1 {
-        update_ms,
-        changed_bytes,
-        bytes_written: after_build.saturating_sub(before_build),
-        activation_with_reclaim_ms,
-        reclaimed_bytes: after_build.saturating_sub(after_activation),
-    }, phase_resources))
+    Ok((
+        DeltaMeasurementV1 {
+            update_ms,
+            changed_bytes,
+            bytes_written: after_build.saturating_sub(before_build),
+            activation_with_reclaim_ms,
+            reclaimed_bytes: after_build.saturating_sub(after_activation),
+        },
+        phase_resources,
+    ))
 }
 
 /// Measure one declared scale tier.
@@ -2017,8 +2035,9 @@ pub fn measure_tier_with_runtime_config(
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
         verify_scoped_repositories(&mut rt, &oracle)
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
-        let (delete_reopen, delete_resources) = measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)
-            .map_err(|error| stage_or_preserve("delete_reopen", error))?;
+        let (delete_reopen, delete_resources) =
+            measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)
+                .map_err(|error| stage_or_preserve("delete_reopen", error))?;
         let mut phase_resources = delta_resources;
         phase_resources.extend(delete_resources);
         phase_resources.insert("full_ingest", ingest_resource);
@@ -2286,6 +2305,7 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
                 "observation_span_ms": observation.observation_span_ms,
                 "observer_setup_ms": observation.observer_setup_ms,
                 "observer_teardown_ms": observation.observer_teardown_ms,
+                "observer_periodic_probe_wall_ms": observation.observer_periodic_probe_wall_ms,
                 "scope": "same process harness plus in-process daemon; observation envelope surrounds the matching wall-timed operation",
             }))
         })
@@ -2420,15 +2440,35 @@ pub fn artifact(
         anyhow::bail!("scale: measured tier has no process CPU observation");
     }
     let expected_phases: &[&str] = if measurement.tier == ScaleTier::Small {
-        &["full_ingest_seal", "full_activate", "delta_ingest_seal", "delta_activate"]
+        &[
+            "full_ingest_seal",
+            "full_activate",
+            "delta_ingest_seal",
+            "delta_activate",
+        ]
     } else {
         &[
-            "full_ingest", "full_seal", "full_activate", "delta_ingest_seal",
-            "delta_activate", "delete_seal", "delete_activate", "same_process_reopen",
+            "full_ingest",
+            "full_seal",
+            "full_activate",
+            "delta_ingest_seal",
+            "delta_activate",
+            "delete_seal",
+            "delete_activate",
+            "same_process_reopen",
         ]
     };
-    if measurement.phase_resources.keys().copied().collect::<Vec<_>>()
-        != expected_phases.iter().copied().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>()
+    if measurement
+        .phase_resources
+        .keys()
+        .copied()
+        .collect::<Vec<_>>()
+        != expected_phases
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
     {
         anyhow::bail!("scale: measured tier is missing a required phase resource observation");
     }
@@ -2468,9 +2508,23 @@ pub fn artifact(
                     ),
                     ("top_k", SCALE_TOP_K.to_string()),
                     ("warm_query_samples", WARM_QUERY_SAMPLES.to_string()),
-                    ("phase_rss_interval_ms", PHASE_RSS_INTERVAL.as_millis().to_string()),
-                    ("phase_rss_max_gap_ms", PHASE_RSS_MAX_GAP.as_millis().to_string()),
-                    ("phase_rss_method", if cfg!(target_os = "linux") { "proc_self_status_vmrss" } else { "ps_rss_kib_self" }.to_string()),
+                    (
+                        "phase_rss_interval_ms",
+                        PHASE_RSS_INTERVAL.as_millis().to_string(),
+                    ),
+                    (
+                        "phase_rss_max_gap_ms",
+                        PHASE_RSS_MAX_GAP.as_millis().to_string(),
+                    ),
+                    (
+                        "phase_rss_method",
+                        if cfg!(target_os = "linux") {
+                            "proc_self_status_vmrss"
+                        } else {
+                            "ps_rss_kib_self"
+                        }
+                        .to_string(),
+                    ),
                     ("history_max_generations", "2".to_string()),
                     (
                         "history_max_revision_pairs",
@@ -2836,6 +2890,103 @@ mod tests {
             }
         );
         assert!(before.elapsed_since(later).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn phase_rss_oracle_requires_interior_coverage_and_preserves_decreases() -> AnyResult<()> {
+        let origin = Instant::now();
+        let point = |ms: u64, bytes| RssPoint {
+            at: origin + Duration::from_millis(ms),
+            bytes,
+        };
+        let cpu = CpuUsageV1 {
+            user_ms: 3.0,
+            system_ms: 1.0,
+        };
+        let summarize = |end_ms, samples: &[RssPoint]| {
+            summarize_phase_resources(
+                origin + Duration::from_millis(5),
+                origin + Duration::from_millis(end_ms),
+                point(0, 4_096),
+                point(end_ms + 5, 2_048),
+                samples,
+                cpu,
+                1.0,
+                2.0,
+                3.0,
+            )
+        };
+        let observed = summarize(
+            350,
+            &[point(100, 3_072), point(200, 8_192), point(300, 1_024)],
+        )?;
+        assert_eq!(observed.sampled_max_rss_bytes, 8_192);
+        assert_eq!(observed.rss_end_bytes, 2_048);
+        assert_eq!(observed.interior_samples, 3);
+        assert_eq!(observed.observed_max_gap_ms, 55.0_f64.max(100.0));
+        assert_eq!(observed.observer_setup_ms, 1.0);
+        assert_eq!(observed.observer_teardown_ms, 2.0);
+        assert_eq!(observed.observer_periodic_probe_wall_ms, 3.0);
+        assert_eq!(observed.discarded_outside_phase_samples, 0);
+
+        assert!(
+            summarize(350, &[]).is_err(),
+            "long phase needs an interior sample"
+        );
+        assert!(summarize(350, &[point(100, 1_024), point(100, 2_048)]).is_err());
+        assert!(summarize(350, &[point(100, 0)]).is_err());
+        assert!(
+            summarize(900, &[point(100, 1_024)]).is_err(),
+            "large sample gap is invalid"
+        );
+        let short = summarize(80, &[])?;
+        assert_eq!(short.interior_samples, 0);
+        assert_eq!(short.sampled_max_rss_bytes, 4_096);
+        let raced = summarize(
+            350,
+            &[point(100, 3_072), point(200, 8_192), point(351, 9_999)],
+        )?;
+        assert_eq!(raced.discarded_outside_phase_samples, 1);
+        assert_eq!(raced.sampled_max_rss_bytes, 8_192);
+        Ok(())
+    }
+
+    #[test]
+    fn phase_observation_failure_does_not_mask_operation_stage() -> AnyResult<()> {
+        let primary = anyhow::Error::new(ScaleStageError::operation(
+            "build_seal",
+            anyhow::anyhow!("fixed operation fault"),
+        ));
+        let observation = stage_or_preserve(
+            "resource_observation",
+            anyhow::anyhow!("fixed sampler fault"),
+        );
+        let combined = combine_phase_result::<()>(Err(primary), Err(observation))
+            .expect_err("both faults reject the phase");
+        let binding = source_binding_for_failure(ScaleTier::Medium, 13)?;
+        let head = GitHeadV1::parse("0123456789abcdef0123456789abcdef01234567")?;
+        let host = HostV1 {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            cpu_count: 4,
+            mem_bytes: 1 << 30,
+            hostname_hash: "sha256:host".to_string(),
+        };
+        let nested = finish_runtime_measurement::<()>(
+            Err(combined),
+            Err(anyhow::anyhow!("driver stop fault")),
+        )
+        .expect_err("daemon cleanup also rejects the tier");
+        let record = refusal_json(&binding, &head, &host, &nested);
+        assert_eq!(record["failure"]["stage"], "build_seal");
+        assert!(
+            record["failure"]["primary"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("fixed sampler fault")
+        );
+        assert_eq!(record["failure"]["cleanup"]["message"], "driver stop fault");
         Ok(())
     }
 
@@ -3219,7 +3370,10 @@ mod tests {
 
     fn sample_measurement() -> TierMeasurement {
         let sample_resource = PhaseResourceV1 {
-            cpu: CpuUsageV1 { user_ms: 1.0, system_ms: 0.25 },
+            cpu: CpuUsageV1 {
+                user_ms: 1.0,
+                system_ms: 0.25,
+            },
             rss_start_bytes: 1_024,
             rss_end_bytes: 2_048,
             sampled_max_rss_bytes: 3_072,
@@ -3228,6 +3382,7 @@ mod tests {
             observation_span_ms: 200.0,
             observer_setup_ms: 1.0,
             observer_teardown_ms: 2.0,
+            observer_periodic_probe_wall_ms: 3.0,
             discarded_outside_phase_samples: 0,
         };
         TierMeasurement {
@@ -3244,7 +3399,9 @@ mod tests {
                 ("full_activate", sample_resource.clone()),
                 ("delta_ingest_seal", sample_resource.clone()),
                 ("delta_activate", sample_resource),
-            ].into_iter().collect(),
+            ]
+            .into_iter()
+            .collect(),
             delete_reopen: None,
             tier: ScaleTier::Small,
             seed: 3,
@@ -3302,9 +3459,18 @@ mod tests {
         assert_eq!(tier["client_request_timeout_ms"], 30_000);
         assert!(tier["requested_client_request_timeout_ms"].is_null());
         assert_eq!(tier["history_max_bytes"], HARNESS_HISTORY_MAX_BYTES);
-        assert_eq!(tier["phase_resources"]["full_ingest_seal"]["sampled_max_rss_bytes"], 3_072);
-        assert_eq!(tier["phase_resources"]["full_ingest_seal"]["sampled_max_is_true_peak"], false);
-        assert_eq!(tier["phase_resources"]["full_ingest_seal"]["interior_samples"], 2);
+        assert_eq!(
+            tier["phase_resources"]["full_ingest_seal"]["sampled_max_rss_bytes"],
+            3_072
+        );
+        assert_eq!(
+            tier["phase_resources"]["full_ingest_seal"]["sampled_max_is_true_peak"],
+            false
+        );
+        assert_eq!(
+            tier["phase_resources"]["full_ingest_seal"]["interior_samples"],
+            2
+        );
         assert!(tier["requested_history_max_bytes"].is_null());
         assert_eq!(
             tier["history_max_total_bytes"],
