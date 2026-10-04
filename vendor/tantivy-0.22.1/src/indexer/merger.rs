@@ -45,7 +45,7 @@ fn exact_live_token_count_from_postings(
         let mut postings = inverted_index
             .read_postings_from_terminfo(terms.value(), IndexRecordOption::WithFreqs)?;
         while postings.doc() != TERMINATED {
-            if alive.is_none_or(|bitset| bitset.is_alive(postings.doc())) {
+            if alive.map_or(true, |bitset| bitset.is_alive(postings.doc())) {
                 total = total
                     .checked_add(u64::from(postings.term_freq()))
                     .ok_or_else(|| {
@@ -83,7 +83,7 @@ fn estimate_total_num_tokens_in_single_segment(
         .get_field_entry(field)
         .field_type()
         .get_index_record_option()
-        .is_some_and(IndexRecordOption::has_freq)
+        .map_or(false, IndexRecordOption::has_freq)
     {
         return exact_live_token_count_from_postings(reader, field);
     }
@@ -877,19 +877,22 @@ mod tests {
             let schema = builder.build();
             let short = format!(
                 "needle {}",
-                std::iter::repeat_n("alpha", 73)
+                std::iter::repeat("alpha")
+                    .take(73)
                     .collect::<Vec<_>>()
                     .join(" ")
             );
             let long = format!(
                 "needle {}",
-                std::iter::repeat_n("beta", 109)
+                std::iter::repeat("beta")
+                    .take(109)
                     .collect::<Vec<_>>()
                     .join(" ")
             );
             let retired = format!(
                 "needle {}",
-                std::iter::repeat_n("gamma", 47)
+                std::iter::repeat("gamma")
+                    .take(47)
                     .collect::<Vec<_>>()
                     .join(" ")
             );
