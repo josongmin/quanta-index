@@ -12,6 +12,7 @@ fn pretty_renderer_supports_symbol_response() {
     let response = SearchPlaneQueryIpcResponseEnvelope {
         request_id: 1,
         payload: SearchPlaneQueryIpcResponse::Symbol(SymbolQueryResponse {
+            selected_active_head: None,
             generation: GenerationPin::new(
                 RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
                 RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
@@ -70,6 +71,7 @@ fn pretty_renderer_supports_runtime_metadata_response() {
         request_id: 1,
         payload: SearchPlaneQueryIpcResponse::RuntimeMetadata(
             SearchPlaneRuntimeMetadataQueryResponse {
+                selected_active_head: None,
                 generation: GenerationPin::new(
                     RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
                     RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
@@ -136,6 +138,7 @@ fn pretty_renderer_supports_sourcegraph_text_response() {
     let response = SearchPlaneQueryIpcResponseEnvelope {
         request_id: 1,
         payload: SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            selected_active_head: None,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             rank_unit: TextRankUnit::Chunk,
             generation: GenerationPin::new(
@@ -356,6 +359,7 @@ fn pretty_renderer_supports_history_response() {
     let response = SearchPlaneQueryIpcResponseEnvelope {
         request_id: 1,
         payload: SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+            selected_active_head: None,
             generation: GenerationPin::new(
                 RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
                 RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
@@ -421,6 +425,7 @@ fn pretty_renderer_prints_relevance_scores() {
     let response = SearchPlaneQueryIpcResponseEnvelope {
         request_id: 1,
         payload: SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+            selected_active_head: None,
             generation: GenerationPin::new(
                 RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
                 RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),

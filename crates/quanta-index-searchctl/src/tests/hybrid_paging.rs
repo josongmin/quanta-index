@@ -99,6 +99,7 @@ fn pretty_renderer_supports_hybrid_response_with_lane_provenance() {
     let response = SearchPlaneQueryIpcResponseEnvelope {
         request_id: 1,
         payload: SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+            selected_active_head: None,
             generation: GenerationPin::new(
                 RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
                 RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),

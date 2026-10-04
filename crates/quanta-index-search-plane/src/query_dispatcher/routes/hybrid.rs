@@ -299,6 +299,7 @@ impl SearchPlaneDispatcher {
             budget,
         )?;
         Ok(HybridQueryResponse {
+            selected_active_head: selection.active_head,
             generation: fusion.pin,
             results: fusion.fused,
             window: fusion.window_v2,

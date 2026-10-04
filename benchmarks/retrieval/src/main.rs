@@ -1621,7 +1621,6 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                     request_events::client_observation_value(pair, observation, *sdk_execute_ns)?;
                 Ok(serde_json::json!({
                     "task_id": task.task_id,
-                    "resolve_request_id": pair.resolve_request_id,
                     "text_request_id": pair.text_request_id,
                     "client": client,
                 }))

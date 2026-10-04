@@ -78,7 +78,24 @@ impl StubQueryTransport {
         }
     }
 
-    fn active(response: SearchPlaneQueryIpcResponse) -> Self {
+    fn active(mut response: SearchPlaneQueryIpcResponse) -> Self {
+        let head = search_corpus_head(
+            7,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            1,
+        );
+        match &mut response {
+            SearchPlaneQueryIpcResponse::Text(page) => page.selected_active_head = Some(head),
+            SearchPlaneQueryIpcResponse::Symbol(page) => page.selected_active_head = Some(head),
+            SearchPlaneQueryIpcResponse::Semantic(page) => page.selected_active_head = Some(head),
+            SearchPlaneQueryIpcResponse::Hybrid(page) => page.selected_active_head = Some(head),
+            SearchPlaneQueryIpcResponse::HybridSeed(page) => page.selected_active_head = Some(head),
+            SearchPlaneQueryIpcResponse::History(page) => page.selected_active_head = Some(head),
+            SearchPlaneQueryIpcResponse::RuntimeMetadata(page) => {
+                page.selected_active_head = Some(head)
+            }
+            _ => {}
+        }
         Self::new(response)
     }
 }
@@ -484,17 +501,14 @@ fn active_resolution(snapshot: GenerationSnapshot) -> ActiveGenerationResolution
     }
 }
 
-fn assert_resolved_active_selector(selector: Option<&GenerationSelector>) {
+fn assert_active_selector(selector: Option<&GenerationSelector>) {
     assert!(matches!(
         selector,
-        Some(GenerationSelector::ResolvedActive {
+        Some(GenerationSelector::Active {
             repo_id: selected_repo,
             revision_id: selected_revision,
-            activation_token,
         }) if selected_repo == &repo_id()
             && selected_revision == &revision_id()
-            && activation_token.root_incarnation() == [7; 16]
-            && activation_token.activation_sequence().get() == 1
     ));
 }
 
@@ -865,6 +879,7 @@ fn sample_parse_tree_record() -> ParseTreeRecord {
 fn unused_query() -> Arc<StubQueryTransport> {
     Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            selected_active_head: None,
             rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
@@ -926,7 +941,7 @@ fn only_query_request(
     Ok(result)
 }
 
-fn query_after_resolution(
+fn single_active_query(
     transport: &StubQueryTransport,
 ) -> Result<SearchPlaneQueryIpcRequestEnvelope, crate::SdkError> {
     let requests = transport
@@ -935,19 +950,12 @@ fn query_after_resolution(
         .map_err(|err| crate::SdkError::Protocol(format!("query request list poisoned: {err}")))?;
     let Some((last, preceding)) = requests.split_last() else {
         return Err(crate::SdkError::Protocol(
-            "expected active resolution before the pinned query".to_string(),
+            "expected one active query".to_string(),
         ));
     };
-    if preceding.is_empty()
-        || !preceding.iter().all(|request| {
-            matches!(
-                &request.payload,
-                quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
-            )
-        })
-    {
+    if !preceding.is_empty() {
         return Err(crate::SdkError::Protocol(
-            "expected active resolution before the pinned query".to_string(),
+            "expected one active query".to_string(),
         ));
     }
     let result = last.clone();

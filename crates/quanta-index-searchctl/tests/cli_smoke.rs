@@ -1301,6 +1301,7 @@ fn dispatch_lexical_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQ
         );
     };
     SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation.clone(),
@@ -1420,6 +1421,7 @@ fn dispatch_semantic_request(request: SearchPlaneQueryIpcRequest) -> SearchPlane
         );
     }
     SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+        selected_active_head: None,
         generation: expected_generation.clone(),
         results: vec![stub_candidate(expected_generation)],
         window: QueryResultWindowV2::exact_probe(1),
@@ -1450,6 +1452,7 @@ fn dispatch_hybrid_request(request: SearchPlaneQueryIpcRequest) -> SearchPlaneQu
     let mut explanation = stub_explanation("hybrid lanes fused", vec![EngineTouched::Lexical]);
     explanation.engines_touched.push(EngineTouched::Semantic);
     SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+        selected_active_head: None,
         generation: expected_generation.clone(),
         results: vec![stub_hybrid_candidate(expected_generation)],
         window: QueryResultWindowV2::exact_probe(1),
@@ -1499,6 +1502,7 @@ fn dispatch_hybrid_seed_request(
         );
     }
     SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
+        selected_active_head: None,
         generation: expected_generation,
         manifest_digest: "manifest-digest-9".to_string(),
         seed_candidates: vec![quanta_index_contract::SeedCandidate {

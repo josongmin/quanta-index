@@ -23,8 +23,8 @@ use crate::ActivationCatalog;
 use crate::query_dispatcher::execution_trace::LaneExecutionSummaryV1;
 use crate::query_dispatcher::selection::{
     SemanticSelection, explicit_pin_mismatch_error, resolve_joint_active_selection,
-    resolve_lexical_request_pin, resolve_semantic_selector_selection, selection_mismatch_error,
-    validate_generation_scope,
+    resolve_lexical_request_selection, resolve_semantic_selector_selection,
+    selection_mismatch_error, validate_generation_scope,
 };
 
 /// The plan-stage trace entry naming the dense lane every semantic route
@@ -117,9 +117,14 @@ pub(super) fn resolve_semantic_request_selection(
             None => None,
         },
     };
-    let scope_pin = match (&joint, request.lexical_scope.as_ref()) {
-        (Some(selection), Some(_)) => Some(selection.pin.clone()),
-        (None, Some(scope)) => Some(resolve_lexical_request_pin(
+    let scope_selection = match (&joint, request.lexical_scope.as_ref()) {
+        (Some(selection), Some(_)) => {
+            Some(crate::query_dispatcher::selection::SelectedGeneration {
+                pin: selection.pin.clone(),
+                active_head: selection.active_head.clone(),
+            })
+        }
+        (None, Some(scope)) => Some(resolve_lexical_request_selection(
             activation_catalog,
             scope,
             SearchPlaneTrackKind::Lexical,
@@ -127,6 +132,10 @@ pub(super) fn resolve_semantic_request_selection(
         )?),
         (_, None) => None,
     };
+    let scope_active_head = scope_selection
+        .as_ref()
+        .and_then(|selection| selection.active_head.clone());
+    let scope_pin = scope_selection.map(|selection| selection.pin);
     match (request.generation.clone(), outer_selection, scope_pin) {
         (Some(pin), Some(selection), Some(scope_pin))
             if pin != selection.pin || pin != scope_pin =>
@@ -181,10 +190,12 @@ pub(super) fn resolve_semantic_request_selection(
         (Some(pin), Some(selection), _) => Ok(SemanticSelection {
             pin,
             expected_manifest_digest: selection.expected_manifest_digest,
+            active_head: selection.active_head.or(scope_active_head),
         }),
         (Some(pin), None, _) | (None, None, Some(pin)) => Ok(SemanticSelection {
             pin,
             expected_manifest_digest: None,
+            active_head: scope_active_head,
         }),
         (None, Some(selection), _) => Ok(selection),
         (None, None, None) => Err(CoreError::InvalidContract(
@@ -215,15 +226,20 @@ pub(super) fn resolve_hybrid_request_selection(
         request.text_query.generation.as_ref(),
         "hybrid",
     )?;
-    let lexical_pin = match &joint {
-        Some(selection) => selection.pin.clone(),
-        None => resolve_lexical_request_pin(
+    let lexical_selection = match &joint {
+        Some(selection) => crate::query_dispatcher::selection::SelectedGeneration {
+            pin: selection.pin.clone(),
+            active_head: selection.active_head.clone(),
+        },
+        None => resolve_lexical_request_selection(
             activation_catalog,
             &request.text_query,
             SearchPlaneTrackKind::Lexical,
             "hybrid text_query",
         )?,
     };
+    let lexical_pin = lexical_selection.pin;
+    let lexical_active_head = lexical_selection.active_head;
     let semantic_selection = match joint {
         Some(selection) => Some(selection),
         None => match request.generation_selector.as_ref() {
@@ -268,15 +284,21 @@ pub(super) fn resolve_hybrid_request_selection(
         (Some(pin), Some(selection)) => Ok(SemanticSelection {
             pin,
             expected_manifest_digest: selection.expected_manifest_digest,
+            active_head: selection.active_head.or(lexical_active_head),
         }),
         (Some(pin), None) => Ok(SemanticSelection {
             pin,
             expected_manifest_digest: None,
+            active_head: lexical_active_head,
         }),
-        (None, Some(selection)) => Ok(selection),
+        (None, Some(mut selection)) => {
+            selection.active_head = selection.active_head.or(lexical_active_head);
+            Ok(selection)
+        }
         (None, None) => Ok(SemanticSelection {
             pin: lexical_pin,
             expected_manifest_digest: None,
+            active_head: lexical_active_head,
         }),
     }
 }

@@ -1721,6 +1721,8 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     assert SearchHandler.calls.count("/api/v1/file/content") == 2 * file_count
     assert SearchHandler.calls.count("/api/v1/projects/fixture/files") == 4
     root = Path(spec["output_root"])
+    suite = json.loads(paths["suite"].read_bytes())
+    pack = json.loads(paths["query_pack"].read_bytes())
     for name in ("sourcegraph", "opengrok", "cs"):
         rows = (root / f"{name}_rows.jsonl").read_text().splitlines()
         assert len(rows) == 20

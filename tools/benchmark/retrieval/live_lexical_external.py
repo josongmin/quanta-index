@@ -2323,13 +2323,13 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                         terminal["elapsed_ms"],
                         literal_query=literal_file_query,
                     )
+            derived["completed_response"] = row.get("completed_response")
+            if canonical_json(row) != canonical_json(derived):
+                raise ValueError("external row disagrees with retained native response")
             _validate_completed_row(
                 row,
                 derived["paths"] if name == "cs" else derived["file_paths_top_10"],
             )
-            derived["completed_response"] = row["completed_response"]
-            if canonical_json(row) != canonical_json(derived):
-                raise ValueError("external row disagrees with retained native response")
 
         _replay_rows(row_path, pack["tasks"], replay_row)
     if bound_release is not None:

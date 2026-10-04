@@ -592,6 +592,7 @@ fn render_pretty(
         SearchPlaneQueryIpcResponse::Semantic(payload) => render_lexical_payload(
             "semantic",
             &TextQueryResponse {
+                selected_active_head: None,
                 explanation: quanta_index_contract::SearchExplanation::empty(),
                 generation: payload.generation.clone(),
                 rank_unit: TextRankUnit::Chunk,

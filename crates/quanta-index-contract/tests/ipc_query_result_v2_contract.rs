@@ -181,6 +181,77 @@ fn generation_pin() -> GenerationPin {
     )
 }
 
+fn selected_head() -> quanta_index_contract::SearchCorpusActiveHeadV1 {
+    use quanta_index_contract::{
+        GenerationSnapshot, SearchCorpusActivationTokenV1, SearchCorpusGenerationIdentityV1,
+        SearchPlaneTrackKind, SemanticContentRootsV1,
+    };
+    let pin = generation_pin();
+    let snapshot = |track| GenerationSnapshot {
+        repo_id: pin.repo_id.clone(),
+        revision_id: pin.revision_id.clone(),
+        track,
+        manifest_generation: pin.manifest_generation,
+        manifest_digest: format!("sha256:{}", "a".repeat(64)),
+    };
+    quanta_index_contract::SearchCorpusActiveHeadV1 {
+        generation: SearchCorpusGenerationIdentityV1 {
+            lexical: snapshot(SearchPlaneTrackKind::Lexical),
+            semantic: snapshot(SearchPlaneTrackKind::Semantic),
+            semantic_content: SemanticContentRootsV1 {
+                row_root_digest: format!("sha256:{}", "b".repeat(64)),
+                membership_root_digest: format!("sha256:{}", "c".repeat(64)),
+            },
+        },
+        activation_token: SearchCorpusActivationTokenV1::new(
+            [7; 16],
+            std::num::NonZeroU64::new(1).expect("positive sequence"),
+        )
+        .expect("valid activation token"),
+    }
+}
+
+#[test]
+fn active_text_response_binds_selected_head_on_strict_wire() -> TestRes {
+    let head = selected_head();
+    let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        generation: generation_pin(),
+        selected_active_head: Some(head.clone()),
+        rank_unit: quanta_index_contract::TextRankUnit::Chunk,
+        results: vec![],
+        window: QueryResultWindowV2::exact_probe(0),
+        explanation: SearchExplanation::empty(),
+        file_owner_rows: None,
+        next_cursor: None,
+    });
+    roundtrip_eq(&response)?;
+    let duplicate = mutate_ipc_response_wire(&response, |wire| {
+        let fields = map_fields_mut(field_value_mut(map_fields_mut(wire)?, "payload")?)?;
+        duplicate_text_field(fields, "selected_active_head")?;
+        Ok(())
+    })?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(
+        &duplicate,
+        "selected_active_head",
+    )?;
+    let wrong_generation = mutate_ipc_response_wire(&response, |wire| {
+        let fields = map_fields_mut(field_value_mut(map_fields_mut(wire)?, "payload")?)?;
+        let head = field_value_mut(fields, "selected_active_head")?;
+        let generation = field_value_mut(map_fields_mut(head)?, "generation")?;
+        for track in ["lexical", "semantic"] {
+            let snapshot = field_value_mut(map_fields_mut(generation)?, track)?;
+            let manifest = field_value_mut(map_fields_mut(snapshot)?, "manifest_generation")?;
+            *manifest = ciborium::Value::Integer(8.into());
+        }
+        Ok(())
+    })?;
+    expect_decode_error_contains::<SearchPlaneQueryIpcResponse>(
+        &wrong_generation,
+        "selected active head",
+    )?;
+    Ok(())
+}
+
 fn lexical_request() -> TextQueryRequest {
     TextQueryRequest {
         syntax: TextQuerySyntax::Sourcegraph,
@@ -805,6 +876,7 @@ fn search_plane_ipc_request_v2_hybrid_rejects_legacy_semantic_vector_ref_field()
 #[test]
 fn search_plane_ipc_response_v2_semantic_roundtrips_explanation() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+        selected_active_head: None,
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         window: QueryResultWindowV2::exact_probe(1),
@@ -831,6 +903,7 @@ fn search_plane_ipc_response_v2_semantic_roundtrips_explanation() -> TestRes {
 #[test]
 fn search_plane_ipc_response_v2_hybrid_roundtrips_explanation() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+        selected_active_head: None,
         generation: generation_pin(),
         results: vec![hybrid_candidate()],
         window: QueryResultWindowV2::exact_probe(1),
@@ -858,6 +931,7 @@ fn search_plane_ipc_response_v2_hybrid_roundtrips_explanation() -> TestRes {
 fn search_plane_ipc_response_v2_symbol_roundtrips_kind_truth() -> TestRes {
     let response =
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
+            selected_active_head: None,
             generation: generation_pin(),
             results: vec![symbol_candidate()?],
             window: QueryResultWindowV2::exact_probe(1),
@@ -891,6 +965,7 @@ fn search_plane_ipc_response_v2_symbol_roundtrips_kind_truth() -> TestRes {
 #[test]
 fn search_plane_ipc_response_v2_sourcegraph_roundtrips_text_candidates() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
@@ -977,6 +1052,7 @@ fn history_diff_candidate() -> DiffCandidate {
 fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
     let commit_page = SearchPlaneQueryIpcResponse::History(
         quanta_index_contract::SearchPlaneHistoryQueryResponse {
+            selected_active_head: None,
             generation: generation_pin(),
             order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: vec![history_commit_candidate()],
@@ -995,6 +1071,7 @@ fn search_plane_ipc_response_v2_history_variant_roundtrips() -> TestRes {
     roundtrip_eq(&commit_page)?;
     let diff_page = SearchPlaneQueryIpcResponse::History(
         quanta_index_contract::SearchPlaneHistoryQueryResponse {
+            selected_active_head: None,
             generation: generation_pin(),
             order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: Vec::new(),
@@ -1020,6 +1097,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
         (
             "has_more without a cursor",
             quanta_index_contract::SearchPlaneHistoryQueryResponse {
+                selected_active_head: None,
                 generation: generation.clone(),
                 order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
@@ -1038,6 +1116,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
         (
             "a cursor without has_more",
             quanta_index_contract::SearchPlaneHistoryQueryResponse {
+                selected_active_head: None,
                 generation: generation.clone(),
                 order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
@@ -1051,6 +1130,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
         (
             "both row kinds",
             quanta_index_contract::SearchPlaneHistoryQueryResponse {
+                selected_active_head: None,
                 generation: generation.clone(),
                 order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
@@ -1064,6 +1144,7 @@ fn search_plane_ipc_response_v2_history_page_rejects_inconsistent_shapes() -> Te
         (
             "a window that does not count the rows",
             quanta_index_contract::SearchPlaneHistoryQueryResponse {
+                selected_active_head: None,
                 generation,
                 order: quanta_index_contract::HistoryOrderV1::Recency,
                 commits: vec![history_commit_candidate()],
@@ -1110,6 +1191,7 @@ fn search_plane_ipc_v2_history_relevance_pages_and_requests_round_trip() -> Test
     second.sha = CommitSha::from_bytes([7u8; 20]);
     second.score = Some(last);
     let page = SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+        selected_active_head: None,
         generation: generation_pin(),
         order: HistoryOrderV1::Relevance,
         commits: vec![first, second],
@@ -1136,6 +1218,7 @@ fn search_plane_ipc_v2_history_relevance_pages_and_requests_round_trip() -> Test
     let mut diff = history_diff_candidate();
     diff.score = Some(top);
     let diff_page = SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+        selected_active_head: None,
         generation: generation_pin(),
         order: HistoryOrderV1::Relevance,
         commits: Vec::new(),
@@ -1195,6 +1278,7 @@ fn search_plane_ipc_v2_history_refuses_order_and_score_disagreements() -> TestRe
      -> Result<SearchPlaneHistoryQueryResponse, Box<dyn std::error::Error>> {
         let has_more = cursor.is_some();
         Ok(SearchPlaneHistoryQueryResponse {
+            selected_active_head: None,
             generation: generation_pin(),
             order,
             commits: vec![commit],
@@ -1265,6 +1349,7 @@ fn search_plane_ipc_v2_history_refuses_order_and_score_disagreements() -> TestRe
 #[test]
 fn search_plane_ipc_response_v2_lexical_rejects_duplicate_results() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
@@ -1337,6 +1422,7 @@ fn text_response_rejects_missing_or_contradictory_window() -> TestRes {
 #[test]
 fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
@@ -1384,6 +1470,7 @@ fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestR
 fn search_plane_ipc_response_v2_symbol_rejects_duplicate_symbol_kind() -> TestRes {
     let response =
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
+            selected_active_head: None,
             generation: generation_pin(),
             results: vec![symbol_candidate()?],
             window: QueryResultWindowV2::exact_probe(1),
@@ -1431,6 +1518,7 @@ fn search_plane_ipc_response_v2_symbol_rejects_duplicate_symbol_kind() -> TestRe
 #[test]
 fn search_plane_ipc_response_v2_semantic_rejects_duplicate_generation() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+        selected_active_head: None,
         generation: generation_pin(),
         results: vec![lexical_candidate()],
         window: QueryResultWindowV2::exact_probe(1),
@@ -1450,6 +1538,7 @@ fn search_plane_ipc_response_v2_semantic_rejects_duplicate_generation() -> TestR
 #[test]
 fn search_plane_ipc_response_v2_hybrid_rejects_duplicate_explanation() -> TestRes {
     let response = SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+        selected_active_head: None,
         generation: generation_pin(),
         results: vec![hybrid_candidate()],
         window: QueryResultWindowV2::exact_probe(1),
@@ -1468,6 +1557,7 @@ fn search_plane_ipc_response_v2_hybrid_rejects_duplicate_explanation() -> TestRe
 
 fn text_response_with_lexical_candidate() -> SearchPlaneQueryIpcResponse {
     SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: generation_pin(),
@@ -1766,6 +1856,7 @@ fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> 
 
     let runtime_page =
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+            selected_active_head: None,
             generation: generation_pin(),
             results: vec![lexical_candidate()],
             window: QueryResultWindowV2::exact_probe(1),
@@ -1786,6 +1877,7 @@ fn search_plane_ipc_response_v2_aux_read_epoch_is_required_and_round_trips() -> 
         });
     roundtrip_eq(&structural_page)?;
     let history_page = SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+        selected_active_head: None,
         generation: generation_pin(),
         order: quanta_index_contract::HistoryOrderV1::Recency,
         commits: Vec::new(),
@@ -1866,6 +1958,7 @@ fn runtime_page_with_continuation() -> Result<
 > {
     Ok(
         quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+            selected_active_head: None,
             generation: generation_pin(),
             results: vec![lexical_candidate_named("a"), lexical_candidate_named("b")],
             window: QueryResultWindowV2::pageable(
@@ -2085,6 +2178,7 @@ fn keyset_pages_round_trip_with_and_without_a_continuation() -> TestRes {
         }
     }
     let final_page = quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+        selected_active_head: None,
         results: vec![lexical_candidate_named("z")],
         window: QueryResultWindowV2::exact_probe(1),
         examined: 9,
@@ -2181,6 +2275,7 @@ fn expect_decode_refused(label: &str, bytes: &[u8], fragment: &str) -> TestRes {
 /// exact window counting them, no continuation.
 fn runtime_final_page() -> quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
     quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+        selected_active_head: None,
         generation: generation_pin(),
         results: vec![lexical_candidate_named("a"), lexical_candidate_named("b")],
         window: QueryResultWindowV2::exact_probe(2),
@@ -2331,6 +2426,7 @@ fn keyset_pages_refuse_continuation_mismatch_on_encode() -> TestRes {
         (
             "an authorizing outcome without a token",
             quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+                selected_active_head: None,
                 next_cursor: None,
                 ..base.clone()
             },
@@ -2338,6 +2434,7 @@ fn keyset_pages_refuse_continuation_mismatch_on_encode() -> TestRes {
         (
             "a token without an authorizing outcome",
             quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+                selected_active_head: None,
                 window: QueryResultWindowV2::exact_probe(2),
                 ..base
             },
@@ -2387,6 +2484,7 @@ fn keyset_pages_refuse_continuation_mismatch_on_encode() -> TestRes {
 fn keyset_pages_refuse_returned_length_mismatch_on_encode() -> TestRes {
     let base = runtime_page_with_continuation()?;
     let short = quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+        selected_active_head: None,
         window: QueryResultWindowV2::pageable(
             1,
             quanta_index_contract::CandidateCountV1::AtLeast(3),

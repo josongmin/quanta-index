@@ -1305,6 +1305,7 @@ mod tests {
             request_id: 7,
             payload: SearchPlaneQueryIpcResponse::Symbol(
                 quanta_index_contract::SymbolQueryResponse {
+                    selected_active_head: None,
                     generation: pin.clone(),
                     results: Vec::new(),
                     window: quanta_index_contract::QueryResultWindowV2::exact_probe(0),

@@ -77,6 +77,7 @@ fn token(label: &str) -> Result<ContinuationTokenV2, Box<dyn Error>> {
 
 fn continued(results: Vec<LexicalCandidate>) -> Result<TextQueryResponse, Box<dyn Error>> {
     Ok(TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(),
@@ -123,6 +124,7 @@ fn a_continued_page_and_a_final_page_round_trip() -> TestResult {
         return Err("a continued page must round-trip".into());
     }
     let last_page = TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(),
@@ -258,6 +260,7 @@ fn symbol_requests_and_pages_share_the_text_rules() -> TestResult {
     };
     let results = rows().iter().map(symbol).collect::<Result<Vec<_>, _>>()?;
     let page = SymbolQueryResponse {
+        selected_active_head: None,
         generation: pin(),
         next_cursor: Some(token("symbol-page")?),
         window: QueryResultWindowV2::pageable(3, CandidateCountV1::AtLeast(4), true, Vec::new())?,

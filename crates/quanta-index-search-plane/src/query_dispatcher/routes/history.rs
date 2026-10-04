@@ -41,7 +41,9 @@ use crate::query_dispatcher::routes::history_records::{
     validate_history_since_timeref,
 };
 use crate::query_dispatcher::routes::history_relevance::execute_history_relevance;
-use crate::query_dispatcher::selection::resolve_optional_selection;
+use crate::query_dispatcher::selection::{
+    resolve_cursor_selection, resolve_optional_selection_with_head,
+};
 use crate::query_dispatcher::text_plane::{
     ExecutableTextPlanePolicy, validate_executable_text_query,
 };
@@ -69,15 +71,22 @@ impl SearchPlaneDispatcher {
             request.order,
             opened.as_ref().map(|cursor| &cursor.boundary),
         )?;
-        let pin = if let Some(opened) = &opened {
+        let selected = if let Some(opened) = &opened {
             require_token_pin(
                 request.text_query.generation.as_ref(),
                 request.text_query.generation_selector.as_ref(),
                 &opened.binding().pin,
             )?;
-            opened.binding().pin.clone()
+            resolve_cursor_selection(
+                self.activation_catalog.as_ref(),
+                request.text_query.generation.clone(),
+                request.text_query.generation_selector.as_ref(),
+                &opened.binding().pin,
+                SearchPlaneTrackKind::Lexical,
+                "history",
+            )?
         } else {
-            resolve_optional_selection(
+            resolve_optional_selection_with_head(
                 self.activation_catalog.as_ref(),
                 request.text_query.generation.clone(),
                 request.text_query.generation_selector.as_ref(),
@@ -88,6 +97,7 @@ impl SearchPlaneDispatcher {
                 CoreError::InvalidContract("history: generation selector required".to_string())
             })?
         };
+        let pin = selected.pin;
         let cursor_context = CursorRequestContextV2 {
             route: CursorRouteV2::History,
             pin: &pin,
@@ -153,6 +163,7 @@ impl SearchPlaneDispatcher {
             })
             .transpose()?;
         Ok(SearchPlaneHistoryQueryResponse {
+            selected_active_head: selected.active_head,
             generation: pin,
             order: request.order,
             commits: page.commits,

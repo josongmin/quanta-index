@@ -133,6 +133,7 @@ fn repomap_active_head_reads_control_and_rejects_a_foreign_pair() {
 fn history_query_routes_through_typed_query_variant() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             order: quanta_index_contract::HistoryOrderV1::Recency,
             commits: vec![],
@@ -174,6 +175,7 @@ fn history_query_routes_through_typed_query_variant() {
 fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             order: quanta_index_contract::HistoryOrderV1::Relevance,
             commits: vec![],
@@ -218,6 +220,7 @@ fn history_sourcegraph_query_preserves_rev_filter_and_syntax() {
 fn history_query_request_resolves_active_before_forwarding() {
     let query = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::History(SearchPlaneHistoryQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             order: quanta_index_contract::HistoryOrderV1::Relevance,
             commits: vec![],
@@ -246,15 +249,15 @@ fn history_query_request_resolves_active_before_forwarding() {
         cursor: None,
     };
     let _response = ok_or_fail!(client.history().query_request(request.clone()));
-    let captured = ok_or_fail!(query_after_resolution(query.as_ref()));
+    let captured = ok_or_fail!(single_active_query(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::History(pinned) = captured.payload
     else {
         panic!("expected pinned history query");
     };
-    assert_eq!(pinned.text_query.generation, Some(sample_generation_pin()));
+    assert_eq!(pinned.text_query.generation, None);
     assert!(matches!(
         pinned.text_query.generation_selector,
-        Some(GenerationSelector::ResolvedActive { .. })
+        Some(GenerationSelector::Active { .. })
     ));
     assert_eq!(pinned.text_query.query_text, request.text_query.query_text);
 }
@@ -263,6 +266,7 @@ fn history_query_request_resolves_active_before_forwarding() {
 fn runtime_query_routes_through_typed_query_variant() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV2::exact_probe(1),
@@ -306,6 +310,7 @@ fn runtime_query_routes_through_typed_query_variant() {
 fn runtime_query_request_forwards_contract_dto_unchanged() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV2::exact_probe(1),

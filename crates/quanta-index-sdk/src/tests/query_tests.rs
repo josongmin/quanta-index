@@ -242,6 +242,7 @@ fn cluster_membership_batch_read_rejects_partial_reordered_and_stale_response_v1
 fn semantic_query_builder_resolves_active_selector_before_query() {
     let query = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV2::exact_probe(1),
@@ -259,7 +260,7 @@ fn semantic_query_builder_resolves_active_selector_before_query() {
         .top_k(5)
         .execute();
     let _response = ok_or_fail!(response);
-    let captured = ok_or_fail!(query_after_resolution(query.as_ref()));
+    let captured = ok_or_fail!(single_active_query(query.as_ref()));
     assert!(
         matches!(
             &captured.payload,
@@ -273,10 +274,10 @@ fn semantic_query_builder_resolves_active_selector_before_query() {
     };
     assert_eq!(req.top_k, 5);
     assert_eq!(req.query_text.as_str(), "0.1 0.2 0.3");
-    assert_eq!(req.generation, Some(sample_generation_pin()));
+    assert_eq!(req.generation, None);
     assert!(matches!(
         req.generation_selector,
-        Some(GenerationSelector::ResolvedActive { .. })
+        Some(GenerationSelector::Active { .. })
     ));
 }
 
@@ -288,18 +289,12 @@ fn semantic_active_keeps_catalog_selector_and_rejects_wrong_generation() {
         ManifestGeneration::new(8),
     );
     let query = Arc::new(StubQueryTransport::sequence([
-        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(active_resolution(
-            GenerationSnapshot {
-                repo_id: repo_id(),
-                revision_id: revision_id(),
-                track: quanta_index_contract::SearchPlaneTrackKind::Semantic,
-                manifest_generation: ManifestGeneration::new(7),
-                manifest_digest:
-                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                        .to_string(),
-            },
-        )),
         SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+            selected_active_head: Some(search_corpus_head(
+                7,
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                1,
+            )),
             generation: wrong,
             results: vec![],
             window: QueryResultWindowV2::exact_probe(0),
@@ -320,16 +315,17 @@ fn semantic_active_keeps_catalog_selector_and_rejects_wrong_generation() {
     assert!(matches!(
         requests.last().map(|request| &request.payload),
         Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(request))
-            if request.generation == Some(sample_generation_pin())
-                && matches!(request.generation_selector, Some(GenerationSelector::ResolvedActive { .. }))
+            if request.generation.is_none()
+                && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
     ));
     drop(requests);
 }
 
 #[test]
 fn semantic_scope_sourcegraph_query_preserves_scope_wire_fields() {
-    let query = Arc::new(StubQueryTransport::new(
+    let query = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV2::exact_probe(1),
@@ -378,8 +374,9 @@ fn semantic_scope_sourcegraph_query_preserves_scope_wire_fields() {
 
 #[test]
 fn lexical_query_builder_carries_top_k_to_wire_contract() {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
+    let query = Arc::new(StubQueryTransport::active(
+        SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            selected_active_head: None,
             rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
@@ -387,8 +384,8 @@ fn lexical_query_builder_carries_top_k_to_wire_contract() {
             window: QueryResultWindowV2::exact_probe(1),
             file_owner_rows: None,
             next_cursor: None,
-        },
-    )));
+        }),
+    ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response = ok_or_fail!(
         client
@@ -419,8 +416,9 @@ fn lexical_query_builder_carries_top_k_to_wire_contract() {
 
 #[test]
 fn code_search_builder_sends_explicit_product_syntax() {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
+    let query = Arc::new(StubQueryTransport::active(
+        SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            selected_active_head: None,
             rank_unit: quanta_index_contract::TextRankUnit::File,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
@@ -428,8 +426,8 @@ fn code_search_builder_sends_explicit_product_syntax() {
             window: QueryResultWindowV2::exact_probe(0),
             file_owner_rows: None,
             next_cursor: None,
-        },
-    )));
+        }),
+    ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let _response = ok_or_fail!(
         client
@@ -454,8 +452,9 @@ fn code_search_builder_sends_explicit_product_syntax() {
 
 #[test]
 fn lexical_constraint_setters_preserve_path_and_language_axes_v1() {
-    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
-        TextQueryResponse {
+    let query = Arc::new(StubQueryTransport::active(
+        SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            selected_active_head: None,
             rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
@@ -463,8 +462,8 @@ fn lexical_constraint_setters_preserve_path_and_language_axes_v1() {
             window: QueryResultWindowV2::exact_probe(0),
             file_owner_rows: None,
             next_cursor: None,
-        },
-    )));
+        }),
+    ));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let path = ExactRepoRelativePathV1::new("src/lib.rs").expect("valid exact path");
     let rust = LanguageCode::new("rust").expect("valid language");
@@ -510,6 +509,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
 
     let semantic_transport = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results: Vec::new(),
             window: QueryResultWindowV2::exact_probe(0),
@@ -534,7 +534,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
             .top_k(3)
             .execute()
     );
-    let semantic_request = ok_or_fail!(query_after_resolution(semantic_transport.as_ref()));
+    let semantic_request = ok_or_fail!(single_active_query(semantic_transport.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(semantic_request) =
         &semantic_request.payload
     else {
@@ -562,6 +562,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
 
     let hybrid_transport = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: Vec::new(),
@@ -583,7 +584,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
             .top_k(3)
             .execute()
     );
-    let hybrid_request = ok_or_fail!(query_after_resolution(hybrid_transport.as_ref()));
+    let hybrid_request = ok_or_fail!(single_active_query(hybrid_transport.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::HybridSeed(hybrid_request) =
         &hybrid_request.payload
     else {
@@ -604,6 +605,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
 
     let symbol_transport = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results: Vec::new(),
             window: QueryResultWindowV2::exact_probe(0),
@@ -623,7 +625,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
             .top_k(3)
             .execute()
     );
-    let symbol_request = ok_or_fail!(query_after_resolution(symbol_transport.as_ref()));
+    let symbol_request = ok_or_fail!(single_active_query(symbol_transport.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Symbol(symbol_request) =
         &symbol_request.payload
     else {
@@ -643,6 +645,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
 fn lexical_query_request_resolves_active_before_forwarding() {
     let query = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            selected_active_head: None,
             rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),
@@ -666,17 +669,18 @@ fn lexical_query_request_resolves_active_before_forwarding() {
         cursor: None,
     };
     let _response = ok_or_fail!(client.lexical().query_request(request.clone()));
-    let captured = ok_or_fail!(query_after_resolution(query.as_ref()));
+    let captured = ok_or_fail!(single_active_query(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(pinned) = captured.payload else {
         panic!("expected pinned text query");
     };
-    assert_eq!(pinned.generation, Some(sample_generation_pin()));
-    assert_resolved_active_selector(pinned.generation_selector.as_ref());
+    assert_eq!(pinned.generation, None);
+    assert_active_selector(pinned.generation_selector.as_ref());
     assert_eq!(pinned.query_text, request.query_text);
 }
 
 fn observed_text_fixture() -> TextQueryResponse {
     TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: SearchExplanation::empty(),
         generation: sample_generation_pin(),
@@ -722,24 +726,21 @@ fn observed_lexical_active_trace_matches_plain_result_and_request_ids() {
     );
     assert_eq!(actual, expected);
     let requests = ok_or_fail!(observed_transport.requests.lock());
-    assert_eq!(requests.len(), 2);
-    assert_eq!(trace.rpcs.len(), 2);
-    assert_eq!(trace.rpcs[0].kind.as_str(), "query.resolve_active");
-    assert_eq!(trace.rpcs[1].kind.as_str(), "query.text");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(trace.rpcs.len(), 1);
+    assert_eq!(trace.rpcs[0].kind.as_str(), "query.text");
     assert_eq!(trace.rpcs[0].request_id, requests[0].request_id);
-    assert_eq!(trace.rpcs[1].request_id, requests[1].request_id);
-    assert_ne!(trace.rpcs[0].request_id, trace.rpcs[1].request_id);
     for rpc in &trace.rpcs {
         assert_eq!(rpc.ipc.total_ns, 20);
         assert_eq!(rpc.ipc.read_io_ns, 4);
         assert!(rpc.ipc.read_io_ns <= rpc.ipc.decode_call_ns);
     }
-    let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(pinned) = &requests[1].payload
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(pinned) = &requests[0].payload
     else {
         panic!("expected pinned lexical text request");
     };
-    assert_eq!(pinned.generation, Some(sample_generation_pin()));
-    assert_resolved_active_selector(pinned.generation_selector.as_ref());
+    assert_eq!(pinned.generation, None);
+    assert_active_selector(pinned.generation_selector.as_ref());
 }
 
 #[test]
@@ -840,6 +841,7 @@ fn observed_lexical_clones_keep_request_local_traces_distinct() {
 fn symbol_query_request_forwards_contract_dto_unchanged() {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results: vec![sample_symbol_hit()],
             window: QueryResultWindowV2::exact_probe(1),
@@ -881,6 +883,7 @@ fn symbol_rev_at_time_text_does_not_relax_response_pin() {
     );
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse {
+            selected_active_head: None,
             generation: wrong,
             results: vec![],
             window: QueryResultWindowV2::exact_probe(0),
@@ -906,8 +909,9 @@ fn symbol_rev_at_time_text_does_not_relax_response_pin() {
 
 #[test]
 fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text() {
-    let query = Arc::new(StubQueryTransport::new(
+    let query = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
@@ -963,6 +967,7 @@ fn hybrid_seed_search_builder_dispatches_hybrid_seed_request_with_semantic_text(
 fn semantic_query_request_resolves_active_before_forwarding() {
     let query = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results: vec![sample_hit()],
             window: QueryResultWindowV2::exact_probe(1),
@@ -990,13 +995,13 @@ fn semantic_query_request_resolves_active_before_forwarding() {
         top_k: 6,
     };
     let _response = ok_or_fail!(client.semantic().query_request(request.clone()));
-    let captured = ok_or_fail!(query_after_resolution(query.as_ref()));
+    let captured = ok_or_fail!(single_active_query(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(pinned) = captured.payload
     else {
         panic!("expected pinned semantic query");
     };
-    assert_eq!(pinned.generation, Some(sample_generation_pin()));
-    assert_resolved_active_selector(pinned.generation_selector.as_ref());
+    assert_eq!(pinned.generation, None);
+    assert_active_selector(pinned.generation_selector.as_ref());
     assert_eq!(pinned.query_text, request.query_text);
 }
 
@@ -1004,6 +1009,7 @@ fn semantic_query_request_resolves_active_before_forwarding() {
 fn hybrid_seed_request_resolves_active_before_forwarding() {
     let query = Arc::new(StubQueryTransport::active(
         SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             manifest_digest: "manifest-digest".to_string(),
             seed_candidates: vec![sample_hybrid_seed_candidate()],
@@ -1032,13 +1038,13 @@ fn hybrid_seed_request_resolves_active_before_forwarding() {
         top_k: 12,
     };
     let _response = ok_or_fail!(client.search().hybrid_seed_request(request.clone()));
-    let captured = ok_or_fail!(query_after_resolution(query.as_ref()));
+    let captured = ok_or_fail!(single_active_query(query.as_ref()));
     let quanta_index_contract::SearchPlaneQueryIpcRequest::HybridSeed(pinned) = captured.payload
     else {
         panic!("expected pinned hybrid-seed query");
     };
-    assert_eq!(pinned.generation, Some(sample_generation_pin()));
-    assert_resolved_active_selector(pinned.generation_selector.as_ref());
+    assert_eq!(pinned.generation, None);
+    assert_active_selector(pinned.generation_selector.as_ref());
     assert_eq!(pinned.semantic_query_text, request.semantic_query_text);
 }
 
@@ -1046,6 +1052,7 @@ fn hybrid_seed_request_resolves_active_before_forwarding() {
 fn lexical_sourcegraph_query_builder_dispatches_text_query_request() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            selected_active_head: None,
             rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: sample_generation_pin(),

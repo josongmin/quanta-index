@@ -2693,7 +2693,7 @@ fn verify_serial_request_events_runner(
         .iter()
         .filter(|event| event.sequence >= before.next_sequence)
         .collect();
-    assert_eq!(new_events.len(), 16);
+    assert_eq!(new_events.len(), 8);
     let routes: Vec<_> = new_events
         .iter()
         .filter(|event| {
@@ -2701,23 +2701,19 @@ fn verify_serial_request_events_runner(
         })
         .map(|event| event.route.as_deref().expect("backend route"))
         .collect();
-    assert_eq!(routes, ["query.resolve_active", "query.text"]);
+    assert_eq!(routes, ["query.text"]);
     let text_id = diagnostic["results"][0]["response"]["explanation"]["request_id"]
         .as_u64()
         .expect("text request ID");
     assert_eq!(events["tasks"][0]["text_request_id"], text_id);
-    assert_eq!(
-        events["tasks"][0]["resolve_request_id"],
-        new_events[0].request_id.get()
-    );
-    assert_eq!(new_events[8].request_id.get(), text_id);
+    assert_eq!(new_events[0].request_id.get(), text_id);
     let client = &events["tasks"][0]["client"];
     assert_eq!(client["clock"], "client_monotonic_duration_ns");
     assert_eq!(client["read_io_accounting"], "nested_inside_decode_call");
     let rpcs = client["rpcs"].as_array().expect("client RPC observations");
-    assert_eq!(rpcs.len(), 2);
+    assert_eq!(rpcs.len(), 1);
     let mut rpc_total_ns = 0_u64;
-    for (index, route) in ["query.resolve_active", "query.text"].iter().enumerate() {
+    for (index, route) in ["query.text"].iter().enumerate() {
         let rpc = &rpcs[index];
         assert_eq!(rpc["route"], *route);
         assert_eq!(rpc["request_id"], new_events[index * 8].request_id.get());

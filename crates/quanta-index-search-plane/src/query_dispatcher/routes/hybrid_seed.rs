@@ -264,6 +264,7 @@ impl SearchPlaneDispatcher {
             seed_lane_traces,
         )?;
         Ok(HybridSeedQueryResponse {
+            selected_active_head: selection.active_head,
             generation: pin,
             manifest_digest,
             seed_candidates,

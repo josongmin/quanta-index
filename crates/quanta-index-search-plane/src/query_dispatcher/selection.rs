@@ -3,16 +3,24 @@
 
 use quanta_index_contract::{
     GenerationPin, GenerationSelector, ManifestGeneration, RepoId, RevisionId,
-    SearchCorpusActivationTokenV1, SearchPlaneTrackKind, TextQueryRequest,
+    SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1, SearchPlaneTrackKind,
+    TextQueryRequest,
 };
 use quanta_index_core::CoreError;
 
-use crate::{ActivationCatalog, SearchCorpusGenerationV1};
+use crate::ActivationCatalog;
 
 #[derive(Clone, Debug)]
 pub(super) struct SemanticSelection {
     pub(super) pin: GenerationPin,
     pub(super) expected_manifest_digest: Option<String>,
+    pub(super) active_head: Option<SearchCorpusActiveHeadV1>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SelectedGeneration {
+    pub(super) pin: GenerationPin,
+    pub(super) active_head: Option<SearchCorpusActiveHeadV1>,
 }
 
 fn active_selector_parts(
@@ -38,7 +46,7 @@ fn resolve_active_head(
     revision_id: &RevisionId,
     expected_token: Option<SearchCorpusActivationTokenV1>,
     plane: &str,
-) -> Result<SearchCorpusGenerationV1, CoreError> {
+) -> Result<SearchCorpusActiveHeadV1, CoreError> {
     let (generation, observed_token) = catalog
         .active_search_corpus_with_token_v1(repo_id, revision_id)?
         .ok_or_else(|| {
@@ -55,7 +63,10 @@ fn resolve_active_head(
             revision_id.as_str()
         )));
     }
-    Ok(generation)
+    Ok(SearchCorpusActiveHeadV1 {
+        generation: generation.to_contract_v1(),
+        activation_token: observed_token,
+    })
 }
 
 fn is_active_selector(selector: Option<&GenerationSelector>) -> bool {
@@ -146,7 +157,7 @@ fn resolve_generation_selector_pin(
     selector: &GenerationSelector,
     track: SearchPlaneTrackKind,
     plane: &str,
-) -> Result<GenerationPin, CoreError> {
+) -> Result<SelectedGeneration, CoreError> {
     match selector {
         GenerationSelector::Active { .. } | GenerationSelector::ResolvedActive { .. } => {
             let Some((repo_id, revision_id, expected_token)) = active_selector_parts(selector)
@@ -167,23 +178,29 @@ fn resolve_generation_selector_pin(
                 expected_token,
                 plane,
             )?;
-            Ok(GenerationPin::new(
-                repo_id.clone(),
-                revision_id.clone(),
-                generation.manifest_generation(),
-            ))
+            Ok(SelectedGeneration {
+                pin: GenerationPin::new(
+                    repo_id.clone(),
+                    revision_id.clone(),
+                    generation.generation.lexical.manifest_generation,
+                ),
+                active_head: Some(generation),
+            })
         }
-        GenerationSelector::Pinned(pin) => Ok(pin.clone()),
+        GenerationSelector::Pinned(pin) => Ok(SelectedGeneration {
+            pin: pin.clone(),
+            active_head: None,
+        }),
     }
 }
 
-pub(super) fn resolve_optional_selection(
+pub(super) fn resolve_optional_selection_with_head(
     activation_catalog: &ActivationCatalog,
     generation: Option<GenerationPin>,
     generation_selector: Option<&GenerationSelector>,
     track: SearchPlaneTrackKind,
     plane: &str,
-) -> Result<Option<GenerationPin>, CoreError> {
+) -> Result<Option<SelectedGeneration>, CoreError> {
     validate_generation_scope(&[generation.as_ref()], &[generation_selector], plane)?;
     let selector_pin = match generation_selector {
         Some(selector) => Some(resolve_generation_selector_pin(
@@ -195,16 +212,41 @@ pub(super) fn resolve_optional_selection(
         None => None,
     };
     match (generation, selector_pin) {
-        (Some(pin), Some(selected)) if pin != selected => Err(selection_mismatch_error(
+        (Some(pin), Some(selected)) if pin != selected.pin => Err(selection_mismatch_error(
             (&pin, None),
-            (&selected, generation_selector),
+            (&selected.pin, generation_selector),
             format!(
                 "{plane}: explicit generation pin does not match generation selector resolution"
             ),
         )),
-        (Some(pin), _) | (None, Some(pin)) => Ok(Some(pin)),
+        (Some(pin), Some(selected)) => Ok(Some(SelectedGeneration {
+            pin,
+            active_head: selected.active_head,
+        })),
+        (Some(pin), None) => Ok(Some(SelectedGeneration {
+            pin,
+            active_head: None,
+        })),
+        (None, Some(selected)) => Ok(Some(selected)),
         (None, None) => Ok(None),
     }
+}
+
+pub(super) fn resolve_optional_selection(
+    activation_catalog: &ActivationCatalog,
+    generation: Option<GenerationPin>,
+    generation_selector: Option<&GenerationSelector>,
+    track: SearchPlaneTrackKind,
+    plane: &str,
+) -> Result<Option<GenerationPin>, CoreError> {
+    Ok(resolve_optional_selection_with_head(
+        activation_catalog,
+        generation,
+        generation_selector,
+        track,
+        plane,
+    )?
+    .map(|selection| selection.pin))
 }
 
 pub(super) fn resolve_semantic_selector_selection(
@@ -231,6 +273,7 @@ pub(super) fn resolve_semantic_selector_selection(
         GenerationSelector::Pinned(pin) => Ok(SemanticSelection {
             pin: pin.clone(),
             expected_manifest_digest: None,
+            active_head: None,
         }),
     }
 }
@@ -286,7 +329,7 @@ pub(super) fn resolve_joint_active_selection(
     let pin = GenerationPin::new(
         lexical_repo.clone(),
         lexical_revision.clone(),
-        generation.manifest_generation(),
+        generation.generation.lexical.manifest_generation,
     );
     if let Some(explicit) = lexical_generation.filter(|explicit| *explicit != &pin) {
         let message = format!(
@@ -300,7 +343,8 @@ pub(super) fn resolve_joint_active_selection(
     }
     Ok(Some(SemanticSelection {
         pin,
-        expected_manifest_digest: Some(generation.manifest_digest().to_string()),
+        expected_manifest_digest: Some(generation.generation.lexical.manifest_digest.clone()),
+        active_head: Some(generation),
     }))
 }
 
@@ -321,11 +365,12 @@ fn resolve_active_semantic_selection(
     let pin = GenerationPin::new(
         repo_id.clone(),
         revision_id.clone(),
-        generation.manifest_generation(),
+        generation.generation.lexical.manifest_generation,
     );
     Ok(SemanticSelection {
         pin,
-        expected_manifest_digest: Some(generation.manifest_digest().to_string()),
+        expected_manifest_digest: Some(generation.generation.lexical.manifest_digest.clone()),
+        active_head: Some(generation),
     })
 }
 
@@ -343,6 +388,55 @@ pub(super) fn resolve_lexical_request_pin(
         plane,
     )?
     .ok_or_else(|| CoreError::InvalidContract(format!("{plane}: generation pin required")))
+}
+
+pub(super) fn resolve_lexical_request_selection(
+    activation_catalog: &ActivationCatalog,
+    request: &TextQueryRequest,
+    track: SearchPlaneTrackKind,
+    plane: &str,
+) -> Result<SelectedGeneration, CoreError> {
+    resolve_optional_selection_with_head(
+        activation_catalog,
+        request.generation.clone(),
+        request.generation_selector.as_ref(),
+        track,
+        plane,
+    )?
+    .ok_or_else(|| CoreError::InvalidContract(format!("{plane}: generation pin required")))
+}
+
+/// Cursor position is authoritative for the page. An Active selector also
+/// requires the current catalog selection to name that cursor's generation;
+/// the returned head is the same snapshot used for that comparison.
+pub(super) fn resolve_cursor_selection(
+    activation_catalog: &ActivationCatalog,
+    generation: Option<GenerationPin>,
+    selector: Option<&GenerationSelector>,
+    cursor_pin: &GenerationPin,
+    track: SearchPlaneTrackKind,
+    plane: &str,
+) -> Result<SelectedGeneration, CoreError> {
+    let selected = resolve_optional_selection_with_head(
+        activation_catalog,
+        generation,
+        selector,
+        track,
+        plane,
+    )?;
+    if let Some(selected) = selected {
+        if selected.pin != *cursor_pin {
+            return Err(CoreError::NotReady(format!(
+                "{plane}: active selection changed since cursor was issued"
+            )));
+        }
+        Ok(selected)
+    } else {
+        Ok(SelectedGeneration {
+            pin: cursor_pin.clone(),
+            active_head: None,
+        })
+    }
 }
 
 /// Construct a [`GenerationPin`] from primitives. Public helper used in tests.

@@ -83,6 +83,7 @@ fn symbol_request() -> SymbolQueryRequest {
 
 fn text_response(generation: GenerationPin) -> SearchPlaneQueryIpcResponse {
     SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation,
@@ -91,6 +92,25 @@ fn text_response(generation: GenerationPin) -> SearchPlaneQueryIpcResponse {
         file_owner_rows: None,
         next_cursor: None,
     })
+}
+
+fn active_head(repo: RepoId) -> SearchCorpusActiveHeadV1 {
+    let SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(resolution) = active_snapshot(repo)
+    else {
+        unreachable!("fixture active snapshot")
+    };
+    resolution.head
+}
+
+fn active_text_response(
+    generation: GenerationPin,
+    head: SearchCorpusActiveHeadV1,
+) -> SearchPlaneQueryIpcResponse {
+    let SearchPlaneQueryIpcResponse::Text(mut page) = text_response(generation) else {
+        unreachable!("fixture text response")
+    };
+    page.selected_active_head = Some(head);
+    SearchPlaneQueryIpcResponse::Text(page)
 }
 
 fn active_snapshot(repo_id: RepoId) -> SearchPlaneQueryIpcResponse {
@@ -291,6 +311,7 @@ fn bounded_semantic_binds_work_settlement_and_refuses_ordinary_fallback() {
         max_work_units: 100,
     };
     let query = quanta_index_contract::SemanticQueryResponse {
+        selected_active_head: None,
         generation: pin(repo_id()),
         results: Vec::new(),
         window: quanta_index_contract::QueryResultWindowV2::exact_probe(0),
@@ -362,7 +383,13 @@ fn wrong_repo_pin_fails_closed() {
 #[test]
 fn active_selector_out_of_domain_fails_closed() {
     let dir = temp_dir("active");
-    let (socket, rx) = scripted_query_server(dir.path(), vec![active_snapshot(other_repo_id())]);
+    let (socket, rx) = scripted_query_server(
+        dir.path(),
+        vec![active_text_response(
+            pin(other_repo_id()),
+            active_head(other_repo_id()),
+        )],
+    );
     let client = client_on(dir.path(), socket);
     let error = client
         .reader()
@@ -377,51 +404,55 @@ fn active_selector_out_of_domain_fails_closed() {
     assert!(matches!(
         error,
         Binding {
-            axis: ResponseBindingAxis::ReadIdentity,
+            axis: ResponseBindingAxis::SelectorDomain,
             ..
         }
     ));
     assert!(matches!(
-        rx.recv()
-            .expect("active resolution reached the query socket"),
-        SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
+        rx.recv().expect("active text query reached the query socket"),
+        SearchPlaneQueryIpcRequest::Text(request) if request.generation.is_none()
+            && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
     ));
 }
 
 #[test]
-fn active_selector_rejects_wrong_same_domain_generation_over_uds() {
+fn resolved_active_rejects_changed_activation_token_over_uds() {
     let dir = temp_dir("active-wrong-generation");
-    let wrong = GenerationPin::new(repo_id(), revision_id(), ManifestGeneration::new(8));
+    let head = active_head(repo_id());
+    let expected_token = head.activation_token;
+    let mut changed = head;
+    changed.activation_token = SearchCorpusActivationTokenV1::new(
+        [7; 16],
+        std::num::NonZeroU64::new(2).expect("positive sequence"),
+    )
+    .expect("valid token");
     let (socket, rx) = scripted_query_server(
         dir.path(),
-        vec![active_snapshot(repo_id()), text_response(wrong)],
+        vec![active_text_response(pin(repo_id()), changed)],
     );
     let client = client_on(dir.path(), socket);
     let error = client
         .reader()
         .lexical_request(text_request(
             None,
-            Some(GenerationSelector::Active {
+            Some(GenerationSelector::ResolvedActive {
                 repo_id: repo_id(),
                 revision_id: revision_id(),
+                activation_token: expected_token,
             }),
         ))
-        .expect_err("same-domain response from another generation must be refused");
+        .expect_err("changed activation token must be refused");
     assert!(matches!(
         error,
         Binding {
-            axis: ResponseBindingAxis::ReadIdentity,
+            axis: ResponseBindingAxis::SelectorDomain,
             ..
         }
     ));
     assert!(matches!(
-        rx.recv().expect("resolution request"),
-        SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
-    ));
-    assert!(matches!(
-        rx.recv().expect("pinned query request"),
+        rx.recv().expect("tokened query request"),
         SearchPlaneQueryIpcRequest::Text(request)
-            if request.generation == Some(pin(repo_id()))
+            if request.generation.is_none()
                 && matches!(request.generation_selector, Some(GenerationSelector::ResolvedActive { .. }))
     ));
 }
@@ -430,6 +461,7 @@ fn active_selector_rejects_wrong_same_domain_generation_over_uds() {
 fn foreign_candidate_fails_closed() {
     let dir = temp_dir("candidate");
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
@@ -481,6 +513,7 @@ fn code_search_requires_file_rank_unit_even_for_an_empty_page() {
     let mut request = text_request(Some(pin(repo_id())), None);
     request.syntax = TextQuerySyntax::CodeSearch;
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::File,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
@@ -503,6 +536,7 @@ fn code_search_requires_file_rank_unit_even_for_an_empty_page() {
     let mut request = text_request(Some(pin(repo_id())), None);
     request.syntax = TextQuerySyntax::CodeSearch;
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::File,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
@@ -518,6 +552,7 @@ fn code_search_requires_file_rank_unit_even_for_an_empty_page() {
 fn window_disagreeing_with_rows_fails_closed() {
     let dir = temp_dir("window");
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
@@ -544,6 +579,7 @@ fn window_disagreeing_with_rows_fails_closed() {
 fn rows_over_request_cap_fails_closed() {
     let dir = temp_dir("cap");
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
@@ -626,6 +662,7 @@ fn swapped_owner_projection_fails_closed() {
     let first = owner_hit("cand-1", 2.0);
     let second = owner_hit("cand-2", 1.0);
     let response = SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: pin(repo_id()),
@@ -656,6 +693,7 @@ fn unordered_hybrid_ranking_fails_closed() {
     let dir = temp_dir("hybrid-order");
     let response =
         SearchPlaneQueryIpcResponse::Hybrid(quanta_index_contract::HybridQueryResponse {
+            selected_active_head: None,
             generation: pin(repo_id()),
             results: vec![
                 owner_hybrid_row("cand-a", 1.0),
@@ -704,7 +742,7 @@ fn query_only_profile_needs_no_control_or_ingest_sockets() {
     let dir = temp_dir("query-only");
     let (socket, rx) = scripted_query_server(
         dir.path(),
-        vec![active_snapshot(repo_id()), text_response(pin(repo_id()))],
+        vec![active_text_response(pin(repo_id()), active_head(repo_id()))],
     );
     // Only the query socket is named; the query-only profile must not
     // require, resolve or fabricate the other two.
@@ -723,14 +761,10 @@ fn query_only_profile_needs_no_control_or_ingest_sockets() {
         .expect("active query dispatch works in the query-only profile");
     drop(response);
     assert!(matches!(
-        rx.recv().expect("resolution request"),
-        SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
-    ));
-    assert!(matches!(
-        rx.recv().expect("pinned query request"),
+        rx.recv().expect("active query request"),
         SearchPlaneQueryIpcRequest::Text(request)
-            if request.generation == Some(pin(repo_id()))
-                && matches!(request.generation_selector, Some(GenerationSelector::ResolvedActive { .. }))
+            if request.generation.is_none()
+                && matches!(request.generation_selector, Some(GenerationSelector::Active { .. }))
     ));
 
     // The full profile with the same options still refuses: least

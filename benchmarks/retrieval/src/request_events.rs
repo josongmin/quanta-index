@@ -23,79 +23,62 @@ const SUCCESS_STAGES: [ProcessRequestEventStageV1; 8] = [
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct RequestPair {
-    pub resolve_request_id: u64,
     pub text_request_id: u64,
 }
 
-/// Join measured client intervals to the lossless server IDs. All arithmetic
-/// uses durations from the client clock; server-local clocks are never subtracted.
+/// Join the one Active query RPC to its lossless server request ID.
 pub(crate) fn client_observation_value(
     pair: RequestPair,
     observation: &ClientLexicalQueryObservationV1,
     sdk_execute_ns: u64,
 ) -> BenchResult<serde_json::Value> {
-    if observation.rpcs.len() != 2 {
+    let [rpc] = observation.rpcs.as_slice() else {
         return Err(BenchError::Protocol(
-            "client query observation requires exactly resolve-active and text RPCs".to_string(),
+            "client query observation requires exactly one text RPC".to_string(),
+        ));
+    };
+    if pair.text_request_id == 0
+        || rpc.kind != ClientQueryRpcKindV1::Text
+        || rpc.request_id != pair.text_request_id
+    {
+        return Err(BenchError::Protocol(
+            "client query observation differs from server request identity".to_string(),
         ));
     }
-    let mut total_ns = 0_u64;
-    let mut rpcs = Vec::with_capacity(2);
-    for (rpc, (kind, request_id)) in observation.rpcs.iter().zip([
-        (
-            ClientQueryRpcKindV1::ResolveActiveGeneration,
-            pair.resolve_request_id,
-        ),
-        (ClientQueryRpcKindV1::Text, pair.text_request_id),
-    ]) {
-        if request_id == 0 || rpc.kind != kind || rpc.request_id != request_id {
-            return Err(BenchError::Protocol(
-                "client query observation differs from server request identity or order"
-                    .to_string(),
-            ));
-        }
-        let timing = rpc.ipc;
-        let children_ns = timing
-            .encode_ns
-            .checked_add(timing.connect_ns)
-            .and_then(|sum| sum.checked_add(timing.write_ns))
-            .and_then(|sum| sum.checked_add(timing.decode_call_ns))
-            .ok_or_else(|| BenchError::Protocol("client RPC child clocks overflow".to_string()))?;
-        if children_ns > timing.total_ns || timing.read_io_ns > timing.decode_call_ns {
-            return Err(BenchError::Protocol(
-                "client RPC child clocks exceed their observed parent".to_string(),
-            ));
-        }
-        total_ns = total_ns
-            .checked_add(timing.total_ns)
-            .ok_or_else(|| BenchError::Protocol("client query RPC clocks overflow".to_string()))?;
-        rpcs.push(serde_json::json!({
-            "route": kind.as_str(), "request_id": request_id,
-            "total_ns": timing.total_ns, "encode_ns": timing.encode_ns,
-            "connect_ns": timing.connect_ns, "write_ns": timing.write_ns,
-            "decode_call_ns": timing.decode_call_ns, "read_io_ns": timing.read_io_ns,
-            "decode_non_read_ns": timing.decode_call_ns.saturating_sub(timing.read_io_ns),
-            "unallocated_ns": timing.total_ns.saturating_sub(children_ns),
-        }));
-    }
-    if pair.resolve_request_id == pair.text_request_id || total_ns > sdk_execute_ns {
+    let timing = rpc.ipc;
+    let children_ns = timing
+        .encode_ns
+        .checked_add(timing.connect_ns)
+        .and_then(|sum| sum.checked_add(timing.write_ns))
+        .and_then(|sum| sum.checked_add(timing.decode_call_ns))
+        .ok_or_else(|| BenchError::Protocol("client RPC child clocks overflow".to_string()))?;
+    if children_ns > timing.total_ns
+        || timing.read_io_ns > timing.decode_call_ns
+        || timing.total_ns > sdk_execute_ns
+    {
         return Err(BenchError::Protocol(
-            "client query RPC clocks or identity contradict SDK execution".to_string(),
+            "client RPC clocks contradict SDK execution".to_string(),
         ));
     }
     Ok(serde_json::json!({
         "clock": "client_monotonic_duration_ns",
         "timing_boundary": "successful_sdk_query_rpc_calls",
-        "sdk_execute_ns": sdk_execute_ns, "rpc_total_ns": total_ns,
-        "sdk_unallocated_ns": sdk_execute_ns.saturating_sub(total_ns), "rpcs": rpcs,
+        "sdk_execute_ns": sdk_execute_ns, "rpc_total_ns": timing.total_ns,
+        "sdk_unallocated_ns": sdk_execute_ns.saturating_sub(timing.total_ns),
+        "rpcs": [{
+            "route": rpc.kind.as_str(), "request_id": rpc.request_id,
+            "total_ns": timing.total_ns, "encode_ns": timing.encode_ns,
+            "connect_ns": timing.connect_ns, "write_ns": timing.write_ns,
+            "decode_call_ns": timing.decode_call_ns, "read_io_ns": timing.read_io_ns,
+            "decode_non_read_ns": timing.decode_call_ns.saturating_sub(timing.read_io_ns),
+            "unallocated_ns": timing.total_ns.saturating_sub(children_ns),
+        }],
         "read_io_accounting": "nested_inside_decode_call",
         "decode_non_read_accounting": "elapsed_local_work_not_cpu_time",
     }))
 }
 
-/// Retain only a complete, lossless, exactly serial two-RPC trace per query.
-/// Each event clock is request-local and begins after frame decoding; this
-/// function does not label any SDK/server residual as IPC overhead.
+/// Admit only a complete, lossless, serial one-RPC trace per query.
 pub(crate) fn check_serial_windows(
     before: &ProcessRequestEventsV1,
     after: &ProcessRequestEventsV1,
@@ -146,154 +129,86 @@ pub(crate) fn check_serial_windows(
             .last()
             .and_then(|event| event.sequence.checked_add(1))
             != Some(after.next_sequence)
-        || new_events.len() != expected_text_ids.len() * SUCCESS_STAGES.len() * 2
+        || new_events.len() != expected_text_ids.len() * SUCCESS_STAGES.len()
     {
         return Err(BenchError::Protocol(
             "query event tail has a missing, extra or incomplete request".to_string(),
         ));
     }
-    let mut seen_request_ids = BTreeSet::new();
-    let mut request_pairs = Vec::with_capacity(expected_text_ids.len());
-    for (query_index, expected_text_id) in expected_text_ids.iter().copied().enumerate() {
-        let mut pair = [0; 2];
-        for (rpc_index, expected_route) in ["query.resolve_active", "query.text"]
-            .into_iter()
-            .enumerate()
+    let mut pairs = Vec::with_capacity(expected_text_ids.len());
+    for (index, expected_id) in expected_text_ids.iter().copied().enumerate() {
+        let group = &new_events[index * SUCCESS_STAGES.len()..(index + 1) * SUCCESS_STAGES.len()];
+        let request_id = group[0].request_id.get();
+        let connection_id = group[0].connection_id;
+        if request_id != expected_id
+            || group.iter().enumerate().any(|(position, event)| {
+                event.request_id.get() != request_id
+                    || event.connection_id != connection_id
+                    || event.stage != SUCCESS_STAGES[position]
+                    || (position == 4
+                        && (event.route.as_deref() != Some("query.text") || event.error.is_some()))
+                    || (position > 0 && event.elapsed_micros < group[position - 1].elapsed_micros)
+            })
         {
-            let start = (query_index * 2 + rpc_index) * SUCCESS_STAGES.len();
-            let group = &new_events[start..start + SUCCESS_STAGES.len()];
-            let request_id = group[0].request_id.get();
-            let connection_id = group[0].connection_id;
-            if !seen_request_ids.insert(request_id)
-                || group.iter().enumerate().any(|(index, event)| {
-                    event.request_id.get() != request_id
-                        || event.connection_id != connection_id
-                        || event.stage != SUCCESS_STAGES[index]
-                        || (index == 4
-                            && (event.route.as_deref() != Some(expected_route)
-                                || event.error.is_some()))
-                        || (index > 0 && event.elapsed_micros < group[index - 1].elapsed_micros)
-                })
-            {
-                return Err(BenchError::Protocol(format!(
-                    "query event RPC {query_index}/{rpc_index} is foreign, reordered or incomplete"
-                )));
-            }
-            pair[rpc_index] = request_id;
-        }
-        if pair[1] != expected_text_id {
             return Err(BenchError::Protocol(format!(
-                "query event text request ID differs from response for query {query_index}"
+                "query event RPC {index} is foreign, reordered or incomplete"
             )));
         }
-        request_pairs.push(RequestPair {
-            resolve_request_id: pair[0],
-            text_request_id: pair[1],
+        pairs.push(RequestPair {
+            text_request_id: request_id,
         });
     }
-    Ok(request_pairs)
+    Ok(pairs)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
-
+    use super::*;
     use quanta_index_contract::ProcessRequestEventV1;
     use quanta_index_sdk::{ClientIpcTimingV1, ClientQueryRpcObservationV1};
+    use std::num::NonZeroU64;
 
-    use super::*;
-
-    fn client_fixture() -> (RequestPair, ClientLexicalQueryObservationV1) {
-        let pair = RequestPair {
-            resolve_request_id: 7,
-            text_request_id: 9,
-        };
-        let timing = ClientIpcTimingV1 {
-            total_ns: 100,
-            encode_ns: 5,
-            connect_ns: 10,
-            write_ns: 15,
-            decode_call_ns: 60,
-            read_io_ns: 40,
-        };
+    fn fixture() -> (RequestPair, ClientLexicalQueryObservationV1) {
         (
-            pair,
+            RequestPair { text_request_id: 9 },
             ClientLexicalQueryObservationV1 {
-                rpcs: vec![
-                    ClientQueryRpcObservationV1 {
-                        kind: ClientQueryRpcKindV1::ResolveActiveGeneration,
-                        request_id: 7,
-                        ipc: timing,
+                rpcs: vec![ClientQueryRpcObservationV1 {
+                    kind: ClientQueryRpcKindV1::Text,
+                    request_id: 9,
+                    ipc: ClientIpcTimingV1 {
+                        total_ns: 100,
+                        encode_ns: 5,
+                        connect_ns: 10,
+                        write_ns: 15,
+                        decode_call_ns: 60,
+                        read_io_ns: 40,
                     },
-                    ClientQueryRpcObservationV1 {
-                        kind: ClientQueryRpcKindV1::Text,
-                        request_id: 9,
-                        ipc: timing,
-                    },
-                ],
+                }],
             },
         )
     }
 
     #[test]
-    fn client_join_uses_nested_read_clocks_and_fixed_request_ids() {
-        let (pair, observation) = client_fixture();
-        let value = client_observation_value(pair, &observation, 250).expect("fixed valid trace");
-        assert_eq!(value["rpc_total_ns"], 200);
+    fn client_join_binds_the_only_text_request_and_nested_read_clock() {
+        let (pair, observation) = fixture();
+        let value = client_observation_value(pair, &observation, 150).expect("valid one-RPC trace");
+        assert_eq!(value["rpc_total_ns"], 100);
         assert_eq!(value["sdk_unallocated_ns"], 50);
-        assert_eq!(value["rpcs"][0]["request_id"], 7);
-        assert_eq!(value["rpcs"][1]["request_id"], 9);
-        assert_eq!(value["rpcs"][1]["read_io_ns"], 40);
-        assert_eq!(value["rpcs"][1]["decode_non_read_ns"], 20);
-        assert_eq!(value["rpcs"][1]["unallocated_ns"], 10);
-        assert_eq!(value["read_io_accounting"], "nested_inside_decode_call");
-    }
-
-    #[test]
-    fn client_join_refuses_foreign_incomplete_reordered_and_overflowing_traces() {
-        let (pair, fixture) = client_fixture();
-        let mut mutants = Vec::new();
-        let mut row = fixture.clone();
-        row.rpcs.swap(0, 1);
-        mutants.push(row);
-        let mut row = fixture.clone();
-        row.rpcs[1].request_id = 11;
-        mutants.push(row);
-        let mut row = fixture.clone();
-        let _removed = row.rpcs.pop();
-        mutants.push(row);
-        let mut row = fixture.clone();
-        row.rpcs.push(row.rpcs[0]);
-        mutants.push(row);
-        let mut row = fixture.clone();
-        row.rpcs[1].ipc.read_io_ns = 61;
-        mutants.push(row);
-        let mut row = fixture.clone();
-        row.rpcs[1].ipc.total_ns = 89;
-        mutants.push(row);
-        let mut row = fixture.clone();
-        row.rpcs[0].ipc.encode_ns = u64::MAX;
-        mutants.push(row);
-        let mut row = fixture.clone();
-        for rpc in &mut row.rpcs {
-            rpc.ipc.total_ns = u64::MAX;
+        assert_eq!(value["rpcs"][0]["request_id"], 9);
+        assert_eq!(value["rpcs"][0]["decode_non_read_ns"], 20);
+        for mutate in 0..6 {
+            let mut bad = observation.clone();
+            match mutate {
+                0 => bad.rpcs.push(bad.rpcs[0]),
+                1 => bad.rpcs[0].request_id = 11,
+                2 => bad.rpcs[0].kind = ClientQueryRpcKindV1::ResolveActiveGeneration,
+                3 => bad.rpcs[0].ipc.read_io_ns = 61,
+                4 => bad.rpcs[0].ipc.total_ns = 89,
+                _ => bad.rpcs[0].ipc.encode_ns = u64::MAX,
+            }
+            assert!(client_observation_value(pair, &bad, 150).is_err());
         }
-        mutants.push(row);
-        for mutant in mutants {
-            assert!(client_observation_value(pair, &mutant, u64::MAX).is_err());
-        }
-        assert!(client_observation_value(pair, &fixture, 199).is_err());
-        assert!(
-            client_observation_value(
-                RequestPair {
-                    resolve_request_id: 0,
-                    text_request_id: 9
-                },
-                &fixture,
-                250,
-            )
-            .is_err()
-        );
+        assert!(client_observation_value(pair, &observation, 99).is_err());
     }
 
     fn window(request_count: usize) -> ProcessRequestEventsV1 {
@@ -308,13 +223,8 @@ mod tests {
                     connection_id: u64::try_from(rpc + 1).expect("small connection"),
                     stage,
                     elapsed_micros: u64::try_from(index).expect("small clock"),
-                    route: (stage == ProcessRequestEventStageV1::BackendOutcome).then(|| {
-                        if rpc % 2 == 0 {
-                            "query.resolve_active".to_string()
-                        } else {
-                            "query.text".to_string()
-                        }
-                    }),
+                    route: (stage == ProcessRequestEventStageV1::BackendOutcome)
+                        .then(|| "query.text".to_string()),
                     error: None,
                     ticket_id: None,
                     window_ordinal: None,
@@ -335,47 +245,29 @@ mod tests {
     }
 
     #[test]
-    fn serial_two_query_trace_has_fixed_request_pairs() {
+    fn serial_one_rpc_windows_bind_response_ids_and_reject_loss() {
         let before = window(0);
-        let after = window(4);
+        let after = window(2);
         assert_eq!(
-            check_serial_windows(&before, &after, &[2, 4]).expect("complete trace"),
+            check_serial_windows(&before, &after, &[1, 2]).expect("complete trace"),
             vec![
-                RequestPair {
-                    resolve_request_id: 1,
-                    text_request_id: 2
-                },
-                RequestPair {
-                    resolve_request_id: 3,
-                    text_request_id: 4
-                }
+                RequestPair { text_request_id: 1 },
+                RequestPair { text_request_id: 2 }
             ]
         );
         assert_eq!(
-            check_serial_windows(&window(2), &after, &[4]).expect("baseline excludes old RPCs"),
-            vec![RequestPair {
-                resolve_request_id: 3,
-                text_request_id: 4
-            }]
+            check_serial_windows(&window(1), &after, &[2]).expect("one new request"),
+            vec![RequestPair { text_request_id: 2 }]
         );
-    }
-
-    #[test]
-    fn serial_trace_rejects_loss_foreign_rpc_and_wrong_response() {
-        let before = window(0);
-        let mut after = window(2);
-        assert!(check_serial_windows(&before, &after, &[3]).is_err());
-        after.dropped_after = 1;
-        assert!(check_serial_windows(&before, &after, &[2]).is_err());
-        after.dropped_after = 0;
-        after.events[12].route = Some("query.symbol".to_string());
-        assert!(check_serial_windows(&before, &after, &[2]).is_err());
-        after = window(2);
-        after.process_instance = "0000000000000000000000000000002b".into();
-        assert!(check_serial_windows(&before, &after, &[2]).is_err());
-        after = window(2);
-        let _removed = after.events.remove(0);
-        assert!(check_serial_windows(&before, &after, &[2]).is_err());
-        assert!(check_serial_windows(&before, &window(4), &[2]).is_err());
+        assert!(check_serial_windows(&before, &after, &[2, 1]).is_err());
+        let mut lost = after.clone();
+        lost.dropped_after = 1;
+        assert!(check_serial_windows(&before, &lost, &[1, 2]).is_err());
+        let mut foreign = after.clone();
+        foreign.events[4].route = Some("query.symbol".to_string());
+        assert!(check_serial_windows(&before, &foreign, &[1, 2]).is_err());
+        let mut restarted = after.clone();
+        restarted.process_instance = "0000000000000000000000000000002b".into();
+        assert!(check_serial_windows(&before, &restarted, &[1, 2]).is_err());
     }
 }

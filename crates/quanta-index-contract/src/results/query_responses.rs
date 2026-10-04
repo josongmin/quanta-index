@@ -10,7 +10,8 @@ use serde::{
 use crate::{
     AuxEpochV1, CommitCandidate, ContinuationTokenV2, DiffCandidate, GenerationPin, HistoryOrderV1,
     LexicalCandidate, LexicalRowOrderKey, ManifestGeneration, OwnerDocKind, QueryResultWindowV2,
-    RepoId, RepoRelativePath, RevisionId, SemanticCorpusKindV1, StructuralCandidate,
+    RepoId, RepoRelativePath, RevisionId, SearchCorpusActiveHeadV1, SemanticCorpusKindV1,
+    StructuralCandidate,
     lex::{SymbolKindCode, SymbolKindFamily},
 };
 
@@ -93,6 +94,7 @@ impl<'de> Deserialize<'de> for TextRankUnit {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextQueryResponse {
     pub generation: GenerationPin,
+    pub selected_active_head: Option<SearchCorpusActiveHeadV1>,
     pub rank_unit: TextRankUnit,
     pub results: Vec<LexicalCandidate>,
     pub window: QueryResultWindowV2,
@@ -376,15 +378,23 @@ impl SymbolCandidate {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SymbolQueryResponse {
     pub generation: GenerationPin,
+    pub selected_active_head: Option<SearchCorpusActiveHeadV1>,
     pub results: Vec<SymbolCandidate>,
     pub window: QueryResultWindowV2,
     pub next_cursor: Option<ContinuationTokenV2>,
 }
 
-const SYMBOL_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "next_cursor"];
+const SYMBOL_QUERY_RESPONSE_FIELDS: &[&str] = &[
+    "generation",
+    "selected_active_head",
+    "results",
+    "window",
+    "next_cursor",
+];
 
 const TEXT_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "generation",
+    "selected_active_head",
     "rank_unit",
     "results",
     "window",
@@ -392,6 +402,24 @@ const TEXT_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "file_owner_rows",
     "next_cursor",
 ];
+
+fn validate_selected_active_head(
+    pin: &GenerationPin,
+    head: Option<&SearchCorpusActiveHeadV1>,
+) -> Result<(), &'static str> {
+    if let Some(head) = head {
+        head.validate_v1()
+            .map_err(|_| "invalid selected active head")?;
+        let lexical = &head.generation.lexical;
+        if lexical.repo_id != pin.repo_id
+            || lexical.revision_id != pin.revision_id
+            || lexical.manifest_generation != pin.manifest_generation
+        {
+            return Err("selected active head disagrees with response generation");
+        }
+    }
+    Ok(())
+}
 
 fn validate_text_rank_unit(
     rank_unit: TextRankUnit,
@@ -431,6 +459,7 @@ const FILE_OWNER_PROJECTION_ROW_FIELDS: &[&str] = &[
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticQueryResponse {
     pub generation: GenerationPin,
+    pub selected_active_head: Option<SearchCorpusActiveHeadV1>,
     pub results: Vec<LexicalCandidate>,
     /// The single completeness authority (S21-06): the typed execution
     /// outcome and coverage. A bounded top-k page that filled without
@@ -440,7 +469,13 @@ pub struct SemanticQueryResponse {
     pub explanation: SearchExplanation,
 }
 
-const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "explanation"];
+const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &[
+    "generation",
+    "selected_active_head",
+    "results",
+    "window",
+    "explanation",
+];
 
 /// The hybrid response: the RRF fusion of the two independent lanes, one
 /// [`HybridCandidateV1`] per fused identity (QI-BB-018, QI-BB-022).
@@ -451,6 +486,7 @@ const SEMANTIC_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "wind
 #[derive(Clone, Debug, PartialEq)]
 pub struct HybridQueryResponse {
     pub generation: GenerationPin,
+    pub selected_active_head: Option<SearchCorpusActiveHeadV1>,
     pub results: Vec<HybridCandidateV1>,
     /// The single completeness authority (S21-06): a capped dense
     /// admission, an interrupted scan or an approximate method stays
@@ -460,7 +496,13 @@ pub struct HybridQueryResponse {
     pub explanation: SearchExplanation,
 }
 
-const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &["generation", "results", "window", "explanation"];
+const HYBRID_QUERY_RESPONSE_FIELDS: &[&str] = &[
+    "generation",
+    "selected_active_head",
+    "results",
+    "window",
+    "explanation",
+];
 
 /// One of the two lanes the hybrid route fuses (QI-BB-018).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -916,6 +958,7 @@ impl From<&SeedCandidate> for SeedFusionIdentity {
 /// `window.returned` counts `seed_candidates`; there is no second list.
 pub struct HybridSeedQueryResponse {
     pub generation: GenerationPin,
+    pub selected_active_head: Option<SearchCorpusActiveHeadV1>,
     pub manifest_digest: String,
     pub seed_candidates: Vec<SeedCandidate>,
     /// The single completeness authority (S21-06), as
@@ -926,6 +969,7 @@ pub struct HybridSeedQueryResponse {
 
 const HYBRID_SEED_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "generation",
+    "selected_active_head",
     "manifest_digest",
     "seed_candidates",
     "window",
@@ -961,6 +1005,7 @@ const SEED_CANDIDATE_V2_FIELDS: &[&str] = &[
 /// wire carries neither beside it.
 pub struct SearchPlaneHistoryQueryResponse {
     pub generation: GenerationPin,
+    pub selected_active_head: Option<SearchCorpusActiveHeadV1>,
     pub order: HistoryOrderV1,
     pub commits: Vec<CommitCandidate>,
     pub diffs: Vec<DiffCandidate>,
@@ -972,6 +1017,7 @@ pub struct SearchPlaneHistoryQueryResponse {
 
 const SEARCH_PLANE_HISTORY_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "generation",
+    "selected_active_head",
     "order",
     "commits",
     "diffs",
@@ -986,10 +1032,16 @@ impl Serialize for SearchPlaneHistoryQueryResponse {
     where
         S: Serializer,
     {
-        let field_count = if self.next_cursor.is_some() { 8 } else { 7 };
+        let field_count = (if self.next_cursor.is_some() { 8 } else { 7 })
+            + usize::from(self.selected_active_head.is_some());
         let mut state =
             serializer.serialize_struct("SearchPlaneHistoryQueryResponse", field_count)?;
+        validate_selected_active_head(&self.generation, self.selected_active_head.as_ref())
+            .map_err(serde::ser::Error::custom)?;
         state.serialize_field("generation", &self.generation)?;
+        if let Some(head) = &self.selected_active_head {
+            state.serialize_field("selected_active_head", head)?;
+        }
         state.serialize_field("order", &self.order)?;
         state.serialize_field("commits", &self.commits)?;
         state.serialize_field("diffs", &self.diffs)?;
@@ -1017,6 +1069,8 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
         A: MapAccess<'de>,
     {
         let mut generation: Option<GenerationPin> = None;
+        let mut selected_active_head: Option<SearchCorpusActiveHeadV1> = None;
+        let mut selected_active_head_seen = false;
         let mut order: Option<HistoryOrderV1> = None;
         let mut commits: Option<Vec<CommitCandidate>> = None;
         let mut diffs: Option<Vec<DiffCandidate>> = None;
@@ -1027,6 +1081,13 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
         let mut next_cursor_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
+                "selected_active_head" => {
+                    if selected_active_head_seen {
+                        return Err(de::Error::duplicate_field("selected_active_head"));
+                    }
+                    selected_active_head_seen = true;
+                    selected_active_head = Some(map.next_value()?);
+                }
                 "generation" => {
                     if generation.is_some() {
                         return Err(de::Error::duplicate_field("generation"));
@@ -1132,8 +1193,12 @@ impl<'de> Visitor<'de> for SearchPlaneHistoryQueryResponseVisitor {
             ));
         }
         let read_epoch = read_epoch.ok_or_else(|| de::Error::missing_field("read_epoch"))?;
+        let generation = generation.ok_or_else(|| de::Error::missing_field("generation"))?;
+        validate_selected_active_head(&generation, selected_active_head.as_ref())
+            .map_err(de::Error::custom)?;
         Ok(SearchPlaneHistoryQueryResponse {
-            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            generation,
+            selected_active_head,
             order,
             commits,
             diffs,
@@ -1186,9 +1251,15 @@ macro_rules! impl_ranked_lexical_page_serde {
                     self.next_cursor.as_ref(),
                 )
                 .map_err(serde::ser::Error::custom)?;
-                let field_count = if self.next_cursor.is_some() { 4 } else { 3 };
+                let field_count = (if self.next_cursor.is_some() { 4 } else { 3 })
+                    + usize::from(self.selected_active_head.is_some());
                 let mut state = serializer.serialize_struct(stringify!($ty), field_count)?;
+                validate_selected_active_head(&self.generation, self.selected_active_head.as_ref())
+                    .map_err(serde::ser::Error::custom)?;
                 state.serialize_field("generation", &self.generation)?;
+                if let Some(head) = &self.selected_active_head {
+                    state.serialize_field("selected_active_head", head)?;
+                }
                 state.serialize_field("results", &self.results)?;
                 state.serialize_field("window", &self.window)?;
                 if let Some(next_cursor) = &self.next_cursor {
@@ -1212,12 +1283,21 @@ macro_rules! impl_ranked_lexical_page_serde {
                 A: MapAccess<'de>,
             {
                 let mut generation: Option<GenerationPin> = None;
+                let mut selected_active_head: Option<SearchCorpusActiveHeadV1> = None;
+                let mut selected_active_head_seen = false;
                 let mut results: Option<Vec<$result_ty>> = None;
                 let mut window: Option<QueryResultWindowV2> = None;
                 let mut next_cursor: Option<ContinuationTokenV2> = None;
                 let mut next_cursor_seen = false;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
+                        "selected_active_head" => {
+                            if selected_active_head_seen {
+                                return Err(de::Error::duplicate_field("selected_active_head"));
+                            }
+                            selected_active_head_seen = true;
+                            selected_active_head = Some(map.next_value()?);
+                        }
                         "generation" => {
                             if generation.is_some() {
                                 return Err(de::Error::duplicate_field("generation"));
@@ -1250,6 +1330,8 @@ macro_rules! impl_ranked_lexical_page_serde {
                 }
                 let generation =
                     generation.ok_or_else(|| de::Error::missing_field("generation"))?;
+                validate_selected_active_head(&generation, selected_active_head.as_ref())
+                    .map_err(de::Error::custom)?;
                 let results = results.ok_or_else(|| de::Error::missing_field("results"))?;
                 let window = window.ok_or_else(|| de::Error::missing_field("window"))?;
                 check_ranked_page_v2(
@@ -1261,6 +1343,7 @@ macro_rules! impl_ranked_lexical_page_serde {
                 .map_err(de::Error::custom)?;
                 Ok($ty {
                     generation,
+                    selected_active_head,
                     results,
                     window,
                     next_cursor,
@@ -1309,8 +1392,13 @@ macro_rules! impl_keyset_page_response_serde {
                 } else {
                     $fields.len().saturating_sub(1)
                 };
+                let field_count = field_count - usize::from(self.selected_active_head.is_none());
                 let mut state = serializer.serialize_struct(stringify!($ty), field_count)?;
+                validate_selected_active_head(&self.generation, self.selected_active_head.as_ref()).map_err(serde::ser::Error::custom)?;
                 state.serialize_field("generation", &self.generation)?;
+                if let Some(head) = &self.selected_active_head {
+                    state.serialize_field("selected_active_head", head)?;
+                }
                 state.serialize_field("results", &self.results)?;
                 state.serialize_field("window", &self.window)?;
                 $(state.serialize_field(stringify!($response_epoch), &self.$response_epoch)?;)+
@@ -1336,6 +1424,8 @@ macro_rules! impl_keyset_page_response_serde {
                 A: MapAccess<'de>,
             {
                 let mut generation: Option<GenerationPin> = None;
+                let mut selected_active_head: Option<SearchCorpusActiveHeadV1> = None;
+                let mut selected_active_head_seen = false;
                 let mut results: Option<Vec<$result_ty>> = None;
                 let mut window: Option<QueryResultWindowV2> = None;
                 $(let mut $response_epoch: Option<AuxEpochV1> = None;)+
@@ -1344,6 +1434,11 @@ macro_rules! impl_keyset_page_response_serde {
                 let mut next_cursor_seen = false;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
+                        "selected_active_head" => {
+                            if selected_active_head_seen { return Err(de::Error::duplicate_field("selected_active_head")); }
+                            selected_active_head_seen = true;
+                            selected_active_head = Some(map.next_value()?);
+                        }
                         "generation" => {
                             if generation.is_some() {
                                 return Err(de::Error::duplicate_field("generation"));
@@ -1404,8 +1499,12 @@ macro_rules! impl_keyset_page_response_serde {
                         "keyset page rows are not strictly ascending by candidate id",
                     ));
                 }
+                let generation = generation.ok_or_else(|| de::Error::missing_field("generation"))?;
+                validate_selected_active_head(&generation, selected_active_head.as_ref())
+                    .map_err(de::Error::custom)?;
                 Ok($ty {
-                    generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+                    generation,
+                    selected_active_head,
                     results,
                     window,
                     $(
@@ -1478,8 +1577,16 @@ macro_rules! impl_generation_results_explanation_response_serde {
                 S: Serializer,
             {
                 ($validate_results)(&self.results).map_err(serde::ser::Error::custom)?;
-                let mut state = serializer.serialize_struct(stringify!($ty), 4)?;
+                let mut state = serializer.serialize_struct(
+                    stringify!($ty),
+                    4 + usize::from(self.selected_active_head.is_some()),
+                )?;
+                validate_selected_active_head(&self.generation, self.selected_active_head.as_ref())
+                    .map_err(serde::ser::Error::custom)?;
                 state.serialize_field("generation", &self.generation)?;
+                if let Some(head) = &self.selected_active_head {
+                    state.serialize_field("selected_active_head", head)?;
+                }
                 state.serialize_field("results", &self.results)?;
                 state.serialize_field("window", &self.window)?;
                 state.serialize_field("explanation", &self.explanation)?;
@@ -1501,11 +1608,20 @@ macro_rules! impl_generation_results_explanation_response_serde {
                 A: MapAccess<'de>,
             {
                 let mut generation: Option<GenerationPin> = None;
+                let mut selected_active_head: Option<SearchCorpusActiveHeadV1> = None;
+                let mut selected_active_head_seen = false;
                 let mut results: Option<Vec<$result_ty>> = None;
                 let mut window: Option<QueryResultWindowV2> = None;
                 let mut explanation: Option<SearchExplanation> = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
+                        "selected_active_head" => {
+                            if selected_active_head_seen {
+                                return Err(de::Error::duplicate_field("selected_active_head"));
+                            }
+                            selected_active_head_seen = true;
+                            selected_active_head = Some(map.next_value()?);
+                        }
                         "generation" => {
                             if generation.is_some() {
                                 return Err(de::Error::duplicate_field("generation"));
@@ -1548,8 +1664,13 @@ macro_rules! impl_generation_results_explanation_response_serde {
                     ));
                 }
                 ($validate_results)(&results).map_err(de::Error::custom)?;
+                let generation =
+                    generation.ok_or_else(|| de::Error::missing_field("generation"))?;
+                validate_selected_active_head(&generation, selected_active_head.as_ref())
+                    .map_err(de::Error::custom)?;
                 Ok($ty {
-                    generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+                    generation,
+                    selected_active_head,
                     results,
                     window,
                     explanation: explanation
@@ -1737,8 +1858,16 @@ impl Serialize for TextQueryResponse {
         if self.next_cursor.is_some() {
             field_count = field_count.saturating_add(1);
         }
+        if self.selected_active_head.is_some() {
+            field_count = field_count.saturating_add(1);
+        }
         let mut state = serializer.serialize_struct("TextQueryResponse", field_count)?;
+        validate_selected_active_head(&self.generation, self.selected_active_head.as_ref())
+            .map_err(serde::ser::Error::custom)?;
         state.serialize_field("generation", &self.generation)?;
+        if let Some(head) = &self.selected_active_head {
+            state.serialize_field("selected_active_head", head)?;
+        }
         state.serialize_field("rank_unit", &self.rank_unit)?;
         state.serialize_field("results", &self.results)?;
         state.serialize_field("window", &self.window)?;
@@ -1767,6 +1896,8 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
         A: MapAccess<'de>,
     {
         let mut generation: Option<GenerationPin> = None;
+        let mut selected_active_head: Option<SearchCorpusActiveHeadV1> = None;
+        let mut selected_active_head_seen = false;
         let mut rank_unit: Option<TextRankUnit> = None;
         let mut results: Option<Vec<LexicalCandidate>> = None;
         let mut window: Option<QueryResultWindowV2> = None;
@@ -1777,6 +1908,13 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
         let mut next_cursor_seen = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
+                "selected_active_head" => {
+                    if selected_active_head_seen {
+                        return Err(de::Error::duplicate_field("selected_active_head"));
+                    }
+                    selected_active_head_seen = true;
+                    selected_active_head = Some(map.next_value()?);
+                }
                 "generation" => {
                     if generation.is_some() {
                         return Err(de::Error::duplicate_field("generation"));
@@ -1841,8 +1979,11 @@ impl<'de> Visitor<'de> for TextQueryResponseVisitor {
         .map_err(de::Error::custom)?;
         validate_file_owner_projection_v1(&results, file_owner_rows.as_deref())
             .map_err(de::Error::custom)?;
+        validate_selected_active_head(&generation, selected_active_head.as_ref())
+            .map_err(de::Error::custom)?;
         Ok(TextQueryResponse {
             generation,
+            selected_active_head,
             rank_unit,
             results,
             window,
@@ -2365,8 +2506,16 @@ impl Serialize for HybridSeedQueryResponse {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("HybridSeedQueryResponse", 5)?;
+        let mut state = serializer.serialize_struct(
+            "HybridSeedQueryResponse",
+            5 + usize::from(self.selected_active_head.is_some()),
+        )?;
+        validate_selected_active_head(&self.generation, self.selected_active_head.as_ref())
+            .map_err(serde::ser::Error::custom)?;
         state.serialize_field("generation", &self.generation)?;
+        if let Some(head) = &self.selected_active_head {
+            state.serialize_field("selected_active_head", head)?;
+        }
         state.serialize_field("manifest_digest", &self.manifest_digest)?;
         state.serialize_field("seed_candidates", &self.seed_candidates)?;
         state.serialize_field("window", &self.window)?;
@@ -2389,12 +2538,21 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
         A: MapAccess<'de>,
     {
         let mut generation: Option<GenerationPin> = None;
+        let mut selected_active_head: Option<SearchCorpusActiveHeadV1> = None;
+        let mut selected_active_head_seen = false;
         let mut manifest_digest: Option<String> = None;
         let mut seed_candidates: Option<Vec<SeedCandidate>> = None;
         let mut window: Option<QueryResultWindowV2> = None;
         let mut explanation: Option<SearchExplanation> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
+                "selected_active_head" => {
+                    if selected_active_head_seen {
+                        return Err(de::Error::duplicate_field("selected_active_head"));
+                    }
+                    selected_active_head_seen = true;
+                    selected_active_head = Some(map.next_value()?);
+                }
                 "generation" => {
                     if generation.is_some() {
                         return Err(de::Error::duplicate_field("generation"));
@@ -2446,8 +2604,12 @@ impl<'de> Visitor<'de> for HybridSeedQueryResponseVisitor {
                 "hybrid seed window returned count does not match seed_candidates length",
             ));
         }
+        let generation = generation.ok_or_else(|| de::Error::missing_field("generation"))?;
+        validate_selected_active_head(&generation, selected_active_head.as_ref())
+            .map_err(de::Error::custom)?;
         Ok(HybridSeedQueryResponse {
-            generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
+            generation,
+            selected_active_head,
             manifest_digest: manifest_digest
                 .ok_or_else(|| de::Error::missing_field("manifest_digest"))?,
             seed_candidates,
@@ -2486,6 +2648,7 @@ impl<'de> Deserialize<'de> for HybridSeedQueryResponse {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPlaneRuntimeMetadataQueryResponse {
     pub generation: GenerationPin,
+    pub selected_active_head: Option<SearchCorpusActiveHeadV1>,
     pub results: Vec<LexicalCandidate>,
     pub window: QueryResultWindowV2,
     pub read_epoch: AuxEpochV1,
@@ -2496,6 +2659,7 @@ pub struct SearchPlaneRuntimeMetadataQueryResponse {
 
 const SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "generation",
+    "selected_active_head",
     "results",
     "window",
     "read_epoch",
@@ -2765,6 +2929,7 @@ mod tests {
     #[test]
     fn hybrid_seed_query_response_round_trips_with_seed_candidates() {
         let response = HybridSeedQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             manifest_digest: "a".repeat(64),
             seed_candidates: vec![sample_seed_candidate()],
@@ -3010,6 +3175,7 @@ mod tests {
             projection_fixture_row("cand-2", 1.0),
         ];
         let valid = TextQueryResponse {
+            selected_active_head: None,
             rank_unit: TextRankUnit::Chunk,
             explanation: SearchExplanation::empty(),
             generation: sample_generation_pin(),
@@ -3034,6 +3200,7 @@ mod tests {
         );
 
         let mistyped = TextQueryResponse {
+            selected_active_head: None,
             file_owner_rows: Some(vec![
                 projection_fixture_owner(&results[1]),
                 projection_fixture_owner(&results[0]),
@@ -3049,6 +3216,7 @@ mod tests {
     #[test]
     fn text_rank_unit_is_required_and_closed_even_for_an_empty_page() {
         let page = TextQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             rank_unit: TextRankUnit::File,
             results: Vec::new(),
@@ -3104,6 +3272,7 @@ mod tests {
             .is_ok()
         );
         let chunk_page = TextQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             rank_unit: TextRankUnit::Chunk,
             results,
@@ -3119,6 +3288,7 @@ mod tests {
         );
         assert!(serde_json::from_value::<TextQueryResponse>(file_value).is_err());
         let file_page = TextQueryResponse {
+            selected_active_head: None,
             rank_unit: TextRankUnit::File,
             ..chunk_page
         };

@@ -105,6 +105,7 @@ fn lexical_only(id: &str, lexical_rank: u32) -> HybridCandidateV1 {
 fn response(results: Vec<HybridCandidateV1>) -> SearchPlaneQueryIpcResponse {
     let returned = u32::try_from(results.len()).map_or(u32::MAX, |n| n);
     SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+        selected_active_head: None,
         generation: GenerationPin::new(
             RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
             RevisionId::new("rev-1").expect("static fixture ID satisfies canonical policy"),

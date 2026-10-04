@@ -37,7 +37,9 @@ use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::{runtime_catalog_head_missing, runtime_snapshot_unknown};
 use crate::query_dispatcher::keyset_page::{KeysetPageCollector, StreamEnd};
 use crate::query_dispatcher::read_view::{AuxEpochPinsV1, ReadViewRequestV1};
-use crate::query_dispatcher::selection::resolve_optional_selection;
+use crate::query_dispatcher::selection::{
+    resolve_cursor_selection, resolve_optional_selection_with_head,
+};
 use crate::query_dispatcher::text_plane::{
     ExecutableTextPlanePolicy, expr_matches, leaf_matches_text, matches_text,
     validate_executable_text_query,
@@ -67,15 +69,22 @@ impl SearchPlaneDispatcher {
             .as_ref()
             .map(|token| self.cursors()?.open::<RuntimeMetadataCursorV1>(token))
             .transpose()?;
-        let pin = if let Some(opened) = &opened {
+        let selected = if let Some(opened) = &opened {
             require_token_pin(
                 request.text_query.generation.as_ref(),
                 request.text_query.generation_selector.as_ref(),
                 &opened.binding().pin,
             )?;
-            opened.binding().pin.clone()
+            resolve_cursor_selection(
+                self.activation_catalog.as_ref(),
+                request.text_query.generation.clone(),
+                request.text_query.generation_selector.as_ref(),
+                &opened.binding().pin,
+                SearchPlaneTrackKind::Lexical,
+                "runtime metadata",
+            )?
         } else {
-            resolve_optional_selection(
+            resolve_optional_selection_with_head(
                 self.activation_catalog.as_ref(),
                 request.text_query.generation.clone(),
                 request.text_query.generation_selector.as_ref(),
@@ -88,6 +97,7 @@ impl SearchPlaneDispatcher {
                 )
             })?
         };
+        let pin = selected.pin;
         let cursor_context = CursorRequestContextV2 {
             route: CursorRouteV2::RuntimeMetadata,
             pin: &pin,
@@ -171,6 +181,7 @@ impl SearchPlaneDispatcher {
             })
             .transpose()?;
         Ok(SearchPlaneRuntimeMetadataQueryResponse {
+            selected_active_head: selected.active_head,
             generation: pin,
             results: page.results,
             window,

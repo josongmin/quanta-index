@@ -1506,6 +1506,7 @@ mod tests {
         let mut response = SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(
             SemanticWorkBoundedQueryResponseV1 {
                 query: SemanticQueryResponse {
+                    selected_active_head: None,
                     generation: pin,
                     results: Vec::new(),
                     window: crate::QueryResultWindowV2::exact_probe(0),
@@ -1565,6 +1566,7 @@ mod tests {
             );
         }
         let response_query = SemanticQueryResponse {
+            selected_active_head: None,
             generation: pin,
             results: Vec::new(),
             window: crate::QueryResultWindowV2::exact_probe(0),
@@ -2361,6 +2363,7 @@ mod tests {
             (
                 "Semantic",
                 SearchPlaneQueryIpcResponse::Semantic(SemanticQueryResponse {
+                    selected_active_head: None,
                     generation: pin(),
                     results: Vec::new(),
                     window: window(),
@@ -2371,6 +2374,7 @@ mod tests {
             (
                 "Hybrid",
                 SearchPlaneQueryIpcResponse::Hybrid(HybridQueryResponse {
+                    selected_active_head: None,
                     generation: pin(),
                     results: Vec::new(),
                     window: window(),
@@ -2381,6 +2385,7 @@ mod tests {
             (
                 "HybridSeed",
                 SearchPlaneQueryIpcResponse::HybridSeed(HybridSeedQueryResponse {
+                    selected_active_head: None,
                     generation: pin(),
                     manifest_digest: String::new(),
                     seed_candidates: Vec::new(),
@@ -2413,6 +2418,7 @@ mod tests {
             (
                 "Text",
                 SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+                    selected_active_head: None,
                     rank_unit: crate::TextRankUnit::Chunk,
                     explanation: crate::SearchExplanation::empty(),
                     generation: pin(),
@@ -2426,6 +2432,7 @@ mod tests {
             (
                 "Symbol",
                 SearchPlaneQueryIpcResponse::Symbol(SymbolQueryResponse {
+                    selected_active_head: None,
                     generation: pin(),
                     results: Vec::new(),
                     window: window(),

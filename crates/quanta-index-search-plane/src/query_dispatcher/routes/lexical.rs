@@ -26,7 +26,9 @@ use crate::query_dispatcher::planning::{
 };
 use crate::query_dispatcher::read_view::ReadViewRequestV1;
 use crate::query_dispatcher::response_budget::fit_ranked_page;
-use crate::query_dispatcher::selection::resolve_optional_selection;
+use crate::query_dispatcher::selection::{
+    resolve_cursor_selection, resolve_optional_selection_with_head,
+};
 use crate::query_dispatcher::stage_timing::{QueryStageObservationPolicy, StageTimings};
 use crate::query_dispatcher::window::{
     lexical_fetch_limit_v1, lexical_page_window_v1, pageable_window_v2,
@@ -256,6 +258,21 @@ impl SearchPlaneDispatcher {
                 &opened.binding().pin,
             )?;
         }
+        let cursor_active_head = opened
+            .as_ref()
+            .map(|opened| {
+                resolve_cursor_selection(
+                    self.activation_catalog.as_ref(),
+                    request.generation.clone(),
+                    request.generation_selector.as_ref(),
+                    &opened.binding().pin,
+                    SearchPlaneTrackKind::Lexical,
+                    "lexical",
+                )
+                .map(|selection| selection.active_head)
+            })
+            .transpose()?
+            .flatten();
         // The cursor positions the page; the plan is the query's alone.
         let pageless = TextQueryRequest {
             generation: opened
@@ -302,6 +319,9 @@ impl SearchPlaneDispatcher {
             let summary = execution.summary();
             return Ok((
                 TextQueryResponse {
+                    selected_active_head: cursor_active_head
+                        .clone()
+                        .or_else(|| planned.active_head.clone()),
                     generation: planned.pin.clone(),
                     rank_unit,
                     results: Vec::new(),
@@ -402,6 +422,7 @@ impl SearchPlaneDispatcher {
         }
         let mut response = fit_ranked_page(
             TextQueryResponse {
+                selected_active_head: cursor_active_head.or(planned.active_head),
                 generation: planned.pin.clone(),
                 rank_unit,
                 results,
@@ -463,15 +484,22 @@ impl SearchPlaneDispatcher {
             .as_ref()
             .map(|token| self.cursors()?.open::<LexicalCursor>(token))
             .transpose()?;
-        let pin = if let Some(opened) = &opened {
+        let selected = if let Some(opened) = &opened {
             require_token_pin(
                 request.generation.as_ref(),
                 request.generation_selector.as_ref(),
                 &opened.binding().pin,
             )?;
-            opened.binding().pin.clone()
+            resolve_cursor_selection(
+                self.activation_catalog.as_ref(),
+                request.generation.clone(),
+                request.generation_selector.as_ref(),
+                &opened.binding().pin,
+                SearchPlaneTrackKind::Lexical,
+                "symbol",
+            )?
         } else {
-            resolve_optional_selection(
+            resolve_optional_selection_with_head(
                 self.activation_catalog.as_ref(),
                 request.generation.clone(),
                 request.generation_selector.as_ref(),
@@ -482,6 +510,8 @@ impl SearchPlaneDispatcher {
                 CoreError::InvalidContract("symbol: generation selector required".to_string())
             })?
         };
+        let pin = selected.pin;
+        let active_head = selected.active_head;
         let after = continuation(opened.as_ref().map(|cursor| &cursor.boundary), &pin)?;
         let lexical_request = TextQueryRequest {
             generation: Some(pin.clone()),
@@ -506,6 +536,7 @@ impl SearchPlaneDispatcher {
         if prepared_language.force_empty {
             return Ok((
                 SymbolQueryResponse {
+                    selected_active_head: active_head.clone(),
                     generation: pin.clone(),
                     results: Vec::new(),
                     window: QueryResultWindowV2::logical_empty("symbol"),
@@ -553,6 +584,7 @@ impl SearchPlaneDispatcher {
             .transpose()?;
         let response = fit_ranked_page(
             SymbolQueryResponse {
+                selected_active_head: active_head,
                 generation: pin.clone(),
                 results,
                 window: public_window,

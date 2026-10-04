@@ -4,11 +4,10 @@ use std::sync::{
 };
 
 use quanta_index_contract::{
-    CurrentGenerationRequest, GenerationPin, GenerationSelector, SearchPlaneControlIpcRequest,
+    GenerationPin, GenerationSelector, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneTrackKind,
 };
 use quanta_index_ipc::ClientIpcTimingV1;
 
@@ -205,10 +204,10 @@ impl QuantaIndex {
 
     fn dispatch_query_inner(
         &self,
-        mut payload: SearchPlaneQueryIpcRequest,
+        payload: SearchPlaneQueryIpcRequest,
         mut observation: Option<&mut Vec<ClientQueryRpcObservationV1>>,
     ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
-        self.pin_active_query(&mut payload, observation.as_deref_mut())?;
+        Self::validate_query_selection(&payload)?;
         let selected_lexical_pin =
             self.resolve_lexical_query_generation(&payload, observation.as_deref_mut())?;
         let mut binding = QueryCallBinding::from_request(&payload);
@@ -291,183 +290,30 @@ impl QuantaIndex {
         Ok(Some(pin))
     }
 
-    /// Resolve an active selector on the query plane before submission.
-    /// Keep `Active` alongside the explicit resolved pin: the server checks
-    /// that the catalog still selects the same generation at dispatch time,
-    /// while the SDK exact-binds the final response. Semantic reads also
-    /// retain the catalog manifest-digest check in the acquired view.
-    /// A public request may carry `ResolvedActive` without an explicit pin;
-    /// resolve it here so its final response is bound to one generation.
-    /// The query-only profile has no control transport.
-    fn pin_active_selector(
-        &self,
-        generation: &mut Option<GenerationPin>,
-        selector: &mut Option<GenerationSelector>,
-        track: SearchPlaneTrackKind,
-        observation: Option<&mut Vec<ClientQueryRpcObservationV1>>,
-    ) -> Result<(), SdkError> {
-        let (repo_id, revision_id, expected_token) = match selector.as_ref() {
-            Some(GenerationSelector::Active {
-                repo_id,
-                revision_id,
-            }) => (repo_id, revision_id, None),
-            Some(GenerationSelector::ResolvedActive {
-                repo_id,
-                revision_id,
-                activation_token,
-            }) if generation.is_none() => (repo_id, revision_id, Some(*activation_token)),
-            _ => return Ok(()),
-        };
-        let request = CurrentGenerationRequest {
-            repo_id: repo_id.clone(),
-            revision_id: revision_id.clone(),
-            track,
-        };
-        let response = self.dispatch_query_inner(
-            SearchPlaneQueryIpcRequest::ResolveActiveGeneration(request),
-            observation,
-        )?;
-        let SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(resolution) = response else {
-            return Err(SdkError::Protocol(
-                "active resolution did not return a generation snapshot".to_string(),
-            ));
-        };
-        let snapshot = resolution.snapshot_v1().ok_or_else(|| {
-            SdkError::Protocol("active resolution returned an unsupported track".to_string())
-        })?;
-        let activation_token = resolution.head.activation_token;
-        if expected_token.is_some_and(|expected| expected != activation_token) {
-            return Err(SdkError::Remote {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::NotReady,
-                message: format!(
-                    "active composite activation token changed for repo={} revision={}",
-                    repo_id.as_str(),
-                    revision_id.as_str()
-                ),
-                repair: None,
-            });
-        }
-        let resolved = GenerationPin::new(
-            snapshot.repo_id.clone(),
-            snapshot.revision_id.clone(),
-            snapshot.manifest_generation,
-        );
-        if generation.as_ref().is_some_and(|pin| pin != &resolved) {
-            return Err(SdkError::Protocol(
-                "explicit generation pin conflicts with active resolution".to_string(),
-            ));
-        }
-        *generation = Some(resolved);
-        *selector = Some(GenerationSelector::ResolvedActive {
-            repo_id: repo_id.clone(),
-            revision_id: revision_id.clone(),
-            activation_token,
-        });
-        Ok(())
-    }
-
-    fn pin_active_query(
-        &self,
-        request: &mut SearchPlaneQueryIpcRequest,
-        mut observation: Option<&mut Vec<ClientQueryRpcObservationV1>>,
-    ) -> Result<(), SdkError> {
+    fn validate_query_selection(request: &SearchPlaneQueryIpcRequest) -> Result<(), SdkError> {
         match request {
-            SearchPlaneQueryIpcRequest::Text(query) => self.pin_active_selector(
-                &mut query.generation,
-                &mut query.generation_selector,
-                SearchPlaneTrackKind::Lexical,
-                observation.as_deref_mut(),
-            ),
-            SearchPlaneQueryIpcRequest::Symbol(query) => self.pin_active_selector(
-                &mut query.generation,
-                &mut query.generation_selector,
-                SearchPlaneTrackKind::Lexical,
-                observation.as_deref_mut(),
-            ),
-            SearchPlaneQueryIpcRequest::Semantic(query) => {
-                self.pin_active_selector(
-                    &mut query.generation,
-                    &mut query.generation_selector,
-                    SearchPlaneTrackKind::Semantic,
-                    observation.as_deref_mut(),
-                )?;
-                if let Some(scope) = &mut query.lexical_scope {
-                    self.pin_active_selector(
-                        &mut scope.generation,
-                        &mut scope.generation_selector,
-                        SearchPlaneTrackKind::Lexical,
-                        observation.as_deref_mut(),
-                    )?;
-                }
-                Ok(())
+            SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(query)
+                if query.query.generation.is_none()
+                    || query.query.generation_selector.is_some() =>
+            {
+                Err(SdkError::Protocol(
+                    "work-bounded semantic query requires an exact generation".to_string(),
+                ))
             }
-            SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(query) => {
-                if query.query.generation.is_none() || query.query.generation_selector.is_some() {
-                    return Err(SdkError::Protocol(
-                        "work-bounded semantic query requires an exact generation".to_string(),
-                    ));
-                }
-                Ok(())
-            }
-            SearchPlaneQueryIpcRequest::Hybrid(query) => {
-                self.pin_active_selector(
-                    &mut query.text_query.generation,
-                    &mut query.text_query.generation_selector,
-                    SearchPlaneTrackKind::Lexical,
-                    observation.as_deref_mut(),
-                )?;
-                self.pin_active_selector(
-                    &mut query.generation,
-                    &mut query.generation_selector,
-                    SearchPlaneTrackKind::Semantic,
-                    observation.as_deref_mut(),
-                )
-            }
-            SearchPlaneQueryIpcRequest::HybridSeed(query) => {
-                self.pin_active_selector(
-                    &mut query.text_query.generation,
-                    &mut query.text_query.generation_selector,
-                    SearchPlaneTrackKind::Lexical,
-                    observation.as_deref_mut(),
-                )?;
-                self.pin_active_selector(
-                    &mut query.generation,
-                    &mut query.generation_selector,
-                    SearchPlaneTrackKind::Semantic,
-                    observation.as_deref_mut(),
-                )
-            }
-            SearchPlaneQueryIpcRequest::History(query) => self.pin_active_selector(
-                &mut query.text_query.generation,
-                &mut query.text_query.generation_selector,
-                SearchPlaneTrackKind::Lexical,
-                observation.as_deref_mut(),
-            ),
-            SearchPlaneQueryIpcRequest::RuntimeMetadata(query) => self.pin_active_selector(
-                &mut query.text_query.generation,
-                &mut query.text_query.generation_selector,
-                SearchPlaneTrackKind::Lexical,
-                observation.as_deref_mut(),
-            ),
-            SearchPlaneQueryIpcRequest::Structural(query) => {
+            SearchPlaneQueryIpcRequest::Structural(query)
                 if matches!(
                     query.text_query.generation_selector,
                     Some(
                         GenerationSelector::Active { .. }
                             | GenerationSelector::ResolvedActive { .. }
                     )
-                ) {
-                    return Err(SdkError::Protocol(
-                        "structural active generation is unsupported".to_string(),
-                    ));
-                }
-                Ok(())
+                ) =>
+            {
+                Err(SdkError::Protocol(
+                    "structural active generation is unsupported".to_string(),
+                ))
             }
-            SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_)
-            | SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(_)
-            | SearchPlaneQueryIpcRequest::RepoMapQuery(_)
-            | SearchPlaneQueryIpcRequest::Explain(_)
-            | SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Ok(()),
+            _ => Ok(()),
         }
     }
 

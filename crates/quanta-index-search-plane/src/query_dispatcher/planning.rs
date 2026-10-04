@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     GenerationPin, LqFilter, LqPatternType, LqQuery, LqSelect, LqType,
-    QueryConstraintIntersectionV1, QueryConstraintSetV1, SearchPlaneTrackKind, TextQueryRequest,
-    TextRankUnit,
+    QueryConstraintIntersectionV1, QueryConstraintSetV1, SearchCorpusActiveHeadV1,
+    SearchPlaneTrackKind, TextQueryRequest, TextRankUnit,
 };
 use quanta_index_core::{
     CoreError, HybridFilterPlanV1, LexicalEndpoint, LexicalPolicy, QueryRouteV1, ReadDomainV1,
@@ -20,7 +20,7 @@ use crate::query_dispatcher::read_view::ReadViewRequestV1;
 use crate::query_dispatcher::rev_at_time::{
     PreparedLexicalTextQuery, rebind_lexical_query_at_time, rev_at_time_selection,
 };
-use crate::query_dispatcher::selection::resolve_lexical_request_pin;
+use crate::query_dispatcher::selection::resolve_lexical_request_selection;
 
 impl SearchPlaneDispatcher {
     /// Admit the original lexical request before composing language constraints.
@@ -90,7 +90,7 @@ impl SearchPlaneDispatcher {
         self.lex_opener
             .preflight_query_primitives(&validated, budget)?;
         let prepared_language = prepare_language_query_v1(lowered, &request.constraints)?;
-        let base_pin = resolve_lexical_request_pin(
+        let base = resolve_lexical_request_selection(
             self.activation_catalog.as_ref(),
             request,
             SearchPlaneTrackKind::Lexical,
@@ -101,22 +101,24 @@ impl SearchPlaneDispatcher {
             constraints,
             force_empty: language_force_empty,
         } = prepared_language;
-        let prepared = match rev_at_time_selection(&query)? {
+        let at_time = rev_at_time_selection(&query)?;
+        let was_at_time = at_time.is_some();
+        let prepared = match at_time {
             Some(selection) => {
                 let selection_view = self.acquire_read_view(
-                    &ReadViewRequestV1::selection("lexical", ReadDomainV1::History, &base_pin),
+                    &ReadViewRequestV1::selection("lexical", ReadDomainV1::History, &base.pin),
                     budget,
                 )?;
                 rebind_lexical_query_at_time(
                     self.activation_catalog.as_ref(),
                     &selection_view.history()?.state,
-                    &base_pin,
+                    &base.pin,
                     query,
                     &selection,
                 )?
             }
             None => PreparedLexicalTextQuery {
-                pin: base_pin,
+                pin: base.pin,
                 query,
                 force_empty: false,
             },
@@ -125,6 +127,7 @@ impl SearchPlaneDispatcher {
         let domains = declare_required_domains_v1(route, Some(&prepared.query));
         Ok(PlannedLexicalTextQuery {
             pin: prepared.pin,
+            active_head: if was_at_time { None } else { base.active_head },
             query: prepared.query,
             constraints,
             force_empty: prepared.force_empty || language_force_empty,
@@ -236,6 +239,7 @@ pub(super) fn text_rank_unit(query: &LqQuery) -> TextRankUnit {
 /// The one executable lexical plan for a text request.
 pub(super) struct PlannedLexicalTextQuery {
     pub(super) pin: GenerationPin,
+    pub(super) active_head: Option<SearchCorpusActiveHeadV1>,
     pub(super) query: LqQuery,
     pub(super) constraints: QueryConstraintSetV1,
     pub(super) force_empty: bool,

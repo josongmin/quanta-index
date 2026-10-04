@@ -170,7 +170,11 @@ pub(crate) fn is_rev_at_time_query(syntax: TextQuerySyntax, query_text: &str) ->
 /// An explicit pin and a `Pinned` selector agree on one exact pin; an
 /// `Active` selector contributes its repo/revision domain, which a
 /// resolved response pin must stay inside.
-type ActiveDomain = (RepoId, RevisionId);
+type ActiveDomain = (
+    RepoId,
+    RevisionId,
+    Option<quanta_index_contract::SearchCorpusActivationTokenV1>,
+);
 
 fn identity_from(
     generation: Option<GenerationPin>,
@@ -184,13 +188,15 @@ fn identity_from(
             GenerationSelector::Active {
                 repo_id,
                 revision_id,
+            } => {
+                domain = Some((repo_id, revision_id, None));
             }
-            | GenerationSelector::ResolvedActive {
+            GenerationSelector::ResolvedActive {
                 repo_id,
                 revision_id,
-                ..
+                activation_token,
             } => {
-                domain = Some((repo_id, revision_id));
+                domain = Some((repo_id, revision_id, Some(activation_token)));
             }
         }
     }
@@ -205,6 +211,7 @@ pub(crate) struct QueryCallBinding {
     resolution_request: Option<CurrentGenerationRequest>,
     pin: Option<GenerationPin>,
     active_domain: Option<ActiveDomain>,
+    secondary: Option<(Option<GenerationPin>, Option<ActiveDomain>)>,
     top_k: Option<u32>,
     expected_text_rank_unit: Option<TextRankUnit>,
     history_order: Option<quanta_index_contract::HistoryOrderV1>,
@@ -225,6 +232,7 @@ impl QueryCallBinding {
                 resolution_request: Some(request.clone()),
                 pin: None,
                 active_domain: None,
+                secondary: None,
                 top_k: None,
                 expected_text_rank_unit: None,
                 history_order: None,
@@ -286,18 +294,23 @@ impl QueryCallBinding {
             SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
                 generation,
                 generation_selector,
+                lexical_scope,
                 top_k,
                 ..
             }) => {
                 let (pin, active_domain) =
                     identity_from(generation.clone(), generation_selector.clone());
-                Self::ranked(
+                let mut binding = Self::ranked(
                     ExpectedQueryResponseV1::Semantic,
                     pin,
                     active_domain,
                     *top_k,
                     false,
-                )
+                );
+                binding.secondary = lexical_scope.as_ref().map(|scope| {
+                    identity_from(scope.generation.clone(), scope.generation_selector.clone())
+                });
+                binding
             }
             SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(request) => {
                 let (pin, active_domain) = identity_from(
@@ -317,34 +330,46 @@ impl QueryCallBinding {
             SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
                 generation,
                 generation_selector,
+                text_query,
                 top_k,
                 ..
             }) => {
                 let (pin, active_domain) =
                     identity_from(generation.clone(), generation_selector.clone());
-                Self::ranked(
+                let mut binding = Self::ranked(
                     ExpectedQueryResponseV1::Hybrid,
                     pin,
                     active_domain,
                     *top_k,
                     false,
-                )
+                );
+                binding.secondary = Some(identity_from(
+                    text_query.generation.clone(),
+                    text_query.generation_selector.clone(),
+                ));
+                binding
             }
             SearchPlaneQueryIpcRequest::HybridSeed(HybridSeedQueryRequest {
                 generation,
                 generation_selector,
+                text_query,
                 top_k,
                 ..
             }) => {
                 let (pin, active_domain) =
                     identity_from(generation.clone(), generation_selector.clone());
-                Self::ranked(
+                let mut binding = Self::ranked(
                     ExpectedQueryResponseV1::HybridSeed,
                     pin,
                     active_domain,
                     *top_k,
                     false,
-                )
+                );
+                binding.secondary = Some(identity_from(
+                    text_query.generation.clone(),
+                    text_query.generation_selector.clone(),
+                ));
+                binding
             }
             SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
                 text_query, order, ..
@@ -358,6 +383,7 @@ impl QueryCallBinding {
                     resolution_request: None,
                     pin,
                     active_domain,
+                    secondary: None,
                     top_k: Some(text_query.top_k),
                     expected_text_rank_unit: None,
                     history_order: Some(*order),
@@ -410,6 +436,7 @@ impl QueryCallBinding {
                     *manifest_generation,
                 )),
                 active_domain: None,
+                secondary: None,
                 top_k: None,
                 expected_text_rank_unit: None,
                 history_order: None,
@@ -424,6 +451,7 @@ impl QueryCallBinding {
                 resolution_request: None,
                 pin: Some(generation.clone()),
                 active_domain: None,
+                secondary: None,
                 top_k: None,
                 expected_text_rank_unit: None,
                 history_order: None,
@@ -437,6 +465,7 @@ impl QueryCallBinding {
                 resolution_request: None,
                 pin: Some(generation.clone()),
                 active_domain: None,
+                secondary: None,
                 top_k: None,
                 expected_text_rank_unit: None,
                 history_order: None,
@@ -449,6 +478,7 @@ impl QueryCallBinding {
     pub(crate) fn with_resolved_lexical_generation(mut self, pin: GenerationPin) -> Self {
         self.pin = Some(pin);
         self.active_domain = None;
+        self.secondary = None;
         self.rev_at_time = false;
         self
     }
@@ -465,6 +495,7 @@ impl QueryCallBinding {
             resolution_request: None,
             pin,
             active_domain,
+            secondary: None,
             top_k: Some(top_k),
             expected_text_rank_unit: None,
             history_order: None,
@@ -508,7 +539,7 @@ fn check_pin(binding: &QueryCallBinding, pin: &GenerationPin) -> Result<(), SdkE
         }
         return Ok(());
     }
-    if let Some((repo_id, revision_id)) = &binding.active_domain
+    if let Some((repo_id, revision_id, _)) = &binding.active_domain
         && (&pin.repo_id != repo_id || &pin.revision_id != revision_id)
     {
         return Err(binding_error(
@@ -516,6 +547,76 @@ fn check_pin(binding: &QueryCallBinding, pin: &GenerationPin) -> Result<(), SdkE
             ResponseBindingAxis::SelectorDomain,
             "the active selector's repo/revision domain",
             "a pin outside that domain",
+        ));
+    }
+    Ok(())
+}
+
+fn check_selected_active_head(
+    binding: &QueryCallBinding,
+    pin: &GenerationPin,
+    head: Option<&SearchCorpusActiveHeadV1>,
+) -> Result<(), SdkError> {
+    if let Some((Some(secondary_pin), _)) = &binding.secondary {
+        if secondary_pin != pin {
+            return Err(binding_error(
+                binding.expected.kind(),
+                ResponseBindingAxis::ReadIdentity,
+                "the second lane's requested pin",
+                "a different response pin",
+            ));
+        }
+    }
+    let domains = [
+        binding.active_domain.as_ref(),
+        binding
+            .secondary
+            .as_ref()
+            .and_then(|(_, domain)| domain.as_ref()),
+    ];
+    let mut active = false;
+    for domain in domains.into_iter().flatten() {
+        active = true;
+        let Some(head) = head else {
+            return Err(binding_error(
+                binding.expected.kind(),
+                ResponseBindingAxis::ReadIdentity,
+                "the selected active head",
+                "missing selected active head",
+            ));
+        };
+        head.validate_v1().map_err(|_| {
+            binding_error(
+                binding.expected.kind(),
+                ResponseBindingAxis::ReadIdentity,
+                "a valid selected active head",
+                "an invalid selected active head",
+            )
+        })?;
+        let lexical = &head.generation.lexical;
+        let semantic = &head.generation.semantic;
+        if lexical.repo_id != domain.0
+            || lexical.revision_id != domain.1
+            || lexical.repo_id != pin.repo_id
+            || lexical.revision_id != pin.revision_id
+            || lexical.manifest_generation != pin.manifest_generation
+            || semantic.manifest_generation != pin.manifest_generation
+            || domain.2.is_some_and(|token| token != head.activation_token)
+        {
+            return Err(binding_error(
+                binding.expected.kind(),
+                ResponseBindingAxis::SelectorDomain,
+                "the requested active domain, generation and activation token",
+                "a different selected active head",
+            ));
+        }
+    }
+    if !active && head.is_some() {
+        return Err(binding_error(
+            binding.expected.kind(),
+            ResponseBindingAxis::ReadIdentity,
+            "no active head for an exact-pin query",
+            "an unsolicited active head",
         ));
     }
     Ok(())
@@ -774,6 +875,11 @@ pub(crate) fn bind_query_response(
                 ));
             }
             check_pin(binding, &payload.generation)?;
+            check_selected_active_head(
+                binding,
+                &payload.generation,
+                payload.selected_active_head.as_ref(),
+            )?;
             check_candidates(
                 binding,
                 &payload.generation,
@@ -793,6 +899,11 @@ pub(crate) fn bind_query_response(
         SearchPlaneQueryIpcResponse::Symbol(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::Symbol)?;
             check_pin(binding, &payload.generation)?;
+            check_selected_active_head(
+                binding,
+                &payload.generation,
+                payload.selected_active_head.as_ref(),
+            )?;
             check_candidates(
                 binding,
                 &payload.generation,
@@ -808,6 +919,11 @@ pub(crate) fn bind_query_response(
         SearchPlaneQueryIpcResponse::Semantic(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::Semantic)?;
             check_pin(binding, &payload.generation)?;
+            check_selected_active_head(
+                binding,
+                &payload.generation,
+                payload.selected_active_head.as_ref(),
+            )?;
             check_candidates(
                 binding,
                 &payload.generation,
@@ -823,6 +939,11 @@ pub(crate) fn bind_query_response(
         SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::SemanticWorkBoundedV1)?;
             check_pin(binding, &payload.query.generation)?;
+            check_selected_active_head(
+                binding,
+                &payload.query.generation,
+                payload.query.selected_active_head.as_ref(),
+            )?;
             check_candidates(
                 binding,
                 &payload.query.generation,
@@ -852,6 +973,11 @@ pub(crate) fn bind_query_response(
         SearchPlaneQueryIpcResponse::Hybrid(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::Hybrid)?;
             check_pin(binding, &payload.generation)?;
+            check_selected_active_head(
+                binding,
+                &payload.generation,
+                payload.selected_active_head.as_ref(),
+            )?;
             check_window("hybrid", payload.window.returned(), payload.results.len())?;
             check_cap(
                 "hybrid",
@@ -863,6 +989,11 @@ pub(crate) fn bind_query_response(
         SearchPlaneQueryIpcResponse::HybridSeed(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::HybridSeed)?;
             check_pin(binding, &payload.generation)?;
+            check_selected_active_head(
+                binding,
+                &payload.generation,
+                payload.selected_active_head.as_ref(),
+            )?;
             let rows = payload.seed_candidates.len();
             check_window("hybrid_seed", payload.window.returned(), rows)?;
             check_cap("hybrid_seed", binding.top_k.unwrap_or(u32::MAX), rows)
@@ -870,6 +1001,11 @@ pub(crate) fn bind_query_response(
         SearchPlaneQueryIpcResponse::History(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::History)?;
             check_pin(binding, &payload.generation)?;
+            check_selected_active_head(
+                binding,
+                &payload.generation,
+                payload.selected_active_head.as_ref(),
+            )?;
             if let Some(order) = &binding.history_order
                 && &payload.order != order
             {
@@ -886,6 +1022,11 @@ pub(crate) fn bind_query_response(
         SearchPlaneQueryIpcResponse::RuntimeMetadata(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::RuntimeMetadata)?;
             check_pin(binding, &payload.generation)?;
+            check_selected_active_head(
+                binding,
+                &payload.generation,
+                payload.selected_active_head.as_ref(),
+            )?;
             check_candidates(
                 binding,
                 &payload.generation,

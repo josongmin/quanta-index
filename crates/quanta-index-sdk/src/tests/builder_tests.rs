@@ -34,6 +34,7 @@ fn text_query_builder_refuses_out_of_range_top_k_before_any_round_trip() {
 fn text_query_builder_accepts_the_public_maximum_top_k() {
     let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
         TextQueryResponse {
+            selected_active_head: None,
             rank_unit: quanta_index_contract::TextRankUnit::Chunk,
             explanation: quanta_index_contract::SearchExplanation::empty(),
             generation: quanta_index_contract::GenerationPin::new(
@@ -107,6 +108,7 @@ fn runtime_query_builder_carries_the_cursor_it_continues_from() {
     let cursor = ok_or_fail!(ContinuationTokenV2::new("signed-runtime-page"));
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results: vec![],
             window: QueryResultWindowV2::exact_probe(0),
@@ -140,6 +142,7 @@ fn runtime_query_builder_carries_the_cursor_it_continues_from() {
     // A builder that never called `after` walks fresh.
     let fresh_query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::RuntimeMetadata(SearchPlaneRuntimeMetadataQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results: vec![],
             window: QueryResultWindowV2::exact_probe(0),
@@ -217,6 +220,7 @@ fn hybrid_builder_assembles_a_hybrid_request_with_both_lanes() {
     let path = ok_or_fail!(ExactRepoRelativePathV1::new("src/lib.rs"));
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::Hybrid(quanta_index_contract::HybridQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results: Vec::new(),
             window: QueryResultWindowV2::exact_probe(0),
@@ -435,6 +439,7 @@ fn typed_code_search_response_rejects_mismatched_source_path() {
     });
     row.snippet = "src/other.rs".to_string();
     let response = SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        selected_active_head: None,
         generation: sample_generation_pin(),
         rank_unit: TextRankUnit::File,
         results: vec![row],
@@ -502,6 +507,7 @@ fn text_swapped_owner_projection_is_refused_on_the_projection_axis() {
     let first = binding_hit("cand-1", 2.0);
     let second = binding_hit("cand-2", 1.0);
     let response = SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: sample_generation_pin(),
@@ -529,6 +535,7 @@ fn text_exact_owner_projection_passes_binding() {
     let first = binding_hit("cand-1", 2.0);
     let second = binding_hit("cand-2", 1.0);
     let response = SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: sample_generation_pin(),
@@ -546,6 +553,7 @@ fn execute_hybrid_with(
 ) -> Result<quanta_index_contract::HybridQueryResponse, crate::SdkError> {
     let query = Arc::new(StubQueryTransport::new(
         SearchPlaneQueryIpcResponse::Hybrid(quanta_index_contract::HybridQueryResponse {
+            selected_active_head: None,
             generation: sample_generation_pin(),
             results,
             window: QueryResultWindowV2::exact_probe(2),

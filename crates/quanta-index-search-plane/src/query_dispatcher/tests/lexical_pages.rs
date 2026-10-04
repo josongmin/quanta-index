@@ -441,6 +441,7 @@ fn a_large_later_owner_projection_cannot_refuse_a_fitting_paired_prefix() -> Tes
         })
         .collect();
     let page = TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: ready_pin(),
@@ -518,6 +519,7 @@ fn code_search_clock_policy_keeps_tight_page_and_continuation_identical() -> Tes
     })
     .collect();
     let off = TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation,
         generation: ready_pin(),
@@ -602,6 +604,7 @@ fn typo_child_clocks_keep_tight_page_and_continuation_identical() -> TestResult 
     })
     .collect();
     let off = TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation,
         generation: ready_pin(),
@@ -675,6 +678,7 @@ fn a_shorter_prefix_can_exceed_the_budget_when_its_cursor_is_larger() -> TestRes
     let results = rows(4, 8);
     let large_token = ContinuationTokenV2::new("L".repeat(3_000))?;
     let page = TextQueryResponse {
+        selected_active_head: None,
         rank_unit: quanta_index_contract::TextRankUnit::Chunk,
         explanation: quanta_index_contract::SearchExplanation::empty(),
         generation: ready_pin(),
@@ -727,6 +731,7 @@ fn symbol_page_budget_cut_keeps_ranked_prefix_window_and_cursor() -> TestResult 
         })
         .collect();
     let page = SymbolQueryResponse {
+        selected_active_head: None,
         generation: ready_pin(),
         results,
         window: QueryResultWindowV2::pageable(4, CandidateCountV1::Exact(4), false, vec![])?,
