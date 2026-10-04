@@ -316,6 +316,29 @@ fn repartition_code_scope(
 }
 
 #[test]
+fn scored_natural_language_keywords_rank_rare_terms_before_common_word_overlap() -> TestResult {
+    let mut scopes = vec![code_scope("z_relevant.rs", "unique padding", 0)?];
+    for index in 0..24 {
+        scopes.push(code_scope(&format!("common_{index:02}.rs"), "common common", 0)?);
+    }
+    let (_dir, searcher) = fixture_with_scopes(scopes)?;
+    let mut query = code_query(&["unique", "common"], false);
+    query.options.pattern_type = LqPatternType::Keyword;
+    query.expr = LqExpr::Any(vec![
+        LqExpr::Leaf(LqLeaf::Keyword("unique".into())),
+        LqExpr::Leaf(LqLeaf::Keyword("common".into())),
+    ]);
+    let result = searcher.search_constrained(&query, &QueryConstraintSetV1::default(),
+        &LexicalPageSpec::first(10), &RequestBudgetV1::unbounded())?;
+    assert_eq!(result.candidates.len(), 10);
+    assert_eq!(result.candidates[0].repo_relative_path.as_str(), "z_relevant.rs",
+        "rare-term IDF dominates repeated corpus-wide common words");
+    assert!(result.candidates[0].score > result.candidates[1].score);
+    assert_eq!(result.candidates.iter().map(|row| row.repo_relative_path.as_str()).collect::<std::collections::BTreeSet<_>>().len(), 10);
+    Ok(())
+}
+
+#[test]
 fn explicit_typo_ranks_attested_declarations_and_preserves_literal_gate() -> TestResult {
     use quanta_index_core::CodeSearchExecutionModeV1;
     let mut declaration = code_scope("z_declaration.rs", "fn DOWN() {}", 1)?;

@@ -1515,7 +1515,7 @@ mod tests {
     }
 
     #[test]
-    fn natural_language_plan_dedups_preserving_first_occurrence_and_case() {
+    fn natural_language_plan_dedups_folded_terms_preserving_first_occurrence() {
         let plan = plan_query(
             QueryInputPolicy::NaturalLanguage,
             "Find find FIND the THE function",
@@ -1526,10 +1526,17 @@ mod tests {
             plan.lexical_request,
             "case:no find OR the OR function"
         );
+        let operators = plan_query(QueryInputPolicy::NaturalLanguageFile,
+            "The the AND and repo:x \"retry\" ΟΣ", &NlPlanConfig::default()).expect("safe atoms");
+        assert_eq!(operators.lexical_request,
+            "select:file case:no the OR and OR repo OR x OR retry OR οσ");
+        let parsed = validate_lexical_request(&operators.lexical_request).expect("public parse");
+        let LqExpr::Any(atoms) = parsed.expr else { panic!("expected flat scored OR") };
+        assert!(atoms.iter().all(|atom| matches!(atom, LqExpr::Leaf(LqLeaf::Keyword(_)))));
     }
 
     #[test]
-    fn natural_language_plan_keeps_joined_punctuation_tokens() {
+    fn natural_language_plan_splits_joined_punctuation_into_scored_terms() {
         let plan = plan_query(
             QueryInputPolicy::NaturalLanguage,
             "open crates/quanta-index-lexical/src/lib.rs and src/query.rs",
