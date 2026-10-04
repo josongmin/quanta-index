@@ -342,6 +342,7 @@ def product_result(
     *,
     scoring_gold: dict[str, list[str]] | None = None,
     file_judgments: dict[str, list[dict]] | None = None,
+    _native_replay: bool = False,
 ) -> dict:
     if file_judgments is not None:
         if set(file_judgments) != set(expected):
@@ -377,6 +378,8 @@ def product_result(
         hits = empty_no_gold = metadata_bytes = 0
         unsupported = []
         elapsed: list[object] = []
+        completed_elapsed: list[float] = []
+        native_summary = None
         per_query = []
         for line in lines:
             row = _json(line)
@@ -454,6 +457,20 @@ def product_result(
             if not judged_gold:
                 empty_no_gold += not paths
             elapsed.append(row.get("elapsed_ms"))
+            completed_ms = None
+            if "completed_response" in row:
+                from tools.benchmark.retrieval import live_lexical_external
+
+                live_lexical_external._validate_completed_row(row, paths)
+                if not _native_replay:
+                    if native_summary is None:
+                        if path.name != f"{product}_rows.jsonl":
+                            raise ValueError("completed clock requires its native capture row owner")
+                        native_summary = live_lexical_external.verify(path.parent)
+                        if native_summary["rows_sha256"].get(product) != raw.sha256.removeprefix("sha256:"):
+                            raise ValueError("completed clock native replay differs from scored row bytes")
+                    completed_ms = row["completed_response"]["duration_ns"] / 1_000_000
+                    completed_elapsed.append(completed_ms)
             per_query.append(
                 {
                     "task_id": task_id,
@@ -465,6 +482,11 @@ def product_result(
                     ),
                     "no_gold_empty_at_10": not paths if not judged_gold else "not_applicable",
                     "query_latency_ms": row.get("elapsed_ms"),
+                    "completed_query_latency_ms": completed_ms,
+                    "completed_response_boundary": (
+                        "request_construction_to_normalized_response"
+                        if completed_ms is not None else None
+                    ),
                 }
             )
             if scoring_gold is not None:
@@ -490,9 +512,9 @@ def product_result(
                 raise ValueError("lexical result metadata exceeds explicit control byte limit")
         if len(seen) != len(expected):
             raise ValueError(f"{product}: incomplete symbol-only lane")
-        return hits, empty_no_gold, elapsed, per_query, unsupported
+        return hits, empty_no_gold, elapsed, completed_elapsed, per_query, unsupported
 
-    hits, empty_no_gold, elapsed, per_query, unsupported = raw.consume_lines(consume)
+    hits, empty_no_gold, elapsed, completed_elapsed, per_query, unsupported = raw.consume_lines(consume)
     answerable = sum(
         bool(scoring_gold[task_id] if scoring_gold is not None else gold)
         for task_id, (_, gold) in expected.items()
@@ -530,6 +552,13 @@ def product_result(
         if elapsed
         else {"count": 0, "timing_layer": TIMING_LAYERS[product], "status": "not_run"},
         "raw_sha256": raw.sha256.removeprefix("sha256:"),
+        "completed_response_latency_ms": (
+            latency_summary(
+                completed_elapsed, len(completed_elapsed), "request_construction_to_normalized_response"
+            )
+            if completed_elapsed
+            else {"count": 0, "timing_layer": "request_construction_to_normalized_response", "status": "not_run"}
+        ),
     }
     if unsupported:
         result["capability_coverage"] = {

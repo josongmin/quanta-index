@@ -2944,6 +2944,13 @@ def judgment_diagnostics(
                 item["reason"] in ("unjudged_ranked_file", "unjudged_ranked_declaration")
                 for item in excluded
             )
+            missing_name_authority = kind == "declaration_name_recovery" and any(
+                item["reason"] in (
+                    "missing_independent_judgments", "missing_independent_name_gold",
+                    "missing_published_symbol_authority", "missing_published_name_authority",
+                    "rank_unit_mismatch",
+                ) for item in excluded
+            )
             by_route[route] = {
                 "rank_unit": expected_unit,
                 "ordering": ordering,
@@ -2965,7 +2972,7 @@ def judgment_diagnostics(
                 "operational_mean": {
                     metric: (
                         value / len(answerable_ids)
-                        if answerable_ids and not missing_ranked_judgments
+                        if answerable_ids and not missing_ranked_judgments and not missing_name_authority
                         else NOT_APPLICABLE
                     )
                     for metric, value in operational.items()
@@ -2977,6 +2984,8 @@ def judgment_diagnostics(
             }
             if missing_ranked_judgments:
                 by_route[route]["operational_unavailable_reason"] = "incomplete_ranked_judgments"
+            elif missing_name_authority:
+                by_route[route]["operational_unavailable_reason"] = "incomplete_name_authority"
         if candidate is None:
             comparison: dict[str, Any] | str = NOT_APPLICABLE
         else:

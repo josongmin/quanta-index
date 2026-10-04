@@ -2205,7 +2205,10 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         row_path = root / f"{name}_rows.jsonl"
         if _sha_file(row_path) != summary.get("rows_sha256", {}).get(name):
             raise ValueError("external rows differ from capture")
-        lexical.product_result(name, row_path, tasks, admitted)
+        # The replay validates the complete native capture below. This nested
+        # shape/quality check must not recursively request replay or expose a
+        # completed clock as verified before native normalization is checked.
+        lexical.product_result(name, row_path, tasks, admitted, _native_replay=True)
 
         def replay_row(task, row, name=name):
             task_id, gold = task["task_id"], tasks[task["task_id"]][1]

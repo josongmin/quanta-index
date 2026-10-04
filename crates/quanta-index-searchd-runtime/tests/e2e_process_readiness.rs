@@ -783,3 +783,112 @@ fn surviving_control_socket_reports_lost_or_replaced_plane_path_not_ready() -> T
     }
     Ok(())
 }
+#[test]
+fn binary_daemon_restart_preserves_active_source_and_ranked_rows() -> TestResult {
+    use sha2::Digest as _;
+
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let source_path = "src/process_restart.rs";
+    let source_text = "fn process_restart_needle() {}";
+    let source_sha256: [u8; 32] =
+        sha2::Sha256::digest(format!("{source_text}\n").as_bytes()).into();
+    let mut prepared = E2eRuntime::boot_in(&state_root)?;
+    let candidate_id =
+        prepared.ingest_text_with_candidate_id("repo-process-restart", source_path, source_text)?;
+    let sealed = prepared.seal()?;
+    prepared.activate_last_sealed_generation()?;
+    let pin = GenerationPin::new(prepared.repo(), prepared.revision(), sealed);
+    prepared.stop()?;
+
+    let observe =
+        |process: &SearchdBinaryProcess,
+         request_id: u64|
+         -> Result<(String, Vec<quanta_index_contract::LexicalCandidate>), Box<dyn Error>> {
+            let client = process.connect()?;
+            let ready = wait_for(
+                &RealTicker::new(),
+                Duration::from_secs(20),
+                Duration::from_millis(50),
+                "binary daemon ready after process start",
+                || client.observability().process_readiness(),
+                |report| report.ready,
+                |_| true,
+            )?;
+            require_eq(&ready.active_repositories, &1, "active repositories")?;
+            let request = SearchPlaneQueryIpcRequestEnvelope {
+                request_id,
+                payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "process_restart_needle".to_owned(),
+                    constraints: QueryConstraintSetV1::unconstrained(),
+                    generation: Some(pin.clone()),
+                    generation_selector: None,
+                    top_k: 5,
+                    cursor: None,
+                }),
+            };
+            let sockets = daemon_socket_paths(&state_root);
+            let response: SearchPlaneQueryIpcResponseEnvelope = quanta_index_ipc::send_request(
+                &sockets[0],
+                &request,
+                quanta_index_ipc::ClientIoPolicy::default(),
+            )?;
+            require_eq(
+                &response.request_id,
+                &request_id,
+                "query response request ID",
+            )?;
+            let SearchPlaneQueryIpcResponse::Text(page) = response.payload else {
+                return Err(format!("binary restart query returned {:?}", response.payload).into());
+            };
+            require_eq(&page.generation, &pin, "active query generation")?;
+            if page.results.len() != 1 {
+                return Err(format!("expected one source-backed row: {:?}", page.results).into());
+            }
+            let row = &page.results[0];
+            require_eq(&row.candidate_id, &candidate_id, "source candidate ID")?;
+            require_eq(&row.source_repo_id, &pin.repo_id, "source repository")?;
+            require_eq(
+                &row.repo_relative_path.as_str(),
+                &source_path,
+                "source relative path",
+            )?;
+            let source = row.source.as_ref().ok_or("missing source revision")?;
+            require_eq(
+                &source.source_sha256,
+                &source_sha256,
+                "source bytes SHA-256",
+            )?;
+            let events = client
+                .observability()
+                .request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+            if !events.events.iter().any(|event| {
+                event.request_id.get() == request_id
+                    && event.stage == ProcessRequestEventStageV1::ResponseWritten
+            }) {
+                return Err("binary restart query has no terminal response event".into());
+            }
+            Ok((events.process_instance, page.results))
+        };
+
+    let first = SearchdBinaryProcess::start(&state_root)?;
+    let first_observed = observe(&first, 0x5eed_01);
+    let first_stopped = first.stop();
+    let (first_instance, first_rows) = first_observed?;
+    first_stopped?;
+
+    let second = SearchdBinaryProcess::start(&state_root)?;
+    let second_observed = observe(&second, 0x5eed_02);
+    let second_stopped = second.stop();
+    let (second_instance, second_rows) = second_observed?;
+    second_stopped?;
+    if first_instance == second_instance {
+        return Err("binary process instance did not change after shutdown and restart".into());
+    }
+    require_eq(
+        &second_rows,
+        &first_rows,
+        "ranked rows after binary restart",
+    )
+}
