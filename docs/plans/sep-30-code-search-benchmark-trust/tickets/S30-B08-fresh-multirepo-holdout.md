@@ -3662,3 +3662,42 @@ with a new output root. The strict collection validator remains unchanged.
   Remaining: 120 actual reviewed tasks; final matching proofs/admission;
   successful final-source five-product capture and controlled complete-output
   performance. The goal remains active and final qualification is unproven.
+
+### 2026-10-04: current ownership audit and terminal corrections
+
+- **VERIFIED**, the independent 120-task issuance recount still matches all
+  retained input digests: 544/1,324 original pairs; 780 remain unissued. The
+  actual typeorm review is live. Nushell, tailscale, django, sqlalchemy and
+  zellij are queued behind it; partial calls are excluded from issuance.
+- **VERIFIED**, cli's separate unchanged-input full-admission retry on
+  `ee764318`: **344.886s**, 20 tasks / 519 judgments, all 16 input digests
+  independently rechecked. The original 744.054s Git-blob-read timeout stays
+  failed. It did not establish a family/source-identity mismatch. Admission
+  source controls are not NL negative-query labels or abstention evidence.
+- **FAILED**, the earlier `4af06051` SDK producer subsequently exhausted its
+  300s resource-lock admission wait. Its daemon release compilation passed;
+  SDK test execution and a successful proof receipt remain **NOT_RUN**. The
+  earlier Contract producer also failed resource admission. Neither partial
+  root may be composed with later source changes.
+- Clean common-source worktree `b08-final-common-source/quanta-index` is now
+  pinned to `37e3824994ad2aa962ee0e746687b91c54f0ade5`. **VERIFIED**, collection
+  matches **732** required Python identities; the positive-only file evidence,
+  NL keyword planner and bounded NL replay fixtures pass **5/5** in 3.19s.
+  Matching Contract then fresh SDK proofs are dispatched serially. Their
+  resource wait is explicitly 1,800s; test validators/deadlines are unchanged.
+  They are not successful until terminal output and receipt verification.
+  External root: `common-proof-37e38249-gup6961_/` under the closeout root.
+- Read-only cross-chat ownership audit: `벤치 - 엔진문제` owns NL keyword
+  planning, declaration-aware typo ranking and proof-command consistency;
+  `ㅔ벤치 준비 - 코퍼스` owns completed-output timing, cold/warmup validation,
+  binary-test inventory and scale/performance work. This C3 owner owns actual
+  labels, input admission, matching proof custody and reviewed captures. The
+  focused Python checks do not replace those owners' Rust/product validation.
+  No duplicate implementation or cross-chat message was initiated.
+- Remaining order: issue the other 120 actual reviewed tasks; obtain matching
+  common-source proofs; reissue/verify admission against that source; freeze
+  each product's effective request and capture all products; review any newly
+  returned unjudged files before reporting. Keep relevant-file (grade >0) and
+  answering-file (grade >=2) results explicit. Zero negative NL controls mean
+  abstention is not applicable. Different lexical predicates stay diagnostic;
+  quiet-host repeated complete-public-API performance remains **NOT_RUN**.
