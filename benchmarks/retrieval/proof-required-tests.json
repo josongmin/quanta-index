@@ -12,6 +12,7 @@
     "tools.ci.tests.test_completed_response_timing.test_completed_output_digest_has_independent_cross_language_golden",
     "tools.ci.tests.test_completed_response_timing.test_completed_response_qualification_accepts_verified_fresh_release_source",
     "tools.ci.tests.test_completed_response_timing.test_completed_worker_deadline_covers_a_partial_protocol_line",
+    "tools.ci.tests.test_completed_response_timing.test_exploratory_replay_rejects_rebound_output_digests",
     "tools.ci.tests.test_completed_response_timing.test_paired_completed_response_clocks_require_binary_source_attestation",
     "tools.ci.tests.test_completed_response_timing.test_phase_digest_map_requires_exact_capture_inventory[<lambda>0]",
     "tools.ci.tests.test_completed_response_timing.test_phase_digest_map_requires_exact_capture_inventory[<lambda>1]",

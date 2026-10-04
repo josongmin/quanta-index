@@ -10279,6 +10279,17 @@ def test_qualified_verdict_refuses_valid_but_unbound_driver_source_closure(tmp_p
 
 def test_qualified_verdict_refuses_receipt_capture_closure_mismatch(tmp_path, monkeypatch):
     monkeypatch.setattr(ev, "MIN_CI_SAMPLE", 2)
+    # This fixture exercises receipt binding, independently of concurrent main updates.
+    driver_root = Path(__file__).resolve().parents[3]
+    real_git_head_sha = pairrun.git_head_sha
+    driver_revision = real_git_head_sha(driver_root)
+    monkeypatch.setattr(
+        pairrun,
+        "git_head_sha",
+        lambda path: driver_revision
+        if path.resolve() == driver_root
+        else real_git_head_sha(path),
+    )
     st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
     receipt_path = st["stage"] / "receipts" / "sdk_receipt.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
