@@ -1069,16 +1069,22 @@ def test_native_index_scope_refuses_evidence_change_during_replay(tmp_path, monk
         live.sourcegraph_index_scope.verify(receipt, **args)
 
 
-def test_native_scope_cli_reaches_input_validation_in_a_fresh_process(tmp_path):
+@pytest.mark.parametrize("entrypoint", ["module", "script"])
+def test_native_scope_cli_reaches_input_validation_in_a_fresh_process(tmp_path, entrypoint):
     spec = tmp_path / "invalid-scope.json"
     spec.write_text("{}", encoding="utf-8")
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
+    source_root = Path(live.__file__).resolve().parents[3]
+    command = (
+        ["-m", "tools.benchmark.retrieval.sourcegraph_index_scope"]
+        if entrypoint == "module"
+        else [str(source_root / "tools/benchmark/retrieval/sourcegraph_index_scope.py")]
+    )
     completed = subprocess.run(
         [
             sys.executable,
-            "-m",
-            "tools.benchmark.retrieval.sourcegraph_index_scope",
+            *command,
             "--scope-spec",
             str(spec),
             "--output-root",
@@ -1086,7 +1092,7 @@ def test_native_scope_cli_reaches_input_validation_in_a_fresh_process(tmp_path):
             "--native-port",
             "6071",
         ],
-        cwd=Path(live.__file__).resolve().parents[3],
+        cwd=source_root if entrypoint == "module" else tmp_path,
         env=env,
         capture_output=True,
         text=True,

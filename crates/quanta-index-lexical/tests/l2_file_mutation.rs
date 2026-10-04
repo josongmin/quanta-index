@@ -739,11 +739,18 @@ fn tombstone_removes_its_file_and_inherits_other_file_units() -> TestResult {
 /// files, constructed without the replaced/deleted file's indexing history.
 fn scored_file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let mut scope = file_scope(path, marker)?;
-    let content = if path == "a.rs" {
-        format!("{marker} livebm25needle retiredextraone retiredextratwo retiredextrathree")
-    } else {
-        format!("{marker} livebm25needle")
+    let extra_tokens = match path {
+        "a.rs" => 47,
+        "b.rs" => 73,
+        "c.rs" => 109,
+        _ => 0,
     };
+    let content = format!(
+        "{marker} livebm25needle {}",
+        std::iter::repeat_n("scoringpadding", extra_tokens)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
     scope.source_bytes = content.as_bytes().to_vec();
     scope.coverage.source.source_sha256 = Sha256::digest(content.as_bytes()).into();
     let chunk = scope.chunks.first_mut().ok_or("missing scored chunk")?;
@@ -755,6 +762,45 @@ fn scored_file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScop
 
 #[test]
 fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
+    struct ScoreStats {
+        num_docs: u64,
+        max_doc: u64,
+        chunk_text_tokens: u64,
+        needle_doc_freq: u64,
+        segments: Vec<(u32, u32, u64)>,
+    }
+
+    fn score_stats(generation_dir: &std::path::Path) -> Result<ScoreStats, Box<dyn Error>> {
+        let index = tantivy::Index::open_in_dir(generation_dir)?;
+        let chunk_text = index.schema().get_field("chunk_text")?;
+        let reader = index.reader()?;
+        let searcher = reader.searcher();
+        let segments = searcher
+            .segment_readers()
+            .iter()
+            .map(|segment| {
+                Ok::<_, tantivy::TantivyError>((
+                    segment.num_docs(),
+                    segment.max_doc(),
+                    segment.inverted_index(chunk_text)?.total_num_tokens(),
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let chunk_text_tokens = segments.iter().map(|row| row.2).sum();
+        let max_doc = segments.iter().map(|row| u64::from(row.1)).sum();
+        let needle_doc_freq = searcher.doc_freq(&tantivy::Term::from_field_text(
+            chunk_text,
+            "livebm25needle",
+        ))?;
+        Ok(ScoreStats {
+            num_docs: searcher.num_docs(),
+            max_doc,
+            chunk_text_tokens,
+            needle_doc_freq,
+            segments,
+        })
+    }
+
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let retired = scored_file_scope("a.rs", "retiredmarker")?;
@@ -838,6 +884,26 @@ fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
     };
     let live_rows = project(&live);
     let expected_rows = project(&expected);
+    let live_stats = score_stats(&target)?;
+    let rebuilt_target =
+        quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+            &rebuilt.repo_id,
+            &rebuilt.revision_id,
+        )
+        .generation_dir(fresh_dir.path(), rebuilt.generation);
+    let rebuilt_stats = score_stats(&rebuilt_target)?;
+    assert_eq!(
+        live_stats.num_docs, 4,
+        "two retained files have text and symbol docs"
+    );
+    assert_eq!(live_stats.max_doc, 4, "no deleted docs remain after seal");
+    assert_eq!(
+        live_stats.needle_doc_freq, 2,
+        "both retained text docs match"
+    );
+    assert_eq!(live_stats.num_docs, rebuilt_stats.num_docs);
+    assert_eq!(live_stats.max_doc, rebuilt_stats.max_doc);
+    assert_eq!(live_stats.needle_doc_freq, rebuilt_stats.needle_doc_freq);
     assert_eq!(live_rows.len(), 2);
     assert_eq!(
         live_rows
@@ -848,8 +914,13 @@ fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
         "only retained source paths may score"
     );
     assert_eq!(
-        live_rows, expected_rows,
-        "deleted source must not change retained BM25 scores"
+        live_rows,
+        expected_rows,
+        "deleted source must not change retained BM25 scores: live chunk_text_tokens={}, segments={:?}; fresh chunk_text_tokens={}, segments={:?}",
+        live_stats.chunk_text_tokens,
+        live_stats.segments,
+        rebuilt_stats.chunk_text_tokens,
+        rebuilt_stats.segments,
     );
     let index = tantivy::Index::open_in_dir(&target)?;
     assert_eq!(

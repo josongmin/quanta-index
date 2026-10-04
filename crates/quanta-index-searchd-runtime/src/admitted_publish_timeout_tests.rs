@@ -24,7 +24,7 @@ use quanta_index_ipc::{
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex};
 use quanta_index_searchd::app::KernelResidentMemoryProbe;
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_searchd_harness::{E2eRuntime, private_tempdir};
 
 use super::{SearchdConfig, build_runtime_with_lexical_builder};
 
@@ -217,7 +217,7 @@ fn test_config(root: &std::path::Path) -> Result<SearchdConfig, Box<dyn Error>> 
 #[test]
 fn timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_reassembly()
 -> TestResult {
-    let root = tempfile::tempdir()?;
+    let root = private_tempdir()?;
     let fixture = E2eRuntime::boot_in(root.path())?;
     let batch = fixture.text_search_corpus_batch(
         "src/timeout.rs",

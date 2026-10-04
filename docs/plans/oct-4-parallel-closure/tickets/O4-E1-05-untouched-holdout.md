@@ -32,6 +32,11 @@ Gin exact1196, 원래 generated 300, B09 public/global12는 이미 진단·튜�
 - repository/commit/license 목록, query authoring rubric, prior tuning/evaluation exposure ledger
 - E1-04의 name/file unit contract, 별도 NL·semantic·workflow·no-answer query 의도
 
+## 현재 source-only 입력 검증
+
+- `VERIFIED`: canonical source split은 development10 repos/6477 files, 이미 사용한 C3 release12 repos/13347 files를 development로 두고 새 candidate12 repos/6079 files를 holdout에 배치했다. repository URL/revision·exact≥256 bytes·near-copy fingerprint rule을 그대로 통과했다. query families는 빈 PREPARE이며 query/intent exposure나 license/gold admission을 발행하지 않는다. 외부 root: `/Users/songmin/Documents/code-new/qi-oct4-unseen-prepare-k7exyv41/source-split-prepare`.
+- candidate source의 factual license inventory는 root LICENSE14개 및 tracked LICENSE/NOTICE/COPYING42개의 path/SHA를 대조했다. checkout HEAD/revision 및 release bytes는 일치하고 approval14개는 모두 `not_attested`다. approver가 없는 상태를 승인으로 대체하지 않는다.
+
 ## 어떤 파일을 어떻게 수정할지
 
 `OWNED`는 에픽 담당 통합, `SHARED`는 I0 반영, `READ`는 기존 구현 소비다. 재현된 결함이나 채택된 계약 변경이 있을 때만 product source를 수정한다. 구현 파일과 독립 검증 파일을 함께 지정한다.

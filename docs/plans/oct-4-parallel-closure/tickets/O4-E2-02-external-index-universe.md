@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `DATA_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | Sourcegraph fresh producer/batch와 selected fixtures65개 `VERIFIED`; 첫 실제 native capture는 reader 부재로 `FAILED`, owned lifecycle 보완 중 |
+| 실행 상태 | Sourcegraph owner tests160개·실제 owned guest lifecycle `VERIFIED`; 12repo fresh native batch 실행 중 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -20,11 +20,11 @@
 - `--scope-batch`는 같은 release의 distinct repositories에서 `BoundRelease.begin`을 1회 실행하고 cell 전후 complete release bytes를 recheck한다. expensive replay 전에 spec/token/producer/owner bytes를 고정하며 next-cell 변경도 거절한다.
 - `VERIFIED`: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py -q --tb=short -k 'sourcegraph or native_index_scope or native_stored_body or native_worker or native_reader or index_scope_spec or native_scope_cli or scope_batch or native_listener'` — 65 passed / 81 deselected / 36.66s, exit 0. 최초 실행의 cleanup EPERM과 새 fixture의 순서 의존 기대값을 수리한 뒤 결과다.
 - `FAILED`: 실제 bat scope CLI, output `/Users/songmin/Documents/code-new/qi-e2-sg-native-20261004-khoe7ry_/bat`. 6071에 listener가 없었다. 과거 6071은 별도로 띄운 native reader 포트이고 container restart가 이 reader를 재생하지 않았다. 현 6072는 indexserver이며 read endpoint로 치환하지 않는다.
-- amd64 container의 `/proc/PID/exe`가 Rosetta translator임을 실제 확인했다. guest reader binary/mapping과 translator identity를 분리 결속하는 owned start/read/stop lifecycle를 보완 중이다. 전체12repo fresh native scope와 OpenGrok fresh before/after는 `NOT_RUN`이다.
+- amd64 container의 `/proc/PID/exe`가 Rosetta translator임을 실제 확인했다. guest reader binary/mapping과 translator identity를 분리 결속하는 owned start/read/stop lifecycle를 통합했다. Python owner 전체는 `test_live_lexical_external.py test_sourcegraph_parity_inventory.py` 160 passed/285.05s였다. 실제 Docker pilot에서 guest SHA `cd47f95e…945e3`와 Rosetta SHA `723a1aee…f241b`, guest inode mappings3개 및 PID/start ticks를 결속했고 owned child/supervisor 종료·동일-token 종료 재시도·listener 부재를 확인했다. mount shadow/기존 listener/없는 binary는 실제로 거절됐다. direct script CLI의 import 실패도 source root 초기화로 수리해 module 및 checkout 밖 cwd direct invocation fixture2개를 통과했다. 현12repo fresh native batch는 `/Users/songmin/Documents/code-new/qi-e2-sg-native-owned-20261004-6hcetaoe`에서 실행 중이다. OpenGrok fresh before/after는 `NOT_RUN`이다.
 
 ## 배경과 현재 상태
 
-B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 있다. B09는 11,695파일이며 다른 universe다. sourcegraph_index_scope.py는 receipt 검증기이고 full native path inventory 생성기는 아니다. post-capture probe만으로 before/after 상태를 생성할 수 없다.
+B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 있다. B09는 11,695파일이며 다른 universe다. sourcegraph_index_scope.py는 현재 receipt 검증기와 bounded full native path/stored-byte producer를 포함한다. post-capture probe만으로 before/after 상태를 생성할 수 없다.
 
 ## 착수 입력
 
@@ -63,7 +63,7 @@ B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 
 ## Existing scope 소비와 추가 producer
 
 - B08의 기존 13,347-file receipts는 원본 bytes·같은 universe/서비스/index revision·유효 retention/phase binding을 replay한 범위에서 소비한다. 모든 파일 probe를 무조건 다시 만들지 않는다. B09 11,695파일 또는 새 서비스 bracket에 소급 적용하지 않는다.
-- Sourcegraph receipt validator는 full path/SHA/native bytes와 terminal progress를 검사하지만 native inventory 생성기가 아니다. 필요한 producer를 live_lexical_external.py의 기존 backend 경로에 연결하고 existing receipt verifier를 그대로 소비한다.
+- Sourcegraph producer는 full path/SHA/native bytes와 terminal progress를 발행하고 canonical receipt verifier가 이를 재생한다. 새 live 소비는 owned guest proof를 요구하며 legacy direct replay는 proof level을 별도로 표기한다. diagnostic join을 final native qualification gate로 사용하지 않는다.
 - bounded API/listing/SSE cap·partial/unknown과 collector MAX_INDEX_FILES 등의 actual limit을 확인한다. 기대 population이 bound를 넘으면 explicit refusal/streamed bounded plan 또는 비적격 scope로 처분하며 단순 limit 상향으로 completeness를 주장하지 않는다.
 - post-capture receipt는 after_only다. before/after snapshot identity는 실제 fresh query bracket에서 수집한다; timestamp와 precondition을 사후 합성하지 않는다.
 

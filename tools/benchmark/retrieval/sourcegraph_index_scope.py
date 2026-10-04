@@ -20,8 +20,17 @@ import sys
 import time
 from pathlib import Path
 
-from tools.benchmark.evidence import RawFile, _read_control_file, canonical_json, parse_json
-from tools.benchmark.retrieval import sourcegraph
+SOURCE_ROOT = Path(__file__).resolve().parents[3]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+
+from tools.benchmark.evidence import (  # noqa: E402
+    RawFile,
+    _read_control_file,
+    canonical_json,
+    parse_json,
+)
+from tools.benchmark.retrieval import sourcegraph  # noqa: E402
 
 SCOPE = "indexed_path_inventory_and_native_stored_document_bytes"
 MAX_STREAM_BYTES = 16 * 1024 * 1024
