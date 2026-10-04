@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | lifecycle fixture·allocated/free disk sampler 통합; 중앙 Rust 검증 중, release profile은 `NOT_RUN` |
+| 실행 상태 | lifecycle 및 직접 L2 oracle가 BM25 삭제 이력 결함 재현 `FAILED`; seal 수리 통합·재검증 중, release profile은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -21,7 +21,7 @@ full/delta/delete/no-op/reopen의 저장·검증·shard 비용과 transient reso
 - disk worker는 cooperative cancel 후 join하고 end boundary를 읽어 동시 recursive walker를 피한다. 막힌 filesystem syscall 자체는 중단하지 못한다.
 - `small_source_lifecycle_matches_independent_bytes_and_fresh_rebuild`가 full→delta→no-op→delete→same-process reopen의 source hash, deleted-token negative, final path/rank/score parity를 검사한다. fresh rebuild parity는 독립 ranking gold나 OS restart 증거가 아니다.
 - Rust compile에서 unused `usize` 반환값 refusal을 수리했다. 중앙 workspace lib/bin은146 harness tests 통과 후 새 lifecycle fresh-rebuild score 비교1건이 실패했다. focused 재현에서 top10 paths/order는 같고 모든 score bits가 달랐다.
-- 일반 lexical seal은 tombstoned Tantivy 문서를 commit/wait만 하고, history index는 같은 BM25 N/df/length 잔여를 stale-segment compaction으로 제거한다. 일반 seal에도 stale segment만 purge하고 잔여0을 검증하는 구조 수리와 직접 L2 regression을 준비 중이다. source hash/no-op/reopen 검사를 완화하지 않는다.
+- 일반 lexical seal은 tombstoned Tantivy 문서를 commit/wait만 하고, history index는 같은 BM25 N/df/length 잔여를 stale-segment compaction으로 제거한다. 일반 seal에도 stale segment만 purge하고 잔여0을 검증하는 구조 수리를 통합했다. 직접 L2 regression은 full→replace→invalid delete refusal→delete→fresh 경로와 고정 unequal-token source를 사용한다. 수리 전 retained source/path/candidate/hash는 같고 score bits가 달라 FAIL했다. source hash/no-op/reopen 검사를 완화하지 않는다.
 - release phase capture·실제 physical I/O·tier scale은 `NOT_RUN`이다.
 
 ## 배경과 현재 상태

@@ -18,7 +18,20 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tantivy::IndexWriter;
+use tantivy::{Index, IndexWriter};
+
+/// Tantivy's default BM25 statistics count deleted documents until their
+/// segments are rewritten. Keep untouched segments shared with the base
+/// generation; only a committed segment with deletions needs compaction.
+fn segments_with_deleted_docs(index: &Index) -> Result<Vec<tantivy::SegmentId>, CoreError> {
+    Ok(index
+        .searchable_segment_metas()
+        .map_err(|err| CoreError::Storage(format!("lexical: list index segments: {err}")))?
+        .iter()
+        .filter(|meta| meta.num_deleted_docs() > 0)
+        .map(tantivy::SegmentMeta::id)
+        .collect())
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct WriterSealTimings {
@@ -94,6 +107,40 @@ impl WriterCache {
                 writer.wait_merging_threads().map_err(|err| {
                     CoreError::Storage(format!("lexical: seal wait for merges: {err}"))
                 })?;
+                let stale = segments_with_deleted_docs(&index)?;
+                if !stale.is_empty() {
+                    // The original writer is fully retired before reading segment
+                    // metadata, so an automatic merge cannot race these IDs.
+                    // Reopen under the same process admission and heap policy.
+                    self.admission.admit_writer_open()?;
+                    let heap_bytes = usize::try_from(self.policy.writer_heap_bytes()).map_err(|err| {
+                        CoreError::Storage(format!(
+                            "lexical: seal compaction writer heap does not fit this platform: {err}"
+                        ))
+                    })?;
+                    let mut compactor: IndexWriter = index
+                        .writer_with_num_threads(writer_threads_for_heap(heap_bytes), heap_bytes)
+                        .map_err(|err| {
+                            CoreError::Storage(format!(
+                                "lexical: open seal compaction writer: {err}"
+                            ))
+                        })?;
+                    let _merged = compactor.merge(&stale).wait().map_err(|err| {
+                        CoreError::Storage(format!(
+                            "lexical: seal compact deleted-document segments: {err}"
+                        ))
+                    })?;
+                    compactor.wait_merging_threads().map_err(|err| {
+                        CoreError::Storage(format!("lexical: seal wait for compaction: {err}"))
+                    })?;
+                }
+                let remaining = segments_with_deleted_docs(&index)?;
+                if !remaining.is_empty() {
+                    return Err(CoreError::Storage(format!(
+                        "lexical: seal retained deleted documents in {} segment(s)",
+                        remaining.len()
+                    )));
+                }
                 timings.merge_wait_ns = crate::adapter_ingest::elapsed_stage_ns(merge_started)?;
                 drop(index);
             }

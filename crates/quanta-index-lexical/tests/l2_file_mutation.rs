@@ -739,7 +739,11 @@ fn tombstone_removes_its_file_and_inherits_other_file_units() -> TestResult {
 /// files, constructed without the replaced/deleted file's indexing history.
 fn scored_file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let mut scope = file_scope(path, marker)?;
-    let content = format!("{marker} livebm25needle");
+    let content = if path == "a.rs" {
+        format!("{marker} livebm25needle retiredextraone retiredextratwo retiredextrathree")
+    } else {
+        format!("{marker} livebm25needle")
+    };
     scope.source_bytes = content.as_bytes().to_vec();
     scope.coverage.source.source_sha256 = Sha256::digest(content.as_bytes()).into();
     let chunk = scope.chunks.first_mut().ok_or("missing scored chunk")?;

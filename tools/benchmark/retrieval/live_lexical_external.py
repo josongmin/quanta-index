@@ -1817,6 +1817,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
             config=spec["sourcegraph"],
             projection=projection,
             snapshot=backend_before["sourcegraph"],
+            require_owned_service=True,
         )
         _write(stage / "sourcegraph-index-scope.json", canonical_json(index_scope).encode() + b"\n")
     probe_indexed_view = (
@@ -1882,6 +1883,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
             config=spec["sourcegraph"],
             projection=projection,
             snapshot=backend_before["sourcegraph"],
+            require_owned_service=True,
         )
         != index_scope
     ):
@@ -2185,6 +2187,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
             config=spec["sourcegraph"],
             projection=projection,
             snapshot=_json(_read_control_file(root / "backend/sourcegraph-before.json")),
+            require_owned_service=True,
         )
         if _json(_read_control_file(root / "sourcegraph-index-scope.json")) != index_scope:
             raise ValueError("retained Sourcegraph index scope differs from evidence replay")

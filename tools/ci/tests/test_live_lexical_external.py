@@ -453,6 +453,207 @@ def test_native_index_scope_replays_exact_paths_and_stored_bytes(tmp_path):
     assert result["projection_revision"] == "d" * 40
     assert result["receipt_sha256"] == "sha256:" + live._sha_file(receipt)
     assert "qualified" not in result
+    assert result["proof_level"] == "legacy_native_scope_v1"
+    with pytest.raises(ValueError, match="owned guest proof is required"):
+        live.sourcegraph_index_scope.verify(receipt, require_owned_service=True, **args)
+
+
+def _bind_owned_service_fixture(receipt_path, fault="none"):
+    root = receipt_path.parent
+    receipt = json.loads(receipt_path.read_text())
+    precommit = json.loads((root / "precommit.json").read_text())
+    result = json.loads((root / "result.json").read_text())
+    guest_sha = receipt["native_binary_sha256"]
+    translator = b"rosetta translator fixture"
+    translator_sha = live._sha(translator)
+    (root / "native-translator").write_bytes(translator)
+    listener = {"port": 6071, "pid": 91, "start_ticks": 1001, "exe_sha256": translator_sha}
+    guest_path = "/usr/local/bin/zoekt-webserver"
+    argv = [guest_path, "-index", "/index", "-listen", "127.0.0.1:6071", "-html=true"]
+    guest = {
+        "pid": 91,
+        "start_ticks": 1001,
+        "argv": argv,
+        "guest_path": guest_path,
+        "guest_sha256": guest_sha,
+        "guest_dev_major": 0,
+        "guest_dev_minor": 64,
+        "guest_inode": 333,
+        "guest_size": (root / "zoekt-webserver").stat().st_size,
+        "guest_mappings": [
+            {
+                "permissions": "r-xp",
+                "device": "00:40",
+                "inode": 333,
+                "path": guest_path,
+            }
+        ],
+        "translator_sha256": translator_sha,
+    }
+    owned = {
+        "kind": "owned_zoekt_webserver",
+        "invocation_id": "a" * 32,
+        "supervisor_pid": 90,
+        "supervisor_start_ticks": 1000,
+        "child_pid": 91,
+        "child_start_ticks": 1001,
+        "guest_path": guest_path,
+        "guest_sha256": guest_sha,
+        "guest_dev_major": 0,
+        "guest_dev_minor": 64,
+        "guest_inode": 333,
+        "guest_size": guest["guest_size"],
+        "argv": argv,
+        "listener": listener,
+        "guest": guest,
+        "image_id": receipt["native_runtime"]["image_id"],
+    }
+    receipt["native_owned_service"] = owned
+    precommit.update(native_owned_service=owned, native_server_process=listener)
+    result.update(native_owned_service=owned, native_server_process=listener)
+    service_cleanup = {
+        "invocation_id": owned["invocation_id"],
+        "tombstone_created": True,
+        "owned_child_stopped": True,
+        "owned_supervisor_stopped": True,
+    }
+    if fault == "mapped_inode":
+        guest["guest_mappings"][0]["inode"] = 334
+    elif fault == "translator_bytes":
+        (root / "native-translator").write_bytes(b"foreign translator")
+    elif fault == "cleanup":
+        service_cleanup["owned_child_stopped"] = False
+    receipt_path.write_text(json.dumps(receipt))
+    (root / "precommit.json").write_text(json.dumps(precommit))
+    (root / "result.json").write_text(json.dumps(result))
+    (root / "owned-service-cleanup.json").write_text(json.dumps(service_cleanup))
+    return receipt_path
+
+
+@pytest.mark.parametrize("fault", ["none", "mapped_inode", "translator_bytes", "cleanup"])
+def test_owned_native_service_replay_binds_guest_translator_and_stop(tmp_path, fault):
+    receipt_path, args = index_scope_fixture(tmp_path)
+    _bind_owned_service_fixture(receipt_path, fault)
+    if fault == "none":
+        assert live.sourcegraph_index_scope.verify(receipt_path, **args)["proof_level"] == (
+            "owned_guest_translator_v1"
+        )
+    else:
+        with pytest.raises(ValueError, match="native Zoekt"):
+            live.sourcegraph_index_scope.verify(receipt_path, **args)
+
+
+@pytest.mark.parametrize("valid_marker", [True, False])
+def test_owned_web_cleanup_retries_only_same_invocation_tombstone(tmp_path, valid_marker):
+    scope = live.sourcegraph_index_scope
+    token = "f" * 32
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    marker_prefix = tmp_path / "qi-sg-owned-web-"
+    marker = tmp_path / f"qi-sg-owned-web-{token}.cancel"
+    marker.write_text(token if valid_marker else "different-invocation")
+    script = (
+        scope._OWNED_WEB_STOP.replace('"/proc"', repr(str(proc)))
+        .replace('"/proc/"', repr(str(proc) + "/"))
+        .replace('"/tmp/qi-sg-owned-web-"', repr(str(marker_prefix)))
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            token,
+            "/usr/local/bin/zoekt-webserver",
+            "/index-attestation",
+            "6071",
+            "a" * 64,
+            "0",
+            "0",
+            "0",
+            "0",
+        ],
+        capture_output=True,
+        timeout=2,
+        check=False,
+    )
+    if valid_marker:
+        assert completed.returncode == 0, completed.stderr
+        assert json.loads(completed.stdout)["owned_child_stopped"] is True
+    else:
+        assert completed.returncode == 2
+
+
+def test_owned_web_supervisor_refuses_late_start_before_exec(tmp_path):
+    scope = live.sourcegraph_index_scope
+    token = "e" * 32
+    marker_prefix = tmp_path / "qi-sg-owned-web-"
+    (tmp_path / f"qi-sg-owned-web-{token}.cancel").write_text(token)
+    script = scope._OWNED_WEB_SUPERVISOR.replace(
+        '"/tmp/qi-sg-owned-web-"', repr(str(marker_prefix))
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script, token, "/no/webserver", "/index", "6071"],
+        capture_output=True,
+        timeout=2,
+        check=False,
+    )
+    assert completed.returncode == 7
+    assert completed.stdout == b""
+
+
+def test_owned_web_refuses_image_mount_shadow_before_start(monkeypatch):
+    scope = live.sourcegraph_index_scope
+    container_id = "c" * 64
+    image_id = "sha256:" + "a" * 64
+    inspected = [
+        {
+            "Id": container_id,
+            "Image": image_id,
+            "Mounts": [{"Destination": "/usr/local/bin"}],
+        }
+    ]
+    monkeypatch.setattr(
+        live, "_process", lambda *_args: (0, json.dumps(inspected).encode(), b"", 0.01)
+    )
+    with pytest.raises(ValueError, match="shadowed by a mount"):
+        scope._image_guest_binary(container_id, image_id, "/usr/local/bin/zoekt-webserver")
+
+
+def test_owned_web_refuses_malformed_supervisor_identity_before_listener(monkeypatch):
+    scope = live.sourcegraph_index_scope
+    original_popen = subprocess.Popen
+    local = "import json,time;print(json.dumps({'kind':'wrong'}),flush=True);time.sleep(5)"
+    monkeypatch.setattr(scope, "_image_guest_binary", lambda *_args: None)
+    monkeypatch.setattr(
+        scope,
+        "_native_server_process",
+        lambda *_args: (_ for _ in ()).throw(
+            ValueError("native Zoekt listener absent on requested port")
+        ),
+    )
+    monkeypatch.setattr(
+        scope.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: original_popen(
+            [sys.executable, "-c", local],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        ),
+    )
+
+    def stop(_container, process, *_args):
+        process.kill()
+        process.wait(timeout=2)
+        process.stdin.close()
+        process.stdout.close()
+
+    monkeypatch.setattr(scope, "_stop_owned_web", stop)
+    with pytest.raises(ValueError, match="start identity differs"):
+        scope._start_owned_web(
+            "c" * 64, "sha256:" + "a" * 64, "/usr/local/bin/zoekt-webserver", "/index", 6071
+        )
 
 
 @pytest.mark.parametrize(
@@ -1053,7 +1254,9 @@ def test_index_scope_batch_reuses_one_release_and_rechecks_each_cell(
         return output / "native-audit/receipt.json"
 
     monkeypatch.setattr(scope, "capture_from_live_spec", capture)
-    receipts = scope.capture_scope_batch(batch_path, native_port=6071)
+    receipts = scope.capture_scope_batch(
+        batch_path, native_port=6071, native_binary_path="/usr/local/bin/zoekt-webserver"
+    )
     assert validations == [release.resolve()]
     assert observed == [Path(cell["scope_spec"]) for cell in cells]
     assert receipts == [Path(cell["output_root"]) / "native-audit/receipt.json" for cell in cells]
@@ -1078,7 +1281,9 @@ def test_index_scope_batch_refuses_mutation_before_next_cell(
 
     monkeypatch.setattr(scope, "capture_from_live_spec", capture)
     with pytest.raises(ValueError, match="changed"):
-        scope.capture_scope_batch(batch_path, native_port=6071)
+        scope.capture_scope_batch(
+            batch_path, native_port=6071, native_binary_path="/usr/local/bin/zoekt-webserver"
+        )
 
 
 def test_index_scope_batch_refuses_different_release_root_and_preflight_drift(
@@ -1092,7 +1297,9 @@ def test_index_scope_batch_refuses_different_release_root_and_preflight_drift(
     shutil.copytree(release, other)
     selected[second]["corpus"]["release_path"] = str(other)
     with pytest.raises(ValueError, match="different release root"):
-        scope.capture_scope_batch(batch_path, native_port=6071)
+        scope.capture_scope_batch(
+            batch_path, native_port=6071, native_binary_path="/usr/local/bin/zoekt-webserver"
+        )
     selected[second]["corpus"]["release_path"] = str(release)
     original_begin = live.BoundRelease.begin
 
@@ -1102,7 +1309,9 @@ def test_index_scope_batch_refuses_different_release_root_and_preflight_drift(
 
     monkeypatch.setattr(live.BoundRelease, "begin", changed_during_begin)
     with pytest.raises(ValueError, match="control files changed"):
-        scope.capture_scope_batch(batch_path, native_port=6071)
+        scope.capture_scope_batch(
+            batch_path, native_port=6071, native_binary_path="/usr/local/bin/zoekt-webserver"
+        )
 
 
 def test_index_scope_single_freezes_controls_before_full_release_replay(
@@ -1123,6 +1332,7 @@ def test_index_scope_single_freezes_controls_before_full_release_replay(
             Path(cells[0]["scope_spec"]),
             Path(cells[0]["output_root"]),
             native_port=6071,
+            native_binary_path="/usr/local/bin/zoekt-webserver",
             scope_spec=True,
         )
 
@@ -1136,7 +1346,9 @@ def test_index_scope_batch_refuses_output_overlapping_another_cell_input(
     cells[0]["output_root"] = str(Path(cells[1]["scope_spec"]).parent)
     batch_path.write_text(json.dumps({"schema_version": 1, "cells": cells}))
     with pytest.raises(ValueError, match="outputs must be fresh and disjoint"):
-        scope.capture_scope_batch(batch_path, native_port=6071)
+        scope.capture_scope_batch(
+            batch_path, native_port=6071, native_binary_path="/usr/local/bin/zoekt-webserver"
+        )
 
 
 def test_external_row_replay_streams_large_jsonl_and_refuses_invalid_order(tmp_path):
@@ -2106,6 +2318,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
                 view=SearchHandler.view,
                 release_digest=json.loads((release / "release.json").read_bytes())["digest"],
             )
+            _bind_owned_service_fixture(receipt)
             spec["sourcegraph"]["indexed_scope_receipt"] = str(receipt)
             if scope_changes_during_queries:
                 SearchHandler.backend_mutation_path = (
@@ -2181,6 +2394,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     )
     if use_index_scope:
         assert result["sourcegraph_index_scope"]["files"] == file_count
+        assert result["sourcegraph_index_scope"]["proof_level"] == "owned_guest_translator_v1"
     assert (
         result["opengrok_indexed_view_probe"]
         == "exact_indexed_inventory_and_served_bytes_bracketing_queries"

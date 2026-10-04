@@ -72,6 +72,194 @@ for job in jobs:
     print(json.dumps(row, sort_keys=True, separators=(",", ":")), flush=True)
 """
 
+_OWNED_WEB_SUPERVISOR = """import hashlib,json,os,select,stat,subprocess,sys,time
+token, binary, index, port = sys.argv[1:5]
+tombstone = "/tmp/qi-sg-owned-web-" + token + ".cancel"
+if os.path.exists(tombstone):
+    raise SystemExit(7)
+source = os.stat(binary)
+if os.path.islink(binary) or not stat.S_ISREG(source.st_mode) or not source.st_mode & stat.S_IXUSR:
+    raise SystemExit(8)
+h = hashlib.sha256()
+with open(binary, "rb") as stream:
+    for block in iter(lambda: stream.read(1048576), b""):
+        h.update(block)
+def stable(value):
+    return (value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns,value.st_ctime_ns,value.st_mode)
+if stable(os.stat(binary)) != stable(source) or os.path.exists(tombstone):
+    raise SystemExit(9)
+argv = [binary, "-index", index, "-listen", "127.0.0.1:" + port, "-html=true"]
+env = {**os.environ, "QI_SG_NATIVE_OWNER": token}
+child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, env=env)
+def ticks(pid):
+    return int(open("/proc/" + str(pid) + "/stat").read().rpartition(") ")[2].split()[19])
+try:
+    if os.path.exists(tombstone):
+        raise SystemExit(7)
+    print(json.dumps({"kind":"owned_zoekt_webserver","invocation_id":token,
+        "supervisor_pid":os.getpid(),"supervisor_start_ticks":ticks(os.getpid()),
+        "child_pid":child.pid,"child_start_ticks":ticks(child.pid),
+        "guest_path":binary,"guest_sha256":h.hexdigest(),
+        "guest_dev_major":os.major(source.st_dev),"guest_dev_minor":os.minor(source.st_dev),
+        "guest_inode":source.st_ino,"guest_size":source.st_size,
+        "argv":argv},sort_keys=True),flush=True)
+    # 3600 s reader plus bounded start, two binary copies and postflight RPCs.
+    end = time.monotonic() + 5400
+    while child.poll() is None and time.monotonic() < end and not os.path.exists(tombstone):
+        if select.select([sys.stdin.buffer], [], [], 0.2)[0] and not sys.stdin.buffer.read(1):
+            break
+finally:
+    if child.poll() is None:
+        child.kill()
+    child.wait()
+"""
+
+_OWNED_WEB_INSPECT = """import hashlib,json,os,stat,sys
+pid, ticks, token, binary, index, port = sys.argv[1:7]
+pid = int(pid); ticks = int(ticks)
+raw_stat = open("/proc/" + str(pid) + "/stat").read().rpartition(") ")[2].split()
+if int(raw_stat[19]) != ticks or raw_stat[0] == "Z":
+    raise SystemExit(2)
+argv = open("/proc/" + str(pid) + "/cmdline", "rb").read().split(b"\\0")[:-1]
+expected = [binary, "-index", index, "-listen", "127.0.0.1:" + port, "-html=true"]
+if argv != [part.encode() for part in expected]:
+    raise SystemExit(3)
+environ = open("/proc/" + str(pid) + "/environ", "rb").read().split(b"\\0")
+if ("QI_SG_NATIVE_OWNER=" + token).encode() not in environ:
+    raise SystemExit(4)
+source = os.stat(binary)
+if os.path.islink(binary) or not stat.S_ISREG(source.st_mode):
+    raise SystemExit(5)
+guest = []
+for line in open("/proc/" + str(pid) + "/maps"):
+    fields = line.split(maxsplit=5)
+    if len(fields) != 6 or fields[5].strip() != binary:
+        continue
+    major, minor = (int(part, 16) for part in fields[3].split(":"))
+    if (major, minor, int(fields[4])) != (os.major(source.st_dev), os.minor(source.st_dev), source.st_ino):
+        raise SystemExit(6)
+    guest.append({"permissions":fields[1],"device":fields[3],"inode":int(fields[4]),"path":fields[5].strip()})
+if not guest or not any("x" in row["permissions"] for row in guest):
+    raise SystemExit(7)
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1048576), b""):
+            h.update(block)
+    return h.hexdigest()
+guest_sha = digest(binary)
+translator_sha = digest("/proc/" + str(pid) + "/exe")
+def stable(value):
+    return (value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns,value.st_ctime_ns,value.st_mode)
+if stable(os.stat(binary)) != stable(source) or int(open("/proc/" + str(pid) + "/stat").read().rpartition(") ")[2].split()[19]) != ticks:
+    raise SystemExit(8)
+print(json.dumps({"pid":pid,"start_ticks":ticks,"argv":expected,"guest_path":binary,
+    "guest_sha256":guest_sha,"guest_dev_major":os.major(source.st_dev),
+    "guest_dev_minor":os.minor(source.st_dev),"guest_inode":source.st_ino,
+    "guest_size":source.st_size,"guest_mappings":guest,"translator_sha256":translator_sha},sort_keys=True))
+"""
+
+_OWNED_WEB_STOP = """import hashlib,json,os,signal,sys,time
+token,binary,index,port,wrapper_sha = sys.argv[1:6]
+expected_wrapper_pid,expected_wrapper_ticks,expected_child_pid,expected_child_ticks = map(int,sys.argv[6:10])
+tombstone = "/tmp/qi-sg-owned-web-" + token + ".cancel"
+try:
+    marker = os.open(tombstone,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+except FileExistsError:
+    try:
+        with open(tombstone,"rb") as prior:
+            if prior.read(len(token)+1)!=token.encode():
+                raise SystemExit(2)
+    except OSError:
+        raise SystemExit(2)
+else:
+    try:
+        if os.write(marker,token.encode()) != len(token):
+            raise SystemExit(3)
+        os.fsync(marker)
+    finally:
+        os.close(marker)
+expected_argv = [binary,"-index",index,"-listen","127.0.0.1:"+port,"-html=true"]
+def info(pid):
+    try:
+        raw = open("/proc/"+str(pid)+"/stat").read().rpartition(") ")[2].split()
+        argv = open("/proc/"+str(pid)+"/cmdline","rb").read().split(b"\\0")[:-1]
+        env = open("/proc/"+str(pid)+"/environ","rb").read().split(b"\\0")
+    except OSError:
+        return None
+    return {"pid":pid,"ticks":int(raw[19]),"state":raw[0],"argv":argv,"env":env}
+def kind(row):
+    argv=row["argv"]
+    if len(argv)==6 and argv==[part.encode() for part in expected_argv] and ("QI_SG_NATIVE_OWNER="+token).encode() in row["env"]:
+        return "child"
+    if len(argv)==7 and argv[1]==b"-c" and argv[3]==token.encode() and argv[4]==binary.encode() and argv[5]==index.encode() and argv[6]==port.encode():
+        if hashlib.sha256(argv[2]).hexdigest()==wrapper_sha:
+            return "wrapper"
+    return None
+def scan():
+    found={"child":[],"wrapper":[]}
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        row=info(int(name))
+        if row is not None and row["state"]!="Z":
+            selected=kind(row)
+            if selected:
+                found[selected].append(row)
+    if any(len(rows)>1 for rows in found.values()):
+        raise SystemExit(4)
+    return found
+def owned(row,which):
+    if kind(row)!=which:
+        raise SystemExit(5)
+    expected=(expected_child_pid,expected_child_ticks) if which=="child" else (expected_wrapper_pid,expected_wrapper_ticks)
+    if expected[0] and (row["pid"],row["ticks"])!=expected:
+        raise SystemExit(6)
+def stop(row,which):
+    owned(row,which)
+    try:
+        fd=os.pidfd_open(row["pid"])
+    except ProcessLookupError:
+        return
+    try:
+        current=info(row["pid"])
+        if current is None or current["state"]=="Z":
+            return
+        if current["ticks"]!=row["ticks"]:
+            raise SystemExit(7)
+        owned(current,which)
+        try:
+            signal.pidfd_send_signal(fd,signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    finally:
+        os.close(fd)
+for _ in range(25):
+    current=scan()
+    if not current["child"] and not current["wrapper"]:
+        break
+    time.sleep(0.2)
+else:
+    for which in ("child","wrapper"):
+        for row in current[which]:
+            stop(row,which)
+for _ in range(25):
+    current=scan()
+    if not current["child"] and not current["wrapper"]:
+        break
+    time.sleep(0.2)
+else:
+    raise SystemExit(8)
+for pid,ticks in ((expected_child_pid,expected_child_ticks),(expected_wrapper_pid,expected_wrapper_ticks)):
+    if pid:
+        row=info(pid)
+        if row is not None and row["ticks"]==ticks and row["state"]!="Z":
+            raise SystemExit(9)
+print(json.dumps({"invocation_id":token,"tombstone_created":True,
+                  "owned_child_stopped":True,"owned_supervisor_stopped":True},sort_keys=True))
+"""
+
 
 def _path_stream_inventory(
     stream: bytes,
@@ -272,6 +460,324 @@ print(json.dumps({"port": port, **owners[0]}, sort_keys=True))
     ):
         raise ValueError("native Zoekt listener process identity differs")
     return row
+
+
+def _image_guest_binary(container_id: str, image_id: str, binary_path: str) -> None:
+    """Require guest bytes from the selected image, without a covering mount or diff."""
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    code, output, stderr, _ = live._process(["docker", "inspect", container_id], 60)
+    inspected = parse_json(output.decode("utf-8", "strict")) if code == 0 and not stderr else None
+    if (
+        not isinstance(inspected, list)
+        or len(inspected) != 1
+        or inspected[0].get("Id") != container_id
+        or inspected[0].get("Image") != image_id
+        or not isinstance(inspected[0].get("Mounts"), list)
+    ):
+        raise ValueError("native Zoekt image identity cannot be bound")
+    for mount in inspected[0]["Mounts"]:
+        destination = mount.get("Destination") if isinstance(mount, dict) else None
+        if not isinstance(destination, str) or not destination.startswith("/"):
+            raise ValueError("native Zoekt mount inventory differs")
+        if binary_path == destination or binary_path.startswith(destination.rstrip("/") + "/"):
+            raise ValueError("native Zoekt guest binary is shadowed by a mount")
+    code, output, stderr, _ = live._process(["docker", "diff", container_id], 60)
+    if code != 0 or stderr:
+        raise ValueError("native Zoekt guest image diff cannot be inspected")
+    for line in output.decode("utf-8", "strict").splitlines():
+        if len(line) < 4 or line[1:3] != " /" or line[0] not in "ACD":
+            raise ValueError("native Zoekt guest image diff is malformed")
+        if line[2:] == binary_path:
+            raise ValueError("native Zoekt guest binary differs from deployed image")
+
+
+def _owned_web_guest(
+    container_id: str, identity: dict, binary_path: str, index_path: str, port: int
+) -> dict:
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    code, output, stderr, _ = live._process(
+        [
+            "docker",
+            "exec",
+            container_id,
+            "python3",
+            "-c",
+            _OWNED_WEB_INSPECT,
+            str(identity["child_pid"]),
+            str(identity["child_start_ticks"]),
+            identity["invocation_id"],
+            binary_path,
+            index_path,
+            str(port),
+        ],
+        60,
+    )
+    if code != 0 or stderr:
+        raise ValueError("native Zoekt guest executable or mapped inode cannot be bound")
+    guest = parse_json(output.decode("utf-8", "strict"))
+    if (
+        not isinstance(guest, dict)
+        or set(guest)
+        != {
+            "pid",
+            "start_ticks",
+            "argv",
+            "guest_path",
+            "guest_sha256",
+            "guest_dev_major",
+            "guest_dev_minor",
+            "guest_inode",
+            "guest_size",
+            "guest_mappings",
+            "translator_sha256",
+        }
+        or guest["pid"] != identity["child_pid"]
+        or guest["start_ticks"] != identity["child_start_ticks"]
+        or guest["guest_path"] != binary_path
+        or guest["guest_sha256"] != identity["guest_sha256"]
+        or guest["guest_dev_major"] != identity["guest_dev_major"]
+        or guest["guest_dev_minor"] != identity["guest_dev_minor"]
+        or guest["guest_inode"] != identity["guest_inode"]
+        or guest["guest_size"] != identity["guest_size"]
+        or guest["argv"] != identity["argv"]
+        or re.fullmatch(r"[0-9a-f]{64}", guest["translator_sha256"]) is None
+    ):
+        raise ValueError("native Zoekt guest executable identity differs")
+    return guest
+
+
+def _start_owned_web(
+    container_id: str, image_id: str, binary_path: str, index_path: str, port: int
+) -> tuple[subprocess.Popen, dict]:
+    """Start a single invocation-owned read-only webserver, then bind its guest bytes."""
+    if not binary_path.startswith("/") or ".." in Path(binary_path).parts:
+        raise ValueError("native Zoekt guest binary path is invalid")
+    if not index_path.startswith("/") or ".." in Path(index_path).parts:
+        raise ValueError("native Zoekt read-only index path is invalid")
+    _image_guest_binary(container_id, image_id, binary_path)
+    try:
+        _native_server_process(container_id, port)
+    except ValueError as error:
+        if str(error) != "native Zoekt listener absent on requested port":
+            raise
+    else:
+        raise ValueError("native Zoekt owned port is already listening")
+    invocation = secrets.token_hex(16)
+    process = subprocess.Popen(
+        [
+            "docker",
+            "exec",
+            "-i",
+            container_id,
+            "python3",
+            "-c",
+            _OWNED_WEB_SUPERVISOR,
+            invocation,
+            binary_path,
+            index_path,
+            str(port),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    if process.stdin is None or process.stdout is None:
+        process.kill()
+        process.wait()
+        raise ValueError("native Zoekt owned service pipes are unavailable")
+    identity: dict | None = None
+    try:
+        os.set_blocking(process.stdout.fileno(), False)
+        line = bytearray()
+        deadline = time.monotonic() + 30
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while b"\n" not in line:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or len(line) > 8192 or process.poll() is not None:
+                    raise ValueError("native Zoekt owned service did not report start identity")
+                for _key, _events in selector.select(remaining):
+                    chunk = os.read(process.stdout.fileno(), 8193 - len(line))
+                    if not chunk:
+                        raise ValueError("native Zoekt owned service exited before identity")
+                    line.extend(chunk)
+        if len(line) > 8192 or line.count(b"\n") != 1:
+            raise ValueError("native Zoekt owned service start identity exceeds bound")
+        identity = parse_json(bytes(line).decode("utf-8", "strict"))
+        expected = {
+            "kind",
+            "invocation_id",
+            "supervisor_pid",
+            "supervisor_start_ticks",
+            "child_pid",
+            "child_start_ticks",
+            "guest_path",
+            "guest_sha256",
+            "guest_dev_major",
+            "guest_dev_minor",
+            "guest_inode",
+            "guest_size",
+            "argv",
+        }
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != expected
+            or identity["kind"] != "owned_zoekt_webserver"
+            or identity["invocation_id"] != invocation
+            or identity["guest_path"] != binary_path
+            or identity["argv"]
+            != [binary_path, "-index", index_path, "-listen", f"127.0.0.1:{port}", "-html=true"]
+            or any(
+                type(identity[key]) is not int or identity[key] <= 0
+                for key in (
+                    "supervisor_pid",
+                    "supervisor_start_ticks",
+                    "child_pid",
+                    "child_start_ticks",
+                    "guest_inode",
+                    "guest_size",
+                )
+            )
+            or any(
+                type(identity[key]) is not int or identity[key] < 0
+                for key in ("guest_dev_major", "guest_dev_minor")
+            )
+            or re.fullmatch(r"[0-9a-f]{64}", identity["guest_sha256"]) is None
+        ):
+            raise ValueError("native Zoekt owned service start identity differs")
+        listener = None
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise ValueError("native Zoekt owned service exited before listening")
+            try:
+                listener = _native_server_process(container_id, port)
+            except ValueError as error:
+                if str(error) != "native Zoekt listener absent on requested port":
+                    raise
+                time.sleep(0.2)
+                continue
+            break
+        if listener is None:
+            raise ValueError("native Zoekt owned service never became a listener")
+        if (listener["pid"], listener["start_ticks"]) != (
+            identity["child_pid"],
+            identity["child_start_ticks"],
+        ):
+            raise ValueError("native Zoekt listener is not the owned guest child")
+        guest = _owned_web_guest(container_id, identity, binary_path, index_path, port)
+        if guest["translator_sha256"] != listener["exe_sha256"]:
+            raise ValueError("native Zoekt translator process identity differs")
+        _image_guest_binary(container_id, image_id, binary_path)
+        return process, {**identity, "listener": listener, "guest": guest, "image_id": image_id}
+    except BaseException:
+        cleanup_identity = (
+            identity
+            if isinstance(identity, dict)
+            and all(
+                type(identity.get(name)) is int and identity[name] > 0
+                for name in (
+                    "supervisor_pid",
+                    "supervisor_start_ticks",
+                    "child_pid",
+                    "child_start_ticks",
+                )
+            )
+            else None
+        )
+        _stop_owned_web(
+            container_id,
+            process,
+            invocation,
+            binary_path,
+            index_path,
+            port,
+            cleanup_identity,
+        )
+        raise
+
+
+def _stop_owned_web(
+    container_id: str,
+    process: subprocess.Popen,
+    invocation: str,
+    binary_path: str,
+    index_path: str,
+    port: int,
+    identity: dict | None,
+) -> dict:
+    """Tombstone first, then prove only this remote supervisor and child exited."""
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    expected = (
+        str(identity["supervisor_pid"]) if identity is not None else "0",
+        str(identity["supervisor_start_ticks"]) if identity is not None else "0",
+        str(identity["child_pid"]) if identity is not None else "0",
+        str(identity["child_start_ticks"]) if identity is not None else "0",
+    )
+    try:
+        code, output, stderr, _ = live._process(
+            [
+                "docker",
+                "exec",
+                container_id,
+                "python3",
+                "-c",
+                _OWNED_WEB_STOP,
+                invocation,
+                binary_path,
+                index_path,
+                str(port),
+                sourcegraph.sha256(_OWNED_WEB_SUPERVISOR.encode()),
+                *expected,
+            ],
+            30,
+        )
+        if code != 0 or stderr:
+            raise ValueError("owned native Zoekt service cleanup could not be proved")
+        result = parse_json(output.decode("utf-8", "strict"))
+        if (
+            not isinstance(result, dict)
+            or set(result)
+            != {
+                "invocation_id",
+                "tombstone_created",
+                "owned_child_stopped",
+                "owned_supervisor_stopped",
+            }
+            or result["invocation_id"] != invocation
+            or result["tombstone_created"] is not True
+            or result["owned_child_stopped"] is not True
+            or result["owned_supervisor_stopped"] is not True
+        ):
+            raise ValueError("owned native Zoekt service cleanup identity differs")
+        return result
+    finally:
+        if process.stdin is not None:
+            process.stdin.close()
+        local_cleanup_error = None
+        if process.poll() is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except PermissionError as error:
+                if process.poll() is None:
+                    local_cleanup_error = error
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            raise ValueError("owned native Zoekt Docker client cleanup unverified") from error
+        finally:
+            if process.stdout is not None:
+                process.stdout.close()
+        if local_cleanup_error is not None:
+            raise ValueError(
+                "owned native Zoekt Docker client cleanup unverified"
+            ) from local_cleanup_error
 
 
 def _native_worker_row(line: bytes, job: dict) -> tuple[dict, bytes]:
@@ -617,8 +1123,72 @@ def _native_stored_content(
     native_port: int,
     native_binary_path: str | None,
     control_sha256: dict[str, str],
-) -> tuple[str, str]:
+) -> tuple[str, str, dict]:
     """Read bounded raw documents from the current container's Zoekt print API."""
+    if native_binary_path is None:
+        raise ValueError("native Zoekt owned capture requires an explicit guest binary path")
+    container_id = snapshot["runtime"]["container_id"]
+    process, owned = _start_owned_web(
+        container_id,
+        "sha256:" + snapshot["runtime"]["image_sha256"],
+        native_binary_path,
+        snapshot["runtime"]["mount_destination"],
+        native_port,
+    )
+    try:
+        binary_sha, rows_sha = _native_stored_content_running(
+            root,
+            config=config,
+            manifest_path=manifest_path,
+            manifest_raw=manifest_raw,
+            files=files,
+            repository=repository,
+            release_digest=release_digest,
+            snapshot=snapshot,
+            native_port=native_port,
+            native_binary_path=native_binary_path,
+            control_sha256=control_sha256,
+            owned_service=owned,
+        )
+    except BaseException:
+        _stop_owned_web(
+            container_id,
+            process,
+            owned["invocation_id"],
+            native_binary_path,
+            snapshot["runtime"]["mount_destination"],
+            native_port,
+            owned,
+        )
+        raise
+    stopped = _stop_owned_web(
+        container_id,
+        process,
+        owned["invocation_id"],
+        native_binary_path,
+        snapshot["runtime"]["mount_destination"],
+        native_port,
+        owned,
+    )
+    _write_json(root / "owned-service-cleanup.json", stopped)
+    return binary_sha, rows_sha, owned
+
+
+def _native_stored_content_running(
+    root: Path,
+    *,
+    config: dict,
+    manifest_path: Path,
+    manifest_raw: bytes,
+    files: list[dict],
+    repository: str,
+    release_digest: str,
+    snapshot: dict,
+    native_port: int,
+    native_binary_path: str,
+    control_sha256: dict[str, str],
+    owned_service: dict,
+) -> tuple[str, str]:
     from tools.benchmark.retrieval import live_lexical_external as live
 
     runtime = snapshot["runtime"]
@@ -640,14 +1210,9 @@ def _native_stored_content(
     }
     native_index = {"runtime": native, "files": snapshot["files"]}
     _write_json(root / "native-index-before.json", native_index)
-    server_process = _native_server_process(container_id, native_port)
-    binary_sha = server_process["exe_sha256"]
-    if (
-        native_binary_path is not None
-        and _container_binary_sha(container_id, native_binary_path) != binary_sha
-    ):
-        raise ValueError("operator supplied Zoekt binary differs from listening executable")
-    binary_source = native_binary_path or f"/proc/{server_process['pid']}/exe"
+    server_process = owned_service["listener"]
+    binary_sha = owned_service["guest"]["guest_sha256"]
+    binary_source = native_binary_path
     copied_code, _copied_stdout, _copied_stderr, _elapsed = live._process(
         ["docker", "cp", "-L", f"{container_id}:{binary_source}", str(root / "zoekt-webserver")],
         60,
@@ -660,6 +1225,22 @@ def _native_stored_content(
         or RawFile.capture(binary_file).sha256 != "sha256:" + binary_sha
     ):
         raise ValueError("deployed Zoekt binary bytes differ")
+    translated_code, _translated_stdout, _translated_stderr, _elapsed = live._process(
+        [
+            "docker",
+            "cp",
+            "-L",
+            f"{container_id}:/proc/{server_process['pid']}/exe",
+            str(root / "native-translator"),
+        ],
+        60,
+    )
+    if (
+        translated_code != 0
+        or RawFile.capture(root / "native-translator").sha256
+        != "sha256:" + server_process["exe_sha256"]
+    ):
+        raise ValueError("native Zoekt translator executable bytes differ")
     with (root / "native-worker.py").open("x", encoding="utf-8") as worker_file:
         worker_file.write(_NATIVE_WORKER)
     script_file = root / "probe_native_contents.py"
@@ -681,6 +1262,7 @@ def _native_stored_content(
             "reader_invocation_id": invocation_id,
             "native_binary_sha256": binary_sha,
             "native_server_process": server_process,
+            "native_owned_service": owned_service,
             "native_runtime": native,
             "tasks": len(jobs),
             "worker_concurrency": 1,
@@ -717,15 +1299,21 @@ def _native_stored_content(
     current = live._backend_snapshot(config)
     if (
         rows != len(files)
-        or (
-            native_binary_path is not None
-            and _container_binary_sha(container_id, native_binary_path) != binary_sha
+        or _container_binary_sha(container_id, native_binary_path) != binary_sha
+        or _native_server_process(container_id, native_port) != server_process
+        or _owned_web_guest(
+            container_id,
+            owned_service,
+            native_binary_path,
+            runtime["mount_destination"],
+            native_port,
         )
-        or _native_server_process(container_id, native_port, binary_sha) != server_process
+        != owned_service["guest"]
         or current != snapshot
         or Path(__file__).read_bytes() != producer_source
     ):
         raise ValueError("native Zoekt worker coverage, binary or producer changed")
+    _image_guest_binary(container_id, owned_service["image_id"], native_binary_path)
     current_runtime = current["runtime"]
     after_native = {
         "runtime": {
@@ -762,6 +1350,7 @@ def _native_stored_content(
             "rows_sha256": rows_sha,
             "control_sha256": control_sha256,
             "native_server_process": server_process,
+            "native_owned_service": owned_service,
             "reader_invocation_id": invocation_id,
             "reader_identity": reader_identity,
             "expected_files": len(files),
@@ -861,6 +1450,8 @@ def capture_from_live_spec(
     output_root = _absolute(str(output_root))
     spec_before = RawFile.capture(live_spec_path)
     spec = _capture_spec(live_spec_path, scope_spec=scope_spec, live=live)
+    if native_binary_path is None:
+        raise ValueError("native Zoekt owned capture requires explicit guest binary path")
     config = spec["sourcegraph"]
     if (
         "backend_snapshot" not in config
@@ -997,7 +1588,7 @@ def capture_from_live_spec(
             ],
         },
     )
-    binary_sha, rows_sha = _native_stored_content(
+    binary_sha, rows_sha, owned_service = _native_stored_content(
         native_root,
         config=config,
         manifest_path=manifest_path,
@@ -1040,6 +1631,7 @@ def capture_from_live_spec(
             "native_index_inventory_sha256": sourcegraph.sha256(native_before_path.read_bytes()),
             "native_runtime": parse_json(native_before_path.read_text())["runtime"],
             "native_binary_sha256": binary_sha,
+            "native_owned_service": owned_service,
             "native_capture_root": str(native_root),
             "native_rows_sha256": rows_sha,
             "path_inventory_proof": str(path_root / "summary.json"),
@@ -1057,6 +1649,7 @@ def capture_from_live_spec(
         config=config,
         projection=projection,
         snapshot=before,
+        require_owned_service=True,
     )
     return receipt
 
@@ -1100,6 +1693,8 @@ def capture_scope_batch(
         or not batch["cells"]
     ):
         raise ValueError("Sourcegraph index scope batch input differs")
+    if native_binary_path is None:
+        raise ValueError("native Zoekt owned capture requires explicit guest binary path")
     cells = []
     release_root = None
     repositories: set[str] = set()
@@ -1197,6 +1792,7 @@ def verify(
     config: dict,
     projection: dict,
     snapshot: dict,
+    require_owned_service: bool = False,
 ) -> dict:
     try:
         return _verify(
@@ -1206,6 +1802,7 @@ def verify(
             config=config,
             projection=projection,
             snapshot=snapshot,
+            require_owned_service=require_owned_service,
         )
     except (KeyError, TypeError, UnicodeDecodeError) as exc:
         raise ValueError("malformed index scope evidence") from exc
@@ -1219,6 +1816,7 @@ def _verify(
     config: dict,
     projection: dict,
     snapshot: dict,
+    require_owned_service: bool,
 ) -> dict:
     """Re-derive one repository scope; never trust a receipt's success flag."""
     commitments: dict[str, RawFile] = {}
@@ -1242,7 +1840,7 @@ def _verify(
         return value
 
     receipt = document(receipt_path)
-    if set(receipt) != {
+    base_receipt_keys = {
         "schema",
         "backend",
         "scope",
@@ -1259,7 +1857,8 @@ def _verify(
         "native_rows_sha256",
         "path_inventory_proof",
         "limitations",
-    }:
+    }
+    if set(receipt) not in (base_receipt_keys, base_receipt_keys | {"native_owned_service"}):
         raise ValueError("index scope receipt keys differ")
     manifest = parse_json(manifest_raw.decode("utf-8"))
     files = sourcegraph._files(manifest["files"], "index scope manifest")
@@ -1322,6 +1921,128 @@ def _verify(
     precommit = document(root / "precommit.json")
     result = document(root / "result.json")
     cleanup = document(root / "owned-probe-cleanup.json")
+    owned = receipt.get("native_owned_service")
+    if require_owned_service and owned is None:
+        raise ValueError("native Zoekt owned guest proof is required")
+    if "native_owned_service" in receipt and owned is None:
+        raise ValueError("native Zoekt owned service receipt differs")
+    if owned is not None:
+        if (
+            not isinstance(owned, dict)
+            or set(owned)
+            != {
+                "kind",
+                "invocation_id",
+                "supervisor_pid",
+                "supervisor_start_ticks",
+                "child_pid",
+                "child_start_ticks",
+                "guest_path",
+                "guest_sha256",
+                "guest_dev_major",
+                "guest_dev_minor",
+                "guest_inode",
+                "guest_size",
+                "argv",
+                "listener",
+                "guest",
+                "image_id",
+            }
+            or owned["kind"] != "owned_zoekt_webserver"
+            or not isinstance(owned["invocation_id"], str)
+            or re.fullmatch(r"[0-9a-f]{32}", owned["invocation_id"]) is None
+            or owned["image_id"] != native["image_id"]
+            or any(
+                type(owned[name]) is not int or owned[name] <= 0
+                for name in (
+                    "supervisor_pid",
+                    "supervisor_start_ticks",
+                    "child_pid",
+                    "child_start_ticks",
+                    "guest_inode",
+                    "guest_size",
+                )
+            )
+            or any(
+                type(owned[name]) is not int or owned[name] < 0
+                for name in ("guest_dev_major", "guest_dev_minor")
+            )
+            or not isinstance(owned["guest_path"], str)
+            or not owned["guest_path"].startswith("/")
+            or ".." in Path(owned["guest_path"]).parts
+            or precommit.get("native_owned_service") != owned
+            or result.get("native_owned_service") != owned
+        ):
+            raise ValueError("native Zoekt owned service receipt differs")
+        guest = owned["guest"]
+        listener = owned["listener"]
+        mappings = guest.get("guest_mappings") if isinstance(guest, dict) else None
+        if (
+            not isinstance(guest, dict)
+            or set(guest)
+            != {
+                "pid",
+                "start_ticks",
+                "argv",
+                "guest_path",
+                "guest_sha256",
+                "guest_dev_major",
+                "guest_dev_minor",
+                "guest_inode",
+                "guest_size",
+                "guest_mappings",
+                "translator_sha256",
+            }
+            or not isinstance(listener, dict)
+            or guest["pid"] != owned["child_pid"]
+            or guest["start_ticks"] != owned["child_start_ticks"]
+            or guest["guest_path"] != owned["guest_path"]
+            or guest["guest_sha256"] != owned["guest_sha256"]
+            or guest["guest_sha256"] != receipt["native_binary_sha256"]
+            or guest["translator_sha256"] != listener.get("exe_sha256")
+            or guest["argv"] != owned["argv"]
+            or any(
+                guest[name] != owned[name]
+                for name in ("guest_dev_major", "guest_dev_minor", "guest_inode", "guest_size")
+            )
+            or not isinstance(mappings, list)
+            or not mappings
+            or not any(
+                isinstance(row, dict) and "x" in row.get("permissions", "") for row in mappings
+            )
+            or any(
+                not isinstance(row, dict)
+                or set(row) != {"permissions", "device", "inode", "path"}
+                or row["path"] != owned["guest_path"]
+                or row["inode"] != owned["guest_inode"]
+                or row["device"] != f"{owned['guest_dev_major']:02x}:{owned['guest_dev_minor']:02x}"
+                for row in mappings
+            )
+            or owned["argv"]
+            != [
+                owned["guest_path"],
+                "-index",
+                runtime["mount_destination"],
+                "-listen",
+                f"127.0.0.1:{listener['port']}",
+                "-html=true",
+            ]
+            or listener["pid"] != owned["child_pid"]
+            or listener["start_ticks"] != owned["child_start_ticks"]
+        ):
+            raise ValueError("native Zoekt guest mapping or translator proof differs")
+        service_cleanup = document(root / "owned-service-cleanup.json")
+        if service_cleanup != {
+            "invocation_id": owned["invocation_id"],
+            "tombstone_created": True,
+            "owned_child_stopped": True,
+            "owned_supervisor_stopped": True,
+        }:
+            raise ValueError("native Zoekt owned service cleanup differs")
+        if raw(root / "native-translator").sha256 != "sha256:" + guest["translator_sha256"]:
+            raise ValueError("native Zoekt translator executable bytes differ")
+    elif "native_owned_service" in precommit or "native_owned_service" in result:
+        raise ValueError("native Zoekt owned service receipt is missing")
     server_process = precommit.get("native_server_process")
     if server_process is not None or "native_server_process" in result:
         if (
@@ -1333,8 +2054,14 @@ def _verify(
             or server_process["pid"] <= 0
             or type(server_process["start_ticks"]) is not int
             or server_process["start_ticks"] <= 0
-            or server_process["exe_sha256"] != receipt["native_binary_sha256"]
+            or server_process["exe_sha256"]
+            != (
+                receipt["native_binary_sha256"]
+                if owned is None
+                else owned["guest"]["translator_sha256"]
+            )
             or result.get("native_server_process") != server_process
+            or (owned is not None and server_process != owned["listener"])
         ):
             raise ValueError("native Zoekt listener process proof differs")
     controls = precommit.get("control_sha256")
@@ -1524,6 +2251,9 @@ def _verify(
             raise ValueError("index scope evidence changed during replay")
     return {
         "scope": SCOPE,
+        "proof_level": (
+            "owned_guest_translator_v1" if owned is not None else "legacy_native_scope_v1"
+        ),
         "files": len(files),
         "receipt_sha256": commitments[str(receipt_path.absolute())].sha256,
         "evidence_sha256": "sha256:"

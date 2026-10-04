@@ -290,9 +290,9 @@ impl LexicalAdapter {
     ///
     /// Opens the writer (creating an empty index for a generation that
     /// indexed nothing, which must still be openable), commits once, waits
-    /// for its merges so the sealed `meta.json` is the last one any writer
-    /// produces, and drops the writer from the cache so nothing can commit
-    /// to this generation again. A sealed generation is never built again,
+    /// for its merges, rewrites only segments with deleted documents so BM25
+    /// scores use live rows, and drops the writer from the cache so nothing
+    /// can commit to this generation again. A sealed generation is never built again,
     /// so its heap goes back to the envelope now.
     pub(crate) fn finalize_index_for_seal(
         &self,

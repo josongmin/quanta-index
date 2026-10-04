@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | Python owner 배치·구조/API·fuzz `VERIFIED`; Rust 통합 실패 수리 후 재실행 중, formal Contract/SDK·CI는 `NOT_RUN` |
+| 실행 상태 | Python owner 배치·구조/API·fuzz `VERIFIED`; Rust workspace 새 lexical lifecycle 반례 `FAILED`, BM25 seal 수리 재검증 중; actual SDK26 `VERIFIED`, formal Contract/SDK·CI는 `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -26,7 +26,8 @@
 - Python required identity registry는 실제 collection 772→788로 반영했다. collection은 실행/proof receipt가 아니다. Rust/SDK registry와 final-source formal proofs는 아직 `NOT_RUN`이다.
 - `VERIFIED`: `just rust-fuzz-smoke` — IPC request/response, corpus ingest, LQ pipeline 네 target의 실제 60초 smoke가 모두 exit 0이었다. 전체 fuzz qualification은 아니다.
 - Rust workspace lib/bin 첫 실행은 SDK positive mocks의 selected head 누락 2건, 다음 실행은 maintenance worker의 supervisor 인계 뒤 premature stop으로 harness 8건이 실패했다. 두 원인을 source/fixture에서 수리했다. E4 disk fixture의 `unused-results` compile refusal도 반환값 binding으로 수리했다.
-- 현재 재실행: `./scripts/cargow --lane test-fast-lane test --workspace --lib --bins --all-features --locked`. 완료 전에는 전체 PASS를 발행하지 않는다. daemon profile·SDK roundtrip/integration·fresh Contract/SDK·hosted CI·release/scale gates는 `NOT_RUN`이다.
+- `FAILED`: `./scripts/cargow --lane test-fast-lane test --workspace --lib --bins --all-features --locked`는 searchd lib105 passed/1 ignored 후 harness146 passed/1 failed로 중단했다. 새 E4 lifecycle fixture에서 delete 후 fresh rebuild와 score bits가 달랐다. 뒤쪽 runtime/lib 등은 실행되지 않았다. 별도 unequal-token L2 oracle도 같은 source/path/candidate/hash를 유지하면서 BM25 score mismatch로 실패했다. stale-segment compaction 수리 후 영향을 재검증한다.
+- `VERIFIED`: matching debug searchd를 명시한 `./scripts/cargow --lane test-fast-lane test --workspace --test sdk_roundtrip --all-features --locked` — actual daemon SDK26 passed/0 failed. 새 Text/Symbol one-RPC selected head와 successor activation 뒤 stale-token refusal을 포함한다. daemon profile·fresh formal Contract/SDK·hosted CI·release/scale gates는 `NOT_RUN`이다.
 - source-derived Rust registry의 stale request-event 4 IDs를 현재 one-RPC test 2 IDs로 교체하고 SDK live Active test 1 ID를 추가했다(Rust188 / SDK26). 실제 Nextest collection equality는 아직 `NOT_RUN`이다.
 - 코드 입력이 실제로 바뀐 scope만 재검증한다. 위 owner 결과를 전체 suite, final benchmark, 배포/운영 qualification으로 승격하지 않는다.
 
