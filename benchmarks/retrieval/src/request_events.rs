@@ -47,14 +47,14 @@ pub(crate) fn client_observation_value(
     }
     let timing = rpc.ipc;
     let children_ns = timing
-        .encode_ns
-        .checked_add(timing.connect_ns)
-        .and_then(|sum| sum.checked_add(timing.write_ns))
-        .and_then(|sum| sum.checked_add(timing.decode_call_ns))
+        .encode
+        .checked_add(timing.connect)
+        .and_then(|sum| sum.checked_add(timing.write))
+        .and_then(|sum| sum.checked_add(timing.decode_call))
         .ok_or_else(|| BenchError::Protocol("client RPC child clocks overflow".to_string()))?;
-    if children_ns > timing.total_ns
-        || timing.read_io_ns > timing.decode_call_ns
-        || timing.total_ns > sdk_execute_ns
+    if children_ns > timing.total
+        || timing.read_io > timing.decode_call
+        || timing.total > sdk_execute_ns
     {
         return Err(BenchError::Protocol(
             "client RPC clocks contradict SDK execution".to_string(),
@@ -63,15 +63,15 @@ pub(crate) fn client_observation_value(
     Ok(serde_json::json!({
         "clock": "client_monotonic_duration_ns",
         "timing_boundary": "successful_sdk_query_rpc_calls",
-        "sdk_execute_ns": sdk_execute_ns, "rpc_total_ns": timing.total_ns,
-        "sdk_unallocated_ns": sdk_execute_ns.saturating_sub(timing.total_ns),
+        "sdk_execute_ns": sdk_execute_ns, "rpc_total_ns": timing.total,
+        "sdk_unallocated_ns": sdk_execute_ns.saturating_sub(timing.total),
         "rpcs": [{
             "route": rpc.kind.as_str(), "request_id": rpc.request_id,
-            "total_ns": timing.total_ns, "encode_ns": timing.encode_ns,
-            "connect_ns": timing.connect_ns, "write_ns": timing.write_ns,
-            "decode_call_ns": timing.decode_call_ns, "read_io_ns": timing.read_io_ns,
-            "decode_non_read_ns": timing.decode_call_ns.saturating_sub(timing.read_io_ns),
-            "unallocated_ns": timing.total_ns.saturating_sub(children_ns),
+            "total_ns": timing.total, "encode_ns": timing.encode,
+            "connect_ns": timing.connect, "write_ns": timing.write,
+            "decode_call_ns": timing.decode_call, "read_io_ns": timing.read_io,
+            "decode_non_read_ns": timing.decode_call.saturating_sub(timing.read_io),
+            "unallocated_ns": timing.total.saturating_sub(children_ns),
         }],
         "read_io_accounting": "nested_inside_decode_call",
         "decode_non_read_accounting": "elapsed_local_work_not_cpu_time",
@@ -176,12 +176,12 @@ mod tests {
                     kind: ClientQueryRpcKindV1::Text,
                     request_id: 9,
                     ipc: ClientIpcTimingV1 {
-                        total_ns: 100,
-                        encode_ns: 5,
-                        connect_ns: 10,
-                        write_ns: 15,
-                        decode_call_ns: 60,
-                        read_io_ns: 40,
+                        total: 100,
+                        encode: 5,
+                        connect: 10,
+                        write: 15,
+                        decode_call: 60,
+                        read_io: 40,
                     },
                 }],
             },
@@ -202,9 +202,9 @@ mod tests {
                 0 => bad.rpcs.push(bad.rpcs[0]),
                 1 => bad.rpcs[0].request_id = 11,
                 2 => bad.rpcs[0].kind = ClientQueryRpcKindV1::ResolveActiveGeneration,
-                3 => bad.rpcs[0].ipc.read_io_ns = 61,
-                4 => bad.rpcs[0].ipc.total_ns = 89,
-                _ => bad.rpcs[0].ipc.encode_ns = u64::MAX,
+                3 => bad.rpcs[0].ipc.read_io = 61,
+                4 => bad.rpcs[0].ipc.total = 89,
+                _ => bad.rpcs[0].ipc.encode = u64::MAX,
             }
             assert!(client_observation_value(pair, &bad, 150).is_err());
         }

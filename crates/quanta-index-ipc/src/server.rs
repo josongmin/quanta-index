@@ -1620,16 +1620,18 @@ use peer_watch::{PeerWatch, PeerWatchOutcome};
 use peer_watch::{WatchEvent, WatchObserver};
 
 /// Request-local client timings for one successful one-shot IPC call.
-/// `read_io_ns` is included in `decode_call_ns`; their sum is not a total.
-/// The unallocated part of `total_ns` includes deadline checks and local work.
+///
+/// All six `u64` values are durations in nanoseconds. `read_io` is included in
+/// `decode_call`; their sum is not a total. The unallocated part of `total`
+/// includes deadline checks and local work.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ClientIpcTimingV1 {
-    pub total_ns: u64,
-    pub encode_ns: u64,
-    pub connect_ns: u64,
-    pub write_ns: u64,
-    pub decode_call_ns: u64,
-    pub read_io_ns: u64,
+    pub total: u64,
+    pub encode: u64,
+    pub connect: u64,
+    pub write: u64,
+    pub decode_call: u64,
+    pub read_io: u64,
 }
 
 struct TimedResponseReader<'a, R> {
@@ -1665,6 +1667,7 @@ where
 }
 
 /// The same one-shot request with opt-in, request-local client attribution.
+///
 /// Failed calls return their original transport error without a successful
 /// observation. Normal callers use [`send_request`] and read no extra clocks.
 pub fn send_request_observed<RequestEnvelopeT, ResponseEnvelopeT>(
@@ -1696,13 +1699,13 @@ where
     let encode_started = timing.as_ref().map(|_| Instant::now());
     let frame = encode_request(request)?;
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), encode_started) {
-        timing.encode_ns = observed_ns(started.elapsed())?;
+        timing.encode = observed_ns(started.elapsed())?;
     }
     let connect_started = timing.as_ref().map(|_| Instant::now());
     let stream = connect_before_deadline(socket, deadline)
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Connect, io_policy))?;
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), connect_started) {
-        timing.connect_ns = observed_ns(started.elapsed())?;
+        timing.connect = observed_ns(started.elapsed())?;
     }
     let mut stream = DeadlineStream::new(stream, deadline);
     let write_started = timing.as_ref().map(|_| Instant::now());
@@ -1710,7 +1713,7 @@ where
         .write_all(&frame)
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Write, io_policy))?;
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), write_started) {
-        timing.write_ns = observed_ns(started.elapsed())?;
+        timing.write = observed_ns(started.elapsed())?;
     }
     let decode_started = timing.as_ref().map(|_| Instant::now());
     let mut read_io = Duration::ZERO;
@@ -1727,13 +1730,13 @@ where
     }
     .map_err(|error| classify_client_decode_error(error, IpcIoOperation::Read, io_policy))?;
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), decode_started) {
-        timing.decode_call_ns = observed_ns(started.elapsed())?;
-        timing.read_io_ns = observed_ns(read_io)?;
+        timing.decode_call = observed_ns(started.elapsed())?;
+        timing.read_io = observed_ns(read_io)?;
     }
     ensure_deadline_remaining(deadline)
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Read, io_policy))?;
-    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), total_started) {
-        timing.total_ns = observed_ns(started.elapsed())?;
+    if let (Some(timing), Some(started)) = (timing, total_started) {
+        timing.total = observed_ns(started.elapsed())?;
     }
     Ok(response)
 }

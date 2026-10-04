@@ -731,9 +731,9 @@ fn observed_lexical_active_trace_matches_plain_result_and_request_ids() {
     assert_eq!(trace.rpcs[0].kind.as_str(), "query.text");
     assert_eq!(trace.rpcs[0].request_id, requests[0].request_id);
     for rpc in &trace.rpcs {
-        assert_eq!(rpc.ipc.total_ns, 20);
-        assert_eq!(rpc.ipc.read_io_ns, 4);
-        assert!(rpc.ipc.read_io_ns <= rpc.ipc.decode_call_ns);
+        assert_eq!(rpc.ipc.total, 20);
+        assert_eq!(rpc.ipc.read_io, 4);
+        assert!(rpc.ipc.read_io <= rpc.ipc.decode_call);
     }
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Text(pinned) = &requests[0].payload
     else {

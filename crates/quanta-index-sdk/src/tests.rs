@@ -149,12 +149,12 @@ impl QueryTransport for StubQueryTransport {
         Ok((
             response,
             quanta_index_ipc::ClientIpcTimingV1 {
-                total_ns: 20,
-                encode_ns: 1,
-                connect_ns: 2,
-                write_ns: 3,
-                decode_call_ns: 5,
-                read_io_ns: 4,
+                total: 20,
+                encode: 1,
+                connect: 2,
+                write: 3,
+                decode_call: 5,
+                read_io: 4,
             },
         ))
     }

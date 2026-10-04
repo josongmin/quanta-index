@@ -244,12 +244,12 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
         ));
     }
     let disjoint = timing
-        .encode_ns
-        .checked_add(timing.connect_ns)
-        .and_then(|value| value.checked_add(timing.write_ns))
-        .and_then(|value| value.checked_add(timing.decode_call_ns))
+        .encode
+        .checked_add(timing.connect)
+        .and_then(|value| value.checked_add(timing.write))
+        .and_then(|value| value.checked_add(timing.decode_call))
         .ok_or_else(|| "client timing children overflowed".to_string())?;
-    if timing.read_io_ns > timing.decode_call_ns || disjoint > timing.total_ns {
+    if timing.read_io > timing.decode_call || disjoint > timing.total {
         return Err(format!("client timing hierarchy is invalid: {timing:?}"));
     }
     Ok(())

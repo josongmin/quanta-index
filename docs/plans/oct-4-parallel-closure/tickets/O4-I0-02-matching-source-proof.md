@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | 수리 후 workspace lib/bin·L2/sealed·구조/API·bounded fuzz `VERIFIED`; daemon 실행 중. formal Contract/SDK·clippy 첫 명령은 admission timeout `FAILED`, 해당 검증 실행은 `NOT_RUN`; hosted CI·release/scale `NOT_RUN` |
+| 실행 상태 | source904 workspace·daemon213·process/L3 56 `VERIFIED`; 후속 Clippy 실제 source 실패 수리 중. formal Contract/SDK 첫 명령 admission timeout `FAILED`, proof `NOT_RUN`; hosted CI·release/scale `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -39,8 +39,11 @@
 - Tantivy standalone exact-live-token regression 1개가 locked online rail에서 통과했다. 미봉인 marker의 missing/wrong/malformed/oversized/symlink refusal, 새 index/reopen, legacy empty seal refusal 및 compactor admission failure 뒤 unsealed discard/rebuild를 current workspace 결과가 포함한다.
 - `VERIFIED`: `just rust-public-api`, `just rust-cargo-modules`, `just rust-hexagonal`, `just rust-wire-inventory`, `just rust-cargo-toml-hygiene`; `just rust-fuzz-smoke 10`의 네 target exit 0. 10초는 요청된 smoke budget이며 초기화 등을 포함한 모든 실제 wall이 10초라는 뜻은 아니다.
 - Source-stable E2 producer 회귀는 `test_live_lexical_external.py test_sourcegraph_parity_inventory.py test_sourcegraph_translator_export.py` 169 passed/347.08s였다. 중간 producer format 변경으로 실패한 앞선 168 pass/1 fail 결과는 이 새 전체 실행으로 대체했으며 실패 기록을 지우지 않았다.
-- `just rust-profile test-daemon`은 실행 중이다. G3 physical retirement fixture는 `runtime_fast_suite`에 있다. 별도 OS-process `process_readiness_owner_v1`은 아직 `NOT_RUN`이며, 앞선 두 owner target의 no-run 요청은 admission timeout으로 실제 compile/test 전에 중단됐다.
-- `qi-oct4-contract-proof-20261004-v1` 및 `qi-oct4-sdk-proof-fresh-20261004-v1`은 resource admission 300초 대기 초과로 명령이 실패했다. source closure/collection만 있고 authoritative execution-context 및 성공 receipt는 없다. `just rust-clippy`도 같은 admission refusal였다. 필요한 실제 검증을 daemon 완료 후 새 root에서 순차 실행한다.
+- `VERIFIED`: source904의 `just rust-profile test-daemon` — exit0, 213 passed/1 skipped, tests259.597s. G3 physical retirement fixture는 `runtime_fast_suite`에 있고 같은 process의 runtime/real UDS scope다.
+- `VERIFIED`: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime -p quanta-index-lexical --test process_readiness_owner_v1 --test l3_exact_source --all-features --locked --test-threads 4 --success-output final` — exit0, 56 passed/0 skipped, tests26.073s. process owner26(14 OS-child scenarios/12 helper), independent exact source L3 30이다. 앞선 no-run admission timeout은 보존한다.
+- `qi-oct4-contract-proof-20261004-v1` 및 `qi-oct4-sdk-proof-fresh-20261004-v1`은 resource admission 300초 대기 초과로 명령이 실패했다. source closure/collection만 있고 authoritative execution-context 및 성공 receipt는 없다. 최초 Clippy admission refusal와 뒤의 실제 source 실패를 구별한다. 필요한 formal 검증은 모든 포함 source 수리 뒤 새 root에서 순차 실행한다.
+- `FAILED`: 후속 실제 `just rust-clippy`는 contract의 optional selected-head field-count arithmetic/validation/ingest grouping 8건으로 exit101이었다. 같은 의미의 explicit field count/checked refusal와 고정 JSON/CBOR field-list 회귀로 수리했다. root 실제 contract lib172 및 integration54 passed다. 다음 full Clippy는 IPC timing field naming/doc/reborrow 및 lexical doc/auto-deref 8건으로 exit101이었다. downstream lint 수리와 재실행은 진행 중이며 lint allowance로 우회하지 않는다.
+- 현재 별도 managed checkout `/Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index`는 clean904를 보존한다. final included source 수리·실제 gates 후 새 HEAD로 retarget하고 그 checkout에서 source-bound formal proof를 실행한다. main 문서 자동 commit 또는 old904 receipt를 새 product source 증거로 승격하지 않는다.
 - `gh run list --commit 904043302f1db8406302a5a62bcffdc0d9412267 --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`는 `[]`였다. 조회 성공을 hosted CI PASS로 표시하지 않는다.
 
 ## 착수 입력

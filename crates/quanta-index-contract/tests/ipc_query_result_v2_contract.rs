@@ -283,6 +283,22 @@ fn selected_active_head_response_fields_are_exact_across_variants() -> TestRes {
         ],
         None,
     )?;
+    let text_head_only = quanta_index_contract::TextQueryResponse {
+        selected_active_head: Some(head.clone()),
+        ..text_without.clone()
+    };
+    assert_selected_head_wire_fields(
+        &text_head_only,
+        &[
+            "generation",
+            "selected_active_head",
+            "rank_unit",
+            "results",
+            "window",
+            "explanation",
+        ],
+        Some(&head),
+    )?;
     let text_with = quanta_index_contract::TextQueryResponse {
         selected_active_head: Some(head.clone()),
         results: vec![lexical_candidate()],
@@ -303,6 +319,22 @@ fn selected_active_head_response_fields_are_exact_across_variants() -> TestRes {
         ],
         Some(&head),
     )?;
+    let text_cursor_only = quanta_index_contract::TextQueryResponse {
+        selected_active_head: None,
+        ..text_with
+    };
+    assert_selected_head_wire_fields(
+        &text_cursor_only,
+        &[
+            "generation",
+            "rank_unit",
+            "results",
+            "window",
+            "explanation",
+            "next_cursor",
+        ],
+        None,
+    )?;
 
     let symbol_without = quanta_index_contract::SymbolQueryResponse {
         generation: generation_pin(),
@@ -312,6 +344,15 @@ fn selected_active_head_response_fields_are_exact_across_variants() -> TestRes {
         next_cursor: None,
     };
     assert_selected_head_wire_fields(&symbol_without, &["generation", "results", "window"], None)?;
+    let symbol_head_only = quanta_index_contract::SymbolQueryResponse {
+        selected_active_head: Some(head.clone()),
+        ..symbol_without.clone()
+    };
+    assert_selected_head_wire_fields(
+        &symbol_head_only,
+        &["generation", "selected_active_head", "results", "window"],
+        Some(&head),
+    )?;
     let symbol_with = quanta_index_contract::SymbolQueryResponse {
         selected_active_head: Some(head.clone()),
         results: vec![symbol_candidate()?],
@@ -329,6 +370,15 @@ fn selected_active_head_response_fields_are_exact_across_variants() -> TestRes {
             "next_cursor",
         ],
         Some(&head),
+    )?;
+    let symbol_cursor_only = quanta_index_contract::SymbolQueryResponse {
+        selected_active_head: None,
+        ..symbol_with
+    };
+    assert_selected_head_wire_fields(
+        &symbol_cursor_only,
+        &["generation", "results", "window", "next_cursor"],
+        None,
     )?;
 
     let semantic_without = SemanticQueryResponse {
@@ -411,11 +461,28 @@ fn selected_active_head_response_fields_are_exact_across_variants() -> TestRes {
         ],
         None,
     )?;
-    let history_with = quanta_index_contract::SearchPlaneHistoryQueryResponse {
+    let history_head_only = quanta_index_contract::SearchPlaneHistoryQueryResponse {
         selected_active_head: Some(head.clone()),
+        ..history_without
+    };
+    assert_selected_head_wire_fields(
+        &history_head_only,
+        &[
+            "generation",
+            "selected_active_head",
+            "order",
+            "commits",
+            "diffs",
+            "window",
+            "read_epoch",
+            "examined",
+        ],
+        Some(&head),
+    )?;
+    let history_with = quanta_index_contract::SearchPlaneHistoryQueryResponse {
         window: continued_one,
         next_cursor: Some(token("active-history")?),
-        ..history_without
+        ..history_head_only
     };
     assert_selected_head_wire_fields(
         &history_with,
@@ -432,6 +499,24 @@ fn selected_active_head_response_fields_are_exact_across_variants() -> TestRes {
         ],
         Some(&head),
     )?;
+    let history_cursor_only = quanta_index_contract::SearchPlaneHistoryQueryResponse {
+        selected_active_head: None,
+        ..history_with
+    };
+    assert_selected_head_wire_fields(
+        &history_cursor_only,
+        &[
+            "generation",
+            "order",
+            "commits",
+            "diffs",
+            "window",
+            "read_epoch",
+            "examined",
+            "next_cursor",
+        ],
+        None,
+    )?;
 
     let runtime_without = runtime_final_page();
     assert_selected_head_wire_fields(
@@ -445,6 +530,23 @@ fn selected_active_head_response_fields_are_exact_across_variants() -> TestRes {
             "examined",
         ],
         None,
+    )?;
+    let runtime_head_only = quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+        selected_active_head: Some(head.clone()),
+        ..runtime_without
+    };
+    assert_selected_head_wire_fields(
+        &runtime_head_only,
+        &[
+            "generation",
+            "selected_active_head",
+            "results",
+            "window",
+            "read_epoch",
+            "universe_epoch",
+            "examined",
+        ],
+        Some(&head),
     )?;
     let runtime_with = quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
         selected_active_head: Some(head.clone()),
@@ -463,6 +565,23 @@ fn selected_active_head_response_fields_are_exact_across_variants() -> TestRes {
             "next_cursor",
         ],
         Some(&head),
+    )?;
+    let runtime_cursor_only = quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse {
+        selected_active_head: None,
+        ..runtime_with
+    };
+    assert_selected_head_wire_fields(
+        &runtime_cursor_only,
+        &[
+            "generation",
+            "results",
+            "window",
+            "read_epoch",
+            "universe_epoch",
+            "examined",
+            "next_cursor",
+        ],
+        None,
     )?;
 
     let seed_without = quanta_index_contract::HybridSeedQueryResponse {
