@@ -811,7 +811,9 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
                         "run": {
                             "runner_binary": {"name": "runner", "digest": digest},
                             "searchd_binary": {
-                                "binary_digest": hashlib.sha256(built["searchd"].read_bytes()).hexdigest()
+                                "binary_digest": hashlib.sha256(
+                                    built["searchd"].read_bytes()
+                                ).hexdigest()
                             },
                             "receipt_digest": "c" * 64,
                             "activation_digest": "d" * 64,
@@ -829,7 +831,9 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
         calls.append((argv, kwargs["env"]))
         fresh_target = kwargs["env"].get("CARGO_TARGET_DIR")
         if fresh_target is not None:
-            profile_dir = "release" if "--release" in argv or built["profile_dir"] == "release" else "debug"
+            profile_dir = (
+                "release" if "--release" in argv or built["profile_dir"] == "release" else "debug"
+            )
             active_target = Path(fresh_target)
             built.update(
                 target=active_target,
@@ -980,11 +984,17 @@ def test_fresh_release_sdk_proof_binds_source_and_binaries(fake_execution) -> No
     assert context["binaries"]["searchd"]["path"] == str(
         out / "target" / "release" / "quanta-index-searchd"
     )
-    build_commands = [row for row in context["commands"] if row["name"] in {"build-searchd", "rust-build"}]
+    build_commands = [
+        row for row in context["commands"] if row["name"] in {"build-searchd", "rust-build"}
+    ]
     assert len(build_commands) == 2
     assert all("--release" in row["argv"] for row in build_commands)
-    assert all(row["environment"]["CARGO_TARGET_DIR"] == str(out / "target") for row in build_commands)
-    assert any("--all-features" in argv for argv, _ in calls if "quanta-index-searchd-runtime" in argv)
+    assert all(
+        row["environment"]["CARGO_TARGET_DIR"] == str(out / "target") for row in build_commands
+    )
+    assert any(
+        "--all-features" in argv for argv, _ in calls if "quanta-index-searchd-runtime" in argv
+    )
 
 
 def test_fresh_binary_paths_bind_original_target(fake_execution) -> None:
@@ -1031,11 +1041,14 @@ def test_fresh_build_refuses_occupied_target(tmp_path, monkeypatch, occupied) ->
         portable_proof._fresh_build_environment(out)
 
 
-@pytest.mark.parametrize("variable,value", [
-    ("RUSTC_WRAPPER", "/opaque/wrapper"),
-    ("RUSTC_WORKSPACE_WRAPPER", "/opaque/wrapper"),
-    ("QUANTA_INDEX_SCCACHE", "1"),
-])
+@pytest.mark.parametrize(
+    "variable,value",
+    [
+        ("RUSTC_WRAPPER", "/opaque/wrapper"),
+        ("RUSTC_WORKSPACE_WRAPPER", "/opaque/wrapper"),
+        ("QUANTA_INDEX_SCCACHE", "1"),
+    ],
+)
 def test_fresh_build_refuses_unbound_compiler_path(tmp_path, monkeypatch, variable, value) -> None:
     for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "QUANTA_INDEX_SCCACHE"):
         monkeypatch.delenv(key, raising=False)
@@ -1072,7 +1085,7 @@ def test_fresh_release_proof_rejects_command_profile_and_binary_tampering(fake_e
 
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
-def test_relocated_custody_preserves_commands_and_paths(fake_execution, rail):
+def test_relocated_custody_preserves_commands_and_paths(fake_execution, rail, monkeypatch):
     import shutil
 
     out, _, _ = fake_execution
@@ -1086,10 +1099,28 @@ def test_relocated_custody_preserves_commands_and_paths(fake_execution, rail):
         shutil.copyfile(binary["path"], target)
         frozen_bins[name] = target
     relocated = copied / receipt.name
+    verifier_root = out.with_name(out.name + "-other-verifier")
+    monkeypatch.setattr(portable_proof, "ROOT", verifier_root)
+    monkeypatch.setattr(
+        portable_proof, "SOURCE_CLOSURE_SCRIPT", verifier_root / "tools/ci/source_closure.py"
+    )
     assert (
         portable_proof.validate(relocated, execution_root=out, binary_files=frozen_bins) == context
     )
     assert relocated.read_bytes() == receipt.read_bytes()
+    for cwd in ("relative/workspace", "/proof/../workspace", "/proof/./workspace", "//proof"):
+        changed = json.loads(receipt.read_bytes())
+        changed["commands"][0]["cwd"] = cwd
+        relocated.write_text(json.dumps(changed))
+        with pytest.raises(ValueError, match="absolute canonical recorded path"):
+            portable_proof.validate(relocated, execution_root=out, binary_files=frozen_bins)
+    relocated.write_bytes(receipt.read_bytes())
+    changed = json.loads(receipt.read_bytes())
+    changed["commands"][1]["cwd"] = str(verifier_root)
+    relocated.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="proof command identity"):
+        portable_proof.validate(relocated, execution_root=out, binary_files=frozen_bins)
+    relocated.write_bytes(receipt.read_bytes())
     with pytest.raises(ValueError):
         portable_proof.validate(
             relocated, execution_root=out.with_name("wrong-root"), binary_files=frozen_bins

@@ -10480,7 +10480,7 @@ def test_pair_provenance_keeps_driver_revision_distinct_from_unattested_binary_s
     assert "binary_build_source_revision" not in _stage_verdict(st)["provenance"]["quanta"]
 
 
-def test_pair_derives_binary_source_only_after_fresh_sdk_chain_verifies(tmp_path):
+def test_pair_derives_binary_source_only_after_fresh_sdk_chain_verifies(tmp_path, monkeypatch):
     from tools.benchmark.retrieval.lexical_file_comparison import _replay_file_pair_verdict
 
     stage = _pair_stage(tmp_path, receipts="full", sdk_build_profile="release-fresh")
@@ -10494,6 +10494,13 @@ def test_pair_derives_binary_source_only_after_fresh_sdk_chain_verifies(tmp_path
         == (stage["manifest"]["provenance"]["quanta"]["source_sha"])
     )
     jsonschema.validate(verdict, _load_schema("verdict.schema.json"))
+    # Replay immutable proof produced in another checkout without rewriting
+    # its original cwd, command paths, Cargo metadata or receipt inputs.
+    verifier_root = tmp_path / "other-verifier-checkout"
+    monkeypatch.setattr(portable_proof, "ROOT", verifier_root)
+    monkeypatch.setattr(
+        portable_proof, "SOURCE_CLOSURE_SCRIPT", verifier_root / "tools/ci/source_closure.py"
+    )
     _replay_file_pair_verdict(stage["repo"], stage["suite_path"], stage["manifest_path"], verdict)
     forged = copy.deepcopy(verdict)
     forged["provenance"]["quanta"]["binary_build_source_revision"] = "e" * 40

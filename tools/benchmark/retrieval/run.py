@@ -10461,6 +10461,7 @@ def _verify_execution_context(
         raise RunError(f"{where} command output root is not absolute")
     try:
         build_profile = portable_proof.validated_build_profile(context, original_out)
+        workspace_root = portable_proof.recorded_workspace_root(context)
     except ValueError as exc:
         raise RunError(f"{where} build profile refused: {exc}") from exc
     first_inherited = commands[0].get("inherited_environment")
@@ -10476,6 +10477,7 @@ def _verify_execution_context(
         binaries,
         inherited_environment=first_inherited,
         build_profile=build_profile,
+        workspace_root=workspace_root,
     )
     if len(commands) != len(expected):
         raise RunError(f"{where} command count mismatch")
@@ -10494,6 +10496,7 @@ def _verify_execution_context(
             collection_name,
             rail,
             build_profile=build_profile,
+            workspace_root=workspace_root,
         )
     for captured in inputs:
         if _proof_file(captured.path) != captured:
@@ -10509,7 +10512,7 @@ def _verify_execution_context(
 
 
 def _verify_context_commands(
-    commands, expected, logs, raw, collection_name, rail, *, build_profile=None
+    commands, expected, logs, raw, collection_name, rail, *, build_profile=None, workspace_root
 ):
     where = f"{rail} execution context"
     reuse_build_raw = {}
@@ -10535,7 +10538,7 @@ def _verify_context_commands(
         if (
             command["name"] != name
             or command["argv"] != argv
-            or command["cwd"] != str(portable_proof.ROOT)
+            or command["cwd"] != str(workspace_root)
             or command["environment"] != overrides
             or type(command["exit_code"]) is not int
             or command["exit_code"] != 0
@@ -10571,7 +10574,7 @@ def _verify_context_commands(
             reuse_build_raw["rust-build"],
             reuse_build_raw["metadata"],
             reuse_build_raw["rust-collection"],
-            workspace_root=Path(commands[0]["cwd"]),
+            workspace_root=workspace_root,
             build_profile=build_profile,
         )
     except ValueError as exc:

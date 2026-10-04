@@ -723,6 +723,25 @@ def _receipt_argv(
     raise ValueError(f"unknown receipt side: {side}")
 
 
+def recorded_workspace_root(context: dict[str, object]) -> Path:
+    """Read the original command root; native Cargo metadata must also bind it."""
+    commands = context.get("commands")
+    if not isinstance(commands, list) or not commands or not isinstance(commands[0], dict):
+        raise ValueError("missing or malformed proof commands")
+    recorded = commands[0].get("cwd")
+    if not isinstance(recorded, str) or not recorded or "\x00" in recorded:
+        raise ValueError("proof workspace root must be an absolute canonical recorded path")
+    root = Path(recorded)
+    if (
+        not root.is_absolute()
+        or ".." in root.parts
+        or str(root) != recorded
+        or recorded.startswith("//")
+    ):
+        raise ValueError("proof workspace root must be an absolute canonical recorded path")
+    return root
+
+
 def _expected_commands(
     rail: str,
     out: Path,
@@ -731,11 +750,13 @@ def _expected_commands(
     *,
     inherited_environment: dict[str, str] | None = None,
     build_profile: str | None = None,
+    workspace_root: Path | None = None,
 ) -> list[tuple[str, list[str], dict[str, str]]]:
     if build_profile not in (None, FRESH_BUILD_PROFILE):
         raise ValueError("unsupported proof build profile")
     python = tools["python"]["path"]
     wrapper = tools["cargow"]["path"]
+    workspace_root = ROOT if workspace_root is None else workspace_root
     base = {"CARGO_NET_OFFLINE": "true"}
     if "cargo" in tools and "rustc" in tools:
         base.update(
@@ -758,7 +779,7 @@ def _expected_commands(
         "source-closure",
         [
             python,
-            str(SOURCE_CLOSURE_SCRIPT),
+            str(workspace_root / "tools/ci/source_closure.py"),
             "capture",
             "--profile",
             "retrieval",
@@ -775,7 +796,7 @@ def _expected_commands(
                 "python-collection",
                 [
                     python,
-                    str(ROOT / "tools/benchmark/retrieval/proof_inventory.py"),
+                    str(workspace_root / "tools/benchmark/retrieval/proof_inventory.py"),
                     "--out",
                     str(out / "python-inventory.json"),
                 ],
@@ -853,7 +874,11 @@ def _expected_commands(
             _cargo(wrapper, "metadata", "--format-version", "1", "--locked"),
             cargo_env,
         ),
-        ("rust-collection", _reuse_nextest(wrapper, "list", out, "--message-format", "json"), cargo_env),
+        (
+            "rust-collection",
+            _reuse_nextest(wrapper, "list", out, "--message-format", "json"),
+            cargo_env,
+        ),
         (
             "rust-test",
             _reuse_nextest(wrapper, "run", out, *FORMAT),
@@ -910,8 +935,7 @@ def validated_build_profile(context: object, execution_root: Path) -> str | None
     if inherited.get("QUANTA_INDEX_SCCACHE") not in (None, "0"):
         raise ValueError("fresh build used a compiler cache")
     if any(
-        not isinstance(command, dict)
-        or command.get("inherited_environment") != inherited
+        not isinstance(command, dict) or command.get("inherited_environment") != inherited
         for command in commands
     ):
         raise ValueError("fresh build inherited environment changed between commands")
@@ -1332,6 +1356,7 @@ def validate(
         raise ValueError("execution root must be an absolute canonical recorded path")
     context = _json_bytes(capture(receipt_path.name))
     build_profile = validated_build_profile(context, execution_root)
+    workspace_root = recorded_workspace_root(context)
     closure = source_closure.validate_manifest_shape(_json_bytes(capture("source-closure.json")))
     if (
         context["revision"] != closure["revision"]
@@ -1373,7 +1398,7 @@ def validate(
         capture("rust-build.stdout"),
         capture("metadata.stdout"),
         capture("rust-collection.stdout"),
-        workspace_root=ROOT,
+        workspace_root=workspace_root,
         required_non_test_binary=(
             Path(binaries["runner"]["path"])
             if context["rail"] == "sdk"
@@ -1422,6 +1447,7 @@ def validate(
         binaries,
         inherited_environment=commands[0]["inherited_environment"],
         build_profile=build_profile,
+        workspace_root=workspace_root,
     )
     expected_names = [name for name, _, _ in expected_commands]
     if (
@@ -1450,7 +1476,7 @@ def validate(
             not isinstance(argv, list)
             or not argv
             or not all(isinstance(arg, str) and arg for arg in argv)
-            or row["cwd"] != str(ROOT)
+            or row["cwd"] != str(workspace_root)
             or type(row["exit_code"]) is not int
             or row["exit_code"] != 0
             or not isinstance(row["environment"], dict)
@@ -1560,13 +1586,17 @@ def validate(
             or (build_profile == FRESH_BUILD_PROFILE and target != str(execution_root / "target"))
             or (
                 binaries["searchd"]["path"]
-                != str(Path(target).resolve() / (
-                    "release" if build_profile == FRESH_BUILD_PROFILE else "debug"
-                ) / f"quanta-index-searchd{suffix}")
+                != str(
+                    Path(target).resolve()
+                    / ("release" if build_profile == FRESH_BUILD_PROFILE else "debug")
+                    / f"quanta-index-searchd{suffix}"
+                )
                 or binaries["runner"]["path"]
-                != str(Path(target).resolve() / (
-                    "release" if build_profile == FRESH_BUILD_PROFILE else "debug"
-                ) / f"{PACKAGE}{suffix}")
+                != str(
+                    Path(target).resolve()
+                    / ("release" if build_profile == FRESH_BUILD_PROFILE else "debug")
+                    / f"{PACKAGE}{suffix}"
+                )
             )
         ):
             raise ValueError("SDK binary paths differ from cargo metadata")
