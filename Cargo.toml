@@ -192,6 +192,11 @@ incremental = true
 # Dependency debug info is expensive and rarely needed during normal local loops.
 debug = false
 
+[profile.dev.package.sha2]
+# Retrieval debug captures hash the pinned searchd executable (hundreds of MiB).
+# Optimize only the digest dependency; the integrity check remains mandatory.
+opt-level = 3
+
 [profile.test]
 # Test compiles use the same local iteration path as `cargo check`, so keep
 # them incremental and avoid full debug info for every dependency rebuild.
