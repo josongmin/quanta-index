@@ -1769,6 +1769,29 @@ fn measure_noop(
     ))
 }
 
+fn require_noop_candidate_parity(
+    before: &crate::harness::E2eQueryResult,
+    after: &crate::harness::E2eQueryResult,
+) -> AnyResult<()> {
+    if before.typed_error.is_some() || after.typed_error.is_some() || before.candidates.is_empty() {
+        anyhow::bail!("scale: no-op query returned a typed error or empty baseline");
+    }
+    if before.candidates.len() != after.candidates.len()
+        || before
+            .candidates
+            .iter()
+            .zip(&after.candidates)
+            .any(|(old, new)| {
+                let mut expected = old.clone();
+                expected.manifest_generation = new.manifest_generation;
+                expected != *new
+            })
+    {
+        anyhow::bail!("scale: no-op publication changed ranked query candidates");
+    }
+    Ok(())
+}
+
 /// Measure the SMALL tier phase by phase.
 ///
 /// Boot, seed, seal, activate, query cold and warm, open the generation
@@ -1876,11 +1899,19 @@ fn measure_small_tier_with_config(
             .map_err(|error| stage_or_preserve("adapter", error))?;
         let (delta, delta_resources) =
             measure_delta(&mut rt, seed).map_err(|error| stage_or_preserve("delta", error))?;
+        let before_noop = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
+        require_result_count(
+            before_noop.candidates.len(),
+            expected_results,
+            "before no-op query",
+        )
+        .map_err(|error| stage_or_preserve("noop_verify", error))?;
         let (noop, noop_resources) =
             measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
-        let after_noop =
-            served_query(&mut rt).map_err(|error| stage_or_preserve("noop_verify", error))?;
-        require_result_count(after_noop, expected_results, "no-op query")
+        let after_noop = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
+        require_result_count(after_noop.candidates.len(), expected_results, "no-op query")
+            .map_err(|error| stage_or_preserve("noop_verify", error))?;
+        require_noop_candidate_parity(&before_noop, &after_noop)
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
         let mut phase_resources = delta_resources;
         for (name, observation) in noop_resources {
@@ -2147,6 +2178,8 @@ pub fn measure_tier_with_runtime_config(
             measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
         let after_noop = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         let _noop_result_count = validate_scoped_response(&oracle, None, &after_noop)
+            .map_err(|error| stage_or_preserve("noop_verify", error))?;
+        require_noop_candidate_parity(&after_delta, &after_noop)
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
         verify_scoped_repositories(&mut rt, &oracle)
             .map_err(|error| stage_or_preserve("noop_verify", error))?;

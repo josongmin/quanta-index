@@ -22,6 +22,7 @@
 ## 진입 조건
 
 - 각 작업은 W1의 **실제 counterexample·선택 계약 또는 측정된 병목**을 요구한다.
+- 이번 실행은 코드·정적 점검을 먼저 준비하고 검증은 I0 중앙 배치에서 수행한다. 필요한 새 counterexample/profile이 아직 실행되지 않았으면 해당 조건부 구현은 대기한다. 중앙 재현 결과가 나온 뒤 필요한 수리를 진행하고 W3에서 영향 검증을 모아 수행한다.
 - baseline에 알려진 correctness failure가 있으면 해당 수리는 필수다. E3-03 single-RPC·E4 token/pack을 모든 baseline capture의 자동 선행으로 만들지 않는다.
 
 ## 내부 순서·채택 기준
@@ -37,6 +38,7 @@
 ## I0에 넘길 결과
 
 - owned patch·SHARED proposal·producer/consumer 영향과 owner command/result, 이번 source에 포함할 수리/최적화 목록.
+- 중앙 검증 전에는 준비한 fixture·정적 점검과 실행 예정 명령을 넘기고, owner 실행 결과는 `NOT_RUN`으로 유지한다. W2 구현 완료를 검증 완료로 치환하지 않는다.
 - 조건 미성립은 실제 근거가 있을 때만 NOT_APPLICABLE이다. 미측정·입력 부재·미선택은 각각 NOT_RUN/BLOCKED/후속 epoch PLANNED로 남긴다.
 - 미선택 single-RPC/token 등도 29개 backlog에서 삭제하지 않는다. 담당·후속 epoch·남은 proof를 원래 티켓에 기록한다.
 - 채택한 변경은 W3 source gates와 W4 affected captures/performance를 요구한다. substage 개선·compile pass만으로 완료하지 않는다.

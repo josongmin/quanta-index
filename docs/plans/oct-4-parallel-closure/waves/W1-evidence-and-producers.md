@@ -35,6 +35,8 @@
 
 ## 담당별 병렬 실행
 
+이번 배치에서는 아래 작업의 코드·fixture·입력 준비와 정적 점검을 먼저 병렬로 진행한다. 표의 실제 검수·재현·비용 측정·owner commands/results는 I0의 중앙 실행 배치에서 수행하며, 준비만으로 통과를 주장하지 않는다. root는 E1/I0를 겸하고 E2/E3/E4에 각각 한 슬롯을 배정한다.
+
 | 담당 | 내부 순서와 실행 범위 | 인계물 |
 | --- | --- | --- |
 | E1 | repository별 E1-01→E1-02. 같은 owner가 E1-04 name oracle·E1-05 holdout/gold를 준비하고 **E1-03 admission producer PREPARE**도 수행한다. 같은 evaluator/review 파일 patch는 순서대로 통합한다. | 실제 raw 역할 provenance·merged qrels·name/gold/coverage/underfill·split/producer proposals |
@@ -47,6 +49,7 @@
 
 - 준비된 repository/claim마다 labels·scope·producer patch와 독립 fixture를 I0에 넘긴다. 모든 repository·holdout·최적화가 끝날 때까지 global wait를 하지 않는다.
 - 선택 scope에 실제 correctness 결함이 있으면 W2 수리 후 W3로 간다. 결함이 없고 W2 최적화를 포함하지 않는 baseline은 W3로 진행한다.
+- 새 실행 증거가 필요한 조건은 fixture/profile 준비 후 I0 중앙 배치에서 판정한다. 그 결과 수리가 필요하면 W2→W3 영향 재검증으로 돌아간다. 미실행 반례를 확인된 결함으로 표시하지 않는다.
 - E3-04/05 또는 E4-03에 수리가 필요하면 원래 티켓의 code phase를 W2에서 계속 수행한다. proof-only 성공으로 수리 완료를 대체하지 않는다.
 - full C3·name/NL·holdout quota가 부족한 범위는 FAILED/BLOCKED/NOT_RUN으로 남긴다. 준비된 file/NL 셀을 발행할 수 있어도 전체 qualification은 남는다.
 - E1-05 holdout은 정책 후보/acceptance가 고정되기 전 결과로 튜닝하지 않는다. exposure가 생기면 development로 바꾸고 새 holdout을 요구한다.

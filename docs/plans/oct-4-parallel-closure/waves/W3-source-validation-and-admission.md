@@ -18,7 +18,7 @@ producer까지 통합한 source를 검증하고 같은 source의 repository별 a
 
 ## 진입 조건
 
-- W0 scope·W1 code-ready proposals/labels와 이번 source에 포함한 W2 수리/최적화의 owner proof를 소비한다.
+- W0 scope·W1 code-ready proposals/독립 fixtures/실행 입력과 이번 source에 포함한 W2 수리/최적화의 채택 근거를 소비한다. owner proof가 미실행이면 3B에서 모아 수행하며, 필수 labels/proof 부재 상태로 3C ISSUE하지 않는다.
 - E1-03 producer·E2 controller/collector/schema와 selected scorer 코드는 이미 PREPARE돼 있어야 한다. admission 발행 뒤 추가 patch로 실행을 보정하지 않는다.
 
 ## 반드시 지킬 내부 순서
@@ -26,7 +26,7 @@ producer까지 통합한 source를 검증하고 같은 source의 repository별 a
 | 순서 | 담당 / 티켓 | 결과 |
 | --- | --- | --- |
 | 3A PREPARE 통합 | I0 / I0-02 | selected product·collector·admission/scorer·SHARED schema/registry/dependencies를 하나의 source에 반영 |
-| 3B VALIDATE | I0 / I0-02 + 해당 owner | 좁은 owner rail·변경 surface별 mandatory gates, 실제 Contract/SDK seam·source/input/binary·portable replay와 필요한 CI 상태 |
+| 3B VALIDATE | I0 / I0-02 + 해당 owner | 통합 정적 점검→중앙 owner rail 배치→변경 surface별 mandatory gates, 실제 Contract/SDK seam·source/input/binary·portable replay와 필요한 CI 상태 |
 | 3C ISSUE | E1 / E1-03 | 검증된 같은 source의 repository별 suite/split/blind pack/license/review/proof와 admission |
 | 3D 인계 | I0+E1 → E2/E4 | matching binaries·producer/controller identity·immutable 입력 경로/revision/digest와 required-cell scope |
 
@@ -37,6 +37,7 @@ producer까지 통합한 source를 검증하고 같은 source의 repository별 a
 - 이번 실행에 필요하지 않은 name/새 holdout/single-RPC/XL tier 완료를 baseline의 선행으로 추가하지 않는다.
 - warmup1과 selected response boundary를 기본 입력으로 발행할 수 있다. warmup0 채택은 W4 parity 후 canonical protocol/config/admission binding을 다시 ISSUE한 다음 실행한다.
 - config/input만 바뀌면 영향 producer/validation/ISSUE를 갱신한다. 코드·binary/source가 바뀌면 3A/3B를 다시 연다.
+- 중앙 재현/profile 배치에서 새 결함·병목이 확인되면 필요한 W2를 재개하고 3A/3B를 반복한다. 같은 host의 heavy build/test 작업은 직렬이며, unrelated scope의 raw를 일괄 폐기하지 않는다.
 
 ## 종료 조건·재개
 

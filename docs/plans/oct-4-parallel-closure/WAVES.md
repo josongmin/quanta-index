@@ -4,19 +4,29 @@
 
 [에픽·소유권 지도](README.md) · [티켓 인덱스](tickets/INDEX.md)
 
-- 상태: `PLANNED`. 아래는 실행 계획이며 제품 테스트·모델 검수·native capture·성능·배포는 이 문서 작성에서 `NOT_RUN`이다.
+- 아래는 실행 계획이다. 작성 당시의 `PLANNED`/`NOT_RUN`은 과거 기준이며, 이후 구현 반영이나 현재 실행 결과를 뜻하지 않는다. 실제 결과는 원래 owning ticket의 명령·관측·scope로 판정한다.
 - 작성 시작 HEAD: `main@f23af16f436c76ad4a700b75de4dd5b5771f56a6`. 앞선 감사 문서 27개가 dirty였다. 그 변경을 보존하며 실행 시 source/dirty/ownership을 다시 확인한다.
 - 웨이브는 **주된 수행 단계와 인계 순서**다. 모든 repository/티켓을 한꺼번에 기다리는 전역 장벽이 아니다. 준비된 repository·claim별로 다음 단계에 진입한다.
 - W2에서 미선택한 최적화와 모든 FAILED/BLOCKED/NOT_RUN 범위는 원래 티켓에 남는다. baseline을 발행한 것과 전체 29개 종료를 구분한다.
+
+## 이번 실행의 배치 규칙
+
+- **먼저 코드·독립 fixture·정적 점검을 병렬로 준비하고, 실행 검증은 I0가 모아서 수행한다.** 에픽별로 pytest/Rust tests·builds·실제 capture·모델/성능 jobs를 따로 시작하지 않는다.
+- 현재 4개 실행 슬롯은 **root가 E1+I0**, 나머지 3개가 **E2/E3/E4**를 맡는다. 에픽 소유권은 유지하고 SHARED 파일은 root가 통합한다. I0는 별도 다섯 번째 실행 슬롯을 요구하지 않는다.
+- W1에서는 source 조사·producer/consumer 구현·반례 fixture·실행 입력 준비를 우선한다. source에서 확정할 수 없는 재현·병목·역할 검수는 중앙 실행 배치 전까지 `NOT_RUN`이며, 입력이 없으면 해당 scope만 `BLOCKED`다.
+- W2의 조건부 변경은 이미 확보한 실제 반례/측정 또는 채택한 계약에 근거한다. 새 실행 증거가 필요한 경우, 준비된 W1 fixture/profile을 I0가 한 배치로 판정한 뒤 **필요한 W2만 재개**한다. 추정으로 pin/token/storage/scanner 변경을 선행하지 않는다.
+- W3에서는 **통합 → 정적 점검 → owner regressions → 영향 surface gates → matching binary/input → admission ISSUE**를 순서대로 수행한다. 재현 배치에서 새 결함이 확인되면 해당 W2 수리 후 W3 영향 범위를 다시 검증한다.
+- W4의 제품 캡처·ingest·정식 성능·scale은 같은 host에서 직렬 실행한다. W5의 실제 final-pool 검수·재채점은 같은 raw/qrel 권위를 사용한다. W6의 provider/Linux/restore/actions는 각 실제 입력을 요구한다.
+- 일괄 검증은 한 번의 실행으로 모든 웨이브를 닫는다는 뜻이 아니다. 코드/계약이 바뀌면 영향 검증을 다음 중앙 배치에 모으고, 필요한 proof가 없으면 다음 단계로 승격하지 않는다.
 
 ## 1. 웨이브 요약
 
 | 웨이브 | 기준 티켓 | 병렬 작업 / 담당 | 다음 단계 진입 조건 |
 | --- | --- | --- | --- |
 | [W0 — 소유권·실행 범위 고정](waves/W0-ownership-and-scope.md) | 1개 | 담당·SHARED 파일·host resource와 이번 실행 scope를 먼저 고정한다. | 선택 scope의 파일/계약/출력 namespace·자원 담당 확정 |
-| [W1 — 근거·정답·producer 병렬 준비](waves/W1-evidence-and-producers.md) | 14개 | 라벨/독립 oracle·native scope/timer/controller·safety 반례·전체 비용을 준비한다. | 선택 cohort의 code-ready proposals·라벨·독립 oracle와 실패 disposition 확보 |
-| [W2 — 확인된 결함 수리·선택 최적화](waves/W2-repairs-and-selected-optimizations.md) | 5개 | 재현된 계약 실패를 수리하고 측정 근거가 있는 최적화를 선택한다. | 선택 source에 필수인 수리·owner proof 완료; 미선택 최적화는 후속 epoch 유지 |
-| [W3 — 소스 통합·검증·admission ISSUE](waves/W3-source-validation-and-admission.md) | 2개 | producer까지 통합한 source를 검증하고 같은 source의 repository별 admission을 발행한다. | 영향 gates·matching binaries·suite/split/admission 결속 |
+| [W1 — 근거·정답·producer 병렬 준비](waves/W1-evidence-and-producers.md) | 14개 | 라벨/독립 oracle·native scope/timer/controller·safety 반례·비용 측정 코드를 준비한다. | 선택 cohort의 code-ready proposals·독립 fixture·실행 입력 준비; 실제 proof는 중앙 배치 |
+| [W2 — 확인된 결함 수리·선택 최적화](waves/W2-repairs-and-selected-optimizations.md) | 5개 | 증거가 확보된 계약 실패를 수리하고 병목 기반 최적화를 선택한다. | 선택 source에 필요한 수리·회귀 fixture 준비; 미확인 조건은 중앙 재현 뒤 판정 |
+| [W3 — 소스 통합·검증·admission ISSUE](waves/W3-source-validation-and-admission.md) | 2개 | producer까지 통합하고 owner/surface 검증을 일괄 수행한 뒤 같은 source의 admission을 발행한다. | 필수 owner/surface gates·matching binaries·suite/split/admission 결속 |
 | [W4 — 실제 캡처·성능·scale](waves/W4-native-capture-performance-and-scale.md) | 4개 | 필요한 warmup parity 뒤 native captures·반복 성능·tier별 load/restart를 실행한다. | 선택 required cells의 immutable raw/coverage·clock/host·claim별 proof 확보 |
 | [W5 — 최종 검수·재채점·정책 판정](waves/W5-final-scoring-and-policy.md) | 2개 | 새 candidate pool을 실제 검수하고 독립 gold/holdout에서 정책을 판정한다. | 해당 scope의 final qrel/scoreboard·분모/CI·정책 disposition; source 변경 시 재검증 |
 | [W6 — release·운영·전체 잔여 판정](waves/W6-release-and-final-closure.md) | 1개 | CODE/release/actions를 별도 증거로 판정하고 모든 29개 티켓의 미완료를 남긴다. | 요청 qualification의 필수 proof 충족; BLOCKED/NOT_RUN이면 해당 작업 잔여 |
@@ -100,9 +110,9 @@
 
 ## 6. 담당·자원 규칙
 
-- **E1–E4 에픽별 한 owner + I0 한 명**을 유지한다. 웨이브가 바뀌어도 동일 evaluator·collector·SDK·lexical source 권위를 분리하지 않는다.
+- **E1–E4 에픽별 한 owner와 단일 I0 역할**을 유지한다. 이번 4개 슬롯에서는 root가 E1/I0를 겸한다. 웨이브가 바뀌어도 동일 evaluator·collector·SDK·lexical source 권위를 분리하지 않는다.
 - OWNED 파일은 해당 에픽 담당이 통합한다. SHARED 파일은 I0가 반영하고 다른 담당은 구체적인 proposal와 proof를 넘긴다.
-- source reading·fixtures·작은 owner checks는 가능한 범위에서 병렬이다. shared service index/model jobs·heavy builds·제품/ingest/scale/정식 성능은 I0가 resource별로 admission/시간대를 관리한다.
+- source reading·fixture 작성·정적 점검은 병렬이다. 실행 owner checks·shared service index/model jobs·heavy builds·제품/ingest/scale/정식 성능은 I0가 검증 배치와 resource별 admission/시간대를 관리한다.
 - filter/명령·구체적인 파일·단계별 oracle와 DoD는 원래 티켓이 기준이다. 웨이브 문서는 새 완화 계약이 아니다.
 
 ## 7. 완료 상태와 문서 검증

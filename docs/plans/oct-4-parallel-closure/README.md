@@ -2,7 +2,7 @@
 
 **4개 구현/검증 에픽 + 단일 통합 담당(I0), 별도 티켓 29개.** 원본 5개 handoff의 중복·완료 구현을 제외한 합집합이다. 에픽별 목적·배경·해야 할 일과 티켓별 정확한 파일/함수/수정 방식·독립 검증·완료 조건을 분리했다.
 
-- 계획 상태: `PLANNED`. 본 문서 작성은 새 모델 검수·제품 실행·구현·benchmark·배포를 수행한 결과가 아니다.
+- 초기 계획 상태: `PLANNED`. 본 문서 작성 당시 관측이며 이후 구현·실행 상태는 원래 owning ticket에서 판정한다. 문서 작성 자체는 모델 검수·제품 실행·benchmark·배포 결과가 아니다.
 - 감사 시작 기준: `main@f23af16f436c76ad4a700b75de4dd5b5771f56a6`, checkout clean. 초기 작성 기준은 `0df06e0c`였다. 실행 시 HEAD/dirty/ownership을 다시 확인하며 원격 fetch 결과를 주장하지 않는다.
 - 구현 기준 `44bd68a1f41e15e7366adead56d825f8259ef46b`→감사 HEAD의 차이는 문서뿐이다. product/benchmark source는 바뀌지 않았다. 핸드오프의 `2062fed3` dirty/staged 상태를 현재 사실로 재사용하지 않는다.
 - 원본: [agent-1](../../handoff/oct-4/agent-1.md), [agent-2](../../handoff/oct-4/agent-2.md), [agent-3](../../handoff/oct-4/agent-3.md), [agent-4](../../handoff/oct-4/agent-4.md), [agent-5](../../handoff/oct-4/agent-5.md).
@@ -37,7 +37,7 @@
 - 티켓 선행 목록은 초기 ISSUE/실행 DAG다. 조사·독립 fixtures·code proposal PREPARE는 먼저 진행할 수 있다. I0-02는 선택한 scope의 code-ready 결과를 VALIDATE하며 모든 에픽 종료를 기다리는 global barrier가 아니다. ISSUE 이후 source 변경은 새 epoch로 재검증한다.
 - E1-07의 순수 numeric 변경은 scorer tests/report 재생을, E4-07의 planner/ranking/policy 변경은 affected SDK/Contract/binary/native cells를 다시 판정한다. 변경과 무관한 raw를 무조건 재실행하지 않는다.
 - 후속 정책이 유지돼야 하는지 바뀌어야 하는지 먼저 결정한다. 근거 없는 모델·RRF·청킹·스토리지 전면 교체를 final gate의 선행 작업으로 만들지 않는다.
-- code inspection·작은 owner fixtures는 병렬 가능하다. build/cache/fixture root·외부 index/model jobs·output namespace는 resource owner가 관리한다. 실제 제품/ingest/scale/정식 성능과 heavy builds는 동일 host admission에서 직렬 실행한다.
+- code inspection·fixture 작성·정적 점검은 병렬이다. 이번 실행은 root가 E1/I0를 겸하고 E2/E3/E4가 나머지 3개 슬롯을 사용한다. 실행 owner tests·builds·model/capture 검증은 I0가 통합 뒤 배치로 관리한다. 실제 제품/ingest/scale/정식 성능과 heavy builds는 동일 host admission에서 직렬 실행한다. 조건부 변경에 필요한 새 반례/측정은 [웨이브 배치 규칙](WAVES.md)의 중앙 재현→수리→영향 재검증 순서를 따른다.
 
 ## 2.1. 담당 간 인계 계약
 

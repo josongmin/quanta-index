@@ -2,7 +2,7 @@
 
 [전체 실행 지도](../README.md) · [웨이브별 실행 계획](../WAVES.md). 4개 에픽 26개 티켓 + I0 3개 = **29개**. 각 티켓에 목적·배경·입력·수정 파일/함수/방법·독립 검증·완료/중단 조건이 있다.
 
-모든 작업은 `PLANNED`, product implementation/verification은 `NOT_RUN`이다. 아래 선행 결과는 결과 ISSUE/실행의 초기 DAG이며 source 조사·독립 fixtures·proposal PREPARE를 막지 않는다. E1-03/E2 controller 등의 코드는 먼저 준비→I0-02 VALIDATE→같은 source의 admission ISSUE 순서다. 조건부 gates와 scope별 추가 prerequisites는 각 티켓 본문을 따른다. BLOCKED/NOT_RUN은 완료가 아니다.
+아래 착수 상태는 초기 계획의 `PLANNED` 기준이며 이후 구현 반영·실행 결과를 뜻하지 않는다. 현재 결과는 원래 owning ticket의 실제 명령·관측·scope에서 판정한다. 아래 선행 결과는 결과 ISSUE/실행의 초기 DAG이며 source 조사·독립 fixtures·proposal PREPARE를 막지 않는다. E1-03/E2 controller 등의 코드는 먼저 준비→I0-02 중앙 일괄 VALIDATE→같은 source의 admission ISSUE 순서다. 조건부 gates와 scope별 추가 prerequisites는 각 티켓 본문을 따른다. BLOCKED/NOT_RUN은 완료가 아니다.
 
 ## E1 — 정답·검수·admission과 독립 평가
 
