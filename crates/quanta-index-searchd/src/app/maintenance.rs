@@ -16,7 +16,7 @@
 //! Everything the timer does is counted, and a failed sweep or walk is a
 //! counted failure the next tick retries, never a silent stop.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -24,13 +24,55 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::SearchCorpusActivationTokenV1;
 use quanta_index_core::{
-    CoreError, MetricPointV1, MetricSourcePort, ProcessMemoryProbePort,
-    SealedGenerationIdentityProbePort, TrackDiskUsagePort, WriterIdleSweepPort,
+    CancelHandleV1, CoreError, MetricPointV1, MetricSourcePort, ProcessMemoryProbePort,
+    RequestBudgetV1, SealedGenerationIdentityProbePort, TrackDiskUsagePort, WriterIdleSweepPort,
 };
 use quanta_index_search_plane::readiness::ActivationCatalog;
 use quanta_index_search_plane::{SearchCorpusGenerationV1, SnapshotInventoryAdmission};
 
 use crate::app::integrity_scrub::PacedIntegrityScrubV1;
+
+const DISK_METER_SCAN_BUDGET: Duration = Duration::from_secs(30);
+
+#[derive(Default)]
+struct DiskMeterStop {
+    stopping: AtomicBool,
+    active: Mutex<Option<CancelHandleV1>>,
+}
+
+impl DiskMeterStop {
+    fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        let cancel = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(cancel) = cancel {
+            cancel.cancel();
+        }
+    }
+
+    fn begin(&self, budget: &RequestBudgetV1) -> bool {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.stopping.load(Ordering::Acquire) {
+            return false;
+        }
+        *active = Some(budget.cancel_handle());
+        true
+    }
+
+    fn finish(&self) {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *active = None;
+    }
+}
 
 /// What the timer has done, read by the scrape.
 #[derive(Debug, Default)]
@@ -254,6 +296,7 @@ fn refresh_disk_usage(
     lexical: &Arc<dyn TrackDiskUsagePort>,
     semantic: &Arc<dyn TrackDiskUsagePort>,
     tallies: &MaintenanceTallies,
+    budget: &RequestBudgetV1,
 ) {
     let _prior = tallies.disk_refreshes.fetch_add(1, Ordering::AcqRel);
     for (port, gauge, measured_at) in [
@@ -268,7 +311,7 @@ fn refresh_disk_usage(
             &tallies.semantic_disk_measured_at,
         ),
     ] {
-        match port.track_disk_bytes() {
+        match port.track_disk_bytes(budget) {
             Ok(bytes) => {
                 gauge.store(bytes, Ordering::Release);
                 if let Ok(mut last) = measured_at.lock() {
@@ -285,6 +328,7 @@ fn refresh_disk_usage(
 /// The running timer; dropping it stops the thread and joins it.
 pub struct MaintenanceTimer {
     stop: Sender<()>,
+    meter_stop: Arc<DiskMeterStop>,
     thread: Option<JoinHandle<()>>,
     tallies: Arc<MaintenanceTallies>,
 }
@@ -302,6 +346,7 @@ impl MaintenanceTimer {
             &parts.lexical_disk_usage,
             &parts.semantic_disk_usage,
             &tallies,
+            &RequestBudgetV1::for_duration(DISK_METER_SCAN_BUDGET),
         );
         if let Ok(mut last) = tallies.last_completed_tick.lock() {
             *last = Some(Instant::now());
@@ -310,15 +355,22 @@ impl MaintenanceTimer {
         // One owned worker and a single pending request bound both execution
         // and queued work without delaying identity probes or heartbeat.
         let (meter_tx, meter_rx) = mpsc::sync_channel::<()>(1);
+        let meter_stop = Arc::new(DiskMeterStop::default());
         let meter = {
             let lexical = Arc::clone(&parts.lexical_disk_usage);
             let semantic = Arc::clone(&parts.semantic_disk_usage);
             let tallies = Arc::clone(&tallies);
+            let meter_stop = Arc::clone(&meter_stop);
             std::thread::Builder::new()
                 .name("searchd-disk-meter".to_string())
                 .spawn(move || {
                     while meter_rx.recv().is_ok() {
-                        refresh_disk_usage(&lexical, &semantic, &tallies);
+                        let budget = RequestBudgetV1::for_duration(DISK_METER_SCAN_BUDGET);
+                        if !meter_stop.begin(&budget) {
+                            break;
+                        }
+                        refresh_disk_usage(&lexical, &semantic, &tallies, &budget);
+                        meter_stop.finish();
                     }
                 })
                 .map_err(|error| {
@@ -326,9 +378,11 @@ impl MaintenanceTimer {
                 })?
         };
         let (stop, stop_rx) = mpsc::channel();
+        let meter_owner = Arc::new(Mutex::new(Some(meter)));
         let thread = {
             let tallies = Arc::clone(&tallies);
-            std::thread::Builder::new()
+            let meter_for_timer = Arc::clone(&meter_owner);
+            let spawned = std::thread::Builder::new()
                 .name("searchd-maintenance".to_string())
                 .spawn(move || {
                     loop {
@@ -351,14 +405,34 @@ impl MaintenanceTimer {
                         }
                     }
                     drop(meter_tx);
+                    let meter = meter_for_timer
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .take()
+                        .expect("maintenance disk meter owner lost");
                     meter.join().expect("maintenance disk meter panicked");
-                })
-                .map_err(|error| {
-                    CoreError::Storage(format!("maintenance timer: spawn thread: {error}"))
-                })?
+                });
+            match spawned {
+                Ok(thread) => thread,
+                Err(error) => {
+                    meter_stop.stop();
+                    // The failed spawn drops its channel sender. Retain and
+                    // join the meter before returning the startup failure.
+                    let meter = meter_owner
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .take()
+                        .expect("maintenance disk meter owner lost");
+                    let _joined = meter.join();
+                    return Err(CoreError::Storage(format!(
+                        "maintenance timer: spawn thread: {error}"
+                    )));
+                }
+            }
         };
         Ok(Self {
             stop,
+            meter_stop,
             thread: Some(thread),
             tallies,
         })
@@ -390,6 +464,7 @@ impl MaintenanceTimer {
         Ok((
             MaintenanceStop {
                 stop: Arc::new(stop),
+                meter_stop: Arc::clone(&self.meter_stop),
             },
             handle,
         ))
@@ -400,11 +475,13 @@ impl MaintenanceTimer {
 /// signal when called or when dropped, whichever comes first.
 pub struct MaintenanceStop {
     stop: Arc<Sender<()>>,
+    meter_stop: Arc<DiskMeterStop>,
 }
 
 impl MaintenanceStop {
     /// Signal the timer to stop; idempotent.
     pub fn stop(&self) {
+        self.meter_stop.stop();
         let _sent = self.stop.send(());
     }
 }
@@ -417,6 +494,7 @@ impl Drop for MaintenanceStop {
 
 impl Drop for MaintenanceTimer {
     fn drop(&mut self) {
+        self.meter_stop.stop();
         let _stop_result = self.stop.send(());
         if let Some(thread) = self.thread.take() {
             let _joined = thread.join();
@@ -509,9 +587,13 @@ impl MetricSourcePort for MaintenanceMetricSource {
 #[cfg(test)]
 mod tests {
     use super::{MaintenanceParts, MaintenanceTallies, MaintenanceTimer};
-    use quanta_index_core::{CoreError, TrackDiskUsagePort, WriterIdleSweepPort};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Condvar, Mutex};
+    use quanta_index_core::{
+        CoreError, RequestBudgetV1, TrackDiskUsagePort, WriterIdleSweepPort,
+        unique_inode_tree_bytes_in_track,
+    };
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Condvar, Mutex, mpsc};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -587,9 +669,68 @@ mod tests {
     struct ScriptedDisk(AtomicU64);
 
     impl TrackDiskUsagePort for ScriptedDisk {
-        fn track_disk_bytes(&self) -> Result<u64, CoreError> {
+        fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
+            budget.checkpoint("scripted-disk:measure")?;
             Ok(self.0.load(Ordering::Acquire))
         }
+    }
+
+    struct PausedWalker {
+        root: PathBuf,
+        calls: AtomicU64,
+        entered: mpsc::Sender<()>,
+    }
+
+    impl TrackDiskUsagePort for PausedWalker {
+        fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
+            let pause = self.calls.fetch_add(1, Ordering::AcqRel) > 0;
+            let announced = AtomicBool::new(false);
+            unique_inode_tree_bytes_in_track(
+                &self.root,
+                &|_| {
+                    if pause && !announced.swap(true, Ordering::AcqRel) {
+                        let _sent = self.entered.send(());
+                        while !budget.is_cancelled() {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    }
+                    false
+                },
+                budget,
+            )
+        }
+    }
+
+    #[test]
+    fn shutdown_cancels_an_owned_inflight_directory_walk_before_join() {
+        let root = tempfile::tempdir().expect("track fixture");
+        std::fs::write(root.path().join("file"), b"payload").expect("track bytes");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let timer = MaintenanceTimer::start(
+            MaintenanceParts {
+                writer_sweep: Arc::new(CountingSweep(AtomicU64::new(0))),
+                lexical_disk_usage: Arc::new(PausedWalker {
+                    root: root.path().to_path_buf(),
+                    calls: AtomicU64::new(0),
+                    entered: entered_tx,
+                }),
+                semantic_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(0))),
+                backend_probe: None,
+                inventory_admission: None,
+                integrity_scrub: None,
+            },
+            Duration::from_millis(10),
+        )
+        .expect("boot measurement completes");
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("owned meter entered the real walker");
+        let stopped = Instant::now();
+        drop(timer);
+        assert!(
+            stopped.elapsed() < Duration::from_secs(2),
+            "cooperative directory walk outlived shutdown"
+        );
     }
 
     struct BlockingDisk {
@@ -598,7 +739,8 @@ mod tests {
     }
 
     impl TrackDiskUsagePort for BlockingDisk {
-        fn track_disk_bytes(&self) -> Result<u64, CoreError> {
+        fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
+            budget.checkpoint("blocking-disk:measure")?;
             if self.calls.fetch_add(1, Ordering::AcqRel) > 0 {
                 let (lock, ready) = &*self.gate;
                 let mut state = lock.lock().map_err(|error| {
@@ -607,9 +749,13 @@ mod tests {
                 state.0 = true;
                 ready.notify_all();
                 while !state.1 {
-                    state = ready.wait(state).map_err(|error| {
-                        CoreError::Storage(format!("blocking disk fixture poisoned: {error}"))
-                    })?;
+                    budget.checkpoint("blocking-disk:wait")?;
+                    state = ready
+                        .wait_timeout(state, Duration::from_millis(10))
+                        .map_err(|error| {
+                            CoreError::Storage(format!("blocking disk fixture poisoned: {error}"))
+                        })?
+                        .0;
                 }
             }
             Ok(10)

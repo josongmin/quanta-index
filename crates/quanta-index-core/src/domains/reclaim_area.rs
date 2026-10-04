@@ -30,7 +30,7 @@ use rustix::fs::{
 use sha2::{Digest as _, Sha256};
 
 use super::generation::FinishedReclaims;
-use crate::CoreError;
+use crate::{CoreError, RequestBudgetV1};
 
 /// The reserved directory under a track root that holds admitted deletions
 /// in progress. Inventories skip it: it is neither a generation family nor
@@ -212,7 +212,17 @@ fn tree_bytes_at(
     name: &OsStr,
     seen: &mut BTreeSet<(u64, u64)>,
     skip: &dyn Fn(&str) -> bool,
+    budget: Option<&RequestBudgetV1>,
 ) -> io::Result<u64> {
+    let checkpoint = || -> io::Result<()> {
+        if let Some(budget) = budget {
+            budget
+                .checkpoint("track-disk-usage:scan")
+                .map_err(io::Error::other)?;
+        }
+        Ok(())
+    };
+    checkpoint()?;
     let path = Path::new(name);
     let metadata = statat(parent, path, AtFlags::SYMLINK_NOFOLLOW).map_err(io_error)?;
     let file_type = FileType::from_raw_mode(metadata.st_mode);
@@ -237,12 +247,15 @@ fn tree_bytes_at(
         identity: inode_key(&metadata)?,
     }];
     while let Some(frame) = pending.pop() {
+        checkpoint()?;
         let directory = open_frame_directory(parent, &frame)?;
         let mut entries = Dir::read_from(&directory).map_err(io_error)?;
         while let Some(child) = next_entry_name(&mut entries)? {
+            checkpoint()?;
             if child.to_str().is_some_and(skip) {
                 continue;
             }
+            checkpoint()?;
             let child_stat = match statat(&directory, Path::new(&child), AtFlags::SYMLINK_NOFOLLOW)
             {
                 Ok(stat) => stat,
@@ -292,7 +305,7 @@ pub fn unique_inode_tree_bytes_below_track(
             path.display()
         )));
     }
-    tree_bytes_at(&parent, &name, &mut BTreeSet::new(), skip)
+    tree_bytes_at(&parent, &name, &mut BTreeSet::new(), skip, None)
         .map_err(|error| storage("measure tree", path, &error))
 }
 
@@ -339,7 +352,7 @@ pub fn unique_inode_tree_bytes_for_roots_below_track(
                 root.display()
             )));
         }
-        let bytes = tree_bytes_at(&parent, &name, &mut seen, skip)
+        let bytes = tree_bytes_at(&parent, &name, &mut seen, skip, None)
             .map_err(|error| storage("measure tree", root, &error))?;
         total = total.saturating_add(bytes);
         present.push(true);
@@ -351,12 +364,21 @@ pub fn unique_inode_tree_bytes_for_roots_below_track(
 pub fn unique_inode_tree_bytes_in_track(
     track_root: &Path,
     skip: &dyn Fn(&str) -> bool,
+    budget: &RequestBudgetV1,
 ) -> Result<u64, CoreError> {
+    budget.checkpoint("track-disk-usage:entry")?;
     let track = open(track_root, DIRECTORY_FLAGS, Mode::empty())
         .map(File::from)
         .map_err(|error| storage("open track root", track_root, &io_error(error)))?;
-    tree_bytes_at(&track, OsStr::new("."), &mut BTreeSet::new(), skip)
-        .map_err(|error| storage("measure track root", track_root, &error))
+    let measured = tree_bytes_at(
+        &track,
+        OsStr::new("."),
+        &mut BTreeSet::new(),
+        skip,
+        Some(budget),
+    );
+    budget.checkpoint("track-disk-usage:complete")?;
+    measured.map_err(|error| storage("measure track root", track_root, &error))
 }
 
 fn open_reclaim_area(track_root: &Path) -> Result<(File, File), CoreError> {
@@ -547,7 +569,7 @@ pub fn finish_interrupted_reclaims(track_root: &Path) -> Result<FinishedReclaims
         }
         for name in names {
             let path = area.join(&name);
-            let bytes = tree_bytes_at(&area_directory, &name, &mut seen, &|_name| false)
+            let bytes = tree_bytes_at(&area_directory, &name, &mut seen, &|_name| false, None)
                 .map_err(|error| storage("measure", &path, &error))?;
             remove_tree_at(&area_directory, &name)
                 .map_err(|error| storage("remove", &path, &error))?;
@@ -568,6 +590,11 @@ mod tests {
     use std::io;
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+
+    use crate::{CoreError, RequestBudgetV1};
 
     use super::{
         FinishedReclaims, finish_interrupted_reclaims, reclaim_area, reclaim_directory,
@@ -577,6 +604,55 @@ mod tests {
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn bounded_track_walker_completes_or_refuses_after_cooperative_cancel() -> TestResult {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("family"))?;
+        std::fs::write(root.path().join("family/file"), b"payload")?;
+        let completed = unique_inode_tree_bytes_in_track(
+            root.path(),
+            &|_| false,
+            &RequestBudgetV1::for_duration(Duration::from_secs(1)),
+        )?;
+        if completed != 7 {
+            return Err(format!("complete walker measured {completed}, expected 7").into());
+        }
+
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(2));
+        let cancel = budget.cancel_handle();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let entered = Arc::new(AtomicBool::new(false));
+        let path = root.path().to_path_buf();
+        let worker = std::thread::spawn(move || {
+            unique_inode_tree_bytes_in_track(
+                &path,
+                &|_| {
+                    if !entered.swap(true, Ordering::AcqRel) {
+                        let _sent = entered_tx.send(());
+                        let _released = release_rx.recv_timeout(Duration::from_secs(2));
+                    }
+                    false
+                },
+                &budget,
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2))?;
+        cancel.cancel();
+        release_tx.send(())?;
+        let result = worker.join().map_err(|_| "walker thread panicked")?;
+        if !matches!(
+            result,
+            Err(CoreError::Typed {
+                code: crate::REQUEST_CANCELLED_CODE,
+                ..
+            })
+        ) {
+            return Err(format!("cancelled walker did not refuse typed: {result:?}").into());
+        }
+        Ok(())
+    }
 
     fn generation(
         root: &Path,
@@ -688,7 +764,11 @@ mod tests {
                 &|_| false,
             )
             .is_ok()
-            || unique_inode_tree_bytes_in_track(root.path(), &|_| false)? != 0
+            || unique_inode_tree_bytes_in_track(
+                root.path(),
+                &|_| false,
+                &RequestBudgetV1::unbounded(),
+            )? != 0
         {
             return Err("measurement followed a family symlink".into());
         }
@@ -763,7 +843,9 @@ mod tests {
             )
             .into());
         }
-        if unique_inode_tree_bytes_in_track(root.path(), &|_| false)? != 7 {
+        if unique_inode_tree_bytes_in_track(root.path(), &|_| false, &RequestBudgetV1::unbounded())?
+            != 7
+        {
             return Err("track measurement double-counted the hard link".into());
         }
         Ok(())

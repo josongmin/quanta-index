@@ -314,7 +314,7 @@ pub trait WriterIdleSweepPort: Send + Sync {
 /// from it on the maintenance timer, never inside a scrape.
 pub trait TrackDiskUsagePort: Send + Sync {
     /// Regular-file bytes under every generation directory of the track.
-    fn track_disk_bytes(&self) -> Result<u64, CoreError>;
+    fn track_disk_bytes(&self, budget: &crate::RequestBudgetV1) -> Result<u64, CoreError>;
 }
 
 #[cfg(test)]

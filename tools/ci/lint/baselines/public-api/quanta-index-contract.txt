@@ -8303,6 +8303,7 @@ pub struct quanta_index_contract::results::HybridQueryResponse
 pub quanta_index_contract::results::HybridQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::results::HybridQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::results::HybridQueryResponse::results: alloc::vec::Vec<quanta_index_contract::HybridCandidateV1>
+pub quanta_index_contract::results::HybridQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::results::HybridQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::HybridQueryResponse
 pub fn quanta_index_contract::HybridQueryResponse::clone(&self) -> quanta_index_contract::HybridQueryResponse
@@ -8327,6 +8328,7 @@ pub quanta_index_contract::results::HybridSeedQueryResponse::explanation: quanta
 pub quanta_index_contract::results::HybridSeedQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::results::HybridSeedQueryResponse::manifest_digest: alloc::string::String
 pub quanta_index_contract::results::HybridSeedQueryResponse::seed_candidates: alloc::vec::Vec<quanta_index_contract::SeedCandidate>
+pub quanta_index_contract::results::HybridSeedQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::results::HybridSeedQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::HybridSeedQueryResponse
 pub fn quanta_index_contract::HybridSeedQueryResponse::clone(&self) -> quanta_index_contract::HybridSeedQueryResponse
@@ -8480,6 +8482,7 @@ pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::generation:
 pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::results::continuation_token::ContinuationTokenV2>
 pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::order: quanta_index_contract::HistoryOrderV1
 pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::read_epoch: quanta_index_contract::AuxEpochV1
+pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::results::SearchPlaneHistoryQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::SearchPlaneHistoryQueryResponse
 pub fn quanta_index_contract::SearchPlaneHistoryQueryResponse::clone(&self) -> quanta_index_contract::SearchPlaneHistoryQueryResponse
@@ -8505,6 +8508,7 @@ pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::gen
 pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::results::continuation_token::ContinuationTokenV2>
 pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::read_epoch: quanta_index_contract::AuxEpochV1
 pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::universe_epoch: quanta_index_contract::AuxEpochV1
 pub quanta_index_contract::results::SearchPlaneRuntimeMetadataQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
@@ -8638,6 +8642,7 @@ pub struct quanta_index_contract::results::SemanticQueryResponse
 pub quanta_index_contract::results::SemanticQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::results::SemanticQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::results::SemanticQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub quanta_index_contract::results::SemanticQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::results::SemanticQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::SemanticQueryResponse
 pub fn quanta_index_contract::SemanticQueryResponse::clone(&self) -> quanta_index_contract::SemanticQueryResponse
@@ -8697,6 +8702,7 @@ pub struct quanta_index_contract::results::SymbolQueryResponse
 pub quanta_index_contract::results::SymbolQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::results::SymbolQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::results::continuation_token::ContinuationTokenV2>
 pub quanta_index_contract::results::SymbolQueryResponse::results: alloc::vec::Vec<quanta_index_contract::SymbolCandidate>
+pub quanta_index_contract::results::SymbolQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::results::SymbolQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::SymbolQueryResponse
 pub fn quanta_index_contract::SymbolQueryResponse::clone(&self) -> quanta_index_contract::SymbolQueryResponse
@@ -8723,6 +8729,7 @@ pub quanta_index_contract::results::TextQueryResponse::generation: quanta_index_
 pub quanta_index_contract::results::TextQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::results::continuation_token::ContinuationTokenV2>
 pub quanta_index_contract::results::TextQueryResponse::rank_unit: quanta_index_contract::TextRankUnit
 pub quanta_index_contract::results::TextQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub quanta_index_contract::results::TextQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::results::TextQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::TextQueryResponse
 pub fn quanta_index_contract::TextQueryResponse::clone(&self) -> quanta_index_contract::TextQueryResponse
@@ -12404,6 +12411,7 @@ pub struct quanta_index_contract::HybridQueryResponse
 pub quanta_index_contract::HybridQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::HybridQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::HybridQueryResponse::results: alloc::vec::Vec<quanta_index_contract::HybridCandidateV1>
+pub quanta_index_contract::HybridQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::HybridQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::HybridQueryResponse
 pub fn quanta_index_contract::HybridQueryResponse::clone(&self) -> quanta_index_contract::HybridQueryResponse
@@ -12453,6 +12461,7 @@ pub quanta_index_contract::HybridSeedQueryResponse::explanation: quanta_index_co
 pub quanta_index_contract::HybridSeedQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::HybridSeedQueryResponse::manifest_digest: alloc::string::String
 pub quanta_index_contract::HybridSeedQueryResponse::seed_candidates: alloc::vec::Vec<quanta_index_contract::SeedCandidate>
+pub quanta_index_contract::HybridSeedQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::HybridSeedQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::HybridSeedQueryResponse
 pub fn quanta_index_contract::HybridSeedQueryResponse::clone(&self) -> quanta_index_contract::HybridSeedQueryResponse
@@ -14886,6 +14895,7 @@ pub quanta_index_contract::SearchPlaneHistoryQueryResponse::generation: quanta_i
 pub quanta_index_contract::SearchPlaneHistoryQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::results::continuation_token::ContinuationTokenV2>
 pub quanta_index_contract::SearchPlaneHistoryQueryResponse::order: quanta_index_contract::HistoryOrderV1
 pub quanta_index_contract::SearchPlaneHistoryQueryResponse::read_epoch: quanta_index_contract::AuxEpochV1
+pub quanta_index_contract::SearchPlaneHistoryQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::SearchPlaneHistoryQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::SearchPlaneHistoryQueryResponse
 pub fn quanta_index_contract::SearchPlaneHistoryQueryResponse::clone(&self) -> quanta_index_contract::SearchPlaneHistoryQueryResponse
@@ -15045,6 +15055,7 @@ pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::generation: 
 pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::results::continuation_token::ContinuationTokenV2>
 pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::read_epoch: quanta_index_contract::AuxEpochV1
 pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::universe_epoch: quanta_index_contract::AuxEpochV1
 pub quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse
@@ -15328,6 +15339,7 @@ pub struct quanta_index_contract::SemanticQueryResponse
 pub quanta_index_contract::SemanticQueryResponse::explanation: quanta_index_contract::SearchExplanation
 pub quanta_index_contract::SemanticQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::SemanticQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub quanta_index_contract::SemanticQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::SemanticQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::SemanticQueryResponse
 pub fn quanta_index_contract::SemanticQueryResponse::clone(&self) -> quanta_index_contract::SemanticQueryResponse
@@ -15899,6 +15911,7 @@ pub struct quanta_index_contract::SymbolQueryResponse
 pub quanta_index_contract::SymbolQueryResponse::generation: quanta_index_contract_base::query::pin::GenerationPin
 pub quanta_index_contract::SymbolQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::results::continuation_token::ContinuationTokenV2>
 pub quanta_index_contract::SymbolQueryResponse::results: alloc::vec::Vec<quanta_index_contract::SymbolCandidate>
+pub quanta_index_contract::SymbolQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::SymbolQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::SymbolQueryResponse
 pub fn quanta_index_contract::SymbolQueryResponse::clone(&self) -> quanta_index_contract::SymbolQueryResponse
@@ -15925,6 +15938,7 @@ pub quanta_index_contract::TextQueryResponse::generation: quanta_index_contract_
 pub quanta_index_contract::TextQueryResponse::next_cursor: core::option::Option<quanta_index_contract_base::results::continuation_token::ContinuationTokenV2>
 pub quanta_index_contract::TextQueryResponse::rank_unit: quanta_index_contract::TextRankUnit
 pub quanta_index_contract::TextQueryResponse::results: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub quanta_index_contract::TextQueryResponse::selected_active_head: core::option::Option<quanta_index_contract::SearchCorpusActiveHeadV1>
 pub quanta_index_contract::TextQueryResponse::window: quanta_index_contract_base::results::query_window::QueryResultWindowV2
 impl core::clone::Clone for quanta_index_contract::TextQueryResponse
 pub fn quanta_index_contract::TextQueryResponse::clone(&self) -> quanta_index_contract::TextQueryResponse

@@ -70,8 +70,8 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, FinishedReclaims, GenerationIdentityValidatePort, MetricPointV1, MetricSourcePort,
-    RECLAIM_AREA_DIR_NAME, SealedGenerationIdentityProbePort, SealedGenerationScanPort,
-    SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource,
+    RECLAIM_AREA_DIR_NAME, RequestBudgetV1, SealedGenerationIdentityProbePort,
+    SealedGenerationScanPort, SemanticIndexOpenPort, SemanticIngestHeaderV1, SemanticScopeSource,
     SemanticScopeStreamBuildPort, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
     TrackDiskUsagePort,
     domains::generation::{
@@ -380,16 +380,12 @@ impl TrackDiskUsagePort for SemanticAdapter {
     /// Bytes the semantic state root occupies on disk, by unique inode (an
     /// inherited dataset's hard-linked fragments count once), measured
     /// while ingest, seals and reclaims keep running.
-    fn track_disk_bytes(&self) -> Result<u64, CoreError> {
+    fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
+        budget.checkpoint("semantic-disk-usage:entry")?;
         if !self.state_root.exists() {
             return Ok(0);
         }
-        unique_inode_tree_bytes_in_track(&self.state_root, &|_name| false).map_err(|err| {
-            CoreError::Storage(format!(
-                "semantic: measure state root {}: {err}",
-                self.state_root.display()
-            ))
-        })
+        unique_inode_tree_bytes_in_track(&self.state_root, &|_name| false, budget)
     }
 }
 

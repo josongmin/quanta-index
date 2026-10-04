@@ -52,7 +52,7 @@ impl SearchCorpusBatchBuildPort for PausedLexicalBuild {
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
-        self.builds.fetch_add(1, Ordering::SeqCst);
+        let _previous = self.builds.fetch_add(1, Ordering::SeqCst);
         self.entered.send(()).map_err(|error| {
             CoreError::Storage(format!("admitted build observer lost: {error}"))
         })?;
@@ -83,7 +83,7 @@ impl SearchCorpusBatchBuildPort for CountingLexicalBuild {
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<Option<quanta_index_contract::LexicalBuildStageDurationsV1>, CoreError> {
-        self.builds.fetch_add(1, Ordering::SeqCst);
+        let _previous = self.builds.fetch_add(1, Ordering::SeqCst);
         self.inner.build_batch(batch)
     }
 }

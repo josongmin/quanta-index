@@ -34,9 +34,9 @@ pub(crate) fn elapsed_stage_ns(started: Instant) -> Result<u64, CoreError> {
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     LexicalIndexBuildPort, MetricPointV1, MetricSourcePort, RepoCommitRecencyIngestPort,
-    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
-    SearchCorpusPreflightPhaseV1, TrackDiskUsagePort, WriterIdleSweepPort, count_from_usize,
-    unique_inode_tree_bytes_in_track,
+    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1,
+    SearchCorpusBatchBuildPort, SearchCorpusPreflightPhaseV1, TrackDiskUsagePort,
+    WriterIdleSweepPort, count_from_usize, unique_inode_tree_bytes_in_track,
 };
 
 /// The writer envelope and the regex match cache as scrape points,
@@ -53,16 +53,12 @@ impl TrackDiskUsagePort for LexicalAdapter {
     /// Bytes the lexical state root occupies on disk, by unique inode (a
     /// delta's hard-linked base segments count once), measured while
     /// ingest, seals and reclaims keep running.
-    fn track_disk_bytes(&self) -> Result<u64, CoreError> {
+    fn track_disk_bytes(&self, budget: &RequestBudgetV1) -> Result<u64, CoreError> {
+        budget.checkpoint("lexical-disk-usage:entry")?;
         if !self.state_root.exists() {
             return Ok(0);
         }
-        unique_inode_tree_bytes_in_track(&self.state_root, &is_writer_lock_entry).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: measure state root {}: {err}",
-                self.state_root.display()
-            ))
-        })
+        unique_inode_tree_bytes_in_track(&self.state_root, &is_writer_lock_entry, budget)
     }
 }
 
