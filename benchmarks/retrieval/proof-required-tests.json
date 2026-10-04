@@ -997,6 +997,7 @@
     "quanta-index-retrieval-bench::sdk_roundtrip$real_daemon_experimental_fetch_floor_matches_initial_probe_without_changing_default",
     "quanta-index-retrieval-bench::sdk_roundtrip$real_daemon_query_observation_off_preserves_results_and_marks_unmeasured",
     "quanta-index-retrieval-bench::sdk_roundtrip$real_daemon_roundtrip_publishes_and_queries",
+    "quanta-index-retrieval-bench::sdk_roundtrip$real_daemon_sdk_active_remaining_routes_bind_one_head_and_refuse_stale_token",
     "quanta-index-retrieval-bench::sdk_roundtrip$real_daemon_sdk_active_text_and_symbol_bind_one_selected_head_without_resolve",
     "quanta-index-retrieval-bench::sdk_roundtrip$sdk_frontdoor_static_guard",
     "quanta-index-retrieval-bench::sdk_roundtrip$second_boot_over_used_root_is_refused_without_cleanup",
