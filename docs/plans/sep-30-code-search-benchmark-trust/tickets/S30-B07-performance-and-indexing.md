@@ -209,6 +209,41 @@ attrs `preflight_capture` accepted that binary without creating its prospective
 output root. This proves the positive handshake, not a current-main product
 capture or release-profile performance result.
 
+### 2026-10-04 current-runner diagnostic E2E
+
+A clean isolated `4f11818a` driver checkout ran attrs and zoxide, each with
+exact-name and infix-name suites, through `quality-matrix` at
+`/private/tmp/qmt6`. The all-features debug runner above and all-features debug
+searchd SHA256 `bb0ddf86eb115511d0ea139bbd848f50f38a1b1dfd237301fa931a661e0b8e8b`
+were pinned in `/private/tmp/qmt6-spec.json` and its four member specs. The
+matrix completed 2/2 repositories and 4/4 member reports in **74.60 s**;
+`quality-matrix-verify` replayed 2/2 repositories in **9.09 s**. These are
+busy-host debug-build diagnostic times, not a release or equal-boundary
+performance result. The shared main checkout was refused before product work
+because another owner's uncommitted test file changed its source closure;
+the clean worktree preserved that guard.
+
+| Repository | Union tasks | Quanta runner total | Quanta publish/activate | Quanta unattributed | Semble worker total | Semble index |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| attrs | 118 | 38.14 s | 22.18 s | 9.76 s | 0.88 s | 0.48 s |
+| zoxide | 112 | 16.20 s | 3.48 s | 10.25 s | 0.38 s | 0.27 s |
+
+The recorded in-process totals sum to about **55.61 s** of the 74.60 s driver
+wall; the remainder also contains preflight, source-closure, process startup,
+artifact validation and report work. It is not a measured Python-GC bucket.
+The Quanta `unattributed` field is a residual of its existing phase clocks,
+not evidence of idle time or a particular engine defect. Its diagnostic
+detail separately records record assembly, corpus reverification and shutdown;
+none accounts for most of that residual.
+
+Next measurement change: time driver preflight, source closure, each product
+subprocess, artifact verification and report projection with monotonic clocks;
+split the Rust runner residual around batch assembly, binary digest,
+post-publication binding and result materialization. Keep source/gold checks
+and independent replay. Then run a fixed-input release-profile A/B on a quiet
+host to assess wall-time gains; do not compare the debug Quanta envelope to
+Semble's in-process function timer as an equal-work product ranking.
+
 ## Work and boundaries
 
 Measure correctness before time. A Quanta SDK/IPC request and a Semble
