@@ -49,6 +49,8 @@ Quanta33캡처/11,272응답과 historical5제품21,815행은 별도의 source/�
 ## 어떤 파일을 어떻게 수정할지
 
 - 후속 scorer consumer 수리는 [E1-06](O4-E1-06-final-pool-and-scoreboards.md)의 실제 RED/focused67로 검증됐다. 기존 SG scope가 mutable main의 old scorer control hash에 결속돼 fresh native v2는 exit2로 거절됐다. old capture를 현재 scorer에 재사용하거나 control hashes를 덮어쓰지 않는다. clean source `ae8f96b`에서 새12repo SG scope receipt를 발행한 뒤 same Python3.13.9/source의 native3 capture와 independent replay를 새 root에서 수행한다.
+- 후속 C3 PREPARE: `/private/tmp/qi-current-nine-pair-exploratory-0e6-input-v1.json` SHA `25f9aad15b4a2e9eab4ed951931a68db8aa408bae7fff12a86cd79355d667035`는 bat409 실제 current admission과 나머지 원본8개의 예정 current0e6 발행 경로를 담는다. 나머지8의 actual issuance 전에는9개 readiness를 뜻하지 않는다. SQLAlchemy/Zellij/Tailscale admission은 null로 유지했다.
+- 나머지 actual labels가 주간 모델 한도로 막혔으므로 새 미검수 candidates를 위한 다음 캡처는 기존 pair v7 `--capture-mode exploratory --query-warmup-passes 1 --selection all-twelve`로 준비한다. v7은 canonical admitted bundle을 먼저 재생한 뒤 admission 권위/qualification claim을 제거한 별도 spec와 admitted-lineage를 발행한다. qualified consumer의 unknown-judgment 거절은 유지하고 final labels를 합성하지 않는다. 실제 제품 실행/독립 replay는 아직 NOT_RUN이다.
 
 `OWNED`는 에픽 담당 통합, `SHARED`는 I0 반영, `READ`는 기존 구현 소비다. 재현된 결함이나 채택된 계약 변경이 있을 때만 product source를 수정한다. 구현 파일과 독립 검증 파일을 함께 지정한다.
 

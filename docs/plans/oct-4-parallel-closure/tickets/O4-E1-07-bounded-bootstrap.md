@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P2 / `CONDITIONAL_CODE` |
 | 기준 웨이브 | [W2 — 확인된 결함 수리·선택 최적화](../waves/W2-repairs-and-selected-optimizations.md) |
-| 실행 상태 | cache-bound 회귀·1196-row cold numeric·독립 scalar parity `VERIFIED`; kernel 최적화 판정은 `NOT_RUN` |
+| 실행 상태 | cache-bound 회귀·1196-row cold numeric·독립 scalar parity `VERIFIED`; bat20 whole-verdict의 추가 kernel 최적화는 profile 근거로 `NOT_APPLICABLE`.1196 full-caller 최적화 판정은 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -27,6 +27,7 @@ evaluator.mean_ci/_bootstrap_bounds는 deterministic paired/within-stratum perce
 - 외부 입력은 `/Users/songmin/Documents/code-new/qi-e1-cold-gin1196-04f3c6p4/{seed,manifest}.json`, seed SHA `0fe7a453b108d29fbd314770ddd34b6bce19f388604f2f1f20a7c47feff9512a`, 79,146 bytes다. 결과 bounds는 current-source prepare와 일치한다. 초기 결과는 동일 구현 재생이다. 이후 evaluator를 import하지 않는 독립 scalar reference v2(SHA `b84a0a5c2840795d050706b949a6f09669dddc43d7327a02245740e4923080fe`)를 같은 frozen seed/manifest/Python으로 실행해 current bounds의 f64 bits가 일치했다. 11,960,000 draw-index stream SHA는 `2a8b79d39bd5b2a11f5fb94636f67f4c977af4644002ec23efd5b1170c2a014a`, lower/upper bits는 `bf5b3fe51142dc1c` / `3f899ebe76e62672`다. 고정4-row reference도 사전 golden -0.5/0.375와 일치했다. candidate golden은 review-required이며 final quality approval이 아니다.
 - bootstrap RNG/reduction/kernel 변경과 cold compute 개선 주장은 없다. 독립 reference와 별도 목표·측정이 확보된 뒤 조건부 최적화를 판정한다.
 - 후속 source0e6 bat20-task actual verdict의 cProfile readback은 원본 verdict와 JSON equality/exit0이었다. instrumented total320.566s 중 split 검증317.483s, mean_ci14calls/0.619s 및 uncached bootstrap6calls/0.618s였다. 이20-task whole-verdict에서는 corpus split replay가 지배했고1196-row numeric-only7.026s 관측을 대체하지 않는다. kernel/RNG/reduction 변경이나 qualified 속도 주장은 없으며 정확한 command·범위는 [E1-03](O4-E1-03-admission-and-split.md)에 있다.
+- 범위별 조건 판정: 현재 bat20 whole-verdict의 bootstrap은 관측 total의 약0.19%이고 split 검증이317.483s다. 이 caller에서 추가 numeric kernel 교체의 착수 조건인 지배 병목은 재현되지 않았으므로 `NOT_APPLICABLE`, 수정 없이 유지한다. instrumented shared-host의 비율로 speed ceiling을 발행하지 않는다.1196-row numeric-only rail은 whole-caller 병목 판단이 아니므로 해당 full-caller/목표 비용·memory ceiling의 추가 판정은 `NOT_RUN`으로 남긴다. 이 제한 판정을 티켓 전체의 종료로 합산하지 않는다.
 
 ## 착수 입력
 
