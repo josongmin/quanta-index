@@ -3750,3 +3750,40 @@ with a new output root. The strict collection validator remains unchanged.
   Final reviewed five-product ranking and controlled repeated complete-output
   performance remain **NOT_RUN**. AI provenance remains explicit and the full
   goal remains active.
+
+### 2026-10-04: common Contract verified; native query grammar residual
+
+- **VERIFIED**, clean `41cceb67` full Contract: **732/732 Python + 186/186
+  Rust**, terminal exit 0 in **377.508s**. Independent canonical
+  `portable_proof.py verify --receipt .../contract/execution-context.json`
+  also exits 0. The stale 48-token binary golden is now closed at the full
+  selected scope. Fresh SDK remains live, not declared successful.
+- Same-source native capture/replay has completed bat and cli: **120 actual
+  product calls**, all retained, with **1 + 29** unjudged returned pairs.
+  Lo also completed with zero unjudged pairs before the driver entered mocha.
+  These are additional reviewed-pool requirements, separate from the original
+  1,324-pair denominator. A rank/product-stripped full-source identity packet
+  for bat's new pair is preserved with `grade: null`; no relevance is inferred.
+- **CONFIRMED**, an independently constructed three-file/two-query cs control
+  exposes a native grammar seam: raw `alpha or beta` returns alpha-only,
+  beta-only and literal-or files; `alpha "or" beta` returns only the literal
+  file. The pinned cs 3.2.0 help documents boolean query syntax and default
+  AND. `live_lexical_external._cs` currently forwards natural-language text
+  directly as native DSL. Reachable C3 task `bat.nl.19` contains `more or most`.
+  Control: `cs-nl-query-grammar-obv1b4ih/result.json`; no original input,
+  service index, qrel or aggregate is modified by this two-query experiment.
+- This establishes native request interpretation, not the relevance of an
+  unjudged file or a product-ranking cause. **Residual before final comparison**:
+  make the cs adapter's natural-language data encoding explicit and consistent
+  with its declared contract; prevent data words/field syntax from becoming
+  boolean/filter controls. Preserve deliberate syntax in the separate explicit
+  fuzzy route. Own `live_lexical_external.py` request/transport/replay handling
+  and its focused native fixtures. Prove literal operator and field-name data
+  with fixed positive/negative fixtures, retain the raw-native diagnostic, and
+  freeze any corrected effective-query policy before new captures. Do not
+  silently reinterpret existing captures as literal-term requests.
+- The guarded pair pipeline `c3-common-pairs-41cceb67-vt6v_jzk/` is live. It
+  waits for matching canonical SDK/admission success before calling either
+  product, preserves failed staging, and makes no human, final ranking or
+  repeated-performance claim. The model quota-backoff controller is also
+  confirmed live; its wait is not issued labels or completed model review.

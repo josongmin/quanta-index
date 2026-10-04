@@ -1195,7 +1195,7 @@ mod tests {
             let definitions = extract_symbols("exports.js", &source)
                 .expect("reserved words are valid exported names");
             assert_eq!(definitions.len(), 1, "an export alias is not a declaration");
-            assert_eq!(find(&definitions, "local").local_name, "local");
+            assert_eq!(find(&definitions, "local").local_name.as_ref(), "local");
         }
         for invalid in [
             "function const() {}",

@@ -1061,16 +1061,17 @@ fn summarize_phase_resources(
             discarded_outside_phase_samples += 1;
         }
     }
-    // The endpoint gap, rather than average cadence, detects a stalled sampler.
+    // Use the timed operation boundaries; setup and teardown are reported
+    // separately and must not masquerade as a gap during the operation.
     let mut max_gap = Duration::ZERO;
-    let mut previous = rss_start.at;
+    let mut previous = started;
     for sample in samples {
         if sample.at > started && sample.at < ended {
             max_gap = max_gap.max(sample.at.duration_since(previous));
             previous = sample.at;
         }
     }
-    max_gap = max_gap.max(rss_end.at.duration_since(previous));
+    max_gap = max_gap.max(ended.duration_since(previous));
     if ended.duration_since(started) >= PHASE_RSS_INTERIOR_REQUIRED_AFTER && interior_samples == 0 {
         anyhow::bail!("scale: long phase has no interior RSS sample");
     }

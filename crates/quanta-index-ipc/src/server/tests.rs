@@ -178,27 +178,40 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
     let dir = private_tempdir()?;
     let socket = dir.path().join("observed-client.sock");
     let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
+    let (status_tx, status_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
     let server = thread::spawn(move || -> TestRes {
         for _ in 0..2 {
-            let (mut stream, _address) = listener.accept().map_err(|error| error.to_string())?;
-            let request: TestRequestEnvelope =
-                super::decode_request(&mut stream).map_err(|error| error.to_string())?;
-            if request
-                != (TestRequestEnvelope {
+            let result = (|| -> TestRes {
+                let (mut stream, _address) =
+                    listener.accept().map_err(|error| error.to_string())?;
+                let request: TestRequestEnvelope =
+                    super::decode_request(&mut stream).map_err(|error| error.to_string())?;
+                if request
+                    != (TestRequestEnvelope {
+                        request_id: 17,
+                        payload: 23,
+                    })
+                {
+                    return Err(format!("request changed under observation: {request:?}"));
+                }
+                let frame = super::encode_response(&TestResponseEnvelope {
                     request_id: 17,
-                    payload: 23,
+                    payload: 24,
                 })
-            {
-                return Err(format!("request changed under observation: {request:?}"));
-            }
-            let frame = super::encode_response(&TestResponseEnvelope {
-                request_id: 17,
-                payload: 24,
-            })
-            .map_err(|error| error.to_string())?;
-            stream
-                .write_all(&frame)
                 .map_err(|error| error.to_string())?;
+                stream
+                    .write_all(&frame)
+                    .map_err(|error| error.to_string())?;
+                release_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(|error| format!("client did not finish response read: {error}"))?;
+                Ok(())
+            })();
+            status_tx
+                .send(result.clone())
+                .map_err(|error| error.to_string())?;
+            result?;
         }
         Ok(())
     });
@@ -208,12 +221,20 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
     };
     let policy =
         ClientIoPolicy::try_new(Duration::from_secs(2)).map_err(|error| error.to_string())?;
+    let plain_result = send_request(&socket, &request, policy);
+    release_tx.send(()).map_err(|error| error.to_string())?;
+    status_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|error| format!("plain server did not finish: {error}"))??;
     let plain: TestResponseEnvelope =
-        send_request(&socket, &request, policy)
-            .map_err(|error| format!("plain IPC request failed: {error}"))?;
+        plain_result.map_err(|error| format!("plain IPC request failed: {error}"))?;
+    let observed_result = send_request_observed(&socket, &request, policy);
+    release_tx.send(()).map_err(|error| error.to_string())?;
+    status_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|error| format!("observed server did not finish: {error}"))??;
     let (observed, timing): (TestResponseEnvelope, _) =
-        send_request_observed(&socket, &request, policy)
-            .map_err(|error| format!("observed IPC request failed: {error}"))?;
+        observed_result.map_err(|error| format!("observed IPC request failed: {error}"))?;
     server
         .join()
         .map_err(|_panic_payload| "server panicked".to_string())??;
