@@ -65,6 +65,17 @@ SEMBLE_PINNED_VERSION = "0.6.0"
 DEFAULT_MODEL_ID = "minishlab/potion-code-16M-v2"
 QUERY_TIMING_BOUNDARY = "request_construction_to_normalized_response"
 QUERY_TIMING_CLOCK = "capture_relative_monotonic_ns"
+PARENT_PHASES = (
+    "admission_preparation",
+    "environment_validation",
+    "corpus_materialization",
+    "worker_spec_preparation",
+    "model_materialization",
+    "source_preparation",
+    "worker_execution",
+    "output_validation",
+    "record_and_metrics_assembly",
+)
 
 
 def execution_profile(mode: str, alpha: float | None) -> dict:
@@ -1685,6 +1696,39 @@ def validate_worker_phase_timings(
     return phases, total
 
 
+def validate_parent_phase_profile(profile: object) -> dict:
+    """Validate disjoint adapter phases in one parent's monotonic clock domain."""
+    if not isinstance(profile, dict) or set(profile) != {
+        "schema_version", "boundary", "clock", "phases", "total_ns", "excluded"
+    }:
+        raise AdapterError("Semble parent phase profile shape differs")
+    if (
+        profile["schema_version"] != 1
+        or profile["boundary"] != "adapter_entry_to_metrics_assembly"
+        or profile["clock"] != "parent_monotonic_ns"
+        or profile["excluded"] != ["cli_import_and_argument_parsing", "manifest_write_and_print"]
+        or not isinstance(profile["phases"], list)
+        or len(profile["phases"]) != len(PARENT_PHASES)
+    ):
+        raise AdapterError("Semble parent phase profile contract differs")
+    previous_end = 0
+    for expected, row in zip(PARENT_PHASES, profile["phases"], strict=True):
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"name", "start_ns", "end_ns"}
+            or row["name"] != expected
+            or type(row["start_ns"]) is not int
+            or type(row["end_ns"]) is not int
+            or row["start_ns"] != previous_end
+            or row["end_ns"] < row["start_ns"]
+        ):
+            raise AdapterError("Semble parent phases are missing, reordered or overlapping")
+        previous_end = row["end_ns"]
+    if type(profile["total_ns"]) is not int or profile["total_ns"] != previous_end:
+        raise AdapterError("Semble parent phase total differs from bounded phases")
+    return profile
+
+
 def run_completed_worker(
     command, *, env, timeout_secs, tasks, top_k, route, normalize_response, stderr_path
 ):
@@ -1816,6 +1860,26 @@ def run_completed_worker(
 
 
 def run_adapter(args: argparse.Namespace) -> int:
+    parent_origin_ns = time.monotonic_ns()
+    parent_previous_ns = parent_origin_ns
+    parent_phases: list[dict[str, int | str]] = []
+
+    def close_parent_phase(name: str) -> None:
+        nonlocal parent_previous_ns
+        if name != PARENT_PHASES[len(parent_phases)]:
+            raise AdapterError("Semble parent phase order differs")
+        end_ns = time.monotonic_ns()
+        if end_ns < parent_previous_ns:
+            raise AdapterError("Semble parent monotonic clock moved backwards")
+        parent_phases.append(
+            {
+                "name": name,
+                "start_ns": parent_previous_ns - parent_origin_ns,
+                "end_ns": end_ns - parent_origin_ns,
+            }
+        )
+        parent_previous_ns = end_ns
+
     repo = Path(args.repo)
     out_root = Path(args.output_root)
     commit, manifest_rows = load_manifest(Path(args.manifest))
@@ -1846,6 +1910,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         raise AdapterError("CLI top_k differs from the query-pack comparison contract")
     if args.blinding not in ("isolated", "attested"):
         raise AdapterError("blinding must be isolated or attested")
+    close_parent_phase("admission_preparation")
 
     env_report = check_semble_env(Path(args.python))
     try:
@@ -1859,12 +1924,14 @@ def run_adapter(args: argparse.Namespace) -> int:
     lockfile = out_root / "lockfile.txt"
     lockfile.write_bytes(external_lock)
     assert sha_file(lockfile) == lockfile_digest
+    close_parent_phase("environment_validation")
 
     corpus_dir = out_root / "corpus"
     admitted_rows, max_bytes = build_isolated_corpus(repo, manifest_rows, corpus_dir)
     # Semble skips files above its size cap; raise the cap to cover the
     # admitted universe explicitly and record the override (never silent).
     max_file_bytes = max(max_bytes + 1024, 1024 * 1024)
+    close_parent_phase("corpus_materialization")
 
     worker_path = out_root / "worker.py"
     worker_path.write_text(WORKER_TEMPLATE, encoding="utf-8")
@@ -1902,6 +1969,7 @@ def run_adapter(args: argparse.Namespace) -> int:
     }
     spec_path = out_root / "spec.json"
     spec_path.write_text(json.dumps(spec, indent=2, sort_keys=True), encoding="utf-8")
+    close_parent_phase("worker_spec_preparation")
     native_path = out_root / "native.json"
     model_id = args.model_id
     model_revision, source_model_asset = resolve_model_revision(
@@ -1918,6 +1986,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         json.dumps(model_cache_manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    close_parent_phase("model_materialization")
     env = dict(os.environ)
     env["SPEC_JSON"] = str(spec_path)
     env["NATIVE_JSON"] = str(native_path)
@@ -1959,6 +2028,8 @@ def run_adapter(args: argparse.Namespace) -> int:
         )
         return normalized[0]
 
+    close_parent_phase("source_preparation")
+
     try:
         completed, completed_rows = run_completed_worker(
             [str(Path(args.python)), str(worker_path)],
@@ -1979,6 +2050,7 @@ def run_adapter(args: argparse.Namespace) -> int:
             (out_root / "worker.stderr.log").write_text(exc.stderr or "", encoding="utf-8")
             tail = (exc.stderr or "")[-2000:]
         raise AdapterError(f"Semble worker failed: {exc}\nstderr tail: {tail}") from exc
+    close_parent_phase("worker_execution")
     (out_root / "worker.stdout.log").write_text(completed.stdout or "", encoding="utf-8")
     (out_root / "worker.stderr.log").write_text(completed.stderr or "", encoding="utf-8")
     native_payload = read_json(native_path)
@@ -2021,6 +2093,7 @@ def run_adapter(args: argparse.Namespace) -> int:
     model_asset = model_asset_digest(materialized_hf, model_id, model_revision)
     if model_asset != source_model_asset:
         raise AdapterError("model snapshot changed while the worker was running")
+    close_parent_phase("output_validation")
     record = assemble_record(
         pack,
         pack_sha256,
@@ -2079,6 +2152,17 @@ def run_adapter(args: argparse.Namespace) -> int:
     (out_root / "phase-metrics.json").write_text(
         json.dumps(phase_metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    close_parent_phase("record_and_metrics_assembly")
+    parent_profile = validate_parent_phase_profile(
+        {
+            "schema_version": 1,
+            "boundary": "adapter_entry_to_metrics_assembly",
+            "clock": "parent_monotonic_ns",
+            "phases": parent_phases,
+            "total_ns": parent_previous_ns - parent_origin_ns,
+            "excluded": ["cli_import_and_argument_parsing", "manifest_write_and_print"],
+        }
+    )
     manifest_out = {
         "semble_version": semble_version,
         "profile": profile,
@@ -2110,6 +2194,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         "semble_max_file_bytes": max_file_bytes,
         "path_sha_diff_digest": diff_digest,
         "top_k": top_k,
+        "parent_phase_profile": parent_profile,
     }
     (out_root / "adapter-manifest.json").write_text(
         json.dumps(manifest_out, indent=2, sort_keys=True) + "\n", encoding="utf-8"

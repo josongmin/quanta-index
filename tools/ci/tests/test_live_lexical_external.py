@@ -112,8 +112,64 @@ def test_opengrok_nl_capture_preserves_submitted_and_effective_query(tmp_path, m
         live._opengrok_response(
             config, task, [], tmp_path, {}, 200, "application/json", raw, 2.0, literal_query=True
         )
-        == row
+        == {key: value for key, value in row.items() if key != "completed_response"}
     )
+    live._validate_completed_row(row)
+
+
+def test_completed_clock_covers_request_and_normalization_but_excludes_persistence(
+    tmp_path, monkeypatch
+):
+    ticks = [0]
+    raw = json.dumps(
+        {"time": 1, "resultCount": 0, "results": {}, "startDocument": 0, "endDocument": 0}
+    ).encode()
+    native_query = live._opengrok_query
+    native_paths = live._paths
+    native_write = live._write
+
+    def query(value, **kwargs):
+        ticks[0] += 2_000_000
+        return native_query(value, **kwargs)
+
+    def http(*args, **kwargs):
+        ticks[0] += 3_000_000
+        return 200, "application/json", raw, 3.0
+
+    def paths(*args, **kwargs):
+        ticks[0] += 5_000_000
+        return native_paths(*args, **kwargs)
+
+    def write(*args, **kwargs):
+        ticks[0] += 11_000_000
+        return native_write(*args, **kwargs)
+
+    monkeypatch.setattr(live.time, "monotonic_ns", lambda: ticks[0])
+    monkeypatch.setattr(live, "_opengrok_query", query)
+    monkeypatch.setattr(live, "_http", http)
+    monkeypatch.setattr(live, "_paths", paths)
+    monkeypatch.setattr(live, "_write", write)
+    row = live._opengrok(
+        {"project": "fixture", "server_image_digest": "a" * 64},
+        {"task_id": "T1", "query": "symbol"},
+        [],
+        tmp_path,
+        {},
+        tmp_path / "raw.json",
+    )
+    assert row["elapsed_ms"] == 3.0
+    assert row["completed_response"]["duration_ns"] == 10_000_000
+    assert ticks[0] == 32_000_000
+    live._validate_completed_row(row)
+    for mutation in (
+        lambda value: value["completed_response"].__setitem__("duration_ns", -1),
+        lambda value: value["completed_response"].__setitem__("output_sha256", "0" * 64),
+        lambda value: value.__setitem__("file_paths_top_10", ["forged.go"]),
+    ):
+        changed = copy.deepcopy(row)
+        mutation(changed)
+        with pytest.raises(ValueError, match="completed response"):
+            live._validate_completed_row(changed)
 
 
 def index_scope_fixture(

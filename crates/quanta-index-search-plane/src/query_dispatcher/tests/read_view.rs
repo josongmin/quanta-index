@@ -9,13 +9,13 @@
 //! all: a route that served from such a ledger provably demanded no
 //! auxiliary domain.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Barrier, Mutex, RwLock};
 use std::time::Instant;
 
 use quanta_index_contract::{
-    AuxEpochV1, GenerationPin, HybridQueryRequest, ManifestGeneration, PlannerStage, RepoId,
-    RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
-    TextQueryRequest, TextQuerySyntax,
+    AuxEpochV1, GenerationPin, GenerationSelector, HybridQueryRequest, ManifestGeneration,
+    PlannerStage, RepoId, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    SearchPlaneTrackKind, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{
     CoreError, READ_VIEW_DOMAIN_UNDECLARED_CODE, READ_VIEW_GENERATION_MIX_CODE, ReadDomainV1,
@@ -28,6 +28,7 @@ use crate::query_dispatcher::errors::{
     ERR_HISTORY_GENERATION_NOT_READY, ERR_HISTORY_PRODUCER_UNAVAILABLE,
 };
 use crate::query_dispatcher::read_view::{ReadViewRequestV1, assemble_for_test};
+use crate::query_dispatcher::selection::resolve_optional_selection;
 use crate::query_dispatcher::tests::support::common::{
     TestResult, activation_catalog_with_generations, candidate, corpus_generation, ipc_error_from,
     ready_ledger, ready_pin, test_activation_catalog,
@@ -40,6 +41,7 @@ use crate::query_dispatcher::tests::support::semantic::{
     RecordingSemanticOpener, RecordingSemanticState,
 };
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
+use crate::{PreparedSearchCorpusGenerationV1, SearchCorpusHistoryRetentionReceiptV1};
 
 /// A dispatcher over recording lexical and semantic openers and `ledger`.
 fn recording_dispatcher(
@@ -72,6 +74,126 @@ fn text_request(query_text: &str, pin: GenerationPin) -> TextQueryRequest {
         top_k: 5,
         cursor: None,
     }
+}
+
+/// The catalog selection and the ledger serving check are separate. Force
+/// the exact G1 selection -> G2/G3 activation -> G1 retirement schedule
+/// without relying on a scheduler race. This fixes the current refusal
+/// boundary; it does not assert that a selected G1 is guaranteed to serve.
+#[test]
+fn active_selection_reaped_before_view_acquisition_refuses_without_opening_g1() -> TestResult {
+    let g1 = ready_pin();
+    let catalog = test_activation_catalog()?;
+    let g1_generation = corpus_generation(
+        g1.repo_id.clone(),
+        g1.revision_id.clone(),
+        g1.manifest_generation,
+        "manifest-digest-9",
+    )?;
+    let g1_head = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(g1_generation, None)?,
+    )?;
+    let selector = GenerationSelector::Active {
+        repo_id: g1.repo_id.clone(),
+        revision_id: g1.revision_id.clone(),
+    };
+    let selected = resolve_optional_selection(
+        &catalog,
+        None,
+        Some(&selector),
+        SearchPlaneTrackKind::Lexical,
+        "lexical",
+    )?
+    .ok_or("active selection returned no generation")?;
+    assert_eq!(selected, g1);
+
+    let ledger = ready_ledger();
+    let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+    let semantic_state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+    let dispatcher = SearchPlaneDispatcher::new(
+        Arc::new(RecordingLexicalOpener {
+            state: Arc::clone(&lexical_state),
+            results: vec![candidate("alpha", 1.0)],
+        }),
+        Arc::new(RecordingSemanticOpener {
+            state: semantic_state,
+        }),
+        Arc::new(StubRepoMapSnapshotPort::default()),
+        Arc::new(FailClosedStructuralProducer),
+        Arc::clone(&ledger),
+        Arc::clone(&catalog),
+    );
+    let release_retention = Arc::new(Barrier::new(2));
+    let retention_done = Arc::new(Barrier::new(2));
+    let mutation = {
+        let catalog = Arc::clone(&catalog);
+        let ledger = Arc::clone(&ledger);
+        let repo = g1.repo_id.clone();
+        let revision = g1.revision_id.clone();
+        let release_retention = Arc::clone(&release_retention);
+        let retention_done = Arc::clone(&retention_done);
+        std::thread::spawn(move || -> Result<(), String> {
+            release_retention.wait();
+            let mut previous = g1_head.active;
+            for generation in [10, 11] {
+                let next = corpus_generation(
+                    repo.clone(),
+                    revision.clone(),
+                    ManifestGeneration::new(generation),
+                    &format!("manifest-digest-{generation}"),
+                )
+                .map_err(|error| error.to_string())?;
+                previous = catalog
+                    .activate_prepared_search_corpus_generation_v1(
+                        &PreparedSearchCorpusGenerationV1::new(next, Some(previous))
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?
+                    .active;
+            }
+            let receipt = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+                &repo,
+                &revision,
+                [ManifestGeneration::new(10), ManifestGeneration::new(11)],
+            );
+            ledger
+                .write()
+                .map_err(|error| error.to_string())?
+                .apply_search_corpus_history_retention_receipt_v1(
+                    &repo,
+                    &revision,
+                    ManifestGeneration::new(11),
+                    &receipt,
+                )
+                .map_err(|error| error.to_string())?;
+            retention_done.wait();
+            Ok(())
+        })
+    };
+    release_retention.wait();
+    // Never wait forever if the mutation failed before signalling the second
+    // barrier: join its terminal result before trying to acquire the view.
+    // The completion barrier is only reached on success; use the thread's
+    // completion itself as the second deterministic rendezvous.
+    let _ = retention_done;
+    mutation.join().map_err(|_| "retention thread panicked")??;
+    let request = ReadViewRequestV1::new(
+        "lexical",
+        &selected,
+        RequiredDomainsV1::of(ReadDomainV1::LexicalTrack),
+    );
+    let refusal = dispatcher
+        .acquire_read_view(&request, &RequestBudgetV1::unbounded())
+        .err()
+        .ok_or("reaped G1 unexpectedly acquired a read view")?;
+    if !matches!(refusal, CoreError::Typed { .. } | CoreError::NotReady(_)) {
+        return Err(format!("unexpected reaped-generation refusal: {refusal:?}").into());
+    }
+    let opened = lexical_state.lock().map_err(|error| error.to_string())?;
+    if !opened.opened_pins.is_empty() {
+        return Err("retired G1 reached the lexical opener".into());
+    }
+    Ok(())
 }
 
 /// What the doubles recorded: lexical opens, lexical searches, semantic

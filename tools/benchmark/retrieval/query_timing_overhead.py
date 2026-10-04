@@ -61,20 +61,31 @@ def _without_code_search_work_clocks(planner_trace: list, *, allow_clocks: bool 
             raise ValueError("on/off CodeSearch work clock is malformed or duplicated")
         seen.add(prefix)
         clocks[prefix] = int(value)
-    if seen.intersection(child_prefixes):
-        modes = [
-            entry["detail"]
-            for entry in planner_trace
-            if isinstance(entry, dict)
-            and isinstance(entry.get("detail"), str)
-            and entry["detail"].startswith("code_search.execution.mode=")
-        ]
-        if (
-            not set(clock_prefixes).issubset(seen)
-            or modes != ["code_search.execution.mode=typo_fallback"]
-            or sum(clocks[key] for key in child_prefixes) > clocks[parent_prefixes[0]]
+    modes = [
+        entry["detail"]
+        for entry in planner_trace
+        if isinstance(entry, dict)
+        and isinstance(entry.get("detail"), str)
+        and entry["detail"].startswith("code_search.execution.mode=")
+    ]
+    if allow_clocks and modes:
+        expected = set(parent_prefixes)
+        if modes == ["code_search.execution.mode=typo_fallback"] or modes == [
+            "code_search.execution.mode=typo_explicit"
+        ]:
+            expected.update(child_prefixes)
+        elif modes not in (
+            ["code_search.execution.mode=ordinary"],
+            ["code_search.execution.mode=components"],
         ):
-            raise ValueError("on/off CodeSearch typo work clock hierarchy is invalid")
+            raise ValueError("on/off CodeSearch work clock hierarchy has an unknown execution mode")
+        if seen != expected or (
+            expected.intersection(child_prefixes)
+            and sum(clocks[key] for key in child_prefixes) > clocks[parent_prefixes[0]]
+        ):
+            raise ValueError("on/off CodeSearch work clock hierarchy is invalid")
+    elif seen:
+        raise ValueError("on/off CodeSearch work clock lacks execution mode")
     return result
 
 

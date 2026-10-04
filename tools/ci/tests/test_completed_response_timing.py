@@ -14,6 +14,33 @@ from tools.benchmark.retrieval import semble
 from tools.ci.tests import test_retrieval_benchmark as fixtures
 
 
+def test_semble_parent_phase_profile_requires_contiguous_ordered_bounds():
+    phases = [
+        {"name": name, "start_ns": index * 10, "end_ns": (index + 1) * 10}
+        for index, name in enumerate(semble.PARENT_PHASES)
+    ]
+    profile = {
+        "schema_version": 1,
+        "boundary": "adapter_entry_to_metrics_assembly",
+        "clock": "parent_monotonic_ns",
+        "phases": phases,
+        "total_ns": len(phases) * 10,
+        "excluded": ["cli_import_and_argument_parsing", "manifest_write_and_print"],
+    }
+    assert semble.validate_parent_phase_profile(profile) == profile
+    for mutation in (
+        lambda value: value["phases"].pop(2),
+        lambda value: value["phases"][2].__setitem__("name", "worker_execution"),
+        lambda value: value["phases"][2].__setitem__("start_ns", 19),
+        lambda value: value["phases"][2].__setitem__("end_ns", 19),
+        lambda value: value.__setitem__("total_ns", value["total_ns"] + 1),
+    ):
+        changed = copy.deepcopy(profile)
+        mutation(changed)
+        with pytest.raises(semble.AdapterError, match="Semble parent phase"):
+            semble.validate_parent_phase_profile(changed)
+
+
 def _timing(phase, record):
     protocol = phase["query_protocol"]
     rows = {(row["task_id"], row["route"]): row for row in record["results"]}

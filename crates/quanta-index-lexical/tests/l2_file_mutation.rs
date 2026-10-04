@@ -889,6 +889,55 @@ fn empty_full_generation_and_empty_delta_retain_admission() -> TestResult {
 }
 
 #[test]
+fn nonempty_noop_delta_reopens_with_the_same_source_and_units_as_fresh_full() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let scopes = vec![
+        file_scope("a.rs", "firstmarker")?,
+        file_scope("b.rs", "secondmarker")?,
+    ];
+    let base = batch(1, None, scopes.clone())?;
+    let _base_stages = adapter.build_batch(&base)?;
+    let unchanged = batch(2, Some(1), Vec::new())?;
+    let _delta_stages = adapter.build_batch(&unchanged)?;
+
+    let fresh_dir = tempfile::tempdir()?;
+    let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
+    let rebuilt = batch(2, None, scopes)?;
+    let _fresh_stages = fresh.build_batch(&rebuilt)?;
+
+    let reopened = adapter.open(
+        &unchanged.repo_id,
+        &unchanged.revision_id,
+        unchanged.generation,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let expected = fresh.open(
+        &rebuilt.repo_id,
+        &rebuilt.revision_id,
+        rebuilt.generation,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(
+        reopened.source_file_coverage(),
+        expected.source_file_coverage(),
+        "no-op delta must inherit the same independently rebuilt source universe"
+    );
+    assert_eq!(
+        reopened.source_publication_event(),
+        Some(&unchanged.source_event)
+    );
+    for marker in ["firstmarker", "secondmarker"] {
+        let chunk = format!("chunk-{marker}");
+        let symbol = format!("symbol-{marker}");
+        assert_units(&adapter, &unchanged, marker, &[&chunk], &[&symbol])?;
+        assert_units(&fresh, &rebuilt, marker, &[&chunk], &[&symbol])?;
+    }
+    assert_units(&adapter, &unchanged, "ghostmarker", &[], &[])?;
+    Ok(())
+}
+
+#[test]
 fn inherited_candidate_collision_refuses_before_target_creation() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());

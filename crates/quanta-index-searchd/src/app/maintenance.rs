@@ -17,7 +17,7 @@
 //! counted failure the next tick retries, never a silent stop.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -44,8 +44,11 @@ pub struct MaintenanceTallies {
     sweep_failures: AtomicU64,
     disk_refreshes: AtomicU64,
     disk_refresh_failures: AtomicU64,
+    disk_refresh_skipped: AtomicU64,
     lexical_generation_disk_bytes: AtomicU64,
     semantic_generation_disk_bytes: AtomicU64,
+    lexical_disk_measured_at: Mutex<Option<Instant>>,
+    semantic_disk_measured_at: Mutex<Option<Instant>>,
     /// Ticks that could not step the scrub because an earlier step
     /// panicked with the scheduler locked; the scrub stays stopped and the
     /// count says so instead of resuming from a torn state.
@@ -130,6 +133,19 @@ impl MaintenanceTallies {
     pub fn semantic_generation_disk_bytes(&self) -> u64 {
         self.semantic_generation_disk_bytes.load(Ordering::Acquire)
     }
+
+    fn disk_measurement_ages(&self) -> Result<(u64, u64), CoreError> {
+        let age = |measured_at: &Mutex<Option<Instant>>| -> Result<u64, CoreError> {
+            let last = *measured_at.lock().map_err(|error| {
+                CoreError::Storage(format!("disk measurement age lock poisoned: {error}"))
+            })?;
+            Ok(last.map_or(u64::MAX, |instant| instant.elapsed().as_secs()))
+        };
+        Ok((
+            age(&self.lexical_disk_measured_at)?,
+            age(&self.semantic_disk_measured_at)?,
+        ))
+    }
 }
 
 /// The ports one tick works through.
@@ -206,7 +222,6 @@ fn tick(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
             let _prior = tallies.sweep_failures.fetch_add(1, Ordering::AcqRel);
         }
     }
-    refresh_disk_usage(parts, tallies);
     if let Some(scrub) = &parts.integrity_scrub {
         match scrub.lock() {
             // What the step did is the scheduler's own tallies.
@@ -235,20 +250,31 @@ fn reconcile_inventory(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
 
 /// Measure both tracks; a track whose walk fails keeps its last value and
 /// counts the failure.
-fn refresh_disk_usage(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
+fn refresh_disk_usage(
+    lexical: &Arc<dyn TrackDiskUsagePort>,
+    semantic: &Arc<dyn TrackDiskUsagePort>,
+    tallies: &MaintenanceTallies,
+) {
     let _prior = tallies.disk_refreshes.fetch_add(1, Ordering::AcqRel);
-    for (port, gauge) in [
+    for (port, gauge, measured_at) in [
         (
-            &parts.lexical_disk_usage,
+            lexical,
             &tallies.lexical_generation_disk_bytes,
+            &tallies.lexical_disk_measured_at,
         ),
         (
-            &parts.semantic_disk_usage,
+            semantic,
             &tallies.semantic_generation_disk_bytes,
+            &tallies.semantic_disk_measured_at,
         ),
     ] {
         match port.track_disk_bytes() {
-            Ok(bytes) => gauge.store(bytes, Ordering::Release),
+            Ok(bytes) => {
+                gauge.store(bytes, Ordering::Release);
+                if let Ok(mut last) = measured_at.lock() {
+                    *last = Some(Instant::now());
+                }
+            }
             Err(_failed) => {
                 let _prior = tallies.disk_refresh_failures.fetch_add(1, Ordering::AcqRel);
             }
@@ -272,10 +298,33 @@ impl MaintenanceTimer {
         let tallies = Arc::new(MaintenanceTallies::default());
         reconcile_inventory(&parts, &tallies);
         observe_backend(&parts, &tallies);
-        refresh_disk_usage(&parts, &tallies);
+        refresh_disk_usage(
+            &parts.lexical_disk_usage,
+            &parts.semantic_disk_usage,
+            &tallies,
+        );
         if let Ok(mut last) = tallies.last_completed_tick.lock() {
             *last = Some(Instant::now());
         }
+        // Disk walks can exceed several health cadences on a large tree.
+        // One owned worker and a single pending request bound both execution
+        // and queued work without delaying identity probes or heartbeat.
+        let (meter_tx, meter_rx) = mpsc::sync_channel::<()>(1);
+        let meter = {
+            let lexical = Arc::clone(&parts.lexical_disk_usage);
+            let semantic = Arc::clone(&parts.semantic_disk_usage);
+            let tallies = Arc::clone(&tallies);
+            std::thread::Builder::new()
+                .name("searchd-disk-meter".to_string())
+                .spawn(move || {
+                    while meter_rx.recv().is_ok() {
+                        refresh_disk_usage(&lexical, &semantic, &tallies);
+                    }
+                })
+                .map_err(|error| {
+                    CoreError::Storage(format!("maintenance disk meter: spawn thread: {error}"))
+                })?
+        };
         let (stop, stop_rx) = mpsc::channel();
         let thread = {
             let tallies = Arc::clone(&tallies);
@@ -285,9 +334,24 @@ impl MaintenanceTimer {
                     loop {
                         match stop_rx.recv_timeout(cadence) {
                             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
-                            Err(RecvTimeoutError::Timeout) => tick(&parts, &tallies),
+                            Err(RecvTimeoutError::Timeout) => {
+                                tick(&parts, &tallies);
+                                match meter_tx.try_send(()) {
+                                    Ok(()) => {}
+                                    Err(TrySendError::Full(())) => {
+                                        let _prior = tallies
+                                            .disk_refresh_skipped
+                                            .fetch_add(1, Ordering::AcqRel);
+                                    }
+                                    Err(TrySendError::Disconnected(())) => {
+                                        panic!("maintenance disk meter stopped unexpectedly");
+                                    }
+                                }
+                            }
                         }
                     }
+                    drop(meter_tx);
+                    meter.join().expect("maintenance disk meter panicked");
                 })
                 .map_err(|error| {
                     CoreError::Storage(format!("maintenance timer: spawn thread: {error}"))
@@ -383,6 +447,7 @@ impl MaintenanceMetricSource {
 impl MetricSourcePort for MaintenanceMetricSource {
     fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
         let tallies = &self.tallies;
+        let (lexical_disk_age, semantic_disk_age) = tallies.disk_measurement_ages()?;
         Ok(vec![
             MetricPointV1::counter("maintenance_ticks_total", tallies.ticks()),
             MetricPointV1::counter(
@@ -413,6 +478,10 @@ impl MetricSourcePort for MaintenanceMetricSource {
                 "maintenance_disk_refresh_failures_total",
                 tallies.disk_refresh_failures.load(Ordering::Acquire),
             ),
+            MetricPointV1::counter(
+                "maintenance_disk_refresh_skipped_total",
+                tallies.disk_refresh_skipped.load(Ordering::Acquire),
+            ),
             MetricPointV1::gauge_count(
                 "search_corpus_lexical_generation_disk_bytes",
                 tallies.lexical_generation_disk_bytes(),
@@ -420,6 +489,14 @@ impl MetricSourcePort for MaintenanceMetricSource {
             MetricPointV1::gauge_count(
                 "search_corpus_semantic_generation_disk_bytes",
                 tallies.semantic_generation_disk_bytes(),
+            ),
+            MetricPointV1::gauge_count(
+                "search_corpus_lexical_generation_disk_age_seconds",
+                lexical_disk_age,
+            ),
+            MetricPointV1::gauge_count(
+                "search_corpus_semantic_generation_disk_age_seconds",
+                semantic_disk_age,
             ),
             MetricPointV1::gauge_count(
                 "process_resident_bytes",
@@ -433,8 +510,8 @@ impl MetricSourcePort for MaintenanceMetricSource {
 mod tests {
     use super::{MaintenanceParts, MaintenanceTallies, MaintenanceTimer};
     use quanta_index_core::{CoreError, TrackDiskUsagePort, WriterIdleSweepPort};
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -515,6 +592,79 @@ mod tests {
         }
     }
 
+    struct BlockingDisk {
+        calls: AtomicU64,
+        gate: Arc<(Mutex<(bool, bool)>, Condvar)>,
+    }
+
+    impl TrackDiskUsagePort for BlockingDisk {
+        fn track_disk_bytes(&self) -> Result<u64, CoreError> {
+            if self.calls.fetch_add(1, Ordering::AcqRel) > 0 {
+                let (lock, ready) = &*self.gate;
+                let mut state = lock.lock().map_err(|error| {
+                    CoreError::Storage(format!("blocking disk fixture poisoned: {error}"))
+                })?;
+                state.0 = true;
+                ready.notify_all();
+                while !state.1 {
+                    state = ready.wait(state).map_err(|error| {
+                        CoreError::Storage(format!("blocking disk fixture poisoned: {error}"))
+                    })?;
+                }
+            }
+            Ok(10)
+        }
+    }
+
+    #[test]
+    fn a_disk_walk_longer_than_three_cadences_does_not_stale_the_health_timer() {
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let lexical = Arc::new(BlockingDisk {
+            calls: AtomicU64::new(0),
+            gate: Arc::clone(&gate),
+        });
+        let cadence = Duration::from_millis(20);
+        let timer = MaintenanceTimer::start(
+            MaintenanceParts {
+                writer_sweep: Arc::new(CountingSweep(AtomicU64::new(0))),
+                lexical_disk_usage: lexical,
+                semantic_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(20))),
+                backend_probe: None,
+                inventory_admission: None,
+                integrity_scrub: None,
+            },
+            cadence,
+        )
+        .expect("timer starts after the first disk measurement");
+        let tallies = timer.tallies();
+        let entered = {
+            let (lock, ready) = &*gate;
+            let state = lock.lock().expect("fixture gate");
+            let (state, timeout) = ready
+                .wait_timeout_while(state, Duration::from_secs(2), |state| !state.0)
+                .expect("fixture wait");
+            state.0 && !timeout.timed_out()
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while tallies.ticks() < 5 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let ticks = tallies.ticks();
+        let fresh = tallies.heartbeat_fresh(cadence).expect("heartbeat check");
+        let skipped = tallies.disk_refresh_skipped.load(Ordering::Acquire);
+        {
+            let (lock, ready) = &*gate;
+            let mut state = lock.lock().expect("fixture gate");
+            state.1 = true;
+            ready.notify_all();
+        }
+        drop(timer);
+        assert!(entered, "meter did not reach the controlled walk");
+        assert!(ticks >= 5, "health timer stalled on disk walk: {ticks}");
+        assert!(fresh, "disk walk made the health heartbeat stale");
+        assert!(skipped > 0, "bounded queue did not record skipped walks");
+    }
+
     /// The timer measures once at start, sweeps and re-measures on every
     /// tick, counts what it did, and stops when dropped.
     #[test]
@@ -546,6 +696,9 @@ mod tests {
         // produced, not on how long they took.
         let deadline = Instant::now() + Duration::from_secs(10);
         while tallies.ticks() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        while tallies.lexical_generation_disk_bytes() != 30 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
         let ticks = tallies.ticks();
