@@ -70,11 +70,11 @@ pub struct ScaleRuntimeConfig {
 }
 
 impl ScaleRuntimeConfig {
-    fn effective_timeout_ms(self) -> AnyResult<u64> {
+    pub fn effective_timeout_ms(self) -> AnyResult<u64> {
         timeout_ms(self.client_timeout)
     }
 
-    fn effective_history_max_bytes(self) -> AnyResult<u64> {
+    pub fn effective_history_max_bytes(self) -> AnyResult<u64> {
         let bytes = self
             .history_max_bytes
             .unwrap_or(DEFAULT_SCALE_HISTORY_MAX_BYTES);
@@ -82,6 +82,16 @@ impl ScaleRuntimeConfig {
             anyhow::bail!("scale: history max bytes must be in 1..={MAX_SCALE_HISTORY_MAX_BYTES}");
         }
         Ok(bytes)
+    }
+
+    pub fn execution_json(self) -> AnyResult<Value> {
+        Ok(json!({
+            "client_request_timeout_ms": self.effective_timeout_ms()?,
+            "requested_client_request_timeout_ms": self.client_timeout.map(|_| self.effective_timeout_ms()).transpose()?,
+            "history_max_generations": 2,
+            "history_max_bytes": self.effective_history_max_bytes()?,
+            "requested_history_max_bytes": self.history_max_bytes,
+        }))
     }
 }
 
@@ -1809,6 +1819,10 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
         "tier": measurement.tier.as_str(),
         "seed": measurement.seed,
         "client_request_timeout_ms": measurement.client_request_timeout_ms,
+        "requested_client_request_timeout_ms": measurement.requested_client_request_timeout_ms,
+        "history_max_generations": 2,
+        "history_max_bytes": measurement.history_max_bytes,
+        "requested_history_max_bytes": measurement.requested_history_max_bytes,
         "cpu_process": {
             "scope": "RUSAGE_SELF, harness and in-process daemon, runtime boot through cleanup",
             "user_ms": measurement.cpu.map(|cpu| cpu.user_ms),
@@ -1963,10 +1977,13 @@ pub fn artifact(
                     ("top_k", SCALE_TOP_K.to_string()),
                     ("warm_query_samples", WARM_QUERY_SAMPLES.to_string()),
                     ("history_max_generations", "2".to_string()),
+                    ("history_max_bytes", measurement.history_max_bytes.to_string()),
+                    ("requested_history_max_bytes", format!("{:?}", measurement.requested_history_max_bytes)),
                     (
                         "client_request_timeout_ms",
                         measurement.client_request_timeout_ms.to_string(),
                     ),
+                    ("requested_client_request_timeout_ms", format!("{:?}", measurement.requested_client_request_timeout_ms)),
                 ],
             ),
             model_revision: measurement.model_revision.clone(),
@@ -2594,6 +2611,9 @@ mod tests {
     fn sample_measurement() -> TierMeasurement {
         TierMeasurement {
             client_request_timeout_ms: 30_000,
+            requested_client_request_timeout_ms: None,
+            history_max_bytes: DEFAULT_SCALE_HISTORY_MAX_BYTES,
+            requested_history_max_bytes: None,
             cpu: Some(CpuUsageV1 {
                 user_ms: 3.0,
                 system_ms: 2.0,
@@ -2653,6 +2673,9 @@ mod tests {
         assert_eq!(tier["adapter_only_phases_ms"]["execute_ms"], 0.05);
         assert_eq!(tier["delta"]["reclaimed_bytes"], 8_000);
         assert_eq!(tier["client_request_timeout_ms"], 30_000);
+        assert!(tier["requested_client_request_timeout_ms"].is_null());
+        assert_eq!(tier["history_max_bytes"], DEFAULT_SCALE_HISTORY_MAX_BYTES);
+        assert!(tier["requested_history_max_bytes"].is_null());
         assert_eq!(tier["cpu_process"]["user_ms"], 3.0);
         assert_eq!(tier["cpu_process"]["system_ms"], 2.0);
         assert!(tier["delete_reopen"].is_null());
@@ -2710,6 +2733,14 @@ mod tests {
             value["provenance"]["config_digest"],
             changed["provenance"]["config_digest"]
         );
+        let mut larger_history = sample_measurement();
+        larger_history.history_max_bytes = 268_435_456;
+        larger_history.requested_history_max_bytes = Some(268_435_456);
+        let changed = artifact(&larger_history, head.clone(), host.clone())
+            .expect("observable")
+            .to_json()
+            .expect("serializes");
+        assert_ne!(value["provenance"]["config_digest"], changed["provenance"]["config_digest"]);
         let mut missing_cpu = sample_measurement();
         missing_cpu.cpu = None;
         assert!(artifact(&missing_cpu, head, host).is_err());

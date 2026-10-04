@@ -775,6 +775,61 @@ primary/cleanup failure fields, CPU arithmetic and actual scoped delete plus
 same-process reopen. CLI, current plane/runner execution and new scale runs
 retain their separate gates.
 
+The subsequent current-debug owner run at clean source `582cb7a5` passed the
+plane typo child-clock/page/cursor test and the actual runner SDK roundtrip
+(1/1 each). Its daemon digest was
+`8beffbf1f905a0c8da263e03b982fb33678d76b335ca0e46202d7814896a5a34`.
+Actual nextest collection selected 169 tests across the three contract suites
+and passed canonical Rust inventory verification, including the new SDK clock
+unit. This is functional debug evidence, not release timing qualification.
+
+Fresh scale runs from the separately built clean `582cb7a5` snapshot used
+scale binary `b6a1f658dc579edde9f477d29247b2ccf26097430a516a2ef4aef427255452a6`:
+
+- Medium 256 files passed independent identities, delta, scoped deletion and
+  same-process reopen checks. Build 8,563.985 ms; activation 432.451 ms; warm
+  p50 27.456 ms; deletion seal 2,539.401 ms; reopen 584.868 ms; first positive
+  query after reopen 3.025 ms. Process user/system CPU was
+  10,107.420/2,711.354 ms; peak whole-process RSS was 182,190,080 bytes.
+  `/private/tmp/qi-scale-medium-20261004-582cb7a5-r1/summary.json` SHA-256
+  `7b243c58eb742c5f9d197d3dce59112dd92b79063374eaec0edde8b25b25896b`.
+- Default large 4,096 files failed with a preserved IPC read timeout at
+  30,000 ms. The single separate 300,000 ms diagnostic received
+  `SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED`: required index bytes
+  61,650,630 exceeded the harness's configured 16,777,216-byte retention
+  budget. This distinguishes a transport deadline and a harness retention
+  policy from intrinsic lexical source capacity. Both had no latency sample
+  or cleanup error. Their failure stage remains `execution_unclassified`;
+  an operation-stage wrapper is required before assigning a more specific
+  stage in a future capture.
+  `/private/tmp/qi-scale-large-20261004-582cb7a5-default-r1/refusal.json`
+  and `/private/tmp/qi-scale-large-20261004-582cb7a5-300s-r1/refusal.json`.
+- XL 32,768 files refused source admission: 4,000,461 posting memberships
+  exceeded the unchanged 4,000,000 limit. No XL latency is reported.
+  `/private/tmp/qi-scale-xlarge-20261004-582cb7a5-r1/refusal.json`.
+
+These are single contended-host diagnostics, not speedup observations. The
+explicit history-budget CLI/configuration follow-up reuses the existing
+`E2eRuntime::with_history_max_bytes` and records its requested/effective policy;
+it must retain the default profile and never automatically raise source limits
+or retry until a tier passes. A future larger-budget run is a separate profile.
+
+A second teardown boundary was found after the scale repair: an explicit
+`stop()` socket-directory removal error could be retried by `Drop`, whose panic
+masked that error. The narrow repair records the explicit error before Drop;
+Drop still retries cleanup and only suppresses its secondary panic in that
+case. Implicit Drop retains fail-fast behavior and the shared namespace is
+not consumed during successful reopen. Three fixed fault/namespace unit tests
+passed. Actual shared-daemon reconnect remains a separate check.
+
+SDK attribution can reuse the existing request-event ring and
+`observability().request_events(Query, limit)`. RPC route/ID and
+Validated/DispatchStarted/BackendReturned/ResponseWritten events cover daemon
+work after frame decoding. The ring does not measure accept, ingress decode
+or client transport/decode. A representative serial capture must verify the
+process instance, complete event sequence and zero drop/omission before
+joining resolve-active and text RPCs; no new observation API is needed.
+
 ## Execution receipt (2026-09-30)
 
 `NOT_RUN`: host not quiet (load ~26 on 16 cores, concurrent builds). Producer `quanta-index@0d21914e` (clean worktree);

@@ -21,13 +21,11 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Result as AnyResult;
-use quanta_index_ipc::DEFAULT_CLIENT_IO_TIMEOUT;
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::scale::{
-    ScaleTier, TierMeasurement, measure_tier_with_client_timeout, source_binding_for_failure,
+    ScaleRuntimeConfig, ScaleTier, TierMeasurement, measure_tier_with_runtime_config, source_binding_for_failure,
     write_artifacts, write_refusal_artifact_with_context,
 };
-use serde_json::json;
 
 /// Deterministic default seed so the rail is reproducible run-to-run unless an
 /// operator overrides it via `--seed`.
@@ -39,6 +37,7 @@ struct CliArgs {
     tiers: Vec<ScaleTier>,
     fresh_output: bool,
     client_timeout_ms: Option<u64>,
+    history_max_bytes: Option<u64>,
 }
 
 fn parse_client_timeout_ms(raw: &str) -> AnyResult<u64> {
@@ -49,12 +48,20 @@ fn parse_client_timeout_ms(raw: &str) -> AnyResult<u64> {
     Ok(parsed)
 }
 
+fn parse_history_max_bytes(raw: &str) -> AnyResult<u64> {
+    let parsed = raw.parse::<u64>()?;
+    ScaleRuntimeConfig { history_max_bytes: Some(parsed), client_timeout: None }
+        .effective_history_max_bytes()?;
+    Ok(parsed)
+}
+
 fn parse_args() -> AnyResult<CliArgs> {
     let mut out_dir = PathBuf::from("artifacts/search-quality/scale/latest");
     let mut seed = DEFAULT_SEED;
     let mut tiers = vec![ScaleTier::Small];
     let mut out_dir_explicit = false;
     let mut client_timeout_ms = None;
+    let mut history_max_bytes = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -78,6 +85,12 @@ fn parse_args() -> AnyResult<CliArgs> {
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--client-timeout-ms requires a value"))?;
                 client_timeout_ms = Some(parse_client_timeout_ms(&raw)?);
+            }
+            "--history-max-bytes" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--history-max-bytes requires a value"))?;
+                history_max_bytes = Some(parse_history_max_bytes(&raw)?);
             }
             "--tier" => {
                 let raw = args
@@ -127,6 +140,7 @@ fn parse_args() -> AnyResult<CliArgs> {
         tiers,
         fresh_output: out_dir_explicit,
         client_timeout_ms,
+        history_max_bytes,
     })
 }
 
@@ -141,20 +155,16 @@ fn run(cli: &CliArgs) -> AnyResult<Vec<TierMeasurement>> {
         std::fs::create_dir(&cli.out_dir)?;
     }
     let mut measurements = Vec::with_capacity(cli.tiers.len());
+    let runtime_config = ScaleRuntimeConfig {
+        client_timeout: cli.client_timeout_ms.map(Duration::from_millis),
+        history_max_bytes: cli.history_max_bytes,
+    };
+    let execution = runtime_config.execution_json()?;
     for tier in &cli.tiers {
-        match measure_tier_with_client_timeout(
-            *tier,
-            cli.seed,
-            cli.client_timeout_ms.map(Duration::from_millis),
-        ) {
+        match measure_tier_with_runtime_config(*tier, cli.seed, runtime_config) {
             Ok(measurement) => measurements.push(measurement),
             Err(error) => {
                 let binding = source_binding_for_failure(*tier, cli.seed)?;
-                let execution = json!({
-                    "client_request_timeout_ms": cli.client_timeout_ms.unwrap_or(
-                        u64::try_from(DEFAULT_CLIENT_IO_TIMEOUT.as_millis())?
-                    ),
-                });
                 write_refusal_artifact_with_context(
                     &binding,
                     &cli.out_dir,
@@ -251,7 +261,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_cold_open_ms, parse_client_timeout_ms};
+    use super::{format_cold_open_ms, parse_client_timeout_ms, parse_history_max_bytes};
 
     #[test]
     fn absent_query_cold_open_is_not_printed_as_zero() {
@@ -267,6 +277,14 @@ mod tests {
         );
         for invalid in ["0", "600001", "nan", "-1"] {
             assert!(parse_client_timeout_ms(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn history_budget_override_is_explicit_and_bounded() {
+        assert_eq!(parse_history_max_bytes("268435456").expect("256 MiB"), 268_435_456);
+        for invalid in ["0", "1073741825", "nan", "-1"] {
+            assert!(parse_history_max_bytes(invalid).is_err());
         }
     }
 }
