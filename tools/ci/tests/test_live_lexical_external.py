@@ -114,7 +114,7 @@ def test_opengrok_nl_capture_preserves_submitted_and_effective_query(tmp_path, m
         )
         == {key: value for key, value in row.items() if key != "completed_response"}
     )
-    live._validate_completed_row(row)
+    live._validate_completed_row(row, row["file_paths_top_10"])
 
 
 def test_completed_clock_covers_request_and_normalization_but_excludes_persistence(
@@ -125,7 +125,9 @@ def test_completed_clock_covers_request_and_normalization_but_excludes_persisten
         {"time": 1, "resultCount": 0, "results": {}, "startDocument": 0, "endDocument": 0}
     ).encode()
     native_query = live._opengrok_query
-    native_paths = live._paths
+    native_paths = live._opengrok_native_paths
+    native_row = live._row
+    native_sha = live._sha
     native_write = live._write
 
     def query(value, **kwargs):
@@ -140,6 +142,14 @@ def test_completed_clock_covers_request_and_normalization_but_excludes_persisten
         ticks[0] += 5_000_000
         return native_paths(*args, **kwargs)
 
+    def score(*args, **kwargs):
+        ticks[0] += 7_000_000
+        return native_row(*args, **kwargs)
+
+    def sha(*args, **kwargs):
+        ticks[0] += 9_000_000
+        return native_sha(*args, **kwargs)
+
     def write(*args, **kwargs):
         ticks[0] += 11_000_000
         return native_write(*args, **kwargs)
@@ -147,7 +157,9 @@ def test_completed_clock_covers_request_and_normalization_but_excludes_persisten
     monkeypatch.setattr(live.time, "monotonic_ns", lambda: ticks[0])
     monkeypatch.setattr(live, "_opengrok_query", query)
     monkeypatch.setattr(live, "_http", http)
-    monkeypatch.setattr(live, "_paths", paths)
+    monkeypatch.setattr(live, "_opengrok_native_paths", paths)
+    monkeypatch.setattr(live, "_row", score)
+    monkeypatch.setattr(live, "_sha", sha)
     monkeypatch.setattr(live, "_write", write)
     row = live._opengrok(
         {"project": "fixture", "server_image_digest": "a" * 64},
@@ -159,17 +171,64 @@ def test_completed_clock_covers_request_and_normalization_but_excludes_persisten
     )
     assert row["elapsed_ms"] == 3.0
     assert row["completed_response"]["duration_ns"] == 10_000_000
-    assert ticks[0] == 32_000_000
-    live._validate_completed_row(row)
+    assert ticks[0] == 62_000_000
+    live._validate_completed_row(row, [])
     for mutation in (
         lambda value: value["completed_response"].__setitem__("duration_ns", -1),
         lambda value: value["completed_response"].__setitem__("output_sha256", "0" * 64),
-        lambda value: value.__setitem__("file_paths_top_10", ["forged.go"]),
     ):
         changed = copy.deepcopy(row)
         mutation(changed)
         with pytest.raises(ValueError, match="completed response"):
-            live._validate_completed_row(changed)
+            live._validate_completed_row(changed, [])
+    with pytest.raises(ValueError, match="completed response"):
+        live._validate_completed_row(row, ["forged.go"])
+
+
+def test_sourcegraph_completed_clock_excludes_evidence_replay_and_raw_writes(
+    tmp_path, monkeypatch
+):
+    ticks = [0]
+    task = {"task_id": "T1", "query": "symbol"}
+    config = {"repository": "benchmark/fixture", "server_image_digest": "a" * 64}
+    manifest = {
+        "repository_commit": "b" * 40,
+        "files": [{"path": "src/a.go", "file_sha256": "c" * 64}],
+    }
+    original_write = live._write
+
+    def query(*args, **kwargs):
+        ticks[0] += 2_000_000
+        return "pinned query"
+
+    def http(*args, **kwargs):
+        ticks[0] += 3_000_000
+        return 200, "text/event-stream", b"native", 3.0
+
+    def normalized(*args, **kwargs):
+        ticks[0] += 5_000_000
+        return [], [], [], 0, 0
+
+    def replay(*args, **kwargs):
+        ticks[0] += 7_000_000
+        return live._row(task, [], [], 3.0, file_paths_top_10=[])
+
+    def write(*args, **kwargs):
+        ticks[0] += 11_000_000
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(live.time, "monotonic_ns", lambda: ticks[0])
+    monkeypatch.setattr(live.sourcegraph, "query_expression", query)
+    monkeypatch.setattr(live.sourcegraph, "normalize_stream", normalized)
+    monkeypatch.setattr(live, "_http", http)
+    monkeypatch.setattr(live, "_sourcegraph_response", replay)
+    monkeypatch.setattr(live, "_write", write)
+    row = live._sourcegraph(
+        config, task, [], manifest, tmp_path, {}, tmp_path / "raw.stream"
+    )
+    assert row["completed_response"]["duration_ns"] == 10_000_000
+    assert ticks[0] == 39_000_000
+    live._validate_completed_row(row, [])
 
 
 def index_scope_fixture(

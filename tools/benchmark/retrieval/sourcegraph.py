@@ -195,6 +195,156 @@ def _events(raw: bytes) -> list[tuple[str, Any]]:
     return events
 
 
+def normalize_stream(
+    request: dict[str, Any],
+    raw: bytes,
+    admitted_by_path: dict[str, str],
+    capture_version: int,
+    *,
+    evidence_hashes: bool = True,
+) -> tuple[list[tuple[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int, int]:
+    """One canonical Sourcegraph stream decoder for timing and evidence replay."""
+    events = _events(raw)
+    if not events or events[-1] != ("done", {}):
+        raise CaptureError("stream lacks a final empty done event")
+    if sum(kind == "done" for kind, _ in events) != 1:
+        raise CaptureError("stream has multiple done events")
+    final_progress = False
+    reported_match_count = 0
+    matches: list[dict[str, Any]] = []
+    seen_matches: set[str] = set()
+    native_match_count = 0
+    out_of_manifest_match_count = 0
+    for i, (kind, data) in enumerate(events[:-1]):
+        if kind == "alert":
+            raise CaptureError(f"stream alert at event {i}; results may be partial")
+        if kind == "progress":
+            if (
+                not isinstance(data, dict)
+                or type(data.get("done")) is not bool
+                or not isinstance(data.get("skipped"), list)
+                or type(data.get("matchCount")) is not int
+                or data["matchCount"] < 0
+                or type(data.get("durationMs")) is not int
+                or data["durationMs"] < 0
+            ):
+                raise CaptureError(f"malformed progress at event {i}")
+            if data["skipped"]:
+                raise CaptureError(f"stream reports skipped results at event {i}")
+            if data["matchCount"] < reported_match_count:
+                raise CaptureError(f"stream match count regressed at event {i}")
+            reported_match_count = data["matchCount"]
+            if data["done"]:
+                if final_progress:
+                    raise CaptureError("multiple final progress events")
+                final_progress = True
+            elif final_progress:
+                raise CaptureError("progress regressed after final progress")
+        elif kind == "matches":
+            if final_progress:
+                raise CaptureError("matches arrived after final progress")
+            if not isinstance(data, list) or not data:
+                raise CaptureError(f"empty or malformed matches event {i}")
+            for hit in data:
+                if not isinstance(hit, dict) or hit.get("type") != "content":
+                    raise CaptureError("non-content result has no comparable file ranking")
+                path = _path(hit.get("path"))
+                if (
+                    hit.get("repository") != request["repository"]
+                    or hit.get("commit") != request["revision"]
+                ):
+                    raise CaptureError("result repository/revision differs from request")
+                in_manifest = path in admitted_by_path
+                if not in_manifest and capture_version == 1:
+                    raise CaptureError(f"result outside admitted universe: {path}")
+                if (
+                    not in_manifest
+                    and PurePosixPath(path).suffix not in request["file_filter_extensions"]
+                ):
+                    raise CaptureError(f"result outside the declared extension filter: {path}")
+                line_matches = hit.get("lineMatches")
+                if (
+                    not isinstance(line_matches, list)
+                    or not line_matches
+                    or hit.get("chunkMatches") not in (None, [])
+                ):
+                    raise CaptureError("content result lacks comparable line matches")
+                for line in line_matches:
+                    if (
+                        not isinstance(line, dict)
+                        or not isinstance(line.get("line"), str)
+                        or type(line.get("lineNumber")) is not int
+                        or line["lineNumber"] < 0
+                        or not isinstance(line.get("offsetAndLengths"), list)
+                        or not line["offsetAndLengths"]
+                        or any(
+                            not isinstance(span, list)
+                            or len(span) != 2
+                            or type(span[0]) is not int
+                            or span[0] < 0
+                            or type(span[1]) is not int
+                            or span[1] <= 0
+                            for span in line["offsetAndLengths"]
+                        )
+                    ):
+                        raise CaptureError("content result has malformed line matches")
+                    # Sourcegraph LineMatch offsets and lengths count characters,
+                    # not UTF-8 bytes. Byte length would admit spans past a
+                    # non-ASCII line's end.
+                    line_characters = len(line["line"])
+                    if any(
+                        offset + length > line_characters
+                        for offset, length in line["offsetAndLengths"]
+                    ):
+                        raise CaptureError("content result has out-of-range line match")
+                fingerprint_source = json.dumps(
+                    hit,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
+                if fingerprint_source in seen_matches:
+                    raise CaptureError("duplicate native match row")
+                seen_matches.add(fingerprint_source)
+                fingerprint = sha256(fingerprint_source.encode()) if evidence_hashes else None
+                native_match_count += 1
+                if not in_manifest:
+                    out_of_manifest_match_count += 1
+                    continue
+                matches.append(
+                    {
+                        "rank": len(matches) + 1,
+                        "native_rank": native_match_count,
+                        "path": path,
+                        "file_sha256": admitted_by_path[path],
+                        "raw_match_sha256": fingerprint,
+                    }
+                )
+        elif kind == "filters":
+            if final_progress or not isinstance(data, list):
+                raise CaptureError("filters after final progress or malformed filters")
+    if not final_progress:
+        raise CaptureError("stream lacks final done=true progress")
+    if reported_match_count < native_match_count:
+        raise CaptureError("final match count is smaller than returned content rows")
+    files: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for hit in matches:
+        if hit["path"] not in seen_paths:
+            seen_paths.add(hit["path"])
+            files.append(
+                {
+                    "rank": len(files) + 1,
+                    "path": hit["path"],
+                    "file_sha256": hit["file_sha256"],
+                    "first_match_rank": hit["rank"],
+                    "first_native_match_rank": hit["native_rank"],
+                }
+            )
+    return events, matches, files, native_match_count, out_of_manifest_match_count
+
+
 def validate_capture(
     request: dict[str, Any], raw: bytes, manifest: dict[str, Any], universe: dict[str, Any]
 ) -> dict[str, Any]:
@@ -301,145 +451,9 @@ def validate_capture(
             "sent query differs from the pinned keyword expression and file universe"
         )
 
-    events = _events(raw)
-    if not events or events[-1] != ("done", {}):
-        raise CaptureError("stream lacks a final empty done event")
-    if sum(kind == "done" for kind, _ in events) != 1:
-        raise CaptureError("stream has multiple done events")
-    final_progress = False
-    reported_match_count = 0
-    matches: list[dict[str, Any]] = []
-    seen_matches: set[str] = set()
-    native_match_count = 0
-    out_of_manifest_match_count = 0
-    for i, (kind, data) in enumerate(events[:-1]):
-        if kind == "alert":
-            raise CaptureError(f"stream alert at event {i}; results may be partial")
-        if kind == "progress":
-            if (
-                not isinstance(data, dict)
-                or type(data.get("done")) is not bool
-                or not isinstance(data.get("skipped"), list)
-                or type(data.get("matchCount")) is not int
-                or data["matchCount"] < 0
-                or type(data.get("durationMs")) is not int
-                or data["durationMs"] < 0
-            ):
-                raise CaptureError(f"malformed progress at event {i}")
-            if data["skipped"]:
-                raise CaptureError(f"stream reports skipped results at event {i}")
-            if data["matchCount"] < reported_match_count:
-                raise CaptureError(f"stream match count regressed at event {i}")
-            reported_match_count = data["matchCount"]
-            if data["done"]:
-                if final_progress:
-                    raise CaptureError("multiple final progress events")
-                final_progress = True
-            elif final_progress:
-                raise CaptureError("progress regressed after final progress")
-        elif kind == "matches":
-            if final_progress:
-                raise CaptureError("matches arrived after final progress")
-            if not isinstance(data, list) or not data:
-                raise CaptureError(f"empty or malformed matches event {i}")
-            for hit in data:
-                if not isinstance(hit, dict) or hit.get("type") != "content":
-                    raise CaptureError("non-content result has no comparable file ranking")
-                path = _path(hit.get("path"))
-                if (
-                    hit.get("repository") != request["repository"]
-                    or hit.get("commit") != request["revision"]
-                ):
-                    raise CaptureError("result repository/revision differs from request")
-                in_manifest = path in admitted_by_path
-                if not in_manifest and capture_version == 1:
-                    raise CaptureError(f"result outside admitted universe: {path}")
-                if (
-                    not in_manifest
-                    and PurePosixPath(path).suffix not in request["file_filter_extensions"]
-                ):
-                    raise CaptureError(f"result outside the declared extension filter: {path}")
-                line_matches = hit.get("lineMatches")
-                if (
-                    not isinstance(line_matches, list)
-                    or not line_matches
-                    or hit.get("chunkMatches") not in (None, [])
-                ):
-                    raise CaptureError("content result lacks comparable line matches")
-                for line in line_matches:
-                    if (
-                        not isinstance(line, dict)
-                        or not isinstance(line.get("line"), str)
-                        or type(line.get("lineNumber")) is not int
-                        or line["lineNumber"] < 0
-                        or not isinstance(line.get("offsetAndLengths"), list)
-                        or not line["offsetAndLengths"]
-                        or any(
-                            not isinstance(span, list)
-                            or len(span) != 2
-                            or type(span[0]) is not int
-                            or span[0] < 0
-                            or type(span[1]) is not int
-                            or span[1] <= 0
-                            for span in line["offsetAndLengths"]
-                        )
-                    ):
-                        raise CaptureError("content result has malformed line matches")
-                    # Sourcegraph LineMatch offsets and lengths count characters,
-                    # not UTF-8 bytes. Byte length would admit spans past a
-                    # non-ASCII line's end.
-                    line_characters = len(line["line"])
-                    if any(
-                        offset + length > line_characters
-                        for offset, length in line["offsetAndLengths"]
-                    ):
-                        raise CaptureError("content result has out-of-range line match")
-                fingerprint = sha256(
-                    json.dumps(
-                        hit,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        ensure_ascii=False,
-                        allow_nan=False,
-                    ).encode()
-                )
-                if fingerprint in seen_matches:
-                    raise CaptureError("duplicate native match row")
-                seen_matches.add(fingerprint)
-                native_match_count += 1
-                if not in_manifest:
-                    out_of_manifest_match_count += 1
-                    continue
-                matches.append(
-                    {
-                        "rank": len(matches) + 1,
-                        "native_rank": native_match_count,
-                        "path": path,
-                        "file_sha256": admitted_by_path[path],
-                        "raw_match_sha256": fingerprint,
-                    }
-                )
-        elif kind == "filters":
-            if final_progress or not isinstance(data, list):
-                raise CaptureError("filters after final progress or malformed filters")
-    if not final_progress:
-        raise CaptureError("stream lacks final done=true progress")
-    if reported_match_count < native_match_count:
-        raise CaptureError("final match count is smaller than returned content rows")
-    files: list[dict[str, Any]] = []
-    seen_paths: set[str] = set()
-    for hit in matches:
-        if hit["path"] not in seen_paths:
-            seen_paths.add(hit["path"])
-            files.append(
-                {
-                    "rank": len(files) + 1,
-                    "path": hit["path"],
-                    "file_sha256": hit["file_sha256"],
-                    "first_match_rank": hit["rank"],
-                    "first_native_match_rank": hit["native_rank"],
-                }
-            )
+    events, matches, files, native_match_count, out_of_manifest_match_count = normalize_stream(
+        request, raw, admitted_by_path, capture_version
+    )
     binding_digest = sha256(
         json.dumps(universe, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     )

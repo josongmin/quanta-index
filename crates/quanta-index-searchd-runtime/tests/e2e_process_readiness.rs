@@ -349,6 +349,80 @@ fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
 }
 
 #[test]
+fn binary_restart_replaces_request_event_instance_and_discards_prior_window() -> TestResult {
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let mut prepared = E2eRuntime::boot_in(&state_root)?;
+    prepared.ingest_text("repo-restart-events", "src/restart.rs", "needle restart")?;
+    let sealed = prepared.seal()?;
+    prepared.activate_last_sealed_generation()?;
+    let pin = GenerationPin::new(prepared.repo(), prepared.revision(), sealed);
+    prepared.stop()?;
+
+    let first = SearchdBinaryProcess::start(&state_root)?;
+    let first_client = first.connect()?;
+    let sockets = daemon_socket_paths(&state_root);
+    let request_id = 0x5ee1_u64;
+    let query = SearchPlaneQueryIpcRequestEnvelope {
+        request_id,
+        payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "needle".to_owned(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: Some(pin),
+            generation_selector: None,
+            top_k: 5,
+            cursor: None,
+        }),
+    };
+    let result: SearchPlaneQueryIpcResponseEnvelope = quanta_index_ipc::send_request(
+        &sockets[0],
+        &query,
+        quanta_index_ipc::ClientIoPolicy::default(),
+    )?;
+    if result.request_id != request_id
+        || !matches!(result.payload, SearchPlaneQueryIpcResponse::Text(_))
+    {
+        return Err(format!("first binary query did not serve: {result:?}").into());
+    }
+    let before = first_client
+        .observability()
+        .request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+    if !before.events.iter().any(|event| {
+        event.request_id.get() == request_id
+            && event.stage == ProcessRequestEventStageV1::BackendOutcome
+    }) {
+        return Err("first process did not record the query outcome".into());
+    }
+    drop(first_client);
+    first.stop()?;
+
+    let second = SearchdBinaryProcess::start(&state_root)?;
+    let outcome = (|| -> TestResult {
+        let client = second.connect()?;
+        let after = client
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+        if after.process_instance == before.process_instance {
+            return Err("restart reused the prior request-event process identity".into());
+        }
+        if after
+            .events
+            .iter()
+            .any(|event| event.request_id.get() == request_id)
+        {
+            return Err("restart disclosed an event from the prior process window".into());
+        }
+        if after.dropped_before > after.dropped_after || after.next_sequence == 0 {
+            return Err("new process window has invalid loss or sequence bounds".into());
+        }
+        Ok(())
+    })();
+    let stopped = second.stop();
+    outcome.and(stopped)
+}
+
+#[test]
 fn zero_active_repositories_do_not_require_existing_track_roots() -> TestResult {
     let mut rt = E2eRuntime::boot()?;
     for track in ["lexical", "semantic"] {

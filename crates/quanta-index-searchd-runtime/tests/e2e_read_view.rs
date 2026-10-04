@@ -17,9 +17,14 @@
 use std::error::Error;
 
 use crate::e2e_harness;
-use quanta_index_contract::{PlannerStage, SearchPlaneErrorCodeV2, TextQuerySyntax};
+use quanta_index_contract::{
+    GenerationPin, GenerationSelector, PlannerStage, SearchPlaneErrorCodeV2,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax,
+};
 use quanta_index_core::{
-    REPO_COMMIT_RECENCY_UNAVAILABLE_CODE, RUNTIME_NOT_READY_CODE, RepoMetadataAuthorityV1,
+    GenerationStorageKeyV1, REPO_COMMIT_RECENCY_UNAVAILABLE_CODE, RUNTIME_NOT_READY_CODE,
+    RepoMetadataAuthorityV1,
 };
 
 use e2e_harness::{E2eErrorCode, E2eHistoryFixtureSpec, E2eQueryResult, E2eRuntime};
@@ -40,6 +45,124 @@ fn seeded_runtime() -> Result<E2eRuntime, Box<dyn Error>> {
     let _generation = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     Ok(rt)
+}
+
+/// A public resolve fixes G1 for the caller, then a two-generation
+/// retention window physically removes it before the caller's query.
+/// The supported boundary is an exact refusal for G1 and a complete G3
+/// result for a fresh Active request. The server-internal select/acquire
+/// interval is exercised separately in the dispatcher fixture.
+#[test]
+fn retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3() -> TestResult {
+    let mut rt = E2eRuntime::boot_with_history_max_generations(2)?;
+    rt.ingest_text("repo", "src/selection.rs", "fn selected_g1() {}")?;
+    let g1 = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let selected = rt
+        .active_search_corpus_head()?
+        .ok_or("G1 activation has an active head")?;
+    if selected.generation.lexical.manifest_generation != g1 {
+        return Err("public selection did not name G1".into());
+    }
+    let selected_pin = GenerationPin::new(rt.repo(), rt.revision(), g1);
+    let storage = GenerationStorageKeyV1::for_repo_revision(&rt.repo(), &rt.revision());
+    let root = std::fs::canonicalize(rt.state_root())?;
+    let old_lexical = storage.generation_dir(&root.join("indexes/lexical"), g1);
+    let old_semantic = storage.generation_dir(&root.join("indexes/semantic"), g1);
+    if !old_lexical.is_dir() || !old_semantic.is_dir() {
+        return Err("G1 physical track roots were absent before retention".into());
+    }
+
+    for label in ["g2", "g3"] {
+        rt.ingest_text(
+            "repo",
+            "src/selection.rs",
+            &format!("fn selected_{label}() {{}}"),
+        )?;
+        let _sealed = rt.seal()?;
+        rt.activate_last_sealed_generation()?;
+    }
+    if old_lexical.exists() || old_semantic.exists() {
+        return Err("retention did not physically retire G1 from both tracks".into());
+    }
+    let current = rt
+        .active_search_corpus_head()?
+        .ok_or("G3 activation has an active head")?;
+    let g3 = current.generation.lexical.manifest_generation;
+    if g3 == g1 || current.activation_token == selected.activation_token {
+        return Err("G3 did not advance the active generation and token".into());
+    }
+
+    let query_socket = rt
+        .socket_paths()
+        .ok_or("running daemon has no query socket")?
+        .0
+        .to_path_buf();
+    let send = |request_id, generation, selector| -> Result<_, Box<dyn Error>> {
+        Ok(quanta_index_ipc::send_request::<
+            _,
+            SearchPlaneQueryIpcResponseEnvelope,
+        >(
+            &query_socket,
+            &SearchPlaneQueryIpcRequestEnvelope {
+                request_id,
+                payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "selected_g3".to_owned(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                    generation,
+                    generation_selector: selector,
+                    top_k: 5,
+                    cursor: None,
+                }),
+            },
+            quanta_index_ipc::ClientIoPolicy::default(),
+        )?)
+    };
+    let stale = send(
+        0x3101,
+        Some(selected_pin.clone()),
+        Some(GenerationSelector::Pinned(selected_pin.clone())),
+    )?;
+    match stale.payload {
+        SearchPlaneQueryIpcResponse::Error(error)
+            if error.code == SearchPlaneErrorCodeV2::UnknownGeneration => {}
+        other => {
+            return Err(format!("retired explicit G1 did not refuse unknown: {other:?}").into());
+        }
+    }
+    let tokened = send(
+        0x3102,
+        Some(selected_pin),
+        Some(GenerationSelector::ResolvedActive {
+            repo_id: rt.repo(),
+            revision_id: rt.revision(),
+            activation_token: selected.activation_token,
+        }),
+    )?;
+    match tokened.payload {
+        SearchPlaneQueryIpcResponse::Error(error)
+            if error.code == SearchPlaneErrorCodeV2::NotReady => {}
+        other => return Err(format!("stale activation token was served: {other:?}").into()),
+    }
+    let active = send(
+        0x3103,
+        None,
+        Some(GenerationSelector::Active {
+            repo_id: rt.repo(),
+            revision_id: rt.revision(),
+        }),
+    )?;
+    let SearchPlaneQueryIpcResponse::Text(page) = active.payload else {
+        return Err(format!("fresh Active did not serve text: {:?}", active.payload).into());
+    };
+    if page.generation.manifest_generation != g3
+        || page.results.len() != 1
+        || page.results.iter().any(|row| row.manifest_generation != g3)
+    {
+        return Err(format!("fresh Active did not bind complete G3 rows: {page:?}").into());
+    }
+    Ok(())
 }
 
 fn served(result: &E2eQueryResult, what: &str) -> TestResult {

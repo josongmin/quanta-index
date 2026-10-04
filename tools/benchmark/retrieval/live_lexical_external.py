@@ -444,31 +444,28 @@ def _row(task: dict, gold: list[str], result_paths: list[str], elapsed: float, *
     }
 
 
-def _completed_row(row: dict, start_ns: int) -> dict:
-    """Close the request clock after required output serialization, before persistence."""
-    required = canonical_json(row).encode("utf-8")
+def _completed_native(paths: list[str], start_ns: int) -> dict:
+    """Close after native result normalization; hash and benchmark work follow."""
+    required = canonical_json({"status": "success", "file_paths_top_10": paths}).encode("utf-8")
     end_ns = time.monotonic_ns()
     if type(start_ns) is not int or type(end_ns) is not int or end_ns < start_ns:
         raise ValueError("completed response clock moved backwards")
-    row["completed_response"] = {
+    return {
         "boundary": COMPLETED_BOUNDARY,
         "clock": COMPLETED_CLOCK,
         "duration_ns": end_ns - start_ns,
         "output_bytes": len(required),
         "output_sha256": _sha(required),
     }
-    return row
 
 
-def _validate_completed_row(row: dict) -> None:
+def _validate_completed_row(row: dict, paths: list[str]) -> None:
     timing = row.get("completed_response")
     if not isinstance(timing, dict) or set(timing) != {
         "boundary", "clock", "duration_ns", "output_bytes", "output_sha256"
     }:
         raise ValueError("completed response metadata is absent or malformed")
-    required = dict(row)
-    del required["completed_response"]
-    encoded = canonical_json(required).encode("utf-8")
+    encoded = canonical_json({"status": "success", "file_paths_top_10": paths}).encode("utf-8")
     if (
         type(row.get("elapsed_ms")) not in (int, float)
         or not math.isfinite(row["elapsed_ms"])
@@ -511,10 +508,25 @@ def _sourcegraph(
     status, content_type, raw, elapsed = _http(
         config, "/.api/search/stream", {"q": query, "v": "V3"}, "text/event-stream", "token"
     )
+    if status != 200 or content_type != "text/event-stream":
+        raise ValueError(f"Sourcegraph returned HTTP {status} / {content_type}")
+    _, _, native_files, _, _ = sourcegraph.normalize_stream(
+        {
+            "repository": config["repository"],
+            "revision": _sourcegraph_revision(config, manifest),
+            "file_filter_extensions": extensions,
+        },
+        raw,
+        admitted,
+        3 if "projection_git_root" in config else 2,
+        evidence_hashes=False,
+    )
+    native_paths = [row["path"] for row in native_files[:10]]
+    completed = _completed_native(native_paths, start_ns)
     row = _sourcegraph_response(
         config, task, gold, manifest, view, admitted, status, content_type, raw, elapsed
     )
-    _completed_row(row, start_ns)
+    row["completed_response"] = completed
     _write(target, raw)
     _write(
         target.with_suffix(".transport.json"),
@@ -654,6 +666,8 @@ def _opengrok(
         "sort": "relevancy",
     }
     status, content_type, raw, elapsed = _http(config, "/api/v1/search", params, "application/json")
+    paths = _opengrok_native_paths(config, status, content_type, raw)
+    completed = _completed_native(paths, start_ns)
     row = _opengrok_response(
         config,
         task,
@@ -666,7 +680,7 @@ def _opengrok(
         elapsed,
         literal_query=literal_query,
     )
-    _completed_row(row, start_ns)
+    row["completed_response"] = completed
     _write(target, raw)
     _write(
         target.with_suffix(".transport.json"),
@@ -683,19 +697,7 @@ def _opengrok(
     return row
 
 
-def _opengrok_response(
-    config: dict,
-    task: dict,
-    gold: list[str],
-    view: Path,
-    admitted: dict[str, str],
-    status: int,
-    content_type: str,
-    raw: bytes,
-    elapsed: float,
-    *,
-    literal_query: bool = False,
-) -> dict:
+def _opengrok_native_paths(config: dict, status: int, content_type: str, raw: bytes) -> list[str]:
     if status != 200 or content_type != "application/json":
         raise ValueError(f"OpenGrok returned HTTP {status} / {content_type}")
     body = _json(raw)
@@ -740,7 +742,27 @@ def _opengrok_response(
             ):
                 raise ValueError("OpenGrok response has a malformed SearchHit")
         paths.append(absolute[len(prefix) :])
-    paths = _paths(paths, admitted, view)
+    if len(paths) != len(set(paths)) or any(
+        not lexical._canonical_result_path(path) for path in paths
+    ):
+        raise ValueError("OpenGrok native paths are duplicate or noncanonical")
+    return paths
+
+
+def _opengrok_response(
+    config: dict,
+    task: dict,
+    gold: list[str],
+    view: Path,
+    admitted: dict[str, str],
+    status: int,
+    content_type: str,
+    raw: bytes,
+    elapsed: float,
+    *,
+    literal_query: bool = False,
+) -> dict:
+    paths = _paths(_opengrok_native_paths(config, status, content_type, raw), admitted, view)
     return _row(
         task,
         gold,
@@ -970,10 +992,12 @@ def _cs(
     start_ns = time.monotonic_ns()
     argv = _cs_argv(binary, task["query"], view, literal_query=literal_query)
     code, stdout, stderr, elapsed = _process(argv, 60)
+    paths = _cs_native_paths(view, code, stdout, stderr)
+    completed = _completed_native(paths, start_ns)
     row = _cs_response(
         task, gold, view, admitted, code, stdout, stderr, elapsed, literal_query=literal_query
     )
-    _completed_row(row, start_ns)
+    row["completed_response"] = completed
     _write(target, stdout)
     _write(target.with_suffix(".stderr"), stderr)
     _write(
@@ -1343,18 +1367,7 @@ def verify_cs_fuzzy(root: Path, *, bound_release: BoundRelease | None = None) ->
     return summary
 
 
-def _cs_response(
-    task: dict,
-    gold: list[str],
-    view: Path,
-    admitted: dict[str, str],
-    code: int,
-    stdout: bytes,
-    stderr: bytes,
-    elapsed: float,
-    *,
-    literal_query: bool = False,
-) -> dict:
+def _cs_native_paths(view: Path, code: int, stdout: bytes, stderr: bytes) -> list[str]:
     if code != 0 or stderr:
         raise ValueError(f"cs failed with exit {code} or nonempty stderr")
     native = json.loads(
@@ -1370,7 +1383,26 @@ def _cs_response(
             raise ValueError("cs hit lacks an absolute location")
         location = Path(hit["location"]).resolve(strict=True)
         paths.append(location.relative_to(view).as_posix())
-    paths = _paths(paths, admitted, view)
+    if len(paths) != len(set(paths)) or any(
+        not lexical._canonical_result_path(path) for path in paths
+    ):
+        raise ValueError("cs native paths are duplicate or noncanonical")
+    return paths
+
+
+def _cs_response(
+    task: dict,
+    gold: list[str],
+    view: Path,
+    admitted: dict[str, str],
+    code: int,
+    stdout: bytes,
+    stderr: bytes,
+    elapsed: float,
+    *,
+    literal_query: bool = False,
+) -> dict:
+    paths = _paths(_cs_native_paths(view, code, stdout, stderr), admitted, view)
     return _row(
         task,
         gold,
@@ -2184,7 +2216,6 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                 ):
                     raise ValueError("Sourcegraph capability row differs from frozen query support")
                 return
-            _validate_completed_row(row)
             if name == "cs":
                 terminal = _json(_read_control_file(root / name / f"{task_id}.process.json"))
                 if (
@@ -2246,6 +2277,10 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                         terminal["elapsed_ms"],
                         literal_query=literal_file_query,
                     )
+            _validate_completed_row(
+                row,
+                derived["paths"] if name == "cs" else derived["file_paths_top_10"],
+            )
             derived["completed_response"] = row["completed_response"]
             if canonical_json(row) != canonical_json(derived):
                 raise ValueError("external row disagrees with retained native response")
