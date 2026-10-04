@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | 새 bat5제품 raw union·18tasks/51pairs·actual role 요청 preflight `VERIFIED`; 과거 first-six raw replay `BLOCKED`. actual supplemental model/merged labels 미완료 |
+| 실행 상태 | 새 bat5제품 union·18tasks/51pairs·실제3 AI 역할 판단/raw 재생 `VERIFIED`; merged 발행 v1 `FAILED`(원본 form pack 결속), 수정 중. 과거 first-six raw replay `BLOCKED` |
 | 선행 결과 | [O4-E1-01](O4-E1-01-original-review-resume.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -44,6 +44,8 @@
 - `VERIFIED`: `/tmp/qi-bat-five-product-unjudged-bridge-20261004-v2.py --pool-input /tmp/qi-bat-failedpair-review-pool-input-20261004-v1.json --pool-root /private/tmp/qi-bat-current-pool-107-v1 --native-root /private/tmp/qn/bat --out /private/tmp/qi-bat-five-pool-107-v1` actual exit0. canonical native replay, 원 2route 재생, five owner-pool과 source/input/tree pre/post 결속 후18tasks/51pairs가 남았다. Sourcegraph/OpenGrok/cs 각20 completed rows의 반환 파일은0이므로 이 셋이 union 분모를 늘리지 않았다.
 - `VERIFIED`: `/tmp/qi-bat-five-product-actual-review-20261004-v2.py --pool-input /tmp/qi-bat-failedpair-review-pool-input-20261004-v1.json --five-root /private/tmp/qi-bat-five-pool-107-v1 --out /private/tmp/qi-bat-five-actual-review-107-v2` actual preflight exit0. 원 suite binder,51 source pairs,5제품 membership,477 native retained files와 두 blind reviewer 요청의 canonical bytes를 재검증했다. 모델 호출은 `NOT_RUN`; 실제 두 판단 후에만 adjudicator를 실행한다.
 - v1 preflight는 tuple/list 표현을 Python 객체로 비교해 `FAILED`였다. 기존 failed root는 보존하고 v2가 producer의 동일 canonical JSON bytes로 비교한다. pool/source/grade를 변경하지 않았다. AI-only 판단, merged suite, 새 admission 및 fresh final pair는 계속 별도 단계다.
+- `VERIFIED`: 위 v2 actual role driver에 `--execute`를 붙여 서비스 reset 이후 실행했고 exit0이었다. reviewer-1/reviewer-2/adjudicator 각51쌍,18tasks가 actual native raw·receipt 및 cache replay를 통과했다. adjudicator의 grade0은48쌍, grade1은3쌍, threshold2 이상은0쌍이다. AI-only 결과이며 human provenance/qualification은 false다.
+- `FAILED`: `/tmp/qi-bat-canonical-supplemental-issuer-20261004-v1.py --input-plan /tmp/qi-bat-merge-finalize-input-plan-20261004-v1.json --out /private/tmp/qi-bat-canonical-merged-107-v1 --finalize` actual exit1. 원본 completed form을 현재 pack에 직접 검증하는 단계가 `query_pack_sha256` 불일치로 거절했으며 새 suite/receipt는 발행되지 않았다. 실제 원본 single-route pack/seed/custody로 먼저 검증하고 동일 query/source/threshold의 판단만 current form으로 이전하는 경로를 준비한다. 기존 form header나 validator를 약화하지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
 

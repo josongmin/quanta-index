@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P2 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | harness 회귀·source107 release build·default small16/medium256 scale·small open-loop `VERIFIED`; large default/diagnostic `FAILED`(timeout/ANN segment contraction), 구조 수리 준비. 다른 tier·OS restart·qualified performance 미완료 |
+| 실행 상태 | source107 small/medium scale·small open-loop `VERIFIED`, large timeout/ANN seal `FAILED`; 새 ANN 수리 집중8·affected97 regressions `VERIFIED`. matching release 재실행·다른 tier·OS restart·qualified performance 미완료 |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E4-01](O4-E4-01-index-phase-profile.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -42,6 +42,9 @@
 - current harness는 delta로 바꾼 첫 파일을 다음 단계에서 삭제한다. 기존 ANN append admission은 segment count만 보존된다고 가정했다. 전체 appended segment의 live rows가 삭제될 때 library가 빈 segment를 제거하는 경계를 independent300+60→delete60 fixture 및 forged UUID negative로 좁혀 검증한다. 실제 fixture·수리는 완료 전이다. base seal 검증이나 coverage/UUID 검사를 약화하지 않는다.
 - `FAILED`: main에 먼저 추가한 independent regressions를 root가 test-integration-lane에서 실행했다. lib의 `a_dataset_that_disagrees_with_the_inherited_contract_is_refused`는 same-count forged UUID를 기존 seal이 받아들여 exit100이었다. fail-fast로 integration은 그 실행에서 `NOT_RUN`; 별도 `--test vector_index_contract -E 'test(deleting_every_row_of_an_appended_segment_reseals_the_survivors)' --test-threads 1` 실행은1.322s 뒤 inherited1/sealed2 오류로 exit100이었다. 두 원인이 수정 전에 각각 재현됐다.
 - 최종 ID/payload 차이만으로 physical deletion을 판정하는 후보 수리는 보류했다. 현재 replacement는 동일 payload도 delete+append하므로 동일 내용 교체를 오거절할 수 있다. 실제 Lance 동일 내용 교체 fixture를 별도 추가했고, surviving UUID·실제 row identity·검증된 immutable base·새 train lineage를 함께 확인하는 수리를 준비한다. product 수리와 새 source proof는 아직 완료 전이다.
+- `FAILED`: 수정 전 `identical_replacement_of_an_appended_segment_can_reseal`도 별도 actual nextest에서0.337s/exit100, inherited1/sealed2 오류를 재현했다. 동일 logical payload를 새 physical row로 교체하는 경계가 실제로 도달한다.
+- 새 수리 epoch `4e3e7395c23ad18fffb14f9ddc87ef7e52c9d76b`: 기반 세대를 기존 sealed open으로 검증하고 그 same manifest의 실제 row root를 재계산한다. 기존 scan에서 얻는 Lance `_rowid`는 임시 비교에만 사용하며 canonical root/manifest schema는 유지한다. physical 삭제·추가 수와 indexed/unindexed coverage가 일치하고 남은 UUID/parameter가 ordered subset일 때만 fresh train과 새 lineage를 발행한다. same-count identity 검사는 policy retrain 선택보다 먼저 수행한다. delta당 기반 rows의 추가 scan 비용을 감춘 speedup 주장은 하지 않는다.
+- `VERIFIED`: `./scripts/cargow --lane test-integration-lane nextest run -p quanta-index-semantic --lib --test vector_index_contract --all-features --locked --no-fail-fast -E '<deletion/identical/multibatch/forged-base/UUID/contraction/policy 8 exact names>' --test-threads 1` actual8/8 passed,3.047s. 이어 같은 명령에서 `-E`를 제거한 affected lib/vector contract 전체97/97 passed,0skip,17.032s였다. 기존 append/ratio/floor/recall/legacy/index-loss/restart 및 build row-integrity rails도 포함된다. source107 formal Contract/SDK proof를 이 수리의 proof로 재사용하지 않는다. matching release large diagnostic 재실행은 아직 `NOT_RUN`이다.
 - `VERIFIED`: source107 small open-loop `--tier small --seed 5715144129723191120 --out-dir /private/tmp/qi-open-small-107-v1/result` actual exit0 및 summary readback을 확인했다. 기본25/50/100/200QPS·10s·32workers·queue256·2s timeout에서 offered/served254/490/1041/1958, 합계3743이며 typed/unexpected/timeout/transport/invalid/drop 모두0이다. 네 구간 unsaturated이며 공유 Darwin/hash-dev 단일 진단이다.
 
 ## 착수 입력과 실제 tier 실행
