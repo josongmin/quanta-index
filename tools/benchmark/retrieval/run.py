@@ -11610,6 +11610,7 @@ def run_quality_batch(
     revalidated against its original suite/pack; no projected view is saved
     or represented as a native capture.
     """
+    timing_marks = [("start", time.monotonic_ns())]
     if prevalidated is None:
         first_spec = load_spec(Path(batch["member_specs"][0]))
         probe_runner_capabilities(Path(first_spec["runner_binary"]))
@@ -11630,6 +11631,7 @@ def run_quality_batch(
         raise RunError("quality batch output root must be outside source and driver repositories")
     if out_root.exists():
         raise RunError("quality batch output root already exists")
+    timing_marks.append(("input_checks", time.monotonic_ns()))
     preflight_capture(first_spec)
     execution_pack, membership = eb.build_execution_pack([row[3] for row in members])
     execution_view = eb.execution_validation_view(execution_pack)
@@ -11637,12 +11639,14 @@ def run_quality_batch(
     if stage.exists():
         raise RunError("quality batch staging root already exists")
     preflight_daemon_socket_paths(stage / "quanta", first_spec["strategies"])
+    timing_marks.append(("preflight_and_pack", time.monotonic_ns()))
     stage.mkdir(parents=True)
     closure_path = stage / "driver-source-closure.json"
     if closure_source is None:
         _source_closure(driver_repo, "capture", closure_path)
     else:
         _source_closure(driver_repo, "reuse", closure_path, reuse_from=closure_source)
+    timing_marks.append(("source_closure", time.monotonic_ns()))
     (stage / "execution-pack.json").write_bytes(canonical_bytes(execution_pack))
     (stage / "membership.json").write_bytes(canonical_bytes(membership))
     task_ids = [task["task_id"] for task in execution_pack["tasks"]]
@@ -11659,6 +11663,7 @@ def run_quality_batch(
     run_spec["output_root"] = str(out_root)
     run_spec["_query_protocol"] = str(protocol_path)
     runner_digest = sha_file(Path(run_spec["runner_binary"]))
+    timing_marks.append(("execution_setup", time.monotonic_ns()))
     product_records = []
     product_packs = []
     for system, routes in (("quanta", ["lexical"]), ("semble", ["semble-lexical-file"])):
@@ -11681,6 +11686,7 @@ def run_quality_batch(
             run_semble_capture(run_spec, stage / "semble", pack_path, routes[0])
             record_path = stage / "semble" / "record.json"
         product_records.append(record_path)
+        timing_marks.append((f"{system}_capture", time.monotonic_ns()))
     repo = Path(first_spec["repo"])
     _, _, combined = _merge_validated_records(
         repo, execution_view, execution_pack, members[0][4], product_records
@@ -11731,6 +11737,7 @@ def run_quality_batch(
         ],
         "members": report_rows,
     }
+    timing_marks.append(("report_and_manifest", time.monotonic_ns()))
     if _quality_batch_input_snapshot(members) != input_snapshot:
         raise RunError("quality batch member inputs changed during product capture")
     _quality_batch_model_assets_unchanged(members, model["model_asset_sha256"])
@@ -11741,10 +11748,26 @@ def run_quality_batch(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     _source_closure(driver_repo, "verify", closure_path)
+    timing_marks.append(("final_verification", time.monotonic_ns()))
     if out_root.exists():
         raise RunError("quality batch output root appeared before promotion")
     os.rename(stage, out_root)
-    print(json.dumps({"output_root": str(out_root), "members": len(members), "native_records": 2}))
+    timing_marks.append(("promotion", time.monotonic_ns()))
+    driver_phase_ms = {
+        phase: (end - start) / 1_000_000
+        for (_, start), (phase, end) in zip(timing_marks, timing_marks[1:], strict=True)
+    }
+    print(
+        json.dumps(
+            {
+                "output_root": str(out_root),
+                "members": len(members),
+                "native_records": 2,
+                "driver_phase_ms": driver_phase_ms,
+                "driver_total_ms": (timing_marks[-1][1] - timing_marks[0][1]) / 1_000_000,
+            }
+        )
+    )
     return 0
 
 
@@ -11903,6 +11926,7 @@ def _quality_matrix_batch(matrix: dict, group: tuple[str, str, list[str]]) -> di
 
 def run_quality_matrix(matrix: dict) -> int:
     """Prevalidate all groups, then publish one diagnostic batch per repository."""
+    matrix_started_ns = time.monotonic_ns()
     root = Path(matrix["output_root"]).resolve()
     if root.exists():
         raise RunError("quality matrix output root already exists")
@@ -11925,6 +11949,7 @@ def run_quality_matrix(matrix: dict) -> int:
             members[0][1]["strategies"],
         )
         prepared.append((group, batch, (members, model)))
+    prevalidated_ns = time.monotonic_ns()
     root.mkdir(parents=True)
     rows = []
     closure_source: Path | None = None
@@ -11955,7 +11980,20 @@ def run_quality_matrix(matrix: dict) -> int:
     (root / "matrix-manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(json.dumps({"output_root": str(root), "repositories": len(rows)}))
+    matrix_finished_ns = time.monotonic_ns()
+    print(
+        json.dumps(
+            {
+                "output_root": str(root),
+                "repositories": len(rows),
+                "driver_phase_ms": {
+                    "prevalidation": (prevalidated_ns - matrix_started_ns) / 1_000_000,
+                    "batches_and_manifest": (matrix_finished_ns - prevalidated_ns) / 1_000_000,
+                },
+                "driver_total_ms": (matrix_finished_ns - matrix_started_ns) / 1_000_000,
+            }
+        )
+    )
     return 0
 
 

@@ -309,7 +309,7 @@ def test_quality_matrix_rejects_stale_runner_before_gold_or_output(tmp_path, mon
     assert not (tmp_path / "batch").exists()
 
 
-def test_quality_matrix_reuses_first_verified_driver_closure(tmp_path, monkeypatch) -> None:
+def test_quality_matrix_reuses_first_verified_driver_closure(tmp_path, monkeypatch, capsys) -> None:
     specs = [tmp_path / f"member-{index}.json" for index in range(4)]
     for index, path in enumerate(specs):
         path.write_text(
@@ -350,6 +350,11 @@ def test_quality_matrix_reuses_first_verified_driver_closure(tmp_path, monkeypat
     assert len(observed) == 2
     assert observed[0][1] is None
     assert observed[1][1] == observed[0][0] / "driver-source-closure.json"
+    result = json.loads(capsys.readouterr().out)
+    phases = result["driver_phase_ms"]
+    assert phases["prevalidation"] >= 0
+    assert phases["batches_and_manifest"] >= 0
+    assert sum(phases.values()) == pytest.approx(result["driver_total_ms"])
 
 
 def _clean_host_timeline_fixture():
