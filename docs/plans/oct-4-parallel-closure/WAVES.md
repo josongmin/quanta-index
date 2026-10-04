@@ -20,7 +20,7 @@
 | W2 | 실제 반례의 live-BM25, maintenance fatal ownership/terminal, fixture 수리 및 지원 Active single-RPC 검증 완료 | bootstrap/scanner/barrier/token-authority 최적화는 실제 비용 조건 판정 대기. E3-02는 현 Accepted refusal 계약에서 근거 있는 `NOT_APPLICABLE` |
 | W3 | source107 Contract Python788/Rust191·fresh SDK27·context 및 first-eight+Nushell9개 admission `VERIFIED` | SQLAlchemy/Zellij/Tailscale·supplemented bat·새 ANN epoch admission; source107 hosted CI `[]`/`NOT_RUN` |
 | W4 | source107 small/medium scale·small load3743requests·native3제품60rows·5제품 union51pairs·Semble phase replay `VERIFIED`; large timeout/ANN seal `FAILED`. 후속4e3 ANN 수리 집중8/affected97 passed | 새 epoch matching release/large lifecycle와 formal source gate. bat merged 발행→새 admission/fresh final pair; parity/remaining tiers/qualification 계속 |
-| W5 | name/source oracle·source-bound 원본 labels 유지; bat51쌍 actual3 AI 역할 판단/raw 재생 `VERIFIED` | canonical merged 발행 v1 pack-binding 실패 수리·최종 qrel/scoreboard·독립 holdout 정책 판정 |
+| W5 | name/source oracle·source-bound 원본 labels 유지; bat51쌍 actual3 AI 역할 판단/raw 재생 및 원본358+신규51=409 canonical merged 발행 `VERIFIED` | 새 bat admission/fresh final capture·최종 scoreboard·독립 holdout 정책 판정 |
 | W6 | local infrastructure/owner proof와 운영 qualification 경계를 기록 | actual authorized Linux target/config/state/rollback 입력 `BLOCKED`; exact producer pair·CI·배포/활성화/restore/rollback 미실행 |
 
 - ready 저장소 하나의 성공은 required8/12 전체 matrix 성공이 아니다. 개별 실행 driver의 required ledger에서 미선택 셀은 `NOT_RUN`으로 유지한다.

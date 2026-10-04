@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | 새 bat5제품 union·18tasks/51pairs·실제3 AI 역할 판단/raw 재생 `VERIFIED`; merged 발행 v1 `FAILED`(원본 form pack 결속), 수정 중. 과거 first-six raw replay `BLOCKED` |
+| 실행 상태 | 새 bat5제품 union·18tasks/51pairs·실제3 AI 역할 판단/raw 재생·원본358+신규51=409 canonical merged 발행 `VERIFIED`; 새 admission/final capture 미완료. 과거 first-six raw replay `BLOCKED` |
 | 선행 결과 | [O4-E1-01](O4-E1-01-original-review-resume.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -46,6 +46,9 @@
 - v1 preflight는 tuple/list 표현을 Python 객체로 비교해 `FAILED`였다. 기존 failed root는 보존하고 v2가 producer의 동일 canonical JSON bytes로 비교한다. pool/source/grade를 변경하지 않았다. AI-only 판단, merged suite, 새 admission 및 fresh final pair는 계속 별도 단계다.
 - `VERIFIED`: 위 v2 actual role driver에 `--execute`를 붙여 서비스 reset 이후 실행했고 exit0이었다. reviewer-1/reviewer-2/adjudicator 각51쌍,18tasks가 actual native raw·receipt 및 cache replay를 통과했다. adjudicator의 grade0은48쌍, grade1은3쌍, threshold2 이상은0쌍이다. AI-only 결과이며 human provenance/qualification은 false다.
 - `FAILED`: `/tmp/qi-bat-canonical-supplemental-issuer-20261004-v1.py --input-plan /tmp/qi-bat-merge-finalize-input-plan-20261004-v1.json --out /private/tmp/qi-bat-canonical-merged-107-v1 --finalize` actual exit1. 원본 completed form을 현재 pack에 직접 검증하는 단계가 `query_pack_sha256` 불일치로 거절했으며 새 suite/receipt는 발행되지 않았다. 실제 원본 single-route pack/seed/custody로 먼저 검증하고 동일 query/source/threshold의 판단만 current form으로 이전하는 경로를 준비한다. 기존 form header나 validator를 약화하지 않는다.
+- `FAILED`: v2도 actual exit1로 원본 capture의 v1 execution profile을 현 v2 profile로 검증하려다 거절됐다. 원본 capture를 현재 유효한 capture로 재해석하지 않는다.
+- `VERIFIED`: `uv run --frozen --extra dev python /tmp/qi-bat-canonical-supplemental-issuer-20261004-v3.py --input-plan /tmp/qi-bat-merge-finalize-input-plan-20261004-v3.json --out /private/tmp/qi-bat-canonical-merged-107-v3 --finalize` — exit0. frozen 원본 suite/source에서 원 pack을 재구성하고 original blank/completed forms·custody·seed·원본 pool bytes를 canonical 검증했다. 동일 query/source/rubric/threshold의 원본358판정만 새 form에 이전하고 actual 신규51판정을 병합했다. 과거 capture의 실행 유효성을 주장하지 않으며 모델을 재호출하지 않았다.
+- 새 결과는20tasks/409pairs, `CANONICAL_SUPPLEMENTED_FILE_LABELS_VERIFIED_UNQUALIFIED`, `qualified:false`, `human_provenance_attested:false`다. 원본 task/family/category/split/threshold 및358grades 보존, merged qrels·suite·pack·2annotations·adjudication의 canonical 검증이 통과했다. suite SHA `fc503882fda59f6e673252fcd6d0f79d80537e345664917aada18418de3c8a1c`, pack SHA `ab3e91e96856c5c165c80aeb4d58589a759dc15f6ad2aaebd4c0d8ce147621f1`다. 새 admission과 갱신 gold의 fresh product capture는 `NOT_RUN`이다.
 
 ## 어떤 파일을 어떻게 수정할지
 
