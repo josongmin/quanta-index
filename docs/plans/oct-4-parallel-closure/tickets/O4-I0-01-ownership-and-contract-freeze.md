@@ -25,6 +25,11 @@
 - output은 checkout 밖 fresh namespace다. native Sourcegraph scope는 Python producer/control/release/index identity에 결속하고, Rust lexical format/dependency 수리는 matching Rust/SDK/Contract/scale source epoch를 다시 요구한다. model judgments는 frozen source/query/form/model identity에 결속하며 product qualification과 구별한다.
 - long-source BM25 수리 이후 source107을 고정해 formal proof와 원본9개 admission을 발행했다. 새 ANN segment contraction 수리는 별도 source27이며 이전 proof/admission을 새 product source의 것으로 재표기하지 않는다.
 
+## 2026-10-05 문서·원본 증거 가용성 재점검
+
+- 기존 계획과 oct-4 handoff50 Markdown의 상대 링크1,245개는 실제 대상이 모두 존재한다.29 ticket IDs는 INDEX/WAVES에 모두 있다. 이것은 문서 구조 점검이며 제품 proof가 아니다.
+- 원본 agent-4의 절대 임시 증거17참조/15고유경로는 현재 없다. `g9-7m7inh5r`, `qg15`, `qg8-zzx504gf`, `qi-fullsync-rca-8v3e3mn_`, `i9-lhyxoxdp`, `a9-21c9z44a` 및 과거 Gin1196 binding/matrix 경로다. 원본 기록을 바꾸거나 파일을 합성하지 않는다. 해당 phase/performance/barrier/selection/operator/matrix 관측은 historical/non-replayable이며 후속 owning ticket의 실제 current 실행으로만 판정한다.
+
 ## 2026-10-05 후속 ANN 수리 source 고정
 
 - clean 관리 작업트리 `/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index`를 exact `27c21d07ca79772da820b9b46fd00071732746d6`으로 생성했다. 최종 lint 수정까지 포함한 semantic6파일 SHA가 root 실제97-test 실행 source와 일치한다. source107 작업트리와 결과는 유지한다.

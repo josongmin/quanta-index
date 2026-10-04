@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | source107 원본9개 admission은 과거 scope. source0e6 bat409 v4 issuance와 strict canonical consumer replay `VERIFIED`; v3 consumer 거절은 보존. SQLAlchemy/Zellij/Tailscale·전체 cohort qualification 미완료 |
+| 실행 상태 | source107 원본9개 admission은 과거 scope. source0e6 bat409 v4·strict consumer 및 원본8 중 cli/lo/mocha/uvicorn/zustand5개 terminal `VERIFIED`; 나머지3개·aggregate 발행 중. v3 consumer 거절은 보존. SQLAlchemy/Zellij/Tailscale·전체 cohort qualification 미완료 |
 | 선행 결과 | [O4-E1-02](O4-E1-02-supplemental-labels.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -19,9 +19,18 @@
 - clean source `0e6c7e7e9494b63fdb33f4594df059817459d3b1`에서 `uv run --frozen --extra dev python /tmp/qi-e1-other-eight-0e6-issuer-v1.py --output-parent /Users/songmin/Documents/code-new/qi-e1-other-eight-admission-0e6-20261005-v1`을 실제 실행 중이다. cli/lo/mocha/uvicorn/zustand/django/typeorm/nushell을 저장소별로 canonical issuance하며 bat409 완료 결과를 반복하지 않는다.
 - packet SHA `2d50ec6b6fe53598ebbc834c4d5cb4b366377ab497c51a57c6d3e45d8657ad46`, wrapper SHA `349e1afd37beac5bc8d0fb86711a3863452c6ba480bf12e62efb205ee26643c3`, canonical issuer SHA `1a14f09d58064cfdf238ac5a17ee65f66d7130273e07b854103347753145cf39`다. 실제 Contract/SDK proof·immutable 원본 labels·source107과 동등한5helpers/template를 전후 검증하며 과거 admission을 current로 바꾸지 않는다.
 - completed result/terminal 전에는 readiness/8개 통과를 발행하지 않는다. 새 모델 호출·human review·전체 cohort qualification 범위가 아니다. SQLAlchemy/Zellij/Tailscale 미결은 이8개에 합산하지 않는다.
-- cli terminal `VERIFIED`:20tasks/519judgments,572.429s, actual result source0e6·canonical16 input paths·stale-source negative1, qualified/humanfalse다. 나머지7개 및 aggregate 완료 전에는 current9repo/180tasks 전체 완료를 주장하지 않는다.
-- lo terminal도 `VERIFIED`:20tasks/495judgments,617.628s, canonical16 input paths·stale-source negative1·qualified/humanfalse다. 다음 mocha issuance를 실행 중이며8개 aggregate는 미완료다.
-- mocha terminal `VERIFIED`:20tasks/511judgments,531.716s다. 다음 uvicorn issuance를 실행 중이며 나머지5개·8개 aggregate는 미완료다.
+- 완료된5개의 실제 result/terminal은 source0e6·20tasks·canonical16 input paths·stale-source negative1·qualified/humanfalse다. root 순수 readback에서 완료된 cli/lo/mocha/uvicorn의16 inputs를 각각 재해시해 일치를 확인했다. aggregate 완료 전에는 current9repo/180tasks 전체 완료를 주장하지 않는다.
+
+| 저장소 | terminal 검증 | file judgments | issuance seconds |
+| --- | --- | --- | --- |
+| cli | `VERIFIED` | 519 | 572.429 |
+| lo | `VERIFIED` | 495 | 617.628 |
+| mocha | `VERIFIED` | 511 | 531.716 |
+| uvicorn | `VERIFIED` | 383 | 779.099 |
+| zustand | `VERIFIED` | 360 | 525.916 |
+| django | `NOT_RUN` — issuance 진행 중, terminal 없음 | 발행 전 | 발행 전 |
+| typeorm | `NOT_RUN` — terminal 없음 | 발행 전 | 발행 전 |
+| nushell | `NOT_RUN` — terminal 없음 | 발행 전 | 발행 전 |
 
 ## 배경과 현재 상태
 
