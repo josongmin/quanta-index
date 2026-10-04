@@ -125,6 +125,9 @@ file deletion, and same-process daemon-thread reopen measurement. The latter
 does not prove OS-process restart or cold page-cache recovery. Focused owner
 tests passed (`scale::` 22/22, `open_loop_matrix` 16/16,
 `scale_matrix` 2/2; `--all-features --locked`). Fresh medium/large/XL runs
-against detached clean source `582cb7a5` remain `NOT_RUN` while its binary
-build is in progress. The large primary failure and whether a longer
+against detached clean source `582cb7a5` remain `NOT_RUN`. Its
+`--all-features --locked` `scale_matrix`/`open_loop_matrix` build passed in
+5 min 11 s; the scale binary SHA-256 is
+`b6a1f658dc579edde9f477d29247b2ccf26097430a516a2ef4aef427255452a6`.
+The large primary failure and whether a longer
 explicit client deadline suffices remain unconfirmed.
