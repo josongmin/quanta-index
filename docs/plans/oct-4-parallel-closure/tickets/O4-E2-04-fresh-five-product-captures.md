@@ -39,6 +39,7 @@ Quanta33캡처/11,272응답과 historical5제품21,815행은 별도의 source/�
 - `/tmp/qi-bat-pair-0e6-w1-input-v1.json`은 actual source0e6 Contract/fresh SDK proof·binary와 bat409 v3 admission121paths를 결속했다. 다른11개 admission은 null로 두어 과거 source107 결과를 current readiness로 소비하지 않는다.
 - pair v7의 `/private/tmp/qpbw1p` preflight는 exit2, canonical E1 result identity 거절로 bat `BLOCKED`였다. 다른 required7개는 미선택 `NOT_RUN`이다. actual pair·warmup parity·scoring은 이 실행에서 `NOT_RUN`이다.
 - E1-03의 external producer v4가 canonical16paths/strict keys를 재발급한 뒤 새 packet/plan root에서 canonical preflight를 다시 수행한다. rejected v3 결과를 고쳐 쓰거나 consumer validator를 완화하지 않는다.
+- 후속 `/tmp/qi-bat-pair-0e6-w1-input-v2.json` SHA `83d6eca47328fe7f9d230beacb54fb94295e5ba795f2f44f8461ddbd20111dc2`로 `/private/tmp/qpbw1p2` preflight를 완료했다. bat PREPARED, 다른 required7개 NOT_RUN이다. canonical consumer 전체 replay 통과 뒤 root가 동일 prepared spec으로 `run.py pair --spec /private/tmp/qpbw1p2/bat.json`을 실행 중이다. output은 새 `/private/tmp/qbw1/bat`, source0e6·409판단·warmup1·quality-only/no-speed 조건이다.
 
 ## 어떤 파일을 어떻게 수정할지
 

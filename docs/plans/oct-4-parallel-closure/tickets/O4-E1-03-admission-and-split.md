@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | source107 원본9개 admission `VERIFIED`; source0e6 bat409 v3 issuance exit0이나 canonical consumer `FAILED`. producer v4 재발급 중; SQLAlchemy/Zellij/Tailscale·전체 cohort qualification 미완료 |
+| 실행 상태 | source107 원본9개 admission은 과거 scope. source0e6 bat409 v4 issuance와 strict canonical consumer replay `VERIFIED`; v3 consumer 거절은 보존. SQLAlchemy/Zellij/Tailscale·전체 cohort qualification 미완료 |
 | 선행 결과 | [O4-E1-02](O4-E1-02-supplemental-labels.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -52,6 +52,8 @@
 - 원인은 external issuer의 canonical `result.json`에 label-producer 필드2개와 확장121-input closure를 추가한 것이다. 현 `run._quality_matrix_verify_member_admission`은 exact result keys와 canonical16-input closure를 요구한다. canonical consumer의 거절을 그대로 유지했다.
 - `/tmp/qi-bat-supplemental-admission-issuer-0e6-v4.py` SHA `dea7b2b6d7102e5c34a333dd236d7d6bed6a5483758d9a7fff64ca8021274f30`는 canonical result keys/16paths를 발행하고, label producer107·validation SHA·확장121paths는 별도 `admission-lineage.json`에 보존한다. 원본 v3/input/product source/proof bytes를 변경하지 않았다.
 - root가 같은 input v3와 actual Contract/fresh SDK2contexts/3receipts로 `/Users/songmin/Documents/code-new/qi-bat-supplemental-admission-0e6-20261005-v2`에서 v4를 재실행 중이다. 새 result와 canonical consumer replay 완료까지 bat409의 W4 admission은 미완료다.
+- 후속 v4 actual issuance `VERIFIED`: exit0,375.874s,20tasks/409judgments, stale-source control1이었다. strict result12keys/canonical16paths와 sidecar121paths를 독립 SHA replay했다. `admission-lineage.json` SHA `271e904529316505c2ae5676d6131c0bcbb9ce8c82f81ac07a35c11e7cd08597`; source0e6 제품과 source107 label producer를 별도 결속한다.
+- 이어 pair v7 preflight의 `/private/tmp/qpbw1p2/prepare.json`에서 bat `PREPARED`를 확인했다. 기존 `run._quality_matrix_verify_member_admission`의 전체 replay를 통과했으며, aggregate exit2는 미선택 required7개 `NOT_RUN` 때문이다. `/private/tmp/qpbw1p2/bat.json` SHA `ef763fbd247e6af49180edb62fee78b14e90d33cd78603c9da9cc3179865937f`의 actual warmup1 pair를 시작했다. capture/verdict 완료 전에는 제품 비교 성공으로 승격하지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
 
