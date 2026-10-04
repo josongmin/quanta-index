@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `CODE_AND_PROOF` |
 | 기준 웨이브 | [W2 — 확인된 결함 수리·선택 최적화](../waves/W2-repairs-and-selected-optimizations.md) |
-| 실행 상태 | DTO/producer/SDK/benchmark 통합; 실제 daemon SDK `sdk_roundtrip` 26 PASS로 Text/Symbol 1RPC·stale token `VERIFIED`. 전체 variant live parity·daemon profile·release qualification은 `NOT_RUN` |
+| 실행 상태 | 지원7 Active variant의 실제 daemon single-RPC/head/token/row와 stale-token 거절 `VERIFIED`; SDK27 assertion PASS/stdio leak1 관측, 단독 재실행 ordinary PASS. current daemon profile 실행 중; formal release qualification `NOT_RUN` |
 | 선행 결과 | [O4-E3-01](O4-E3-01-active-selection-race.md), [O4-E3-02](O4-E3-02-admission-pin-transfer.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -19,6 +19,13 @@
 - `real_daemon_sdk_active_text_and_symbol_bind_one_selected_head_without_resolve`를 실제 daemon SDK integration에 추가했다. query-only SDK의 Text/Symbol 각 1RPC, ACK와 selected generation/token 결속, query-ring admission/terminal을 검사한다. G31→G32 실제 successor activation 뒤 G31 token 요청의 typed `NotReady`도 같은 fixture에서 검증한다.
 - `VERIFIED`: test-fast-lane env를 source하고 같은 lane의 debug `quanta-index-searchd`를 `QUANTA_INDEX_SEARCHD_BIN`으로 pin한 뒤 `./scripts/cargow --lane test-fast-lane test --workspace --test sdk_roundtrip --all-features --locked` —26 passed /0 failed /25.07초, exit0. 새 live Active/stale-token case도 통과했다. 이 결과는 Linux/fresh-release formal SDK proof가 아니다.
 - 중앙 workspace 실행에서 stale SDK positive mocks 2건을 수리한 뒤 SDK lib와 search-plane lib는 통과했다. 이 결과는 새 live SDK integration 실행을 대신하지 않는다. wire 4-target fuzz smoke와 public API baseline check는 `VERIFIED`다.
+
+## 2026-10-04 지원 Active route 실제 확장 검증
+
+- 실제 SDK27 첫 배치는26 passed/1 failed였다. 새 remaining-route fixture의 History positive가 `HistoryShardUnavailable`을 반환했다. 현 `history_shard_requirements`는 symbolic `rev:`에 ref·tag shard를 모두 요구하지만 fixture는 ref만 발행했다. production refusal는 계약대로였고 fixture의 G41/G42별 tag를 commit metadata와 같은 SHA로 실제 게시하도록 수정했다. branch query를 제거하거나 head/pin/1RPC/row·stale-token oracle를 완화하지 않았다.
+- `VERIFIED`: matching debug daemon을 `QUANTA_INDEX_SEARCHD_BIN`으로 pin한 `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --no-fail-fast --test-threads 4` — exit0,27 run/27 passed,0 skipped, tests19.169s. 지원 Semantic/Hybrid/HybridSeed/History/RuntimeMetadata 각각 G41와 G42의 exact head/pin/nonempty 또는 fixed row·request count1 및 G42 이후 stale G41 typed refusal가 통과했다. Text/Symbol live fixture도 같은 배치에서 통과했다.
+- Nextest는 `actual_runner_binary_emits_receipt_bound_v5_record`의 stdio handle leak1건을 표시했다. 해당 selector를 `-E 'test(=actual_runner_binary_emits_receipt_bound_v5_record)' --success-output final`로 단독 재실행한 결과 exit0,1 passed/26 skipped,9.236s이며 leak 표시는 없었다. 명백한 inherited-capture 경로를 정적 추적에서 찾지 못했고, 원래 leak 관측은 보존한다. 이것만으로 모든 process cleanup 또는 formal SDK qualification을 선언하지 않는다.
+- fixture는 hash-dev, secure local state와 실제 OS daemon/UDS scope다. learned semantic 품질·speedup·Linux 및 current-source formal release proof는 별도 결과가 필요하다. Structural Active refusal, SemanticWorkBounded exact-only, cursor/ancestor 도메인 계약은 유지한다.
 
 ## 목적
 
@@ -79,7 +86,7 @@ SDK Active 요청에서 사전 resolve 왕복을 제거할 수 있는 원자적 
 - contract/results/query_responses.rs의 현재 generation 필드와 strict serializers를 기준으로 selected token 증거를 설계한다. 필요한 영향을 받는 History/RuntimeMetadata/HybridSeed 응답 producer도 같은 변경에서 inventory한다.
 - 실제 SDK trace의 request_id+RPC kind로 route별 전후 count를 검증한다. 각 route의 domain/generation/token/variant/rows와 ancestor/cursor semantics가 독립 expected snapshot을 만족해야 해당 one-RPC claim을 발행한다.
 
-## 남은 검증 계획 — 전체 variant live parity/daemon profile NOT_RUN
+## 남은 검증 계획 — current daemon/formal release qualification NOT_RUN
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 

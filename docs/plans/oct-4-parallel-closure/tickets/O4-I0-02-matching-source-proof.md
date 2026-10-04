@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | source904 workspace·daemon213·process/L3 56 및 후속 full Clippy/current owner972 `VERIFIED`; current daemon/SDK27 영향 재검증 중. formal Contract/SDK 첫 명령 admission timeout `FAILED`, proof `NOT_RUN`; hosted CI·release/scale `NOT_RUN` |
+| 실행 상태 | source904 workspace·daemon213·process/L3 56 및 후속 full Clippy/current owner972·SDK27 assertions `VERIFIED`; SDK stdio leak1 관측/단독 재실행 ordinary PASS, current daemon 영향 재검증 중. formal Contract/SDK proof `NOT_RUN`; hosted CI·release/scale `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -72,6 +72,12 @@
 - 관리 checkout `/Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index`를 clean `bf9066391ad1e6002eff77d1b16bc535a62d3299`로 retarget했다. formal Contract/SDK 및 matching release binaries는 이 epoch에서 발행한다. main의 후속 문서 SHA를 이 source의 proof SHA로 대체하지 않는다.
 - exact sourcebf의 `gh run list --commit bf9066391ad1e6002eff77d1b16bc535a62d3299 --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`는 exit0/`[]`였다. hosted CI는 `NOT_RUN`이다.
 - matching debug daemon을 pin한 live SDK27은 실행 중이다. current daemon/process/fuzz 및 sourcebf formal proof는 아직 완료 결과가 아니다.
+
+## 2026-10-04 SDK27 실제 실행과 fixture 수리
+
+- SDK27 최초 실제 실행은26 pass/1 fail였다. History symbolic-rev의 필수 tag shard를 helper가 게시하지 않은 것이 원인이었다. generation-bound tag 이름을 `CommitRecord.tags`와 실제 `.tag_upsert`에 같은 SHA로 넣고 branch query·G41/G42 head/pin/row/1RPC·stale token oracle는 유지했다.
+- 수정 후 matching debug daemon을 pin한 SDK27 전체 Nextest는 exit0,27 passed,0 skipped,19.169s였다. Nextest stdio leak1건은 runner record test에서 관측했고, 해당 test 단독 재실행은 ordinary PASS1/26 skipped,9.236s였다. original leak 관측과 causal uncertainty를 보존하며 formal proof의 machine result와 구분한다.
+- sourcebf는 이 fixture 수정이 포함되기 전 epoch다. 관리 checkout을 최종 수정 commit으로 다시 retarget한 뒤 formal proof를 발행한다. product source가 바뀌지 않은 owner972의 scope를 무조건 무효화하지 않는다.
 
 ## 착수 입력
 

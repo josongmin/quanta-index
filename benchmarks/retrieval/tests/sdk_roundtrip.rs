@@ -752,6 +752,7 @@ fn publish_active_auxiliary_fixture(
 
     let generation_byte = u8::try_from(identity.generation.get()).expect("tiny fixture generation");
     let commit_sha = CommitSha::from_bytes([generation_byte; 20]);
+    let tag_name = format!("active-fixture-{}", identity.generation.get());
     let history_batch = quanta_index_sdk::HistoryBatch::new(
         identity.repo_id.clone(),
         identity.revision_id.clone(),
@@ -776,9 +777,11 @@ fn publish_active_auxiliary_fixture(
         committer_email: None,
         message: "fix: sphinx corpus".to_string().into_boxed_str(),
         is_merge: false,
-        tags: Vec::new(),
+        tags: vec![tag_name.clone().into_boxed_str()],
     })
-    .ref_upsert("refs/heads/main", commit_sha);
+    .ref_upsert("refs/heads/main", commit_sha)
+    // Symbolic rev filters require both ref and tag shards to be materialized.
+    .tag_upsert(tag_name, commit_sha);
     let _history_receipt = session
         .client()
         .history()
