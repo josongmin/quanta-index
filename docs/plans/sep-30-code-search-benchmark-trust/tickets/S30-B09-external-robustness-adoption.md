@@ -459,8 +459,8 @@ all8 external NL lanes and label-sensitivity results are in `RESULTS.md`.
 
 Final verification:39 owner units passed in10.10s, test-authority/Ruff/diff
 checks passed. Larger historical focused test slices are not summed.
-Remaining qualification gates are local human relevance review, declaration
+Unrun scopes are local human relevance review, declaration
 span recovery, unseen holdout, this cohort's query-bracketed Sourcegraph full
-index scope, whole upstream CoIR/CORE/CSN execution, the other72-matrix lanes'
-new product calls, quiet-host performance and current-main engine qualification.
+index scope, whole upstream CoIR/CORE/CSN execution, new product calls for the
+remaining60 input cells, quiet-host performance and current-main engine qualification.
 These are NOT_RUN; the diagnostic work above is complete.

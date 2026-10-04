@@ -131,3 +131,42 @@ against detached clean source `582cb7a5` remain `NOT_RUN`. Its
 `b6a1f658dc579edde9f477d29247b2ccf26097430a516a2ef4aef427255452a6`.
 The large primary failure and whether a longer
 explicit client deadline suffices remain unconfirmed.
+
+## 2026-10-04 fresh source `582cb7a5` diagnostic result
+
+The fixed source and `scale_matrix` binary named above were used for each
+fresh, separate external output root. This run was on a busy host and does
+not qualify latency, throughput, or portability. These outcomes supersede
+the earlier snapshot only for their own source and configuration.
+
+- Medium, default 30 s IPC deadline: **VERIFIED** measured rail, 256 files
+  and four source repos. Build 8.564 s, activation 0.432 s, first query
+  27.076 ms, warm p50 27.456 ms. Process CPU from runtime boot through
+  cleanup was user 10.107 s/system 2.711 s. Peak whole-process RSS was
+  182,190,080 B, including fixture allocations. Exact deletion took
+  2.539 s to seal and 0.431 s to activate; same-process daemon reopen to
+  readiness took 0.585 s, followed by a validated positive first query
+  in 3.025 ms. All source identity, deletion/no-answer and retained-file
+  checks passed. Evidence:
+  `/private/tmp/qi-scale-medium-20261004-582cb7a5-r1/summary.json`.
+- Large, default 30 s IPC deadline: **FAILED** with primary `ipc Read timed
+  out after 30000 ms`; the refusal preserved the original error and did not
+  report a cleanup error. Evidence:
+  `/private/tmp/qi-scale-large-20261004-582cb7a5-default-r1/refusal.json`.
+- Large, one explicit `--client-timeout-ms 300000` diagnostic: **FAILED**
+  with typed daemon code `SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED`. The
+  required one-generation index was 61,650,630 B; this harness was configured
+  for a 16,777,216 B history byte maximum. The failure artifact has
+  `limit: null` because the source-preflight limit classifier does not parse
+  daemon error strings. This identifies a harness retention-budget blocker,
+  not an intrinsic engine maximum. Evidence:
+  `/private/tmp/qi-scale-large-20261004-582cb7a5-300s-r1/refusal.json`.
+- XL, default 30 s IPC deadline: **VERIFIED typed refusal** before daemon
+  start: 4,000,461 posting memberships versus the 4,000,000 source-index
+  admission maximum. It is not measured XL throughput. Evidence:
+  `/private/tmp/qi-scale-xlarge-20261004-582cb7a5-r1/refusal.json`.
+
+Successful large-tier performance requires a separate, explicitly configured
+history-retention budget with provenance and a fresh source/binary binding.
+Changing the configured budget is a new experiment; neither refusal should
+be counted as a successful tier or an intrinsic product size ceiling.
