@@ -44,9 +44,11 @@ from tools.benchmark.retrieval import query_plan, sourcegraph, sourcegraph_index
 
 MAX_HTTP_BYTES = 16 * 1024 * 1024
 MAX_PROCESS_BYTES = 16 * 1024 * 1024
-MAX_INDEX_FILES = 4096
+MAX_BACKEND_INDEX_FILES = 4096
 MAX_INDEX_BYTES = 512 * 1024 * 1024
 MAX_INDEXED_VIEW_SECONDS = 900
+MAX_INDEXED_VIEW_BATCH_FILES = 1024
+MAX_INDEXED_VIEW_BATCH_BYTES = 512 * 1024 * 1024
 HTTP_TIMEOUT = 50
 MAX_SOURCEGRAPH_REQUEST_TARGET_BYTES = 8 * 1024
 CS_FUZZY_CAPABILITY = "cs_fuzzy_osa1_file"
@@ -815,11 +817,16 @@ def _opengrok_indexed_inventory_response(
         raise ValueError(
             f"OpenGrok indexed file inventory is unavailable: HTTP {status} / {content_type}"
         )
+    if len(raw) > MAX_HTTP_BYTES:
+        raise ValueError("OpenGrok indexed file inventory exceeds HTTP response byte limit")
     native = json.loads(
         raw.decode("utf-8"), object_pairs_hook=_object, parse_constant=_reject_constant
     )
-    if not isinstance(native, list) or len(native) > MAX_INDEX_FILES:
-        raise ValueError("OpenGrok indexed file inventory is not a bounded path list")
+    expected = [row["path"] for row in manifest["files"]]
+    if not expected or len(expected) != len(set(expected)):
+        raise ValueError("OpenGrok release manifest path inventory is invalid")
+    if not isinstance(native, list):
+        raise ValueError("OpenGrok indexed file inventory is not a path list")
     prefix = "/" + config["project"] + "/"
     paths = []
     for path in native:
@@ -831,17 +838,19 @@ def _opengrok_indexed_inventory_response(
         paths.append(relative)
     if len(paths) != len(set(paths)):
         raise ValueError("OpenGrok indexed file inventory has duplicate paths")
-    expected = {row["path"] for row in manifest["files"]}
-    if set(paths) != expected:
+    if len(paths) != len(expected) or set(paths) != set(expected):
         raise ValueError("OpenGrok indexed file inventory differs from release manifest")
 
 
-def _opengrok_indexed_inventory(config: dict, manifest: dict, target: Path, phase: str) -> None:
+def _opengrok_indexed_inventory(
+    config: dict, manifest: dict, target: Path, phase: str, batch: int
+) -> None:
     endpoint = "/api/v1/projects/" + urllib.parse.quote(config["project"], safe="") + "/files"
     status, content_type, raw, elapsed = _http(config, endpoint, {}, "application/json")
-    _write(target / f"indexed-files-{phase}.json", raw)
+    name = f"indexed-files-{phase}-b{batch:04d}"
+    _write(target / f"{name}.json", raw)
     _write(
-        target / f"indexed-files-{phase}.transport.json",
+        target / f"{name}.transport.json",
         json.dumps(
             {
                 "endpoint": endpoint,
@@ -856,45 +865,66 @@ def _opengrok_indexed_inventory(config: dict, manifest: dict, target: Path, phas
     _opengrok_indexed_inventory_response(config, manifest, status, content_type, raw)
 
 
+def _opengrok_index_batches(manifest: dict, view: Path) -> list[tuple[int, int]]:
+    """Partition the frozen source universe by bounded file count and bytes."""
+    files = manifest["files"]
+    if not isinstance(files, list) or not files:
+        raise ValueError("OpenGrok indexed view requires a nonempty manifest")
+    batches: list[tuple[int, int]] = []
+    start = 0
+    accumulated = 0
+    for index, row in enumerate(files):
+        size = (view / row["path"]).stat().st_size
+        if size > MAX_HTTP_BYTES:
+            raise ValueError("OpenGrok indexed source exceeds HTTP response byte limit")
+        if index > start and (
+            index - start >= MAX_INDEXED_VIEW_BATCH_FILES
+            or accumulated + size > MAX_INDEXED_VIEW_BATCH_BYTES
+        ):
+            batches.append((start, index))
+            start = index
+            accumulated = 0
+        accumulated += size
+    batches.append((start, len(files)))
+    return batches
+
+
 def _opengrok_indexed_view(config: dict, manifest: dict, view: Path, target: Path) -> None:
     files = manifest["files"]
-    if (
-        len(files) > MAX_INDEX_FILES
-        or sum((view / row["path"]).stat().st_size for row in files) > MAX_INDEX_BYTES
-    ):
-        raise ValueError("OpenGrok full indexed view probe exceeds file or byte limit")
-    deadline = time.monotonic() + MAX_INDEXED_VIEW_SECONDS
-    _opengrok_indexed_inventory(config, manifest, target, "before")
-    if time.monotonic() >= deadline:
-        raise ValueError("OpenGrok full indexed view probe timed out")
-    for index, row in enumerate(files):
+    for batch, (start, end) in enumerate(_opengrok_index_batches(manifest, view)):
+        deadline = time.monotonic() + MAX_INDEXED_VIEW_SECONDS
+        _opengrok_indexed_inventory(config, manifest, target, "before", batch)
         if time.monotonic() >= deadline:
             raise ValueError("OpenGrok full indexed view probe timed out")
-        path = "/" + config["project"] + "/" + row["path"]
-        status, content_type, raw, elapsed = _http(
-            config, "/api/v1/file/content", {"path": path}, "application/octet-stream"
-        )
-        name = f"{index:06d}"
-        _write(target / f"{name}.content", raw)
-        _write(
-            target / f"{name}.transport.json",
-            json.dumps(
-                {
-                    "path": path,
-                    "status": status,
-                    "content_type": content_type,
-                    "elapsed_ms": elapsed,
-                },
-                sort_keys=True,
-            ).encode()
-            + b"\n",
-        )
-        _opengrok_indexed_view_response(row, view, status, content_type, raw)
+        for index in range(start, end):
+            row = files[index]
+            if time.monotonic() >= deadline:
+                raise ValueError("OpenGrok full indexed view probe timed out")
+            path = "/" + config["project"] + "/" + row["path"]
+            status, content_type, raw, elapsed = _http(
+                config, "/api/v1/file/content", {"path": path}, "application/octet-stream"
+            )
+            name = f"{index:06d}"
+            _write(target / f"{name}.content", raw)
+            _write(
+                target / f"{name}.transport.json",
+                json.dumps(
+                    {
+                        "path": path,
+                        "status": status,
+                        "content_type": content_type,
+                        "elapsed_ms": elapsed,
+                    },
+                    sort_keys=True,
+                ).encode()
+                + b"\n",
+            )
+            _opengrok_indexed_view_response(row, view, status, content_type, raw)
+            if time.monotonic() >= deadline:
+                raise ValueError("OpenGrok full indexed view probe timed out")
+        _opengrok_indexed_inventory(config, manifest, target, "after", batch)
         if time.monotonic() >= deadline:
             raise ValueError("OpenGrok full indexed view probe timed out")
-    _opengrok_indexed_inventory(config, manifest, target, "after")
-    if time.monotonic() >= deadline:
-        raise ValueError("OpenGrok full indexed view probe timed out")
 
 
 def _process(argv: list[str], timeout: int) -> tuple[int, bytes, bytes, float]:
@@ -1538,7 +1568,7 @@ def _backend_index_paths(root: Path) -> set[str]:
 
 def _backend_tree(root: Path) -> tuple[list[dict], str]:
     paths = _backend_index_paths(root)
-    if not paths or len(paths) > MAX_INDEX_FILES:
+    if not paths or len(paths) > MAX_BACKEND_INDEX_FILES:
         raise ValueError("backend index file inventory is empty or exceeds 4096 files")
     rows = []
     total = 0
@@ -1614,7 +1644,7 @@ def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
     ):
         raise ValueError("backend snapshot runtime identity differs")
     rows = snapshot["files"]
-    if not isinstance(rows, list) or not 0 < len(rows) <= MAX_INDEX_FILES:
+    if not isinstance(rows, list) or not 0 < len(rows) <= MAX_BACKEND_INDEX_FILES:
         raise ValueError("backend snapshot file inventory differs")
     total = 0
     previous = ""
@@ -1793,6 +1823,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
     probe_indexed_view = (
         "opengrok" in products and spec["opengrok"].get("indexed_view_probe") == "full"
     )
+    indexed_batches = _opengrok_index_batches(manifest, view) if probe_indexed_view else []
     if probe_indexed_view:
         _opengrok_indexed_view(spec["opengrok"], manifest, view, stage / "opengrok-view")
     capture_product = {
@@ -2102,9 +2133,10 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
             expected_raw.add(f"sourcegraph/{task_id}.capability.json")
     if probe_indexed_view:
         for probe in ("opengrok-view", "opengrok-view-post"):
-            for phase in ("before", "after"):
-                name = f"{probe}/indexed-files-{phase}"
-                expected_raw.update({f"{name}.json", f"{name}.transport.json"})
+            for batch in range(len(indexed_batches)):
+                for phase in ("before", "after"):
+                    name = f"{probe}/indexed-files-{phase}-b{batch:04d}"
+                    expected_raw.update({f"{name}.json", f"{name}.transport.json"})
             for index in range(len(manifest["files"])):
                 name = f"{probe}/{index:06d}"
                 expected_raw.update({f"{name}.content", f"{name}.transport.json"})
@@ -2163,44 +2195,49 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
             + "/files"
         )
         for probe in ("opengrok-view", "opengrok-view-post"):
-            for phase in ("before", "after"):
-                name = f"{probe}/indexed-files-{phase}"
-                transport = _json(_read_control_file(root / f"{name}.transport.json"))
-                if (
-                    set(transport) != {"endpoint", "status", "content_type", "elapsed_ms"}
-                    or transport["endpoint"] != endpoint
-                    or type(transport["status"]) is not int
-                    or type(transport["elapsed_ms"]) not in (int, float)
-                    or not math.isfinite(transport["elapsed_ms"])
-                    or transport["elapsed_ms"] < 0
-                ):
-                    raise ValueError("OpenGrok indexed file inventory transport metadata differs")
-                _opengrok_indexed_inventory_response(
-                    spec["opengrok"],
-                    manifest,
-                    transport["status"],
-                    transport["content_type"],
-                    _read_control_file(root / f"{name}.json"),
-                )
-            for index, row in enumerate(manifest["files"]):
-                name = f"{probe}/{index:06d}"
-                transport = _json(_read_control_file(root / f"{name}.transport.json"))
-                if (
-                    set(transport) != {"path", "status", "content_type", "elapsed_ms"}
-                    or transport["path"] != "/" + spec["opengrok"]["project"] + "/" + row["path"]
-                    or type(transport["status"]) is not int
-                    or type(transport["elapsed_ms"]) not in (int, float)
-                    or not math.isfinite(transport["elapsed_ms"])
-                    or transport["elapsed_ms"] < 0
-                ):
-                    raise ValueError("OpenGrok indexed view transport metadata differs")
-                _opengrok_indexed_view_response(
-                    row,
-                    view,
-                    transport["status"],
-                    transport["content_type"],
-                    _read_control_file(root / f"{name}.content"),
-                )
+            for batch, (start, end) in enumerate(indexed_batches):
+                for phase in ("before", "after"):
+                    name = f"{probe}/indexed-files-{phase}-b{batch:04d}"
+                    transport = _json(_read_control_file(root / f"{name}.transport.json"))
+                    if (
+                        set(transport) != {"endpoint", "status", "content_type", "elapsed_ms"}
+                        or transport["endpoint"] != endpoint
+                        or type(transport["status"]) is not int
+                        or type(transport["elapsed_ms"]) not in (int, float)
+                        or not math.isfinite(transport["elapsed_ms"])
+                        or transport["elapsed_ms"] < 0
+                    ):
+                        raise ValueError(
+                            "OpenGrok indexed file inventory transport metadata differs"
+                        )
+                    _opengrok_indexed_inventory_response(
+                        spec["opengrok"],
+                        manifest,
+                        transport["status"],
+                        transport["content_type"],
+                        _read_control_file(root / f"{name}.json"),
+                    )
+                for index in range(start, end):
+                    row = manifest["files"][index]
+                    name = f"{probe}/{index:06d}"
+                    transport = _json(_read_control_file(root / f"{name}.transport.json"))
+                    if (
+                        set(transport) != {"path", "status", "content_type", "elapsed_ms"}
+                        or transport["path"]
+                        != "/" + spec["opengrok"]["project"] + "/" + row["path"]
+                        or type(transport["status"]) is not int
+                        or type(transport["elapsed_ms"]) not in (int, float)
+                        or not math.isfinite(transport["elapsed_ms"])
+                        or transport["elapsed_ms"] < 0
+                    ):
+                        raise ValueError("OpenGrok indexed view transport metadata differs")
+                    _opengrok_indexed_view_response(
+                        row,
+                        view,
+                        transport["status"],
+                        transport["content_type"],
+                        _read_control_file(root / f"{name}.content"),
+                    )
     for name in products:
         row_path = root / f"{name}_rows.jsonl"
         if _sha_file(row_path) != summary.get("rows_sha256", {}).get(name):

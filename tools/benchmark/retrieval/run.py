@@ -4802,7 +4802,11 @@ def validate_retrieval_diagnostic(
             "clock",
             "daemon_boot_and_readiness",
             "sdk_publish_and_activate_opaque",
-            *({"sdk_publish", "sdk_activate"} if diagnostic["schema_version"] in (7, 8, 9) else set()),
+            *(
+                {"sdk_publish", "sdk_activate"}
+                if diagnostic["schema_version"] in (7, 8, 9)
+                else set()
+            ),
             "runner_record_assembly",
             "corpus_reverification",
             "daemon_shutdown",
@@ -5320,7 +5324,10 @@ def run_quanta_strategy(
     if phase["schema_version"] != 4:
         raise RunError("current Rust runner omitted SDK child clock phase schema v4")
     validate_completed_query_timing(
-        phase, read_json(record_path), require_output_validation=True, require_completed_status=False
+        phase,
+        read_json(record_path),
+        require_output_validation=True,
+        require_completed_status=False,
     )
     _validate_quanta_query_protocol_execution(requested_protocol, phase)
     if protocol_bytes is not None and Path(spec["_query_protocol"]).read_bytes() != protocol_bytes:
@@ -6106,22 +6113,16 @@ def validate_completed_query_timing(
     observed_digests = {}
     record_digests = {}
     for index, entry in enumerate(observations):
-        if (
-            not isinstance(entry, dict)
-            or set(entry)
-            != {
-                "task_id",
-                "route",
-                "phase",
-                "iteration",
-                "start_ns",
-                "end_ns",
-                "status",
-                "output_bytes",
-            }
-            | sdk_child_keys
-            | ({"output_sha256"} if output_validated else set())
-        ):
+        if not isinstance(entry, dict) or set(entry) != {
+            "task_id",
+            "route",
+            "phase",
+            "iteration",
+            "start_ns",
+            "end_ns",
+            "status",
+            "output_bytes",
+        } | sdk_child_keys | ({"output_sha256"} if output_validated else set()):
             raise RunError("completed-response timing observation is malformed")
         start, end = entry["start_ns"], entry["end_ns"]
         if (
@@ -6178,7 +6179,9 @@ def validate_completed_query_timing(
                     except (KeyError, ValueError, TypeError) as exc:
                         raise RunError("completed-response normalized output is invalid") from exc
                 if record_digests[response_key] != entry["output_sha256"]:
-                    raise RunError("completed-response output digest differs from normalized record")
+                    raise RunError(
+                        "completed-response output digest differs from normalized record"
+                    )
         elapsed_ms = (end - start) / 1e6
         if protocol and entry["phase"] in {"cold", "measured"}:
             if entry["phase"] == "cold":
@@ -6200,8 +6203,12 @@ def validate_completed_query_timing(
                 raise RunError(
                     "completed-response timing status differs from the normalized response"
                 )
-            if entry["phase"] == "measured" and entry["iteration"] == 0 and not math.isclose(
-                row["timings"]["query_latency_ms"], elapsed_ms, rel_tol=1e-9, abs_tol=1e-9
+            if (
+                entry["phase"] == "measured"
+                and entry["iteration"] == 0
+                and not math.isclose(
+                    row["timings"]["query_latency_ms"], elapsed_ms, rel_tol=1e-9, abs_tol=1e-9
+                )
             ):
                 raise RunError("completed-response timing differs from normalized row latency")
     if observed_keys != expected:
@@ -7584,7 +7591,13 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     }
     if parent_binding is not None:
         protocol_keys.add("delegated_cgroup_parent")
-    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") in (3, 4, 5, 6, 7):
+    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") in (
+        3,
+        4,
+        5,
+        6,
+        7,
+    ):
         protocol_keys.update({"server_observation", "ingest_request_identity"})
     if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") in (4, 5, 6, 7):
         protocol_keys.add("hybrid_fetch_policy")
@@ -8307,9 +8320,16 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 bound_records.add(observed)
             diagnostic_ref = run_entry.get("retrieval_diagnostic")
             diagnostic_digest = run_entry.get("retrieval_diagnostic_digest")
-            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3, 4, 5, 6, 7, 8, 9) and (
-                diagnostic_ref is None or diagnostic_digest is None
-            ):
+            if protocol_payload.get("retrieval_diagnostic_version") in (
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+            ) and (diagnostic_ref is None or diagnostic_digest is None):
                 pair_note("retrieval_diagnostic_missing", ("T12",))
             if diagnostic_ref is not None or diagnostic_digest is not None:
                 try:
@@ -8347,7 +8367,13 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                         raise RunError(
                             "retrieval diagnostic hybrid fetch policy differs from protocol"
                         )
-                    if diagnostic["schema_version"] in (5, 6, 7, 8, 9) and _validate_ingest_diagnostic(
+                    if diagnostic["schema_version"] in (
+                        5,
+                        6,
+                        7,
+                        8,
+                        9,
+                    ) and _validate_ingest_diagnostic(
                         diagnostic["ingest"],
                         record_payload,
                         lexical_stage_contract=diagnostic["schema_version"] in (7, 8, 9),

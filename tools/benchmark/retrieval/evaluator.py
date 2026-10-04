@@ -905,7 +905,9 @@ def block(
                 where + " context expansion differs from source spans",
             )
             if "name_span" in accounting:
-                require(accounting["unit_kind"] == "symbol", where + " name span requires symbol unit")
+                require(
+                    accounting["unit_kind"] == "symbol", where + " name span requires symbol unit"
+                )
                 validate_name_span(
                     accounting["name_span"], raw, indexed_start, indexed_end, where + ".name_span"
                 )
@@ -1453,7 +1455,9 @@ def validate_suite(
                             f"intended_name query collides with a source identifier: {task_id}",
                         )
                 oracle_args = (
-                    task["source_oracle"]["contract"], oracle_query, task["source_oracle"]["unit"]
+                    task["source_oracle"]["contract"],
+                    oracle_query,
+                    task["source_oracle"]["unit"],
                 )
                 with_names = task["source_oracle"]["unit"] == "symbol" and any(
                     "name_span" in row for row in task.get("declaration_judgments", [])
@@ -2945,11 +2949,15 @@ def judgment_diagnostics(
                 for item in excluded
             )
             missing_name_authority = kind == "declaration_name_recovery" and any(
-                item["reason"] in (
-                    "missing_independent_judgments", "missing_independent_name_gold",
-                    "missing_published_symbol_authority", "missing_published_name_authority",
+                item["reason"]
+                in (
+                    "missing_independent_judgments",
+                    "missing_independent_name_gold",
+                    "missing_published_symbol_authority",
+                    "missing_published_name_authority",
                     "rank_unit_mismatch",
-                ) for item in excluded
+                )
+                for item in excluded
             )
             by_route[route] = {
                 "rank_unit": expected_unit,
@@ -2972,7 +2980,9 @@ def judgment_diagnostics(
                 "operational_mean": {
                     metric: (
                         value / len(answerable_ids)
-                        if answerable_ids and not missing_ranked_judgments and not missing_name_authority
+                        if answerable_ids
+                        and not missing_ranked_judgments
+                        and not missing_name_authority
                         else NOT_APPLICABLE
                     )
                     for metric, value in operational.items()

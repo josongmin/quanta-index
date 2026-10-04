@@ -183,7 +183,9 @@ impl PublishedUnitRegistry {
     ) -> BenchResult<Self> {
         let supplied = names.values().map(BTreeMap::len).sum::<usize>();
         if supplied != self.symbol_count {
-            return Err(BenchError::Protocol("symbol name inventory differs from published units".into()));
+            return Err(BenchError::Protocol(
+                "symbol name inventory differs from published units".into(),
+            ));
         }
         for (path, file_names) in names {
             let source = sources.get(path).ok_or_else(|| {
@@ -197,18 +199,27 @@ impl PublishedUnitRegistry {
                 if unit.kind != PublishedUnitKind::Symbol
                     || unit.path != *path
                     || unit.source_sha256 != source.sha256
-                    || !(usize::try_from(unit.byte_start).is_ok_and(|start| start <= name.start_byte)
+                    || !(usize::try_from(unit.byte_start)
+                        .is_ok_and(|start| start <= name.start_byte)
                         && name.start_byte < name.end_byte
                         && usize::try_from(unit.byte_end).is_ok_and(|end| name.end_byte <= end))
                     || source.text.get(name.start_byte..name.end_byte) != Some(name.name.as_str())
                 {
-                    return Err(BenchError::Protocol(format!("symbol name span differs from published source definition: {id}")));
+                    return Err(BenchError::Protocol(format!(
+                        "symbol name span differs from published source definition: {id}"
+                    )));
                 }
                 unit.name_span = Some(name.clone());
             }
         }
-        if self.by_id.values().any(|unit| unit.kind == PublishedUnitKind::Symbol && unit.name_span.is_none()) {
-            return Err(BenchError::Protocol("published symbol lacks a parser name capture".into()));
+        if self
+            .by_id
+            .values()
+            .any(|unit| unit.kind == PublishedUnitKind::Symbol && unit.name_span.is_none())
+        {
+            return Err(BenchError::Protocol(
+                "published symbol lacks a parser name capture".into(),
+            ));
         }
         Ok(self)
     }
@@ -362,20 +373,45 @@ mod tests {
         let preflight = preflight_corpus_symbols(&source, &SymbolPreflightOptions::default())
             .expect("preflight");
         let registry = PublishedUnitRegistry::from_chunks_and_symbols(
-            &BTreeMap::new(), preflight.symbols(), &source,
-        ).expect("published units");
-        let bound = registry.clone().with_symbol_names(preflight.names(), &source)
+            &BTreeMap::new(),
+            preflight.symbols(),
+            &source,
+        )
+        .expect("published units");
+        let bound = registry
+            .clone()
+            .with_symbol_names(preflight.names(), &source)
             .expect("source-bound name inventory");
-        let alpha = preflight.symbols()["src/lib.rs"].iter()
-            .find(|record| record.local_name.as_ref() == "alpha").expect("alpha declaration");
-        assert_eq!(bound.get(alpha.symbol_id.as_str()).expect("unit").name_span,
-            Some(SymbolNameSpan { start_byte: 7, end_byte: 12, name: "alpha".into() }));
+        let alpha = preflight.symbols()["src/lib.rs"]
+            .iter()
+            .find(|record| record.local_name.as_ref() == "alpha")
+            .expect("alpha declaration");
+        assert_eq!(
+            bound.get(alpha.symbol_id.as_str()).expect("unit").name_span,
+            Some(SymbolNameSpan {
+                start_byte: 7,
+                end_byte: 12,
+                name: "alpha".into()
+            })
+        );
         let mut missing = preflight.names().clone();
-        missing.get_mut("src/lib.rs").expect("file").remove(alpha.symbol_id.as_str());
-        assert!(registry.clone().with_symbol_names(&missing, &source).is_err());
+        missing
+            .get_mut("src/lib.rs")
+            .expect("file")
+            .remove(alpha.symbol_id.as_str());
+        assert!(
+            registry
+                .clone()
+                .with_symbol_names(&missing, &source)
+                .is_err()
+        );
         let mut wrong = preflight.names().clone();
-        wrong.get_mut("src/lib.rs").expect("file").get_mut(alpha.symbol_id.as_str())
-            .expect("name").name = "usage".into();
+        wrong
+            .get_mut("src/lib.rs")
+            .expect("file")
+            .get_mut(alpha.symbol_id.as_str())
+            .expect("name")
+            .name = "usage".into();
         assert!(registry.clone().with_symbol_names(&wrong, &source).is_err());
         let mut foreign = preflight.names().clone();
         let file = foreign.get_mut("src/lib.rs").expect("file");

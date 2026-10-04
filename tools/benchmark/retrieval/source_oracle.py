@@ -725,7 +725,7 @@ class SourceOracleIndex:
         self, contract: str, query: str, unit: str, *, include_name_spans: bool = False
     ) -> list[dict[str, Any]]:
         if include_name_spans and not (contract in DECLARATION_NAME_CONTRACTS and unit == "symbol"):
-            raise SourceOracleError("name-span gold requires a declaration-name symbol contract")
+            raise SourceOracleError("unsupported source oracle contract/unit for name-span gold")
         if contract in DECLARATION_NAME_CONTRACTS and unit in ("symbol", "distinct_file"):
             matches = self._name_matches(contract, query)
             if unit == "symbol":
@@ -737,12 +737,17 @@ class SourceOracleIndex:
                         "end_byte": end,
                         "grade": 3,
                         **(
-                            {"name_span": {
-                                "start_byte": name_start,
-                                "end_byte": name_end,
-                                "name": self.files[path][0][name_start:name_end].decode("utf-8"),
-                            }}
-                            if include_name_spans else {}
+                            {
+                                "name_span": {
+                                    "start_byte": name_start,
+                                    "end_byte": name_end,
+                                    "name": self.files[path][0][name_start:name_end].decode(
+                                        "utf-8"
+                                    ),
+                                }
+                            }
+                            if include_name_spans
+                            else {}
                         ),
                     }
                     for path, name_start, name_end, start, end in sorted(matches)

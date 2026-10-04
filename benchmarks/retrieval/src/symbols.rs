@@ -933,7 +933,9 @@ fn extract_parsed_symbols(
                 != Some(definition.local_name.as_str())
         {
             return Err(SymbolExtractError::ProducerDefect {
-                detail: format!("local-name capture escapes definition or differs from source: {path}"),
+                detail: format!(
+                    "local-name capture escapes definition or differs from source: {path}"
+                ),
             });
         }
         names.insert(
@@ -1032,7 +1034,14 @@ mod tests {
             .expect("source extraction");
         let pick = find(&extracted.records, "Pick");
         let name = &extracted.names[pick.symbol_id.as_str()];
-        assert_eq!(name, &SymbolNameSpan { start_byte: 15, end_byte: 19, name: "Pick".into() });
+        assert_eq!(
+            name,
+            &SymbolNameSpan {
+                start_byte: 15,
+                end_byte: 19,
+                name: "Pick".into()
+            }
+        );
         assert_eq!(extracted.records.len(), 2);
         assert_eq!(extracted.names.len(), 2);
         assert_ne!(name.start_byte, source.rfind("Pick").expect("usage"));
@@ -1042,16 +1051,27 @@ mod tests {
     fn local_name_capture_retains_utf8_bytes_and_dotted_namespace_terminal() {
         for (path, source, local_name, start, end) in [
             ("source.rs", "fn café() { café(); }", "café", 3, 8),
-            ("source.ts", "namespace Outer.Inner { export function inner() {} }", "Inner", 16, 21),
+            (
+                "source.ts",
+                "namespace Outer.Inner { export function inner() {} }",
+                "Inner",
+                16,
+                21,
+            ),
         ] {
             let language = SymbolLanguage::from_path(path).expect("language");
             let tree = parse(language, path, source).expect("valid source");
             let extracted = extract_parsed_symbols(language, path, source, &tree, None)
                 .expect("source extraction");
             let record = find(&extracted.records, local_name);
-            assert_eq!(extracted.names[record.symbol_id.as_str()], SymbolNameSpan {
-                start_byte: start, end_byte: end, name: local_name.into(),
-            });
+            assert_eq!(
+                extracted.names[record.symbol_id.as_str()],
+                SymbolNameSpan {
+                    start_byte: start,
+                    end_byte: end,
+                    name: local_name.into(),
+                }
+            );
         }
     }
 

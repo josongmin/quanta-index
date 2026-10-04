@@ -870,8 +870,10 @@ fn prove_hit(
         },
     });
     if let Some(name_span) = &unit.name_span {
-        candidate["span_accounting"]["name_span"] = serde_json::to_value(name_span)
-            .map_err(|err| BenchError::Protocol(format!("cannot encode symbol name span: {err}")))?;
+        candidate["span_accounting"]["name_span"] =
+            serde_json::to_value(name_span).map_err(|err| {
+                BenchError::Protocol(format!("cannot encode symbol name span: {err}"))
+            })?;
     }
     Ok(ProvenHit {
         candidate,

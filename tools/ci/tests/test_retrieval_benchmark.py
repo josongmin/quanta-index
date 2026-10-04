@@ -1257,8 +1257,11 @@ def test_ingest_preparation_file_children_require_observations_and_parent_bounds
 
     def validate(value):
         return pairrun._validate_ingest_diagnostic(
-            value, record, lexical_stage_contract=True,
-            detailed_authority=True, detailed_file_authority=True,
+            value,
+            record,
+            lexical_stage_contract=True,
+            detailed_authority=True,
+            detailed_file_authority=True,
         )
 
     validate(raw)
@@ -1287,7 +1290,10 @@ def test_ingest_preparation_file_children_require_observations_and_parent_bounds
     validate(measured_zero)
     with pytest.raises(pairrun.RunError):
         pairrun._validate_ingest_diagnostic(
-            raw, record, lexical_stage_contract=True, detailed_authority=True,
+            raw,
+            record,
+            lexical_stage_contract=True,
+            detailed_authority=True,
         )
 
 
@@ -1306,15 +1312,18 @@ def test_diagnostic_v9_replay_requires_new_children_and_preserves_v8(tmp_path):
             del diagnostic["ingest"]["observation"]["lexical_stages"]["prep_coverage_write_ns"]
             with pytest.raises(pairrun.RunError, match="ingest lexical stages"):
                 pairrun.validate_retrieval_diagnostic(
-                    diagnostic, record, pairrun.sha_file(record_path), pack,
+                    diagnostic,
+                    record,
+                    pairrun.sha_file(record_path),
+                    pack,
                 )
 
 
 def test_query_plan_oracle_uses_nfc_and_rejects_unindexable_runs():
     composed = qp.plan_lexical_request("natural_language", "caf\u00e9")
     decomposed = qp.plan_lexical_request("natural_language", "cafe\u0301")
-    assert composed == decomposed == 'case:no caf\u00e9'
-    assert qp.plan_lexical_request("natural_language", "foo --- bar") == 'case:no foo OR bar'
+    assert composed == decomposed == "case:no caf\u00e9"
+    assert qp.plan_lexical_request("natural_language", "foo --- bar") == "case:no foo OR bar"
     with pytest.raises(qp.QueryPlanError, match="no tokens"):
         qp.plan_lexical_request("natural_language", "--- ... ///")
 
@@ -3315,7 +3324,8 @@ def test_runner_capability_probe_refuses_stale_and_malformed_binaries(monkeypatc
         if marker is not None:
             payload["completed_response_output_validation"] = marker
         monkeypatch.setattr(
-            pairrun.subprocess, "run",
+            pairrun.subprocess,
+            "run",
             lambda argv, payload=payload, **_kwargs: subprocess.CompletedProcess(
                 argv, 0, json.dumps(payload), ""
             ),
@@ -3327,8 +3337,11 @@ def test_runner_capability_probe_refuses_stale_and_malformed_binaries(monkeypatc
         pairrun.subprocess,
         "run",
         lambda argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 0, '{"schema_version":1,"retrieval_diagnostic_schema_version":7,'
-            '"completed_response_output_validation":"normalized_row_score_bits_sha256_v1"}', ""
+            argv,
+            0,
+            '{"schema_version":1,"retrieval_diagnostic_schema_version":7,'
+            '"completed_response_output_validation":"normalized_row_score_bits_sha256_v1"}',
+            "",
         ),
     )
     with pytest.raises(pairrun.RunError, match="diagnostic contract differs"):
@@ -4690,7 +4703,9 @@ def test_direct_quanta_capture_accepts_current_ingest_children_and_binds_identit
         spec["generation"] = spec.get("generation", 7) + 1
 
     def fake_run(command, **kwargs):
-        Path(command[command.index("--out") + 1]).write_bytes((original / "record.json").read_bytes())
+        Path(command[command.index("--out") + 1]).write_bytes(
+            (original / "record.json").read_bytes()
+        )
         Path(command[command.index("--metrics-out") + 1]).write_bytes(
             (original / "phase-metrics.json").read_bytes()
         )
@@ -4708,8 +4723,14 @@ def test_direct_quanta_capture_accepts_current_ingest_children_and_binds_identit
     monkeypatch.setattr(pairrun, "run_monitored_process", fake_run)
     monkeypatch.setattr(pairrun, "_validate_phase_metrics", reached_phase)
     expected = ReachedPhaseValidation if control == "valid" else pairrun.RunError
-    match = None if control == "valid" else (
-        "ingest lexical stages must hold exactly" if control == "missing_clock" else "ingest identity"
+    match = (
+        None
+        if control == "valid"
+        else (
+            "ingest lexical stages must hold exactly"
+            if control == "missing_clock"
+            else "ingest identity"
+        )
     )
     with pytest.raises(expected, match=match):
         pairrun.run_quanta_strategy(
@@ -10450,9 +10471,7 @@ def test_qualified_verdict_refuses_receipt_capture_closure_mismatch(tmp_path, mo
     monkeypatch.setattr(
         pairrun,
         "git_head_sha",
-        lambda path: driver_revision
-        if path.resolve() == driver_root
-        else real_git_head_sha(path),
+        lambda path: driver_revision if path.resolve() == driver_root else real_git_head_sha(path),
     )
     st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
     receipt_path = st["stage"] / "receipts" / "sdk_receipt.json"
@@ -12433,10 +12452,17 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
     portable_source = (root / "tools/benchmark/retrieval/portable_proof.py").read_text()
     assert "proof_inventory.PYTHON_SELECTORS" in portable_source
     assert portable_proof.proof_inventory.RUST_SELECTOR == (
-        "-p", "quanta-index-retrieval-bench", "--lib",
-        "--bin", "quanta-index-retrieval-bench",
-        "--test", "chunking_contract", "--test", "l5_parser_regressions",
-        "--all-features", "--locked",
+        "-p",
+        "quanta-index-retrieval-bench",
+        "--lib",
+        "--bin",
+        "quanta-index-retrieval-bench",
+        "--test",
+        "chunking_contract",
+        "--test",
+        "l5_parser_regressions",
+        "--all-features",
+        "--locked",
     )
 
 
@@ -13144,13 +13170,13 @@ def test_code_search_file_pair_profile_admits_only_file_diagnostic(tmp_path, pol
 def test_natural_language_file_planner_has_distinct_scored_file_contract():
     raw = "Find retry handling"
     policy = "natural_language_file"
-    assert qp.plan_lexical_request(policy, raw) == 'select:file case:no find OR retry OR handling'
-    assert qp.plan_lexical_request("natural_language", raw) == 'case:no find OR retry OR handling'
+    assert qp.plan_lexical_request(policy, raw) == "select:file case:no find OR retry OR handling"
+    assert qp.plan_lexical_request("natural_language", raw) == "case:no find OR retry OR handling"
     assert qp.plan_lexical_request(policy, 'The the AND and repo:x "retry"') == (
-        'select:file case:no the OR and OR repo OR x OR retry'
+        "select:file case:no the OR and OR repo OR x OR retry"
     )
-    assert qp.plan_lexical_request(policy, 'foo-bar/path.go') == (
-        'select:file case:no foo OR bar OR path OR go'
+    assert qp.plan_lexical_request(policy, "foo-bar/path.go") == (
+        "select:file case:no foo OR bar OR path OR go"
     )
     assert qp.derive_query_identity(policy, raw) != qp.derive_query_identity(
         "natural_language", raw
@@ -16144,6 +16170,9 @@ def test_query_clock_overhead_v7_preserves_current_diagnostic_and_hybrid_policy(
     pack, _ = pairrun.project_pack_and_suite(pack, suite, sorted(record["route_provenance"]))
     on = json.loads(path.read_text())
     on["record_sha256"] = cp.sha(cp.canonical(record))
+    on["results"][0]["response"]["explanation"]["planner_trace"].append(
+        {"stage": "merge", "detail": "code_search.execution.mode=ordinary"}
+    )
     off = json.loads(json.dumps(on))
     off["server_observation"] = pairrun.server_observation_configuration("disabled")
     for row in off["results"]:
@@ -16308,8 +16337,13 @@ def test_query_clock_comparator_refuses_enabled_mode_without_complete_clock_inve
 def test_query_clock_comparator_binds_explicit_mode_and_refuses_orphan_children():
     def row(detail):
         return {"stage": "merge", "detail": "code_search.execution." + detail}
+
     parents = [row("candidate_ns=10"), row("sort_page_ns=0"), row("preview_ns=0")]
-    children = [row("typo_shortlist_admission_ns=2"), row("typo_source_token_scan_ns=4"), row("typo_materialize_ns=1")]
+    children = [
+        row("typo_shortlist_admission_ns=2"),
+        row("typo_source_token_scan_ns=4"),
+        row("typo_materialize_ns=1"),
+    ]
     explicit = row("mode=typo_explicit")
     assert overhead._without_code_search_work_clocks([explicit, *parents, *children]) == [explicit]
     for mutant in (

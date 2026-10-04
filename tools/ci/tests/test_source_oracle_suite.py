@@ -19,14 +19,22 @@ def test_name_span_gold_is_independent_of_same_line_usage(tmp_path):
     raw = b"package p\nfunc Same() { Same() }; func Peer() {}\n"
     repo, commit, files = _source_repo(tmp_path, {"a.go": raw})
     oracle = ev.source_oracle.SourceOracleIndex({"a.go": (raw, ev.digest(raw))}, {"Same"})
-    expected = [{
-        "path": "a.go", "file_sha256": ev.digest(raw), "grade": 3,
-        "start_byte": 10, "end_byte": 32,
-        "name_span": {"start_byte": 15, "end_byte": 19, "name": "Same"},
-    }]
-    assert oracle.expected_rows(
-        ev.source_oracle.GO_EXACT_LOCAL_NAME, "Same", "symbol", include_name_spans=True
-    ) == expected
+    expected = [
+        {
+            "path": "a.go",
+            "file_sha256": ev.digest(raw),
+            "grade": 3,
+            "start_byte": 10,
+            "end_byte": 32,
+            "name_span": {"start_byte": 15, "end_byte": 19, "name": "Same"},
+        }
+    ]
+    assert (
+        oracle.expected_rows(
+            ev.source_oracle.GO_EXACT_LOCAL_NAME, "Same", "symbol", include_name_spans=True
+        )
+        == expected
+    )
     baseline = _baseline(commit, files)
     task = baseline["tasks"][0]
     task.update(query="Same", query_sha256=ev.digest(b"Same"))
@@ -34,7 +42,9 @@ def test_name_span_gold_is_independent_of_same_line_usage(tmp_path):
     assert suite["tasks"][0]["declaration_judgments"] == expected
     forged = copy.deepcopy(suite)
     forged["tasks"][0]["declaration_judgments"][0]["name_span"] = {
-        "start_byte": 24, "end_byte": 28, "name": "Same",
+        "start_byte": 24,
+        "end_byte": 28,
+        "name": "Same",
     }
     # The usage has identical text inside the same definition and context.
     # Only the independent parser census distinguishes it from the name.
@@ -44,14 +54,20 @@ def test_name_span_gold_is_independent_of_same_line_usage(tmp_path):
 
 def test_name_recovery_does_not_promote_definition_or_same_context_hits():
     judgment = {
-        "path": "same.go", "start_byte": 10, "end_byte": 32, "grade": 3,
+        "path": "same.go",
+        "start_byte": 10,
+        "end_byte": 32,
+        "grade": 3,
         "name_span": {"start_byte": 15, "end_byte": 19, "name": "Same"},
     }
     candidate = {
-        "path": "same.go", "rank": 1,
+        "path": "same.go",
+        "rank": 1,
         "span_accounting": {
-            "unit_kind": "symbol", "unit_id": "same-definition",
-            "indexed_start_byte": 10, "indexed_end_byte": 32,
+            "unit_kind": "symbol",
+            "unit_id": "same-definition",
+            "indexed_start_byte": 10,
+            "indexed_end_byte": 32,
             "name_span": copy.deepcopy(judgment["name_span"]),
         },
     }
@@ -64,7 +80,9 @@ def test_name_recovery_does_not_promote_definition_or_same_context_hits():
     assert ev.declaration_name_mrr_at_k([usage], [judgment], 10) == 0.0
     sibling = copy.deepcopy(candidate)
     sibling["span_accounting"].update(
-        unit_id="other-definition", indexed_start_byte=34, indexed_end_byte=48,
+        unit_id="other-definition",
+        indexed_start_byte=34,
+        indexed_end_byte=48,
         name_span={"start_byte": 39, "end_byte": 43, "name": "Peer"},
     )
     assert ev.declaration_name_recall_at_k([sibling], [judgment], 10) == 0.0
@@ -76,14 +94,20 @@ def test_name_recovery_does_not_promote_definition_or_same_context_hits():
 @pytest.mark.parametrize("missing", ["gold", "native"])
 def test_name_recovery_reports_missing_authority_without_synthesizing_zero(missing):
     gold = {
-        "path": "same.go", "start_byte": 10, "end_byte": 32, "grade": 3,
+        "path": "same.go",
+        "start_byte": 10,
+        "end_byte": 32,
+        "grade": 3,
         "name_span": {"start_byte": 15, "end_byte": 19, "name": "Same"},
     }
     candidate = {
-        "path": "same.go", "rank": 1,
+        "path": "same.go",
+        "rank": 1,
         "span_accounting": {
-            "unit_kind": "symbol", "unit_id": "definition",
-            "indexed_start_byte": 10, "indexed_end_byte": 32,
+            "unit_kind": "symbol",
+            "unit_id": "definition",
+            "indexed_start_byte": 10,
+            "indexed_end_byte": 32,
             "name_span": copy.deepcopy(gold["name_span"]),
         },
     }
@@ -94,29 +118,47 @@ def test_name_recovery_reports_missing_authority_without_synthesizing_zero(missi
         "route_provenance": {"symbol": {"capture_id": "native"}},
         "captures": {"native": {"system": "quanta"}},
     }
-    tasks = {"task": {
-        "answerable": True, "declaration_judgments": [gold], "judgment_policy": ev.UNJUDGED_POLICY,
-    }}
-    results = {("task", "symbol"): {
-        "status": "success", "rank_unit": "symbol", "candidates": [candidate],
-    }}
+    tasks = {
+        "task": {
+            "answerable": True,
+            "declaration_judgments": [gold],
+            "judgment_policy": ev.UNJUDGED_POLICY,
+        }
+    }
+    results = {
+        ("task", "symbol"): {
+            "status": "success",
+            "rank_unit": "symbol",
+            "candidates": [candidate],
+        }
+    }
     report = ev.judgment_diagnostics(suite, run, results, tasks, "symbol", None)
-    assert report["declaration_judgments"]["routes"]["symbol"]["conditional_mean"]["recall_at_10"] == 1.0
+    assert (
+        report["declaration_judgments"]["routes"]["symbol"]["conditional_mean"]["recall_at_10"]
+        == 1.0
+    )
     names = report["declaration_name_recovery"]["routes"]["symbol"]
     assert names["eligible_count"] == 0
     assert names["operational_mean"]["recall_at_10"] == ev.NOT_APPLICABLE
     assert names["operational_unavailable_reason"] == "incomplete_name_authority"
-    assert names["excluded"] == [{
-        "task_id": "task",
-        "reason": "missing_independent_name_gold" if missing == "gold" else "missing_published_name_authority",
-    }]
+    assert names["excluded"] == [
+        {
+            "task_id": "task",
+            "reason": "missing_independent_name_gold"
+            if missing == "gold"
+            else "missing_published_name_authority",
+        }
+    ]
 
 
-@pytest.mark.parametrize("span,reason", [
-    ({"start_byte": 3, "end_byte": 7, "name": "caf"}, "UTF-8 boundary"),
-    ({"start_byte": 0, "end_byte": 8, "name": "fn café"}, "escapes"),
-    ({"start_byte": 3, "end_byte": 8, "name": "cafe"}, "differs from source"),
-])
+@pytest.mark.parametrize(
+    "span,reason",
+    [
+        ({"start_byte": 3, "end_byte": 7, "name": "caf"}, "UTF-8 boundary"),
+        ({"start_byte": 0, "end_byte": 8, "name": "fn café"}, "escapes"),
+        ({"start_byte": 3, "end_byte": 8, "name": "cafe"}, "differs from source"),
+    ],
+)
 def test_name_span_refuses_utf8_cuts_context_expansion_and_wrong_text(span, reason):
     with pytest.raises(ev.EvidenceError, match=reason):
         ev.validate_name_span(span, "fn café() {}".encode(), 3, 13, "name proof")
@@ -602,11 +644,14 @@ def test_go_indexed_local_name_includes_interface_methods_and_aliases(tmp_path):
         assert tasks["Hidden"]["answerable"] is False
         assert tasks["Hidden"]["gold"] == []
         if mode.endswith("symbol"):
+
             def named_declaration(fragment: bytes, name: bytes) -> dict:
                 row = declaration(fragment)
                 start = row["start_byte"] + fragment.index(name)
                 row["name_span"] = {
-                    "start_byte": start, "end_byte": start + len(name), "name": name.decode(),
+                    "start_byte": start,
+                    "end_byte": start + len(name),
+                    "name": name.decode(),
                 }
                 return row
 
@@ -614,8 +659,12 @@ def test_go_indexed_local_name_includes_interface_methods_and_aliases(tmp_path):
                 named_declaration(b"Push()", b"Push"),
                 named_declaration(b"func (w *Writer) Push() {}", b"Push"),
             ]
-            assert tasks["Alias"]["declaration_judgments"] == [named_declaration(b"Alias = Reader", b"Alias")]
-            assert tasks["Flush"]["declaration_judgments"] == [named_declaration(b"Flush()", b"Flush")]
+            assert tasks["Alias"]["declaration_judgments"] == [
+                named_declaration(b"Alias = Reader", b"Alias")
+            ]
+            assert tasks["Flush"]["declaration_judgments"] == [
+                named_declaration(b"Flush()", b"Flush")
+            ]
             assert tasks["Hidden"]["declaration_judgments"] == []
         else:
             assert tasks["Push"]["file_judgments"] == [

@@ -1059,6 +1059,27 @@ def test_opengrok_indexed_inventory_accepts_exact_unsorted_native_paths():
     )
 
 
+def test_opengrok_native_inventory_uses_manifest_cardinality_not_backend_file_cap():
+    paths = [f"src/file-{index:05d}.go" for index in range(4097)]
+    manifest = {"files": [{"path": path} for path in paths]}
+    native = json.dumps(["/fixture/" + path for path in reversed(paths)]).encode()
+    live._opengrok_indexed_inventory_response(
+        {"project": "fixture"}, manifest, 200, "application/json", native
+    )
+
+
+def test_opengrok_native_inventory_refuses_over_byte_response(monkeypatch):
+    monkeypatch.setattr(live, "MAX_HTTP_BYTES", 20)
+    with pytest.raises(ValueError, match="response byte limit"):
+        live._opengrok_indexed_inventory_response(
+            {"project": "fixture"},
+            {"files": [{"path": "file.go"}]},
+            200,
+            "application/json",
+            b'["/fixture/file.go", "extra"]',
+        )
+
+
 def test_opengrok_indexed_inventory_requires_successful_json_response():
     manifest = {"files": [{"path": "a.go"}]}
     for status, content_type in ((401, "application/json"), (200, "text/plain")):
@@ -1173,10 +1194,10 @@ def test_backend_snapshot_refuses_process_restart_and_unbounded_index(tmp_path, 
     monkeypatch.setattr(live, "_backend_runtime", runtime)
     with pytest.raises(ValueError, match="changed during index hashing"):
         live._backend_snapshot(config)
-    monkeypatch.setattr(live, "MAX_INDEX_FILES", 1)
+    monkeypatch.setattr(live, "MAX_BACKEND_INDEX_FILES", 1)
     with pytest.raises(ValueError, match="exceeds 4096 files"):
         live._backend_tree(root)
-    monkeypatch.setattr(live, "MAX_INDEX_FILES", 4096)
+    monkeypatch.setattr(live, "MAX_BACKEND_INDEX_FILES", 4096)
     monkeypatch.setattr(live, "MAX_INDEX_BYTES", 5)
     with pytest.raises(ValueError, match="exceeds 512 MiB"):
         live._backend_tree(root)
@@ -1229,10 +1250,74 @@ def test_opengrok_full_view_probe_rejects_inventory_change_during_capture(tmp_pa
         live._opengrok_indexed_view({"project": "fixture"}, manifest, view, target)
     assert inventory_calls == 2
     assert (target / "000000.content").read_bytes() == b"current source"
-    assert json.loads((target / "indexed-files-after.json").read_bytes()) == [
+    assert json.loads((target / "indexed-files-after-b0000.json").read_bytes()) == [
         "/fixture/file.go",
         "/fixture/extra.go",
     ]
+
+
+def test_opengrok_full_view_batches_each_have_closed_native_inventory(tmp_path, monkeypatch):
+    view = tmp_path / "view"
+    view.mkdir()
+    files = []
+    for index in range(3):
+        path = f"{index}.go"
+        body = f"source {index}".encode()
+        (view / path).write_bytes(body)
+        files.append({"path": path, "file_sha256": live._sha(body)})
+    manifest = {"files": files}
+    monkeypatch.setattr(live, "MAX_INDEXED_VIEW_BATCH_FILES", 2)
+    inventory = json.dumps([f"/fixture/{row['path']}" for row in files]).encode()
+    calls = []
+
+    def fake_http(_config, endpoint, params, _accept):
+        calls.append(endpoint)
+        if endpoint.endswith("/files"):
+            return 200, "application/json", inventory, 1.0
+        path = params["path"].removeprefix("/fixture/")
+        return 200, "application/octet-stream", (view / path).read_bytes(), 1.0
+
+    monkeypatch.setattr(live, "_http", fake_http)
+    target = tmp_path / "probe"
+    assert live._opengrok_index_batches(manifest, view) == [(0, 2), (2, 3)]
+    live._opengrok_indexed_view({"project": "fixture"}, manifest, view, target)
+    assert calls == [
+        "/api/v1/projects/fixture/files",
+        "/api/v1/file/content",
+        "/api/v1/file/content",
+        "/api/v1/projects/fixture/files",
+        "/api/v1/projects/fixture/files",
+        "/api/v1/file/content",
+        "/api/v1/projects/fixture/files",
+    ]
+    assert (target / "indexed-files-before-b0001.json").read_bytes() == inventory
+    assert (target / "indexed-files-after-b0001.json").read_bytes() == inventory
+    assert (target / "000002.content").read_bytes() == b"source 2"
+
+    inventory_calls = 0
+
+    def mutated_http(_config, endpoint, params, accept):
+        nonlocal inventory_calls
+        if endpoint.endswith("/files"):
+            inventory_calls += 1
+            if inventory_calls == 4:
+                changed = json.dumps(["/fixture/0.go", "/fixture/1.go", "/fixture/extra.go"])
+                return 200, "application/json", changed.encode(), 1.0
+        return fake_http(_config, endpoint, params, accept)
+
+    monkeypatch.setattr(live, "_http", mutated_http)
+    with pytest.raises(ValueError, match="indexed file inventory differs from release manifest"):
+        live._opengrok_indexed_view({"project": "fixture"}, manifest, view, tmp_path / "mutated")
+    assert inventory_calls == 4
+
+
+def test_opengrok_full_view_refuses_single_source_above_http_byte_bound(tmp_path, monkeypatch):
+    view = tmp_path / "view"
+    view.mkdir()
+    (view / "file.go").write_bytes(b"oversized")
+    monkeypatch.setattr(live, "MAX_HTTP_BYTES", 8)
+    with pytest.raises(ValueError, match="source exceeds HTTP response byte limit"):
+        live._opengrok_index_batches({"files": [{"path": "file.go"}]}, view)
 
 
 def test_sourcegraph_request_target_preflight_is_independent_of_corpus_size():
@@ -1587,7 +1672,9 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         assert SearchHandler.calls.count("/api/v1/search") == 20
         stage = Path(spec["output_root"] + ".staging")
         assert (
-            json.loads((stage / "opengrok-view-post/indexed-files-before.json").read_bytes())[-1]
+            json.loads((stage / "opengrok-view-post/indexed-files-before-b0000.json").read_bytes())[
+                -1
+            ]
             == "/fixture/extra.go"
         )
         return
@@ -1632,7 +1719,9 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         assert len(rows) == 20
         assert sum(json.loads(row).get("file_hit_at_10", False) for row in rows) == 1
         compared = live.lexical.product_result(
-            name, root / f"{name}_rows.jsonl", live.lexical._tasks(suite, pack),
+            name,
+            root / f"{name}_rows.jsonl",
+            live.lexical._tasks(suite, pack),
             {entry["path"] for entry in suite["file_universe"]},
         )
         assert compared["completed_response_latency_ms"]["count"] == 20
@@ -1862,7 +1951,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         live.verify(root)
     probe_path.write_bytes(original_probe)
     summary_path.write_text(json.dumps(result))
-    inventory_path = root / "opengrok-view-post/indexed-files-before.json"
+    inventory_path = root / "opengrok-view-post/indexed-files-before-b0000.json"
     original_inventory = inventory_path.read_bytes()
     inventory_path.write_text(json.dumps(["/fixture/extra.go"]))
     summary_path.write_text(
@@ -1871,7 +1960,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
                 **result,
                 "raw_capture_sha256": {
                     **result["raw_capture_sha256"],
-                    "opengrok-view-post/indexed-files-before.json": live._sha(
+                    "opengrok-view-post/indexed-files-before-b0000.json": live._sha(
                         inventory_path.read_bytes()
                     ),
                 },

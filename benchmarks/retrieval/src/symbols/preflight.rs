@@ -14,8 +14,8 @@ use serde::ser::SerializeStruct;
 use sha2::{Digest, Sha256};
 
 use super::{
-    SYMBOL_PRODUCER_GRAMMARS, SYMBOL_PRODUCER_IDENTITY, SymbolExtractError, SymbolLanguage,
-    ExtractedSymbols, SymbolNameSpan, SymbolRecord, extract_parsed_symbols, parse_tree,
+    ExtractedSymbols, SYMBOL_PRODUCER_GRAMMARS, SYMBOL_PRODUCER_IDENTITY, SymbolExtractError,
+    SymbolLanguage, SymbolNameSpan, SymbolRecord, extract_parsed_symbols, parse_tree,
 };
 use crate::corpus::SourceFile;
 use crate::{BenchError, BenchResult, sha256_hex};
@@ -653,7 +653,10 @@ pub fn preflight_corpus_symbols(
             options.max_symbols_total.saturating_sub(retained_symbols),
         ) {
             Ok(value) => value,
-            Err(error) => (failure_report(path, file, &error), ExtractedSymbols::default()),
+            Err(error) => (
+                failure_report(path, file, &error),
+                ExtractedSymbols::default(),
+            ),
         };
         row.diagnostics.truncate(
             options

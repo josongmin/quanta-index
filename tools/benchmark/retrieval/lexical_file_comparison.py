@@ -465,10 +465,16 @@ def product_result(
                 if not _native_replay:
                     if native_summary is None:
                         if path.name != f"{product}_rows.jsonl":
-                            raise ValueError("completed clock requires its native capture row owner")
+                            raise ValueError(
+                                "completed clock requires its native capture row owner"
+                            )
                         native_summary = live_lexical_external.verify(path.parent)
-                        if native_summary["rows_sha256"].get(product) != raw.sha256.removeprefix("sha256:"):
-                            raise ValueError("completed clock native replay differs from scored row bytes")
+                        if native_summary["rows_sha256"].get(product) != raw.sha256.removeprefix(
+                            "sha256:"
+                        ):
+                            raise ValueError(
+                                "completed clock native replay differs from scored row bytes"
+                            )
                     completed_ms = row["completed_response"]["duration_ns"] / 1_000_000
                     completed_elapsed.append(completed_ms)
             per_query.append(
@@ -485,7 +491,8 @@ def product_result(
                     "completed_query_latency_ms": completed_ms,
                     "completed_response_boundary": (
                         "request_construction_to_normalized_response"
-                        if completed_ms is not None else None
+                        if completed_ms is not None
+                        else None
                     ),
                 }
             )
@@ -514,7 +521,9 @@ def product_result(
             raise ValueError(f"{product}: incomplete symbol-only lane")
         return hits, empty_no_gold, elapsed, completed_elapsed, per_query, unsupported
 
-    hits, empty_no_gold, elapsed, completed_elapsed, per_query, unsupported = raw.consume_lines(consume)
+    hits, empty_no_gold, elapsed, completed_elapsed, per_query, unsupported = raw.consume_lines(
+        consume
+    )
     answerable = sum(
         bool(scoring_gold[task_id] if scoring_gold is not None else gold)
         for task_id, (_, gold) in expected.items()
@@ -554,10 +563,16 @@ def product_result(
         "raw_sha256": raw.sha256.removeprefix("sha256:"),
         "completed_response_latency_ms": (
             latency_summary(
-                completed_elapsed, len(completed_elapsed), "request_construction_to_normalized_response"
+                completed_elapsed,
+                len(completed_elapsed),
+                "request_construction_to_normalized_response",
             )
             if completed_elapsed
-            else {"count": 0, "timing_layer": "request_construction_to_normalized_response", "status": "not_run"}
+            else {
+                "count": 0,
+                "timing_layer": "request_construction_to_normalized_response",
+                "status": "not_run",
+            }
         ),
     }
     if unsupported:
