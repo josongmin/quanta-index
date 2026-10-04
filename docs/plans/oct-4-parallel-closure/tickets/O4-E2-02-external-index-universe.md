@@ -26,6 +26,14 @@
 
 B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 있다. B09는 11,695파일이며 다른 universe다. sourcegraph_index_scope.py는 현재 receipt 검증기와 bounded full native path/stored-byte producer를 포함한다. post-capture probe만으로 before/after 상태를 생성할 수 없다.
 
+## 2026-10-04 translator export 실제 보완
+
+- 첫 owned 12-repository batch는 `/proc/PID/exe`에 대한 `docker cp -L` 실패로 중단됐다. remote identity SHA mismatch가 아니며 translator output 파일이 생성되지 않았다. 실패 root `qi-e2-sg-native-owned-20261004-6hcetaoe`를 보존했다.
+- producer는 PID/start ticks/SHA를 고정한 proc FD를 최대256MiB/50초의 고유 O_EXCL regular file로 복사하고 Docker cp 후 host bytes를 비교한다. 성공/실패/시간초과에는 tombstone→owned worker 종료 확인→자기 파일 정리를 수행하고 cleanup 미확인은 거절한다. native replay의 translator SHA 검사는 유지한다.
+- `VERIFIED`: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_sourcegraph_translator_export.py -q --tb=short` — 8 passed, 0.21s. success/stale ticks/wrong remote SHA/wrong host SHA/overcap/cp failure/cleanup failure/indeterminate export를 포함한다.
+- `VERIFIED`: 실제 Docker owned translator pilot `qi-e2-translator-pilot-20261004-ux7nyh6w` — 1,726,424 bytes, SHA `723a1aee626399b5620cbf46f11637d6b7fa79777b23e0ad4d1c9ae2a45f241b`; guest bytes/mapping identity 유지, host SHA 일치, worker/file 및 owned service cleanup 완료. corpus scope/query bracket proof는 아니다.
+- current full E2 regression과 새 `qi-e2-sg-native-owned-v4-20261004-r5aasda9/batch.json`의 12repo/13,347파일 canonical scope batch는 실행 중이다. 완료된 범위로 선표시하지 않는다.
+
 ## 착수 입력
 
 - 외부 BASE의 sourcegraph-native-content-8l9gxy35, opengrok-source-posting-reference-full-moyyggn_ 역사적 증거

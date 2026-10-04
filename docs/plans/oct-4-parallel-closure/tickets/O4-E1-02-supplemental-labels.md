@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | source/request PREPARE 가능; 과거 first-six native pool replay는 `BLOCKED`, actual supplemental model/merged labels는 `NOT_RUN` |
 | 선행 결과 | [O4-E1-01](O4-E1-01-original-review-resume.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,14 @@
 ## 배경과 현재 상태
 
 첫 6저장소의 신규 union은 375쌍, 그중 bat/cli/lo 214쌍의 repaired preflight가 과거에 기록됐다. 이 숫자는 전체 최종 분모가 아니다. 기존 lo 발행 41쌍과 신규 lo 30쌍은 별도다. bind_supplemental_review_tasks는 frozen suite의 threshold/query/source를 검증해 이미 구현되어 있다.
+
+## 2026-10-04 현재 바이트 custody 재검증
+
+- 새 외부 preflight v1은 packet의 잘못된 repository key 가정으로 `FAILED`; v2는 producer와 모든 original `input_sha256`를 재검증하는 실제 request 준비 단계에서 원본 record 부재를 확인하고 거절했다. 두 실패 root는 보존했으며 모델 호출/새 grade는 0이다.
+- 기존 `c3-all-five-pool-audit-gsZWij9u/*-canonical/result.json` 6개는 102 refs를 가진다. 현재 원위치에서 78 refs의 SHA가 일치하고, 사라진 suite/query-pack 12 refs는 같은 SHA의 영구 사본이 있다.
+- Quanta/Semble `record.json` 12 refs는 `/private/tmp/qdrk7q9q8/{0..5}.staging/`에 있었고 현재 부재다. BASE의 이름 기준 suite/query-pack/record 후보277개와 SHA를 대조했으나 같은 record 12개를 복구하지 못했다. 해당 paired producer terminal은 `FAILED`이고 stdout에는 임시 output path만 남아 있다.
+- 따라서 당시 생성된375쌍을 **현재 재생된 5제품 합집합**으로 승격할 수 없다. 필요한 원본 바이트 부재의 replay scope는 `BLOCKED`; current-source Quanta/Semble 재캡처와 pool 재발행을 준비한다. packet의 자체 hash만으로 raw custody를 대체하지 않는다.
+- Source-only packet은 current frozen suite/checkout과 task/query/path/file SHA/text를 재결속한 diagnostic 후보 준비에 쓸 수 있지만 canonical returned-file union/admission의 증거가 아니다. actual supplemental review와 merged labels는 새 native 입력 확보 후 실행한다.
 
 ## 착수 입력
 
