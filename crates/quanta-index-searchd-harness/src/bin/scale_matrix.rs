@@ -124,7 +124,7 @@ fn parse_args() -> AnyResult<CliArgs> {
             other => return Err(anyhow::anyhow!("unknown argument {other:?}")),
         }
     }
-    if !out_dir_explicit && (tiers.len() != 1 || tiers[0] != ScaleTier::Small) {
+    if !out_dir_explicit && tiers.as_slice() != [ScaleTier::Small] {
         anyhow::bail!("--out-dir is required for a non-default scale tier");
     }
     if out_dir_explicit && out_dir.exists() {
@@ -211,7 +211,7 @@ fn format_cold_open_ms(value: Option<f64>) -> String {
 )]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
+    if matches!(args.as_slice(), [arg] if matches!(arg.as_str(), "--help" | "-h")) {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }

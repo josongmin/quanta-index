@@ -95,7 +95,7 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
             "--queue-capacity" => config.queue_capacity = raw.parse()?,
             "--request-timeout-ms" => config.request_timeout = Duration::from_millis(raw.parse()?),
             "--history-max-bytes" => {
-                config.history_max_bytes = Some(parse_history_max_bytes(&raw)?)
+                config.history_max_bytes = Some(parse_history_max_bytes(&raw)?);
             }
             "--out-dir" => {
                 out_dir = PathBuf::from(raw);
@@ -128,7 +128,7 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
 }
 
 fn run(
-    config: open_loop::Config,
+    config: &open_loop::Config,
     out_dir: &Path,
     fresh_output: bool,
 ) -> AnyResult<open_loop::Report> {
@@ -145,7 +145,7 @@ fn run(
                 config.tier,
                 config.seed,
             )?;
-            let execution = execution_context(&config)?;
+            let execution = execution_context(config)?;
             write_refusal_artifact_with_context(
                 &binding,
                 out_dir,
@@ -173,7 +173,7 @@ fn format_latency(value: Option<f64>) -> String {
 )]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
+    if matches!(args.as_slice(), [arg] if matches!(arg.as_str(), "--help" | "-h")) {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
@@ -184,7 +184,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let report = match run(config, &out_dir, fresh_output) {
+    let report = match run(&config, &out_dir, fresh_output) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("open_loop_matrix: {error:#}");
