@@ -267,6 +267,48 @@ def test_quality_matrix_groups_and_replay_custody(tmp_path, monkeypatch) -> None
         pairrun.verify_quality_matrix(matrix)
 
 
+def test_quality_matrix_rejects_stale_runner_before_gold_or_output(tmp_path, monkeypatch) -> None:
+    specs = [tmp_path / f"member-{index}.json" for index in range(4)]
+    for index, path in enumerate(specs):
+        path.write_text(
+            json.dumps(
+                {
+                    "repo": str(tmp_path / f"repo-{index // 2}"),
+                    "runner_binary": str(tmp_path / "stale-runner"),
+                }
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(pairrun, "load_spec", lambda path: json.loads(path.read_text()))
+    monkeypatch.setattr(
+        pairrun,
+        "probe_runner_capabilities",
+        lambda _binary: (_ for _ in ()).throw(pairrun.RunError("stale runner")),
+    )
+    monkeypatch.setattr(
+        pairrun,
+        "_quality_batch_members",
+        lambda _batch: (_ for _ in ()).throw(AssertionError("gold preflight ran")),
+    )
+    matrix = {
+        "schema_version": 1,
+        "member_specs": [str(path) for path in specs],
+        "output_root": str(tmp_path / "matrix"),
+    }
+    with pytest.raises(pairrun.RunError, match="stale runner"):
+        pairrun.run_quality_matrix(matrix)
+    assert not Path(matrix["output_root"]).exists()
+    with pytest.raises(pairrun.RunError, match="stale runner"):
+        pairrun.run_quality_batch(
+            {
+                "schema_version": 1,
+                "member_specs": matrix["member_specs"][:2],
+                "output_root": str(tmp_path / "batch"),
+            }
+        )
+    assert not (tmp_path / "batch").exists()
+
+
 def _clean_host_timeline_fixture():
     host = {
         "system": "Darwin",

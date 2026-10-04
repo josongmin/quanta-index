@@ -11609,6 +11609,9 @@ def run_quality_batch(
     revalidated against its original suite/pack; no projected view is saved
     or represented as a native capture.
     """
+    if prevalidated is None:
+        first_spec = load_spec(Path(batch["member_specs"][0]))
+        probe_runner_capabilities(Path(first_spec["runner_binary"]))
     members, model = prevalidated if prevalidated is not None else _quality_batch_members(batch)
     input_snapshot = _quality_batch_input_snapshot(members)
     _quality_batch_model_assets_unchanged(members, model["model_asset_sha256"])
@@ -11909,9 +11912,10 @@ def run_quality_matrix(matrix: dict) -> int:
             raise RunError(
                 "quality matrix output root must be outside source and driver repositories"
             )
+        first_spec = load_spec(Path(group[2][0]))
+        probe_runner_capabilities(Path(first_spec["runner_binary"]))
         members, model = _quality_batch_members(batch)
         _quality_batch_input_snapshot(members)
-        probe_runner_capabilities(Path(members[0][1]["runner_binary"]))
         preflight_daemon_socket_paths(
             Path(batch["output_root"] + ".staging") / "quanta",
             members[0][1]["strategies"],
