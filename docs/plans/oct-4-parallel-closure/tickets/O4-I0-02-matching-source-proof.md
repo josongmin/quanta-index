@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | source904 workspace·daemon213·process/L3 56 및 후속 full Clippy `VERIFIED`; current owner/daemon/SDK27 영향 재검증 중. formal Contract/SDK 첫 명령 admission timeout `FAILED`, proof `NOT_RUN`; hosted CI·release/scale `NOT_RUN` |
+| 실행 상태 | source904 workspace·daemon213·process/L3 56 및 후속 full Clippy/current owner972 `VERIFIED`; current daemon/SDK27 영향 재검증 중. formal Contract/SDK 첫 명령 admission timeout `FAILED`, proof `NOT_RUN`; hosted CI·release/scale `NOT_RUN` |
 | 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -63,6 +63,15 @@
 - open-loop negative fixture의 대상·기대값은 유지했다. JSON `pointer` 조회는 필드 누락을 거절하고 explicit null만 null oracle를 만족한다. 마지막 Clippy 실패는 test helper의 불필요한 `Value` 소유 인수1개였고 borrowed expected value로 수리했다.
 - `VERIFIED`: 같은 source의 `just fmt-check` 및 `git diff --check` — exit0. 이 결과는 behavioral/release 검증이 아니다.
 - current matching debug daemon build는 exit0이었다. 영향을 받은 core/harness/SDK/IPC/runtime/lexical owner 배치는 실행 중이며, 이전 runtime231 실패를 아직 전체 PASS로 대체하지 않는다. 새 SDK27·daemon/process·formal proof 결과는 완료 후 별도로 기록한다.
+
+## 2026-10-04 sourcebf owner 배치와 freeze
+
+- `VERIFIED`: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-core -p quanta-index-searchd-harness -p quanta-index-sdk -p quanta-index-ipc -p quanta-index-searchd-runtime -p quanta-index-lexical --lib --bins --test runtime_supervisor_owner_v1 --test sdk_binding_owner_v1 --test l2_file_mutation --test l3_exact_source --test sealed_manifest --test text_authority_shards --all-features --locked --no-fail-fast` — exit0, 28 binaries, 972 selected/run/passed, 0 skipped, tests552.768s. 동일 source에 해당하는 dirty test overlay가 실행 중 commit `bf9066391ad1e6002eff77d1b16bc535a62d3299`에 반영됐고 product/test bytes는 실행 도중 바뀌지 않았다.
+- runtime supervisor25와 admitted publish timeout/reassembly owner1이 모두 통과했다. 이전 runtime/SDK/IPC231 실패 및 10 NOT_RUN 범위는 이번 전체 영향 배치로 재검증했다. bounded walker, SDK binding, IPC partial-frame, harness typed refusal/accounting, L2/L3/sealed/text authority를 포함한다. 972는 이 선택의 실행 수이며 중복 module test를 제거한 unique behavior 합계가 아니다.
+- text-authority의 6,194문서 one-scope delta/inode oracle267.472s와 4,098문서 boundary delta 대 independent full rebuild446.447s가 통과했다. 시간은 debug/공유 host의 실제 관측이며 release performance 또는 capacity 수치로 사용하지 않는다.
+- 관리 checkout `/Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index`를 clean `bf9066391ad1e6002eff77d1b16bc535a62d3299`로 retarget했다. formal Contract/SDK 및 matching release binaries는 이 epoch에서 발행한다. main의 후속 문서 SHA를 이 source의 proof SHA로 대체하지 않는다.
+- exact sourcebf의 `gh run list --commit bf9066391ad1e6002eff77d1b16bc535a62d3299 --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`는 exit0/`[]`였다. hosted CI는 `NOT_RUN`이다.
+- matching debug daemon을 pin한 live SDK27은 실행 중이다. current daemon/process/fuzz 및 sourcebf formal proof는 아직 완료 결과가 아니다.
 
 ## 착수 입력
 

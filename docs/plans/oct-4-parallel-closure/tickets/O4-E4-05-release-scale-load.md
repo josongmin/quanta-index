@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P2 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W4 — 실제 캡처·성능·scale](../waves/W4-native-capture-performance-and-scale.md) |
-| 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
+| 실행 상태 | current harness lib/bin oracle 및 bound/refusal 회귀 `VERIFIED`; matching release build·tier/load/restart 실행 `NOT_RUN` |
 | 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E4-01](O4-E4-01-index-phase-profile.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,13 @@
 ## 배경과 현재 상태
 
 현 scale history2, open-loop8, default16MiB이며 explicit300s/256MiB는 별도 diagnostic profile이다. old256 lifecycle은 과거 source,4096 timeout/retention exhaustion,32768 posting-cap refusal였다. SDK proof는 scale/open-loop binary를 build/execute한 증거가 아니다.
+
+## 2026-10-04 실행 준비와 owner 검증
+
+- sourcebf의 I0 owner 배치가 972/972 passed였다. 선택에 harness lib/bin의 scale·open-loop source fixture, history/timeout bounds, requested/effective refusal JSON, offered accounting과 existing lifecycle oracle가 포함됐다. 실제 release tier/load를 실행한 결과는 아니다.
+- 각 medium256/large4096/xlarge32768 tier는 별도 fresh external root에서 실행한다. default scale timeout30s/history16MiB·2generations와 explicit300s/history256MiB는 구별한다. open-loop request timeout의 허용 상한은30s이며 scale300s 인자를 그대로 적용하지 않는다.
+- 현재 `delete_reopen`은 same-process runtime 재개방이다. OS child restart, cold page cache, physical write I/O 및 4,096/32,768문서 독립 ranking gold는 이 harness artifact로 증명하지 않는다.
+- matching release build/run과 artifact readback은 `NOT_RUN`이다. 공유 macOS host의 diagnostic 실행에서 frequency/thermal/quiet qualification을 합성하지 않는다.
 
 ## 착수 입력
 
