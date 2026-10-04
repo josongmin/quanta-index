@@ -16,7 +16,7 @@
 
 ## 배경과 현재 상태
 
-selection.resolve_generation_selector_pin은 catalog head를 pin으로 해석하고 acquire_read_view는 이후 ledger/track handle을 획득한다. dispatcher barrier fixture `active_selection_reaped_before_view_acquisition_refuses_without_opening_g1`은 G1 선택→G2/G3 활성화·retention→G1 acquire를 고정한다. 관측 oracle는 `UNKNOWN_GENERATION` 및 lexical opener 0회다. `e2e_read_view::retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3`는 별도 실제 daemon에서 양 track의 G1 physical retirement와 fresh G3 selected head/token을 검사하도록 통합됐으며 daemon profile 실행은 별도다.
+selection.resolve_generation_selector_pin은 catalog head를 pin으로 해석하고 acquire_read_view는 이후 ledger/track handle을 획득한다. dispatcher barrier fixture `active_selection_reaped_before_view_acquisition_refuses_without_opening_g1`은 G1 선택→G2/G3 활성화·retention→G1 acquire를 고정한다. 관측 oracle는 `UNKNOWN_GENERATION` 및 lexical opener 0회다. `e2e_read_view::retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3`는 같은 test process의 실제 runtime/UDS에서 양 track의 G1 physical retirement와 fresh G3 selected head/token을 검사한다.
 
 ## 착수 입력
 
@@ -53,6 +53,8 @@ selection.resolve_generation_selector_pin은 catalog head를 pin으로 해석하
 
 - dispatcher의 `active_selection_reaped_before_view_acquisition_refuses_without_opening_g1`은 G1 선택→G2/G3 퇴역→view 획득 순서를 barrier로 고정하고 typed refusal 및 lexical open 0회를 검사한다. `runtime_fast_suite`의 `retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3`는 실제 UDS와 양 track의 물리적 G1 퇴역·G3 head/token을 검사하지만 daemon은 같은 test process에서 구동한다. 기록된 PASS를 이번에 재실행하지 않았다.
 - **별도 OS child 내부의 동일 select/acquire 경합은 `NOT_RUN`**이다. 기존 `SearchdBinaryProcess`는 child 기동·종료와 UDS 요청만 제어하며 Active 선택 직후/read-view 획득 직전의 child-visible barrier가 없다. 순차적으로 G1을 퇴역시킨 뒤 child에 질의하는 case는 이 경합을 증명하지 않는다. 현 Accepted 계약의 retire-first refusal을 넘는 pin-transfer 보장이나 production hook은 이 잔여 증명을 위해 새로 채택하지 않는다.
+- 재확인한 seam 위치: `selection.rs:174–188`은 concrete catalog의 Active head를 pin으로 반환하고, `planning.rs:90–98`의 lexical preflight는 선택 전에 호출된다. `routes/lexical.rs:336`에서 `read_view/view.rs:473–478`의 ledger 획득으로 진행하며 opener는 view 획득 이후다. 따라서 기존 preflight/opener를 중간 barrier로 사용하면 원하는 select→retire→acquire 순서를 검증하지 못한다. runtime fixture의 public G1 선택 역시 RPC 전이므로 서버 내부의 선택 경합과 구별한다.
+- 기존 dispatcher barrier test를 `current_exe --exact`로 별도 test OS child에서 실행하는 추가 component 검증은 가능하다. 다만 in-memory ledger/recording opener의 typed refusal·open0 범위이며 실제 disk track 퇴역을 포함하지 않는다. 이번 정적 감사에서는 fixture나 production hook을 추가하지 않았고 이 추가 component 실행도 `NOT_RUN`이다.
 - 정확한 owner selectors: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-search-plane --lib --all-features --locked -E 'test(active_selection_reaped_before_view_acquisition_refuses_without_opening_g1)'`; `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_fast_suite --all-features --locked -E 'test(retired_selected_generation_refuses_before_open_while_fresh_active_serves_g3)'`. 둘 다 이번 정적 판정에서는 `NOT_RUN`이다.
 
 ## 검증 계획 — 위 실행 scope 외 NOT_RUN
