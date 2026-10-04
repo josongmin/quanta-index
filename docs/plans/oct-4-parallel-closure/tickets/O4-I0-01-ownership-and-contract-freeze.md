@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W0 — 소유권·실행 범위 고정](../waves/W0-ownership-and-scope.md) |
-| 실행 상태 | 에픽별 patch PREPARE·root 단일 integration 및 중앙 실행 운영 중; 최종 source epoch는 아직 미고정 |
+| 실행 상태 | 에픽별 static PREPARE·root 단일 integration/중앙 실행; clean source107 및 matching Contract/SDK proof epoch `VERIFIED`. 전체29개 qualification 종료는 미완료 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)

@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `CODE_AND_PROOF` |
 | 기준 웨이브 | [W2 — 확인된 결함 수리·선택 최적화](../waves/W2-repairs-and-selected-optimizations.md) |
-| 실행 상태 | 지원7 Active variant의 실제 daemon single-RPC/head/token/row와 stale-token 거절 `VERIFIED`; SDK27 assertion PASS/stdio leak1 관측, 단독 재실행 ordinary PASS. current daemon profile 실행 중; formal release qualification `NOT_RUN` |
+| 실행 상태 | 지원7 Active variant single-RPC/head/token/row·stale-token 거절, daemon213 및 source107 fresh release SDK27/context replay `VERIFIED`; learned 품질·speed·Linux release `NOT_RUN` |
 | 선행 결과 | [O4-E3-01](O4-E3-01-active-selection-race.md), [O4-E3-02](O4-E3-02-admission-pin-transfer.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)

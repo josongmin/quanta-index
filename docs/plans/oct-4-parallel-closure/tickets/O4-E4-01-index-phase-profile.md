@@ -5,12 +5,19 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | exact live-BM25 producer·artifact migration seam 수리 및 workspace lifecycle oracle `VERIFIED`; release phase profile·scale·seal streaming-pass 비용은 `NOT_RUN` |
+| 실행 상태 | exact live-BM25·artifact migration seam·lifecycle oracles 및 Gin99 fresh release full-ingest child clocks `VERIFIED`; tier lifecycle/scale·isolated seal-scan cost는 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
-## 목적
+## 2026-10-04 Gin99 matching release full-ingest 관측
+
+- E1-04 actual capture의 `/private/tmp/qi-name4-v3/capture/strategy-00-fw_strict/retrieval-diagnostic.json`을 manifest의 diagnostic SHA와 대조했다. source107 SDK fresh matching binaries에서 accepted99 file scopes, semantic windows0인 full ingest였다. 각 child clock과 직접 parent의 포함 관계/잔여 시간을 실제 값으로 검사해 모두 통과했다.
+- `lexical_build_ns`2,614.010ms: preparation866.973, writer mutation143.131, text authority360.419, file authority1,097.648, seal100.468ms이며 top-level 미귀속 잔여45.371ms다. coverage write836.688ms, changed source write1,087.021ms는 각각 preparation/file authority의 하위값이다. 중복 합산하지 않는다.
+- seal writer commit8.769ms, merge wait0.155ms, commitment78.658ms이며 file admission21.464ms는 commitment의 하위값이다. merge wait는 compaction/vendor scan을 포함할 수 있어 scan-only 비용으로 표시하지 않는다. `activation_ns`는 null로 유지한다.
+- 단일 Darwin/shared-host99-file/hash-dev 관측이며 syscall별 fsync 비용·full/delta/no-op/delete/reopen aggregate·physical I/O·peak RSS·observer A/B·정식 반복 성능 증거가 아니다. 이 값만으로 group barrier/token-authority 최적화 조건을 채택하지 않는다.
+
+## 목적과 남은 profile
 
 full/delta/delete/no-op/reopen의 저장·검증·shard 비용과 transient resource를 분해해 필요한 최적화와 capacity 거절을 결정한다.
 

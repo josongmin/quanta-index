@@ -15,6 +15,7 @@
 - `VERIFIED`: clean `1071692b2dd4d5a77db54f79ecd0e80a1a20b2a7`에서 `just retrieval-sdk-proof-fresh /Users/songmin/Documents/code-new/qi-oct4-sdk-proof-fresh-20261004-v2` — exit0, 비어 있는 fresh target/release/all-features, SDK27 selected/run/passed,0 failed/skipped,tests19.140s. 전체 배치에서 Nextest stdio leak 표시는 없었다. 앞선 debug leak1 관측을 소급 삭제하지 않는다.
 - `VERIFIED`: 같은 checkout의 `uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py verify --receipt /Users/songmin/Documents/code-new/qi-oct4-sdk-proof-fresh-20261004-v2/execution-context.json` — 별도 재검증 exit0. matching runner SHA는 `e6c1ff016c13a374eb52378f52af4ea0b3afcee08f1b58284653a1f3eb294f51`, searchd SHA는 `8e8439ed3b439f5874089b0a3b2d2dcacc8ce29d0be9a40d9ca3112c55de27b5`다.
 - source107 Contract v3와 SDK fresh v2를 후속 admission/capture의 실제 입력으로 사용한다. Darwin/hash-dev SDK seam을 learned retrieval 품질·performance·Linux release 또는 hosted CI로 승격하지 않는다.
+- exact source107의 `gh run list --commit 1071692b2dd4d5a77db54f79ecd0e80a1a20b2a7 --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`는 exit0/`[]`였다. 해당 hosted CI scope는 `NOT_RUN`이다.
 
 ## 목적과 증거 경계
 

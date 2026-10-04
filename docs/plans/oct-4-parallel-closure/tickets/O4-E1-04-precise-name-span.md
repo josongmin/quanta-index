@@ -26,8 +26,6 @@ evaluator에는 indexed_span_diagnostics와 declaration_recall_at_k/declaration_
 - 실제 Gin checkout `d3ffc9985281dcf4d3bef604cce4e662b1a327a6`의99 Go files 및 exact-name4개에 대해 source SHA/byte witnesses를 읽어 PREPARE했다. matching release binaries 뒤 canonical source oracle의 symbol/name judgments로 새 suite/pack을 생성하고 실제 단독 `exact_symbol_name` 캡처를 할 계획이다. 아직 input 생성/capture/replay는 `NOT_RUN`이다. 과거 file-only controls를 새 name-span gold로 재결속하지 않는다.
 - 현재 exact symbol route는 OSA 오타를 교정하지 않는다. 기존 `go_declaration_name_osa1_v1`의 distinct-file scoreboard를 name-span recovery로 환산하지 않는다. 새 실제 SDK symbol capture와 지원 가능한 name lane의 전체 scoreboards는 `NOT_RUN`; fixture 통과를 benchmark 완료로 승격하지 않는다.
 
-## 착수 입력
-
 ## 2026-10-04 Gin4 실제 exact-name 진단
 
 - helper v1은 `responseWriter` receiver 내부의 `Write`를 함수명으로 선택해 witness assertion에서 실패했다. 실제 Go 선언 anchor와 독립 source oracle는 함수명 `[1797,1802)`를 가리킨다. 두 줄의 helper 수리 뒤 새 root에서 suite/pack을 생성했다. 제품/평가기 계약을 수정하지 않았다.

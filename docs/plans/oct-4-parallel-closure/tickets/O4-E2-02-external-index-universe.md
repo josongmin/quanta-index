@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `DATA_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | Sourcegraph owner169·v5 12repo/13,347파일 owned native scope와 독립 replay `VERIFIED`; OpenGrok fresh scope v1 `FAILED`, v2 producer exit0/24 sweeps 수집, offline raw replay 실행 중. 전체 UID/새 query 전후 bracket `NOT_RUN` |
+| 실행 상태 | Sourcegraph owner169·v5 12repo/13,347파일 native scope/replay 및 OpenGrok v2 24 sweeps/path-bearing posting offline replay `VERIFIED`; 전체 OpenGrok UID·auxiliary·새 query bracket qualification `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -50,6 +50,14 @@ B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 
 - 별도 현재 관측 `docker inspect --format '{{json .NetworkSettings.Ports}}' <C3-container>`은 `8080/tcp → 127.0.0.1:18083`를 반환했다. 현재 endpoint 매핑의 read-only 관측이며, producer/consumer가 실제 query 전후에 이를 검사한다는 보장은 아니다.
 
 ## 착수 입력
+
+## 2026-10-04 OpenGrok v2 독립 raw replay 완료
+
+- `VERIFIED`: clean source107에서 `uv run --frozen --extra dev python /tmp/quanta-e2-og-fullscope-replay-20261004-v1.py --spec /private/tmp/quanta-e2-og-scope-input-20261004.json --capture /Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/opengrok-native-full-20261004-v2 --source-root /Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index --source-head 1071692b2dd4d5a77db54f79ecd0e80a1a20b2a7 --output /Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/opengrok-native-full-20261004-v2-offline-replay-v1.json` — exit0.
+- 실제 replay는80 API inventory responses,24 repository-phase sweeps의26,694 served files,4 retained native snapshots 및13,347 path-bearing full-posting rows를 검증했다. 해당 row들의 UID nonnull/global uniqueness 및 stored type/reference가 일치했다. index SHA는 `ae8623d124eeac39af460ce985d4b901ddac2c22e90d3350df354be2d09a9873`다.
+- result는 `qualified:false`, `query_bracketed:false`, `entire_uid_universe_verified:false`, `auxiliary_document_contents_verified:false`를 유지한다. auxiliary4,268의 count만 관측됐으며 물리 index 재읽기·새 query request·native API port bracket은 이 실행 범위가 아니다. 기존 producer summary의 전체 UID 표현을 이 증거 범위로 승격하지 않는다.
+
+## 착수 입력과 추가 qualification
 
 - 외부 BASE의 sourcegraph-native-content-8l9gxy35, opengrok-source-posting-reference-full-moyyggn_ 역사적 증거
 - 새 capture의 정확한 release/manifest/file hashes, live service/runtime/config/image/index tree identity
