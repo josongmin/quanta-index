@@ -65,6 +65,7 @@
 - 이 결과는256MiB history/300s diagnostic의 기능 검증이다. default large30s/16MiB lifecycle, ANN semantic recall/relevance, cold page cache, 정식 latency 비교, 전체 process owner27 및 Linux release를 검증한 결과가 아니다. sourcecef 영향 harness/runtime Clippy는 후속 실행 중이며 아직 PASS를 주장하지 않는다.
 - 후속 `FAILED`: `./scripts/cargow --lane clippy-lane clippy -p quanta-index-searchd-harness -p quanta-index-searchd-runtime --all-targets --all-features --locked -- -D warnings` — exit101. 새 fixture의 type_complexity/collapsible_if2건이었다. tuple projection의 local type alias와 같은 predicate의 let-chain으로 정리했으며 lint allowance를 추가하지 않았다.
 - 최종 style bytes에서 같은 Clippy 명령 `VERIFIED`: exit0,7.12s. 기존 Tantivy vendor warning8개는 남는다. `just fmt-check`, `just rust-public-api`, `just rust-cargo-modules`, `just rust-hexagonal` 및 `git diff --check`도 exit0이다. 이 검사는 sourcecef 이후 main의 root-owned fixture overlay(SHA `1afc50f4863d4ed008b75ed5094ea9aef04009952fb1491a2fc6307911600ef9`)에 대한 결과다. assertion/query/source 조건은 유지했고 최종 clean source/owner release 재검증을 다음 실행에서 고정한다.
+- 최종 clean source `0e6c7e7e9494b63fdb33f4594df059817459d3b1`에서 위 exact release owner 명령을 다시 실행해 `VERIFIED`: exit0, release compile2m49s,1/1 passed·70.352s, owner26개 filtered out. fixture SHA `1afc50f4863d4ed008b75ed5094ea9aef04009952fb1491a2fc6307911600ef9`의 실제 실행이다. hash-dev/300s/256MiB 기능 scope이며 기존 sourcecef66.736s 관측과 별도로 보존한다. 같은 clean source의 scale/open-loop matching binary 빌드를 시작했으며 tier 실행 완료 전에는 lifecycle/성능 통과를 주장하지 않는다.
 
 ## 착수 입력과 실제 tier 실행
 
