@@ -991,7 +991,9 @@ impl PhaseSampler {
         let cpu_ended = CpuSnapshot::observe();
         let teardown_started = Instant::now();
         self.stopped.store(true, Ordering::Release);
-        let worker = self.worker.take().expect("phase sampler owns its worker");
+        let Some(worker) = self.worker.take() else {
+            anyhow::bail!("scale: RSS sampler worker missing at stop");
+        };
         worker.thread().unpark();
         let (samples, observer_periodic_probe_wall_ms) = worker
             .join()
@@ -1115,6 +1117,17 @@ fn combine_phase_result<T>(
         }
         .into()),
     }
+}
+
+fn record_phase(
+    phases: &mut BTreeMap<&'static str, PhaseResourceV1>,
+    name: &'static str,
+    observation: PhaseResourceV1,
+) -> AnyResult<()> {
+    if phases.insert(name, observation).is_some() {
+        anyhow::bail!("scale: duplicate phase resource observation {name}");
+    }
+    Ok(())
 }
 
 fn current_rss_bytes() -> AnyResult<u64> {
@@ -1569,9 +1582,9 @@ fn measure_scoped_delete_reopen(
     let _count = validate_scoped_response(&successor, None, &global_reopened)?;
     verify_scoped_repositories(rt, &successor)?;
     let mut phase_resources = BTreeMap::new();
-    phase_resources.insert("delete_seal", delete_resource);
-    phase_resources.insert("delete_activate", activation_resource);
-    phase_resources.insert("same_process_reopen", reopen_resource);
+    record_phase(&mut phase_resources, "delete_seal", delete_resource)?;
+    record_phase(&mut phase_resources, "delete_activate", activation_resource)?;
+    record_phase(&mut phase_resources, "same_process_reopen", reopen_resource)?;
     Ok((
         DeleteReopenMeasurementV1 {
             delete_seal_ms,
@@ -1667,8 +1680,8 @@ fn measure_delta(
     })?;
     let after_activation = directory_bytes(rt.state_root())?;
     let mut phase_resources = BTreeMap::new();
-    phase_resources.insert("delta_ingest_seal", update_resource);
-    phase_resources.insert("delta_activate", activation_resource);
+    record_phase(&mut phase_resources, "delta_ingest_seal", update_resource)?;
+    record_phase(&mut phase_resources, "delta_activate", activation_resource)?;
     Ok((
         DeltaMeasurementV1 {
             update_ms,
@@ -1789,8 +1802,8 @@ fn measure_small_tier_with_config(
         let (delta, delta_resources) =
             measure_delta(&mut rt, seed).map_err(|error| stage_or_preserve("delta", error))?;
         let mut phase_resources = delta_resources;
-        phase_resources.insert("full_ingest_seal", build_resource);
-        phase_resources.insert("full_activate", activation_resource);
+        record_phase(&mut phase_resources, "full_ingest_seal", build_resource)?;
+        record_phase(&mut phase_resources, "full_activate", activation_resource)?;
 
         Ok(TierMeasurement {
             tier: ScaleTier::Small,
@@ -1874,8 +1887,8 @@ fn measure_scoped_delta(
     })?;
     let after_activation = directory_bytes(rt.state_root())?;
     let mut phase_resources = BTreeMap::new();
-    phase_resources.insert("delta_ingest_seal", update_resource);
-    phase_resources.insert("delta_activate", activation_resource);
+    record_phase(&mut phase_resources, "delta_ingest_seal", update_resource)?;
+    record_phase(&mut phase_resources, "delta_activate", activation_resource)?;
     Ok((
         DeltaMeasurementV1 {
             update_ms,
@@ -2049,10 +2062,12 @@ pub fn measure_tier_with_runtime_config(
             measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)
                 .map_err(|error| stage_or_preserve("delete_reopen", error))?;
         let mut phase_resources = delta_resources;
-        phase_resources.extend(delete_resources);
-        phase_resources.insert("full_ingest", ingest_resource);
-        phase_resources.insert("full_seal", seal_resource);
-        phase_resources.insert("full_activate", activation_resource);
+        for (name, observation) in delete_resources {
+            record_phase(&mut phase_resources, name, observation)?;
+        }
+        record_phase(&mut phase_resources, "full_ingest", ingest_resource)?;
+        record_phase(&mut phase_resources, "full_seal", seal_resource)?;
+        record_phase(&mut phase_resources, "full_activate", activation_resource)?;
         Ok(TierMeasurement {
             tier,
             seed,
@@ -2314,6 +2329,7 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
                 "rss_method": if cfg!(target_os = "linux") { "proc_self_status_vmrss" } else { "ps_rss_kib_self" },
                 "sample_interval_ms": PHASE_RSS_INTERVAL.as_millis(),
                 "maximum_allowed_gap_ms": PHASE_RSS_MAX_GAP.as_millis(),
+                "interior_required_after_ms": PHASE_RSS_INTERIOR_REQUIRED_AFTER.as_millis(),
                 "observed_max_gap_ms": observation.observed_max_gap_ms,
                 "interior_samples": observation.interior_samples,
                 "discarded_outside_phase_samples": observation.discarded_outside_phase_samples,
@@ -2342,7 +2358,7 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
             "system_ms": measurement.cpu.map(|cpu| cpu.system_ms),
         },
         "phase_resources": phase_resources,
-        "phase_resources_method": "RUSAGE_SELF CPU deltas and sampled current RSS; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
+        "phase_resources_method": "RUSAGE_SELF CPU deltas for harness plus in-process daemon; sampled current RSS; macOS ps probe child CPU is excluded; observer setup and teardown are outside operation wall timers; physical write I/O is not measured",
         "file_count": measurement.file_count,
         "serving_owner_count": 1,
         "source_repo_count": measurement.source_repo_count,
@@ -3028,8 +3044,17 @@ mod tests {
                 .contains("fixed sampler fault")
         );
         assert_eq!(record["failure"]["cleanup"]["message"], "driver stop fault");
-        assert_eq!(record["failure"]["secondary_failures"].as_array().unwrap().len(), 2);
-        assert_eq!(record["failure"]["secondary_failures"][1]["context"], "phase resource observation");
+        assert_eq!(
+            record["failure"]["secondary_failures"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            record["failure"]["secondary_failures"][1]["context"],
+            "phase resource observation"
+        );
         Ok(())
     }
 
@@ -3511,6 +3536,10 @@ mod tests {
             .unwrap()
             .interior_samples = 0;
         assert!(artifact(&no_interior, head, host).is_err());
+        let observation = sample_measurement().phase_resources["full_activate"].clone();
+        let mut phases = BTreeMap::new();
+        record_phase(&mut phases, "full_activate", observation.clone())?;
+        assert!(record_phase(&mut phases, "full_activate", observation).is_err());
         Ok(())
     }
 

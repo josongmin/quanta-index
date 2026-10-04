@@ -1187,6 +1187,27 @@ mod tests {
 
     #[test]
     fn javascript_and_typescript_definitions() {
+        for exported in [
+            "const", "var", "true", "false", "for", "function", "return", "if", "this",
+            "null", "debugger", "new",
+        ] {
+            let source = format!("function local() {{}} export {{ local as {exported} }};");
+            let definitions = extract_symbols("exports.js", &source)
+                .expect("reserved words are valid exported names");
+            assert_eq!(definitions.len(), 1, "an export alias is not a declaration");
+            assert_eq!(find(&definitions, "local").local_name, "local");
+        }
+        for invalid in [
+            "function const() {}",
+            "import { value as const } from 'module';",
+            "export { value as };",
+            "const value = ;",
+        ] {
+            assert!(matches!(
+                extract_symbols("broken.js", invalid),
+                Err(SymbolExtractError::ParseFailure { .. })
+            ));
+        }
         let js = "export class Queue {\n  \
                   push(item) {}\n  \
                   static make() {}\n\

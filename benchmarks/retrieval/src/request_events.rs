@@ -74,8 +74,8 @@ pub(crate) fn client_observation_value(
             "total_ns": timing.total_ns, "encode_ns": timing.encode_ns,
             "connect_ns": timing.connect_ns, "write_ns": timing.write_ns,
             "decode_call_ns": timing.decode_call_ns, "read_io_ns": timing.read_io_ns,
-            "decode_non_read_ns": timing.decode_call_ns - timing.read_io_ns,
-            "unallocated_ns": timing.total_ns - children_ns,
+            "decode_non_read_ns": timing.decode_call_ns.saturating_sub(timing.read_io_ns),
+            "unallocated_ns": timing.total_ns.saturating_sub(children_ns),
         }));
     }
     if pair.resolve_request_id == pair.text_request_id || total_ns > sdk_execute_ns {
@@ -87,7 +87,7 @@ pub(crate) fn client_observation_value(
         "clock": "client_monotonic_duration_ns",
         "timing_boundary": "successful_sdk_query_rpc_calls",
         "sdk_execute_ns": sdk_execute_ns, "rpc_total_ns": total_ns,
-        "sdk_unallocated_ns": sdk_execute_ns - total_ns, "rpcs": rpcs,
+        "sdk_unallocated_ns": sdk_execute_ns.saturating_sub(total_ns), "rpcs": rpcs,
         "read_io_accounting": "nested_inside_decode_call",
         "decode_non_read_accounting": "elapsed_local_work_not_cpu_time",
     }))
@@ -260,7 +260,7 @@ mod tests {
         row.rpcs[1].request_id = 11;
         mutants.push(row);
         let mut row = fixture.clone();
-        row.rpcs.pop();
+        let _removed = row.rpcs.pop();
         mutants.push(row);
         let mut row = fixture.clone();
         row.rpcs.push(row.rpcs[0]);
