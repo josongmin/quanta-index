@@ -15,12 +15,12 @@
 
 ## 배경과 현재 상태
 
-run.py는 query_warmup_passes=0을 이미 허용하고 qualified speed는 1회 이상을 요구한다. 기존 unit acceptance는 실제 Quanta/Semble 0-vs-1 결과 parity를 증명하지 않는다. 과거 qg15 warmup 합계 18.707초는 새 wall 절감 예측값으로 사용하지 않는다.
+run.py는 query_warmup_passes=0을 이미 허용하고 qualified speed는 1회 이상을 요구한다. build_query_protocol은 warmup/measurement shuffle에 하나의 RNG를 사용하므로 같은 seed라도 warmup 수가 바뀌면 measured schedule이 달라진다. 실제 helper에서 8tasks/seed7/2repetitions의 0/1 순서 차이를 확인했다. 이 source probe는 제품 결과 parity 증거가 아니다. 과거 qg15 warmup 합계 18.707초는 새 wall 절감 예측값으로 사용하지 않는다.
 
 ## 착수 입력
 
 - 작은 fixed corpus/suite/query protocol, matching Quanta runner/daemon와 Semble environment
-- 동일 result/status/query order·profile·seed를 유지한 0/1 두 quality-only spec; 새 외부 output roots
+- 동일 task set/cold probe/profile/seed/repetitions의 0/1 두 quality-only spec; 각 protocol SHA·실제 measured schedule과 새 외부 output roots. 같은 seed의 측정 순서 동등성을 가정하지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
 
@@ -35,8 +35,8 @@ run.py는 query_warmup_passes=0을 이미 허용하고 qualified speed는 1회 �
 
 ## 실행 단계
 
-1. 0/1 spec의 유일한 정책 차이를 warmup schedule로 제한하고 모든 output root를 분리한다.
-2. 현 runner/adapter로 동일 fixture를 실제 실행해 measured normalized result rows/status/score bits의 parity를 확인한다. identity hashing과 record persistence를 timer 밖에 둔다.
+1. task set/cold probe/profile/seed/repetitions를 고정하고 warmup 수만 설정상 바꾼다. canonical helper로 각 protocol을 생성해 별도 SHA와 실제 schedule을 보존한다. measured order·전체 protocol bytes가 같다고 표시하지 않는다.
+2. 현 runner/adapter로 동일 fixture를 실제 실행한다. (task_id, measured repetition)으로 정확히 대응해 그 task의 ranked rows/order/status/score bits를 비교하고, 각 원본 phase ledger는 자기 protocol과 replay한다. 전체 event 순서를 강제로 맞추거나 hash를 재작성하지 않는다. identity hashing과 record persistence는 timer 밖에 둔다.
 3. cold·warmup·measured request ledger와 canonical schema를 검증하고 zero-warmup에서 가짜 warm observation을 발행하지 않는다.
 4. qualified-speed zero-warmup 거절을 유지하고 zero quality result에는 speed qualification을 발행하지 않는다.
 5. 실제 parity가 확인된 cohort의 quality spec만 0으로 바꾸고 절감된 phase/wall을 별도 diagnostic으로 보고한다.
@@ -46,12 +46,12 @@ run.py는 query_warmup_passes=0을 이미 허용하고 qualified speed는 1회 �
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
 - `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -k 'zero_warmups or qualified_speed or query_protocol'`
-- 실제 0/1 Quanta+Semble fixture capture: 동일 measured rows/status/score bits, 명시적 request/phase ledger, elapsed clock의 범위를 비교한다.
+- 실제 0/1 Quanta+Semble fixture capture: 같은 task/repetition의 measured rows/status/score bits, 각자의 request/phase ledger와 protocol SHA, elapsed clock 범위를 비교한다. order-sensitive 결과 차이가 있으면 warmup0을 채택하지 않는다.
 - Negative: speed-mode warmup0, protocol/spec mismatch, 같은 row count지만 후보가 다른 응답, 누락 measured phase 거절.
 
 ## 완료 조건
 
-- 0/1 실제 parity와 zero-warmup speed refusal이 있고 사용된 quality specs에 정책이 명시돼 있다.
+- 실제 task별 0/1 parity·schedule 차이를 포함한 ledger replay·zero-warmup speed refusal이 있고 quality specs에 정책이 명시돼 있다. 같은 measured order로만 격리된 비용 실험이 필요하면 별도 method 계약을 결정한다; 현재 protocol을 변조하지 않는다.
 - 실측 없는 wall 절감이나 qualified latency를 주장하지 않는다.
 
 ## 중단·거절·재개 조건

@@ -51,6 +51,13 @@ B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 
 - Positive: full native inventory와 same-universe manifest equality; before/after unchanged index.
 - Negative: B08 receipt를 B09에 적용, missing/extra/wrong hash, source revision drift, content/defs/refs 혼동, fabricated pre-capture timestamp 거절.
 
+## Existing scope 소비와 추가 producer
+
+- B08의 기존 13,347-file receipts는 원본 bytes·같은 universe/서비스/index revision·유효 retention/phase binding을 replay한 범위에서 소비한다. 모든 파일 probe를 무조건 다시 만들지 않는다. B09 11,695파일 또는 새 서비스 bracket에 소급 적용하지 않는다.
+- Sourcegraph receipt validator는 full path/SHA/native bytes와 terminal progress를 검사하지만 native inventory 생성기가 아니다. 필요한 producer를 live_lexical_external.py의 기존 backend 경로에 연결하고 existing receipt verifier를 그대로 소비한다.
+- bounded API/listing/SSE cap·partial/unknown과 collector MAX_INDEX_FILES 등의 actual limit을 확인한다. 기대 population이 bound를 넘으면 explicit refusal/streamed bounded plan 또는 비적격 scope로 처분하며 단순 limit 상향으로 completeness를 주장하지 않는다.
+- post-capture receipt는 after_only다. before/after snapshot identity는 실제 fresh query bracket에서 수집한다; timestamp와 precondition을 사후 합성하지 않는다.
+
 ## 완료 조건
 
 - 제품×repository×profile마다 실제 입증한 source/index scope와 누락·unknown 집합이 있다.

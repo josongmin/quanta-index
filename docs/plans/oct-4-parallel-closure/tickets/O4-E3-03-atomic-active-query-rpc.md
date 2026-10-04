@@ -15,7 +15,7 @@ SDK Active 요청에서 사전 resolve 왕복을 제거할 수 있는 원자적 
 
 ## 배경과 현재 상태
 
-SdkClient.pin_active_selector는 ResolveActiveGeneration을 먼저 보내고 explicit pin+ResolvedActive token으로 다음 query를 구성한다. server는 Active selector를 지원하지만 기존 응답 pin만으로 A→B→A token identity를 검증할 수 있다고 가정할 수 없다. 과거 2개 query의 resolve1.5–1.6ms는 비용 위치일 뿐 절감 보장이 아니다.
+SDK pin_active_selector는 ResolveActiveGeneration을 먼저 보내고 explicit pin+ResolvedActive token으로 다음 query를 구성한다. server는 Active selector를 지원하지만 기존 응답 pin만으로 A→B→A token identity를 검증할 수 있다고 가정할 수 없다. 과거 2개 query의 resolve1.5–1.6ms는 비용 위치일 뿐 절감 보장이 아니다.
 
 ## 착수 입력
 
@@ -28,13 +28,21 @@ SdkClient.pin_active_selector는 ResolveActiveGeneration을 먼저 보내고 exp
 
 | 파일 | 함수 / 경계 | 구체적인 변경 또는 검증 | 모드 |
 | --- | --- | --- | --- |
-| [crates/quanta-index-sdk/src/client.rs](../../../../crates/quanta-index-sdk/src/client.rs) | pin_active_selector / dispatch_query_inner | atomic active-query route가 final selected snapshot을 반환할 때 pre-resolve를 제거하고 exact response binding을 유지한다. | OWNED |
+| [crates/quanta-index-sdk/src/client.rs](../../../../crates/quanta-index-sdk/src/client.rs) | pin_active_selector / pin_active_query / resolve_lexical_query_generation / dispatch_query_inner | atomic active-query route가 final selected snapshot을 반환할 때 pre-resolve를 제거하고 exact response binding을 유지한다. | OWNED |
 | [crates/quanta-index-sdk/src/binding.rs](../../../../crates/quanta-index-sdk/src/binding.rs) | query generation/domain/response validation | generation/token/domain/variant/row identity를 actual selected response와 검증한다. missing/wrong snapshot 거절. | OWNED |
 | [crates/quanta-index-search-plane/src/query_dispatcher/selection.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/selection.rs) | active and joint selection | 한 snapshot에서 track pin/token을 결정하고 acquired view까지 결속한다. | OWNED |
 | [crates/quanta-index-search-plane/src/query_dispatcher/planning.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/planning.rs) | planned lexical/semantic query | 선택 authority와 response materialization 사이에 ambient latest read를 추가하지 않는다. | SHARED |
 | [crates/quanta-index-contract/src/ipc/split.rs](../../../../crates/quanta-index-contract/src/ipc/split.rs) | SearchPlaneQueryIpcRequest/Response | 현 DTO에서 selected snapshot/token 증거가 부족할 때만 I0와 현재 wire를 진화시킨다. | SHARED |
 | [crates/quanta-index-sdk/src/tests/query_tests.rs](../../../../crates/quanta-index-sdk/src/tests/query_tests.rs) | observed active query RPCs | fixed atomic snapshot expected rows와 RPC count, token conflicts/ABA/continuation tests를 추가한다. | OWNED |
 | [benchmarks/retrieval/tests/sdk_roundtrip.rs](../../../../benchmarks/retrieval/tests/sdk_roundtrip.rs) | real-daemon query observation | 단일RPC actual SDK seam과 normalized result parity를 검증한다. | SHARED |
+| [crates/quanta-index-contract/src/results/query_responses.rs](../../../../crates/quanta-index-contract/src/results/query_responses.rs) | TextQueryResponse / SymbolQueryResponse / SemanticQueryResponse / HybridQueryResponse / HybridSeedQueryResponse / SearchPlaneHistoryQueryResponse / SearchPlaneRuntimeMetadataQueryResponse | 실제 결과 DTO·custom serializer/strict visitor에서 selected snapshot/token 증거를 결속한다. 현재 generation 필드만으로 token/ABA가 검증된다고 가정하지 않는다. 변경 시 split envelope·SDK binding·fixtures를 같은 계약에서 갱신한다. | SHARED |
+| [crates/quanta-index-search-plane/src/query_dispatcher/dispatcher.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/dispatcher.rs) | ResolveActiveGeneration / dispatch | 현재 Active resolution과 query dispatch caller를 조사하고 single-query 선택 identity의 생성/전달 지점을 같이 갱신한다. 사전 resolve를 다른 숨은 RPC로 옮기지 않는다. | OWNED |
+| [crates/quanta-index-search-plane/src/query_dispatcher/routes/lexical.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/lexical.rs) | lexical response materialization | 선택된 view의 identity를 final Text response에 직접 결속한다. Symbol/Semantic/Hybrid 등 영향 variant의 생성 지점도 함께 inventory하고 변경한다. | SHARED |
+| [crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs) | semantic response materialization | semantic/hybrid single-selection의 actual track/snapshot에서 응답 authority를 구성한다. 서로 다른 catalog 재조회로 track pair를 조합하지 않는다. | SHARED |
+| [crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs) | hybrid response materialization | joint selection/view의 lexical+semantic source identity를 실제 hybrid response와 결속한다. E4 policy/ranking hunk와 I0가 충돌 없이 통합한다. | SHARED |
+| [crates/quanta-index-search-plane/src/query_dispatcher/routes/history.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/history.rs) | SearchPlaneHistoryQueryResponse materialization | History Active의 실제 generation/token과 selected read-view identity를 응답에 결속한다. selected variant에 대한 SDK binding과 strict DTO를 함께 검증한다. | SHARED |
+| [crates/quanta-index-search-plane/src/query_dispatcher/routes/runtime_metadata.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/runtime_metadata.rs) | SearchPlaneRuntimeMetadataQueryResponse materialization | RuntimeMetadata Active의 selected scope/generation identity를 응답과 같은 권위에서 구성하고 unsupported selector의 typed refusal을 유지한다. | SHARED |
+| [crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid_seed.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid_seed.rs) | HybridSeedQueryResponse materialization | 양 track selection과 SeedFusionIdentity/contribution source를 한 snapshot에서 결속하고 hidden pre-resolve/RPC 재도입을 거절한다. | SHARED |
 
 ## 실행 단계
 
@@ -43,6 +51,20 @@ SdkClient.pin_active_selector는 ResolveActiveGeneration을 먼저 보내고 exp
 3. SDK raw Active/ResolvedActive/explicit pin callers를 함께 업데이트하고 old two-step fallback 계층을 장기 유지하지 않는다.
 4. ABA, concurrent activate, explicit conflict, cursor continuation, stale generation, ancestor domain, credential/deadline/cancel/reconnect cases를 실행한다.
 5. representative fixed fixture→full exact1196 순서로 row/order/count/status/byte/unit parity를 검증하고 E4-06에 source change를 넘긴다.
+
+## 지원 variant와 실제 RPC 수 inventory
+
+| 현재 경로 | 현 source에서 확인할 추가 요청 | 단일 선택 변경의 요구 |
+| --- | --- | --- |
+| Text/Symbol/History/RuntimeMetadata의 Active | 보통 Active resolve 1회+본 query | selected snapshot/token·정확한 row binding을 같은 응답에서 검증 |
+| Semantic의 Active+lexical_scope Active | 각 track resolve, 이후 query | lexical/semantic scope가 같은 joint-selection 계약을 충족하는지 검사 |
+| Hybrid/HybridSeed의 양 track Active | track별 resolve 2회+query: 총3회 가능 | 두 track을 한 snapshot에서 선택하고 응답 contribution identity까지 결속 |
+| Text rev:at.time(...) | resolve_lexical_query_generation의 별도 ResolveLexicalGeneration | ancestor domain/pin을 유지하고 RPC 제거 여부를 별도 판정; 숨은 resolve를 count에서 제외하지 않음 |
+| SemanticWorkBoundedV1/Structural | exact generation 필요 또는 Active 미지원 | 현재 typed refusal 유지; 지원 범위를 이 최적화에서 자동 확대하지 않음 |
+
+- source의 pin_active_query 모든 arms와 resolve_lexical_query_generation을 inventory한다. Text2RPC 관측을 모든 route의 보편적 baseline으로 사용하지 않는다.
+- contract/results/query_responses.rs의 현재 generation 필드와 strict serializers를 기준으로 selected token 증거를 설계한다. 필요한 영향을 받는 History/RuntimeMetadata/HybridSeed 응답 producer도 같은 변경에서 inventory한다.
+- 실제 SDK trace의 request_id+RPC kind로 route별 전후 count를 검증한다. 각 route의 domain/generation/token/variant/rows와 ancestor/cursor semantics가 독립 expected snapshot을 만족해야 해당 one-RPC claim을 발행한다.
 
 ## 검증 계획 — NOT_RUN
 
@@ -55,7 +77,7 @@ SdkClient.pin_active_selector는 ResolveActiveGeneration을 먼저 보내고 exp
 
 ## 완료 조건
 
-- native Active query가 선택된 generation/token과 exact-bound response로 하나의 query RPC를 실행한다.
+- 지원 inventory의 각 Active variant가 선택된 generation/token과 exact-bound response로 하나의 query RPC를 실행한다. route별 실제 count·선택 계약·parity를 발행하고 unsupported/exact-only variant의 typed refusal을 유지한다.
 - atomic linearization·result identity 보존과 runtime tests가 입증되며 speedup은 E4-06에서 따로 판정한다.
 
 ## 중단·거절·재개 조건

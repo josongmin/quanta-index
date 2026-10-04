@@ -28,7 +28,7 @@
 2. Sourcegraph/OpenGrok actual indexed-file inventory를 현재 corpus commit/source mapping과 대조한다.
 3. required-cell inventory와 canonical readiness helper의 실제 controller 연결을 완료하고 ready sibling을 실패와 분리해 실행한다.
 4. Semble import/env/model asset/corpus copy/worker/validation/assembly 단계를 실제 child clocks로 귀속하고 disjoint totals와 parent unattributed residual을 출력한다.
-5. 기존 warmup0 API의 실제 Quanta/Semble 0-vs-1 row parity·phase ledger·speed-mode refusal을 확인한 뒤 quality-only producer에서만 사용한다.
+5. warmup0를 선택할 때만 실제 Quanta/Semble task별 ranked rows·status·f64 bits parity와 각자 protocol의 phase ledger·speed-mode refusal을 입증한다. 동일 RNG는 warmup 유무에 따라 measured 순서가 달라지며 검증 전에는 기존 warmup1을 유지한다.
 6. E1의 admitted input와 I0 matching binaries에서 5제품을 실행하고 source/request/response-bound union을 E1에 전달한다. Gin20·ARB original/adapted·외부 cohort는 별도 셀과 lane으로 유지한다.
 
 ## 티켓 실행 순서
@@ -38,7 +38,7 @@
 | [O4-E2-01](../tickets/O4-E2-01-native-completed-timer.md) | 외부 제품의 completed-response 시간 경계 | P1 / `CODE_AND_PROOF` | 즉시 조사·fixture 준비 가능 |
 | [O4-E2-02](../tickets/O4-E2-02-external-index-universe.md) | Sourcegraph·OpenGrok 전체 native 색인 범위 | P1 / `DATA_AND_PROOF` | 즉시 조사·fixture 준비 가능 |
 | [O4-E2-03](../tickets/O4-E2-03-required-cells-and-scheduling.md) | 필수 셀 inventory와 실패 분리 스케줄 | P0 / `INTEGRATION` | 즉시 조사·fixture 준비 가능 |
-| [O4-E2-04](../tickets/O4-E2-04-fresh-five-product-captures.md) | 5제품 실제 캡처와 blind union 반환 | P1 / `EXECUTION` | [O4-E1-03](../tickets/O4-E1-03-admission-and-split.md), [O4-E2-01](../tickets/O4-E2-01-native-completed-timer.md), [O4-E2-02](../tickets/O4-E2-02-external-index-universe.md), [O4-E2-03](../tickets/O4-E2-03-required-cells-and-scheduling.md), [O4-I0-02](../tickets/O4-I0-02-matching-source-proof.md), [O4-E2-06](../tickets/O4-E2-06-quality-only-warmup.md) |
+| [O4-E2-04](../tickets/O4-E2-04-fresh-five-product-captures.md) | 5제품 실제 캡처와 blind union 반환 | P1 / `EXECUTION` | [O4-E1-03](../tickets/O4-E1-03-admission-and-split.md), [O4-E2-02](../tickets/O4-E2-02-external-index-universe.md), [O4-E2-03](../tickets/O4-E2-03-required-cells-and-scheduling.md), [O4-I0-02](../tickets/O4-I0-02-matching-source-proof.md) |
 | [O4-E2-05](../tickets/O4-E2-05-semble-process-attribution.md) | Semble process 비용의 phase 귀속 | P2 / `CODE_AND_PROOF` | 즉시 조사·fixture 준비 가능 |
 | [O4-E2-06](../tickets/O4-E2-06-quality-only-warmup.md) | 기존 quality-only warmup=0 정책의 실제 parity | P1 / `PROOF_AND_CONFIG` | 즉시 조사·fixture 준비 가능 |
 
@@ -59,7 +59,7 @@
 | [tools/benchmark/retrieval/lexical_file_comparison.py](../../../../tools/benchmark/retrieval/lexical_file_comparison.py) | product_result / external result parsing | SHARED | [O4-E2-01](../tickets/O4-E2-01-native-completed-timer.md) |
 | [tools/benchmark/retrieval/live_lexical_external.py](../../../../tools/benchmark/retrieval/live_lexical_external.py) | _http / _process / _sourcegraph / _opengrok / _cs / capture / verify<br>_backend_runtime / _backend_snapshot / _opengrok_indexed_inventory / _opengrok_indexed_view<br>_selected_products / capture / verify<br>capture / verify / BoundRelease | OWNED | [O4-E2-01](../tickets/O4-E2-01-native-completed-timer.md), [O4-E2-02](../tickets/O4-E2-02-external-index-universe.md), [O4-E2-03](../tickets/O4-E2-03-required-cells-and-scheduling.md), [O4-E2-04](../tickets/O4-E2-04-fresh-five-product-captures.md) |
 | [tools/benchmark/retrieval/retrieval_contract.py](../../../../tools/benchmark/retrieval/retrieval_contract.py) | shared completed boundary owner | SHARED | [O4-E2-01](../tickets/O4-E2-01-native-completed-timer.md) |
-| [tools/benchmark/retrieval/run.py](../../../../tools/benchmark/retrieval/run.py) | run_quality_batch / run_quality_matrix / verify_quality_matrix<br>cmd_quanta / cmd_pair / run_quality_matrix / cmd_verdict<br>build_query_protocol / validate_qualified_speed_spec / load_spec / run_quality_batch | SHARED/READ | [O4-E2-03](../tickets/O4-E2-03-required-cells-and-scheduling.md), [O4-E2-04](../tickets/O4-E2-04-fresh-five-product-captures.md), [O4-E2-06](../tickets/O4-E2-06-quality-only-warmup.md) |
+| [tools/benchmark/retrieval/run.py](../../../../tools/benchmark/retrieval/run.py) | run_quality_batch / run_quality_matrix / verify_quality_matrix<br>cmd_quanta / cmd_pair / run_quality_matrix / cmd_verdict<br>build_query_protocol / validate_qualified_speed_spec / load_spec / run_quality_batch | SHARED | [O4-E2-03](../tickets/O4-E2-03-required-cells-and-scheduling.md), [O4-E2-04](../tickets/O4-E2-04-fresh-five-product-captures.md), [O4-E2-06](../tickets/O4-E2-06-quality-only-warmup.md) |
 | [tools/benchmark/retrieval/semble.py](../../../../tools/benchmark/retrieval/semble.py) | run_adapter / run_completed_worker<br>check_semble_env / build_isolated_corpus / materialize_model_cache / run_completed_worker / run_adapter / assemble_record<br>validate_worker_phase_timings / validate_native_profile_report<br>run_adapter / query protocol validation | OWNED | [O4-E2-04](../tickets/O4-E2-04-fresh-five-product-captures.md), [O4-E2-05](../tickets/O4-E2-05-semble-process-attribution.md), [O4-E2-06](../tickets/O4-E2-06-quality-only-warmup.md) |
 | [tools/benchmark/retrieval/sourcegraph.py](../../../../tools/benchmark/retrieval/sourcegraph.py) | validate_capture | OWNED | [O4-E2-02](../tickets/O4-E2-02-external-index-universe.md) |
 | [tools/benchmark/retrieval/sourcegraph_index_scope.py](../../../../tools/benchmark/retrieval/sourcegraph_index_scope.py) | verify / _verify | OWNED | [O4-E2-02](../tickets/O4-E2-02-external-index-universe.md) |
@@ -73,11 +73,11 @@
 
 E2-01/02/03/05/06의 source 조사·fixture 준비는 시작 가능하다. live_lexical_external.py·semble.py는 E2 담당자 한 명이 통합한다. 실제 외부 service index 교체와 제품 호출은 동일 resource별 직렬 실행한다.
 
-E2-04는 E1-03·E2-01/02/03/06·I0-02 이후 실행한다. E1 final-pool이 query/source binding을 바꾸면 해당 required cells를 새 commitment에서 재실행한다.
+E2-04의 hard prerequisites는 해당 repository의 E1-03·E2-02/03·I0-02다. E2-01은 completed speed claim, E2-06은 warmup0 선택에만 요구한다. warmup1과 의미가 명시된 historical transport quality diagnostic은 가능한 범위에서 진행한다. controller/schema/collector 코드는 PREPARE 때 제출해 I0가 VALIDATE한 뒤 admission을 ISSUE한다. query/source/unit/model/index/profile/clock 변경 시 영향 셀을 새 commitment에서 실행한다.
 
 ## 에픽 완료 조건
 
-- 모든 필수 셀이 native input/runtime/index scope/request/raw response에서 설명된다.
+- 모든 필수 셀이 native input/runtime/index scope/request/raw response에서 설명된다. unsupported/cap/partial/error/missing inventory는 운영 coverage이며 성공 비교/전체 qualification 달성을 뜻하지 않는다.
 - completed-response와 transport/worker clocks의 의미가 구분되고 persistence/hash가 completed clock에 섞이지 않는다.
 - blind union과 operational outcomes를 E1에 넘기고 final qrels에서 raw replay가 일치한다.
 

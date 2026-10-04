@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E2 — 외부 제품 native 범위·응답 경계·실제 캡처](../epics/E2-external-capture-and-timing.md) / E2 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION` |
 | 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
-| 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-01](O4-E2-01-native-completed-timer.md), [O4-E2-02](O4-E2-02-external-index-universe.md), [O4-E2-03](O4-E2-03-required-cells-and-scheduling.md), [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E2-06](O4-E2-06-quality-only-warmup.md) |
+| 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-02](O4-E2-02-external-index-universe.md), [O4-E2-03](O4-E2-03-required-cells-and-scheduling.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
@@ -49,8 +49,19 @@ Quanta33캡처/11,272응답과 historical5제품21,815행은 별도의 source/�
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
 - `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py tools/ci/tests/test_retrieval_capture.py tools/ci/tests/test_lexical_five_product_oracle.py -q`
-- 실제 CLI는 current --help/loaded spec으로 확정하고 outside-checkout fresh output를 사용한다. 계획에는 실행하지 않은 capture command를 성공으로 기록하지 않는다.
+- `uv run --frozen --extra dev python tools/benchmark/retrieval/run.py quality-matrix --spec <issued-quality-matrix.json>`
+- `uv run --frozen --extra dev python tools/benchmark/retrieval/run.py quality-matrix-verify --spec <same-quality-matrix.json>`
+- `uv run --frozen --extra dev python tools/benchmark/retrieval/live_lexical_external.py --spec <issued-external-spec.json>`
+- `uv run --frozen --extra dev python tools/benchmark/retrieval/live_lexical_external.py --verify <fresh-native-capture-root>`
+- 실제 loaded spec의 outside-checkout output·제품·scope를 먼저 검증한다. quality matrix의 Quanta/Semble 실행과 별도 native external collector를 같은 required-cell inventory에서 join한다. 위 명령은 NOT_RUN이다.
 - Raw independent replay: wrong request/source/indexed file set, duplicate file ranks, partial underfill, mismatched pack, unsupported normalization을 거절한다.
+
+## 셀별 선택 조건
+
+- 위 선행 결과는 해당 repository/product/capture epoch 범위에 적용한다. 실패한 sibling과 신규 unseen holdout은 ready 셀을 막지 않는다.
+- E2-01 completed timer가 미완료이면 품질 raw는 historical transport boundary를 정확히 유지한 diagnostic으로만 발행하고 completed-response speed qualification은 NOT_RUN이다.
+- E2-06 실제 parity가 미완료이면 quality spec은 기존 warmup1을 유지한다. warmup0을 선택한 셀은 E2-06 parity·protocol ledger가 선행 결과다.
+- name metric·single-RPC·durable batching·token authority를 해당 epoch에 도입했으면 I0에서 그 producer/consumer 및 narrow rails를 먼저 통합한다.
 
 ## 완료 조건
 

@@ -15,7 +15,7 @@
 
 ## 배경과 현재 상태
 
-이번 계획 기준 HEAD44bd68a1에는 앞선82파일 변경이 들어갔으며 origin/main local ref와 같다. 현재 dirty는 이 채팅의 FINAL-REMAINING-WORK.md 수정이다. 각 에픽의 owner-local proof와 final source qualification은 다르다. run.py·schema·registry·shared Rust runner changes가 경합의 중심이다.
+이번 보완의 시작 기준은 main@f23af16f436c76ad4a700b75de4dd5b5771f56a6, checkout clean이다. 44bd68a1 이후 변경은 계획 문서이며 구현 소스는 같은 기준이다. 실행 착수 시 HEAD/dirty/로컬 ref를 다시 조회한다. 각 에픽의 owner-local proof와 해당 epoch qualification은 다르다. run.py·schema·registry·shared Rust runner changes가 경합의 중심이다.
 
 ## 착수 입력
 
@@ -39,6 +39,8 @@
 | [Cargo.lock](../../../../Cargo.lock) | Rust dependency resolution | 새 dependency가 실제 필요할 때 Cargo.toml과 같은 source epoch에서만 수정한다. | SHARED |
 | [pyproject.toml](../../../../pyproject.toml) | benchmark Python dependencies | numeric/collector dependency 변경이 실제 필요한 경우 현 canonical Python environment에 반영한다. | SHARED |
 | [uv.lock](../../../../uv.lock) | Python frozen resolution | pyproject.toml과 함께 frozen dependency resolution을 갱신하고 owner tests를 재실행한다. | SHARED |
+| [docs/adr/OCT-04-002-configuration-and-generation-policy.md](../../../../docs/adr/OCT-04-002-configuration-and-generation-policy.md) | Proposed decision input | E3 actual operator/config 필요성을 모아 채택/불필요/추가 입력 필요 상태와 근거를 남긴다. 요구 부재를 구현 완료로 표시하지 않는다. | READ |
+| [docs/adr/OCT-04-003-source-preparation-sdk.md](../../../../docs/adr/OCT-04-003-source-preparation-sdk.md) | Proposed decision input | 실제 producer fixture와 source-preparation 요구를 resolve하고 새 API의 선행 필요성을 판정한다. 현 lexical closure의 자동 선행 조건이 아니다. | READ |
 
 ## 실행 단계
 
@@ -56,6 +58,11 @@
 - git status --short; git diff --check (각 command를 별도로 실행)
 - source/required test identity collections와 proof-required-tests equality; producer/consumer field/profile consistency.
 - Negative: 동시 schema twins, wrong owner reset/copy, count-only registry approval, stale source/context rebind를 거절한다.
+
+## P2 설계 결정의 담당
+
+- OCT-04-002는 I0가 E3의 실제 operator/config/readiness evidence를 받아 결정 근거를 기록한다. OCT-04-003은 I0가 실제 producer fixture/canonical caller를 받아 필요성을 판정한다.
+- 입력이 없으면 해당 결정은 DEFERRED/BLOCKED로 남기고 구현 티켓을 합성하지 않는다. 불필요하다는 실제 판단이 있으면 이유와 trigger를 남긴다. 두 ADR는 아직 Proposed이며 이 계획 보완이 Accepted로 승격하지 않는다.
 
 ## 완료 조건
 

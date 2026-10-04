@@ -33,6 +33,8 @@ Gin exact1196, 원래 generated 300, B09 public/global12는 이미 진단·튜�
 | [tools/benchmark/corpus_binding.py](../../../../tools/benchmark/corpus_binding.py) | validate_split_manifest | repository/source-family/near-duplicate 노출과 cross-split source 일치를 검사한다. | OWNED |
 | [tools/benchmark/retrieval/source_oracle.py](../../../../tools/benchmark/retrieval/source_oracle.py) | SourceOracleIndex | mechanical gold의 존재·hash·parser coverage를 검증하고 semantic relevance 판단과 구분한다. | OWNED |
 | [tools/ci/tests/test_corpus_binding.py](../../../../tools/ci/tests/test_corpus_binding.py) | split leakage mutants | same repository/family/source 복제·renamed duplicates·stale release negative를 보강한다. | OWNED |
+| [tools/benchmark/retrieval/identifier_robustness_suite.py](../../../../tools/benchmark/retrieval/identifier_robustness_suite.py) | propose / propose_typo_operation | 현 four-edit family producer와 collision/admission 경계를 소비한다. source-query label 권위를 새 sampling scorer로 복제하지 않는다. | READ |
+| [tools/benchmark/retrieval/gold_oracle.py](../../../../tools/benchmark/retrieval/gold_oracle.py) | mechanical gold / declaration contracts | 이름·prefix/infix/components·OSA1·no-answer의 independent contract와 coverage를 source bytes에서 검증하고 reviewed NL 의미 gold와 구별한다. | READ |
 
 ## 실행 단계
 
@@ -49,6 +51,13 @@ Gin exact1196, 원래 generated 300, B09 public/global12는 이미 진단·튜�
 - `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_corpus_binding.py tools/ci/tests/test_source_oracle_suite.py -q`
 - Positive: split manifest를 release bytes로 replay하고 query/source/family의 독립성을 확인한다.
 - Negative: 기존 global12를 renamed holdout으로 수입, family 복제 1000개 채움, unknown→no-answer, corpus exposure 누락 거절.
+
+## Unique-query와 holdout 노출 게이트
+
+- exact/prefix/infix/components/insert/delete/substitute/transpose/no-answer/NL/workflow를 요구된 lane별로 population·eligible·admitted·quota·underfill 사유/IDs로 발행한다. unique query≥1,000 요구는 동일 source family 반복이나 성능 observations로 채우지 않는다.
+- current holdout_sampling의 baseline_v3/scale_diagnostic_v1과 실제 quotas를 사용한다. 두 profile 모두 reviewed NL/workflow qrels가 없으면 underfill이다. scale profile의 내장 ≥1,000 refusal은 SCALE_MINIMUM_LANES의 mechanical lanes에만 적용되고 natural_language_workflow는 제외된다. profile 통과를 모든 요구 lane의 ≥1,000 issuance로 해석하지 않는다. 요청된 NL/workflow quota는 별도 ledger에서 판정하며 미충족 qualification은 NOT_RUN/BLOCKED다.
+- policy/model/chunking 후보와 acceptance를 결과를 보기 전에 고정하고 final holdout 접근은 별도 담당/단일 선택 평가로 제한한다. holdout 실패를 보고 튜닝했으면 그 population은 development exposure로 전환하고 새 미사용 holdout을 발행한다.
+- 기존 split validator의 URL/revision/family/exact/near-copy policy는 source leakage를 검사한다. 의미상 query/intent 누출과 과거 사용 이력까지 자동 증명하지는 않으므로 exposure ledger를 별도 대조한다.
 
 ## 완료 조건
 

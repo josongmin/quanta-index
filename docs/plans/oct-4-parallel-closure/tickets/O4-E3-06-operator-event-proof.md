@@ -34,21 +34,29 @@
 | [crates/quanta-index-sdk/src/observability.rs](../../../../crates/quanta-index-sdk/src/observability.rs) | request_events | 현 response binding/limit/plane/process identity를 소비한다. | OWNED |
 | [crates/quanta-index-searchctl/src/lib.rs](../../../../crates/quanta-index-searchctl/src/lib.rs) | RequestEvents dispatch/rendering | 현 CLI에서 process/loss/truncation을 정확히 보여주는지 확인한다. | OWNED |
 | [crates/quanta-index-searchd-runtime/tests/process_readiness_owner_v1.rs](../../../../crates/quanta-index-searchd-runtime/tests/process_readiness_owner_v1.rs) | real operator process proofs | observer denial/instance restart/child loss 및 ring disclosure negative를 현재 rail에 등록한다. | OWNED |
+| [crates/quanta-index-searchd-runtime/tests/e2e_process_readiness.rs](../../../../crates/quanta-index-searchd-runtime/tests/e2e_process_readiness.rs) | binary_daemon_exposes_one_correlated_query_without_payload / binary_daemon_detects_lost_active_backend_root | 이미 있는 binary-process tests를 먼저 소비한다. 빠진 observer/instance/loss control만 이 실제 포함 module에 추가하고 owner wrapper와 registry를 연결한다. | OWNED |
+| [crates/quanta-index-searchd-runtime/tests/common/searchd_binary_process.rs](../../../../crates/quanta-index-searchd-runtime/tests/common/searchd_binary_process.rs) | SearchdBinaryProcess / searchd_binary_path | CARGO_BIN_EXE_quanta-index-searchd의 build-profile/source와 실제 child를 확인한다. 임의 env binary로 교체되지 않으며 owner-local binary process와 Linux fresh release proof는 별도다. | READ |
+| [crates/quanta-index-sdk/src/tests/control_tests.rs](../../../../crates/quanta-index-sdk/src/tests/control_tests.rs) | ProcessRequestEventsV1 controls | 기존 plane/limit/variant validation tests를 소비하고 missing/wrong process/loss binding case만 보강한다. | OWNED |
+| [crates/quanta-index-searchctl/src/render.rs](../../../../crates/quanta-index-searchctl/src/render.rs) | render_request_events | pretty/JSON에서 process instance·sequence/drop/truncation을 실제 DTO 의미대로 출력하는지 검증한다. 재현된 표시 결함이 있으면 현 renderer를 수정한다. | OWNED |
+| [crates/quanta-index-searchctl/src/tests/control.rs](../../../../crates/quanta-index-searchctl/src/tests/control.rs) | request-events parse / render tests | 기존 request-events parsing·pretty/JSON fixtures를 실행하고 loss/limits/refusal 표시가 실제 contract와 같은지 보강한다. | OWNED |
+| [crates/quanta-index-searchctl/tests/cli_smoke.rs](../../../../crates/quanta-index-searchctl/tests/cli_smoke.rs) | control CLI process smoke | CLI process의 request-events success/refusal와 typed output를 test UDS에서 확인한다. 이 mock dispatcher smoke를 real-daemon proof로 승격하지 않는다. | OWNED |
 
 ## 실행 단계
 
-1. 기존 전체 UI/SDK/control/ring caller graph를 확인해 unimplemented와 already-implemented를 구분한다.
+1. 기존 SDK/control/ring/CLI caller graph와 binary_daemon_exposes_one_correlated_query_without_payload 등 actual process tests를 확인한다. 기존 case를 재작성하지 않고 현 source에서 재실행한다. process_readiness_owner_v1.rs는 e2e_process_readiness.rs를 포함하는 target wrapper다.
 2. observer principal 요청 시 ring read 호출과 disclosure가 0인지 고정 port로 검증한다.
 3. operator success, wrong plane/limit/oversize, ring wrap/drop/sequence exhaustion와 process restart를 검사한다.
 4. 실제 query/ingest request를 server→backend/provider→terminal request ID로 join하고 missing/drop은 명시한다.
-5. supervisor child/maintenance/backend loss를 각각 readiness false와 연결하고 registry의 actual scenarios를 I0에 전달한다.
+5. supervisor child/maintenance/backend loss를 readiness false와 연결하고 실제 scenarios를 I0에 전달한다. CARGO_BIN_EXE로 수행한 local binary process proof와 P09 Linux release-daemon-fresh scope를 구별한다. 누락 release target은 I0-03에서 등록한다.
 
 ## 검증 계획 — NOT_RUN
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
 - `./scripts/cargow test -p quanta-index-ipc --lib --all-features --locked`
+- `./scripts/cargow test -p quanta-index-search-plane --lib --all-features --locked control_dispatcher`
 - `./scripts/cargow test -p quanta-index-sdk --lib --all-features --locked`
+- `./scripts/cargow test -p quanta-index-searchctl --lib --test cli_smoke --all-features --locked`
 - `./scripts/cargow test -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --all-features --locked`
 - 재현된 public/decode/process surface 수정 시 AGENT_PLAYBOOK의 해당 escalation gate를 실행한다.
 

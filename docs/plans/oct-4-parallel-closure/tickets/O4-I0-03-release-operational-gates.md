@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P1 / `RELEASE_GATE` |
 | 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
-| 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E1-06](O4-E1-06-final-pool-and-scoreboards.md), [O4-E3-06](O4-E3-06-operator-event-proof.md), [O4-E4-06](O4-E4-06-qualified-performance.md), [O4-E4-07](O4-E4-07-policy-and-semantic-residuals.md) |
+| 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
@@ -36,6 +36,20 @@ SEP21 R0–R6는 proof-result authority, P03–P08, P09, semantic omission sourc
 | [scripts/verify-repomap-cross-repo.sh](../../../../scripts/verify-repomap-cross-repo.sh) | current canonical paired verification | 실제 Semantica dependency graph가 frozen Quanta roots로 연결됐는지 검증한 뒤 QBC paired rail을 실행한다. | READ |
 | [crates/quanta-index-searchd-runtime/tests/state_migration_owner_v1.rs](../../../../crates/quanta-index-searchd-runtime/tests/state_migration_owner_v1.rs) | existing backup/restore refusal proof | stopped daemon·exclusive lease/current format backup/verify/restore-forward·wrong format/target를 실제 release root에서 검증한다. | READ |
 | [docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md](../../../../docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md) | R0–R6/P03–P12 current gate | 현재 code와 evidence를 재대조한 disposition·exact target·blocked operational input만 갱신한다. | SHARED |
+| [crates/quanta-index-contract/src/ipc/ingest.rs](../../../../crates/quanta-index-contract/src/ipc/ingest.rs) | source batch / terminal receipt | semantic required-scope oracle가 실제 producer source-plan에서 발행된 경우만 existing batch/receipt에 결속한다. self-authored completeness flag를 독립 oracle로 만들지 않는다. | SHARED |
+| [crates/quanta-index-search-plane/src/semantic_derive.rs](../../../../crates/quanta-index-search-plane/src/semantic_derive.rs) | derive_semantic_stream_from_semantic_sources_v1 | legitimate unchanged delta와 omitted/duplicate required scope를 구별하는 current derive/ingest boundary를 확인한다. 원인별 oracle 부재는 BLOCKED로 남긴다. | SHARED |
+| [tools/ci/paired_cargo_resolution.py](../../../../tools/ci/paired_cargo_resolution.py) | validate_resolution | 현재 typed Cargo metadata의 실제 package roots·consumer feature profile·lock mapping을 exact pair receipt에 결속한다. | SHARED |
+| [tools/ci/binary_custody.py](../../../../tools/ci/binary_custody.py) | pin / verify | built/provided/custody binary identity와 later source/binary drift를 existing custody helper로 검사한다. | READ |
+| [tools/ci/proof-manifest.schema.json](../../../../tools/ci/proof-manifest.schema.json) | ProofManifestV1 source/action/result fields | operational-action mode 도입이 필요한 경우 실제 typed pre/post producer·authority parser/checker와 같은 current schema로 진화시킨다. | SHARED |
+| [tools/ci/write-proof-aggregate.py](../../../../tools/ci/write-proof-aggregate.py) | aggregate verdict / source pair | P00–P12 prerequisites와 개별 stage results에서 final verdict를 계산한다. missing/blocked/staged를 passed로 바꾸지 않는다. | SHARED |
+| [tools/ci/tests/test_paired_cargo_resolution.py](../../../../tools/ci/tests/test_paired_cargo_resolution.py) | resolved dependency mutants | second Quanta root/wrong package/feature/lock mapping을 refused로 검증한다. | SHARED |
+| [tools/ci/tests/test_write_proof_aggregate.py](../../../../tools/ci/tests/test_write_proof_aggregate.py) | aggregate stage separation | deploy-only→activated/rollback 승격, missing prereqs/wrong exact pair refusal를 검증한다. | SHARED |
+| [crates/quanta-index-searchd/src/app/state_format.rs](../../../../crates/quanta-index-searchd/src/app/state_format.rs) | current format / authority | current-format root identity·legacy refusal를 소비한다. 새 legacy importer를 만들지 않는다. | READ |
+| [crates/quanta-index-searchd/src/app/state_migration.rs](../../../../crates/quanta-index-searchd/src/app/state_migration.rs) | backup / verify / restore-forward composition | stopped daemon/exclusive lease·retention·activation incarnation rotation을 actual release process에서 검증한다. | READ |
+| [crates/quanta-index-searchd-runtime/src/state_migration.rs](../../../../crates/quanta-index-searchd-runtime/src/state_migration.rs) | state custody runtime owner | original manifest·bounded sidecars·exact paths과 wrong target/format refusal를 현재 owner에서 확인한다. | READ |
+| [crates/quanta-index-searchd/src/cli/command.rs](../../../../crates/quanta-index-searchd/src/cli/command.rs) | state migration CLI | 실제 disposable/authorized target에 current backup/verify/restore-forward를 실행하고 rollback boundary를 분리한다. | READ |
+| [docs/operator/state-cutover-runbook.md](../../../../docs/operator/state-cutover-runbook.md) | operator cutover/rollback steps | 현 state roots·retention/lease/restore-forward 조건과 actual operational receipts에서 관측한 단계만 갱신한다. | SHARED |
+| [Justfile](../../../../Justfile) | proof-p11-deployment / proof-p11-activation / proof-p11-rollback / final qualification | 현재 없는 P11 action recipes를 implemented라고 표시하지 않는다. 실제 authorized target 입력과 typed action/result authority가 확보된 경우만 현재 front door에 추가한다. | SHARED |
 
 ## 실행 단계
 
@@ -50,13 +64,38 @@ SEP21 R0–R6는 proof-result authority, P03–P08, P09, semantic omission sourc
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.
 
-- 기존 tools/ci/tests/test_proof_execution_result.py, test_write_proof_manifest.py, test_check_proof_authority.py owner tests를 canonical environment에서 실행한다.
+- `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_proof_execution_result.py tools/ci/tests/test_write_proof_manifest.py tools/ci/tests/test_check_proof_authority.py tools/ci/tests/test_paired_cargo_resolution.py tools/ci/tests/test_write_proof_aggregate.py -q`
+- `just proof-p12a-proof-infrastructure` — registry가 요구하는 raw authority/aggregate/paired/local-scope/handoff owners 전체. formal claim에는 이 registered recipe의 actual result가 필요하다.
 - current registry의 selected release/paired targets를 actual commands로 실행하고 raw authority를 independent verifier로 확인한다.
 - Negative: wrong binary/source pair/package root/host class/CI run, forged counts, missing operation pre/post, ACK divergence, wrong format/rollback boundary 거절.
 
+## Registry의 실제 target·release 잔여
+
+| 범위 | 현 canonical 진입점 / 별도 필요한 결과 |
+| --- | --- |
+| P00–P02 | proof-p00-authority-freeze, proof-p01-canonical-identity, proof-p02a-repomap-compiler, proof-p02b-operation-journal의 **현재 source 결과**도 aggregate CODE_QUALIFIED prerequisites다. 과거 완료만으로 생략하지 않는다. |
+| P03–P06 owners | just proof-p03-candidate-activation-owner / proof-p04-read-view-lifetime-owner / proof-p05-query-truth-owner / proof-p06-sdk-binding-owner. Linux fresh release targets는 별도 source/binary/raw를 요구한다. |
+| P07 | just proof-p07-provider-boundary-owner는 local provider boundary다. p07-provider-boundary release node는 approved real-provider inputs·concrete target가 없는 staged 상태이므로 owner pass로 닫지 않는다. |
+| P08–P10 | just proof-p08-runtime-supervisor-owner / proof-p09-control-readiness-owner / proof-p10-state-migration-owner. actual Linux release binary의 signals/child-loss/readiness/bounded events/current-format custody와 typed targets가 별도 필요하다. |
+| P11 pair | just rust-verify-hellgate-cross-repo <actual-Semantica-checkout>. 현재 script는 clean exact pair·provided binary custody·resolved dependency graph/QBC tests를 요구한다. input env와 package roots는 actual source에서 resolve한다. |
+| P11 actions | registry의 proof-p11-deployment/activation/rollback은 선언된 future command며 현재 Justfile recipe가 없다. typed operational result producer·manifest/checker mode·distinct pre/post targets를 구현/검증한 뒤에만 executable로 전환한다. |
+| P12 | just proof-authority-code-gate / proof-authority-release-gate / proof-authority-final-qualification은 SEMANTICA_CHECKOUT·actual manifests를 요구한다. aggregate는 p12a-proof-infrastructure current-source 결과도 prerequisite로 소비한다. --require-all --bind-source의 final exact pair acceptance가 있어야 aggregate가 적격이다. |
+
+- 위 owner command는 NOT_RUN이다. release registry의 staged node를 넘기기 위해 빈 test-authority list·hand-written terminal/log·owner result를 reuse하지 않는다.
+- proof-manifest.schema.json·result producer/checker·aggregate·registered commands를 하나의 current authority로 수정한다. 새 동등한 evidence 체계를 만들지 않는다.
+- Semantica의 search_plane_handoff_dispatch lexical_batch/semantic_state와 source-plan/manifest, consumer Cargo roots는 실제 canonical graph에서 경로를 resolve한다. oracle가 없으면 producer-side work를 명시적으로 scope에 잡으며 lexical benchmark와 독립 진행한다.
+- authorized host/root가 없는 경우 Linux/operation scope는 BLOCKED다. ledger를 발행한 것과 실제 CODE_QUALIFIED/DEPLOYED/ACTIVATED/ROLLBACK_PROVEN 달성을 구분한다.
+
+## Qualification별 선행 범위
+
+- CODE_QUALIFIED는 현 registry의 P00–P11 source-bound prerequisites로 판정한다. E1 전체 라벨/미사용 holdout·E4 최적화/performance를 무조건 선행 조건으로 추가하지 않는다.
+- 제품 품질·unseen 정책·성능을 함께 주장하면 E1-06·E1-05·E4-06/07의 해당 scope 결과도 별도로 요구한다. source 변경이 있으면 I0-02 epoch를 다시 발행한다.
+- P09 owner proof에는 E3-06의 실제 daemon diagnostics를 소비한다. Linux release·real-provider·paired producer·state restore·operational actions는 각각 실제 target/input/result를 요구한다.
+- BLOCKED/NOT_RUN 상태 inventory 작성은 ledger 작업 완료다. 요청한 qualification 자체는 해당 필수 결과가 없으면 미완료이며 실행 티켓을 닫지 않는다.
+
 ## 완료 조건
 
-- CODE_QUALIFIED·DEPLOYED·ACTIVATED·ROLLBACK_PROVEN 각 범위에 실제로 관측된 별도 proof 또는 명시적 BLOCKED/NOT_RUN이 있다.
+- 요청된 CODE_QUALIFIED·DEPLOYED·ACTIVATED·ROLLBACK_PROVEN은 각각 실제 필수 proof가 있어야 달성된다. BLOCKED/NOT_RUN ledger만 발행했다면 상태 정리는 끝났어도 해당 qualification 작업은 남아 있다.
 - bench completion·commit/push/local focused tests로 release state를 대체하지 않는다.
 
 ## 중단·거절·재개 조건

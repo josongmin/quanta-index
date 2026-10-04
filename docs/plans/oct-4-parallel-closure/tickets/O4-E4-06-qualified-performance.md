@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E4 — 인덱싱·typo 실행 비용·release 성능·scale](../epics/E4-storage-query-and-scale.md) / E4 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION` |
 | 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
-| 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E2-01](O4-E2-01-native-completed-timer.md), [O4-E2-05](O4-E2-05-semble-process-attribution.md), [O4-E3-03](O4-E3-03-atomic-active-query-rpc.md), [O4-E4-05](O4-E4-05-release-scale-load.md) |
+| 선행 결과 | [O4-I0-02](O4-I0-02-matching-source-proof.md), [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-01](O4-E2-01-native-completed-timer.md), [O4-E2-02](O4-E2-02-external-index-universe.md), [O4-E2-05](O4-E2-05-semble-process-attribution.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
@@ -52,6 +52,13 @@ B07에는 complete output/phase clocks/host timeline/required observations 검�
 - `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_completed_response_timing.py tools/ci/tests/test_retrieval_benchmark.py -q -k 'completed or qualified_speed or host_timeline or phase_digest'`
 - 실제 host-probe와 continuous timeline refusal controls: frequency unavailable/load/thermal/power drift/capture overlap/wrong phase bytes.
 - full expected schedule와 source closure를 independent verdict replay로 검증한다.
+
+## 성능 claim별 추가 조건
+
+- E3-03 single-RPC 또는 E4 storage/scanner/token 변경의 효과를 주장할 때는 그 선택된 변경·독립 결과 oracle를 I0 epoch에서 먼저 통합한다. baseline 두 RPC를 측정하는 데 single-RPC 구현 완료를 요구하지 않는다.
+- E4-05 전체 scale 성공은 작은 corpus의 query-speed 비교 선행 조건이 아니다. large-corpus capacity/tail/restart 성능 claim에는 해당 tier/profile의 E4-05 proof가 필요하다.
+- 외부 제품 speed claim은 해당 E2-02 native index scope와 서비스 topology/remote resource identity를 요구한다. Quanta-only이면 외부 scope는 NOT_APPLICABLE이고, Semble이 없으면 E2-05 범위도 비적용이다.
+- 현재 driver의 바닥값은 **20 frozen tasks, 5 fresh roots, warmup≥1, route당 합계1,000 measured warm observations, 정확히 한 Quanta route**다. E1의 lane별 unique-query≥1,000 요구와 observations를 혼동하지 않는다. 추가 표본/효과/CI 기준은 selected B07 contract에 맞춰 사전 확정한다.
 
 ## 완료 조건
 

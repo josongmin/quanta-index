@@ -38,7 +38,7 @@
 ## 실행 단계
 
 1. E3-01에서 현 계약상 결함 또는 채택된 더 강한 선택 계약의 실패가 확인된 경우만 implementation branch를 선택한다. 현 계약을 충족하고 제안도 채택되지 않았으면 proof로 NOT_APPLICABLE 처리한다.
-2. catalog→retention→registry lock order와 bounded claim 수명을 정하고 I/O/backend open을 guard 안에 넣지 않는다.
+2. 현재 catalog/retention/registry/mutation-coordinator caller의 lock acquisition graph를 먼저 작성해 기존 순서·역방향 호출을 확인한다. acyclic order와 bounded claim 수명을 정하고 I/O/backend open을 guard 안에 넣지 않는다. 이름 순서만 보고 catalog→retention→registry를 강제하지 않는다.
 3. 최소 admission claim을 선택과 함께 획득하고 read-view acquisition 후 기존 live handle 보호로 이전한다.
 4. explicit pin/token conflict·joint lexical+semantic snapshot·aux epochs의 refusal 계약을 유지한다.
 5. retire/GC/cancel/panic/cache-churn counterexamples와 real daemon case를 re-run한다.

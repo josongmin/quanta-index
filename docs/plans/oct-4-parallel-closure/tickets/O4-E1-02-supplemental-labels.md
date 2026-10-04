@@ -49,6 +49,13 @@
 - Positive: 원본 lo 41쌍 보존, suite threshold 2 유지, 신규 pair만 actual call로 판단.
 - Negative: explicit threshold mismatch, duplicate/already-judged pair, stale source text, supplied grade, invalid cached raw, subset-only no-answer 발행 거절.
 
+## 검수 권위와 task 처분
+
+- canonical helper는 서로 다른 reviewer_id 2개와 별도 adjudicator_id, frozen source/query/form coverage를 검사한다. 그 ID만으로 실제 호출·reviewer independence·human provenance를 증명하지 않는다.
+- 외부 실제 driver의 request/run ID·model revision/settings·rubric/input digest와 raw/cache source를 별도 재생한다. 실제 두 blind role 실행과 조정 실행을 AI provenance로 표시하며 사용된 model 수를 independence로 해석하지 않는다.
+- pooled files의 answerable=false는 pool 범위 판단이다. corpus-wide no-answer는 독립 source/oracle 또는 명시된 전수 판단이 있어야 한다. unknown을 grade0으로 채워 전체 no-answer를 발행하지 않는다.
+- unresolved를 제외할 경우 original task ID와 사유·변경된 분모를 발행한다. failed/blocked task가 남은 full C3 240 완료 scope는 FAILED/BLOCKED/NOT_RUN으로 남고, ready repository의 partial labels만 발행할 수 있다.
+
 ## 완료 조건
 
 - old/new/reused/unresolved/excluded pair 수가 원본 raw와 일치한다.

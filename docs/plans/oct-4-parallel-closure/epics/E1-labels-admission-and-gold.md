@@ -17,7 +17,7 @@
 
 ## 목표 계약과 변경 원칙
 
-- raw reviewer1/reviewer2/adjudicator → canonical qrels → suite/split/admission을 한 pipeline으로 발행한다. distinct model identity는 human independence 증명이 아니므로 실제 AI provenance와 human_provenance_attested:false를 유지한다.
+- raw reviewer1/reviewer2/adjudicator → canonical qrels → suite/split/admission을 한 pipeline으로 발행한다. 서로 다른 reviewer/adjudicator ID는 실제 역할 실행·독립성 증명이 아니므로 실제 run/model/settings/input/output provenance와 human_provenance_attested:false를 유지한다. 서로 다른 모델 제품 3개를 현 API 요구로 만들지 않는다.
 - final-pool 추가 검수는 같은 pipeline의 다음 qrel revision이다. unknown/unresolved는 명시적 판단·제외로 처리하고 0점/no-answer로 합성하지 않는다.
 - 이름 witness, symbol/unit 회수, 파일 Hit@k, source/parser coverage의 분모를 분리한다. B08/B09·file/chunk/symbol·default/explicit query 계약을 하나로 합산하지 않는다.
 - 독립 holdout은 기존 진단/튜닝 exposure와 repository/source-family/near-duplicate를 분리하고 license·commit·eligible/underfill을 고정한다.
@@ -30,7 +30,7 @@
 4. 정확한 declaration-name metric과 필요 시 Rust name witness producer를 같은 source authority에서 구현한다. 기존 definition span metric은 명칭과 의미를 유지한다.
 5. 미사용 holdout·ambiguity/no-answer·same-name relevance를 독립 발행한다. 각 family의 1000+ 목표는 실제 eligible population·underfill로 판단한다.
 6. E2 fresh candidates를 받으면 추가 qrel revision을 발행하고 최종 lane별 score/coverage/CI·pool exposure sensitivity를 재생한다.
-7. cold bootstrap이 최종 실행의 병목으로 측정된 경우만 독립 scalar/statistics reference와 fixed draws로 bounded vectorization을 한다.
+7. cold bootstrap이 유효한 기존 input 또는 최종 실행의 병목으로 측정된 경우만 독립 scalar/statistics reference와 fixed draws로 bounded vectorization을 한다.
 
 ## 티켓 실행 순서
 
@@ -41,8 +41,8 @@
 | [O4-E1-03](../tickets/O4-E1-03-admission-and-split.md) | 최종 suite·split·admission 연결 | P0 / `INTEGRATION` | [O4-E1-02](../tickets/O4-E1-02-supplemental-labels.md), [O4-I0-02](../tickets/O4-I0-02-matching-source-proof.md) |
 | [O4-E1-04](../tickets/O4-E1-04-precise-name-span.md) | 정확한 선언 이름 span과 unit 회수 평가 | P1 / `CODE_AND_PROOF` | 즉시 조사·fixture 준비 가능 |
 | [O4-E1-05](../tickets/O4-E1-05-untouched-holdout.md) | 독립 relevance와 미사용 holdout 발행 | P1 / `DATA_AND_PROOF` | 즉시 조사·fixture 준비 가능 |
-| [O4-E1-06](../tickets/O4-E1-06-final-pool-and-scoreboards.md) | 최종 합집합 검수·재채점·정책 판정 | P1 / `EXECUTION_AND_REPORT` | [O4-E1-03](../tickets/O4-E1-03-admission-and-split.md), [O4-E1-04](../tickets/O4-E1-04-precise-name-span.md), [O4-E2-04](../tickets/O4-E2-04-fresh-five-product-captures.md), [O4-E1-05](../tickets/O4-E1-05-untouched-holdout.md) |
-| [O4-E1-07](../tickets/O4-E1-07-bounded-bootstrap.md) | cold bootstrap의 결정적 bounded 계산 | P2 / `CONDITIONAL_CODE` | [O4-E1-06](../tickets/O4-E1-06-final-pool-and-scoreboards.md) |
+| [O4-E1-06](../tickets/O4-E1-06-final-pool-and-scoreboards.md) | 최종 합집합 검수·재채점·정책 판정 | P1 / `EXECUTION_AND_REPORT` | [O4-E1-03](../tickets/O4-E1-03-admission-and-split.md), [O4-E2-04](../tickets/O4-E2-04-fresh-five-product-captures.md) |
+| [O4-E1-07](../tickets/O4-E1-07-bounded-bootstrap.md) | cold bootstrap의 결정적 bounded 계산 | P2 / `CONDITIONAL_CODE` | 즉시 조사·fixture 준비 가능 |
 
 - `CONDITIONAL_CODE`는 병목/계약 실패 조건이 실제로 성립한 경우 구현한다. 조건 미성립은 근거가 있는 `NOT_APPLICABLE`로 닫는다.
 - `PROOF_FIRST`/`PROOF_THEN_CONDITIONAL_CODE`는 baseline 결과와 독립 expected contract를 먼저 발행한다.
@@ -63,10 +63,12 @@
 | [tools/benchmark/retrieval/admission.schema.json](../../../../tools/benchmark/retrieval/admission.schema.json) | required fields | SHARED | [O4-E1-03](../tickets/O4-E1-03-admission-and-split.md) |
 | [tools/benchmark/retrieval/corpus_set.py](../../../../tools/benchmark/retrieval/corpus_set.py) | freeze_one / freeze_set | OWNED | [O4-E1-05](../tickets/O4-E1-05-untouched-holdout.md) |
 | [tools/benchmark/retrieval/evaluator.py](../../../../tools/benchmark/retrieval/evaluator.py) | validate_suite / _check_split_leakage<br>_declaration_match / declaration_* / indexed_span_diagnostics<br>evaluate / evaluate_complete_scored_file_evidence / repository_cluster_ci<br>mean_ci / _bootstrap_bounds / query_family_cluster_ci / repository_cluster_ci | OWNED | [O4-E1-03](../tickets/O4-E1-03-admission-and-split.md), [O4-E1-04](../tickets/O4-E1-04-precise-name-span.md), [O4-E1-06](../tickets/O4-E1-06-final-pool-and-scoreboards.md), [O4-E1-07](../tickets/O4-E1-07-bounded-bootstrap.md) |
+| [tools/benchmark/retrieval/gold_oracle.py](../../../../tools/benchmark/retrieval/gold_oracle.py) | mechanical gold / declaration contracts | READ | [O4-E1-05](../tickets/O4-E1-05-untouched-holdout.md) |
 | [tools/benchmark/retrieval/holdout_review.py](../../../../tools/benchmark/retrieval/holdout_review.py) | validate_completed_forms / finalize_file_review_labels<br>capture_review_pool / bind_supplemental_review_tasks / finalize_file_review_labels<br>기존 supplemental/finalization pipeline | OWNED | [O4-E1-01](../tickets/O4-E1-01-original-review-resume.md), [O4-E1-02](../tickets/O4-E1-02-supplemental-labels.md), [O4-E1-06](../tickets/O4-E1-06-final-pool-and-scoreboards.md) |
 | [tools/benchmark/retrieval/holdout_sampling.py](../../../../tools/benchmark/retrieval/holdout_sampling.py) | build / _no_answer / _declarations | OWNED | [O4-E1-05](../tickets/O4-E1-05-untouched-holdout.md) |
 | [tools/benchmark/retrieval/identifier_robustness_fresh_join.py](../../../../tools/benchmark/retrieval/identifier_robustness_fresh_join.py) | build / common eligible & source admission | OWNED | [O4-E1-06](../tickets/O4-E1-06-final-pool-and-scoreboards.md) |
 | [tools/benchmark/retrieval/identifier_robustness_multiproduct_report.py](../../../../tools/benchmark/retrieval/identifier_robustness_multiproduct_report.py) | build / summarize | OWNED | [O4-E1-06](../tickets/O4-E1-06-final-pool-and-scoreboards.md) |
+| [tools/benchmark/retrieval/identifier_robustness_suite.py](../../../../tools/benchmark/retrieval/identifier_robustness_suite.py) | propose / propose_typo_operation | READ | [O4-E1-05](../tickets/O4-E1-05-untouched-holdout.md) |
 | [tools/benchmark/retrieval/lexical_five_product_oracle.py](../../../../tools/benchmark/retrieval/lexical_five_product_oracle.py) | score_record / evaluate | OWNED | [O4-E1-06](../tickets/O4-E1-06-final-pool-and-scoreboards.md) |
 | [tools/benchmark/retrieval/run.py](../../../../tools/benchmark/retrieval/run.py) | validate_admission_manifest / verify_admission_bundle / freeze_admission | SHARED | [O4-E1-03](../tickets/O4-E1-03-admission-and-split.md) |
 | [tools/benchmark/retrieval/source_oracle.py](../../../../tools/benchmark/retrieval/source_oracle.py) | declaration_census / SourceOracleIndex.declaration_name_spans<br>SourceOracleIndex | OWNED | [O4-E1-04](../tickets/O4-E1-04-precise-name-span.md), [O4-E1-05](../tickets/O4-E1-05-untouched-holdout.md) |
@@ -79,13 +81,13 @@
 
 ## 병렬 착수와 의존 경계
 
-E1-01, E1-04, E1-05 준비는 시작 가능하다. 같은 evaluator/source_oracle/holdout 파일 변경은 E1 담당자 한 명이 순서대로 합친다. 실제 model jobs·output namespace는 하나의 실행 owner가 관리한다.
+E1-01, E1-04, E1-05와 E1-07의 조건 판정·독립 numeric reference 준비는 시작 가능하다. 같은 evaluator/source_oracle/holdout 파일 변경은 E1 담당자 한 명이 순서대로 합친다. 실제 model jobs·output namespace는 하나의 실행 owner가 관리한다.
 
-원본/보충 검수 → 첫 admission(E1-03) → E2 fresh capture → 마지막 pool 검수(E1-06). final qrel만 바뀌면 요청 binding을 검사해 raw 재채점 가능성을 결정하고, 요청·source·unit이 바뀐 셀만 재실행한다.
+원본/보충 검수와 admission producer PREPARE → I0 선택 epoch VALIDATE → E1-03 repository별 admission ISSUE → E2 fresh capture → E1-06 final-pool 검수다. 준비된 file/NL replay는 새 untouched holdout·name lane 전체 완료를 기다리지 않는다. name 회수와 unseen 정책 주장은 각각 E1-04/05 결과를 요구한다. final qrel 변경은 실제 raw binding에 따라 scoring projection 또는 영향 셀 재캡처를 판정한다.
 
 ## 에픽 완료 조건
 
-- 모든 task/pair의 issued/excluded/failed/blocked 상태가 raw에서 재생되고 미판단 pair가 scored population에 없다.
+- 모든 task/pair의 issued/excluded/failed/blocked 상태가 raw에서 재생되고 미판단 pair가 scored population에 없다. 실패 inventory 발행만으로 요청된 C3 240·전체 lane qualification이 완료되는 것은 아니다.
 - 최종 suite·split·admission과 파일/name/symbol/NL lane 분모·점수·CI가 독립 oracle와 일치한다.
 - unseen·human·performance qualification은 실제 증거가 있는 범위에만 부여한다.
 

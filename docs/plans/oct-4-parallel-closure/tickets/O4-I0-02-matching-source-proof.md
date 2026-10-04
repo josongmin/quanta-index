@@ -5,13 +5,13 @@
 | 에픽 / 담당 | [I0 — 단일 통합 담당·source 검증·release 게이트](../epics/I0-integration-and-release-gates.md) / 단일 통합 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_AND_BUILD` |
 | 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
-| 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md), [O4-E1-04](O4-E1-04-precise-name-span.md), [O4-E2-01](O4-E2-01-native-completed-timer.md), [O4-E2-05](O4-E2-05-semble-process-attribution.md), [O4-E3-02](O4-E3-02-admission-pin-transfer.md), [O4-E3-03](O4-E3-03-atomic-active-query-rpc.md), [O4-E3-04](O4-E3-04-maintenance-health-metering.md), [O4-E3-05](O4-E3-05-publish-timeout-replay.md), [O4-E3-06](O4-E3-06-operator-event-proof.md), [O4-E4-02](O4-E4-02-generation-durable-barriers.md), [O4-E4-03](O4-E4-03-ascii-scanner-decision.md), [O4-E4-04](O4-E4-04-source-token-authority.md) |
+| 선행 결과 | [O4-I0-01](O4-I0-01-ownership-and-contract-freeze.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
 ## 목적
 
-각 에픽의 변경·조건부 disposition을 통합한 source에서 필요한 테스트와 실제 SDK seam을 입증하고 matching capture binaries를 제공한다.
+선택한 capture/performance/release epoch에 포함할 변경과 그 영향 범위를 먼저 고정한 뒤, 해당 source의 테스트·실제 SDK seam과 matching binaries를 발행한다. 미착수한 다른 에픽 전체를 capture 선행 조건으로 만들지 않는다.
 
 ## 배경과 현재 상태
 
@@ -19,7 +19,8 @@
 
 ## 착수 입력
 
-- 각 prerequisite ticket의 code/proof 또는 근거 있는 NOT_APPLICABLE disposition
+- I0-01의 epoch 범위: 포함할 product/driver/scorer 변경, 해당 patch-ready owner 결과·독립 oracle·mandatory surfaces, 미포함 티켓의 이유와 후속 epoch
+- E1-01/02/03의 review/admission, E2-01/03/05/06의 timer/controller/phase/warmup 등 **해당 epoch에 반영하는 모든 코드 변경**. 티켓 CLOSED 여부보다 실제 반영된 source를 검사한다.
 - final current source/lock/config, exact registry, canonical toolchain/resource admission
 - checkout 밖 fresh Contract/SDK/source-closure/output roots
 
@@ -39,12 +40,12 @@
 
 ## 실행 단계
 
-1. conditional tickets는 구현 완료 또는 조건 미성립의 실제 근거가 있어야 prerequisite resolution으로 인정한다.
+1. source를 PREPARE→VALIDATE→ISSUE로 처리한다. 각 owner가 독립 fixture·변경 patch와 영향 목록을 제출하고 I0가 선택한 epoch의 코드·schema·registry·dependencies를 먼저 통합한다. 아직 조사하지 않은 optional optimization은 PLANNED로 남긴다; NOT_APPLICABLE을 합성하지 않는다.
 2. focused tests와 AGENT_PLAYBOOK surface별 escalation을 통합 source에서 실행한다.
 3. source/runtime/lockfile과 actual test identity inventory를 고정하고 canonical Contract·SDK proof를 새 외부 root에서 실행한다.
 4. portable proof verifier로 source/binary/input/results를 독립 재생하고 실제 selected/executed/passed/failed/skipped를 확인한다.
 5. 필요한 hosted CI를 exact source에서 관측하고 remote result가 없으면 NOT_RUN/BLOCKED로 기록한다.
-6. matching runner/daemon binary를 E2-04·E4-05/06에 넘긴다. source epoch가 바뀌면 영향을 다시 검증한다.
+6. matching runner/daemon binary와 producer/controller source·config identity를 E1-03의 ISSUE 단계와 E2-04·E4-05/06에 넘긴다. ISSUE 뒤 코드 수정은 새 epoch의 PREPARE로 돌아가 영향받는 gates를 재실행한다. 이미 확인된 correctness failure는 optional로 분류해 우회하지 않는다.
 
 ## 검증 계획 — NOT_RUN
 
@@ -55,6 +56,13 @@
 - `just retrieval-sdk-proof-fresh <fresh-external-sdk-root>`
 - `uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py verify --receipt <fresh-external-sdk-root>/execution-context.json`
 - public SDK/contract: just rust-public-api; wire/decode: just rust-fuzz-smoke; module: just rust-hexagonal + just rust-cargo-modules; selection/state/ingress: just rust-profile test-daemon.
+
+## Epoch admission과 후속 작업
+
+- 선택한 source의 SDK/Contract/registry 실패, 필요한 raw/입력/반례 누락은 해당 capture scope를 BLOCKED/FAILED로 남긴다.
+- E3 selection/timeout/health 또는 E4 storage/scanner/token 변경을 epoch에 포함하면 그 owner oracle와 surface gates를 mandatory로 소비한다. 새 source가 실제 요구받는 계약을 깨뜨리는 알려진 반례는 미포함으로 숨길 수 없다.
+- 기존 두 RPC 경로나 warmup1을 유지하는 baseline epoch도 그 계약·입력·출력·timing boundary를 명시해 검증할 수 있다. single-RPC/token-index/pack 도입은 baseline capture의 자동 선행 조건이 아니다.
+- I0-02는 epoch별로 실행할 gate다. E1-03 source PREPARE, E1-07 scorer, E4-07 policy 등 후속 변경은 같은 티켓의 새 epoch로 재검증한다.
 
 ## 완료 조건
 

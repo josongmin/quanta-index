@@ -33,9 +33,13 @@ B09 frozen diagnostic에서 default23는 모두 ordinary literal-first suppressi
 | [crates/quanta-index-lexical/src/searcher/code_search/ranking.rs](../../../../crates/quanta-index-lexical/src/searcher/code_search/ranking.rs) | source-attested declaration ranking | distance/declaration/occurrence 불변식을 독립 gold로 확인한다. gold 교체로 rank gain을 만들지 않는다. | OWNED |
 | [tools/benchmark/retrieval/query_plan.py](../../../../tools/benchmark/retrieval/query_plan.py) | canonical lexical NL planner | 현 scored OR/UCD17 request와 raw semantic query를 보존하고 actual mismatch·route failure만 고친다. | OWNED |
 | [benchmarks/retrieval/src/query_plan.rs](../../../../benchmarks/retrieval/src/query_plan.rs) | Rust planner/effective request | Python producer/consumer와 같은 contract를 함께 변경하고 request-only replay를 실제 search proof와 구분한다. | SHARED |
-| [crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs) | candidate execution/contribution merge | READ: E3의 selection/view 계약을 소비해 failed stage를 추적한다. 입증된 ranking/fusion 변경이 필요하면 I0가 route hunk를 통합한다. | READ |
+| [crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs) | candidate execution/contribution merge | READ: E3의 selection/view 계약을 소비해 failed stage를 추적한다. 입증된 ranking/fusion 변경이 필요하면 I0가 route hunk를 통합한다. | SHARED |
 | [crates/quanta-index-search-plane/src/query_dispatcher/ranking.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/ranking.rs) | query ranking kernel | 구체적인 ranking 결함이 확인되면 현재 owner를 최소 변경한다. global RRF tuning은 isolated holdout ablation 뒤에만 허용한다. | SHARED |
 | [tools/ci/tests/test_retrieval_benchmark.py](../../../../tools/ci/tests/test_retrieval_benchmark.py) | planner/policy oracle | request/ambiguity/no-answer·critical strata 및 common cohort regression을 I0를 통해 등록한다. | SHARED |
+| [crates/quanta-index-search-plane/src/query_embedder.rs](../../../../crates/quanta-index-search-plane/src/query_embedder.rs) | provider/model identity / query embedding | semantic 후보 누락의 query embedding·model revision·budget/cancel·effective query를 실제 provider 경계에서 추적한다. model 변경은 독립 qrels/holdout ablation 이후 별도 selected change로 다룬다. | READ |
+| [crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs) | semantic candidate route | existing semantic request/model/source/generation과 candidate unit을 관측해 후보 생성 실패와 fusion 손실을 구별한다. | SHARED |
+| [crates/quanta-index-search-plane/src/query_dispatcher/tests/semantic.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/tests/semantic.rs) | semantic route independent fixtures | 동일 qrels ablation과 별개로 source/generation/filter/model/budget refusal 및 independently expected candidates를 검증한다. E3 selection fixture와 I0가 합친다. | SHARED |
+| [crates/quanta-index-search-plane/src/query_dispatcher/tests/hybrid.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/tests/hybrid.rs) | hybrid lane contribution fixtures | lexical/semantic candidate·contribution·dedup/unit/cap 경계를 독립 fixture로 대조한다. E3 joint-selection fixture와 I0가 합치며 2query pilot을 broad relevance proof로 승격하지 않는다. | SHARED |
 
 ## 실행 단계
 
@@ -51,6 +55,8 @@ B09 frozen diagnostic에서 default23는 모두 ordinary literal-first suppressi
 
 - `./scripts/cargow test -p quanta-index-lexical --test l3_exact_source --locked`
 - `./scripts/cargow test -p quanta-index-retrieval-bench --lib --bins --locked`
+- `./scripts/cargow test -p quanta-index-search-plane --lib --all-features --locked semantic`
+- `./scripts/cargow test -p quanta-index-search-plane --lib --all-features --locked hybrid`
 - `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -k 'query_plan or natural_language or default'`
 - Independent same-qrel/source/model ablation; wrong case/unit/source/model/generation, unjudged negatives와 literal regression refusal.
 

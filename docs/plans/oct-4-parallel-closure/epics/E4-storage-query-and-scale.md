@@ -31,7 +31,7 @@
 3. ASCII scanner를 허용된 host에서 whole-call 재측정해 유지/수정/철회를 결정한다.
 4. 반복 source token scan이 계속 지배하면 source/generation-bound distinct raw token/witness authority를 도입하되 completeness 전 complete fallback을 보존한다.
 5. matching release binaries로 scale256→4096→32768와 open-loop/full/delta/delete/reopen/restart를 별도 관측한다.
-6. E3 최종SDK·E2 completed-response 이후 Quanta/Semble/external boundaries의 정식 반복 성능을 수행한다.
+6. 선택한 source epoch·E1 admission·E2 scope/completed clocks/Semble attribution에서 정식 반복 성능을 수행한다. single-RPC/token/pack은 채택한 개선 효과 claim에만, 대규모 tier 결과는 해당 capacity/tail/restart claim에만 요구한다.
 7. E1 final qrels+미사용 holdout 이후 default23·Gin4·NL/semantic misses를 분류하고 필요한 정책 수정만 독립 fixture·holdout에서 판정한다.
 
 ## 티켓 실행 순서
@@ -43,7 +43,7 @@
 | [O4-E4-03](../tickets/O4-E4-03-ascii-scanner-decision.md) | ASCII scanner 전체 호출 효과 판정 | P1 / `EXECUTION_THEN_CONDITIONAL_CODE` | 즉시 조사·fixture 준비 가능 |
 | [O4-E4-04](../tickets/O4-E4-04-source-token-authority.md) | source-bound distinct token authority | P2 / `CONDITIONAL_CODE` | [O4-E4-01](../tickets/O4-E4-01-index-phase-profile.md), [O4-E4-03](../tickets/O4-E4-03-ascii-scanner-decision.md) |
 | [O4-E4-05](../tickets/O4-E4-05-release-scale-load.md) | matching release scale·load·restart 실행 | P2 / `EXECUTION_AND_PROOF` | [O4-I0-02](../tickets/O4-I0-02-matching-source-proof.md), [O4-E4-01](../tickets/O4-E4-01-index-phase-profile.md) |
-| [O4-E4-06](../tickets/O4-E4-06-qualified-performance.md) | 동일 응답 경계의 정식 반복 성능 | P1 / `EXECUTION` | [O4-I0-02](../tickets/O4-I0-02-matching-source-proof.md), [O4-E2-01](../tickets/O4-E2-01-native-completed-timer.md), [O4-E2-05](../tickets/O4-E2-05-semble-process-attribution.md), [O4-E3-03](../tickets/O4-E3-03-atomic-active-query-rpc.md), [O4-E4-05](../tickets/O4-E4-05-release-scale-load.md) |
+| [O4-E4-06](../tickets/O4-E4-06-qualified-performance.md) | 동일 응답 경계의 정식 반복 성능 | P1 / `EXECUTION` | [O4-I0-02](../tickets/O4-I0-02-matching-source-proof.md), [O4-E1-03](../tickets/O4-E1-03-admission-and-split.md), [O4-E2-01](../tickets/O4-E2-01-native-completed-timer.md), [O4-E2-02](../tickets/O4-E2-02-external-index-universe.md), [O4-E2-05](../tickets/O4-E2-05-semble-process-attribution.md) |
 | [O4-E4-07](../tickets/O4-E4-07-policy-and-semantic-residuals.md) | 기본 typo·NL·semantic 잔여의 정책 RCA | P2 / `PROOF_THEN_CONDITIONAL_CODE` | [O4-E1-04](../tickets/O4-E1-04-precise-name-span.md), [O4-E1-05](../tickets/O4-E1-05-untouched-holdout.md), [O4-E1-06](../tickets/O4-E1-06-final-pool-and-scoreboards.md) |
 
 - `CONDITIONAL_CODE`는 병목/계약 실패 조건이 실제로 성립한 경우 구현한다. 조건 미성립은 근거가 있는 `NOT_APPLICABLE`로 닫는다.
@@ -72,7 +72,11 @@
 | [crates/quanta-index-lexical/tests/l3_exact_source.rs](../../../../crates/quanta-index-lexical/tests/l3_exact_source.rs) | actual file/case/typo ranking<br>typo exhaustive fixtures | OWNED | [O4-E4-03](../tickets/O4-E4-03-ascii-scanner-decision.md), [O4-E4-04](../tickets/O4-E4-04-source-token-authority.md) |
 | [crates/quanta-index-lexical/tests/sealed_manifest.rs](../../../../crates/quanta-index-lexical/tests/sealed_manifest.rs) | sealed artifact integrity | OWNED | [O4-E4-02](../tickets/O4-E4-02-generation-durable-barriers.md) |
 | [crates/quanta-index-search-plane/src/query_dispatcher/ranking.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/ranking.rs) | query ranking kernel | SHARED | [O4-E4-07](../tickets/O4-E4-07-policy-and-semantic-residuals.md) |
-| [crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs) | candidate execution/contribution merge | READ | [O4-E4-07](../tickets/O4-E4-07-policy-and-semantic-residuals.md) |
+| [crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs) | candidate execution/contribution merge | SHARED | [O4-E4-07](../tickets/O4-E4-07-policy-and-semantic-residuals.md) |
+| [crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs) | semantic candidate route | SHARED | [O4-E4-07](../tickets/O4-E4-07-policy-and-semantic-residuals.md) |
+| [crates/quanta-index-search-plane/src/query_dispatcher/tests/hybrid.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/tests/hybrid.rs) | hybrid lane contribution fixtures | SHARED | [O4-E4-07](../tickets/O4-E4-07-policy-and-semantic-residuals.md) |
+| [crates/quanta-index-search-plane/src/query_dispatcher/tests/semantic.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/tests/semantic.rs) | semantic route independent fixtures | SHARED | [O4-E4-07](../tickets/O4-E4-07-policy-and-semantic-residuals.md) |
+| [crates/quanta-index-search-plane/src/query_embedder.rs](../../../../crates/quanta-index-search-plane/src/query_embedder.rs) | provider/model identity / query embedding | READ | [O4-E4-07](../tickets/O4-E4-07-policy-and-semantic-residuals.md) |
 | [crates/quanta-index-searchd-harness/src/bin/open_loop_matrix.rs](../../../../crates/quanta-index-searchd-harness/src/bin/open_loop_matrix.rs) | current CLI/result gates | OWNED | [O4-E4-05](../tickets/O4-E4-05-release-scale-load.md) |
 | [crates/quanta-index-searchd-harness/src/bin/scale_matrix.rs](../../../../crates/quanta-index-searchd-harness/src/bin/scale_matrix.rs) | current CLI/output | OWNED | [O4-E4-05](../tickets/O4-E4-05-release-scale-load.md) |
 | [crates/quanta-index-searchd-harness/src/open_loop.rs](../../../../crates/quanta-index-searchd-harness/src/open_loop.rs) | schedule / measure_point / run / artifact | OWNED | [O4-E4-05](../tickets/O4-E4-05-release-scale-load.md) |
@@ -94,11 +98,11 @@
 
 E4-01/03의 attribution·fixture·독립 oracle 준비는 시작 가능하다. lexical storage/searcher 변경은 E4 한 담당자가 순서대로 통합한다. Rust heavy builds·ingest/capture/scale/performance는 I0 resource admission을 공유하고 직렬 실행한다.
 
-E4-02/04는 measured bottleneck 조건부다. E4-05/06은 I0 matching source 이후, E4-06은 E2 timers·Semble attribution·E3 SDK·scale 결과 이후다. E4-07은 E1 labels/name/holdout/final scoring 이후이며 정책 source 변경은 affected I0/capture gates를 다시 연다.
+E4-02/04는 measured bottleneck 조건부다. E4-05/06은 I0 선택 epoch 이후, E4-06은 E1 admission·E2 scope/timers/Semble attribution을 요구한다. baseline speed는 single-RPC와 XL scale 전체 완료를 기다리지 않는다. 개선/대규모 효과 claim에는 해당 E3/E4 proof를 추가 요구한다. E4-07은 E1 name/holdout/final scoring을 소비해 정책 판정하며 수정 시 affected I0/capture gates를 다시 연다.
 
 ## 에픽 완료 조건
 
-- 각 변경의 independent output/lifecycle/crash equivalence와 bounded resource 비용이 증명된다.
+- 각 채택한 변경의 independent output/lifecycle/crash equivalence와 bounded resource 비용이 증명된다. syscall fault·process kill/reopen과 실제 저장장치 power-loss/flush qualification을 구별한다.
 - whole-call effects·uncertainty·refusal·host limits가 정식 release 결과에서 설명된다.
 - 기본 정책/NL/semantic을 바꾸면 untouched holdout과 critical strata의 acceptance가 충족된다.
 

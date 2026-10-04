@@ -31,7 +31,7 @@ Semble worker 외부의 bootstrap/model/source/record 비용을 parent-bounded p
 | [tools/benchmark/retrieval/semble.py](../../../../tools/benchmark/retrieval/semble.py) | check_semble_env / build_isolated_corpus / materialize_model_cache / run_completed_worker / run_adapter / assemble_record | 현재 parent lifecycle에 bounded preparation/validation phases를 넣고 source/model bytes 검증과 required row parity를 유지한다. | OWNED |
 | [tools/benchmark/retrieval/semble.py](../../../../tools/benchmark/retrieval/semble.py) | validate_worker_phase_timings / validate_native_profile_report | 같은 clock domain에서 child bounds/complete phases를 검사한다. parent-worker timestamp subtraction 금지. | OWNED |
 | [tools/ci/tests/test_completed_response_timing.py](../../../../tools/ci/tests/test_completed_response_timing.py) | Semble parent-normalized output tests | same-size wrong row, partial worker line, changed model/source와 phase order/bounds mutants를 확장한다. | OWNED |
-| [tools/ci/tests/test_retrieval_benchmark.py](../../../../tools/ci/tests/test_retrieval_benchmark.py) | Semble adapter/source contract tests | 테스트 hunk는 E1/I0가 통합하며 file 전체를 동시에 수정하지 않는다. | SHARED |
+| [tools/ci/tests/test_retrieval_benchmark.py](../../../../tools/ci/tests/test_retrieval_benchmark.py) | Semble adapter/source contract tests | 테스트 hunk는 I0가 통합하며 file 전체를 동시에 수정하지 않는다. | SHARED |
 
 ## 실행 단계
 

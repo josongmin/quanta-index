@@ -43,6 +43,12 @@
 5. 원본 suite→blind pack→manifest→license/review/split receipt→matching proof를 기존 admission verifier에 연결한다.
 6. ready/failed/pending admission inventory를 발행하고 repository별 입력 bytes와 terminal을 검증해 E2로 전달한다.
 
+## PREPARE와 ISSUE 경계
+
+- 선행 표는 최종 **ISSUE**를 위한 조건이다. 입력 builder/validator/schema/fixture의 source PREPARE는 I0-01 소유권 확인 후 먼저 진행하고 변경·selector를 I0-02에 제출한다.
+- 순서는 source PREPARE→해당 epoch I0-02 VALIDATE→same-source receipts를 소비한 admission ISSUE다. I0-02 통과 뒤 새 code를 덧붙이고 그 옛 proof로 admission을 발행하지 않는다.
+- repository별 ready bundle은 frozen suite/pack/release/split/license/review/proof의 실제 paths·bytes/digests와 terminal을 E2에 전달한다. mutable latest pointer나 ticket 완료 문구는 admission authority가 아니다.
+
 ## 검증 계획 — NOT_RUN
 
 아래는 실행할 명령/시나리오다. 본 문서에서 통과를 주장하지 않는다. `<...>`와 외부 root는 실행 전에 실제 값으로 확정한다. test filter는 실제 수집 ID를 확인하고 0 tests를 성공으로 표시하지 않는다.

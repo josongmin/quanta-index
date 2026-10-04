@@ -41,7 +41,7 @@ index_store.write_atomic_durable는 file sync→rename→parent sync다. coverag
 1. 실제 group당 touched directory와 old/new references를 열거하고 barrier count를 임의4회로 고정하지 않는다.
 2. 최소 canonical batch primitive를 설계하고 single-file writer도 그 한 durable ordering을 사용하도록 정리한다.
 3. content file full-sync와 rename, inherited hardlink dir durability를 보존한다.
-4. root/manifest publish 및 post-publication barrier가 성공한 뒤에만 old artifact cleanup/seal/activate를 허용한다.
+4. root/manifest publish 및 post-publication barrier가 성공한 뒤에만 cleanup/seal/activate를 허용한다. old/new/live-reader/retained/rollback-required generation의 reference set을 독립 oracle로 검사해 여전히 참조된 source/page/hardlink를 지우지 않는다.
 5. 각 syscall 실패·partial/missing source·symlink·root replacement·cleanup failure를 fault injection하고 reopen oracle로 판정한다.
 6. matching engine release ingest A/B로 actual publish 효과를 측정한다. immutable pack은 별도 조건부 decision으로 남긴다.
 
@@ -58,6 +58,7 @@ index_store.write_atomic_durable는 file sync→rename→parent sync다. coverag
 
 - durable ordering·error propagation·source custody가 independent fault/crash/lifecycle tests로 입증된다.
 - actual engine publish 비용과 resource/output parity를 보고한다. 비용 조건이 성립하지 않으면 no-code NOT_APPLICABLE 가능.
+- syscall fault와 OS-process kill/reopen은 그 failure model의 증거다. 실제 storage power-loss/flush guarantee를 측정하지 않았다면 power-loss 범위는 NOT_RUN으로 보존한다.
 
 ## 중단·거절·재개 조건
 

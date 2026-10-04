@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_AND_REPORT` |
 | 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
-| 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E1-04](O4-E1-04-precise-name-span.md), [O4-E2-04](O4-E2-04-fresh-five-product-captures.md), [O4-E1-05](O4-E1-05-untouched-holdout.md) |
+| 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-04](O4-E2-04-fresh-five-product-captures.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
@@ -20,7 +20,7 @@ historical 21,815행 join과 fresh Quanta 11,272응답은 같은 시점의 5제�
 ## 착수 입력
 
 - E2-04 raw native records/required-cell outcomes/fresh pooled candidates
-- E1-03 admitted suite/pack, E1-04 name metric, E1-05 holdout와 E4-07에서 사용할 product acceptance
+- E1-03 admitted suite/pack. E1-04 name metric이 준비된 경우 그 별도 span lane; E1-05 신규 holdout은 이후 policy/unseen qualification의 입력이며 기존 cohort 재채점의 선행 조건은 아니다.
 
 ## 어떤 파일을 어떻게 수정할지
 
@@ -50,6 +50,13 @@ historical 21,815행 join과 fresh Quanta 11,272응답은 같은 시점의 5제�
 
 - `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_identifier_robustness_fresh_join.py tools/ci/tests/test_identifier_robustness_multiproduct_report.py tools/ci/tests/test_lexical_five_product_oracle.py tools/ci/tests/test_retrieval_benchmark.py -q`
 - 독립 raw replay의 row/denominator/score/report equality 및 unit/case/span/status/qrel/source mutations를 검증한다.
+
+## 보고서 발행 범위
+
+- repository별 C3/B08/B09 qrel·raw replay는 해당 입력이 준비되면 발행한다. 새 holdout 전체나 다른 저장소 실패 때문에 ready cohort를 막지 않는다.
+- E1-04가 미완료인 경우 file/definition 결과는 발행 가능하나 **name recovery 범위는 NOT_RUN**, E1 에픽 전체의 name 평가 작업은 남아 있다.
+- E1-05가 미완료면 기존 diagnostic cohort 결과를 unseen/policy-qualified로 승격하지 않는다. E4-07의 정책 변경 acceptance는 새 holdout 이후다.
+- 모든 required cells의 inventory가 있다는 사실과 모든 셀 성공·full-cohort qualification을 구분한다. failed/missing/excluded population과 claim 범위를 같이 발행한다.
 
 ## 완료 조건
 

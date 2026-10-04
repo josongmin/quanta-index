@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P2 / `CONDITIONAL_CODE` |
 | 실행 상태 | `PLANNED` — 본 티켓의 구현·실행·검증은 `NOT_RUN` |
-| 선행 결과 | [O4-E1-06](O4-E1-06-final-pool-and-scoreboards.md) |
+| 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
@@ -34,10 +34,10 @@ evaluator.mean_ci/_bootstrap_bounds는 deterministic paired/within-stratum perce
 
 ## 실행 단계
 
-1. cold profile로 numeric loop의 유의미한 비용을 확인하고 목표·memory ceiling을 먼저 정한다.
+1. 기존 valid replay 또는 고정 independent metric vectors로 cold numeric cost와 memory ceiling을 먼저 측정한다. E1-06의 최종 모델 검수 완료를 기다릴 필요는 없지만 최종 report acceptance는 그 입력에서 재생한다.
 2. 기존 resampling/RNG 결과를 유지할지 단일 method를 명시적으로 진화시킬지 결정한다.
 3. 기존 numeric cache 앞단의 source/evidence replay는 유지하면서 bounded numeric batch kernel을 구현한다.
-4. fixed draw indices로 scalar/reference와 비교하고 seed/percentile interpolation/RNG 변경은 명시한다.
+4. 10,000 resamples, 현재 stratum/family/repository weighting·seed/order·percentile interpolation을 고정한 scalar/reference와 비교한다. RNG나 reduction rounding/method를 변경하면 현재 method/consumer를 함께 진화시키고 과거 bytes parity를 주장하지 않는다.
 5. cold/on-cache/repeated-cache를 분리해 비용·bytes parity 또는 declared method change를 보고한다.
 
 ## 검증 계획 — NOT_RUN
