@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_THEN_CONDITIONAL_CODE` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | runtime lib 실제 UDS timeout→peer hangup→Committed inspect→재조립 후 exact replay fixture `VERIFIED` (중앙 Nextest 1 selected/1 PASS). 기본30초·OS process·daemon profile은 `NOT_RUN` |
+| 실행 상태 | runtime lib 실제 UDS timeout→peer hangup→Committed inspect→재조립 후 exact replay fixture 및 current owner972 재실행 `VERIFIED`. 기본30초·별도OS-process timeout 시나리오는 `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)

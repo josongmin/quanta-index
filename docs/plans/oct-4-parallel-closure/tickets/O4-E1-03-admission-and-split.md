@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `INTEGRATION` |
 | 기준 웨이브 | [W3 — 소스 통합·검증·admission ISSUE](../waves/W3-source-validation-and-admission.md) |
-| 실행 상태 | first-six current reissue PREPARE 및 Django/TypeORM suite·review receipt 발행 `VERIFIED`; matching proof를 소비한 fresh admission ISSUE는 `NOT_RUN` |
+| 실행 상태 | Django/TypeORM suite·review receipt 및 source107 bat fresh admission `VERIFIED`; 나머지 ready7 admission 중앙 발행 진행 중. 전체 cohort qualification 미완료 |
 | 선행 결과 | [O4-E1-02](O4-E1-02-supplemental-labels.md), [O4-I0-02](O4-I0-02-matching-source-proof.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -25,7 +25,14 @@
 - 새 root에는 각 repository의 suite/blind pack/annotation2/adjudication/validation이 있다. `qualified:false`, `human_provenance_attested:false`; 새 모델 호출·수동 grade·human review 승인·제품 capture/admission 증거가 아니다.
 - SQLAlchemy/Zellij/Tailscale의 original review와 canonical suite 발행, actual fresh admission 및 supplemental merged revision은 완료 전이다. 과거 supplemental union은 E1-02의 missing capture record blocker를 유지한다.
 
-## 착수 입력
+## 2026-10-04 source107 admission 실제 발행
+
+- clean source107의 Contract v3 및 fresh release SDK v2 context를 검증한 후 `/tmp/quanta-e1-current-admission-isolated-v2-20261004.py --input /tmp/qi-e1-eight-actual-proof-1071692b-20261004-v1.json --output-parent /Users/songmin/Documents/code-new/qi-e1-first-eight-admission-20261004-v1 --selection first-eight`를 root가 실행했다. 저장소별 canonical issuance와 독립 terminal을 유지하며 아직 전체 명령은 완료 전이다.
+- `VERIFIED`: 먼저 발행된 `bat/bat/result.json`은20 tasks/358 file judgments, source107, stale-source negative control1, qualified/human provenance false다. canonical suite/pack/review/license/split/model/environment 및 actual Contract Python/Rust/SDK3 receipts를 소비했다. 기존 local AI benchmark ingestion/internal metrics license scope를 human/legal 승인으로 승격하지 않는다.
+- isolated issuer의 host profiles는 저장소별 profile_id 때문에 bytes가 다르다. paired spec은 해당 issuer의 host-profile path/hash를 사용하고 canonical admission 및 current host fingerprint를 다시 검사한다. 공통 profile로 덮어써 hash mismatch를 무시하지 않는다.
+- 다른7 issuer 결과가 실제로 발행되기 전에는 ready/PASS로 합성하지 않는다. 준비된 저장소별로 W4에 진입하고 전체8 또는 C3 240 completion은 별도다.
+
+## 착수 입력과 후속 발행
 
 - E1-02 merged judgments, frozen suite/pack, repository license decision
 - corpus release/checkouts, development/holdout family assignments, source/runtime lock 및 matching Contract/SDK proof

@@ -49,8 +49,6 @@ B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 
 - v2 producer는 exit0으로24개 repository-phase sweep을 모두 끝냈다. prequery scope의 네 captured snapshots는12projects/132 artifacts/136,606,249bytes, index SHA `ae8623d124eeac39af460ce985d4b901ddac2c22e90d3350df354be2d09a9873`다. producer 종료만으로 raw replay를 PASS로 표시하지 않는다. clean source107과 canonical uv Python에서 별도 offline replay를 실행 중이며, API path/served bytes·path-bearing UID/type/posting 및 retained snapshot identity를 재검증한다. auxiliary 내용·물리 index 재읽기·실제 query bracket은 이 replay의 범위 밖이다.
 - 별도 현재 관측 `docker inspect --format '{{json .NetworkSettings.Ports}}' <C3-container>`은 `8080/tcp → 127.0.0.1:18083`를 반환했다. 현재 endpoint 매핑의 read-only 관측이며, producer/consumer가 실제 query 전후에 이를 검사한다는 보장은 아니다.
 
-## 착수 입력
-
 ## 2026-10-04 OpenGrok v2 독립 raw replay 완료
 
 - `VERIFIED`: clean source107에서 `uv run --frozen --extra dev python /tmp/quanta-e2-og-fullscope-replay-20261004-v1.py --spec /private/tmp/quanta-e2-og-scope-input-20261004.json --capture /Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/opengrok-native-full-20261004-v2 --source-root /Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index --source-head 1071692b2dd4d5a77db54f79ecd0e80a1a20b2a7 --output /Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91/opengrok-native-full-20261004-v2-offline-replay-v1.json` — exit0.

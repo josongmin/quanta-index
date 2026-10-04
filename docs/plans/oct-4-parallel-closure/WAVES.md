@@ -9,7 +9,25 @@
 - 웨이브는 **주된 수행 단계와 인계 순서**다. 모든 repository/티켓을 한꺼번에 기다리는 전역 장벽이 아니다. 준비된 repository·claim별로 다음 단계에 진입한다.
 - W2에서 미선택한 최적화와 모든 FAILED/BLOCKED/NOT_RUN 범위는 원래 티켓에 남는다. baseline을 발행한 것과 전체 29개 종료를 구분한다.
 
-## 이번 실행의 배치 규칙
+## 2026-10-04 실행 스냅샷 — source107
+
+이 표는 초기 티켓 배치를 바꾸지 않으며 전체29개 종료를 뜻하지 않는다. 실제 명령·출력 경로·scope는 owning ticket이 기준이다.
+
+| 웨이브 | 확보한 실행 결과 | 남은 실제 작업 |
+| --- | --- | --- |
+| W0 | root 단일 통합/중앙 실행, clean `1071692b`와 matching proof source 고정 | 후속 product 변경 시 새 epoch 발행 |
+| W1 | owner regressions, Gin4 exact-name 실제 capture/scoring, Sourcegraph12repo native replay, OpenGrok24 sweeps/path-bearing posting replay `VERIFIED` | SQLAlchemy/Zellij/Tailscale 실제 role 판단 재개; whole OpenGrok UID/auxiliary/endpoint bracket; untouched holdout license·사전 acceptance 입력/발행 |
+| W2 | 실제 반례의 live-BM25, maintenance fatal ownership/terminal, fixture 수리 및 지원 Active single-RPC 검증 완료 | bootstrap/scanner/barrier/token-authority 최적화는 실제 비용 조건 판정 대기. E3-02는 현 Accepted refusal 계약에서 근거 있는 `NOT_APPLICABLE` |
+| W3 | Contract Python788/Rust191, fresh release SDK27, context replay `VERIFIED`; 먼저 bat20tasks/358pairs admission 발행 | 다른 ready repository별 fresh admission 계속; source107 hosted CI 조회는 `[]`/`NOT_RUN` |
+| W4 | matching release runner/searchd 확보; bat부터 실제 pair 입력 준비; 별도 scale harness release build 진행 | 실제 Quanta/Semble roots와 warmup0/1 parity, native3제품 query/raw replay, release tier/load/restart, qualified repeated performance |
+| W5 | name/source oracle 및 source-bound 원본 labels 유지 | 새5제품 blind union의 actual supplemental review·최종 qrel/scoreboard·독립 holdout 정책 판정 |
+| W6 | local infrastructure/owner proof와 운영 qualification 경계를 기록 | actual authorized Linux target/config/state/rollback 입력 `BLOCKED`; exact producer pair·CI·배포/활성화/restore/rollback 미실행 |
+
+- ready 저장소 하나의 성공은 required8/12 전체 matrix 성공이 아니다. 개별 실행 driver의 required ledger에서 미선택 셀은 `NOT_RUN`으로 유지한다.
+- provider quota 응답의 재개 시각은2026-10-04 23:40 KST다. 무응답 pair를 grade/no-answer로 채우지 않는다. AI 실제 판단과 human provenance를 구분한다.
+- native/Gin/phase 진단과 Darwin/hash-dev owner proof를 독립 gold·learned quality·속도·Linux release qualification으로 승격하지 않는다.
+
+## 중앙 실행의 배치 규칙
 
 - **먼저 코드·독립 fixture·정적 점검을 병렬로 준비하고, 실행 검증은 I0가 모아서 수행한다.** 에픽별로 pytest/Rust tests·builds·실제 capture·모델/성능 jobs를 따로 시작하지 않는다.
 - 현재 4개 실행 슬롯은 **root가 E1+I0**, 나머지 3개가 **E2/E3/E4**를 맡는다. 에픽 소유권은 유지하고 SHARED 파일은 root가 통합한다. I0는 별도 다섯 번째 실행 슬롯을 요구하지 않는다.
