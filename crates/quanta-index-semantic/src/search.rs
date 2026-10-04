@@ -435,9 +435,9 @@ pub(crate) async fn verified_base_vector_index_seal_v1(
     let (loaded, manifest) =
         open_generation_with_manifest(semantic_root, repo, revision, generation).await?;
     let actual = semantic_row_commitment_v1(&loaded.table).await?;
-    if actual.row_count != manifest.row_count
-        || actual.root_digest != manifest.semantic_row_root_digest
-    {
+    let row_count_matches = actual.row_count == manifest.row_count;
+    let row_root_matches = actual.root_digest == manifest.semantic_row_root_digest;
+    if !row_count_matches || !row_root_matches {
         return Err(CoreError::Storage(format!(
             "semantic: sealed base row commitment differs before successor seal: rows {} versus {}, root {} versus {}",
             actual.row_count,

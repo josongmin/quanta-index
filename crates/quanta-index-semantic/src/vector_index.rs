@@ -358,6 +358,7 @@ async fn read_index_segments_v1(
 }
 
 /// Count physical row removals and appends relative to a sealed base.
+///
 /// Byte-identical scope replacement still replaces Lance native row IDs.
 /// An in-place payload change under one physical ID is a custody violation.
 fn row_change_counts_v1(
@@ -392,12 +393,12 @@ fn row_change_counts_v1(
         if !current_native_ids.insert(row.native_row_id) {
             return Err(seal_refused("the successor repeats a Lance native row ID"));
         }
-        if let Some(base_row) = base_by_native_id.get(&row.native_row_id) {
-            if base_row.record_id != row.record_id || base_row.leaf_digest != row.leaf_digest {
-                return Err(seal_refused(
-                    "an inherited physical row changed identity or payload without a new Lance row ID",
-                ));
-            }
+        if let Some(base_row) = base_by_native_id.get(&row.native_row_id)
+            && (base_row.record_id != row.record_id || base_row.leaf_digest != row.leaf_digest)
+        {
+            return Err(seal_refused(
+                "an inherited physical row changed identity or payload without a new Lance row ID",
+            ));
         }
     }
     let mut base_rows = base.iter().peekable();
@@ -454,6 +455,7 @@ fn row_change_counts_v1(
 }
 
 /// Bind the index's lost coverage to actual canonical row changes.
+///
 /// Index loss with unchanged rows cannot masquerade as a delete, and newly
 /// inserted or replaced rows must be exactly the rows the index calls pending.
 fn verify_contraction_row_changes_v1(
@@ -496,8 +498,9 @@ fn verify_contraction_row_changes_v1(
     Ok(())
 }
 
-/// A deletion can retire a complete inherited segment. A contracted index
-/// cannot retain the old lineage: a caller must verify the sealed base and
+/// Detect retirement of a complete inherited segment after deletion.
+///
+/// A contracted index cannot retain the old lineage: a caller must verify the sealed base and
 /// retrain the current live rows before publishing a successor seal.
 ///
 /// The remaining segment identities and parameters must be an ordered subset
@@ -540,7 +543,9 @@ pub(crate) async fn inherited_index_contracted_v1(
     }
     let segments =
         read_index_segments_v1(table, VECTOR_INDEX_NAME, "before contracted-index seal").await?;
-    if u32::try_from(segments.len()).ok() != Some(report.segments) {
+    let segment_count = u32::try_from(segments.len())
+        .map_err(|error| seal_refused(&format!("contracted segment count overflows: {error}")))?;
+    if segment_count != report.segments {
         return Err(seal_refused(
             "the contracted index report and segment identity list disagree",
         ));

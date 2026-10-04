@@ -639,9 +639,10 @@ fn a_delta_inside_the_append_budget_appends_to_the_inherited_index() -> TestResu
     Ok(())
 }
 
-/// A tombstone that removes every row from an appended segment must produce a
-/// new seal over the surviving source, while preserving the already sealed
-/// base and delta. The library may retire the now-empty appended segment.
+/// Removing an appended segment's rows must reseal the surviving source.
+///
+/// The already sealed base and delta must remain unchanged. The library may
+/// retire the now-empty appended segment.
 #[test]
 fn deleting_every_row_of_an_appended_segment_reseals_the_survivors() -> TestResult {
     let temp = tempfile::tempdir()?;
@@ -788,8 +789,9 @@ fn identical_replacement_of_an_appended_segment_can_reseal() -> TestResult {
     Ok(())
 }
 
-/// Mutation and seal may arrive in separate batches. After an appended
-/// segment is fully tombstoned and new rows are pending, the later seal must
+/// Mutation and seal may arrive in separate batches.
+///
+/// After an appended segment is fully tombstoned and new rows are pending, the later seal must
 /// validate the original sealed base and train over all current live rows.
 #[test]
 fn multibatch_delete_and_append_retrains_after_segment_contraction() -> TestResult {
@@ -939,8 +941,9 @@ fn ordinary_delta_refuses_a_forged_base_row_root() -> TestResult {
     Ok(())
 }
 
-/// The cheap base open accepts a self-consistent, re-committed sidecar with
-/// a false row root. A segment-contraction retrain must recompute the sealed
+/// The cheap base open accepts a re-committed sidecar with a false row root.
+///
+/// A segment-contraction retrain must recompute the sealed
 /// base's canonical row commitment before accepting it as training authority.
 #[test]
 fn contracted_successor_refuses_a_forged_base_row_root() -> TestResult {
