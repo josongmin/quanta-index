@@ -1378,6 +1378,7 @@ macro_rules! impl_keyset_page_response_serde {
         $fields:ident,
         $visitor:ident,
         $result_ty:ty,
+        active_head = [$($active_head:ident)?],
         epochs = [$($response_epoch:ident),+ $(,)?]
     ) => {
         impl Serialize for $ty {
@@ -1392,13 +1393,13 @@ macro_rules! impl_keyset_page_response_serde {
                 } else {
                     $fields.len().saturating_sub(1)
                 };
-                let field_count = field_count - usize::from(self.selected_active_head.is_none());
+                $(let field_count = field_count - usize::from(self.$active_head.is_none());)?
                 let mut state = serializer.serialize_struct(stringify!($ty), field_count)?;
-                validate_selected_active_head(&self.generation, self.selected_active_head.as_ref()).map_err(serde::ser::Error::custom)?;
+                $(validate_selected_active_head(&self.generation, self.$active_head.as_ref()).map_err(serde::ser::Error::custom)?;)?
                 state.serialize_field("generation", &self.generation)?;
-                if let Some(head) = &self.selected_active_head {
-                    state.serialize_field("selected_active_head", head)?;
-                }
+                $(if let Some(head) = &self.$active_head {
+                    state.serialize_field(stringify!($active_head), head)?;
+                })?
                 state.serialize_field("results", &self.results)?;
                 state.serialize_field("window", &self.window)?;
                 $(state.serialize_field(stringify!($response_epoch), &self.$response_epoch)?;)+
@@ -1424,8 +1425,8 @@ macro_rules! impl_keyset_page_response_serde {
                 A: MapAccess<'de>,
             {
                 let mut generation: Option<GenerationPin> = None;
-                let mut selected_active_head: Option<SearchCorpusActiveHeadV1> = None;
-                let mut selected_active_head_seen = false;
+                $(let mut $active_head: Option<SearchCorpusActiveHeadV1> = None;
+                let mut selected_active_head_seen = false;)?
                 let mut results: Option<Vec<$result_ty>> = None;
                 let mut window: Option<QueryResultWindowV2> = None;
                 $(let mut $response_epoch: Option<AuxEpochV1> = None;)+
@@ -1434,11 +1435,11 @@ macro_rules! impl_keyset_page_response_serde {
                 let mut next_cursor_seen = false;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
-                        "selected_active_head" => {
+                        $(stringify!($active_head) => {
                             if selected_active_head_seen { return Err(de::Error::duplicate_field("selected_active_head")); }
                             selected_active_head_seen = true;
-                            selected_active_head = Some(map.next_value()?);
-                        }
+                            $active_head = Some(map.next_value()?);
+                        })?
                         "generation" => {
                             if generation.is_some() {
                                 return Err(de::Error::duplicate_field("generation"));
@@ -1500,11 +1501,11 @@ macro_rules! impl_keyset_page_response_serde {
                     ));
                 }
                 let generation = generation.ok_or_else(|| de::Error::missing_field("generation"))?;
-                validate_selected_active_head(&generation, selected_active_head.as_ref())
-                    .map_err(de::Error::custom)?;
+                $(validate_selected_active_head(&generation, $active_head.as_ref())
+                    .map_err(de::Error::custom)?;)?
                 Ok($ty {
                     generation,
-                    selected_active_head,
+                    $($active_head,)?
                     results,
                     window,
                     $(
@@ -2672,6 +2673,7 @@ impl_keyset_page_response_serde!(
     SEARCH_PLANE_RUNTIME_METADATA_QUERY_RESPONSE_FIELDS,
     SearchPlaneRuntimeMetadataQueryResponseVisitor,
     LexicalCandidate,
+    active_head = [selected_active_head],
     epochs = [read_epoch, universe_epoch]
 );
 
@@ -2711,6 +2713,7 @@ impl_keyset_page_response_serde!(
     SEARCH_PLANE_STRUCTURAL_QUERY_RESPONSE_FIELDS,
     SearchPlaneStructuralQueryResponseVisitor,
     StructuralCandidate,
+    active_head = [],
     epochs = [read_epoch]
 );
 

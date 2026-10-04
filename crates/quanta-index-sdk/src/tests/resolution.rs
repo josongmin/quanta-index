@@ -224,6 +224,53 @@ fn lexical_time_resolution_binds_the_final_ancestor_pin() {
 }
 
 #[test]
+fn active_rev_at_time_keeps_ancestor_resolution_and_exact_final_binding() {
+    let ancestor = GenerationPin::new(
+        repo_id(),
+        RevisionId::new("ancestor").expect("fixture revision"),
+        ManifestGeneration::new(3),
+    );
+    let query = Arc::new(StubQueryTransport::sequence([
+        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(ancestor.clone()),
+        SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            generation: ancestor.clone(),
+            selected_active_head: None,
+            rank_unit: quanta_index_contract::TextRankUnit::Chunk,
+            results: vec![],
+            window: QueryResultWindowV2::exact_probe(0),
+            explanation: quanta_index_contract::SearchExplanation::empty(),
+            file_owner_rows: None,
+            next_cursor: None,
+        }),
+    ]));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let request = quanta_index_contract::TextQueryRequest {
+        syntax: quanta_index_contract::TextQuerySyntax::Sourcegraph,
+        query_text: "needle rev:at.time(2024-06-01T12:34:56Z)".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: Some(GenerationSelector::Active {
+            repo_id: repo_id(),
+            revision_id: revision_id(),
+        }),
+        top_k: 5,
+        cursor: None,
+    };
+    assert_eq!(
+        ok_or_fail!(client.lexical().query_request(request.clone())).generation,
+        ancestor
+    );
+    let requests = ok_or_fail!(query.requests.lock());
+    assert_eq!(requests.len(), 2);
+    assert!(
+        matches!(&requests[0].payload, quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(sent) if sent == &request)
+    );
+    assert!(
+        matches!(&requests[1].payload, quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent) if sent == &request)
+    );
+}
+
+#[test]
 fn quoted_timeref_literals_do_not_resolve_or_relax_text_response_pins() {
     let literal = "\"rev:at.time(2024-06-01T12:34:56Z)\"";
     assert!(!crate::binding::is_rev_at_time_query(

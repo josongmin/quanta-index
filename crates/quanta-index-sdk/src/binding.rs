@@ -540,7 +540,7 @@ fn check_pin(binding: &QueryCallBinding, pin: &GenerationPin) -> Result<(), SdkE
         return Ok(());
     }
     if let Some((repo_id, revision_id, _)) = &binding.active_domain
-        && (&pin.repo_id != repo_id || &pin.revision_id != revision_id)
+        && (&pin.repo_id != repo_id || (!binding.rev_at_time && &pin.revision_id != revision_id))
     {
         return Err(binding_error(
             binding.expected.kind(),
