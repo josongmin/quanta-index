@@ -10,18 +10,22 @@ use crate::error::IpcError;
 const TEXT_VALUE_STORAGE_BYTES: usize = 3 * std::mem::size_of::<String>();
 
 pub(crate) fn retained_text_budget(bytes: &[u8]) -> Result<usize, IpcError> {
-    let mut decoder = Decoder::from(bytes);
+    retained_text_budget_reader(bytes, bytes.len())
+}
+
+pub(crate) fn retained_text_budget_reader<R: std::io::Read>(reader: R, input_len: usize) -> Result<usize, IpcError> {
+    let mut decoder = Decoder::from(reader);
     let mut storage_bytes = 0_usize;
     let header = decoder.pull().map_err(|error| decode_error(&error))?;
     scan(
         header,
         &mut decoder,
-        bytes.len(),
+        input_len,
         0,
         false,
         &mut storage_bytes,
     )?;
-    if decoder.offset() != bytes.len() {
+    if decoder.offset() != input_len {
         return Err(IpcError::Decode(
             "CBOR request contains trailing bytes".to_string(),
         ));
@@ -33,13 +37,13 @@ fn decode_error(error: &ciborium_ll::Error<std::io::Error>) -> IpcError {
     IpcError::Decode(format!("CBOR preflight failed: {error:?}"))
 }
 
-fn next(decoder: &mut Decoder<&[u8]>) -> Result<Header, IpcError> {
+fn next<R: std::io::Read>(decoder: &mut Decoder<R>) -> Result<Header, IpcError> {
     decoder.pull().map_err(|error| decode_error(&error))
 }
 
-fn scan(
+fn scan<R: std::io::Read>(
     header: Header,
-    decoder: &mut Decoder<&[u8]>,
+    decoder: &mut Decoder<R>,
     input_len: usize,
     depth: usize,
     map_key: bool,

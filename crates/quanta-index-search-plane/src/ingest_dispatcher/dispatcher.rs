@@ -1,7 +1,7 @@
 //! `SearchPlaneIngestDispatcher`: routes typed ingest requests to their owner
 //! ports under the idempotency record and the request budget.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
     BatchPublishReceipt, IngestOperationKindV1, RepoMapPublishBundleRequestV2,
@@ -67,6 +67,8 @@ pub struct SearchPlaneIngestDispatcher {
     idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
     source_publication: Arc<dyn quanta_index_core::SourcePublicationCatalogPort>,
     source_authority: Arc<dyn super::ports::SearchCorpusAuthorityInspectPort>,
+    source_upload: Option<Arc<dyn quanta_index_core::SourcePublicationUploadPort>>,
+    source_upload_commit: Mutex<()>,
 }
 
 impl SearchPlaneIngestDispatcher {
@@ -106,7 +108,15 @@ impl SearchPlaneIngestDispatcher {
             idempotency,
             source_publication,
             source_authority,
+            source_upload: None,
+            source_upload_commit: Mutex::new(()),
         }
+    }
+
+    #[must_use]
+    pub fn with_source_upload(mut self, upload: Arc<dyn quanta_index_core::SourcePublicationUploadPort>) -> Self {
+        self.source_upload = Some(upload);
+        self
     }
 
     /// Run one receipt-bearing publish under the operation journal
@@ -490,6 +500,48 @@ impl SearchPlaneIngestDispatcher {
             return SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err));
         }
         match request {
+            SearchPlaneIngestIpcRequest::StageSourcePublication(part) => {
+                let result = self.source_upload.as_ref().ok_or_else(||
+                    CoreError::InvalidContract("source publication staging is unavailable".into()))
+                    .and_then(|upload| upload.stage(&part, budget));
+                match result {
+                    Ok(ack) => SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(ack),
+                    Err(error) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(error)),
+                }
+            }
+            SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(identity) => {
+                let result = self.source_upload.as_ref().ok_or_else(||
+                    CoreError::InvalidContract("source publication staging is unavailable".into()))
+                    .and_then(|upload| upload.discard(identity));
+                match result {
+                    Ok(()) => SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(
+                        quanta_index_contract::SourcePublicationUploadAck { identity, next_offset: 0 }),
+                    Err(error) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(error)),
+                }
+            }
+            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) => {
+                let operation = self.source_upload_commit.try_lock().map_err(|_| CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy,
+                    message: "another staged source publication is materializing".into(),
+                });
+                let result = operation.and_then(|_operation| {
+                    let upload = self.source_upload.as_ref().ok_or_else(||
+                        CoreError::InvalidContract("source publication staging is unavailable".into()))?;
+                    let batch = upload.load(commit.identity, budget)?;
+                    if quanta_index_contract::SourcePublicationBinding::for_batch(&batch) != commit.publication {
+                        return Err(CoreError::InvalidContract("staged source publication binding mismatch".into()));
+                    }
+                    let response = self.dispatch(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch), budget);
+                    if matches!(&response, SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)) {
+                        upload.discard(commit.identity)?;
+                    }
+                    Ok(response)
+                });
+                match result {
+                    Ok(response) => response,
+                    Err(error) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(error)),
+                }
+            }
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(mut batch) => {
                 let mut observation = None;
                 match self.publish_source_idempotent(&mut batch, |batch| {

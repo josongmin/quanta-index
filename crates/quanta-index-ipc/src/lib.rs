@@ -20,6 +20,11 @@ mod peer_credentials;
 mod plane;
 mod server;
 mod socket_access;
+mod source_upload;
+pub use source_upload::{
+    SOURCE_PUBLICATION_INLINE_BYTES, SourcePublicationUploadError, SourcePublicationUploadStore,
+    for_each_source_publication_upload_part, source_publication_upload_identity,
+};
 
 pub use admission::{
     DispatchPermit, DispatchSlots, IngressBudget, ServerAdmissionPolicy, SlotRefusal,

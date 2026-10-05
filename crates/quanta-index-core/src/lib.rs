@@ -11,6 +11,8 @@
 pub mod domains;
 pub mod error;
 pub mod ingest_resource;
+mod source_upload;
+pub use source_upload::SourcePublicationUploadPort;
 pub mod request_budget;
 pub mod timeref;
 

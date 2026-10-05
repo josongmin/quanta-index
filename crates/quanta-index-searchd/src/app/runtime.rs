@@ -1733,7 +1733,9 @@ impl SearchdRuntime {
             idempotency,
             activation_catalog,
             authority_inspect_port,
-        ));
+        ).with_source_upload(Arc::new(quanta_index_ipc::SourcePublicationUploadStore::open(
+            config.state_root().join("source-publication-uploads"),
+        )?)));
         let query_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,
         > = Arc::new(SearchPlaneQueryIpcAdapter::new(query_dispatcher));

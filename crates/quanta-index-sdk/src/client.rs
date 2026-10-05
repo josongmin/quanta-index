@@ -418,6 +418,7 @@ impl QuantaIndex {
                 repair: error.repair,
             }),
             payload @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | quanta_index_contract::SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(
@@ -510,6 +511,7 @@ impl QuantaIndex {
         response: &SearchPlaneIngestIpcResponse,
     ) -> &'static str {
         match response {
+            SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => "source_publication_upload_ack",
             SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_) => "search_corpus_receipt",
             SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_) => {
                 "repomap_terminal_receipt_v2"

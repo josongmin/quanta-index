@@ -359,7 +359,7 @@ const SEARCH_CORPUS_REPLACE_SCOPE_FIELDS: &[&str] =
 // CBOR must carry a source file as one byte string. The default Vec<u8>
 // serializer emits an array of integers, inflating ingest frames and forcing
 // the decoder to allocate an element sequence for every file byte.
-struct SourceBytesWire<'a>(&'a [u8]);
+pub(super) struct SourceBytesWire<'a>(pub(super) &'a [u8]);
 
 impl Serialize for SourceBytesWire<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -367,7 +367,7 @@ impl Serialize for SourceBytesWire<'_> {
     }
 }
 
-struct SourceBytesBuf(Vec<u8>);
+pub(super) struct SourceBytesBuf(pub(super) Vec<u8>);
 
 struct SourceBytesVisitor;
 

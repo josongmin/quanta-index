@@ -153,6 +153,9 @@ impl PlaneDispatch<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>
     fn event_route(request: &SearchPlaneIngestIpcRequest) -> &'static str {
         match request {
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_) => "ingest.search_corpus",
+            SearchPlaneIngestIpcRequest::StageSourcePublication(_) => "ingest.source_upload",
+            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_) => "ingest.search_corpus",
+            SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) => "ingest.source_upload_discard",
             SearchPlaneIngestIpcRequest::PublishHistoryBatch(_) => "ingest.history",
             SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_) => {
                 "ingest.repo_commit_recency"
@@ -176,6 +179,7 @@ impl PlaneDispatch<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>
     fn event_error(response: &SearchPlaneIngestIpcResponse) -> Option<SearchPlaneErrorCodeV2> {
         match response {
             SearchPlaneIngestIpcResponse::Error(error) => Some(error.code),
+            SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => None,
             SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
             | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)

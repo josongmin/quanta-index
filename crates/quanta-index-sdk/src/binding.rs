@@ -122,6 +122,7 @@ impl ExpectedControlResponseV1 {
 /// The one response variant an ingest-plane call accepts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExpectedIngestResponseV1 {
+    SourcePublicationUploadAck,
     SearchCorpusReceipt,
     RepoMapTerminalReceiptV2,
     HistoryReceipt,
@@ -140,6 +141,7 @@ impl ExpectedIngestResponseV1 {
     #[must_use]
     pub(crate) const fn kind(self) -> &'static str {
         match self {
+            Self::SourcePublicationUploadAck => "source_publication_upload_ack",
             Self::SearchCorpusReceipt => "search_corpus_receipt",
             Self::RepoMapTerminalReceiptV2 => "repomap_terminal_receipt_v2",
             Self::HistoryReceipt => "history_receipt",
@@ -1536,6 +1538,11 @@ impl IngestCallBinding {
     /// over the closed request enum.
     pub(crate) fn from_request(request: &SearchPlaneIngestIpcRequest) -> Self {
         let (expected, commitment) = match request {
+            SearchPlaneIngestIpcRequest::StageSourcePublication(_)
+            | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) =>
+                (ExpectedIngestResponseV1::SourcePublicationUploadAck, None),
+            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_) =>
+                (ExpectedIngestResponseV1::SearchCorpusReceipt, None),
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_) => {
                 (ExpectedIngestResponseV1::SearchCorpusReceipt, None)
             }
@@ -1584,6 +1591,9 @@ impl IngestCallBinding {
             }
         };
         let repo_map_v2 = match request {
+            SearchPlaneIngestIpcRequest::StageSourcePublication(_)
+            | SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_)
+            | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) => None,
             SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request) => Some(request.clone()),
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
             | SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
@@ -1602,6 +1612,10 @@ impl IngestCallBinding {
             commitment,
             repo_map_v2,
             search_corpus: match request {
+                SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) =>
+                    Some((commit.publication.clone(), true)),
+                SearchPlaneIngestIpcRequest::StageSourcePublication(_)
+                | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) => None,
                 SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => Some((
                     quanta_index_contract::SourcePublicationBinding::for_batch(batch),
                     batch.seal,
@@ -1655,6 +1669,7 @@ pub(crate) fn bind_ingest_response(
 ) -> Result<(), SdkError> {
     let route = binding.expected.kind();
     let (actual_kind, receipt): (&str, Option<&BatchPublishReceipt>) = match response {
+        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => ("source_publication_upload_ack", None),
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => {
             ("search_corpus_receipt", Some(receipt))
         }

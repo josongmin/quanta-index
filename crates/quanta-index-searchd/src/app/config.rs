@@ -1011,7 +1011,10 @@ impl SearchdConfig {
             ingest_batch_bytes: self
                 .ingest_resource_policy
                 .max_text_bytes()
-                .saturating_add(self.ingest_resource_policy.max_vector_bytes()),
+                .saturating_add(self.ingest_resource_policy.max_vector_bytes())
+                // One staged commit at a time: decoded body plus guarded
+                // collection storage, admitted before runtime construction.
+                .saturating_add(2 * quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES),
             ceiling: self.process_memory_ceilings.ceiling_bytes(),
             rss_ceiling: self.process_memory_ceilings.rss_ceiling_bytes(),
         };
