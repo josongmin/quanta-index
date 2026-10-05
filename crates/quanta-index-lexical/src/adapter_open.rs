@@ -214,10 +214,13 @@ impl SealedGenerationVisitor for LoadedGeneration {
 
     fn file_authority(
         &mut self,
-        files: Vec<crate::file_authority::SourceFile>,
+        authority: crate::file_authority::VerifiedAuthority,
+        object_dir: std::path::PathBuf,
         budget: Option<&RequestBudgetV1>,
     ) -> Result<(), CoreError> {
-        self.file_authority = Some(crate::file_authority::from_verified_files(files, budget)?);
+        self.file_authority = Some(crate::file_authority::from_v15_verified(
+            authority, object_dir, budget,
+        )?);
         Ok(())
     }
 

@@ -4,14 +4,14 @@
 //! The seal commits every file a query opens with its length and SHA-256.
 //! A fresh generation is measured whole; a delta inherits the base's
 //! commitment for every file that *is* the base's inode (the segment
-//! files, text-authority shards, file-authority sources and overlays the delta hard-linked) and
+//! files, text-authority shards, file-authority objects and overlays the delta hard-linked) and
 //! measures only what it wrote. These tests pin that with an inode oracle:
 //! the files of the delta are partitioned on disk by whether their inode
 //! is the base's, and the seal's own measurement — bytes it read through
 //! its hasher, bytes it inherited — must equal the sizes of exactly those
 //! partitions. Nothing here reads a clock.
-//! File-index admission reads every source path separately, including inherited
-//! source bytes; its counters must not be mixed with commitment inheritance.
+//! File-index admission reads changed raw source input; its counters must not
+//! be mixed with commitment inheritance or cold file-authority replay.
 
 #![forbid(unsafe_code)]
 
@@ -201,17 +201,58 @@ fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn 
     let mut files = Vec::new();
     for entry in std::fs::read_dir(generation_dir)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
+        let metadata = entry.path().symlink_metadata()?;
         let name = entry.file_name().to_string_lossy().into_owned();
+        if metadata.file_type().is_symlink() {
+            return Err(format!("committed tree contains a symlink: {name}").into());
+        }
         if metadata.is_dir() {
             if name != TEXT_AUTHORITY_DIR && name != FILE_AUTHORITY_DIR {
                 return Err(format!("unexpected directory {name}").into());
             }
             for shard in std::fs::read_dir(entry.path())? {
                 let shard = shard?;
-                let shard_metadata = shard.metadata()?;
+                let shard_metadata = shard.path().symlink_metadata()?;
+                let shard_name = shard.file_name().to_string_lossy().into_owned();
+                if shard_metadata.is_dir() && name == FILE_AUTHORITY_DIR && shard_name == "objects"
+                {
+                    for object in std::fs::read_dir(shard.path())? {
+                        let object = object?;
+                        let object_metadata = object.path().symlink_metadata()?;
+                        let object_name = object.file_name().to_string_lossy().into_owned();
+                        let Some(digest) = object_name.strip_suffix(".bin") else {
+                            return Err(
+                                format!("unexpected file-authority object: {object_name}").into()
+                            );
+                        };
+                        if !object_metadata.is_file()
+                            || digest.len() != 64
+                            || !digest
+                                .bytes()
+                                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                        {
+                            return Err(
+                                format!("invalid file-authority object: {object_name}").into()
+                            );
+                        }
+                        files.push(CommittedFile {
+                            name: format!("{name}/{shard_name}/{object_name}"),
+                            bytes: object_metadata.len(),
+                            inode: object_metadata.ino(),
+                        });
+                    }
+                    continue;
+                }
+                if !shard_metadata.is_file() {
+                    return Err(format!("unexpected sidecar entry: {name}/{shard_name}").into());
+                }
+                if name == FILE_AUTHORITY_DIR && shard_name != "root.cbor" {
+                    return Err(
+                        format!("unexpected sealed file-authority entry: {shard_name}").into(),
+                    );
+                }
                 files.push(CommittedFile {
-                    name: format!("{name}/{}", shard.file_name().to_string_lossy()),
+                    name: format!("{name}/{shard_name}"),
                     bytes: shard_metadata.len(),
                     inode: shard_metadata.ino(),
                 });
@@ -264,6 +305,12 @@ fn delta_stats(
         file_admission_bytes_read: after
             .file_admission_bytes_read
             .saturating_sub(before.file_admission_bytes_read),
+        file_authority_replay_files_read: after
+            .file_authority_replay_files_read
+            .saturating_sub(before.file_authority_replay_files_read),
+        file_authority_replay_bytes_read: after
+            .file_authority_replay_bytes_read
+            .saturating_sub(before.file_authority_replay_bytes_read),
     }
 }
 
@@ -272,7 +319,7 @@ fn delta_stats(
     clippy::panic_in_result_fn,
     reason = "fixed on-disk source admission oracle in a fallible fixture"
 )]
-fn file_admission_counts_inherited_source_reads_separately() -> TestResult {
+fn file_admission_counts_changed_source_reads_separately() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path();
     let adapter = LexicalAdapter::with_state_root(root.to_path_buf());
@@ -292,37 +339,30 @@ fn file_admission_counts_inherited_source_reads_separately() -> TestResult {
         base_stats.file_admission_bytes_read,
         u64::try_from(original.len() + inherited.len())?
     );
+    assert_eq!(base_stats.file_authority_replay_files_read, 0);
+    assert_eq!(base_stats.file_authority_replay_bytes_read, 0);
     let base_files = committed_files(&generation_dir(root, g1))?;
     let _stages = adapter.build_batch(&batch(g2, Some(g1), vec![scope(0, replacement)?])?)?;
     let after = adapter.seal_commitment_stats()?;
     let delta = delta_stats(base_stats, after);
     let delta_files = committed_files(&generation_dir(root, g2))?;
-    let source_files: Vec<_> = delta_files
-        .iter()
-        .filter(|file| {
-            file.name.starts_with("file-authority/")
-                && Path::new(&file.name)
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("bin"))
-        })
-        .collect();
-    assert_eq!(source_files.len(), 2);
-    assert_eq!(
-        source_files
+    assert!(
+        base_files
             .iter()
-            .filter(|file| base_files.iter().any(|base| base.inode == file.inode))
-            .count(),
-        1
+            .any(|file| file.name.starts_with("file-authority/objects/"))
     );
-    assert_eq!(delta.file_admission_files_read, 2);
+    assert!(
+        delta_files
+            .iter()
+            .any(|file| file.name.starts_with("file-authority/objects/"))
+    );
+    assert_eq!(delta.file_admission_files_read, 1);
     assert_eq!(
         delta.file_admission_bytes_read,
-        total_bytes(source_files.iter().copied())
+        u64::try_from(replacement.len())?
     );
-    assert_eq!(
-        delta.file_admission_bytes_read,
-        u64::try_from(replacement.len() + inherited.len())?
-    );
+    assert_eq!(delta.file_authority_replay_files_read, 0);
+    assert_eq!(delta.file_authority_replay_bytes_read, 0);
     assert!(delta.files_inherited > 0);
     assert!(delta.bytes_inherited >= u64::try_from(inherited.len())?);
     let metrics = adapter.scrape()?;
@@ -334,6 +374,14 @@ fn file_admission_counts_inherited_source_reads_separately() -> TestResult {
         (
             "lexical_seal_file_admission_bytes_read_total",
             after.file_admission_bytes_read,
+        ),
+        (
+            "lexical_seal_file_authority_replay_files_read_total",
+            after.file_authority_replay_files_read,
+        ),
+        (
+            "lexical_seal_file_authority_replay_bytes_read_total",
+            after.file_authority_replay_bytes_read,
         ),
     ] {
         assert!(metrics.iter().any(|metric| {
@@ -550,17 +598,15 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     {
         return Err("an unchanged segment did not inherit its ranked-key table".into());
     }
-    // The file-authority manifest is a full source roster rewritten by a
-    // delta. Account for that known O(file-count) control artifact explicitly;
+    // The file-authority root binds the complete source roster and is rewritten
+    // by a delta. Account for its independently measured O(file-count) bytes;
     // all other newly hashed bytes still stay below half the base fixture.
-    let file_manifest_bytes = written
+    let file_root_bytes = written
         .iter()
-        .find(|file| file.name == "file-authority/manifest.cbor")
-        .ok_or("delta did not publish its file-authority manifest")?
+        .find(|file| file.name == "file-authority/root.cbor")
+        .ok_or("delta did not publish its file-authority root")?
         .bytes;
-    let budget = base_bytes
-        .saturating_div(2)
-        .saturating_add(file_manifest_bytes);
+    let budget = base_bytes.saturating_div(2).saturating_add(file_root_bytes);
     if delta_seal.bytes_hashed > budget {
         return Err(format!(
             "the delta seal read {} bytes against a {base_bytes}-byte base (budget {budget})",

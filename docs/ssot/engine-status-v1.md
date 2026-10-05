@@ -44,10 +44,14 @@ and current E3 owner rather than the retired unexecuted-counterexample wording.
 [OCT-04](../plans/oct-4-parallel-closure/tickets/INDEX.md) owns conditional
 optimization, missing inputs and remaining execution.
 Frozen5796 matching release diagnostics confirmed large default build/seal
-timeout and XL posting admission refusal before daemon startup. Full source
-publication still performs file/parent durable barriers per source; cold open
-globally verifies source and builds resident trigram authority. These are active
-capacity/cost repair boundaries under
+timeout and XL posting admission refusal before daemon startup. Current F15
+source stores immutable bucket packs and postings, publishes a durable root
+before the sealed manifest, and reuses unchanged committed objects on delta.
+Cold open independently validates the complete source/posting census and retains
+a bounded term/range/hash directory; queries read admitted posting ranges under
+one request work budget. Logical heap admission does not establish an RSS bound.
+F15 compiler/owner checks are in progress; matching Large/XL, crash/reopen and
+release evidence remain required capacity/cost boundaries under
 [E4-01/02/05](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
 Explicit timeout/retention diagnostic success does not close default capacity.
 [SEP-21](../plans/sep-21-search-plane-sota-hardening/tickets/CURRENT-RESIDUAL-2026-09-26.md)

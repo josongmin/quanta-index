@@ -1562,14 +1562,17 @@ fn observe_phase<T>(work: impl FnOnce() -> AnyResult<T>) -> AnyResult<(T, PhaseR
     observe_phase_at_root("test", None, work)
 }
 
+#[derive(Clone, Copy)]
 enum CausalPhaseMarker {
     Start,
     End { succeeded: bool },
 }
 
-fn write_causal_phase_marker(name: &str, marker: CausalPhaseMarker) -> AnyResult<()> {
-    let stderr = std::io::stderr();
-    let mut output = stderr.lock();
+fn write_causal_phase_marker_to(
+    output: &mut impl std::io::Write,
+    name: &str,
+    marker: CausalPhaseMarker,
+) -> AnyResult<()> {
     let written = match marker {
         CausalPhaseMarker::Start => {
             writeln!(output, "QI_CAUSAL_V1 kind=phase_start name={name}")
@@ -1585,17 +1588,30 @@ fn write_causal_phase_marker(name: &str, marker: CausalPhaseMarker) -> AnyResult
         .map_err(|error| stage_or_preserve("causal_marker_output", error))
 }
 
+fn write_causal_phase_marker(name: &str, marker: CausalPhaseMarker) -> AnyResult<()> {
+    let stderr = std::io::stderr();
+    write_causal_phase_marker_to(&mut stderr.lock(), name, marker)
+}
+
 fn observe_phase_at_root<T>(
     name: &'static str,
     root: Option<&Path>,
     work: impl FnOnce() -> AnyResult<T>,
 ) -> AnyResult<(T, PhaseResourceV1)> {
+    observe_phase_at_root_with_marker(root, work, causal_profile_enabled(), |marker| {
+        write_causal_phase_marker(name, marker)
+    })
+}
+
+fn observe_phase_at_root_with_marker<T>(
+    root: Option<&Path>,
+    work: impl FnOnce() -> AnyResult<T>,
+    causal_profile: bool,
+    mut emit_marker: impl FnMut(CausalPhaseMarker) -> AnyResult<()>,
+) -> AnyResult<(T, PhaseResourceV1)> {
     let sampler = PhaseSampler::start(root)
         .map_err(|error| stage_or_preserve("resource_observation", error))?;
-    let causal_profile = causal_profile_enabled();
-    if causal_profile
-        && let Err(primary) = write_causal_phase_marker(name, CausalPhaseMarker::Start)
-    {
+    if causal_profile && let Err(primary) = emit_marker(CausalPhaseMarker::Start) {
         let observation = sampler
             .stop()
             .map_err(|error| stage_or_preserve("resource_observation", error));
@@ -1603,19 +1619,26 @@ fn observe_phase_at_root<T>(
     }
     let measurement = work();
     let marker = if causal_profile {
-        write_causal_phase_marker(
-            name,
-            CausalPhaseMarker::End {
-                succeeded: measurement.is_ok(),
-            },
-        )
+        emit_marker(CausalPhaseMarker::End {
+            succeeded: measurement.is_ok(),
+        })
     } else {
         Ok(())
     };
     let observation = sampler
         .stop()
         .map_err(|error| stage_or_preserve("resource_observation", error));
-    let measurement = match (measurement, marker) {
+    combine_phase_result(
+        combine_phase_marker_result(measurement, marker),
+        observation,
+    )
+}
+
+fn combine_phase_marker_result<T>(
+    measurement: AnyResult<T>,
+    marker: AnyResult<()>,
+) -> AnyResult<T> {
+    match (measurement, marker) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(primary), Ok(())) => Err(primary),
         (Ok(_), Err(marker_error)) => Err(marker_error),
@@ -1625,8 +1648,7 @@ fn observe_phase_at_root<T>(
             cleanup_context: "causal phase marker output",
         }
         .into()),
-    };
-    combine_phase_result(measurement, observation)
+    }
 }
 
 fn combine_phase_result<T>(
@@ -4269,6 +4291,122 @@ mod tests {
         ensure_predicate!(
             observed.observed_max_gap_ms <= PHASE_RSS_MAX_GAP.as_secs_f64() * 1_000.0
         );
+        Ok(())
+    }
+
+    struct FailOnFlush {
+        bytes: Vec<u8>,
+        flushes: u8,
+        fail_on: u8,
+    }
+
+    impl std::io::Write for FailOnFlush {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes = self.flushes.saturating_add(1);
+            if self.flushes == self.fail_on {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "fixed causal marker output fault",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn causal_marker_io_failure_refuses_phase_without_publishing_resources() -> AnyResult<()> {
+        let mut start_sink = FailOnFlush {
+            bytes: Vec::new(),
+            flushes: 0,
+            fail_on: 1,
+        };
+        let mut start_work_ran = false;
+        let start = observe_phase_at_root_with_marker(
+            None,
+            || {
+                start_work_ran = true;
+                Ok(())
+            },
+            true,
+            |marker| write_causal_phase_marker_to(&mut start_sink, "io_probe", marker),
+        );
+        ensure_predicate!(!start_work_ran);
+        ensure_equal!(start_sink.flushes, 1);
+        let start_error = start
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("start I/O fault passed"))?;
+        ensure_predicate!(format!("{start_error:#}").contains("causal_marker_output"));
+
+        let mut end_sink = FailOnFlush {
+            bytes: Vec::new(),
+            flushes: 0,
+            fail_on: 2,
+        };
+        let mut end_work_ran = false;
+        let end = observe_phase_at_root_with_marker(
+            None,
+            || {
+                end_work_ran = true;
+                Ok(())
+            },
+            true,
+            |marker| write_causal_phase_marker_to(&mut end_sink, "io_probe", marker),
+        );
+        ensure_predicate!(end_work_ran);
+        ensure_equal!(end_sink.flushes, 2);
+        ensure_equal!(
+            end_sink.bytes.as_slice(),
+            b"QI_CAUSAL_V1 kind=phase_start name=io_probe\nQI_CAUSAL_V1 kind=phase_end name=io_probe ok=1\n".as_slice()
+        );
+        let end_error = end
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("end I/O fault passed"))?;
+        ensure_predicate!(format!("{end_error:#}").contains("causal_marker_output"));
+
+        let primary = anyhow::Error::new(ScaleStageError::operation(
+            "build_seal",
+            &anyhow::anyhow!("fixed operation fault"),
+        ));
+        let mut failing_marker = FailOnFlush {
+            bytes: Vec::new(),
+            flushes: 0,
+            fail_on: 1,
+        };
+        let marker = write_causal_phase_marker_to(
+            &mut failing_marker,
+            "io_probe",
+            CausalPhaseMarker::End { succeeded: false },
+        );
+        ensure_equal!(
+            marker
+                .as_ref()
+                .err()
+                .and_then(|error| error.downcast_ref::<ScaleStageError>())
+                .map(|error| error.stage),
+            Some("causal_marker_output")
+        );
+        let combined = combine_phase_marker_result::<()>(Err(primary), marker)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("operation plus marker I/O fault passed"))?;
+        let failure = combined
+            .downcast_ref::<ScaleRuntimeFailure>()
+            .ok_or_else(|| anyhow::anyhow!("both errors were not retained"))?;
+        ensure_equal!(failure.cleanup_context, "causal phase marker output");
+        ensure_equal!(
+            failure
+                .primary
+                .as_ref()
+                .and_then(|error| error.downcast_ref::<ScaleStageError>())
+                .map(|error| error.stage),
+            Some("build_seal")
+        );
+        ensure_predicate!(format!("{:#}", failure.cleanup).contains("causal_marker_output"));
         Ok(())
     }
 

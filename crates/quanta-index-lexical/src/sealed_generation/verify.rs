@@ -35,7 +35,7 @@ use quanta_index_core::{CoreError, RequestBudgetV1};
 use sha2::{Digest as _, Sha256};
 use tantivy::{Index, IndexReader, ReloadPolicy};
 
-use crate::file_authority::{self, SourceFile};
+use crate::file_authority;
 use crate::overlay_codec::OverlayFamily;
 use crate::ranked_keys::{self, MAX_RANKED_KEYS_BYTES, RankedKeyTables, SegmentKeys};
 use crate::sealed_generation::coverage::{
@@ -62,7 +62,8 @@ pub(crate) trait SealedGenerationVisitor {
     /// in-memory search index; validation visitors discard these bytes.
     fn file_authority(
         &mut self,
-        files: Vec<SourceFile>,
+        authority: file_authority::VerifiedAuthority,
+        object_dir: std::path::PathBuf,
         budget: Option<&RequestBudgetV1>,
     ) -> Result<(), CoreError>;
 
@@ -80,7 +81,8 @@ impl SealedGenerationVisitor for DiscardingVisitor {
 
     fn file_authority(
         &mut self,
-        _files: Vec<SourceFile>,
+        _authority: file_authority::VerifiedAuthority,
+        _object_dir: std::path::PathBuf,
         _budget: Option<&RequestBudgetV1>,
     ) -> Result<(), CoreError> {
         Ok(())
@@ -235,160 +237,159 @@ fn verify_file_authority<V: SealedGenerationVisitor>(
     budget: Option<&RequestBudgetV1>,
 ) -> Result<(), CoreError> {
     checkpoint(budget, "lexical:cold-open:file-authority")?;
-    let manifest_name = format!("{}/{}", file_authority::DIR, file_authority::MANIFEST);
+    let root_name = format!("{}/{}", file_authority::DIR, file_authority::ROOT);
     let by_name: BTreeMap<&str, &SealedArtifactCommitmentV1> = committed
         .iter()
         .map(|artifact| (artifact.name.as_str(), artifact))
         .collect();
-    let manifest_commitment = by_name
-        .get(manifest_name.as_str())
-        .copied()
-        .ok_or_else(|| {
-            crate::index_store::sidecar_corrupt(
-                generation_dir,
-                &manifest_name,
-                "missing commitment",
-            )
-        })?;
-    if !matches!(
-        usize::try_from(manifest_commitment.bytes),
-        Ok(bytes) if bytes <= file_authority::max_manifest_bytes()
-    ) {
+    if by_name.len() != committed.len() {
         return Err(crate::index_store::sidecar_corrupt(
             generation_dir,
-            &manifest_name,
-            "manifest exceeds byte limit",
+            file_authority::DIR,
+            "duplicate file authority commitment",
         ));
     }
-    let manifest_bytes = read_committed(root, generation_dir, manifest_commitment, budget)?;
-    let rows = file_authority::decode_verified_manifest(&manifest_bytes, generation_dir)?;
-    checkpoint(budget, "lexical:cold-open:file-manifest-decode")?;
-    let sources: Vec<_> = rows.iter().map(|(source, _)| source.clone()).collect();
-    let expected = file_authority::expected_names(&sources);
-    if by_name.len() != committed.len()
-        || !by_name
-            .keys()
+    let root_commitment = by_name.get(root_name.as_str()).copied().ok_or_else(|| {
+        crate::index_store::sidecar_corrupt(generation_dir, &root_name, "F15 root is not committed")
+    })?;
+    if root_commitment.bytes > file_authority::max_root_bytes() {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &root_name,
+            "F15 root exceeds byte policy",
+        ));
+    }
+    let root_bytes = read_committed(root, generation_dir, root_commitment, budget)?;
+    let mut read_failure = None;
+    let verified_result = file_authority::verify_v15(&root_bytes, |digest, expected_len| {
+        let name = file_authority::object_name(&digest);
+        let commitment = by_name
+            .get(name.as_str())
             .copied()
-            .eq(expected.iter().map(String::as_str))
+            .ok_or_else(|| format!("object {name} is absent from outer manifest"))?;
+        if commitment.bytes != expected_len || commitment.sha256 != digest {
+            return Err(format!("object {name} differs from root descriptor"));
+        }
+        file_authority::read_object_pinned(
+            &generation_dir
+                .join(file_authority::DIR)
+                .join(file_authority::OBJECTS),
+            digest,
+            expected_len,
+            budget,
+        )
+        .map_err(|error| {
+            read_failure = Some(error);
+            format!("object {name} read failed")
+        })
+    });
+    if let Some(error) = read_failure {
+        return Err(error);
+    }
+    let verified = verified_result.map_err(|reason| {
+        crate::index_store::sidecar_corrupt(generation_dir, &root_name, &reason)
+    })?;
+    checkpoint(budget, "lexical:cold-open:file-census")?;
+    let expected = file_authority::verified_inventory(&verified);
+    if expected.len() != committed.len()
+        || !expected
+            .keys()
+            .map(String::as_str)
+            .eq(by_name.keys().copied())
+        || expected.iter().any(|(name, len)| {
+            name != &root_name
+                && by_name
+                    .get(name.as_str())
+                    .is_none_or(|row| row.bytes != *len)
+        })
     {
         return Err(crate::index_store::sidecar_corrupt(
             generation_dir,
             file_authority::DIR,
-            "commitments differ from manifest",
-        ));
-    }
-    let actual: BTreeSet<String> = std::fs::read_dir(generation_dir.join(file_authority::DIR))
-        .map_err(|error| {
-            CoreError::Storage(format!("lexical: list sealed file authority: {error}"))
-        })?
-        .map(|entry| {
-            entry
-                .map(|entry| {
-                    format!(
-                        "{}/{}",
-                        file_authority::DIR,
-                        entry.file_name().to_string_lossy()
-                    )
-                })
-                .map_err(|error| {
-                    CoreError::Storage(format!("lexical: sealed file authority entry: {error}"))
-                })
-        })
-        .collect::<Result<_, _>>()?;
-    if actual != expected {
-        return Err(crate::index_store::sidecar_corrupt(
-            generation_dir,
-            file_authority::DIR,
-            "directory differs from manifest",
+            "outer manifest object inventory differs from F15 root",
         ));
     }
     let coverage = coverage.ok_or_else(|| {
         crate::index_store::sidecar_corrupt(
             generation_dir,
             file_authority::DIR,
-            "source coverage missing",
+            "source coverage is missing",
         )
     })?;
-    if coverage.len() != sources.len() {
+    if !file_authority::verified_matches_coverage(&verified, coverage) {
         return Err(crate::index_store::sidecar_corrupt(
             generation_dir,
             file_authority::DIR,
-            "source coverage and file authority counts differ",
+            "F15 source metadata differs from coverage",
         ));
     }
-    let mut files = Vec::with_capacity(sources.len());
-    let mut logical_source_bytes = 0_u64;
-    for (source, expected_postings) in rows {
-        checkpoint(budget, "lexical:cold-open:file")?;
-        let Some(coverage_row) = coverage.get(&source.file) else {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                file_authority::DIR,
-                "source missing from coverage",
-            ));
-        };
-        if coverage_row.source != source {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                file_authority::DIR,
-                "source identity differs from coverage",
-            ));
-        }
-        let name = file_authority::artifact_name(&source);
-        let artifact = by_name.get(name.as_str()).copied().ok_or_else(|| {
-            crate::index_store::sidecar_corrupt(generation_dir, &name, "source bytes not committed")
-        })?;
-        if artifact.bytes
-            > u64::try_from(file_authority::MAX_FILE_BYTES)
-                .map_err(|error| CoreError::Storage(format!("lexical: file byte cap: {error}")))?
-        {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                &name,
-                "source bytes exceed admission limit",
-            ));
-        }
-        logical_source_bytes = logical_source_bytes
-            .checked_add(artifact.bytes)
-            .ok_or_else(|| {
-                CoreError::Storage("lexical: file authority source byte sum overflow".into())
-            })?;
-        if logical_source_bytes
-            > u64::try_from(file_authority::MAX_TOTAL_SOURCE_BYTES).map_err(|error| {
-                CoreError::Storage(format!("lexical: file authority cap: {error}"))
-            })?
-        {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                file_authority::DIR,
-                "source byte admission exceeded",
-            ));
-        }
-        let bytes = read_committed(root, generation_dir, artifact, budget)?;
-        if artifact.sha256 != source.source_sha256 {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                &name,
-                "source bytes digest differs from source revision",
-            ));
-        }
-        let file = SourceFile {
-            source,
-            bytes,
-            text_admitted: coverage_row.text_admitted,
-            language: coverage_row.language.clone(),
-            indexed_text: None,
-            folded_text: None,
-            indexed_path: String::new(),
-            folded_path: String::new(),
-            expected_postings,
-        };
-        let _admitted_text = file.admitted_text()?;
-        checkpoint(budget, "lexical:cold-open:file-decode")?;
-        files.push(file);
+    // List through pinned nofollow directory descriptors, including nested objects.
+    let authority_dir = open_child_directory(root, file_authority::DIR).map_err(|error| {
+        crate::index_store::sidecar_corrupt(
+            generation_dir,
+            file_authority::DIR,
+            &format!("open directory: {error}"),
+        )
+    })?;
+    let top: BTreeSet<String> = super::entry_names_at(&authority_dir, None)
+        .map_err(|error| CoreError::Storage(format!("lexical: list F15 authority: {error}")))?
+        .into_iter()
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect();
+    if top
+        != BTreeSet::from([
+            file_authority::ROOT.to_owned(),
+            file_authority::OBJECTS.to_owned(),
+        ])
+    {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            file_authority::DIR,
+            "F15 authority directory has uncommitted entries",
+        ));
     }
-    visitor.file_authority(files, budget)?;
+    let object_dir =
+        open_child_directory(&authority_dir, file_authority::OBJECTS).map_err(|error| {
+            crate::index_store::sidecar_corrupt(
+                generation_dir,
+                file_authority::OBJECTS,
+                &format!("open object directory: {error}"),
+            )
+        })?;
+    let actual_objects: BTreeSet<String> = super::entry_names_at(&object_dir, None)
+        .map_err(|error| CoreError::Storage(format!("lexical: list F15 objects: {error}")))?
+        .into_iter()
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect();
+    let object_prefix = format!("{}/{}/", file_authority::DIR, file_authority::OBJECTS);
+    let expected_objects: BTreeSet<String> = expected
+        .keys()
+        .filter_map(|name| name.strip_prefix(&object_prefix).map(str::to_owned))
+        .collect();
+    if actual_objects != expected_objects {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            file_authority::DIR,
+            "F15 object directory differs from root",
+        ));
+    }
+    let object_path = generation_dir
+        .join(file_authority::DIR)
+        .join(file_authority::OBJECTS);
+    visitor.file_authority(verified, object_path, budget)?;
     checkpoint(budget, "lexical:cold-open:file-authority")
+}
+
+fn open_child_directory(parent: &File, name: &str) -> std::io::Result<File> {
+    use rustix::fs::{Mode, OFlags, openat};
+    let descriptor = openat(
+        parent,
+        Path::new(name),
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))?;
+    Ok(File::from(descriptor))
 }
 
 fn checkpoint(budget: Option<&RequestBudgetV1>, stage: &'static str) -> Result<(), CoreError> {

@@ -879,6 +879,12 @@ owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "lexical-f15-file-authority"
+path = "crates/quanta-index-lexical/tests/f15_file_authority.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lexical-boot-inventory"
 path = "crates/quanta-index-lexical/tests/boot_inventory.rs"
 owner = "quanta-index-lexical"

@@ -71,8 +71,9 @@ not establish an executed clean pair or promote an operational registry node.
 
 ## Native segment retention and committed live statistics
 
-Sealed manifest format 14 requires `search-corpus-live-bm25.cbor`. Earlier
-generations require a producer rebuild; native statistics are not a fallback
+Sealed manifest format 15 retains the format-14 live-statistics contract and
+requires `search-corpus-live-bm25.cbor`. Earlier generations require a producer
+rebuild; native statistics are not a fallback
 for absent or invalid live statistics. Every native document producer stores a
 private census of exact indexed terms and token counts using the registered
 analyzer and native term-length rules.
@@ -90,11 +91,15 @@ decode admission; these are not measured heap or transient-peak guarantees.
 Changed retained segments still compare deletion bits across `max_doc`. Native
 byte reuse does not establish a whole-call CPU/read/write bound. Source/authority
 custody walks, metadata publication and long-running segment/correction fanout
-remain separate cost scopes. File-authority seal preflight still reads, hashes
-and folds unchanged complete source; cold open validates and materializes the
-committed source set and constructs both global trigram indexes. Native segment
-reuse does not establish delta-proportional whole-call reads/CPU or bounded
-file-authority residency. A future compaction policy requires independent
+remain separate cost scopes. Current format-15 file authority reuses exact
+unchanged committed objects and only rebuilds touched source buckets. Cold open
+independently validates the complete source/posting census and materializes
+source rows plus bounded term/range/hash directories. Query posting lists are
+read on demand under a shared literal/typo request budget. Encoded and logical
+resident admissions do not establish measured heap, RSS or transient peaks.
+Inherited commitment reuse and new-object replay counters are separate from
+physical I/O. Native segment reuse does not establish delta-proportional
+whole-call reads/CPU. A future compaction policy requires independent
 score/page parity and measured foreground, maintenance and residency budgets.
 
 Owners: [document census](../../crates/quanta-index-lexical/src/doc_census.rs),

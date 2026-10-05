@@ -79,7 +79,7 @@ pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-genera
 const MAX_SEALED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 14;
+pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 15;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -129,7 +129,7 @@ pub(crate) struct LexicalSealedManifest {
     /// The `text-authority/` tree by `/`-joined path, ascending by name, or
     /// `None` for a generation built without a text authority.
     pub(crate) text_authority: Option<Vec<SealedArtifactCommitmentV1>>,
-    /// Immutable source-file bytes and their exact source identities.
+    /// F15 root and its immutable packed source/posting objects.
     pub(crate) file_authority: Vec<SealedArtifactCommitmentV1>,
     /// Every overlay family present, in [`OverlayFamily::ALL`] order.
     pub(crate) overlays: Vec<SealedArtifactCommitmentV1>,
@@ -261,7 +261,7 @@ impl LexicalSealedManifest {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
-                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: committed exact live BM25 statistics for retained deletions); the generation must be rebuilt",
+                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: packed file authority with disk postings); the generation must be rebuilt",
                     path.display()
                 ),
             });
@@ -372,17 +372,22 @@ impl LexicalSealedManifest {
                 ));
             }
         }
-        let file_prefix = format!("{}/", file_authority::DIR);
+        let root_name = format!("{}/{}", file_authority::DIR, file_authority::ROOT);
+        let object_prefix = format!("{}/objects/", file_authority::DIR);
         ensure_names(path, "file authority", &self.file_authority, |name| {
-            name.strip_prefix(file_prefix.as_str())
-                .is_some_and(&top_level)
+            name == root_name
+                || name
+                    .strip_prefix(object_prefix.as_str())
+                    .is_some_and(file_authority::is_object_file_name)
         })?;
-        if !self.file_authority.iter().any(|file| {
-            file.name == format!("{}/{}", file_authority::DIR, file_authority::MANIFEST)
-        }) {
+        if !self
+            .file_authority
+            .iter()
+            .any(|file| file.name == root_name)
+        {
             return Err(manifest_corrupt(
                 path,
-                "file authority is committed without its manifest",
+                "file authority is committed without its F15 root",
             ));
         }
         if let Some(coverage) = &self.source_coverage
@@ -611,7 +616,7 @@ mod tests {
                 artifact("text-authority/manifest.cbor"),
                 artifact("text-authority/shard-00000000-0000000000000000.cbor"),
             ]),
-            file_authority: vec![artifact("file-authority/manifest.cbor")],
+            file_authority: vec![artifact("file-authority/root.cbor")],
             overlays: vec![artifact("repo-metadata.cbor"), artifact("repo-meta.cbor")],
             source_coverage: None,
         }
@@ -691,6 +696,25 @@ mod tests {
             || super::read_manifest(&generation)?.manifest_digest != "replacement"
         {
             return Err("manifest reader followed a replacement generation".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bound_manifest_refuses_identity_digest_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+        let family = tempfile::tempdir()?;
+        let generation = family.path().join("generation");
+        std::fs::create_dir(&generation)?;
+        std::fs::write(
+            generation.join(super::LEXICAL_SEALED_MANIFEST_FILE_NAME),
+            manifest().encode()?,
+        )?;
+        let opened = super::super::open_generation_dir_nofollow(&generation)?;
+        let result = super::read_bound_manifest_at(&generation, &opened, "different-digest");
+        if typed_code(&result)
+            != Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch)
+        {
+            return Err(format!("identity digest mismatch was accepted: {result:?}").into());
         }
         Ok(())
     }
@@ -810,6 +834,7 @@ mod tests {
             11,
             12,
             13,
+            14,
             LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1,
         ] {
             let other_format: SealedManifestRow = (

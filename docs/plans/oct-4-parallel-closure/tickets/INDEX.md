@@ -9,10 +9,12 @@
 
 ## 현재 코드 잔여 — 2026-10-06 소스 대조
 
-현재 정리 기준: Quanta main `f251296dcdf247ddb4f341a176fd15907f2002bb`와 history/admission/문서 수정 overlay.
+현재 정리 기준: Quanta main `52a45e58aba9fb9887c73c594e1abcf24caa7bcd`와 F15 엔진/회귀 수정 overlay.
 Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀·scanner custody·ARB 용어 예산 수리가 추가됐다.
-현재 overlay에는 scale/open-loop의 pair/total retention 정책 결속과 invocation-scoped 입장 검증 재사용이 추가됐다.
-Retrieval 엔진 소스는 아직 동일하며 F15 저장 구조 수리는 외부 후보다.
+Main에는 scale/open-loop pair/total retention 정책 결속, invocation-scoped 입장 검증 재사용과
+전체 file-pair verdict를 사용하는 테스트 fixture가 추가됐다. 현재 overlay에는 F15 immutable
+pack/root/posting과 bounded query reader, 기존 비용/format 테스트 전환 및 제품 회귀가 통합됐다.
+F15 actual 컴파일·회귀는 진행 중이며 Large/XL 재실행·새 formal proof는 아직 `NOT_RUN`이다.
 Frozen5796 actual과 아래 current-source owner 회귀를 구분하며 main formal proof로 승격하지 않는다.
 Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
 아래는 실제 생산 경로·코드와 기존 결과를 대조한 잔여이며 새 full-suite/release qualification이 아니다.
@@ -376,10 +378,11 @@ P1 · W1/W4 · F14 native 재사용·정확도 owner 회귀 `VERIFIED`; 전체 d
   changed retained segment의 delete bitmap 비교에는 O(max_doc) CPU 순회가 남고,
   `NoMergePolicy`의 장기 segment 누적 비용은 미검증이다. Logical bytes·retained estimate를
   physical I/O·peak memory로 표시하지 않는다. 전체 QI-BB-006 비용 closure는 미완료다.
-- File authority의 seal preflight는 unchanged 파일까지 전체 source를 읽고 hash/fold한다.
-  Cold open도 committed source 전수를 검증·적재하고 두 전역 `TrigramIndex`를 구성한다
-  (`file_authority.rs`, `sealed_generation/verify.rs`). F14 native 재사용은 이 전체 읽기/CPU와
-  file-authority residency를 delta 비례 비용으로 바꾸지 않는다.
+- F14 frozen5796은 unchanged source까지 seal에서 읽고 hash/fold하며 cold에서 두 전역
+  `TrigramIndex`를 구성한다. 현재 F15 overlay는 변경 bucket만 재작성하고 immutable base
+  commitment를 계승한다. Cold open은 독립 전수 검증 후 bounded term/offset/hash directory를
+  적재하고 query에서 필요한 posting 범위만 읽는다. Cold 전수 검증 비용은 그대로 측정 대상이며
+  producer admission/replay 계수는 물리 I/O 계수가 아니다. 실제 성능·RSS는 아직 `NOT_RUN`이다.
 - Frozen5796 Large 명시적 진단 `VERIFIED_DIAGNOSTIC`: 아래 E4-05 root에서 total127.612s,
   full seal68.733s와 explicit sync49.778s(약72.4%)를 관측했다. Atomic file4,367회/25.108s,
   atomic parent4,367회/24.646s다. Source4,096개 각각의 file/parent barrier가 생산 경로에 있다.
@@ -392,10 +395,14 @@ P1 · W1/W4 · F14 native 재사용·정확도 owner 회귀 `VERIFIED`; 전체 d
 
 ### O4-E4-02
 
-P1 · W2 · full sync 병목 actual 확인; source pack/root publication 수리·crash controls `NOT_RUN`.
+P1 · W2 · full sync 병목 actual 확인; F15 pack/root publication 통합, actual 회귀 진행 중.
 
 E4-01에서 source별 file/parent barrier의 full sync 비용을 확인했다. Parent sync만 묶으면
-file sync25.108s와 다른 work가 남으므로 immutable bounded source packs 및 manifest-last 발행을 함께 설계한다.
+file sync25.108s와 다른 work가 남는다. F15는 bounded source/posting objects의 durable write와
+directory sync 뒤 root를 atomic durable 발행하고 sealed manifest를 마지막에 발행한다.
+Source32,768/raw128MiB/memberships20M 및 pack/posting/directory/resident/query work admission은
+논리 한도이며 XL 실측 capacity·RSS 상한의 증거가 아니다. Delta/new-object replay와 normal
+admission 계수를 분리했고 fresh/delta의 inherited object 재전수 해시를 제거했다.
 File sync/rename/hardlink/directory/root publish/
 cleanup cut별 fault와 crash/reopen에서 old 또는 완전한 new root·참조 file/digest를 검증한다.
 Barrier 실패 후 seal/activate를 거절하고 inherited page custody를 유지한다.

@@ -17,8 +17,9 @@
 //! are hashed at seal because in-place changes must not bypass the prepared
 //! coverage root. A fresh generation is therefore proved whole at its seal.
 //!
-//! File-index admission separately reads every source path, including inherited
-//! source artifacts, to prove the normalized dictionary and membership bounds.
+//! F15 admission checks the aggregate root and each changed source. Reused
+//! buckets retain their verified base descriptors; cold open independently
+//! checks complete source and posting contents before serving.
 //!
 //! The measurements are reported per seal so a test can hold the seal to
 //! that shape with an inode oracle instead of a clock.
@@ -30,7 +31,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use quanta_index_contract::{GenerationSnapshot, SourceFileRevision};
+use quanta_index_contract::GenerationSnapshot;
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 use sha2::{Digest, Sha256};
@@ -47,7 +48,7 @@ use crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME;
 use crate::sealed_generation::index_files::referenced_index_files;
 use crate::sealed_generation::live_bm25::{self, BaseSnapshot, LiveBm25Statistics};
 use crate::sealed_generation::manifest::{
-    IndexSegmentVerificationV1, LexicalSealedManifest, manifest_path, read_manifest, write_manifest,
+    IndexSegmentVerificationV1, LexicalSealedManifest, write_manifest,
 };
 use crate::text_authority::{
     TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_MANIFEST_FILE_NAME, TextAuthorityManifest,
@@ -60,8 +61,8 @@ use crate::{SchemaFields, TANTIVY_INDEX_META_FILE_NAME, TEXT_DOC_KIND};
 ///
 /// Every committed file is counted under exactly one of two sources.
 /// `bytes_hashed` is what the commitment hasher reads; `bytes_inherited`
-/// bypasses that hasher. File-index admission may read inherited source bytes
-/// again and reports its reads separately.
+/// bypasses that hasher. Changed staged source payload reads are reported
+/// separately from packed object reads and commitment hashing.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LexicalSealCommitmentStats {
     /// Generations sealed.
@@ -75,10 +76,14 @@ pub struct LexicalSealCommitmentStats {
     pub files_inherited: u64,
     /// Their length, not read by the commitment hasher.
     pub bytes_inherited: u64,
-    /// Source paths read by file-index admission, including inherited artifacts.
+    /// Changed staged source paths read for F15 production.
     pub file_admission_files_read: u64,
-    /// Source bytes read by file-index admission, counted per source path.
+    /// Changed staged source bytes read for F15 production.
     pub file_admission_bytes_read: u64,
+    /// Durable unsealed-root replay objects read and SHA-checked; inherited
+    /// same-inode base objects do not enter this counter.
+    pub file_authority_replay_files_read: u64,
+    pub file_authority_replay_bytes_read: u64,
 }
 
 impl LexicalSealCommitmentStats {
@@ -95,6 +100,12 @@ impl LexicalSealCommitmentStats {
         self.file_admission_bytes_read = self
             .file_admission_bytes_read
             .saturating_add(seal.file_admission_bytes_read);
+        self.file_authority_replay_files_read = self
+            .file_authority_replay_files_read
+            .saturating_add(seal.file_authority_replay_files_read);
+        self.file_authority_replay_bytes_read = self
+            .file_authority_replay_bytes_read
+            .saturating_add(seal.file_authority_replay_bytes_read);
     }
 
     fn hashed(&mut self, bytes: u64) {
@@ -125,18 +136,25 @@ impl BaseCommitments {
         let Some(base_dir) = base_dir else {
             return Ok(None);
         };
-        if !manifest_path(base_dir).is_file() {
+        if !crate::index_store::sealed_identity_entry_present(base_dir)? {
             return Ok(None);
         }
-        let manifest = read_manifest(base_dir)?;
+        let opened = super::open_generation_dir_nofollow(base_dir).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: open commitment base {}: {error}",
+                base_dir.display()
+            ))
+        })?;
+        let identity = crate::index_store::read_lexical_sealed_identity_at(base_dir, &opened)?;
+        let manifest =
+            super::manifest::read_bound_manifest_at(base_dir, &opened, &identity.manifest_digest)?;
         let mut by_name: BTreeMap<_, _> = manifest
             .all_commitments()
             .map(|artifact| (artifact.name.clone(), artifact.clone()))
             .collect();
         if let Some(root) = &manifest.source_coverage {
-            let identity = crate::index_store::read_lexical_sealed_identity(base_dir)?;
-            for page in crate::sealed_generation::coverage::root_page_commitments(
-                base_dir, root, &identity,
+            for page in crate::sealed_generation::coverage::root_page_commitments_at(
+                &opened, base_dir, root, &identity,
             )? {
                 let _previous = by_name.insert(page.name.clone(), page);
             }
@@ -400,53 +418,26 @@ pub(crate) fn seal_generation(
         .as_ref()
         .map(|manifest| commit_text_authority(&mut measurer, manifest))
         .transpose()?;
-    file_authority::ensure_empty_manifest(generation_dir)?;
-    let file_rows = file_authority::read_manifest(generation_dir)?.ok_or_else(|| {
-        crate::index_store::sidecar_corrupt(generation_dir, file_authority::MANIFEST, "missing")
-    })?;
-    let file_sources: Vec<_> = file_rows.iter().map(|(source, _)| source.clone()).collect();
-    let expected_files = file_authority::expected_names(&file_sources);
-    let actual_files: std::collections::BTreeSet<String> =
-        std::fs::read_dir(generation_dir.join(file_authority::DIR))
-            .map_err(|error| {
-                CoreError::Storage(format!("lexical: list file authority at seal: {error}"))
-            })?
-            .map(|entry| {
-                entry
-                    .map(|entry| {
-                        format!(
-                            "{}/{}",
-                            file_authority::DIR,
-                            entry.file_name().to_string_lossy()
-                        )
-                    })
-                    .map_err(|error| {
-                        CoreError::Storage(format!(
-                            "lexical: file authority entry at seal: {error}"
-                        ))
-                    })
-            })
-            .collect::<Result<_, _>>()?;
-    if actual_files != expected_files {
-        return Err(crate::index_store::sidecar_corrupt(
-            generation_dir,
-            file_authority::DIR,
-            "directory differs from listed source files",
-        ));
-    }
+    let file_admission_started = Instant::now();
+    let coverage_for_files =
+        crate::sealed_generation::coverage::read_staged_coverage(generation_dir, identity)?
+            .ok_or_else(|| {
+                crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    file_authority::DIR,
+                    "staged source coverage is missing",
+                )
+            })?;
+    let (expected_files, files_read, bytes_read, replay_files_read, replay_bytes_read) =
+        file_authority::build_for_seal(generation_dir, base_dir, &coverage_for_files.coverage)?;
+    let file_admission_ns = crate::stage_timing::elapsed_stage_ns(file_admission_started)?;
+    measurer.stats.file_admission_files_read = files_read;
+    measurer.stats.file_admission_bytes_read = bytes_read;
+    measurer.stats.file_authority_replay_files_read = replay_files_read;
+    measurer.stats.file_authority_replay_bytes_read = replay_bytes_read;
     let mut file_authority = Vec::with_capacity(expected_files.len());
     for name in expected_files {
         file_authority.push(measurer.commit(&name)?);
-    }
-    let logical_source_bytes =
-        logical_source_bytes(generation_dir, &file_sources, &file_authority)?;
-    if logical_source_bytes
-        > u64::try_from(file_authority::MAX_TOTAL_SOURCE_BYTES)
-            .map_err(|error| CoreError::Storage(format!("lexical: file authority cap: {error}")))?
-    {
-        return Err(CoreError::InvalidContract(
-            "lexical: file authority exceeds 128 MiB source byte admission".into(),
-        ));
     }
     let mut overlays = Vec::new();
     for family in OverlayFamily::ALL {
@@ -533,42 +524,8 @@ pub(crate) fn seal_generation(
         overlays,
         source_coverage,
     };
-    let file_admission_started = Instant::now();
-    let (files_read, bytes_read) =
-        file_authority::validate_index_build_budget(generation_dir, identity, &file_rows)?;
-    let file_admission_ns = crate::stage_timing::elapsed_stage_ns(file_admission_started)?;
-    measurer.stats.file_admission_files_read = files_read;
-    measurer.stats.file_admission_bytes_read = bytes_read;
     write_manifest(generation_dir, &manifest)?;
     Ok((measurer.stats, file_admission_ns))
-}
-
-/// Count bytes per source path, even when paths share one physical artifact.
-fn logical_source_bytes(
-    generation_dir: &Path,
-    sources: &[SourceFileRevision],
-    commitments: &[SealedArtifactCommitmentV1],
-) -> Result<u64, CoreError> {
-    let by_name: BTreeMap<&str, &SealedArtifactCommitmentV1> = commitments
-        .iter()
-        .map(|artifact| (artifact.name.as_str(), artifact))
-        .collect();
-    sources.iter().try_fold(0_u64, |total, source| {
-        let name = file_authority::artifact_name(source);
-        let artifact = by_name.get(name.as_str()).ok_or_else(|| {
-            crate::index_store::sidecar_corrupt(generation_dir, &name, "source bytes not committed")
-        })?;
-        if artifact.sha256 != source.source_sha256 {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                &name,
-                "source bytes differ from declared source digest",
-            ));
-        }
-        total.checked_add(artifact.bytes).ok_or_else(|| {
-            CoreError::Storage("lexical: file authority source byte sum overflow".into())
-        })
-    })
 }
 
 /// Build only new segment tables.
@@ -798,43 +755,4 @@ fn ensure_text_authority_covers_index(
         ));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod file_authority_lookup_tests {
-    use super::*;
-    use quanta_index_contract::{RepoId, RepoRelativePath, RevisionId, SourceFileKey};
-
-    #[test]
-    fn shared_digest_counts_each_source_and_refuses_missing_or_wrong_commitment() {
-        let digest = [7_u8; 32];
-        let sources: Vec<SourceFileRevision> = ["a.rs", "b.rs"]
-            .into_iter()
-            .map(|path| SourceFileRevision {
-                file: SourceFileKey {
-                    source_repo_id: RepoId::new("repo").expect("repo id"),
-                    repo_relative_path: RepoRelativePath::new(path),
-                },
-                revision_id: RevisionId::new("revision").expect("revision id"),
-                source_sha256: digest,
-            })
-            .collect();
-        let commitment = SealedArtifactCommitmentV1 {
-            name: file_authority::artifact_name(sources.first().expect("first source")),
-            bytes: 4,
-            sha256: digest,
-        };
-        let dir = Path::new("/test-generation");
-        assert_eq!(
-            logical_source_bytes(dir, &sources, std::slice::from_ref(&commitment))
-                .expect("shared digest source bytes"),
-            8
-        );
-        assert!(logical_source_bytes(dir, &sources, &[]).is_err());
-        let wrong_digest = SealedArtifactCommitmentV1 {
-            sha256: [9_u8; 32],
-            ..commitment
-        };
-        assert!(logical_source_bytes(dir, &sources, &[wrong_digest]).is_err());
-    }
 }

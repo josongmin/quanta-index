@@ -1230,7 +1230,7 @@ const MANIFEST_ROW_LEN: usize = 12;
 /// Position of the normalizer stamp in the current manifest row.
 const MANIFEST_NORMALIZER_INDEX: usize = 2;
 /// The manifest format this build seals.
-const CURRENT_FORMAT: u32 = 14;
+const CURRENT_FORMAT: u32 = 15;
 
 /// Generations sealed under earlier manifest formats are refused typed by
 /// both doors.
@@ -1241,7 +1241,8 @@ const CURRENT_FORMAT: u32 = 14;
 /// Format 6 predates the source-file coverage commitment; format 7 predates
 /// the ranked-key commitment. Format 8 predates bounded coverage pages;
 /// format 9 predates full-file authority; format 10 predates folded-only
-/// posting counts; format 11 predates explicit symbol-name source policy.
+/// posting counts; format 11 predates explicit symbol-name source policy;
+/// format 14 predates content-addressed file authority.
 /// The validator and the query open both answer
 /// `GENERATION_MANIFEST_FORMAT_UNSUPPORTED` for each, and the intact
 /// current manifest is admitted again once restored.
@@ -1259,7 +1260,7 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
         return Err(format!("unexpected current manifest row shape: {current:?}").into());
     }
 
-    for earlier in [4_u32, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
+    for earlier in [4_u32, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] {
         let mut downgraded = current.clone();
         if let Some(version) = downgraded.first_mut() {
             *version = ciborium::Value::from(earlier);

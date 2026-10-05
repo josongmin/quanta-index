@@ -24,17 +24,16 @@ use quanta_index_core::{
 };
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
 use quanta_index_lq_regex::RegexExecutor;
-use quanta_index_lq_trigram::{
-    DocId, MAX_CANDIDATE_PRE_VERIFY, Trigram, TrigramIndex, TrigramIntersectionError, trigrams_of,
-};
+#[cfg(test)]
+use quanta_index_lq_trigram::TrigramIndex;
+use quanta_index_lq_trigram::{MAX_CANDIDATE_PRE_VERIFY, Trigram, trigrams_of};
 use sha2::{Digest as _, Sha256};
 use tantivy::Term;
 use tantivy::query::{BooleanQuery, Occur, TermQuery};
 use tantivy::schema::{IndexRecordOption, TantivyDocument, Value as _};
 
 use crate::TantivySearcher;
-use crate::file_authority::{FileAuthority, SourceFile};
-use crate::query_errors::map_trigram_error;
+use crate::file_authority::{FileAuthority, QueryWork, SourceFile};
 use crate::regex::RegexPolicy;
 use crate::searcher::planner_errors::map_regex_plan_error;
 use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText, MappingError};
@@ -106,12 +105,12 @@ fn unsupported(reason: &str) -> CoreError {
     }
 }
 
-fn file_id_at(index: usize) -> Result<u64, CoreError> {
-    let one_based = index
-        .checked_add(1)
-        .ok_or_else(|| CoreError::Storage("lexical: file index overflow".into()))?;
-    u64::try_from(one_based)
-        .map_err(|error| CoreError::Storage(format!("lexical: file id overflow: {error}")))
+fn file_id_at(authority: &FileAuthority, index: usize) -> Result<u64, CoreError> {
+    let key = authority
+        .ordered_keys
+        .get(index)
+        .ok_or_else(|| CoreError::Storage("lexical: file index outside authority".into()))?;
+    authority.id_for_key(key)
 }
 
 fn byte_offset(value: usize) -> Result<u64, CoreError> {
@@ -873,30 +872,43 @@ fn typo_candidates(
     budget: &RequestBudgetV1,
 ) -> Result<Option<BTreeSet<u64>>, CoreError> {
     typo_candidates_observed(
-        index,
         identifier,
         eligible,
         max_posting_visits,
         budget,
         None,
+        |grams| {
+            Ok(grams
+                .iter()
+                .map(|gram| index.lookup(*gram).iter().map(|id| id.0).collect())
+                .collect())
+        },
     )
 }
 
-fn typo_candidates_observed(
-    index: &TrigramIndex,
+fn typo_candidates_observed<F>(
     identifier: &str,
     eligible: Option<&BTreeSet<u64>>,
     max_posting_visits: usize,
     budget: &RequestBudgetV1,
     mut stats: Option<&mut CodeSearchExecutionStatsV1>,
-) -> Result<Option<BTreeSet<u64>>, CoreError> {
+    mut load_lists: F,
+) -> Result<Option<BTreeSet<u64>>, CoreError>
+where
+    F: FnMut(&[Trigram]) -> Result<Vec<Vec<u64>>, CoreError>,
+{
     let mut grams: Vec<Trigram> = trigrams_of(identifier.to_ascii_lowercase().as_bytes()).collect();
     grams.sort_unstable();
     grams.dedup();
     let Some(threshold) = grams.len().checked_sub(4).filter(|count| *count > 0) else {
         return Ok(None);
     };
-    let lists: Vec<&[DocId]> = grams.iter().map(|gram| index.lookup(*gram)).collect();
+    let lists = load_lists(&grams)?;
+    if lists.len() != grams.len() {
+        return Err(CoreError::Storage(
+            "lexical: typo posting list count differs from grams".into(),
+        ));
+    }
     if let Some(eligible) = eligible {
         let probes = eligible.len().saturating_mul(lists.len());
         if probes > max_posting_visits {
@@ -917,7 +929,7 @@ fn typo_candidates_observed(
             }
             let count = lists
                 .iter()
-                .filter(|list| list.binary_search(&DocId(id)).is_ok())
+                .filter(|list| list.binary_search(&id).is_ok())
                 .count();
             if count >= threshold {
                 if candidates.len() >= MAX_CANDIDATE_PRE_VERIFY {
@@ -986,7 +998,7 @@ fn typo_candidates_observed(
                     message: "lexical code search: typo candidate set budget exceeded".into(),
                 });
             }
-            let _inserted = candidates.insert(id.0);
+            let _inserted = candidates.insert(id);
         }
     }
     budget.checkpoint("lexical:code-search-typo-postings-end")?;
@@ -1108,27 +1120,15 @@ fn proximity_bonus(
     Ok(32_u32.saturating_sub(gap))
 }
 
-fn posting_sources(authority: &FileAuthority, scope: Scope) -> [Option<&TrigramIndex>; 2] {
-    match scope {
-        Scope::Both => [
-            Some(&authority.content_folded),
-            Some(&authority.path_folded),
-        ],
-        Scope::Content => [Some(&authority.content_folded), None],
-        Scope::Path => [Some(&authority.path_folded), None],
-    }
-}
-
 struct LiteralPrefilter<'term, 'index> {
     term: &'term CodeSearchTerm,
-    trigrams: Vec<Trigram>,
-    // Query-owned posting references avoid a BTreeMap lookup for every gram
-    // of every term at each file in the seed posting walk.
-    postings: [Option<Vec<&'index [DocId]>>; 2],
+    // Query-owned posting references point into bounded lists loaded once
+    // across all terms and both requested surfaces.
+    postings: [Option<Vec<&'index [u64]>>; 2],
 }
 
 impl LiteralPrefilter<'_, '_> {
-    fn possible_in(&self, id: DocId) -> bool {
+    fn possible_in(&self, id: u64) -> bool {
         self.postings
             .iter()
             .flatten()
@@ -1144,17 +1144,20 @@ impl LiteralPrefilter<'_, '_> {
     }
 }
 
-fn file_for_id(authority: &FileAuthority, id: DocId) -> Result<&SourceFile, CoreError> {
-    let position = usize::try_from(id.0.saturating_sub(1))
-        .map_err(|error| CoreError::Storage(format!("lexical: file id overflow: {error}")))?;
-    let key = authority
-        .ordered_keys
-        .get(position)
-        .ok_or_else(|| CoreError::Storage("lexical: file posting outside authority".into()))?;
-    authority
-        .files
-        .get(key)
-        .ok_or_else(|| CoreError::Storage("lexical: file posting has no source".into()))
+fn file_for_id(authority: &FileAuthority, id: u64) -> Result<&SourceFile, CoreError> {
+    authority.file_for_id(id)
+}
+
+fn posting_term_lists<'a>(
+    index: &'a BTreeMap<Trigram, Vec<u64>>,
+    grams: &[Trigram],
+) -> Vec<&'a [u64]> {
+    let mut lists: Vec<_> = grams
+        .iter()
+        .map(|gram| index.get(gram).map_or(&[][..], Vec::as_slice))
+        .collect();
+    lists.sort_by_key(|list| list.len());
+    lists
 }
 
 /// Generate one file-level AND set. A broad individual posting is never
@@ -1167,13 +1170,16 @@ fn candidate_ids(
     eligible: Option<&BTreeSet<u64>>,
     budget: &RequestBudgetV1,
 ) -> Result<BTreeMap<u64, ScoredMatch>, CoreError> {
+    let mut work = QueryWork::default();
     candidate_ids_observed(
         authority,
         terms,
         case,
         eligible,
         budget,
+        &mut work,
         &mut CodeSearchExecutionStatsV1::default(),
+        MAX_CANDIDATE_PRE_VERIFY,
     )
 }
 
@@ -1183,10 +1189,15 @@ fn candidate_ids_observed(
     case: CaseMode,
     eligible: Option<&BTreeSet<u64>>,
     budget: &RequestBudgetV1,
+    work: &mut QueryWork,
     stats: &mut CodeSearchExecutionStatsV1,
+    candidate_cap: usize,
 ) -> Result<BTreeMap<u64, ScoredMatch>, CoreError> {
     let literals: Vec<_> = terms.iter().filter(|term| term.regex.is_none()).collect();
-    let mut indexed = Vec::new();
+    let mut prepared = Vec::new();
+    let mut all_grams = Vec::new();
+    let mut need_content = false;
+    let mut need_path = false;
     for term in &literals {
         // Per-character fold preserves every sensitive substring. The
         // original NFC text remains the final matching authority.
@@ -1194,26 +1205,73 @@ fn candidate_ids_observed(
             CaseMode::Sensitive => normalize::fold(&term.needle),
             CaseMode::Folded => term.needle.clone(),
         };
-        if needle.len() >= 3 {
-            let mut trigrams: Vec<_> = trigrams_of(needle.as_bytes()).collect();
-            trigrams.sort_unstable();
-            trigrams.dedup();
-            let postings = posting_sources(authority, term.scope).map(|source| {
-                source.map(|index| {
-                    let mut lists: Vec<_> = trigrams
-                        .iter()
-                        .map(|trigram| index.lookup(*trigram))
-                        .collect();
-                    lists.sort_by_key(|list| list.len());
-                    lists
-                })
-            });
-            indexed.push(LiteralPrefilter {
-                term,
-                trigrams,
-                postings,
-            });
+        if needle.len() < 3 {
+            continue;
         }
+        let mut grams: Vec<_> = trigrams_of(needle.as_bytes()).collect();
+        grams.sort_unstable();
+        grams.dedup();
+        match term.scope {
+            Scope::Both => {
+                need_content = true;
+                need_path = true;
+            }
+            Scope::Content => need_content = true,
+            Scope::Path => need_path = true,
+        }
+        all_grams.extend_from_slice(&grams);
+        prepared.push((*term, grams));
+    }
+    all_grams.sort_unstable();
+    all_grams.dedup();
+    let content_lists = if need_content {
+        Some(authority.posting_lists(
+            crate::file_authority::PostingSurface::Content,
+            &all_grams,
+            work,
+            budget,
+        )?)
+    } else {
+        None
+    };
+    let path_lists = if need_path {
+        Some(authority.posting_lists(
+            crate::file_authority::PostingSurface::Path,
+            &all_grams,
+            work,
+            budget,
+        )?)
+    } else {
+        None
+    };
+    let mut indexed = Vec::new();
+    for (term, grams) in &prepared {
+        let postings = match term.scope {
+            Scope::Both => [
+                content_lists
+                    .as_ref()
+                    .map(|index| posting_term_lists(index, grams)),
+                path_lists
+                    .as_ref()
+                    .map(|index| posting_term_lists(index, grams)),
+            ],
+            Scope::Content => [
+                content_lists
+                    .as_ref()
+                    .map(|index| posting_term_lists(index, grams)),
+                None,
+            ],
+            Scope::Path => [
+                path_lists
+                    .as_ref()
+                    .map(|index| posting_term_lists(index, grams)),
+                None,
+            ],
+        };
+        indexed.push(LiteralPrefilter {
+            term: *term,
+            postings,
+        });
     }
     let mut hits = BTreeMap::new();
     if let Some((seed_position, seed)) = indexed
@@ -1221,71 +1279,61 @@ fn candidate_ids_observed(
         .enumerate()
         .min_by_key(|(_, term)| term.seed_size())
     {
-        for index in posting_sources(authority, seed.term.scope)
-            .into_iter()
-            .flatten()
-        {
+        for lists in seed.postings.iter().flatten() {
             budget.checkpoint("lexical:code-search-trigram")?;
-            let shortest_posting = seed
-                .trigrams
-                .iter()
-                .map(|gram| index.lookup(*gram).len())
-                .min()
-                .unwrap_or(0);
+            let shortest = lists.first().map_or(&[][..], |list| *list);
             stats.posting_probes = stats.posting_probes.saturating_add(checked_count_u64(
-                shortest_posting,
+                shortest.len(),
                 "shortest trigram posting",
             )?);
-            let _candidates = index
-                .intersect_trigrams_filtered_with_checkpoint(
-                    &seed.trigrams,
-                    |id| {
-                        if hits.contains_key(&id.0) {
-                            return Ok(true);
+            for &id in shortest {
+                budget.checkpoint("lexical:code-search-trigram-posting")?;
+                if hits.contains_key(&id) || eligible.is_some_and(|ids| !ids.contains(&id)) {
+                    continue;
+                }
+                if !lists.iter().all(|list| list.binary_search(&id).is_ok()) {
+                    continue;
+                }
+                let mut rejected = false;
+                for (position, term) in indexed.iter().enumerate() {
+                    if position != seed_position {
+                        budget.checkpoint("lexical:code-search-term-postings")?;
+                        if !term.possible_in(id) {
+                            rejected = true;
+                            break;
                         }
-                        if eligible.is_some_and(|ids| !ids.contains(&id.0)) {
-                            return Ok(false);
-                        }
-                        for (position, term) in indexed.iter().enumerate() {
-                            if position != seed_position {
-                                budget.checkpoint("lexical:code-search-term-postings")?;
-                                if !term.possible_in(id) {
-                                    return Ok(false);
-                                }
-                            }
-                        }
-                        let file = file_for_id(authority, id)?;
-                        stats.literal_source_verification_attempts = stats.literal_source_verification_attempts.checked_add(1)
-                            .ok_or_else(|| CoreError::Storage("lexical: verification work count overflow".into()))?;
-                        let Some(scored) = score_terms_observed(
-                            file,
-                            terms,
-                            case,
-                            None,
-                            TermsToScore::Literals,
-                            budget,
-                            Some(stats),
-                        )?
-                        else {
-                            return Ok(false);
-                        };
-                        if hits.len() >= MAX_CANDIDATE_PRE_VERIFY {
-                            return Err(CoreError::Typed {
-                                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
-                                message: "lexical code search: verified file candidate set exceeds cap".into(),
-                            });
-                        }
-                        let _previous = hits.insert(id.0, scored);
-                        Ok(true)
-                    },
-                    || budget.checkpoint("lexical:code-search-trigram-posting"),
-                )
-                .map_err(|error| match error {
-                    TrigramIntersectionError::Index(error) => {
-                        map_trigram_error("code search file prefilter", &error)
                     }
-                    TrigramIntersectionError::Checkpoint(error) => error,
-                })?;
+                }
+                if rejected {
+                    continue;
+                }
+                let file = file_for_id(authority, id)?;
+                stats.literal_source_verification_attempts = stats
+                    .literal_source_verification_attempts
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        CoreError::Storage("lexical: verification work count overflow".into())
+                    })?;
+                let Some(scored) = score_terms_observed(
+                    file,
+                    terms,
+                    case,
+                    None,
+                    TermsToScore::Literals,
+                    budget,
+                    Some(stats),
+                )?
+                else {
+                    continue;
+                };
+                if hits.len() >= candidate_cap {
+                    return Err(CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                        message: "lexical code search: verified file candidate set exceeds cap".into(),
+                    });
+                }
+                let _previous = hits.insert(id, scored);
+            }
         }
         return Ok(hits);
     }
@@ -1305,7 +1353,7 @@ fn candidate_ids_observed(
     }
     for (position, key) in authority.ordered_keys.iter().enumerate() {
         budget.checkpoint("lexical:code-search-short-verify")?;
-        let id = file_id_at(position)?;
+        let id = file_id_at(authority, position)?;
         if eligible.is_some_and(|ids| !ids.contains(&id)) {
             continue;
         }
@@ -1333,7 +1381,6 @@ fn candidate_ids_observed(
     }
     Ok(hits)
 }
-
 fn source_bytes_checked(
     authority: &FileAuthority,
     scope: Scope,
@@ -1346,7 +1393,7 @@ fn source_bytes_checked(
         if position % 256 == 0 {
             budget.checkpoint("lexical:code-search-source-size")?;
         }
-        let id = file_id_at(position)?;
+        let id = file_id_at(authority, position)?;
         if eligible.is_some_and(|ids| !ids.contains(&id)) {
             continue;
         }
@@ -1425,7 +1472,7 @@ fn language_eligible_ids(
             .get(key)
             .ok_or_else(|| CoreError::Storage("lexical: file authority id has no source".into()))?;
         if constraints.language_any_of.contains(&file.language) {
-            let id = file_id_at(index)?;
+            let id = file_id_at(authority, index)?;
             let _inserted = ids.insert(id);
         }
     }
@@ -1444,16 +1491,7 @@ fn admit_regex_scan(
         if position % 256 == 0 {
             budget.checkpoint("lexical:code-search-regex-admission")?;
         }
-        let index = usize::try_from(id.saturating_sub(1))
-            .map_err(|error| CoreError::Storage(format!("lexical: file id overflow: {error}")))?;
-        let key = authority
-            .ordered_keys
-            .get(index)
-            .ok_or_else(|| CoreError::Storage("lexical: regex file id outside authority".into()))?;
-        let file = authority
-            .files
-            .get(key)
-            .ok_or_else(|| CoreError::Storage("lexical: regex file id has no source".into()))?;
+        let file = authority.file_for_id(id)?;
         bytes = bytes.saturating_add(scanned_bytes(file, scope, CaseMode::Sensitive));
         if position >= MAX_REGEX_SCAN_FILES || bytes > MAX_REGEX_SCAN_SOURCE_BYTES {
             return Err(CoreError::Typed {
@@ -2230,6 +2268,7 @@ impl TantivySearcher {
         case: CaseMode,
         request: CodeSearchTypoRequest<'_>,
         mut stats: CodeSearchExecutionStatsV1,
+        posting_work: &mut QueryWork,
         candidate_started: Instant,
     ) -> Result<LexicalSearchPageV1, CoreError> {
         let CodeSearchTypoRequest {
@@ -2247,12 +2286,29 @@ impl TantivySearcher {
             None
         } else {
             typo_candidates_observed(
-                &authority.content_folded,
                 identifier,
                 eligible.as_ref(),
                 MAX_TYPO_POSTING_VISITS,
                 budget,
                 Some(&mut stats),
+                |grams| {
+                    let loaded = authority.posting_lists(
+                        crate::file_authority::PostingSurface::Content,
+                        grams,
+                        posting_work,
+                        budget,
+                    )?;
+                    grams
+                        .iter()
+                        .map(|gram| {
+                            loaded.get(gram).cloned().ok_or_else(|| {
+                                CoreError::Storage(
+                                    "lexical: missing requested typo posting gram".into(),
+                                )
+                            })
+                        })
+                        .collect()
+                },
             )?
         };
         let mut selected = Vec::new();
@@ -2261,7 +2317,7 @@ impl TantivySearcher {
             if position.is_multiple_of(256) {
                 budget.checkpoint("lexical:code-search-typo-admission")?;
             }
-            let id = file_id_at(position)?;
+            let id = file_id_at(authority, position)?;
             if possible.as_ref().is_some_and(|ids| !ids.contains(&id))
                 || eligible.as_ref().is_some_and(|ids| !ids.contains(&id))
                 || constraints
@@ -2414,6 +2470,7 @@ impl TantivySearcher {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
             message: "lexical code search requires rebuilt full-file source authority".into(),
         })?;
+        let mut posting_work = QueryWork::default();
         if let Some(identifier) = parsed.typo.as_deref() {
             let candidate_started = Instant::now();
             return self.search_code_files_typo(
@@ -2430,6 +2487,7 @@ impl TantivySearcher {
                     mode: CodeSearchExecutionModeV1::TypoExplicit,
                     ..CodeSearchExecutionStatsV1::default()
                 },
+                &mut posting_work,
                 candidate_started,
             );
         }
@@ -2453,7 +2511,7 @@ impl TantivySearcher {
                 for (index, key) in authority.ordered_keys.iter().enumerate() {
                     budget.checkpoint("lexical:code-search-exact-path")?;
                     if key.repo_relative_path.as_str() == path.as_str() {
-                        let id = file_id_at(index)?;
+                        let id = file_id_at(authority, index)?;
                         if eligible.is_none_or(|ids| ids.contains(&id)) {
                             let _previous = matching.insert(id, None);
                         }
@@ -2473,7 +2531,9 @@ impl TantivySearcher {
                         parsed.case,
                         eligible,
                         budget,
+                        &mut posting_work,
                         &mut stats,
+                        MAX_CANDIDATE_PRE_VERIFY,
                     )?
                     .into_iter()
                     .map(|(id, scored)| (id, Some(scored)))
@@ -2501,16 +2561,10 @@ impl TantivySearcher {
                 if let Some(ids) = eligible {
                     ids.iter().copied().map(|id| (id, None)).collect()
                 } else {
-                    (1..=authority.ordered_keys.len())
-                        .map(|position| {
-                            u64::try_from(position)
-                                .map(|id| (id, None))
-                                .map_err(|error| {
-                                    CoreError::Storage(format!(
-                                        "lexical: file id overflow: {error}"
-                                    ))
-                                })
-                        })
+                    authority
+                        .ordered_keys
+                        .iter()
+                        .map(|key| authority.id_for_key(key).map(|id| (id, None)))
                         .collect::<Result<BTreeMap<_, _>, _>>()?
                 }
             }
@@ -2538,17 +2592,7 @@ impl TantivySearcher {
                 .final_candidate_visits
                 .checked_add(1)
                 .ok_or_else(|| CoreError::Storage("lexical: final work count overflow".into()))?;
-            let position = usize::try_from(id.saturating_sub(1)).map_err(|error| {
-                CoreError::Storage(format!("lexical: file id overflow: {error}"))
-            })?;
-            let key = authority
-                .ordered_keys
-                .get(position)
-                .ok_or_else(|| CoreError::Storage("lexical: file id outside authority".into()))?;
-            let file = authority
-                .files
-                .get(key)
-                .ok_or_else(|| CoreError::Storage("lexical: file id has no source".into()))?;
+            let file = authority.file_for_id(id)?;
             let selection = if preverified.is_some() {
                 TermsToScore::Regex
             } else {
@@ -2590,6 +2634,7 @@ impl TantivySearcher {
                     budget,
                 },
                 stats,
+                &mut posting_work,
                 candidate_started,
             );
         }
@@ -2670,7 +2715,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::ops::Range;
 
-    use crate::file_authority::{FileAuthority, SourceFile, from_verified_files};
+    use crate::file_authority::{SourceFile, from_test_files};
     use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText};
 
     fn osa_oracle(left: &[u8], right: &[u8]) -> usize {
@@ -3188,7 +3233,8 @@ mod tests {
             folded_path: String::new(),
             expected_postings: fixture_postings(path, Some(text)),
         };
-        let authority = from_verified_files(vec![file], None).expect("authority");
+        let temp = tempfile::tempdir().expect("generation directory");
+        let authority = from_test_files(vec![file], temp.path()).expect("authority");
         let budget = RequestBudgetV1::unbounded();
         for (needle, scope, expected) in [
             ("ABC", Scope::Content, true),
@@ -3521,7 +3567,8 @@ mod tests {
                             repo_relative_path: RepoRelativePath::new(&path),
                         },
                         revision_id: revision.clone(),
-                        source_sha256: [0; 32],
+                        source_sha256: <sha2::Sha256 as sha2::Digest>::digest(value.as_bytes())
+                            .into(),
                     },
                     bytes: value.as_bytes().to_vec(),
                     text_admitted: true,
@@ -3534,7 +3581,8 @@ mod tests {
                 }
             })
             .collect();
-        let authority = from_verified_files(files, None).expect("file authority");
+        let temp = tempfile::tempdir().expect("generation directory");
+        let authority = from_test_files(files, temp.path()).expect("file authority");
         let term = CodeSearchTerm {
             text: "x".into(),
             needle: "x".into(),
@@ -3577,14 +3625,14 @@ mod tests {
         let repo = RepoId::new("fixture").expect("repo");
         let revision = RevisionId::new("fixture-revision").expect("revision");
         let language = LanguageCode::new("text").expect("language");
-        let mut content_index = TrigramIndexBuilder::new(1).expect("generation");
-        let path_index = TrigramIndexBuilder::new(1).expect("generation");
-        let mut files = BTreeMap::new();
-        let mut ordered_keys = Vec::new();
-        for position in 0..=200_000_u64 {
-            let text = if position == 200_000 {
+        // This scales the product candidate cap down for a fixed 21-file
+        // oracle. The F15 source-file ceiling is 32,768, so the former
+        // 200,001-file fixture could never reach a serving generation.
+        let mut files = Vec::new();
+        for position in 0..=20_u64 {
+            let text = if position == 20 {
                 "aaa bbb"
-            } else if position < 100_000 {
+            } else if position < 10 {
                 "aaa"
             } else {
                 "bbb"
@@ -3593,33 +3641,24 @@ mod tests {
                 source_repo_id: repo.clone(),
                 repo_relative_path: RepoRelativePath::new(format!("src/{position:06}.txt")),
             };
-            content_index.add_doc(DocId(position + 1), text.as_bytes());
-            ordered_keys.push(key.clone());
-            let _previous = files.insert(
-                key.clone(),
-                SourceFile {
-                    source: SourceFileRevision {
-                        file: key,
-                        revision_id: revision.clone(),
-                        source_sha256: [0; 32],
-                    },
-                    bytes: text.as_bytes().to_vec(),
-                    text_admitted: true,
-                    language: language.clone(),
-                    indexed_text: Some(text.to_string()),
-                    folded_text: Some(text.to_string()),
-                    indexed_path: String::new(),
-                    folded_path: String::new(),
-                    expected_postings: 0,
+            files.push(SourceFile {
+                source: SourceFileRevision {
+                    file: key,
+                    revision_id: revision.clone(),
+                    source_sha256: <sha2::Sha256 as sha2::Digest>::digest(text.as_bytes()).into(),
                 },
-            );
+                bytes: text.as_bytes().to_vec(),
+                text_admitted: true,
+                language: language.clone(),
+                indexed_text: None,
+                folded_text: None,
+                indexed_path: String::new(),
+                folded_path: String::new(),
+                expected_postings: fixture_postings(&format!("src/{position:06}.txt"), Some(text)),
+            });
         }
-        let authority = FileAuthority {
-            files,
-            ordered_keys,
-            content_folded: content_index.finish(),
-            path_folded: path_index.finish(),
-        };
+        let temp = tempfile::tempdir().expect("generation directory");
+        let authority = from_test_files(files, temp.path()).expect("F15 authority");
         let terms = ["aaa", "bbb"].map(|text| CodeSearchTerm {
             text: text.into(),
             needle: text.into(),
@@ -3627,25 +3666,31 @@ mod tests {
             regex: None,
         });
         let budget = RequestBudgetV1::unbounded();
-        assert!(matches!(
-            candidate_ids(
+        let run = |terms: &[CodeSearchTerm]| {
+            super::candidate_ids_observed(
                 &authority,
-                std::slice::from_ref(&terms[0]),
+                terms,
                 CaseMode::Sensitive,
                 None,
                 &budget,
-            ),
+                &mut super::QueryWork::default(),
+                &mut super::CodeSearchExecutionStatsV1::default(),
+                10,
+            )
+        };
+        assert!(matches!(
+            run(std::slice::from_ref(&terms[0])),
             Err(CoreError::Typed {
                 code: SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
                 ..
             })
         ));
         assert_eq!(
-            candidate_ids(&authority, &terms, CaseMode::Sensitive, None, &budget)
+            run(&terms)
                 .expect("joint candidate set")
                 .into_keys()
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from([200_001]),
+            BTreeSet::from([21]),
         );
     }
 
@@ -3657,9 +3702,10 @@ mod tests {
                 repo_relative_path: RepoRelativePath::new("src/İ.go"),
             },
             revision_id: RevisionId::new("revision").expect("revision"),
-            source_sha256: [0; 32],
+            source_sha256: <sha2::Sha256 as sha2::Digest>::digest("İ".as_bytes()).into(),
         };
-        let authority = from_verified_files(
+        let temp = tempfile::tempdir().expect("generation directory");
+        let authority = from_test_files(
             vec![SourceFile {
                 source,
                 bytes: "İ".as_bytes().to_vec(),
@@ -3671,7 +3717,7 @@ mod tests {
                 folded_path: String::new(),
                 expected_postings: fixture_postings("src/İ.go", Some("İ")),
             }],
-            None,
+            temp.path(),
         )
         .expect("file authority");
         let file = authority.files.values().next().expect("file");
@@ -3722,9 +3768,10 @@ mod tests {
                 repo_relative_path: RepoRelativePath::new("src/İ.go"),
             },
             revision_id: RevisionId::new("revision").expect("revision"),
-            source_sha256: [0; 32],
+            source_sha256: <sha2::Sha256 as sha2::Digest>::digest([]).into(),
         };
-        let authority = from_verified_files(
+        let temp = tempfile::tempdir().expect("generation directory");
+        let authority = from_test_files(
             vec![SourceFile {
                 source,
                 bytes: Vec::new(),
@@ -3736,7 +3783,7 @@ mod tests {
                 folded_path: String::new(),
                 expected_postings: fixture_postings("src/İ.go", None),
             }],
-            None,
+            temp.path(),
         )
         .expect("file authority");
         let file = authority.files.values().next().expect("file");

@@ -10,7 +10,7 @@
 - 실제 미구현: [I0-03 P11 typed operational producer/recipes](tickets/INDEX.md#o4-i0-03).
   실제 actions와 독립 pre/post 성공 판정 계약·authorized target 입력이 필요하다.
 - Frozen5796 Large default timeout과 XL posting admission 거절이 재현됐다.
-  E4-02 source durable publication과 bounded authority 수리는 W2의 확정 작업이다.
+  E4-02 F15 source pack/root와 bounded authority 수리를 통합했으며 W2 actual 회귀 중이다.
   E1-07/E4-04/E4-07은 실제 병목·독립 정책 실패 뒤에만 채택한다.
 - E1/E2/E3 및 scale/scanner/proof의 기존 구현은 실행 증거가 부족하다는 이유로 재작성하지 않는다.
 - Large full seal68.733s 중 explicit sync49.778s를 관측했다. Parent sync 묶기만으로
@@ -39,7 +39,10 @@
 - Frozen5796 Gin declaration1,196 fresh single-route oracle/capture/scoring 진단은 완료했다.
   1,192success/4capped 및 declaration MRR@10=1.0은 그 분모의 diagnostic이며 독립 holdout/비교/PERF가 아니다.
 - Current history/admission Python owner58cases는 통과했다. Broad Python은 current file-pair
-  fixture의 불완전한 manifest에서 실패했고 hosted Rust의 계측 Clippy6건도 수리 후 재실행이 필요하다.
+  fixture의 불완전한 manifest에서 실패했다. Canonical stage fixture 전환 뒤 owner 재실행은
+  20-task warm samples가 phase window를 초과한 fixture 오류로 실패했고 보완 중이다.
+  Hosted Rust 계측 Clippy6건 수리 뒤 local harness Clippy는 marker enum의 값 전달1건으로
+  실패했다. Copy enum과 marker I/O 실패 회귀를 반영했으며 재실행은 아직 `NOT_RUN`이다.
 - 이후 source/ADR/Justfile 변경의 proof는 새 epoch로 발행한다. 위 frozen 결과의 SHA는 변경하지 않는다.
 
 ## W0–W6

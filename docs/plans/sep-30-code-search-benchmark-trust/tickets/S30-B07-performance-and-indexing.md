@@ -64,11 +64,13 @@ before daemon startup at the first exceeded 4M posting count. An independent
 large300s/256MiB diagnostic completed in127.612s, with full seal68.733s and
 explicit sync49.778s. Source file/parent barriers dominate that full envelope.
 Delta/noop/delete seal12.711/14.733/14.393s have only0.265/0.153/0.205s explicit
-sync; their exclusive residual stages remain unmeasured. The current engine
-still globally reads/hashes source and builds resident trigram authority.
-Repair must preserve old-or-complete-new durable root publication and bound
-resident/query work; neither a tiny posting-cap increase nor fixture reduction
-closes the failure. Exact commands, roots and scope are in
+sync; their exclusive residual stages remain unmeasured. Current F15 source
+reuses unchanged committed bucket objects and publishes durable pack/root
+authority. Cold independently verifies the complete census, retains bounded
+term/range/hash directories, and queries read selected posting ranges under one
+work budget. The logical resident admission is not measured RSS. Owner checks
+are in progress; old-or-complete-new crash custody and matching Large/XL/default
+retention still require actual execution. Exact commands, roots and scope are in
 [E4-01/02/05](../../oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
 These diagnostics do not qualify later source epochs, OS-child restart,
 scanner A/B or quiet-host performance. A separate current78d2474 Medium256

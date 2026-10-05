@@ -82,6 +82,16 @@ impl MetricSourcePort for LexicalAdapter {
                 "lexical_seal_file_admission_bytes_read_total",
                 seals.file_admission_bytes_read,
             ),
+            // Replay counts logical object reads after a durable unsealed root;
+            // these are not physical device I/O or producer base-bucket reads.
+            MetricPointV1::counter(
+                "lexical_seal_file_authority_replay_files_read_total",
+                seals.file_authority_replay_files_read,
+            ),
+            MetricPointV1::counter(
+                "lexical_seal_file_authority_replay_bytes_read_total",
+                seals.file_authority_replay_bytes_read,
+            ),
             MetricPointV1::counter("lexical_coverage_decodes_total", coverage.decodes),
             MetricPointV1::counter(
                 "lexical_coverage_root_bytes_read_total",

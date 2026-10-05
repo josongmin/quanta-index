@@ -8,6 +8,8 @@
 //! generation can seal; a query never consults the live filesystem.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -15,13 +17,35 @@ use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{SearchScopeSurface, SourceFileKey, SourceFileRevision};
 use quanta_index_core::{CoreError, RequestBudgetV1};
-use quanta_index_lq_trigram::{DocId, TrigramIndex, TrigramIndexBuilder, trigrams_of};
+use quanta_index_lq_trigram::trigrams_of;
 use sha2::{Digest as _, Sha256};
 
 use crate::channel_payloads::{decode_replace_scope_payload, decode_tombstone_scope_payload};
 
+mod codec;
+mod producer;
+mod reader;
+pub(crate) mod root;
+mod verify;
+
+pub(crate) use codec::PostingSurface;
+pub(crate) use reader::QueryWork;
+pub(crate) struct VerifiedAuthority {
+    authority: verify::VerifiedAuthority,
+    pinned_objects: BTreeMap<[u8; 32], ObjectIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ObjectIdentity {
+    dev: u64,
+    ino: u64,
+    len: u64,
+}
+
 pub(crate) const DIR: &str = "file-authority";
-pub(crate) const MANIFEST: &str = "manifest.cbor";
+pub(crate) const MANIFEST: &str = "staging/manifest.cbor";
+pub(crate) const ROOT: &str = "root.cbor";
+pub(crate) const OBJECTS: &str = "objects";
 // The replace-scope transport is a single bounded frame; leave room for
 // coverage, chunks, symbols and encoding overhead in its 16 MiB frame.
 pub(crate) const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
@@ -29,14 +53,12 @@ pub(crate) const MAX_TOTAL_SOURCE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 // A cold open can index an admitted 8 MiB source. Check the request between
 // bounded slices instead of waiting for an entire file's trigram build.
-const TRIGRAM_BUILD_SLICE_BYTES: usize = 64 * 1024;
 // Only folded content/path postings are retained. Sensitive matches are
 // verified against the original NFC surfaces, so this candidate superset
 // shares one index per surface. Forward-only scratch omits reverse postings.
 // Bound both total memberships and each dictionary's estimated scratch heap;
 // a high-entropy source can have many singleton dictionary entries.
-const MAX_FILE_INDEX_POSTING_MEMBERSHIPS: usize = 4_000_000;
-const MAX_FILE_INDEX_BUILD_HEAP_BYTES: usize = 128 * 1024 * 1024;
+const MAX_FILE_INDEX_POSTING_MEMBERSHIPS: usize = 20_000_000;
 const TRIGRAM_BITMAP_BYTES: usize = 2 * 1024 * 1024;
 
 // This sealed artifact evolves the existing manifest. Counts are per source
@@ -73,11 +95,67 @@ impl SourceFile {
 pub(crate) struct FileAuthority {
     pub(crate) files: BTreeMap<SourceFileKey, SourceFile>,
     pub(crate) ordered_keys: Vec<SourceFileKey>,
-    pub(crate) content_folded: TrigramIndex,
-    pub(crate) path_folded: TrigramIndex,
+    root: root::AuthorityRoot,
+    posting_directory: verify::PostingDirectory,
+    term_directory_charge: u64,
+    object_dir: PathBuf,
+    pinned_objects: BTreeMap<[u8; 32], ObjectIdentity>,
+    keys_by_id: BTreeMap<u64, SourceFileKey>,
+    ids_by_key: BTreeMap<SourceFileKey, u64>,
 }
 
 impl FileAuthority {
+    pub(crate) fn id_for_key(&self, key: &SourceFileKey) -> Result<u64, CoreError> {
+        self.ids_by_key.get(key).copied().ok_or_else(|| {
+            CoreError::Storage("lexical: verified file key lacks stable source id".into())
+        })
+    }
+
+    pub(crate) fn file_for_id(&self, id: u64) -> Result<&SourceFile, CoreError> {
+        self.keys_by_id
+            .get(&id)
+            .and_then(|key| self.files.get(key))
+            .ok_or_else(|| {
+                CoreError::Storage("lexical: posting id lacks verified source file".into())
+            })
+    }
+
+    pub(crate) fn source_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.keys_by_id.keys().copied()
+    }
+
+    pub(crate) fn posting_lists(
+        &self,
+        surface: PostingSurface,
+        grams: &[[u8; 3]],
+        work: &mut QueryWork,
+        budget: &RequestBudgetV1,
+    ) -> Result<BTreeMap<[u8; 3], Vec<u64>>, CoreError> {
+        reader::posting_lists(
+            &self.root,
+            &self.posting_directory,
+            policy(),
+            surface,
+            grams,
+            work,
+            budget,
+            |digest, total_len, offset, len| {
+                let pinned = self.pinned_objects.get(&digest).ok_or_else(|| {
+                    CoreError::Storage("lexical: posting object has no pinned identity".into())
+                })?;
+                read_object_range(
+                    &self.object_dir,
+                    digest,
+                    total_len,
+                    offset,
+                    len,
+                    *pinned,
+                    budget,
+                )
+            },
+        )
+    }
+
     pub(crate) fn heap_bytes_estimate(&self) -> u64 {
         let bytes = self.files.iter().fold(0_u64, |total, (key, file)| {
             total
@@ -103,16 +181,751 @@ impl FileAuthority {
                         .saturating_add(file.folded_path.len()),
                 ))
         });
-        [&self.content_folded, &self.path_folded]
-            .iter()
-            .fold(bytes, |total, index| {
-                index.iter().fold(total, |total, (_tri, postings)| {
-                    total
-                        .saturating_add(64)
-                        .saturating_add(saturating_usize_to_u64(postings.len()).saturating_mul(8))
-                })
-            })
+        bytes
+            .saturating_add(saturating_usize_to_u64(self.root.sources.len()).saturating_mul(256))
+            .saturating_add(self.term_directory_charge)
+            .saturating_add(saturating_usize_to_u64(self.keys_by_id.len()).saturating_mul(160))
+            .saturating_add(saturating_usize_to_u64(self.ids_by_key.len()).saturating_mul(160))
     }
+
+    fn checked_resident_bytes(&self) -> Result<u64, CoreError> {
+        let mut total = self.term_directory_charge;
+        for row in &self.root.sources {
+            let file = self
+                .files
+                .get(&row.source.file)
+                .ok_or_else(|| invalid("resident source is absent"))?;
+            let charge = root::resident_file_charge(
+                &file.source,
+                &file.language,
+                file.bytes.len(),
+                file.indexed_path.len(),
+                file.folded_path.len(),
+                file.indexed_text.as_ref().map_or(0, String::len),
+                file.folded_text.as_ref().map_or(0, String::len),
+            )
+            .map_err(|reason| invalid(&reason))?;
+            if charge != row.resident_heap_bytes {
+                return Err(invalid("resident source charge differs from root"));
+            }
+            total = total
+                .checked_add(charge)
+                .ok_or_else(|| invalid("resident heap charge overflow"))?;
+            if total > policy().max_resident_file_heap_bytes {
+                return Err(invalid("resident heap exceeds policy"));
+            }
+        }
+        Ok(total)
+    }
+}
+
+pub(crate) fn read_object(
+    object_dir: &Path,
+    digest: [u8; 32],
+    expected_len: u64,
+) -> Result<Vec<u8>, String> {
+    let generation_dir = object_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "object directory has no generation parent".to_owned())?;
+    let name = object_name(&digest);
+    let mut file =
+        crate::sealed_generation::open_regular_nofollow(generation_dir, Path::new(&name))
+            .map_err(|error| format!("open {name}: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("stat {name}: {error}"))?;
+    if !metadata.is_file() || metadata.len() != expected_len {
+        return Err(format!("{name} is not a regular file of committed length"));
+    }
+    let maximum =
+        usize::try_from(expected_len).map_err(|_| "object length exceeds usize".to_owned())?;
+    crate::sealed_generation::read_opened_bounded(&mut file, maximum)
+        .map_err(|error| format!("read {name}: {error}"))
+}
+
+pub(crate) fn read_object_pinned(
+    object_dir: &Path,
+    digest: [u8; 32],
+    expected_len: u64,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<(Vec<u8>, ObjectIdentity), CoreError> {
+    let generation_dir = object_dir.parent().and_then(Path::parent).ok_or_else(|| {
+        CoreError::Storage("lexical: F15 object directory has no generation parent".into())
+    })?;
+    let name = object_name(&digest);
+    let mut file =
+        crate::sealed_generation::open_regular_nofollow(generation_dir, Path::new(&name))
+            .map_err(|error| corrupt(generation_dir, &name, &format!("open: {error}")))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| corrupt(generation_dir, &name, &format!("stat: {error}")))?;
+    if !metadata.is_file() || metadata.len() != expected_len {
+        return Err(corrupt(
+            generation_dir,
+            &name,
+            "object differs from committed length",
+        ));
+    }
+    let maximum = usize::try_from(expected_len).map_err(|error| {
+        CoreError::Storage(format!("lexical: F15 object length exceeds usize: {error}"))
+    })?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(maximum)
+        .map_err(|_| CoreError::Storage("lexical: F15 object allocation refused".into()))?;
+    bytes.resize(maximum, 0);
+    for chunk in bytes.chunks_mut(64 * 1024) {
+        checkpoint(budget)?;
+        file.read_exact(chunk)
+            .map_err(|error| corrupt(generation_dir, &name, &format!("read: {error}")))?;
+    }
+    let mut extra = [0_u8; 1];
+    if file
+        .read(&mut extra)
+        .map_err(|error| corrupt(generation_dir, &name, &format!("read tail: {error}")))?
+        != 0
+    {
+        return Err(corrupt(generation_dir, &name, "object grew after stat"));
+    }
+    checkpoint(budget)?;
+    Ok((
+        bytes,
+        ObjectIdentity {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            len: metadata.len(),
+        },
+    ))
+}
+
+fn read_object_range(
+    object_dir: &Path,
+    digest: [u8; 32],
+    total_len: u64,
+    offset: u64,
+    len: u64,
+    pinned: ObjectIdentity,
+    budget: &RequestBudgetV1,
+) -> Result<Vec<u8>, CoreError> {
+    let generation_dir = object_dir.parent().and_then(Path::parent).ok_or_else(|| {
+        CoreError::Storage("lexical: F15 object directory has no generation parent".into())
+    })?;
+    let name = object_name(&digest);
+    if offset.checked_add(len).is_none_or(|end| end > total_len)
+        || len > policy().max_query_decoded_bytes
+    {
+        return Err(corrupt(
+            generation_dir,
+            &name,
+            "posting range exceeds committed object",
+        ));
+    }
+    let mut file =
+        crate::sealed_generation::open_regular_nofollow(generation_dir, Path::new(&name)).map_err(
+            |error| {
+                corrupt(
+                    generation_dir,
+                    &name,
+                    &format!("open posting range: {error}"),
+                )
+            },
+        )?;
+    let metadata = file.metadata().map_err(|error| {
+        corrupt(
+            generation_dir,
+            &name,
+            &format!("stat posting range: {error}"),
+        )
+    })?;
+    if !metadata.is_file()
+        || metadata.len() != total_len
+        || pinned.len != total_len
+        || metadata.dev() != pinned.dev
+        || metadata.ino() != pinned.ino
+    {
+        return Err(corrupt(
+            generation_dir,
+            &name,
+            "posting object identity differs from cold-open snapshot",
+        ));
+    }
+    file.seek(SeekFrom::Start(offset)).map_err(|error| {
+        CoreError::Storage(format!("lexical: seek posting range {name}: {error}"))
+    })?;
+    let length = usize::try_from(len).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: posting range length exceeds usize: {error}"
+        ))
+    })?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| CoreError::Storage("lexical: posting range allocation refused".into()))?;
+    bytes.resize(length, 0);
+    for chunk in bytes.chunks_mut(64 * 1024) {
+        budget.checkpoint("lexical:query:posting-range-read")?;
+        file.read_exact(chunk).map_err(|error| {
+            corrupt(
+                generation_dir,
+                &name,
+                &format!("read posting range: {error}"),
+            )
+        })?;
+    }
+    budget.checkpoint("lexical:query:posting-range-read")?;
+    Ok(bytes)
+}
+
+fn policy() -> root::AuthorityPolicy {
+    root::AuthorityPolicy {
+        max_root_bytes: 16 * 1024 * 1024,
+        max_source_files: 32_768,
+        max_source_bytes: MAX_TOTAL_SOURCE_BYTES as u64,
+        max_pack_bytes: 16 * 1024 * 1024,
+        max_total_pack_bytes: 160 * 1024 * 1024,
+        max_posting_block_bytes: 32 * 1024 * 1024,
+        max_total_posting_bytes: 512 * 1024 * 1024,
+        max_total_memberships: 20_000_000,
+        max_partitions: 256,
+        max_source_id: u32::MAX as u64,
+        max_bucket_scratch_bytes: 128 * 1024 * 1024,
+        max_term_directory_bytes: 32 * 1024 * 1024,
+        max_resident_file_heap_bytes: 512 * 1024 * 1024,
+        max_query_list_reads: 16_384,
+        max_query_posting_ids: 2_000_000,
+        max_query_decoded_bytes: 512 * 1024 * 1024,
+        max_query_decoded_ids: 20_000_000,
+    }
+}
+
+pub(crate) fn max_root_bytes() -> u64 {
+    policy().max_root_bytes
+}
+
+pub(crate) fn codec_limits() -> codec::CodecLimits {
+    let policy = policy();
+    codec::CodecLimits {
+        max_source_pack_encoded_bytes: policy.max_pack_bytes as usize,
+        max_posting_block_encoded_bytes: policy.max_posting_block_bytes as usize,
+        max_sources: policy.max_source_files as usize,
+        max_terms: 1 << 24,
+        max_memberships: policy.max_total_memberships,
+    }
+}
+
+pub(crate) fn is_object_file_name(name: &str) -> bool {
+    let Some(hex) = name.strip_suffix(".bin") else {
+        return false;
+    };
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+pub(crate) fn object_name(digest: &[u8; 32]) -> String {
+    format!("{DIR}/{OBJECTS}/{}", file_name(digest))
+}
+
+fn object_inventory(root: &root::AuthorityRoot) -> BTreeMap<[u8; 32], u64> {
+    root.packs
+        .iter()
+        .chain(&root.path_postings)
+        .chain(&root.content_postings)
+        .map(|row| (row.sha256, row.bytes))
+        .collect()
+}
+
+pub(crate) fn verify_v15<R>(
+    root_bytes: &[u8],
+    mut read_blob: R,
+) -> Result<VerifiedAuthority, String>
+where
+    R: FnMut([u8; 32], u64) -> Result<(Vec<u8>, ObjectIdentity), String>,
+{
+    let mut pinned_objects = BTreeMap::new();
+    let authority =
+        verify::verify_authority(root_bytes, policy(), &codec_limits(), |digest, len| {
+            let (bytes, identity) = read_blob(digest, len)?;
+            if pinned_objects
+                .insert(digest, identity)
+                .is_some_and(|prior| prior != identity)
+            {
+                return Err("F15 object identity changed during cold verification".into());
+            }
+            Ok(bytes)
+        })?;
+    if pinned_objects.len() != object_inventory(&authority.root).len() {
+        return Err("F15 pinned object inventory differs from root".into());
+    }
+    Ok(VerifiedAuthority {
+        authority,
+        pinned_objects,
+    })
+}
+
+pub(crate) fn verified_inventory(authority: &VerifiedAuthority) -> BTreeMap<String, u64> {
+    let mut names = BTreeMap::new();
+    names.insert(format!("{DIR}/{ROOT}"), 0);
+    for (digest, len) in object_inventory(&authority.authority.root) {
+        names.insert(object_name(&digest), len);
+    }
+    names
+}
+
+pub(crate) fn verified_matches_coverage(
+    authority: &VerifiedAuthority,
+    coverage: &quanta_index_contract::FileCoverageSnapshot,
+) -> bool {
+    root_matches_coverage(&authority.authority.root, coverage)
+}
+
+fn root_matches_coverage(
+    root: &root::AuthorityRoot,
+    coverage: &quanta_index_contract::FileCoverageSnapshot,
+) -> bool {
+    root.sources.len() == coverage.len()
+        && root.sources.iter().all(|row| {
+            coverage.get(&row.source.file).is_some_and(|covered| {
+                covered.source == row.source
+                    && covered.text_admitted == row.text_admitted
+                    && covered.language == row.language
+            })
+        })
+}
+
+fn write_object(
+    generation_dir: &Path,
+    digest: [u8; 32],
+    bytes: &[u8],
+    next_temp: &mut u64,
+) -> Result<(), String> {
+    let object_dir = generation_dir.join(DIR).join(OBJECTS);
+    let path = object_dir.join(file_name(&digest));
+    let expected: [u8; 32] = Sha256::digest(bytes).into();
+    if expected != digest {
+        return Err("producer blob digest differs from supplied name".into());
+    }
+    if path.exists() {
+        let existing = read_object(&object_dir, digest, bytes.len() as u64)?;
+        if existing != bytes {
+            return Err("existing object has different bytes".into());
+        }
+        return Ok(());
+    }
+    let (temp, mut file) = loop {
+        let temp = object_dir.join(format!(".object-{}-{}.tmp", std::process::id(), *next_temp));
+        *next_temp = next_temp
+            .checked_add(1)
+            .ok_or("object temporary sequence overflow")?;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(file) => break (temp, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create object temporary: {error}")),
+        }
+    };
+    file.write_all(bytes)
+        .map_err(|error| format!("write object temporary: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("sync object temporary: {error}"))?;
+    drop(file);
+    // link(2) cannot replace a published object if another writer won the
+    // digest name. Its bytes are checked before accepting that race.
+    match std::fs::hard_link(&temp, &path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = read_object(&object_dir, digest, bytes.len() as u64)?;
+            if existing != bytes {
+                return Err("existing object has different bytes".into());
+            }
+        }
+        Err(error) => return Err(format!("publish object: {error}")),
+    }
+    std::fs::remove_file(&temp).map_err(|error| format!("retire object temporary: {error}"))?;
+    Ok(())
+}
+
+fn sync_object_dir(generation_dir: &Path) -> Result<(), CoreError> {
+    let path = generation_dir.join(DIR).join(OBJECTS);
+    std::fs::File::open(&path)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: sync F15 object directory {}: {error}",
+                path.display()
+            ))
+        })
+}
+
+fn sealed_base_root(base_dir: &Path) -> Result<root::AuthorityRoot, CoreError> {
+    let opened =
+        crate::sealed_generation::open_generation_dir_nofollow(base_dir).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: open F15 base {}: {error}",
+                base_dir.display()
+            ))
+        })?;
+    let identity = crate::index_store::read_lexical_sealed_identity_at(base_dir, &opened)?;
+    let manifest = crate::sealed_generation::read_bound_manifest_at(
+        base_dir,
+        &opened,
+        &identity.manifest_digest,
+    )?;
+    let name = format!("{DIR}/{ROOT}");
+    let commitment = manifest
+        .file_authority
+        .iter()
+        .find(|entry| entry.name == name)
+        .ok_or_else(|| corrupt(base_dir, &name, "base manifest lacks F15 root"))?;
+    let mut file = crate::sealed_generation::open_regular_below(&opened, Path::new(&name))
+        .map_err(|error| corrupt(base_dir, &name, &format!("open base root: {error}")))?;
+    if file
+        .metadata()
+        .map_err(|error| corrupt(base_dir, &name, &format!("stat: {error}")))?
+        .len()
+        != commitment.bytes
+    {
+        return Err(corrupt(
+            base_dir,
+            &name,
+            "base root length differs from commitment",
+        ));
+    }
+    let maximum = usize::try_from(policy().max_root_bytes)
+        .map_err(|error| CoreError::Storage(format!("lexical: root byte ceiling: {error}")))?;
+    let bytes = crate::sealed_generation::read_opened_bounded(&mut file, maximum)
+        .map_err(|error| corrupt(base_dir, &name, &format!("read: {error}")))?;
+    let observed: [u8; 32] = Sha256::digest(&bytes).into();
+    if observed != commitment.sha256 {
+        return Err(corrupt(
+            base_dir,
+            &name,
+            "base root digest differs from commitment",
+        ));
+    }
+    let authority = root::AuthorityRoot::decode(&bytes, policy())
+        .map_err(|reason| corrupt(base_dir, &name, &reason))?;
+    let expected = object_inventory(&authority);
+    if manifest.file_authority.len() != expected.len() + 1
+        || manifest.file_authority.iter().any(|entry| {
+            if entry.name == name {
+                return entry != commitment;
+            }
+            expected
+                .iter()
+                .find(|(digest, _)| object_name(digest) == entry.name)
+                .is_none_or(|(digest, len)| entry.sha256 != *digest || entry.bytes != *len)
+        })
+    {
+        return Err(corrupt(
+            base_dir,
+            &name,
+            "base F15 object commitments differ from root",
+        ));
+    }
+    let coverage_commitment = manifest.source_coverage.as_ref().ok_or_else(|| {
+        corrupt(
+            base_dir,
+            &name,
+            "base F15 root has no source coverage commitment",
+        )
+    })?;
+    if coverage_commitment.bytes > crate::sealed_generation::coverage::MAX_COVERAGE_ROOT_BYTES_U64 {
+        return Err(corrupt(
+            base_dir,
+            &name,
+            "base source coverage exceeds policy",
+        ));
+    }
+    let coverage_bytes = crate::sealed_generation::coverage::read_committed_coverage_root_at(
+        &opened,
+        base_dir,
+        coverage_commitment,
+    )?;
+    let coverage = crate::sealed_generation::coverage::decode_coverage_at(
+        &opened,
+        &coverage_bytes,
+        base_dir,
+        &identity,
+    )?;
+    if !root_matches_coverage(&authority, &coverage.coverage) {
+        return Err(corrupt(
+            base_dir,
+            &name,
+            "base F15 root differs from committed coverage",
+        ));
+    }
+    Ok(authority)
+}
+
+fn replay_object_inherited(
+    generation_dir: &Path,
+    base_dir: &Path,
+    digest: [u8; 32],
+    len: u64,
+) -> bool {
+    let name = object_name(&digest);
+    let ours = crate::sealed_generation::open_regular_nofollow(generation_dir, Path::new(&name))
+        .and_then(|file| file.metadata());
+    let theirs = crate::sealed_generation::open_regular_nofollow(base_dir, Path::new(&name))
+        .and_then(|file| file.metadata());
+    matches!((ours, theirs), (Ok(ours), Ok(theirs))
+        if ours.is_file() && theirs.is_file()
+            && ours.len() == len && theirs.len() == len
+            && ours.dev() == theirs.dev() && ours.ino() == theirs.ino())
+}
+
+fn audit_replayed_objects(
+    generation_dir: &Path,
+    base_dir: Option<&Path>,
+    current: &root::AuthorityRoot,
+) -> Result<(u64, u64), CoreError> {
+    let base = match base_dir {
+        Some(dir) if crate::index_store::sealed_identity_entry_present(dir)? => {
+            Some((dir, sealed_base_root(dir)?))
+        }
+        _ => None,
+    };
+    let base_inventory = base
+        .as_ref()
+        .map(|(_, root)| object_inventory(root))
+        .unwrap_or_default();
+    let object_dir = generation_dir.join(DIR).join(OBJECTS);
+    let mut reads = (0_u64, 0_u64);
+    for (digest, len) in object_inventory(current) {
+        if let Some((dir, _)) = &base
+            && base_inventory.get(&digest) == Some(&len)
+            && replay_object_inherited(generation_dir, dir, digest, len)
+        {
+            continue;
+        }
+        let bytes = read_object(&object_dir, digest, len)
+            .map_err(|reason| corrupt(generation_dir, DIR, &reason))?;
+        if <[u8; 32]>::from(Sha256::digest(&bytes)) != digest {
+            return Err(corrupt(
+                generation_dir,
+                DIR,
+                "replayed object digest differs",
+            ));
+        }
+        reads.0 = reads
+            .0
+            .checked_add(1)
+            .ok_or_else(|| invalid("replay object read count overflow"))?;
+        reads.1 = reads
+            .1
+            .checked_add(len)
+            .ok_or_else(|| invalid("replay object byte count overflow"))?;
+    }
+    Ok(reads)
+}
+
+/// Produce or replay one complete F15 authority before the sealed manifest.
+/// Staging is unservable and may disappear only after the new root is durable.
+pub(crate) fn build_for_seal(
+    generation_dir: &Path,
+    base_dir: Option<&Path>,
+    coverage: &quanta_index_contract::FileCoverageSnapshot,
+) -> Result<(Vec<String>, u64, u64, u64, u64), CoreError> {
+    let mut source_reads = (0_u64, 0_u64);
+    let mut replay_reads = (0_u64, 0_u64);
+    let object_dir = generation_dir.join(DIR).join(OBJECTS);
+    ensure_local_dir(&generation_dir.join(DIR))?;
+    ensure_local_dir(&object_dir)?;
+    let root = match read_root(generation_dir)? {
+        Some(existing) if root_matches_coverage(&existing, coverage) => {
+            replay_reads = audit_replayed_objects(generation_dir, base_dir, &existing)?;
+            existing
+        }
+        _ => {
+            let base_root = match base_dir {
+                Some(dir) if crate::index_store::sealed_identity_entry_present(dir)? => {
+                    Some(sealed_base_root(dir)?)
+                }
+                _ => None,
+            };
+            let base_by_key: BTreeMap<SourceFileKey, &root::SourceRow> = base_root
+                .as_ref()
+                .into_iter()
+                .flat_map(|root| root.sources.iter())
+                .map(|row| (row.source.file.clone(), row))
+                .collect();
+            let staging = read_manifest(generation_dir)?.unwrap_or_default();
+            let staged_by_key: BTreeMap<SourceFileKey, FileManifestRow> = staging
+                .into_iter()
+                .map(|row| (row.0.file.clone(), row))
+                .collect();
+            if staged_by_key.len() != coverage.len() {
+                return Err(corrupt(
+                    generation_dir,
+                    MANIFEST,
+                    "staging and coverage source counts differ",
+                ));
+            }
+            let mut changed = BTreeMap::new();
+            let mut files_read = 0_u64;
+            let mut bytes_read = 0_u64;
+            for (key, covered) in coverage.iter() {
+                let staged = staged_by_key.get(key).ok_or_else(|| {
+                    corrupt(
+                        generation_dir,
+                        MANIFEST,
+                        "coverage source is absent from staging",
+                    )
+                })?;
+                if staged.0 != covered.source {
+                    return Err(corrupt(
+                        generation_dir,
+                        MANIFEST,
+                        "staging source revision differs from coverage",
+                    ));
+                }
+                let inherited = base_by_key.get(key).is_some_and(|row| {
+                    row.source == covered.source
+                        && row.text_admitted == covered.text_admitted
+                        && row.language == covered.language
+                });
+                if inherited {
+                    continue;
+                }
+                let name = artifact_name(&covered.source);
+                let mut file = crate::sealed_generation::open_regular_nofollow(
+                    generation_dir,
+                    Path::new(&name),
+                )
+                .map_err(|error| {
+                    corrupt(
+                        generation_dir,
+                        &name,
+                        &format!("open staged source: {error}"),
+                    )
+                })?;
+                let metadata = file
+                    .metadata()
+                    .map_err(|error| corrupt(generation_dir, &name, &format!("stat: {error}")))?;
+                if metadata.len() > MAX_FILE_BYTES as u64 {
+                    return Err(corrupt(
+                        generation_dir,
+                        &name,
+                        "staged source exceeds 8 MiB",
+                    ));
+                }
+                let bytes =
+                    crate::sealed_generation::read_opened_bounded(&mut file, MAX_FILE_BYTES)
+                        .map_err(|error| {
+                            corrupt(generation_dir, &name, &format!("read: {error}"))
+                        })?;
+                let sha: [u8; 32] = Sha256::digest(&bytes).into();
+                if sha != covered.source.source_sha256 {
+                    return Err(corrupt(
+                        generation_dir,
+                        &name,
+                        "staged source digest differs from coverage",
+                    ));
+                }
+                files_read = files_read
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("source read count overflow"))?;
+                bytes_read = bytes_read
+                    .checked_add(bytes.len() as u64)
+                    .ok_or_else(|| invalid("source read byte count overflow"))?;
+                changed.insert(key.clone(), bytes);
+            }
+            let mut dispositions = Vec::with_capacity(coverage.len());
+            for (key, covered) in coverage.iter() {
+                if let Some(bytes) = changed.get(key) {
+                    dispositions.push(producer::SourceDisposition::Updated {
+                        source: covered.source.clone(),
+                        bytes,
+                        text_admitted: covered.text_admitted,
+                        language: covered.language.clone(),
+                    });
+                } else {
+                    dispositions.push(producer::SourceDisposition::Inherited {
+                        source: covered.source.clone(),
+                        text_admitted: covered.text_admitted,
+                        language: covered.language.clone(),
+                    });
+                }
+            }
+            let base_read = |digest, len| {
+                let dir =
+                    base_dir.ok_or_else(|| "inherited source without sealed base".to_owned())?;
+                read_object(&dir.join(DIR).join(OBJECTS), digest, len)
+            };
+            let base = base_root.as_ref().map(|root| producer::CommittedBase {
+                root,
+                read_blob: &base_read,
+            });
+            let mut next_temp = 0_u64;
+            let mut sink =
+                |digest, bytes: &[u8]| write_object(generation_dir, digest, bytes, &mut next_temp);
+            let produced = producer::produce_authority(
+                &dispositions,
+                base,
+                policy(),
+                root::PREFIX_BITS,
+                &mut sink,
+            )
+            .map_err(|error| match error.kind {
+                producer::ProducerErrorKind::CorruptBase => {
+                    corrupt(generation_dir, DIR, &error.reason)
+                }
+                _ => invalid(&error.reason),
+            })?;
+            // New bytes were hashed against their digest by the sink. The
+            // inherited descriptors were bound to the sealed base above;
+            // the outer seal measurer verifies newly named objects and
+            // carries only same-inode committed base objects.
+            sync_object_dir(generation_dir)?;
+            crate::index_store::write_atomic_durable(
+                &root_path(generation_dir),
+                &produced.root_bytes,
+                "F15 file authority root",
+            )?;
+            source_reads = (files_read, bytes_read);
+            produced.root
+        }
+    };
+    let expected = object_inventory(&root);
+    for entry in std::fs::read_dir(&object_dir)
+        .map_err(|error| CoreError::Storage(format!("lexical: list F15 objects: {error}")))?
+    {
+        let entry = entry
+            .map_err(|error| CoreError::Storage(format!("lexical: F15 object entry: {error}")))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !expected.keys().any(|digest| file_name(digest) == name) {
+            std::fs::remove_file(entry.path()).map_err(|error| {
+                CoreError::Storage(format!("lexical: retire F15 object {name}: {error}"))
+            })?;
+        }
+    }
+    sync_object_dir(generation_dir)?;
+    let staging_dir = generation_dir.join(DIR).join("staging");
+    if staging_dir.exists() {
+        std::fs::remove_dir_all(&staging_dir)
+            .map_err(|error| CoreError::Storage(format!("lexical: retire F15 staging: {error}")))?;
+        std::fs::File::open(generation_dir.join(DIR))
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| {
+                CoreError::Storage(format!("lexical: sync F15 authority directory: {error}"))
+            })?;
+    }
+    let mut names = vec![format!("{DIR}/{ROOT}")];
+    names.extend(expected.keys().map(object_name));
+    names.sort();
+    Ok((
+        names,
+        source_reads.0,
+        source_reads.1,
+        replay_reads.0,
+        replay_reads.1,
+    ))
 }
 
 // The resident estimate is intentionally conservative on a target whose usize
@@ -123,6 +936,27 @@ fn saturating_usize_to_u64(value: usize) -> u64 {
 
 pub(crate) fn manifest_path(generation_dir: &Path) -> PathBuf {
     generation_dir.join(DIR).join(MANIFEST)
+}
+
+pub(crate) fn root_path(generation_dir: &Path) -> PathBuf {
+    generation_dir.join(DIR).join(ROOT)
+}
+
+pub(crate) fn read_root(generation_dir: &Path) -> Result<Option<root::AuthorityRoot>, CoreError> {
+    let name = format!("{DIR}/{ROOT}");
+    let mut file =
+        match crate::sealed_generation::open_regular_nofollow(generation_dir, Path::new(&name)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(corrupt(generation_dir, &name, &format!("open: {error}"))),
+        };
+    let maximum = usize::try_from(policy().max_root_bytes)
+        .map_err(|error| CoreError::Storage(format!("lexical: root byte ceiling: {error}")))?;
+    let bytes = crate::sealed_generation::read_opened_bounded(&mut file, maximum)
+        .map_err(|error| corrupt(generation_dir, &name, &format!("read: {error}")))?;
+    root::AuthorityRoot::decode(&bytes, policy())
+        .map(Some)
+        .map_err(|reason| corrupt(generation_dir, &name, &reason))
 }
 
 fn file_name(digest: &[u8; 32]) -> String {
@@ -144,7 +978,7 @@ fn hex_digit(nibble: u8) -> char {
 }
 
 pub(crate) fn artifact_name(source: &SourceFileRevision) -> String {
-    format!("{DIR}/{}", file_name(&source.source_sha256))
+    format!("{DIR}/staging/{}", file_name(&source.source_sha256))
 }
 
 fn invalid(reason: &str) -> CoreError {
@@ -153,6 +987,27 @@ fn invalid(reason: &str) -> CoreError {
 
 fn corrupt(generation_dir: &Path, name: &str, reason: &str) -> CoreError {
     crate::index_store::sidecar_corrupt(generation_dir, name, reason)
+}
+
+fn ensure_local_dir(path: &Path) -> Result<(), CoreError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(CoreError::Storage(format!(
+            "lexical: file authority directory is not a local directory: {}",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(path)
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: create file authority directory {}: {error}",
+                    path.display()
+                ))
+            }),
+        Err(error) => Err(CoreError::Storage(format!(
+            "lexical: inspect file authority directory {}: {error}",
+            path.display()
+        ))),
+    }
 }
 
 pub(crate) fn decode_verified_manifest(
@@ -198,7 +1053,25 @@ pub(crate) fn read_manifest(
         Path::new(&format!("{DIR}/{MANIFEST}")),
     ) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let legacy = generation_dir.join(DIR).join("manifest.cbor");
+            match std::fs::symlink_metadata(&legacy) {
+                Ok(_) => return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+                    message: format!("lexical: legacy file authority {} requires F15 rebuild", legacy.display()),
+                }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(CoreError::Storage(format!("lexical: inspect legacy file authority {}: {error}", legacy.display()))),
+            }
+            return read_root(generation_dir).map(|root| {
+                root.map(|root| {
+                    root.sources
+                        .into_iter()
+                        .map(|row| (row.source, row.posting_memberships))
+                        .collect()
+                })
+            });
+        }
         Err(error) => {
             return Err(CoreError::Storage(format!(
                 "lexical: open file authority {}: {error}",
@@ -212,18 +1085,14 @@ pub(crate) fn read_manifest(
 }
 
 pub(crate) fn ensure_empty_manifest(generation_dir: &Path) -> Result<(), CoreError> {
-    if read_manifest(generation_dir)?.is_some() {
+    if manifest_path(generation_dir).is_file() {
         return Ok(());
     }
-    let dir = generation_dir.join(DIR);
-    std::fs::create_dir_all(&dir).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: create file authority {}: {error}",
-            dir.display()
-        ))
-    })?;
-    let empty: Vec<FileManifestRow> = Vec::new();
-    let encoded = crate::channel_payloads::encode_cbor(&empty, "empty file authority manifest")?;
+    let rows = read_manifest(generation_dir)?.unwrap_or_default();
+    let dir = generation_dir.join(DIR).join("staging");
+    ensure_local_dir(&generation_dir.join(DIR))?;
+    ensure_local_dir(&dir)?;
+    let encoded = crate::channel_payloads::encode_cbor(&rows, "staging file authority manifest")?;
     crate::index_store::write_atomic_durable(
         &manifest_path(generation_dir),
         &encoded,
@@ -244,6 +1113,7 @@ pub(crate) fn plan_ops(
     generation_dir: &Path,
     ops: &[LexicalChannelOp],
 ) -> Result<FileAuthorityDelta, CoreError> {
+    let inherited_root = read_root(generation_dir)?;
     let mut files: BTreeMap<SourceFileKey, FileManifestRow> = read_manifest(generation_dir)?
         .unwrap_or_default()
         .into_iter()
@@ -316,21 +1186,43 @@ pub(crate) fn plan_ops(
             bytes.len()
         } else {
             let name = artifact_name(source);
-            let file =
-                crate::sealed_generation::open_regular_nofollow(generation_dir, Path::new(&name))
-                    .map_err(|error| {
-                    CoreError::Storage(format!("lexical: open file authority {name}: {error}"))
-                })?;
-            usize::try_from(
-                file.metadata()
-                    .map_err(|error| {
-                        CoreError::Storage(format!("lexical: stat file authority {name}: {error}"))
+            match crate::sealed_generation::open_regular_nofollow(generation_dir, Path::new(&name))
+            {
+                Ok(file) => usize::try_from(
+                    file.metadata()
+                        .map_err(|error| {
+                            CoreError::Storage(format!(
+                                "lexical: stat file authority {name}: {error}"
+                            ))
+                        })?
+                        .len(),
+                )
+                .map_err(|error| {
+                    CoreError::Storage(format!("lexical: file authority size {name}: {error}"))
+                })?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let row = inherited_root
+                        .as_ref()
+                        .and_then(|root| root.sources.iter().find(|row| row.source == *source))
+                        .ok_or_else(|| {
+                            corrupt(
+                                generation_dir,
+                                &name,
+                                "source has neither staged bytes nor inherited root row",
+                            )
+                        })?;
+                    usize::try_from(row.source_bytes).map_err(|error| {
+                        CoreError::Storage(format!(
+                            "lexical: inherited source size {name}: {error}"
+                        ))
                     })?
-                    .len(),
-            )
-            .map_err(|error| {
-                CoreError::Storage(format!("lexical: file authority size {name}: {error}"))
-            })?
+                }
+                Err(error) => {
+                    return Err(CoreError::Storage(format!(
+                        "lexical: open file authority {name}: {error}"
+                    )));
+                }
+            }
         };
         total = total
             .checked_add(bytes)
@@ -359,18 +1251,56 @@ pub(crate) fn apply_plan(
         writes,
         encoded,
     } = plan;
-    let dir = generation_dir.join(DIR);
-    std::fs::create_dir_all(&dir).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: create file authority {}: {error}",
-            dir.display()
-        ))
-    })?;
+    let dir = generation_dir.join(DIR).join("staging");
+    ensure_local_dir(&generation_dir.join(DIR))?;
+    ensure_local_dir(&dir)?;
     let source_write_started = Instant::now();
     for (digest, bytes) in &writes {
         let path = dir.join(file_name(digest));
-        if !path.is_file() {
-            crate::index_store::write_atomic_durable(&path, bytes, "file authority source")?;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => file.write_all(bytes).map_err(|error| {
+                CoreError::Storage(format!("lexical: stage source {}: {error}", path.display()))
+            })?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let relative = format!("{DIR}/staging/{}", file_name(digest));
+                let mut opened = crate::sealed_generation::open_regular_nofollow(
+                    generation_dir,
+                    Path::new(&relative),
+                )
+                .map_err(|error| {
+                    corrupt(
+                        generation_dir,
+                        &relative,
+                        &format!("open existing staged source: {error}"),
+                    )
+                })?;
+                let observed =
+                    crate::sealed_generation::read_opened_bounded(&mut opened, MAX_FILE_BYTES)
+                        .map_err(|error| {
+                            corrupt(
+                                generation_dir,
+                                &relative,
+                                &format!("read existing staged source: {error}"),
+                            )
+                        })?;
+                if observed != *bytes {
+                    return Err(corrupt(
+                        generation_dir,
+                        &relative,
+                        "staged digest path has different bytes",
+                    ));
+                }
+            }
+            Err(error) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical: stage source {}: {error}",
+                    path.display()
+                )));
+            }
         }
     }
     let source_write_ns = crate::stage_timing::elapsed_stage_ns(source_write_started)?;
@@ -390,7 +1320,7 @@ pub(crate) fn apply_plan(
             CoreError::Storage(format!("lexical: file authority entry: {error}"))
         })?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name != MANIFEST
+        if name != "manifest.cbor"
             && !keep.contains(&name)
             && !crate::index_store::is_durable_write_temporary(&name)
         {
@@ -402,265 +1332,70 @@ pub(crate) fn apply_plan(
     Ok(source_write_ns)
 }
 
-pub(crate) fn expected_names(sources: &[SourceFileRevision]) -> BTreeSet<String> {
-    let mut names: BTreeSet<String> = sources.iter().map(artifact_name).collect();
-    let _inserted = names.insert(format!("{DIR}/{MANIFEST}"));
-    names
-}
-
-pub(crate) fn max_manifest_bytes() -> usize {
-    MAX_MANIFEST_BYTES
-}
-
-fn doc_id_for_index(index: usize) -> Result<DocId, CoreError> {
-    let ordinal = index
-        .checked_add(1)
-        .ok_or_else(|| CoreError::Storage("lexical: file id overflow".to_owned()))?;
-    u64::try_from(ordinal)
-        .map(DocId)
-        .map_err(|error| CoreError::Storage(format!("lexical: file id overflow: {error}")))
-}
-
-// Admission bookkeeping, discarded after proof; the only serving index is
-// the canonical TrigramIndex. The bitmaps charge dictionary keys once per
-// surface and memberships once per file, including repeated source digests.
-struct FileIndexAdmission {
-    dictionaries: [Vec<u8>; 2],
-    local: Vec<u8>,
-    dictionary_keys: [usize; 2],
-    memberships: [usize; 2],
-    total: usize,
-}
-
-impl FileIndexAdmission {
-    fn new() -> Self {
-        Self {
-            dictionaries: std::array::from_fn(|_| vec![0; TRIGRAM_BITMAP_BYTES]),
-            local: vec![0; TRIGRAM_BITMAP_BYTES],
-            dictionary_keys: [0; 2],
-            memberships: [0; 2],
-            total: 0,
-        }
-    }
-
-    fn add(
-        &mut self,
-        path: &str,
-        content: Option<&str>,
-        expected: u32,
-        max_heap_bytes: usize,
-        budget: Option<&RequestBudgetV1>,
-    ) -> Result<(), CoreError> {
-        let prior = self.total;
-        for (surface, bytes) in [Some(path.as_bytes()), content.map(str::as_bytes)]
-            .into_iter()
-            .enumerate()
-        {
-            let Some(bytes) = bytes else {
-                continue;
-            };
-            self.local.fill(0);
-            for (offset, [first, second, third]) in trigrams_of(bytes).enumerate() {
-                if offset % TRIGRAM_BUILD_SLICE_BYTES == 0 {
-                    checkpoint(budget)?;
-                }
-                let key =
-                    (usize::from(first) << 16) | (usize::from(second) << 8) | usize::from(third);
-                let mask = 1_u8 << (key & 7);
-                let local = self
-                    .local
-                    .get_mut(key >> 3)
-                    .ok_or_else(|| invalid("trigram bitmap index overflow"))?;
-                if *local & mask != 0 {
-                    continue;
-                }
-                *local |= mask;
-                self.total = self.total.saturating_add(1);
-                let memberships = self
-                    .memberships
-                    .get_mut(surface)
-                    .ok_or_else(|| invalid("trigram surface outside admission"))?;
-                *memberships = memberships.saturating_add(1);
-                let dictionary = self
-                    .dictionaries
-                    .get_mut(surface)
-                    .and_then(|bitmap| bitmap.get_mut(key >> 3))
-                    .ok_or_else(|| invalid("dictionary bitmap index overflow"))?;
-                let keys = self
-                    .dictionary_keys
-                    .get_mut(surface)
-                    .ok_or_else(|| invalid("dictionary surface outside admission"))?;
-                if *dictionary & mask == 0 {
-                    *dictionary |= mask;
-                    *keys = keys.saturating_add(1);
-                }
-                if self.total > MAX_FILE_INDEX_POSTING_MEMBERSHIPS {
-                    return Err(invalid(
-                        "file trigram posting membership admission exceeded",
-                    ));
-                }
-                if TrigramIndexBuilder::forward_heap_bytes_for(*memberships, *keys) > max_heap_bytes
-                {
-                    return Err(invalid("file trigram scratch heap admission exceeded"));
-                }
-            }
-        }
-        if self.total.saturating_sub(prior)
-            != usize::try_from(expected)
-                .map_err(|error| invalid(&format!("manifest posting count: {error}")))?
-        {
-            return Err(invalid("file posting count differs from sealed manifest"));
-        }
-        checkpoint(budget)
-    }
-}
-
-/// Prove the dictionary/membership bound before writing the sealed manifest.
-///
-/// Read each complete source once, using explicit staged
-/// coverage for text admission; no query index or live worktree is consulted.
-/// Return actual source-path reads and bytes, separately from commitment hashing.
-pub(crate) fn validate_index_build_budget(
-    generation_dir: &Path,
-    identity: &quanta_index_contract::GenerationSnapshot,
-    rows: &[FileManifestRow],
-) -> Result<(u64, u64), CoreError> {
-    if rows.is_empty() {
-        return Ok((0, 0));
-    }
-    let coverage =
-        crate::sealed_generation::coverage::read_staged_coverage(generation_dir, identity)?
-            .ok_or_else(|| invalid("source coverage missing at seal"))?;
-    if coverage.coverage.len() != rows.len() {
-        return Err(invalid("source coverage universe differs at seal"));
-    }
-    let mut admission = FileIndexAdmission::new();
-    let mut source_bytes = 0_usize;
-    for (source, expected) in rows {
-        let coverage_row = coverage
-            .coverage
-            .get(&source.file)
-            .ok_or_else(|| invalid("source missing from coverage at seal"))?;
-        if coverage_row.source != *source {
-            return Err(invalid("source identity differs from coverage at seal"));
-        }
-        let name = artifact_name(source);
-        let mut file =
-            crate::sealed_generation::open_regular_nofollow(generation_dir, Path::new(&name))
-                .map_err(|error| {
-                    CoreError::Storage(format!("lexical: open source at seal {name}: {error}"))
-                })?;
-        let bytes = crate::sealed_generation::read_opened_bounded(&mut file, MAX_FILE_BYTES)
-            .map_err(|error| corrupt(generation_dir, &name, &format!("source read: {error}")))?;
-        source_bytes = source_bytes.saturating_add(bytes.len());
-        if source_bytes > MAX_TOTAL_SOURCE_BYTES {
-            return Err(invalid(
-                "file authority exceeds 128 MiB source byte admission",
-            ));
-        }
-        let observed: [u8; 32] = Sha256::digest(&bytes).into();
-        if observed != source.source_sha256 {
-            return Err(invalid(
-                "source bytes digest differs from source revision at seal",
-            ));
-        }
-        let raw =
-            if coverage_row.text_admitted {
-                Some(std::str::from_utf8(&bytes).map_err(|error| {
-                    invalid(&format!("text-admitted source is not UTF-8: {error}"))
-                })?)
-            } else {
-                None
-            };
-        let (_, folded_path, _, folded_content) =
-            normalized_surfaces(source.file.repo_relative_path.as_str(), raw);
-        admission.add(
-            &folded_path,
-            folded_content.as_deref(),
-            *expected,
-            MAX_FILE_INDEX_BUILD_HEAP_BYTES,
-            None,
-        )?;
-    }
-    Ok((
-        saturating_usize_to_u64(rows.len()),
-        saturating_usize_to_u64(source_bytes),
-    ))
-}
-
-pub(crate) fn from_verified_files(
-    files: Vec<SourceFile>,
+pub(crate) fn from_v15_verified(
+    verified: VerifiedAuthority,
+    object_dir: PathBuf,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<FileAuthority, CoreError> {
+    let VerifiedAuthority {
+        authority,
+        pinned_objects,
+    } = verified;
+    let verify::VerifiedAuthority {
+        root,
+        files,
+        posting_directory,
+    } = authority;
     let mut by_key = BTreeMap::new();
-    for mut file in files {
+    for file in files {
         checkpoint(budget)?;
-        normalize_file(&mut file)?;
         if by_key.insert(file.source.file.clone(), file).is_some() {
             return Err(invalid("duplicate verified source file"));
         }
         checkpoint(budget)?;
     }
-    let mut content_folded = TrigramIndexBuilder::new_forward_only(1).map_err(|error| {
-        CoreError::Storage(format!("lexical: folded file content index: {error}"))
-    })?;
-    let mut path_folded = TrigramIndexBuilder::new_forward_only(1)
-        .map_err(|error| CoreError::Storage(format!("lexical: folded file path index: {error}")))?;
-    let mut ordered_keys = Vec::with_capacity(by_key.len());
-    let mut posting_memberships = 0_usize;
-    for (index, (key, file)) in by_key.iter().enumerate() {
+    let ordered_keys = by_key.keys().cloned().collect();
+    let mut keys_by_id = BTreeMap::new();
+    let mut ids_by_key = BTreeMap::new();
+    for row in &root.sources {
         checkpoint(budget)?;
-        let id = doc_id_for_index(index)?;
-        let prior_memberships = posting_memberships;
-        add_doc_with_checkpoints(
-            &mut path_folded,
-            id,
-            file.folded_path.as_bytes(),
-            &mut posting_memberships,
-            MAX_FILE_INDEX_POSTING_MEMBERSHIPS,
-            || checkpoint(budget),
-        )?;
-        if let Some(folded) = &file.folded_text {
-            add_doc_with_checkpoints(
-                &mut content_folded,
-                id,
-                folded.as_bytes(),
-                &mut posting_memberships,
-                MAX_FILE_INDEX_POSTING_MEMBERSHIPS,
-                || checkpoint(budget),
-            )?;
-        }
-        let actual_postings = posting_memberships.saturating_sub(prior_memberships);
-        if actual_postings
-            != usize::try_from(file.expected_postings)
-                .map_err(|error| invalid(&format!("manifest posting count: {error}")))?
+        let key = row.source.file.clone();
+        let file = by_key
+            .get(&key)
+            .ok_or_else(|| invalid("verified row lacks source"))?;
+        if file.source != row.source
+            || file.expected_postings != row.posting_memberships
+            || file.text_admitted != row.text_admitted
+            || file.language != row.language
         {
-            return Err(invalid("file posting count differs from sealed manifest"));
+            return Err(invalid("verified source differs from root metadata"));
         }
-        ordered_keys.push(key.clone());
+        if keys_by_id.insert(row.source_id, key.clone()).is_some()
+            || ids_by_key.insert(key, row.source_id).is_some()
+        {
+            return Err(invalid("duplicate stable source id or key"));
+        }
     }
+    if by_key.len() != root.sources.len() {
+        return Err(invalid("verified source count differs from root"));
+    }
+    let term_directory_charge = root
+        .term_directory_charge(policy())
+        .map_err(|reason| invalid(&reason))?;
     checkpoint(budget)?;
-    let content_folded = content_folded.finish();
-    checkpoint(budget)?;
-    let path_folded = path_folded.finish();
-    checkpoint(budget)?;
-    Ok(FileAuthority {
+    let authority = FileAuthority {
         files: by_key,
         ordered_keys,
-        content_folded,
-        path_folded,
-    })
-}
-
-fn normalize_file(file: &mut SourceFile) -> Result<(), CoreError> {
-    let raw = file.admitted_text()?;
-    let (path, folded_path, content, folded_content) =
-        normalized_surfaces(file.source.file.repo_relative_path.as_str(), raw);
-    file.indexed_path = path;
-    file.folded_path = folded_path;
-    file.indexed_text = content;
-    file.folded_text = folded_content;
-    Ok(())
+        root,
+        posting_directory,
+        term_directory_charge,
+        object_dir,
+        pinned_objects,
+        keys_by_id,
+        ids_by_key,
+    };
+    authority.checked_resident_bytes()?;
+    Ok(authority)
 }
 
 fn normalized_surfaces(
@@ -734,64 +1469,6 @@ fn count_posting_memberships(
     Ok(())
 }
 
-fn add_doc_with_checkpoints<F>(
-    builder: &mut TrigramIndexBuilder,
-    id: DocId,
-    bytes: &[u8],
-    total_memberships: &mut usize,
-    max_memberships: usize,
-    mut checkpoint: F,
-) -> Result<(), CoreError>
-where
-    F: FnMut() -> Result<(), CoreError>,
-{
-    let prior = builder.posting_memberships();
-    if bytes.len() < 3 {
-        checkpoint()?;
-        return Ok(());
-    }
-    let mut start: usize = 0;
-    loop {
-        checkpoint()?;
-        let end = start
-            .saturating_add(TRIGRAM_BUILD_SLICE_BYTES)
-            .min(bytes.len());
-        let slice = bytes.get(start..end).ok_or_else(|| {
-            CoreError::Storage("lexical: trigram build slice outside source".into())
-        })?;
-        builder.add_doc(id, slice);
-        ensure_trigram_build_heap(builder, MAX_FILE_INDEX_BUILD_HEAP_BYTES)?;
-        let current = total_memberships
-            .saturating_sub(prior)
-            .saturating_add(builder.posting_memberships());
-        if current > max_memberships {
-            return Err(invalid(
-                "file trigram posting membership admission exceeded",
-            ));
-        }
-        if end == bytes.len() {
-            break;
-        }
-        // Preserve the two windows that straddle the slice boundary.
-        start = end.saturating_sub(2);
-    }
-    *total_memberships = total_memberships
-        .saturating_sub(prior)
-        .saturating_add(builder.posting_memberships());
-    checkpoint()
-}
-
-fn ensure_trigram_build_heap(
-    builder: &TrigramIndexBuilder,
-    max_heap_bytes: usize,
-) -> Result<(), CoreError> {
-    if builder.forward_heap_bytes_estimate() > max_heap_bytes {
-        Err(invalid("file trigram scratch heap admission exceeded"))
-    } else {
-        Ok(())
-    }
-}
-
 fn checkpoint(budget: Option<&RequestBudgetV1>) -> Result<(), CoreError> {
     budget.map_or(Ok(()), |budget| {
         budget.checkpoint("lexical:cold-open:file-index")
@@ -799,358 +1476,216 @@ fn checkpoint(budget: Option<&RequestBudgetV1>) -> Result<(), CoreError> {
 }
 
 #[cfg(test)]
+pub(crate) fn from_test_files(
+    mut files: Vec<SourceFile>,
+    generation_dir: &Path,
+) -> Result<FileAuthority, CoreError> {
+    files.sort_by(|left, right| left.source.file.cmp(&right.source.file));
+    ensure_local_dir(&generation_dir.join(DIR))?;
+    let object_dir = generation_dir.join(DIR).join(OBJECTS);
+    ensure_local_dir(&object_dir)?;
+    let dispositions: Vec<_> = files
+        .iter()
+        .map(|file| producer::SourceDisposition::Updated {
+            source: file.source.clone(),
+            bytes: &file.bytes,
+            text_admitted: file.text_admitted,
+            language: file.language.clone(),
+        })
+        .collect();
+    let mut next_temp = 0_u64;
+    let mut sink =
+        |digest, bytes: &[u8]| write_object(generation_dir, digest, bytes, &mut next_temp);
+    let produced =
+        producer::produce_authority(&dispositions, None, policy(), root::PREFIX_BITS, &mut sink)
+            .map_err(|error| invalid(&format!("test F15 producer: {}", error.reason)))?;
+    for (expected, row) in files.iter().zip(&produced.root.sources) {
+        if expected.source != row.source || expected.expected_postings != row.posting_memberships {
+            return Err(invalid(
+                "test source expected postings differ from canonical F15 root",
+            ));
+        }
+    }
+    sync_object_dir(generation_dir)?;
+    crate::index_store::write_atomic_durable(
+        &root_path(generation_dir),
+        &produced.root_bytes,
+        "test F15 root",
+    )?;
+    let verified = verify_v15(&produced.root_bytes, |digest, len| {
+        read_object_pinned(&object_dir, digest, len, None).map_err(|error| error.to_string())
+    })
+    .map_err(|reason| corrupt(generation_dir, ROOT, &reason))?;
+    from_v15_verified(verified, object_dir, None)
+}
+
+#[cfg(test)]
 mod tests {
     use super::{
-        DIR, MANIFEST, MAX_FILE_BYTES, SourceFile, TRIGRAM_BUILD_SLICE_BYTES,
-        add_doc_with_checkpoints, count_posting_memberships, decode_verified_manifest,
-        doc_id_for_index, file_name, from_verified_files, plan_ops, saturating_usize_to_u64,
+        TRIGRAM_BITMAP_BYTES, decode_verified_manifest, file_name, normalized_surfaces,
+        source_posting_memberships,
     };
-    use quanta_index_contract::channel::{LexicalChannelOp, TombstoneLexicalScope};
     use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
-        BatchIngestMode, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-        SearchCorpusTombstoneScope, SourceFileKey, SourceFileRevision,
+        RepoId, RepoRelativePath, RevisionId, SourceFileKey, SourceFileRevision,
     };
-    use quanta_index_lq_trigram::{DocId, TrigramIndexBuilder};
-    use sha2::Digest as _;
+    use sha2::{Digest as _, Sha256};
 
-    #[test]
-    fn shared_source_admission_refuses_high_entropy_dictionary_before_build() {
-        let mut diverse = super::FileIndexAdmission::new();
-        let error = diverse
-            .add("x", Some("abcdefghijk"), 9, 1_000, None)
-            .expect_err("nine distinct keys exceed dictionary byte admission");
-        assert!(
-            matches!(error, quanta_index_core::CoreError::InvalidContract(message)
-            if message.contains("scratch heap"))
-        );
-        let repeated_source = "abc".repeat(1_000);
-        let mut repeated = super::FileIndexAdmission::new();
-        repeated
-            .add("x", Some(&repeated_source), 3, 1_000, None)
-            .expect("three distinct trigrams fit regardless of source repetitions");
-        repeated
-            .add("x", Some(&repeated_source), 3, 1_000, None)
-            .expect("dictionary is shared, memberships remain per file");
-        assert_eq!(repeated.total, 6);
-        assert_eq!(repeated.dictionary_keys, [0, 3]);
-    }
-
-    #[test]
-    fn shared_source_admission_binds_counts_even_without_constructing_postings() {
-        let mut admission = super::FileIndexAdmission::new();
-        let error = admission
-            .add("abc", Some("def"), 1, usize::MAX, None)
-            .expect_err("two surface memberships cannot claim one");
-        assert!(
-            matches!(error, quanta_index_core::CoreError::InvalidContract(message)
-            if message.contains("posting count differs"))
-        );
-    }
-
-    #[test]
-    fn scratch_heap_admission_counts_distinct_postings_not_source_repetitions() {
-        let mut dense = TrigramIndexBuilder::new_forward_only(1).expect("builder");
-        for id in 1..=1_000 {
-            dense.add_doc(DocId(id), b"abc");
-        }
-        assert!(super::ensure_trigram_build_heap(&dense, 16_384).is_err());
-        let mut repeated = TrigramIndexBuilder::new_forward_only(1).expect("builder");
-        for _ in 0..1_000 {
-            repeated.add_doc(DocId(1), b"abc");
-        }
-        assert!(super::ensure_trigram_build_heap(&repeated, 16_384).is_ok());
-    }
-
-    #[test]
-    fn folded_manifest_admits_more_than_old_duplicate_membership_cap() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let source = SourceFileRevision {
+    fn source() -> SourceFileRevision {
+        SourceFileRevision {
             file: SourceFileKey {
                 source_repo_id: RepoId::new("repo").expect("repo"),
                 repo_relative_path: RepoRelativePath::new("src/a.rs"),
             },
             revision_id: RevisionId::new("revision").expect("revision"),
             source_sha256: [7; 32],
-        };
-        let mut admitted = Vec::new();
-        ciborium::into_writer(&vec![(source, 3_379_823_u32)], &mut admitted).expect("encode");
+        }
+    }
+
+    #[test]
+    fn staging_manifest_accepts_xl_memberships_and_refuses_global_overflow() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut encoded = Vec::new();
+        ciborium::into_writer(&vec![(source(), 17_715_020_u32)], &mut encoded).expect("encode");
         assert_eq!(
-            decode_verified_manifest(&admitted, dir.path())
-                .expect("admitted")
+            decode_verified_manifest(&encoded, dir.path())
+                .expect("within F15 cap")
                 .len(),
             1
         );
+        encoded.clear();
+        ciborium::into_writer(&vec![(source(), 20_000_001_u32)], &mut encoded).expect("encode");
+        assert!(decode_verified_manifest(&encoded, dir.path()).is_err());
     }
 
     #[test]
-    fn sliced_trigram_build_preserves_boundary_windows() {
-        let mut bytes = vec![b'x'; TRIGRAM_BUILD_SLICE_BYTES + 7];
-        bytes
-            .get_mut(
-                TRIGRAM_BUILD_SLICE_BYTES.saturating_sub(2)
-                    ..TRIGRAM_BUILD_SLICE_BYTES.saturating_add(2),
-            )
-            .expect("boundary is inside source")
-            .copy_from_slice(b"abcd");
-        let mut whole = TrigramIndexBuilder::new(1).expect("whole");
-        whole.add_doc(DocId(1), &bytes);
-        let mut sliced = TrigramIndexBuilder::new(1).expect("sliced");
-        let mut checks = 0;
-        let mut memberships = 0;
-        add_doc_with_checkpoints(
-            &mut sliced,
-            DocId(1),
-            &bytes,
-            &mut memberships,
-            usize::MAX,
-            || {
-                checks += 1;
-                Ok(())
-            },
+    fn staging_counter_keeps_path_and_content_memberships_distinct() {
+        let mut bitmap = vec![0_u8; TRIGRAM_BITMAP_BYTES];
+        let path_only = source_posting_memberships(&source(), b"\xff", false, &mut bitmap)
+            .expect("binary path");
+        assert_eq!(
+            path_only,
+            source_posting_memberships(&source(), b"abc", false, &mut bitmap)
+                .expect("text path only")
+        );
+        let with_content =
+            source_posting_memberships(&source(), b"abc", true, &mut bitmap).expect("text content");
+        assert!(with_content > path_only);
+        assert!(source_posting_memberships(&source(), b"\xff", true, &mut bitmap).is_err());
+    }
+
+    #[test]
+    fn resident_charge_counts_utf8_fold_expansion() {
+        let mut source = source();
+        source.file.repo_relative_path = RepoRelativePath::new("src/İ.go");
+        source.revision_id = RevisionId::new("rev").expect("revision");
+        let language = LanguageCode::new("go").expect("language");
+        let (indexed_path, folded_path, indexed_text, folded_text) =
+            normalized_surfaces("src/İ.go", Some("İ"));
+        assert_eq!(indexed_path.len(), 9);
+        assert_eq!(folded_path.len(), 10);
+        assert_eq!(indexed_text.as_ref().map(String::len), Some(2));
+        assert_eq!(folded_text.as_ref().map(String::len), Some(3));
+        let charge = super::root::resident_file_charge(
+            &source,
+            &language,
+            2,
+            indexed_path.len(),
+            folded_path.len(),
+            indexed_text.as_ref().map_or(0, String::len),
+            folded_text.as_ref().map_or(0, String::len),
         )
-        .expect("sliced build");
-        assert!(checks >= 3);
-        assert_eq!(sliced.finish(), whole.finish());
-        assert!(memberships >= 4);
+        .expect("checked charge");
+        assert_eq!(charge, 1138);
     }
 
     #[test]
-    fn sliced_trigram_build_stops_at_checkpoint() {
-        let bytes = vec![b'x'; TRIGRAM_BUILD_SLICE_BYTES * 3];
-        let mut builder = TrigramIndexBuilder::new(1).expect("builder");
-        let mut checks = 0;
-        let mut memberships = 0;
-        let result = add_doc_with_checkpoints(
-            &mut builder,
-            DocId(1),
-            &bytes,
-            &mut memberships,
-            usize::MAX,
-            || {
-                checks += 1;
-                if checks == 2 {
-                    Err(quanta_index_core::CoreError::InvalidContract(
-                        "cancelled".into(),
-                    ))
-                } else {
-                    Ok(())
-                }
-            },
+    fn replay_audit_counts_only_read_objects_and_refuses_corrupt_bytes() {
+        let generation = tempfile::tempdir().expect("tempdir");
+        let object_dir = generation.path().join(super::DIR).join(super::OBJECTS);
+        std::fs::create_dir_all(&object_dir).expect("objects");
+        let body = b"canonical object";
+        let digest: [u8; 32] = Sha256::digest(body).into();
+        let object = object_dir.join(super::file_name(&digest));
+        std::fs::write(&object, body).expect("object");
+        let root = super::root::AuthorityRoot {
+            policy_sha256: super::policy().digest(),
+            next_source_id: 1,
+            sources: vec![],
+            packs: vec![super::root::Partition {
+                prefix_bits: super::root::PREFIX_BITS,
+                prefix: [0; 32],
+                sha256: digest,
+                bytes: body.len() as u64,
+                entries: 1,
+                terms: 0,
+            }],
+            path_postings: vec![],
+            content_postings: vec![],
+        };
+        assert_eq!(
+            super::audit_replayed_objects(generation.path(), None, &root).expect("audit"),
+            (1, body.len() as u64)
         );
-        assert!(result.is_err());
-        assert_eq!(checks, 2);
+        std::fs::write(&object, b"corrupt!! object").expect("in-place corruption");
+        assert!(super::audit_replayed_objects(generation.path(), None, &root).is_err());
+        std::fs::remove_file(&object).expect("replace");
+        std::fs::write(&object, b"replaced! object").expect("replacement");
+        assert!(super::audit_replayed_objects(generation.path(), None, &root).is_err());
     }
 
     #[test]
-    fn file_trigram_membership_limit_refuses_before_unbounded_growth() {
-        let mut builder = TrigramIndexBuilder::new(1).expect("builder");
-        let mut memberships = 0;
-        let result = add_doc_with_checkpoints(
-            &mut builder,
-            DocId(1),
-            b"abcdef",
-            &mut memberships,
-            3,
-            || Ok(()),
-        );
-        assert!(
-            matches!(result, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message.contains("posting membership"))
-        );
-        assert_eq!(builder.posting_memberships(), 4);
-    }
-
-    #[test]
-    fn file_trigram_membership_limit_accumulates_across_files() {
-        let mut builder = TrigramIndexBuilder::new(1).expect("builder");
-        let mut memberships = 0;
-        add_doc_with_checkpoints(&mut builder, DocId(1), b"abcd", &mut memberships, 3, || {
-            Ok(())
-        })
-        .expect("first file fits");
-        assert_eq!(memberships, 2);
-        let result =
-            add_doc_with_checkpoints(&mut builder, DocId(2), b"wxyz", &mut memberships, 3, || {
-                Ok(())
-            });
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn file_trigram_membership_limit_accumulates_across_surfaces() {
-        let mut content = TrigramIndexBuilder::new(1).expect("content");
-        let mut path = TrigramIndexBuilder::new(1).expect("path");
-        let mut memberships = 0;
-        add_doc_with_checkpoints(&mut content, DocId(1), b"abcd", &mut memberships, 3, || {
-            Ok(())
-        })
-        .expect("content fits");
-        let result =
-            add_doc_with_checkpoints(&mut path, DocId(1), b"file", &mut memberships, 3, || Ok(()));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn seal_count_matches_builder_memberships_and_refuses_over_limit() {
-        let mut bitmap = vec![0_u8; super::TRIGRAM_BITMAP_BYTES];
-        let mut total = 0;
-        let sources: [&[u8]; 2] = [b"ababa", "ÄÄÄ".as_bytes()];
-        let mut builder = TrigramIndexBuilder::new(1).expect("builder");
-        for (index, source) in sources.into_iter().enumerate() {
-            count_posting_memberships(source, &mut bitmap, &mut total, usize::MAX).expect("count");
-            builder.add_doc(
-                DocId(u64::try_from(index.saturating_add(1)).expect("id")),
-                source,
-            );
+    fn replay_inheritance_requires_same_inode_and_length() {
+        let family = tempfile::tempdir().expect("family");
+        let base = family.path().join("base");
+        let target = family.path().join("target");
+        for generation in [&base, &target] {
+            std::fs::create_dir_all(generation.join(super::DIR).join(super::OBJECTS))
+                .expect("objects");
         }
-        assert_eq!(total, builder.posting_memberships());
-        let mut refused = 0;
-        let error = count_posting_memberships(b"abcdef", &mut bitmap, &mut refused, 3)
-            .expect_err("four unique trigrams exceed three memberships");
-        assert!(
-            matches!(error, quanta_index_core::CoreError::InvalidContract(message) if message.contains("posting membership"))
-        );
-    }
-
-    #[test]
-    fn file_manifest_requires_posting_count_and_refuses_excess() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let source = SourceFileRevision {
-            file: SourceFileKey {
-                source_repo_id: RepoId::new("repo").expect("repo"),
-                repo_relative_path: RepoRelativePath::new("src/a.rs"),
-            },
-            revision_id: RevisionId::new("revision").expect("revision"),
-            source_sha256: [7; 32],
-        };
-        let mut old = Vec::new();
-        ciborium::into_writer(&vec![source.clone()], &mut old).expect("old encode");
-        assert!(decode_verified_manifest(&old, dir.path()).is_err());
-        let mut over = Vec::new();
-        ciborium::into_writer(&vec![(source, 4_000_001_u32)], &mut over).expect("over encode");
-        assert!(decode_verified_manifest(&over, dir.path()).is_err());
-    }
-
-    #[test]
-    fn cold_open_recounts_committed_source_postings() {
-        let source = SourceFileRevision {
-            file: SourceFileKey {
-                source_repo_id: RepoId::new("repo").expect("repo"),
-                repo_relative_path: RepoRelativePath::new("a.rs"),
-            },
-            revision_id: RevisionId::new("revision").expect("revision"),
-            source_sha256: sha2::Sha256::digest(b"abc").into(),
-        };
-        let file = SourceFile {
-            source,
-            bytes: b"abc".to_vec(),
-            text_admitted: true,
-            language: LanguageCode::new("rust").expect("language"),
-            indexed_text: None,
-            folded_text: None,
-            indexed_path: String::new(),
-            folded_path: String::new(),
-            // "a.rs" has two distinct trigrams and "abc" has one; each
-            // appears once in the shared folded index.
-            expected_postings: 3,
-        };
-        assert!(from_verified_files(vec![file.clone()], None).is_ok());
-        let mut forged = file;
-        forged.expected_postings = 2;
-        assert!(matches!(
-            from_verified_files(vec![forged], None),
-            Err(quanta_index_core::CoreError::InvalidContract(message))
-                if message.contains("posting count differs")
+        let body = b"same inode";
+        let digest: [u8; 32] = Sha256::digest(body).into();
+        let base_object = base.join(super::object_name(&digest));
+        let target_object = target.join(super::object_name(&digest));
+        std::fs::write(&base_object, body).expect("base object");
+        std::fs::hard_link(&base_object, &target_object).expect("inherited object");
+        assert!(super::replay_object_inherited(
+            &target,
+            &base,
+            digest,
+            body.len() as u64
+        ));
+        std::fs::remove_file(&target_object).expect("unlink inherited");
+        std::fs::write(&target_object, body).expect("same bytes, new inode");
+        assert!(!super::replay_object_inherited(
+            &target,
+            &base,
+            digest,
+            body.len() as u64
         ));
     }
 
     #[test]
-    fn file_name_encodes_both_nibbles_as_lowercase_hex() {
+    fn object_names_are_lowercase_hex() {
         assert_eq!(file_name(&[0xab; 32]), format!("{}.bin", "ab".repeat(32)));
         assert_eq!(file_name(&[0x05; 32]), format!("{}.bin", "05".repeat(32)));
     }
 
     #[test]
-    fn planned_net_source_bytes_enforce_the_generation_cap() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let generation_dir = dir.path().join("generation");
-        let authority_dir = generation_dir.join(DIR);
-        std::fs::create_dir_all(&authority_dir).expect("authority dir");
-        let mut sources = Vec::new();
-        for index in 1_u8..=17 {
-            let digest = [index; 32];
-            let source = SourceFileRevision {
-                file: SourceFileKey {
-                    source_repo_id: RepoId::new("cap-repo").expect("repo"),
-                    repo_relative_path: RepoRelativePath::new(format!("{index:02}.rs")),
-                },
-                revision_id: RevisionId::new("cap-revision").expect("revision"),
-                source_sha256: digest,
-            };
-            let file = std::fs::File::create(authority_dir.join(file_name(&digest)))
-                .expect("source artifact");
-            file.set_len(if index == 17 {
-                1
-            } else {
-                u64::try_from(MAX_FILE_BYTES).expect("file cap fits u64")
-            })
-            .expect("sparse source length");
-            sources.push(source);
-        }
-        let write_manifest = |sources: &[SourceFileRevision]| {
-            let mut encoded = Vec::new();
-            let rows: Vec<_> = sources
-                .iter()
-                .cloned()
-                .map(|source| (source, 0_u32))
-                .collect();
-            ciborium::into_writer(&rows, &mut encoded).expect("encode manifest");
-            std::fs::write(authority_dir.join(MANIFEST), encoded).expect("write manifest");
-        };
-        write_manifest(sources.get(..16).expect("first sixteen sources"));
-        let at_cap = plan_ops(&generation_dir, &[]);
-        assert!(at_cap.is_ok(), "128 MiB is admitted: {at_cap:?}");
-        write_manifest(&sources);
-        let result = plan_ops(&generation_dir, &[]);
-        assert!(
-            matches!(result, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message.contains("128 MiB")),
-            "128 MiB + 1 byte must be refused"
-        );
-        let mut payload = Vec::new();
-        ciborium::into_writer(
-            &(
-                BatchIngestMode::ReplaceGeneration,
-                None::<ManifestGeneration>,
-                SearchCorpusTombstoneScope {
-                    file: sources.first().expect("first source").file.clone(),
-                },
-            ),
-            &mut payload,
+    fn legacy_unsealed_manifest_requires_rebuild() {
+        let generation = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(generation.path().join(super::DIR)).expect("authority dir");
+        std::fs::write(
+            generation.path().join(super::DIR).join("manifest.cbor"),
+            b"old",
         )
-        .expect("encode tombstone");
-        let tombstone = LexicalChannelOp::TombstoneLexicalScope(TombstoneLexicalScope {
-            repo_id: RepoId::new("cap-repo").expect("repo"),
-            revision_id: RevisionId::new("cap-revision").expect("revision"),
-            generation: ManifestGeneration::new(1),
-            payload,
-        });
-        assert!(
-            plan_ops(&generation_dir, &[tombstone]).is_ok(),
-            "retiring an 8 MiB file must be judged by the net source set"
-        );
-    }
-
-    #[test]
-    fn file_id_rejects_overflow_instead_of_wrapping() {
-        assert_eq!(doc_id_for_index(0).expect("first id"), DocId(1));
-        assert!(doc_id_for_index(usize::MAX).is_err());
-    }
-
-    #[test]
-    fn resident_estimate_conversion_preserves_or_saturates() {
-        assert_eq!(saturating_usize_to_u64(123), 123);
-        if usize::BITS > u64::BITS {
-            assert_eq!(saturating_usize_to_u64(usize::MAX), u64::MAX);
-        }
+        .expect("legacy file");
+        assert!(matches!(
+            super::read_manifest(generation.path()),
+            Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+                ..
+            })
+        ));
     }
 }

@@ -20,7 +20,9 @@ mod verify;
 pub use seal::LexicalSealCommitmentStats;
 
 pub(crate) use index_directory::SealedIndexDirectory;
-pub(crate) use manifest::{LEXICAL_SEALED_MANIFEST_FILE_NAME, manifest_path, read_manifest};
+pub(crate) use manifest::{
+    LEXICAL_SEALED_MANIFEST_FILE_NAME, manifest_path, read_bound_manifest_at, read_manifest,
+};
 pub(crate) use overlay::{persist_overlay, remove_overlay};
 pub(crate) use path_io::{
     entry_names_at, is_unsafe_artifact_path, open_generation_dir_nofollow, open_regular_below,
