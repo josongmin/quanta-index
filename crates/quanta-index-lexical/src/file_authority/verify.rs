@@ -147,7 +147,7 @@ fn append_directory(
     *charged = charged
         .checked_add(block_charge)
         .ok_or_else(|| corrupt("term directory aggregate charge overflow"))?;
-    if *charged > policy.max_term_directory_bytes {
+    if *charged > policy.term_directory_bytes {
         return Err(corrupt("term directory exceeds policy"));
     }
     if view.term_descriptors().len() != terms {
@@ -217,7 +217,7 @@ where
             .ok_or_else(|| corrupt("missing source bucket"))?;
         let mut scratch = Scratch {
             bytes: 0,
-            ceiling: policy.max_bucket_scratch_bytes,
+            ceiling: policy.bucket_scratch_bytes,
         };
         scratch.charge(pack.bytes)?;
         scratch.charge(path.bytes)?;
@@ -279,7 +279,7 @@ where
             resident_charge = resident_charge
                 .checked_add(file_charge)
                 .ok_or_else(|| corrupt("resident heap charge overflow"))?;
-            if resident_charge > policy.max_resident_file_heap_bytes {
+            if resident_charge > policy.resident_file_heap_bytes {
                 return Err(corrupt("resident heap exceeds policy"));
             }
             let path_count = add_source(
@@ -371,33 +371,33 @@ mod tests {
 
     fn policy() -> AuthorityPolicy {
         AuthorityPolicy {
-            max_root_bytes: 16 * 1024 * 1024,
-            max_source_files: 4,
-            max_source_bytes: 1024,
-            max_pack_bytes: 1024,
-            max_total_pack_bytes: 1024,
-            max_posting_block_bytes: 1024,
-            max_total_posting_bytes: 2048,
-            max_total_memberships: 8,
-            max_partitions: 4,
-            max_source_id: 8,
-            max_bucket_scratch_bytes: 8192,
-            max_term_directory_bytes: 4096,
-            max_resident_file_heap_bytes: 8192,
-            max_query_list_reads: 512,
-            max_query_posting_ids: 1024,
-            max_query_decoded_bytes: 2048,
-            max_query_decoded_ids: 10,
+            root_bytes: 16 * 1024 * 1024,
+            source_files: 4,
+            source_bytes: 1024,
+            pack_bytes: 1024,
+            total_pack_bytes: 1024,
+            posting_block_bytes: 1024,
+            total_posting_bytes: 2048,
+            total_memberships: 8,
+            partitions: 4,
+            source_id: 8,
+            bucket_scratch_bytes: 8192,
+            term_directory_bytes: 4096,
+            resident_file_heap_bytes: 8192,
+            query_list_reads: 512,
+            query_posting_ids: 1024,
+            query_decoded_bytes: 2048,
+            query_decoded_ids: 10,
         }
     }
 
     fn codec_limits() -> CodecLimits {
         CodecLimits {
-            max_source_pack_encoded_bytes: 1024,
-            max_posting_block_encoded_bytes: 1024,
-            max_sources: 4,
-            max_terms: 4,
-            max_memberships: 8,
+            source_pack_encoded_bytes: 1024,
+            posting_block_encoded_bytes: 1024,
+            sources: 4,
+            terms: 4,
+            memberships: 8,
         }
     }
 

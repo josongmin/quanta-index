@@ -28,20 +28,20 @@ pub(crate) enum CodecError {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CodecLimits {
-    pub(crate) max_source_pack_encoded_bytes: usize,
-    pub(crate) max_posting_block_encoded_bytes: usize,
-    pub(crate) max_sources: usize,
-    pub(crate) max_terms: usize,
-    pub(crate) max_memberships: u64,
+    pub(crate) source_pack_encoded_bytes: usize,
+    pub(crate) posting_block_encoded_bytes: usize,
+    pub(crate) sources: usize,
+    pub(crate) terms: usize,
+    pub(crate) memberships: u64,
 }
 
 impl CodecLimits {
     fn validate(self) -> Result<(), CodecError> {
-        if self.max_source_pack_encoded_bytes < SOURCE_HEADER
-            || self.max_posting_block_encoded_bytes < POSTING_HEADER
-            || self.max_sources == 0
-            || self.max_terms == 0
-            || self.max_memberships == 0
+        if self.source_pack_encoded_bytes < SOURCE_HEADER
+            || self.posting_block_encoded_bytes < POSTING_HEADER
+            || self.sources == 0
+            || self.terms == 0
+            || self.memberships == 0
         {
             return Err(CodecError::Invalid(
                 "codec limits must be explicit and positive",
@@ -257,7 +257,7 @@ pub(crate) fn encode_source_pack(
     limits: &CodecLimits,
 ) -> Result<Vec<u8>, CodecError> {
     limits.validate()?;
-    if sources.len() > limits.max_sources || sources.len() > u32::MAX as usize {
+    if sources.len() > limits.sources || sources.len() > u32::MAX as usize {
         return Err(CodecError::Limit("source count"));
     }
     let table_bytes = mul(sources.len(), SOURCE_ROW, "source table overflow")?;
@@ -280,7 +280,7 @@ pub(crate) fn encode_source_pack(
         }
         payload_bytes = add(payload_bytes, source.bytes.len(), "source payload overflow")?;
         total = add(total, source.bytes.len(), "source pack size overflow")?;
-        if total > limits.max_source_pack_encoded_bytes {
+        if total > limits.source_pack_encoded_bytes {
             return Err(CodecError::Limit("source pack encoded bytes"));
         }
     }
@@ -316,7 +316,7 @@ pub(crate) fn decode_source_pack<'a>(
     limits: &CodecLimits,
 ) -> Result<SourcePackView<'a>, CodecError> {
     limits.validate()?;
-    if bytes.len() > limits.max_source_pack_encoded_bytes {
+    if bytes.len() > limits.source_pack_encoded_bytes {
         return Err(CodecError::Limit("source pack encoded bytes"));
     }
     if bytes.len() < SOURCE_HEADER
@@ -327,7 +327,7 @@ pub(crate) fn decode_source_pack<'a>(
         return Err(CodecError::Corrupt("source pack header"));
     }
     let count = u32_at(bytes, 12)? as usize;
-    if count > limits.max_sources {
+    if count > limits.sources {
         return Err(CodecError::Limit("source count"));
     }
     let payload_len = usize_from_u64(u64_at(bytes, 16)?)?;
@@ -390,7 +390,7 @@ pub(crate) fn encode_posting_block(
     limits: &CodecLimits,
 ) -> Result<Vec<u8>, CodecError> {
     limits.validate()?;
-    if postings.len() > limits.max_terms || postings.len() > u32::MAX as usize {
+    if postings.len() > limits.terms || postings.len() > u32::MAX as usize {
         return Err(CodecError::Limit("posting term count"));
     }
     let table_bytes = mul(postings.len(), POSTING_ROW, "posting table overflow")?;
@@ -413,7 +413,7 @@ pub(crate) fn encode_posting_block(
         memberships = memberships
             .checked_add(posting.source_ids.len() as u64)
             .ok_or(CodecError::Limit("membership count overflow"))?;
-        if memberships > limits.max_memberships {
+        if memberships > limits.memberships {
             return Err(CodecError::Limit("posting memberships"));
         }
         total = add(
@@ -421,7 +421,7 @@ pub(crate) fn encode_posting_block(
             mul(posting.source_ids.len(), 8, "posting bytes overflow")?,
             "posting size overflow",
         )?;
-        if total > limits.max_posting_block_encoded_bytes {
+        if total > limits.posting_block_encoded_bytes {
             return Err(CodecError::Limit("posting block encoded bytes"));
         }
     }
@@ -477,7 +477,7 @@ where
 {
     limits.validate()?;
     checkpoint()?;
-    if bytes.len() > limits.max_posting_block_encoded_bytes {
+    if bytes.len() > limits.posting_block_encoded_bytes {
         return Err(CodecError::Limit("posting block encoded bytes"));
     }
     if bytes.len() < POSTING_HEADER
@@ -490,7 +490,7 @@ where
     }
     let count = u32_at(bytes, 12)? as usize;
     let memberships = u64_at(bytes, 16)?;
-    if count > limits.max_terms || memberships > limits.max_memberships {
+    if count > limits.terms || memberships > limits.memberships {
         return Err(CodecError::Limit("posting terms or memberships"));
     }
     let payload_len = usize_from_u64(u64_at(bytes, 24)?)?;
@@ -586,11 +586,11 @@ mod tests {
 
     fn limits() -> CodecLimits {
         CodecLimits {
-            max_source_pack_encoded_bytes: 4096,
-            max_posting_block_encoded_bytes: 4096,
-            max_sources: 4,
-            max_terms: 4,
-            max_memberships: 8,
+            source_pack_encoded_bytes: 4096,
+            posting_block_encoded_bytes: 4096,
+            sources: 4,
+            terms: 4,
+            memberships: 8,
         }
     }
 
@@ -683,7 +683,7 @@ mod tests {
             Some(CodecError::DigestMismatch)
         );
         let tight = CodecLimits {
-            max_source_pack_encoded_bytes: fixed.len() - 1,
+            source_pack_encoded_bytes: fixed.len() - 1,
             ..limits()
         };
         assert!(matches!(
@@ -759,7 +759,7 @@ mod tests {
             Err(CodecError::Corrupt(_))
         ));
         let tight = CodecLimits {
-            max_memberships: 1,
+            memberships: 1,
             ..limits()
         };
         assert!(matches!(

@@ -36,23 +36,23 @@ pub(crate) fn is_object_file_name(name: &str) -> bool {
 /// never stands in for the aggregate membership limit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AuthorityPolicy {
-    pub max_root_bytes: u64,
-    pub max_source_files: u64,
-    pub max_source_bytes: u64,
-    pub max_pack_bytes: u64,
-    pub max_total_pack_bytes: u64,
-    pub max_posting_block_bytes: u64,
-    pub max_total_posting_bytes: u64,
-    pub max_total_memberships: u64,
-    pub max_partitions: u64,
-    pub max_source_id: u64,
-    pub max_bucket_scratch_bytes: u64,
-    pub max_term_directory_bytes: u64,
-    pub max_resident_file_heap_bytes: u64,
-    pub max_query_list_reads: u64,
-    pub max_query_posting_ids: u64,
-    pub max_query_decoded_bytes: u64,
-    pub max_query_decoded_ids: u64,
+    pub root_bytes: u64,
+    pub source_files: u64,
+    pub source_bytes: u64,
+    pub pack_bytes: u64,
+    pub total_pack_bytes: u64,
+    pub posting_block_bytes: u64,
+    pub total_posting_bytes: u64,
+    pub total_memberships: u64,
+    pub partitions: u64,
+    pub source_id: u64,
+    pub bucket_scratch_bytes: u64,
+    pub term_directory_bytes: u64,
+    pub resident_file_heap_bytes: u64,
+    pub query_list_reads: u64,
+    pub query_posting_ids: u64,
+    pub query_decoded_bytes: u64,
+    pub query_decoded_ids: u64,
 }
 
 impl AuthorityPolicy {
@@ -60,23 +60,23 @@ impl AuthorityPolicy {
         let mut hasher = Sha256::new();
         hasher.update(b"quanta-file-authority-policy-v15\0");
         for value in [
-            self.max_root_bytes,
-            self.max_source_files,
-            self.max_source_bytes,
-            self.max_pack_bytes,
-            self.max_total_pack_bytes,
-            self.max_posting_block_bytes,
-            self.max_total_posting_bytes,
-            self.max_total_memberships,
-            self.max_partitions,
-            self.max_source_id,
-            self.max_bucket_scratch_bytes,
-            self.max_term_directory_bytes,
-            self.max_resident_file_heap_bytes,
-            self.max_query_list_reads,
-            self.max_query_posting_ids,
-            self.max_query_decoded_bytes,
-            self.max_query_decoded_ids,
+            self.root_bytes,
+            self.source_files,
+            self.source_bytes,
+            self.pack_bytes,
+            self.total_pack_bytes,
+            self.posting_block_bytes,
+            self.total_posting_bytes,
+            self.total_memberships,
+            self.partitions,
+            self.source_id,
+            self.bucket_scratch_bytes,
+            self.term_directory_bytes,
+            self.resident_file_heap_bytes,
+            self.query_list_reads,
+            self.query_posting_ids,
+            self.query_decoded_bytes,
+            self.query_decoded_ids,
         ] {
             hasher.update(value.to_le_bytes());
         }
@@ -275,7 +275,7 @@ fn validate_partitions(
     require_entries: bool,
 ) -> Result<(u64, u64), String> {
     if u64::try_from(partitions.len()).map_err(|_| invalid("partition count overflow"))?
-        > policy.max_partitions
+        > policy.partitions
     {
         return Err(invalid("partition count exceeds policy"));
     }
@@ -430,9 +430,9 @@ fn preflight_root(bytes: &[u8], policy: AuthorityPolicy) -> Result<(), String> {
     for _ in 0..3 {
         scan.skip(1)?;
     }
-    scan.bounded_array(policy.max_source_files)?;
+    scan.bounded_array(policy.source_files)?;
     for _ in 0..3 {
-        scan.bounded_array(policy.max_partitions)?;
+        scan.bounded_array(policy.partitions)?;
     }
     if scan.offset != bytes.len() {
         return Err(invalid("trailing CBOR bytes"));
@@ -459,7 +459,7 @@ impl AuthorityRoot {
                         .ok_or_else(|| invalid("term directory row charge overflow"))?,
                 )
                 .ok_or_else(|| invalid("term directory aggregate charge overflow"))?;
-            if charge > policy.max_term_directory_bytes {
+            if charge > policy.term_directory_bytes {
                 return Err(invalid("term directory exceeds policy"));
             }
         }
@@ -471,7 +471,7 @@ impl AuthorityRoot {
         let bytes = encode_cbor(&wire(self), "file authority v15 root")
             .map_err(|error| invalid(&error.to_string()))?;
         if u64::try_from(bytes.len()).map_err(|_| invalid("root byte count overflow"))?
-            > policy.max_root_bytes
+            > policy.root_bytes
         {
             return Err(invalid("root exceeds byte policy"));
         }
@@ -480,7 +480,7 @@ impl AuthorityRoot {
 
     pub(super) fn decode(bytes: &[u8], policy: AuthorityPolicy) -> Result<Self, String> {
         if u64::try_from(bytes.len()).map_err(|_| invalid("root byte count overflow"))?
-            > policy.max_root_bytes
+            > policy.root_bytes
         {
             return Err(invalid("root exceeds byte policy"));
         }
@@ -546,11 +546,11 @@ impl AuthorityRoot {
             return Err(invalid("policy identity differs; rebuild required"));
         }
         if u64::try_from(self.sources.len()).map_err(|_| invalid("source count overflow"))?
-            > policy.max_source_files
+            > policy.source_files
         {
             return Err(invalid("source count exceeds policy"));
         }
-        if self.next_source_id == 0 || self.next_source_id > policy.max_source_id {
+        if self.next_source_id == 0 || self.next_source_id > policy.source_id {
             return Err(invalid("next source ID exceeds policy"));
         }
         let (pack_bytes, pack_entries) = validate_partitions(&self.packs, policy, true)?;
@@ -574,25 +574,25 @@ impl AuthorityRoot {
         if self
             .packs
             .iter()
-            .any(|partition| partition.bytes > policy.max_pack_bytes)
+            .any(|partition| partition.bytes > policy.pack_bytes)
             || self
                 .path_postings
                 .iter()
                 .chain(&self.content_postings)
-                .any(|partition| partition.bytes > policy.max_posting_block_bytes)
+                .any(|partition| partition.bytes > policy.posting_block_bytes)
         {
             return Err(invalid("partition exceeds per-block byte policy"));
         }
         let posting_bytes = path_bytes
             .checked_add(content_bytes)
             .ok_or_else(|| invalid("posting bytes overflow"))?;
-        if posting_bytes > policy.max_total_posting_bytes {
+        if posting_bytes > policy.total_posting_bytes {
             return Err(invalid("posting bytes exceed aggregate policy"));
         }
         let memberships = path_memberships
             .checked_add(content_memberships)
             .ok_or_else(|| invalid("posting memberships overflow"))?;
-        if memberships > policy.max_total_memberships {
+        if memberships > policy.total_memberships {
             return Err(invalid("postings exceed aggregate policy"));
         }
         let mut previous = None;
@@ -627,7 +627,7 @@ impl AuthorityRoot {
             source_bytes = source_bytes
                 .checked_add(row.source_bytes)
                 .ok_or_else(|| invalid("source byte count overflow"))?;
-            if source_bytes > policy.max_source_bytes {
+            if source_bytes > policy.source_bytes {
                 return Err(invalid("source bytes exceed aggregate policy"));
             }
             if row.resident_heap_bytes < RESIDENT_FILE_ROW_CHARGE {
@@ -636,7 +636,7 @@ impl AuthorityRoot {
             resident_heap_bytes = resident_heap_bytes
                 .checked_add(row.resident_heap_bytes)
                 .ok_or_else(|| invalid("resident heap charge overflow"))?;
-            if resident_heap_bytes > policy.max_resident_file_heap_bytes {
+            if resident_heap_bytes > policy.resident_file_heap_bytes {
                 return Err(invalid("resident heap exceeds policy"));
             }
             let key_digest = source_key_digest(&row.source)?;
@@ -667,7 +667,7 @@ impl AuthorityRoot {
         {
             return Err(invalid("posting inventory has unreferenced source bucket"));
         }
-        if pack_bytes > policy.max_total_pack_bytes {
+        if pack_bytes > policy.total_pack_bytes {
             return Err(invalid("pack encoded bytes exceed aggregate policy"));
         }
         Ok(())
@@ -688,23 +688,23 @@ mod tests {
 
     fn policy() -> AuthorityPolicy {
         AuthorityPolicy {
-            max_root_bytes: 16 * 1024 * 1024,
-            max_source_files: 10,
-            max_source_bytes: 100,
-            max_pack_bytes: 100,
-            max_total_pack_bytes: 200,
-            max_posting_block_bytes: 100,
-            max_total_posting_bytes: 200,
-            max_total_memberships: 10,
-            max_partitions: 10,
-            max_source_id: 100,
-            max_bucket_scratch_bytes: 1024,
-            max_term_directory_bytes: 4096,
-            max_resident_file_heap_bytes: 8192,
-            max_query_list_reads: 512,
-            max_query_posting_ids: 1024,
-            max_query_decoded_bytes: 2048,
-            max_query_decoded_ids: 10,
+            root_bytes: 16 * 1024 * 1024,
+            source_files: 10,
+            source_bytes: 100,
+            pack_bytes: 100,
+            total_pack_bytes: 200,
+            posting_block_bytes: 100,
+            total_posting_bytes: 200,
+            total_memberships: 10,
+            partitions: 10,
+            source_id: 100,
+            bucket_scratch_bytes: 1024,
+            term_directory_bytes: 4096,
+            resident_file_heap_bytes: 8192,
+            query_list_reads: 512,
+            query_posting_ids: 1024,
+            query_decoded_bytes: 2048,
+            query_decoded_ids: 10,
         }
     }
 
@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn root_rejects_policy_inventory_and_global_count_mutants() {
         let mut changed_policy = policy();
-        changed_policy.max_total_memberships += 1;
+        changed_policy.total_memberships += 1;
         assert!(root().encode(changed_policy).is_err());
 
         let mut absent_pack = root();
@@ -796,7 +796,7 @@ mod tests {
         assert!(forged_terms.encode(policy()).is_err());
 
         let mut tight = policy();
-        tight.max_term_directory_bytes = 383;
+        tight.term_directory_bytes = 383;
         let mut over_directory = root();
         over_directory.policy_sha256 = tight.digest();
         let reason = over_directory
@@ -805,7 +805,7 @@ mod tests {
         assert!(reason.contains("term directory exceeds policy"), "{reason}");
 
         let mut tight_heap = policy();
-        tight_heap.max_resident_file_heap_bytes = 1480;
+        tight_heap.resident_file_heap_bytes = 1480;
         let mut over_heap = root();
         over_heap.policy_sha256 = tight_heap.digest();
         let reason = over_heap

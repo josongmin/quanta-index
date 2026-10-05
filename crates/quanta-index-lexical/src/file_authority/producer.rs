@@ -110,15 +110,15 @@ fn prefix(key: &[u8; 32], bits: u16) -> [u8; 32] {
 
 fn codec_limits(policy: AuthorityPolicy) -> Result<CodecLimits, ProducerError> {
     Ok(CodecLimits {
-        max_source_pack_encoded_bytes: usize::try_from(policy.max_pack_bytes)
+        source_pack_encoded_bytes: usize::try_from(policy.pack_bytes)
             .map_err(|_| ProducerError::limit("pack byte policy exceeds usize"))?,
-        max_posting_block_encoded_bytes: usize::try_from(policy.max_posting_block_bytes)
+        posting_block_encoded_bytes: usize::try_from(policy.posting_block_bytes)
             .map_err(|_| ProducerError::limit("posting byte policy exceeds usize"))?,
-        max_sources: usize::try_from(policy.max_source_files)
+        sources: usize::try_from(policy.source_files)
             .map_err(|_| ProducerError::limit("source count policy exceeds usize"))?,
         // A three-byte gram has only 2^24 possible values.
-        max_terms: 1 << 24,
-        max_memberships: policy.max_total_memberships,
+        terms: 1 << 24,
+        memberships: policy.total_memberships,
     })
 }
 
@@ -240,7 +240,7 @@ fn source_rows<'a>(
     ProducerError,
 > {
     if u64::try_from(current.len()).map_err(|_| ProducerError::limit("source count overflow"))?
-        > policy.max_source_files
+        > policy.source_files
     {
         return Err(ProducerError::limit("source count exceeds policy"));
     }
@@ -282,7 +282,7 @@ fn source_rows<'a>(
                 .ok_or_else(|| ProducerError::limit("source ID watermark overflow"))?;
             id
         };
-        if source_id == 0 || next_id > policy.max_source_id {
+        if source_id == 0 || next_id > policy.source_id {
             return Err(ProducerError::limit("source ID exceeds policy"));
         }
         let row = match disposition {
@@ -357,7 +357,7 @@ fn source_rows<'a>(
         total_memberships = total_memberships
             .checked_add(u64::from(row.posting_memberships))
             .ok_or_else(|| ProducerError::limit("aggregate memberships overflow"))?;
-        if total_bytes > policy.max_source_bytes || total_memberships > policy.max_total_memberships
+        if total_bytes > policy.source_bytes || total_memberships > policy.total_memberships
         {
             return Err(ProducerError::limit(
                 "aggregate source or membership policy exceeded",
@@ -428,7 +428,7 @@ fn produce_packs(
                     .bytes
                     .checked_mul(2)
                     .and_then(|bytes| bytes.checked_add(map_overhead))
-                    .is_none_or(|peak| peak > policy.max_bucket_scratch_bytes)
+                    .is_none_or(|peak| peak > policy.bucket_scratch_bytes)
                 {
                     return Err(ProducerError::limit(
                         "base pack decode exceeds bucket scratch ceiling",
@@ -494,7 +494,7 @@ fn produce_packs(
             if cloned_body_bytes
                 .checked_add(map_overhead)
                 .and_then(|peak| peak.checked_add(projected_len))
-                .is_none_or(|peak| peak > policy.max_bucket_scratch_bytes)
+                .is_none_or(|peak| peak > policy.bucket_scratch_bytes)
             {
                 return Err(ProducerError::limit(
                     "pack encode exceeds bucket scratch ceiling",
@@ -524,7 +524,7 @@ fn produce_packs(
         total_bytes = total_bytes
             .checked_add(descriptor.bytes)
             .ok_or_else(|| ProducerError::limit("aggregate pack bytes overflow"))?;
-        if total_bytes > policy.max_total_pack_bytes {
+        if total_bytes > policy.total_pack_bytes {
             return Err(ProducerError::limit("aggregate pack bytes exceed policy"));
         }
         partitions.push(descriptor);
@@ -692,7 +692,7 @@ fn charge_term_directory(
         .checked_add(rows)
         .and_then(|sum| sum.checked_add(blocks))
         .ok_or_else(|| ProducerError::limit("term directory charge overflow"))?;
-    if *current > policy.max_term_directory_bytes {
+    if *current > policy.term_directory_bytes {
         return Err(ProducerError::limit("term directory exceeds policy"));
     }
     Ok(())
@@ -706,11 +706,11 @@ fn produce_posting_buckets(
     bits: u16,
     policy: AuthorityPolicy,
     limits: &CodecLimits,
-    max_bucket_scratch_bytes: usize,
+    bucket_scratch_bytes: usize,
     emitted: &mut BTreeMap<[u8; 32], u64>,
     sink: &mut dyn FnMut([u8; 32], &[u8]) -> Result<(), String>,
 ) -> Result<(Vec<Partition>, Vec<Partition>), ProducerError> {
-    if max_bucket_scratch_bytes <= SCRATCH_BITMAP_BYTES {
+    if bucket_scratch_bytes <= SCRATCH_BITMAP_BYTES {
         return Err(ProducerError::limit(
             "posting bucket scratch ceiling is too small",
         ));
@@ -778,7 +778,7 @@ fn produce_posting_buckets(
             )?;
             if resident_charge
                 .checked_add(term_directory_charge)
-                .is_none_or(|total| total > policy.max_resident_file_heap_bytes)
+                .is_none_or(|total| total > policy.resident_file_heap_bytes)
             {
                 return Err(ProducerError::limit("resident heap exceeds policy"));
             }
@@ -793,7 +793,7 @@ fn produce_posting_buckets(
                 touched_ids,
                 limits,
                 &mut scratch,
-                max_bucket_scratch_bytes,
+                bucket_scratch_bytes,
             )?;
             let mut content = load_old_postings(
                 base,
@@ -802,7 +802,7 @@ fn produce_posting_buckets(
                 touched_ids,
                 limits,
                 &mut scratch,
-                max_bucket_scratch_bytes,
+                bucket_scratch_bytes,
             )?;
             for index in indices {
                 let row = &mut rows[index];
@@ -824,7 +824,7 @@ fn produce_posting_buckets(
                         .ok_or_else(|| ProducerError::limit("resident heap charge overflow"))?;
                     if resident_charge
                         .checked_add(term_directory_charge)
-                        .is_none_or(|total| total > policy.max_resident_file_heap_bytes)
+                        .is_none_or(|total| total > policy.resident_file_heap_bytes)
                     {
                         return Err(ProducerError::limit("resident heap exceeds policy"));
                     }
@@ -834,7 +834,7 @@ fn produce_posting_buckets(
                         .ok_or_else(|| ProducerError::limit("normalized source bytes overflow"))?;
                     if scratch
                         .checked_add(temporary)
-                        .is_none_or(|peak| peak > max_bucket_scratch_bytes)
+                        .is_none_or(|peak| peak > bucket_scratch_bytes)
                     {
                         return Err(ProducerError::limit(
                             "normalized source scratch ceiling exceeded",
@@ -846,7 +846,7 @@ fn produce_posting_buckets(
                         &mut bitmap,
                         &mut path,
                         &mut scratch,
-                        max_bucket_scratch_bytes,
+                        bucket_scratch_bytes,
                     )?;
                     let content_count = if let Some(text) = &folded_content {
                         add_surface(
@@ -855,7 +855,7 @@ fn produce_posting_buckets(
                             &mut bitmap,
                             &mut content,
                             &mut scratch,
-                            max_bucket_scratch_bytes,
+                            bucket_scratch_bytes,
                         )?
                     } else {
                         0
@@ -877,7 +877,7 @@ fn produce_posting_buckets(
             )?;
             if resident_charge
                 .checked_add(term_directory_charge)
-                .is_none_or(|total| total > policy.max_resident_file_heap_bytes)
+                .is_none_or(|total| total > policy.resident_file_heap_bytes)
             {
                 return Err(ProducerError::limit("resident heap exceeds policy"));
             }
@@ -888,7 +888,7 @@ fn produce_posting_buckets(
                 bits,
                 limits,
                 &mut scratch,
-                max_bucket_scratch_bytes,
+                bucket_scratch_bytes,
                 emitted,
                 sink,
             )?;
@@ -899,7 +899,7 @@ fn produce_posting_buckets(
                 bits,
                 limits,
                 &mut scratch,
-                max_bucket_scratch_bytes,
+                bucket_scratch_bytes,
                 emitted,
                 sink,
             )?;
@@ -912,8 +912,8 @@ fn produce_posting_buckets(
             total_memberships = total_memberships
                 .checked_add(descriptor.entries)
                 .ok_or_else(|| ProducerError::limit("aggregate posting memberships overflow"))?;
-            if total_bytes > policy.max_total_posting_bytes
-                || total_memberships > policy.max_total_memberships
+            if total_bytes > policy.total_posting_bytes
+                || total_memberships > policy.total_memberships
             {
                 return Err(ProducerError::limit("aggregate posting policy exceeded"));
             }
@@ -925,7 +925,7 @@ fn produce_posting_buckets(
         sum.checked_add(u64::from(row.posting_memberships))
             .ok_or_else(|| ProducerError::limit("source membership sum overflow"))
     })?;
-    if source_total != total_memberships || source_total > policy.max_total_memberships {
+    if source_total != total_memberships || source_total > policy.total_memberships {
         return Err(ProducerError::invalid(
             "source and posting membership totals differ",
         ));
@@ -965,7 +965,7 @@ pub(super) fn produce_authority(
         }
     }
     let limits = codec_limits(policy)?;
-    let max_bucket_scratch_bytes = usize::try_from(policy.max_bucket_scratch_bytes)
+    let bucket_scratch_bytes = usize::try_from(policy.bucket_scratch_bytes)
         .map_err(|_| ProducerError::limit("bucket scratch policy exceeds usize"))?;
     let (mut rows, changed_bytes, updates, touched_ids, next_source_id) =
         source_rows(current, base.as_ref(), policy)?;
@@ -988,7 +988,7 @@ pub(super) fn produce_authority(
         prefix_bits,
         policy,
         &limits,
-        max_bucket_scratch_bytes,
+        bucket_scratch_bytes,
         &mut emitted_blobs,
         sink,
     )?;
@@ -1019,23 +1019,23 @@ mod tests {
 
     fn policy() -> AuthorityPolicy {
         AuthorityPolicy {
-            max_root_bytes: 1 << 20,
-            max_source_files: 10,
-            max_source_bytes: 1 << 20,
-            max_pack_bytes: 1 << 20,
-            max_total_pack_bytes: 1 << 20,
-            max_posting_block_bytes: 1 << 20,
-            max_total_posting_bytes: 1 << 20,
-            max_total_memberships: 1000,
-            max_partitions: 256,
-            max_source_id: 100,
-            max_bucket_scratch_bytes: 16 << 20,
-            max_term_directory_bytes: 1 << 20,
-            max_resident_file_heap_bytes: 1 << 20,
-            max_query_list_reads: 512,
-            max_query_posting_ids: 1000,
-            max_query_decoded_bytes: 1 << 20,
-            max_query_decoded_ids: 1000,
+            root_bytes: 1 << 20,
+            source_files: 10,
+            source_bytes: 1 << 20,
+            pack_bytes: 1 << 20,
+            total_pack_bytes: 1 << 20,
+            posting_block_bytes: 1 << 20,
+            total_posting_bytes: 1 << 20,
+            total_memberships: 1000,
+            partitions: 256,
+            source_id: 100,
+            bucket_scratch_bytes: 16 << 20,
+            term_directory_bytes: 1 << 20,
+            resident_file_heap_bytes: 1 << 20,
+            query_list_reads: 512,
+            query_posting_ids: 1000,
+            query_decoded_bytes: 1 << 20,
+            query_decoded_ids: 1000,
         }
     }
 
@@ -1121,7 +1121,7 @@ mod tests {
     #[test]
     fn resident_cap_refuses_updated_source() {
         let mut strict = policy();
-        strict.max_resident_file_heap_bytes = 1102;
+        strict.resident_file_heap_bytes = 1102;
         let mut sink = |_, _: &[u8]| Ok(());
         let error = produce_authority(
             &[SourceDisposition::Updated {

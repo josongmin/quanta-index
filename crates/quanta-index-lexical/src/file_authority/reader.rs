@@ -56,10 +56,10 @@ fn charge_work(
         .decoded_bytes
         .checked_add(bytes)
         .ok_or_else(|| plan_limit("decoded byte count overflow"))?;
-    if work.list_reads > policy.max_query_list_reads
-        || work.posting_ids > policy.max_query_posting_ids
-        || work.decoded_ids > policy.max_query_decoded_ids
-        || work.decoded_bytes > policy.max_query_decoded_bytes
+    if work.list_reads > policy.query_list_reads
+        || work.posting_ids > policy.query_posting_ids
+        || work.decoded_ids > policy.query_decoded_ids
+        || work.decoded_bytes > policy.query_decoded_bytes
     {
         return Err(plan_limit("global query posting work exceeds policy"));
     }
@@ -105,8 +105,8 @@ where
         .map(|gram| (gram, Vec::new()))
         .collect();
     let max_directory_probes = policy
-        .max_query_list_reads
-        .checked_mul(policy.max_partitions)
+        .query_list_reads
+        .checked_mul(policy.partitions)
         .ok_or_else(|| plan_limit("directory lookup policy overflow"))?;
     for bucket in buckets {
         budget.checkpoint("lexical:file-authority-v15-list-lookup")?;
@@ -210,33 +210,33 @@ mod tests {
 
     fn policy(list_reads: u64) -> AuthorityPolicy {
         AuthorityPolicy {
-            max_root_bytes: 4096,
-            max_source_files: 4,
-            max_source_bytes: 1024,
-            max_pack_bytes: 1024,
-            max_total_pack_bytes: 1024,
-            max_posting_block_bytes: 1024,
-            max_total_posting_bytes: 2048,
-            max_total_memberships: 8,
-            max_partitions: 4,
-            max_source_id: 8,
-            max_bucket_scratch_bytes: 8192,
-            max_term_directory_bytes: 4096,
-            max_resident_file_heap_bytes: 8192,
-            max_query_list_reads: list_reads,
-            max_query_posting_ids: 8,
-            max_query_decoded_bytes: 64,
-            max_query_decoded_ids: 8,
+            root_bytes: 4096,
+            source_files: 4,
+            source_bytes: 1024,
+            pack_bytes: 1024,
+            total_pack_bytes: 1024,
+            posting_block_bytes: 1024,
+            total_posting_bytes: 2048,
+            total_memberships: 8,
+            partitions: 4,
+            source_id: 8,
+            bucket_scratch_bytes: 8192,
+            term_directory_bytes: 4096,
+            resident_file_heap_bytes: 8192,
+            query_list_reads: list_reads,
+            query_posting_ids: 8,
+            query_decoded_bytes: 64,
+            query_decoded_ids: 8,
         }
     }
 
     fn fixture() -> (AuthorityRoot, PostingDirectory, Vec<u8>) {
         let limits = CodecLimits {
-            max_source_pack_encoded_bytes: 1024,
-            max_posting_block_encoded_bytes: 1024,
-            max_sources: 4,
-            max_terms: 4,
-            max_memberships: 8,
+            source_pack_encoded_bytes: 1024,
+            posting_block_encoded_bytes: 1024,
+            sources: 4,
+            terms: 4,
+            memberships: 8,
         };
         let block = encode_posting_block(
             PostingSurface::Content,

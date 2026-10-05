@@ -195,7 +195,7 @@ impl FileAuthority {
             total = total
                 .checked_add(charge)
                 .ok_or_else(|| invalid("resident heap charge overflow"))?;
-            if total > policy().max_resident_file_heap_bytes {
+            if total > policy().resident_file_heap_bytes {
                 return Err(invalid("resident heap exceeds policy"));
             }
         }
@@ -297,7 +297,7 @@ fn read_object_range(
     })?;
     let name = object_name(&digest);
     if offset.checked_add(len).is_none_or(|end| end > total_len)
-        || len > policy().max_query_decoded_bytes
+        || len > policy().query_decoded_bytes
     {
         return Err(corrupt(
             generation_dir,
@@ -363,38 +363,38 @@ fn read_object_range(
 
 fn policy() -> root::AuthorityPolicy {
     root::AuthorityPolicy {
-        max_root_bytes: 16 * 1024 * 1024,
-        max_source_files: 32_768,
-        max_source_bytes: MAX_TOTAL_SOURCE_BYTES as u64,
-        max_pack_bytes: 16 * 1024 * 1024,
-        max_total_pack_bytes: 160 * 1024 * 1024,
-        max_posting_block_bytes: 32 * 1024 * 1024,
-        max_total_posting_bytes: 512 * 1024 * 1024,
-        max_total_memberships: 20_000_000,
-        max_partitions: 256,
-        max_source_id: u32::MAX as u64,
-        max_bucket_scratch_bytes: 128 * 1024 * 1024,
-        max_term_directory_bytes: 32 * 1024 * 1024,
-        max_resident_file_heap_bytes: 512 * 1024 * 1024,
-        max_query_list_reads: 16_384,
-        max_query_posting_ids: 2_000_000,
-        max_query_decoded_bytes: 512 * 1024 * 1024,
-        max_query_decoded_ids: 20_000_000,
+        root_bytes: 16 * 1024 * 1024,
+        source_files: 32_768,
+        source_bytes: MAX_TOTAL_SOURCE_BYTES as u64,
+        pack_bytes: 16 * 1024 * 1024,
+        total_pack_bytes: 160 * 1024 * 1024,
+        posting_block_bytes: 32 * 1024 * 1024,
+        total_posting_bytes: 512 * 1024 * 1024,
+        total_memberships: 20_000_000,
+        partitions: 256,
+        source_id: u32::MAX as u64,
+        bucket_scratch_bytes: 128 * 1024 * 1024,
+        term_directory_bytes: 32 * 1024 * 1024,
+        resident_file_heap_bytes: 512 * 1024 * 1024,
+        query_list_reads: 16_384,
+        query_posting_ids: 2_000_000,
+        query_decoded_bytes: 512 * 1024 * 1024,
+        query_decoded_ids: 20_000_000,
     }
 }
 
 pub(crate) fn max_root_bytes() -> u64 {
-    policy().max_root_bytes
+    policy().root_bytes
 }
 
 pub(crate) fn codec_limits() -> codec::CodecLimits {
     let policy = policy();
     codec::CodecLimits {
-        max_source_pack_encoded_bytes: policy.max_pack_bytes as usize,
-        max_posting_block_encoded_bytes: policy.max_posting_block_bytes as usize,
-        max_sources: policy.max_source_files as usize,
-        max_terms: 1 << 24,
-        max_memberships: policy.max_total_memberships,
+        source_pack_encoded_bytes: policy.pack_bytes as usize,
+        posting_block_encoded_bytes: policy.posting_block_bytes as usize,
+        sources: policy.source_files as usize,
+        terms: 1 << 24,
+        memberships: policy.total_memberships,
     }
 }
 
@@ -570,7 +570,7 @@ fn sealed_base_root(base_dir: &Path) -> Result<root::AuthorityRoot, CoreError> {
             "base root length differs from commitment",
         ));
     }
-    let maximum = usize::try_from(policy().max_root_bytes)
+    let maximum = usize::try_from(policy().root_bytes)
         .map_err(|error| CoreError::Storage(format!("lexical: root byte ceiling: {error}")))?;
     let bytes = crate::sealed_generation::read_opened_bounded(&mut file, maximum)
         .map_err(|error| corrupt(base_dir, &name, &format!("read: {error}")))?;
@@ -926,7 +926,7 @@ pub(crate) fn read_root(generation_dir: &Path) -> Result<Option<root::AuthorityR
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(corrupt(generation_dir, &name, &format!("open: {error}"))),
         };
-    let maximum = usize::try_from(policy().max_root_bytes)
+    let maximum = usize::try_from(policy().root_bytes)
         .map_err(|error| CoreError::Storage(format!("lexical: root byte ceiling: {error}")))?;
     let bytes = crate::sealed_generation::read_opened_bounded(&mut file, maximum)
         .map_err(|error| corrupt(generation_dir, &name, &format!("read: {error}")))?;
@@ -1407,7 +1407,7 @@ fn count_posting_memberships(
     source: &[u8],
     bitmap: &mut [u8],
     total: &mut usize,
-    max_memberships: usize,
+    memberships: usize,
 ) -> Result<(), CoreError> {
     bitmap.fill(0);
     for [first, second, third] in trigrams_of(source) {
@@ -1419,7 +1419,7 @@ fn count_posting_memberships(
         if *entry & mask == 0 {
             *entry |= mask;
             *total = total.saturating_add(1);
-            if *total > max_memberships {
+            if *total > memberships {
                 return Err(invalid(
                     "file trigram posting membership admission exceeded",
                 ));

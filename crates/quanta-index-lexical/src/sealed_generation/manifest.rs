@@ -906,8 +906,8 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 10")
-                    && message.contains("serves 14")
-                    && message.contains("committed exact live BM25 statistics")
+                    && message.contains("serves 15")
+                    && message.contains("packed file authority with disk postings")
                     && message.contains("must be rebuilt")
         ));
     }
@@ -925,8 +925,8 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 12")
-                    && message.contains("serves 14")
-                    && message.contains("committed exact live BM25 statistics")
+                    && message.contains("serves 15")
+                    && message.contains("packed file authority with disk postings")
                     && message.contains("must be rebuilt")
         ));
     }
