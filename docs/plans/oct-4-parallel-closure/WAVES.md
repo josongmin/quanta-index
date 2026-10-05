@@ -38,6 +38,13 @@
 | E2 · Ready9 OG/평가 | 원본90 input bindings, OG9 spec·readonly service/index 검증·raw replay, final join 연결 | OG 단독은 Quanta Rust/SDK proof와 독립. Exact63ac clean checkout에서 OG9 spec PREPARE 완료. 캡처의 Python10-role SHA·런타임·corpus/suite/pack·서비스 신원을 최종 source에서 재검증해 같은 raw를 명시적으로 join. Admission ISSUE·Quanta/SG pair·전체 join은 각 matching proof 이후 |
 
 동시 배정된 에이전트는 `e4_causal_cost`, `process_regression`, `e2_og_universe`다.
+이후 사용자 요청으로 실제 작업을 별도 sidebar 채팅 세 개에 위임했다.
+Ready9 `01a10d0b-b1dd-72e1-9744-cab043867364`,
+Scale `01a10d0b-bc57-7662-a2d3-315c1a07fdb5`,
+Scanner `01a10d0b-c4c2-7be1-9a67-2a0482724e4b`이며 I0는 원래 통합 채팅에 남는다.
+조사·수정·준비는 병렬, 현재 host actual pipeline은 Ready9→Scale→Scanner 순서로 예약한다.
+별도 채팅 담당은 각자 actual 실행까지 소유하며 이전 subagent-only 실행 제한을 적용하지 않는다.
+Host slot·terminal outcome/cleanup 조정은 `/private/tmp/qi-sidebar-dispatch-20261006-v1/`에 둔다.
 인계 문서는 각각 `/private/tmp/qi-parallel-scale-20261006-v1/`,
 `/private/tmp/qi-parallel-scanner-20261006-v1/`, `/private/tmp/qi-parallel-ready9-20261006-v1/`에 준비한다.
 OG 독립 source는 `/Users/songmin/.codex/worktrees/oct6-og-63ac/quanta-index`의
@@ -73,7 +80,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   이 실행은 `0b5409a2`의 컴파일 결과다. 이후 strict 경계 검사·공유 posting 한도 수정 overlay의
   영향 회귀는 별도로 재검증한다. Strict Clippy 최초176건을 수정·통합했고 다음 실행의 이름 충돌4건도
   수정했다. 이후 v6는 lexical lib-test의36건에서 `FAILED`였다. Producer8/reader10/root·verify13/facade5를
-  병렬 수정해 통합했으며 v7 재실행 중이다. All-target/all-feature gate를 통과로 표시하지 않는다.
+  병렬 수정해 통합했다. v7의
+  `CARGO_BUILD_JOBS=1 QUANTA_INDEX_SCCACHE=0 QUANTA_INDEX_TARGET_GC=0 ./scripts/cargow --lane test-f15-owner-lane clippy -p quanta-index-lexical -p quanta-index-searchd-harness --all-targets --all-features --locked -- -D warnings`
+  는exit0/322.077s로 `VERIFIED`다. 이는 두 owner package Clippy이며 actual Rust 회귀·최종 Contract/SDK proof가 아니다.
 - Scanner comparator의 각 runner SHA 결속 fixture와 negative-test 전제 검사를 보완했다.
   `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_query_scanner_ab.py`는17passed·10.91s/exit0로
   `VERIFIED`다. 실제 두 fresh 빌드·A/B 캡처는 `NOT_RUN`이다.

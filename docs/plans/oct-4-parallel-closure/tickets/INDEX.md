@@ -17,8 +17,10 @@ Main에는 scale/open-loop pair/total retention 정책 결속, invocation-scoped
 bounded query reader와 기존 비용/format 테스트 전환·제품 회귀도 main에 통합됐다.
 Seal별 exact product-retention bytes 계측과 canonical fixture는 반영됐다.
 Source0b의 lexical 전체 회귀는598passed/8skipped·702.173s였으며, 이후 strict 경계 검사·공유 posting 한도
-수정 overlay의 영향 회귀 및 all-target Clippy는 재검증 중이다. Large/XL 재실행·새 formal proof는 `NOT_RUN`이다.
-Clippy v6 lexical lib-test36건을 세 에이전트와 I0가 경로별 수정해 통합했고 v7 실행 중이다.
+수정 overlay의 영향 회귀는 재검증 대상이다. All-target Clippy는 아래 v7 결과이며 Large/XL 재실행·새 formal proof는 `NOT_RUN`이다.
+Clippy v6 lexical lib-test36건을 세 에이전트와 I0가 경로별 수정해 통합했고 v7은exit0/322.077s로 통과했다.
+`CARGO_BUILD_JOBS=1 QUANTA_INDEX_SCCACHE=0 QUANTA_INDEX_TARGET_GC=0 ./scripts/cargow --lane test-f15-owner-lane clippy -p quanta-index-lexical -p quanta-index-searchd-harness --all-targets --all-features --locked -- -D warnings`
+범위만 `VERIFIED`이며 최신 Rust actual 회귀/Contract/SDK proof와 구분한다.
 Scanner comparator17cases는10.91s/exit0로 통과했다. 각 negative가 유효한 baseline/candidate를
 먼저 비교한 뒤 자기 mutant를 거부하도록 보완했다. Actual two-arm A/B는 `NOT_RUN`이다.
 병렬 소유 경로와 선행은 [병렬 작업 배정](../WAVES.md#병렬-작업-배정--2026-10-06)에 정리했다.
