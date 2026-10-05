@@ -174,8 +174,13 @@ P1 · W1/W4 · native reader/capture/replay 구현 완료, 전체 서비스 univ
   Root `/private/tmp/qi-e2-og-query-reader-ready9-uvicorn20-20261005-v1`, capture SHA256
   `a60e8c47445bed4e8ecba6ac7111e82bea7676999d7753988d265ef7405df2cd`.
   Native12repo/17,615live와20개 요청의 segments_4/generation4/readerVersion16/live89/max90가 일치했다.
-  현재 ready8repo/160requests의 selected-request attested만true다. Zustand1repo 및
-  전체 서비스 reader/비교 qualification은 남아 있다.
+  해당 실행 시점의 ready8repo/160requests에서 selected-request attested만true였다.
+- `VERIFIED`: Zustand20 fresh capture와 별도 process native replay가 각각 exit0이다.
+  Root `/private/tmp/qi-e2-og-query-reader-ready9-zustand20-20261005-v1`, capture SHA256
+  `8e2e9dbb5b5e853b6d4ca40b536296757a463c2eb30947229cccab7bdb0caf90`.
+  Native12repo/17,615live와20개 요청의 segments_4/generation4/readerVersion16/live68/max69가 일치했다.
+  현재 ready9repo/180requests의 selected-request attested 범위는 완료다. All-project readers,
+  global indexed universe/서비스 전체 권위 및 최종 제품 비교 qualification은 남아 있다.
 - 남은 repository/profile의 실제 acquired-reader scope 및 필요한 전수 source-byte/posting 권위를 확정한다.
   `opengrok_query_fixture.py`가 고정 원본→patch→Java→4classes 재현을 제공한다.
   `VERIFIED`: 외부 fresh `/private/tmp/qi-og-query-fixture-repro-20261005-v1`에서
