@@ -336,6 +336,7 @@ targets = [
   "proof-manifest-python-owner",
   "proof-execution-result-python-owner",
   "proof-paired-cargo-resolution-python-owner",
+  "proof-paired-r5-result-python-owner",
   "proof-local-scope-runner-python-owner",
 ]
 
@@ -509,6 +510,12 @@ rail = "pr-proof-authority-python"
 id = "proof-paired-cargo-resolution-python-owner"
 path = "tools/ci/tests/test_paired_cargo_resolution.py"
 owner = "tools/ci/paired_cargo_resolution.py"
+rail = "pr-proof-authority-python"
+
+[[python_targets]]
+id = "proof-paired-r5-result-python-owner"
+path = "tools/ci/tests/test_paired_r5_result.py"
+owner = "tools/ci/paired_r5_result.py"
 rail = "pr-proof-authority-python"
 
 [[python_targets]]

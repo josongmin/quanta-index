@@ -28,6 +28,7 @@ Every query selects exactly one policy before execution:
 - `natural_language`: build the deterministic lexical token-OR plan and keep the semantic input identity separate.
 
 The runner records the original query digest, the effective lexical request digest and the semantic text digest.
+Native DSL preserves AND; literal input uses the declared escaping contract.
 Planning configuration and whether planning time is included in latency are frozen before a run. Evaluator gold,
 holdout labels and expected ranks are not query-planner inputs.
 
@@ -83,6 +84,7 @@ symbol hits are rejected. No-answer and timeout remain distinct from exact exhau
 Indexed bytes, returned SDK bytes and evaluator-scored bytes are separate quantities. Rank metrics use the indexed hit
 identity; context cost uses the returned byte/token extent; exact-span recall uses the independently declared source
 span. Overlapping byte ranges are unioned before coverage is computed. UTF-8 and CRLF fixtures use byte offsets.
+Long-line and line-expanded context fixtures preserve the independent span denominator.
 
 Chunking strategies remain explicit profile values. A development comparison may select among a finite declared
 matrix, but it cannot change public defaults or claim semantic quality without the qualification contract in

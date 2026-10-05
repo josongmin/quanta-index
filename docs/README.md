@@ -22,7 +22,7 @@ acceptance. Historical tests, counts and status do not qualify current source.
 Plans above retain unfinished implementation, input/decision and qualification
 conditions. Completed histories and duplicate handoff summaries are retired.
 Accepted contracts, current usage, generated capabilities and the reusable
-[purpose audit inventory](analysis/quanta-index-purpose-validation-checklist.md)
+[purpose audit inventory](reference/purpose-audit-inventory.md)
 are references, not another uncompleted feature queue. Proposed ADRs remain
 conditional designs; their age or presence does not authorize implementation.
 
@@ -30,7 +30,7 @@ conditional designs; their age or presence does not authorize implementation.
 
 - [SDK](../crates/quanta-index-sdk/README.md), [CLI](../crates/quanta-index-searchctl/README.md), [build/verification](../README.md#build-and-verification).
 - [Benchmark commands](../tools/benchmark/README.md), [code-search report/runbook](../tools/benchmark/CODE_SEARCH_RUNBOOK.md), [retrieval guide](../tools/benchmark/retrieval/README.md).
-- [DSL capabilities](reference/dsl-capabilities.md), [Sourcegraph filter coverage](reference/sourcegraph-filter-parity.md).
+- [DSL capabilities](reference/dsl-capabilities.md), [proof inventory](reference/dsl-proof-inventory.md), [Sourcegraph filter coverage](reference/sourcegraph-filter-parity.md).
 - [State backup/restore/rebuild](operator/state-cutover-runbook.md), [embedding setup](potion-code-embedder.md).
 
 ## History

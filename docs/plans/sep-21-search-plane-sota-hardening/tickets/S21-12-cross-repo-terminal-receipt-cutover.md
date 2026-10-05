@@ -32,6 +32,16 @@ cutover; retired wire/receipt forms refuse before storage/provider mutation.
 
 ## Remaining acceptance
 
+The existing cross-repo recipe now has an optional typed caller/kernel archive
+under `QUANTA_P11_R5_EVIDENCE_ROOT`. Semantica nextest passes through CLI-owned
+immutable completion custody; both required caller features are selected by
+resolver/list/run, and the kernel retains its own required feature. Quanta18 and
+Semantica25 owner tests passed on the integrated owned source. Actual clean-pair
+build/test and daemon custody are `NOT_RUN`; this is a `runner-candidate-only`
+component, not a staged P11 operational result. [OCT-04 I0-03](../../oct-4-parallel-closure/tickets/INDEX.md#o4-i0-03)
+owns source/candidate/main and execution checkpoints. A subsequent source epoch
+rechecks affected proof; frozen5796 SDK bytes do not imply current-pair binary parity.
+
 - Bind canonical resolver mapping and nested lock into typed paired receipt
   evidence. Run actual fresh producer/daemon builds and the selected positive/
   negative public SDK/daemon tests on one frozen pair, including publish-only,

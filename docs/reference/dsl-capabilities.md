@@ -10,7 +10,7 @@ a test receipt. Use the current code-owned sources:
   lexical predicate names and argument admission.
 - `crates/quanta-index-search-plane/src/lowering.rs` for Sourcegraph structural
   leaf legality.
-- [DSL proof inventory](../plans/may-25-lexical-enhancement/lexical-capability-matrix.md)
+- [DSL proof inventory](dsl-proof-inventory.md)
   for historical per-surface proof owners. Its status cells are not a
   current-source support verdict without revalidation.
 - [Sourcegraph compatibility decision](../adr/JUN-06-001-sourcegraph-compatibility-boundary.md)

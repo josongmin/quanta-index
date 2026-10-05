@@ -45,9 +45,7 @@ ROOT = Path(__file__).resolve().parents[3]
 PREDICATE_REGISTRY_RS = ROOT / "crates" / "quanta-index-lexical" / "src" / "predicate_registry.rs"
 LOWERING_RS = ROOT / "crates" / "quanta-index-search-plane" / "src" / "lowering.rs"
 GARGOW = ROOT / "scripts" / "cargow"
-CAPABILITY_MATRIX_MD = (
-    ROOT / "docs" / "plans" / "may-25-lexical-enhancement" / "lexical-capability-matrix.md"
-)
+CAPABILITY_MATRIX_MD = ROOT / "docs" / "reference" / "dsl-proof-inventory.md"
 ADV_TICKETS_DIR = ROOT / "docs" / "plans" / "jun-2-dsl-advanced" / "tickets"
 PREDICATE_DUMP_PACKAGE = "quanta-index-lexical"
 PREDICATE_DUMP_BIN = "dump_predicate_capabilities"

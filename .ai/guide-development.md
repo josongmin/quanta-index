@@ -17,7 +17,7 @@
 | --- | --- |
 | [`README.md`](../README.md) | 현재 tree truth, build/test entrypoints |
 | [`docs/adr/SEP-21-DECISION-REGISTRY.md`](../docs/adr/SEP-21-DECISION-REGISTRY.md) | accepted search-plane decisions |
-| [`docs/plans/may-25-lexical-enhancement/lexical-capability-matrix.md`](../docs/plans/may-25-lexical-enhancement/lexical-capability-matrix.md) | DSL capability matrix |
+| [`docs/reference/dsl-proof-inventory.md`](../docs/reference/dsl-proof-inventory.md) | DSL proof inventory; current execution is separate |
 | [`SEP-21 decisions`](../docs/adr/SEP-21-DECISION-REGISTRY.md) and [residual ledger](../docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md) | Current contract and unfinished readiness work; the Sep-16 audit is historical |
 
 Historical only:

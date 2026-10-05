@@ -190,6 +190,39 @@ The old QIT progress snapshot/scaffolding is retired. Its unfulfilled acceptance
 is preserved in [the residual board](../plans/jul-15-sota-test-hardening/tickets/00-ticket-status-board.md);
 this consolidation asserts implemented authorities, not SOTA/test qualification.
 
+### Test fixture and wait invariants
+
+The completed MISC test-optimization contracts retain these independent oracles.
+Executable test authority and actual collection select the current owner checks;
+this inventory asserts no fresh terminal result or quantitative speedup.
+
+| ID | Current owner surface | Independent invariant |
+| --- | --- | --- |
+| D1 | searchd runtime end-to-end/repomap fixtures and searchd harness | Long-path configuration covers all three sockets, including ingest. |
+| D2 | searchd runtime `tests/common/searchd_binary_process.rs` | Already-exited child cleanup cannot signal an unrelated reused process. |
+| R1 | runtime lifecycle/lease fixtures | Explicit acknowledged release; no mandatory three-second happy-path sleep. |
+| R2 | embed OpenAI retry/sleeper seam | Injected test delay; production retry bounds/jitter unchanged. |
+| R3 | embed concurrency fixtures | Structural barrier proves four-way overlap, not a 25 ms timing guess. |
+| R4 | IPC `PeerWatch` | Explicit wake/disarm/join; cancellation needs no compensating sleeps. |
+| R5 | runtime ingest-resource envelope and lower core owners | Boundary assertions conserved below E2E; one wiring proof retained; daemon boots counted. |
+| WA-1 | lexical trigram property tests | Unexpected error makes the property fail, never a skipped success. |
+| WA-2 | runtime matrix smoke | Exact expected candidate identity/set, not any in-corpus row. |
+| WA-3 | runtime state migration | Manifest/object/digest completeness; missing/corrupt data fails. |
+| TH-1 | SDK-frontdoor observation waits | Never-ready input returns typed timeout, not stale `Ok`. |
+| TH-2 | runtime process-envelope scrape waits | Never-true predicate returns typed timeout. |
+| TH-3 | SDK binding fixtures | RAII temporary path custody; no pid-only persistent socket directory. |
+| TH-4 | runtime filter-execution cases | Immutable family fixture reuse with per-case context and no shared mutable daemon. |
+| PO-1 | core `timeref.rs` | Injected exact clock and fixed boundary matrix; convenience edge samples once. |
+| PO-2 | SDK `config.rs` | Injected environment precedence/errors; no process-global mutation seam. |
+| PO-3 | catalog connection/idempotency | One clock sample per transition; less/equal/greater deadline matrix. |
+| PO-4 | search-plane `single_flight.rs` | Outcome-or-cancellation wake; no correctness dependence on 20 ms polling. |
+
+Do not shorten sleeps, disable production jitter, weaken errors, share mutable
+global fixtures or delete lower-layer assertions to make timing look better.
+Reproduce a current regression before reopening implementation. Final selected
+functional/installed/platform execution and paired test-cost measurements remain
+in [MISC-05/06](../plans/sep-27-misc/tickets/INDEX.md).
+
 ### Semantic mutation output admission
 
 Preflight exact escaped UTF-8 native delete SQL before allocation or mutation:

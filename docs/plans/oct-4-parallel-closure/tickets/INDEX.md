@@ -7,6 +7,19 @@
 코드 대조: 구현 존재/수리23개, 조건부4개, 현 계약 비적용1개, 계약 입력이 필요한 운영 코드1개.
 이는 29개 요청의 전체 qualification 완료율이 아니다. 기존 구현을 다시 만드는 작업은 남기지 않는다.
 
+## 현재 코드 잔여 — 2026-10-05 소스 대조
+
+기준: clean main `c7b0ce88617d8ae0f582ab41cdf223e5962bd8ab`와 아래 명시한 외부 후보.
+각 후보의 main 반영·실행 결과는 해당 항목에서 갱신한다. 29개 scope를 코드 건수로 합산하지 않는다.
+
+| 분류 | 실제 잔여 | 근거·종료 조건 |
+| --- | --- | --- |
+| 코드 반영 완료·통합 실행 잔여 | R5 cross-repo 완료 증거 전달·caller feature 선택 | 두 main 작업트리에 수리를 반영해 Quanta18/Semantica25 owner tests가 통과했다. Actual caller/kernel pair는 미실행이다. [I0-03](#o4-i0-03) |
+| 미구현·입력 필요 | P11 배포/활성화/restore-forward typed action producer·recipes·parser/aggregate 연결 | 실제 host/config/state/retention/rollback 및 독립 pre/post 관측 계약 이후 구현. [I0-03](#o4-i0-03) |
+| 실패 후 판정 | Large/XL default 용량 원인 수리 또는 제품 계약 변경 | 이전 source의 timeout/posting-cap 실패는 보존한다. F14 matching 실행 결과로 수리 범위를 결정한다. [E4-05](#o4-e4-05) |
+| 조건부 | Bootstrap 추가 최적화, durable group barrier, persistent token authority, 검색 정책 변경 | [E1-07](#o4-e1-07), [E4-02](#o4-e4-02), [E4-04](#o4-e4-04), [E4-07](#o4-e4-07)의 실제 병목·독립 gold·사전 계약이 선행한다. |
+| 구현 있음·실행 잔여 | Review/admission, collectors/scorer, SDK/runtime lifecycle, scale/scanner/proof | 코드 부재로 재분류하지 않는다. AI/holdout inputs, matching admissions/captures, A/B, CI와 release를 각각 실행한다. |
+
 ## 공통 실행 조건
 
 - `VERIFIED`는 실제 실행한 해당 scope, `FAILED`는 실행 실패, `BLOCKED`는 필수 입력 부재,
@@ -55,12 +68,26 @@ P0 · W1→W5 · 코드 구현 완료, current9 blind input `PREPARED`, 실제 �
 
 ### O4-E1-03
 
-P0 · W3 · admission 코드 구현 완료, 나머지3repo 및 후속 final revisions 미발행.
+P0 · W3 · admission consumer 구현 완료. product0e6의9repo 발행은 historical;
+frozen5796 ready9 재발행 및 나머지3repo·후속 final revisions 미완료.
 
 - SQLAlchemy/Zellij/Tailscale 및 새 merged labels를 canonical suite/pack/split/license/review/proof에
   연결한다. repository별 실제 source/runtime과 I0-02 matching proof 이후 admission ISSUE.
 - frozen product0e6의 bat 포함9repo/180tasks/4,262judgments admission은 그 범위로 유지한다.
   원본 source107이나 원 review-validator revision을 current product revision으로 재명명하지 않는다.
+- clean5796 Contract791/Rust191/SDK27은 [I0-02](#o4-i0-02)의 완료 proof다.
+  외부 Bat 재발행 후보는 원본358-pair review pack으로 typed forms/custody를 재생한 뒤
+  merged409-pair qrels/suite/pack의 고정 byte 일치를 요구한다. v3 actual은5passed/2failed·22.07s:
+  409쌍 재생·두 typed alias 거절·잘못된 merged pack 거절은 통과했고,
+  label/product source guard2개는 기록된107 checkout 경로 부재로 실패했다.
+  동일107 source checkout 복구·신원 대조 후 새 input으로 실행하며 old raw/packet은 변경하지 않는다.
+  이 외부 후보·other8 준비는 actual admission ISSUE가 아니다.
+- 후속 외부 v4 재생 `VERIFIED`: clean5796 product와 새 clean107 label checkout을 명시해
+  `QI_CURRENT_SOURCE_ROOT=/Users/songmin/.codex/worktrees/oct5-f14-qualified-5796/quanta-index QI_LABEL_SOURCE_ROOT=/Users/songmin/.codex/worktrees/oct5-label-source-107/quanta-index uv run --project /Users/songmin/Documents/code-new/quanta-index --frozen --extra dev python -m pytest -q -o addopts='' /private/tmp/qi-e2-ready9-full5-current-prep-v4/test_bat409_reissue.py`
+  →8passed·10.87s/exit0였다. 원본 packet의107 revision·원래 경로·5개 helper SHA와
+  새 checkout의 clean HEAD·실제5개 bytes를 검증했다. Label 원본 경로와 검증용 경로를
+  새 lineage에 각각 기록하며 원본 packet/raw는 수정하지 않는다. 409쌍 재AI 호출은 없다.
+  새 ready9 admissions ISSUE와 제품 실행은 `NOT_RUN`이다.
 - B08이 계속 요구하는 C5 stale4 suites는 manifest/query/source를 재확인해 reissue 또는 명시적
   exclusion을 발행한다. B09 global12와 합치거나 NL-only diagnostic을 mixed-track decision으로 승격하지 않는다.
 - 완료: 각 ready repository의 정확한 admission inputs/result 및 변경 labels의 새 revision.
@@ -211,6 +238,10 @@ P1 · W4→W5 · collectors/joins 구현 완료; 나머지3repo·다른 lanes·�
 
 - source97의 bat+required8 captures/replays/full5 joins는 완료 scope로 유지한다.
   현재 prepared9 밖 SQLAlchemy/Tailscale/Zellij는 admission 이후 실제 capture/replay/join한다.
+- frozen5796 ready9의 Quanta/Semble pair·Sourcegraph/CS capture·새 full5 join은 `NOT_RUN`이다.
+  기존 OpenGrok ready9/180 selected-request 증거와 Sourcegraph scope receipts는
+  동일 input·producer bytes·현재 service/native scope에 대한 canonical replay를 통과해야 재사용한다.
+  원본 정답 재검수와 새 제품 실행을 구분하며 source97 raw를5796 raw로 재표기하지 않는다.
 - required lanes: exact1,196; prefix/infix/components; default/explicit typo; no-answer;
   C3 NL240; Gin20; ARB original17/88와 adapted88; B09 OSA/CLARC/CSN.
   four typo lanes1,192/1,178/1,192/1,192의 계약을 서로 합산하지 않는다.
@@ -311,6 +342,10 @@ P1 · W1/W4 · F14 native 재사용·정확도 owner 회귀 `VERIFIED`; 전체 d
   changed retained segment의 delete bitmap 비교에는 O(max_doc) CPU 순회가 남고,
   `NoMergePolicy`의 장기 segment 누적 비용은 미검증이다. Logical bytes·retained estimate를
   physical I/O·peak memory로 표시하지 않는다. 전체 QI-BB-006 비용 closure는 미완료다.
+- File authority의 seal preflight는 unchanged 파일까지 전체 source를 읽고 hash/fold한다.
+  Cold open도 committed source 전수를 검증·적재하고 두 전역 `TrigramIndex`를 구성한다
+  (`file_authority.rs`, `sealed_generation/verify.rs`). F14 native 재사용은 이 전체 읽기/CPU와
+  file-authority residency를 delta 비례 비용으로 바꾸지 않는다.
 - 완료: 명시적 clock/resource domain과 source-bound 결과로 주요 residual의 실제 원인을 설명한다.
 
 ### O4-E4-02
@@ -326,8 +361,10 @@ Power-loss 범위는 별도 실제 storage proof가 없으면 `NOT_RUN`이다.
 
 P1 · W1/W4 · scanner A/B comparator/CLI·independent 회귀 구현 완료, whole-call 결정 미완료.
 
-- Scanner만 다른 exact source/binaries, 같은 source/input/observation clocks와 독립 tokenizer/full-DP
+- 각 arm의 source→searchd/runner binary 관계를 별도 build 증거로 먼저 결속한다.
+  Scanner만 다른 source/input/observation clocks와 독립 tokenizer/full-DP
   oracle에서 실제 whole-call A/B 후 유지/수정/철회를 판정한다. 불가용 과거+8.75%는 새 proof가 아니다.
+  비교 CLI의 선언 source SHA만으로 binary build provenance가 입증되지 않는다.
 - bytes/span/case/order/status/cursor/work/config parity를 유지하고 mixed Unicode, short names,
   token cap/cancellation/cache identity를 검증한다. child 개선이 whole-call 악화를 덮지 않는다.
 - 실행 진입점: `uv run --frozen --extra dev python tools/benchmark/retrieval/query_timing_overhead.py --help`.
@@ -343,10 +380,20 @@ cold-open/build/residency/cap/cancel 계약을 독립 검증한다. 비용·memo
 
 ### O4-E4-05
 
-P2 · W4 · typed scale/load/preflight/ANN 구현 완료; default capacity gate `FAILED`.
+P2 · W4 · typed scale/load/preflight/ANN 구현 완료; 이전 source default capacity gate `FAILED`.
+F14 matching release 바이너리 빌드 완료, 후속 tier actual은 아래 범위로 판정한다.
 
 - 256/4,096/32,768 tiers의 matching release/profile/lifecycle/open-loop·OS restart를 판정한다.
-  default large30s timeout과 xlarge4,000,461 memberships 대4,000,000 cap 거절을 보존한다.
+  이전 source의 default large30s timeout과 xlarge4,000,461 memberships 대4,000,000 cap 거절을 보존한다.
+- clean5796 별도 `scale_matrix` build `VERIFIED`: SDK target을 cache seed로 사용해
+  `./scripts/cargow --lane test-daemon-lane build -p quanta-index-searchd-harness --bin scale_matrix --all-features --release --locked`
+  →exit0·13m42s. Source closure/toolchain/env를 새 clean checkout과 대조하고 SDK proof를 재검증했다.
+  Binary SHA-256 `d28c7b480ebb25c68333aad37fcdb6e4e048da00e8cdee3a90bf86a408558e41`.
+  `python -m tools.benchmark.retrieval.causal_cost_capture`의 exact source/binary·seed5864059738136528177
+  ·small16 actual은 `/private/tmp/qi-scale-f14-5796-20261005-v1-small`에서 exit0·4.861s,
+  `VERIFIED_DIAGNOSTIC`이다. 같은 명령의 medium256 actual도
+  `/private/tmp/qi-scale-f14-5796-20261005-v1-medium`에서 exit0·16.768s이며 clean/source/binary 전후 일치다.
+  Large/XL/open-loop/restart 및 qualified performance는 별도다.
 - large300s/256MiB diagnostic 성공 및4,096 OS restart 성공을 default 성공으로 바꾸지 않는다.
   지원 목표/latency/resource 계약을 결정한 뒤 원인 수리 또는 명시적 제품 계약 변경을 수행한다.
 - 완료: 각 tier/profile의 독립 source/result/count/oracle와 terminal, offered/served/errors/timeouts/drops
@@ -444,14 +491,14 @@ frozen `5796a63f` Contract·fresh SDK `VERIFIED`, hosted CI `NOT_RUN`.
   이 결과는 해당 frozen source의 macOS 로컬 proof다. Semantic/hybrid는 개발용 Hash provider를
   사용했으며 real-provider·Linux 배포/운영·hosted CI·검색 품질/성능 qualification은 미포함이다.
   후속 source revision과 proof를 대조하며 이 결과의 revision을 변경하지 않는다.
-- 선택 epoch의 포함 코드/driver/scorer/ADR 및 mandatory surfaces를 검증하고 matching fresh
+- 후속 source epoch의 포함 코드/driver/scorer/ADR 및 영향 mandatory surfaces를 검증하고 matching fresh
   Contract/SDK/source closure/binaries를 발행·portable replay한다. E3 shipping acceptance와 CI도 실제 scope로 판정한다.
 - 공개SDK/contract 변경: `just rust-public-api`; wire/decode: `just rust-fuzz-smoke`;
   module: `just rust-hexagonal`, `just rust-cargo-modules`; selection/state/ingress: `just rust-profile test-daemon`.
 - runtime `autotests=false`: read-view/ingest는 `runtime_fast_suite`, generation/cursor/restart는
   `runtime_risk_suite`, crash/readiness는 `runtime_extended_suite`; 등록된 OS-child owner targets는 별도다.
 - 완료: 정확한 source/command/selector/binary actual results와 필요한 CI/SDK/contract surface.
-  Provider/Linux/release/scale 등의 미포함 경계를 명시한다.
+  Real-provider/Linux 배포·운영/scale 등의 미포함 경계를 명시한다.
 
 ### O4-I0-03
 
@@ -460,6 +507,21 @@ P1 · 코드 입력 먼저, W6 실행 · **P11 operational producer/recipes 미�
 원본 `agent-1.md`의 Release 범위에서 인계된 Linux 서버 배포·운영 검증이다.
 로컬 엔진 회귀와 검색 평가의 완료 판정은 각 owner scope를 따른다.
 
+- R5 component 코드 수리 `VERIFIED` owner scope: Quanta의 existing cross-repo recipe에
+  optional `QUANTA_P11_R5_EVIDENCE_ROOT` typed archive를 연결하고, Semantica nextest frontdoor가
+  기존 CLI-owned immutable completion custody를 사용하도록 두 main 작업트리에7개 owned paths를 반영했다.
+  원본 코드의 두 focused tests는 실제 `FAILED`였고 수정 후 completion/custody/locator/closeout4파일은
+  `PYTHONPATH=tools/quanta-build-cli uv run --frozen --only-group architecture-tooling python -m pytest -q -o addopts='' tools/quanta-build-cli/test_nextest_completion_frontdoor_v1.py tools/quanta-build-cli/test_verification_completion_custody_v1.py tools/quanta-build-cli/test_verification_completion_locator_v1.py tools/quanta-build-cli/test_verification_completion_closeout_v1.py`
+  →25passed·0.45s/exit0였다.
+  Quanta `uv run --frozen --extra dev python -m pytest -q -o addopts='' tools/ci/tests/test_paired_r5_result.py`
+  →18passed·0.09s/exit0; 해당2파일 Ruff와 candidate test-authority 검사도 exit0였다.
+  Runtime caller list/run/resolver는 Cargo target이 요구하는
+  `index-sdk-ingress,retrieval-authority-contract-surface`를 동일하게 선택한다. Kernel feature는
+  `index-sdk-ingress-surface`다. Locator/process exit/source/nonce/argv/receipt와 resolver의
+  int/bool/float 신원은 typed canonical bytes로 검증하고 actual runner 전후 source/lock/manifest를 대조한다.
+  Root는 stage/commit/push하지 않았다. Actual clean-pair QBC caller/kernel 실행·fresh daemon custody는
+  `NOT_RUN`; 결과 형식은 `runner-candidate-only`이며 P11 operational staged node를 발행하지 않는다.
+  `Justfile`/test-authority와 후속 ADR 변경의 source closure 및 영향 proof는 새 epoch로 검증한다.
 - 배포·활성화·restore-forward 실제 명령, distinct independent pre/post 성공 관측,
   authorized Linux host/path/config/state/retention/rollback window를 확정한다.
   현재 parser/schema는 nextest/pytest authority며 staged action을 발행할 수 없다.

@@ -6,10 +6,23 @@
 
 ## 코드 우선
 
+- R5 cross-repo completion 전달·caller 필수 feature·typed resolver/locator 수리는 두 main 작업트리에 반영했다.
+  Quanta18/Semantica25 owner scope 완료; 실제 clean pair 실행은 [I0-03](tickets/INDEX.md#o4-i0-03)에서 계속한다.
 - 실제 미구현: [I0-03 P11 typed operational producer/recipes](tickets/INDEX.md#o4-i0-03).
   실제 actions와 독립 pre/post 성공 판정 계약·authorized target 입력이 필요하다.
 - E1-07/E4-02/E4-04/E4-07은 실제 병목·독립 정책 실패 뒤에만 채택하는 조건부 변경이다.
 - E1/E2/E3 및 scale/scanner/proof의 기존 구현은 실행 증거가 부족하다는 이유로 재작성하지 않는다.
+- Large/XL의 이전 default 실패는 새 F14 tier 결과로 수리 또는 제품 계약 변경을 판정한다.
+  Bat 재발행은 외부 issuer의 original review pack/merged product pack 신원 재생이며 새 relevance 판정이 아니다.
+
+## 확인된 실행 체크포인트
+
+- Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
+- 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.
+  나머지 tier/open-loop/restart·quiet-host 성능은 각 actual 결과를 기다린다.
+- ready9 OpenGrok selected-request180은 완료; 전체 service/index 권위는 미완료다.
+  Frozen5796 ready9 admissions·pair·SG/CS·full5 join은 완료 증거가 없다.
+- 이후 source/ADR/Justfile 변경의 proof는 새 epoch로 발행한다. 위 frozen 결과의 SHA는 변경하지 않는다.
 
 ## W0–W6
 

@@ -56,7 +56,9 @@ existing `run.py`, `query_timing_overhead.py`, canonical `host_monitor.py` and
 registered scale/tail/open-loop producers. Heavy runs share one admitted host
 slot. Extend an owner only for a demonstrated missing boundary; no second harness.
 
-Historical release SDK proofs and scanner A/B establish only their frozen
-source/input scopes; they are not matching current scale builds or quiet-host
-performance. Exact old commands/results are recoverable through
+F14 frozen5796 fresh SDK27 and Contract791/191 have completed actual and portable
+verification. A separate matching release `scale_matrix` build and small16 causal
+run are scoped diagnostics under [E4-05](../../oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
+They do not qualify later source epochs, remaining capacity tiers, scanner A/B or
+quiet-host performance. Exact old commands/results are recoverable through
 [the history index](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).

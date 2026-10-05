@@ -12,28 +12,22 @@ execution and acceptance ledger. Historical counts are not required inventories.
 | --- | --- |
 | BENCH-02 | Local cs/Sourcegraph/OpenGrok fixed-native path/hit refusal is implemented. Audit every admitted acquisition/scoring/replay entrypoint and remaining format; complete the native negative matrix and qualify actual captures. The [native ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-02-native-response-validation.md) owns remaining semantics; the bare normalized scorer is diagnostic. |
 | BENCH-03 | Current qualified verdict resamples whole query families and refuses insufficient independent families/categories; task-level intervals are descriptive. Admit independent multi-repository gold/holdout, frozen effects/budgets and repository-level inference before broader quality claims. [Statistics ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-03-tracks-metrics-and-statistics.md) owns the remaining acceptance. |
-| BENCH-04 | OpenGrok can opt into exact indexed-file inventory and served-byte probes bracketing search queries; this remains diagnostic without posting freshness and current admitted external corpus. Sourcegraph/cs index scope, product mutation/restart and equal-work timing are unrun. [Comparator ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-04-comparators-performance-and-incremental.md) owns execution. |
+| BENCH-04 | Qualify remaining admitted repository/profile captures and index scope. OpenGrok has optional file/served-byte probes and instrumented acquired-query-reader scope under [OCT-05-002](../../../adr/OCT-05-002-native-capture-clock-and-index-scope.md); request-local reader proof does not attest the full indexed source/posting universe. Sourcegraph/cs index scope, product mutation/restart and equal-work timing still need actual execution. [Comparator ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-04-comparators-performance-and-incremental.md) owns execution. |
 | MISC-05 / ENG-02 | Qualify total coverage pipeline work/physical heap/bytes, including remaining preflight/build/open full scans and every sidecar. Same-build seal no longer decodes coverage twice, but re-hashes every effective page. [Coverage ticket](../../sep-27-code-search-remediation/rfcs/CS-ENG-02-capability-publication-and-freshness.md) owns the cost issue; no stale-result defect is implied. |
 | MISC-04 / actual producers and consumers | After owner changes, execute required Python/Rust contracts, actual native/Criterion/SDK/contract production, fresh promoted-path validation and relocated Python/Rust consumers/replay. Preserve process/monitor/capture failure controls and live test identities. Local selected passes do not establish hosted/product qualification. |
 | MISC-03 / IO-5 | Complete adapter-specific large successful/failed output, many-entry metadata/archive and interruption/corruption acceptance through prepare/execute/publish/load/replay. Declare retained-metadata limits separately; use independent bytes/digests and fresh-process RSS for actual resource claims. Generic streaming/probe success is not every adapter's acceptance. |
 | MISC-05 / product/platform | Execute selected functional invariants, combined Rust/daemon, actual installed ingest/restart/crash and supported Linux delegated-cgroup/Landlock scopes. External producer issuance and current-format rebuild/activation need their own boundary; no unrun platform promotion. |
 | MISC-06/07 / measurements | Execute admitted real profile/comparator pilot and independent quality/performance/update/test-cost measurements with declared units, host, inputs and denominators. Exploratory output remains diagnostic; manual labels/license/host prerequisites block only dependent claims. |
 
-The owner implementations for atomic profile publication/GC, sticky capture
-failure, process/monitor construction, bounded raw/archive I/O and C4/C5 selection
-are retained decisions, not open feature tickets. Their required actual-producer,
-consumer, resource and product acceptance is owned above. Reopen implementation
-only for a demonstrated regression. Old proof-navigation work is closed after
-historical proof cleanup; do not recreate per-run repository evidence files.
-
-Completed regex/input, coverage, native-row and archive mitigations are owned by
+Implemented profile/GC, sticky failure, process/monitor, bounded I/O, C4/C5,
+regex/input, coverage and native/archive decisions live in
 [SEP-27-003](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md),
 [SEP-27-004](../../../adr/SEP-27-004-benchmark-capture-and-resource-custody.md) and
 [OCT-05 ADRs](../../../adr/README.md#oct-05-implemented-contracts).
-The exact regex allocation cap remains [conditional/deferred P3](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md#deferred-regex-allocation-cap-cs-eng-04).
-Coverage reuse needs authenticated immutable base ownership; actual producers,
-native scope, resource and supported-host/platform acceptance remain open above.
-Earlier integration receipts are recoverable through
+Reopen only a demonstrated regression; actual acceptance remains above. The
+[exact regex cap](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md#deferred-regex-allocation-cap-cs-eng-04)
+is conditional/deferred P3. Historical proof cleanup does not require a new
+per-run repository evidence tree; earlier receipts remain in
 [the plan archive](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
 
 ## Execution order and shared boundary
@@ -78,37 +72,14 @@ platform rows remain separate.
 
 ## MISC-05 — functional, installed and platform qualification
 
-### Test-optimization invariant census
+### Functional regression execution
 
-These are coverage obligations, not presumed remaining implementation defects.
 Resolve current selectors from `tools/ci/test-authority.toml` and actual
-collection, then record one owner/oracle/terminal result per row.
-
-| ID | Current owner surface | Independent invariant |
-| --- | --- | --- |
-| D1 | searchd runtime end-to-end/repomap fixtures and searchd harness | Long-path configuration covers all three sockets, including ingest. |
-| D2 | searchd runtime `tests/common/searchd_binary_process.rs` | Already-exited child cleanup cannot signal an unrelated reused process. |
-| R1 | runtime lifecycle/lease fixtures | Explicit acknowledged release; no mandatory three-second happy-path sleep. |
-| R2 | embed OpenAI retry/sleeper seam | Injected test delay; production retry bounds/jitter unchanged. |
-| R3 | embed concurrency fixtures | Structural barrier proves four-way overlap, not a 25 ms timing guess. |
-| R4 | IPC `PeerWatch` | Explicit wake/disarm/join; cancellation needs no compensating sleeps. |
-| R5 | runtime ingest-resource envelope and lower core owners | Boundary assertions conserved below E2E; one wiring proof retained; daemon boots counted. |
-| WA-1 | lexical trigram property tests | Unexpected error makes the property fail, never a skipped success. |
-| WA-2 | runtime matrix smoke | Exact expected candidate identity/set, not any in-corpus row. |
-| WA-3 | runtime state migration | Manifest/object/digest completeness; missing/corrupt data fails. |
-| TH-1 | SDK-frontdoor observation waits | Never-ready input returns typed timeout, not stale `Ok`. |
-| TH-2 | runtime process-envelope scrape waits | Never-true predicate returns typed timeout. |
-| TH-3 | SDK binding fixtures | RAII temporary path custody; no pid-only persistent socket directory. |
-| TH-4 | runtime filter-execution cases | Immutable family fixture reuse with per-case context and no shared mutable daemon. |
-| PO-1 | core `timeref.rs` | Injected exact clock and fixed boundary matrix; convenience edge samples once. |
-| PO-2 | SDK `config.rs` | Injected environment precedence/errors; no process-global mutation seam. |
-| PO-3 | catalog connection/idempotency | One clock sample per transition; less/equal/greater deadline matrix. |
-| PO-4 | search-plane `single_flight.rs` | Outcome-or-cancellation wake; no correctness dependence on 20 ms polling. |
-
-Do not shorten sleeps, disable production jitter, weaken errors, share mutable
-global fixtures or delete lower-layer assertions to make timing look better.
-Only reproduce-and-fix a current regression; otherwise retain the implemented
-owner and execute its qualification.
+collection. Execute the affected [18 fixture/wait invariants](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#test-fixture-and-wait-invariants)
+on the final selected source with independent expected outcomes and nonempty
+terminal results. Their implementation is retained; only a reproduced regression
+opens a code repair. The ADR owns D1/D2, R1–R5, WA-1–3, TH-1–4 and PO-1–4.
+Test-cost measurements remain under MISC-06 and keep their separate baseline.
 
 ### Installed ingest and process/resource checks
 
@@ -134,30 +105,19 @@ DoD: focused invariant terminals plus same-source full Rust/daemon rails and
 installed/platform evidence for the claims selected. Remaining host access
 blocks only that platform; no generic all-platform success.
 
-### Retained retrieval implementation invariants
+### Retrieval regression execution
 
-These contracts remain required regression coverage; they are not additional
-feature tickets. Concurrent engine changes affect several owners, so their
-current implementation/qualification must be rechecked at the serial freeze.
-This documentation refresh does not claim to have qualified those changes.
-Reopen a code change only for a demonstrated failure.
-
-| Surface | Required invariant / negative control |
-| --- | --- |
-| Query policy | Exactly one of native/literal/natural_language; preserve native DSL AND and literal escaping. Natural-language lexical token-OR and semantic text have distinct bound identities. Gold/category/holdout data never drives planning. |
-| Observation | Executed versus contributed lanes are distinct; OFF omits query-stage collection/DTO data but preserves operational/deadline clocks. Compare exact enabled/disabled startup policy and config digest; server/SDK/sidecar timings remain separate. |
-| Semble mode dispatch | native-default, hybrid-no-rerank, lexical-only and semantic-only use the same pinned function/profile in cold, warmup and measurement. Bind requested/actual alpha, rerank, lane counts, depth and upstream source; alpha endpoints do not prove only one lane executed. |
-| Symbol publication | Chunks and symbols replace together; symbol-only changes alter scope digest. Reject duplicate/cross-kind IDs. Parser/grammar/lockfile/capability identities and per-path unsupported SHA/reason are explicit; supported parse failure is coverage failure. |
-| Symbol ownership | Use AST ownership, not delimiter/lexical guesses. Rust generic impl owners and direct method scope, JS/TS function declarations versus explicit methods, and Python nearest named scope have independent fixtures. |
-| Result authority | Published typed unit registry, generation, path and byte span authorize hits. Reject forged/stale/unanchored hits. Unsupported symbol Phrase/RawString/Regex/regexp-keyword/content-filter combinations remain typed refusals, never silent chunk fallback or empty exhaustive success. |
-| Span accounting | Indexed identity drives rank; returned bytes/tokens drive context cost; independent source spans drive exact recall. Union overlapping spans; hand-check Unicode/CRLF/long-line cases and line-expanded context. |
-| Semantic parity / ANN | Full vectors with pinned model/tokenizer/config, canonical adversarial inputs, norms and pairwise directional checks. Reject omitted/subset/reordered/forged vectors and nonfinite/scalar-type substitutions. Independently exhaustive-scan the same rows; cover 255/256, short/full result, filter/page/churn boundaries. |
-| Fetch experiment | Only typed integer 25/50/100; default 100. Requested policy, daemon config and actual initial-fetch trace agree. Preserve ceiling/refill/generation pinning/force-empty; reject bool/float/alias/unknown/missing/duplicate settings. No omitted/duplicate hits across pages. |
-
-Minimum owner checks are the retrieval Python contract, Rust chunking/library,
-actual SDK process, relevant storage/semantic integration and asset-backed
-model tests when claimed. Asset-free validators cannot substitute for actual
-model execution or production-served ANN checks.
+At the serial source freeze, execute affected query-policy, symbol publication/
+ownership, result authority and independent span controls under
+[SEP-26-001](../../../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md)
+and [SEP-27-003](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md).
+Observation, comparator modes, full-vector/ANN and typed fetch controls are
+[SEP-26-002-owned](../../../adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md).
+Minimum selected checks are the retrieval Python contract, Rust chunking/library,
+actual SDK process, relevant storage/semantic integration and asset-backed model
+execution where claimed. Recheck affected owners after concurrent engine edits;
+asset-free validators do not qualify actual encoding or production-served ANN.
+A demonstrated failure opens a code repair; retained contracts are not new tickets.
 
 ## MISC-06 — measurement, with separate denominators
 
@@ -235,7 +195,6 @@ Current schemas/strategies, independent gold/isolation, byte-density scoring,
 returned-window diagnostics, five cold roots, warm distinct-task/root/sample
 floors and final-path replay are ADR-owned. Missing external prerequisites block
 the affected quality/speed claim; a valid exploratory pair cannot promote itself.
-Current runner records use schema 5; schema 3/4 readers serve historical replay.
 
 ## User-owned inputs and explicit exclusions
 

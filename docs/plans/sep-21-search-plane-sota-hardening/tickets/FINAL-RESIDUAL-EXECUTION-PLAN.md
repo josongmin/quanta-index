@@ -91,6 +91,16 @@ negative bundle/transition/wrong-tree/binary and exact ACK replay through the
 registered cross-repo/QBC rail. Bind build/test terminal results; mapping logs,
 binary hashes and Quanta-local CAS alone cannot close the terminal chain.
 
+The existing recipe's optional typed caller/kernel archive and Semantica
+nextest completion custody are implemented; their owner tests are separate from
+the remaining clean-pair execution. Keep `runner-candidate-only` distinct from
+P11 release/operational nodes. Freeze clean sibling checkouts so Semantica's
+actual relative Cargo paths resolve the selected Quanta tree and nested lock.
+Use the recipe's independent fresh release lane; never pass the SDK proof target
+to its `clean` command. A provided old SDK binary must not stand in for current
+fresh-build byte parity. [I0-03](../../oct-4-parallel-closure/tickets/INDEX.md#o4-i0-03)
+retains the current implementation and actual execution checkpoints.
+
 ## R6 — P11 actions and P12 aggregate
 
 Define typed deploy/activate/restore-forward action producers/recipes and distinct

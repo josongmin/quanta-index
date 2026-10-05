@@ -1,17 +1,17 @@
-# Lexical capability owner index
+# DSL proof inventory
 
 Status: `DECLARED_PROOF_INVENTORY`; no fresh test result is asserted here.
 
 The [machine-readable ledger](dsl-proof-ledger.toml) retains per-surface proof
 owners, carrier kinds, expected behavior and companion rails for leaves, Boolean,
 filters, history, runtime, structural patterns and directives. The generated
-[Sourcegraph coverage](../../reference/sourcegraph-filter-parity.md) names recognized
+[Sourcegraph coverage](sourcegraph-filter-parity.md) names recognized
 forms and source-test owners. These are inventories, not current-source support receipts.
 
-Accepted contracts: [DSL](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md),
-[Sourcegraph](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md),
-[query/publication](../../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md)
-and [code search](../../adr/SEP-27-003-code-search-source-and-preview-contract.md).
+Accepted contracts: [DSL](../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md),
+[Sourcegraph](../adr/JUN-06-001-sourcegraph-compatibility-boundary.md),
+[query/publication](../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md)
+and [code search](../adr/SEP-27-003-code-search-source-and-preview-contract.md).
 
 ## Canonical lexical predicate boundaries
 
@@ -52,4 +52,4 @@ so compaction does not erase that coverage mapping.
   integration and qualification remain separately required where claimed.
 
 The old proof/status table and repeated rail lists are recoverable at
-`0b4839a4a8b4cf99e870b4251395b6e3df8f4a21`. The machine ledger is unchanged.
+`0b4839a4a8b4cf99e870b4251395b6e3df8f4a21`. Per-surface machine-ledger entries are preserved; metadata points to the live ADR.

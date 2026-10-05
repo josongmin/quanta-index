@@ -289,3 +289,22 @@ The dirty preimage of this archive index and exact preimages of all affected
 files are retained outside the checkout at `/tmp/qi-sep21-prompt-compaction-8mq_zouv`.
 Deleting duplicate prompts neither issues P10/P11/P12A receipts nor qualifies
 release/deployment/activation/rollback.
+
+## OCT-05 reference inventory relocation and MISC contract consolidation
+
+Pre-edit revision: `c7b0ce88617d8ae0f582ab41cdf223e5962bd8ab`.
+15 edited/retired source bodies matched that revision before mutation.
+The source-map dirty preimage, including concurrent paired-runner navigation,
+is preserved externally; only its embedder boundary rows change in this pass.
+Recover a body with `git show c7b0ce88617d8ae0f582ab41cdf223e5962bd8ab:<repository-relative-path>`.
+
+| Historical path / body | Current authority |
+| --- | --- |
+| `may-25-lexical-enhancement/README.md` | Redundant navigation retired; [DSL entrypoint](../reference/dsl-capabilities.md) owns navigation |
+| `may-25-lexical-enhancement/lexical-capability-matrix.md` and `dsl-proof-ledger.toml` | Moved to [DSL proof inventory](../reference/dsl-proof-inventory.md) and [machine ledger](../reference/dsl-proof-ledger.toml); all canonical predicates and per-surface entries preserved; checker/hook consume the new path |
+| `docs/analysis/quanta-index-purpose-validation-checklist.md` | Moved to [purpose audit inventory](../reference/purpose-audit-inventory.md); all 143 G0–G13 IDs/conditions retained as reference rows, without unchecked task status |
+| MISC permanent fixture/wait and retrieval contract copies | [SEP-27-005](../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#test-fixture-and-wait-invariants), [SEP-26-001](../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md) and [SEP-26-002](../adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md); pending actual execution, inputs and numeric measurement acceptance stay in [MISC](sep-27-misc/tickets/INDEX.md) |
+
+The source map now follows the daemon's PotionCode default and explicit development
+hash selector. This pass issues no model, runtime, hosted, performance or release
+qualification. The external preimage directory is `/tmp/qi-oct5-reference-consolidation-wq7ztn2_`.

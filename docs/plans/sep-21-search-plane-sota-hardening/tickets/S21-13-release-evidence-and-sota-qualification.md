@@ -54,7 +54,7 @@ partial, zero-selected, ignored-only, timeout and report-only inputs. Refuse
 artifact absence, fake provider, in-process crash substitute, macOS substituted
 for Linux, unchecked restored state and wrong producer checkout. A self-reported
 PASS or registry-edited DAG cannot define the independent expected result.
-The [purpose audit IDs](../../../analysis/quanta-index-purpose-validation-checklist.md)
+The [purpose audit IDs](../../../reference/purpose-audit-inventory.md)
 retain mandatory P0/P1 coverage; a code-local result does not close external rows.
 
 `PRODUCTION_READY` requires the registered M0–M4 dependency checkpoints, complete

@@ -20,6 +20,10 @@ SQLAlchemy와 Zellij는 **검색 평가용 코드 저장소**다. 해당 잔여�
 Linux는 원본 `agent-1.md`의 Release 항목에서 인계된 서버 검증 대상이며, 실행에는 실제
 host/config/state/retention/rollback 입력이 필요하다. 현재 로컬 검증 환경은 macOS다.
 
+현재 코드 잔여와 source/candidate 구분은 [최신 코드 대조](tickets/INDEX.md#현재-코드-잔여--2026-10-05-소스-대조),
+실행 순서는 [웨이브](WAVES.md)가 소유한다. R5 증거 전달 수리, P11 운영 producer,
+capacity 실패 원인 판정과 조건부 최적화를 구분하며 review/capture 미실행을 새 구현으로 세지 않는다.
+
 ## 담당
 
 | 담당 | 소유 경계 | 완료 구현 ADR | 실제 잔여 |

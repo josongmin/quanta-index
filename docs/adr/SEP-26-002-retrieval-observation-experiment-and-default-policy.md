@@ -40,6 +40,10 @@ pairwise directional checks. ANN diagnosis compares production-served results wi
 the same fully bound row set. Short-result, filtering, pagination and churn cases remain separate. A bounded proof does
 not establish general recall, quality or performance.
 
+Refuse omitted, subset, reordered or forged vectors and nonfinite/scalar-type
+substitutions. Independent exact/ANN controls include the 255/256-row boundary,
+short/full results, filters, pages and churn; their scope remains fixture-bound.
+
 The exact lane must match the exhaustive oracle's ordered top-k. The approximate lane reranks admitted candidates by
 exact cosine score, but its candidate search can omit oracle top-k rows. The current sealed-effort quality test requires
 aggregate recall@10 of at least 0.95 on its declared fixture; it does not require 1.0 recall on every 256-row query or
@@ -49,7 +53,9 @@ establish a corpus-wide guarantee. Report the observed recall and fixture identi
 
 Experimental hybrid fetch floor accepts only `25`, `50` or `100`; the default remains `100`. Requested policy,
 effective daemon configuration and the actual initial-fetch trace must agree. Refill, ceiling and generation pinning
-remain unchanged.
+remain unchanged. Fetch settings require typed integers; bool, float, alias,
+unknown, missing and duplicate values refuse. Force-empty and paginated refill
+controls preserve the pinned generation without omitted or duplicate hits.
 
 Chunking, ranking, fetch and ingest optimization follow a finite development matrix. A default changes only after the
 predeclared effect metric, quality guard, failure accounting and final holdout gate in

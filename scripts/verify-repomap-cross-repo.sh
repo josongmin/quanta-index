@@ -43,7 +43,10 @@ resolved_pair() {
 # Check the actual Cargo resolver before the expensive build, not the spelling
 # of declared relative paths. Both selected feature profiles must use this
 # exact Quanta checkout and the nested workspace's actual lockfile.
-runtime_resolution="$(resolved_pair quanta-runtime index-sdk-ingress)"
+# The caller target's Cargo required-features lists both index-sdk-ingress and
+# retrieval-authority-contract-surface. Resolve and execute that same minimal
+# feature pair; index-sdk-ingress alone does not admit this target.
+runtime_resolution="$(resolved_pair quanta-runtime index-sdk-ingress,retrieval-authority-contract-surface)"
 kernel_resolution="$(resolved_pair quanta-runtime-retrieval-kernel index-sdk-ingress-surface)"
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
@@ -77,11 +80,21 @@ require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
 
 cd -- "$semantica_root"
-require_binary_custody
-CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
+if [[ -n "${QUANTA_P11_R5_EVIDENCE_ROOT:-}" ]]; then
+  require_binary_custody
+  python3 "$quanta_root/tools/ci/paired_r5_result.py" \
+    --quanta-root "$quanta_root" --semantica-root "$semantica_root" \
+    --evidence-root "$QUANTA_P11_R5_EVIDENCE_ROOT" \
+    --quanta-head "$quanta_head" --semantica-head "$semantica_head" \
+    --daemon-digest "$binary_digest" --built-binary "$built_binary" \
+    --provided-binary "$provided_binary" --custody-binary "$custody_binary" \
+    --runtime-resolution "$runtime_resolution" --kernel-resolution "$kernel_resolution"
+else
+  require_binary_custody
+  CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
   --locked \
   --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime \
-  --no-default-features --features index-sdk-ingress \
+  --no-default-features --features index-sdk-ingress,retrieval-authority-contract-surface \
   --test index_sdk_ingress_publish_contract_test -- --list \
   | rg '^index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1: test$'
 require_binary_custody
@@ -89,7 +102,7 @@ CODEGRAPH_PERSONA=agent \
   ./scripts/quanta-build-cli cargo --lane local -- test \
   --locked \
   --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime \
-  --no-default-features --features index-sdk-ingress \
+  --no-default-features --features index-sdk-ingress,retrieval-authority-contract-surface \
   --test index_sdk_ingress_publish_contract_test \
   index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1 \
   -- --exact --nocapture
@@ -110,10 +123,11 @@ CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
   index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2 \
   -- --exact --nocapture
 
+fi
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
 require_binary_custody
-runtime_resolution_after="$(resolved_pair quanta-runtime index-sdk-ingress)"
+runtime_resolution_after="$(resolved_pair quanta-runtime index-sdk-ingress,retrieval-authority-contract-surface)"
 kernel_resolution_after="$(resolved_pair quanta-runtime-retrieval-kernel index-sdk-ingress-surface)"
 if [[ "$runtime_resolution_after" != "$runtime_resolution" || "$kernel_resolution_after" != "$kernel_resolution" ]]; then
   printf 'resolved cross-repo dependency identities changed during proof\n' >&2

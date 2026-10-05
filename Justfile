@@ -849,13 +849,14 @@ proof-p00-authority-freeze:
     @test -z "${PYTEST_ADDOPTS:-}" && test -z "${PYTEST_PLUGINS:-}" || { echo "pytest environment overrides are forbidden for proof tests" >&2; exit 2; }
     python3 tools/ci/write-error-authority-inventory.py
     python3 tools/ci/lint/check-proof-authority.py
-    @if [ -n "${QUANTA_PROOF_RAW_DIR:-}" ]; then mkdir -p "$QUANTA_PROOF_RAW_DIR"; python3 tools/ci/proof_execution_result.py collect-pytest --output "$QUANTA_PROOF_RAW_DIR/p00-inventory.json" tools/ci/tests/test_write_error_authority_inventory.py tools/ci/tests/test_write_proof_aggregate.py tools/ci/tests/test_write_proof_manifest.py tools/ci/tests/test_proof_execution_result.py tools/ci/tests/test_paired_cargo_resolution.py tools/ci/tests/test_run_local_test_scope.py tools/ci/tests/test_check_proof_authority.py tools/ci/tests/test_check_lane_handoff.py tools/ci/tests/test_handoff_validation.py; fi
+    @if [ -n "${QUANTA_PROOF_RAW_DIR:-}" ]; then mkdir -p "$QUANTA_PROOF_RAW_DIR"; python3 tools/ci/proof_execution_result.py collect-pytest --output "$QUANTA_PROOF_RAW_DIR/p00-inventory.json" tools/ci/tests/test_write_error_authority_inventory.py tools/ci/tests/test_write_proof_aggregate.py tools/ci/tests/test_write_proof_manifest.py tools/ci/tests/test_proof_execution_result.py tools/ci/tests/test_paired_cargo_resolution.py tools/ci/tests/test_paired_r5_result.py tools/ci/tests/test_run_local_test_scope.py tools/ci/tests/test_check_proof_authority.py tools/ci/tests/test_check_lane_handoff.py tools/ci/tests/test_handoff_validation.py; fi
     python3 -m pytest \
         tools/ci/tests/test_write_error_authority_inventory.py \
         tools/ci/tests/test_write_proof_aggregate.py \
         tools/ci/tests/test_write_proof_manifest.py \
         tools/ci/tests/test_proof_execution_result.py \
         tools/ci/tests/test_paired_cargo_resolution.py \
+        tools/ci/tests/test_paired_r5_result.py \
         tools/ci/tests/test_run_local_test_scope.py \
         tools/ci/tests/test_check_proof_authority.py \
         tools/ci/tests/test_check_lane_handoff.py \
@@ -871,6 +872,7 @@ proof-p12a-proof-infrastructure:
         tools/ci/tests/test_write_proof_manifest.py \
         tools/ci/tests/test_proof_execution_result.py \
         tools/ci/tests/test_paired_cargo_resolution.py \
+        tools/ci/tests/test_paired_r5_result.py \
         tools/ci/tests/test_run_local_test_scope.py \
         tools/ci/tests/test_write_proof_aggregate.py \
         tools/ci/tests/test_check_proof_authority.py \

@@ -62,6 +62,13 @@ Measurements and missing authority remain in the [residual ledger](../plans/oct-
    before registry promotion. Shell exit zero or caller-written success JSON is
    not operational authority. Keep the existing staged refusal.
 
+The paired caller/kernel component uses the existing cross-repository recipe
+and CLI-owned immutable completion custody. Its optional typed archive binds
+the exact selected tests, source/dependency mapping and daemon bytes; the archive
+is `runner-candidate-only`. This component is separate from the unimplemented
+deploy/activate/restore-forward action authority in decision 9. Owner tests do
+not establish an executed clean pair or promote an operational registry node.
+
 ## Native segment retention and committed live statistics
 
 Sealed manifest format 14 requires `search-corpus-live-bm25.cbor`. Earlier
@@ -74,7 +81,7 @@ Full builds collect those censuses. Delta builds reuse committed segment
 statistics and subtract newly deleted documents' censuses after checking native
 component identity and deletion-mask consistency. The selected native scorer
 uses live document counts, token totals and corrected document frequencies.
-The writer retains native segments with `NoMergePolicy`; deletion does not force
+Delta writers with a retained base use `NoMergePolicy`; deletion does not force
 compaction of surviving documents solely to recover live BM25 statistics.
 Missing or corrupted mandatory sidecars and inconsistent statistics refuse open
 or seal. The sidecar has a 16 MiB encoded bound and a conservative 64 MiB retained
@@ -83,7 +90,11 @@ decode admission; these are not measured heap or transient-peak guarantees.
 Changed retained segments still compare deletion bits across `max_doc`. Native
 byte reuse does not establish a whole-call CPU/read/write bound. Source/authority
 custody walks, metadata publication and long-running segment/correction fanout
-remain separate cost scopes. A future compaction policy requires independent
+remain separate cost scopes. File-authority seal preflight still reads, hashes
+and folds unchanged complete source; cold open validates and materializes the
+committed source set and constructs both global trigram indexes. Native segment
+reuse does not establish delta-proportional whole-call reads/CPU or bounded
+file-authority residency. A future compaction policy requires independent
 score/page parity and measured foreground, maintenance and residency budgets.
 
 Owners: [document census](../../crates/quanta-index-lexical/src/doc_census.rs),

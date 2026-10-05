@@ -25,7 +25,8 @@ authority rather than implying a missing producer crate.
 
 | Boundary | Source / interpretation |
 | --- | --- |
-| Default semantic embedder | [query_embedder.rs](../../crates/quanta-index-search-plane/src/query_embedder.rs): `search-owned-hash-text-v1`, FNV 64-d. Hash proof does not qualify opt-in PotionCode/OpenAI provider identity, egress or quality. |
+| Default semantic embedder | [Daemon config](../../crates/quanta-index-searchd/src/app/config.rs): unset/empty `QUANTA_INDEX_EMBEDDER` selects `potion-code` with `Pinned512V1`; pinned model assets need [provisioning](../potion-code-embedder.md). Explicit `potion-code-full-v2` selects `FullLengthV2` and requires a newly indexed generation. Config selection does not qualify actual model execution or retrieval quality. |
+| Development embedder | Explicit `hash-dev` and `from_test_state_root` select the development hash profile; the default 64-d FNV implementation is in [query_embedder.rs](../../crates/quanta-index-search-plane/src/query_embedder.rs). Hash tests do not qualify PotionCode/OpenAI identity, egress or quality. |
 | Lexical structural-block leaf | [planner.rs](../../crates/quanta-index-lexical/src/planner.rs): typed `structural_block_leaf` refusal |
 | Selected history primitives | [text_plane.rs](../../crates/quanta-index-search-plane/src/query_dispatcher/text_plane.rs): explicit `NotImplemented` for unsupported filters/leaves |
 | Rust structural grammar | [LangId](../../crates/quanta-index-lq-structural/src/types.rs): deferred grammar declaration; distinct from the benchmark's independent declaration parser |
@@ -47,4 +48,10 @@ owns installed/paired/Linux/provider/release acceptance. P11 additionally lacks
 typed deploy/activate/restore-forward producers and recipes under
 [S21-12](../plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md).
 Existing IPC/CAS handlers do not close that operational code/observer contract.
+The [existing cross-repo recipe](../../scripts/verify-repomap-cross-repo.sh) and
+[paired component archive](../../tools/ci/paired_r5_result.py) bind caller/kernel
+selection, canonical resolver mapping and CLI-owned completion receipts. Their
+`runner-candidate-only` result is distinct from actual exact-pair qualification
+and the missing operational action authority. Current execution status belongs
+to [I0-03](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-i0-03).
 Local tests, code presence and documentation cleanup do not issue qualification.

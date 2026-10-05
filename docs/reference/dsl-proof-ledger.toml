@@ -1,7 +1,8 @@
 version = 1
-status = "proof_accounted"
+status = "declared_proof_inventory"
+# Historical inventory date; not a current test receipt.
 date = "2026-06-02"
-authority_spec = "../may-24-lexical-indexing-sourcegraph/dsl.md"
+authority_spec = "../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md"
 
 [[entry]]
 surface = "Keyword"
