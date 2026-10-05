@@ -9,8 +9,8 @@
 
 ## 현재 코드 잔여 — 2026-10-06 소스 대조
 
-현재 정리 기준: Quanta main `237d1d147acf5124d5047098fc9dcaac9fec6f51`와 scanner/tooling 수정 overlay.
-Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀·scanner custody 도구가 추가됐다.
+현재 정리 기준: Quanta main `c2431375738326f4f2370f3e226d43ced0e09bca`와 문서 수정 overlay.
+Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀·scanner custody·ARB 용어 예산 수리가 추가됐다.
 Retrieval 엔진 소스는 아직 동일하며 F15 저장 구조 수리는 외부 후보다.
 Frozen5796 actual과 아래 current-source owner 회귀를 구분하며 main formal proof로 승격하지 않는다.
 Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
@@ -568,8 +568,23 @@ frozen `5796a63f` Contract·fresh SDK `VERIFIED`, hosted CI `NOT_RUN`.
   후속 source revision과 proof를 대조하며 이 결과의 revision을 변경하지 않는다.
 - 후속 source epoch의 포함 코드/driver/scorer/ADR 및 영향 mandatory surfaces를 검증하고 matching fresh
   Contract/SDK/source closure/binaries를 발행·portable replay한다. E3 shipping acceptance와 CI도 실제 scope로 판정한다.
-  감사 기준 `dcd3860e`에는 frozen5796 이후 Justfile/ADR/R5 변경이 있으므로 해당 최신 epoch의
+  감사 기준 `c2431375`에는 frozen5796 이후 Justfile/ADR/R5/scanner/ARB 변경이 있으므로 해당 최신 epoch의
   formal Contract/SDK·hosted CI는 `NOT_RUN`이다. Frozen791/191/27 결과의 source를 바꾸지 않는다.
+- Current source owner 추가 검증: ARB adapter의 raw32→effective35 용어 초과를 canonical planner
+  term projection 공유로 수리했다. Adapter v2는 raw32/effective32를 함께 제한하고 식별자 우선·원래 출력 순서를 유지한다.
+  `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_arb_adapter.py`와 같은 실행에
+  `test_retrieval_benchmark.py`의 NFC/indexability/UTF8/lowercase/bounded-NL4selectors를 더해
+  →51passed·2.14s/exit0, real Gin88 입력 case도 skipped 없이 실행했다.
+  Frozen v1 ARB capture는 v2 결과로 바꾸지 않으며 새 adapted88 capture/scoring은 `NOT_RUN`이다.
+- P12A current owner `VERIFIED`: 최초 canonical 실행은276passed/1failed였고,
+  cross-repo script의 custody 호출 개수 고정 테스트가7개 실제 경계와 불일치했다.
+  경계별 guard/제거 mutants와 locked `uv run --frozen --extra dev python` 진입점을 함께 수정했다.
+  `QUANTA_PROOF_RAW_DIR=/private/tmp/qi-p12a-quanta-locked-20261006-v2 just proof-p12a-proof-infrastructure`
+  →295selected/passed·93.66s/exit0. Registry lint는25registered/0manifest인 `REGISTRY_ONLY`이며
+  P12 aggregate/CODE_QUALIFIED/release 실행 결과를 발행한 것은 아니다.
+- Hosted CI: `7a16771a` CircleCI Python job은 ARB effective35 거절, Rust job은 신규 OS-process
+  테스트 포맷으로 실제 `FAILED`였다. 두 원인은 현재 소스에서 수정했고 `c2431375`의
+  `ci/circleci: verify`/`verify-python`는 조회 시 pending이다. Hosted pass를 추정하지 않는다.
 - 공개SDK/contract 변경: `just rust-public-api`; wire/decode: `just rust-fuzz-smoke`;
   module: `just rust-hexagonal`, `just rust-cargo-modules`; selection/state/ingress: `just rust-profile test-daemon`.
 - runtime `autotests=false`: read-view/ingest는 `runtime_fast_suite`, generation/cursor/restart는
