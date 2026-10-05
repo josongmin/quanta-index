@@ -101,6 +101,37 @@ def test_semantic_decision_is_bound_by_retrieval_closure() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "profile,decision",
+    [
+        ("retrieval", "OCT-05-001-review-admission-and-result-identity.md"),
+        ("retrieval", "OCT-05-002-native-capture-clock-and-index-scope.md"),
+        ("retrieval", "OCT-05-003-active-query-and-runtime-lifecycle.md"),
+        ("retrieval", "OCT-05-004-cost-capacity-and-qualification-boundaries.md"),
+        ("benchmark-control-plane", "OCT-05-001-review-admission-and-result-identity.md"),
+        ("benchmark-control-plane", "OCT-05-002-native-capture-clock-and-index-scope.md"),
+        ("benchmark-control-plane", "OCT-05-004-cost-capacity-and-qualification-boundaries.md"),
+    ],
+)
+def test_consolidated_adr_mutation_invalidates_bound_closure(tmp_path, profile, decision):
+    repo, module = _synthetic_repo(tmp_path)
+    relative = f"docs/adr/{decision}"
+    assert relative in module.PROFILES[profile]["paths"]
+    path = repo / relative
+    path.parent.mkdir(parents=True)
+    original = (REPO_ROOT / relative).read_text()
+    assert "Status: `Accepted`" in original
+    path.write_text(original)
+    module.PROFILES["bm-synthetic"]["paths"] += (relative,)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "bind adopted decision")
+    manifest = module.build_manifest(repo, "bm-synthetic")
+    module.verify_manifest(repo, manifest)
+    path.write_text(original.replace("Status: `Accepted`", "Status: `Proposed`", 1))
+    with pytest.raises(module.ClosureError, match="dirty|changed"):
+        module.verify_manifest(repo, manifest)
+
+
 def test_portable_execution_transitively_binds_file_custody_owner() -> None:
     module = _closure_module()
     imports = module._python_import_roots(

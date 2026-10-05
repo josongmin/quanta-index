@@ -59,8 +59,8 @@ than an SDK retry, an inferred rollback or a new operator endpoint.
   [ingest dispatch](../../crates/quanta-index-search-plane/src/ingest_dispatcher/dispatcher.rs),
   [operator dispatch](../../crates/quanta-index-search-plane/src/control_dispatcher.rs).
 - Retain actual OS-child [selection](../../crates/quanta-index-searchd-runtime/tests/active_selection_process_v1.rs),
-  [slow-disk](../../crates/quanta-index-searchd-runtime/tests/process_slow_disk_tests.rs),
-  [default-timeout](../../crates/quanta-index-searchd-runtime/tests/admitted_publish_timeout_tests.rs),
+  [slow-disk](../../crates/quanta-index-searchd-runtime/src/process_slow_disk_tests.rs),
+  [default-timeout](../../crates/quanta-index-searchd-runtime/src/admitted_publish_timeout_tests.rs),
   [restart/replay](../../crates/quanta-index-searchd-runtime/tests/e2e_ingest_idempotency.rs),
   [socket authorization](../../crates/quanta-index-searchd-runtime/tests/e2e_socket_access.rs)
   and [SDK roundtrip](../../benchmarks/retrieval/tests/sdk_roundtrip.rs) controls.
