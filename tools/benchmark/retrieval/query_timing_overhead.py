@@ -1,4 +1,4 @@
-"""Compare explicit on/off query clock captures without qualifying performance.
+"""Replay query observation on/off or separate scanner A/B captures.
 
 Run identical frozen runner inputs with --query-stage-observation enabled/disabled, a fresh
 state root for each, and the same query protocol. This replay refuses differing
@@ -6,6 +6,9 @@ results, model/input identities or repetition coverage. Values describe these
 samples only; host quietness and interleaved repetitions remain separate gates.
 The control toggles plane stage/trace collection. Backend clock reads execute
 in both arms, so this is not an instrumentation-free backend comparison.
+The scanner A/B mode requires two distinct declared source revisions and
+captured searchd binary digests. It compares normalized outputs and work
+counts but does not attest either source revision to its binary or qualify speed.
 """
 
 from __future__ import annotations
@@ -281,14 +284,18 @@ def _scanner_identity(record: dict, phases: dict, declared: dict) -> dict:
     }:
         raise ValueError("scanner A/B requires explicit source and binary identities")
     revision = declared["source_revision"]
-    if not isinstance(revision, str) or len(revision) != 40 or any(
-        char not in "0123456789abcdef" for char in revision
+    if (
+        not isinstance(revision, str)
+        or len(revision) != 40
+        or any(char not in "0123456789abcdef" for char in revision)
     ):
         raise ValueError("scanner A/B source revision must be a full lowercase Git SHA")
     for key in ("runner_binary_sha256", "searchd_binary_sha256"):
         value = declared[key]
-        if not isinstance(value, str) or len(value) != 64 or any(
-            char not in "0123456789abcdef" for char in value
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(char not in "0123456789abcdef" for char in value)
         ):
             raise ValueError(f"scanner A/B {key} must be a lowercase SHA-256")
     if phases.get("runner_binary_sha256") != declared["runner_binary_sha256"]:
@@ -303,8 +310,7 @@ def _scanner_identity(record: dict, phases: dict, declared: dict) -> dict:
             or not isinstance(capture.get("runner_binary"), dict)
             or not isinstance(capture.get("searchd_binary"), dict)
             or capture["runner_binary"].get("digest") != declared["runner_binary_sha256"]
-            or capture["searchd_binary"].get("binary_digest")
-            != declared["searchd_binary_sha256"]
+            or capture["searchd_binary"].get("binary_digest") != declared["searchd_binary_sha256"]
         ):
             raise ValueError("scanner A/B captured binary differs from declared identity")
         projected[capture_id] = {
@@ -320,16 +326,18 @@ def _scanner_identity(record: dict, phases: dict, declared: dict) -> dict:
             )
         }
     provenance = record.get("route_provenance")
-    if not isinstance(provenance, dict) or not provenance or any(
-        not isinstance(owner, dict) or owner.get("capture_id") not in projected
-        for owner in provenance.values()
+    if (
+        not isinstance(provenance, dict)
+        or not provenance
+        or any(
+            not isinstance(owner, dict) or owner.get("capture_id") not in projected
+            for owner in provenance.values()
+        )
     ):
         raise ValueError("scanner A/B route capture identity is missing")
     return {
         "captures": sorted(projected.values(), key=canonical),
-        "routes": {
-            route: projected[owner["capture_id"]] for route, owner in provenance.items()
-        },
+        "routes": {route: projected[owner["capture_id"]] for route, owner in provenance.items()},
     }
 
 
@@ -379,6 +387,37 @@ def _scanner_query_timing(timing: dict) -> dict:
     }
 
 
+def _scanner_ingest_work(ingest: dict) -> dict:
+    """Retain validated ingest work counts without comparing local ACKs or clocks."""
+    receipt = ingest["receipt"]
+    observation = ingest["observation"]
+    semantic = observation["semantic"]
+    receipt_work = {
+        key: value
+        for key, value in receipt.items()
+        if key not in {"generation", "manifest_digest", "batch_digest", "durable_sequence"}
+    }
+    observation_work = {
+        key: value
+        for key, value in observation.items()
+        if key
+        not in {
+            "request_id",
+            "generation",
+            "batch_digest",
+            "activation_ns",
+            "finalize_ns",
+            "lexical_build_ns",
+            "lexical_stages",
+            "semantic",
+        }
+    }
+    observation_work["semantic"] = {
+        key: value for key, value in semantic.items() if key != "durations"
+    }
+    return {"receipt": receipt_work, "observation": observation_work}
+
+
 def compare_scanner(
     baseline: dict,
     candidate: dict,
@@ -405,22 +444,18 @@ def compare_scanner(
         ):
             raise ValueError("scanner A/B requires current v5/v9/v4 capture and query protocol")
         pairrun._validate_phase_metrics(phases, "scanner A/B phase metrics")
-        pairrun.validate_completed_query_timing(
-            phases, record, require_output_validation=True
-        )
+        pairrun.validate_completed_query_timing(phases, record, require_output_validation=True)
         pairrun.validate_retrieval_diagnostic(diagnostic, record, phases["record_sha256"], pack)
     baseline_captures = _scanner_identity(baseline, baseline_phases, baseline_identity)
     candidate_captures = _scanner_identity(candidate, candidate_phases, candidate_identity)
     if baseline_identity["source_revision"] == candidate_identity["source_revision"] or (
-        baseline_identity["searchd_binary_sha256"]
-        == candidate_identity["searchd_binary_sha256"]
+        baseline_identity["searchd_binary_sha256"] == candidate_identity["searchd_binary_sha256"]
     ):
         raise ValueError("scanner A/B requires distinct declared source and searchd binary")
     if not _same_json(baseline_captures, candidate_captures):
         raise ValueError("scanner A/B captured corpus/model/profile configuration differs")
-    if (
-        baseline.get("query_pack_sha256") != candidate.get("query_pack_sha256")
-        or not baseline.get("query_pack_sha256")
+    if baseline.get("query_pack_sha256") != candidate.get("query_pack_sha256") or not baseline.get(
+        "query_pack_sha256"
     ):
         raise ValueError("scanner A/B query pack differs")
     # Only per-run record digest, runner binary and measured clocks may differ.
@@ -449,16 +484,27 @@ def compare_scanner(
     }
     if not _same_json(baseline_config, candidate_config):
         raise ValueError("scanner A/B diagnostic query/protocol/observation configuration differs")
-    answer_keys = ("route", "task_id", "status", "error", "candidates")
-    answers = lambda record: [
-        {key: row[key] for key in answer_keys} for row in record["results"]
-    ]
+    if not _same_json(
+        _scanner_ingest_work(baseline_diagnostic["ingest"]),
+        _scanner_ingest_work(candidate_diagnostic["ingest"]),
+    ):
+        raise ValueError("scanner A/B ingest work counts or source scope differ")
+
+    def answers(record):
+        projected = []
+        for row in record["results"]:
+            if not isinstance(row.get("timings"), dict) or set(row["timings"]) != {
+                "query_latency_ms"
+            }:
+                raise ValueError("scanner A/B record timing shape is unsupported")
+            projected.append({key: value for key, value in row.items() if key != "timings"})
+        return projected
+
     if (
         not baseline.get("results")
         or not _same_json(answers(baseline), answers(candidate))
         or any(
-            row["status"] not in ("success", "capped", "abstained")
-            for row in baseline["results"]
+            row["status"] not in ("success", "capped", "abstained") for row in baseline["results"]
         )
     ):
         raise ValueError("scanner A/B status, path, order, score or answer differs")
@@ -502,9 +548,7 @@ def compare_scanner(
             repetitions < 2
             or len(left) != repetitions
             or len(right) != repetitions
-            or any(
-                not is_finite_json_number(value) or value <= 0 for value in left + right
-            )
+            or any(not is_finite_json_number(value) or value <= 0 for value in left + right)
         ):
             raise ValueError("scanner A/B sample coverage is missing or invalid")
         baseline_median = statistics.median(left)
@@ -563,13 +607,20 @@ def main() -> int:
     args = parser.parse_args()
     try:
         overhead_paths = [
-            args.on_record, args.off_record, args.on_phases, args.off_phases,
-            args.on_diagnostic, args.off_diagnostic,
+            args.on_record,
+            args.off_record,
+            args.on_phases,
+            args.off_phases,
+            args.on_diagnostic,
+            args.off_diagnostic,
         ]
         scanner_paths = [
-            args.baseline_record, args.candidate_record,
-            args.baseline_phases, args.candidate_phases,
-            args.baseline_diagnostic, args.candidate_diagnostic,
+            args.baseline_record,
+            args.candidate_record,
+            args.baseline_phases,
+            args.candidate_phases,
+            args.baseline_diagnostic,
+            args.candidate_diagnostic,
         ]
         baseline_identity = {
             "source_revision": args.baseline_source_revision,
@@ -589,9 +640,11 @@ def main() -> int:
                 raise ValueError("scanner A/B requires only complete baseline/candidate inputs")
             paths = [*scanner_paths, args.pack]
         else:
-            if any(path is not None for path in scanner_paths) or any(
-                value is not None for value in scanner_claims
-            ) or any(path is None for path in overhead_paths):
+            if (
+                any(path is not None for path in scanner_paths)
+                or any(value is not None for value in scanner_claims)
+                or any(path is None for path in overhead_paths)
+            ):
                 raise ValueError("on/off comparison requires only complete on/off inputs")
             paths = [*overhead_paths, args.pack]
         payloads = [path.read_bytes() for path in paths]
@@ -616,7 +669,8 @@ def main() -> int:
                 canonical({**result, "input_sha256": [sha(raw) for raw in payloads]}) + b"\n"
             )
     except (ValueError, OSError, KeyError, TypeError, pairrun.RunError) as error:
-        parser.exit(2, f"query comparison replay refused: {error}\n")
+        mode = "scanner A/B" if args.scanner_ab else "overhead"
+        parser.exit(2, f"{mode} replay refused: {error}\n")
     return 0
 
 

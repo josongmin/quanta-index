@@ -7,11 +7,11 @@ import json
 
 import pytest
 
+from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import query_timing_overhead as scanner
 from tools.benchmark.retrieval import retrieval_contract as rc
 from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble as semble_adapter
-from tools.benchmark.retrieval import evaluator as ev
 from tools.ci.tests.test_retrieval_benchmark import _pair_stage
 
 
@@ -105,8 +105,15 @@ def _pair(tmp_path):
 
 def _compare(baseline, candidate, pack):
     return scanner.compare_scanner(
-        baseline[0], candidate[0], baseline[1], candidate[1],
-        baseline[2], candidate[2], pack, baseline[3], candidate[3],
+        baseline[0],
+        candidate[0],
+        baseline[1],
+        candidate[1],
+        baseline[2],
+        candidate[2],
+        pack,
+        baseline[3],
+        candidate[3],
     )
 
 
@@ -123,6 +130,8 @@ def test_scanner_ab_preserves_parity_and_declared_binary_difference(tmp_path):
     for observation in candidate[1]["query_timing"]["observations"]:
         observation["start_ns"] += 1
         observation["end_ns"] += 1
+    for row in candidate[2]["results"]:
+        row["response"]["explanation"]["request_id"] += 100
     candidate[2]["runner_timing_detail_ms"]["daemon_shutdown"] += 1
     assert _compare(baseline, candidate, pack)["rows"]
 
@@ -130,8 +139,18 @@ def test_scanner_ab_preserves_parity_and_declared_binary_difference(tmp_path):
 @pytest.mark.parametrize(
     "mutation",
     [
-        "status", "order", "score", "cursor", "corpus", "model",
-        "binary", "source", "work_counter", "output_digest", "type_alias",
+        "status",
+        "order",
+        "score",
+        "cursor",
+        "corpus",
+        "model",
+        "binary",
+        "source",
+        "work_counter",
+        "ingest_counter",
+        "output_digest",
+        "type_alias",
     ],
 )
 def test_scanner_ab_refuses_independent_semantic_or_custody_delta(tmp_path, mutation):
@@ -146,7 +165,7 @@ def test_scanner_ab_refuses_independent_semantic_or_custody_delta(tmp_path, muta
         row = next(row for row in diagnostic["results"] if row["candidates"])
         row["candidates"][0]["score"] = -0.0
     elif mutation == "cursor":
-        diagnostic["results"][0]["response"]["window"]["outcome"]["continuation"] = False
+        diagnostic["results"][0]["response"]["window"]["outcome"]["kind"] = "lower_bound"
     elif mutation == "corpus":
         next(iter(record["captures"].values()))["chunk_config"] = {"changed": True}
     elif mutation == "model":
@@ -159,9 +178,11 @@ def test_scanner_ab_refuses_independent_semantic_or_custody_delta(tmp_path, muta
         diagnostic["results"][0]["response"]["explanation"]["planner_trace"].append(
             {"stage": "merge", "detail": "code_search.execution.posting_probes=999"}
         )
+    elif mutation == "ingest_counter":
+        diagnostic["ingest"]["receipt"]["accepted_replace_scopes"] += 1
     elif mutation == "output_digest":
         phase["query_timing"]["observations"][0]["output_sha256"] = "f" * 64
     elif mutation == "type_alias":
-        diagnostic["results"][0]["response"]["window"]["outcome"]["continuation"] = 1
+        diagnostic["results"][0]["response"]["window"]["coverage"]["lanes"][0]["contributed"] = 1
     with pytest.raises((ValueError, pairrun.RunError)):
         _compare(baseline, candidate, pack)
