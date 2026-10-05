@@ -16,8 +16,18 @@ use quanta_index_core::IngestBatchBodyV1;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::codec::encode_cbor_payload;
 use crate::error::IpcError;
+
+struct HashWriter(Sha256);
+impl std::io::Write for HashWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 /// The canonical digest of `body`'s route and content, as raw bytes.
 ///
@@ -27,15 +37,16 @@ pub fn canonical_batch_digest_v1<B: IngestBatchBodyV1 + Serialize>(
     body: &mut B,
 ) -> Result<[u8; 32], IpcError> {
     let carried = std::mem::take(body.batch_digest_mut());
-    let encoded = encode_cbor_payload(&*body);
-    *body.batch_digest_mut() = carried;
-    let encoded = encoded?;
     let mut hasher = Sha256::new();
     hasher.update(INGEST_BATCH_DIGEST_DOMAIN_V1);
     hasher.update(B::OPERATION.as_code_str().as_bytes());
     hasher.update(INGEST_BATCH_DIGEST_FIELD_SEPARATOR_V1);
-    hasher.update(&encoded);
-    Ok(hasher.finalize().into())
+    let mut writer = HashWriter(hasher);
+    let encoded = ciborium::into_writer(&*body, &mut writer)
+        .map_err(|error| IpcError::Encode(error.to_string()));
+    *body.batch_digest_mut() = carried;
+    encoded?;
+    Ok(writer.0.finalize().into())
 }
 
 /// Set `body.batch_digest` to its canonical token, whatever it carried.
@@ -116,6 +127,27 @@ mod tests {
         assert_eq!(left, right, "the carried token is not part of the digest");
         assert_eq!(first.batch_digest, "whatever the producer wrote");
         assert_eq!(second.batch_digest, "a different token");
+    }
+
+    #[test]
+    fn streaming_digest_preserves_the_published_cbor_preimage_formula() {
+        use sha2::{Digest as _, Sha256};
+        let mut batch = dirty_batch("src/a.rs");
+        let mut reference = batch.clone();
+        reference.batch_digest.clear();
+        let encoded = crate::encode_cbor_payload(&reference).expect("reference CBOR");
+        // Literal protocol domain and operation code are independent of the
+        // streaming implementation. Existing persisted commitments must match.
+        let mut digest = Sha256::new();
+        digest.update(b"quanta-index:ingest-batch-digest:v1\0");
+        digest.update(b"dirty");
+        digest.update(b"\x1f");
+        digest.update(encoded);
+        let expected: [u8; 32] = digest.finalize().into();
+        assert_eq!(
+            canonical_batch_digest_v1(&mut batch).expect("streamed digest"),
+            expected
+        );
     }
 
     #[test]

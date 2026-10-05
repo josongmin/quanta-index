@@ -407,6 +407,7 @@ pub struct SearchdConfig {
     /// The resource envelope one search-corpus batch may ask the plane to
     /// hold (QI-BB-021): records, embedded text bytes and vector bytes.
     ingest_resource_policy: IngestResourcePolicy,
+    source_publication_max_bytes: u64,
     /// The window the semantic track embeds and appends a batch in
     /// (QI-BB-021): owner scopes and vector bytes resident at once.
     semantic_stream_window_policy: SemanticStreamWindowPolicy,
@@ -548,6 +549,20 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
         ],
         apply: |config, lookup| {
             Ok(config.with_ingest_resource_policy(ingest_resource_policy_from_lookup(lookup)?))
+        },
+    },
+    EnvPolicyFamily {
+        name: "source publication staging",
+        env_vars: &["QUANTA_INDEX_SOURCE_PUBLICATION_MAX_BYTES"],
+        apply: |config, lookup| {
+            let bytes = match lookup("QUANTA_INDEX_SOURCE_PUBLICATION_MAX_BYTES")? {
+                None => quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_DEFAULT_BYTES,
+                Some(raw) => required_positive_raw_u64(
+                    "QUANTA_INDEX_SOURCE_PUBLICATION_MAX_BYTES",
+                    Some(raw),
+                )?,
+            };
+            config.try_with_source_publication_max_bytes(bytes)
         },
     },
     EnvPolicyFamily {
@@ -708,6 +723,8 @@ impl SearchdConfig {
             query_admission_policy: ServerAdmissionPolicy::DEFAULT,
             regex_match_cache_policy: RegexMatchCachePolicy::DEFAULT,
             ingest_resource_policy: IngestResourcePolicy::DEFAULT,
+            source_publication_max_bytes:
+                quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_DEFAULT_BYTES,
             semantic_stream_window_policy: SemanticStreamWindowPolicy::DEFAULT,
             lexical_writer_policy: LexicalWriterPolicy::DEFAULT,
             socket_access_policies: SocketAccessPolicies::PRIVATE,
@@ -887,6 +904,18 @@ impl SearchdConfig {
     }
 
     #[must_use]
+    pub const fn source_publication_max_bytes(&self) -> u64 {
+        self.source_publication_max_bytes
+    }
+
+    pub fn try_with_source_publication_max_bytes(mut self, bytes: u64) -> Result<Self> {
+        if bytes == 0 || bytes > quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES {
+            anyhow::bail!("source publication max bytes must be in 1..=512 MiB");
+        }
+        self.source_publication_max_bytes = bytes;
+        Ok(self)
+    }
+
     pub const fn process_memory_ceilings(&self) -> ProcessMemoryCeilings {
         self.process_memory_ceilings
     }
@@ -1014,7 +1043,7 @@ impl SearchdConfig {
                 .saturating_add(self.ingest_resource_policy.max_vector_bytes())
                 // One staged commit at a time: decoded body plus guarded
                 // collection storage, admitted before runtime construction.
-                .saturating_add(2 * quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES),
+                .saturating_add(self.source_publication_max_bytes.saturating_mul(2)),
             ceiling: self.process_memory_ceilings.ceiling_bytes(),
             rss_ceiling: self.process_memory_ceilings.rss_ceiling_bytes(),
         };
@@ -2029,6 +2058,7 @@ mod tests {
             ("QUANTA_INDEX_REGEX_CACHE_MAX_ENTRIES", "5"),
             ("QUANTA_INDEX_REGEX_CACHE_MAX_RESIDENT_BYTES", "2048"),
             ("QUANTA_INDEX_REGEX_CACHE_MAX_MATCHES_PER_ENTRY", "6"),
+            ("QUANTA_INDEX_SOURCE_PUBLICATION_MAX_BYTES", "104857600"),
             ("QUANTA_INDEX_INGEST_MAX_RECORDS", "12"),
             ("QUANTA_INDEX_INGEST_MAX_TEXT_BYTES", "3456"),
             ("QUANTA_INDEX_INGEST_MAX_VECTOR_BYTES", "789"),
@@ -2462,6 +2492,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn source_publication_limit_is_explicit_and_charged_to_process_memory() {
+        let config = SearchdConfig::from_test_state_root(PathBuf::from("/tmp/upload-limit"));
+        assert_eq!(config.source_publication_max_bytes(), 128 * 1024 * 1024);
+        for invalid in [0, 512 * 1024 * 1024 + 1] {
+            assert!(
+                config
+                    .clone()
+                    .try_with_source_publication_max_bytes(invalid)
+                    .is_err()
+            );
+        }
+        let large = config
+            .try_with_source_publication_max_bytes(512 * 1024 * 1024)
+            .expect("limit");
+        assert!(
+            large.process_memory_envelope().is_err(),
+            "default ceiling refuses extra resident capacity"
+        );
+        assert!(
+            large
+                .with_process_memory_ceilings(
+                    ProcessMemoryCeilings::new(4 * 1024 * 1024 * 1024, None).expect("ceiling")
+                )
+                .process_memory_envelope()
+                .is_ok()
+        );
+    }
+
     /// The one envelope (QI-BB-016): the config's resident byte policies
     /// sum under the ceiling, and a ceiling below their sum is refused
     /// typed by both entry points.
@@ -2494,6 +2553,7 @@ mod tests {
             envelope.ingest_batch_bytes,
             IngestResourcePolicy::DEFAULT.max_text_bytes()
                 + IngestResourcePolicy::DEFAULT.max_vector_bytes()
+                + 2 * quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_DEFAULT_BYTES
         );
         assert!(envelope.declared_bytes() <= ProcessMemoryEnvelopeV1::DEFAULT_CEILING_BYTES);
         assert_eq!(envelope.rss_ceiling, None);

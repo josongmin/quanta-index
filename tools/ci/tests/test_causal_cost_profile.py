@@ -99,15 +99,21 @@ def _summary() -> dict:
                     "seed": 5,
                     "file_count": 4096,
                     "source_repo_count": 16,
-                    "client_request_timeout_ms": 30_000,
+                    "client_request_timeout_ms": 600_000,
                     "requested_client_request_timeout_ms": None,
                     "history_max_generations": 2,
-                    "history_max_bytes": 16 * 1024 * 1024,
+                    "history_max_bytes": 1024 * 1024 * 1024,
                     "requested_history_max_bytes": None,
                     "requested_history_max_total_bytes": None,
-                    "history_policy_id": "harness-default-v1",
+                    "history_policy_id": "scale-supported-v1",
                     "history_max_revision_pairs": 128,
-                    "history_max_total_bytes": 256 * 1024 * 1024,
+                    "ingest_max_records": 100_000,
+                    "ingest_max_text_bytes": 134_217_728,
+                    "ingest_max_vector_bytes": 268_435_456,
+                    "source_publication_part_bytes": 1_048_576,
+                    "source_publication_max_bytes": 536_870_912,
+                    "process_memory_ceiling_bytes": 4_294_967_296,
+                    "history_max_total_bytes": 2 * 1024 * 1024 * 1024,
                     "retained_index_bytes": {
                         "method": "product_retention_receipt_gauge_v1",
                         "scope": "one serving repo/revision pair; exact unique-inode regular-file bytes admitted by each seal; total equals pair; unavailable after daemon restart",
@@ -182,7 +188,7 @@ def test_profile_binds_full_lifecycle_and_cost_domains() -> None:
     assert result["status"] == "diagnostic_unqualified"
     assert set(result["phases"]) == set(PHASES)
     assert result["file_count"] == 4096
-    assert result["runtime_config"]["client_request_timeout_ms"] == 30_000
+    assert result["runtime_config"]["client_request_timeout_ms"] == 600_000
     phase = result["phases"]["full_seal"]
     assert phase["sync"]["atomic_file"]["elapsed_ns"] == 400
     assert phase["exact_live_token_scan"]["live_tokens"] == 7
@@ -192,6 +198,41 @@ def test_profile_binds_full_lifecycle_and_cost_domains() -> None:
     assert result["phases"]["delta_ingest_seal"]["bm25_live_build"][0]["newly_dead_docs"] == 1
     assert phase["process_write_io"]["write_bytes"] == 4096
     assert phase["sync_call_wall_ratio"] == 0.00004
+
+
+def test_profile_counts_file_authority_sync_barriers_exactly() -> None:
+    trace = TRACE.replace(
+        b"QI_CAUSAL_V1 kind=phase_end name=full_seal ok=1\n",
+        b"QI_CAUSAL_V1 kind=sync label=file_authority_object ok=1 elapsed_ns=11\n"
+        b"QI_CAUSAL_V1 kind=sync label=file_authority_directory ok=1 elapsed_ns=13\n"
+        b"QI_CAUSAL_V1 kind=sync label=file_authority_directory ok=1 elapsed_ns=17\n"
+        b"QI_CAUSAL_V1 kind=phase_end name=full_seal ok=1\n",
+    )
+    phase = _replay(trace=trace)["phases"]["full_seal"]
+    assert phase["sync"]["file_authority_object"] == {
+        "calls": 1, "failed_calls": 0, "elapsed_ns": 11,
+    }
+    assert phase["sync"]["file_authority_directory"] == {
+        "calls": 2, "failed_calls": 0, "elapsed_ns": 30,
+    }
+    assert phase["sync_call_elapsed_ns_sum"] == 441
+
+
+@pytest.mark.parametrize("label", ["file_authority_object", "file_authority_directory"])
+def test_profile_refuses_failed_file_authority_sync(label: str) -> None:
+    trace = TRACE.replace(
+        b"QI_CAUSAL_V1 kind=phase_end name=full_seal ok=1\n",
+        f"QI_CAUSAL_V1 kind=sync label={label} ok=0 elapsed_ns=11\n".encode()
+        + b"QI_CAUSAL_V1 kind=phase_end name=full_seal ok=1\n",
+    )
+    with pytest.raises(ValueError, match="failed lexical sync"):
+        _replay(trace=trace)
+
+
+def test_profile_refuses_unknown_file_authority_sync_label() -> None:
+    trace = TRACE.replace(b"label=atomic_file", b"label=file_authority_unknown")
+    with pytest.raises(ValueError, match="invalid lexical sync marker"):
+        _replay(trace=trace)
 
 
 @pytest.mark.parametrize(
@@ -224,13 +265,19 @@ def test_profile_rejects_unpaired_unknown_or_inconsistent_trace(mutant: bytes) -
         ("source_repo_count", False),
         ("source_repo_count", 15),
         ("client_request_timeout_ms", 300_000),
-        ("client_request_timeout_ms", 30_000.0),
-        ("requested_client_request_timeout_ms", 30_000),
+        ("client_request_timeout_ms", 600_000.0),
+        ("requested_client_request_timeout_ms", 600_000),
         ("requested_history_max_bytes", 16 * 1024 * 1024),
         ("requested_history_max_total_bytes", 256 * 1024 * 1024),
         ("history_policy_id", "explicit-pair-total-diagnostic-v1"),
         ("history_max_bytes", True),
         ("history_max_generations", 3),
+        ("ingest_max_records", 100_001),
+        ("ingest_max_text_bytes", 134_217_729),
+        ("ingest_max_vector_bytes", 268_435_455),
+        ("source_publication_part_bytes", 1_048_577),
+        ("source_publication_max_bytes", 536_870_913),
+        ("process_memory_ceiling_bytes", 2_147_483_648),
     ],
 )
 def test_profile_refuses_wrong_measured_input_or_policy(key: str, value: object) -> None:
@@ -250,7 +297,7 @@ def test_profile_refuses_wrong_measured_input_or_policy(key: str, value: object)
         lambda row: row["retained_index_bytes"]["by_seal"].update(full=1.5),
         lambda row: row["retained_index_bytes"]["by_seal"].update(full=0),
         lambda row: row["retained_index_bytes"]["by_seal"].update(full=(1 << 53) + 1),
-        lambda row: row["retained_index_bytes"]["by_seal"].update(full=17 * 1024 * 1024),
+        lambda row: row["retained_index_bytes"]["by_seal"].update(full=1_073_741_825),
         lambda row: row["retained_index_bytes"].update(method="sampled_st_blocks"),
     ],
 )

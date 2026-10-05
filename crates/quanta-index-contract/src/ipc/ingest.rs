@@ -61,8 +61,9 @@ pub use payload_digest::source_event_payload_sha256;
 
 mod source_upload;
 pub use source_upload::{
-    SOURCE_PUBLICATION_UPLOAD_MAX_BYTES, SOURCE_PUBLICATION_UPLOAD_PART_BYTES,
-    SourcePublicationUploadAck, SourcePublicationUploadCommit, SourcePublicationUploadIdentity, SourcePublicationUploadPart,
+    SOURCE_PUBLICATION_UPLOAD_DEFAULT_BYTES, SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+    SOURCE_PUBLICATION_UPLOAD_PART_BYTES, SourcePublicationUploadAck,
+    SourcePublicationUploadCommit, SourcePublicationUploadIdentity, SourcePublicationUploadPart,
 };
 
 mod validation;

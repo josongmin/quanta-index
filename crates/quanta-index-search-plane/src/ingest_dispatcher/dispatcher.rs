@@ -114,7 +114,10 @@ impl SearchPlaneIngestDispatcher {
     }
 
     #[must_use]
-    pub fn with_source_upload(mut self, upload: Arc<dyn quanta_index_core::SourcePublicationUploadPort>) -> Self {
+    pub fn with_source_upload(
+        mut self,
+        upload: Arc<dyn quanta_index_core::SourcePublicationUploadPort>,
+    ) -> Self {
         self.source_upload = Some(upload);
         self
     }
@@ -501,8 +504,14 @@ impl SearchPlaneIngestDispatcher {
         }
         match request {
             SearchPlaneIngestIpcRequest::StageSourcePublication(part) => {
-                let result = self.source_upload.as_ref().ok_or_else(||
-                    CoreError::InvalidContract("source publication staging is unavailable".into()))
+                let result = self
+                    .source_upload
+                    .as_ref()
+                    .ok_or_else(|| {
+                        CoreError::InvalidContract(
+                            "source publication staging is unavailable".into(),
+                        )
+                    })
                     .and_then(|upload| upload.stage(&part, budget));
                 match result {
                     Ok(ack) => SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(ack),
@@ -510,33 +519,59 @@ impl SearchPlaneIngestDispatcher {
                 }
             }
             SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(identity) => {
-                let result = self.source_upload.as_ref().ok_or_else(||
-                    CoreError::InvalidContract("source publication staging is unavailable".into()))
+                let result = self
+                    .source_upload
+                    .as_ref()
+                    .ok_or_else(|| {
+                        CoreError::InvalidContract(
+                            "source publication staging is unavailable".into(),
+                        )
+                    })
                     .and_then(|upload| upload.discard(identity));
                 match result {
                     Ok(()) => SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(
-                        quanta_index_contract::SourcePublicationUploadAck { identity, next_offset: 0 }),
+                        quanta_index_contract::SourcePublicationUploadAck {
+                            identity,
+                            next_offset: 0,
+                        },
+                    ),
                     Err(error) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(error)),
                 }
             }
             SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) => {
-                let operation = self.source_upload_commit.try_lock().map_err(|_| CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy,
-                    message: "another staged source publication is materializing".into(),
-                });
-                let result = operation.and_then(|_operation| {
-                    let upload = self.source_upload.as_ref().ok_or_else(||
-                        CoreError::InvalidContract("source publication staging is unavailable".into()))?;
-                    let batch = upload.load(commit.identity, budget)?;
-                    if quanta_index_contract::SourcePublicationBinding::for_batch(&batch) != commit.publication {
-                        return Err(CoreError::InvalidContract("staged source publication binding mismatch".into()));
-                    }
-                    let response = self.dispatch(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch), budget);
-                    if matches!(&response, SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)) {
-                        upload.discard(commit.identity)?;
-                    }
-                    Ok(response)
-                });
+                let result = self
+                    .source_upload_commit
+                    .try_lock()
+                    .map_err(|_error| CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy,
+                        message: "another staged source publication is materializing".into(),
+                    })
+                    .and_then(|_operation| {
+                        let upload = self.source_upload.as_ref().ok_or_else(|| {
+                            CoreError::InvalidContract(
+                                "source publication staging is unavailable".into(),
+                            )
+                        })?;
+                        let batch = upload.load(commit.identity, budget)?;
+                        if quanta_index_contract::SourcePublicationBinding::for_batch(&batch)
+                            != commit.publication
+                        {
+                            return Err(CoreError::InvalidContract(
+                                "staged source publication binding mismatch".into(),
+                            ));
+                        }
+                        let response = self.dispatch(
+                            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
+                            budget,
+                        );
+                        if matches!(
+                            &response,
+                            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+                        ) {
+                            upload.discard(commit.identity)?;
+                        }
+                        Ok(response)
+                    });
                 match result {
                     Ok(response) => response,
                     Err(error) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(error)),

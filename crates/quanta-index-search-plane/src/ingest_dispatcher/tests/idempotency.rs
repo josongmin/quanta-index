@@ -407,6 +407,211 @@ fn dirty_batch(doc: &str) -> Result<DirtyIngestBatch, Box<dyn std::error::Error>
 }
 
 #[test]
+fn staged_over_limit_publication_is_refused_typed_without_disk_or_event_mutation() -> TestRes {
+    use quanta_index_contract::{SourcePublicationUploadIdentity, SourcePublicationUploadPart};
+    use quanta_index_ipc::SourcePublicationUploadStore;
+    let runtime = Arc::new(CountingRuntime {
+        applies: AtomicUsize::new(0),
+    });
+    let catalog = Arc::new(MemoryIdempotencyCatalog::default());
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("uploads");
+    let dispatcher = dispatcher(runtime.clone(), catalog.clone())
+        .with_source_upload(Arc::new(SourcePublicationUploadStore::open(&path, 16)?));
+    let response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::StageSourcePublication(SourcePublicationUploadPart {
+            identity: SourcePublicationUploadIdentity {
+                body_sha256: [1; 32],
+                body_bytes: 17,
+            },
+            offset: 0,
+            bytes: vec![1],
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert_eq!(
+        typed_code_of(&response),
+        Some(quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest)
+    );
+    assert_eq!(std::fs::read_dir(path)?.count(), 0);
+    assert_eq!(catalog.records(), 0);
+    assert_eq!(runtime.applies.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn staged_unsealed_publication_is_refused_before_source_reservation() -> TestRes {
+    use quanta_index_contract::{
+        SourcePublicationBinding, SourcePublicationUploadCommit, SourcePublicationUploadPart,
+    };
+    use quanta_index_core::SourcePublicationCatalogPort as _;
+    use quanta_index_ipc::{SourcePublicationUploadStore, source_publication_upload_identity};
+    let catalog = memory_catalog();
+    let (materializer, _fakes) = search_corpus_materializer(catalog.clone(), true, false);
+    let port = Arc::new(CountingSearchCorpus::new(materializer));
+    let root = tempfile::tempdir()?;
+    let dispatcher = search_corpus_dispatcher_with_port(port.clone(), catalog.clone())
+        .with_source_upload(Arc::new(SourcePublicationUploadStore::open(
+            root.path().join("uploads"),
+            quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+        )?));
+    let mut batch = fixture_search_corpus_batch()?;
+    batch.seal = false;
+    let _digest = stamp_batch_digest_v1(&mut batch)?;
+    let identity = source_publication_upload_identity(&batch)?;
+    let bytes = quanta_index_ipc::encode_cbor_payload(&batch)?;
+    let budget = RequestBudgetV1::unbounded();
+    assert!(matches!(
+        dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::StageSourcePublication(SourcePublicationUploadPart {
+                identity,
+                offset: 0,
+                bytes,
+            }),
+            &budget
+        ),
+        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+    ));
+    let response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(
+            SourcePublicationUploadCommit {
+                identity,
+                publication: SourcePublicationBinding::for_batch(&batch),
+            },
+        ),
+        &budget,
+    );
+    let SearchPlaneIngestIpcResponse::Error(error) = response else {
+        return Err(anyhow::anyhow!("unsealed staged publication was accepted"));
+    };
+    assert!(
+        error.message.contains("requires a sealed batch"),
+        "{}",
+        error.message
+    );
+    assert_eq!(port.preflights(), 0);
+    assert_eq!(port.applies(), 0);
+    assert!(
+        catalog
+            .source_publication
+            .inspect_source_event(&batch.repo_id, &batch.source_event)?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn staged_source_publication_is_inert_until_commit_and_replays_one_original_event() -> TestRes {
+    use quanta_index_contract::{
+        SourcePublicationBinding, SourcePublicationUploadCommit, SourcePublicationUploadPart,
+    };
+    use quanta_index_core::SourcePublicationCatalogPort as _;
+    use quanta_index_ipc::{SourcePublicationUploadStore, source_publication_upload_identity};
+
+    let catalog = memory_catalog();
+    let (materializer, _fakes) = search_corpus_materializer(catalog.clone(), true, false);
+    let port = Arc::new(CountingSearchCorpus::new(materializer));
+    let root = tempfile::tempdir()?;
+    let dispatcher = search_corpus_dispatcher_with_port(port.clone(), catalog.clone())
+        .with_source_upload(Arc::new(SourcePublicationUploadStore::open(
+            root.path().join("uploads"),
+            quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+        )?));
+    let batch = fixture_search_corpus_batch()?;
+    let identity = source_publication_upload_identity(&batch)?;
+    let bytes = quanta_index_ipc::encode_cbor_payload(&batch)?;
+    let split = bytes.len() / 2;
+    let part = |offset: usize, bytes: &[u8]| {
+        SearchPlaneIngestIpcRequest::StageSourcePublication(SourcePublicationUploadPart {
+            identity,
+            offset: u64::try_from(offset).expect("fixture offset"),
+            bytes: bytes.to_vec(),
+        })
+    };
+    let budget = RequestBudgetV1::unbounded();
+    let commit = SourcePublicationUploadCommit {
+        identity,
+        publication: SourcePublicationBinding::for_batch(&batch),
+    };
+    assert!(matches!(
+        dispatcher.dispatch(part(0, bytes.get(..split).expect("first half")), &budget),
+        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+    ));
+    assert!(matches!(
+        dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit.clone()),
+            &budget
+        ),
+        SearchPlaneIngestIpcResponse::Error(_)
+    ));
+    assert_eq!(port.preflights(), 0);
+    assert_eq!(port.applies(), 0);
+    assert!(
+        catalog
+            .source_publication
+            .inspect_source_event(&batch.repo_id, &batch.source_event)?
+            .is_none()
+    );
+
+    assert!(matches!(
+        dispatcher.dispatch(
+            part(split, bytes.get(split..).expect("second half")),
+            &budget
+        ),
+        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+    ));
+    let mut swapped = commit.clone();
+    swapped.publication.event.event_id = "foreign-event".into();
+    assert!(matches!(
+        dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(swapped),
+            &budget
+        ),
+        SearchPlaneIngestIpcResponse::Error(_)
+    ));
+    assert_eq!(port.applies(), 0);
+    assert!(
+        catalog
+            .source_publication
+            .inspect_source_event(&batch.repo_id, &batch.source_event)?
+            .is_none()
+    );
+
+    let original = receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit.clone()),
+        &budget,
+    ))?;
+    assert_eq!(original.generation, batch.generation);
+    assert_eq!(original.batch_digest, batch.batch_digest);
+    assert_eq!(port.applies(), 1);
+    let source = catalog
+        .source_publication
+        .inspect_source_event(&batch.repo_id, &batch.source_event)?
+        .ok_or("original event missing")?;
+    assert_eq!(source.binding.event, commit.publication.event);
+    assert_eq!(source.binding.target, commit.publication.target);
+    assert_eq!(
+        source.binding.journal_key.batch_digest,
+        commit.publication.batch_digest
+    );
+    assert_eq!(source.phase, quanta_index_core::SourceEventPhaseV1::Staged);
+
+    // A lost commit response can be retried after the staging file was removed.
+    assert!(matches!(
+        dispatcher.dispatch(part(0, &bytes), &budget),
+        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+    ));
+    let replay = receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit),
+        &budget,
+    ))?;
+    assert!(!replay.applied);
+    assert_eq!(replay.durable_sequence, original.durable_sequence);
+    assert_eq!(port.applies(), 1);
+    Ok(())
+}
+
+#[test]
 fn ingest_claims_use_absolute_deadlines_on_batch_and_repomap_paths() -> TestRes {
     let catalog = memory_catalog();
     let runtime = Arc::new(CountingRuntime {
@@ -581,7 +786,8 @@ fn typed_code_of(
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => None,
+        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => None,
     }
 }
 
@@ -601,7 +807,8 @@ fn receipt_of(response: SearchPlaneIngestIpcResponse) -> Result<BatchPublishRece
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
+        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)) => {
             Err(format!("unexpected response {other:?}"))
         }
     }
@@ -1295,7 +1502,8 @@ fn repomap_receipt_of(
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
+        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)) => {
             Err(format!("unexpected response {other:?}"))
         }
     }

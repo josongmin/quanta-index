@@ -11,16 +11,18 @@
 
 ### Sidebar 실행 결과 회수
 
-- 후속 통합 기준은 `7fb46415ae5a74601f714d09ab8b24d82418ade6`이다. Benchmark 직렬화2곳의
-  manual Serialize 수리는 main에 반영됐고 전체 derive allowlist·owned rustfmt·diff 검사가 `VERIFIED`다.
-  Module cycle·test authority·prompt lint·Ruff check/format도 통과했다. F15 actual 회귀는 shared host lock
-  대기 중이며 실행 완료로 세지 않는다. Scale의 최종 SDK caller/binding 수리는 아직 관리 worktree에 있다.
+- 후속 통합 기준은 `a84f237ca8d4f3a2a5d0bc24f5f4574e73ae8b1c`와 Scale source
+  `74bdc9b493d08da8a708ccfda673f669a1e546ea`의39-path overlay다. 각 pre/post SHA와 patch SHA,
+  `git apply --check`·통합 뒤 `git diff --check`·owned Rust30paths rustfmt가 `VERIFIED`다.
+  SDK caller/binding·daemon staged publication·streaming digest·bounded CBOR scratch·scale profile은 main에 통합됐다.
+  F15 sync3곳의 actual 계측도 main에 반영했다. 영향 Rust/runtime·최종 proof는 아직 실행 완료로 세지 않는다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
   Actual admission/pair/full5는 새 selected-source proof·runtime·host slot 전달 전 `NOT_RUN`이다.
-- Public API 담당은 새 contract 업로드 API baseline 후보를 준비했다. 실제 nightly rendering/consumer
-  판정은 Scale 최종 bytes를 포함한 source에서 수행해야 하며 현재 완료 증거가 없다.
+- Public API 담당의 actual contract API rendering과 contract module gate는 reviewed 후보와 byte-exact로
+  `VERIFIED`다. SDK API·core module·독립 external consumer는 대기 중이다. API/module baseline3paths는
+  source overlay에서 제외했으며 해당 actual gate와 source guards를 확인한 뒤 통합한다.
 - Hosted CircleCI source7fb46415는 `FAILED`다. Verify1730은 upload 코드의 rustfmt drift에서 exit1,
   verify-python1729는 contract/core guarded module tree의 새 upload DTO/port 및 sibling byte wrapper
   visibility baseline 누락에서 exit1이었다. 포맷은 Scale, 두 module baseline과 공개 API는 API 담당이 소유한다.
@@ -73,7 +75,7 @@ Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중�
 | 우선·종류 | 할 작업 | 종료 조건·owner |
 | --- | --- | --- |
 | P0 · 검증 | 선택한 최신 source의 Contract/SDK·영향 runtime/public API/wire gates·hosted CI 실행 | Matching source/binary와 actual selected 결과. Frozen5796의791/191/27을 새 HEAD 결과로 바꾸지 않는다. [I0-02](#o4-i0-02) |
-| P1 · 수리→검증 | Large4,096 default30s timeout 및 XL32,768 posting admission 거절 수리; open-loop·OS restart 실행 | Frozen5796에서도 두 default gate가 실패했다. Full source durable publication과 bounded file authority를 함께 수리하고 matching source에서 재실행한다. [E4-05](#o4-e4-05) |
+| P1 · 검증 | Large4,096/XL32,768 원래 fixture의 지원 profile·typed refusal 검증; open-loop·OS restart 실행 | F15 durable authority와 bounded staged publication 수리는 통합됐다. 새 scale-supported-v1은 별도 명시적 용량 계약이며 기존30s/16MiB 성공을 뜻하지 않는다. Matching source·retained bytes·elapsed·RSS·초과 한도 거절을 확인한다. [E4-05](#o4-e4-05) |
 | P1 · 계측→필요 시 수리 | Full/delta/delete/no-op/reopen 전체 읽기·CPU·metadata·IO·memory/segment 누적 비용 분해 | F15 변경 bucket 생산·cold 전수 검증·selected posting read, retained delete bitmap 및 NoMerge fanout 비용을 actual profile로 판정. Native segment 재사용 구현은 완료다. [E4-01](#o4-e4-01) |
 | P1 · 성능 판정 | 완료한 Scanner diagnostic A/B의 범위 판정·Semble phase 비용·1,196-row bootstrap full caller·정식 반복 성능 | Scanner fixed338 diagnostic parity는 완료다. 유지/철회와 qualified speed는 사전 acceptance·지속 host 관측 및 최소5 fresh roots/route1,000 warm observations로 별도 판정. [E4-03](#o4-e4-03), [E4-06](#o4-e4-06), [E2-05](#o4-e2-05), [E1-07](#o4-e1-07) |
 | P1 · 평가 실행 | SQL146/Zellij476·신규742pairs 판단, Tailscale rubric, admissions·required cells·5제품 capture/replay/join·최종 scores | AI quota/rubric 입력은 해당 범위만 `BLOCKED`. Ready cells는 별도로 실행한다. Exact/prefix/infix/components/default·explicit typo/no-answer/NL/ARB/B09 분모와 외부 index scope를 유지한다. [E1](#e1), [E2](#e2) |
@@ -217,6 +219,10 @@ P1 · W5 · scorer/report 구현 완료, final labels·재채점·전체 cohort 
 
 P2 · W1→조건부W2 · bounded kernel/cache 구현 있음, 추가 최적화 조건 미확인.
 
+- 두 Gin actual의1,196 task/query/category/family와 기록된 input hash는 일치했다. 두 root 모두
+  Quanta symbol 단일 route이며 `evaluate-diagnostic`은 paired bootstrap caller를 호출하지 않는다.
+  단일 route profile과 paired caller 비용을 구분한다. Matching 두 번째 capture와 caller inputs 없이
+  self-comparison·합성 row로 paired 병목을 판정하지 않는다.
 - 1,196-row full-caller cold compute/RSS와 사전 목표/memory ceiling을 측정한다.
   bat20 whole-verdict의 추가 numeric 최적화는 관측 profile 범위에서 이미 `NOT_APPLICABLE`이다.
 - 채택 시 declared10,000 resamples/method/seed/draw/strata를 independent scalar/reference와 대조하고
@@ -499,6 +505,11 @@ cold-open/build/residency/cap/cancel 계약을 독립 검증한다. 비용·memo
 P1 · W2/W4 · typed scale/load/preflight/ANN 구현 완료; frozen5796 default capacity gates `FAILED`.
 Matching release actual 및 별도 override 진단은 아래 범위로 판정한다.
 
+- source74bdc9b4의39 owned paths를 main에 통합했다. `scale-supported-v1`은 pair1GiB/total2GiB,
+  client600s, source128MiB/100,000records, vector256MiB, staged body512MiB, process4GiB 계약이다.
+  각1MiB upload part를 디스크에 보관하고 hash/CBOR preflight/기존 sealed event identity를 검증한 뒤
+  작은 commit으로 발행한다. 기존 inline request cap·SDK30s 및 harness16MiB default는 유지된다.
+  이 profile의 원래 Large/XL full/delta/noop/delete/reopen actual과 over-limit refusal는 아직 `NOT_RUN`이다.
 - 256/4,096/32,768 tiers의 matching release/profile/lifecycle/open-loop·OS restart를 판정한다.
   이전 source의 default large30s timeout과 xlarge4,000,461 memberships 대4,000,000 cap 거절을 보존한다.
 - clean5796 별도 `scale_matrix` build `VERIFIED`: SDK target을 cache seed로 사용해

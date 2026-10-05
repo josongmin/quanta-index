@@ -60,7 +60,8 @@ fn receipt_of(
         SearchPlaneIngestIpcResponse::Error(error) => {
             Err(format!("refused: {}: {}", error.code, error.message).into())
         }
-        other @ (SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+        other @ (SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
         | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
@@ -79,7 +80,8 @@ fn receipt_of(
 fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
     match response {
         SearchPlaneIngestIpcResponse::Error(error) => Some(error.code.as_wire_str()),
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
+        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+        | SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)

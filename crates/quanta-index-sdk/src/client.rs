@@ -391,7 +391,7 @@ impl QuantaIndex {
         &self,
         payload: SearchPlaneIngestIpcRequest,
     ) -> Result<SearchPlaneIngestIpcResponse, SdkError> {
-        let binding = IngestCallBinding::from_request(&payload);
+        let binding = IngestCallBinding::from_request(&payload)?;
         let ingest_transport = self
             .inner
             .ingest_transport
@@ -511,7 +511,9 @@ impl QuantaIndex {
         response: &SearchPlaneIngestIpcResponse,
     ) -> &'static str {
         match response {
-            SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => "source_publication_upload_ack",
+            SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => {
+                "source_publication_upload_ack"
+            }
             SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_) => "search_corpus_receipt",
             SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_) => {
                 "repomap_terminal_receipt_v2"

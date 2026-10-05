@@ -36,7 +36,9 @@ const USAGE: &str = "Usage: scale_matrix [--tier small|medium|large|xlarge | --a
     [--history-max-bytes POSITIVE_U64] [--history-max-total-bytes POSITIVE_U64]
     [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
     Default tier: small (16 files). medium=256, large=4096, xlarge=32768.
-    Default timeout/history profile is separate from explicit diagnostic overrides.
+    scale-supported-v1: timeout=600s, history pair=1GiB/total=2GiB, ingest text=128MiB.
+    Publications above 64MiB use 1MiB staged parts; sealed body cap=512MiB, process memory ceiling=4GiB.
+    Explicit timeout/history overrides remain diagnostic inputs.
     A total-history override requires an explicit pair-history override.
     --help, -h  Print this usage without running the rail.";
 

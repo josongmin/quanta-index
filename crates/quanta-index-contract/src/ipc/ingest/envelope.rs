@@ -13,9 +13,8 @@ use super::{
     DirtyIngestBatch, FileContributorIngestBatch, FileOwnershipIngestBatch, HistoryIngestBatch,
     RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoMetaIngestBatch,
     RepoTopicIngestBatch, RuntimeCatalogIngestBatch, SearchCorpusIngestBatch,
-    StructuralIngestBatch,
-    SourcePublicationUploadPart, SourcePublicationUploadCommit, SourcePublicationUploadIdentity,
-    SourcePublicationUploadAck,
+    SourcePublicationUploadAck, SourcePublicationUploadCommit, SourcePublicationUploadIdentity,
+    SourcePublicationUploadPart, StructuralIngestBatch,
 };
 use crate::{RepoMapPublishBundleRequestV2, RepoMapTerminalReceiptV2};
 
@@ -81,7 +80,9 @@ pub enum SearchPlaneIngestIpcRequest {
 }
 
 const SEARCH_PLANE_INGEST_REQUEST_VARIANTS: &[&str] = &[
-    "StageSourcePublication", "PublishStagedSourcePublication", "DiscardSourcePublicationUpload",
+    "StageSourcePublication",
+    "PublishStagedSourcePublication",
+    "DiscardSourcePublicationUpload",
     "PublishSearchCorpusBatchV2",
     "PublishHistoryBatch",
     "PublishRepoCommitRecencyBatch",
@@ -103,11 +104,23 @@ impl Serialize for SearchPlaneIngestIpcRequest {
     {
         match self {
             Self::StageSourcePublication(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcRequest", 16, "StageSourcePublication", payload),
+                "SearchPlaneIngestIpcRequest",
+                16,
+                "StageSourcePublication",
+                payload,
+            ),
             Self::PublishStagedSourcePublication(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcRequest", 17, "PublishStagedSourcePublication", payload),
+                "SearchPlaneIngestIpcRequest",
+                17,
+                "PublishStagedSourcePublication",
+                payload,
+            ),
             Self::DiscardSourcePublicationUpload(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcRequest", 18, "DiscardSourcePublicationUpload", payload),
+                "SearchPlaneIngestIpcRequest",
+                18,
+                "DiscardSourcePublicationUpload",
+                payload,
+            ),
             Self::PublishSearchCorpusBatch(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcRequest",
                 0,
@@ -199,9 +212,19 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcRequestVisitor {
     {
         let (tag, variant) = data.variant::<String>()?;
         match tag.as_str() {
-            "StageSourcePublication" => Ok(SearchPlaneIngestIpcRequest::StageSourcePublication(variant.newtype_variant()?)),
-            "PublishStagedSourcePublication" => Ok(SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(variant.newtype_variant()?)),
-            "DiscardSourcePublicationUpload" => Ok(SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(variant.newtype_variant()?)),
+            "StageSourcePublication" => Ok(SearchPlaneIngestIpcRequest::StageSourcePublication(
+                variant.newtype_variant()?,
+            )),
+            "PublishStagedSourcePublication" => {
+                Ok(SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(
+                    variant.newtype_variant()?,
+                ))
+            }
+            "DiscardSourcePublicationUpload" => {
+                Ok(SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(
+                    variant.newtype_variant()?,
+                ))
+            }
             "PublishSearchCorpusBatchV2" => Ok(
                 SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(variant.newtype_variant()?),
             ),
@@ -312,7 +335,11 @@ impl Serialize for SearchPlaneIngestIpcResponse {
     {
         match self {
             Self::SourcePublicationUploadAck(payload) => serializer.serialize_newtype_variant(
-                "SearchPlaneIngestIpcResponse", 15, "SourcePublicationUploadAck", payload),
+                "SearchPlaneIngestIpcResponse",
+                15,
+                "SourcePublicationUploadAck",
+                payload,
+            ),
             Self::SearchCorpusReceipt(payload) => serializer.serialize_newtype_variant(
                 "SearchPlaneIngestIpcResponse",
                 0,
@@ -410,7 +437,11 @@ impl<'de> Visitor<'de> for SearchPlaneIngestIpcResponseVisitor {
     {
         let (tag, variant) = data.variant::<String>()?;
         match tag.as_str() {
-            "SourcePublicationUploadAck" => Ok(SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(variant.newtype_variant()?)),
+            "SourcePublicationUploadAck" => {
+                Ok(SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(
+                    variant.newtype_variant()?,
+                ))
+            }
             "SearchCorpusReceiptV2" => Ok(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                 variant.newtype_variant()?,
             )),

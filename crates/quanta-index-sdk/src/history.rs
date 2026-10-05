@@ -603,6 +603,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo commit recency receipt",
                 QuantaIndex::ingest_response_kind(&other),
@@ -628,6 +629,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo meta receipt",
                 QuantaIndex::ingest_response_kind(&other),
@@ -653,6 +655,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo topic receipt",
                 QuantaIndex::ingest_response_kind(&other),
@@ -681,6 +684,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repo description receipt",
                 QuantaIndex::ingest_response_kind(&other),
@@ -709,6 +713,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "file ownership receipt",
                 QuantaIndex::ingest_response_kind(&other),
@@ -737,6 +742,7 @@ impl<'a> HistoryNamespace<'a> {
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "file contributor receipt",
                 QuantaIndex::ingest_response_kind(&other),
@@ -777,6 +783,7 @@ impl crate::NamespaceIngest for HistoryNs {
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "history receipt",
                 QuantaIndex::ingest_response_kind(&other),

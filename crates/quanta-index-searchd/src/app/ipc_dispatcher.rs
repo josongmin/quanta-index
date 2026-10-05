@@ -154,8 +154,12 @@ impl PlaneDispatch<SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse>
         match request {
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_) => "ingest.search_corpus",
             SearchPlaneIngestIpcRequest::StageSourcePublication(_) => "ingest.source_upload",
-            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_) => "ingest.search_corpus",
-            SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) => "ingest.source_upload_discard",
+            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_) => {
+                "ingest.search_corpus"
+            }
+            SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) => {
+                "ingest.source_upload_discard"
+            }
             SearchPlaneIngestIpcRequest::PublishHistoryBatch(_) => "ingest.history",
             SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_) => {
                 "ingest.repo_commit_recency"

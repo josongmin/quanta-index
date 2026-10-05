@@ -13,9 +13,15 @@ pub(crate) fn retained_text_budget(bytes: &[u8]) -> Result<usize, IpcError> {
     retained_text_budget_reader(bytes, bytes.len())
 }
 
-pub(crate) fn retained_text_budget_reader<R: std::io::Read>(reader: R, input_len: usize) -> Result<usize, IpcError> {
+pub(crate) fn retained_text_budget_reader<R: std::io::Read>(
+    reader: R,
+    input_len: usize,
+) -> Result<usize, IpcError> {
     let mut decoder = Decoder::from(reader);
     let mut storage_bytes = 0_usize;
+    // One scratch buffer for the entire bounded walk. Per-depth 4 KiB buffers
+    // exhausted a normal worker/test stack before reaching the nesting guard.
+    let mut scratch = [0_u8; 4096];
     let header = decoder.pull().map_err(|error| decode_error(&error))?;
     scan(
         header,
@@ -24,6 +30,7 @@ pub(crate) fn retained_text_budget_reader<R: std::io::Read>(reader: R, input_len
         0,
         false,
         &mut storage_bytes,
+        &mut scratch,
     )?;
     if decoder.offset() != input_len {
         return Err(IpcError::Decode(
@@ -48,6 +55,7 @@ fn scan<R: std::io::Read>(
     depth: usize,
     map_key: bool,
     storage_bytes: &mut usize,
+    scratch: &mut [u8; 4096],
 ) -> Result<(), IpcError> {
     if depth >= 256 {
         return Err(IpcError::Decode(
@@ -65,13 +73,13 @@ fn scan<R: std::io::Read>(
             child_depth,
             map_key,
             storage_bytes,
+            scratch,
         )?,
         Header::Bytes(len) => {
             let mut segments = decoder.bytes(len);
-            let mut scratch = [0_u8; 4096];
             while let Some(mut segment) = segments.pull().map_err(|error| decode_error(&error))? {
                 while segment
-                    .pull(&mut scratch)
+                    .pull(scratch)
                     .map_err(|error| decode_error(&error))?
                     .is_some()
                 {}
@@ -84,10 +92,9 @@ fn scan<R: std::io::Read>(
                     .ok_or_else(|| IpcError::Decode("CBOR text budget overflow".into()))?;
             }
             let mut segments = decoder.text(len);
-            let mut scratch = [0_u8; 4096];
             while let Some(mut segment) = segments.pull().map_err(|error| decode_error(&error))? {
                 while segment
-                    .pull(&mut scratch)
+                    .pull(scratch)
                     .map_err(|error| decode_error(&error))?
                     .is_some()
                 {}
@@ -107,6 +114,7 @@ fn scan<R: std::io::Read>(
                     child_depth,
                     false,
                     storage_bytes,
+                    scratch,
                 )?;
             }
         }
@@ -115,7 +123,15 @@ fn scan<R: std::io::Read>(
             if child == Header::Break {
                 break;
             }
-            scan(child, decoder, input_len, child_depth, false, storage_bytes)?;
+            scan(
+                child,
+                decoder,
+                input_len,
+                child_depth,
+                false,
+                storage_bytes,
+                scratch,
+            )?;
         },
         Header::Map(Some(len)) => {
             if len > input_len >> 1 {
@@ -131,6 +147,7 @@ fn scan<R: std::io::Read>(
                     child_depth,
                     true,
                     storage_bytes,
+                    scratch,
                 )?;
                 scan(
                     next(decoder)?,
@@ -139,6 +156,7 @@ fn scan<R: std::io::Read>(
                     child_depth,
                     false,
                     storage_bytes,
+                    scratch,
                 )?;
             }
         }
@@ -147,7 +165,15 @@ fn scan<R: std::io::Read>(
             if key == Header::Break {
                 break;
             }
-            scan(key, decoder, input_len, child_depth, true, storage_bytes)?;
+            scan(
+                key,
+                decoder,
+                input_len,
+                child_depth,
+                true,
+                storage_bytes,
+                scratch,
+            )?;
             scan(
                 next(decoder)?,
                 decoder,
@@ -155,6 +181,7 @@ fn scan<R: std::io::Read>(
                 child_depth,
                 false,
                 storage_bytes,
+                scratch,
             )?;
         },
     }
@@ -179,5 +206,13 @@ mod tests {
     fn rejects_truncated_arrays_and_trailing_values() {
         assert!(retained_text_budget(b"\x82\x60").is_err());
         assert!(retained_text_budget(b"\x01\x02").is_err());
+    }
+
+    #[test]
+    fn nesting_guard_refuses_without_exhausting_the_worker_stack() {
+        let mut bytes = vec![0x81; 257];
+        bytes.push(0);
+        let error = retained_text_budget(&bytes).expect_err("nested input exceeds contract");
+        assert!(error.to_string().contains("nesting limit"));
     }
 }

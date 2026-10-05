@@ -46,3 +46,7 @@
 "Dense"
 "text_query"
 "QIPCZST1"
+"StageSourcePublication"
+"PublishStagedSourcePublication"
+"DiscardSourcePublicationUpload"
+"SourcePublicationUploadAck"

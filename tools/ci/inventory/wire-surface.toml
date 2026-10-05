@@ -212,6 +212,9 @@ file = "crates/quanta-index-contract/src/ipc/ingest/envelope.rs"
 plane = "ingest"
 direction = "request"
 variants = [
+  "StageSourcePublication",
+  "PublishStagedSourcePublication",
+  "DiscardSourcePublicationUpload",
   "PublishSearchCorpusBatch",
   "PublishHistoryBatch",
   "PublishRepoCommitRecencyBatch",
@@ -232,6 +235,7 @@ file = "crates/quanta-index-contract/src/ipc/ingest/envelope.rs"
 plane = "ingest"
 direction = "response"
 variants = [
+  "SourcePublicationUploadAck",
   "SearchCorpusReceipt",
   "HistoryReceipt",
   "RepoCommitRecencyReceipt",
@@ -252,15 +256,22 @@ variants = [
 # ---------------------------------------------------------------------------
 
 [[artifact]]
+id = "source-publication-upload-staging"
+owner = "quanta-index-ipc"
+path = "state_root/source-publication-uploads/<body-sha256>-<body-bytes-hex>.cbor"
+reproduction = "cache"
+notes = "Opaque current-wire SearchCorpusIngestBatch bytes, verified by complete length/SHA-256 and guarded decode before commit. Staging owns no source event, journal or generation authority. The producer can resend its original publication after discard, TTL cleanup, restart or a lost response; the existing publication journal owns replay. Admission bounds one body to a configured 128 MiB default, 512 MiB absolute maximum, parts to 1 MiB, eight slots and 1 GiB staged bytes. Private regular files only; completed uploads are removed, and later stage admission scans reclaim bodies untouched for 24 hours. Not migrated across wire changes."
+
+[[artifact]]
 id = "lexical-sealed-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Seal commitment binds identity digest, normalizer, Tantivy commit and segment components, text authority, overlays, optional source coverage and ranked keys. Format 9 added bounded coverage pages; format 10 added full-file authority and immutable source bytes with four-surface posting counts; format 11 counts folded content and path postings only; format 12 binds explicit symbol-name source policy; format 13 required exact live BM25 token totals and zero deleted documents at seal; format 14 commits mandatory producer document census and exact live per-segment BM25 statistics while preserving immutable segments with tombstones. Formats 1-13 are refused typed and require a producer rebuild."
+notes = "Seal commitment binds identity digest, normalizer, Tantivy commit and segment components, text authority, overlays, optional source coverage and ranked keys. Format 9 added bounded coverage pages; format 10 added full-file authority and immutable source bytes with four-surface posting counts; format 11 counts folded content and path postings only; format 12 binds explicit symbol-name source policy; format 13 required exact live BM25 token totals and zero deleted documents at seal; format 14 commits mandatory producer document census and exact live per-segment BM25 statistics while preserving immutable segments with tombstones. The current decoder accepts format 15; formats 1-14 are refused typed and require a producer rebuild."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
-value = 14
+value = 15
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"

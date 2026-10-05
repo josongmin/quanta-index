@@ -51,7 +51,7 @@ def test_scale_command_forwards_pair_and_total_as_distinct_flags() -> None:
     [
         (None, 600_000_000),
         (600_000_001, 600_000_000),
-        (268_435_457, None),
+        (2_147_483_649, None),
         (0, None),
         (True, None),
         (300_000_000, 0),

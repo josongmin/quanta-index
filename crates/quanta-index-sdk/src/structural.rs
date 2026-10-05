@@ -254,6 +254,7 @@ fn publish_structural_batch<const SEALED: bool>(
         | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
         | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
             "structural receipt",
             QuantaIndex::ingest_response_kind(&other),

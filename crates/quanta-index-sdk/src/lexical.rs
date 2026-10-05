@@ -581,15 +581,60 @@ fn dispatch_search_corpus_publish_outcome_v1<const SEALED: bool>(
     wire_batch.validate_surface_mutations_v1().map_err(|err| {
         SdkError::Protocol(format!("invalid search corpus surface mutation: {err}"))
     })?;
-    let response = client.dispatch_ingest(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire_batch),
-    )?;
+    let response = if quanta_index_ipc::cbor_payload_len(&wire_batch)
+        .map_err(SdkError::Transport)?
+        > quanta_index_ipc::SOURCE_PUBLICATION_INLINE_BYTES
+    {
+        let identity = quanta_index_ipc::source_publication_upload_identity(&wire_batch)
+            .map_err(SdkError::Transport)?;
+        quanta_index_ipc::for_each_source_publication_upload_part(&wire_batch, identity, |part| {
+            let next_offset = part
+                .offset
+                .checked_add(
+                    u64::try_from(part.bytes.len())
+                        .map_err(|error| SdkError::Protocol(error.to_string()))?,
+                )
+                .ok_or_else(|| SdkError::Protocol("source upload part offset overflow".into()))?;
+            let SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(ack) = client
+                .dispatch_ingest(SearchPlaneIngestIpcRequest::StageSourcePublication(part))?
+            else {
+                return Err(SdkError::Protocol(
+                    "source publication upload acknowledgement mismatch".into(),
+                ));
+            };
+            if ack.identity != identity || ack.next_offset != next_offset {
+                return Err(SdkError::Protocol(
+                    "source publication upload acknowledgement mismatch".into(),
+                ));
+            }
+            Ok(())
+        })
+        .map_err(|error| match error {
+            quanta_index_ipc::SourcePublicationUploadError::Transport(error) => error,
+            quanta_index_ipc::SourcePublicationUploadError::Encoding(error) => {
+                SdkError::Transport(error)
+            }
+        })?;
+        client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(
+            quanta_index_contract::SourcePublicationUploadCommit {
+                identity,
+                publication: quanta_index_contract::SourcePublicationBinding::for_batch(
+                    &wire_batch,
+                ),
+            },
+        ))?
+    } else {
+        client.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+            wire_batch,
+        ))?
+    };
     match response {
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) => {
             validate_search_corpus_publish_receipt_v1(batch, &outcome.receipt)?;
             Ok(outcome)
         }
         other @ (SearchPlaneIngestIpcResponse::HistoryReceipt(_)
+        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
         | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)

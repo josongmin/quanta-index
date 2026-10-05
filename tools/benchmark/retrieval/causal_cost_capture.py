@@ -42,7 +42,7 @@ def _history_inputs(pair: int | None, total: int | None) -> dict:
             raise ValueError(f"{label} must be a positive u64")
     if total is not None and pair is None:
         raise ValueError("total history override requires an explicit pair bound")
-    if pair is not None and pair > (total if total is not None else 256 * 1024 * 1024):
+    if pair is not None and pair > (total if total is not None else 2 * 1024 * 1024 * 1024):
         raise ValueError("pair history bound exceeds effective total history bound")
     return {
         "history_policy_id": (
@@ -50,12 +50,12 @@ def _history_inputs(pair: int | None, total: int | None) -> dict:
             if total is not None
             else "explicit-pair-default-total-v1"
             if pair is not None
-            else "harness-default-v1"
+            else "scale-supported-v1"
         ),
         "requested_history_max_bytes": pair,
-        "history_max_bytes": pair if pair is not None else 16 * 1024 * 1024,
+        "history_max_bytes": pair if pair is not None else 1024 * 1024 * 1024,
         "requested_history_max_total_bytes": total,
-        "history_max_total_bytes": total if total is not None else 256 * 1024 * 1024,
+        "history_max_total_bytes": total if total is not None else 2 * 1024 * 1024 * 1024,
     }
 
 

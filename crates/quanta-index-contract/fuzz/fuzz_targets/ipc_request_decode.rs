@@ -26,6 +26,7 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SemanticIngestBatch, SemanticQueryRequest, SemanticWorkBoundedQueryRequestV1,
+    SourcePublicationUploadCommit, SourcePublicationUploadIdentity, SourcePublicationUploadPart,
     StructuralIngestBatch, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
 };
 use quanta_index_ipc::decode_request;
@@ -74,6 +75,9 @@ fuzz_target!(|data: &[u8]| {
     // fuzz target exercises them now so the fail-closed deserializer
     // invariant holds before runtime wiring lands.
     let _ = ciborium::de::from_reader::<SearchCorpusIngestBatch, _>(data);
+    let _ = ciborium::de::from_reader::<SourcePublicationUploadIdentity, _>(data);
+    let _ = ciborium::de::from_reader::<SourcePublicationUploadPart, _>(data);
+    let _ = ciborium::de::from_reader::<SourcePublicationUploadCommit, _>(data);
     let _ = ciborium::de::from_reader::<SemanticIngestBatch, _>(data);
     let _ = ciborium::de::from_reader::<HistoryIngestBatch, _>(data);
     let _ = ciborium::de::from_reader::<DirtyIngestBatch, _>(data);

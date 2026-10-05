@@ -8,6 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::corpus_wire::{SourceBytesBuf, SourceBytesWire};
 
 pub const SOURCE_PUBLICATION_UPLOAD_PART_BYTES: usize = 1024 * 1024;
+pub const SOURCE_PUBLICATION_UPLOAD_DEFAULT_BYTES: u64 = 128 * 1024 * 1024;
 pub const SOURCE_PUBLICATION_UPLOAD_MAX_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,7 +26,10 @@ impl Serialize for SourcePublicationUploadIdentity {
 impl<'de> Deserialize<'de> for SourcePublicationUploadIdentity {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let (body_sha256, body_bytes) = Deserialize::deserialize(deserializer)?;
-        Ok(Self { body_sha256, body_bytes })
+        Ok(Self {
+            body_sha256,
+            body_bytes,
+        })
     }
 }
 
@@ -44,8 +48,13 @@ impl Serialize for SourcePublicationUploadPart {
 
 impl<'de> Deserialize<'de> for SourcePublicationUploadPart {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let (identity, offset, bytes): (_, _, SourceBytesBuf) = Deserialize::deserialize(deserializer)?;
-        Ok(Self { identity, offset, bytes: bytes.0 })
+        let (identity, offset, bytes): (_, _, SourceBytesBuf) =
+            Deserialize::deserialize(deserializer)?;
+        Ok(Self {
+            identity,
+            offset,
+            bytes: bytes.0,
+        })
     }
 }
 
@@ -70,7 +79,10 @@ impl Serialize for SourcePublicationUploadCommit {
 impl<'de> Deserialize<'de> for SourcePublicationUploadCommit {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let (identity, publication) = Deserialize::deserialize(deserializer)?;
-        Ok(Self { identity, publication })
+        Ok(Self {
+            identity,
+            publication,
+        })
     }
 }
 
@@ -83,6 +95,9 @@ impl Serialize for SourcePublicationUploadAck {
 impl<'de> Deserialize<'de> for SourcePublicationUploadAck {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let (identity, next_offset) = Deserialize::deserialize(deserializer)?;
-        Ok(Self { identity, next_offset })
+        Ok(Self {
+            identity,
+            next_offset,
+        })
     }
 }

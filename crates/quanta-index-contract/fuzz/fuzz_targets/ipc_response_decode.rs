@@ -21,7 +21,7 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneStructuralQueryResponse, SemanticQueryResponse, SemanticWorkBoundedQueryResponseV1,
-    SymbolQueryResponse, TextQueryResponse,
+    SourcePublicationUploadAck, SymbolQueryResponse, TextQueryResponse,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -60,6 +60,7 @@ fuzz_target!(|data: &[u8]| {
 
     // Ingest receipts (QI-ING-01 + history / dirty / structural follow-ons).
     let _ = ciborium::de::from_reader::<BatchPublishReceipt, _>(data);
+    let _ = ciborium::de::from_reader::<SourcePublicationUploadAck, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneIngestIpcResponse, _>(data);
     let _ = ciborium::de::from_reader::<SearchPlaneIngestIpcResponseEnvelope, _>(data);
 

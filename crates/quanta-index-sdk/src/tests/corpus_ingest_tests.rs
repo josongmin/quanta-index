@@ -1097,3 +1097,126 @@ fn producer_client_delegates_non_advancing_activation_rejection_before_ingest_v1
         "non-advancing activation reached ingest"
     );
 }
+
+struct MultipartCorpusTransport {
+    body: Vec<u8>,
+    identity: quanta_index_contract::SourcePublicationUploadIdentity,
+    publication: quanta_index_contract::SourcePublicationBinding,
+    receipt: BatchPublishReceipt,
+    progress: Mutex<(usize, usize, usize)>,
+}
+
+impl IngestTransport for MultipartCorpusTransport {
+    fn send(
+        &self,
+        request: SearchPlaneIngestIpcRequestEnvelope,
+    ) -> Result<SearchPlaneIngestIpcResponseEnvelope, crate::SdkError> {
+        let mut progress = self
+            .progress
+            .lock()
+            .map_err(|error| crate::SdkError::Protocol(error.to_string()))?;
+        let payload = match request.payload {
+            SearchPlaneIngestIpcRequest::StageSourcePublication(part) => {
+                assert_eq!(part.identity, self.identity);
+                assert_eq!(part.offset, u64::try_from(progress.0).expect("offset"));
+                assert!(part.bytes.len() <= 1_048_576);
+                let end = progress.0.checked_add(part.bytes.len()).expect("part end");
+                assert_eq!(self.body.get(progress.0..end), Some(part.bytes.as_slice()));
+                progress.0 = end;
+                progress.1 = progress.1.checked_add(1).expect("part count");
+                SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(
+                    quanta_index_contract::SourcePublicationUploadAck {
+                        identity: self.identity,
+                        next_offset: u64::try_from(end).expect("end"),
+                    },
+                )
+            }
+            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) => {
+                assert_eq!(progress.0, self.body.len());
+                assert_eq!(commit.identity, self.identity);
+                assert_eq!(commit.publication, self.publication);
+                progress.2 = progress.2.checked_add(1).expect("commit count");
+                SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
+                    quanta_index_contract::SearchCorpusPublishOutcome {
+                        publication: self.publication.clone(),
+                        receipt: self.receipt.clone(),
+                        observation: None,
+                    },
+                )
+            }
+            SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)
+            | SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishFileContributorBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishStructuralBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_) => {
+                return Err(crate::SdkError::Protocol(
+                    "large SDK publication used a different route".into(),
+                ));
+            }
+        };
+        Ok(SearchPlaneIngestIpcResponseEnvelope {
+            request_id: request.request_id,
+            payload,
+        })
+    }
+}
+
+#[test]
+fn large_sdk_publication_streams_exact_original_body_then_commits_once() {
+    let mut source = sample_semantic_source("large-symbol");
+    source.text = "x".repeat(65 * 1024 * 1024);
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(1),
+        "manifest:multipart",
+    )
+    .source_event(sample_source_event())
+    .replace_semantic_scope(
+        sample_semantic_scope("large-symbol"),
+        "scope:multipart",
+        vec![source],
+        vec![],
+    );
+    let wire = ok_or_fail!(batch.to_wire_batch());
+    // Independent whole-body encoding is a test oracle, never the production upload path.
+    let body = ok_or_fail!(quanta_index_ipc::encode_cbor_payload(&wire));
+    assert!(body.len() > 64 * 1024 * 1024);
+    let transport = Arc::new(MultipartCorpusTransport {
+        body,
+        identity: ok_or_fail!(quanta_index_ipc::source_publication_upload_identity(&wire)),
+        publication: quanta_index_contract::SourcePublicationBinding::for_batch(&wire),
+        receipt: BatchPublishReceipt {
+            generation: ManifestGeneration::new(1),
+            manifest_digest: Some("manifest:multipart".into()),
+            batch_digest: wire.batch_digest.clone(),
+            applied: true,
+            durable_sequence: 7,
+            semantic_content: None,
+            accepted_clear_surfaces: 0,
+            accepted_replace_scopes: 0,
+            accepted_tombstone_scopes: 0,
+            accepted_semantic_replace_scopes: 1,
+            accepted_semantic_tombstone_scopes: 0,
+            sealed: true,
+        },
+        progress: Mutex::new((0, 0, 0)),
+    });
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), transport.clone());
+    assert_eq!(
+        ok_or_fail!(client.search_corpus().publish(&batch)),
+        transport.receipt
+    );
+    let progress = transport.progress.lock().expect("progress");
+    assert_eq!(progress.0, transport.body.len());
+    assert!(progress.1 > 64);
+    assert_eq!(progress.2, 1);
+}

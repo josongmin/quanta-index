@@ -138,6 +138,7 @@ impl crate::NamespaceIngest for RuntimeNs {
             | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
             | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "dirty receipt",
                 QuantaIndex::ingest_response_kind(&other),

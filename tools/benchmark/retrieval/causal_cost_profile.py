@@ -28,6 +28,8 @@ SYNC_LABELS = frozenset(
         "overlay_directory",
         "text_authority_directory",
         "history_layout_directory",
+        "file_authority_object",
+        "file_authority_directory",
     }
 )
 KINDS = frozenset(
@@ -91,9 +93,9 @@ LARGE_PHASES = frozenset(
         "same_process_reopen",
     }
 )
-DEFAULT_TIMEOUT_MS = 30_000
-DEFAULT_HISTORY_MAX_BYTES = 16 * 1024 * 1024
-HISTORY_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+DEFAULT_TIMEOUT_MS = 600_000
+DEFAULT_HISTORY_MAX_BYTES = 1024 * 1024 * 1024
+HISTORY_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 HISTORY_MAX_REVISION_PAIRS = 128
 
 
@@ -144,7 +146,7 @@ def _declared_inputs(
         if requested_history_max_total_bytes is not None
         else "explicit-pair-default-total-v1"
         if requested_history_max_bytes is not None
-        else "harness-default-v1"
+        else "scale-supported-v1"
     )
     manifest = load(manifest_raw)
     if (
@@ -188,6 +190,12 @@ def _declared_inputs(
         "history_policy_id": policy_id,
         "history_max_generations": 2,
         "history_max_revision_pairs": HISTORY_MAX_REVISION_PAIRS,
+        "ingest_max_records": 100_000,
+        "ingest_max_text_bytes": 134_217_728,
+        "ingest_max_vector_bytes": 268_435_456,
+        "source_publication_part_bytes": 1_048_576,
+        "source_publication_max_bytes": 536_870_912,
+        "process_memory_ceiling_bytes": 4_294_967_296,
         "history_max_total_bytes": effective_total,
     }
     for key, expected in policy.items():

@@ -9,7 +9,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
-use quanta_index_contract::{validate_semantic_source_record_v1, SearchCorpusIngestBatch};
+use quanta_index_contract::{SearchCorpusIngestBatch, validate_semantic_source_record_v1};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(batch) = ciborium::de::from_reader::<SearchCorpusIngestBatch, _>(data) else {

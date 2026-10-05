@@ -174,6 +174,9 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
         quanta_index_ipc::ClientIoPolicy::default(),
     )?;
     match response.payload {
+        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => {
+            Err("ingest publish returned an upload acknowledgement without a receipt".into())
+        }
         SearchPlaneIngestIpcResponse::Error(err) => {
             Err(format!("ingest failed code={} message={}", err.code, err.message).into())
         }

@@ -27,10 +27,15 @@ Current execution is owned by [OCT-04 E4-05](../../oct-4-parallel-closure/ticket
   sampler/probes, sampled maxima are not physical peaks. Logical directory-size
   changes may double-count hard links and do not measure physical write I/O.
   Daemon-only attribution, physical I/O and transient disk remain separate scopes.
-- Preserve source/IPC/posting/history limits and the 30 s default client deadline.
-  Scale retains two generations/16 MiB; open-loop retains eight. Explicit timeout
-  or history overrides bind requested/effective configuration and remain separate
-  diagnostic profiles. Do not shrink the tier or raise a limit to pass a default.
+- Bind source/IPC/posting/history limits and deadlines to the selected profile.
+  Native scale uses `scale-supported-v1`: two generations, 1 GiB per pair,
+  2 GiB total history, 600 s client timeout, 100,000 records, 128 MiB source/text,
+  256 MiB vectors, 512 MiB staged body and explicit 4 GiB process memory ceiling.
+  The small unit harness retains 16 MiB history and 30 s client timeout; ordinary
+  product text admission remains 64 MiB and staged-body admission defaults to
+  128 MiB under its unchanged 2 GiB process ceiling. Explicit timeout/history
+  overrides remain separate diagnostic inputs. Fixed tier shapes are unchanged;
+  changing the profile does not turn historical refusals into successes.
 - Report each selected tier's success or typed failure/stage, primary and cleanup
   errors, original source binding and limit only where typed authority supplies it.
   Missing latency is unavailable, never zero. Retain default large-timeout/history
@@ -38,6 +43,25 @@ Current execution is owned by [OCT-04 E4-05](../../oct-4-parallel-closure/ticket
   requires new matching binaries and execution.
 - Qualified capacity/performance needs an admitted host; portability needs another
   admitted host with matching input/configuration and explicit platform exclusions.
+
+## Large/XL repair boundary
+
+The F15 Large failure at the inherited 16 MiB fixture retention cap and the XL
+385,260,565-byte CBOR failure at ordinary 128 MiB request admission are distinct.
+XL reached no daemon in that refusal. The product text envelope is a later
+admission boundary, not evidence of an executed engine OOM.
+
+SDK and harness now stream publications above 64 MiB into bounded 1 MiB parts
+in the private state-root upload store, then commit the unchanged sealed batch.
+Incomplete uploads reserve no event or generation. Complete length/SHA-256,
+guarded CBOR decode and the original publication binding precede the existing
+journal/CAS path. Disk quota, slot count, retry prefix checks, explicit discard
+and admission-time idle cleanup bound staging. Commit still materializes a bounded
+complete DTO; arbitrarily large single-publication streaming is outside this fix.
+
+Matching-release Large/XL lifecycle execution and qualified quiet-host performance
+are separate acceptance scopes. See the runtime profile and operator configuration
+in [the native scale guide](../../../../tools/benchmark/retrieval/README.md#native-scale-capacity-profile).
 
 ## Output and history
 

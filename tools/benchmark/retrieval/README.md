@@ -66,6 +66,52 @@ python3 -m tools.benchmark.retrieval evaluate \
 Symbol phrase/regex/raw-string refuses with `LEX_PLANNER_UNSUPPORTED_FILTER_COMBO`.
 A literal policy does not turn it into symbol keyword search.
 
+## Native scale capacity profile
+
+`scale_matrix` keeps the fixed small/medium/large/xlarge shapes (16/256/4,096/32,768
+files). Its default `scale-supported-v1` profile uses a 600-second client timeout,
+two retained generations, 1 GiB per repo/revision pair, 2 GiB total history,
+100,000 ingest records, 128 MiB source/text, 256 MiB vectors, a 512 MiB staged
+body limit and an explicit 4 GiB process memory ceiling.
+These inputs appear in the artifact and config digest; explicit timeout/history
+overrides remain separate diagnostic inputs. The ordinary harness unit fixture
+keeps its 16 MiB retention limit. A profile or limit change never requalifies an
+older result.
+
+```sh
+./scripts/cargow --lane bench-scale-lane build --release \
+  -p quanta-index-searchd-harness --bin scale_matrix --locked
+# Run the matching binary from a clean source checkout, with fresh external roots.
+/absolute/matching/scale_matrix --tier large --out-dir /absolute/new-large-root
+/absolute/matching/scale_matrix --tier xlarge --out-dir /absolute/new-xlarge-root
+```
+
+SDK and harness publications above 64 MiB use 1 MiB IPC parts followed by one
+commit. Parts are stored under the private state-root `source-publication-uploads`
+directory. Admission permits at most eight staged bodies and 1 GiB of staged
+bytes. The default daemon body limit is 128 MiB; the scale profile explicitly
+sets it to the absolute 512 MiB transport maximum. Completed uploads are removed, explicit
+discard is idempotent, and later stage admissions reclaim bodies untouched for
+24 hours. A producer
+retry sends the same parts and original publication: matching durable prefixes
+are accepted, changed bytes and gaps are refused. Uploading reserves no source
+event and changes no generation. Commit verifies the complete length/hash,
+CBOR allocation bounds and original binding, then uses the existing publication
+journal and paired activation contract.
+
+The ordinary 128 MiB IPC decoded-request limit remains in force. Commit reads
+the bounded complete batch DTO from disk; this transport does not provide a
+constant-memory decoder for arbitrarily large individual publications.
+Searchd's ordinary ingest text default remains 64 MiB. A standalone daemon
+using this scale capacity must set `QUANTA_INDEX_INGEST_MAX_TEXT_BYTES=134217728`,
+`QUANTA_INDEX_SOURCE_PUBLICATION_MAX_BYTES=536870912` and
+`QUANTA_INDEX_PROCESS_MEMORY_CEILING_BYTES=4294967296`,
+configure the matching history bounds and use an explicit client timeout.
+The process memory ceiling validates the declared resident policies; it is not
+an OS RSS limit. The hash embedder and same-process scale rail are diagnostic; they do not prove
+model quality, quiet-host latency, multi-owner concurrency or OS-process crash
+recovery.
+
 ## Select the query policy and result unit
 
 Each row is a separate intent/profile; use separate suites/output roots. The

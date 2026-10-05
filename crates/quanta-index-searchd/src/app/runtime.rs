@@ -1718,24 +1718,30 @@ impl SearchdRuntime {
                 request_events: Some(request_events),
             },
         ));
-        let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(
-            direct_search_corpus_ingest_port,
-            direct_history_ingest_port,
-            repo_commit_recency_ingest_port,
-            repo_topic_ingest_port,
-            repo_description_ingest_port,
-            file_ownership_ingest_port,
-            file_contributor_ingest_port,
-            repo_meta_ingest_port,
-            direct_runtime_ingest_port,
-            direct_structural_ingest_port,
-            repo_map_bundle_ingest_port,
-            idempotency,
-            activation_catalog,
-            authority_inspect_port,
-        ).with_source_upload(Arc::new(quanta_index_ipc::SourcePublicationUploadStore::open(
-            config.state_root().join("source-publication-uploads"),
-        )?)));
+        let ingest_dispatcher = Arc::new(
+            SearchPlaneIngestDispatcher::new(
+                direct_search_corpus_ingest_port,
+                direct_history_ingest_port,
+                repo_commit_recency_ingest_port,
+                repo_topic_ingest_port,
+                repo_description_ingest_port,
+                file_ownership_ingest_port,
+                file_contributor_ingest_port,
+                repo_meta_ingest_port,
+                direct_runtime_ingest_port,
+                direct_structural_ingest_port,
+                repo_map_bundle_ingest_port,
+                idempotency,
+                activation_catalog,
+                authority_inspect_port,
+            )
+            .with_source_upload(Arc::new(
+                quanta_index_ipc::SourcePublicationUploadStore::open(
+                    config.state_root().join("source-publication-uploads"),
+                    config.source_publication_max_bytes(),
+                )?,
+            )),
+        );
         let query_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,
         > = Arc::new(SearchPlaneQueryIpcAdapter::new(query_dispatcher));

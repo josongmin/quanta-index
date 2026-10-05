@@ -1531,19 +1531,20 @@ pub(crate) struct IngestCallBinding {
     repo_map_v2: Option<RepoMapPublishBundleRequestV2>,
     /// Identity only: retaining the batch would clone all corpus source text.
     search_corpus: Option<(quanta_index_contract::SourcePublicationBinding, bool)>,
+    source_upload: Option<quanta_index_contract::SourcePublicationUploadAck>,
 }
 
 impl IngestCallBinding {
     /// Extract the binding from an ingest request payload. Exhaustive
     /// over the closed request enum.
-    pub(crate) fn from_request(request: &SearchPlaneIngestIpcRequest) -> Self {
+    pub(crate) fn from_request(request: &SearchPlaneIngestIpcRequest) -> Result<Self, SdkError> {
         let (expected, commitment) = match request {
             SearchPlaneIngestIpcRequest::StageSourcePublication(_)
-            | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) =>
-                (ExpectedIngestResponseV1::SourcePublicationUploadAck, None),
-            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_) =>
-                (ExpectedIngestResponseV1::SearchCorpusReceipt, None),
-            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_) => {
+            | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) => {
+                (ExpectedIngestResponseV1::SourcePublicationUploadAck, None)
+            }
+            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_)
+            | SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_) => {
                 (ExpectedIngestResponseV1::SearchCorpusReceipt, None)
             }
             SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => (
@@ -1591,11 +1592,11 @@ impl IngestCallBinding {
             }
         };
         let repo_map_v2 = match request {
+            SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request) => Some(request.clone()),
             SearchPlaneIngestIpcRequest::StageSourcePublication(_)
             | SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_)
-            | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) => None,
-            SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request) => Some(request.clone()),
-            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
+            | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)
+            | SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
             | SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
             | SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
             | SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
@@ -1607,20 +1608,22 @@ impl IngestCallBinding {
             | SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
             | SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_) => None,
         };
-        Self {
+        Ok(Self {
             expected,
             commitment,
             repo_map_v2,
+            source_upload: Self::source_upload_binding(request)?,
             search_corpus: match request {
-                SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) =>
-                    Some((commit.publication.clone(), true)),
-                SearchPlaneIngestIpcRequest::StageSourcePublication(_)
-                | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) => None,
+                SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) => {
+                    Some((commit.publication.clone(), true))
+                }
                 SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => Some((
                     quanta_index_contract::SourcePublicationBinding::for_batch(batch),
                     batch.seal,
                 )),
-                SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_)
+                SearchPlaneIngestIpcRequest::StageSourcePublication(_)
+                | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)
+                | SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_)
                 | SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
                 | SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
                 | SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
@@ -1632,7 +1635,45 @@ impl IngestCallBinding {
                 | SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
                 | SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_) => None,
             },
-        }
+        })
+    }
+
+    fn source_upload_binding(
+        request: &SearchPlaneIngestIpcRequest,
+    ) -> Result<Option<quanta_index_contract::SourcePublicationUploadAck>, SdkError> {
+        Ok(match request {
+            SearchPlaneIngestIpcRequest::StageSourcePublication(part) => {
+                let length = u64::try_from(part.bytes.len())
+                    .map_err(|error| SdkError::Protocol(error.to_string()))?;
+                let next_offset = part
+                    .offset
+                    .checked_add(length)
+                    .ok_or_else(|| SdkError::Protocol("source upload offset overflow".into()))?;
+                Some(quanta_index_contract::SourcePublicationUploadAck {
+                    identity: part.identity,
+                    next_offset,
+                })
+            }
+            SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(identity) => {
+                Some(quanta_index_contract::SourcePublicationUploadAck {
+                    identity: *identity,
+                    next_offset: 0,
+                })
+            }
+            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_)
+            | SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishFileContributorBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishStructuralBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => None,
+        })
     }
 
     pub(crate) fn validate_observation(
@@ -1669,7 +1710,14 @@ pub(crate) fn bind_ingest_response(
 ) -> Result<(), SdkError> {
     let route = binding.expected.kind();
     let (actual_kind, receipt): (&str, Option<&BatchPublishReceipt>) = match response {
-        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => ("source_publication_upload_ack", None),
+        SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(ack) => {
+            if binding.source_upload.as_ref() != Some(ack) {
+                return Err(SdkError::Protocol(
+                    "source publication upload acknowledgement binding mismatch".into(),
+                ));
+            }
+            ("source_publication_upload_ack", None)
+        }
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => {
             ("search_corpus_receipt", Some(receipt))
         }
@@ -2078,6 +2126,103 @@ pub const SDK_WIRE_ROUTE_EXCLUSIONS_V1: &[(&str, &str)] = &[
 ];
 
 #[cfg(test)]
+mod source_upload_binding_tests {
+    use super::{IngestCallBinding, bind_ingest_response};
+    use quanta_index_contract::{
+        SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SourcePublicationUploadAck,
+        SourcePublicationUploadIdentity, SourcePublicationUploadPart,
+    };
+
+    #[test]
+    fn source_upload_ack_binds_body_identity_and_exact_accepted_offset() {
+        let identity = SourcePublicationUploadIdentity {
+            body_sha256: [7; 32],
+            body_bytes: 10,
+        };
+        let binding = IngestCallBinding::from_request(
+            &SearchPlaneIngestIpcRequest::StageSourcePublication(SourcePublicationUploadPart {
+                identity,
+                offset: 3,
+                bytes: vec![1, 2],
+            }),
+        )
+        .expect("valid ingest binding");
+        assert!(
+            IngestCallBinding::from_request(&SearchPlaneIngestIpcRequest::StageSourcePublication(
+                SourcePublicationUploadPart {
+                    identity,
+                    offset: u64::MAX,
+                    bytes: vec![1],
+                }
+            ),)
+            .is_err()
+        );
+        let ack = SourcePublicationUploadAck {
+            identity,
+            next_offset: 5,
+        };
+        assert!(
+            bind_ingest_response(
+                &binding,
+                &SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(ack)
+            )
+            .is_ok()
+        );
+        for foreign in [
+            SourcePublicationUploadAck {
+                next_offset: 4,
+                ..ack
+            },
+            SourcePublicationUploadAck {
+                identity: SourcePublicationUploadIdentity {
+                    body_sha256: [8; 32],
+                    ..identity
+                },
+                ..ack
+            },
+            SourcePublicationUploadAck {
+                identity: SourcePublicationUploadIdentity {
+                    body_bytes: 11,
+                    ..identity
+                },
+                ..ack
+            },
+        ] {
+            assert!(
+                bind_ingest_response(
+                    &binding,
+                    &SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(foreign)
+                )
+                .is_err()
+            );
+        }
+        let discard = IngestCallBinding::from_request(
+            &SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(identity),
+        )
+        .expect("valid ingest binding");
+        assert!(
+            bind_ingest_response(
+                &discard,
+                &SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(
+                    SourcePublicationUploadAck {
+                        identity,
+                        next_offset: 0
+                    }
+                )
+            )
+            .is_ok()
+        );
+        assert!(
+            bind_ingest_response(
+                &discard,
+                &SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(ack)
+            )
+            .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
 mod search_corpus_binding_tests {
     use super::{ControlCallBinding, bind_control_response};
     use crate::{ResponseBindingAxis, SdkError};
@@ -2361,7 +2506,8 @@ mod repo_map_v2_binding_tests {
         let request = publish_request();
         let binding = IngestCallBinding::from_request(
             &SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(request.clone()),
-        );
+        )
+        .expect("valid ingest binding");
         let valid = receipt(&request, RepoMapMutationPhaseV2::Publish);
         assert!(
             bind_ingest_response(

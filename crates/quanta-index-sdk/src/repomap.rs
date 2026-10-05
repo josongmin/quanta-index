@@ -149,6 +149,7 @@ impl crate::NamespaceIngest for RepoMapNs {
             | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
             | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+            | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
             | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
                 "repomap terminal receipt",
                 QuantaIndex::ingest_response_kind(&other),

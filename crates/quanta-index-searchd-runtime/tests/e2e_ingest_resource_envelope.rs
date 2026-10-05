@@ -54,7 +54,8 @@ fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => None,
+        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => None,
     }
 }
 
@@ -134,7 +135,8 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => {
+        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
+        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_) => {
             return Err(format!("a fitting batch must apply, got {accepted:?}").into());
         }
     }

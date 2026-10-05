@@ -140,6 +140,7 @@ struct DriverSpec<'a> {
     history_max_bytes: u64,
     history_max_total_bytes: u64,
     ingest_resource_policy: IngestResourcePolicy,
+    source_publication_max_bytes: u64,
     /// The semantic track's stream window (QI-BB-021).
     semantic_stream_window_policy: SemanticStreamWindowPolicy,
     /// The query socket's admission limits, including the deadline every
@@ -223,6 +224,7 @@ pub struct E2eRuntime {
     /// fixture; envelope tests tighten it through
     /// [`Self::boot_with_ingest_resource_policy`].
     ingest_resource_policy: IngestResourcePolicy,
+    source_publication_max_bytes: u64,
     /// Who may connect to each socket (QI-BB-014). Private everywhere by
     /// default; shared-mode tests open one through
     /// [`Self::boot_with_socket_access`].
@@ -541,6 +543,25 @@ impl E2eRuntime {
         Ok(runtime)
     }
 
+    #[must_use]
+    pub fn with_ingest_resource_policy(mut self, policy: IngestResourcePolicy) -> Self {
+        self.ingest_resource_policy = policy;
+        self
+    }
+
+    pub fn try_with_source_publication_max_bytes(mut self, bytes: u64) -> AnyResult<Self> {
+        let _validated = SearchdConfig::from_test_state_root(self.state_root().to_path_buf())
+            .try_with_source_publication_max_bytes(bytes)?;
+        self.source_publication_max_bytes = bytes;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn with_process_memory_ceilings(mut self, ceilings: ProcessMemoryCeilings) -> Self {
+        self.process_memory_ceilings = ceilings;
+        self
+    }
+
     /// Like [`Self::boot`] but binds each socket under its policy in
     /// `access` (QI-BB-014).
     ///
@@ -675,6 +696,8 @@ impl E2eRuntime {
             history_max_bytes: HARNESS_HISTORY_MAX_BYTES,
             history_max_total_bytes: HARNESS_HISTORY_MAX_TOTAL_BYTES,
             ingest_resource_policy: IngestResourcePolicy::DEFAULT,
+            source_publication_max_bytes:
+                quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_DEFAULT_BYTES,
             socket_access: SocketAccessPolicies::PRIVATE,
             socket_directory: None,
             explicit_stop_error_reported: false,
@@ -851,6 +874,7 @@ impl E2eRuntime {
             history_max_bytes: self.history_max_bytes,
             history_max_total_bytes: self.history_max_total_bytes,
             ingest_resource_policy: self.ingest_resource_policy,
+            source_publication_max_bytes: self.source_publication_max_bytes,
             semantic_stream_window_policy: self.semantic_stream_window_policy,
             query_admission_policy: self.query_admission_policy,
             lexical_writer_policy: self.lexical_writer_policy,
@@ -1444,9 +1468,56 @@ impl E2eRuntime {
         else {
             return Err(anyhow::anyhow!("unexpected stamped corpus request"));
         };
-        let response = self.dispatch_ingest_response(
-            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
-        )?;
+        let response = if quanta_index_ipc::cbor_payload_len(&batch)?
+            > quanta_index_ipc::SOURCE_PUBLICATION_INLINE_BYTES
+        {
+            let upload_identity = quanta_index_ipc::source_publication_upload_identity(&batch)?;
+            quanta_index_ipc::for_each_source_publication_upload_part(
+                &batch,
+                upload_identity,
+                |part| {
+                    let next_offset = part
+                        .offset
+                        .checked_add(u64::try_from(part.bytes.len())?)
+                        .ok_or_else(|| anyhow::anyhow!("source upload part offset overflow"))?;
+                    let SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(ack) = self
+                        .dispatch_ingest_response(
+                            SearchPlaneIngestIpcRequest::StageSourcePublication(part),
+                        )?
+                    else {
+                        return Err(anyhow::anyhow!(
+                            "source publication upload acknowledgement mismatch"
+                        ));
+                    };
+                    if ack.identity != upload_identity || ack.next_offset != next_offset {
+                        return Err(anyhow::anyhow!(
+                            "source publication upload acknowledgement mismatch"
+                        ));
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|error| match error {
+                quanta_index_ipc::SourcePublicationUploadError::Transport(error) => error,
+                quanta_index_ipc::SourcePublicationUploadError::Encoding(error) => {
+                    anyhow::Error::new(error)
+                }
+            })?;
+            self.dispatch_ingest_response(
+                SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(
+                    quanta_index_contract::SourcePublicationUploadCommit {
+                        identity: upload_identity,
+                        publication: quanta_index_contract::SourcePublicationBinding::for_batch(
+                            &batch,
+                        ),
+                    },
+                ),
+            )?
+        } else {
+            self.dispatch_ingest_response(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+                batch.clone(),
+            ))?
+        };
         let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) = response else {
             return Err(anyhow::anyhow!(
                 "sealed corpus publish returned an unexpected response"
@@ -2044,6 +2115,59 @@ impl E2eRuntime {
             payload,
         };
         let decoded = quanta_index_ipc::cbor_payload_len(&envelope)?;
+        if decoded > quanta_index_ipc::SOURCE_PUBLICATION_INLINE_BYTES {
+            let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) = &envelope.payload
+            else {
+                return Err(anyhow::anyhow!(
+                    "source upload preview requires a corpus batch"
+                ));
+            };
+            let identity = quanta_index_ipc::source_publication_upload_identity(batch)?;
+            let mut request_id = envelope.request_id;
+            let mut wire_bytes = 0_u64;
+            quanta_index_ipc::for_each_source_publication_upload_part(
+                batch,
+                identity,
+                |part| -> AnyResult<()> {
+                    let request = SearchPlaneIngestIpcRequestEnvelope {
+                        request_id,
+                        payload: SearchPlaneIngestIpcRequest::StageSourcePublication(part),
+                    };
+                    wire_bytes = wire_bytes
+                        .checked_add(u64::try_from(
+                            quanta_index_ipc::encode_request(&request)?.len(),
+                        )?)
+                        .ok_or_else(|| anyhow::anyhow!("source upload wire size overflow"))?;
+                    request_id = request_id
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow::anyhow!("source upload request ID overflow"))?;
+                    Ok(())
+                },
+            )
+            .map_err(|error| match error {
+                quanta_index_ipc::SourcePublicationUploadError::Transport(error) => error,
+                quanta_index_ipc::SourcePublicationUploadError::Encoding(error) => {
+                    anyhow::Error::new(error)
+                }
+            })?;
+            let commit = SearchPlaneIngestIpcRequestEnvelope {
+                request_id,
+                payload: SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(
+                    quanta_index_contract::SourcePublicationUploadCommit {
+                        identity,
+                        publication: quanta_index_contract::SourcePublicationBinding::for_batch(
+                            batch,
+                        ),
+                    },
+                ),
+            };
+            wire_bytes = wire_bytes
+                .checked_add(u64::try_from(
+                    quanta_index_ipc::encode_request(&commit)?.len(),
+                )?)
+                .ok_or_else(|| anyhow::anyhow!("source upload wire size overflow"))?;
+            return Ok((decoded, wire_bytes));
+        }
         let wire = quanta_index_ipc::encode_request(&envelope)?;
         Ok((decoded, u64::try_from(wire.len())?))
     }
@@ -3235,6 +3359,11 @@ impl E2eRuntime {
     ) -> AnyResult<SearchPlaneIngestIpcResponse> {
         let payload = stamped_ingest_request(payload)?;
         let source_binding = match &payload {
+            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) => {
+                Some((commit.publication.clone(), true))
+            }
+            SearchPlaneIngestIpcRequest::StageSourcePublication(_)
+            | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) => None,
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => Some((
                 quanta_index_contract::SourcePublicationBinding::for_batch(batch),
                 batch.seal,
@@ -3656,6 +3785,7 @@ fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
         .with_semantic_embedder_profile(spec.embedder_profile.clone())
         .with_provider_egress_grant(spec.provider_egress_grant.clone())
         .with_ingest_resource_policy(spec.ingest_resource_policy)
+        .try_with_source_publication_max_bytes(spec.source_publication_max_bytes)?
         .with_semantic_stream_window_policy(spec.semantic_stream_window_policy)
         .with_integrity_scrub_policy(spec.integrity_scrub_policy)
         .with_query_response_budget(spec.query_response_budget)
@@ -3905,6 +4035,9 @@ pub fn stamped_ingest_request(
         Ok(batch)
     }
     Ok(match payload {
+        request @ (SearchPlaneIngestIpcRequest::StageSourcePublication(_)
+        | SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_)
+        | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)) => request,
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
             // A producer event is immutable. Transport stamping must not repair
             // a stale/tampered source commitment or create new source authority.

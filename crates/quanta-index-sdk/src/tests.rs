@@ -286,6 +286,13 @@ fn verified_request_digest(
         }
     }
     match request {
+        SearchPlaneIngestIpcRequest::StageSourcePublication(_)
+        | SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_)
+        | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) => {
+            Err(crate::SdkError::Protocol(
+                "single-response fixture does not implement source staging".into(),
+            ))
+        }
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => verify(batch),
         SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => verify(batch),
         SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch) => verify(batch),
@@ -320,6 +327,7 @@ fn name_receipt_digest(payload: &mut SearchPlaneIngestIpcResponse, digest: &str)
             receipt.batch_digest = digest.to_string();
         }
         SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
+        | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
         | SearchPlaneIngestIpcResponse::Error(_) => {}
     }
 }

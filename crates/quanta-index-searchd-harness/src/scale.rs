@@ -56,7 +56,6 @@ use quanta_index_contract::{
 #[cfg(target_os = "linux")]
 use quanta_index_core::ProcessMemoryProbePort as _;
 use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1};
-use quanta_index_ipc::DEFAULT_CLIENT_IO_TIMEOUT;
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_search_plane::lower_lexical_text_query;
 #[cfg(target_os = "linux")]
@@ -69,13 +68,21 @@ use crate::artifact::{
     config_digest, corpus_digest, corpus_digest_refs, directory_bytes, model_revision_of,
     saturating_u64,
 };
-use crate::harness::{
-    E2eRuntime, E2eTextChunkSpec, HARNESS_HISTORY_MAX_BYTES, HARNESS_HISTORY_MAX_REVISION_PAIRS,
-    HARNESS_HISTORY_MAX_TOTAL_BYTES,
-};
+use crate::harness::{E2eRuntime, E2eTextChunkSpec, HARNESS_HISTORY_MAX_REVISION_PAIRS};
 
 /// The artifact dimension this rail writes.
 pub const DIMENSION: &str = "scale";
+
+/// Explicit native scale capacity profile; small unit fixtures keep their own
+/// 16 MiB history policy. These are bounded supported-profile inputs, not
+/// measured latency or memory guarantees.
+pub const SCALE_HISTORY_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+pub const SCALE_HISTORY_MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const SCALE_INGEST_TEXT_BYTES: u64 = 128 * 1024 * 1024;
+const SCALE_INGEST_MAX_RECORDS: usize = 100_000;
+const SCALE_PROCESS_MEMORY_CEILING_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const SCALE_INGEST_VECTOR_BYTES: u64 = 256 * 1024 * 1024;
+const SCALE_CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Explicit runtime policy for a scale measurement. Requested values remain
 /// separate from the effective defaults in both success and refusal records.
@@ -93,7 +100,7 @@ impl ScaleRuntimeConfig {
 
     pub fn history_policy_id(self) -> AnyResult<&'static str> {
         match (self.history_max_bytes, self.history_max_total_bytes) {
-            (None, None) => Ok("harness-default-v1"),
+            (None, None) => Ok("scale-supported-v1"),
             (Some(_), None) => Ok("explicit-pair-default-total-v1"),
             (Some(_), Some(_)) => Ok("explicit-pair-total-diagnostic-v1"),
             (None, Some(_)) => {
@@ -106,7 +113,7 @@ impl ScaleRuntimeConfig {
         let _policy = self.history_policy_id()?;
         let bytes = self
             .history_max_total_bytes
-            .unwrap_or(HARNESS_HISTORY_MAX_TOTAL_BYTES);
+            .unwrap_or(SCALE_HISTORY_MAX_TOTAL_BYTES);
         if bytes == 0 {
             anyhow::bail!("scale: total history max bytes must be positive");
         }
@@ -114,7 +121,7 @@ impl ScaleRuntimeConfig {
     }
 
     pub fn effective_history_max_bytes(self) -> AnyResult<u64> {
-        let bytes = self.history_max_bytes.unwrap_or(HARNESS_HISTORY_MAX_BYTES);
+        let bytes = self.history_max_bytes.unwrap_or(SCALE_HISTORY_MAX_BYTES);
         let total = self.effective_history_max_total_bytes()?;
         if !(1..=total).contains(&bytes) {
             anyhow::bail!(
@@ -125,7 +132,7 @@ impl ScaleRuntimeConfig {
     }
 
     pub fn execution_json(self) -> AnyResult<Value> {
-        Ok(json!({
+        Ok(with_capacity_profile(json!({
             "client_request_timeout_ms": self.effective_timeout_ms()?,
             "requested_client_request_timeout_ms": self.client_timeout.map(|_| self.effective_timeout_ms()).transpose()?,
             "history_max_generations": 2,
@@ -135,8 +142,20 @@ impl ScaleRuntimeConfig {
             "history_max_revision_pairs": HARNESS_HISTORY_MAX_REVISION_PAIRS,
             "history_max_total_bytes": self.effective_history_max_total_bytes()?,
             "requested_history_max_total_bytes": self.history_max_total_bytes,
-        }))
+        })))
     }
+}
+
+fn with_capacity_profile(mut value: Value) -> Value {
+    value["ingest_max_records"] = json!(SCALE_INGEST_MAX_RECORDS);
+    value["ingest_max_text_bytes"] = json!(SCALE_INGEST_TEXT_BYTES);
+    value["ingest_max_vector_bytes"] = json!(SCALE_INGEST_VECTOR_BYTES);
+    value["source_publication_part_bytes"] =
+        json!(quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_PART_BYTES);
+    value["source_publication_max_bytes"] =
+        json!(quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES);
+    value["process_memory_ceiling_bytes"] = json!(SCALE_PROCESS_MEMORY_CEILING_BYTES);
+    value
 }
 
 /// The deterministic query the small-tier measurement issues.
@@ -1777,19 +1796,30 @@ impl CpuSnapshot {
 }
 
 fn scale_runtime(config: ScaleRuntimeConfig) -> AnyResult<E2eRuntime> {
-    let runtime =
-        match config.client_timeout {
-            Some(timeout) => Ok(E2eRuntime::boot_with_client_request_timeout(timeout)?
-                .with_history_max_generations(2)),
-            None => E2eRuntime::boot_with_history_max_generations(2),
-        }?;
+    let runtime = E2eRuntime::boot_with_client_request_timeout(
+        config.client_timeout.unwrap_or(SCALE_CLIENT_IO_TIMEOUT),
+    )?
+    .with_history_max_generations(2);
+    let policy = quanta_index_core::IngestResourcePolicy::new(
+        SCALE_INGEST_MAX_RECORDS,
+        SCALE_INGEST_TEXT_BYTES,
+        SCALE_INGEST_VECTOR_BYTES,
+    )?;
     Ok(runtime
+        .with_ingest_resource_policy(policy)
+        .try_with_source_publication_max_bytes(
+            quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+        )?
+        .with_process_memory_ceilings(quanta_index_searchd::app::ProcessMemoryCeilings::new(
+            SCALE_PROCESS_MEMORY_CEILING_BYTES,
+            None,
+        )?)
         .with_history_max_bytes(config.effective_history_max_bytes()?)
         .with_history_max_total_bytes(config.effective_history_max_total_bytes()?))
 }
 
 fn timeout_ms(client_timeout: Option<Duration>) -> AnyResult<u64> {
-    let duration = client_timeout.unwrap_or(DEFAULT_CLIENT_IO_TIMEOUT);
+    let duration = client_timeout.unwrap_or(SCALE_CLIENT_IO_TIMEOUT);
     let millis = u64::try_from(duration.as_millis())?;
     if !(1..=600_000).contains(&millis) || Duration::from_millis(millis) != duration {
         anyhow::bail!("scale: client request timeout must be whole milliseconds in 1..=600000");
@@ -3149,7 +3179,7 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
             }))
         })
         .collect::<BTreeMap<_, _>>();
-    json!({
+    with_capacity_profile(json!({
         "tier": measurement.tier.as_str(),
         "seed": measurement.seed,
         "client_request_timeout_ms": measurement.client_request_timeout_ms,
@@ -3225,7 +3255,7 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
             "scope": "same OS process and state root; daemon thread restarted; page cache not cleared",
         })),
         "result_count": measurement.result_count,
-    })
+    }))
 }
 
 /// Advisory row for a tier that is declared but not measured here.
@@ -3288,15 +3318,18 @@ pub fn artifact(
     host: HostV1,
 ) -> AnyResult<BenchArtifactV1> {
     let history = ScaleRuntimeConfig {
-        client_timeout: None,
+        client_timeout: measurement
+            .requested_client_request_timeout_ms
+            .map(Duration::from_millis),
         history_max_bytes: measurement.requested_history_max_bytes,
         history_max_total_bytes: measurement.requested_history_max_total_bytes,
     };
     if history.history_policy_id()? != measurement.history_policy_id
         || history.effective_history_max_bytes()? != measurement.history_max_bytes
         || history.effective_history_max_total_bytes()? != measurement.history_max_total_bytes
+        || history.effective_timeout_ms()? != measurement.client_request_timeout_ms
     {
-        anyhow::bail!("scale: measured history policy differs from requested/effective bounds");
+        anyhow::bail!("scale: measured runtime policy differs from requested/effective bounds");
     }
     if measurement.cpu.is_none() {
         anyhow::bail!("scale: measured tier has no process CPU observation");
@@ -3476,6 +3509,24 @@ pub fn artifact(
                         }
                         .to_string(),
                     ),
+                    ("ingest_max_records", SCALE_INGEST_MAX_RECORDS.to_string()),
+                    ("ingest_max_text_bytes", SCALE_INGEST_TEXT_BYTES.to_string()),
+                    (
+                        "ingest_max_vector_bytes",
+                        SCALE_INGEST_VECTOR_BYTES.to_string(),
+                    ),
+                    (
+                        "source_publication_part_bytes",
+                        quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_PART_BYTES.to_string(),
+                    ),
+                    (
+                        "source_publication_max_bytes",
+                        quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES.to_string(),
+                    ),
+                    (
+                        "process_memory_ceiling_bytes",
+                        SCALE_PROCESS_MEMORY_CEILING_BYTES.to_string(),
+                    ),
                     ("history_max_generations", "2".to_string()),
                     (
                         "history_policy_id",
@@ -3627,7 +3678,7 @@ mod tests {
 
     #[test]
     fn client_timeout_contract_requires_bounded_whole_milliseconds() -> AnyResult<()> {
-        ensure_equal!(timeout_ms(None)?, 30_000);
+        ensure_equal!(timeout_ms(None)?, 600_000);
         ensure_equal!(timeout_ms(Some(Duration::from_secs(300)))?, 300_000);
         for invalid in [
             Duration::ZERO,
@@ -3643,12 +3694,13 @@ mod tests {
     #[test]
     fn runtime_config_records_requested_and_effective_policy() -> AnyResult<()> {
         let default = ScaleRuntimeConfig::default().execution_json()?;
-        ensure_equal!(default["client_request_timeout_ms"], 30_000);
+        ensure_equal!(default["client_request_timeout_ms"], 600_000);
         ensure_predicate!(default["requested_client_request_timeout_ms"].is_null());
-        ensure_equal!(default["history_max_bytes"], 16_777_216);
+        ensure_equal!(default["history_max_bytes"], 1_073_741_824);
         ensure_predicate!(default["requested_history_max_bytes"].is_null());
-        ensure_equal!(default["history_policy_id"], "harness-default-v1");
-        ensure_equal!(default["history_max_total_bytes"], 268_435_456);
+        ensure_equal!(default["history_policy_id"], "scale-supported-v1");
+        ensure_equal!(default["history_max_total_bytes"], 2_147_483_648_u64);
+        ensure_equal!(default["process_memory_ceiling_bytes"], 4_294_967_296_u64);
         ensure_predicate!(default["requested_history_max_total_bytes"].is_null());
         ensure_equal!(default["history_max_revision_pairs"], 128);
 
@@ -3698,7 +3750,7 @@ mod tests {
         ] {
             ensure_predicate!(invalid.execution_json().is_err());
         }
-        for invalid in [0, HARNESS_HISTORY_MAX_TOTAL_BYTES + 1] {
+        for invalid in [0, SCALE_HISTORY_MAX_TOTAL_BYTES + 1] {
             ensure_predicate!(
                 ScaleRuntimeConfig {
                     history_max_bytes: Some(invalid),
@@ -5017,12 +5069,12 @@ mod tests {
             disk: None,
         };
         TierMeasurement {
-            client_request_timeout_ms: 30_000,
+            client_request_timeout_ms: 600_000,
             requested_client_request_timeout_ms: None,
-            history_max_bytes: HARNESS_HISTORY_MAX_BYTES,
+            history_max_bytes: SCALE_HISTORY_MAX_BYTES,
             requested_history_max_bytes: None,
-            history_policy_id: "harness-default-v1",
-            history_max_total_bytes: HARNESS_HISTORY_MAX_TOTAL_BYTES,
+            history_policy_id: "scale-supported-v1",
+            history_max_total_bytes: SCALE_HISTORY_MAX_TOTAL_BYTES,
             requested_history_max_total_bytes: None,
             retained_index_bytes_by_seal: [("full", 4_096), ("delta", 5_120), ("noop", 5_000)]
                 .into_iter()
@@ -5210,10 +5262,10 @@ mod tests {
         assert_eq!(tier["delta"]["reclaimed_bytes"], 8_000);
         assert_eq!(tier["noop"]["seal_ms"], 0.2);
         assert_eq!(tier["noop"]["activation_ms"], 0.1);
-        assert_eq!(tier["client_request_timeout_ms"], 30_000);
+        assert_eq!(tier["client_request_timeout_ms"], 600_000);
         assert!(tier["requested_client_request_timeout_ms"].is_null());
-        assert_eq!(tier["history_max_bytes"], HARNESS_HISTORY_MAX_BYTES);
-        assert_eq!(tier["history_policy_id"], "harness-default-v1");
+        assert_eq!(tier["history_max_bytes"], SCALE_HISTORY_MAX_BYTES);
+        assert_eq!(tier["history_policy_id"], "scale-supported-v1");
         assert_eq!(tier["retained_index_bytes"]["by_seal"]["full"], 4_096);
         assert_eq!(tier["retained_index_bytes"]["by_seal"]["delta"], 5_120);
         assert_eq!(tier["retained_index_bytes"]["by_seal"]["noop"], 5_000);
@@ -5248,7 +5300,7 @@ mod tests {
         assert!(tier["requested_history_max_bytes"].is_null());
         assert_eq!(
             tier["history_max_total_bytes"],
-            HARNESS_HISTORY_MAX_TOTAL_BYTES
+            SCALE_HISTORY_MAX_TOTAL_BYTES
         );
         assert!(tier["requested_history_max_total_bytes"].is_null());
         assert_eq!(
@@ -5304,6 +5356,7 @@ mod tests {
         assert_eq!(value["rows"][0]["latency"]["samples"], 3);
         let mut longer_timeout = sample_measurement();
         longer_timeout.client_request_timeout_ms = 300_000;
+        longer_timeout.requested_client_request_timeout_ms = Some(300_000);
         let changed = artifact(&longer_timeout, head.clone(), host.clone())
             .expect("observable")
             .to_json()
@@ -5339,7 +5392,7 @@ mod tests {
             changed["provenance"]["config_digest"]
         );
         let mut forged_policy = larger_total;
-        forged_policy.history_max_total_bytes = HARNESS_HISTORY_MAX_TOTAL_BYTES;
+        forged_policy.history_max_total_bytes = SCALE_HISTORY_MAX_TOTAL_BYTES;
         assert!(artifact(&forged_policy, head.clone(), host.clone()).is_err());
         let mut missing_cpu = sample_measurement();
         missing_cpu.cpu = None;
