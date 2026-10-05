@@ -56,6 +56,9 @@ pub(crate) struct AuthorityPolicy {
 }
 
 impl AuthorityPolicy {
+    /// Infallible by construction: hashes a fixed domain and seventeen
+    /// fixed-width integers without serialization, allocation, or I/O.
+    /// The digest commits the policy values; it does not validate their limits.
     pub(super) fn digest(self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"quanta-file-authority-policy-v15\0");
