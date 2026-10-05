@@ -381,7 +381,7 @@ source/binary/input namespace 관리는 이후 각 epoch의 상시 규칙이다.
 
 ### O4-I0-02
 
-P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료; 최신 전체 qualification·hosted CI `NOT_RUN`.
+P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료; fresh Contract preflight `FAILED`, 최신 SDK·hosted CI `NOT_RUN`.
 
 - Frozen product `0e6c7e7e9494b63fdb33f4594df059817459d3b1`와 Python native/join
   `97eedd11b70e76c66985b15a968211a2faf92c6d` 결과는 각각의 historical source 범위다.
@@ -416,7 +416,18 @@ P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
   lexical `--all-targets --all-features --locked` Clippy `-D warnings`、hexagonal/module-cycle/wire/
   test-authority/no-allow/cargo-modules/format guards, causal parser43개는 각 실행 범위에서 통과했다.
   Cargo-modules는 contract/core만 보호하므로 lexical module tree 검증으로 표시하지 않는다.
-  Matching-source release/full Contract/SDK/hosted CI/operational qualification은 `NOT_RUN`이다.
+  Matching-source release/SDK/hosted CI/operational qualification은 `NOT_RUN`이다.
+- Fresh Contract `FAILED`: clean `615224a8985e64b081b0806d942b8662bfcd6cdf`에서
+  `CARGO_BUILD_JOBS=1 QUANTA_INDEX_SCCACHE=0 just retrieval-contract-proof /private/tmp/qi-retrieval-contract-f14-615224a8-20261005-v1`
+  은 pytest collection과 source-controlled required inventory 불일치로 preflight exit1이었다.
+  실제791개에서 누락은0개, 추가는 기존 frozen-field bool/float alias refusal 회귀3개였다.
+  `benchmarks/retrieval/proof-required-tests.json`에 이3개 identity만 추가한 watcher commit
+  `4c55ead6f7ee761572ca20253330d17266ada3ed`는 기존 Python788·Rust191·SDK27을 보존한다.
+  `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_holdout_review.py -k completed_forms_refuse_typed_aliases_in_frozen_fields`
+  →3passed/111deselected·0.93s/exit0. 별도 `proof_inventory.collect_pytest()`와
+  `verify_inventory_authority(..., 'python')`는 실제791개와 고정 목록 일치/exit0였다.
+  이는 collection 및 focused3 proof이며 formal Contract791개의 behavioral pass가 아니다.
+  재시도는 새 clean source와 새 외부 root를 사용하며 실패한 root를 재사용하지 않는다.
 - 선택 epoch의 포함 코드/driver/scorer/ADR 및 mandatory surfaces를 검증하고 matching fresh
   Contract/SDK/source closure/binaries를 발행·portable replay한다. E3 shipping acceptance와 CI도 실제 scope로 판정한다.
 - 공개SDK/contract 변경: `just rust-public-api`; wire/decode: `just rust-fuzz-smoke`;
