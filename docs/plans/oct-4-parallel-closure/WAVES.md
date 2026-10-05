@@ -61,6 +61,15 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+- Sidebar 회수: Ready9 OG9/9 capture·independent replay는source63ac에서 `VERIFIED`다.
+  Scanner fixed338/79files/2,030completed response parity는sourcef2dfe089의 explicit allow-incomplete
+  diagnostic에서 `VERIFIED`; strict symbol coverage·qualified speed는 그 결과에 포함되지 않는다.
+  Scanner owned3path 수정은 exact SHA guards로 main에 통합했다. Focused55tests는 owner snapshot 결과다.
+- Scale source898d2dfb의 threshold2/owner36/CLI2/Clippy/release는 통과했다. Large default는
+  required81,764,348B > pair16,777,216B, XL은 decoded385,260,565B > cap134,217,728B로 `FAILED`다.
+  별도 Large explicit diagnostic lifecycle/replay는 `VERIFIED`, XL lifecycle은 wire 거부 뒤 `NOT_RUN`.
+  이후 main bc18e67e에 bounded source-upload 코드가 추가돼 Scale 채팅이 SDK/daemon/XL actual을 진행 중이다.
+  Latest Rust/runtime 영향 회귀·final Contract/SDK·Ready9 full5 join은 아직 남는다.
 - Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
 - 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.
   Large default30s timeout과 XL preflight4M posting 거절은 `FAILED`다.

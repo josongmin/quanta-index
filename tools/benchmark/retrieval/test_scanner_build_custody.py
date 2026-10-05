@@ -110,6 +110,28 @@ def test_canonical_build_capture_and_replay(admitted, monkeypatch):
     assert custody.verify(receipt) == receipt["binaries"]
 
 
+def test_build_resource_controls_are_fixed_despite_inherited_environment(admitted, monkeypatch):
+    spec, _ = admitted
+    monkeypatch.setenv("CARGO_BUILD_JOBS", "16")
+    monkeypatch.setenv("QUANTA_INDEX_TARGET_GC", "1")
+    monkeypatch.setenv("QUANTA_INDEX_SCCACHE", "1")
+    env = custody._effective_env(Path(spec["repo"]), Path(spec["output_root"]), {})
+    assert env["CARGO_BUILD_JOBS"] == "1"
+    assert env["QUANTA_INDEX_TARGET_GC"] == "0"
+    assert env["QUANTA_INDEX_SCCACHE"] == "0"
+
+
+@pytest.mark.parametrize(
+    "key", ["CARGO_BUILD_JOBS", "QUANTA_INDEX_TARGET_GC", "QUANTA_INDEX_SCCACHE"]
+)
+def test_fixed_build_controls_cannot_be_overridden(admitted, key):
+    spec, _ = admitted
+    repo, out = Path(spec["repo"]), Path(spec["output_root"])
+    assert custody._effective_env(repo, out, {})[key] in ("0", "1")
+    with pytest.raises(CustodyError, match="unsupported|cannot be overridden"):
+        custody._effective_env(repo, out, {key: "8"})
+
+
 def test_reused_target_and_arbitrary_capture_command_refused(admitted):
     spec, receipt_path = admitted
     Path(spec["output_root"]).mkdir()

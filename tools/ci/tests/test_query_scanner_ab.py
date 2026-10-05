@@ -157,6 +157,7 @@ def test_scanner_ab_preserves_parity_and_declared_binary_difference(tmp_path):
         "status",
         "order",
         "score",
+        "span",
         "cursor",
         "corpus",
         "model",
@@ -184,6 +185,9 @@ def test_scanner_ab_refuses_independent_semantic_or_custody_delta(tmp_path, muta
     elif mutation == "score":
         row = next(row for row in diagnostic["results"] if row["candidates"])
         row["candidates"][0]["score"] = -0.0
+    elif mutation == "span":
+        row = next(row for row in record["results"] if row["candidates"])
+        row["candidates"][0]["start_byte"] += 1
     elif mutation == "cursor":
         diagnostic["results"][0]["response"]["window"]["outcome"]["kind"] = "lower_bound"
     elif mutation == "corpus":

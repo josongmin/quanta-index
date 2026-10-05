@@ -164,9 +164,11 @@ def _effective_env(repo: Path, out: Path, overrides: dict[str, str]) -> dict[str
     ):
         raise CustodyError("execution environment overrides are malformed or unsupported")
     mandatory = {
+        "CARGO_BUILD_JOBS": "1",
         "CARGO_TARGET_DIR": str(out / "target"),
         "QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR": "1",
         "QUANTA_INDEX_SCCACHE": "0",
+        "QUANTA_INDEX_TARGET_GC": "0",
         "CARGO_NET_OFFLINE": "true",
         "QUANTA_INDEX_RESOURCE_ADMISSION": "auto",
         "QUANTA_INDEX_BUILD_LOGGING": "0",

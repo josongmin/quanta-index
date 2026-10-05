@@ -9,6 +9,28 @@
 
 ## 현재 코드 잔여 — 2026-10-06 소스 대조
 
+### Sidebar 실행 결과 회수
+
+- 확인 시 main은 clean `bc18e67e63ebd5914bb679d2aeb25ae498c4d2f9`였다. 새 bounded source-upload
+  코드가 추가됐으며 이전 Clippy/598 lexical/Frozen5796 proof를 그 source의 최종 증거로 승격하지 않는다.
+- Ready9 OG는 source63ac에서9/9 capture·독립 `live_lexical_external.py --verify`가 `VERIFIED`다.
+  각20tasks/총180tasks,18개 실행 exit0. 결과는 `/private/tmp/qi-parallel-ready9-20261006-v1/actual-run-v1/result.json`.
+  Quanta final Contract/SDK·SG/CS·final pair/full5 join·all-project authority·holdout는 이 결과에 포함되지 않는다.
+- Scanner는 sourcef2dfe089에서 두 fresh build/capture와 custody verify·canonical/independent parity가
+  `VERIFIED`다. Fixed338queries/79files,2,030completed responses. Explicit `allow-incomplete` lexical-file
+  profile이며6 ParseFailed facts를 보존했다. 원래 `require-complete`는 `FAILED`; 정식 speed/adoption은 `NOT_RUN`.
+  Source/producer resource-control/byte-span negative 수정3paths는 SHA guard 대조 후 main에 통합했다.
+  Focused55tests/29.26s는 해당 owner snapshot 결과다. `/private/tmp/qis.utp62qk5/owner-result.md`가 상세 scope를 소유한다.
+- Scale의 source898d2dfb 고정 실행은 threshold2/owner36/CLI2/Clippy/release build가 `VERIFIED`이고
+  Large·XL default native는 `FAILED`다. Large required81,764,348B가 pair16,777,216B를 초과했고,
+  XL decoded request385,260,565B가 cap134,217,728B를 초과했다. 별도 Large explicit diagnostic lifecycle/replay는
+  `VERIFIED`; native XL lifecycle은 wire 거부 이후 `NOT_RUN`이다. `/private/tmp/qi-scale-f15-20261006-v1/result.json`.
+  Scale 채팅은 그 후 새 source-upload 경로의 SDK/daemon 회귀와 XL actual을 진행 중이며 아직 완료로 표시하지 않는다.
+- 남은 통합 종료 조건: 새 upload/Scale 및 scanner owner 변경을 포함한 영향 Rust/runtime 회귀,
+  최종 selected-source Contract/fresh SDK·portable replay, Ready9 final pair/full5 join과 각 별도 qualification.
+
+### Sidebar 배정 시 구현 기준
+
 현재 정리 기준: sidebar 작업 배정 시 clean Quanta source `20c3ae60b257892bceba84c8380e7a7e25c4b64a`.
 F15 cfg(test)/Scanner fixture 보완도 이 source에 통합됐다.
 F15 strict 경계 검사/shared-limit/scanner comparator 수정은 이 source에 통합됐다.
