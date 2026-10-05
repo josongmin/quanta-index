@@ -937,6 +937,10 @@ pub struct TierMeasurement {
     pub history_policy_id: &'static str,
     pub history_max_total_bytes: u64,
     pub requested_history_max_total_bytes: Option<u64>,
+    /// Exact product retention accounting after each successful seal. The
+    /// fixture has one serving repo/revision pair, so total equals pair bytes.
+    /// These are unique-inode regular-file sizes, not sampled allocated blocks.
+    pub retained_index_bytes_by_seal: BTreeMap<&'static str, u64>,
     /// `RUSAGE_SELF` around runtime boot through driver cleanup. The daemon is
     /// an in-process thread; this includes harness and daemon CPU time.
     pub cpu: Option<CpuUsageV1>,
@@ -2081,6 +2085,7 @@ fn measure_scoped_delete_reopen(
 ) -> AnyResult<(
     DeleteReopenMeasurementV1,
     BTreeMap<&'static str, PhaseResourceV1>,
+    u64,
 )> {
     let disk_root = rt.state_root().to_path_buf();
     if file.source_repo_id != "repo0" || file.repo_relative_path != "src/file_0.rs" {
@@ -2110,6 +2115,7 @@ fn measure_scoped_delete_reopen(
                 .map_err(|error| ScaleStageError::operation("delete_activate", &error))?;
             Ok(elapsed_ms(activation_started))
         })?;
+    let delete_retained = retained_index_bytes_after_seal(rt)?;
     let successor = oracle.without_file("repo0", &file.repo_relative_path)?;
 
     let deleted_after = rt.query_text(TextQuerySyntax::Native, &deleted_token, SCALE_TOP_K);
@@ -2150,6 +2156,7 @@ fn measure_scoped_delete_reopen(
             reopened_first_query: reopened_first_query_ms,
         },
         phase_resources,
+        delete_retained,
     ))
 }
 
@@ -2204,6 +2211,34 @@ fn measure_adapter_phases(
         plan_ms: median_ms(&mut plan_samples)?,
         execute_ms: median_ms(&mut execute_samples)?,
     })
+}
+
+const MAX_EXACT_GAUGE_INTEGER: f64 = 9_007_199_254_740_992.0;
+const RETAINED_INDEX_BYTES_GAUGE: &str = "search_corpus_retained_index_bytes";
+
+fn retained_index_bytes_from_snapshot(snapshot: &MetricsSnapshotV1) -> AnyResult<u64> {
+    let mut observed = None;
+    for gauge in &snapshot.gauges {
+        if gauge.name != RETAINED_INDEX_BYTES_GAUGE {
+            continue;
+        }
+        if observed.replace(gauge.value).is_some() {
+            anyhow::bail!("scale: duplicate retained index bytes gauge");
+        }
+    }
+    let value =
+        observed.ok_or_else(|| anyhow::anyhow!("scale: missing retained index bytes gauge"))?;
+    if !value.is_finite() || value <= 0.0 || value.fract() != 0.0 || value > MAX_EXACT_GAUGE_INTEGER
+    {
+        anyhow::bail!("scale: retained index bytes gauge is not an exact positive integer");
+    }
+    format!("{value:.0}")
+        .parse::<u64>()
+        .map_err(|error| anyhow::anyhow!("scale: parse exact retained index bytes gauge: {error}"))
+}
+
+fn retained_index_bytes_after_seal(rt: &mut E2eRuntime) -> AnyResult<u64> {
+    retained_index_bytes_from_snapshot(&rt.metrics_snapshot()?)
 }
 
 /// Change one file, ingest and seal it as a delta, activate (reclaiming the
@@ -2381,6 +2416,8 @@ fn measure_small_tier_with_config(
         let scrape_before_first = rt
             .metrics_snapshot()
             .map_err(|error| stage_or_preserve("query_first", error))?;
+        let full_retained = retained_index_bytes_from_snapshot(&scrape_before_first)
+            .map_err(|error| stage_or_preserve("retention_full", error))?;
         let first_started = Instant::now();
         let result_count =
             served_query(&mut rt).map_err(|error| stage_or_preserve("query_first", error))?;
@@ -2421,6 +2458,8 @@ fn measure_small_tier_with_config(
             .map_err(|error| stage_or_preserve("adapter", error))?;
         let (delta, delta_resources) =
             measure_delta(&mut rt, seed).map_err(|error| stage_or_preserve("delta", error))?;
+        let delta_retained = retained_index_bytes_after_seal(&mut rt)
+            .map_err(|error| stage_or_preserve("retention_delta", error))?;
         let before_noop = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         require_result_count(
             before_noop.candidates.len(),
@@ -2430,6 +2469,8 @@ fn measure_small_tier_with_config(
         .map_err(|error| stage_or_preserve("noop_verify", error))?;
         let (noop, noop_resources) =
             measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
+        let noop_retained = retained_index_bytes_after_seal(&mut rt)
+            .map_err(|error| stage_or_preserve("retention_noop", error))?;
         let after_noop = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         require_result_count(after_noop.candidates.len(), expected_results, "no-op query")
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
@@ -2476,6 +2517,13 @@ fn measure_small_tier_with_config(
             history_policy_id: config.history_policy_id()?,
             history_max_total_bytes: config.effective_history_max_total_bytes()?,
             requested_history_max_total_bytes: config.history_max_total_bytes,
+            retained_index_bytes_by_seal: [
+                ("full", full_retained),
+                ("delta", delta_retained),
+                ("noop", noop_retained),
+            ]
+            .into_iter()
+            .collect(),
             cpu: None,
             phase_resources,
             delete_reopen: None,
@@ -2655,6 +2703,8 @@ pub fn measure_tier_with_runtime_config(
         let scrape_before_first = rt
             .metrics_snapshot()
             .map_err(|error| stage_or_preserve("query_first", error))?;
+        let full_retained = retained_index_bytes_from_snapshot(&scrape_before_first)
+            .map_err(|error| stage_or_preserve("retention_full", error))?;
         let first_started = Instant::now();
         let first = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         let first_query_ms = elapsed_ms(first_started);
@@ -2703,6 +2753,8 @@ pub fn measure_tier_with_runtime_config(
             .ok_or_else(|| anyhow::anyhow!("scale: scoped corpus has no file to change"))?;
         let (delta, delta_resources) = measure_scoped_delta(&mut rt, delta_file)
             .map_err(|error| stage_or_preserve("delta", error))?;
+        let delta_retained = retained_index_bytes_after_seal(&mut rt)
+            .map_err(|error| stage_or_preserve("retention_delta", error))?;
         let after_delta = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         let _delta_result_count = validate_scoped_response(&oracle, None, &after_delta)
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
@@ -2710,6 +2762,8 @@ pub fn measure_tier_with_runtime_config(
             .map_err(|error| stage_or_preserve("delta_verify", error))?;
         let (noop, noop_resources) =
             measure_noop(&mut rt).map_err(|error| stage_or_preserve("noop", error))?;
+        let noop_retained = retained_index_bytes_after_seal(&mut rt)
+            .map_err(|error| stage_or_preserve("retention_noop", error))?;
         let after_noop = rt.query_text(TextQuerySyntax::Native, SCALE_QUERY_TOKEN, SCALE_TOP_K);
         let _noop_result_count = validate_scoped_response(&oracle, None, &after_noop)
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
@@ -2717,7 +2771,7 @@ pub fn measure_tier_with_runtime_config(
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
         verify_scoped_repositories(&mut rt, &oracle)
             .map_err(|error| stage_or_preserve("noop_verify", error))?;
-        let (delete_reopen, delete_resources) =
+        let (delete_reopen, delete_resources, delete_retained) =
             measure_scoped_delete_reopen(&mut rt, &oracle, delta_file)
                 .map_err(|error| stage_or_preserve("delete_reopen", error))?;
         let mut phase_resources = delta_resources;
@@ -2764,6 +2818,14 @@ pub fn measure_tier_with_runtime_config(
             history_policy_id: config.history_policy_id()?,
             history_max_total_bytes: config.effective_history_max_total_bytes()?,
             requested_history_max_total_bytes: config.history_max_total_bytes,
+            retained_index_bytes_by_seal: [
+                ("full", full_retained),
+                ("delta", delta_retained),
+                ("noop", noop_retained),
+                ("delete", delete_retained),
+            ]
+            .into_iter()
+            .collect(),
             cpu: None,
             phase_resources,
             delete_reopen: Some(delete_reopen),
@@ -3098,6 +3160,11 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
         "history_max_revision_pairs": HARNESS_HISTORY_MAX_REVISION_PAIRS,
         "history_max_total_bytes": measurement.history_max_total_bytes,
         "requested_history_max_total_bytes": measurement.requested_history_max_total_bytes,
+        "retained_index_bytes": {
+            "method": "product_retention_receipt_gauge_v1",
+            "scope": "one serving repo/revision pair; exact unique-inode regular-file bytes admitted by each seal; total equals pair; unavailable after daemon restart",
+            "by_seal": measurement.retained_index_bytes_by_seal,
+        },
         "cpu_process": {
             "scope": "RUSAGE_SELF whole process from runtime boot through cleanup: harness, in-process daemon, RSS sampler thread, and parent-side RSS probe management; macOS ps child CPU excluded",
             "user_ms": measurement.cpu.map(|cpu| cpu.user_ms),
@@ -3262,6 +3329,29 @@ pub fn artifact(
             "same_process_reopen",
         ]
     };
+    let expected_retention: BTreeSet<&str> = if measurement.tier == ScaleTier::Small {
+        ["full", "delta", "noop"].into_iter().collect()
+    } else {
+        ["full", "delta", "noop", "delete"].into_iter().collect()
+    };
+    if measurement
+        .retained_index_bytes_by_seal
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        != expected_retention
+        || measurement
+            .retained_index_bytes_by_seal
+            .values()
+            .any(|bytes| {
+                *bytes == 0
+                    || *bytes > (1_u64 << 53)
+                    || *bytes > measurement.history_max_bytes
+                    || *bytes > measurement.history_max_total_bytes
+            })
+    {
+        anyhow::bail!("scale: invalid product retention bytes for seal phases");
+    }
     let observed_phases = measurement
         .phase_resources
         .keys()
@@ -4918,6 +5008,9 @@ mod tests {
             history_policy_id: "harness-default-v1",
             history_max_total_bytes: HARNESS_HISTORY_MAX_TOTAL_BYTES,
             requested_history_max_total_bytes: None,
+            retained_index_bytes_by_seal: [("full", 4_096), ("delta", 5_120), ("noop", 5_000)]
+                .into_iter()
+                .collect(),
             cpu: Some(CpuUsageV1 {
                 user_ms: 3.0,
                 system_ms: 2.0,
@@ -5054,6 +5147,34 @@ mod tests {
     }
 
     #[test]
+    fn retained_index_bytes_requires_one_exact_product_gauge() -> AnyResult<()> {
+        use quanta_index_contract::MetricGaugeV1;
+
+        let mut snapshot = MetricsSnapshotV1::default();
+        ensure_predicate!(retained_index_bytes_from_snapshot(&snapshot).is_err());
+        snapshot.gauges.push(MetricGaugeV1 {
+            name: RETAINED_INDEX_BYTES_GAUGE.to_string(),
+            value: 4_096.0,
+        });
+        ensure_equal!(retained_index_bytes_from_snapshot(&snapshot)?, 4_096);
+        for invalid in [
+            0.0,
+            -1.0,
+            1.5,
+            f64::NAN,
+            f64::INFINITY,
+            9_007_199_254_740_994.0,
+        ] {
+            snapshot.gauges[0].value = invalid;
+            ensure_predicate!(retained_index_bytes_from_snapshot(&snapshot).is_err());
+        }
+        snapshot.gauges[0].value = 4_096.0;
+        snapshot.gauges.push(snapshot.gauges[0].clone());
+        ensure_predicate!(retained_index_bytes_from_snapshot(&snapshot).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn detail_json_records_every_phase_and_the_advisory_split() {
         let value = detail_json(&sample_measurement());
         assert_eq!(
@@ -5077,6 +5198,9 @@ mod tests {
         assert!(tier["requested_client_request_timeout_ms"].is_null());
         assert_eq!(tier["history_max_bytes"], HARNESS_HISTORY_MAX_BYTES);
         assert_eq!(tier["history_policy_id"], "harness-default-v1");
+        assert_eq!(tier["retained_index_bytes"]["by_seal"]["full"], 4_096);
+        assert_eq!(tier["retained_index_bytes"]["by_seal"]["delta"], 5_120);
+        assert_eq!(tier["retained_index_bytes"]["by_seal"]["noop"], 5_000);
         assert_eq!(
             tier["phase_resources"]["full_ingest_seal"]["sampled_max_rss_bytes"],
             3_072

@@ -264,7 +264,7 @@ fn delta_delete_noop_and_cold_open_match_independent_full_build() -> TestResult 
             .as_ref()
             .ok_or("source identity")?
             .source_sha256,
-        Sha256::digest(SHARED.as_bytes()).into()
+        <[u8; 32]>::from(Sha256::digest(SHARED.as_bytes()))
     );
     assert_eq!(
         witness[0]
@@ -336,7 +336,7 @@ fn delta_delete_noop_and_cold_open_match_independent_full_build() -> TestResult 
             .as_ref()
             .ok_or("source identity")?
             .source_sha256,
-        Sha256::digest(SHARED.as_bytes()).into()
+        <[u8; 32]>::from(Sha256::digest(SHARED.as_bytes()))
     );
     assert_eq!(
         unicode[0]
@@ -464,7 +464,7 @@ fn nontext_source_stays_path_only_across_cold_delta_noop_and_delete() -> TestRes
             .as_ref()
             .ok_or("binary path source identity absent")?
             .source_sha256,
-        Sha256::digest(BINARY_BODY).into()
+        <[u8; 32]>::from(Sha256::digest(BINARY_BODY))
     );
 
     assert!(

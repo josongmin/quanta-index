@@ -108,6 +108,16 @@ def _summary() -> dict:
                     "history_policy_id": "harness-default-v1",
                     "history_max_revision_pairs": 128,
                     "history_max_total_bytes": 256 * 1024 * 1024,
+                    "retained_index_bytes": {
+                        "method": "product_retention_receipt_gauge_v1",
+                        "scope": "one serving repo/revision pair; exact unique-inode regular-file bytes admitted by each seal; total equals pair; unavailable after daemon restart",
+                        "by_seal": {
+                            "full": 1_000_000,
+                            "delta": 1_100_000,
+                            "noop": 1_200_000,
+                            "delete": 1_300_000,
+                        },
+                    },
                     "phase_resources": {name: deepcopy(phase) for name in PHASES},
                 }
             ],
@@ -226,6 +236,27 @@ def test_profile_rejects_unpaired_unknown_or_inconsistent_trace(mutant: bytes) -
 def test_profile_refuses_wrong_measured_input_or_policy(key: str, value: object) -> None:
     summary = _summary()
     summary["detail"]["measured_tiers"][0][key] = value
+    with pytest.raises(ValueError):
+        _replay(summary)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda row: row.pop("retained_index_bytes"),
+        lambda row: row["retained_index_bytes"]["by_seal"].pop("delta"),
+        lambda row: row["retained_index_bytes"]["by_seal"].update(extra=1),
+        lambda row: row["retained_index_bytes"]["by_seal"].update(full=True),
+        lambda row: row["retained_index_bytes"]["by_seal"].update(full=1.5),
+        lambda row: row["retained_index_bytes"]["by_seal"].update(full=0),
+        lambda row: row["retained_index_bytes"]["by_seal"].update(full=(1 << 53) + 1),
+        lambda row: row["retained_index_bytes"]["by_seal"].update(full=17 * 1024 * 1024),
+        lambda row: row["retained_index_bytes"].update(method="sampled_st_blocks"),
+    ],
+)
+def test_profile_refuses_unbound_retention_bytes(mutation) -> None:
+    summary = _summary()
+    mutation(summary["detail"]["measured_tiers"][0])
     with pytest.raises(ValueError):
         _replay(summary)
 

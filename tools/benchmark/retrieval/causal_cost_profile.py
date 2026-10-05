@@ -458,6 +458,27 @@ def replay(
         requested_history_max_bytes=requested_history_max_bytes,
         requested_history_max_total_bytes=requested_history_max_total_bytes,
     )
+    retention = tier.get("retained_index_bytes")
+    expected_seals = {"full", "delta", "noop"}
+    if expected_tier != "small":
+        expected_seals.add("delete")
+    if (
+        not isinstance(retention, dict)
+        or set(retention) != {"method", "scope", "by_seal"}
+        or retention.get("method") != "product_retention_receipt_gauge_v1"
+        or retention.get("scope")
+        != "one serving repo/revision pair; exact unique-inode regular-file bytes admitted by each seal; total equals pair; unavailable after daemon restart"
+        or not isinstance(retention.get("by_seal"), dict)
+        or set(retention["by_seal"]) != expected_seals
+        or any(
+            type(value) is not int
+            or not 1 <= value <= (1 << 53)
+            or value > policy["history_max_bytes"]
+            or value > policy["history_max_total_bytes"]
+            for value in retention["by_seal"].values()
+        )
+    ):
+        raise ValueError("scale artifact lacks exact product retention bytes for each seal")
     expected_phases = SMALL_PHASES if expected_tier == "small" else LARGE_PHASES
     if set(resources) != expected_phases:
         raise ValueError("scale artifact has incomplete or unexpected lifecycle phases")
@@ -508,6 +529,7 @@ def replay(
         "seed": tier["seed"],
         "file_count": tier["file_count"],
         "runtime_config": policy,
+        "retained_index_bytes": retention,
         "scope": {
             "sync": "all explicit sync_all calls in quanta-index-lexical; dependency and semantic sync excluded",
             "posting": "Tantivy deleted-segment pure-string exact-live-token-count pass only",
