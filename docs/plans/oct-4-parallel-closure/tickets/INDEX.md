@@ -60,6 +60,8 @@ P0 · W3 · admission 코드 구현 완료, 나머지3repo 및 후속 final revi
   연결한다. repository별 실제 source/runtime과 I0-02 matching proof 이후 admission ISSUE.
 - frozen product0e6의 bat 포함9repo/180tasks/4,262judgments admission은 그 범위로 유지한다.
   원본 source107이나 원 review-validator revision을 current product revision으로 재명명하지 않는다.
+- B08이 계속 요구하는 C5 stale4 suites는 manifest/query/source를 재확인해 reissue 또는 명시적
+  exclusion을 발행한다. B09 global12와 합치거나 NL-only diagnostic을 mixed-track decision으로 승격하지 않는다.
 - 완료: 각 ready repository의 정확한 admission inputs/result 및 변경 labels의 새 revision.
   threshold/query/grade/family/unit/source/runtime/proof/license 불일치는 발행 거절이다.
 
@@ -82,6 +84,8 @@ P1 · W1/W5 · source/split 도구 구현 완료, license·acceptance 입력 `BL
   corpus-set5,684와 release code_only6,079는 서로 다른 selection 분모이며 candidate12repo는 미승인이다.
 - license approver·사전 acceptance/critical-stratum 허용 회귀를 확정하고 query/family/exposure,
   near-copy/parser coverage, 독립 relevance/gold/review와 admission을 발행한다.
+- 각 family의 기존1,000+ 목표는 실제 eligible population/underfill로 판정한다.
+  동일 family 복제나 exposed corpus 재명명으로 표본 목표를 채우지 않는다.
 - 완료: development와 holdout의 source/query/family 분리 및 provenance,
   ambiguous/excluded/underfilled 집합. 기존 Gin/C3/B09를 renamed unseen으로 재사용하지 않는다.
 
