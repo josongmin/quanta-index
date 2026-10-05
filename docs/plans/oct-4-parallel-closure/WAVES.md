@@ -13,10 +13,12 @@
 
 이 표는 초기 티켓 배치를 바꾸지 않으며 전체29개 종료를 뜻하지 않는다. 실제 명령·출력 경로·scope는 owning ticket이 기준이다.
 
+SQLAlchemy·Zellij는 각20개 자연어 질의를 쓰는 C3 검색 평가용 소스 저장소다. 최종 판정은 검색 정답 파일의 관련성 검수이며, 모델 한도 때문에 adjudicator를 교체해 재개했다. Linux release·배포 검증은 원본 agent-1의 Release 잔여다. Linux 실제 두 UID component는 기존 권한 증거의 누락 보완이며 release·배포와 별도로 판정한다.
+
 | 웨이브 | 확보한 실행 결과 | 남은 실제 작업 |
 | --- | --- | --- |
 | W0 | root 단일 통합/중앙 실행, source107 matching proof 및 후속 ANN·최종 OS restart fixture의 clean `0e6c7e7e` 고정 | 후속 product 변경 시 영향 proof 재발행 |
-| W1 | owner regressions, Gin4 exact-name capture/scoring, Sourcegraph12repo replay, OpenGrok path-bearing 및 전체live17,615·source path/UID13,347 독립 replay `VERIFIED`; Zellij 두 reviewer20/476 완료 | SQLAlchemy/Zellij 대체 조정, Tailscale rubric 입력 `BLOCKED`; OpenGrok actual query 전후 whole-index/canonical qualification; untouched holdout license·사전 acceptance 입력/발행 |
+| W1 | owner regressions, Gin4 exact-name capture/scoring, Sourcegraph12repo replay, OpenGrok path-bearing 및 전체live17,615·source path/UID13,347 독립 replay `VERIFIED`; Zellij 두 reviewer20/476 완료 | SQLAlchemy/Zellij 검색 정답 검수의 최종 판정, Tailscale rubric 입력 `BLOCKED`; OpenGrok actual query 전후 whole-index/canonical qualification; untouched holdout license·사전 acceptance 입력/발행 |
 | W2 | 실제 반례의 live-BM25, maintenance fatal ownership/terminal, fixture 수리 및 지원 Active single-RPC 검증 완료 | bootstrap/scanner/barrier/token-authority 최적화는 실제 비용 조건 판정 대기. E3-02는 현 Accepted refusal 계약에서 근거 있는 `NOT_APPLICABLE` |
 | W3 | 최종source0e6 Contract Python788/Rust191·fresh SDK27·두 portable verifier 및 bat409 v4 issuance/strict consumer replay `VERIFIED`; 원본8 current admissions exit0·8terminal/aggregate/각16-input hash `VERIFIED`; bat 포함 current9repo/180tasks/4,262judgments. source107 원본9개는 과거 scope | SQLAlchemy·Zellij·Tailscale admissions 및 final revisions; source0e6 hosted CI `[]`/`NOT_RUN` |
 | W4 | frozen0e6 ANN97·Clippy·release·4096 OS restart1/1·large300s/256MiB·기본 small/medium lifecycle/load, bat409 warmup0/1 각40/40·독립 verdict/full parity; source97의 bat+required8 native captures/독립 replays 및 full5제품 joins `VERIFIED`; default large timeout·xlarge posting-cap capacity gate `FAILED` | SQLAlchemy·Zellij·Tailscale admission/capture, 정식 성능·qualification 계속; 후속 native metadata 수리 source의 qualification은 별도 새 root 필요 |
@@ -32,7 +34,7 @@
 
 | 웨이브 / 담당 | 다음 작업 | 현재 실행 또는 입력 경계 |
 | --- | --- | --- |
-| W1 / E1 | SQLAlchemy/Zellij fresh Opus 조정→canonical suite/pack 발행 | actual Opus weekly-limit 실패, SQL334pair 유효 보존/잔여146·Zellij476 BLOCKED. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 정책 답변 전 발행 BLOCKED |
+| W1 / E1 | SQLAlchemy/Zellij 검색 정답 검수의 최종 판정→canonical suite/pack 발행 | actual Opus weekly-limit 실패, SQL334pair 유효 보존/잔여146·Zellij476 BLOCKED. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 정책 답변 전 발행 BLOCKED |
 | W3 / E1+I0 | current9 후속 final-label revisions 재ISSUE와 SQLAlchemy/Zellij/Tailscale admission 연결 | canonical issuer exit0/8terminal·aggregate VERIFIED. bat 포함 current9개 admission 발행 완료; 후속 final revisions와 SQLAlchemy/Zellij/Tailscale는 미완료. source107 결과를 current로 재표기하지 않음 |
 | W4–W5 / E2+E1 | canonical owner의 focused 검증→새 fixed-source SG/native epoch→bat5제품 join, remaining C3 matrix→final blind union/검수·재채점 | ae8f SG producer/독립 replay12·native3 actual/replay VERIFIED; join v4 FAILED 보존. clean628541 retained bat canonical raw·교차 checkout replay와 후속97eedd focused203 VERIFIED. 새 SG12/13,347files·bat native3/replay·retained full5 join VERIFIED. all12 PREPARE9 ready/3 admission BLOCKED·aggregate exit2; required8 Q/S8·native8 producer/독립 replays/full5 joins VERIFIED. blind union9/9 PREPARED·신규151tasks/742pairs이며 actual model review 미실행. native metadata4타입 결속 RED4재현/GREEN12passed 통합; 후속 source의 native qualification 미발행. bat 밖 warmup은 자체 parity 전1회 유지 |
 | W1–W4 / E2 | OG whole live auxiliary/source authority를 canonical query 전후 index/endpoint/consumer에 통합 | 관측 replay 완료; 현재 collector universe=false, named RW volume을 readonly snapshot으로 간주하지 않음 |

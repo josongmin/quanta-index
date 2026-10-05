@@ -11,14 +11,16 @@
 
 전체29티켓의 공수 가중치는 산정하지 않았다. 아래 비율은 전체 제품 완료율로 합산하지 않는다.
 
+SQLAlchemy·Zellij는 C3 검색 평가의 소스 저장소이며 각각 자연어 질의20개를 제공한다. 아래 최종 판정은 두 reviewer의 파일 관련성 판단을 adjudicator가 검수해 검색 정답을 확정하는 작업이다. 기존 모델의 한도 소진으로 새 모델에서 판정을 재개했으며, 해당 제품의 구현이나 교체 작업이 아니다. Linux release·배포 검증은 원본 [agent-1의 Release 잔여](agent-1.md#3-remaining-work-and-decision-order)에 포함됐다. 실제 두 UID 테스트는 기존 권한 검증의 누락을 보완한 component 증거이며 release·배포 완료를 뜻하지 않는다.
+
 | 범위 | 현재 | 비율 | 남은 작업 |
 | --- | --- | --- | --- |
 | 원본5개 통합·29티켓 웨이브 배치 | 29/29·중복0·링크 누락0 | 100% | 후속 결과를 기존 티켓에 반영 |
 | C3 NL 기존 라벨의 기본 admission 및5제품 캡처/독립 replay/join | 9/12repo·180/240tasks | 75% | SQLAlchemy·Zellij·Tailscale3repo와 후속 final revisions |
 | current9 신규 보충 검수 | 0/742query-file pairs·151tasks 입력 준비 | 0% | 실제 두 reviewer+adjudicator→canonical merge/admission→재채점 |
-| SQLAlchemy 대체 adjudication | 334/480pairs | 69.6% | 146pairs·quota 대기 |
-| Zellij 대체 adjudication | 0/476pairs | 0% | 476pairs·quota 대기; 기존 두 reviewer 보존 |
-| Linux 실제 두 UID component | 1/1 test | 100% | shipping daemon/Linux release·운영 범위는 별도 |
+| 검색 정답 검수 최종 판정 — SQLAlchemy | 334/480pairs | 69.6% | 146pairs·모델 한도 대기 |
+| 검색 정답 검수 최종 판정 — Zellij | 0/476pairs | 0% | 476pairs·모델 한도 대기; 기존 두 reviewer 보존 |
+| 권한 검증 보완 — Linux 실제 두 UID 테스트 | 1/1 test | 100% | shipping daemon/Linux release·운영 범위는 별도 |
 | 실제 deploy/activate/restore/rollback | 이번 요청의 운영 실행 미착수 | 0% | authorized host/config/state/retention/rollback 입력 |
 
 신규 보충과 SQLAlchemy/Zellij 조정의 실제 잔여는 최소1,364개 query-file pairs다. 역할별 호출 수는 이 pair 수와 다르며 Tailscale 정책, 독립 holdout, 다른 lane과 성능/운영 검증은 이 분모 밖이다.
@@ -30,7 +32,7 @@
 | 1 / W3–W5 | 새 미판정151tasks/742pairs 실제 검수·canonical labels·재채점 | current9 blind pool9/9 PREPARED. source97 Q/S8·native8·독립 replays/full5 joins VERIFIED; bat20 및 required8 각0–5 common eligible는 diagnostic 범위. actual reviewer/adjudicator quota BLOCKED, unknown을0점으로 처리하지 않음 |
 | 2 / W3 | current0e6 admission에 후속 final merged revisions 연결 | canonical issuer exit0/8 terminal·aggregate 및 각16-input hash readback VERIFIED. bat 포함9repo/180tasks/4,262judgments의 admission 범위; 후속 final revisions·나머지3개는 미완료 |
 | 3 / W4–W5 | 나머지3 C3 저장소와 다른 lane의 required cells, 후속 source/qrel 영향 재검증 | all12 PREPARE9 ready/3 admission BLOCKED; current9의 source97 captures/joins와 blind union 완료. metadata owner 수리의 focused proof는 별도 scope이며 새 source의 fresh native qualification은 아직 미발행 |
-| 4 / W1→W3→W5 | SQLAlchemy/Zellij 실제 조정 완료·suite/pack/admission 발행, Tailscale 미결 정책 적용 후 재검수 | actual Opus 주간 한도로 SQL146·Zellij476pairs `BLOCKED`. SQL334pairs 보존. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 입력도 `BLOCKED` |
+| 4 / W1→W3→W5 | SQLAlchemy/Zellij 검색 정답 검수의 최종 판정 완료·suite/pack/admission 발행, Tailscale 미결 정책 적용 후 재검수 | actual Opus 주간 한도로 SQL146·Zellij476pairs `BLOCKED`. SQL334pairs 보존. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 입력도 `BLOCKED` |
 | 5 / W1–W5 | 다른 lane의 fresh required cells와 독립 name/holdout 평가, 최종 합집합 검수·scoreboard·정책 판정 | 아래 에픽별 잔여와 입력 경계 적용. C3 NL·exact/typo/span·ARB·B09 분모를 합산하지 않음 |
 | 6 / W6 | exact producer/source pair·hosted CI·Linux release·실제 운영 gate | authorized host/path/config/state/retention/rollback 입력 `BLOCKED`. local proof를 배포/복구 증거로 승격하지 않음 |
 

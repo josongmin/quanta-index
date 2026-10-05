@@ -185,11 +185,13 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
             elif set(fields) == {"d", "loc", "numl"}:
                 directory = _text(fields, "d")
                 _require(directory.startswith("/" + name) and (directory == "/" + name or directory.startswith("/" + name + "/")) and directory not in directories[name] and set(indexed) == {"d"}, "native directory role differs")
+                _require(all(piece and piece not in {".", ".."} for piece in directory.split("/")[1:]), "native directory path is noncanonical")
                 _require(all(len(fields[k]) == 1 and fields[k][0]["valueKind"] == "number" for k in ("loc", "numl")), "native directory counters differ")
                 _one_term(indexed, "d", directory)
                 directories[name].add(directory)
             elif set(fields) == {"objuid", "objver", "objser"}:
                 _require(_text(fields, "objuid") == SETTINGS_UID and len(fields["objver"]) == 1 and fields["objver"][0]["valueKind"] == "number" and fields["objver"][0]["valueDecimal"] == "3" and len(fields["objser"]) == 1 and fields["objser"][0]["valueKind"] == "binary" and set(indexed) == {"objuid"}, "native settings role differs")
+                _require(bool(fields["objser"][0]["valueBase64"]), "native settings payload is empty")
                 _one_term(indexed, "objuid", SETTINGS_UID)
                 settings[name] += 1
                 _require(settings[name] == 1, "native settings document repeats")
@@ -208,11 +210,36 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
     }
 
 
+def _argv(config: dict, index: Path, expected: dict[str, set[str]]) -> list[str]:
+    _require(index.is_absolute() and index.resolve(strict=True) == index and index.is_dir(), "native index root must be canonical")
+    return [config["java"], "-Xmx512m", "--class-path", os.pathsep.join(config["classpath"]), str(READER), str(index), ",".join(sorted(expected))]
+
+
+def replay(config: dict, index: Path, expected: dict[str, set[str]], target: Path, *, execution_target: Path | None = None) -> dict:
+    """Validate owned execution and stream without executing Java or deserializing objects."""
+    identity = reader_identity(config)
+    argv = _argv(config, index, expected)
+    record = _json(RawFile.capture(target / "execution.json").read_control())
+    request = {"argv": argv, "cwd": str(READER.parent), "timeout_seconds": 1800}
+    _require(set(record) == {"status", "command", "request", "error_type", "output_errors", "raw"} and record["status"] == "completed" and canonical_json(record["request"]) == canonical_json(request) and record["error_type"] is None and record["output_errors"] == [], "native execution is incomplete or differs")
+    command = record["command"]
+    _require(type(command) is dict and set(command) == set(request) | {"status", "exit_code", "wall_ms"} and command["status"] == "completed" and type(command["exit_code"]) is int and command["exit_code"] == 0 and type(command["wall_ms"]) is int and command["wall_ms"] >= 0 and canonical_json({key: command[key] for key in request}) == canonical_json(request), "native execution command failed or differs")
+    logs = execution_target or target
+    refs = []
+    for name in ("stdout", "stderr"):
+        raw = RawFile.capture(target / name)
+        refs.append({"path": str(logs / name), "sha256": raw.sha256, "bytes": raw.size})
+    _require(canonical_json(record["raw"]) == canonical_json(refs), "native execution output custody differs")
+    result = verify_documents(target / "stdout", expected)
+    _require(canonical_json(reader_identity(config)) == canonical_json(identity), "native reader changed during replay")
+    return {**result, "reader": identity}
+
+
 def collect(config: dict, index: Path, expected: dict[str, set[str]], target: Path) -> dict:
     identity = reader_identity(config)
     target.mkdir(parents=True)
     env = {key: value for key, value in os.environ.items() if key not in {"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "CLASSPATH"}}
-    execute([config["java"], "-Xmx512m", "--class-path", os.pathsep.join(config["classpath"]), str(READER), str(index), ",".join(sorted(expected))], cwd=READER.parent, env=env, timeout=1800, log_dir=target)
-    result = verify_documents(target / "stdout", expected)
+    execute(_argv(config, index, expected), cwd=READER.parent, env=env, timeout=1800, log_dir=target)
+    result = replay(config, index, expected, target)
     _require(canonical_json(reader_identity(config)) == canonical_json(identity), "native reader changed during collection")
-    return {**result, "reader": identity}
+    return result

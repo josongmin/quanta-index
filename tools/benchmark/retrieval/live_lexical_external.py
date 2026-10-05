@@ -40,7 +40,12 @@ import corpus_release  # noqa: E402
 from evidence import RawFile, _read_control_file, canonical_json, file_digest  # noqa: E402
 
 from tools.benchmark.retrieval import lexical_file_comparison as lexical  # noqa: E402
-from tools.benchmark.retrieval import query_plan, sourcegraph, sourcegraph_index_scope  # noqa: E402
+from tools.benchmark.retrieval import (  # noqa: E402
+    opengrok_index_scope,
+    query_plan,
+    sourcegraph,
+    sourcegraph_index_scope,
+)
 
 MAX_HTTP_BYTES = 16 * 1024 * 1024
 MAX_PROCESS_BYTES = 16 * 1024 * 1024
@@ -130,6 +135,8 @@ def _source_hashes() -> dict[str, str]:
         "producer": Path(__file__),
         "sourcegraph_adapter": Path(sourcegraph.__file__),
         "sourcegraph_index_scope": Path(sourcegraph_index_scope.__file__),
+        "opengrok_index_scope": Path(opengrok_index_scope.__file__),
+        "opengrok_native_reader": opengrok_index_scope.READER,
         "lexical_scorer": Path(lexical.__file__),
         "corpus_binding": Path(corpus_binding.__file__),
         "corpus_release": Path(corpus_release.__file__),
@@ -268,10 +275,15 @@ def _spec(path: Path) -> dict:
         value["opengrok"] = _service(
             value["opengrok"],
             {"base_url", "project", "server_image_digest"},
-            {"indexed_view_probe", "backend_snapshot"},
+            {"indexed_view_probe", "backend_snapshot", "native_index_reader"},
         )
         if value["opengrok"].get("indexed_view_probe") not in (None, "full"):
             raise ValueError("OpenGrok indexed view probe must be full or absent")
+        if "native_index_reader" in value["opengrok"]:
+            config = value["opengrok"]
+            if "backend_snapshot" not in config or config.get("indexed_view_probe") != "full":
+                raise ValueError("OpenGrok native reader requires readonly backend and full view probe")
+            opengrok_index_scope.reader_identity(config["native_index_reader"])
     if "cs" in products and (not isinstance(value["cs"], dict) or set(value["cs"]) != {"binary"}):
         raise ValueError("cs spec requires only binary")
     for key in ("suite", "query_pack", "output_root"):
@@ -1808,6 +1820,16 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         _validate_backend_snapshot(spec[name], snapshot)
         backend_before[name] = snapshot
         _write(stage / "backend" / f"{name}-before.json", canonical_json(snapshot).encode() + b"\n")
+    native_scope = None
+    native_projects = None
+    if "opengrok" in products and "native_index_reader" in spec["opengrok"]:
+        native_projects = opengrok_index_scope.expected_projects(release, document, view_name)
+        native_scope = opengrok_index_scope.collect(
+            spec["opengrok"]["native_index_reader"],
+            Path(spec["opengrok"]["backend_snapshot"]["root"]),
+            native_projects,
+            stage / "opengrok-native-before",
+        )
     index_scope = None
     if "sourcegraph" in products and "indexed_scope_receipt" in spec["sourcegraph"]:
         index_scope = sourcegraph_index_scope.verify(
@@ -1868,6 +1890,15 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
     if probe_indexed_view:
         # Two fixed, independently bounded full probes bracket every search.
         _opengrok_indexed_view(spec["opengrok"], manifest, view, stage / "opengrok-view-post")
+    if native_scope is not None:
+        native_after = opengrok_index_scope.collect(
+            spec["opengrok"]["native_index_reader"],
+            Path(spec["opengrok"]["backend_snapshot"]["root"]),
+            native_projects,
+            stage / "opengrok-native-after",
+        )
+        if canonical_json(native_scope) != canonical_json(native_after):
+            raise ValueError("OpenGrok native index or reader changed during queries")
     for name in backend_names:
         snapshot = _backend_snapshot(spec[name])
         _validate_backend_snapshot(spec[name], snapshot)
@@ -1923,6 +1954,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         "tasks": len(tasks),
         "indexed_universe_attested": False,
         "sourcegraph_index_scope": index_scope,
+        **({"opengrok_index_scope": native_scope} if native_scope is not None else {}),
         # The API inventory and served bytes do not attest Lucene postings.
         # Backend artifact/process binding is required for that stronger claim.
         "opengrok_indexed_universe_attested": False,
@@ -1951,6 +1983,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
                 *products,
                 *(("opengrok-view", "opengrok-view-post") if probe_indexed_view else ()),
                 *(("backend",) if backend_names else ()),
+                *(("opengrok-native-before", "opengrok-native-after") if native_scope is not None else ()),
             )
             for path in sorted((stage / name).iterdir())
         },
@@ -2012,6 +2045,11 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     }
     if spec["schema_version"] == 2:
         fields.add("products")
+    native_reader = (
+        spec["opengrok"].get("native_index_reader") if "opengrok" in products else None
+    )
+    if native_reader is not None:
+        fields.add("opengrok_index_scope")
     if (
         set(summary) != fields
         or type(summary.get("schema_version")) is not int
@@ -2117,6 +2155,12 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     ] != (len(manifest["files"]) if probe_indexed_view else 0):
         raise ValueError("external indexed view probe count differs")
     expected_raw = set()
+    if native_reader is not None:
+        expected_raw.update(
+            f"{directory}/{name}"
+            for directory in ("opengrok-native-before", "opengrok-native-after")
+            for name in ("stdout", "stderr", "execution.json")
+        )
     for task in pack["tasks"]:
         task_id = task["task_id"]
         if "sourcegraph" in products:
@@ -2197,6 +2241,23 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
             raise ValueError("retained Sourcegraph index scope differs from evidence replay")
     if canonical_json(summary["sourcegraph_index_scope"]) != canonical_json(index_scope):
         raise ValueError("Sourcegraph index scope claim differs from evidence replay")
+    if native_reader is not None:
+        native_projects = opengrok_index_scope.expected_projects(release, document, view_name)
+        native_scopes = [
+            opengrok_index_scope.replay(
+                native_reader,
+                Path(spec["opengrok"]["backend_snapshot"]["root"]),
+                native_projects,
+                root / directory,
+                execution_target=root.with_name(root.name + ".staging") / directory,
+            )
+            for directory in ("opengrok-native-before", "opengrok-native-after")
+        ]
+        if any(
+            canonical_json(scope) != canonical_json(summary["opengrok_index_scope"])
+            for scope in native_scopes
+        ):
+            raise ValueError("OpenGrok native scope differs across queries or replay")
     if probe_indexed_view:
         endpoint = (
             "/api/v1/projects/"
