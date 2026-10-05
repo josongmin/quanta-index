@@ -317,7 +317,12 @@ P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
   `97eedd11b70e76c66985b15a968211a2faf92c6d` 결과는 각각의 historical source 범위다.
   후속 수리·문서/source-closure 변경을 그 전체 결과로 승격하지 않는다.
 - `VERIFIED`: clean08d의 `PATH=/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index/.venv/bin:$PATH CARGO_BUILD_JOBS=1 just rust-profile test-daemon`
-  은214passed/1skipped·226.315s/exit0였다. runtime lib3 및 latest full/release는 별도다.
+  은214passed/1skipped·226.315s/exit0였다. 같은 clean08d의 runtime lib에서
+  `admitted_publish_timeout_tests::*`와
+  `process_slow_disk_tests::os_child_slow_disk_port_does_not_stale_active_readiness`를
+  `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --lib --all-features --locked`
+  의 exact selector·`--test-threads 1 --no-tests fail --success-output final`로 실행해3passed·34.701s/exit0였다.
+  latest full/release는 별도다.
   OpenGrok 새2 owner target은 benchmark-control local/PR 및 source closure에 등록했다.
   기존 formal Contract Python788에는 이 테스트들이 없으며,78/244 owner pass를 그 formal proof로 표시하지 않는다.
 - 선택 epoch의 포함 코드/driver/scorer/ADR 및 mandatory surfaces를 검증하고 matching fresh
