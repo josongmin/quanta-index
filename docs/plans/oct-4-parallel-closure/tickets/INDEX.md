@@ -9,7 +9,8 @@
 
 ## 현재 코드 잔여 — 2026-10-06 소스 대조
 
-현재 정리 기준: Quanta source `326ee3ba93bfc5456c2e946a59146fa5d5ced4b4`와 F15 cfg(test)/Scanner fixture 보완 overlay.
+현재 정리 기준: sidebar 작업 배정 시 clean Quanta source `20c3ae60b257892bceba84c8380e7a7e25c4b64a`.
+F15 cfg(test)/Scanner fixture 보완도 이 source에 통합됐다.
 F15 strict 경계 검사/shared-limit/scanner comparator 수정은 이 source에 통합됐다.
 Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀·scanner custody·ARB 용어 예산 수리가 추가됐다.
 Main에는 scale/open-loop pair/total retention 정책 결속, invocation-scoped 입장 검증 재사용과
