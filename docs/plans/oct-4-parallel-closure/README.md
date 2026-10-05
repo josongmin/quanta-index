@@ -5,6 +5,21 @@
 [실행 웨이브](WAVES.md) ·
 [초기 문서 복구](../ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).
 
+## 작업 목적과 범위
+
+원본 5개 handoff의 합집합은 아래 세 범위를 포함한다. 진행률과 완료 판정도 범위별로 구분한다.
+
+| 범위 | 목적 | 담당·단계 |
+| --- | --- | --- |
+| 엔진 구현·검증 | 검색·인덱싱·generation 수명·SDK 동작을 수리하고 변경된 source의 회귀를 검증 | E3/E4 및 I0-02 |
+| 검색 품질 평가 | 독립 정답과 실제 검색 결과를 대조해 품질을 판단 | E1/E2 및 W1–W5 |
+| 배포·운영 검증 | Linux 서버에서 supervision/readiness/state migration·배포·활성화·복구를 검증 | I0-03 및 W6 |
+
+SQLAlchemy와 Zellij는 **검색 평가용 코드 저장소**다. 해당 잔여는 검색 질의와 후보 코드의
+관련도 점수를 최종 확정하는 작업이다. Zellij 항목의 명칭은 **최종 AI 정답 판정**으로 사용한다.
+Linux는 원본 `agent-1.md`의 Release 항목에서 인계된 서버 검증 대상이며, 실행에는 실제
+host/config/state/retention/rollback 입력이 필요하다. 현재 로컬 검증 환경은 macOS다.
+
 ## 담당
 
 | 담당 | 소유 경계 | 완료 구현 ADR | 실제 잔여 |

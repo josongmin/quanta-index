@@ -30,7 +30,8 @@
 
 P0 · W1 · 코드 구현 완료, 최종 판단 입력 `BLOCKED`.
 
-- SQLAlchemy 잔여146pairs와 Zellij476pairs의 실제 최종 AI 판정을 완료한다.
+- 검색 평가용 코드 저장소의 최종 AI 정답 판정: SQLAlchemy 잔여146pairs와 Zellij476pairs를 완료한다.
+  각 pair는 검색 질의와 후보 코드의 관련도 판단 단위다.
   유효 SQL334/480 및 기존 두 reviewer raw는 보존한다. service quota/auth/model identity를 재확인한다.
 - Tailscale 필터 패키지 밖 UDP 상태 테스트의 grade1/3 rubric 경계를 확정한 뒤 재검수한다.
 - 재개 입력: `/Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91` 아래
@@ -381,7 +382,8 @@ source/binary/input namespace 관리는 이후 각 epoch의 상시 규칙이다.
 
 ### O4-I0-02
 
-P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료; fresh Contract preflight `FAILED`, 최신 SDK·hosted CI `NOT_RUN`.
+P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
+frozen `5796a63f` Contract·fresh SDK `VERIFIED`, hosted CI `NOT_RUN`.
 
 - Frozen product `0e6c7e7e9494b63fdb33f4594df059817459d3b1`와 Python native/join
   `97eedd11b70e76c66985b15a968211a2faf92c6d` 결과는 각각의 historical source 범위다.
@@ -416,7 +418,7 @@ P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
   lexical `--all-targets --all-features --locked` Clippy `-D warnings`、hexagonal/module-cycle/wire/
   test-authority/no-allow/cargo-modules/format guards, causal parser43개는 각 실행 범위에서 통과했다.
   Cargo-modules는 contract/core만 보호하므로 lexical module tree 검증으로 표시하지 않는다.
-  Matching-source release/SDK/hosted CI/operational qualification은 `NOT_RUN`이다.
+  이 owner rail은 matching-source fresh SDK·hosted CI·운영 검증을 포함하지 않는다.
 - Fresh Contract `FAILED`: clean `615224a8985e64b081b0806d942b8662bfcd6cdf`에서
   `CARGO_BUILD_JOBS=1 QUANTA_INDEX_SCCACHE=0 just retrieval-contract-proof /private/tmp/qi-retrieval-contract-f14-615224a8-20261005-v1`
   은 pytest collection과 source-controlled required inventory 불일치로 preflight exit1이었다.
@@ -428,6 +430,20 @@ P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
   `verify_inventory_authority(..., 'python')`는 실제791개와 고정 목록 일치/exit0였다.
   이는 collection 및 focused3 proof이며 formal Contract791개의 behavioral pass가 아니다.
   재시도는 새 clean source와 새 외부 root를 사용하며 실패한 root를 재사용하지 않는다.
+- Fresh Contract·SDK `VERIFIED`: clean `5796a63f7a813ae3ac3529ea7d281abd64b9db8f`에서
+  `CARGO_BUILD_JOBS=1 QUANTA_INDEX_SCCACHE=0 just retrieval-contract-proof /private/tmp/qi-retrieval-contract-f14-5796a63f-20261005-v2`
+  → Python selected/executed/passed791, Rust selected/executed/passed191, failed0/exit0.
+  `CARGO_BUILD_JOBS=1 QUANTA_INDEX_SCCACHE=0 just retrieval-sdk-proof-fresh /private/tmp/qi-retrieval-sdk-f14-5796a63f-20261005-v1`
+  → SDK selected/executed/passed27, failed0/skipped0/exit0. Fresh release daemon·runner와
+  별도 process의 lexical/semantic/hybrid 요청을 포함한다.
+  두 root의 `execution-context.json` 각각에
+  `uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py verify --receipt <root>/execution-context.json`
+  을 독립 실행해 exit0를 확인했다.
+  searchd SHA-256 `43355866f76a6f4c3621f31009338750f6c22c7349ee99b0bbdf7f03ed069f34`,
+  runner SHA-256 `bfae22c4397df8d0c9be6556a7770b03b16ce5b7004914e2c69eb9cf4a96b666`.
+  이 결과는 해당 frozen source의 macOS 로컬 proof다. Semantic/hybrid는 개발용 Hash provider를
+  사용했으며 real-provider·Linux 배포/운영·hosted CI·검색 품질/성능 qualification은 미포함이다.
+  후속 source revision과 proof를 대조하며 이 결과의 revision을 변경하지 않는다.
 - 선택 epoch의 포함 코드/driver/scorer/ADR 및 mandatory surfaces를 검증하고 matching fresh
   Contract/SDK/source closure/binaries를 발행·portable replay한다. E3 shipping acceptance와 CI도 실제 scope로 판정한다.
 - 공개SDK/contract 변경: `just rust-public-api`; wire/decode: `just rust-fuzz-smoke`;
@@ -440,6 +456,9 @@ P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
 ### O4-I0-03
 
 P1 · 코드 입력 먼저, W6 실행 · **P11 operational producer/recipes 미구현·설계 입력 `BLOCKED`**.
+
+원본 `agent-1.md`의 Release 범위에서 인계된 Linux 서버 배포·운영 검증이다.
+로컬 엔진 회귀와 검색 평가의 완료 판정은 각 owner scope를 따른다.
 
 - 배포·활성화·restore-forward 실제 명령, distinct independent pre/post 성공 관측,
   authorized Linux host/path/config/state/retention/rollback window를 확정한다.
