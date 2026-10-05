@@ -246,7 +246,7 @@ Shipping Linux daemon 및 P11 process-truth는 [I0-03](#o4-i0-03)의 별도 actu
 
 ### O4-E4-01
 
-P1 · W1/W4 · lifecycle/BM25/phase/resource 코드 구현 완료, 실제 causal profile 미완료.
+P1 · W1/W4 · 계측·정확도 구현 있음; 실제 delta 비용 실패 및 구조 수리 미완료.
 
 - Matching release에서 full/delta/delete/no-op/reopen·fresh rebuild parity를 유지하며
   seal streaming/posting scan, fsync/syscalls/physical I/O, token/IPC 비용을 독립 분리한다.
@@ -259,6 +259,9 @@ P1 · W1/W4 · lifecycle/BM25/phase/resource 코드 구현 완료, 실제 causal
   base segment6files의 shared0/missing6 및 고정 untouched filler400개 전부의 segment 이동을 관측했다.
   삭제 처리 compaction이 실제 surviving data를 재작성했다. 전체 metadata139,885bytes 발행은 별도 비용이다.
   exact live BM25 통계·native scorer 및 byte/rebuild parity를 함께 검증하는 구조 수리가 미완료다.
+  변경 segment 전체 postings 재스캔도 큰 단일 segment에서는 O(base) 읽기를 남기므로,
+  canonical 문서 생산 시 exact indexed-field census를 커밋하고 삭제·교체 문서만 차감하는 owner를 준비한다.
+  foreground read/write/elapsed·누적 correction/segment fanout·compaction 비용을 함께 검증해야 한다.
 - 완료: 명시적 clock/resource domain과 source-bound 결과로 주요 residual의 실제 원인을 설명한다.
 
 ### O4-E4-02
