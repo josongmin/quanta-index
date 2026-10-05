@@ -6,9 +6,9 @@ results, model/input identities or repetition coverage. Values describe these
 samples only; host quietness and interleaved repetitions remain separate gates.
 The control toggles plane stage/trace collection. Backend clock reads execute
 in both arms, so this is not an instrumentation-free backend comparison.
-The scanner A/B mode requires two distinct declared source revisions and
-captured searchd binary digests. It compares normalized outputs and work
-counts but does not attest either source revision to its binary or qualify speed.
+The scanner A/B mode requires separate local source/build custody receipts,
+including a distinct source identity and searchd binary for each arm. It
+compares normalized outputs and work counts but does not qualify speed.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ from pathlib import Path
 from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval.conditional_proof import canonical, load, sha
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
+from tools.benchmark.retrieval.scanner_build_custody import verify as verify_scanner_build
+from tools.benchmark.retrieval.scanner_source_identity import verify_pair as verify_scanner_source_pair
 
 
 def _without_code_search_work_clocks(planner_trace: list, *, allow_clocks: bool = True) -> list:
@@ -278,18 +280,18 @@ def _same_json(left: object, right: object) -> bool:
 
 def _scanner_identity(record: dict, phases: dict, declared: dict) -> dict:
     if set(declared) != {
-        "source_revision",
+        "source_identity_sha256",
         "runner_binary_sha256",
         "searchd_binary_sha256",
     }:
         raise ValueError("scanner A/B requires explicit source and binary identities")
-    revision = declared["source_revision"]
+    revision = declared["source_identity_sha256"]
     if (
         not isinstance(revision, str)
-        or len(revision) != 40
+        or len(revision) != 64
         or any(char not in "0123456789abcdef" for char in revision)
     ):
-        raise ValueError("scanner A/B source revision must be a full lowercase Git SHA")
+        raise ValueError("scanner A/B source identity must be a lowercase SHA-256")
     for key in ("runner_binary_sha256", "searchd_binary_sha256"):
         value = declared[key]
         if (
@@ -462,10 +464,10 @@ def compare_scanner(
         pairrun.validate_retrieval_diagnostic(diagnostic, record, phases["record_sha256"], pack)
     baseline_captures = _scanner_identity(baseline, baseline_phases, baseline_identity)
     candidate_captures = _scanner_identity(candidate, candidate_phases, candidate_identity)
-    if baseline_identity["source_revision"] == candidate_identity["source_revision"] or (
+    if baseline_identity["source_identity_sha256"] == candidate_identity["source_identity_sha256"] or (
         baseline_identity["searchd_binary_sha256"] == candidate_identity["searchd_binary_sha256"]
     ):
-        raise ValueError("scanner A/B requires distinct declared source and searchd binary")
+        raise ValueError("scanner A/B requires distinct attested source and searchd binary")
     if not _same_json(baseline_captures, candidate_captures):
         raise ValueError("scanner A/B captured corpus/model/profile configuration differs")
     if not _same_json(baseline.get("comparison_contract"), candidate.get("comparison_contract")):
@@ -592,12 +594,12 @@ def compare_scanner(
         "schema_version": 1,
         "status": "diagnostic_unqualified",
         "scorer_identity": "scanner-ab-parity-v1",
-        "identity_scope": "source_revision_declared_binary_sha256_captured",
+        "identity_scope": "comparator_supplied_source_binary_claims_only",
         "baseline_identity": baseline_identity,
         "candidate_identity": candidate_identity,
         "allowed_work_counter_differences": [],
         "qualification_limits": [
-            "source_revision_not_attested_to_binary_build",
+            "source_build_custody_not_verified_by_comparator_function",
             "host_and_repetition_qualification_not_established",
         ],
         "rows": summaries,
@@ -623,9 +625,7 @@ def main() -> int:
     ):
         parser.add_argument(f"--{name}", type=Path)
     for name in ("baseline", "candidate"):
-        parser.add_argument(f"--{name}-source-revision")
-        parser.add_argument(f"--{name}-runner-binary-sha256")
-        parser.add_argument(f"--{name}-searchd-binary-sha256")
+        parser.add_argument(f"--{name}-custody", type=Path)
     parser.add_argument("--pack", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -646,23 +646,15 @@ def main() -> int:
             args.baseline_diagnostic,
             args.candidate_diagnostic,
         ]
-        baseline_identity = {
-            "source_revision": args.baseline_source_revision,
-            "runner_binary_sha256": args.baseline_runner_binary_sha256,
-            "searchd_binary_sha256": args.baseline_searchd_binary_sha256,
-        }
-        candidate_identity = {
-            "source_revision": args.candidate_source_revision,
-            "runner_binary_sha256": args.candidate_runner_binary_sha256,
-            "searchd_binary_sha256": args.candidate_searchd_binary_sha256,
-        }
-        scanner_claims = [*baseline_identity.values(), *candidate_identity.values()]
+        scanner_claims = [args.baseline_custody, args.candidate_custody]
         if args.scanner_ab:
             if any(path is not None for path in overhead_paths) or any(
                 value is None for value in [*scanner_paths, *scanner_claims]
             ):
                 raise ValueError("scanner A/B requires only complete baseline/candidate inputs")
             paths = [*scanner_paths, args.pack]
+            if any(path.is_symlink() or not path.is_file() for path in [*paths, *scanner_claims]):
+                raise ValueError("scanner A/B replay refuses missing or symlinked inputs")
         else:
             if (
                 any(path is not None for path in scanner_paths)
@@ -683,14 +675,63 @@ def main() -> int:
         for phase, path in zip(phases, paths[2:4], strict=True):
             pairrun.symbol_coverage.verify_artifact(phase, path, corpus)
         objects = [load(payload) for payload in payloads]
+        custody_payloads = []
         if args.scanner_ab:
+            custody_payloads = [path.read_bytes() for path in scanner_claims]
+            receipts = [load(raw) for raw in custody_payloads]
+            for arm, receipt in enumerate(receipts):
+                verify_scanner_build(receipt)
+                captured_pack = receipt["capture_outputs"]["pack"]
+                if (
+                    (arm == 0 and Path(captured_pack["path"]).resolve() != args.pack.resolve())
+                    or captured_pack["sha256"] != sha(args.pack.read_bytes())
+                ):
+                    raise ValueError("scanner custody projected pack differs from replay input")
+                for role, index in (("record", arm), ("phases", arm + 2), ("diagnostic", arm + 4)):
+                    captured = receipt["capture_outputs"][role]
+                    if Path(captured["path"]).resolve() != scanner_paths[index].resolve() or captured["sha256"] != sha(payloads[index]):
+                        raise ValueError(f"scanner custody {role} output differs from replay input")
+            verify_scanner_source_pair(receipts[0]["source_identity"], receipts[1]["source_identity"])
+            if set(receipts[0]["inputs"]) != set(receipts[1]["inputs"]) or any(
+                receipts[0]["inputs"][role]["files"] != receipts[1]["inputs"][role]["files"]
+                for role in receipts[0]["inputs"]
+            ):
+                raise ValueError("scanner A/B corpus, query, suite or template bytes differ")
+            effective_env = [
+                {key: value for key, value in receipt["execution_env_sha256"].items()
+                 if key not in {"CARGO_TARGET_DIR", "PYTHONPATH"}}
+                for receipt in receipts
+            ]
+            if effective_env[0] != effective_env[1]:
+                raise ValueError("scanner A/B relevant build/capture environment differs")
+            tool_fingerprints = [
+                {key: (value["sha256"], value.get("version"))
+                 for key, value in receipt["tools"].items()}
+                for receipt in receipts
+            ]
+            if tool_fingerprints[0] != tool_fingerprints[1]:
+                raise ValueError("scanner A/B build/capture tools differ")
+            identities = [
+                {
+                    "source_identity_sha256": receipt["source_identity"]["identity_sha256"],
+                    "runner_binary_sha256": receipt["binaries"]["runner"]["sha256"],
+                    "searchd_binary_sha256": receipt["binaries"]["searchd"]["sha256"],
+                }
+                for receipt in receipts
+            ]
+            baseline_identity, candidate_identity = identities
             result = compare_scanner(*objects, baseline_identity, candidate_identity)
+            result["identity_scope"] = "local_scanner_source_build_receipt_v1"
+            result["qualification_limits"] = [
+                "local_build_custody_not_remote_attestation",
+                "host_and_repetition_qualification_not_established",
+            ]
         else:
             result = compare(*objects)
 
         with args.out.open("xb") as stream:
             stream.write(
-                canonical({**result, "input_sha256": [sha(raw) for raw in payloads]}) + b"\n"
+                canonical({**result, "input_sha256": [sha(raw) for raw in payloads + custody_payloads]}) + b"\n"
             )
     except (ValueError, OSError, KeyError, TypeError, pairrun.RunError) as error:
         mode = "scanner A/B" if args.scanner_ab else "overhead"

@@ -82,7 +82,7 @@ def _arm(record: dict, phase: dict, diagnostic: dict, *, source: str, searchd: s
         "observations": observations,
     }
     identity = {
-        "source_revision": source,
+        "source_identity_sha256": source,
         "runner_binary_sha256": phase["runner_binary_sha256"],
         "searchd_binary_sha256": searchd,
     }
@@ -98,8 +98,8 @@ def _pair(tmp_path):
     record = json.loads(path.with_name("record.json").read_text())
     phase = json.loads(path.with_name("phase-metrics.json").read_text())
     diagnostic = json.loads(path.read_text())
-    baseline = _arm(record, phase, diagnostic, source="a" * 40, searchd="b" * 64)
-    candidate = _arm(record, phase, diagnostic, source="c" * 40, searchd="d" * 64)
+    baseline = _arm(record, phase, diagnostic, source="a" * 64, searchd="b" * 64)
+    candidate = _arm(record, phase, diagnostic, source="c" * 64, searchd="d" * 64)
     return baseline, candidate, pack
 
 
@@ -122,6 +122,7 @@ def test_scanner_ab_preserves_parity_and_declared_binary_difference(tmp_path):
     result = _compare(baseline, candidate, pack)
     assert result["status"] == "diagnostic_unqualified"
     assert result["scorer_identity"] == "scanner-ab-parity-v1"
+    assert result["identity_scope"] == "comparator_supplied_source_binary_claims_only"
     assert result["allowed_work_counter_differences"] == []
     assert result["baseline_identity"] != result["candidate_identity"]
     assert len(result["rows"]) == len(baseline[0]["results"])
@@ -176,7 +177,7 @@ def test_scanner_ab_refuses_independent_semantic_or_custody_delta(tmp_path, muta
     elif mutation == "binary":
         identity["searchd_binary_sha256"] = "e" * 64
     elif mutation == "source":
-        identity["source_revision"] = baseline[3]["source_revision"]
+        identity["source_identity_sha256"] = baseline[3]["source_identity_sha256"]
     elif mutation == "work_counter":
         diagnostic["results"][0]["response"]["explanation"]["planner_trace"].append(
             {"stage": "merge", "detail": "code_search.execution.posting_probes=999"}
