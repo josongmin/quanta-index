@@ -81,6 +81,10 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   별도 Large explicit diagnostic lifecycle/replay는 `VERIFIED`, XL lifecycle은 wire 거부 뒤 `NOT_RUN`.
   이후 main bc18e67e에 bounded source-upload 코드가 추가돼 Scale 채팅이 SDK/daemon/XL actual을 진행 중이다.
   Latest Rust/runtime 영향 회귀·final Contract/SDK·Ready9 full5 join은 아직 남는다.
+- 후속 source4cc8f5b9의 digest 설명과 Large/XL realOS-child owner 회귀를 통합했다.
+  Test-authority·ignored-policy·포맷 검사는 통과했으며 Medium default을 유지한다. OS3 actual은 `NOT_RUN`이다.
+  Source74bdc9b4 `just rust-test-e2e`는214passed/1skipped·301.789s, main F15 selected79는
+  79passed/527skipped·203.351s로 `VERIFIED`다. 영향 회귀 범위이며 전체 workspace·최종 proof가 아니다.
 - Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
 - 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.
   Large default30s timeout과 XL preflight4M posting 거절은 `FAILED`다.

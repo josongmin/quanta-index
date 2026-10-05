@@ -16,6 +16,15 @@
   `git apply --check`·통합 뒤 `git diff --check`·owned Rust30paths rustfmt가 `VERIFIED`다.
   SDK caller/binding·daemon staged publication·streaming digest·bounded CBOR scratch·scale profile은 main에 통합됐다.
   F15 sync3곳의 actual 계측도 main에 반영했다. 영향 Rust/runtime·최종 proof는 아직 실행 완료로 세지 않는다.
+- 후속 main은 clean `4cc8f5b94f1a3cca57890d1b4f29687b38cb96cb`다. Digest-fallibility의
+  정책 hash 설명 누락을 문서3줄로 수리했으며 함수 body bytes는 동일하다. Gate는19sites/0violations다.
+  Large/XL 실제 OS-child restart 회귀2개와 exact ignored 등록을 추가했고 Medium 기본 profile은 유지했다.
+  Test-authority·ignored-policy·owned rustfmt가 `VERIFIED`; 새 OS3 selectors actual은 `NOT_RUN`이다.
+- Actual 영향 회귀: Scale source74bdc9b4의 `just rust-test-e2e`는214passed/1skipped·301.789s다.
+  Fast/risk/DSL/active-selection4binaries 범위이며 전체 runtime suite가 아니다.
+  Main 영향 F15 owner nextest는79passed/527skipped·203.351s다. `file_authority::` unit 및
+  `f15_file_authority`·`sealed_commitment_cost`·`sealed_manifest`·`unicode_normalization_goldens`를 선택했다.
+  Log `/private/tmp/qi-f15-final-owner-nextest-20261006-v1.log`; 전체 lexical/runtime·formal proof로 승격하지 않는다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
