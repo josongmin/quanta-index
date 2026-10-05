@@ -20,7 +20,7 @@ from tools.benchmark.retrieval.scanner_source_identity import (
 )
 
 PATH = "crates/quanta-index-lexical/src/searcher/code_search.rs"
-BASE = b'''// unrelated code may change without changing the control policy
+BASE = b"""// unrelated code may change without changing the control policy
 fn typo_text_is_ascii(text: &str, budget: &RequestBudgetV1) -> Result<bool, CoreError> {
     for chunk in text.as_bytes().chunks(16_384) {
         budget.checkpoint("lexical:code-search-typo-ascii-detect")?;
@@ -62,8 +62,8 @@ fn typo_witness(
 
 /// Conservatively shortlist files with shared trigrams.
 fn typo_candidates() {}
-'''
-CONTROL = b'''// unrelated code may change without changing the control policy
+"""
+CONTROL = b"""// unrelated code may change without changing the control policy
 #[cfg(test)]
 fn typo_text_is_ascii(text: &str, budget: &RequestBudgetV1) -> Result<bool, CoreError> {
     for chunk in text.as_bytes().chunks(16_384) {
@@ -92,7 +92,7 @@ fn typo_witness(
 
 /// Conservatively shortlist files with shared trigrams.
 fn typo_candidates() {}
-'''
+"""
 
 
 def _run(root, *argv):
@@ -114,7 +114,16 @@ def source(tmp_path):
     (repo / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
     _run(repo, "add", ".")
     subprocess.check_call(
-        ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base"],
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "base",
+        ],
         cwd=repo,
     )
     base = _run(repo, "rev-parse", "HEAD").decode().strip()
@@ -141,19 +150,26 @@ def test_fixed_fragment_parity_and_unrelated_source_change():
     )
 
 
-@pytest.mark.parametrize("mutant", [
-    BASE.replace(b"fn typo_witness(\n", b"fn renamed_witness(\n"),
-    BASE.replace(b"fn typo_text_is_ascii", b"fn renamed_ascii"),
-    BASE.replace(b"    if typo_text_is_ascii(text, budget)? {", b"    if other_branch(text, budget)? {"),
-    BASE.replace(b"byte.is_ascii_alphanumeric()", b"byte.is_ascii()"),
-    BASE.replace(b"file-start", b"changed-start"),
-    BASE.replace(b"file-end", b"changed-end"),
-    BASE.replace(b"fn typo_text_is_ascii", b"#[cfg(test)]\nfn typo_text_is_ascii"),
-    BASE + BASE,
-    BASE.replace(b"    budget.checkpoint(\"lexical:code-search-typo-file-end\")?;\n",
-                 b"    budget.checkpoint(\"lexical:code-search-typo-file-end\")?;\n"
-                 b"    budget.checkpoint(\"lexical:code-search-typo-file-end\")?;\n"),
-])
+@pytest.mark.parametrize(
+    "mutant",
+    [
+        BASE.replace(b"fn typo_witness(\n", b"fn renamed_witness(\n"),
+        BASE.replace(b"fn typo_text_is_ascii", b"fn renamed_ascii"),
+        BASE.replace(
+            b"    if typo_text_is_ascii(text, budget)? {", b"    if other_branch(text, budget)? {"
+        ),
+        BASE.replace(b"byte.is_ascii_alphanumeric()", b"byte.is_ascii()"),
+        BASE.replace(b"file-start", b"changed-start"),
+        BASE.replace(b"file-end", b"changed-end"),
+        BASE.replace(b"fn typo_text_is_ascii", b"#[cfg(test)]\nfn typo_text_is_ascii"),
+        BASE + BASE,
+        BASE.replace(
+            b'    budget.checkpoint("lexical:code-search-typo-file-end")?;\n',
+            b'    budget.checkpoint("lexical:code-search-typo-file-end")?;\n'
+            b'    budget.checkpoint("lexical:code-search-typo-file-end")?;\n',
+        ),
+    ],
+)
 def test_unknown_missing_duplicate_or_pretransformed_anchor_refused(mutant):
     with pytest.raises(CustodyError, match="scanner control"):
         canonical_control_bytes(mutant)
@@ -192,7 +208,11 @@ def test_arbitrary_claimed_patch_and_extra_change_refused(source):
             capture(repo, base, forged)
     path.write_bytes(CONTROL + b"// extra\n")
     patch.write_bytes(_run(repo, "diff", "--binary", "--", PATH))
-    malicious = {**overlay, "result_sha256": _sha(path.read_bytes()), "patch_sha256": _sha(patch.read_bytes())}
+    malicious = {
+        **overlay,
+        "result_sha256": _sha(path.read_bytes()),
+        "patch_sha256": _sha(patch.read_bytes()),
+    }
     with pytest.raises(CustodyError, match="canonical scanner control policy"):
         capture(repo, base, malicious)
 
@@ -210,7 +230,9 @@ def test_pair_and_other_tracked_file_mutants(source):
     repo, base, clean, _, _, overlay = source
     control = capture(repo, base, overlay)
     forged = json.loads(json.dumps(clean))
-    next(row for row in forged["source_inventory"] if row["path"] == "Cargo.toml")["sha256"] = "0" * 64
+    next(row for row in forged["source_inventory"] if row["path"] == "Cargo.toml")["sha256"] = (
+        "0" * 64
+    )
     with pytest.raises(CustodyError, match="outside CodeSearch scanner"):
         verify_pair(control, forged)
     with pytest.raises(CustodyError, match="approved control overlay"):
@@ -242,7 +264,16 @@ def test_untracked_staged_mode_head_and_stale_identity_refused(source):
     path.chmod(path.stat().st_mode & ~0o111)
     _run(repo, "add", ".")
     subprocess.check_call(
-        ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "later"],
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "later",
+        ],
         cwd=repo,
     )
     with pytest.raises(CustodyError, match="base revision differs"):

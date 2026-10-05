@@ -106,9 +106,11 @@ def _assert_cross_repo_custody(source: str) -> None:
         assert guard.search(source, start, end), f"missing binary custody at {name}"
     final_start, final_end = windows["final-output"]
     final = source[final_start:final_end]
-    assert final.index('require_frozen_source "$quanta_root"') < final.index(
-        'require_frozen_source "$semantica_root"'
-    ) < final.index("require_binary_custody")
+    assert (
+        final.index('require_frozen_source "$quanta_root"')
+        < final.index('require_frozen_source "$semantica_root"')
+        < final.index("require_binary_custody")
+    )
 
 
 def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
@@ -144,8 +146,13 @@ def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
 @pytest.mark.parametrize(
     "boundary",
     (
-        "r5-producer", "runtime-list", "runtime-run", "kernel-list",
-        "kernel-run", "after-resolution", "final-output",
+        "r5-producer",
+        "runtime-list",
+        "runtime-run",
+        "kernel-list",
+        "kernel-run",
+        "after-resolution",
+        "final-output",
     ),
 )
 def test_cross_repo_hellgate_refuses_missing_boundary_custody(boundary: str) -> None:

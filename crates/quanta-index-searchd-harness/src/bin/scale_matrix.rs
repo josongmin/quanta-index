@@ -33,9 +33,11 @@ const DEFAULT_SEED: u64 = 0x5161_5343_414c_4531;
 
 const USAGE: &str = "Usage: scale_matrix [--tier small|medium|large|xlarge | --all-tiers]
     [--seed U64] [--client-timeout-ms 1..=600000]
-    [--history-max-bytes 1..=268435456] [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
+    [--history-max-bytes POSITIVE_U64] [--history-max-total-bytes POSITIVE_U64]
+    [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
     Default tier: small (16 files). medium=256, large=4096, xlarge=32768.
     Default timeout/history profile is separate from explicit diagnostic overrides.
+    A total-history override requires an explicit pair-history override.
     --help, -h  Print this usage without running the rail.";
 
 struct CliArgs {
@@ -45,6 +47,7 @@ struct CliArgs {
     fresh_output: bool,
     client_timeout_ms: Option<u64>,
     history_max_bytes: Option<u64>,
+    history_max_total_bytes: Option<u64>,
 }
 
 fn parse_client_timeout_ms(raw: &str) -> AnyResult<u64> {
@@ -57,11 +60,10 @@ fn parse_client_timeout_ms(raw: &str) -> AnyResult<u64> {
 
 fn parse_history_max_bytes(raw: &str) -> AnyResult<u64> {
     let parsed = raw.parse::<u64>()?;
-    ScaleRuntimeConfig {
-        history_max_bytes: Some(parsed),
-        client_timeout: None,
+    if parsed == 0 {
+        anyhow::bail!("history byte bound must be positive");
     }
-    .effective_history_max_bytes()
+    Ok(parsed)
 }
 
 fn parse_args() -> AnyResult<CliArgs> {
@@ -71,6 +73,7 @@ fn parse_args() -> AnyResult<CliArgs> {
     let mut out_dir_explicit = false;
     let mut client_timeout_ms = None;
     let mut history_max_bytes = None;
+    let mut history_max_total_bytes = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -100,6 +103,12 @@ fn parse_args() -> AnyResult<CliArgs> {
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--history-max-bytes requires a value"))?;
                 history_max_bytes = Some(parse_history_max_bytes(&raw)?);
+            }
+            "--history-max-total-bytes" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--history-max-total-bytes requires a value"))?;
+                history_max_total_bytes = Some(parse_history_max_bytes(&raw)?);
             }
             "--tier" => {
                 let raw = args
@@ -143,6 +152,12 @@ fn parse_args() -> AnyResult<CliArgs> {
             anyhow::bail!("--out-dir must be outside the checkout");
         }
     }
+    let _history = ScaleRuntimeConfig {
+        client_timeout: client_timeout_ms.map(Duration::from_millis),
+        history_max_bytes,
+        history_max_total_bytes,
+    }
+    .execution_json()?;
     Ok(CliArgs {
         out_dir,
         seed,
@@ -150,6 +165,7 @@ fn parse_args() -> AnyResult<CliArgs> {
         fresh_output: out_dir_explicit,
         client_timeout_ms,
         history_max_bytes,
+        history_max_total_bytes,
     })
 }
 
@@ -167,6 +183,7 @@ fn run(cli: &CliArgs) -> AnyResult<Vec<TierMeasurement>> {
     let runtime_config = ScaleRuntimeConfig {
         client_timeout: cli.client_timeout_ms.map(Duration::from_millis),
         history_max_bytes: cli.history_max_bytes,
+        history_max_total_bytes: cli.history_max_total_bytes,
     };
     let execution = runtime_config.execution_json()?;
     for tier in &cli.tiers {
@@ -302,7 +319,11 @@ mod tests {
             parse_history_max_bytes("268435456").expect("256 MiB"),
             268_435_456
         );
-        for invalid in ["0", "268435457", "nan", "-1"] {
+        assert_eq!(
+            parse_history_max_bytes("536870912").expect("diagnostic pair bound"),
+            536_870_912
+        );
+        for invalid in ["0", "nan", "-1"] {
             assert!(parse_history_max_bytes(invalid).is_err());
         }
     }

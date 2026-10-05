@@ -10,8 +10,7 @@ use std::time::Duration;
 use anyhow::{Context, Result as AnyResult};
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::scale::{
-    ScaleRuntimeConfig, ScaleTier, source_binding_for_failure_in_dimension,
-    write_refusal_artifact_with_context,
+    ScaleTier, source_binding_for_failure_in_dimension, write_refusal_artifact_with_context,
 };
 use serde_json::{Value, json};
 
@@ -19,9 +18,11 @@ const USAGE: &str = "Usage: open_loop_matrix [--tier small|medium|large|xlarge]
     [--seed U64] [--arrival-model seeded-poisson|deterministic-periodic]
     [--rates-qps COMMA_SEPARATED_U32] [--duration-ms U64] [--workers USIZE]
     [--queue-capacity USIZE] [--request-timeout-ms U64]
-    [--history-max-bytes 1..=268435456] [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
+    [--history-max-bytes POSITIVE_U64] [--history-max-total-bytes POSITIVE_U64]
+    [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
     Default tier: small (16 files). medium=256, large=4096, xlarge=32768.
     Default history profile is separate from explicit diagnostic overrides.
+    A total-history override requires an explicit pair-history override.
     --help, -h  Print this usage without running the rail.";
 
 fn execution_context(config: &open_loop::Config) -> AnyResult<Value> {
@@ -38,11 +39,10 @@ fn execution_context(config: &open_loop::Config) -> AnyResult<Value> {
 
 fn parse_history_max_bytes(raw: &str) -> AnyResult<u64> {
     let bytes = raw.parse::<u64>()?;
-    ScaleRuntimeConfig {
-        client_timeout: None,
-        history_max_bytes: Some(bytes),
+    if bytes == 0 {
+        anyhow::bail!("history byte bound must be positive");
     }
-    .effective_history_max_bytes()
+    Ok(bytes)
 }
 
 fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
@@ -56,6 +56,7 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
         queue_capacity: 256,
         request_timeout: Duration::from_secs(2),
         history_max_bytes: None,
+        history_max_total_bytes: None,
     };
     let mut out_dir = PathBuf::from("artifacts/search-quality/open-loop/latest");
     let mut out_dir_explicit = false;
@@ -97,6 +98,9 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
             "--history-max-bytes" => {
                 config.history_max_bytes = Some(parse_history_max_bytes(&raw)?);
             }
+            "--history-max-total-bytes" => {
+                config.history_max_total_bytes = Some(parse_history_max_bytes(&raw)?);
+            }
             "--out-dir" => {
                 out_dir = PathBuf::from(raw);
                 out_dir_explicit = true;
@@ -104,6 +108,7 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
             _ => anyhow::bail!("unknown argument {flag:?}"),
         }
     }
+    config.validate()?;
     if config.tier != ScaleTier::Small && !out_dir_explicit {
         anyhow::bail!("--out-dir is required for a non-default open-loop tier");
     }
@@ -123,7 +128,6 @@ fn parse_args() -> AnyResult<(open_loop::Config, PathBuf, bool)> {
             anyhow::bail!("--out-dir must be outside the checkout");
         }
     }
-    config.validate()?;
     Ok((config, out_dir, out_dir_explicit))
 }
 
@@ -271,6 +275,7 @@ mod tests {
             queue_capacity: 8,
             request_timeout: Duration::from_millis(250),
             history_max_bytes: None,
+            history_max_total_bytes: None,
         };
         let value = execution_context(&config)?;
         expect_json_eq(
@@ -298,12 +303,22 @@ mod tests {
             "/history_policy/history_max_generations",
             &serde_json::json!(8),
         )?;
+        expect_json_eq(
+            &value,
+            "/history_policy/history_policy_id",
+            &serde_json::json!("harness-default-v1"),
+        )?;
+        expect_json_eq(
+            &value,
+            "/history_policy/requested_history_max_total_bytes",
+            &serde_json::Value::Null,
+        )?;
         Ok(())
     }
 
     #[test]
     fn explicit_history_budget_is_bounded_and_bound_to_refusal_context() -> anyhow::Result<()> {
-        for invalid in ["0", "268435457", "-1", "nan"] {
+        for invalid in ["0", "18446744073709551616", "-1", "nan"] {
             anyhow::ensure!(
                 parse_history_max_bytes(invalid).is_err(),
                 "accepted invalid history budget {invalid}"
@@ -320,6 +335,7 @@ mod tests {
             queue_capacity: 8,
             request_timeout: Duration::from_millis(250),
             history_max_bytes: Some(bytes),
+            history_max_total_bytes: None,
         };
         config.validate()?;
         let value = execution_context(&config)?;
@@ -343,6 +359,47 @@ mod tests {
             "/history_policy/history_max_revision_pairs",
             &serde_json::json!(128),
         )?;
+        expect_json_eq(
+            &value,
+            "/history_policy/history_policy_id",
+            &serde_json::json!("explicit-pair-default-total-v1"),
+        )?;
+        let mut diagnostic = config.clone();
+        diagnostic.history_max_bytes = Some(300_000_000);
+        diagnostic.history_max_total_bytes = Some(600_000_000);
+        diagnostic.validate()?;
+        let diagnostic_context = execution_context(&diagnostic)?;
+        for (pointer, expected) in [
+            (
+                "/history_policy/history_max_bytes",
+                serde_json::json!(300_000_000),
+            ),
+            (
+                "/history_policy/requested_history_max_bytes",
+                serde_json::json!(300_000_000),
+            ),
+            (
+                "/history_policy/history_max_total_bytes",
+                serde_json::json!(600_000_000),
+            ),
+            (
+                "/history_policy/requested_history_max_total_bytes",
+                serde_json::json!(600_000_000),
+            ),
+            (
+                "/history_policy/history_policy_id",
+                serde_json::json!("explicit-pair-total-diagnostic-v1"),
+            ),
+        ] {
+            expect_json_eq(&diagnostic_context, pointer, &expected)?;
+        }
+        diagnostic.history_max_bytes = None;
+        anyhow::ensure!(
+            diagnostic.validate().is_err(),
+            "accepted total-only override"
+        );
+        diagnostic.history_max_bytes = Some(600_000_001);
+        anyhow::ensure!(diagnostic.validate().is_err(), "accepted pair above total");
         Ok(())
     }
 
@@ -359,6 +416,7 @@ mod tests {
             queue_capacity: 8,
             request_timeout: Duration::from_millis(250),
             history_max_bytes: Some(268_435_456),
+            history_max_total_bytes: None,
         };
         let binding = source_binding_for_failure_in_dimension(
             open_loop::DIMENSION,

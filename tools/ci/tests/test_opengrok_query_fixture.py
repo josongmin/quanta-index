@@ -16,18 +16,23 @@ def _sha(data: bytes) -> str:
 
 def test_embedded_source_patch_and_javac_class_goldens_are_fixed() -> None:
     assert _sha(fixture.PATCH) == "8e6b4cdb7d11fad1fe864eb69f4a5647fa04482f77059b703fba1be2e013ca98"
-    assert fixture.ORIGINAL_SOURCE_SHA256 == "e7880011219a11e8b2e133c8c8b6cc678b9d8b39cc4fbb7e98836c4631c55654"
-    assert fixture.PATCHED_SOURCE_SHA256 == "21b0cb48cd58553a2d4657b1434ee5fb5228dc630f30de98ccaddd813b560f27"
-    assert fixture.COMPILER_IMAGE_ID == "sha256:1b79b7700154fec76b32816c560b1d67f30e115868fc8caf5c123207ae6074e7"
+    assert (
+        fixture.ORIGINAL_SOURCE_SHA256
+        == "e7880011219a11e8b2e133c8c8b6cc678b9d8b39cc4fbb7e98836c4631c55654"
+    )
+    assert (
+        fixture.PATCHED_SOURCE_SHA256
+        == "21b0cb48cd58553a2d4657b1434ee5fb5228dc630f30de98ccaddd813b560f27"
+    )
+    assert (
+        fixture.COMPILER_IMAGE_ID
+        == "sha256:1b79b7700154fec76b32816c560b1d67f30e115868fc8caf5c123207ae6074e7"
+    )
     assert fixture.CLASS_SHA256 == {
-        "org/opengrok/web/api/v1/controller/SearchController$SearchEngineWrapper.class":
-            "e477af140507338e72c22eb0753720a1f63c89aa7811a7fbea2fdb67259c1335",
-        "org/opengrok/web/api/v1/controller/SearchController$SearchHit.class":
-            "f8945465238c3ed984f51edb987339ab85ed615ee0e7f375ac600c4780f16c65",
-        "org/opengrok/web/api/v1/controller/SearchController$SearchResult.class":
-            "8db685df4821fba6f3fb0cc218b78ca7fcc638fb5c72fc4845f1f42aee80ac82",
-        "org/opengrok/web/api/v1/controller/SearchController.class":
-            "c492587703599e7203d17872326fe8d0af694d2547b801dbe7195a4036b9c372",
+        "org/opengrok/web/api/v1/controller/SearchController$SearchEngineWrapper.class": "e477af140507338e72c22eb0753720a1f63c89aa7811a7fbea2fdb67259c1335",
+        "org/opengrok/web/api/v1/controller/SearchController$SearchHit.class": "f8945465238c3ed984f51edb987339ab85ed615ee0e7f375ac600c4780f16c65",
+        "org/opengrok/web/api/v1/controller/SearchController$SearchResult.class": "8db685df4821fba6f3fb0cc218b78ca7fcc638fb5c72fc4845f1f42aee80ac82",
+        "org/opengrok/web/api/v1/controller/SearchController.class": "c492587703599e7203d17872326fe8d0af694d2547b801dbe7195a4036b9c372",
     }
 
 
@@ -67,7 +72,9 @@ def test_wrong_upstream_original_refused_before_creating_output(tmp_path) -> Non
 
 def test_class_oracle_rejects_extra_missing_and_mutated_files(tmp_path, monkeypatch) -> None:
     payloads = {name: name.encode() for name in fixture.CLASS_SHA256}
-    monkeypatch.setattr(fixture, "CLASS_SHA256", {name: _sha(data) for name, data in payloads.items()})
+    monkeypatch.setattr(
+        fixture, "CLASS_SHA256", {name: _sha(data) for name, data in payloads.items()}
+    )
     classes = tmp_path / "classes"
     for name, data in payloads.items():
         target = classes / name
@@ -105,8 +112,19 @@ def test_cli_build_failure_leaves_final_absent_and_removes_staging(tmp_path, mon
 
     monkeypatch.setattr(fixture, "materialize", materialize)
     monkeypatch.setattr(fixture, "build_classes", failed_build)
-    monkeypatch.setattr(sys, "argv", ["fixture", "--original", str(upstream),
-                                  "--output", str(output), "--build-web-inf", str(tmp_path)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fixture",
+            "--original",
+            str(upstream),
+            "--output",
+            str(output),
+            "--build-web-inf",
+            str(tmp_path),
+        ],
+    )
     with pytest.raises(ValueError, match="compiler failed"):
         fixture.main()
     assert not output.exists()
@@ -119,8 +137,19 @@ def test_cli_build_refuses_existing_output_without_touching_it(tmp_path, monkeyp
     marker = output / "keep"
     marker.write_bytes(b"existing")
     monkeypatch.setattr(fixture, "materialize", lambda *_args: pytest.fail("overwrote output"))
-    monkeypatch.setattr(sys, "argv", ["fixture", "--original", str(tmp_path / "upstream.java"),
-                                  "--output", str(output), "--build-web-inf", str(tmp_path)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fixture",
+            "--original",
+            str(tmp_path / "upstream.java"),
+            "--output",
+            str(output),
+            "--build-web-inf",
+            str(tmp_path),
+        ],
+    )
     with pytest.raises(ValueError, match="fresh external path"):
         fixture.main()
     assert marker.read_bytes() == b"existing"
@@ -141,8 +170,19 @@ def test_cli_build_publishes_only_after_compiled_classes_pass(tmp_path, monkeypa
 
     monkeypatch.setattr(fixture, "materialize", materialize)
     monkeypatch.setattr(fixture, "build_classes", accepted_build)
-    monkeypatch.setattr(sys, "argv", ["fixture", "--original", str(tmp_path / "upstream.java"),
-                                  "--output", str(output), "--build-web-inf", str(tmp_path)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fixture",
+            "--original",
+            str(tmp_path / "upstream.java"),
+            "--output",
+            str(output),
+            "--build-web-inf",
+            str(tmp_path),
+        ],
+    )
     assert fixture.main() == 0
     assert (output / "classes").is_dir()
     assert set(tmp_path.iterdir()) == {output}

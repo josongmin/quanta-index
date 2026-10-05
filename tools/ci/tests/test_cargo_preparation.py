@@ -24,8 +24,13 @@ def test_one_preparation_preserves_original_selection_and_reuses_both_commands(
     selector = ["-p", "quanta-index-retrieval-bench"]
     selector += (
         [
-            "--lib", "--bin", "quanta-index-retrieval-bench",
-            "--test", "chunking_contract", "--test", "l5_parser_regressions",
+            "--lib",
+            "--bin",
+            "quanta-index-retrieval-bench",
+            "--test",
+            "chunking_contract",
+            "--test",
+            "l5_parser_regressions",
         ]
         if rail == "contract"
         else ["--test", "sdk_roundtrip"]

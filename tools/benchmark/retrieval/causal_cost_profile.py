@@ -30,17 +30,37 @@ SYNC_LABELS = frozenset(
         "history_layout_directory",
     }
 )
-KINDS = frozenset({
-    "phase_start", "phase_end", "sync", "exact_live_token_scan",
-    "bm25_census_build", "bm25_boundary", "bm25_live_build",
-})
+KINDS = frozenset(
+    {
+        "phase_start",
+        "phase_end",
+        "sync",
+        "exact_live_token_scan",
+        "bm25_census_build",
+        "bm25_boundary",
+        "bm25_live_build",
+    }
+)
 BM25_BOUNDARY_LABELS = frozenset({"base_read", "encode"})
-BM25_BUILD_COUNTERS = frozenset({
-    "elapsed_ns", "reused_segments", "changed_segments", "new_segments",
-    "mask_docs", "new_census_docs", "newly_dead_docs", "logical_census_bytes",
-    "changed_ns", "new_ns", "death_ns", "correction_keys", "segment_fanout",
-    "retained_valid", "retained_estimate_bytes",
-})
+BM25_BUILD_COUNTERS = frozenset(
+    {
+        "elapsed_ns",
+        "reused_segments",
+        "changed_segments",
+        "new_segments",
+        "mask_docs",
+        "new_census_docs",
+        "newly_dead_docs",
+        "logical_census_bytes",
+        "changed_ns",
+        "new_ns",
+        "death_ns",
+        "correction_keys",
+        "segment_fanout",
+        "retained_valid",
+        "retained_estimate_bytes",
+    }
+)
 TIER_SHAPE = {
     "small": (1, 16),
     "medium": (4, 64),
@@ -49,15 +69,26 @@ TIER_SHAPE = {
 }
 SMALL_PHASES = frozenset(
     {
-        "full_ingest_seal", "full_activate", "delta_ingest_seal",
-        "delta_activate", "noop_seal", "noop_activate",
+        "full_ingest_seal",
+        "full_activate",
+        "delta_ingest_seal",
+        "delta_activate",
+        "noop_seal",
+        "noop_activate",
     }
 )
 LARGE_PHASES = frozenset(
     {
-        "full_ingest", "full_seal", "full_activate", "delta_ingest_seal",
-        "delta_activate", "noop_seal", "noop_activate", "delete_seal",
-        "delete_activate", "same_process_reopen",
+        "full_ingest",
+        "full_seal",
+        "full_activate",
+        "delta_ingest_seal",
+        "delta_activate",
+        "noop_seal",
+        "noop_activate",
+        "delete_seal",
+        "delete_activate",
+        "same_process_reopen",
     }
 )
 DEFAULT_TIMEOUT_MS = 30_000
@@ -79,8 +110,13 @@ def _declared_inputs(
     expected_seed: int,
     requested_client_timeout_ms: int | None,
     requested_history_max_bytes: int | None,
+    requested_history_max_total_bytes: int | None,
 ) -> dict:
-    if expected_tier not in TIER_SHAPE or type(expected_seed) is not int or not 0 <= expected_seed < 1 << 64:
+    if (
+        expected_tier not in TIER_SHAPE
+        or type(expected_seed) is not int
+        or not 0 <= expected_seed < 1 << 64
+    ):
         raise ValueError("invalid declared scale tier or seed")
     if requested_client_timeout_ms is not None and (
         type(requested_client_timeout_ms) is not int
@@ -89,9 +125,27 @@ def _declared_inputs(
         raise ValueError("invalid declared client timeout")
     if requested_history_max_bytes is not None and (
         type(requested_history_max_bytes) is not int
-        or not 1 <= requested_history_max_bytes <= HISTORY_MAX_TOTAL_BYTES
+        or not 1 <= requested_history_max_bytes <= (1 << 64) - 1
     ):
         raise ValueError("invalid declared history limit")
+    if requested_history_max_total_bytes is not None and (
+        type(requested_history_max_total_bytes) is not int
+        or not 1 <= requested_history_max_total_bytes <= (1 << 64) - 1
+    ):
+        raise ValueError("invalid declared total history limit")
+    if requested_history_max_total_bytes is not None and requested_history_max_bytes is None:
+        raise ValueError("total history override requires an explicit pair bound")
+    effective_total = requested_history_max_total_bytes or HISTORY_MAX_TOTAL_BYTES
+    effective_pair = requested_history_max_bytes or DEFAULT_HISTORY_MAX_BYTES
+    if effective_pair > effective_total:
+        raise ValueError("pair history bound exceeds total history bound")
+    policy_id = (
+        "explicit-pair-total-diagnostic-v1"
+        if requested_history_max_total_bytes is not None
+        else "explicit-pair-default-total-v1"
+        if requested_history_max_bytes is not None
+        else "harness-default-v1"
+    )
     manifest = load(manifest_raw)
     if (
         not isinstance(manifest, dict)
@@ -104,7 +158,9 @@ def _declared_inputs(
         or len(manifest["tiers"]) != len(TIER_SHAPE)
     ):
         raise ValueError("scale tier manifest contract is invalid")
-    for row, (name, (repos, files_per_repo)) in zip(manifest["tiers"], TIER_SHAPE.items(), strict=True):
+    for row, (name, (repos, files_per_repo)) in zip(
+        manifest["tiers"], TIER_SHAPE.items(), strict=True
+    ):
         if not isinstance(row, dict) or row.get("tier") != name:
             raise ValueError("scale tier manifest order or name changed")
         for key, expected in (
@@ -127,14 +183,19 @@ def _declared_inputs(
         "requested_client_request_timeout_ms": requested_client_timeout_ms,
         "client_request_timeout_ms": requested_client_timeout_ms or DEFAULT_TIMEOUT_MS,
         "requested_history_max_bytes": requested_history_max_bytes,
-        "history_max_bytes": requested_history_max_bytes or DEFAULT_HISTORY_MAX_BYTES,
+        "history_max_bytes": effective_pair,
+        "requested_history_max_total_bytes": requested_history_max_total_bytes,
+        "history_policy_id": policy_id,
         "history_max_generations": 2,
         "history_max_revision_pairs": HISTORY_MAX_REVISION_PAIRS,
-        "history_max_total_bytes": HISTORY_MAX_TOTAL_BYTES,
+        "history_max_total_bytes": effective_total,
     }
     for key, expected in policy.items():
         if expected is None:
             if key not in tier or tier[key] is not None:
+                raise ValueError(f"{key} does not match declared scale input")
+        elif isinstance(expected, str):
+            if type(tier.get(key)) is not str or tier[key] != expected:
                 raise ValueError(f"{key} does not match declared scale input")
         else:
             _exact_int(tier.get(key), expected, key)
@@ -253,10 +314,14 @@ def parse_trace(raw: bytes, expected_phases: set[str]) -> dict:
                 if row["label"] not in BM25_BOUNDARY_LABELS or row["reason"] != "counter_overflow":
                     raise ValueError("invalid BM25 boundary failure")
                 raise ValueError("BM25 boundary observation overflowed")
-            _check_fields(row, {"kind", "label", "ok", "elapsed_ns", "logical_bytes", "index_files"})
+            _check_fields(
+                row, {"kind", "label", "ok", "elapsed_ns", "logical_bytes", "index_files"}
+            )
             if row["ok"] != "1" or row["label"] not in BM25_BOUNDARY_LABELS:
                 raise ValueError("invalid BM25 boundary marker")
-            counts = {key: _natural(row, key) for key in ("elapsed_ns", "logical_bytes", "index_files")}
+            counts = {
+                key: _natural(row, key) for key in ("elapsed_ns", "logical_bytes", "index_files")
+            }
             if active is None:
                 unattributed["bm25_events"] += 1
                 continue
@@ -323,9 +388,7 @@ def parse_trace(raw: bytes, expected_phases: set[str]) -> dict:
         raise ValueError("failed scale phase marker")
     if not any(phase["sync"] for phase in phases.values()):
         raise ValueError("scale trace has no lexical durability call markers")
-    seal_phases = {
-        "full_ingest_seal", "full_seal", "delta_ingest_seal", "noop_seal", "delete_seal"
-    }
+    seal_phases = {"full_ingest_seal", "full_seal", "delta_ingest_seal", "noop_seal", "delete_seal"}
     for name, phase in phases.items():
         if name in seal_phases and (
             len(phase["bm25_live_build"]) != 1
@@ -346,6 +409,7 @@ def replay(
     expected_seed: int,
     requested_client_timeout_ms: int | None,
     requested_history_max_bytes: int | None,
+    requested_history_max_total_bytes: int | None = None,
 ) -> dict:
     summary = load(summary_raw)
     if (
@@ -392,6 +456,7 @@ def replay(
         expected_seed=expected_seed,
         requested_client_timeout_ms=requested_client_timeout_ms,
         requested_history_max_bytes=requested_history_max_bytes,
+        requested_history_max_total_bytes=requested_history_max_total_bytes,
     )
     expected_phases = SMALL_PHASES if expected_tier == "small" else LARGE_PHASES
     if set(resources) != expected_phases:
@@ -466,6 +531,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--client-timeout-ms", type=int)
     parser.add_argument("--history-max-bytes", type=int)
+    parser.add_argument("--history-max-total-bytes", type=int)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -474,13 +540,16 @@ def main() -> int:
         ):
             raise ValueError("source revision must be a full lowercase commit SHA")
         result = replay(
-            args.summary.read_bytes(), args.trace.read_bytes(), args.binary.read_bytes(),
+            args.summary.read_bytes(),
+            args.trace.read_bytes(),
+            args.binary.read_bytes(),
             args.manifest.read_bytes(),
             source_revision=args.source_revision,
             expected_tier=args.tier,
             expected_seed=args.seed,
             requested_client_timeout_ms=args.client_timeout_ms,
             requested_history_max_bytes=args.history_max_bytes,
+            requested_history_max_total_bytes=args.history_max_total_bytes,
         )
         with args.out.open("xb") as stream:
             stream.write(canonical(result) + b"\n")

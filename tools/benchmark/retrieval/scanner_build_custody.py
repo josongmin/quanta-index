@@ -46,8 +46,10 @@ def _file(path: Path) -> str:
         after = path.lstat()
     except OSError as error:
         raise CustodyError(f"scanner artifact could not be read: {path}") from error
+
     def identity(row: os.stat_result) -> tuple[int, ...]:
         return (row.st_dev, row.st_ino, row.st_mode, row.st_size, row.st_mtime_ns, row.st_ctime_ns)
+
     if identity(before) != identity(opened) or identity(opened) != identity(after):
         raise CustodyError(f"scanner artifact changed while reading: {path}")
     return _sha(data)
@@ -67,7 +69,12 @@ def _input_inventory(roots: dict[str, str]) -> dict:
     result = {}
     for role, raw in sorted(roots.items()):
         path = Path(raw)
-        if not isinstance(raw, str) or not path.is_absolute() or path.is_symlink() or not path.exists():
+        if (
+            not isinstance(raw, str)
+            or not path.is_absolute()
+            or path.is_symlink()
+            or not path.exists()
+        ):
             raise CustodyError(f"invalid input root: {role}")
         if path.is_file():
             files = [path]
@@ -83,10 +90,7 @@ def _input_inventory(roots: dict[str, str]) -> dict:
             raise CustodyError(f"symlink in scanner input root: {role}")
         result[role] = {
             "root": str(path),
-            "files": [
-                {"path": p.relative_to(base).as_posix(), "sha256": _file(p)}
-                for p in files
-            ],
+            "files": [{"path": p.relative_to(base).as_posix(), "sha256": _file(p)} for p in files],
         }
     return result
 
@@ -102,27 +106,55 @@ def _tools(repo: Path, env: dict[str, str]) -> dict:
     for name, path in tools.items():
         resolved = path.resolve(strict=True)
         result[name] = {"path": str(path), "realpath": str(resolved), "sha256": _file(resolved)}
-    for name, argv in (("cargo", [str(tools["cargo"]), "--version"]),
-                       ("rustc", [str(tools["rustc"]), "-Vv"])):
-        process = subprocess.run(argv, cwd=repo, env=env, capture_output=True,
-                                 timeout=30, check=False)
+    for name, argv in (
+        ("cargo", [str(tools["cargo"]), "--version"]),
+        ("rustc", [str(tools["rustc"]), "-Vv"]),
+    ):
+        process = subprocess.run(
+            argv, cwd=repo, env=env, capture_output=True, timeout=30, check=False
+        )
         if process.returncode or not process.stdout:
             raise CustodyError(f"tool version probe failed: {name}")
         result[name]["version"] = process.stdout.decode(errors="replace").strip()
     return result
 
 
-EXECUTION_ENV_KEYS = frozenset({
-    "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "CARGO_HOME", "RUSTUP_HOME",
-    "RUSTUP_TOOLCHAIN", "RUSTC", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS",
-    "CARGO_INCREMENTAL", "CARGO_BUILD_TARGET", "CARGO_BUILD_RUSTFLAGS",
-    "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTDOCFLAGS", "SDKROOT",
-    "MACOSX_DEPLOYMENT_TARGET", "CC", "CXX", "AR",
-    "PYTHONNOUSERSITE", "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
-    "TOKENIZERS_PARALLELISM", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
-    "QUANTA_INDEX_CACHE_ROOT", "QUANTA_INDEX_RESOURCE_WAIT_SECONDS",
-    "QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS",
-})
+EXECUTION_ENV_KEYS = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        "RUSTUP_TOOLCHAIN",
+        "RUSTC",
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_INCREMENTAL",
+        "CARGO_BUILD_TARGET",
+        "CARGO_BUILD_RUSTFLAGS",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "RUSTDOCFLAGS",
+        "SDKROOT",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "CC",
+        "CXX",
+        "AR",
+        "PYTHONNOUSERSITE",
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "TRANSFORMERS_CACHE",
+        "TOKENIZERS_PARALLELISM",
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "QUANTA_INDEX_CACHE_ROOT",
+        "QUANTA_INDEX_RESOURCE_WAIT_SECONDS",
+        "QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS",
+    }
+)
 
 
 def _effective_env(repo: Path, out: Path, overrides: dict[str, str]) -> dict[str, str]:
@@ -158,7 +190,11 @@ def _binary_inventory(out: Path, relpaths: dict[str, str]) -> dict:
         raise CustodyError("runner and searchd binary paths required")
     result = {}
     for role, relative in sorted(relpaths.items()):
-        if not isinstance(relative, str) or Path(relative).is_absolute() or ".." in Path(relative).parts:
+        if (
+            not isinstance(relative, str)
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+        ):
             raise CustodyError("unsafe binary relative path")
         path = out / relative
         if not _inside(path, out):
@@ -174,7 +210,11 @@ def _capture_inventory(out: Path, relpaths: dict[str, str]) -> dict:
         raise CustodyError("record, phases, diagnostic and projected pack required")
     result = {}
     for role, relative in sorted(relpaths.items()):
-        if not isinstance(relative, str) or Path(relative).is_absolute() or ".." in Path(relative).parts:
+        if (
+            not isinstance(relative, str)
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+        ):
             raise CustodyError("unsafe capture relative path")
         path = out / relative
         if not _inside(path, out):
@@ -207,14 +247,36 @@ def _template_context(spec: dict) -> tuple[dict, dict[str, str]]:
         raise CustodyError("scanner run template is not JSON") from error
     dynamic = {"runner_binary", "searchd_binary", "searchd_expected_sha256", "output_root"}
     required = {
-        "spec_version", "repo", "manifest", "suite", "query_pack", "execution_profiles",
-        "top_k", "strategies", "routes", "scope", "claims", "embedder",
-        "query_repetitions_per_root", "query_warmup_passes", "query_stage_observation",
+        "spec_version",
+        "repo",
+        "manifest",
+        "suite",
+        "query_pack",
+        "execution_profiles",
+        "top_k",
+        "strategies",
+        "routes",
+        "scope",
+        "claims",
+        "embedder",
+        "query_repetitions_per_root",
+        "query_warmup_passes",
+        "query_stage_observation",
     }
     optional = {
-        "seed", "run_id", "runner_name", "repo_id", "revision_id", "generation",
-        "timeout_secs", "io_timeout_secs", "cache_regime", "host_profile",
-        "symbol_coverage_policy", "symbol_total_timeout_ms", "code_search_rank_study",
+        "seed",
+        "run_id",
+        "runner_name",
+        "repo_id",
+        "revision_id",
+        "generation",
+        "timeout_secs",
+        "io_timeout_secs",
+        "cache_regime",
+        "host_profile",
+        "symbol_coverage_policy",
+        "symbol_total_timeout_ms",
+        "code_search_rank_study",
     }
     if (
         not isinstance(template, dict)
@@ -245,18 +307,31 @@ def _template_context(spec: dict) -> tuple[dict, dict[str, str]]:
     for key in ("seed", "generation", "timeout_secs", "io_timeout_secs", "symbol_total_timeout_ms"):
         if key in template and (type(template[key]) is not int or template[key] < 0):
             raise CustodyError(f"scanner template {key} must be a nonnegative integer")
-    for key in ("run_id", "runner_name", "repo_id", "revision_id", "cache_regime", "symbol_coverage_policy"):
+    for key in (
+        "run_id",
+        "runner_name",
+        "repo_id",
+        "revision_id",
+        "cache_regime",
+        "symbol_coverage_policy",
+    ):
         if key in template and (not isinstance(template[key], str) or not template[key]):
             raise CustodyError(f"scanner template {key} must be a nonempty string")
     if "code_search_rank_study" in template:
         study = template["code_search_rank_study"]
-        if not isinstance(study, dict) or set(study) != {"max_files", "max_pages", "timeout_ms"} or any(
-            type(value) is not int or value <= 0 for value in study.values()
+        if (
+            not isinstance(study, dict)
+            or set(study) != {"max_files", "max_pages", "timeout_ms"}
+            or any(type(value) is not int or value <= 0 for value in study.values())
         ):
             raise CustodyError("scanner rank study limits must be positive integers")
     roots = {"run_template": str(path)}
-    for role, key in (("corpus", "repo"), ("manifest", "manifest"),
-                      ("suite", "suite"), ("query_pack", "query_pack")):
+    for role, key in (
+        ("corpus", "repo"),
+        ("manifest", "manifest"),
+        ("suite", "suite"),
+        ("query_pack", "query_pack"),
+    ):
         raw = template.get(key)
         if not isinstance(raw, str) or not Path(raw).is_absolute():
             raise CustodyError(f"scanner template {key} must be absolute")
@@ -270,12 +345,26 @@ def _template_context(spec: dict) -> tuple[dict, dict[str, str]]:
 
 
 def _validate_spec(spec: dict) -> tuple[Path, Path, dict | None, dict, dict[str, str]]:
-    if not isinstance(spec, dict) or set(spec) != {
-        "schema_version", "repo", "base_git_revision", "overlay", "output_root",
-        "run_template", "env_overrides"
-    } or type(spec["schema_version"]) is not int or spec["schema_version"] != 2:
+    if (
+        not isinstance(spec, dict)
+        or set(spec)
+        != {
+            "schema_version",
+            "repo",
+            "base_git_revision",
+            "overlay",
+            "output_root",
+            "run_template",
+            "env_overrides",
+        }
+        or type(spec["schema_version"]) is not int
+        or spec["schema_version"] != 2
+    ):
         raise CustodyError("scanner build spec schema differs")
-    if not all(isinstance(spec[key], str) for key in ("repo", "base_git_revision", "output_root", "run_template")):
+    if not all(
+        isinstance(spec[key], str)
+        for key in ("repo", "base_git_revision", "output_root", "run_template")
+    ):
         raise CustodyError("scanner build spec path/revision type differs")
     repo = Path(spec["repo"])
     out = Path(spec["output_root"])
@@ -292,14 +381,34 @@ def _validate_spec(spec: dict) -> tuple[Path, Path, dict | None, dict, dict[str,
 
 
 def _build_argv(repo: Path) -> list[str]:
-    return [str(repo / "scripts/cargow"), "--lane", "scanner-ab-lane", "build",
-            "-p", "quanta-index-retrieval-bench", "-p", "quanta-index-searchd-runtime",
-            "--bin", "quanta-index-retrieval-bench", "--bin", "quanta-index-searchd",
-            "--all-features", "--release", "--locked"]
+    return [
+        str(repo / "scripts/cargow"),
+        "--lane",
+        "scanner-ab-lane",
+        "build",
+        "-p",
+        "quanta-index-retrieval-bench",
+        "-p",
+        "quanta-index-searchd-runtime",
+        "--bin",
+        "quanta-index-retrieval-bench",
+        "--bin",
+        "quanta-index-searchd",
+        "--all-features",
+        "--release",
+        "--locked",
+    ]
 
 
 def _capture_argv(repo: Path, run_spec: Path) -> list[str]:
-    return [sys.executable, "-m", "tools.benchmark.retrieval.run", "quanta", "--spec", str(run_spec)]
+    return [
+        sys.executable,
+        "-m",
+        "tools.benchmark.retrieval.run",
+        "quanta",
+        "--spec",
+        str(run_spec),
+    ]
 
 
 def _run_spec(template: dict, out: Path, binaries: dict) -> dict:
@@ -323,10 +432,17 @@ def _assert_run_spec(out: Path, template: dict, binaries: dict) -> None:
 def capture(spec: dict, receipt_path: Path) -> dict:
     """Run a fresh controlled build and write a bound local receipt once."""
     repo, out, overlay, template, roots = _validate_spec(spec)
-    if not receipt_path.is_absolute() or out.exists() or receipt_path.exists() or _inside(receipt_path, repo):
+    if (
+        not receipt_path.is_absolute()
+        or out.exists()
+        or receipt_path.exists()
+        or _inside(receipt_path, repo)
+    ):
         raise CustodyError("output/receipt must be new and outside checkout")
-    if any(_inside(Path(raw), out) or _inside(out, Path(raw)) or _inside(receipt_path, Path(raw))
-           for raw in roots.values()):
+    if any(
+        _inside(Path(raw), out) or _inside(out, Path(raw)) or _inside(receipt_path, Path(raw))
+        for raw in roots.values()
+    ):
         raise CustodyError("input and output roots must be disjoint")
     env = _effective_env(repo, out, spec["env_overrides"])
     before_source = source_capture(repo, spec["base_git_revision"], overlay, env=env)
@@ -334,34 +450,42 @@ def capture(spec: dict, receipt_path: Path) -> dict:
     out.mkdir(parents=True)
     before_tools = _tools(repo, env)
     build_argv = _build_argv(repo)
-    process = subprocess.run(build_argv, cwd=repo, env=env,
-                             capture_output=True, check=False)
+    process = subprocess.run(build_argv, cwd=repo, env=env, capture_output=True, check=False)
     (out / "build.stdout").write_bytes(process.stdout)
     (out / "build.stderr").write_bytes(process.stderr)
     after_source = source_capture(repo, spec["base_git_revision"], overlay, env=env)
     after_inputs = _input_inventory(roots)
     after_tools = _tools(repo, env)
-    if before_source != after_source or before_inputs != after_inputs or before_tools != after_tools:
+    if (
+        before_source != after_source
+        or before_inputs != after_inputs
+        or before_tools != after_tools
+    ):
         raise CustodyError("source, input or tool drift during build")
     if process.returncode:
-        raise CustodyError(f"scanner build failed with exit {process.returncode}; raw output retained")
+        raise CustodyError(
+            f"scanner build failed with exit {process.returncode}; raw output retained"
+        )
     binaries = _binary_inventory(out, BIN_RELPATHS)
     run_spec = out / "run-spec.json"
     run_spec.write_bytes(_canonical(_run_spec(template, out, binaries)) + b"\n")
     _assert_run_spec(out, template, binaries)
     capture_argv = _capture_argv(repo, run_spec)
-    observed = subprocess.run(capture_argv, cwd=repo, env=env,
-                              capture_output=True, check=False)
+    observed = subprocess.run(capture_argv, cwd=repo, env=env, capture_output=True, check=False)
     (out / "capture.stdout").write_bytes(observed.stdout)
     (out / "capture.stderr").write_bytes(observed.stderr)
-    if (source_capture(repo, spec["base_git_revision"], overlay, env=env) != before_source
+    if (
+        source_capture(repo, spec["base_git_revision"], overlay, env=env) != before_source
         or _input_inventory(roots) != before_inputs
         or _tools(repo, env) != before_tools
-        or _binary_inventory(out, BIN_RELPATHS) != binaries):
+        or _binary_inventory(out, BIN_RELPATHS) != binaries
+    ):
         raise CustodyError("source, input, tool or binary drift during capture")
     _assert_run_spec(out, template, binaries)
     if observed.returncode:
-        raise CustodyError(f"scanner Quanta capture failed with exit {observed.returncode}; raw output retained")
+        raise CustodyError(
+            f"scanner Quanta capture failed with exit {observed.returncode}; raw output retained"
+        )
     capture_outputs = _capture_inventory(out, CAP_RELPATHS)
     core = {
         "schema_version": 1,
@@ -390,14 +514,36 @@ def capture(spec: dict, receipt_path: Path) -> dict:
 
 def verify(receipt: dict) -> dict:
     """Refuse stale source, inputs, toolchain, environment or binary bytes."""
-    if not isinstance(receipt, dict) or set(receipt) != {
-        "schema_version", "spec", "source_identity", "inputs", "tools", "execution_env_sha256",
-        "build_argv", "build_exit_code", "build_stdout_sha256", "build_stderr_sha256",
-        "binaries", "run_spec_sha256", "capture_argv", "capture_exit_code",
-        "capture_stdout_sha256", "capture_stderr_sha256", "capture_outputs", "receipt_sha256"
-    } or type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1 \
-      or type(receipt["build_exit_code"]) is not int or receipt["build_exit_code"] != 0 \
-      or type(receipt["capture_exit_code"]) is not int or receipt["capture_exit_code"] != 0:
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt)
+        != {
+            "schema_version",
+            "spec",
+            "source_identity",
+            "inputs",
+            "tools",
+            "execution_env_sha256",
+            "build_argv",
+            "build_exit_code",
+            "build_stdout_sha256",
+            "build_stderr_sha256",
+            "binaries",
+            "run_spec_sha256",
+            "capture_argv",
+            "capture_exit_code",
+            "capture_stdout_sha256",
+            "capture_stderr_sha256",
+            "capture_outputs",
+            "receipt_sha256",
+        }
+        or type(receipt["schema_version"]) is not int
+        or receipt["schema_version"] != 1
+        or type(receipt["build_exit_code"]) is not int
+        or receipt["build_exit_code"] != 0
+        or type(receipt["capture_exit_code"]) is not int
+        or receipt["capture_exit_code"] != 0
+    ):
         raise CustodyError("scanner build receipt schema differs")
     core = {k: v for k, v in receipt.items() if k != "receipt_sha256"}
     if _sha(_canonical(core)) != receipt["receipt_sha256"]:
@@ -407,11 +553,17 @@ def verify(receipt: dict) -> dict:
     if not out.is_dir() or not receipt["source_identity"]:
         raise CustodyError("scanner build output or source identity missing")
     env = _effective_env(repo, out, spec["env_overrides"])
-    source_verify(repo, receipt["source_identity"],
-                  patch_path=None if overlay is None else Path(overlay["patch_path"]), env=env)
+    source_verify(
+        repo,
+        receipt["source_identity"],
+        patch_path=None if overlay is None else Path(overlay["patch_path"]),
+        env=env,
+    )
     if receipt["inputs"] != _input_inventory(roots):
         raise CustodyError("scanner run input bytes drifted")
-    if receipt["execution_env_sha256"] != _env_fingerprints(env) or receipt["tools"] != _tools(repo, env):
+    if receipt["execution_env_sha256"] != _env_fingerprints(env) or receipt["tools"] != _tools(
+        repo, env
+    ):
         raise CustodyError("scanner build environment or toolchain drifted")
     if receipt["build_argv"] != _build_argv(repo):
         raise CustodyError("scanner build command differs from canonical owner")
@@ -422,11 +574,15 @@ def verify(receipt: dict) -> dict:
         raise CustodyError("scanner run spec digest differs")
     if receipt["capture_outputs"] != _capture_inventory(out, CAP_RELPATHS):
         raise CustodyError("scanner capture output drifted")
-    if (receipt["capture_argv"] != _capture_argv(repo, out / "run-spec.json")
+    if (
+        receipt["capture_argv"] != _capture_argv(repo, out / "run-spec.json")
         or receipt["capture_stdout_sha256"] != _file(out / "capture.stdout")
-        or receipt["capture_stderr_sha256"] != _file(out / "capture.stderr")):
+        or receipt["capture_stderr_sha256"] != _file(out / "capture.stderr")
+    ):
         raise CustodyError("scanner capture command or output log differs")
-    if receipt["build_stdout_sha256"] != _file(out / "build.stdout") or receipt["build_stderr_sha256"] != _file(out / "build.stderr"):
+    if receipt["build_stdout_sha256"] != _file(out / "build.stdout") or receipt[
+        "build_stderr_sha256"
+    ] != _file(out / "build.stderr"):
         raise CustodyError("scanner build output logs drifted")
     return receipt["binaries"]
 

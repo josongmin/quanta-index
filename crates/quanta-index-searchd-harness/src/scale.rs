@@ -34,6 +34,7 @@ use std::fmt::Write as _;
 use std::fs;
 #[cfg(target_os = "macos")]
 use std::io::Read as _;
+use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -83,6 +84,7 @@ pub const DIMENSION: &str = "scale";
 pub struct ScaleRuntimeConfig {
     pub client_timeout: Option<Duration>,
     pub history_max_bytes: Option<u64>,
+    pub history_max_total_bytes: Option<u64>,
 }
 
 impl ScaleRuntimeConfig {
@@ -90,11 +92,34 @@ impl ScaleRuntimeConfig {
         timeout_ms(self.client_timeout)
     }
 
+    pub fn history_policy_id(self) -> AnyResult<&'static str> {
+        match (self.history_max_bytes, self.history_max_total_bytes) {
+            (None, None) => Ok("harness-default-v1"),
+            (Some(_), None) => Ok("explicit-pair-default-total-v1"),
+            (Some(_), Some(_)) => Ok("explicit-pair-total-diagnostic-v1"),
+            (None, Some(_)) => {
+                anyhow::bail!("scale: total history override requires an explicit pair bound")
+            }
+        }
+    }
+
+    pub fn effective_history_max_total_bytes(self) -> AnyResult<u64> {
+        let _policy = self.history_policy_id()?;
+        let bytes = self
+            .history_max_total_bytes
+            .unwrap_or(HARNESS_HISTORY_MAX_TOTAL_BYTES);
+        if bytes == 0 {
+            anyhow::bail!("scale: total history max bytes must be positive");
+        }
+        Ok(bytes)
+    }
+
     pub fn effective_history_max_bytes(self) -> AnyResult<u64> {
         let bytes = self.history_max_bytes.unwrap_or(HARNESS_HISTORY_MAX_BYTES);
-        if !(1..=HARNESS_HISTORY_MAX_TOTAL_BYTES).contains(&bytes) {
+        let total = self.effective_history_max_total_bytes()?;
+        if !(1..=total).contains(&bytes) {
             anyhow::bail!(
-                "scale: history max bytes must be in 1..={HARNESS_HISTORY_MAX_TOTAL_BYTES} (harness total retention cap)"
+                "scale: history max bytes must be in 1..={total} (effective total retention cap)"
             );
         }
         Ok(bytes)
@@ -105,10 +130,12 @@ impl ScaleRuntimeConfig {
             "client_request_timeout_ms": self.effective_timeout_ms()?,
             "requested_client_request_timeout_ms": self.client_timeout.map(|_| self.effective_timeout_ms()).transpose()?,
             "history_max_generations": 2,
+            "history_policy_id": self.history_policy_id()?,
             "history_max_bytes": self.effective_history_max_bytes()?,
             "requested_history_max_bytes": self.history_max_bytes,
             "history_max_revision_pairs": HARNESS_HISTORY_MAX_REVISION_PAIRS,
-            "history_max_total_bytes": HARNESS_HISTORY_MAX_TOTAL_BYTES,
+            "history_max_total_bytes": self.effective_history_max_total_bytes()?,
+            "requested_history_max_total_bytes": self.history_max_total_bytes,
         }))
     }
 }
@@ -907,6 +934,9 @@ pub struct TierMeasurement {
     pub requested_client_request_timeout_ms: Option<u64>,
     pub history_max_bytes: u64,
     pub requested_history_max_bytes: Option<u64>,
+    pub history_policy_id: &'static str,
+    pub history_max_total_bytes: u64,
+    pub requested_history_max_total_bytes: Option<u64>,
     /// `RUSAGE_SELF` around runtime boot through driver cleanup. The daemon is
     /// an in-process thread; this includes harness and daemon CPU time.
     pub cpu: Option<CpuUsageV1>,
@@ -1033,10 +1063,8 @@ fn process_write_io_snapshot() -> AnyResult<ProcessWriteIoV1> {
 }
 
 fn causal_profile_enabled() -> bool {
-    std::env::var("QUANTA_INDEX_CAUSAL_PROFILE_V1")
-        .ok()
-        .as_deref()
-        == Some("1")
+    std::env::var_os("QUANTA_INDEX_CAUSAL_PROFILE_V1")
+        .is_some_and(|value| value == std::ffi::OsStr::new("1"))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1392,10 +1420,10 @@ impl PhaseSampler {
                     start
                         .as_ref()
                         .err()
-                        .map_or_else(|| "observed".to_owned(), |error| error.to_string()),
+                        .map_or_else(|| "observed".to_owned(), ToString::to_string),
                     end.as_ref()
                         .err()
-                        .map_or_else(|| "observed".to_owned(), |error| error.to_string()),
+                        .map_or_else(|| "observed".to_owned(), ToString::to_string),
                 ));
             }
         }
@@ -1534,6 +1562,29 @@ fn observe_phase<T>(work: impl FnOnce() -> AnyResult<T>) -> AnyResult<(T, PhaseR
     observe_phase_at_root("test", None, work)
 }
 
+enum CausalPhaseMarker {
+    Start,
+    End { succeeded: bool },
+}
+
+fn write_causal_phase_marker(name: &str, marker: CausalPhaseMarker) -> AnyResult<()> {
+    let stderr = std::io::stderr();
+    let mut output = stderr.lock();
+    let written = match marker {
+        CausalPhaseMarker::Start => {
+            writeln!(output, "QI_CAUSAL_V1 kind=phase_start name={name}")
+        }
+        CausalPhaseMarker::End { succeeded } => writeln!(
+            output,
+            "QI_CAUSAL_V1 kind=phase_end name={name} ok={}",
+            u8::from(succeeded)
+        ),
+    };
+    written
+        .and_then(|()| output.flush())
+        .map_err(|error| stage_or_preserve("causal_marker_output", error))
+}
+
 fn observe_phase_at_root<T>(
     name: &'static str,
     root: Option<&Path>,
@@ -1542,19 +1593,39 @@ fn observe_phase_at_root<T>(
     let sampler = PhaseSampler::start(root)
         .map_err(|error| stage_or_preserve("resource_observation", error))?;
     let causal_profile = causal_profile_enabled();
-    if causal_profile {
-        eprintln!("QI_CAUSAL_V1 kind=phase_start name={name}");
+    if causal_profile
+        && let Err(primary) = write_causal_phase_marker(name, CausalPhaseMarker::Start)
+    {
+        let observation = sampler
+            .stop()
+            .map_err(|error| stage_or_preserve("resource_observation", error));
+        return combine_phase_result(Err(primary), observation);
     }
     let measurement = work();
-    if causal_profile {
-        eprintln!(
-            "QI_CAUSAL_V1 kind=phase_end name={name} ok={}",
-            u8::from(measurement.is_ok())
-        );
-    }
+    let marker = if causal_profile {
+        write_causal_phase_marker(
+            name,
+            CausalPhaseMarker::End {
+                succeeded: measurement.is_ok(),
+            },
+        )
+    } else {
+        Ok(())
+    };
     let observation = sampler
         .stop()
         .map_err(|error| stage_or_preserve("resource_observation", error));
+    let measurement = match (measurement, marker) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(marker_error)) => Err(marker_error),
+        (Err(primary), Err(marker_error)) => Err(ScaleRuntimeFailure {
+            primary: Some(primary),
+            cleanup: marker_error,
+            cleanup_context: "causal phase marker output",
+        }
+        .into()),
+    };
     combine_phase_result(measurement, observation)
 }
 
@@ -1685,7 +1756,9 @@ fn scale_runtime(config: ScaleRuntimeConfig) -> AnyResult<E2eRuntime> {
                 .with_history_max_generations(2)),
             None => E2eRuntime::boot_with_history_max_generations(2),
         }?;
-    Ok(runtime.with_history_max_bytes(config.effective_history_max_bytes()?))
+    Ok(runtime
+        .with_history_max_bytes(config.effective_history_max_bytes()?)
+        .with_history_max_total_bytes(config.effective_history_max_total_bytes()?))
 }
 
 fn timeout_ms(client_timeout: Option<Duration>) -> AnyResult<u64> {
@@ -2378,6 +2451,9 @@ fn measure_small_tier_with_config(
                 .map(|_| effective_timeout_ms),
             history_max_bytes: effective_history_max_bytes,
             requested_history_max_bytes: config.history_max_bytes,
+            history_policy_id: config.history_policy_id()?,
+            history_max_total_bytes: config.effective_history_max_total_bytes()?,
+            requested_history_max_total_bytes: config.history_max_total_bytes,
             cpu: None,
             phase_resources,
             delete_reopen: None,
@@ -2467,6 +2543,7 @@ pub fn measure_tier_with_client_timeout(
         ScaleRuntimeConfig {
             client_timeout,
             history_max_bytes: None,
+            history_max_total_bytes: None,
         },
     )
 }
@@ -2662,6 +2739,9 @@ pub fn measure_tier_with_runtime_config(
                 .map(|_| effective_timeout_ms),
             history_max_bytes: effective_history_max_bytes,
             requested_history_max_bytes: config.history_max_bytes,
+            history_policy_id: config.history_policy_id()?,
+            history_max_total_bytes: config.effective_history_max_total_bytes()?,
+            requested_history_max_total_bytes: config.history_max_total_bytes,
             cpu: None,
             phase_resources,
             delete_reopen: Some(delete_reopen),
@@ -2990,10 +3070,12 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
         "client_request_timeout_ms": measurement.client_request_timeout_ms,
         "requested_client_request_timeout_ms": measurement.requested_client_request_timeout_ms,
         "history_max_generations": 2,
+        "history_policy_id": measurement.history_policy_id,
         "history_max_bytes": measurement.history_max_bytes,
         "requested_history_max_bytes": measurement.requested_history_max_bytes,
         "history_max_revision_pairs": HARNESS_HISTORY_MAX_REVISION_PAIRS,
-        "history_max_total_bytes": HARNESS_HISTORY_MAX_TOTAL_BYTES,
+        "history_max_total_bytes": measurement.history_max_total_bytes,
+        "requested_history_max_total_bytes": measurement.requested_history_max_total_bytes,
         "cpu_process": {
             "scope": "RUSAGE_SELF whole process from runtime boot through cleanup: harness, in-process daemon, RSS sampler thread, and parent-side RSS probe management; macOS ps child CPU excluded",
             "user_ms": measurement.cpu.map(|cpu| cpu.user_ms),
@@ -3115,6 +3197,17 @@ pub fn artifact(
     git_head: GitHeadV1,
     host: HostV1,
 ) -> AnyResult<BenchArtifactV1> {
+    let history = ScaleRuntimeConfig {
+        client_timeout: None,
+        history_max_bytes: measurement.requested_history_max_bytes,
+        history_max_total_bytes: measurement.requested_history_max_total_bytes,
+    };
+    if history.history_policy_id()? != measurement.history_policy_id
+        || history.effective_history_max_bytes()? != measurement.history_max_bytes
+        || history.effective_history_max_total_bytes()? != measurement.history_max_total_bytes
+    {
+        anyhow::bail!("scale: measured history policy differs from requested/effective bounds");
+    }
     if measurement.cpu.is_none() {
         anyhow::bail!("scale: measured tier has no process CPU observation");
     }
@@ -3162,7 +3255,7 @@ pub fn artifact(
             || observation
                 .process_write_io_unavailable_reason
                 .as_ref()
-                .is_some_and(|reason| reason.is_empty())
+                .is_some_and(String::is_empty)
         {
             anyhow::bail!("scale: phase {phase} has invalid process write I/O observation");
         }
@@ -3272,12 +3365,20 @@ pub fn artifact(
                     ),
                     ("history_max_generations", "2".to_string()),
                     (
+                        "history_policy_id",
+                        measurement.history_policy_id.to_string(),
+                    ),
+                    (
                         "history_max_revision_pairs",
                         HARNESS_HISTORY_MAX_REVISION_PAIRS.to_string(),
                     ),
                     (
                         "history_max_total_bytes",
-                        HARNESS_HISTORY_MAX_TOTAL_BYTES.to_string(),
+                        measurement.history_max_total_bytes.to_string(),
+                    ),
+                    (
+                        "requested_history_max_total_bytes",
+                        format!("{:?}", measurement.requested_history_max_total_bytes),
                     ),
                     (
                         "history_max_bytes",
@@ -3433,18 +3534,57 @@ mod tests {
         ensure_predicate!(default["requested_client_request_timeout_ms"].is_null());
         ensure_equal!(default["history_max_bytes"], 16_777_216);
         ensure_predicate!(default["requested_history_max_bytes"].is_null());
+        ensure_equal!(default["history_policy_id"], "harness-default-v1");
         ensure_equal!(default["history_max_total_bytes"], 268_435_456);
+        ensure_predicate!(default["requested_history_max_total_bytes"].is_null());
         ensure_equal!(default["history_max_revision_pairs"], 128);
 
         let explicit = ScaleRuntimeConfig {
             client_timeout: Some(Duration::from_secs(300)),
             history_max_bytes: Some(268_435_456),
+            history_max_total_bytes: None,
         };
         let execution = explicit.execution_json()?;
         ensure_equal!(execution["client_request_timeout_ms"], 300_000);
         ensure_equal!(execution["requested_client_request_timeout_ms"], 300_000);
         ensure_equal!(execution["history_max_bytes"], 268_435_456);
         ensure_equal!(execution["requested_history_max_bytes"], 268_435_456);
+        ensure_equal!(
+            execution["history_policy_id"],
+            "explicit-pair-default-total-v1"
+        );
+        let diagnostic = ScaleRuntimeConfig {
+            history_max_bytes: Some(536_870_912),
+            history_max_total_bytes: Some(1_073_741_824),
+            ..explicit
+        };
+        let diagnostic_json = diagnostic.execution_json()?;
+        ensure_equal!(
+            diagnostic_json["history_policy_id"],
+            "explicit-pair-total-diagnostic-v1"
+        );
+        ensure_equal!(diagnostic_json["history_max_bytes"], 536_870_912);
+        ensure_equal!(diagnostic_json["history_max_total_bytes"], 1_073_741_824);
+        ensure_equal!(
+            diagnostic_json["requested_history_max_total_bytes"],
+            1_073_741_824
+        );
+        for invalid in [
+            ScaleRuntimeConfig {
+                history_max_total_bytes: Some(1),
+                ..explicit
+            },
+            ScaleRuntimeConfig {
+                history_max_total_bytes: Some(0),
+                ..diagnostic
+            },
+            ScaleRuntimeConfig {
+                history_max_bytes: None,
+                ..diagnostic
+            },
+        ] {
+            ensure_predicate!(invalid.execution_json().is_err());
+        }
         for invalid in [0, HARNESS_HISTORY_MAX_TOTAL_BYTES + 1] {
             ensure_predicate!(
                 ScaleRuntimeConfig {
@@ -3463,6 +3603,7 @@ mod tests {
         let mut runtime = scale_runtime(ScaleRuntimeConfig {
             client_timeout: None,
             history_max_bytes: Some(1),
+            history_max_total_bytes: None,
         })?;
         let owner = runtime.repo();
         runtime.ingest_text(owner.as_str(), "source.rs", "fn budget_fixture() {}\n")?;
@@ -4636,6 +4777,9 @@ mod tests {
             requested_client_request_timeout_ms: None,
             history_max_bytes: HARNESS_HISTORY_MAX_BYTES,
             requested_history_max_bytes: None,
+            history_policy_id: "harness-default-v1",
+            history_max_total_bytes: HARNESS_HISTORY_MAX_TOTAL_BYTES,
+            requested_history_max_total_bytes: None,
             cpu: Some(CpuUsageV1 {
                 user_ms: 3.0,
                 system_ms: 2.0,
@@ -4794,6 +4938,7 @@ mod tests {
         assert_eq!(tier["client_request_timeout_ms"], 30_000);
         assert!(tier["requested_client_request_timeout_ms"].is_null());
         assert_eq!(tier["history_max_bytes"], HARNESS_HISTORY_MAX_BYTES);
+        assert_eq!(tier["history_policy_id"], "harness-default-v1");
         assert_eq!(
             tier["phase_resources"]["full_ingest_seal"]["sampled_max_rss_bytes"],
             3_072
@@ -4827,6 +4972,7 @@ mod tests {
             tier["history_max_total_bytes"],
             HARNESS_HISTORY_MAX_TOTAL_BYTES
         );
+        assert!(tier["requested_history_max_total_bytes"].is_null());
         assert_eq!(
             tier["history_max_revision_pairs"],
             HARNESS_HISTORY_MAX_REVISION_PAIRS
@@ -4888,7 +5034,22 @@ mod tests {
             value["provenance"]["config_digest"],
             changed["provenance"]["config_digest"]
         );
+        let mut larger_total = sample_measurement();
+        larger_total.history_policy_id = "explicit-pair-total-diagnostic-v1";
+        larger_total.history_max_bytes = 268_435_456;
+        larger_total.requested_history_max_bytes = Some(268_435_456);
+        larger_total.history_max_total_bytes = 536_870_912;
+        larger_total.requested_history_max_total_bytes = Some(536_870_912);
+        let changed = artifact(&larger_total, head.clone(), host.clone())
+            .expect("observable")
+            .to_json()
+            .expect("serializes");
+        assert_ne!(
+            value["provenance"]["config_digest"],
+            changed["provenance"]["config_digest"]
+        );
         let mut larger_history = sample_measurement();
+        larger_history.history_policy_id = "explicit-pair-default-total-v1";
         larger_history.history_max_bytes = 268_435_456;
         larger_history.requested_history_max_bytes = Some(268_435_456);
         let changed = artifact(&larger_history, head.clone(), host.clone())
@@ -4899,6 +5060,9 @@ mod tests {
             value["provenance"]["config_digest"],
             changed["provenance"]["config_digest"]
         );
+        let mut forged_policy = larger_total.clone();
+        forged_policy.history_max_total_bytes = HARNESS_HISTORY_MAX_TOTAL_BYTES;
+        assert!(artifact(&forged_policy, head.clone(), host.clone()).is_err());
         let mut missing_cpu = sample_measurement();
         missing_cpu.cpu = None;
         assert!(artifact(&missing_cpu, head, host).is_err());

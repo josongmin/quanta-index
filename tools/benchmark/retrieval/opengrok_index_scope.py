@@ -176,26 +176,41 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                 _require(
                     set(row)
                     == {
-                        "kind", "repository", "segmentsFile", "generation", "readerVersion",
-                        "numDocs", "maxDoc", "fileNamesSha256",
+                        "kind",
+                        "repository",
+                        "segmentsFile",
+                        "generation",
+                        "readerVersion",
+                        "numDocs",
+                        "maxDoc",
+                        "fileNamesSha256",
                     }
                     and name not in commits
                     and not any(key[0] == name for key in segments)
                     and type(row["segmentsFile"]) is str
                     and re.fullmatch(r"segments_[0-9a-z]+", row["segmentsFile"]) is not None
-                    and all(type(row[key]) is int and 0 <= row[key] < 2**63
-                            for key in ("generation", "readerVersion"))
-                    and int(row["segmentsFile"][len("segments_"):], 36) == row["generation"]
+                    and all(
+                        type(row[key]) is int and 0 <= row[key] < 2**63
+                        for key in ("generation", "readerVersion")
+                    )
+                    and int(row["segmentsFile"][len("segments_") :], 36) == row["generation"]
                     and all(_integer(row[key]) for key in ("numDocs", "maxDoc"))
                     and row["numDocs"] <= row["maxDoc"]
                     and type(row["fileNamesSha256"]) is str
                     and re.fullmatch(r"[0-9a-f]{64}", row["fileNamesSha256"]) is not None,
                     "native repository commit is absent, repeated or malformed",
                 )
-                commits[name] = {key: row[key] for key in (
-                    "segmentsFile", "generation", "readerVersion", "numDocs", "maxDoc",
-                    "fileNamesSha256",
-                )}
+                commits[name] = {
+                    key: row[key]
+                    for key in (
+                        "segmentsFile",
+                        "generation",
+                        "readerVersion",
+                        "numDocs",
+                        "maxDoc",
+                        "fileNamesSha256",
+                    )
+                }
                 continue
             if kind == "segment":
                 _require(

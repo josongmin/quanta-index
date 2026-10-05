@@ -9,8 +9,9 @@
 
 ## 현재 코드 잔여 — 2026-10-06 소스 대조
 
-현재 정리 기준: Quanta main `c2431375738326f4f2370f3e226d43ced0e09bca`와 문서 수정 overlay.
+현재 정리 기준: Quanta main `f251296dcdf247ddb4f341a176fd15907f2002bb`와 history/admission/문서 수정 overlay.
 Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀·scanner custody·ARB 용어 예산 수리가 추가됐다.
+현재 overlay에는 scale/open-loop의 pair/total retention 정책 결속과 invocation-scoped 입장 검증 재사용이 추가됐다.
 Retrieval 엔진 소스는 아직 동일하며 F15 저장 구조 수리는 외부 후보다.
 Frozen5796 actual과 아래 current-source owner 회귀를 구분하며 main formal proof로 승격하지 않는다.
 Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
@@ -126,6 +127,12 @@ P1 · W1/W4 · name-span 구현 완료, 다른 지원 name/typo cells와 최신 
 - Gin exact1,196 symbol/name capture/scoring(product0e6/driverb55)은 해당 historical scope의 완료다.
   변경된 source의 최신 qualification에는 영향 capture/scoring을 새로 실행한다.
   다른 지원 unit의 선언 ID/name bytes/span을 independent source oracle와 native selected unit으로 평가한다.
+- 후속 frozen5796 Gin fresh 진단 `VERIFIED`: canonical `source_oracle_suite.py`의 complete Go
+  declaration oracle → `run.py quanta --spec /private/tmp/qi-gin1196-f14-5796-spec.json` →
+  `evaluator.py evaluate-diagnostic`를 실행했다. Capture `/private/tmp/qn1196f14`, report
+  `/private/tmp/qi-gin1196-f14-5796-name-report.json`:1,196rows/1,192success/4capped,
+  선언 및 declaration-name recovery MRR@10=1.0, Recall@10=0.9985493335876968, coverage=1.0.
+  `diagnostic_unqualified`/single-route이며 current main·independent holdout·제품 비교·PERF proof가 아니다.
 - same-line 두 선언, same-name receiver, use-only, Unicode/case negative를 유지한다.
 - 완료: unit별 실제 supported/unsupported 분모와 source-attested recovery.
   file hit·잘못된 이름·context enlargement는 name recovery가 아니다.
@@ -568,8 +575,9 @@ frozen `5796a63f` Contract·fresh SDK `VERIFIED`, hosted CI `NOT_RUN`.
   후속 source revision과 proof를 대조하며 이 결과의 revision을 변경하지 않는다.
 - 후속 source epoch의 포함 코드/driver/scorer/ADR 및 영향 mandatory surfaces를 검증하고 matching fresh
   Contract/SDK/source closure/binaries를 발행·portable replay한다. E3 shipping acceptance와 CI도 실제 scope로 판정한다.
-  감사 기준 `c2431375`에는 frozen5796 이후 Justfile/ADR/R5/scanner/ARB 변경이 있으므로 해당 최신 epoch의
-  formal Contract/SDK·hosted CI는 `NOT_RUN`이다. Frozen791/191/27 결과의 source를 바꾸지 않는다.
+  감사 기준 `f251296d`와 history/admission overlay에는 frozen5796 이후 Justfile/ADR/R5/scanner/ARB 및
+  owner 변경이 있다. 최신 formal Contract/SDK는 `NOT_RUN`, 아래 hosted CI는 실제 `FAILED`다.
+  Frozen791/191/27 결과의 source를 바꾸지 않는다.
 - Current source owner 추가 검증: ARB adapter의 raw32→effective35 용어 초과를 canonical planner
   term projection 공유로 수리했다. Adapter v2는 raw32/effective32를 함께 제한하고 식별자 우선·원래 출력 순서를 유지한다.
   `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_arb_adapter.py`와 같은 실행에
@@ -582,9 +590,20 @@ frozen `5796a63f` Contract·fresh SDK `VERIFIED`, hosted CI `NOT_RUN`.
   `QUANTA_PROOF_RAW_DIR=/private/tmp/qi-p12a-quanta-locked-20261006-v2 just proof-p12a-proof-infrastructure`
   →295selected/passed·93.66s/exit0. Registry lint는25registered/0manifest인 `REGISTRY_ONLY`이며
   P12 aggregate/CODE_QUALIFIED/release 실행 결과를 발행한 것은 아니다.
-- Hosted CI: `7a16771a` CircleCI Python job은 ARB effective35 거절, Rust job은 신규 OS-process
-  테스트 포맷으로 실제 `FAILED`였다. 두 원인은 현재 소스에서 수정했고 `c2431375`의
-  `ci/circleci: verify`/`verify-python`는 조회 시 pending이다. Hosted pass를 추정하지 않는다.
+- Hosted CI 실제 실패와 수리: `7a16771a`의 ARB effective35/OS-process format 원인을 수정했다.
+  후속 `c2431375` Python1679는676pass/7skip 뒤 Contract 준비 selector의 필수 `--bin` 누락
+  고정 oracle에서 실패했고 Rust1680은 test barrier MutexGuard drop으로 실패했다.
+  두 owner 수정 후 `f251296d` Python1683은2,228pass/8skip 뒤 current file-pair fixture의
+  불완전한 manifest에서 실패했다. Rust1684는 scale 계측 코드 Clippy6건으로 실패했다.
+  Clippy 원인은 현재 history overlay에 수정했으며 file-pair fixture의 전체 canonical replay 수리는 진행 중이다.
+  같은 broad Python 명령을 로컬 실행한 결과도 `FAILED`: `uv run --frozen --extra dev python -m pytest tools -q --ignore=tools/ci/tests/test_semgrep_policy.py --ignore=tools/ci/tests/test_check_rust_fallbacks.py -x`
+  →2,228passed/8platform-skipped/1failed·926.86s. Latest hosted pass와 full-suite pass는 없다.
+- History/admission current owner `VERIFIED`: `test_causal_cost_capture.py`, `test_causal_cost_profile.py`,
+  `test_retrieval_benchmark.py`의 batch boundary/input-source drift/disjoint freeze3selectors를 함께 실행해
+  →58passed·16.76s/exit0였다. Pair/total requested·effective 값은 daemon/scale/open-loop/artifact/replay에
+  결속한다. 기존 default16MiB/256MiB는 유지하며 큰 override는 diagnostic이다.
+  입장 검증은 배치 시작·종료의 전체 release replay와 개별 source/gold/review 검사를 유지한다.
+  이 변경의 새 final-source packet/proof·actual admissions 및 Rust/Clippy는 아직 `NOT_RUN`이다.
 - 공개SDK/contract 변경: `just rust-public-api`; wire/decode: `just rust-fuzz-smoke`;
   module: `just rust-hexagonal`, `just rust-cargo-modules`; selection/state/ingress: `just rust-profile test-daemon`.
 - runtime `autotests=false`: read-view/ingest는 `runtime_fast_suite`, generation/cursor/restart는

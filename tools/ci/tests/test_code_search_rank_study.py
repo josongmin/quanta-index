@@ -360,9 +360,9 @@ def test_complete_pool_accepts_ordinary_mode_and_rejects_contradictory_modes():
     validate(artifact, record, pack)
     for bad in ("typo_fallback", "unknown", ""):
         changed = copy.deepcopy(artifact)
-        changed["results"][0]["collection"]["pages"][0]["explanation"]["planner_trace"][
-            -1
-        ]["detail"] = f"code_search.execution.mode={bad}"
+        changed["results"][0]["collection"]["pages"][0]["explanation"]["planner_trace"][-1][
+            "detail"
+        ] = f"code_search.execution.mode={bad}"
         with pytest.raises(ValueError, match="ordinary execution mode"):
             validate(changed, record, pack)
     duplicate = copy.deepcopy(artifact)

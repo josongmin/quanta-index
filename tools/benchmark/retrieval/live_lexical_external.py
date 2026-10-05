@@ -280,8 +280,13 @@ def _spec(path: Path) -> dict:
         value["opengrok"] = _service(
             value["opengrok"],
             {"base_url", "project", "server_image_digest"},
-            {"indexed_view_probe", "backend_snapshot", "native_index_reader", "readonly_service",
-             "query_reader_witness"},
+            {
+                "indexed_view_probe",
+                "backend_snapshot",
+                "native_index_reader",
+                "readonly_service",
+                "query_reader_witness",
+            },
         )
         if value["opengrok"].get("indexed_view_probe") not in (None, "full"):
             raise ValueError("OpenGrok indexed view probe must be full or absent")
@@ -338,11 +343,15 @@ def _spec(path: Path) -> dict:
                 "readonly_service" not in config
                 or type(fixture) is not dict
                 or set(fixture)
-                != {"contract", "original_source", "patched_source", "source_patch",
-                    "instrumented_war"}
+                != {
+                    "contract",
+                    "original_source",
+                    "patched_source",
+                    "source_patch",
+                    "instrumented_war",
+                }
                 or fixture["contract"] != opengrok_query_witness.CONTRACT
-                or config["server_image_digest"]
-                != opengrok_query_witness.COMPILER_IMAGE_SHA256
+                or config["server_image_digest"] != opengrok_query_witness.COMPILER_IMAGE_SHA256
             ):
                 raise ValueError("OpenGrok query reader fixture spec differs")
             for field, expected_sha in (
@@ -363,11 +372,7 @@ def _spec(path: Path) -> dict:
             if type(fixture["instrumented_war"]) is not str:
                 raise ValueError("OpenGrok instrumented WAR differs")
             war = Path(fixture["instrumented_war"])
-            if (
-                not war.is_absolute()
-                or war.resolve(strict=True) != war
-                or not war.is_file()
-            ):
+            if not war.is_absolute() or war.resolve(strict=True) != war or not war.is_file():
                 raise ValueError("OpenGrok instrumented WAR differs")
     if "cs" in products and (not isinstance(value["cs"], dict) or set(value["cs"]) != {"binary"}):
         raise ValueError("cs spec requires only binary")
@@ -510,9 +515,7 @@ def _http(
     request = urllib.request.Request(url, headers=headers, method="GET")
     start = time.monotonic_ns()
     try:
-        with _service_opener(config).open(
-            request, timeout=HTTP_TIMEOUT
-        ) as response:
+        with _service_opener(config).open(request, timeout=HTTP_TIMEOUT) as response:
             status = response.status
             content_type = response.headers.get_content_type()
             raw = response.read(MAX_HTTP_BYTES + 1)
@@ -537,9 +540,7 @@ def _opengrok_witness_http(
     request = urllib.request.Request(url, headers=headers, method="GET")
     start = time.monotonic_ns()
     try:
-        with _service_opener(config).open(
-            request, timeout=HTTP_TIMEOUT
-        ) as response:
+        with _service_opener(config).open(request, timeout=HTTP_TIMEOUT) as response:
             status = response.status
             content_type = response.headers.get_content_type()
             witness = response.headers.get_all(opengrok_query_witness.HEADER)
@@ -1100,9 +1101,7 @@ def _opengrok_write_denial_probe(config: dict, target: Path, *, capture: bool) -
         )
         started = time.monotonic_ns()
         try:
-            with _service_opener(config).open(
-                request, timeout=HTTP_TIMEOUT
-            ) as response:
+            with _service_opener(config).open(request, timeout=HTTP_TIMEOUT) as response:
                 status = response.status
                 raw = response.read(MAX_HTTP_BYTES + 1)
         except urllib.error.HTTPError as error:
@@ -1839,8 +1838,12 @@ def _opengrok_readonly_files(config: dict) -> dict:
                 target = webapps / "ROOT" / name
                 if not target.is_file() or changed_sha != _sha_file(target):
                     raise ValueError("OpenGrok instrumented WAR differs from mounted webapp")
-                if name not in allowed_classes | {"WEB-INF/web.xml"} and changed_sha != base_hashes.get(name):
-                    raise ValueError("OpenGrok instrumented WAR changes unrelated class or resource")
+                if name not in allowed_classes | {
+                    "WEB-INF/web.xml"
+                } and changed_sha != base_hashes.get(name):
+                    raise ValueError(
+                        "OpenGrok instrumented WAR changes unrelated class or resource"
+                    )
                 if name in allowed_classes and (
                     changed_sha == base_hashes.get(name)
                     or changed_sha != opengrok_query_witness.PINNED_CLASS_SHA256[name]
@@ -2168,8 +2171,10 @@ def _validate_opengrok_snapshot_seal(config: dict, snapshot: dict) -> None:
             **{
                 name: snapshot["runtime"]["readonly_files"][name]
                 for name in (
-                    "instrumented_war_sha256", "patched_source_sha256",
-                    "source_patch_sha256", "original_source_sha256",
+                    "instrumented_war_sha256",
+                    "patched_source_sha256",
+                    "source_patch_sha256",
+                    "original_source_sha256",
                 )
             },
         }
@@ -2178,18 +2183,21 @@ def _validate_opengrok_snapshot_seal(config: dict, snapshot: dict) -> None:
     )
     if (
         set(receipt)
-        != ({
-            "schema_version",
-            "sealed_at_utc",
-            "index_root",
-            "index_tree_sha256",
-            "webapps_root",
-            "webapps_sha256",
-            "etc_root",
-            "configuration_sha256",
-            "source_root",
-            "source_war_sha256",
-        } | set(witness_receipt))
+        != (
+            {
+                "schema_version",
+                "sealed_at_utc",
+                "index_root",
+                "index_tree_sha256",
+                "webapps_root",
+                "webapps_sha256",
+                "etc_root",
+                "configuration_sha256",
+                "source_root",
+                "source_war_sha256",
+            }
+            | set(witness_receipt)
+        )
         or type(receipt["schema_version"]) is not int
         or receipt["schema_version"] != 1
         or receipt["index_root"] != config["backend_snapshot"]["root"]
@@ -2259,8 +2267,7 @@ def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
             or not runtime["created_at"]
             or runtime["restart_count"] != 0
             or type(files) is not dict
-            or set(files)
-            != set(expected_files) | {"source_war_sha256"}
+            or set(files) != set(expected_files) | {"source_war_sha256"}
             or any(
                 type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None
                 for value in files.values()
@@ -2619,9 +2626,11 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         "sourcegraph_index_scope": index_scope,
         **({"opengrok_index_scope": native_scope} if native_scope is not None else {}),
         **(
-            {"opengrok_query_reader_scope": _opengrok_query_reader_scope(
-                spec["opengrok"], native_scope, len(pack["tasks"])
-            )}
+            {
+                "opengrok_query_reader_scope": _opengrok_query_reader_scope(
+                    spec["opengrok"], native_scope, len(pack["tasks"])
+                )
+            }
             if "opengrok" in products and "query_reader_witness" in spec["opengrok"]
             else {}
         ),
@@ -3105,10 +3114,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                 required_transport = {"status", "content_type", "elapsed_ms"}
                 if name == "opengrok" and query_reader_witness:
                     required_transport |= {"request_nonce", "reader_witness_headers"}
-                if (
-                    set(terminal) != required_transport
-                    or type(terminal["status"]) is not int
-                ):
+                if set(terminal) != required_transport or type(terminal["status"]) is not int:
                     raise ValueError("HTTP terminal metadata differs")
                 if name == "opengrok" and query_reader_witness:
                     nonce = opengrok_query_witness.request_nonce(

@@ -159,8 +159,10 @@ def _percentile(values: list[float], fraction: float) -> float | None:
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Report operational and successful-call cohorts using evaluator scores."""
-    _require(all(row.get("label_contract") == LABEL_CONTRACT for row in rows),
-             "mixed or missing file label authority")
+    _require(
+        all(row.get("label_contract") == LABEL_CONTRACT for row in rows),
+        "mixed or missing file label authority",
+    )
     eligible = [row for row in rows if row["eligible"]]
     times = [row["latency_ms"] for row in rows if row["latency_ms"] is not None]
     output = {

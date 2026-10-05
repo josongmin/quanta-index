@@ -140,8 +140,7 @@ def test_tantivy_segment_reader_call_does_not_hide_other_transport_leaks(
     ranked_keys.write_text("fn id(reader: &SegmentReader) { reader.segment_id(); }\n")
     native = lexical / "live_statistics.rs"
     native.write_text(
-        "fn id(reader: &tantivy::SegmentReader) { "
-        "tantivy::SegmentReader::segment_id(reader); }\n"
+        "fn id(reader: &tantivy::SegmentReader) { tantivy::SegmentReader::segment_id(reader); }\n"
     )
     other = searchd / "ingest.rs"
     other.write_text("fn ingest() { let segment_id = 1; }\n")
@@ -163,13 +162,10 @@ def test_tantivy_segment_reader_call_does_not_hide_other_transport_leaks(
         "tantivy::SegmentReader::segment_id(reader); "
         "let segment_id = 1; }\n"
     )
-    assert {v.path for v in lint.check_channel_backend_isolation()} == {
-        ranked_keys, native, other
-    }
+    assert {v.path for v in lint.check_channel_backend_isolation()} == {ranked_keys, native, other}
 
     native.write_text(
-        "fn id(reader: &channel::SegmentReader) { "
-        "channel::SegmentReader::segment_id(reader); }\n"
+        "fn id(reader: &channel::SegmentReader) { channel::SegmentReader::segment_id(reader); }\n"
     )
     assert native in {v.path for v in lint.check_channel_backend_isolation()}
 
@@ -177,8 +173,7 @@ def test_tantivy_segment_reader_call_does_not_hide_other_transport_leaks(
     core.mkdir(parents=True)
     core_source = core / "storage.rs"
     core_source.write_text(
-        "fn id(reader: &tantivy::SegmentReader) { "
-        "tantivy::SegmentReader::segment_id(reader); }\n"
+        "fn id(reader: &tantivy::SegmentReader) { tantivy::SegmentReader::segment_id(reader); }\n"
     )
     assert core_source in {v.path for v in lint.check_channel_backend_isolation()}
 

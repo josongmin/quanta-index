@@ -29,7 +29,7 @@ use quanta_index_searchd_harness::scale::{
 };
 use quanta_index_searchd_harness::{
     DEFAULT_HISTORY_MAX_GENERATIONS, E2eRuntime, E2eTextChunkSpec,
-    HARNESS_HISTORY_MAX_REVISION_PAIRS, HARNESS_HISTORY_MAX_TOTAL_BYTES,
+    HARNESS_HISTORY_MAX_REVISION_PAIRS,
 };
 use serde_json::{Value, json};
 
@@ -69,23 +69,32 @@ pub(crate) struct Config {
     pub request_timeout: Duration,
     /// Explicit per-pair history budget; `None` retains the harness default.
     pub history_max_bytes: Option<u64>,
+    /// Explicit total retained-history budget; requires a pair override.
+    pub history_max_total_bytes: Option<u64>,
 }
 
 impl Config {
-    fn effective_history_max_bytes(&self) -> AnyResult<u64> {
+    fn history_config(&self) -> ScaleRuntimeConfig {
         ScaleRuntimeConfig {
             client_timeout: None,
             history_max_bytes: self.history_max_bytes,
+            history_max_total_bytes: self.history_max_total_bytes,
         }
-        .effective_history_max_bytes()
+    }
+
+    fn effective_history_max_bytes(&self) -> AnyResult<u64> {
+        self.history_config().effective_history_max_bytes()
     }
 
     pub(crate) fn history_policy_json(&self) -> AnyResult<Value> {
+        let policy = self.history_config();
         Ok(json!({
             "history_max_generations": DEFAULT_HISTORY_MAX_GENERATIONS,
             "history_max_bytes": self.effective_history_max_bytes()?,
             "requested_history_max_bytes": self.history_max_bytes,
-            "history_max_total_bytes": HARNESS_HISTORY_MAX_TOTAL_BYTES,
+            "history_max_total_bytes": policy.effective_history_max_total_bytes()?,
+            "requested_history_max_total_bytes": self.history_max_total_bytes,
+            "history_policy_id": policy.history_policy_id()?,
             "history_max_revision_pairs": HARNESS_HISTORY_MAX_REVISION_PAIRS,
         }))
     }
@@ -746,7 +755,12 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
 
     let mut runtime = E2eRuntime::boot()
         .map_err(|error| ScaleStageError::operation("runtime_boot", &error))?
-        .with_history_max_bytes(config.effective_history_max_bytes()?);
+        .with_history_max_bytes(config.effective_history_max_bytes()?)
+        .with_history_max_total_bytes(
+            config
+                .history_config()
+                .effective_history_max_total_bytes()?,
+        );
     let model_revision = model_revision_of(runtime.embedder_profile());
     if let Some(corpus) = &legacy {
         let serving_owner = runtime.repo();
@@ -962,8 +976,19 @@ pub(crate) fn artifact(
                         format!("{:?}", config.history_max_bytes),
                     ),
                     (
+                        "requested_history_max_total_bytes",
+                        format!("{:?}", config.history_max_total_bytes),
+                    ),
+                    (
+                        "history_policy_id",
+                        config.history_config().history_policy_id()?.to_string(),
+                    ),
+                    (
                         "history_max_total_bytes",
-                        HARNESS_HISTORY_MAX_TOTAL_BYTES.to_string(),
+                        config
+                            .history_config()
+                            .effective_history_max_total_bytes()?
+                            .to_string(),
                     ),
                     (
                         "history_max_revision_pairs",
@@ -1006,6 +1031,7 @@ pub(crate) fn artifact(
 )]
 mod tests {
     use super::*;
+    use quanta_index_searchd_harness::HARNESS_HISTORY_MAX_TOTAL_BYTES;
 
     fn required_json<'a>(value: &'a Value, pointer: &str) -> AnyResult<&'a Value> {
         value
@@ -1038,6 +1064,7 @@ mod tests {
             queue_capacity: 1,
             request_timeout: Duration::from_secs(1),
             history_max_bytes: None,
+            history_max_total_bytes: None,
         };
         let first = scheduled_offsets(&config, 10)?;
         assert_eq!(first, scheduled_offsets(&config, 10)?);
@@ -1067,6 +1094,7 @@ mod tests {
             queue_capacity: 1,
             request_timeout: Duration::from_secs(1),
             history_max_bytes: None,
+            history_max_total_bytes: None,
         };
         assert!(scheduled_offsets(&empty, 1)?.is_empty());
         assert!(empty.validate().is_err());
@@ -1383,6 +1411,7 @@ mod tests {
                     queue_capacity: 1,
                     request_timeout: Duration::from_secs(1),
                     history_max_bytes: None,
+                    history_max_total_bytes: None,
                 },
                 corpus_digest: String::new(),
                 model_revision: None,
@@ -1441,6 +1470,7 @@ mod tests {
                 queue_capacity: 1,
                 request_timeout: Duration::from_secs(1),
                 history_max_bytes: None,
+                history_max_total_bytes: None,
             },
             corpus_digest: String::new(),
             model_revision: None,
@@ -1474,6 +1504,7 @@ mod tests {
             queue_capacity: 2,
             request_timeout: Duration::from_secs(2),
             history_max_bytes: None,
+            history_max_total_bytes: None,
         })?;
         assert_eq!(report.points.len(), 1);
         let point = report.points.first().context("missing load point")?;
@@ -1504,6 +1535,7 @@ mod tests {
             queue_capacity: 2,
             request_timeout: Duration::from_secs(2),
             history_max_bytes: Some(1),
+            history_max_total_bytes: None,
         };
         assert_eq!(config.effective_history_max_bytes()?, 1);
         let error = run(config.clone()).expect_err("one byte cannot retain the planted index");
@@ -1551,6 +1583,7 @@ mod tests {
                 queue_capacity: 8,
                 request_timeout: Duration::from_secs(1),
                 history_max_bytes: None,
+                history_max_total_bytes: None,
             },
             corpus_digest: "sha256:fixed-source".to_string(),
             model_revision: None,
@@ -1582,7 +1615,7 @@ mod tests {
             "default history request must be null"
         );
         report.config.history_max_bytes = Some(268_435_456);
-        let explicit = artifact(&report, head, host)?.to_json()?;
+        let explicit = artifact(&report, head.clone(), host.clone())?.to_json()?;
         ensure!(
             required_json(&explicit, "/detail/history_policy/history_max_bytes")?
                 == &json!(268_435_456),
@@ -1599,6 +1632,48 @@ mod tests {
             required_json(&default, "/provenance/config_digest")?
                 != required_json(&explicit, "/provenance/config_digest")?,
             "history override did not change config digest"
+        );
+        report.config.history_max_bytes = Some(300_000_000);
+        report.config.history_max_total_bytes = Some(600_000_000);
+        let diagnostic = artifact(&report, head.clone(), host.clone())?.to_json()?;
+        for (pointer, expected) in [
+            (
+                "/detail/history_policy/history_max_bytes",
+                json!(300_000_000),
+            ),
+            (
+                "/detail/history_policy/requested_history_max_bytes",
+                json!(300_000_000),
+            ),
+            (
+                "/detail/history_policy/history_max_total_bytes",
+                json!(600_000_000),
+            ),
+            (
+                "/detail/history_policy/requested_history_max_total_bytes",
+                json!(600_000_000),
+            ),
+            (
+                "/detail/history_policy/history_policy_id",
+                json!("explicit-pair-total-diagnostic-v1"),
+            ),
+        ] {
+            ensure!(
+                required_json(&diagnostic, pointer)? == &expected,
+                "{pointer} changed"
+            );
+        }
+        ensure!(
+            required_json(&diagnostic, "/provenance/config_digest")?
+                != required_json(&explicit, "/provenance/config_digest")?,
+            "total override did not change config digest"
+        );
+        report.config.history_max_total_bytes = Some(700_000_000);
+        let wider_total = artifact(&report, head, host)?.to_json()?;
+        ensure!(
+            required_json(&diagnostic, "/provenance/config_digest")?
+                != required_json(&wider_total, "/provenance/config_digest")?,
+            "total-only change did not change config digest"
         );
         Ok(())
     }

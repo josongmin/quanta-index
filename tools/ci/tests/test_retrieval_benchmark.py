@@ -9589,6 +9589,83 @@ def test_repository_disjoint_source_custody_refuses_wrong_holdout(monkeypatch, t
         )
 
 
+def test_admission_split_batch_replays_at_both_boundaries_and_refuses_drift(monkeypatch, tmp_path):
+    from tools.benchmark import corpus_binding
+
+    release = tmp_path / "release"
+    release.mkdir()
+    view = release / "source.py"
+    view.write_bytes(b"fixed source\n")
+    split = tmp_path / "split.json"
+    split.write_bytes(b'{"fixed":"split"}\n')
+    releases = tmp_path / "releases.json"
+    releases.write_text(json.dumps({"sha256:" + "a" * 64: str(release)}))
+    calls = []
+
+    def fixed_oracle(raw, paths):
+        calls.append((raw, dict(paths)))
+        if raw != b'{"fixed":"split"}\n' or view.read_bytes() != b"fixed source\n":
+            raise ValueError("release source changed")
+        return {"repositories": [{"repository": "fixed"}]}
+
+    monkeypatch.setattr(corpus_binding, "validate_split_manifest", fixed_oracle)
+    batch = pairrun._AdmissionSplitBatch(split, releases)
+    assert len(calls) == 1
+    frozen_split = tmp_path / "frozen-split.json"
+    frozen_split.write_bytes(split.read_bytes())
+    frozen_releases = tmp_path / "frozen-releases.json"
+    frozen_releases.write_bytes(releases.read_bytes())
+    observed = batch.manifest(frozen_split, frozen_releases)
+    observed["repositories"].clear()
+    assert batch.manifest(frozen_split, frozen_releases)["repositories"] == [
+        {"repository": "fixed"}
+    ]
+    assert len(calls) == 1
+
+    frozen_split.write_bytes(b"{}\n")
+    with pytest.raises(pairrun.RunError, match="input or owner source changed"):
+        batch.manifest(frozen_split, frozen_releases)
+    frozen_split.write_bytes(split.read_bytes())
+    frozen_releases.write_bytes(b"{}\n")
+    with pytest.raises(pairrun.RunError, match="input or owner source changed"):
+        batch.manifest(frozen_split, frozen_releases)
+    frozen_releases.write_bytes(releases.read_bytes())
+    view.write_bytes(b"changed source\n")
+    with pytest.raises(pairrun.RunError, match="final replay failed"):
+        batch.finish()
+    assert len(calls) == 2
+    view.write_bytes(b"fixed source\n")
+    batch.finish()
+    assert len(calls) == 3
+    with pytest.raises(pairrun.RunError, match="already finalized"):
+        batch.manifest(frozen_split, frozen_releases)
+
+
+def test_admission_split_batch_refuses_live_input_and_owner_drift(monkeypatch, tmp_path):
+    from tools.benchmark import corpus_binding
+
+    split = tmp_path / "split.json"
+    split.write_bytes(b'{"fixed":"split"}\n')
+    releases = tmp_path / "releases.json"
+    releases.write_text(json.dumps({"sha256:" + "a" * 64: str(tmp_path / "release")}))
+    monkeypatch.setattr(
+        corpus_binding, "validate_split_manifest", lambda _raw, _paths: {"repositories": []}
+    )
+    batch = pairrun._AdmissionSplitBatch(split, releases)
+    original = pairrun.sha_file
+    monkeypatch.setattr(
+        pairrun,
+        "sha_file",
+        lambda path: "0" * 64 if path == Path(pairrun.__file__) else original(path),
+    )
+    with pytest.raises(pairrun.RunError, match="input or owner source changed"):
+        batch.finish()
+    monkeypatch.setattr(pairrun, "sha_file", original)
+    split.write_bytes(b"{}\n")
+    with pytest.raises(pairrun.RunError, match="input or owner source changed"):
+        batch.finish()
+
+
 def test_repository_disjoint_admission_freeze_routes_global_custody(monkeypatch, tmp_path):
     st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
     spec = copy.deepcopy(st["spec"])

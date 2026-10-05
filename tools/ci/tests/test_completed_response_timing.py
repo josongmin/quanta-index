@@ -442,15 +442,22 @@ def test_completed_output_digest_has_independent_cross_language_golden():
 def test_completed_clock_binds_cold_and_warmup_to_normalized_output(phase_name):
     protocol = pairrun.build_query_protocol(["T1"], 0, 1, 2)
     metrics = {
-        "route_count": 1, "query_protocol": protocol,
+        "route_count": 1,
+        "query_protocol": protocol,
         "warm_latencies_ms": {"lexical": {"T1": [1.0, 1.0]}},
         "cold_latencies_ms": {"lexical": 1.0},
     }
-    record = {"results": [{
-        "task_id": "T1", "route": "lexical", "status": "success",
-        "candidates": [{"path": "a.go", "score": 1.0}],
-        "timings": {"query_latency_ms": 1.0},
-    }]}
+    record = {
+        "results": [
+            {
+                "task_id": "T1",
+                "route": "lexical",
+                "status": "success",
+                "candidates": [{"path": "a.go", "score": 1.0}],
+                "timings": {"query_latency_ms": 1.0},
+            }
+        ]
+    }
     metrics["query_timing"] = _timing(metrics, record)
     pairrun.validate_completed_query_timing(metrics, record, require_output_validation=True)
     wrong_status = copy.deepcopy(metrics)
@@ -458,7 +465,9 @@ def test_completed_clock_binds_cold_and_warmup_to_normalized_output(phase_name):
         if observation["phase"] == phase_name:
             observation["status"] = "capped"
     with pytest.raises(pairrun.RunError, match="status differs"):
-        pairrun.validate_completed_query_timing(wrong_status, record, require_output_validation=True)
+        pairrun.validate_completed_query_timing(
+            wrong_status, record, require_output_validation=True
+        )
     changed = copy.deepcopy(record["results"][0])
     changed["candidates"][0]["path"] = "b.go"
     for observation in metrics["query_timing"]["observations"]:
@@ -479,11 +488,15 @@ def test_completed_clock_binds_every_repetition_to_normalized_output():
         "cold_latencies_ms": {"lexical": 1.0},
     }
     record = {
-        "results": [{
-            "task_id": "T1", "route": "lexical", "status": "success",
-            "candidates": [{"path": "a.go", "score": 1.0}],
-            "timings": {"query_latency_ms": 1.0},
-        }]
+        "results": [
+            {
+                "task_id": "T1",
+                "route": "lexical",
+                "status": "success",
+                "candidates": [{"path": "a.go", "score": 1.0}],
+                "timings": {"query_latency_ms": 1.0},
+            }
+        ]
     }
     metrics["query_timing"] = _timing(metrics, record)
     pairrun.validate_completed_query_timing(metrics, record, require_output_validation=True)
@@ -518,9 +531,7 @@ def test_completed_clock_binds_every_repetition_to_normalized_output():
     failed["results"][0]["status"] = "timeout"
     failed_metrics = copy.deepcopy(metrics)
     failed_metrics["query_timing"] = _timing(failed_metrics, failed)
-    pairrun.validate_completed_query_timing(
-        failed_metrics, failed, require_completed_status=False
-    )
+    pairrun.validate_completed_query_timing(failed_metrics, failed, require_completed_status=False)
     with pytest.raises(pairrun.RunError, match="incomplete or failed requests"):
         pairrun.validate_completed_query_timing(failed_metrics, failed)
 
@@ -542,7 +553,9 @@ def test_exploratory_replay_rejects_rebound_output_digests(tmp_path):
 
 
 @pytest.mark.parametrize("first_phase", ["cold", "warmup", "measured"])
-def test_semble_parent_refuses_changed_later_output_with_same_size_and_status(tmp_path, first_phase):
+def test_semble_parent_refuses_changed_later_output_with_same_size_and_status(
+    tmp_path, first_phase
+):
     worker = tmp_path / "changed.py"
     worker.write_text(
         "import json,sys\n"
@@ -557,15 +570,22 @@ def test_semble_parent_refuses_changed_later_output_with_same_size_and_status(tm
 
     def normalize(task_id, hits, _indexed_chunks):
         return {
-            "task_id": task_id, "route": "lexical", "status": "success",
+            "task_id": task_id,
+            "route": "lexical",
+            "status": "success",
             "candidates": [{"path": "a.go", "score": hits[0]["score"]}],
             "timings": {"query_latency_ms": 0.0},
         }
 
     with pytest.raises(semble.AdapterError, match="changed between repetitions"):
         semble.run_completed_worker(
-            [sys.executable, str(worker)], env=dict(os.environ), timeout_secs=5,
-            tasks={"T1": "q"}, top_k=1, route="lexical", normalize_response=normalize,
+            [sys.executable, str(worker)],
+            env=dict(os.environ),
+            timeout_secs=5,
+            tasks={"T1": "q"},
+            top_k=1,
+            route="lexical",
+            normalize_response=normalize,
             stderr_path=tmp_path / "changed.stderr",
         )
 

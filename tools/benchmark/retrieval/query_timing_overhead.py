@@ -466,7 +466,9 @@ def compare_scanner(
         pairrun.validate_retrieval_diagnostic(diagnostic, record, phases["record_sha256"], pack)
     baseline_captures = _scanner_identity(baseline, baseline_phases, baseline_identity)
     candidate_captures = _scanner_identity(candidate, candidate_phases, candidate_identity)
-    if baseline_identity["source_identity_sha256"] == candidate_identity["source_identity_sha256"] or (
+    if baseline_identity["source_identity_sha256"] == candidate_identity[
+        "source_identity_sha256"
+    ] or (
         baseline_identity["searchd_binary_sha256"] == candidate_identity["searchd_binary_sha256"]
     ):
         raise ValueError("scanner A/B requires distinct attested source and searchd binary")
@@ -685,30 +687,38 @@ def main() -> int:
                 verify_scanner_build(receipt)
                 captured_pack = receipt["capture_outputs"]["pack"]
                 if (
-                    (arm == 0 and Path(captured_pack["path"]).resolve() != args.pack.resolve())
-                    or captured_pack["sha256"] != sha(args.pack.read_bytes())
-                ):
+                    arm == 0 and Path(captured_pack["path"]).resolve() != args.pack.resolve()
+                ) or captured_pack["sha256"] != sha(args.pack.read_bytes()):
                     raise ValueError("scanner custody projected pack differs from replay input")
                 for role, index in (("record", arm), ("phases", arm + 2), ("diagnostic", arm + 4)):
                     captured = receipt["capture_outputs"][role]
-                    if Path(captured["path"]).resolve() != scanner_paths[index].resolve() or captured["sha256"] != sha(payloads[index]):
+                    if Path(captured["path"]).resolve() != scanner_paths[
+                        index
+                    ].resolve() or captured["sha256"] != sha(payloads[index]):
                         raise ValueError(f"scanner custody {role} output differs from replay input")
-            verify_scanner_source_pair(receipts[0]["source_identity"], receipts[1]["source_identity"])
+            verify_scanner_source_pair(
+                receipts[0]["source_identity"], receipts[1]["source_identity"]
+            )
             if set(receipts[0]["inputs"]) != set(receipts[1]["inputs"]) or any(
                 receipts[0]["inputs"][role]["files"] != receipts[1]["inputs"][role]["files"]
                 for role in receipts[0]["inputs"]
             ):
                 raise ValueError("scanner A/B corpus, query, suite or template bytes differ")
             effective_env = [
-                {key: value for key, value in receipt["execution_env_sha256"].items()
-                 if key not in {"CARGO_TARGET_DIR", "PYTHONPATH"}}
+                {
+                    key: value
+                    for key, value in receipt["execution_env_sha256"].items()
+                    if key not in {"CARGO_TARGET_DIR", "PYTHONPATH"}
+                }
                 for receipt in receipts
             ]
             if effective_env[0] != effective_env[1]:
                 raise ValueError("scanner A/B relevant build/capture environment differs")
             tool_fingerprints = [
-                {key: (value["sha256"], value.get("version"))
-                 for key, value in receipt["tools"].items()}
+                {
+                    key: (value["sha256"], value.get("version"))
+                    for key, value in receipt["tools"].items()
+                }
                 for receipt in receipts
             ]
             if tool_fingerprints[0] != tool_fingerprints[1]:
@@ -733,7 +743,10 @@ def main() -> int:
 
         with args.out.open("xb") as stream:
             stream.write(
-                canonical({**result, "input_sha256": [sha(raw) for raw in payloads + custody_payloads]}) + b"\n"
+                canonical(
+                    {**result, "input_sha256": [sha(raw) for raw in payloads + custody_payloads]}
+                )
+                + b"\n"
             )
     except (ValueError, OSError, KeyError, TypeError, pairrun.RunError) as error:
         mode = "scanner A/B" if args.scanner_ab else "overhead"

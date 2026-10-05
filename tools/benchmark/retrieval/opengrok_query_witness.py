@@ -32,7 +32,7 @@ PINNED_CLASS_SHA256: dict[str, str] = {
     "WEB-INF/classes/org/opengrok/web/api/v1/controller/SearchController$SearchEngineWrapper.class": "e477af140507338e72c22eb0753720a1f63c89aa7811a7fbea2fdb67259c1335",
     "WEB-INF/classes/org/opengrok/web/api/v1/controller/SearchController$SearchHit.class": "f8945465238c3ed984f51edb987339ab85ed615ee0e7f375ac600c4780f16c65",
     "WEB-INF/classes/org/opengrok/web/api/v1/controller/SearchController$SearchResult.class": "8db685df4821fba6f3fb0cc218b78ca7fcc638fb5c72fc4845f1f42aee80ac82",
-    "WEB-INF/classes/org/opengrok/web/api/v1/controller/SearchController.class": "c492587703599e7203d17872326fe8d0af694d2547b801dbe7195a4036b9c372"
+    "WEB-INF/classes/org/opengrok/web/api/v1/controller/SearchController.class": "c492587703599e7203d17872326fe8d0af694d2547b801dbe7195a4036b9c372",
 }
 MAX_HEADER_BYTES = 8192
 PROJECT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
@@ -40,7 +40,12 @@ SEGMENTS = re.compile(r"segments_[0-9a-z]+\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 NUMBER = re.compile(r"(?:0|[1-9][0-9]*)\Z")
 COMMIT_KEYS = {
-    "segmentsFile", "generation", "readerVersion", "numDocs", "maxDoc", "fileNamesSha256"
+    "segmentsFile",
+    "generation",
+    "readerVersion",
+    "numDocs",
+    "maxDoc",
+    "fileNamesSha256",
 }
 
 
@@ -56,12 +61,16 @@ def _strict_commit(value: object) -> dict:
         or len(segments) > len("segments_") + 13
         or type(digest) is not str
         or DIGEST.fullmatch(digest) is None
-        or any(type(value[key]) is not int or not 0 <= value[key] < 2**63
-               for key in ("generation", "readerVersion"))
-        or any(type(value[key]) is not int or not 0 <= value[key] <= 4 * 1024 * 1024
-               for key in ("numDocs", "maxDoc"))
+        or any(
+            type(value[key]) is not int or not 0 <= value[key] < 2**63
+            for key in ("generation", "readerVersion")
+        )
+        or any(
+            type(value[key]) is not int or not 0 <= value[key] <= 4 * 1024 * 1024
+            for key in ("numDocs", "maxDoc")
+        )
         or value["numDocs"] > value["maxDoc"]
-        or int(segments[len("segments_"):], 36) != value["generation"]
+        or int(segments[len("segments_") :], 36) != value["generation"]
     ):
         raise ValueError("OpenGrok native reader commit field differs")
     return value
@@ -125,8 +134,10 @@ def verify_header(
     _, segments, generation, version, live, maximum, file_digest = fields
     if (
         SEGMENTS.fullmatch(segments) is None
-        or any(NUMBER.fullmatch(value) is None or len(value) > 19
-               for value in (generation, version, live, maximum))
+        or any(
+            NUMBER.fullmatch(value) is None or len(value) > 19
+            for value in (generation, version, live, maximum)
+        )
         or DIGEST.fullmatch(file_digest) is None
     ):
         raise ValueError("OpenGrok query reader commit field is malformed")

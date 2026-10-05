@@ -36,6 +36,10 @@
 - ready9 OpenGrok selected-request180은 완료; 전체 service/index 권위는 미완료다.
   Frozen5796 CLI admission20tasks/519pairs만 actual exit0이다. Django admission은 중단했고
   나머지 admissions·pair·SG/CS·full5 join은 완료 증거가 없다.
+- Frozen5796 Gin declaration1,196 fresh single-route oracle/capture/scoring 진단은 완료했다.
+  1,192success/4capped 및 declaration MRR@10=1.0은 그 분모의 diagnostic이며 독립 holdout/비교/PERF가 아니다.
+- Current history/admission Python owner58cases는 통과했다. Broad Python은 current file-pair
+  fixture의 불완전한 manifest에서 실패했고 hosted Rust의 계측 Clippy6건도 수리 후 재실행이 필요하다.
 - 이후 source/ADR/Justfile 변경의 proof는 새 epoch로 발행한다. 위 frozen 결과의 SHA는 변경하지 않는다.
 
 ## W0–W6

@@ -27,8 +27,17 @@ def admitted(tmp_path, monkeypatch):
     (repo / "Cargo.toml").write_bytes(b"[workspace]\n")
     _git(repo, "add", ".")
     subprocess.check_call(
-        ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-         "commit", "-qm", "base"], cwd=repo
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "base",
+        ],
+        cwd=repo,
     )
     base = _git(repo, "rev-parse", "HEAD").decode().strip()
     corpus = tmp_path / "corpus"
@@ -93,7 +102,9 @@ def test_canonical_build_capture_and_replay(admitted, monkeypatch):
     spec, receipt_path = admitted
     receipt = custody.capture(spec, receipt_path)
     assert receipt["build_argv"] == custody._build_argv(Path(spec["repo"]))
-    assert receipt["capture_argv"] == custody._capture_argv(Path(spec["repo"]), Path(spec["output_root"]) / "run-spec.json")
+    assert receipt["capture_argv"] == custody._capture_argv(
+        Path(spec["repo"]), Path(spec["output_root"]) / "run-spec.json"
+    )
     assert custody.verify(receipt) == receipt["binaries"]
     monkeypatch.setenv("UNRELATED_SHELL_CHANGE", "ignored by closed execution environment")
     assert custody.verify(receipt) == receipt["binaries"]

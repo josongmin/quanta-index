@@ -3038,12 +3038,87 @@ def _validate_gold_review_receipt(
         raise RunError(f"qualification {role} receipt source validation failed: {exc}") from exc
 
 
+class _AdmissionSplitBatch:
+    """One issuer invocation's split proof, pending a final complete replay.
+
+    This object is private to an issuer batch. Individual admission results
+    are provisional until finish() succeeds. It never persists a cache or
+    changes the independent suite/review validation below.
+    """
+
+    def __init__(self, split_manifest_path: Path, split_releases_path: Path) -> None:
+        from tools.benchmark import corpus_binding
+
+        self._split_manifest_path = split_manifest_path
+        self._split_releases_path = split_releases_path
+        self._manifest_raw = split_manifest_path.read_bytes()
+        self._releases_raw = split_releases_path.read_bytes()
+        owner_paths = (
+            Path(__file__),
+            Path(corpus_binding.__file__),
+            Path(corpus_binding.corpus.__file__),
+        )
+        self._owners = tuple((path, sha_file(path)) for path in owner_paths)
+        try:
+            releases = corpus_binding._split_releases(corpus_binding._json(self._releases_raw))
+            manifest = corpus_binding.validate_split_manifest(self._manifest_raw, releases)
+        except (ValueError, OSError) as exc:
+            raise RunError(f"qualification repository-disjoint split is invalid: {exc}") from exc
+        # Keep a private immutable value. Every consumer receives a new parse.
+        self._manifest_value = canonical(manifest)
+        self._finished = False
+        self._check_inputs(split_manifest_path, split_releases_path)
+
+    def _check_inputs(self, split_manifest_path: Path, split_releases_path: Path) -> None:
+        try:
+            if (
+                split_manifest_path.read_bytes() != self._manifest_raw
+                or split_releases_path.read_bytes() != self._releases_raw
+                or self._split_manifest_path.read_bytes() != self._manifest_raw
+                or self._split_releases_path.read_bytes() != self._releases_raw
+                or any(sha_file(path) != original for path, original in self._owners)
+            ):
+                raise RunError("qualification split batch input or owner source changed")
+        except OSError as exc:
+            raise RunError(f"qualification split batch input is unavailable: {exc}") from exc
+
+    def manifest(self, split_manifest_path: Path, split_releases_path: Path) -> dict:
+        if self._finished:
+            raise RunError("qualification split batch was already finalized")
+        self._check_inputs(split_manifest_path, split_releases_path)
+        return json.loads(self._manifest_value)
+
+    def finish(self) -> None:
+        """Revalidate live releases before the issuer publishes VERIFIED cells."""
+        from tools.benchmark import corpus_binding
+
+        if self._finished:
+            raise RunError("qualification split batch was already finalized")
+        self._check_inputs(self._split_manifest_path, self._split_releases_path)
+        try:
+            releases = corpus_binding._split_releases(corpus_binding._json(self._releases_raw))
+            manifest = corpus_binding.validate_split_manifest(self._manifest_raw, releases)
+        except (ValueError, OSError) as exc:
+            raise RunError(f"qualification split batch final replay failed: {exc}") from exc
+        if canonical(manifest) != self._manifest_value:
+            raise RunError("qualification split batch changed during issuance")
+        self._check_inputs(self._split_manifest_path, self._split_releases_path)
+        self._finished = True
+
+    def assert_inputs_unchanged(self) -> None:
+        if not self._finished:
+            raise RunError("qualification split batch final replay is missing")
+        self._check_inputs(self._split_manifest_path, self._split_releases_path)
+
+
 def _validate_disjoint_admission_source(
     admission: dict,
     suite: dict,
     repo: Path,
     split_manifest_path: Path,
     split_releases_path: Path,
+    *,
+    _split_batch: _AdmissionSplitBatch | None = None,
 ) -> None:
     """Prove a holdout suite against the complete release and split authority."""
     benchmark_dir = str(Path(__file__).resolve().parents[1])
@@ -3056,12 +3131,19 @@ def _validate_disjoint_admission_source(
         "split_releases_sha256"
     ] != sha_file(split_releases_path):
         raise RunError("qualification repository-disjoint split bytes differ")
-    release_paths = read_json(split_releases_path)
-    try:
-        releases = corpus_binding._split_releases(release_paths)
-        split = corpus_binding.validate_split_manifest(split_manifest_path.read_bytes(), releases)
-    except (ValueError, OSError) as exc:
-        raise RunError(f"qualification repository-disjoint split is invalid: {exc}") from exc
+    if _split_batch is None:
+        release_paths = read_json(split_releases_path)
+        try:
+            releases = corpus_binding._split_releases(release_paths)
+            split = corpus_binding.validate_split_manifest(
+                split_manifest_path.read_bytes(), releases
+            )
+        except (ValueError, OSError) as exc:
+            raise RunError(f"qualification repository-disjoint split is invalid: {exc}") from exc
+    elif type(_split_batch) is _AdmissionSplitBatch:
+        split = _split_batch.manifest(split_manifest_path, split_releases_path)
+    else:
+        raise RunError("qualification split batch type differs")
     selected = [
         row
         for row in split["repositories"]
@@ -3107,9 +3189,12 @@ def verify_admission_bundle(
     semble_model_asset_sha256: str | None = None,
     split_manifest_path: Path | None = None,
     split_releases_path: Path | None = None,
+    _split_batch: _AdmissionSplitBatch | None = None,
 ) -> dict:
     """Re-derive every authority digest in a qualified admission bundle."""
     admission = validate_admission_manifest(read_json(manifest_path))
+    if admission["schema_version"] == 2 and _split_batch is not None:
+        raise RunError("qualification local custody cannot use a split batch")
     if admission["source_revision"] != source_revision:
         raise RunError("qualification admission source revision mismatch")
     corpus = read_json(corpus_manifest_path)
@@ -3171,9 +3256,19 @@ def verify_admission_bundle(
             raise RunError(
                 "qualification repository-disjoint custody paths are incomplete or mixed"
             )
-        _validate_disjoint_admission_source(
-            admission, suite_payload, repo, split_manifest_path, split_releases_path
-        )
+        if _split_batch is None:
+            _validate_disjoint_admission_source(
+                admission, suite_payload, repo, split_manifest_path, split_releases_path
+            )
+        else:
+            _validate_disjoint_admission_source(
+                admission,
+                suite_payload,
+                repo,
+                split_manifest_path,
+                split_releases_path,
+                _split_batch=_split_batch,
+            )
     if admission["cache_regime"] != cache_regime:
         raise RunError("qualification admission cache regime mismatch")
     if admission["license"]["receipt_sha256"] != sha_file(license_path):
@@ -10898,7 +10993,13 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
     return frozen
 
 
-def freeze_admission(spec: dict, stage: Path, frozen_receipts: dict[str, str]) -> dict[str, object]:
+def freeze_admission(
+    spec: dict,
+    stage: Path,
+    frozen_receipts: dict[str, str],
+    *,
+    _split_batch: _AdmissionSplitBatch | None = None,
+) -> dict[str, object]:
     """Freeze and preflight the W0-B authority packet for a qualified run."""
     scope = spec.get("scope", "exploratory")
     raw = spec.get("admission")
@@ -11000,6 +11101,7 @@ def freeze_admission(spec: dict, stage: Path, frozen_receipts: dict[str, str]) -
         host_profile_path=Path(spec["host_profile"]),
         cache_regime=spec.get("cache_regime", "undeclared"),
         receipt_paths=required_receipts,
+        **({"_split_batch": _split_batch} if _split_batch is not None else {}),
     )
     return frozen
 

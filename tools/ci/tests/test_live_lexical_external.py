@@ -2766,8 +2766,11 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
 @pytest.mark.parametrize(
     ("product", "native", "readonly", "witnessed"),
     [(product, False, False, False) for product in live.PRODUCTS]
-    + [("opengrok", True, False, False), ("opengrok", True, True, False),
-       ("opengrok", True, True, True)],
+    + [
+        ("opengrok", True, False, False),
+        ("opengrok", True, True, False),
+        ("opengrok", True, True, True),
+    ],
 )
 def test_v2_single_product_capture_replays_only_selected_native_evidence(
     tmp_path, lexical_release_seed, product, native, readonly, witnessed, monkeypatch
@@ -2877,7 +2880,8 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
                     witness = live.opengrok_query_witness
                     monkeypatch.setattr(witness, "COMPILER_IMAGE_SHA256", "b" * 64)
                     monkeypatch.setattr(
-                        witness, "PINNED_CLASS_SHA256",
+                        witness,
+                        "PINNED_CLASS_SHA256",
                         {name: live._sha(b"instrumented-class") for name in witness.CLASS_FILES},
                     )
                     fixture_sources = {}
@@ -2890,7 +2894,9 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
                         ("patched_source", "PATCHED_SOURCE_SHA256"),
                         ("source_patch", "SOURCE_PATCH_SHA256"),
                     ):
-                        monkeypatch.setattr(witness, constant, live._sha_file(Path(fixture_sources[name])))
+                        monkeypatch.setattr(
+                            witness, constant, live._sha_file(Path(fixture_sources[name]))
+                        )
                     instrumented_war = tmp_path / "instrumented.war"
                     with zipfile.ZipFile(instrumented_war, "w") as archive:
                         archive.writestr("WEB-INF/web.xml", descriptor.read_bytes())
@@ -2933,12 +2939,15 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
                                     **{
                                         name: files[name]
                                         for name in (
-                                            "instrumented_war_sha256", "patched_source_sha256",
-                                            "source_patch_sha256", "original_source_sha256",
+                                            "instrumented_war_sha256",
+                                            "patched_source_sha256",
+                                            "source_patch_sha256",
+                                            "original_source_sha256",
                                         )
                                     },
                                 }
-                                if witnessed else {}
+                                if witnessed
+                                else {}
                             ),
                         }
                     )
@@ -3095,12 +3104,17 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
         ):
             changed_raw = json.dumps(changed).encode()
             transport_path.write_bytes(changed_raw)
-            summary_path.write_text(json.dumps({
-                **summary,
-                "raw_capture_sha256": {
-                    **summary["raw_capture_sha256"], transport_name: live._sha(changed_raw),
-                },
-            }))
+            summary_path.write_text(
+                json.dumps(
+                    {
+                        **summary,
+                        "raw_capture_sha256": {
+                            **summary["raw_capture_sha256"],
+                            transport_name: live._sha(changed_raw),
+                        },
+                    }
+                )
+            )
             with pytest.raises(ValueError, match="query reader|nonce"):
                 live.verify(root)
         transport_path.write_bytes(original_transport)

@@ -21,9 +21,7 @@ with requests.Session() as sess, open("stopwords.rs", "w") as mod:
         "These stop word lists are from the Snowball project (https://snowballstem.org/)\nwhich carries the following copyright and license:\n\n"
     )
 
-    resp = sess.get(
-        "https://raw.githubusercontent.com/snowballstem/snowball/master/COPYING"
-    )
+    resp = sess.get("https://raw.githubusercontent.com/snowballstem/snowball/master/COPYING")
     resp.raise_for_status()
     mod.write(resp.text)
     mod.write("*/\n\n")

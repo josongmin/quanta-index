@@ -138,6 +138,7 @@ struct DriverSpec<'a> {
     provider_egress_grant: &'a ProviderEgressGrantConfig,
     history_max_generations: usize,
     history_max_bytes: u64,
+    history_max_total_bytes: u64,
     ingest_resource_policy: IngestResourcePolicy,
     /// The semantic track's stream window (QI-BB-021).
     semantic_stream_window_policy: SemanticStreamWindowPolicy,
@@ -213,6 +214,10 @@ pub struct E2eRuntime {
     /// [`HARNESS_HISTORY_MAX_BYTES`] unless a fixture larger than it widens
     /// it through [`Self::with_history_max_bytes`].
     history_max_bytes: u64,
+    /// Total retained index bytes across revision pairs in the state root.
+    /// The harness default is 256 MiB; explicit scale diagnostics can widen
+    /// it together with the pair bound before the daemon starts.
+    history_max_total_bytes: u64,
     /// The resource envelope one search-corpus batch may ask the daemon to
     /// hold (QI-BB-021). The production default is far wider than any
     /// fixture; envelope tests tighten it through
@@ -520,6 +525,13 @@ impl E2eRuntime {
         self
     }
 
+    /// Change the state-root retention byte ceiling for the next daemon start.
+    #[must_use]
+    pub const fn with_history_max_total_bytes(mut self, max_bytes: u64) -> Self {
+        self.history_max_total_bytes = max_bytes;
+        self
+    }
+
     /// Like [`Self::boot`] but runs the daemon under `policy` as its ingest
     /// resource envelope, so an envelope refusal can be provoked with a
     /// small batch instead of a hundred-thousand-record one.
@@ -661,6 +673,7 @@ impl E2eRuntime {
             provider_egress_grant: ProviderEgressGrantConfig::default(),
             history_max_generations,
             history_max_bytes: HARNESS_HISTORY_MAX_BYTES,
+            history_max_total_bytes: HARNESS_HISTORY_MAX_TOTAL_BYTES,
             ingest_resource_policy: IngestResourcePolicy::DEFAULT,
             socket_access: SocketAccessPolicies::PRIVATE,
             socket_directory: None,
@@ -836,6 +849,7 @@ impl E2eRuntime {
             provider_egress_grant: &self.provider_egress_grant,
             history_max_generations: self.history_max_generations,
             history_max_bytes: self.history_max_bytes,
+            history_max_total_bytes: self.history_max_total_bytes,
             ingest_resource_policy: self.ingest_resource_policy,
             semantic_stream_window_policy: self.semantic_stream_window_policy,
             query_admission_policy: self.query_admission_policy,
@@ -3625,7 +3639,7 @@ fn build_config(spec: &DriverSpec<'_>) -> AnyResult<SearchdConfig> {
             spec.history_max_generations,
             spec.history_max_bytes,
             HARNESS_HISTORY_MAX_REVISION_PAIRS,
-            HARNESS_HISTORY_MAX_TOTAL_BYTES,
+            spec.history_max_total_bytes,
         )?;
     let (query_socket, control_socket, ingest_socket) =
         spec.socket_directory

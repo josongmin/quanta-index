@@ -1699,7 +1699,12 @@ def validate_worker_phase_timings(
 def validate_parent_phase_profile(profile: object) -> dict:
     """Validate disjoint adapter phases in one parent's monotonic clock domain."""
     if not isinstance(profile, dict) or set(profile) != {
-        "schema_version", "boundary", "clock", "phases", "total_ns", "excluded"
+        "schema_version",
+        "boundary",
+        "clock",
+        "phases",
+        "total_ns",
+        "excluded",
     }:
         raise AdapterError("Semble parent phase profile shape differs")
     if (
@@ -1818,7 +1823,9 @@ def run_completed_worker(
                 output_sha256 = completed_output_sha256(required_output)
                 previous = completed_output_digests.setdefault(task_id, output_sha256)
                 if previous != output_sha256:
-                    raise AdapterError("Semble completed response changed between repetitions or phases")
+                    raise AdapterError(
+                        "Semble completed response changed between repetitions or phases"
+                    )
                 observation = {
                     "task_id": task_id,
                     "route": route,

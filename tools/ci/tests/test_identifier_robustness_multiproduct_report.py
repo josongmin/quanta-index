@@ -50,7 +50,13 @@ def test_source_strata_and_evaluator_score_have_independent_fixed_expected_value
         {"contract": "declaration_name_exact", "unit": "symbol"},
     ):
         with pytest.raises(report.OfflineReportError, match="exact declaration source authority"):
-            report._result({**task, "source_oracle": authority}, [], eligible=True, status="success", latency_ms=1)
+            report._result(
+                {**task, "source_oracle": authority},
+                [],
+                eligible=True,
+                status="success",
+                latency_ms=1,
+            )
 
 
 @pytest.mark.parametrize(

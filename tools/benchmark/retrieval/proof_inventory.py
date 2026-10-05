@@ -35,10 +35,17 @@ PYTHON_SELECTORS = (
 )
 PYTHON_SELECTOR = " ".join(PYTHON_SELECTORS)
 RUST_SELECTOR = (
-    "-p", "quanta-index-retrieval-bench", "--lib",
-    "--bin", "quanta-index-retrieval-bench",
-    "--test", "chunking_contract", "--test", "l5_parser_regressions",
-    "--all-features", "--locked",
+    "-p",
+    "quanta-index-retrieval-bench",
+    "--lib",
+    "--bin",
+    "quanta-index-retrieval-bench",
+    "--test",
+    "chunking_contract",
+    "--test",
+    "l5_parser_regressions",
+    "--all-features",
+    "--locked",
 )
 RUST_COMMAND = "./scripts/cargow nextest run " + " ".join(RUST_SELECTOR)
 DEFAULT_AUTHORITY = (

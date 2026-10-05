@@ -70,9 +70,7 @@ def test_build_summary_binds_actual_runner_and_machine_counts(tmp_path: Path) ->
 
 def test_build_summary_fresh_command_is_explicit_and_closed(tmp_path: Path) -> None:
     record, nextest, runner = _fixture(tmp_path)
-    fresh = MODULE.build_summary(
-        record, nextest, runner, command=MODULE.SDK_FRESH_COMMAND
-    )
+    fresh = MODULE.build_summary(record, nextest, runner, command=MODULE.SDK_FRESH_COMMAND)
     assert fresh["command"] == "just retrieval-sdk-proof-fresh"
     with pytest.raises(ValueError, match="unsupported SDK proof command"):
         MODULE.build_summary(record, nextest, runner, command="just unrelated-command")

@@ -294,8 +294,12 @@ def test_identifier_preference_when_over_limit():
     assert "Plain" not in tokens
     assert tokens[:23] == [f"plain{i}" for i in range(23)]
     assert tokens[23:] == [
-        "snake_case_a", "pkg.Func", "path/to/file", "camelCase",
-        "go_test_package", "local_test_reproduction",
+        "snake_case_a",
+        "pkg.Func",
+        "path/to/file",
+        "camelCase",
+        "go_test_package",
+        "local_test_reproduction",
     ]
     assert result["dropped"]["over_limit"] == 47 - 29
     assert len(tokens) == 29
@@ -304,9 +308,7 @@ def test_identifier_preference_when_over_limit():
 
 
 def test_joined_identifiers_use_exact_prebudget_planner_terms():
-    assert natural_language_terms("pkg.Func path/to/file") == [
-        "pkg", "func", "path", "to", "file"
-    ]
+    assert natural_language_terms("pkg.Func path/to/file") == ["pkg", "func", "path", "to", "file"]
     assert plan_lexical_request("natural_language", "pkg.Func path/to/file") == (
         "case:no pkg OR func OR path OR to OR file"
     )

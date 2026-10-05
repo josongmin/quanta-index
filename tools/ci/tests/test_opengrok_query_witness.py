@@ -51,7 +51,12 @@ def test_exact_selected_reader_witness():
         ([HEADER, HEADER], NONCE, "bat", {"bat": COMMIT}),
         ([HEADER], "c" * 32, "bat", {"bat": COMMIT}),
         ([HEADER], NONCE, "other", {"other": COMMIT}),
-        ([HEADER + ":other,segments_3p,133,971,17615,17620," + "a" * 64], NONCE, "bat", {"bat": COMMIT}),
+        (
+            [HEADER + ":other,segments_3p,133,971,17615,17620," + "a" * 64],
+            NONCE,
+            "bat",
+            {"bat": COMMIT},
+        ),
         ([HEADER], NONCE, "bat", {"bat": {**COMMIT, "generation": 134}}),
         ([HEADER], NONCE, "bat", {"bat": {**COMMIT, "fileNamesSha256": "c" * 64}}),
         ([HEADER], NONCE, "bat", {"bat": COMMIT, "other": COMMIT}),
@@ -86,7 +91,9 @@ def test_reader_witness_mutants_rejected(headers, nonce, project, commits):
 def test_native_commit_aliases_rejected_even_with_exact_header(field, value):
     with pytest.raises(ValueError, match="native reader commit"):
         witness.verify_header(
-            [HEADER], nonce=NONCE, project="bat",
+            [HEADER],
+            nonce=NONCE,
+            project="bat",
             native_commits={"bat": {**COMMIT, field: value}},
         )
 
@@ -97,31 +104,34 @@ def test_native_commit_missing_or_extra_field_rejected():
         {**COMMIT, "unknown": 0},
     ):
         with pytest.raises(ValueError, match="native reader commit shape"):
-            witness.verify_header([HEADER], nonce=NONCE, project="bat", native_commits={"bat": changed})
+            witness.verify_header(
+                [HEADER], nonce=NONCE, project="bat", native_commits={"bat": changed}
+            )
 
 
 def test_instrumented_war_rejects_unrelated_byte_change(tmp_path, monkeypatch):
     original_xml = (
         b'<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee">'
-        b'<context-param><param-name>CONFIGURATION</param-name>'
-        b'<param-value>/var/opengrok/etc/configuration.xml</param-value>'
-        b'</context-param></web-app>'
+        b"<context-param><param-name>CONFIGURATION</param-name>"
+        b"<param-value>/var/opengrok/etc/configuration.xml</param-value>"
+        b"</context-param></web-app>"
     )
     readonly_xml = (
         b'<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee">'
-        b'<context-param><param-name>CONFIGURATION</param-name>'
-        b'<param-value>/opengrok/etc/configuration.xml</param-value>'
-        b'</context-param><security-constraint><web-resource-collection>'
-        b'<web-resource-name>deny API writes</web-resource-name>'
-        b'<url-pattern>/api/*</url-pattern><http-method-omission>GET</http-method-omission>'
-        b'</web-resource-collection><auth-constraint/></security-constraint></web-app>'
+        b"<context-param><param-name>CONFIGURATION</param-name>"
+        b"<param-value>/opengrok/etc/configuration.xml</param-value>"
+        b"</context-param><security-constraint><web-resource-collection>"
+        b"<web-resource-name>deny API writes</web-resource-name>"
+        b"<url-pattern>/api/*</url-pattern><http-method-omission>GET</http-method-omission>"
+        b"</web-resource-collection><auth-constraint/></security-constraint></web-app>"
     )
     base = {"WEB-INF/web.xml": original_xml, "WEB-INF/classes/Other.class": b"original"}
     base.update({name: b"old" for name in witness.CLASS_FILES})
     modified = {**base, "WEB-INF/web.xml": readonly_xml}
     modified.update({name: b"new" for name in witness.CLASS_FILES})
     monkeypatch.setattr(
-        witness, "PINNED_CLASS_SHA256",
+        witness,
+        "PINNED_CLASS_SHA256",
         {name: hashlib.sha256(b"new").hexdigest() for name in witness.CLASS_FILES},
     )
     webapps = tmp_path / "webapps"
@@ -151,7 +161,9 @@ def test_instrumented_war_rejects_unrelated_byte_change(tmp_path, monkeypatch):
         auxiliary[name] = str(path)
     config = {
         "readonly_service": {
-            "webapps_root": str(webapps), "etc_root": str(etc), "source_war": str(base_war)
+            "webapps_root": str(webapps),
+            "etc_root": str(etc),
+            "source_war": str(base_war),
         },
         "query_reader_witness": {"instrumented_war": str(instrumented_war), **auxiliary},
     }
@@ -168,7 +180,9 @@ def test_instrumented_war_rejects_unrelated_byte_change(tmp_path, monkeypatch):
         live._opengrok_readonly_files(config)
 
 
-def test_readonly_http_ignores_ambient_proxy_for_config_view_search_and_write(tmp_path, monkeypatch):
+def test_readonly_http_ignores_ambient_proxy_for_config_view_search_and_write(
+    tmp_path, monkeypatch
+):
     direct_calls = []
     direct_put_bodies = []
     proxy_calls = []
@@ -211,8 +225,9 @@ def test_readonly_http_ignores_ambient_proxy_for_config_view_search_and_write(tm
 
     direct = ThreadingHTTPServer(("127.0.0.1", 0), Direct)
     proxy = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
-    threads = [threading.Thread(target=server.serve_forever, daemon=True)
-               for server in (direct, proxy)]
+    threads = [
+        threading.Thread(target=server.serve_forever, daemon=True) for server in (direct, proxy)
+    ]
     for thread in threads:
         thread.start()
     try:
@@ -229,13 +244,18 @@ def test_readonly_http_ignores_ambient_proxy_for_config_view_search_and_write(tm
         }
         for endpoint in ("/api/v1/configuration/dataRoot", "/api/v1/file/content"):
             assert live._http(readonly, endpoint, {}, "application/json")[:3] == (
-                200, "application/json", b"direct"
+                200,
+                "application/json",
+                b"direct",
             )
         status, content_type, raw, _elapsed, headers = live._opengrok_witness_http(
             readonly, "/api/v1/search", {"projects": "bat"}, NONCE
         )
         assert (status, content_type, raw, headers) == (
-            200, "application/json", b"direct", [HEADER]
+            200,
+            "application/json",
+            b"direct",
+            [HEADER],
         )
         live._opengrok_write_denial_probe(readonly, tmp_path / "write", capture=True)
         assert [(method, path.split("?", 1)[0]) for method, path, _ in direct_calls] == [
