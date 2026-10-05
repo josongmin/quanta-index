@@ -1640,12 +1640,13 @@ mod tests {
             b"old",
         )
         .expect("legacy file");
+        let result = super::read_manifest(generation.path());
         assert!(matches!(
-            super::read_manifest(generation.path()),
+            result,
             Err(quanta_index_core::CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 ..
             })
-        ));
+        ), "legacy manifest result: {result:?}");
     }
 }
