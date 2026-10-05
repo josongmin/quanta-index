@@ -2,6 +2,28 @@
 
 Status: `HISTORICAL RECOVERY INDEX`
 
+## Oct-05 handoff compaction
+
+Pre-deletion revision: `52980f58f9c08b8560b6262499071cfb7ca610c7`.
+The five `docs/handoff/oct-4/agent-{1,2,3,4,5}.md` bodies matched this revision
+byte-for-byte before removal. Recover a file with
+`git show 52980f58:docs/handoff/oct-4/agent-4.md`; enumerate the originals with
+`git ls-tree -r --name-only 52980f58 -- docs/handoff/oct-4`.
+
+Completed implementation decisions live in the
+[OCT-05 Accepted set](adr/README.md#oct-05-implemented-contracts).
+All 29 original scope IDs, unmet acceptance and operational/design inputs remain
+in the [active residual ledger](plans/oct-4-parallel-closure/tickets/INDEX.md).
+The [summary](handoff/oct-4/FINAL-REMAINING-WORK.md) is navigation rather than
+a duplicate execution ledger. The active parent remains open.
+
+The related 41-file plan compaction and exact recovery are recorded in the
+[plan history index](plans/ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).
+Preimages of retained edits and all removed files were copied outside the
+checkout to `/tmp/qi-oct5-adr-compaction-y_jhbe9z`; `manifest.json` records their
+content hashes. Git recovery is the durable source for the removed bodies.
+Historical tests, raw paths and frozen revisions do not qualify newer source.
+
 ## Oct-04 source-count snapshot retirement
 
 At `8ee2f1ea82c6dcb991b633d9282ca2ca2bf0aff3`,

@@ -2,6 +2,36 @@
 
 Status: `HISTORICAL RECOVERY INDEX`
 
+## Oct-05 handoff and ticket compaction
+
+Pre-deletion revision: `52980f58f9c08b8560b6262499071cfb7ca610c7`.
+All 41 removed plan bodies matched this revision before deletion:
+
+| Removed set under `docs/plans/oct-4-parallel-closure/` | Files | Current owner |
+| --- | ---: | --- |
+| `tickets/O4-*.md` | 29 | [Single residual ledger](oct-4-parallel-closure/tickets/INDEX.md): all original IDs, unmet inputs/acceptance and execution entrypoints |
+| `epics/*.md` | 5 | [Owner/transfer map](oct-4-parallel-closure/README.md) and the four [Accepted ADRs](../adr/README.md#oct-05-implemented-contracts) |
+| `waves/W*.md` | 7 | [Remaining W0–W6 execution](oct-4-parallel-closure/WAVES.md) |
+
+Recover an exact body with
+`git show 52980f58:docs/plans/oct-4-parallel-closure/tickets/O4-E2-02-external-index-universe.md`.
+Enumerate the old packet with
+`git ls-tree -r --name-only 52980f58 -- docs/plans/oct-4-parallel-closure`.
+The five original handoffs are recorded in the
+[documentation archive](../ARCHIVE-INDEX.md#oct-05-handoff-compaction): 46 files removed in total.
+
+Old execution commands, selectors, raw/output paths, SHA bindings, failed attempts
+and owner test totals remain in these Git bodies; they were not synthesized into
+current proof. Implemented contracts live in OCT-05-001/002/003/004. All incomplete
+label/admission/name/holdout/index/performance/capacity/current-source/CI/provider/
+paired/Linux/state/action gates remain active. P11 operational producer/recipes
+remain unimplemented and four optimization/policy changes remain conditional.
+
+The OCT-04 parent, README/WAVES and `tickets/INDEX.md` remain live. Their pre-edit
+bodies are recoverable at the same revision; exact preimages were also retained
+outside the checkout at `/tmp/qi-oct5-adr-compaction-y_jhbe9z`.
+No redirect stubs or duplicate historical execution packet remain in the live tree.
+
 ## Oct-04 stale draft consolidation
 
 The six Sep-23/24 draft bodies below are recoverable from clean

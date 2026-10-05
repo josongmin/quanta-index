@@ -18,6 +18,24 @@ Current proposals (not accepted decisions or implementation authority):
 ADR 변경은 decision을 바꾸는 breaking change다. 같은 commit에서 downstream contract, inventory, migration
 class와 proof authority를 갱신한다. optional compatibility field나 dual live decoder로 decision drift를 숨기지 않는다.
 
+## OCT-05 implemented contracts
+
+Oct-04 handoff/implementation history is consolidated into four `Accepted` ADRs.
+They preserve existing contracts; conditional optimization, open proposals and
+staged operational actions remain unimplemented. Current acceptance is owned by
+the [29-scope residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md).
+
+- [Review, admission and result identity](OCT-05-001-review-admission-and-result-identity.md): E1 frozen typed binding, actual judgment, name units and split/gold authority.
+- [Native capture, clock and index scope](OCT-05-002-native-capture-clock-and-index-scope.md): E2 native replay, strict Lucene metadata, disk/reader boundaries and warmup policy.
+- [Active query and runtime lifecycle](OCT-05-003-active-query-and-runtime-lifecycle.md): E3 retire-first refusal, one-RPC binding, metering, timeout/replay and operator authorization.
+- [Cost, capacity and qualification boundaries](OCT-05-004-cost-capacity-and-qualification-boundaries.md): E4/I0 causal/scanner/scale, conditional changes and current-source/release authority.
+
+Exact old bodies and executions remain recoverable through the
+[plan history index](../plans/ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).
+Removing detailed plans does not close the active parent or issue qualification.
+
+## Prior accepted decisions
+
 SEP-21 accepted set:
 
 - [Canonical identity and digest domains](SEP-21-001-canonical-identity-and-digest-domains.md)

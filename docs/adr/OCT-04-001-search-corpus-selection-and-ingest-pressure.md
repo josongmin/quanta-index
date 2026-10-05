@@ -1,74 +1,55 @@
-# OCT-04-001 — Search-corpus selection and ingest pressure
+# OCT-04-001 — Search-corpus Ingest Pressure and Optional Selection Strengthening
 
 Status: `Proposed` — open design, not implementation authority or qualification.
 
-Source audit: clean `main@e43cda8c87b4a06fecac82a266011e30f84a2986` on 2026-10-04.
-Recheck the selected source before implementation. The September RFC is recoverable
-from Git history; its source snapshot, performance claims and proposed gates are
-not current evidence. Accepted [SEP-21-002](SEP-21-002-durable-authority-and-operation-lifecycle.md),
-[SEP-21-003](SEP-21-003-read-view-continuation-and-provider-policy.md) and
-[SEP-27-005](SEP-27-005-catalog-recovery-supervision-and-proof-custody.md)
-remain authoritative.
+Updated: 2026-10-05. The original clean-main audit at `e43cda8c` remains in Git.
+Completed selection, maintenance and timeout contracts are now consolidated in
+[OCT-05-003](OCT-05-003-active-query-and-runtime-lifecycle.md); measured-cost and
+conditional optimization boundaries are in
+[OCT-05-004](OCT-05-004-cost-capacity-and-qualification-boundaries.md).
+This proposal does not override the Accepted retire-first refusal contract.
 
-## Current implementation and limits
+## Completed scope removed from this proposal
 
-- `query_dispatcher/selection.rs` resolves an un-tokened `Active` head before
-  `query_dispatcher/read_view/view.rs::acquire_read_view` checks the ledger and
-  acquires handles. The selected generation has no admission pin across that
-  interval. Once acquired, `QueryReadViewV2` and `snapshot_registry.rs` retain
-  handles against retirement. A transition-induced refusal in the interval is
-  statically possible; no deterministic three-generation reproduction was run.
-- Search-corpus ingest uses one process-wide serial dispatch slot
-  (`quanta-index-ipc/src/admission.rs`), while query has separate admission.
-  The SDK default I/O timeout is 30 s and ingest dispatch budget is 120 s.
-  `server/peer_watch.rs` now detects hang-up and cancels the budget, but
-  `ingest_dispatcher/dispatcher.rs::dispatch` checkpoints only at entry and
-  deliberately settles an admitted publish. A timed-out caller must inspect or
-  replay by operation identity; timeout alone does not establish rollback.
-- [SEP-21-002](SEP-21-002-durable-authority-and-operation-lifecycle.md)
-  describes one global `MutationCoordinatorV1` for all durable mutation.
-  Production wires its port through `AuxiliaryMutationCoordinator`; the
-  search-corpus path takes that guard for auxiliary finalization, while its
-  preceding track build has separate operation locks and journal fences.
-  Thus the accepted blanket wording should not be read as one guard over the
-  whole publish. This scope discrepancy is not proof of an unsafe
-  cross-process write. Reconcile authority and tests before wider dispatch.
-- Lexical ingest already uses a buffered Tantivy writer, synchronous commit and
-  seal-time merge wait. Semantic ingest uses bounded windows and a staging
-  Lance dataset. The current `SearchCorpusIngestObservation` includes lexical
-  substage and semantic phase durations. Neither a per-file direct-write claim
-  nor the dominant indexing cost follows from the old benchmark.
-- Retention measures deduplicated regular-file logical lengths, not physical
-  allocated blocks or transient build/merge high water. The maintenance tick
-  refreshes both track disk gauges through full-tree walkers and boot performs
-  that refresh synchronously (`app/maintenance.rs`). Readiness uses the tick's
-  freshness. No slow-walk latency or disk-pressure experiment was run here.
+Actual runtime OS-child tests covered selected G1 physical retirement before
+acquisition, slow disk metering/readiness and default SDK30s timeout followed by
+admitted publish/restart/exact replay. These are owner/process scope results;
+shipping current-source/Linux release remains in the
+[active residual ledger](../plans/oct-4-parallel-closure/tickets/INDEX.md#i0).
+The old statements that these scenarios were entirely unexecuted no longer apply.
 
-## Decisions requiring proof
+## Open decisions
 
-1. Force `Active` selection of G1, then activate G2 and retain G3 so G1 is
-   eligible for removal before view acquisition. If the baseline refuses due
-   to retirement, add a short-lived admission pin under the catalog/retention
-   authority, transfer custody to the acquired read view, and preserve exact
-   pinned/token-bound refusal semantics. Prove active-pair cardinality above
-   snapshot-cache capacity without pinning every active handle indefinitely.
-2. Measure full/delta/delete/seal and concurrent-query phase time, RSS and
-   actual free/allocated/transient disk before changing storage or dispatch.
-   Resource admission must preserve the previous active and rollback-required
-   generations and live readers. Logical retention is not a hard physical
-   quota; a hard cap requires filesystem/OS enforcement.
-3. If a scripted full-tree walk delays backend freshness, separate bounded
-   backend health from paced disk metering with age/error reporting. Test the
-   30 s client timeout against an admitted slow publish and exact replay.
+1. A stronger guarantee that an un-tokened Active selection must survive physical
+   retirement remains unaccepted. If that product guarantee is required, define
+   its linearization point, retention authority and bounded short-lived claim
+   transfer/release, then prove panic/cancel/GC and many active pairs beyond cache
+   capacity. Current typed refusal without opening retired G1 is expected behavior,
+   not sufficient evidence for adding admission pins.
+2. Resource admission or wider dispatch requires actual full/delta/delete/seal and
+   concurrent-query phase time, RSS and free/allocated/transient disk. Search-corpus
+   ingress currently uses one process-wide serial slot; query admission is separate.
+   Reconcile the global mutation-coordinator wording with actual build/journal/
+   auxiliary-finalization ownership before widening concurrency. Do not infer an
+   unsafe cross-process write merely from that scope distinction.
+3. Retention/logical disk metering is not a hard physical quota. A hard cap needs
+   declared filesystem/OS enforcement and must preserve active, rollback-required
+   and live-reader generations. Source-bound physical pressure/merge high-water
+   measurements and real storage power-loss proof remain unexecuted here.
 4. Keep immutable generation publication and synchronous terminal receipts.
-   Consider concurrent pairs only if measured serial-slot contention is
-   material and resource permits plus durable ownership are proved. Durable
-   asynchronous acknowledgement additionally requires replayable source-byte
-   custody and explicit queued/sealed/active milestones.
+   Concurrent pairs require measured serial contention plus resource/durable-owner
+   proof. Durable asynchronous acknowledgment additionally requires replayable
+   source-byte custody and explicit queued/sealed/active milestones. Neither is
+   accepted by the completed timeout/replay tests.
 
-Owner-local race, timeout and slow-walk tests are `NOT_RUN`; physical-pressure,
-mixed-load performance, power-loss and release qualification are `NOT_RUN`.
-The current performance owner is
-[S30-B07](../plans/sep-30-code-search-benchmark-trust/tickets/S30-B07-performance-and-indexing.md);
-read-view and process proof remain in the
-[SEP-21 residual plan](../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md).
+## Owners
+
+- [O4-E4-01](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-01) owns causal cost;
+  [O4-E4-02](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-02) owns conditional durable barriers.
+- [S30-B07](../plans/sep-30-code-search-benchmark-trust/tickets/S30-B07-performance-and-indexing.md)
+  owns actual performance and indexing acceptance.
+- [SEP-21 residual plan](../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)
+  owns shipping process/release qualification.
+
+This compaction neither accepts the open designs nor supplies physical-pressure,
+performance, power-loss or release evidence.
