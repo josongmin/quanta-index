@@ -21,6 +21,12 @@ typo_text_is_ascii는16384B 단위 cancellation prepass 후 byte scanner 또는 
 - `VERIFIED`: source904 중앙 workspace rail의 lexical lib296와 `test-daemon-lane`의 `l3_exact_source` 30개가 실제 통과했다. independent source/Unicode/typo/declaration/literal-gate correctness scope다.
 - same binary/source 차이로 묶인 whole-call release A/B와 scanner 유지/수정/철회 결정은 `NOT_RUN`이다. current Darwin의 CPU frequency authority가 없어 현재 host의 latency/throughput은 diagnostic이며, 이를 qualified speed 비교로 승격하지 않는다.
 
+## 2026-10-05 A/B 실행 경로 보완
+
+- `query_timing_overhead.py`는 **동일 binaries/model/input의 observation on/off** 검증기다. `runner_binary_sha256`와 searchd binary digest가 달라지면 `on/off model/daemon/input identity differs`로 거절한다. 서로 다른 scanner 구현의 whole-call A/B를 이 도구의 성공 조건으로 검증할 수 없다. 기존 검증기를 약화하거나 다른 바이너리를 같은 identity로 표시하지 않는다.
+- scanner A/B에는 scanner 차이만 가진 baseline/candidate source와 각각 matching binaries를 먼저 확보하고, 그 두 source/binary identities를 명시적으로 허용하는 별도 비교 경로가 필요하다. query/protocol/corpus/model·selected tasks·status/path/order/cursor/score bits 및 의미 있는 work counters는 독립 대조하고, 차이가 허용되는 clock/counter 항목은 사전에 선언한다. observation on/off 자체는 기존 도구로 별도 검사한다. 이 추가 입력·비교 경로와 실제 whole-call 실행은 `NOT_RUN`이다.
+- 사라진 과거 capture/binary 경로를 source tuple로 재구성하지 않는다. 준비된 같은 source scanner pair와 사전 acceptance가 없으므로 현재 functional PASS를 scanner 성능 결정으로 승격하지 않는다.
+
 ## 착수 입력
 
 - candidate/baseline scanner만 다른 exact source/binary tuple
@@ -35,7 +41,7 @@ typo_text_is_ascii는16384B 단위 cancellation prepass 후 byte scanner 또는 
 | --- | --- | --- | --- |
 | [crates/quanta-index-lexical/src/searcher/code_search.rs](../../../../crates/quanta-index-lexical/src/searcher/code_search.rs) | typo_text_is_ascii / typo_witness / scan_typo_token_spans | prepass·token scan·cache·budget checkpoints의 whole-call work를 비교한다. 해로운 이중 순회가 재현되면 단일 scanner를 수정하거나 optimization을 철회한다. | OWNED |
 | [crates/quanta-index-lexical/tests/l3_exact_source.rs](../../../../crates/quanta-index-lexical/tests/l3_exact_source.rs) | actual file/case/typo ranking | Unicode boundary·byte witness·default/explicit result/order/cursor를 보존하는 fixture를 추가한다. | OWNED |
-| [tools/benchmark/retrieval/query_timing_overhead.py](../../../../tools/benchmark/retrieval/query_timing_overhead.py) | existing A/B observations | 동일 non-clock rows·work counters를 보존한 A/B를 실행한다. | OWNED |
+| [tools/benchmark/retrieval/query_timing_overhead.py](../../../../tools/benchmark/retrieval/query_timing_overhead.py) | same-binary observation on/off | 계측 overhead만 기존 owner로 확인한다. scanner binary A/B는 별도 declared comparison으로 non-clock rows·work counters를 검증한다. | READ |
 | [tools/ci/tests/test_retrieval_benchmark.py](../../../../tools/ci/tests/test_retrieval_benchmark.py) | scanner phase/read replay | shared test hunk는 I0가 반영한다. 시간 fields 외 의미 있는 counters를 비교에서 삭제하지 않는다. | SHARED |
 
 ## 실행 단계
