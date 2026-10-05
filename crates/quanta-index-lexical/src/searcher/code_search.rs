@@ -1120,14 +1120,13 @@ fn proximity_bonus(
     Ok(32_u32.saturating_sub(gap))
 }
 
-struct LiteralPrefilter<'term, 'index> {
-    term: &'term CodeSearchTerm,
+struct LiteralPrefilter<'index> {
     // Query-owned posting references point into bounded lists loaded once
     // across all terms and both requested surfaces.
     postings: [Option<Vec<&'index [u64]>>; 2],
 }
 
-impl LiteralPrefilter<'_, '_> {
+impl LiteralPrefilter<'_> {
     fn possible_in(&self, id: u64) -> bool {
         self.postings
             .iter()
@@ -1268,10 +1267,7 @@ fn candidate_ids_observed(
                 None,
             ],
         };
-        indexed.push(LiteralPrefilter {
-            term: *term,
-            postings,
-        });
+        indexed.push(LiteralPrefilter { postings });
     }
     let mut hits = BTreeMap::new();
     if let Some((seed_position, seed)) = indexed

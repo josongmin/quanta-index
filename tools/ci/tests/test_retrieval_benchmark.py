@@ -6981,6 +6981,12 @@ def _pair_stage(
             capture.update(model="none:lexical", model_revision="not-applicable")
         else:
             capture["receipt_digest"] = mapping["diff_digest"]
+            if file_current:
+                # The phase clock and adapter manifest identify this worker.
+                capture["runner_binary"] = {
+                    "name": "semble-worker",
+                    "digest": _fake_sha("worker"),
+                }
         rows = json.loads(json.dumps(route_rows))
         if system == "semble":
             task_queries = {task["task_id"]: task["query"] for task in pack["tasks"]}
@@ -7015,7 +7021,15 @@ def _pair_stage(
 
     rep_layouts = []
     measurements = 10 if qualified_speed_sample else 1
-    warm_query_ms = len(pack["tasks"]) * measurements * 1.5 if qualified_speed_sample else 3.0
+    if file_current:
+        # Both routes execute every measured task serially. Preserve the
+        # independent raw row clocks instead of the old two-task window.
+        warm_query_ms = max(
+            sum(row["timings"]["query_latency_ms"] for row in rows) * measurements
+            for rows in (lex_rows, sem_rows)
+        )
+    else:
+        warm_query_ms = len(pack["tasks"]) * measurements * 1.5 if qualified_speed_sample else 3.0
     for rep in range(repetitions):
         rep_dir = stage / f"rep-{rep:02d}"
         qdir = rep_dir / "quanta" / "strategy-00-whole_file"

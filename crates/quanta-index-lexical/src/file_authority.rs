@@ -80,18 +80,6 @@ pub(crate) struct SourceFile {
     pub(crate) expected_postings: u32,
 }
 
-impl SourceFile {
-    pub(crate) fn admitted_text(&self) -> Result<Option<&str>, CoreError> {
-        if self.text_admitted {
-            std::str::from_utf8(&self.bytes)
-                .map(Some)
-                .map_err(|error| invalid(&format!("text-admitted source is not UTF-8: {error}")))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
 pub(crate) struct FileAuthority {
     pub(crate) files: BTreeMap<SourceFileKey, SourceFile>,
     pub(crate) ordered_keys: Vec<SourceFileKey>,
@@ -118,10 +106,6 @@ impl FileAuthority {
             .ok_or_else(|| {
                 CoreError::Storage("lexical: posting id lacks verified source file".into())
             })
-    }
-
-    pub(crate) fn source_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.keys_by_id.keys().copied()
     }
 
     pub(crate) fn posting_lists(
@@ -350,7 +334,7 @@ fn read_object_range(
             "posting object identity differs from cold-open snapshot",
         ));
     }
-    file.seek(SeekFrom::Start(offset)).map_err(|error| {
+    let _ = file.seek(SeekFrom::Start(offset)).map_err(|error| {
         CoreError::Storage(format!("lexical: seek posting range {name}: {error}"))
     })?;
     let length = usize::try_from(len).map_err(|error| {
@@ -467,9 +451,9 @@ where
 
 pub(crate) fn verified_inventory(authority: &VerifiedAuthority) -> BTreeMap<String, u64> {
     let mut names = BTreeMap::new();
-    names.insert(format!("{DIR}/{ROOT}"), 0);
+    let _ = names.insert(format!("{DIR}/{ROOT}"), 0);
     for (digest, len) in object_inventory(&authority.authority.root) {
-        names.insert(object_name(&digest), len);
+        let _ = names.insert(object_name(&digest), len);
     }
     names
 }
@@ -834,7 +818,7 @@ pub(crate) fn build_for_seal(
                 bytes_read = bytes_read
                     .checked_add(bytes.len() as u64)
                     .ok_or_else(|| invalid("source read byte count overflow"))?;
-                changed.insert(key.clone(), bytes);
+                let _ = changed.insert(key.clone(), bytes);
             }
             let mut dispositions = Vec::with_capacity(coverage.len());
             for (key, covered) in coverage.iter() {
@@ -1082,22 +1066,6 @@ pub(crate) fn read_manifest(
     let bytes = crate::sealed_generation::read_opened_bounded(&mut file, MAX_MANIFEST_BYTES)
         .map_err(|error| corrupt(generation_dir, MANIFEST, &format!("read: {error}")))?;
     decode_verified_manifest(&bytes, generation_dir).map(Some)
-}
-
-pub(crate) fn ensure_empty_manifest(generation_dir: &Path) -> Result<(), CoreError> {
-    if manifest_path(generation_dir).is_file() {
-        return Ok(());
-    }
-    let rows = read_manifest(generation_dir)?.unwrap_or_default();
-    let dir = generation_dir.join(DIR).join("staging");
-    ensure_local_dir(&generation_dir.join(DIR))?;
-    ensure_local_dir(&dir)?;
-    let encoded = crate::channel_payloads::encode_cbor(&rows, "staging file authority manifest")?;
-    crate::index_store::write_atomic_durable(
-        &manifest_path(generation_dir),
-        &encoded,
-        "file authority manifest",
-    )
 }
 
 #[derive(Debug)]
@@ -1394,7 +1362,7 @@ pub(crate) fn from_v15_verified(
         keys_by_id,
         ids_by_key,
     };
-    authority.checked_resident_bytes()?;
+    let _ = authority.checked_resident_bytes()?;
     Ok(authority)
 }
 

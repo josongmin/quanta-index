@@ -2220,14 +2220,14 @@ fn scrub_quarantines_a_tampered_coverage_root_before_page_expansion() -> TestRes
 
 #[test]
 fn older_formats_require_explicit_rebuild() -> TestResult {
-    for format in [8, 9, 10, 11, 12] {
+    for format in 8..15 {
         let temp = tempfile::tempdir()?;
         let root = temp.path().to_path_buf();
         let adapter = LexicalAdapter::with_state_root(root.clone());
         let generation = ManifestGeneration::new(1);
         let _stages =
             adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
-        expect_admitted(&knock(&adapter, generation), "current format thirteen")?;
+        expect_admitted(&knock(&adapter, generation), "current format fifteen")?;
         let manifest = generation_dir(&root, generation).join(MANIFEST);
         let raw = std::fs::read(&manifest)?;
         let mut value: ciborium::Value = ciborium::from_reader(raw.as_slice())?;
