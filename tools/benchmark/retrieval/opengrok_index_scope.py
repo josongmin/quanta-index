@@ -116,6 +116,7 @@ def _one_term(indexed: dict, field: str, value: str) -> None:
         type(term) is dict
         and term["distinctTerms"] == 1
         and term["occurrences"] == 1
+        and term["frequenciesAvailable"] is False
         and term["termFrequencySha256"] == expected,
         "native stored value and exact indexed term differ",
     )
@@ -359,7 +360,7 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                     directory.startswith("/" + name)
                     and (directory == "/" + name or directory.startswith("/" + name + "/"))
                     and directory not in directories[name]
-                    and set(indexed) == {"d"},
+                    and set(indexed) == {"d", "dirpath"},
                     "native directory role differs",
                 )
                 _require(
@@ -374,11 +375,19 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                     "native directory counters differ",
                 )
                 _one_term(indexed, "d", directory)
+                # NumLinesLOCAccessor indexes the parent, normalized by QueryBuilder.
+                parent = directory.rsplit("/", 1)[0] or "/"
+                digest = hashlib.sha1(
+                    (parent.rstrip("/") + "/").encode("utf-8"), usedforsecurity=False
+                ).digest()
+                normalized = "".join(
+                    chr(103 + (byte >> 4)) + chr(103 + (byte & 15)) for byte in digest
+                )
+                _one_term(indexed, "dirpath", normalized)
                 directories[name].add(directory)
-            elif set(fields) == {"objuid", "objver", "objser"}:
+            elif set(fields) == {"objver", "objser"}:
                 _require(
-                    _text(fields, "objuid") == SETTINGS_UID
-                    and len(fields["objver"]) == 1
+                    len(fields["objver"]) == 1
                     and fields["objver"][0]["valueKind"] == "number"
                     and fields["objver"][0]["valueDecimal"] == "3"
                     and len(fields["objser"]) == 1

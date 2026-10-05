@@ -56,7 +56,10 @@ def observation(expected):
                     stored("loc", "7", "number"),
                     stored("numl", "8", "number"),
                 ],
-                [term("d", f"/{project}")],
+                [
+                    term("d", f"/{project}"),
+                    term("dirpath", "kigpprkqvgihuljvtovtkuglmsilmotnsiujvvqo"),
+                ],
             )
         )
         # Fixed product UID and version; serialized settings remain opaque.
@@ -64,7 +67,6 @@ def observation(expected):
         documents.append(
             (
                 [
-                    stored("objuid", settings_uid),
                     stored("objver", "3", "number"),
                     stored("objser", "rO0ABQ==", "binary"),
                 ],
@@ -215,11 +217,11 @@ def test_native_live_documents_refuse_independent_mutants(tmp_path, mutation):
     elif mutation == "unknown_aux":
         rows[2]["storedFields"][0]["name"] = "unknown"
     elif mutation == "settings_version":
-        rows[3]["storedFields"][1]["valueDecimal"] = "4"
+        rows[3]["storedFields"][0]["valueDecimal"] = "4"
     elif mutation == "settings_uid":
-        rows[3]["storedFields"][0]["value"] = "unexpected"
+        rows[3]["indexedFields"][0] = term("objuid", "unexpected")
     elif mutation == "empty_settings":
-        rows[3]["storedFields"][2]["valueBase64"] = ""
+        rows[3]["storedFields"][1]["valueBase64"] = ""
     elif mutation == "directory":
         rows[2]["storedFields"][0]["value"] = "/fixture/../escape"
     elif mutation == "bool":
@@ -237,6 +239,31 @@ def test_native_live_documents_refuse_independent_mutants(tmp_path, mutation):
     path = tmp_path / "native.jsonl"
     write_rows(path, rows)
     with pytest.raises(ValueError):
+        scope.verify_documents(path, expected)
+
+
+def test_native_auxiliary_shape_uses_deployed_directory_parent_and_index_only_uid(tmp_path):
+    expected = {"bat": {"src/a.rs"}}
+    rows = observation(expected)
+    directory = "/bat/src/syntax_mapping"
+    rows[2]["storedFields"][0]["value"] = directory
+    # Fixed digest observed in deployed OpenGrok 1.14.18, not computed by the verifier.
+    rows[2]["indexedFields"] = [
+        term("d", directory),
+        {
+            "field": "dirpath",
+            "distinctTerms": 1,
+            "occurrences": 1,
+            "frequenciesAvailable": False,
+            "termFrequencySha256": "2105e2df99f53bff307dec7631992aaa360535165cac242644de76967ea8c854",
+        },
+    ]
+    path = tmp_path / "native.jsonl"
+    write_rows(path, rows)
+    assert scope.verify_documents(path, expected)["projects"]["bat"]["directory_documents"] == 1
+    rows[2]["indexedFields"][1]["termFrequencySha256"] = "0" * 64
+    write_rows(path, rows)
+    with pytest.raises(ValueError, match="exact indexed term"):
         scope.verify_documents(path, expected)
 
 
