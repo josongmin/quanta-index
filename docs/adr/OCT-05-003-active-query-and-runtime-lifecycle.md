@@ -47,7 +47,9 @@ than an SDK retry, an inferred rollback or a new operator endpoint.
 5. Existing request events/counters, SDK observability and searchctl own operator
    diagnostics. Authorize before reading the bounded ring. Preserve process
    instance, sequence/drop window, request correlation and transport bounds;
-   restart/wrap/denied-principal outcomes are explicit. Two actual UID socket
+   restart/wrap/denied-principal outcomes are explicit. Request IDs/payloads stay
+   outside metric labels; ring events do not replace cumulative counter authority.
+   Two actual UID socket
    checks establish their component scope, not shipping Linux deployment.
 
 ## Owners and regressions

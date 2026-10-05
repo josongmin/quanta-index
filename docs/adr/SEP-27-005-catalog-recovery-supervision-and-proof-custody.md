@@ -85,7 +85,9 @@ root; external trust anchors and root/daemon fencing are separate obligations.
   three maintenance cadences. Identity/marker reads are capped at 4096 bytes.
   Fresh physical admission seeds a new activation; zero-active catalogs need
   no track roots. Root/identity liveness is distinct from deep content proof.
-  Bounded authorized IPC diagnostics and final process proof remain open.
+  The bounded authorized IPC projection and independent disk-meter cadence are
+  implemented under [OCT-05-003](OCT-05-003-active-query-and-runtime-lifecycle.md).
+  Final selected installed/release process proof retains its own source/host scope.
 
 ### Original backup authority and current-format cutover
 

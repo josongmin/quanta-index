@@ -4,7 +4,7 @@ Status: `HISTORICAL RECOVERY INDEX`
 
 ## Oct-05 residual owner clarification
 
-Pre-edit revision: `3f4877c95183769e82d870f71e296c832c9014ed`. All thirteen edited bodies matched this revision
+Pre-edit revision: `3f4877c95183769e82d870f71e296c832c9014ed`. All fifteen edited bodies matched this revision
 byte-for-byte before editing. Recover any original with
 `git show 3f4877c95183769e82d870f71e296c832c9014ed:<repository-relative-path>`.
 
@@ -16,7 +16,9 @@ The QIT board retains every QIT-00–09 and all proposed thresholds; current pro
 registry/staging and every R0–R6 release/producer/action oracle remain unchanged.
 
 SEP-21 now points to implemented Active/maintenance/operator/proof-result owners
-instead of requiring them to be recreated. Current final-source/installed/Linux/
+instead of requiring them to be recreated. SEP-27-005 points to the implemented
+OCT-05-003 diagnostic/meter owner; request IDs remain outside metric labels and
+ring events do not replace counter authority. Current final-source/installed/Linux/
 hosted/provider/paired/state evidence and P11 missing typed operational producers,
 independent observers and authorized target inputs remain open. BENCH acceptance
 does not relabel exposed mechanical/AI/native diagnostics as fresh qualification.
