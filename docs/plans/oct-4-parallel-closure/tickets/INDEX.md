@@ -160,6 +160,12 @@ P1 · W1/W4 · native reader/capture/replay 구현 완료, 전체 서비스 univ
   Native12repo/17,615live,20개 요청의 segments_4/generation4/readerVersion16/live561/max562가 일치했다.
   완료된 ready5repo/100requests의 selected-request attested만true다. 나머지 ready4repo 및
   전체 서비스 reader/비교 qualification은 남아 있다.
+- `VERIFIED`: Nushell20도 별도 fresh capture 및 새 process native replay가 각각 exit0이다.
+  Root `/private/tmp/qi-e2-og-query-reader-ready9-nushell20-20261005-v1`, capture SHA256
+  `9bb14a98f9ce2c63c435b96b580656dd4066811f13e901de49c3c32e0bb2cdd1`.
+  Native12repo/17,615live,20개 요청의 segments_4/generation4/readerVersion16/live2,298/max2,299가 일치했다.
+  완료된 ready6repo/120requests의 selected-request attested만true다. 나머지 ready3repo 및
+  전체 서비스 reader/비교 qualification은 남아 있다.
 - 남은 repository/profile의 실제 acquired-reader scope 및 필요한 전수 source-byte/posting 권위를 확정한다.
   `opengrok_query_fixture.py`가 고정 원본→patch→Java→4classes 재현을 제공한다.
   `VERIFIED`: 외부 fresh `/private/tmp/qi-og-query-fixture-repro-20261005-v1`에서
