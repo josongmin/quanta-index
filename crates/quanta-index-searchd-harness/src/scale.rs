@@ -34,7 +34,6 @@ use std::fmt::Write as _;
 use std::fs;
 #[cfg(target_os = "macos")]
 use std::io::Read as _;
-use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};

@@ -9,13 +9,15 @@
 
 ## 현재 코드 잔여 — 2026-10-06 소스 대조
 
-현재 정리 기준: Quanta source base `343b6f619a0c83f8abe69fa16eaae98e006dd594`와 F15 테스트/scale 계측 overlay.
+현재 정리 기준: Quanta source base `0b5409a2e2fafd6128d91117a3ae993303f15b78`와 F15 strict 경계 검사/shared-limit/scanner comparator overlay.
 Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀·scanner custody·ARB 용어 예산 수리가 추가됐다.
 Main에는 scale/open-loop pair/total retention 정책 결속, invocation-scoped 입장 검증 재사용과
 전체 file-pair verdict를 사용하는 테스트 fixture가 추가됐다. F15 immutable pack/root/posting,
 bounded query reader와 기존 비용/format 테스트 전환·제품 회귀도 main에 통합됐다.
-현재 overlay는 테스트 컴파일 보완과 seal별 exact product-retention bytes 계측이다.
-F15 actual 컴파일·회귀는 진행 중이며 Large/XL 재실행·새 formal proof는 아직 `NOT_RUN`이다.
+Seal별 exact product-retention bytes 계측과 canonical fixture는 반영됐다.
+Source0b의 lexical 전체 회귀는598passed/8skipped·702.173s였으며, 이후 strict 경계 검사·공유 posting 한도
+수정 overlay의 영향 회귀 및 all-target Clippy는 재검증 중이다. Large/XL 재실행·새 formal proof는 `NOT_RUN`이다.
+병렬 소유 경로와 선행은 [병렬 작업 배정](../WAVES.md#병렬-작업-배정--2026-10-06)에 정리했다.
 Frozen5796 actual과 아래 current-source owner 회귀를 구분하며 main formal proof로 승격하지 않는다.
 Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
 아래는 실제 생산 경로·코드와 기존 결과를 대조한 잔여이며 새 full-suite/release qualification이 아니다.
@@ -614,7 +616,16 @@ frozen `5796a63f` Contract·fresh SDK `VERIFIED`, hosted CI `NOT_RUN`.
   →58passed·16.76s/exit0였다. Pair/total requested·effective 값은 daemon/scale/open-loop/artifact/replay에
   결속한다. 기존 default16MiB/256MiB는 유지하며 큰 override는 diagnostic이다.
   입장 검증은 배치 시작·종료의 전체 release replay와 개별 source/gold/review 검사를 유지한다.
-  이 변경의 새 final-source packet/proof·actual admissions 및 Rust/Clippy는 아직 `NOT_RUN`이다.
+  후속 exact seal retention/batch 경계·source drift67selectors는67passed·1.35s/exit0였다.
+  새 final-source packet/proof·actual admissions는 `NOT_RUN`이다. F15 lexical 전체 실행은 아래처럼 구분한다.
+- F15 lexical 전체 owner `VERIFIED` (source0b 컴파일 범위):
+  `CARGO_BUILD_JOBS=1 QUANTA_INDEX_SCCACHE=0 QUANTA_INDEX_TARGET_GC=0 ./scripts/cargow --lane test-f15-owner-lane nextest run -p quanta-index-lexical --all-features --locked --test-threads 1 --no-tests fail --no-fail-fast --success-output never`
+  →598passed/8skipped·702.173s/exit0. F15 제품3회귀, format/cost·Unicode 및 기존 lifecycle/query/authority 통합 범위다.
+  이후 경계 검사/shared-limit overlay의 영향 회귀는 아직 미실행이며 이 결과의 source를 바꾸지 않는다.
+  최초 strict Clippy176건은 guarded codec/root/producer/reader/verify 수정으로 통합했다. 다음 실행의
+  producer 이름 충돌4건도 수정했고 all-target/all-feature lexical+harness 재실행 중이다.
+  Scale preflight의 stale4M을 canonical lexical20M 선언으로 연결했으며 fixed17,715,020 허용/
+  20,000,001 거부 테스트를 추가했다. 실제 XL capacity·history/timeout qualification은 `NOT_RUN`이다.
 - 공개SDK/contract 변경: `just rust-public-api`; wire/decode: `just rust-fuzz-smoke`;
   module: `just rust-hexagonal`, `just rust-cargo-modules`; selection/state/ingress: `just rust-profile test-daemon`.
 - runtime `autotests=false`: read-view/ingest는 `runtime_fast_suite`, generation/cursor/restart는

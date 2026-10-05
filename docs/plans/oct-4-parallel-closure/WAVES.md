@@ -25,6 +25,21 @@
   [I0-03](tickets/INDEX.md#o4-i0-03)에 연동 수용 잔여로 보존하며 Quanta 자체 코드 건수에 합산하지 않는다.
 - R5 clean pair는 producer 연동 수용 범위다. Quanta 단독 엔진·벤치의 완료 조건과 구별한다.
 
+## 병렬 작업 배정 — 2026-10-06
+
+현재 Quanta 소유 코드만 분리한다. 담당별 경로를 고정하고 변경은 I0가 통합한다.
+빌드·테스트·native 실행은 현재 host에서 직렬이며, 별도 host의 실행은 같은 source와 input을 결속한다.
+
+| 담당 | 독립 작업과 소유 범위 | 종료 조건 / 선행 |
+| --- | --- | --- |
+| F15 엔진 | `file_authority/` codec·producer/root·reader/verify 경계 검사 | 세 소유 범위의 guarded 수정은 통합됐다. I0가 strict Clippy와 영향 회귀를 실행한다. Full wire golden·cold census·delta/delete/noop oracle 보존 |
+| Scale | lexical public posting 한도와 harness `scale.rs` 사전 검사 | 오래된4M과 F15의20M 한도를 제품 선언 하나로 통일했다. Fixed17,715,020 허용/20,000,001 거부 회귀와 실제 Large/XL 측정 필요. History/timeout 변경은 측정 뒤 판정 |
+| Scanner | `query_timing_overhead.py`와 scanner A/B 테스트·사양 | 서로 다른 fresh runner를 각각 자기 SHA에 결속하는 비교기 수정은 통합됐다. 고정338-task Bat typo 입력으로 두 arm build/capture/parity·전체 호출 비용 실행. 최종 source 필요 |
+| E1/E2 | 원본 ready9 inputs, admission·SG/OG·full5 사양 | Final-source 외부 v5 준비 완료. 서비스 신원/readonly index 범위 확인을 병렬 준비할 수 있다. Actual ISSUE와 capture는 최종 Contract/SDK 이후. 기존 OG180을 새 source 증거로 재명명하지 않는다 |
+
+Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 않는 별도 검증 작업이다.
+현재 host에서는 I0가 순서대로 실행한다. AI quota·rubric·holdout 승인·provider/Linux 입력은 해당 scope만 대기한다.
+
 ## 확인된 실행 체크포인트
 
 - Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
@@ -38,11 +53,14 @@
   나머지 admissions·pair·SG/CS·full5 join은 완료 증거가 없다.
 - Frozen5796 Gin declaration1,196 fresh single-route oracle/capture/scoring 진단은 완료했다.
   1,192success/4capped 및 declaration MRR@10=1.0은 그 분모의 diagnostic이며 독립 holdout/비교/PERF가 아니다.
-- Current history/admission Python owner58cases는 통과했다. Broad Python은 current file-pair
+- Current history/admission Python owner58cases와 후속 retention/batch67cases는 각각 통과했다. Broad Python은 current file-pair
   fixture의 불완전한 manifest에서 실패했다. Canonical stage·clock/binary/capped fixture 보완 뒤
   current-file 전체와 기존 verdict4개 경로는24passed·31.97s로 `VERIFIED`다. Broad 재실행은 `NOT_RUN`이다.
-  Hosted Rust 계측 Clippy6건 수리 뒤 local harness Clippy는 marker enum의 값 전달1건으로
-  실패했다. Copy enum과 marker I/O 실패 회귀를 반영했으며 재실행은 아직 `NOT_RUN`이다.
+  Hosted Rust 계측 Clippy6건 및 marker enum1건 수리를 반영했다.
+- F15와 기존 format/cost fixture 전환 후 lexical 전체는598passed/8skipped·702.173s/exit0였다.
+  이 실행은 `0b5409a2`의 컴파일 결과다. 이후 strict 경계 검사·공유 posting 한도 수정 overlay의
+  영향 회귀는 별도로 재검증한다. Strict Clippy 최초176건을 수정·통합했고 다음 실행의 이름 충돌4건도
+  수정했다. Lexical+harness all-target/all-feature Clippy 재실행 중이며 통과로 표시하지 않는다.
 - 이후 source/ADR/Justfile 변경의 proof는 새 epoch로 발행한다. 위 frozen 결과의 SHA는 변경하지 않는다.
 
 ## W0–W6

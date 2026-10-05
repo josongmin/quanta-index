@@ -364,7 +364,7 @@ mod tests {
             "/history_policy/history_policy_id",
             &serde_json::json!("explicit-pair-default-total-v1"),
         )?;
-        let mut diagnostic = config.clone();
+        let mut diagnostic = config;
         diagnostic.history_max_bytes = Some(300_000_000);
         diagnostic.history_max_total_bytes = Some(600_000_000);
         diagnostic.validate()?;
