@@ -62,6 +62,32 @@ Measurements and missing authority remain in the [residual ledger](../plans/oct-
    before registry promotion. Shell exit zero or caller-written success JSON is
    not operational authority. Keep the existing staged refusal.
 
+## Selected score and optional ranking diagnostics
+
+- File Explain resolves immutable file authority and shares the selected scorer
+  with search. Additive score components, engine, boost, total and emitted score
+  must agree. Optional declaration evidence validates pinned name/definition
+  identity; missing coverage is unknown, not zero or a literal exclusion.
+- The complete-pool rank study retains native first-page equality before cursor
+  continuation, source/generation/profile bindings, all pool pages, ablations and
+  explicit exclusions. Experimental declaration/boundary/occurrence policies
+  are unselected. Only proven complete eligible pools receive full-rank metrics;
+  file features cannot count declaration-span recovery.
+- Optional study collection-budget refusal preserves valid selected-score Explain
+  with its typed refusal after cancellation/deadline checks. Storage/identity and
+  interruption errors propagate. A study and refusal are mutually exclusive;
+  no synthetic neutral/zero experimental score fills missing diagnostics.
+- Timed queries exclude later optional study calls, while process CPU/RSS can
+  include them. That capture cannot issue speed authority. Production enrichment
+  batching and ranking selection remain conditional on judged unused holdout and
+  complete-call/resource acceptance, not observed Gin or experimental weights.
+
+Owners: [selected scorer/Explain](../../crates/quanta-index-lexical/src/searcher/code_search.rs),
+[public Explain](../../crates/quanta-index-search-plane/src/query_dispatcher/routes/explain.rs)
+and [rank study](../../tools/benchmark/retrieval/code_search_rank_study.py).
+Retain independent score/cursor/source/unit mutations, long NFC/NFD/case-expansion
+fixtures, optional-budget versus identity/cancel failures and complete-pool parity.
+
 ## Owners and retained proof
 
 - [Lexical authority](../../crates/quanta-index-lexical/src/file_authority.rs),

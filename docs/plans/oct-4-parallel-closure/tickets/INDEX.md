@@ -316,7 +316,7 @@ P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
 - Frozen product `0e6c7e7e9494b63fdb33f4594df059817459d3b1`와 Python native/join
   `97eedd11b70e76c66985b15a968211a2faf92c6d` 결과는 각각의 historical source 범위다.
   후속 수리·문서/source-closure 변경을 그 전체 결과로 승격하지 않는다.
-- `VERIFIED`: clean08d의 `PATH=<borrowed-venv>/bin:$PATH CARGO_BUILD_JOBS=1 just rust-profile test-daemon`
+- `VERIFIED`: clean08d의 `PATH=/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index/.venv/bin:$PATH CARGO_BUILD_JOBS=1 just rust-profile test-daemon`
   은214passed/1skipped·226.315s/exit0였다. runtime lib3 및 latest full/release는 별도다.
   OpenGrok 새2 owner target은 benchmark-control local/PR 및 source closure에 등록했다.
   기존 formal Contract Python788에는 이 테스트들이 없으며,78/244 owner pass를 그 formal proof로 표시하지 않는다.

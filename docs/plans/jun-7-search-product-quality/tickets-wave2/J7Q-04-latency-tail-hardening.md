@@ -1,78 +1,34 @@
-# J7Q-04 — Admitted route-tail evidence
+# J7Q-04 — Admitted route-tail and offered-load evidence
 
-Status: `ACTIVE_RESIDUAL`
-Parent: [quality index](INDEX.md)
-Owner: benchmark harness, comparator and canonical performance host
-
-Current-source audit (2026-10-04, main `e43cda8c` plus owned overlay): tail
-response validation is implemented; existing tail owner checks passed 7/7.
-Open-loop CLI checks subsequently passed 20/20, including explicit history
-policy, bounded configuration and actual small-fixture seal refusal. Earlier
-`NOT_RUN` labels below refer to their historical extension stage. Current
-open-loop generation retention is eight and its default history byte budget
-is 16 MiB, distinct from scale's two generations. Query request timeout does
-not extend the seal transport timeout.
-
-Actual admitted route-tail runs, new release offered-load runs and justified
-performance blockers remain open. Use the existing tail/open-loop rails and
-continuous host observations; focused tests and the frozen retrieval SDK proof
-do not close this acceptance. Measured outcomes must retain arrival-to-completion,
-service timing, errors/drops and post-timer golden validation separately.
-
-DSL p50 and p95 blocking rules are already implemented;
+Status: `ACTIVE_RESIDUAL`. Parent: [quality index](INDEX.md).
+Owner: existing `tail_matrix`/`open_loop_matrix`, comparator and admitted host.
+Implemented gates are in
 [JUN-08-001](../../../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md)
-owns them. `tail.rs` emits route budgets and correctness-gated representative
-queries; its local latency budgets remain advisory. p99 is advisory in the DSL
-comparator. These policies must not be collapsed into one tail verdict.
+and [OCT-05-004](../../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md).
 
 ## Remaining acceptance
 
-- Obtain admitted warm/cold artifacts and reviewed baselines on the quiet
-  canonical Linux host; preserve complete sample, source, host and scenario
-  bindings. Performance is not inferred from a successful local correctness rail.
-- Measure lexical/symbol/structural/history/runtime-catalog families separately.
-  Justify any additional p95/p99 blocker from representative route budgets and
-  variance; keep advisory measurements labeled.
-- Retain enough native diagnostics for candidate-count, regex-complexity,
-  repo-fanout and accept-loop tail cliffs; a p50 improvement cannot hide a tail
-  regression or substitute for a missing route.
+- Obtain actual admitted cold/warm artifacts and reviewed baselines on the quiet
+  canonical Linux host, bound to complete samples/source/config/scenarios.
+  Execute current release offered-load tiers through the existing seeded Poisson
+  scheduler independently of completion; zero offered arrivals cannot qualify.
+- Measure lexical/symbol/structural/history/runtime-catalog separately. Preserve
+  arrival-to-completion, service time, queue delay, served/errors/timeouts/drops
+  and finite complete accounting. Validate every response after its timer against
+  independent scenario/source truth, including the declared parse-failure case.
+- Keep ordered candidate/source-repository/path identities and load-point source
+  digest/arrival settings. Failed runs retain typed stage/refusal and missing
+  latency. Query timeout does not extend seal transport timeout; open-loop keeps
+  eight history generations and 16 MiB unless an explicit bounded profile says so.
+- Justify new blocking budgets from representative route variance. Existing DSL
+  p50/p95 blockers, advisory p99 and advisory local tail budgets remain distinct.
+  Preserve candidate-count, regex-complexity, repo-fanout and accept-loop tail
+  diagnostics; a p50 improvement cannot hide route/p95 regression.
 
-Output owner: registered `tail_matrix`, with `summary.json` and
-`route_budgets.json`. Fresh measurement and host admission remain required;
-existing command/schema/threshold implementation is not an open coding task.
-
-## 2026-10-04 measured-response hardening
-
-The local `tail_matrix` owner now validates all 64 measured responses per route
-against the existing scenario golden after stopping each timer. A fast empty or
-wrong typed response stops the rail before the latency summary is produced. The
-owner unit injects a wrong second response and also checks that the adversarial
-scenario's expected `PARSE_FAIL` remains a valid measured response.
-
-The focused `tail::` Rust owner unit command passed 7/7 on 2026-10-04:
-`./scripts/cargow --lane indexing-stage-test-lane test -p quanta-index-searchd-harness --lib --all-features --locked tail::`.
-The real `tail_matrix` rail, canonical-host tail evidence and any new p95/p99
-blocking decision remain `NOT_RUN`.
-
-## 2026-10-04 offered-load correctness
-
-The existing `open_loop_matrix` already schedules seeded Poisson arrivals
-independently of completions over the public query socket. Its owner now rejects
-a zero-arrival load point before measurement or aggregation, and rejects
-nonfinite completion timing. The baseline page is checked against the generated
-one-chunk-per-file source fixture (ten distinct admitted paths from sixteen
-files), rather than treating a prior engine response as relevance gold. The
-measured response comparison rejects changes in ordered candidate ID, source
-repository ID, or relative path, including a path change with unchanged IDs.
-The open-loop runner now selects the same scoped scale tiers with `--tier`; it
-reuses its existing arrival scheduler, validates the source-repo/path oracle,
-and probes each source repository before dispatch. Non-default tiers require
-an explicit, newly created external output directory. A failed run writes a
-no-replace `refusal.json` through the scale rail's existing writer. It binds
-the `open-loop` source digest and exact arrival settings, and names a limit
-only for typed source admission; unknown wire/runtime errors keep `limit: null`.
-Missing latency prints as `unavailable`, rather than a fabricated zero.
-Focused `open_loop_matrix` tests were `NOT_RUN` at this extension stage; the
-latest owner run above passed 20/20. The new release offered-load rail and
-capacity qualification remain `NOT_RUN`. No capacity limit is qualified from
-these unit checks.
+Outputs: registered `tail_matrix` summary/route budgets and `open_loop_matrix`
+offered-load results/refusals. [J7Q-03](J7Q-03-large-corpus-scale-tiers.md) retains
+source tier/resource/lifecycle acceptance; [B07](../../sep-30-code-search-benchmark-trust/tickets/S30-B07-performance-and-indexing.md)
+and [OCT-04 E4-05/06](../../oct-4-parallel-closure/tickets/INDEX.md#e4) own actual
+measurement and host admission. Existing functional tests and release SDK proof
+do not close these runs. Exact older commands/results are recoverable through
+[the history index](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).

@@ -1,6 +1,6 @@
 # S30-B06 — ARB gin 88 workflow retrieval
 
-Status: `PARTIAL` (2026-09-30); see receipt below. Priority: P1. ARB release validation
+Status: `ACTIVE_RESIDUAL`; historical executions are diagnostic. Priority: P1. ARB release validation
 may start alongside B02/B03; live capture depends on B04's native/adapter
 contract. Parent: [Sep 30 plan](../README.md). Contract owners:
 [CS-BENCH-01](../../sep-27-code-search-remediation/rfcs/CS-BENCH-01-corpus-gold-and-holdout.md)
@@ -45,9 +45,13 @@ gin `d3ffc998`/99-file corpus or transfer its file IDs into ARB qrels.
 Keep reusable adapters under the current retrieval benchmark owners. Store
 downloaded corpora, indexes and captures outside the checkout.
 
-## Execution receipt (2026-09-30)
 
-`PARTIAL`: 88/88 pinned; Quanta completed 17/88 (71 refused by runner natural_language limits: >32 tokens or a >96-char token); audited, wording corrected. Producer `quanta-index@0d21914e` (clean worktree);
-results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
+## Execution ownership
 
-v2 (2026-10-01): adapter arm `arb-nl-adapter-v1` completed 88/88 from clean `f318e832` (adapter-conditional, single run, no CI; `literal` policy arm not run): [b06v2/README.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/b06v2/README.md), [qi-s30-v2-f318e832/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-v2-f318e832/RESULTS.md). Status: official-text arm PARTIAL; adapter arm EXECUTED_DIAGNOSTIC.
+Official-text and transformed-adapter arms keep separate populations and
+request limits; a completed adapter arm does not close the official-text arm.
+Current cross-ticket execution is owned once by the
+[OCT-04 residual ledger](../../oct-4-parallel-closure/tickets/INDEX.md).
+Retain the acceptance above for any new claim; reuse compatible captures.
+Past counts, binaries, failures and commands are recoverable from [historical bodies](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+They do not qualify current source.

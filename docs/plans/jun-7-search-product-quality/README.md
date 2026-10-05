@@ -20,38 +20,12 @@ corpus and comparator admission is in the
 [code-search benchmark ledger](../sep-27-code-search-remediation/readme.md).
 Historical bodies are recoverable through [the plan archive](../ARCHIVE-INDEX.md).
 
-## Gin 300-query diagnostic boundary (2026-09-29)
+## Semantic selection acceptance
 
-The frozen gin bare-symbol semantic-only run is a diagnostic of one 99-file
-corpus, not an admitted product-quality score: Quanta V1 found the generated
-gold file in 266/300 top-10 responses and Semble in 277/300. An isolated V2
-encoder control found 268/300, with 13 recovered and 11 newly missed queries.
-Quanta's indexed chunks contained all 46 union-miss gold definitions; Semble's
-indexed chunks contained all 46 gold identifiers. The Quanta run used
-exact-vector search, so that run does not establish an ANN recall defect. The
-generated gold has no independent relevance review, and bare names can refer
-to other declarations or uses.
-
-At local `main@938251d2`, freshly built runner and searchd binaries repeated
-the original bare-symbol 300-query diagnostic on new states: V1 found the gold
-file in 266/300 top-10 responses and opt-in V2 in 268/300. Both ordered top-10
-outputs matched the earlier source-bound native controls for all 300 queries.
-All 600 responses completed with `capped` status. These are generated,
-unreviewed file labels and a contended, single-run diagnostic, not an admitted
-quality or speed result. Source, binary, input and output boundaries are in
-`/Users/songmin/Documents/code-new/qi-gin-quality-current-20260929-938251d2/RESULTS.md`.
-
-The same current binaries also found the mechanically identified exact
-definition span for 300/300 names through the distinct exact-symbol route
-(297 at rank 1, three at rank 2). That result tests declaration lookup, not
-semantic natural-language relevance. Path-limited inspection found no semantic
-encoder/search/route change since `cca9477f`; the new native captures now
-confirm the observed gin rank prefix at `938251d2`. They do not qualify a
-default V2 decision.
-
-Remaining acceptance is an independently authored and reviewed semantic-intent
-pool with a frozen holdout, source-bound file/declaration judgments, separate
-route-unit metrics, and a predeclared quality/resource decision. V2 also needs
-quiet-host repeated latency and peak-memory evidence; larger-corpus ANN quality
-requires its own control. The [retrieval benchmark guide](../../../tools/benchmark/retrieval/README.md)
-describes the distinct exact-symbol, file-ranked lexical and semantic profiles.
+Semantic natural-language intent needs an independently authored/reviewed pool,
+unused holdout and source-bound file/declaration units with a predeclared quality
+and resource decision. An opt-in encoder change additionally needs admitted-host
+repeated latency/memory evidence; larger-corpus ANN recall has its own control.
+Exact-symbol success and exposed generated Gin labels do not close these gates.
+Historical Gin controls are recoverable through
+[the plan archive](../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).

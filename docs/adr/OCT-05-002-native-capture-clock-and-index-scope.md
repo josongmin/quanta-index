@@ -70,6 +70,29 @@ facts. Transport/worker clocks also differ from completed query response time.
    scoped to its bound inputs; other cohorts retain one warmup until proved.
    Zero warmup cannot acquire qualified speed.
 
+## Repository batching and retained phase bytes
+
+- Compatible original suites and blind packs are independently validated before
+  constructing a per-repository product-query union. Shared queries execute once;
+  an explicit membership map projects native rows into each original scoring view.
+  Keep native execution identity separate from derived per-intent views. Matrix
+  verification re-derives membership, every child record and each report; publish
+  only the complete declared batch. Do not concatenate incompatible intent suites.
+- Retained phase paths bind exactly to captured SHA-256 bytes through
+  `phase_metrics_digests` before semantic validation. Missing/extra/duplicate paths,
+  malformed digests and changed bytes refuse. Parent/worker clock domains and
+  nested stage inclusion remain explicit; rewriting phase JSON cannot reuse the
+  old capture's authority.
+- Qualified response timing uses the declared
+  `request_construction_to_normalized_response` boundary and each capture's own
+  monotonic domain. Required output validation precedes timer completion; later
+  telemetry/persistence stays outside. Complete output/clock/status facts must
+  agree throughout the measured schedule, not just its first response.
+
+Owners: [batch membership](../../tools/benchmark/retrieval/execution_batch.py)
+and [capture/replay](../../tools/benchmark/retrieval/run.py). Retain duplicate or
+changed membership, stale source/cache, missing child and phase-byte mutants.
+
 ## Owners and regressions
 
 - [External capture/verify](../../tools/benchmark/retrieval/live_lexical_external.py),

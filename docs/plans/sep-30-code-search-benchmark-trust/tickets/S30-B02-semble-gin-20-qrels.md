@@ -1,6 +1,6 @@
 # S30-B02 — independently adjudicate Semble gin 20
 
-Status: `EXECUTED_DIAGNOSTIC` (2026-09-30); see receipt below. Priority: P0. Depends on S30-B01
+Status: `ACTIVE_RESIDUAL`; historical executions are diagnostic. Priority: P0. Depends on S30-B01
 source-universe validation. Parent: [Sep 30 plan](../README.md). Contract owner:
 [CS-BENCH-01](../../sep-27-code-search-remediation/rfcs/CS-BENCH-01-corpus-gold-and-holdout.md).
 
@@ -53,16 +53,13 @@ The method follows [TREC pooled judgments](https://trec.nist.gov/pubs/trec33/pap
 and [CodeSearchNet's graded human annotations](https://github.com/github/CodeSearchNet),
 while retaining TREC's incomplete-pool limitation.
 
-## Execution receipt (2026-09-30)
 
-Automated assessors only (2 blind + adjudicator + blind pooled review over 5 runs from Quanta and Semble, not five products); intents written after reading upstream labels; qrels fixtures refused by the evaluator. Not human-reviewed. Producer `quanta-index@0d21914e` (clean worktree);
-results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
+## Execution ownership
 
-v2 (2026-10-01): gin 20 was not re-run; its qrels remain automated-assessor only.
-
-An external blind human-review packet was prepared at
-[`human-review packet`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/human-review/README.md):
-314 query/file candidate pairs in separate blank forms for two reviewers,
-bound to the gin 99-file source manifest. No human judgments have been
-received; the pool includes existing Quanta/Semble candidates only and needs
-a five-product pooled revision before a qualified gin-20 comparison.
+Human review and a complete five-product blind pool remain unqualified.
+Existing automated labels and prepared human forms are not human judgments.
+Current cross-ticket execution is owned once by the
+[OCT-04 residual ledger](../../oct-4-parallel-closure/tickets/INDEX.md).
+Retain the acceptance above for any new claim; reuse compatible captures.
+Past counts, binaries, failures and commands are recoverable from [historical bodies](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+They do not qualify current source.

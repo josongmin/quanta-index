@@ -1,65 +1,50 @@
-# Search-plane engine status
+# Search-plane source map and capability boundaries
 
-Authority: **code**. Re-audited at clean `main@e43cda8c` on 2026-10-04.
-The SEP-21 residual ledger owns host/release evidence; a separate
-[proposal](../adr/OCT-04-001-search-corpus-selection-and-ingest-pressure.md)
-records code-level selection and resource risks that still require controlled
-reproduction. Neither document is a current-source execution receipt.
+Authority: current source. This is navigation and explicit capability limits,
+not a current-source runtime/release receipt. Accepted decisions and current
+residual owners are separate in [the documentation index](../README.md).
 
-## Live path
+## Live source path
 
-1. SDK ingest → UDS → `SearchPlaneIngestDispatcher::dispatch` →
-   `publish_idempotent` (digest → fenced claim → apply → commit).
-2. Lexical materialize: Tantivy `LexicalAdapter`. Semantic: Lance
-   `SemanticAdapter` under `{state_root}/indexes/semantic/...`.
-3. Activation is **not** publish: `ActivateSearchCorpusGenerationCas` /
-   `activate_prepared_v1` (lexical+semantic pair CAS). Rollback is the
-   matching CAS.
-4. Serve: `searchd` `drive` binds query/control/ingest sockets.
-   `ipc_dispatcher` maps query 14 / control 12 / ingest 12 variants; no
-   unimplemented match arm.
-5. Query: lexical Tantivy planner; semantic Lance exact/ANN per sealed policy;
-   hybrid RRF
-   (`dispatch_hybrid`).
-
-Catalog `open` recovers unfinished journal rows and stale mutation leases.
-Snapshot fence / `StillReferenced` is transactional.
-
-## Default semantic quality
-
-`SEARCH_OWNED_SEMANTIC_MODEL_ID = "search-owned-hash-text-v1"` (FNV 64-d).
-PotionCode and OpenAI embedders exist behind profiles + egress grant. Hash
-tests do not qualify a neural provider.
-
-## Typed holes (code, not residual prose)
-
-| Hole | Symbol |
+| Boundary | Owner |
 | --- | --- |
-| Lexical structural leaf | `LexicalPlannerError::Unimplemented { node: "structural_block_leaf" }` |
-| Some history `LqFilter`/`LqLeaf` | `CoreError::NotImplemented` |
-| `LangId::Rust` grammar | still deferred (LEX-05 comment on the enum) |
-| Legacy v1 catalog tables | refuse without migration |
+| SDK ingest and query | [SDK](../../crates/quanta-index-sdk/README.md) |
+| Fenced idempotent publication | [Ingest dispatcher](../../crates/quanta-index-search-plane/src/ingest_dispatcher/dispatcher.rs) and [search-corpus materializer](../../crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs) |
+| Lexical/semantic materialization | [Lexical](../../crates/quanta-index-lexical/src/lib.rs), [semantic](../../crates/quanta-index-semantic/src/lib.rs) |
+| Prepared lexical/semantic pair CAS activate/rollback | [Lifecycle](../../crates/quanta-index-search-plane/src/search_corpus_lifecycle.rs); publication alone does not activate |
+| Immutable query view and lifetime | [Query dispatcher](../../crates/quanta-index-search-plane/src/query_dispatcher/mod.rs), [snapshot registry](../../crates/quanta-index-search-plane/src/snapshot_registry.rs) |
+| UDS serve, runtime/maintenance and diagnostics | [Daemon composition](../../crates/quanta-index-searchd/src/app/runtime.rs) |
+| Recovery/idempotency authority | [Catalog](../../crates/quanta-index-catalog/README.md) and [recovery ADR](../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md) |
 
-Structural ingest/query routes and `TruthfulSubsetAuthorityMatcher` are live
-subset authority, not a missing producer crate.
+Lexical, semantic exact/ANN and hybrid routes have existing implementation.
+Actual wire variants/selectors are code-owned inventories; static route counts
+are not maintained here. Structural/runtime routes retain their live subset
+authority rather than implying a missing producer crate.
 
-## Static risks requiring controlled proof
+## Explicit capability limits
 
-- Un-tokened `Active` selection precedes read-view acquisition without an
-  admission pin spanning both. Acquired views retain handles; the proposed
-  three-generation transition counterexample has not been executed.
-- Maintenance boot and each tick perform full-tree disk-byte refreshes in the
-  same cadence as backend freshness. Slow-root impact has not been measured.
-- The SDK default I/O deadline is shorter than the ingest dispatch budget.
-  Peer hang-up now cancels a budget, but an admitted publish settles durably;
-  test timeout plus replay before claiming rollback or exactly-once delivery.
+| Boundary | Source / interpretation |
+| --- | --- |
+| Default semantic embedder | [query_embedder.rs](../../crates/quanta-index-search-plane/src/query_embedder.rs): `search-owned-hash-text-v1`, FNV 64-d. Hash proof does not qualify opt-in PotionCode/OpenAI provider identity, egress or quality. |
+| Lexical structural-block leaf | [planner.rs](../../crates/quanta-index-lexical/src/planner.rs): typed `structural_block_leaf` refusal |
+| Selected history primitives | [text_plane.rs](../../crates/quanta-index-search-plane/src/query_dispatcher/text_plane.rs): explicit `NotImplemented` for unsupported filters/leaves |
+| Rust structural grammar | [LangId](../../crates/quanta-index-lq-structural/src/types.rs): deferred grammar declaration; distinct from the benchmark's independent declaration parser |
+| Old persisted formats | Owner seal/catalog decoders refuse unsupported formats; [state runbook](../operator/state-cutover-runbook.md) owns explicit current-format rebuild/restore |
 
-Current ingest observations include lexical substage and semantic phase timing.
-Do not use the Sep-30 RFC's older one-field lexical timing description.
+## Implemented behavior versus remaining work
 
-## What CURRENT-RESIDUAL still means
+Active selection/view acquisition, seven single-request SDK routes, separated
+disk metering/freshness cadence, and admitted timeout-to-durable-terminal replay
+are implemented under [OCT-05-003](../adr/OCT-05-003-active-query-and-runtime-lifecycle.md).
+Selection itself does not create a lifetime lease; acquired views retain handles.
+Stronger pin or resource claims keep their [proposed scope](../adr/OCT-04-001-search-corpus-selection-and-ingest-pressure.md)
+and current E3 owner rather than the retired unexecuted-counterexample wording.
 
-R0–R6 / P03–P12 remaining rows are Linux host, release-binary, real-provider
-identity, paired-run receipts, and ops deploy/activate/rollback **evidence**.
-They do not mean IPC handlers or CAS activate are unimplemented.
-`CODE_QUALIFIED` is a qualification verdict, not a compile verdict.
+[OCT-04](../plans/oct-4-parallel-closure/tickets/INDEX.md) owns conditional
+optimization, missing inputs and remaining execution.
+[SEP-21](../plans/sep-21-search-plane-sota-hardening/tickets/CURRENT-RESIDUAL-2026-09-26.md)
+owns installed/paired/Linux/provider/release acceptance. P11 additionally lacks
+typed deploy/activate/restore-forward producers and recipes under
+[S21-12](../plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md).
+Existing IPC/CAS handlers do not close that operational code/observer contract.
+Local tests, code presence and documentation cleanup do not issue qualification.

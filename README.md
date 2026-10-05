@@ -26,13 +26,10 @@ Build and start the daemon against an external current-format state root:
 Publish typed producer input through the SDK before querying an active generation.
 Legacy generations require a rebuild; see the state operations guide.
 
-Engine code path (2026-10-03, source over residual prose): ingest is
-publish-only; serve requires `ActivateSearchCorpusGenerationCas`. Lexical
-(Tantivy), semantic (Lance ANN), and hybrid (RRF) query handlers are live.
-Default development embed is `search-owned-hash-text-v1` (FNV), not a neural
-model; PotionCode/OpenAI are opt-in profiles. Residual tickets below are
-**host/release evidence**, not missing IPC match arms. See
-[engine status](docs/ssot/engine-status-v1.md).
+[Documentation index](docs/README.md) routes current source maps, Accepted ADRs,
+remaining code/inputs/qualification and historical recovery. Publication requires
+separate pair activation before serving. The development hash embedder does not
+qualify an opt-in neural provider; see [engine source map](docs/ssot/engine-status-v1.md).
 
 ## Build and verification
 
@@ -133,14 +130,10 @@ qualification split:
 
 ## Active work
 
-- [Production/state/cross-repository residuals](docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)
-- [Code-search engine and benchmark acceptance](docs/plans/sep-27-code-search-remediation/readme.md)
-- [Benchmark execution and measurement ledger](docs/plans/sep-27-misc/tickets/INDEX.md)
-- [Semantic ownership proof](docs/plans/may-25-search-owned-semantic-derivation/README.md)
-- [Search quality acceptance](docs/plans/jun-7-search-product-quality/tickets-wave2/INDEX.md)
-- [Test hardening acceptance](docs/plans/jul-15-sota-test-hardening/tickets/00-ticket-status-board.md)
+- [OCT-04 residual work](docs/plans/oct-4-parallel-closure/tickets/INDEX.md): remaining code, conditional decisions, required inputs and execution.
+- [Execution waves](docs/plans/oct-4-parallel-closure/WAVES.md): dependencies and owner handoffs.
+- [All acceptance owners](docs/README.md#start-here): benchmark, engine, semantic, quality, CI, paired and operational scopes.
 
-Completed tickets and historical reports are indexed for Git recovery in the
-[documentation archive](docs/ARCHIVE-INDEX.md) and [plan archive](docs/plans/ARCHIVE-INDEX.md).
-Use fresh source-bound results for verification; README command lists are not
-qualification evidence.
+Historical bodies are recoverable through the [documentation archive](docs/ARCHIVE-INDEX.md)
+and [plan archive](docs/plans/ARCHIVE-INDEX.md). Use current source and actual gate
+results for verification; command/navigation lists are not qualification evidence.

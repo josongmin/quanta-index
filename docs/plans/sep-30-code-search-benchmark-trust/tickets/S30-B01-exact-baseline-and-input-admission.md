@@ -1,6 +1,6 @@
 # S30-B01 — exact gin baseline and input admission
 
-Status: `EXECUTED_DIAGNOSTIC` (2026-09-30); see receipt below. Priority: P0.
+Status: `ACTIVE_RESIDUAL`; historical executions are diagnostic. Priority: P0.
 Parent: [Sep 30 plan](../README.md). Contract owners:
 [CS-BENCH-01](../../sep-27-code-search-remediation/rfcs/CS-BENCH-01-corpus-gold-and-holdout.md)
 and [CS-BENCH-02](../../sep-27-code-search-remediation/rfcs/CS-BENCH-02-native-response-validation.md).
@@ -10,7 +10,8 @@ and [CS-BENCH-02](../../sep-27-code-search-remediation/rfcs/CS-BENCH-02-native-r
 Start with gin `d3ffc9985281dcf4d3bef604cce4e662b1a327a6`, its 99-file
 `code_only` manifest and the 1,196-task suite SHA-256
 `bb49c90ecd3706d153c16f01ff336a44b42a2e23d160126107554dcf0e281ef3`.
-The suite path and source-universe digest are in the [plan](../README.md).
+Resolve the exact source universe and suite from the retained input manifest;
+historical paths are in [historical bodies](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
 This is an exposed, source-oracle exact-name regression set. Its all-positive,
 single-repository distribution must stay visible: 1,118/1,196 tasks have one
 gold file. Do not present this as representative of typo, no-answer, semantic
@@ -49,9 +50,11 @@ Use [source oracle suite](../../../../tools/benchmark/retrieval/source_oracle_su
 [query-pool guard](../../../../tools/benchmark/retrieval/query_pool_guard.py).
 Create no new suite from report hits.
 
-## Execution receipt (2026-09-30)
 
-`VERIFIED` audit boundary (corrected 2026-10-01): input/oracle cross-check incl. per-name declaration counts, real validator refusals (v1 and v3, stale pack), historical external replay. Historical Quanta/Semble pairs not replayed; admission matrix is not a complete prospective manifest. Producer `quanta-index@0d21914e` (clean worktree);
-results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
+## Execution ownership
 
-v2 (2026-10-01): inputs regenerated from clean `f318e832`; v3 exact suite/pack byte-identical; [qi-s30-v2-f318e832/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-v2-f318e832/RESULTS.md).
+Current cross-ticket execution is owned once by the
+[OCT-04 residual ledger](../../oct-4-parallel-closure/tickets/INDEX.md).
+Retain the acceptance above for any new claim; reuse compatible captures.
+Past counts, binaries, failures and commands are recoverable from [historical bodies](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+They do not qualify current source.

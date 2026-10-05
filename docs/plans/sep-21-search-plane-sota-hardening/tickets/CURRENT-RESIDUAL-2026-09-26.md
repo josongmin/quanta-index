@@ -1,11 +1,13 @@
 # SEP-21 remaining qualification
 
-Status: `ACTIVE` **qualification ledger**, not an implementation gap list.
+Status: `ACTIVE` qualification ledger; P11 also retains a missing operational producer contract.
 Code audit 2026-10-03: ingest → index → CAS activate → UDS
 lexical/semantic/hybrid query is **live** in this tree. See
 [engine status](../../../ssot/engine-status-v1.md).
 
-This file remains a residual ledger for **host/release/evidence**. It is not
+This file owns host/release/paired acceptance. P11 typed deploy/activate/
+restore-forward producers and recipes remain unimplemented under S21-12;
+existing IPC/CAS handlers do not close that operational scope. This is not
 a current-source code receipt. Completed recovery/supervision/proof decisions
 are in
 [SEP-27-005](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
@@ -29,7 +31,7 @@ embed vs real-provider identity).
 | R3 — semantic omission | Producer owner must bind source-plan/shadow policy/prior sealed owner state/cluster plan, with independent fixed expected replace/tombstone/unchanged scope partitions before dispatch. Quanta validates admitted mutations; lexical-only and unchanged empty semantic deltas remain valid. Do not add a self-asserted completeness flag. |
 | R4 / P10 — state and native proof | Execute final original-manifest/copy/catalog custody, current-format backup/verify/restore-forward and actual native append/clear/membership-replace/replace/tombstone exporter plus independent complete-row/window/delete/commit replay. Reissue current-source owner/daemon proof; retain the unchanged maximum-page/cursor scenario. Inventory real target schemas/retained data and execute authorized Linux target restore separately. No legacy importer or target mutation follows from local tests. |
 | R5 / P11 — exact pair | Actual dependency pre/postflight is implemented. Bind canonical resolver mapping and nested lock as typed paired receipt evidence, plus actual fresh build/test terminal outcomes and exact clean pair. Execute live V2 publish/activate/restart/query, negative bundle/transition and exact ACK replay; a mapping log or Quanta-local CAS is insufficient. |
-| R6 / P11–P12 — operations | Obtain authorized host/root/config/retention/rollback inputs. Produce separate observed deploy/activate/rollback action receipts with one operational host and the attested release binary. Final-source proof DAG/P12A/aggregate must execute. Audit authentic historical handoffs separately; missing records must not be reconstructed from current manifests. |
+| R6 / P11–P12 — operations | Define and implement S21-12 typed action producers/recipes with distinct independent pre/post success observers. Obtain authorized host/root/config/retention/rollback inputs. Produce separate observed deploy/activate/rollback action receipts with one operational host and the attested release binary. Final-source proof DAG/P12A/aggregate must execute. Audit authentic historical handoffs separately; missing records must not be reconstructed from current manifests. |
 
 ## Shared execution boundary
 

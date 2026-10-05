@@ -2,6 +2,16 @@
 
 Status: `HISTORICAL RECOVERY INDEX`
 
+## Oct-05 benchmark and quality ledger compaction
+
+The [plan history index](plans/ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction)
+records the exact pre-edit revision and recovery for B01–B09, J7Q and CS-INT-01
+historical execution/RCA bodies. Their acceptance remains live; completed
+mechanisms are in OCT-05-001/002/004 and current execution in the OCT-04 ledger.
+The documentation entrypoint is [docs/README.md](README.md). Source maps and
+SEP-21 now explicitly retain P11 missing operational code alongside qualification.
+This cleanup issues no new product or release evidence.
+
 ## Oct-05 handoff compaction
 
 Pre-deletion revision: `52980f58f9c08b8560b6262499071cfb7ca610c7`.

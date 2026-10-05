@@ -51,6 +51,35 @@ complete relevance outside the reviewed population.
    reduction and strata, with bounded memory and independent reference parity.
    Further vectorization requires a demonstrated whole-caller bottleneck.
 
+## External input, planner and parser identity
+
+- CodeSearchNet intake binds the exact upstream commit/CSV and retains every
+  annotator row, grade/note, disagreement and fractional mean. Its lowercase
+  grouping convention cannot silently merge normalization collisions. Outside-pool
+  files stay unjudged; intake does not issue source verification or local review.
+- Fresh NL planning emits normalized scored keyword OR terms under its explicit
+  profile; match-only phrase requests retain their distinct contract. Rust and
+  Python request identities are independently derived using pinned Unicode 17
+  default lowercase data, rather than host Python Unicode tables. The actual
+  versioned token/profile admission preserves shared/new/excluded queries.
+- Gold capture/replay package identities come from the producer's source-locked
+  runtime. Bind loaded vendored grammar generation to source provenance; a source
+  change requires a fresh producer process. Cache reuse binds source bytes/digest
+  and parser identity and rechecks each original suite's universe/gold.
+- Identifier containment and surviving-component diagnostics describe frozen
+  query/name bytes under the oracle tokenizer. They do not identify the engine's
+  tokenizer or explain a hit. Complete intended-name file gold and representative
+  intended-original file recovery retain separate metrics and source authority;
+  neither becomes declaration-span or general content relevance.
+
+Owners: [external qrel intake](../../tools/benchmark/retrieval/codesearchnet_qrels.py),
+[query planner](../../tools/benchmark/retrieval/query_plan.py),
+[runtime identity](../../tools/benchmark/retrieval/retrieval_contract.py),
+[declaration parser](../../tools/benchmark/retrieval/declaration_parsers.py),
+[robustness report](../../tools/benchmark/retrieval/identifier_robustness_report.py).
+Retain pinned-input/grade/normalization/refusal fixtures and loaded-grammar/source
+mutants; historical request identities are replayed under their original profile.
+
 ## Owners and regressions
 
 - [Review producer/issuer](../../tools/benchmark/retrieval/holdout_review.py),

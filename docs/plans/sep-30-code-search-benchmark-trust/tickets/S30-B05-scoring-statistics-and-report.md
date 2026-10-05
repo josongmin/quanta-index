@@ -1,6 +1,6 @@
 # S30-B05 — independent scoring, uncertainty and final report
 
-Status: `EXECUTED_DIAGNOSTIC` (2026-09-30); see receipt below. Priority: P1. Depends on admitted B02/B03
+Status: `ACTIVE_RESIDUAL`; historical executions are diagnostic. Priority: P1. Depends on admitted B02/B03
 qrels and B04 native captures for each scored lane. Parent: [Sep 30 plan](../README.md).
 Contract owner:
 [CS-BENCH-03](../../sep-27-code-search-remediation/rfcs/CS-BENCH-03-tracks-metrics-and-statistics.md).
@@ -58,57 +58,11 @@ Implement needed scoring changes only in the existing
 [lexical comparator](../../../../tools/benchmark/retrieval/lexical_file_comparison.py)
 and their test owners. No second scoring stack.
 
-## Execution receipt (2026-09-30)
 
-Diagnostic scorecard (v1 root); pytrec_eval agreement on reported metrics; all numbers re-derived by a separate audit. No qualified delta or default decision. Producer `quanta-index@0d21914e` (clean worktree);
-results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
+## Execution ownership
 
-Names: the v1 root's `b05/scorecard.json` (0d21914e captures). v2 root `scores/scorecard-v2.json` (`score_v2.py`, f318e832): paired exact Hit@10 vs `keyword_file` over all 1,196 tasks, distinct-file systems only; no pytrec cross-check on v2. [qi-s30-v2-f318e832/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-v2-f318e832/RESULTS.md).
-
-2026-10-01 source-bound follow-up: independent source-file qrel checks over
-1,196 complete records agreed with the evaluator on Semble `lexical-file`
-1,190/1,196 and Quanta `keyword_file` 1,192/1,196 top-10 file hits. The
-Quanta record now carries the native SDK score for every returned file; the
-Semble raw capture keeps every positive-score BM25 chunk before file collapse.
-The two scored file modes have different query semantics and tie policies, so
-these counts are diagnostic observations, not a paired quality delta. See
-[`Semble summary`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/semble/summary.json) and
-[`Quanta summary`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/quanta/summary.json).
-The independent [audit checker](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/audit.py)
-re-read the source-file qrels, both records and Semble's full native BM25
-lists; its [result](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/audit.json)
-agrees on every task and projection. No new five-product paired score was
-created from snapshots with different request semantics.
-
-The separate 2026-10-01 [robustness file-mode audit](/Users/songmin/Documents/code-new/qi-s30-robust-filemodes-20261001-xh1F3Xoh/audit.json)
-recomputed all six lanes from source-file qrels. Semble distinct-file hits are
-prefix 257/352, infix 164/339, components 276/278, typo 284/363; Quanta
-`keyword_file` hits are 21/352, 14/339 (337 submitted), unsupported on
-components, and 0/363. The no-answer-content lane returned zero files for
-Quanta and non-empty files on all 99 Semble queries. Request semantics and
-completion coverage differ; these are operational diagnostics, not a paired
-quality delta.
-
-2026-10-01 reporting repair: `identifier_robustness_report.py` joins the
-existing evaluator's per-task file Hit@10, eligibility and statuses to the
-frozen robustness census. It independently checks declaration-name ambiguity
-and gold-file counts against the pinned Go source, preserves generator
-ineligibility versus query-policy refusal, and reports no-answer abstention
-and nonempty responses. It does not calculate a second relevance score.
-Archived NOC diagnostics are explicitly marked
-`content_absence_replay_verified=false`; only a newly admitted NOC suite with
-the versioned content-absence oracle can receive `true` after CLI source
-replay. The CLI refuses output overwrites and in-checkout output paths. This
-compositor supports validated Quanta and Semble distinct-file diagnostics;
-the Sourcegraph/cs/OpenGrok native capture contract remains separate. Existing
-five-product rows are still diagnostic and not a matched-semantics cohort.
-
-2026-10-01 denominator binding follow-up: the compositor previously accepted
-an edited census with one extra excluded NOC source probe, changing
-`requested/not_admitted` from `100/1` to `101/2` while the suite, record and
-diagnostic stayed fixed. The CLI now requires the generation manifest and
-checks the exact census and lane-suite bytes against its artifact digests;
-NOC also checks the source probe count against the manifest parameter.
-It records the manifest SHA-256, rejects duplicate JSON keys in census and
-diagnostic inputs, and still reports `diagnostic_unqualified`. The manifest
-is producer provenance, not independent human gold or an external signature.
+Current cross-ticket execution is owned once by the
+[OCT-04 residual ledger](../../oct-4-parallel-closure/tickets/INDEX.md).
+Retain the acceptance above for any new claim; reuse compatible captures.
+Past counts, binaries, failures and commands are recoverable from [historical bodies](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+They do not qualify current source.

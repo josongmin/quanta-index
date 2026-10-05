@@ -2,6 +2,26 @@
 
 Status: `HISTORICAL RECOVERY INDEX`
 
+## Oct-05 benchmark and quality ledger compaction
+
+Pre-edit revision: `121ad9309303d8de9b0e189a04a4b65bf6d80c40`. All existing edited bodies matched that revision
+byte-for-byte. Recover any exact body with
+`git show 121ad9309303d8de9b0e189a04a4b65bf6d80c40:<repository-relative-path>`.
+
+The live B01–B09 tickets and their Sep-30 README/index, J7Q-01/03/04 and quality
+README, and CS-INT-01 retain acceptance and stable owner IDs. Repeated historical
+execution/RCA/research bodies, temporary paths and source-specific test totals
+are removed from those live owners. Completed planner/parser/intake, batch/clock
+and optional ranking/Explain decisions are consolidated in OCT-05-001/002/004.
+The OCT-04 ledger owns current execution state; unmet review/holdout/native scope,
+host/capacity/resource/platform/release and operational contracts remain open.
+
+The source-map/SSOT/root navigation and SEP-21 residual wording were corrected;
+`docs/README.md` is the documentation entrypoint. P11 missing typed operational
+producers/recipes remain code work, with required action/observer/target inputs.
+No runtime, benchmark or release qualification follows from this compaction.
+Exact external preimages and digests: `/tmp/qi-oct5-doc-sweep-_8g9_zdf`, `manifest.json`.
+
 ## Oct-05 handoff and ticket compaction
 
 Pre-deletion revision: `52980f58f9c08b8560b6262499071cfb7ca610c7`.
