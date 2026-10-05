@@ -197,23 +197,29 @@ fn prefix_canonical(bits: u16, prefix: &[u8; 32]) -> bool {
     if bits > 256 {
         return false;
     }
-    let full = usize::from(bits / 8);
+    let full = usize::from(bits).div_euclid(8);
     let partial = bits % 8;
     if partial != 0 {
-        let mask = (1_u8 << (8 - partial)) - 1;
-        if prefix[full] & mask != 0 {
+        let mask = u8::MAX >> partial;
+        if prefix.get(full).is_none_or(|byte| byte & mask != 0) {
             return false;
         }
     }
-    let suffix = full + usize::from(partial != 0);
-    prefix[suffix..].iter().all(|byte| *byte == 0)
+    let Some(suffix) = full.checked_add(usize::from(partial != 0)) else {
+        return false;
+    };
+    prefix
+        .get(suffix..)
+        .is_some_and(|remaining| remaining.iter().all(|byte| *byte == 0))
 }
 
 pub(super) fn source_key_digest(source: &SourceFileRevision) -> Result<[u8; 32], String> {
     let repo = source.file.source_repo_id.as_str().as_bytes();
     let path = source.file.repo_relative_path.as_str().as_bytes();
-    let repo_len = u64::try_from(repo.len()).map_err(|_| invalid("repo key length overflow"))?;
-    let path_len = u64::try_from(path.len()).map_err(|_| invalid("path key length overflow"))?;
+    let repo_len = u64::try_from(repo.len())
+        .map_err(|error| invalid(&format!("repo key length overflow: {error}")))?;
+    let path_len = u64::try_from(path.len())
+        .map_err(|error| invalid(&format!("path key length overflow: {error}")))?;
     let mut hasher = Sha256::new();
     hasher.update(b"quanta-file-authority-source-key-v15\0");
     hasher.update(repo_len.to_le_bytes());
@@ -223,9 +229,10 @@ pub(super) fn source_key_digest(source: &SourceFileRevision) -> Result<[u8; 32],
     Ok(hasher.finalize().into())
 }
 
-/// Logical serving-heap admission, not a physical RSS bound. Six key copies
-/// account for root, file, ordered and ID maps; row charge covers container
-/// nodes/headers. Producer and cold opener use this exact function.
+/// Logical serving-heap admission, not a physical RSS bound.
+///
+/// Six key copies account for root, file, ordered and ID maps. The row charge
+/// covers container nodes and headers. Producer and cold opener use this function.
 pub(super) fn resident_file_charge(
     source: &SourceFileRevision,
     language: &LanguageCode,
@@ -235,7 +242,9 @@ pub(super) fn resident_file_charge(
     indexed_text_bytes: usize,
     folded_text_bytes: usize,
 ) -> Result<u64, String> {
-    let width = |value: usize| u64::try_from(value).map_err(|_| invalid("resident length width"));
+    let width = |value: usize| {
+        u64::try_from(value).map_err(|error| invalid(&format!("resident length width: {error}")))
+    };
     let key = source
         .file
         .source_repo_id
@@ -274,7 +283,8 @@ fn validate_partitions(
     policy: AuthorityPolicy,
     require_entries: bool,
 ) -> Result<(u64, u64), String> {
-    if u64::try_from(partitions.len()).map_err(|_| invalid("partition count overflow"))?
+    if u64::try_from(partitions.len())
+        .map_err(|error| invalid(&format!("partition count overflow: {error}")))?
         > policy.partitions
     {
         return Err(invalid("partition count exceeds policy"));
@@ -312,7 +322,7 @@ fn matching_partition<'a>(
 ) -> Result<&'a Partition, String> {
     let index = partitions
         .binary_search_by_key(&key[0], |partition| partition.prefix[0])
-        .map_err(|_| invalid("source has no partition"))?;
+        .map_err(|error| invalid(&format!("source has no partition: {error}")))?;
     partitions
         .get(index)
         .ok_or_else(|| invalid("source partition index is invalid"))
@@ -331,7 +341,10 @@ impl CborPreflight<'_> {
             .bytes
             .get(self.offset)
             .ok_or_else(|| invalid("truncated CBOR"))?;
-        self.offset += 1;
+        self.offset = self
+            .offset
+            .checked_add(1)
+            .ok_or_else(|| invalid("CBOR header offset overflow"))?;
         let extra = match first & 31 {
             0..=23 => return Ok((first >> 5, u64::from(first & 31))),
             24 => 1,
@@ -367,8 +380,8 @@ impl CborPreflight<'_> {
         match major {
             0 | 1 | 7 => Ok(()),
             2 | 3 => {
-                let length =
-                    usize::try_from(count).map_err(|_| invalid("CBOR byte length overflow"))?;
+                let length = usize::try_from(count)
+                    .map_err(|error| invalid(&format!("CBOR byte length overflow: {error}")))?;
                 self.offset = self
                     .offset
                     .checked_add(length)
@@ -388,17 +401,25 @@ impl CborPreflight<'_> {
                 };
                 let remaining = self.bytes.len().saturating_sub(self.offset);
                 if children
-                    > u64::try_from(remaining)
-                        .map_err(|_| invalid("CBOR remaining length overflow"))?
+                    > u64::try_from(remaining).map_err(|error| {
+                        invalid(&format!("CBOR remaining length overflow: {error}"))
+                    })?
                 {
                     return Err(invalid("CBOR container count exceeds encoded bytes"));
                 }
                 for _ in 0..children {
-                    self.skip(depth + 1)?;
+                    let child_depth = depth
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("CBOR nesting depth overflow"))?;
+                    self.skip(child_depth)?;
                 }
                 Ok(())
             }
-            6 => self.skip(depth + 1),
+            6 => self.skip(
+                depth
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("CBOR nesting depth overflow"))?,
+            ),
             _ => Err(invalid("unknown CBOR major type")),
         }
     }
@@ -410,7 +431,8 @@ impl CborPreflight<'_> {
         }
         let remaining = self.bytes.len().saturating_sub(self.offset);
         if count
-            > u64::try_from(remaining).map_err(|_| invalid("CBOR remaining length overflow"))?
+            > u64::try_from(remaining)
+                .map_err(|error| invalid(&format!("CBOR remaining length overflow: {error}")))?
         {
             return Err(invalid("root array count exceeds encoded bytes"));
         }
@@ -448,7 +470,7 @@ impl AuthorityRoot {
             .checked_add(self.content_postings.len())
             .ok_or_else(|| invalid("term directory block count overflow"))?;
         let mut charge = u64::try_from(blocks)
-            .map_err(|_| invalid("term directory block count width"))?
+            .map_err(|error| invalid(&format!("term directory block count width: {error}")))?
             .checked_mul(TERM_DIRECTORY_BLOCK_CHARGE)
             .ok_or_else(|| invalid("term directory block charge overflow"))?;
         for partition in self.path_postings.iter().chain(&self.content_postings) {
@@ -469,8 +491,9 @@ impl AuthorityRoot {
     pub(super) fn encode(&self, policy: AuthorityPolicy) -> Result<Vec<u8>, String> {
         self.validate(policy)?;
         let bytes = encode_cbor(&wire(self), "file authority v15 root")
-            .map_err(|error| invalid(&error.to_string()))?;
-        if u64::try_from(bytes.len()).map_err(|_| invalid("root byte count overflow"))?
+            .map_err(|error| format!("file authority v15: {error}"))?;
+        if u64::try_from(bytes.len())
+            .map_err(|error| invalid(&format!("root byte count overflow: {error}")))?
             > policy.root_bytes
         {
             return Err(invalid("root exceeds byte policy"));
@@ -479,7 +502,8 @@ impl AuthorityRoot {
     }
 
     pub(super) fn decode(bytes: &[u8], policy: AuthorityPolicy) -> Result<Self, String> {
-        if u64::try_from(bytes.len()).map_err(|_| invalid("root byte count overflow"))?
+        if u64::try_from(bytes.len())
+            .map_err(|error| invalid(&format!("root byte count overflow: {error}")))?
             > policy.root_bytes
         {
             return Err(invalid("root exceeds byte policy"));
@@ -545,7 +569,8 @@ impl AuthorityRoot {
         if self.policy_sha256 != policy.digest() {
             return Err(invalid("policy identity differs; rebuild required"));
         }
-        if u64::try_from(self.sources.len()).map_err(|_| invalid("source count overflow"))?
+        if u64::try_from(self.sources.len())
+            .map_err(|error| invalid(&format!("source count overflow: {error}")))?
             > policy.source_files
         {
             return Err(invalid("source count exceeds policy"));
@@ -605,9 +630,7 @@ impl AuthorityRoot {
         let mut used_path_prefixes = BTreeSet::new();
         let mut used_content_prefixes = BTreeSet::new();
         for row in &self.sources {
-            row.source
-                .validate()
-                .map_err(|error| invalid(&error.to_string()))?;
+            row.source.validate().map_err(invalid)?;
             if previous.as_ref().is_some_and(|key| key >= &row.source.file) {
                 return Err(invalid("source keys are not strictly ascending"));
             }
@@ -658,7 +681,7 @@ impl AuthorityRoot {
             return Err(invalid("source and posting membership totals differ"));
         }
         let digest_count = u64::try_from(digest_per_pack.len())
-            .map_err(|_| invalid("unique source digest count overflow"))?;
+            .map_err(|error| invalid(&format!("unique source digest count overflow: {error}")))?;
         if used_pack_prefixes.len() != self.packs.len() || digest_count != pack_entries {
             return Err(invalid("pack inventory has unreferenced source bytes"));
         }

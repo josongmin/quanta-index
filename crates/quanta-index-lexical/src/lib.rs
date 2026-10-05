@@ -49,6 +49,10 @@
 #![deny(clippy::let_underscore_must_use)]
 #![deny(clippy::map_err_ignore)]
 
+/// Global distinct path and content trigram posting memberships admitted by
+/// the canonical F15 file authority. Scale preflight uses the same bound.
+pub const FILE_AUTHORITY_POSTING_MEMBERSHIP_LIMIT: u32 = 20_000_000;
+
 mod analyzer;
 
 mod authority_doc_set;

@@ -15,13 +15,26 @@ from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci.tests.test_retrieval_benchmark import _pair_stage
 
 
-def _arm(record: dict, phase: dict, diagnostic: dict, *, source: str, searchd: str):
+def _arm(
+    record: dict,
+    phase: dict,
+    diagnostic: dict,
+    *,
+    source: str,
+    searchd: str,
+    runner: str | None = None,
+):
     record = copy.deepcopy(record)
     phase = copy.deepcopy(phase)
     diagnostic = copy.deepcopy(diagnostic)
     record["span_accounting_version"] = 1
+    if runner is not None:
+        record["runner"]["revision"] = f"sha256:{runner}"
+        phase["runner_binary_sha256"] = runner
     for capture in record["captures"].values():
         capture["searchd_binary"]["binary_digest"] = searchd
+        if runner is not None:
+            capture["runner_binary"]["digest"] = runner
     record_sha = ev.digest(ev.canonical(record))
     phase["record_sha256"] = record_sha
     diagnostic["record_sha256"] = record_sha
@@ -99,7 +112,7 @@ def _pair(tmp_path):
     phase = json.loads(path.with_name("phase-metrics.json").read_text())
     diagnostic = json.loads(path.read_text())
     baseline = _arm(record, phase, diagnostic, source="a" * 64, searchd="b" * 64)
-    candidate = _arm(record, phase, diagnostic, source="c" * 64, searchd="d" * 64)
+    candidate = _arm(record, phase, diagnostic, source="c" * 64, searchd="d" * 64, runner="e" * 64)
     return baseline, candidate, pack
 
 
@@ -125,6 +138,7 @@ def test_scanner_ab_preserves_parity_and_declared_binary_difference(tmp_path):
     assert result["identity_scope"] == "comparator_supplied_source_binary_claims_only"
     assert result["allowed_work_counter_differences"] == []
     assert result["baseline_identity"] != result["candidate_identity"]
+    assert baseline[3]["runner_binary_sha256"] != candidate[3]["runner_binary_sha256"]
     assert len(result["rows"]) == len(baseline[0]["results"])
     assert all(row["delta_ms"] == 0 for row in result["rows"])
     # Validated clocks can vary; output digests, work counts and page facts cannot.
@@ -153,6 +167,7 @@ def test_scanner_ab_preserves_parity_and_declared_binary_difference(tmp_path):
         "ingest_counter",
         "comparison_contract",
         "runner_protocol",
+        "runner_revision",
         "output_digest",
         "type_alias",
     ],
@@ -203,6 +218,11 @@ def test_scanner_ab_refuses_independent_semantic_or_custody_delta(tmp_path, muta
         record["comparison_contract"]["span_unit"] = "changed-span-unit"
     elif mutation == "runner_protocol":
         record["runner"]["tokenizer_budget_version"] = "different-budget"
+    elif mutation == "runner_revision":
+        record["runner"]["revision"] = "sha256:" + "f" * 64
+        record_sha = ev.digest(ev.canonical(record))
+        phase["record_sha256"] = record_sha
+        diagnostic["record_sha256"] = record_sha
     elif mutation == "output_digest":
         phase["query_timing"]["observations"][0]["output_sha256"] = "f" * 64
     elif mutation == "type_alias":

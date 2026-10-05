@@ -58,7 +58,6 @@ const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 // shares one index per surface. Forward-only scratch omits reverse postings.
 // Bound both total memberships and each dictionary's estimated scratch heap;
 // a high-entropy source can have many singleton dictionary entries.
-const MAX_FILE_INDEX_POSTING_MEMBERSHIPS: usize = 20_000_000;
 const TRIGRAM_BITMAP_BYTES: usize = 2 * 1024 * 1024;
 
 // This sealed artifact evolves the existing manifest. Counts are per source
@@ -255,9 +254,9 @@ pub(crate) fn read_object_pinned(
         CoreError::Storage(format!("lexical: F15 object length exceeds usize: {error}"))
     })?;
     let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(maximum)
-        .map_err(|error| CoreError::Storage(format!("lexical: F15 object allocation refused: {error}")))?;
+    bytes.try_reserve_exact(maximum).map_err(|error| {
+        CoreError::Storage(format!("lexical: F15 object allocation refused: {error}"))
+    })?;
     bytes.resize(maximum, 0);
     for chunk in bytes.chunks_mut(64 * 1024) {
         checkpoint(budget)?;
@@ -343,9 +342,11 @@ fn read_object_range(
         ))
     })?;
     let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(length)
-        .map_err(|error| CoreError::Storage(format!("lexical: posting range allocation refused: {error}")))?;
+    bytes.try_reserve_exact(length).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: posting range allocation refused: {error}"
+        ))
+    })?;
     bytes.resize(length, 0);
     for chunk in bytes.chunks_mut(64 * 1024) {
         budget.checkpoint("lexical:query:posting-range-read")?;
@@ -370,7 +371,7 @@ fn policy() -> root::AuthorityPolicy {
         total_pack_bytes: 160 * 1024 * 1024,
         posting_block_bytes: 32 * 1024 * 1024,
         total_posting_bytes: 512 * 1024 * 1024,
-        total_memberships: 20_000_000,
+        total_memberships: u64::from(crate::FILE_AUTHORITY_POSTING_MEMBERSHIP_LIMIT),
         partitions: 256,
         source_id: u64::from(u32::MAX),
         bucket_scratch_bytes: 128 * 1024 * 1024,
@@ -379,7 +380,7 @@ fn policy() -> root::AuthorityPolicy {
         query_list_reads: 16_384,
         query_posting_ids: 2_000_000,
         query_decoded_bytes: 512 * 1024 * 1024,
-        query_decoded_ids: 20_000_000,
+        query_decoded_ids: u64::from(crate::FILE_AUTHORITY_POSTING_MEMBERSHIP_LIMIT),
     }
 }
 
@@ -590,7 +591,9 @@ fn sealed_base_root(base_dir: &Path) -> Result<root::AuthorityRoot, CoreError> {
     let authority = root::AuthorityRoot::decode(&bytes, policy())
         .map_err(|reason| corrupt(base_dir, &name, &reason))?;
     let expected = object_inventory(&authority);
-    let expected_count = expected.len().checked_add(1)
+    let expected_count = expected
+        .len()
+        .checked_add(1)
         .ok_or_else(|| corrupt(base_dir, &name, "base object count overflows"))?;
     if manifest.file_authority.len() != expected_count
         || manifest.file_authority.iter().any(|entry| {
@@ -789,8 +792,9 @@ pub(crate) fn build_for_seal(
                 let metadata = file
                     .metadata()
                     .map_err(|error| corrupt(generation_dir, &name, &format!("stat: {error}")))?;
-                let file_ceiling = u64::try_from(MAX_FILE_BYTES)
-                    .map_err(|error| CoreError::Storage(format!("lexical: staged source ceiling: {error}")))?;
+                let file_ceiling = u64::try_from(MAX_FILE_BYTES).map_err(|error| {
+                    CoreError::Storage(format!("lexical: staged source ceiling: {error}"))
+                })?;
                 if metadata.len() > file_ceiling {
                     return Err(corrupt(
                         generation_dir,
@@ -814,8 +818,9 @@ pub(crate) fn build_for_seal(
                 files_read = files_read
                     .checked_add(1)
                     .ok_or_else(|| invalid("source read count overflow"))?;
-                let source_len = u64::try_from(bytes.len())
-                    .map_err(|error| CoreError::Storage(format!("lexical: staged source length: {error}")))?;
+                let source_len = u64::try_from(bytes.len()).map_err(|error| {
+                    CoreError::Storage(format!("lexical: staged source length: {error}"))
+                })?;
                 bytes_read = bytes_read
                     .checked_add(source_len)
                     .ok_or_else(|| invalid("source read byte count overflow"))?;
@@ -854,7 +859,7 @@ pub(crate) fn build_for_seal(
                 |digest, bytes: &[u8]| write_object(generation_dir, digest, bytes, &mut next_temp);
             let produced = producer::produce_authority(
                 &dispositions,
-                base,
+                base.as_ref(),
                 policy(),
                 root::PREFIX_BITS,
                 &mut sink,
@@ -863,7 +868,9 @@ pub(crate) fn build_for_seal(
                 producer::ProducerErrorKind::CorruptBase => {
                     corrupt(generation_dir, DIR, &error.reason)
                 }
-                producer::ProducerErrorKind::Invalid | producer::ProducerErrorKind::Limit => invalid(&error.reason),
+                producer::ProducerErrorKind::Invalid | producer::ProducerErrorKind::Limit => {
+                    invalid(&error.reason)
+                }
             })?;
             // New bytes were hashed against their digest by the sink. The
             // inherited descriptors were bound to the sealed base above;
@@ -1004,7 +1011,7 @@ pub(crate) fn decode_verified_manifest(
     let entries: Vec<FileManifestRow> = crate::channel_payloads::decode_cbor_exact(bytes)
         .map_err(|error| corrupt(generation_dir, MANIFEST, &format!("decode: {error}")))?;
     let mut previous: Option<&SourceFileKey> = None;
-    let mut postings = 0_usize;
+    let mut postings = 0_u64;
     for (source, count) in &entries {
         source
             .validate()
@@ -1017,10 +1024,10 @@ pub(crate) fn decode_verified_manifest(
             ));
         }
         previous = Some(&source.file);
-        postings = postings.saturating_add(usize::try_from(*count).map_err(|error| {
-            corrupt(generation_dir, MANIFEST, &format!("posting count: {error}"))
-        })?);
-        if postings > MAX_FILE_INDEX_POSTING_MEMBERSHIPS {
+        postings = postings
+            .checked_add(u64::from(*count))
+            .ok_or_else(|| corrupt(generation_dir, MANIFEST, "posting count overflow"))?;
+        if postings > u64::from(crate::FILE_AUTHORITY_POSTING_MEMBERSHIP_LIMIT) {
             return Err(corrupt(
                 generation_dir,
                 MANIFEST,
@@ -1134,15 +1141,12 @@ pub(crate) fn plan_ops(
         }
     }
     let sources: Vec<FileManifestRow> = files.into_values().collect();
-    let total_postings = sources.iter().try_fold(0_usize, |total, row| {
+    let total_postings = sources.iter().try_fold(0_u64, |total, row| {
         total
-            .checked_add(
-                usize::try_from(row.1)
-                    .map_err(|error| invalid(&format!("posting count conversion: {error}")))?,
-            )
+            .checked_add(u64::from(row.1))
             .ok_or_else(|| invalid("file trigram posting count overflow"))
     })?;
-    if total_postings > MAX_FILE_INDEX_POSTING_MEMBERSHIPS {
+    if total_postings > u64::from(crate::FILE_AUTHORITY_POSTING_MEMBERSHIP_LIMIT) {
         return Err(invalid(
             "file trigram posting membership admission exceeded",
         ));
@@ -1198,8 +1202,9 @@ pub(crate) fn plan_ops(
         total = total
             .checked_add(bytes)
             .ok_or_else(|| invalid("source byte sum overflows"))?;
-        let total_bytes = u64::try_from(total)
-            .map_err(|error| CoreError::Storage(format!("lexical: source byte sum width: {error}")))?;
+        let total_bytes = u64::try_from(total).map_err(|error| {
+            CoreError::Storage(format!("lexical: source byte sum width: {error}"))
+        })?;
         if total_bytes > u64::from(MAX_TOTAL_SOURCE_BYTES) {
             return Err(invalid(
                 "file authority exceeds 128 MiB source byte admission",
@@ -1412,7 +1417,8 @@ fn source_posting_memberships(
             surface,
             bitmap,
             &mut total,
-            MAX_FILE_INDEX_POSTING_MEMBERSHIPS,
+            usize::try_from(crate::FILE_AUTHORITY_POSTING_MEMBERSHIP_LIMIT)
+                .map_err(|error| invalid(&format!("posting limit exceeds usize: {error}")))?,
         )?;
     }
     u32::try_from(total).map_err(|error| invalid(&format!("posting count: {error}")))

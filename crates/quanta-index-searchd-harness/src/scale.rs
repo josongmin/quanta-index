@@ -585,7 +585,9 @@ impl ScopedOracle {
 /// authority changes.
 const MAX_SCALE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SCALE_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_SCALE_POSTING_MEMBERSHIPS: u64 = 4_000_000;
+fn scale_posting_membership_limit() -> u64 {
+    u64::from(quanta_index_lexical::FILE_AUTHORITY_POSTING_MEMBERSHIP_LIMIT)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScaleAdmissionLimit {
@@ -600,7 +602,7 @@ impl ScaleAdmissionLimit {
         match self {
             Self::SourceFileBytes => "lexical_source_file_bytes_8m",
             Self::TotalSourceBytes => "lexical_total_source_bytes_128m",
-            Self::TrigramPostingMemberships => "lexical_trigram_posting_memberships_4m",
+            Self::TrigramPostingMemberships => "lexical_trigram_posting_memberships",
         }
     }
 }
@@ -715,11 +717,11 @@ fn check_admission_counts(
             maximum: MAX_SCALE_SOURCE_BYTES,
         });
     }
-    if postings > MAX_SCALE_POSTING_MEMBERSHIPS {
+    if postings > scale_posting_membership_limit() {
         return Err(ScaleAdmissionRefusal {
             limit: ScaleAdmissionLimit::TrigramPostingMemberships,
             observed: postings,
-            maximum: MAX_SCALE_POSTING_MEMBERSHIPS,
+            maximum: scale_posting_membership_limit(),
         });
     }
     Ok(())
@@ -4756,16 +4758,31 @@ mod tests {
             ScaleAdmissionLimit::TotalSourceBytes
         );
         assert_eq!(
-            check_admission_counts(1, 1, MAX_SCALE_POSTING_MEMBERSHIPS + 1)
-                .expect_err("posting bound")
-                .limit,
+            scale_posting_membership_limit(),
+            u64::from(quanta_index_lexical::FILE_AUTHORITY_POSTING_MEMBERSHIP_LIMIT)
+        );
+        assert_eq!(scale_posting_membership_limit(), 20_000_000);
+        assert!(check_admission_counts(1, 1, 17_715_020).is_ok());
+        let above_posting_limit =
+            check_admission_counts(1, 1, 20_000_001).expect_err("posting bound");
+        assert_eq!(
+            above_posting_limit.limit,
             ScaleAdmissionLimit::TrigramPostingMemberships
+        );
+        assert_eq!(above_posting_limit.observed, 20_000_001);
+        assert_eq!(
+            above_posting_limit.limit.as_str(),
+            "lexical_trigram_posting_memberships"
+        );
+        assert_eq!(
+            above_posting_limit.maximum,
+            scale_posting_membership_limit()
         );
         assert!(
             check_admission_counts(
                 MAX_SCALE_FILE_BYTES,
                 MAX_SCALE_SOURCE_BYTES,
-                MAX_SCALE_POSTING_MEMBERSHIPS
+                scale_posting_membership_limit()
             )
             .is_ok()
         );

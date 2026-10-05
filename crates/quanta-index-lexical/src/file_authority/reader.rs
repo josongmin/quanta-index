@@ -1,5 +1,5 @@
 //! Selective query reads from cold-authenticated F15 posting lists.
-//! One QueryWork spans literal search and fallback.
+//! One `QueryWork` spans literal search and fallback.
 
 use std::collections::BTreeMap;
 
@@ -66,9 +66,11 @@ fn charge_work(
     Ok(())
 }
 
-/// The owner callback refuses symlinks/devices, checks committed object length
-/// and exact range before allocation, and retains its generation lease. The
-/// selected list digest detects same-length in-place object mutation.
+/// Read selected posting lists under the generation lease.
+///
+/// The owner callback refuses symlinks/devices and checks committed object
+/// length and exact range before allocation. The selected list digest detects
+/// same-length in-place object mutation.
 pub(super) fn posting_lists<R>(
     root: &AuthorityRoot,
     directory: &PostingDirectory,
@@ -82,7 +84,11 @@ pub(super) fn posting_lists<R>(
 where
     R: FnMut([u8; 32], u64, u64, u64) -> Result<Vec<u8>, CoreError>,
 {
-    if grams.windows(2).any(|pair| pair[0] >= pair[1]) {
+    if grams.windows(2).any(|pair| {
+        pair.first()
+            .zip(pair.get(1))
+            .is_some_and(|(left, right)| left >= right)
+    }) {
         return Err(CoreError::Storage(
             "lexical file authority v15: query grams not sorted".into(),
         ));
@@ -147,7 +153,9 @@ where
                 row.offset,
                 length,
             )?;
-            if u64::try_from(bytes.len()).map_err(|_| corrupt("term list length width"))? != length
+            if u64::try_from(bytes.len())
+                .map_err(|_length_width_error| corrupt("term list length width"))?
+                != length
             {
                 return Err(corrupt("term list short read"));
             }
@@ -160,17 +168,19 @@ where
             if actual != row.sha256 {
                 return Err(corrupt("selected posting list digest differs"));
             }
-            let additional =
-                usize::try_from(count).map_err(|_| plan_limit("term list count width"))?;
+            let additional = usize::try_from(count)
+                .map_err(|_count_width_error| plan_limit("term list count width"))?;
             ids.try_reserve(additional)
-                .map_err(|_| plan_limit("term list result allocation refused"))?;
+                .map_err(|_allocation_error| plan_limit("term list result allocation refused"))?;
             let mut previous = None;
             for (index, word) in bytes.chunks_exact(8).enumerate() {
                 if index.is_multiple_of(1024) {
                     budget.checkpoint("lexical:file-authority-v15-list-decode")?;
                 }
-                let id =
-                    u64::from_le_bytes(word.try_into().map_err(|_| corrupt("term list ID width"))?);
+                let id = u64::from_le_bytes(
+                    word.try_into()
+                        .map_err(|_id_width_error| corrupt("term list ID width"))?,
+                );
                 if id == 0 || previous.is_some_and(|prior| prior >= id) {
                     return Err(corrupt("term list IDs not strictly ascending"));
                 }
@@ -187,7 +197,7 @@ where
             if index.is_multiple_of(1024) {
                 budget.checkpoint("lexical:file-authority-v15-unique-list")?;
             }
-            if pair[0] == pair[1] {
+            if pair.first() == pair.get(1) {
                 return Err(corrupt("source ID occurs in multiple source-key buckets"));
             }
         }

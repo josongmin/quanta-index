@@ -304,6 +304,11 @@ def _scanner_identity(record: dict, phases: dict, declared: dict) -> dict:
             raise ValueError(f"scanner A/B {key} must be a lowercase SHA-256")
     if phases.get("runner_binary_sha256") != declared["runner_binary_sha256"]:
         raise ValueError("scanner A/B phase runner binary differs from declared identity")
+    runner = record.get("runner")
+    if not isinstance(runner, dict) or runner.get("revision") != (
+        f"sha256:{declared['runner_binary_sha256']}"
+    ):
+        raise ValueError("scanner A/B runner revision differs from attested binary")
     captures = record.get("captures")
     if not isinstance(captures, dict) or not captures:
         raise ValueError("scanner A/B requires captured binary and model identities")
@@ -480,8 +485,16 @@ def compare_scanner(
         if not isinstance(record.get("runner"), dict) or not record["runner"].get("run_id"):
             raise ValueError("scanner A/B runner protocol is missing")
     if not _same_json(
-        {key: value for key, value in baseline["runner"].items() if key != "run_id"},
-        {key: value for key, value in candidate["runner"].items() if key != "run_id"},
+        {
+            key: value
+            for key, value in baseline["runner"].items()
+            if key not in {"run_id", "revision"}
+        },
+        {
+            key: value
+            for key, value in candidate["runner"].items()
+            if key not in {"run_id", "revision"}
+        },
     ):
         raise ValueError("scanner A/B runner protocol differs")
     if baseline.get("query_pack_sha256") != candidate.get("query_pack_sha256") or not baseline.get(

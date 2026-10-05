@@ -58,15 +58,13 @@ pub(crate) struct SourcePackInput<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct SourceRow {
+struct SourceRow<'a> {
     digest: [u8; 32],
-    offset: usize,
-    len: usize,
+    body: &'a [u8],
 }
 
 pub(crate) struct SourcePackView<'a> {
-    payload: &'a [u8],
-    rows: Vec<SourceRow>,
+    rows: Vec<SourceRow<'a>>,
 }
 
 impl<'a> SourcePackView<'a> {
@@ -74,15 +72,11 @@ impl<'a> SourcePackView<'a> {
         let Ok(index) = self.rows.binary_search_by_key(digest, |row| row.digest) else {
             return None;
         };
-        let row = self.rows.get(index)?;
-        self.payload.get(row.offset..row.offset + row.len)
+        self.rows.get(index).map(|row| row.body)
     }
 
     pub(crate) fn entries(&self) -> impl ExactSizeIterator<Item = ([u8; 32], &'a [u8])> + '_ {
-        self.rows.iter().map(|row| {
-            // Every range was checked and hashed by decode_source_pack.
-            (row.digest, &self.payload[row.offset..row.offset + row.len])
-        })
+        self.rows.iter().map(|row| (row.digest, row.body))
     }
 }
 
@@ -108,16 +102,16 @@ pub(crate) struct PostingInput<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct PostingRow {
+struct PostingRow<'a> {
     gram: [u8; 3],
     offset: usize,
     count: usize,
+    bytes: &'a [u8],
 }
 
 pub(crate) struct PostingBlockView<'a> {
-    payload: &'a [u8],
     payload_offset: usize,
-    rows: Vec<PostingRow>,
+    rows: Vec<PostingRow<'a>>,
     membership_count: u64,
 }
 
@@ -136,20 +130,15 @@ impl<'a> PostingBlockView<'a> {
             return None;
         };
         let row = self.rows.get(index)?;
-        let len = row.count.checked_mul(8)?;
-        Some(PostingIds {
-            bytes: self.payload.get(row.offset..row.offset.checked_add(len)?)?,
-        })
+        Some(PostingIds { bytes: row.bytes })
     }
 
     pub(crate) fn iter_terms(
         &self,
     ) -> impl ExactSizeIterator<Item = ([u8; 3], usize, PostingIds<'a>)> + '_ {
-        self.rows.iter().map(|row| {
-            // Every range was checked by decode_posting_block.
-            let bytes = &self.payload[row.offset..row.offset + row.count * 8];
-            (row.gram, row.count, PostingIds { bytes })
-        })
+        self.rows
+            .iter()
+            .map(|row| (row.gram, row.count, PostingIds { bytes: row.bytes }))
     }
 
     pub(crate) fn membership_count(&self) -> u64 {
@@ -164,31 +153,19 @@ impl<'a> PostingBlockView<'a> {
                 .payload_offset
                 .checked_add(row.offset)
                 .ok_or(CodecError::Corrupt("term descriptor offset overflow"))?;
-            let length = row
-                .count
-                .checked_mul(8)
-                .ok_or(CodecError::Corrupt("term descriptor length overflow"))?;
-            let end = row
-                .offset
-                .checked_add(length)
-                .ok_or(CodecError::Corrupt("term descriptor end overflow"))?;
-            let bytes = self
-                .payload
-                .get(row.offset..end)
-                .ok_or(CodecError::Corrupt("term descriptor bounds"))?;
             Ok(PostingTermDescriptor {
                 gram: row.gram,
                 offset: u64::try_from(start)
-                    .map_err(|_| CodecError::Corrupt("term descriptor offset width"))?,
+                    .map_err(|_error| CodecError::Corrupt("term descriptor offset width"))?,
                 count: u32::try_from(row.count)
-                    .map_err(|_| CodecError::Corrupt("term descriptor count width"))?,
-                sha256: Sha256::digest(bytes).into(),
+                    .map_err(|_error| CodecError::Corrupt("term descriptor count width"))?,
+                sha256: Sha256::digest(row.bytes).into(),
             })
         })
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct PostingIds<'a> {
     bytes: &'a [u8],
 }
@@ -203,7 +180,7 @@ impl Iterator for PostingIds<'_> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let count = self.bytes.len() / 8;
+        let count = self.bytes.chunks_exact(8).len();
         (count, Some(count))
     }
 }
@@ -224,7 +201,7 @@ fn u32_at(bytes: &[u8], at: usize) -> Result<u32, CodecError> {
         .get(at..end)
         .ok_or(CodecError::Corrupt("truncated u32"))?
         .try_into()
-        .map_err(|_| CodecError::Corrupt("truncated u32"))?;
+        .map_err(|_error| CodecError::Corrupt("truncated u32"))?;
     Ok(u32::from_le_bytes(word))
 }
 
@@ -234,7 +211,7 @@ fn u16_at(bytes: &[u8], at: usize) -> Result<u16, CodecError> {
         .get(at..end)
         .ok_or(CodecError::Corrupt("truncated u16"))?
         .try_into()
-        .map_err(|_| CodecError::Corrupt("truncated u16"))?;
+        .map_err(|_error| CodecError::Corrupt("truncated u16"))?;
     Ok(u16::from_le_bytes(word))
 }
 
@@ -244,12 +221,12 @@ fn u64_at(bytes: &[u8], at: usize) -> Result<u64, CodecError> {
         .get(at..end)
         .ok_or(CodecError::Corrupt("truncated u64"))?
         .try_into()
-        .map_err(|_| CodecError::Corrupt("truncated u64"))?;
+        .map_err(|_error| CodecError::Corrupt("truncated u64"))?;
     Ok(u64::from_le_bytes(word))
 }
 
 fn usize_from_u64(value: u64) -> Result<usize, CodecError> {
-    usize::try_from(value).map_err(|_| CodecError::Corrupt("encoded length exceeds usize"))
+    usize::try_from(value).map_err(|_error| CodecError::Corrupt("encoded length exceeds usize"))
 }
 
 pub(crate) fn encode_source_pack(
@@ -257,9 +234,11 @@ pub(crate) fn encode_source_pack(
     limits: &CodecLimits,
 ) -> Result<Vec<u8>, CodecError> {
     limits.validate()?;
-    if sources.len() > limits.sources || sources.len() > u32::MAX as usize {
+    if sources.len() > limits.sources {
         return Err(CodecError::Limit("source count"));
     }
+    let source_count =
+        u32::try_from(sources.len()).map_err(|_error| CodecError::Limit("source count"))?;
     let table_bytes = mul(sources.len(), SOURCE_ROW, "source table overflow")?;
     let mut total = add(SOURCE_HEADER, table_bytes, "source pack header overflow")?;
     let mut payload_bytes = 0_usize;
@@ -271,7 +250,7 @@ pub(crate) fn encode_source_pack(
             ));
         }
         prior = Some(source.digest);
-        if source.bytes.len() > MAX_SOURCE_BYTES || source.bytes.len() > u32::MAX as usize {
+        if source.bytes.len() > MAX_SOURCE_BYTES {
             return Err(CodecError::Limit("source exceeds 8 MiB"));
         }
         let observed: [u8; 32] = Sha256::digest(source.bytes).into();
@@ -286,23 +265,25 @@ pub(crate) fn encode_source_pack(
     }
     let mut out = Vec::new();
     out.try_reserve_exact(total)
-        .map_err(|_| CodecError::Limit("source pack allocation"))?;
+        .map_err(|_error| CodecError::Limit("source pack allocation"))?;
     out.extend_from_slice(SOURCE_MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&0_u16.to_le_bytes());
-    out.extend_from_slice(&(sources.len() as u32).to_le_bytes());
+    out.extend_from_slice(&source_count.to_le_bytes());
     out.extend_from_slice(
         &u64::try_from(payload_bytes)
-            .map_err(|_| CodecError::Limit("source payload length"))?
+            .map_err(|_error| CodecError::Limit("source payload length"))?
             .to_le_bytes(),
     );
     let mut offset = 0_u64;
     for source in sources {
         out.extend_from_slice(&source.digest);
         out.extend_from_slice(&offset.to_le_bytes());
-        out.extend_from_slice(&(source.bytes.len() as u32).to_le_bytes());
+        let source_len = u32::try_from(source.bytes.len())
+            .map_err(|_error| CodecError::Limit("source exceeds 8 MiB"))?;
+        out.extend_from_slice(&source_len.to_le_bytes());
         offset = offset
-            .checked_add(source.bytes.len() as u64)
+            .checked_add(u64::from(source_len))
             .ok_or(CodecError::Limit("source offset"))?;
     }
     for source in sources {
@@ -326,7 +307,8 @@ pub(crate) fn decode_source_pack<'a>(
     {
         return Err(CodecError::Corrupt("source pack header"));
     }
-    let count = u32_at(bytes, 12)? as usize;
+    let count =
+        usize::try_from(u32_at(bytes, 12)?).map_err(|_error| CodecError::Limit("source count"))?;
     if count > limits.sources {
         return Err(CodecError::Limit("source count"));
     }
@@ -340,23 +322,34 @@ pub(crate) fn decode_source_pack<'a>(
     if expected != bytes.len() {
         return Err(CodecError::Corrupt("source pack length or trailing bytes"));
     }
-    let payload = &bytes[table_end..];
+    let payload = bytes
+        .get(table_end..)
+        .ok_or(CodecError::Corrupt("source pack payload bounds"))?;
     let mut rows = Vec::new();
     rows.try_reserve_exact(count)
-        .map_err(|_| CodecError::Limit("source table allocation"))?;
+        .map_err(|_error| CodecError::Limit("source table allocation"))?;
     let mut offset = 0_usize;
     let mut prior = None;
     for index in 0..count {
-        let start = SOURCE_HEADER + index * SOURCE_ROW;
-        let digest: [u8; 32] = bytes[start..start + 32]
+        let start = add(
+            SOURCE_HEADER,
+            mul(index, SOURCE_ROW, "source row offset overflow")?,
+            "source row start overflow",
+        )?;
+        let digest_end = add(start, 32, "source digest end overflow")?;
+        let digest: [u8; 32] = bytes
+            .get(start..digest_end)
+            .ok_or(CodecError::Corrupt("source digest row"))?
             .try_into()
-            .map_err(|_| CodecError::Corrupt("source digest row"))?;
+            .map_err(|_error| CodecError::Corrupt("source digest row"))?;
         if prior.is_some_and(|previous| previous >= digest) {
             return Err(CodecError::Corrupt("unsorted or duplicate source digest"));
         }
         prior = Some(digest);
-        let encoded_offset = usize_from_u64(u64_at(bytes, start + 32)?)?;
-        let len = u32_at(bytes, start + 40)? as usize;
+        let encoded_offset = usize_from_u64(u64_at(bytes, digest_end)?)?;
+        let len_at = add(start, 40, "source length offset overflow")?;
+        let len = usize::try_from(u32_at(bytes, len_at)?)
+            .map_err(|_error| CodecError::Corrupt("source length width"))?;
         if encoded_offset != offset {
             return Err(CodecError::Corrupt("noncontiguous source offset"));
         }
@@ -371,17 +364,13 @@ pub(crate) fn decode_source_pack<'a>(
         if observed != digest {
             return Err(CodecError::DigestMismatch);
         }
-        rows.push(SourceRow {
-            digest,
-            offset,
-            len,
-        });
+        rows.push(SourceRow { digest, body });
         offset = end;
     }
     if offset != payload_len {
         return Err(CodecError::Corrupt("unused source payload"));
     }
-    Ok(SourcePackView { payload, rows })
+    Ok(SourcePackView { rows })
 }
 
 pub(crate) fn encode_posting_block(
@@ -390,9 +379,11 @@ pub(crate) fn encode_posting_block(
     limits: &CodecLimits,
 ) -> Result<Vec<u8>, CodecError> {
     limits.validate()?;
-    if postings.len() > limits.terms || postings.len() > u32::MAX as usize {
+    if postings.len() > limits.terms {
         return Err(CodecError::Limit("posting term count"));
     }
+    let posting_count =
+        u32::try_from(postings.len()).map_err(|_error| CodecError::Limit("posting term count"))?;
     let table_bytes = mul(postings.len(), POSTING_ROW, "posting table overflow")?;
     let mut total = add(POSTING_HEADER, table_bytes, "posting header overflow")?;
     let mut memberships = 0_u64;
@@ -402,16 +393,23 @@ pub(crate) fn encode_posting_block(
             return Err(CodecError::Invalid("posting grams must be strictly sorted"));
         }
         prior_gram = Some(posting.gram);
-        if posting.source_ids.is_empty() || posting.source_ids.len() > u32::MAX as usize {
+        if posting.source_ids.is_empty() || u32::try_from(posting.source_ids.len()).is_err() {
             return Err(CodecError::Invalid(
                 "posting IDs must be nonempty and bounded",
             ));
         }
-        if posting.source_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+        if posting
+            .source_ids
+            .iter()
+            .zip(posting.source_ids.iter().skip(1))
+            .any(|(left, right)| left >= right)
+        {
             return Err(CodecError::Invalid("posting IDs must be strictly sorted"));
         }
+        let posting_memberships = u64::try_from(posting.source_ids.len())
+            .map_err(|_error| CodecError::Limit("membership count overflow"))?;
         memberships = memberships
-            .checked_add(posting.source_ids.len() as u64)
+            .checked_add(posting_memberships)
             .ok_or(CodecError::Limit("membership count overflow"))?;
         if memberships > limits.memberships {
             return Err(CodecError::Limit("posting memberships"));
@@ -428,16 +426,16 @@ pub(crate) fn encode_posting_block(
     let payload_bytes = mul(usize_from_u64(memberships)?, 8, "posting payload overflow")?;
     let mut out = Vec::new();
     out.try_reserve_exact(total)
-        .map_err(|_| CodecError::Limit("posting allocation"))?;
+        .map_err(|_error| CodecError::Limit("posting allocation"))?;
     out.extend_from_slice(POSTING_MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.push(surface.wire());
     out.push(0);
-    out.extend_from_slice(&(postings.len() as u32).to_le_bytes());
+    out.extend_from_slice(&posting_count.to_le_bytes());
     out.extend_from_slice(&memberships.to_le_bytes());
     out.extend_from_slice(
         &u64::try_from(payload_bytes)
-            .map_err(|_| CodecError::Limit("posting payload length"))?
+            .map_err(|_error| CodecError::Limit("posting payload length"))?
             .to_le_bytes(),
     );
     let mut offset = 0_u64;
@@ -445,9 +443,15 @@ pub(crate) fn encode_posting_block(
         out.extend_from_slice(&posting.gram);
         out.push(0);
         out.extend_from_slice(&offset.to_le_bytes());
-        out.extend_from_slice(&(posting.source_ids.len() as u32).to_le_bytes());
+        let id_count = u32::try_from(posting.source_ids.len())
+            .map_err(|_error| CodecError::Invalid("posting IDs must be nonempty and bounded"))?;
+        out.extend_from_slice(&id_count.to_le_bytes());
         offset = offset
-            .checked_add((posting.source_ids.len() as u64) * 8)
+            .checked_add(
+                u64::from(id_count)
+                    .checked_mul(8)
+                    .ok_or(CodecError::Limit("posting offset"))?,
+            )
             .ok_or(CodecError::Limit("posting offset"))?;
     }
     for posting in postings {
@@ -488,7 +492,8 @@ where
     {
         return Err(CodecError::Corrupt("posting block header or surface"));
     }
-    let count = u32_at(bytes, 12)? as usize;
+    let count = usize::try_from(u32_at(bytes, 12)?)
+        .map_err(|_error| CodecError::Limit("posting term count"))?;
     let memberships = u64_at(bytes, 16)?;
     if count > limits.terms || memberships > limits.memberships {
         return Err(CodecError::Limit("posting terms or memberships"));
@@ -507,10 +512,12 @@ where
             "posting block length or trailing bytes",
         ));
     }
-    let payload = &bytes[table_end..];
+    let payload = bytes
+        .get(table_end..)
+        .ok_or(CodecError::Corrupt("posting payload bounds"))?;
     let mut rows = Vec::new();
     rows.try_reserve_exact(count)
-        .map_err(|_| CodecError::Limit("posting table allocation"))?;
+        .map_err(|_error| CodecError::Limit("posting table allocation"))?;
     let mut offset = 0_usize;
     let mut observed_memberships = 0_u64;
     let mut prior_gram = None;
@@ -518,21 +525,34 @@ where
         if index.is_multiple_of(64) {
             checkpoint()?;
         }
-        let start = POSTING_HEADER + index * POSTING_ROW;
-        let gram: [u8; 3] = bytes[start..start + 3]
+        let start = add(
+            POSTING_HEADER,
+            mul(index, POSTING_ROW, "posting row offset overflow")?,
+            "posting row start overflow",
+        )?;
+        let gram_end = add(start, 3, "posting gram end overflow")?;
+        let gram: [u8; 3] = bytes
+            .get(start..gram_end)
+            .ok_or(CodecError::Corrupt("posting gram row"))?
             .try_into()
-            .map_err(|_| CodecError::Corrupt("posting gram row"))?;
-        if bytes[start + 3] != 0 || prior_gram.is_some_and(|previous| previous >= gram) {
+            .map_err(|_error| CodecError::Corrupt("posting gram row"))?;
+        if bytes.get(gram_end) != Some(&0) || prior_gram.is_some_and(|previous| previous >= gram) {
             return Err(CodecError::Corrupt("posting gram order or reserved byte"));
         }
         prior_gram = Some(gram);
-        let encoded_offset = usize_from_u64(u64_at(bytes, start + 4)?)?;
-        let ids = u32_at(bytes, start + 12)? as usize;
+        let offset_at = add(start, 4, "posting offset position overflow")?;
+        let count_at = add(start, 12, "posting count position overflow")?;
+        let encoded_offset = usize_from_u64(u64_at(bytes, offset_at)?)?;
+        let ids = usize::try_from(u32_at(bytes, count_at)?)
+            .map_err(|_error| CodecError::Corrupt("posting ID count width"))?;
         if ids == 0 || encoded_offset != offset {
             return Err(CodecError::Corrupt("posting count or offset"));
         }
         observed_memberships = observed_memberships
-            .checked_add(ids as u64)
+            .checked_add(
+                u64::try_from(ids)
+                    .map_err(|_error| CodecError::Corrupt("membership count width"))?,
+            )
             .ok_or(CodecError::Corrupt("membership count overflow"))?;
         let end = add(
             offset,
@@ -550,7 +570,7 @@ where
             let id = u64::from_le_bytes(
                 chunk
                     .try_into()
-                    .map_err(|_| CodecError::Corrupt("posting ID width"))?,
+                    .map_err(|_error| CodecError::Corrupt("posting ID width"))?,
             );
             if prior_id.is_some_and(|previous| previous >= id) {
                 return Err(CodecError::Corrupt("unsorted or duplicate posting ID"));
@@ -561,6 +581,7 @@ where
             gram,
             offset,
             count: ids,
+            bytes: encoded_ids,
         });
         offset = end;
     }
@@ -570,7 +591,6 @@ where
         ));
     }
     Ok(PostingBlockView {
-        payload,
         payload_offset: table_end,
         rows,
         membership_count: memberships,
@@ -665,13 +685,13 @@ mod tests {
             Err(CodecError::Corrupt(_))
         ));
         let mut reserved = fixed.clone();
-        reserved[10] = 1;
+        *reserved.get_mut(10).unwrap() = 1;
         assert!(matches!(
             decode_source_pack(&reserved, &limits()),
             Err(CodecError::Corrupt(_))
         ));
         let mut offset = fixed.clone();
-        offset[24 + 32] = 1;
+        *offset.get_mut(56).unwrap() = 1;
         assert!(matches!(
             decode_source_pack(&offset, &limits()),
             Err(CodecError::Corrupt(_))
@@ -691,7 +711,10 @@ mod tests {
             Err(CodecError::Limit(_))
         ));
         let mut huge_count = fixed;
-        huge_count[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        huge_count
+            .get_mut(12..16)
+            .unwrap()
+            .copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(matches!(
             decode_source_pack(&huge_count, &limits()),
             Err(CodecError::Limit(_))
@@ -735,19 +758,25 @@ mod tests {
             Err(CodecError::Corrupt(_))
         ));
         let mut duplicate_id = fixed.clone();
-        duplicate_id[56..64].copy_from_slice(&7_u64.to_le_bytes());
+        duplicate_id
+            .get_mut(56..64)
+            .unwrap()
+            .copy_from_slice(&7_u64.to_le_bytes());
         assert!(matches!(
             decode_posting_block(&duplicate_id, PostingSurface::Path, &limits()),
             Err(CodecError::Corrupt(_))
         ));
         let mut offset = fixed.clone();
-        offset[32 + 4] = 1;
+        *offset.get_mut(36).unwrap() = 1;
         assert!(matches!(
             decode_posting_block(&offset, PostingSurface::Path, &limits()),
             Err(CodecError::Corrupt(_))
         ));
         let mut count = fixed.clone();
-        count[16..24].copy_from_slice(&3_u64.to_le_bytes());
+        count
+            .get_mut(16..24)
+            .unwrap()
+            .copy_from_slice(&3_u64.to_le_bytes());
         assert!(matches!(
             decode_posting_block(&count, PostingSurface::Path, &limits()),
             Err(CodecError::Corrupt(_))

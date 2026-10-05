@@ -51,7 +51,9 @@ where
 {
     // The caller must stat the file and refuse size > expected before read.
     let bytes = read(row.sha256, row.bytes)?;
-    if u64::try_from(bytes.len()).map_err(|_| corrupt("blob length overflow"))? != row.bytes {
+    if u64::try_from(bytes.len()).map_err(|_length_width_error| corrupt("blob length overflow"))?
+        != row.bytes
+    {
         return Err(corrupt("blob length differs from root"));
     }
     let actual: [u8; 32] = Sha256::digest(&bytes).into();
@@ -93,8 +95,8 @@ fn add_source(
             scratch.charge(64)?;
         }
     }
-    let count =
-        u32::try_from(distinct.len()).map_err(|_| corrupt("one source term count overflow"))?;
+    let count = u32::try_from(distinct.len())
+        .map_err(|_count_width_error| corrupt("one source term count overflow"))?;
     for gram in distinct {
         let new_term = !expected.contains_key(&gram);
         if new_term {
@@ -138,8 +140,8 @@ fn append_directory(
     charged: &mut u64,
     policy: AuthorityPolicy,
 ) -> Result<(), String> {
-    let terms =
-        usize::try_from(descriptor.terms).map_err(|_| corrupt("term directory count width"))?;
+    let terms = usize::try_from(descriptor.terms)
+        .map_err(|_count_width_error| corrupt("term directory count width"))?;
     let block_charge = u64::from(descriptor.terms)
         .checked_mul(TERM_DIRECTORY_ROW_CHARGE)
         .and_then(|rows| rows.checked_add(TERM_DIRECTORY_BLOCK_CHARGE))
@@ -155,13 +157,13 @@ fn append_directory(
     }
     let mut rows = Vec::new();
     rows.try_reserve_exact(terms)
-        .map_err(|_| corrupt("term directory allocation refused"))?;
+        .map_err(|_allocation_error| corrupt("term directory allocation refused"))?;
     for term in view.term_descriptors() {
         rows.push(term.map_err(|error| corrupt(&format!("term descriptor: {error:?}")))?);
     }
     target
         .try_reserve(1)
-        .map_err(|_| corrupt("term directory bucket allocation refused"))?;
+        .map_err(|_allocation_error| corrupt("term directory bucket allocation refused"))?;
     target.push(PostingBucketDirectory {
         partition: descriptor.clone(),
         terms: rows,
@@ -191,7 +193,7 @@ where
     let mut resident_charge = root.term_directory_charge(policy)?;
     files
         .try_reserve(root.sources.len())
-        .map_err(|_| corrupt("source vector allocation refused"))?;
+        .map_err(|_allocation_error| corrupt("source vector allocation refused"))?;
     let mut by_bucket: BTreeMap<u8, Vec<&SourceRow>> = BTreeMap::new();
     for row in &root.sources {
         let key = source_key_digest(&row.source)?;
@@ -229,10 +231,9 @@ where
         for row in bucket_rows {
             if let Some(previous_length) =
                 expected_digests.insert(row.source.source_sha256, row.source_bytes)
+                && previous_length != row.source_bytes
             {
-                if previous_length != row.source_bytes {
-                    return Err(corrupt("same digest has different source length"));
-                }
+                return Err(corrupt("same digest has different source length"));
             }
         }
         if source_view.entries().len() != expected_digests.len() {
@@ -242,7 +243,8 @@ where
             let expected_length = expected_digests
                 .get(&digest)
                 .ok_or_else(|| corrupt("unreferenced packed source"))?;
-            if u64::try_from(bytes.len()).map_err(|_| corrupt("packed source length overflow"))?
+            if u64::try_from(bytes.len())
+                .map_err(|_length_width_error| corrupt("packed source length overflow"))?
                 != *expected_length
             {
                 return Err(corrupt("packed source length differs from root"));
@@ -257,7 +259,7 @@ where
             let raw = if row.text_admitted {
                 Some(
                     std::str::from_utf8(source)
-                        .map_err(|_| corrupt("text-admitted source is not UTF-8"))?,
+                        .map_err(|_utf8_error| corrupt("text-admitted source is not UTF-8"))?,
                 )
             } else {
                 None

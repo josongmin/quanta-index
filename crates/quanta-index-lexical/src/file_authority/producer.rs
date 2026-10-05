@@ -80,7 +80,7 @@ impl SourceDisposition<'_> {
 
 pub(super) struct CommittedBase<'a> {
     pub root: &'a AuthorityRoot,
-    /// Must stat against expected_len before a bounded read from a sealed,
+    /// Must stat against `expected_len` before a bounded read from a sealed,
     /// immutable base blob. No producer fallback to an unverified path.
     pub read_blob: &'a dyn Fn([u8; 32], u64) -> Result<Vec<u8>, String>,
 }
@@ -88,6 +88,21 @@ pub(super) struct CommittedBase<'a> {
 pub(super) struct ProducedAuthority {
     pub root: AuthorityRoot,
     pub root_bytes: Vec<u8>,
+}
+
+type BlobSink<'a> = dyn FnMut([u8; 32], &[u8]) -> Result<(), String> + 'a;
+#[derive(Default)]
+struct PackGroup {
+    digests: BTreeSet<[u8; 32]>,
+    indices: Vec<usize>,
+}
+
+struct SourceRows<'a> {
+    rows: Vec<SourceRow>,
+    changed_bytes: BTreeMap<[u8; 32], &'a [u8]>,
+    updates: BTreeMap<u64, UpdatedInput<'a>>,
+    touched_ids: BTreeSet<u64>,
+    next_id: u64,
 }
 
 struct UpdatedInput<'a> {
@@ -101,21 +116,30 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-fn prefix(key: &[u8; 32], bits: u16) -> [u8; 32] {
+fn prefix(key: &[u8; 32], bits: u16) -> Result<[u8; 32], ProducerError> {
     let mut result = [0_u8; 32];
-    let full = usize::from(bits / 8);
-    result[..full].copy_from_slice(&key[..full]);
-    result
+    let full = usize::from(bits).div_euclid(8);
+    let target = result
+        .get_mut(..full)
+        .ok_or_else(|| ProducerError::invalid("partition prefix exceeds digest width"))?;
+    let source = key
+        .get(..full)
+        .ok_or_else(|| ProducerError::invalid("partition key exceeds digest width"))?;
+    target.copy_from_slice(source);
+    Ok(result)
 }
 
 fn codec_limits(policy: AuthorityPolicy) -> Result<CodecLimits, ProducerError> {
     Ok(CodecLimits {
-        source_pack_encoded_bytes: usize::try_from(policy.pack_bytes)
-            .map_err(|_| ProducerError::limit("pack byte policy exceeds usize"))?,
-        posting_block_encoded_bytes: usize::try_from(policy.posting_block_bytes)
-            .map_err(|_| ProducerError::limit("posting byte policy exceeds usize"))?,
-        sources: usize::try_from(policy.source_files)
-            .map_err(|_| ProducerError::limit("source count policy exceeds usize"))?,
+        source_pack_encoded_bytes: usize::try_from(policy.pack_bytes).map_err(|error| {
+            ProducerError::limit(format!("pack byte policy exceeds usize: {error}"))
+        })?,
+        posting_block_encoded_bytes: usize::try_from(policy.posting_block_bytes).map_err(
+            |error| ProducerError::limit(format!("posting byte policy exceeds usize: {error}")),
+        )?,
+        sources: usize::try_from(policy.source_files).map_err(|error| {
+            ProducerError::limit(format!("source count policy exceeds usize: {error}"))
+        })?,
         // A three-byte gram has only 2^24 possible values.
         terms: 1 << 24,
         memberships: policy.total_memberships,
@@ -125,7 +149,9 @@ fn codec_limits(policy: AuthorityPolicy) -> Result<CodecLimits, ProducerError> {
 fn codec_input(error: CodecError) -> ProducerError {
     match error {
         CodecError::Limit(reason) => ProducerError::limit(format!("codec: {reason}")),
-        other => ProducerError::invalid(format!("codec: {other:?}")),
+        error @ (CodecError::Invalid(_) | CodecError::Corrupt(_) | CodecError::DigestMismatch) => {
+            ProducerError::invalid(format!("codec: {error:?}"))
+        }
     }
 }
 
@@ -137,24 +163,25 @@ fn base_blob(base: &CommittedBase<'_>, partition: &Partition) -> Result<Vec<u8>,
     let bytes =
         (base.read_blob)(partition.sha256, partition.bytes).map_err(ProducerError::corrupt)?;
     let observed_len = u64::try_from(bytes.len())
-        .map_err(|_| ProducerError::limit("base blob length exceeds u64"))?;
+        .map_err(|error| ProducerError::limit(format!("base blob length exceeds u64: {error}")))?;
     if observed_len != partition.bytes || digest(&bytes) != partition.sha256 {
         return Err(ProducerError::corrupt("base blob SHA-256 differs"));
     }
     Ok(bytes)
 }
 
-/// Sink must write a new content-addressed object or byte-compare an existing
-/// digest name. It may leave an unreferenced orphan on later failure; only the
-/// caller can publish the root after the sink's durability barrier.
+/// Write or byte-compare a content-addressed object.
+///
+/// The sink may leave an unreferenced orphan on later failure. Only the caller
+/// can publish the root after the sink's durability barrier.
 fn emit_blob(
     emitted: &mut BTreeMap<[u8; 32], u64>,
-    sink: &mut dyn FnMut([u8; 32], &[u8]) -> Result<(), String>,
-    bytes: Vec<u8>,
+    sink: &mut BlobSink<'_>,
+    bytes: &[u8],
 ) -> Result<[u8; 32], ProducerError> {
-    let sha256 = digest(&bytes);
+    let sha256 = digest(bytes);
     let length = u64::try_from(bytes.len())
-        .map_err(|_| ProducerError::limit("emitted blob length overflow"))?;
+        .map_err(|error| ProducerError::limit(format!("emitted blob length overflow: {error}")))?;
     if emitted
         .get(&sha256)
         .is_some_and(|previous| *previous != length)
@@ -165,7 +192,7 @@ fn emit_blob(
     }
     // Always call the sink, including duplicates such as empty content blocks.
     // Its read-after-write equality check handles same-length SHA collisions.
-    sink(sha256, &bytes).map_err(ProducerError::corrupt)?;
+    sink(sha256, bytes).map_err(ProducerError::corrupt)?;
     if emitted
         .insert(sha256, length)
         .is_some_and(|prior| prior != length)
@@ -185,10 +212,9 @@ fn normalized_updated(
 ) -> Result<(String, Option<String>, u64), ProducerError> {
     // source_rows already verified the exact bytes and 8 MiB bound.
     let raw = if text_admitted {
-        Some(
-            std::str::from_utf8(bytes)
-                .map_err(|_| ProducerError::invalid("text-admitted source is not UTF-8"))?,
-        )
+        Some(std::str::from_utf8(bytes).map_err(|error| {
+            ProducerError::invalid(format!("text-admitted source is not UTF-8: {error}"))
+        })?)
     } else {
         None
     };
@@ -219,7 +245,8 @@ fn checked_descriptor(
         prefix_bits: bits,
         prefix: bucket,
         sha256,
-        bytes: u64::try_from(bytes).map_err(|_| ProducerError::limit("blob bytes overflow"))?,
+        bytes: u64::try_from(bytes)
+            .map_err(|error| ProducerError::limit(format!("blob bytes overflow: {error}")))?,
         entries,
         terms,
     })
@@ -229,17 +256,9 @@ fn source_rows<'a>(
     current: &[SourceDisposition<'a>],
     base: Option<&CommittedBase<'_>>,
     policy: AuthorityPolicy,
-) -> Result<
-    (
-        Vec<SourceRow>,
-        BTreeMap<[u8; 32], &'a [u8]>,
-        BTreeMap<u64, UpdatedInput<'a>>,
-        BTreeSet<u64>,
-        u64,
-    ),
-    ProducerError,
-> {
-    if u64::try_from(current.len()).map_err(|_| ProducerError::limit("source count overflow"))?
+) -> Result<SourceRows<'a>, ProducerError> {
+    if u64::try_from(current.len())
+        .map_err(|error| ProducerError::limit(format!("source count overflow: {error}")))?
         > policy.source_files
     {
         return Err(ProducerError::limit("source count exceeds policy"));
@@ -256,7 +275,7 @@ fn source_rows<'a>(
     let mut next_id = base.map_or(1, |base| base.root.next_source_id);
     let mut rows = Vec::new();
     rows.try_reserve_exact(current.len())
-        .map_err(|_| ProducerError::limit("source row allocation"))?;
+        .map_err(|error| ProducerError::limit(format!("source row allocation: {error}")))?;
     let mut changed_bytes = BTreeMap::new();
     let mut updates = BTreeMap::new();
     let mut touched_ids = BTreeSet::new();
@@ -314,12 +333,12 @@ fn source_rows<'a>(
                         "updated source byte limit or digest differs",
                     ));
                 }
-                if let Some(previous) = changed_bytes.insert(source.source_sha256, *bytes) {
-                    if previous != *bytes {
-                        return Err(ProducerError::invalid(
-                            "one digest has different source bytes",
-                        ));
-                    }
+                if let Some(previous) = changed_bytes.insert(source.source_sha256, *bytes)
+                    && previous != *bytes
+                {
+                    return Err(ProducerError::invalid(
+                        "one digest has different source bytes",
+                    ));
                 }
                 if !touched_ids.insert(source_id) {
                     return Err(ProducerError::invalid("updated source ID is duplicated"));
@@ -330,7 +349,7 @@ fn source_rows<'a>(
                         UpdatedInput {
                             source_id,
                             row_index,
-                            bytes: *bytes,
+                            bytes,
                             text_admitted: *text_admitted,
                         },
                     )
@@ -343,8 +362,9 @@ fn source_rows<'a>(
                     text_admitted: *text_admitted,
                     language: language.clone(),
                     posting_memberships: 0, // Filled after bucket-local tokenization.
-                    source_bytes: u64::try_from(bytes.len())
-                        .map_err(|_| ProducerError::limit("source byte count overflow"))?,
+                    source_bytes: u64::try_from(bytes.len()).map_err(|error| {
+                        ProducerError::limit(format!("source byte count overflow: {error}"))
+                    })?,
                     resident_heap_bytes: 0, // Filled at bucket-local normalization.
                     source_id,
                     pack_sha256: [0; 32], // Filled after pack partitioning.
@@ -357,8 +377,7 @@ fn source_rows<'a>(
         total_memberships = total_memberships
             .checked_add(u64::from(row.posting_memberships))
             .ok_or_else(|| ProducerError::limit("aggregate memberships overflow"))?;
-        if total_bytes > policy.source_bytes || total_memberships > policy.total_memberships
-        {
+        if total_bytes > policy.source_bytes || total_memberships > policy.total_memberships {
             return Err(ProducerError::limit(
                 "aggregate source or membership policy exceeded",
             ));
@@ -367,13 +386,17 @@ fn source_rows<'a>(
     }
     let current_ids: BTreeSet<u64> = rows.iter().map(|row| row.source_id).collect();
     for old in base_by_key.values() {
-        if !current_ids.contains(&old.source_id) {
-            if !touched_ids.insert(old.source_id) {
-                return Err(ProducerError::corrupt("retired source ID is duplicated"));
-            }
+        if !current_ids.contains(&old.source_id) && !touched_ids.insert(old.source_id) {
+            return Err(ProducerError::corrupt("retired source ID is duplicated"));
         }
     }
-    Ok((rows, changed_bytes, updates, touched_ids, next_id))
+    Ok(SourceRows {
+        rows,
+        changed_bytes,
+        updates,
+        touched_ids,
+        next_id,
+    })
 }
 
 fn produce_packs(
@@ -384,21 +407,21 @@ fn produce_packs(
     policy: AuthorityPolicy,
     limits: &CodecLimits,
     emitted: &mut BTreeMap<[u8; 32], u64>,
-    sink: &mut dyn FnMut([u8; 32], &[u8]) -> Result<(), String>,
+    sink: &mut BlobSink<'_>,
 ) -> Result<Vec<Partition>, ProducerError> {
-    let mut groups: BTreeMap<[u8; 32], (BTreeSet<[u8; 32]>, Vec<usize>)> = BTreeMap::new();
+    let mut groups: BTreeMap<[u8; 32], PackGroup> = BTreeMap::new();
     for (index, row) in rows.iter().enumerate() {
         let key = source_key_digest(&row.source).map_err(ProducerError::invalid)?;
-        let group = groups.entry(prefix(&key, bits)).or_default();
+        let group = groups.entry(prefix(&key, bits)?).or_default();
         // Identical source bytes under distinct source keys share one pack body.
-        let _new_body = group.0.insert(row.source.source_sha256);
-        group.1.push(index);
+        let _new_body = group.digests.insert(row.source.source_sha256);
+        group.indices.push(index);
     }
     let mut base_groups: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> = BTreeMap::new();
     for old in base.into_iter().flat_map(|base| base.root.sources.iter()) {
         let key = source_key_digest(&old.source).map_err(ProducerError::corrupt)?;
         let _new_body = base_groups
-            .entry(prefix(&key, bits))
+            .entry(prefix(&key, bits)?)
             .or_default()
             .insert(old.source.source_sha256);
     }
@@ -409,14 +432,13 @@ fn produce_packs(
         .collect();
     let mut partitions = Vec::new();
     let mut total_bytes = 0_u64;
-    for (bucket, (digests, indices)) in groups {
+    for (bucket, PackGroup { digests, indices }) in groups {
         let old_partition = base_partitions.get(&bucket).copied();
         let old_digests = base_groups.get(&bucket);
         let descriptor = if old_partition.is_some() && old_digests == Some(&digests) {
-            let prior = (*old_partition
+            (*old_partition
                 .ok_or_else(|| ProducerError::corrupt("unchanged pack descriptor is missing"))?)
-            .clone();
-            prior
+            .clone()
         } else {
             let mut source_bytes: BTreeMap<[u8; 32], Vec<u8>> = BTreeMap::new();
             if let (Some(base), Some(prior)) = (base, old_partition) {
@@ -474,21 +496,23 @@ fn produce_packs(
                 })
                 .collect::<Result<_, ProducerError>>()?;
             let cloned_body_bytes = source_bytes.values().try_fold(0_u64, |sum, body| {
-                sum.checked_add(
-                    u64::try_from(body.len())
-                        .map_err(|_| ProducerError::limit("cloned body length overflow"))?,
-                )
+                sum.checked_add(u64::try_from(body.len()).map_err(|error| {
+                    ProducerError::limit(format!("cloned body length overflow: {error}"))
+                })?)
                 .ok_or_else(|| ProducerError::limit("cloned body sum overflow"))
             })?;
             let map_overhead = u64::try_from(source_bytes.len())
-                .map_err(|_| ProducerError::limit("pack map size overflow"))?
+                .map_err(|error| ProducerError::limit(format!("pack map size overflow: {error}")))?
                 .checked_mul(128)
                 .ok_or_else(|| ProducerError::limit("pack map charge overflow"))?;
             // Codec V1: 24-byte header and 44-byte table row. Calculate the
             // output allocation before encode while cloned base bodies live.
             let projected_len = input.iter().try_fold(24_u64, |sum, source| {
+                let body_len = u64::try_from(source.bytes.len()).map_err(|error| {
+                    ProducerError::limit(format!("pack projected body length: {error}"))
+                })?;
                 sum.checked_add(44)
-                    .and_then(|sum| sum.checked_add(source.bytes.len() as u64))
+                    .and_then(|sum| sum.checked_add(body_len))
                     .ok_or_else(|| ProducerError::limit("pack projected length overflow"))
             })?;
             if cloned_body_bytes
@@ -502,24 +526,30 @@ fn produce_packs(
             }
             let encoded = encode_source_pack(&input, limits).map_err(codec_input)?;
             let len = encoded.len();
-            if len as u64 != projected_len {
+            if u64::try_from(len)
+                .map_err(|error| ProducerError::limit(format!("encoded pack length: {error}")))?
+                != projected_len
+            {
                 return Err(ProducerError::corrupt(
                     "pack encoded length differs from projection",
                 ));
             }
-            let sha256 = emit_blob(emitted, sink, encoded)?;
+            let sha256 = emit_blob(emitted, sink, &encoded)?;
             checked_descriptor(
                 bits,
                 bucket,
                 sha256,
                 len,
                 u64::try_from(digests.len())
-                    .map_err(|_| ProducerError::limit("pack entry count"))?,
+                    .map_err(|error| ProducerError::limit(format!("pack entry count: {error}")))?,
                 0,
             )?
         };
         for index in indices {
-            rows[index].pack_sha256 = descriptor.sha256;
+            let row = rows
+                .get_mut(index)
+                .ok_or_else(|| ProducerError::invalid("pack row index exceeds source rows"))?;
+            row.pack_sha256 = descriptor.sha256;
         }
         total_bytes = total_bytes
             .checked_add(descriptor.bytes)
@@ -606,8 +636,9 @@ fn load_old_postings(
 ) -> Result<BTreeMap<[u8; 3], BTreeSet<u64>>, ProducerError> {
     let mut postings = BTreeMap::new();
     if let (Some(base), Some(partition)) = (base, partition) {
-        let expected = usize::try_from(partition.bytes)
-            .map_err(|_| ProducerError::limit("base posting bytes exceed usize"))?;
+        let expected = usize::try_from(partition.bytes).map_err(|error| {
+            ProducerError::limit(format!("base posting bytes exceed usize: {error}"))
+        })?;
         if scratch
             .checked_add(expected)
             .is_none_or(|sum| sum > max_scratch)
@@ -621,12 +652,12 @@ fn load_old_postings(
         let view = decode_posting_block(&bytes, surface, limits).map_err(codec_base)?;
         for (gram, _, ids) in view.iter_terms() {
             for id in ids {
-                if !touched_ids.contains(&id) {
-                    if !insert_membership(&mut postings, gram, id, scratch, max_scratch)? {
-                        return Err(ProducerError::corrupt(
-                            "base posting repeats a source membership",
-                        ));
-                    }
+                if !touched_ids.contains(&id)
+                    && !insert_membership(&mut postings, gram, id, scratch, max_scratch)?
+                {
+                    return Err(ProducerError::corrupt(
+                        "base posting repeats a source membership",
+                    ));
                 }
             }
         }
@@ -634,16 +665,20 @@ fn load_old_postings(
     Ok(postings)
 }
 
+struct PostingEncodeContext<'a> {
+    bits: u16,
+    limits: &'a CodecLimits,
+    scratch: &'a mut usize,
+    max_scratch: usize,
+}
+
 fn encode_postings(
     postings: BTreeMap<[u8; 3], BTreeSet<u64>>,
     surface: PostingSurface,
     bucket: [u8; 32],
-    bits: u16,
-    limits: &CodecLimits,
-    scratch: &mut usize,
-    max_scratch: usize,
+    context: &mut PostingEncodeContext<'_>,
     emitted: &mut BTreeMap<[u8; 32], u64>,
-    sink: &mut dyn FnMut([u8; 32], &[u8]) -> Result<(), String>,
+    sink: &mut BlobSink<'_>,
 ) -> Result<Partition, ProducerError> {
     let owned: Vec<([u8; 3], Vec<u64>)> = postings
         .into_iter()
@@ -658,19 +693,19 @@ fn encode_postings(
         .collect();
     let entries = owned.iter().try_fold(0_u64, |total, (_, ids)| {
         total
-            .checked_add(
-                u64::try_from(ids.len())
-                    .map_err(|_| ProducerError::limit("posting membership conversion"))?,
-            )
+            .checked_add(u64::try_from(ids.len()).map_err(|error| {
+                ProducerError::limit(format!("posting membership conversion: {error}"))
+            })?)
             .ok_or_else(|| ProducerError::limit("posting membership sum"))
     })?;
-    let encoded = encode_posting_block(surface, &input, limits).map_err(codec_input)?;
-    charge(scratch, encoded.len(), max_scratch)?;
+    let encoded = encode_posting_block(surface, &input, context.limits).map_err(codec_input)?;
+    charge(context.scratch, encoded.len(), context.max_scratch)?;
     let len = encoded.len();
-    let sha256 = emit_blob(emitted, sink, encoded)?;
-    let terms = u32::try_from(owned.len())
-        .map_err(|_| ProducerError::limit("posting term count exceeds u32"))?;
-    checked_descriptor(bits, bucket, sha256, len, entries, terms)
+    let sha256 = emit_blob(emitted, sink, &encoded)?;
+    let terms = u32::try_from(owned.len()).map_err(|error| {
+        ProducerError::limit(format!("posting term count exceeds u32: {error}"))
+    })?;
+    checked_descriptor(context.bits, bucket, sha256, len, entries, terms)
 }
 
 fn charge_term_directory(
@@ -698,18 +733,30 @@ fn charge_term_directory(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct PostingBuildContext<'a, 'b> {
+    base: Option<&'a CommittedBase<'b>>,
+    bits: u16,
+    policy: AuthorityPolicy,
+    limits: &'a CodecLimits,
+    bucket_scratch_bytes: usize,
+}
+
 fn produce_posting_buckets(
     rows: &mut [SourceRow],
     updates: &BTreeMap<u64, UpdatedInput<'_>>,
     touched_ids: &BTreeSet<u64>,
-    base: Option<&CommittedBase<'_>>,
-    bits: u16,
-    policy: AuthorityPolicy,
-    limits: &CodecLimits,
-    bucket_scratch_bytes: usize,
+    build_limits: PostingBuildContext<'_, '_>,
     emitted: &mut BTreeMap<[u8; 32], u64>,
-    sink: &mut dyn FnMut([u8; 32], &[u8]) -> Result<(), String>,
+    sink: &mut BlobSink<'_>,
 ) -> Result<(Vec<Partition>, Vec<Partition>), ProducerError> {
+    let PostingBuildContext {
+        base,
+        bits,
+        policy,
+        limits,
+        bucket_scratch_bytes,
+    } = build_limits;
     if bucket_scratch_bytes <= SCRATCH_BITMAP_BYTES {
         return Err(ProducerError::limit(
             "posting bucket scratch ceiling is too small",
@@ -718,7 +765,7 @@ fn produce_posting_buckets(
     let mut groups: BTreeMap<[u8; 32], Vec<usize>> = BTreeMap::new();
     for (index, row) in rows.iter().enumerate() {
         let key = source_key_digest(&row.source).map_err(ProducerError::invalid)?;
-        groups.entry(prefix(&key, bits)).or_default().push(index);
+        groups.entry(prefix(&key, bits)?).or_default().push(index);
     }
     let mut old_groups: BTreeMap<[u8; 32], BTreeSet<u64>> = BTreeMap::new();
     let mut base_path = BTreeMap::new();
@@ -727,7 +774,7 @@ fn produce_posting_buckets(
         for row in &base.root.sources {
             let key = source_key_digest(&row.source).map_err(ProducerError::corrupt)?;
             if !old_groups
-                .entry(prefix(&key, bits))
+                .entry(prefix(&key, bits)?)
                 .or_default()
                 .insert(row.source_id)
             {
@@ -753,8 +800,14 @@ fn produce_posting_buckets(
             .ok_or_else(|| ProducerError::limit("resident heap charge overflow"))
     })?;
     for (bucket, indices) in groups {
-        let current_ids: BTreeSet<u64> =
-            indices.iter().map(|index| rows[*index].source_id).collect();
+        let current_ids: BTreeSet<u64> = indices
+            .iter()
+            .map(|index| {
+                rows.get(*index)
+                    .map(|row| row.source_id)
+                    .ok_or_else(|| ProducerError::invalid("posting row index exceeds source rows"))
+            })
+            .collect::<Result<_, _>>()?;
         let old_ids = old_groups.get(&bucket);
         let old_path = base_path.get(&bucket).copied();
         let old_content = base_content.get(&bucket).copied();
@@ -805,7 +858,9 @@ fn produce_posting_buckets(
                 bucket_scratch_bytes,
             )?;
             for index in indices {
-                let row = &mut rows[index];
+                let row = rows.get_mut(index).ok_or_else(|| {
+                    ProducerError::invalid("posting row index exceeds source rows")
+                })?;
                 if let Some(update) = updates.get(&row.source_id) {
                     if update.row_index != index || update.source_id != row.source_id {
                         return Err(ProducerError::invalid(
@@ -864,15 +919,21 @@ fn produce_posting_buckets(
                         u32::try_from(path_count.checked_add(content_count).ok_or_else(|| {
                             ProducerError::limit("source membership sum overflow")
                         })?)
-                        .map_err(|_| ProducerError::limit("source membership count exceeds u32"))?;
+                        .map_err(|error| {
+                            ProducerError::limit(format!(
+                                "source membership count exceeds u32: {error}"
+                            ))
+                        })?;
                 }
             }
             charge_term_directory(
                 &mut term_directory_charge,
-                u64::try_from(path.len())
-                    .map_err(|_| ProducerError::limit("path term count exceeds u64"))?,
-                u64::try_from(content.len())
-                    .map_err(|_| ProducerError::limit("content term count exceeds u64"))?,
+                u64::try_from(path.len()).map_err(|error| {
+                    ProducerError::limit(format!("path term count exceeds u64: {error}"))
+                })?,
+                u64::try_from(content.len()).map_err(|error| {
+                    ProducerError::limit(format!("content term count exceeds u64: {error}"))
+                })?,
                 policy,
             )?;
             if resident_charge
@@ -881,14 +942,17 @@ fn produce_posting_buckets(
             {
                 return Err(ProducerError::limit("resident heap exceeds policy"));
             }
+            let mut encode_context = PostingEncodeContext {
+                bits,
+                limits,
+                scratch: &mut scratch,
+                max_scratch: bucket_scratch_bytes,
+            };
             let path = encode_postings(
                 path,
                 PostingSurface::Path,
                 bucket,
-                bits,
-                limits,
-                &mut scratch,
-                bucket_scratch_bytes,
+                &mut encode_context,
                 emitted,
                 sink,
             )?;
@@ -896,10 +960,7 @@ fn produce_posting_buckets(
                 content,
                 PostingSurface::Content,
                 bucket,
-                bits,
-                limits,
-                &mut scratch,
-                bucket_scratch_bytes,
+                &mut encode_context,
                 emitted,
                 sink,
             )?;
@@ -940,15 +1001,15 @@ fn produce_posting_buckets(
 /// aggregate retained bytes.
 pub(super) fn produce_authority(
     current: &[SourceDisposition<'_>],
-    base: Option<CommittedBase<'_>>,
+    base: Option<&CommittedBase<'_>>,
     policy: AuthorityPolicy,
     prefix_bits: u16,
-    sink: &mut dyn FnMut([u8; 32], &[u8]) -> Result<(), String>,
+    sink: &mut BlobSink<'_>,
 ) -> Result<ProducedAuthority, ProducerError> {
     if prefix_bits != 8 {
         return Err(ProducerError::invalid("F15 requires exactly 8 prefix bits"));
     }
-    if let Some(base) = &base {
+    if let Some(base) = base {
         base.root.validate(policy).map_err(ProducerError::corrupt)?;
         for partition in base
             .root
@@ -965,15 +1026,21 @@ pub(super) fn produce_authority(
         }
     }
     let limits = codec_limits(policy)?;
-    let bucket_scratch_bytes = usize::try_from(policy.bucket_scratch_bytes)
-        .map_err(|_| ProducerError::limit("bucket scratch policy exceeds usize"))?;
-    let (mut rows, changed_bytes, updates, touched_ids, next_source_id) =
-        source_rows(current, base.as_ref(), policy)?;
+    let bucket_scratch_bytes = usize::try_from(policy.bucket_scratch_bytes).map_err(|error| {
+        ProducerError::limit(format!("bucket scratch policy exceeds usize: {error}"))
+    })?;
+    let SourceRows {
+        mut rows,
+        changed_bytes,
+        updates,
+        touched_ids,
+        next_id: next_source_id,
+    } = source_rows(current, base, policy)?;
     let mut emitted_blobs = BTreeMap::new();
     let packs = produce_packs(
         &mut rows,
         &changed_bytes,
-        base.as_ref(),
+        base,
         prefix_bits,
         policy,
         &limits,
@@ -984,11 +1051,13 @@ pub(super) fn produce_authority(
         &mut rows,
         &updates,
         &touched_ids,
-        base.as_ref(),
-        prefix_bits,
-        policy,
-        &limits,
-        bucket_scratch_bytes,
+        PostingBuildContext {
+            base,
+            bits: prefix_bits,
+            policy,
+            limits: &limits,
+            bucket_scratch_bytes,
+        },
         &mut emitted_blobs,
         sink,
     )?;
@@ -1095,7 +1164,7 @@ mod tests {
                 text_admitted,
                 language: language(language_code),
             }],
-            Some(CommittedBase {
+            Some(&CommittedBase {
                 root: &base.root,
                 read_blob: &no_read,
             }),
@@ -1167,8 +1236,8 @@ mod tests {
             calls += 1;
             Ok(())
         };
-        let first = emit_blob(&mut inventory, &mut sink, b"same empty block".to_vec()).unwrap();
-        let second = emit_blob(&mut inventory, &mut sink, b"same empty block".to_vec()).unwrap();
+        let first = emit_blob(&mut inventory, &mut sink, b"same empty block").unwrap();
+        let second = emit_blob(&mut inventory, &mut sink, b"same empty block").unwrap();
         assert_eq!(first, second);
         assert_eq!(inventory.len(), 1);
         assert_eq!(calls, 2);
@@ -1205,7 +1274,7 @@ mod tests {
         replacement.source_sha256 = Sha256::digest(b"abd").into();
         let read = |sha, len| -> Result<Vec<u8>, String> {
             let bytes = base_blobs.get(&sha).ok_or("missing base blob")?;
-            if bytes.len() as u64 != len {
+            if u64::try_from(bytes.len()).map_err(|error| error.to_string())? != len {
                 return Err("base length".into());
             }
             Ok(bytes.clone())
@@ -1228,7 +1297,7 @@ mod tests {
                 text_admitted: true,
                 language: language("rust"),
             }],
-            Some(CommittedBase {
+            Some(&CommittedBase {
                 root: &base.root,
                 read_blob: &read,
             }),
@@ -1252,7 +1321,7 @@ mod tests {
         let mut no_write = |_, _: &[u8]| -> Result<(), String> { panic!("tombstone wrote blob") };
         let empty = produce_authority(
             &[],
-            Some(CommittedBase {
+            Some(&CommittedBase {
                 root: &base.root,
                 read_blob: &no_read,
             }),
@@ -1273,7 +1342,7 @@ mod tests {
                 text_admitted: false,
                 language: language("rust"),
             }],
-            Some(CommittedBase {
+            Some(&CommittedBase {
                 root: &empty.root,
                 read_blob: &no_read,
             }),
