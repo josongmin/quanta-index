@@ -21,6 +21,10 @@
   Actual admission/pair/full5는 새 selected-source proof·runtime·host slot 전달 전 `NOT_RUN`이다.
 - Public API 담당은 새 contract 업로드 API baseline 후보를 준비했다. 실제 nightly rendering/consumer
   판정은 Scale 최종 bytes를 포함한 source에서 수행해야 하며 현재 완료 증거가 없다.
+- Hosted CircleCI source7fb46415는 `FAILED`다. Verify1730은 upload 코드의 rustfmt drift에서 exit1,
+  verify-python1729는 contract/core guarded module tree의 새 upload DTO/port 및 sibling byte wrapper
+  visibility baseline 누락에서 exit1이었다. 포맷은 Scale, 두 module baseline과 공개 API는 API 담당이 소유한다.
+  이 source의 Clippy·뒤쪽 Python gates는 앞 단계 실패로 실행되지 않았다.
 - 확인 시 main은 clean `bc18e67e63ebd5914bb679d2aeb25ae498c4d2f9`였다. 새 bounded source-upload
   코드가 추가됐으며 이전 Clippy/598 lexical/Frozen5796 proof를 그 source의 최종 증거로 승격하지 않는다.
 - Ready9 OG는 source63ac에서9/9 capture·독립 `live_lexical_external.py --verify`가 `VERIFIED`다.
@@ -576,7 +580,7 @@ source/binary/input namespace 관리는 이후 각 epoch의 상시 규칙이다.
 ### O4-I0-02
 
 P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
-frozen `5796a63f` Contract·fresh SDK `VERIFIED`, hosted CI `NOT_RUN`.
+frozen `5796a63f` Contract·fresh SDK `VERIFIED`, 후속 source7fb46415 hosted CI `FAILED`.
 
 - Frozen product `0e6c7e7e9494b63fdb33f4594df059817459d3b1`와 Python native/join
   `97eedd11b70e76c66985b15a968211a2faf92c6d` 결과는 각각의 historical source 범위다.

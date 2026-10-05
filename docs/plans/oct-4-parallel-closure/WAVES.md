@@ -64,6 +64,8 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 - 후속 통합 source7fb46415에서 benchmark manual Serialize2곳과 전체 derive gate를 정리했다.
   Module cycle·test authority·prompt lint·Ruff도 `VERIFIED`다. 현재 F15 actual은 host lock 대기 중이다.
   Scale 최종 SDK caller/binding과 공개 API rendering, matching Contract/fresh SDK는 아직 종료하지 않았다.
+  같은 source의 CircleCI verify1730/verify-python1729는 각각 upload rustfmt drift와 contract/core
+  cargo-modules baseline 누락으로 `FAILED`다. 해당 owned 수리 뒤 새 exact-source CI를 확인한다.
 - Ready9 final static 원본90/admission73/Bat105/OG39,669파일과 runtime 감사 및 guard9/9가 통과했다.
   Source107 helper3개의 relocated lookup 수리는 외부 guarded 후보다. 새 proof와 host slot 전달 이후
   actual admission/pair/SG-CS/replay/full5를 진행한다. 정적 준비를 actual 결과로 세지 않는다.

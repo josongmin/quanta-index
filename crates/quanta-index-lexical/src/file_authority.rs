@@ -511,7 +511,7 @@ fn write_object(
     };
     file.write_all(bytes)
         .map_err(|error| format!("write object temporary: {error}"))?;
-    file.sync_all()
+    crate::causal_profile::timed_sync("file_authority_object", || file.sync_all())
         .map_err(|error| format!("sync object temporary: {error}"))?;
     drop(file);
     // link(2) cannot replace a published object if another writer won the
@@ -533,7 +533,9 @@ fn write_object(
 fn sync_object_dir(generation_dir: &Path) -> Result<(), CoreError> {
     let path = generation_dir.join(DIR).join(OBJECTS);
     std::fs::File::open(&path)
-        .and_then(|dir| dir.sync_all())
+        .and_then(|dir| {
+            crate::causal_profile::timed_sync("file_authority_directory", || dir.sync_all())
+        })
         .map_err(|error| {
             CoreError::Storage(format!(
                 "lexical: sync F15 object directory {}: {error}",
@@ -905,7 +907,9 @@ pub(crate) fn build_for_seal(
         std::fs::remove_dir_all(&staging_dir)
             .map_err(|error| CoreError::Storage(format!("lexical: retire F15 staging: {error}")))?;
         std::fs::File::open(generation_dir.join(DIR))
-            .and_then(|dir| dir.sync_all())
+            .and_then(|dir| {
+                crate::causal_profile::timed_sync("file_authority_directory", || dir.sync_all())
+            })
             .map_err(|error| {
                 CoreError::Storage(format!("lexical: sync F15 authority directory: {error}"))
             })?;
