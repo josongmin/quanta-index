@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P0 / `PROOF_FIRST` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | dispatcher G1→G2→G3 barrier 및 runtime physical-retirement fixture `VERIFIED`; 유지보수 수리 뒤 current daemon profile213 passed/1 skipped 재검증. 별도 OS-child에서 같은 retention race는 `NOT_RUN` |
+| 실행 상태 | 실제 disk-backed runtime OS-child에서 Active G1 선택→G2/G3 활성화·양 트랙 물리 퇴역→typed refusal·view acquire0→fresh G3/head/token/row·정상 stop `VERIFIED`. shipping release/더 강한 pin-transfer 계약은 별도 |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -22,6 +22,14 @@ selection.resolve_generation_selector_pin은 catalog head를 pin으로 해석하
 
 - 현재 main·ActivationCatalog/retention/snapshot registry 실제 caller graph
 - 고정 G1/G2/G3 source identity, independent expected selection/refusal 계약, barrier로 제어되는 concurrent fixture
+
+## 2026-10-05 실제 runtime OS-child 경합 검증
+
+- frozen `b55f4c6d` + E3 runtime3파일 및 test feature/fixture7파일의 root `oct5-process-actual`에서 실제 `build_runtime` child, UDS, catalog, disk adapters, activation/retention을 사용한다. private gate는 child의 Active 선택 직후·view 획득 직전에 설치한다.
+- `VERIFIED`: `CARGO_BUILD_JOBS=1 ./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --test active_selection_process_v1 --all-features --locked -- --exact os_child_active_selection_retired_before_view_refuses_without_opening_g1 --nocapture` — exit0,1selected/1passed/0failed/0filtered,2.06s(parent)/2.02s(child).
+- G1 선택이 gate에 도달한 뒤 parent가 SDK로 G2/G3를 활성화하고 두 G1 실제 track 디렉터리의 삭제를 확인한다. release 뒤 응답은 `UNKNOWN_GENERATION`, lexical view acquire attempt는0이다. fresh Active 질의는 실제 G3 head/token 및 정답1row, acquire1을 요구하며 child의 정상 stop/join도 확인한다.
+- `test-runtime-barriers`는 기본 비활성이고 runtime의 dev-dependency에서만 활성화한다. 정상 runtime package build의 regular dependency는 활성화하지 않는다. `--workspace --all-features`는 이 코드를 포함하지만 설치된 callback 없이는 기다리지 않는다. wire/config/environment의 production gate는 추가하지 않았다.
+- 검증한7파일을 main의 원래 bytes와 대조해 통합했다. actual test-executable OS child 범위이며 shipping release나 Proposed pin-transfer 보장으로 확대하지 않는다. 아래 정적 `NOT_RUN` 기록은 이번 실행 이전의 상태다.
 
 ## 어떤 파일을 어떻게 수정할지
 

@@ -31,6 +31,9 @@ mod semantic_derive;
 mod single_flight;
 mod snapshot_inventory_admission;
 mod snapshot_registry;
+#[cfg(feature = "test-runtime-barriers")]
+#[doc(hidden)]
+pub mod test_runtime_barriers;
 
 pub use control_dispatcher::{
     ControlAccessV1, ControlCapabilityV1, ProcessReadinessPort, ProcessRequestEventsPort,

@@ -24,6 +24,7 @@
 | 검색 정답 검수 최종 판정 — SQLAlchemy | 334/480pairs | 69.6% | 146pairs·모델 한도 대기 |
 | 검색 정답 검수 최종 판정 — Zellij | 0/476pairs | 0% | 476pairs·모델 한도 대기; 기존 두 reviewer 보존 |
 | 권한 검증 보완 — Linux 실제 두 UID 테스트 | 1/1 test | 100% | shipping daemon/Linux release·운영 범위는 별도 |
+| 실제 runtime OS-child의 selection race·slow disk·기본 SDK timeout/replay | 3/3시나리오 | 100% | shipping release·최신 source qualification은 I0 범위 |
 | 실제 deploy/activate/restore/rollback | 이번 요청의 운영 실행 미착수 | 0% | authorized host/config/state/retention/rollback 입력 |
 
 신규 보충 검수와 SQLAlchemy/Zellij 검색 정답 검수의 최종 판정 잔여는 최소1,364개 query-file pairs다. 역할별 호출 수는 이 pair 수와 다르며 Tailscale 정책, 독립 holdout, 다른 lane과 성능/운영 검증은 이 분모 밖이다.
@@ -73,8 +74,7 @@ E1 name-span producer/evaluator 및 E3 selection-retirement·maintenance cancell
 
 ### E3 — 선택·운영 안전성의 잔여 proof
 
-- [E3-01](../../plans/oct-4-parallel-closure/tickets/O4-E3-01-active-selection-race.md): 별도 OS-child의 같은 retention race 범위를 기존 supported refusal/view 계약에서 판정한다. dispatcher/runtime owner·daemon proof를 그 OS 시나리오로 재명명하지 않는다.
-- [E3-04](../../plans/oct-4-parallel-closure/tickets/O4-E3-04-maintenance-health-metering.md)·[E3-05](../../plans/oct-4-parallel-closure/tickets/O4-E3-05-publish-timeout-replay.md): actual daemon slow-disk3-cadence, 기본30초 별도 OS-process admitted publish timeout→operation inspect→exact replay 범위를 검증한다.
+- [E3-01](../../plans/oct-4-parallel-closure/tickets/O4-E3-01-active-selection-race.md)·[E3-04](../../plans/oct-4-parallel-closure/tickets/O4-E3-04-maintenance-health-metering.md)·[E3-05](../../plans/oct-4-parallel-closure/tickets/O4-E3-05-publish-timeout-replay.md)의 요청 OS-child3시나리오는 실제 통과해 해당 잔여에서 제거했다. 같은 main bytes에 검증한 delta를 통합했으며 shipping release·후속 source qualification은 아래 I0에서 별도 수행한다.
 - [E3-06](../../plans/oct-4-parallel-closure/tickets/O4-E3-06-operator-event-proof.md): Linux 실제2UID UDS component v4는1/1passed·2.59s/exit0이며 source/overlay 전후·owned cleanup도 `VERIFIED`다. 검증한 fixture/policy2파일을 main에 통합했고 v1–v3 실제 실패는 보존했다. shipping Linux daemon/release는 미실행이다. P11 운영 process-truth는 authorized host/path/config/state/retention/rollback 입력 `BLOCKED`로 별도 유지한다.
 - [E3-02](../../plans/oct-4-parallel-closure/tickets/O4-E3-02-admission-pin-transfer.md)는 현 Accepted 계약에서 `NOT_APPLICABLE`; 강화 계약 채택·새 실제 반례가 있을 때만 재개한다. [E3-03](../../plans/oct-4-parallel-closure/tickets/O4-E3-03-atomic-active-query-rpc.md)의 지원7 Active variant single-RPC 구현은 재작성하지 않는다. 후속 효과/운영 qualification만 해당 scope에서 수행한다.
 

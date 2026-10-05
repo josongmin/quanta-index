@@ -78,6 +78,20 @@ fn build_runtime_with_lexical_builder(
         Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
     ) -> Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
 ) -> Result<SearchdRuntime> {
+    build_runtime_with_parts(config, memory_probe, wrap_lexical_builder, |_| {})
+}
+
+// Compose the same production ports before assembly. Crate-local process
+// proofs may wrap an existing port while retaining the real state root,
+// catalog, adapters, supervisor and IPC servers. Production passes no-op.
+fn build_runtime_with_parts(
+    config: SearchdConfig,
+    memory_probe: Arc<dyn ProcessMemoryProbePort>,
+    wrap_lexical_builder: impl FnOnce(
+        Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
+    ) -> Arc<dyn SearchCorpusBatchBuildPort + Send + Sync>,
+    wrap_parts: impl FnOnce(&mut SearchdRuntimeParts),
+) -> Result<SearchdRuntime> {
     let search_corpus_history_retention = config.search_corpus_history_retention_policy()?;
     // The one envelope (QI-BB-016) is validated before any adapter exists,
     // and its resident-memory ceiling becomes the lexical writer gate.
@@ -222,57 +236,56 @@ fn build_runtime_with_lexical_builder(
         repo_map_store.clone();
     let repo_map_quarantine: Arc<dyn RepoMapQuarantinePort + Send + Sync> = repo_map_store;
 
-    SearchdRuntime::assemble(
-        config,
-        SearchdRuntimeParts {
-            state_root_lease,
-            search_corpus_build_port,
-            lexical_generation_scanner,
-            lexical_generation_validator,
-            lexical_identity_probe,
-            lexical_incomplete_discard,
-            lexical_sealed_reclaim,
-            lex_open_port,
-            repo_commit_recency_ingest_port,
-            repo_topic_ingest_port,
-            repo_description_ingest_port,
-            file_ownership_ingest_port,
-            file_contributor_ingest_port,
-            repo_meta_ingest_port,
-            sem_build_port,
-            semantic_generation_scanner,
-            semantic_generation_validator,
-            semantic_identity_probe,
-            semantic_content_roots,
-            semantic_incomplete_discard,
-            semantic_sealed_reclaim,
-            sem_open_port,
-            repo_map_snapshot_port,
-            repo_map_bundle_ingest_port,
-            repo_map_generation_activate_port,
-            lexical_quarantine_discard,
-            semantic_quarantine_discard,
-            lexical_door_findings,
-            semantic_door_findings,
-            repo_map_quarantine,
-            repo_map_open_report,
-            search_corpus_lifecycle,
-            idempotency,
-            mutation_coordinator,
-            auxiliary_catalog,
-            history_text_index,
-            adapter_metric_sources: vec![
-                lexical_metric_source,
-                semantic_metric_source,
-                gate_metric_source,
-            ],
-            integrity_scrub_ports: vec![lexical_integrity_scrub, semantic_integrity_scrub],
-            writer_idle_sweep,
-            lexical_disk_usage,
-            semantic_disk_usage,
-            memory_probe,
-        },
-    )
+    let mut parts = SearchdRuntimeParts {
+        state_root_lease,
+        search_corpus_build_port,
+        lexical_generation_scanner,
+        lexical_generation_validator,
+        lexical_identity_probe,
+        lexical_incomplete_discard,
+        lexical_sealed_reclaim,
+        lex_open_port,
+        repo_commit_recency_ingest_port,
+        repo_topic_ingest_port,
+        repo_description_ingest_port,
+        file_ownership_ingest_port,
+        file_contributor_ingest_port,
+        repo_meta_ingest_port,
+        sem_build_port,
+        semantic_generation_scanner,
+        semantic_generation_validator,
+        semantic_identity_probe,
+        semantic_content_roots,
+        semantic_incomplete_discard,
+        semantic_sealed_reclaim,
+        sem_open_port,
+        repo_map_snapshot_port,
+        repo_map_bundle_ingest_port,
+        repo_map_generation_activate_port,
+        lexical_quarantine_discard,
+        semantic_quarantine_discard,
+        lexical_door_findings,
+        semantic_door_findings,
+        repo_map_quarantine,
+        repo_map_open_report,
+        search_corpus_lifecycle,
+        idempotency,
+        mutation_coordinator,
+        auxiliary_catalog,
+        history_text_index,
+        adapter_metric_sources: vec![
+            lexical_metric_source,
+            semantic_metric_source,
+            gate_metric_source,
+        ],
+        integrity_scrub_ports: vec![lexical_integrity_scrub, semantic_integrity_scrub],
+        writer_idle_sweep,
+        lexical_disk_usage,
+        semantic_disk_usage,
+        memory_probe,
+    };
+    wrap_parts(&mut parts);
+    SearchdRuntime::assemble(config, parts)
 }
 
 /// The lexical writer gate for a resident-memory ceiling (QI-BB-016):
@@ -352,3 +365,5 @@ pub fn run_supervised(command: SearchdCommand) -> Result<quanta_index_searchd::S
 
 #[cfg(test)]
 mod admitted_publish_timeout_tests;
+#[cfg(test)]
+mod process_slow_disk_tests;

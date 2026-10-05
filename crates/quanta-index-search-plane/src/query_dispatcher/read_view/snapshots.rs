@@ -27,6 +27,8 @@ impl SearchPlaneDispatcher {
         generation: ManifestGeneration,
         budget: &RequestBudgetV1,
     ) -> Result<Arc<dyn LexicalSearcher>, CoreError> {
+        #[cfg(feature = "test-runtime-barriers")]
+        crate::test_runtime_barriers::record_lexical_view_acquire_attempt();
         let key = SnapshotKey::new(repo_id, revision_id, generation);
         let acquired = self.snapshots.lexical.acquire(&key, budget, || {
             let handle: Arc<dyn LexicalSearcher> =

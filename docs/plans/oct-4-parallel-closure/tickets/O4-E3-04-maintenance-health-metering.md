@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_THEN_CONDITIONAL_CODE` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | cooperative metering·fatal ownership/terminal 전달 owner13·runtime supervisor25·수리 뒤 daemon213/process26 `VERIFIED`. OS-child slow-disk injection은 `NOT_RUN` |
+| 실행 상태 | 기존 owner/daemon proof 및 실제 runtime 조립 OS-child slow-disk port5-cadence·active readiness·실제 adapter 완료·정상 stop/join `VERIFIED`. shipping binary/Linux release는 별도 scope |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -13,6 +13,14 @@
 ## 목적
 
 디스크 full-tree walk가 backend health/readiness의 freshness를 지연시키는지 재현하고 필요한 경우 bounded health와 paced metering을 분리한다.
+
+## 2026-10-05 실제 runtime OS-child 검증
+
+- frozen `b55f4c6d` + runtime 조립/fixture3파일의 root 작업트리 `oct5-process-actual`에서 실행했다. child는 실제 `build_runtime`과 동일한 private composition, state root, catalog, disk adapters, supervisor, UDS를 사용한다. production composition은 기존 port를 그대로 전달한다. 테스트에서만 실제 `TrackDiskUsagePort` 앞에 gate를 설치한다.
+- parent는 빈 production state root의 child에 SDK `publish_and_activate`로 G1 양 트랙을 활성화한 뒤 meter를 멈춘다. 100ms cadence5회 이상에서 refresh 완료가 늘지 않고 skipped work가 증가하는 동안 actual control UDS의 ready·active1·heartbeat·candidate integrity를 검사한다. release 뒤 실제 adapter 완료 token과 refresh/failure counters를 확인하고 child의 정상 stop/join을 요구한다.
+- `VERIFIED`: `CARGO_BUILD_JOBS=1 ./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --lib --all-features --locked os_child -- --nocapture --test-threads 1` — exit0,2selected/2passed/0failed/1filtered,32.06s. 이 티켓의 slow-disk child는1.34s에 통과했다. 같은 배치의 timeout/replay는 [E3-05](O4-E3-05-publish-timeout-replay.md)에 기록한다.
+- 초기 실행 실패를 성공으로 계산하지 않았다: fixture shutdown 타입·미사용 반환값 compile 오류, retention 설정 누락, Darwin accepted gate의 nonblocking IO 실패를 수정했다. parent gate에 blocking mode를 명시했고 실제 meter의30초 budget은 바꾸지 않았다. fake harness로 production root를 준비하는 경로도 제거했다.
+- 검증한 runtime3파일을 원래 main bytes와 대조해 통합했다. `lib` test executable의 실제 OS child이며 shipping release daemon/Linux/운영 qualification으로 확대하지 않는다. 아래 정적 `NOT_RUN` 기록은 이 실행 이전의 상태다.
 
 ## 2026-10-04 구현·실패 수리
 

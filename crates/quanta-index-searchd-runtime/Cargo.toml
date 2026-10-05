@@ -70,6 +70,7 @@ quanta-index-corpus-smoke = { version = "0.1.0", path = "../quanta-index-corpus-
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
 quanta-index-searchd-harness = { version = "0.1.0", path = "../quanta-index-searchd-harness" }
+quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", features = ["test-runtime-barriers"] }
 rusqlite = { workspace = true }
 rustix = { workspace = true, features = ["process"] }
 serde = { workspace = true }
@@ -77,3 +78,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile.workspace = true
 toml = { workspace = true }
+
+[[test]]
+name = "active_selection_process_v1"
+path = "tests/active_selection_process_v1.rs"

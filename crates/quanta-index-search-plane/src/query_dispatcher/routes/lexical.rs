@@ -1,5 +1,7 @@
 //! Lexical text and symbol query routes.
 
+#[cfg(feature = "test-runtime-barriers")]
+use quanta_index_contract::GenerationSelector;
 use quanta_index_contract::{
     CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, CursorRouteV2,
     EngineTouched, GenerationPin, LexicalCursor, LexicalRowOrderKey, LqExpr, LqLeaf, LqPatternType,
@@ -331,6 +333,13 @@ impl SearchPlaneDispatcher {
                 },
                 summary,
             ));
+        }
+        #[cfg(feature = "test-runtime-barriers")]
+        if matches!(
+            &request.generation_selector,
+            Some(GenerationSelector::Active { .. })
+        ) {
+            crate::test_runtime_barriers::lexical_active_selected_before_view(&planned.pin)?;
         }
         let view_started = self.query_stage_observation.start();
         let view = self.acquire_read_view(

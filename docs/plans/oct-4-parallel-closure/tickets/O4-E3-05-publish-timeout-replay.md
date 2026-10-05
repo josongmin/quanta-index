@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_THEN_CONDITIONAL_CODE` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | runtime lib 실제 UDS timeout→peer hangup→Committed inspect→재조립 후 exact replay fixture 및 current owner972 재실행 `VERIFIED`. 기본30초·별도OS-process timeout 시나리오는 `NOT_RUN` |
+| 실행 상태 | 기본30초 SDK read timeout→별도 OS-child admitted publish Committed→child 종료/재조립→exact replay/build0·digest conflict refusal `VERIFIED`. shipping release daemon은 별도 scope |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -17,6 +17,14 @@ client timeout 이후 durable publish 상태와 exact operation replay를 검증
 ## 배경과 현재 상태
 
 SDK default I/O deadline30s, ingest budget120s, process-wide serial ingest admission과 query admission은 별도다. runtime lib `timed_out_uds_peer_does_not_cancel_admitted_publish_or_replay_after_runtime_reassembly`는 2초 client policy의 실제 UDS read timeout, peer hangup metric, journal Committed, runtime 재조립 뒤 exact replay와 physical build 0회를 확인한다. 기본30초 timeout과 별도 OS process daemon 결과로 확대하지 않는다. async ACK/parallel dispatch를 새로 도입할 근거는 없다.
+
+## 2026-10-05 기본 SDK deadline의 실제 OS-child 검증
+
+- root frozen `b55f4c6d` + runtime 조립/fixture3파일의 `oct5-process-actual`에서 [E3-04](O4-E3-04-maintenance-health-metering.md)와 같은 명령을 실행했다: `CARGO_BUILD_JOBS=1 ./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --lib --all-features --locked os_child -- --nocapture --test-threads 1` — exit0,2selected/2passed/0failed/1filtered,32.06s.
+- `default_sdk_timeout_in_os_child_still_commits_and_replays_without_rebuild`는 실제 disk-backed runtime child의 admitted build gate에서 catalog `InFlight`를 확인한다. SDK의 기본 정책을 사용해 정확한 `Read`/`DEFAULT_CLIENT_IO_TIMEOUT` typed timeout 및 peer hangup을 관측한 뒤 gate를 release한다. journal `Committed`의 applied/durable sequence를 확인하고 child를 종료·회수한다.
+- 같은 state root를 실제 runtime으로 재조립해 원래 durable receipt와 exact SDK replay의 equality를 검사하고 build0을 요구한다. 동일 source event의 다른 canonical digest는 `BatchDigestConflict`, conflict journal은 `Absent`, 원래 receipt는 불변이며 추가 build0이어야 한다.
+- 준비용 harness와 child production state root를 분리해 초기 `STATE_ROOT_FORMAT_UNSUPPORTED` 실패를 수정했다. accepted gate는 blocking mode와 bounded read를 명시한다. 기본 SDK30초/ingest budget/생산자 계약을 바꾸지 않았다.
+- 검증한 runtime3파일을 main에 통합했다. actual OS process의 test-composed runtime 범위이며 shipping release daemon/Linux 배포는 별도다. 아래 정적 `NOT_RUN` 기록은 이 실행 이전의 상태다.
 
 ## 2026-10-05 정적 잔여 판정
 
