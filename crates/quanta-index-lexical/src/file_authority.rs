@@ -49,7 +49,7 @@ pub(crate) const OBJECTS: &str = root::OBJECTS_NAME;
 // The replace-scope transport is a single bounded frame; leave room for
 // coverage, chunks, symbols and encoding overhead in its 16 MiB frame.
 pub(crate) const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
-pub(crate) const MAX_TOTAL_SOURCE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_TOTAL_SOURCE_BYTES: u32 = 128 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 // A cold open can index an admitted 8 MiB source. Check the request between
 // bounded slices instead of waiting for an entire file's trigram build.
@@ -222,8 +222,8 @@ pub(crate) fn read_object(
     if !metadata.is_file() || metadata.len() != expected_len {
         return Err(format!("{name} is not a regular file of committed length"));
     }
-    let maximum =
-        usize::try_from(expected_len).map_err(|_| "object length exceeds usize".to_owned())?;
+    let maximum = usize::try_from(expected_len)
+        .map_err(|error| format!("object length exceeds usize: {error}"))?;
     crate::sealed_generation::read_opened_bounded(&mut file, maximum)
         .map_err(|error| format!("read {name}: {error}"))
 }
@@ -257,7 +257,7 @@ pub(crate) fn read_object_pinned(
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(maximum)
-        .map_err(|_| CoreError::Storage("lexical: F15 object allocation refused".into()))?;
+        .map_err(|error| CoreError::Storage(format!("lexical: F15 object allocation refused: {error}")))?;
     bytes.resize(maximum, 0);
     for chunk in bytes.chunks_mut(64 * 1024) {
         checkpoint(budget)?;
@@ -334,7 +334,7 @@ fn read_object_range(
             "posting object identity differs from cold-open snapshot",
         ));
     }
-    let _ = file.seek(SeekFrom::Start(offset)).map_err(|error| {
+    let _position = file.seek(SeekFrom::Start(offset)).map_err(|error| {
         CoreError::Storage(format!("lexical: seek posting range {name}: {error}"))
     })?;
     let length = usize::try_from(len).map_err(|error| {
@@ -345,7 +345,7 @@ fn read_object_range(
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(length)
-        .map_err(|_| CoreError::Storage("lexical: posting range allocation refused".into()))?;
+        .map_err(|error| CoreError::Storage(format!("lexical: posting range allocation refused: {error}")))?;
     bytes.resize(length, 0);
     for chunk in bytes.chunks_mut(64 * 1024) {
         budget.checkpoint("lexical:query:posting-range-read")?;
@@ -365,14 +365,14 @@ fn policy() -> root::AuthorityPolicy {
     root::AuthorityPolicy {
         root_bytes: 16 * 1024 * 1024,
         source_files: 32_768,
-        source_bytes: MAX_TOTAL_SOURCE_BYTES as u64,
+        source_bytes: u64::from(MAX_TOTAL_SOURCE_BYTES),
         pack_bytes: 16 * 1024 * 1024,
         total_pack_bytes: 160 * 1024 * 1024,
         posting_block_bytes: 32 * 1024 * 1024,
         total_posting_bytes: 512 * 1024 * 1024,
         total_memberships: 20_000_000,
         partitions: 256,
-        source_id: u32::MAX as u64,
+        source_id: u64::from(u32::MAX),
         bucket_scratch_bytes: 128 * 1024 * 1024,
         term_directory_bytes: 32 * 1024 * 1024,
         resident_file_heap_bytes: 512 * 1024 * 1024,
@@ -387,15 +387,18 @@ pub(crate) fn max_root_bytes() -> u64 {
     policy().root_bytes
 }
 
-pub(crate) fn codec_limits() -> codec::CodecLimits {
+fn codec_limits() -> Result<codec::CodecLimits, String> {
     let policy = policy();
-    codec::CodecLimits {
-        source_pack_encoded_bytes: policy.pack_bytes as usize,
-        posting_block_encoded_bytes: policy.posting_block_bytes as usize,
-        sources: policy.source_files as usize,
+    Ok(codec::CodecLimits {
+        source_pack_encoded_bytes: usize::try_from(policy.pack_bytes)
+            .map_err(|error| format!("source pack ceiling exceeds usize: {error}"))?,
+        posting_block_encoded_bytes: usize::try_from(policy.posting_block_bytes)
+            .map_err(|error| format!("posting block ceiling exceeds usize: {error}"))?,
+        sources: usize::try_from(policy.source_files)
+            .map_err(|error| format!("source count ceiling exceeds usize: {error}"))?,
         terms: 1 << 24,
         memberships: policy.total_memberships,
-    }
+    })
 }
 
 pub(crate) fn object_name(digest: &[u8; 32]) -> String {
@@ -420,7 +423,7 @@ where
 {
     let mut pinned_objects = BTreeMap::new();
     let authority =
-        verify::verify_authority(root_bytes, policy(), &codec_limits(), |digest, len| {
+        verify::verify_authority(root_bytes, policy(), &codec_limits()?, |digest, len| {
             let (bytes, identity) = read_blob(digest, len)?;
             if pinned_objects
                 .insert(digest, identity)
@@ -441,9 +444,9 @@ where
 
 pub(crate) fn verified_inventory(authority: &VerifiedAuthority) -> BTreeMap<String, u64> {
     let mut names = BTreeMap::new();
-    let _ = names.insert(format!("{DIR}/{ROOT}"), 0);
+    let _prior_root = names.insert(format!("{DIR}/{ROOT}"), 0);
     for (digest, len) in object_inventory(&authority.authority.root) {
-        let _ = names.insert(object_name(&digest), len);
+        let _prior_object = names.insert(object_name(&digest), len);
     }
     names
 }
@@ -481,8 +484,10 @@ fn write_object(
     if expected != digest {
         return Err("producer blob digest differs from supplied name".into());
     }
+    let encoded_len = u64::try_from(bytes.len())
+        .map_err(|error| format!("producer object length exceeds u64: {error}"))?;
     if path.exists() {
-        let existing = read_object(&object_dir, digest, bytes.len() as u64)?;
+        let existing = read_object(&object_dir, digest, encoded_len)?;
         if existing != bytes {
             return Err("existing object has different bytes".into());
         }
@@ -499,7 +504,7 @@ fn write_object(
             .open(&temp)
         {
             Ok(file) => break (temp, file),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(format!("create object temporary: {error}")),
         }
     };
@@ -513,7 +518,7 @@ fn write_object(
     match std::fs::hard_link(&temp, &path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let existing = read_object(&object_dir, digest, bytes.len() as u64)?;
+            let existing = read_object(&object_dir, digest, encoded_len)?;
             if existing != bytes {
                 return Err("existing object has different bytes".into());
             }
@@ -585,7 +590,9 @@ fn sealed_base_root(base_dir: &Path) -> Result<root::AuthorityRoot, CoreError> {
     let authority = root::AuthorityRoot::decode(&bytes, policy())
         .map_err(|reason| corrupt(base_dir, &name, &reason))?;
     let expected = object_inventory(&authority);
-    if manifest.file_authority.len() != expected.len() + 1
+    let expected_count = expected.len().checked_add(1)
+        .ok_or_else(|| corrupt(base_dir, &name, "base object count overflows"))?;
+    if manifest.file_authority.len() != expected_count
         || manifest.file_authority.iter().any(|entry| {
             if entry.name == name {
                 return entry != commitment;
@@ -744,7 +751,7 @@ pub(crate) fn build_for_seal(
             let mut changed = BTreeMap::new();
             let mut files_read = 0_u64;
             let mut bytes_read = 0_u64;
-            for (key, covered) in coverage.iter() {
+            for (key, covered) in coverage {
                 let staged = staged_by_key.get(key).ok_or_else(|| {
                     corrupt(
                         generation_dir,
@@ -782,7 +789,9 @@ pub(crate) fn build_for_seal(
                 let metadata = file
                     .metadata()
                     .map_err(|error| corrupt(generation_dir, &name, &format!("stat: {error}")))?;
-                if metadata.len() > MAX_FILE_BYTES as u64 {
+                let file_ceiling = u64::try_from(MAX_FILE_BYTES)
+                    .map_err(|error| CoreError::Storage(format!("lexical: staged source ceiling: {error}")))?;
+                if metadata.len() > file_ceiling {
                     return Err(corrupt(
                         generation_dir,
                         &name,
@@ -805,15 +814,17 @@ pub(crate) fn build_for_seal(
                 files_read = files_read
                     .checked_add(1)
                     .ok_or_else(|| invalid("source read count overflow"))?;
+                let source_len = u64::try_from(bytes.len())
+                    .map_err(|error| CoreError::Storage(format!("lexical: staged source length: {error}")))?;
                 bytes_read = bytes_read
-                    .checked_add(bytes.len() as u64)
+                    .checked_add(source_len)
                     .ok_or_else(|| invalid("source read byte count overflow"))?;
                 if changed.insert(key.clone(), bytes).is_some() {
                     return Err(invalid("staged source key appears twice in coverage"));
                 }
             }
             let mut dispositions = Vec::with_capacity(coverage.len());
-            for (key, covered) in coverage.iter() {
+            for (key, covered) in coverage {
                 if let Some(bytes) = changed.get(key) {
                     dispositions.push(producer::SourceDisposition::Updated {
                         source: covered.source.clone(),
@@ -852,7 +863,7 @@ pub(crate) fn build_for_seal(
                 producer::ProducerErrorKind::CorruptBase => {
                     corrupt(generation_dir, DIR, &error.reason)
                 }
-                _ => invalid(&error.reason),
+                producer::ProducerErrorKind::Invalid | producer::ProducerErrorKind::Limit => invalid(&error.reason),
             })?;
             // New bytes were hashed against their digest by the sink. The
             // inherited descriptors were bound to the sealed base above;
@@ -1187,7 +1198,9 @@ pub(crate) fn plan_ops(
         total = total
             .checked_add(bytes)
             .ok_or_else(|| invalid("source byte sum overflows"))?;
-        if total > MAX_TOTAL_SOURCE_BYTES {
+        let total_bytes = u64::try_from(total)
+            .map_err(|error| CoreError::Storage(format!("lexical: source byte sum width: {error}")))?;
+        if total_bytes > u64::from(MAX_TOTAL_SOURCE_BYTES) {
             return Err(invalid(
                 "file authority exceeds 128 MiB source byte admission",
             ));
@@ -1324,11 +1337,13 @@ pub(crate) fn from_v15_verified(
             .get(&key)
             .ok_or_else(|| invalid("verified row lacks source"))?;
         if file.source != row.source
-            || file.expected_postings != row.posting_memberships
             || file.text_admitted != row.text_admitted
             || file.language != row.language
         {
             return Err(invalid("verified source differs from root metadata"));
+        }
+        if file.expected_postings != row.posting_memberships {
+            return Err(invalid("verified source posting count differs from root"));
         }
         if keys_by_id.insert(row.source_id, key.clone()).is_some()
             || ids_by_key.insert(key, row.source_id).is_some()
@@ -1354,7 +1369,7 @@ pub(crate) fn from_v15_verified(
         keys_by_id,
         ids_by_key,
     };
-    let _ = authority.checked_resident_bytes()?;
+    let _resident_bytes = authority.checked_resident_bytes()?;
     Ok(authority)
 }
 
