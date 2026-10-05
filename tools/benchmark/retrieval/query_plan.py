@@ -171,6 +171,10 @@ _MARK = regex.compile(r"\A\p{Mark}\Z")
 class QueryPlanError(ValueError):
     """Typed refusal while re-deriving a query plan."""
 
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 def validated_execution_config(policy: str, config: dict[str, int] | None = None) -> dict:
     """Admit the one bounded v5 natural-language setting carried by a profile."""
@@ -422,11 +426,41 @@ def _validate_indexable_text(raw: str) -> bool:
             size = len(term.encode())
             if size > MAX_TOKEN_BYTES:
                 raise QueryPlanError(
-                    f"token of {size} bytes exceeds lexical term max {MAX_TOKEN_BYTES}"
+                    f"token of {size} bytes exceeds lexical term max {MAX_TOKEN_BYTES}",
+                    code="INDEX_TERM_TOO_LONG",
                 )
             saw_token = True
             current = []
     return saw_token
+
+
+def _natural_language_terms(raw: str, resolved: dict[str, int]) -> list[str]:
+    """Derive ordered, distinct folded lexical terms before the plan budget.
+
+    The adapter consumes this same projection to account for joined input
+    tokens. The caller still owns the maximum-term and request-byte checks.
+    """
+    distinct: list[str] = []
+    for token in tokenize_nl(raw):
+        if len(token) > resolved["max_token_chars"]:
+            raise QueryPlanError(
+                f"token of {len(token)} chars exceeds max {resolved['max_token_chars']}"
+            )
+        if len(token) < resolved["min_token_chars"]:
+            continue
+        if not _validate_indexable_text(token):
+            continue
+        for term in regex.findall(r"[\p{Alphabetic}\p{Number}\p{Mark}_]+", token):
+            folded = _unicode_lowercase(term)
+            _validate_indexable_text(folded)
+            if len(folded) >= resolved["min_token_chars"] and folded not in distinct:
+                distinct.append(folded)
+    return distinct
+
+
+def natural_language_terms(raw: str, config: dict[str, int] | None = None) -> list[str]:
+    """Return the canonical pre-budget term projection for NL adapter accounting."""
+    return _natural_language_terms(raw, validated_execution_config("natural_language", config))
 
 
 def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = None) -> str:
@@ -524,21 +558,7 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
             )
         return f'components:"{raw}"'
     if policy in ("natural_language", "natural_language_file"):
-        distinct: list[str] = []
-        for token in tokenize_nl(raw):
-            if len(token) > resolved["max_token_chars"]:
-                raise QueryPlanError(
-                    f"token of {len(token)} chars exceeds max {resolved['max_token_chars']}"
-                )
-            if len(token) < resolved["min_token_chars"]:
-                continue
-            if not _validate_indexable_text(token):
-                continue
-            for term in regex.findall(r"[\p{Alphabetic}\p{Number}\p{Mark}_]+", token):
-                folded = _unicode_lowercase(term)
-                _validate_indexable_text(folded)
-                if len(folded) >= resolved["min_token_chars"] and folded not in distinct:
-                    distinct.append(folded)
+        distinct = _natural_language_terms(raw, resolved)
         if not distinct:
             raise QueryPlanError("natural-language plan produced no tokens")
         if len(distinct) > resolved["max_tokens"]:

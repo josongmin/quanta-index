@@ -866,9 +866,9 @@ proof-p00-authority-freeze:
 # independently; P12 final qualification binds P11 and the paired checkout.
 proof-p12a-proof-infrastructure:
     @test -z "${PYTEST_ADDOPTS:-}" && test -z "${PYTEST_PLUGINS:-}" || { echo "pytest environment overrides are forbidden for proof tests" >&2; exit 2; }
-    python3 tools/ci/lint/check-test-authority.py
-    python3 tools/ci/lint/check-proof-authority.py
-    python3 tools/ci/proof_execution_result.py run-p12a \
+    uv run --frozen --extra dev python tools/ci/lint/check-test-authority.py
+    uv run --frozen --extra dev python tools/ci/lint/check-proof-authority.py
+    uv run --frozen --extra dev python tools/ci/proof_execution_result.py run-p12a \
         tools/ci/tests/test_write_proof_manifest.py \
         tools/ci/tests/test_proof_execution_result.py \
         tools/ci/tests/test_paired_cargo_resolution.py \

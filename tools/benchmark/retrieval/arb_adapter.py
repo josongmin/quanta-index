@@ -1,10 +1,11 @@
-"""ARB natural-language input adapter (``arb-nl-adapter-v1``).
+"""ARB natural-language input adapter (``arb-nl-adapter-v2``).
 
 Deterministic, preregistered, gold-blind per-task transformation of one Agent
 Retrieval Bench (ARB) sample's structured ``query`` into a short plain-text
 query that the bench runner's ``natural_language`` input policy always accepts
 (``tools.benchmark.retrieval.query_plan`` / ``benchmarks/retrieval/src/query_plan.rs``,
-``NlPlanConfig::default()``: at most 32 distinct tokens, each at most 96 chars).
+``NlPlanConfig::default()``: at most 32 distinct normalized lexical terms,
+with each input token at most 96 chars).
 
 The frozen rule is ``RULE_TEXT`` below; ``RULE_SHA256`` binds it. Any change to
 the rule, the field orders, or the constants is a new adapter version.
@@ -28,14 +29,15 @@ from tools.benchmark.retrieval.query_plan import (
     MAX_TOKEN_BYTES,
     QueryPlanError,
     _is_token_char,
+    natural_language_terms,
     plan_lexical_request,
     tokenize_nl,
 )
 
-ADAPTER_VERSION = "arb-nl-adapter-v1"
+ADAPTER_VERSION = "arb-nl-adapter-v2"
 
 RULE_TEXT = """\
-arb-nl-adapter-v1 rule (frozen).
+arb-nl-adapter-v2 rule (frozen).
 
 Input projection (gold-blindness is structural):
   The adapter copies ONLY these sample keys into a projected dict and every
@@ -84,24 +86,28 @@ Step 3 - per raw token, in order:
   d. drop hex hashes: the token fully matches [0-9A-Fa-f]{7,} and contains at
      least one ASCII digit (dropped.hex_hash).
   e. drop tokens the plan would skip or refuse as lexical terms: no run of
-     token characters (dropped.no_index_term), or some run of token characters
-     longer than MAX_TOKEN_BYTES=256 UTF-8 bytes (dropped.index_term_too_long).
+     token characters (dropped.no_index_term), or some raw or Unicode-lowered
+     term longer than MAX_TOKEN_BYTES=256 UTF-8 bytes
+     (dropped.index_term_too_long).
 
 Step 4 - dedupe by exact string, keeping the first occurrence
   (dropped.duplicate).
 
-Step 5 - if more than 32 distinct tokens remain, select 32 deterministically:
-  identifier/path-like tokens first (contain "_", ".", "/", or an internal
-  lower->upper case change, i.e. a Unicode Ll char immediately followed by a
-  Unicode Lu char), in first-occurrence order; then every other token in
-  first-occurrence order; keep the first 32 of that preference list
-  (dropped.over_limit). The kept tokens are emitted in their original
-  first-occurrence order.
+Step 5 - select tokens against BOTH the 32 raw-token bound and the planner's
+  32 distinct normalized lexical-term bound. Obtain each token's folded terms
+  from query_plan.natural_language_terms (the same derivation used by the
+  planner), never by parsing a rendered query. Identifier/path-like tokens
+  first (contain "_", ".", "/", or an internal Unicode Ll->Lu transition),
+  in first-occurrence order; then other tokens in first-occurrence order.
+  Keep a token only if its addition leaves both bounds satisfied; overlapping
+  normalized terms count once. A skipped token increments dropped.over_limit.
+  Emit the kept raw tokens in original first-occurrence order.
 
 Step 6 - adapted_text = kept tokens joined by single U+0020 spaces.
   Zero kept tokens is a typed refusal (ArbAdapterRefusal, a ValueError).
   Self-check (refusal on failure): tokenize_nl(adapted_text) == kept tokens and
-  query_plan.plan_lexical_request("natural_language", adapted_text) succeeds.
+  query_plan.plan_lexical_request("natural_language", adapted_text) succeeds
+  with at most 32 effective distinct normalized terms.
 """
 
 __doc__ = (__doc__ or "") + "\n" + RULE_TEXT
@@ -251,6 +257,16 @@ def _transform(projected: dict[str, Any]) -> dict[str, Any]:
             if reason is not None:
                 dropped[reason] += 1
                 continue
+            try:
+                canonical_terms = natural_language_terms(piece)
+            except QueryPlanError as error:
+                if error.code == "INDEX_TERM_TOO_LONG":
+                    dropped["index_term_too_long"] += 1
+                    continue
+                raise ArbAdapterRefusal("ARB_ADAPTER_PLAN_REFUSED", str(error)) from error
+            if not canonical_terms:
+                dropped["no_index_term"] += 1
+                continue
             candidates.append(piece)
 
     distinct: list[str] = []
@@ -262,15 +278,26 @@ def _transform(projected: dict[str, Any]) -> dict[str, Any]:
         seen.add(token)
         distinct.append(token)
 
-    if len(distinct) > MAX_TOKENS:
-        preference = [t for t in distinct if is_identifier_like(t)] + [
-            t for t in distinct if not is_identifier_like(t)
-        ]
-        keep = set(preference[:MAX_TOKENS])
-        dropped["over_limit"] = len(distinct) - MAX_TOKENS
-        tokens = [t for t in distinct if t in keep]
-    else:
-        tokens = distinct
+    preference = [t for t in distinct if is_identifier_like(t)] + [
+        t for t in distinct if not is_identifier_like(t)
+    ]
+    keep: set[str] = set()
+    effective: set[str] = set()
+    for token in preference:
+        try:
+            contribution = set(natural_language_terms(token))
+        except QueryPlanError as error:
+            raise ArbAdapterRefusal("ARB_ADAPTER_PLAN_REFUSED", str(error)) from error
+        if not contribution:
+            raise ArbAdapterRefusal(
+                "ARB_ADAPTER_SELF_CHECK", "candidate has no canonical index term"
+            )
+        if len(keep) >= MAX_TOKENS or len(effective | contribution) > MAX_TOKENS:
+            dropped["over_limit"] += 1
+            continue
+        keep.add(token)
+        effective.update(contribution)
+    tokens = [token for token in distinct if token in keep]
 
     if not tokens:
         raise ArbAdapterRefusal(
@@ -285,6 +312,8 @@ def _transform(projected: dict[str, Any]) -> dict[str, Any]:
         plan_lexical_request("natural_language", adapted_text)
     except QueryPlanError as error:
         raise ArbAdapterRefusal("ARB_ADAPTER_PLAN_REFUSED", str(error)) from error
+    if set(natural_language_terms(adapted_text)) != effective:
+        raise ArbAdapterRefusal("ARB_ADAPTER_SELF_CHECK", "effective term accounting differs")
 
     return {
         "adapter": ADAPTER_VERSION,
@@ -300,6 +329,7 @@ def _transform(projected: dict[str, Any]) -> dict[str, Any]:
         "adapted_text_sha256": hashlib.sha256(adapted_text.encode("utf-8")).hexdigest(),
         "tokens": tokens,
         "token_count": len(tokens),
+        "effective_term_count": len(effective),
         "raw_token_count": len(raw_tokens),
         "dropped": {**dropped, "split_over_96_chars": split_tokens},
         "fields_used": [f"query.{field}" for field in order],

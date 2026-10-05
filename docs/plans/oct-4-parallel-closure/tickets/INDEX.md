@@ -7,11 +7,12 @@
 현재 요청의 실행 목록은 아래 **Quanta 자체 작업**이다. 원본29개 scope의 owner 판정과
 외부 producer 연동 기록은 상세 항목에 보존하며 Quanta 작업 건수·진행률에 합산하지 않는다.
 
-## 현재 코드 잔여 — 2026-10-05 소스 대조
+## 현재 코드 잔여 — 2026-10-06 소스 대조
 
-현재 정리 기준: Quanta main `7a16771afec15602edb6f04130d66e64fe471989`와 문서 수정 overlay.
-Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀 추가가 있고 retrieval 엔진 소스는 동일하다.
-아래 신규 actual은 clean5796과 그 matching binary의 결과이며 main formal proof로 승격하지 않는다.
+현재 정리 기준: Quanta main `237d1d147acf5124d5047098fc9dcaac9fec6f51`와 scanner/tooling 수정 overlay.
+Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀·scanner custody 도구가 추가됐다.
+Retrieval 엔진 소스는 아직 동일하며 F15 저장 구조 수리는 외부 후보다.
+Frozen5796 actual과 아래 current-source owner 회귀를 구분하며 main formal proof로 승격하지 않는다.
 Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
 아래는 실제 생산 경로·코드와 기존 결과를 대조한 잔여이며 새 full-suite/release qualification이 아니다.
 
@@ -401,6 +402,10 @@ P1 · W1/W4 · scanner A/B comparator/CLI·independent 회귀 구현 완료, who
   Scanner만 다른 source/input/observation clocks와 독립 tokenizer/full-DP
   oracle에서 실제 whole-call A/B 후 유지/수정/철회를 판정한다. 불가용 과거+8.75%는 새 proof가 아니다.
   비교 CLI의 선언 source SHA만으로 binary build provenance가 입증되지 않는다.
+- Canonical clean/one-overlay source identity와 fresh build/capture producer를 반영했다.
+  Whole-file SHA 고정 대신 `code-search-typo-unicode-control-v1`의 고정 변환을 독립 재계산한다.
+  `uv run --frozen --extra dev python -m pytest -q tools/benchmark/retrieval/test_scanner_source_identity.py tools/benchmark/retrieval/test_scanner_build_custody.py tools/ci/tests/test_query_scanner_ab.py`
+  →49passed·28.60s, `VERIFIED` owner scope. 실제 두 arm build/capture/whole-call 판정은 `NOT_RUN`이다.
 - bytes/span/case/order/status/cursor/work/config parity를 유지하고 mixed Unicode, short names,
   token cap/cancellation/cache identity를 검증한다. child 개선이 whole-call 악화를 덮지 않는다.
 - 실행 진입점: `uv run --frozen --extra dev python tools/benchmark/retrieval/query_timing_overhead.py --help`.
@@ -452,10 +457,18 @@ Matching release actual 및 별도 override 진단은 아래 범위로 판정한
   Source128MiB ceiling 안이지만 기존4M posting ceiling 밖이다. U64 posting IDs만141,720,160bytes이며
   dictionary/header와 source bytes는 별도다. Harness의 default history16MiB/total256MiB도 별도 gate다.
   Aggregate/resident/disk/query 및 retention 계약을 함께 정하고 shard별 cap으로 global cap을 대신하지 않는다.
+- 같은 source-bound per-file counts의 v15 source-key256bucket histogram은
+  `/private/tmp/qi-xl-bucket-count-5796-20261006-v1/histogram.json`에서 global 합계를 재검증했다.
+  Max bucket161files/556,075source bytes/87,142memberships다.
+  Source count만 `VERIFIED`이며 실제 encoded disk/scratch RSS/capacity proof는 아니다.
 - 실제 OS-process Medium 회귀 producer/test registration은 `7a16771a`에 반영했다.
   `runtime_extended_suite::e2e_scale_process_restart`가256source digest/line bounds,
   G1 positive→G2 tombstone, repo2의64개 전체 결과와 ranked/source rows의 실제 child stop/reap/restart
-  보존을 검사한다. 아직 actual owner 결과를 기다리며 Large/XL 또는 Linux proof로 표시하지 않는다.
+  보존을 검사한다. Current78d2474에서 아래 actual owner가 `VERIFIED`:
+  `CARGO_BUILD_JOBS=1 QUANTA_INDEX_SCCACHE=0 ./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked -E 'test(=e2e_scale_process_restart::medium_scale_source_survives_real_daemon_process_restart_and_delete)' --test-threads 1 --no-tests fail --success-output final`
+  →1passed/82unselected·31.805s/exit0. 실제 child stop/reap/restart와 G2 delete/source/ranked-row 보존이다.
+  최초 compile의4unused-result 오류는 수정했고 대상 Rust 포맷도 정리했다.
+  Full runtime suite/Large·XL OS restart/Linux/resource qualification은 `NOT_RUN`이다.
 - large300s/256MiB diagnostic 성공을 default 성공으로 바꾸지 않는다.
   지원 목표/latency/resource 계약을 결정한 뒤 원인 수리 또는 명시적 제품 계약 변경을 수행한다.
 - 완료: 각 tier/profile의 독립 source/result/count/oracle와 terminal, offered/served/errors/timeouts/drops

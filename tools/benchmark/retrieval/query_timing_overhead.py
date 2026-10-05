@@ -21,7 +21,9 @@ from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval.conditional_proof import canonical, load, sha
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
 from tools.benchmark.retrieval.scanner_build_custody import verify as verify_scanner_build
-from tools.benchmark.retrieval.scanner_source_identity import verify_pair as verify_scanner_source_pair
+from tools.benchmark.retrieval.scanner_source_identity import (
+    verify_pair as verify_scanner_source_pair,
+)
 
 
 def _without_code_search_work_clocks(planner_trace: list, *, allow_clocks: bool = True) -> list:

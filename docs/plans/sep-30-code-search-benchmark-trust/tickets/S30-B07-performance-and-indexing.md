@@ -71,5 +71,10 @@ resident/query work; neither a tiny posting-cap increase nor fixture reduction
 closes the failure. Exact commands, roots and scope are in
 [E4-01/02/05](../../oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
 These diagnostics do not qualify later source epochs, OS-child restart,
-scanner A/B or quiet-host performance. Exact old commands/results are recoverable through
+scanner A/B or quiet-host performance. A separate current78d2474 Medium256
+OS-child stop/reap/restart owner regression passed (1 selected/82 unselected,
+31.805s); Large/XL restart and resource qualification remain `NOT_RUN`.
+Scanner source/build/capture custody owner tests passed49 selected cases;
+the actual two-arm build/capture and whole-call decision remain `NOT_RUN`.
+Exact old commands/results are recoverable through
 [the history index](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).

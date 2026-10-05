@@ -65,6 +65,52 @@ def test_terminal_json_preserves_unambiguous_values() -> None:
     ) == {"status": "failed", "counts": {"failed": 1}, "items": [None, True, 1.25]}
 
 
+def _cross_repo_custody_windows(source: str) -> dict[str, tuple[int, int]]:
+    """Locate the producer, list, run, and final custody boundaries."""
+    markers = {
+        "r5_branch": 'if [[ -n "${QUANTA_P11_R5_EVIDENCE_ROOT:-}" ]]; then',
+        "r5_producer": 'python3 "$quanta_root/tools/ci/paired_r5_result.py"',
+        "fallback": "\nelse\n",
+        "runtime_list": "--test index_sdk_ingress_publish_contract_test -- --list",
+        "runtime_inventory": "| rg '^index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1: test$'",
+        "runtime_run": "  index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1 \\\n",
+        "kernel_list": "--features index-sdk-ingress-surface --lib -- --list",
+        "kernel_inventory": "| rg '^index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2: test$'",
+        "kernel_run": "  index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2 \\\n",
+        "fallback_end": '\nfi\nrequire_frozen_source "$quanta_root"',
+        "resolution_after": "runtime_resolution_after=",
+        "resolution_drift_end": "  printf 'resolved cross-repo dependency identities changed during proof\\n' >&2\n  exit 1\nfi\n",
+        "final_output": "printf 'paired-daemon-sha256:",
+    }
+    positions = {name: source.index(marker) for name, marker in markers.items()}
+    assert list(positions.values()) == sorted(positions.values())
+    boundaries = (
+        ("r5-producer", "r5_branch", "r5_producer"),
+        ("runtime-list", "fallback", "runtime_list"),
+        ("runtime-run", "runtime_inventory", "runtime_run"),
+        ("kernel-list", "runtime_run", "kernel_list"),
+        ("kernel-run", "kernel_inventory", "kernel_run"),
+        ("after-resolution", "fallback_end", "resolution_after"),
+        ("final-output", "resolution_drift_end", "final_output"),
+    )
+    return {
+        name: (positions[left] + len(markers[left]), positions[right])
+        for name, left, right in boundaries
+    }
+
+
+def _assert_cross_repo_custody(source: str) -> None:
+    guard = re.compile(r"(?m)^[ \t]*require_binary_custody[ \t]*$")
+    windows = _cross_repo_custody_windows(source)
+    for name, (start, end) in windows.items():
+        assert guard.search(source, start, end), f"missing binary custody at {name}"
+    final_start, final_end = windows["final-output"]
+    final = source[final_start:final_end]
+    assert final.index('require_frozen_source "$quanta_root"') < final.index(
+        'require_frozen_source "$semantica_root"'
+    ) < final.index("require_binary_custody")
+
+
 def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
     command = subprocess.run(
         ["just", "--dry-run", "rust-verify-hellgate-cross-repo"],
@@ -92,7 +138,23 @@ def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
     assert source.index('require_frozen_source "$quanta_root"') < build
     assert build < compare < source.index(target)
     assert 'QUANTA_INDEX_SEARCHD_BIN="$custody_binary"' in source
-    assert source.count("require_binary_custody\n") == 6
+    _assert_cross_repo_custody(source)
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    (
+        "r5-producer", "runtime-list", "runtime-run", "kernel-list",
+        "kernel-run", "after-resolution", "final-output",
+    ),
+)
+def test_cross_repo_hellgate_refuses_missing_boundary_custody(boundary: str) -> None:
+    source = (REPO_ROOT / "scripts/verify-repomap-cross-repo.sh").read_text()
+    start, end = _cross_repo_custody_windows(source)[boundary]
+    guard = re.compile(r"(?m)^[ \t]*require_binary_custody[ \t]*\n")
+    changed = source[:start] + guard.sub("", source[start:end]) + source[end:]
+    with pytest.raises(AssertionError, match="missing binary custody"):
+        _assert_cross_repo_custody(changed)
 
 
 @dataclass(frozen=True)

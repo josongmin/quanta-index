@@ -194,6 +194,8 @@ def _recipe_selects_python_target(body: str, path: str) -> bool:
             tokens = shlex.split(line)
         except ValueError:
             continue
+        if tokens[:6] == ["uv", "run", "--frozen", "--extra", "dev", "python"]:
+            tokens = ["python3", *tokens[6:]]
         direct_pytest = tokens[:3] == ["python3", "-m", "pytest"]
         proof_runner = tokens[:3] == ["python3", "tools/ci/proof_execution_result.py", "run-p12a"]
         if not (direct_pytest or proof_runner):

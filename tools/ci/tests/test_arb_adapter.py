@@ -1,4 +1,4 @@
-"""arb-nl-adapter-v1: determinism, gold blindness, and NL-plan acceptance."""
+"""arb-nl-adapter-v2: determinism, gold blindness, and effective term budgets."""
 
 from __future__ import annotations
 
@@ -12,7 +12,12 @@ import pytest
 
 from tools.benchmark.retrieval import arb_adapter
 from tools.benchmark.retrieval.arb_adapter import ArbAdapterRefusal, adapt
-from tools.benchmark.retrieval.query_plan import plan_lexical_request, tokenize_nl
+from tools.benchmark.retrieval.query_plan import (
+    QueryPlanError,
+    natural_language_terms,
+    plan_lexical_request,
+    tokenize_nl,
+)
 
 ARB_GIN_DATA = Path(
     os.environ.get(
@@ -77,6 +82,7 @@ def _assert_plan_accepts(result: dict) -> None:
     assert 1 <= len(set(tokens)) <= 32
     assert len(tokens) == len(set(tokens))
     assert all(len(token) <= 96 for token in tokens)
+    assert 1 <= len(natural_language_terms(text)) <= 32
     plan_lexical_request("natural_language", text)
 
 
@@ -94,8 +100,11 @@ def _gin_samples() -> list[dict]:
 
 
 def test_rule_is_frozen_and_documented():
-    assert arb_adapter.ADAPTER_VERSION == "arb-nl-adapter-v1"
+    assert arb_adapter.ADAPTER_VERSION == "arb-nl-adapter-v2"
     assert arb_adapter.RULE_TEXT in (arb_adapter.__doc__ or "")
+    assert arb_adapter.RULE_SHA256 == (
+        "88c17874014115b84e8b27a57194b09da5d3ba627fc1d0aee78b3b0709d652f5"
+    )
     assert (
         arb_adapter.RULE_SHA256 == hashlib.sha256(arb_adapter.RULE_TEXT.encode("utf-8")).hexdigest()
     )
@@ -108,7 +117,7 @@ def test_adapt_is_deterministic_and_does_not_mutate_input():
     second = adapt(copy.deepcopy(sample))
     assert first == second
     assert sample == before
-    assert first["adapter"] == "arb-nl-adapter-v1"
+    assert first["adapter"] == "arb-nl-adapter-v2"
     expected_query = json.dumps(sample["query"], ensure_ascii=False, sort_keys=True)
     assert first["original_query_sha256"] == hashlib.sha256(expected_query.encode()).hexdigest()
 
@@ -283,9 +292,81 @@ def test_identifier_preference_when_over_limit():
         assert ident in tokens
     assert "go_test_package" in tokens and "local_test_reproduction" in tokens
     assert "Plain" not in tokens
-    assert tokens[:26] == [f"plain{i}" for i in range(26)]
-    assert result["dropped"]["over_limit"] == 47 - 32
-    assert len(tokens) == 32
+    assert tokens[:23] == [f"plain{i}" for i in range(23)]
+    assert tokens[23:] == [
+        "snake_case_a", "pkg.Func", "path/to/file", "camelCase",
+        "go_test_package", "local_test_reproduction",
+    ]
+    assert result["dropped"]["over_limit"] == 47 - 29
+    assert len(tokens) == 29
+    assert result["effective_term_count"] == 32
+    assert len(natural_language_terms(result["adapted_text"])) == 32
+
+
+def test_joined_identifiers_use_exact_prebudget_planner_terms():
+    assert natural_language_terms("pkg.Func path/to/file") == [
+        "pkg", "func", "path", "to", "file"
+    ]
+    assert plan_lexical_request("natural_language", "pkg.Func path/to/file") == (
+        "case:no pkg OR func OR path OR to OR file"
+    )
+    sample = _trace_sample("pkg.Func path/to/file", command="")
+    sample["query"] = {"failure_excerpt": "pkg.Func path/to/file"}
+    result = adapt(sample)
+    assert result["tokens"] == ["pkg.Func", "path/to/file"]
+    assert result["effective_term_count"] == 5
+    _assert_plan_accepts(result)
+
+
+def test_under_cap_tokens_keep_original_text_and_order():
+    sample = _trace_sample("", command="")
+    sample["query"] = {"failure_excerpt": "alpha beta_gamma DELTA"}
+    result = adapt(sample)
+    assert result["tokens"] == ["alpha", "beta_gamma", "DELTA"]
+    assert result["adapted_text"] == "alpha beta_gamma DELTA"
+    assert result["effective_term_count"] == 3
+    assert result["dropped"]["over_limit"] == 0
+    assert plan_lexical_request("natural_language", result["adapted_text"]) == (
+        "case:no alpha OR beta_gamma OR delta"
+    )
+
+
+def test_normalized_overlap_counts_once_and_preserves_safe_under_cap_text():
+    assert natural_language_terms("e\u0301 É pkg.Func pkg/func") == ["é", "pkg", "func"]
+    sample = _trace_sample("", command="")
+    sample["query"] = {"failure_excerpt": "e\u0301e\u0301 ÉÉ pkg.Func pkg/func"}
+    result = adapt(sample)
+    assert result["tokens"] == ["éé", "ÉÉ", "pkg.Func", "pkg/func"]
+    assert result["adapted_text"] == "éé ÉÉ pkg.Func pkg/func"
+    assert result["effective_term_count"] == 3
+    _assert_plan_accepts(result)
+
+
+def test_unicode_lowercase_expansion_cannot_emit_an_oversized_index_term():
+    expanded = "İ" * 96  # 192 raw UTF-8 bytes; lowercase adds combining dots.
+    with pytest.raises(QueryPlanError, match="lexical term max"):
+        natural_language_terms(expanded)
+    sample = _trace_sample("", command="")
+    sample["query"] = {"failure_excerpt": expanded + " safe_word"}
+    result = adapt(sample)
+    assert result["tokens"] == ["safe_word"]
+    assert result["dropped"]["index_term_too_long"] == 1
+    _assert_plan_accepts(result)
+
+
+def test_effective_budget_rejects_overfull_joiner_but_retains_later_terms():
+    raw = " ".join(f"plain{i}" for i in range(31)) + " path/to/file"
+    assert len(natural_language_terms(raw)) == 34
+    with pytest.raises(QueryPlanError, match="34 tokens"):
+        plan_lexical_request("natural_language", raw)
+    sample = _trace_sample("", command="")
+    sample["query"] = {"failure_excerpt": raw}
+    result = adapt(sample)
+    assert result["tokens"] == [f"plain{i}" for i in range(29)] + ["path/to/file"]
+    assert result["dropped"]["over_limit"] == 2
+    assert result["effective_term_count"] == 32
+    assert len(natural_language_terms(result["adapted_text"])) == 32
+    _assert_plan_accepts(result)
 
 
 def test_all_real_gin_samples_are_plan_accepted():

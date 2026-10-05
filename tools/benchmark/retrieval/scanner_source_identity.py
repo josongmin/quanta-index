@@ -1,4 +1,4 @@
-"""Static candidate: fail-closed clean/one-overlay scanner source identity.
+"""Fail-closed clean/one-overlay scanner source identity.
 
 This is a source snapshot primitive, not a build or runtime attestation.
 No repository file is modified by this module.
@@ -7,13 +7,13 @@ No repository file is modified by this module.
 from __future__ import annotations
 
 import argparse
-
 import hashlib
 import json
 import stat
 import subprocess
 import tempfile
 from difflib import unified_diff
+from os import stat_result
 from pathlib import Path
 
 
@@ -115,7 +115,7 @@ def _hex(value: object, length: int) -> bool:
 def _git(repo: Path, *argv: str, env: dict[str, str] | None = None) -> bytes:
     process = subprocess.run(
         ["git", *argv], cwd=repo, env=env, check=False,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        capture_output=True
     )
     if process.returncode:
         raise CustodyError(f"git {argv[0]} failed: {process.stderr.decode(errors='replace')[:300]}")
@@ -180,7 +180,7 @@ def _check_overlay(repo: Path, base: str, tree: dict, overlay: dict | None,
         target.write_bytes(base_data)
         process = subprocess.run(
             ["git", "apply", "--whitespace=nowarn", "-"],
-            cwd=root, env=env, input=patch, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=root, env=env, input=patch, check=False, capture_output=True,
         )
         if process.returncode:
             raise CustodyError("overlay patch does not apply to base bytes")
@@ -256,7 +256,8 @@ def capture(repo: Path, base: str, overlay: dict | None = None,
         before = path.stat()
         data = path.read_bytes()
         after = path.stat()
-        state = lambda s: (s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+        def state(s: stat_result) -> tuple[int, ...]:
+            return (s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
         if state(before) != state(after):
             raise CustodyError(f"source changed while reading: {relative}")
         if bool(after.st_mode & 0o111) != (mode == "100755"):

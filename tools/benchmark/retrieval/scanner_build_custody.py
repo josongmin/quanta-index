@@ -1,7 +1,6 @@
-"""Candidate local scanner build custody; diagnostic, not remote attestation.
+"""Local scanner build/capture custody for diagnostic A/B comparison.
 
-Capture executes only when explicitly called. This module does not run in this
-preparation task. Keep its receipts outside the source checkout.
+Keep receipts outside the source checkout.
 """
 
 from __future__ import annotations
@@ -16,14 +15,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    from tools.benchmark.retrieval.scanner_source_identity import (
-        CustodyError, capture as source_capture, verify as source_verify,
-    )
-except ModuleNotFoundError:  # external static candidate before repository integration
-    from scanner_source_identity import (
-        CustodyError, capture as source_capture, verify as source_verify,
-    )
+from tools.benchmark.retrieval.scanner_source_identity import (
+    CustodyError,
+)
+from tools.benchmark.retrieval.scanner_source_identity import (
+    capture as source_capture,
+)
+from tools.benchmark.retrieval.scanner_source_identity import (
+    verify as source_verify,
+)
 
 
 def _canonical(value: object) -> bytes:
@@ -46,8 +46,8 @@ def _file(path: Path) -> str:
         after = path.lstat()
     except OSError as error:
         raise CustodyError(f"scanner artifact could not be read: {path}") from error
-    identity = lambda row: (row.st_dev, row.st_ino, row.st_mode, row.st_size,
-                            row.st_mtime_ns, row.st_ctime_ns)
+    def identity(row: os.stat_result) -> tuple[int, ...]:
+        return (row.st_dev, row.st_ino, row.st_mode, row.st_size, row.st_mtime_ns, row.st_ctime_ns)
     if identity(before) != identity(opened) or identity(opened) != identity(after):
         raise CustodyError(f"scanner artifact changed while reading: {path}")
     return _sha(data)
@@ -104,8 +104,8 @@ def _tools(repo: Path, env: dict[str, str]) -> dict:
         result[name] = {"path": str(path), "realpath": str(resolved), "sha256": _file(resolved)}
     for name, argv in (("cargo", [str(tools["cargo"]), "--version"]),
                        ("rustc", [str(tools["rustc"]), "-Vv"])):
-        process = subprocess.run(argv, cwd=repo, env=env, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, timeout=30, check=False)
+        process = subprocess.run(argv, cwd=repo, env=env, capture_output=True,
+                                 timeout=30, check=False)
         if process.returncode or not process.stdout:
             raise CustodyError(f"tool version probe failed: {name}")
         result[name]["version"] = process.stdout.decode(errors="replace").strip()
@@ -335,7 +335,7 @@ def capture(spec: dict, receipt_path: Path) -> dict:
     before_tools = _tools(repo, env)
     build_argv = _build_argv(repo)
     process = subprocess.run(build_argv, cwd=repo, env=env,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+                             capture_output=True, check=False)
     (out / "build.stdout").write_bytes(process.stdout)
     (out / "build.stderr").write_bytes(process.stderr)
     after_source = source_capture(repo, spec["base_git_revision"], overlay, env=env)
@@ -351,7 +351,7 @@ def capture(spec: dict, receipt_path: Path) -> dict:
     _assert_run_spec(out, template, binaries)
     capture_argv = _capture_argv(repo, run_spec)
     observed = subprocess.run(capture_argv, cwd=repo, env=env,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+                              capture_output=True, check=False)
     (out / "capture.stdout").write_bytes(observed.stdout)
     (out / "capture.stderr").write_bytes(observed.stderr)
     if (source_capture(repo, spec["base_git_revision"], overlay, env=env) != before_source

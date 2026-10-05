@@ -10,9 +10,14 @@ import subprocess
 import pytest
 
 from tools.benchmark.retrieval.scanner_source_identity import (
-    CONTROL_POLICY, CustodyError, canonical_control_bytes, capture, prepare_control, verify, verify_pair,
+    CONTROL_POLICY,
+    CustodyError,
+    canonical_control_bytes,
+    capture,
+    prepare_control,
+    verify,
+    verify_pair,
 )
-
 
 PATH = "crates/quanta-index-lexical/src/searcher/code_search.rs"
 BASE = b'''// unrelated code may change without changing the control policy

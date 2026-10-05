@@ -31,9 +31,11 @@
 - 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.
   Large default30s timeout과 XL preflight4M posting 거절은 `FAILED`다.
   Large300s/256MiB는127.612s에 완료한 별도 진단이며 default closure가 아니다.
-  Open-loop/OS-child restart·quiet-host 성능은 actual 결과를 기다린다.
+  Current78d2474 Medium256 OS-child stop/reap/restart 회귀는1passed/82unselected·31.805s로 `VERIFIED`.
+  Large/XL OS-child restart·open-loop·quiet-host 성능은 `NOT_RUN`이다.
 - ready9 OpenGrok selected-request180은 완료; 전체 service/index 권위는 미완료다.
-  Frozen5796 ready9 admissions·pair·SG/CS·full5 join은 완료 증거가 없다.
+  Frozen5796 CLI admission20tasks/519pairs만 actual exit0이다. Django admission은 중단했고
+  나머지 admissions·pair·SG/CS·full5 join은 완료 증거가 없다.
 - 이후 source/ADR/Justfile 변경의 proof는 새 epoch로 발행한다. 위 frozen 결과의 SHA는 변경하지 않는다.
 
 ## W0–W6

@@ -1533,7 +1533,12 @@ def test_manual_paired_checkout_is_outside_primary_source() -> None:
 
 @pytest.mark.parametrize(
     "prefix",
-    ("python3 -m pytest", "python3 tools/ci/proof_execution_result.py run-p12a"),
+    (
+        "python3 -m pytest",
+        "python3 tools/ci/proof_execution_result.py run-p12a",
+        "uv run --frozen --extra dev python -m pytest",
+        "uv run --frozen --extra dev python tools/ci/proof_execution_result.py run-p12a",
+    ),
 )
 @pytest.mark.parametrize(
     "option",
@@ -1541,11 +1546,24 @@ def test_manual_paired_checkout_is_outside_primary_source() -> None:
 )
 def test_python_proof_recipe_refuses_selection_narrowing(prefix: str, option: str) -> None:
     path = "tools/ci/tests/test_write_proof_manifest.py"
-    valid = f"{prefix} {path}" + (" -q" if prefix == "python3 -m pytest" else "")
+    direct_pytest = prefix.endswith("-m pytest")
+    valid = f"{prefix} {path}" + (" -q" if direct_pytest else "")
     assert MODULE._recipe_selects_python_target(valid, path)
     assert not MODULE._recipe_selects_python_target(f"{valid} {option}", path)
-    if prefix != "python3 -m pytest":
+    if not direct_pytest:
         assert not MODULE._recipe_selects_python_target(f"{valid} -q", path)
+
+
+def test_python_proof_recipe_refuses_unlocked_or_modified_uv_frontdoor() -> None:
+    path = "tools/ci/tests/test_write_proof_manifest.py"
+    for prefix in (
+        "uv run --extra dev python",
+        "uv run --frozen --extra dev python3",
+        "uv run --frozen --extra dev python -k selected",
+    ):
+        assert not MODULE._recipe_selects_python_target(
+            f"{prefix} tools/ci/proof_execution_result.py run-p12a {path}", path
+        )
 
 
 def test_python_target_requires_exact_junit_module_path() -> None:
