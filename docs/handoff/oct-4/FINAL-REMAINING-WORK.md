@@ -16,6 +16,7 @@ SQLAlchemy·Zellij는 C3 검색 평가의 소스 저장소이며 각각 자연�
 | 범위 | 현재 | 비율 | 남은 작업 |
 | --- | --- | --- | --- |
 | 원본5개 통합·29티켓 웨이브 배치 | 29/29·중복0·링크 누락0 | 100% | 후속 결과를 기존 티켓에 반영 |
+| Gin exact symbol/name 실제 캡처·독립 채점 | 1,196/1,196질의 | 100% | 다른 name/typo cells·최신 main qualification은 별도 |
 | C3 NL 기존 라벨의 기본 admission 및5제품 캡처/독립 replay/join | 9/12repo·180/240tasks | 75% | SQLAlchemy·Zellij·Tailscale3repo와 후속 final revisions |
 | current9 신규 보충 검수 | 0/742query-file pairs·151tasks 입력 준비 | 0% | 실제 두 reviewer+adjudicator→canonical merge/admission→재채점 |
 | 검색 정답 검수 최종 판정 — SQLAlchemy | 334/480pairs | 69.6% | 146pairs·모델 한도 대기 |
@@ -57,7 +58,7 @@ E1 name-span producer/evaluator 및 E3 selection-retirement·maintenance cancell
 - [E1-01](../../plans/oct-4-parallel-closure/tickets/O4-E1-01-original-review-resume.md): SQLAlchemy/Zellij의 실제 조정 잔여를 완료한다. 한도 실패·유효 partial raw를 보존하며 final receipt를 합성하지 않는다. Tailscale의 필터 패키지 밖 UDP 상태 테스트에 대한 grade1/3 경계를 확정해야 한다.
 - [E1-02](../../plans/oct-4-parallel-closure/tickets/O4-E1-02-supplemental-labels.md)·[E1-06](../../plans/oct-4-parallel-closure/tickets/O4-E1-06-final-pool-and-scoreboards.md): 새 actual 응답의 미판단 합집합만 실제 두 reviewer+adjudicator로 검수하고 재채점한다. bat 원본358+supplemental51의409판단은 재수행하지 않는다. AI 판단을 human review로 표시하지 않는다.
 - [E1-03](../../plans/oct-4-parallel-closure/tickets/O4-E1-03-admission-and-split.md): 나머지 current admissions와 후속 merged revisions를 canonical suite/pack/license/split/proof에 연결한다. 원본 source107 admissions는 과거 scope다.
-- [E1-04](../../plans/oct-4-parallel-closure/tickets/O4-E1-04-precise-name-span.md): Gin4 control을 전체 exact/name/typo population으로 확장해 declaration-name span·ID 회수를 file hit와 별도 평가한다.4개 성공을1196개 또는 typo 전체 성공으로 바꾸지 않는다.
+- [E1-04](../../plans/oct-4-parallel-closure/tickets/O4-E1-04-precise-name-span.md): product0e6/driverb55의 Gin 전체 exact1,196 symbol/name 실제 캡처·독립 채점은 완료했다(MRR@10=1, 평균 Recall@10=0.9985493335876968;4 capped). 남은 지원 가능한 다른 name/typo cells와 최신 source 영향을 판정하며 file-only/미지원 unit은 회수 성공으로 계산하지 않는다.
 - [E1-05](../../plans/oct-4-parallel-closure/tickets/O4-E1-05-untouched-holdout.md): 준비된 미사용12repo/6079files의 license approver·사전 acceptance/critical strata·exposure를 확정하고 독립 gold/holdout을 발행한다. 입력 미결 `BLOCKED`다.
 - [E1-07](../../plans/oct-4-parallel-closure/tickets/O4-E1-07-bounded-bootstrap.md):1196-row의 full-caller cold cost/목표·memory ceiling을 판정한다. bat20 whole-verdict의 추가 numeric kernel 최적화는 actual profile에서 병목 조건이 성립하지 않아 해당 범위 `NOT_APPLICABLE`이다.
 

@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P1 / `CODE_AND_PROOF` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | name-span producer/scorer·formal oracles 및 새 Gin4 exact-symbol/name capture·scoring `VERIFIED`; 전체 name/typo scoreboard qualification `NOT_RUN` |
+| 실행 상태 | name-span producer/scorer·formal oracles 및 Gin 전체 exact1,196질의 symbol/name capture·scoring `VERIFIED`(product0e6/driverb55). MRR@10=1, 평균 Recall@10=0.9985493335876968;4 capped. 다른 name/typo cells 및 최신 main 전체 qualification `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -33,6 +33,16 @@ evaluator에는 indexed_span_diagnostics와 declaration_recall_at_k/declaration_
 - `VERIFIED`: clean source107에서 `uv run --frozen --extra dev python -m tools.benchmark.retrieval.run quanta --spec /private/tmp/qi-name4-v3/capture-spec.json` — exit0, 실제 matching fresh release runner/searchd, Gin99 Go files, `exact_symbol_name`/symbol 한 route, 4 completed results.
 - `VERIFIED`: `uv run --frozen --extra dev python -m tools.benchmark.retrieval evaluate-diagnostic --repo /Users/songmin/Documents/code-new/qi-large-scale-rerun-20260927/full-checkouts/gin --suite /private/tmp/qi-name4-v3/source-oracle/go-declaration-symbol-suite.json --runner /private/tmp/qi-name4-v3/capture/strategy-00-fw_strict/record.json --output /private/tmp/qi-name4-v3/name-report.json` — exit0. L0065/L0248/L0990/L1291의 declaration 및 name recovery MRR@10/Recall@10 모두1.0, coverage4/4, `source_oracle_complete_v1`.
 - report는 `diagnostic_unqualified`, oracle는 `go_exact_local_name_v3`, rank unit은 symbol이다. source-bound 좁은4-query 진단이며 전체 Gin/OSA typo, file-only 외부 제품, unseen gold, human review 또는 품질 비교 qualification을 주장하지 않는다.
+
+## 2026-10-05 Gin 전체1,196 실제 exact-name 진단
+
+- 원본 B09 `native-v3/gin-exact-1196/suite.json` SHA `7754aeeef1abf71b267b0a90df69e8d72d133fc92b722956819457a8733f79ae`의 task IDs·queries·query hashes를 모두 유지했다. source-oracle 소유 annotation을 제거한 baseline에서 canonical oracle가 Gin99 Go files/commit `d3ffc9985281dcf4d3bef604cce4e662b1a327a6`의1,196개 독립 질의와1,444개 declaration/name judgments를 산출했다. 반환 결과로 gold를 만들지 않았다.
+- 입력 root `/private/tmp/qi-gin1196-name-b55-20261005-v2`, symbol suite SHA `9a8c2f7dcfa08b31d14eb98a77c0aba42e7cef1948db16d1873ead1535bd8a3a`. 평가 도구는 frozen `b55f4c6d2e1408a4ec0b4d3d914abc734efe905c`; 제품은 앞서 검증한 frozen `0e6c7e7e9494b63fdb33f4594df059817459d3b1` release binaries다. runner SHA `ef0cf0933a1765a97233d890855605895cd66b3c22f1ab270242e4017f286aef`, searchd SHA `e86ee7213bdec351fdf7037f675a51eadd79ab588e78ee6e87cf54cb5b3237f1`. 최신 main 전체 source proof로 재표기하지 않는다.
+- `VERIFIED`: `/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index/.venv/bin/python -m tools.benchmark.retrieval.run quanta --spec /private/tmp/qi-gin1196-name-b55-20261005-v2/capture-spec-v3.json` — driver worktree `oct5-name-capture`, exit0, fresh `/private/tmp/qn1196v3`, symbol 단독 `exact_symbol_name`/top10,1,196 completed results. 원본 `record.json` SHA `8a9cac9aebfdc5bd969d624e8de9345c244aadaa3316a948bbec5de0748491e5`다.
+- `VERIFIED`: 같은 Python/driver에서 `-m tools.benchmark.retrieval evaluate-diagnostic --repo /Users/songmin/Documents/code-new/qi-large-scale-rerun-20260927/full-checkouts/gin --suite /private/tmp/qi-gin1196-name-b55-20261005-v2/source-oracle/go-declaration-symbol-suite.json --runner /private/tmp/qn1196v3/strategy-00-fw_strict/record.json --output /private/tmp/qi-gin1196-name-b55-20261005-v2/name-report-v3.json` — exit0. declaration 및 name recovery 모두 coverage1,196/1,196, MRR@10=1.0, query-mean Recall@10=0.9985493335876968. report SHA `5fc25f5318f2bc9efd638de52b1a8ef085b73d22bc867511d970f6fd2e13188d`다.
+-4개의 `capped`는 Bind17/Name18/Render22/init15개 독립 정답 선언에 대해10개만 반환한 관측이다. 각각 Recall@10은10/17·10/18·10/22·10/15이며 첫 순위는 정답이다. `unit_id`, source SHA, indexed definition bytes와 별도 name bytes를 검증했으며 반환 context의 extra byte를 이름 회수로 계산하지 않았다. 나머지1,192질의는 `success`다.
+- baseline v1은 category annotation에 필요한 observed-prefix diagnostic policy 누락으로 exit2였다. 다음 긴 output root는 control socket106 bytes/limit103 사전 점검에서 exit2였다. 실패 입력을 덮지 않고 policy를 보존한 v2 baseline 및 짧은 새 v3 capture root를 사용했다. 제품/평가 코드 변경은 없었다.
+- report는 `diagnostic_unqualified`/`go_exact_local_name_v3`/`source_oracle_complete_v1`다. 지원하지 않는 symbol OSA 교정, file-only 제품의 declaration/name/ID 회수, unseen/human gold, 품질 비교와 최신 main qualification은 이 실행의 완료 범위 밖이다.
 
 ## 착수 입력과 남은 범위
 
