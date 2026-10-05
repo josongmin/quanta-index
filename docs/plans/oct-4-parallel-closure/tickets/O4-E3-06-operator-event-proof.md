@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_ONLY` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | 구조 수리 뒤 current process_readiness_owner_v1 실제26 passed(14 OS-child scenario·12 helper); 다른 OS UID 및 Linux release proof `NOT_RUN` |
+| 실행 상태 | current process_readiness_owner_v1 실제26 passed(14 OS-child scenario·12 helper). Linux 실제2UID fixture 준비·pinned image 도구 확인 완료; 첫 nextest test0 실패 보존·canonical cargow test exact1 build 실행 중. Linux release/P11 proof `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -36,6 +36,13 @@
 - selector: `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked --run-ignored only -E 'test(linux_two_real_uids_enforce_operator_events_and_serve_listed_query)' --success-output final`. 이 Linux UDS credential component 범위와 P11 실제 release/deploy/config/rollback 범위는 별개다.
 - 후속 PREPARE v3는 응답 수신과 ring terminal 기록의 순서를 보완했다. `server.rs`는 `write_all` 이후 `ResponseWritten`을 기록하므로, 기존 `fail_closed_wait`로 exact request0xe306 terminal을 최대5s 관측하고 동일 process instance를 확인한다. 임의 고정 sleep으로 통과를 만들지 않는다. 최종 fixture SHA는 `6bf943b79e6d7641308767b4389d03c9afbcc56a13ee82b6e1723564d59eea34`, policy SHA는 위와 같다. 변경 뒤 `./scripts/cargow fmt --check`, Python3.13 ignored-policy lint, diff-check가 각각 exit0이다. Linux build/test는 여전히 `NOT_RUN`이다.
 - 최신 실행 입력은 `/private/tmp/qi-linux-uid-serial-prepare-v3/packet.json`(SHA `77c30645b69bd407423051bb77513c63e86b0f965308962fa93fc1ef474aba86`) 및 같은 폴더의 `owned.patch`(SHA `d62d9a736f85e2bb1eafc150d6b22f2bd03379805547711e53dda20bb05e55ba`)다. v2 입력은 보존하며 실제 실행은 v3의 source/overlay를 다시 확인하고 current root serial batch 종료 후 수행한다. 고유 SSD cache `/Volumes/Extreme SSD 1/qi-linux-uid-component-20261005-v3`에는 입력 준비만 수행했다. locked613 crate archives를 Cargo.lock checksum과 대조하고 sparse index와 함께1,176files/149,708,167bytes를 neutral cargo-home에 복사했다. credentials/config/git checkout/Darwin target는 포함하지 않았다. `/private/tmp/qi-linux-uid-registry-prepare-v1.json` SHA `4213f76376ecc24927c9665aaed8278891291a8042a22b7e7074a7668863f8ea`이며 실제 Linux build/test는 `NOT_RUN`이다.
+
+## 2026-10-05 실제 Linux component 실행
+
+- cached image의 `bash -c` inventory는 root/aarch64, `/tmp`1777·exec 가능 및 실제 UID/GID65534·groups=[]를 확인했다. image default stable Rust1.98과 protoc 부재로 prerequisite 결과는 `BLOCKED`였다. Rust1.92 toolchain은 이미 설치돼 있었다. `/private/tmp/qi-linux-uid-inventory-actual-20261005-v1/stdout.json` SHA `bffc047cc075250740e4f50e7402786d002471440305ccb0ca9c0f3c32962825`를 보존했다.
+- owned disposable container에서 `RUSTUP_TOOLCHAIN=1.92.0`을 고정하고 `apt-get update`→`apt-get install -y --no-install-recommends protobuf-compiler`를 실행했다. pinned Rust/cargo·cc·setpriv·protoc·pkg-config inventory는 `PREPARED`다. host 설치나 image pull은 없으며 container network를 분리한 뒤 locked/offline Rust rail을 시작했다.
+- v1 actual nextest는 exit96으로 `/work/target/nextest/default` store를 읽기 전용 source mount에 생성하지 못해 실패했다. fixture test0이며 제품 compilation/test 성공을 주장하지 않는다. root `/private/tmp/qi-linux-uid-component-actual-20261005-v1` 및 summary의 `FAILED`, owned container cleanup `VERIFIED`를 보존했다.
+- v2는 새 owned container/root `/private/tmp/qi-linux-uid-component-actual-20261005-v2`에서 준비된 canonical fallback을 실행 중이다: `./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked -- --ignored --exact e2e_socket_access::linux_two_real_uids_enforce_operator_events_and_serve_listed_query --nocapture`. RO `/work`, SSD RW `/qi-cache`, neutral Cargo source cache, `CARGO_BUILD_JOBS=1`,4GiB container memory, sccache/GC/build-logging0이다. 실제1selected/1passed와 source/2owned SHA 전후·owned cleanup을 확인하기 전 결과는 미확정이다. 이 config는 성능 qualification이 아니다.
 
 ## 배경과 현재 상태
 

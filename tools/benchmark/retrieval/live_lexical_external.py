@@ -2088,7 +2088,9 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     )
     if projection is not None:
         spec["sourcegraph"]["projection_revision"] = projection["projection_revision"]
-        if _json(_read_control_file(root / "sourcegraph-projection.json")) != projection:
+        if canonical_json(
+            _json(_read_control_file(root / "sourcegraph-projection.json"))
+        ) != canonical_json(projection):
             raise ValueError("Sourcegraph projection differs from retained capture")
     sourcegraph_max_request_target_bytes = None
     if "sourcegraph" in products:
@@ -2100,8 +2102,8 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         or canonical_json(binding) != canonical_json(summary.get("binding"))
         or summary.get("tasks") != len(tasks)
         or summary.get("release_digest") != document["digest"]
-        or summary.get("sourcegraph_max_request_target_bytes")
-        != sourcegraph_max_request_target_bytes
+        or canonical_json(summary.get("sourcegraph_max_request_target_bytes"))
+        != canonical_json(sourcegraph_max_request_target_bytes)
     ):
         raise ValueError("external capture binding differs")
     files = {row["path"]: row["file_sha256"] for row in manifest["files"]}
@@ -2189,9 +2191,11 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
             snapshot=_json(_read_control_file(root / "backend/sourcegraph-before.json")),
             require_owned_service=True,
         )
-        if _json(_read_control_file(root / "sourcegraph-index-scope.json")) != index_scope:
+        if canonical_json(
+            _json(_read_control_file(root / "sourcegraph-index-scope.json"))
+        ) != canonical_json(index_scope):
             raise ValueError("retained Sourcegraph index scope differs from evidence replay")
-    if summary["sourcegraph_index_scope"] != index_scope:
+    if canonical_json(summary["sourcegraph_index_scope"]) != canonical_json(index_scope):
         raise ValueError("Sourcegraph index scope claim differs from evidence replay")
     if probe_indexed_view:
         endpoint = (

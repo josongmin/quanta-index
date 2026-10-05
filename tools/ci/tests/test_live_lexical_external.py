@@ -2153,16 +2153,28 @@ class SearchHandler(BaseHTTPRequestHandler):
         "use_index_scope",
         "scope_changes_during_queries",
         "nl_file_query",
+        "scope_type_alias",
     ),
     [
-        (False, False, False, False, False, False, False),
-        (False, False, False, True, False, False, False),
-        (True, False, False, False, False, False, False),
-        (False, True, False, False, False, False, False),
-        (False, False, True, False, False, False, False),
-        (False, False, False, True, True, False, False),
-        (False, False, False, False, True, True, False),
-        pytest.param(False, False, False, True, False, False, True, id="nl-file-literal"),
+        (False, False, False, False, False, False, False, None),
+        (False, False, False, True, False, False, False, None),
+        (True, False, False, False, False, False, False, None),
+        (False, True, False, False, False, False, False, None),
+        (False, False, True, False, False, False, False, None),
+        (False, False, False, True, True, False, False, None),
+        (False, False, False, False, True, True, False, None),
+        pytest.param(False, False, False, True, False, False, True, None, id="nl-file-literal"),
+        *[
+            pytest.param(
+                False, False, False, True, True, False, False, case, id=f"scope-type-alias-{case}"
+            )
+            for case in (
+                "projection-count",
+                "retained-scope-count",
+                "summary-scope-count",
+                "request-target-count",
+            )
+        ],
     ],
 )
 def test_live_capture_makes_three_product_requests_and_retains_raw(
@@ -2175,6 +2187,7 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     use_index_scope,
     scope_changes_during_queries,
     nl_file_query,
+    scope_type_alias,
     monkeypatch,
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
@@ -2508,6 +2521,50 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
     assert (root / "opengrok" / "S00.json").exists()
     assert (root / "cs" / "S00.json").exists()
     summary_path = root / "capture.json"
+    if scope_type_alias is not None:
+        # A mathematically equal float must not replace a derived integer
+        # claim, even when the retained raw rows and their hashes are intact.
+        aliases = {
+            "projection-count": (
+                "sourcegraph-projection.json",
+                "file_count",
+                None,
+                "Sourcegraph projection differs",
+            ),
+            "retained-scope-count": (
+                "sourcegraph-index-scope.json",
+                "files",
+                None,
+                "retained Sourcegraph index scope differs",
+            ),
+            "summary-scope-count": (
+                "capture.json",
+                "files",
+                "sourcegraph_index_scope",
+                "Sourcegraph index scope claim differs",
+            ),
+            "request-target-count": (
+                "capture.json",
+                "sourcegraph_max_request_target_bytes",
+                None,
+                "external capture binding differs",
+            ),
+        }
+        filename, key, parent, error = aliases[scope_type_alias]
+        target = root / filename
+        original = target.read_bytes()
+        changed = json.loads(original)
+        claim = changed[parent] if parent is not None else changed
+        assert type(claim[key]) is int and claim[key] > 0
+        claim[key] = float(claim[key])
+        target.write_text(json.dumps(changed))
+        try:
+            with pytest.raises(ValueError, match=error):
+                live.verify(root)
+        finally:
+            target.write_bytes(original)
+        assert live.verify(root) == result
+        return
     if use_index_scope:
         scope_path = root / "sourcegraph-index-scope.json"
         original_scope = scope_path.read_bytes()

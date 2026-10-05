@@ -4,16 +4,16 @@
 
 - 담당·파일/함수·독립 검증·완료 조건: [4개 에픽 + I0](../../plans/oct-4-parallel-closure/README.md), [29개 티켓](../../plans/oct-4-parallel-closure/tickets/INDEX.md).
 - 실행 순서·실제 상태: [W0–W6](../../plans/oct-4-parallel-closure/WAVES.md). 개별 명령·관측·증거 범위는 기존 owning ticket이 기준이다.
-- 제품 proof/binaries/admissions는 frozen `0e6c7e7e9494b63fdb33f4594df059817459d3b1` 기준이다. 완료된 scope 수리/SG/native3는 clean `ae8f96bae1a0db1fc0378861b228cd5359080fa1` 범위다. derived provenance·frozen-context 경로 수리는 clean `628541e150192b4aaf0ff4ba54566ae28c6ca25f`에 고정했고 retained bat canonical raw replay가 통과했다. 후속 report/verdict JSON 타입 결속을 수리한 clean `97eedd11b70e76c66985b15a968211a2faf92c6d`의 focused 회귀203/203·0failed/skipped가 통과했다. 새 SG12repo/13,347files 독립 replay·bat native3 actual/replay·retained full5제품 join은 통과했다. remaining8 actual captures/replays/joins와 final qualification은 남아 있다. mutable main이나 과거 receipt를 새 source 결과로 재표기하지 않는다.
+- 제품 proof/binaries/admissions는 frozen `0e6c7e7e9494b63fdb33f4594df059817459d3b1` 기준이다. 완료된 scope 수리/SG/native3는 clean `ae8f96bae1a0db1fc0378861b228cd5359080fa1` 범위다. derived provenance·frozen-context 경로 수리는 clean `628541e150192b4aaf0ff4ba54566ae28c6ca25f`에 고정했고 retained bat canonical raw replay가 통과했다. 후속 report/verdict JSON 타입 결속을 수리한 clean `97eedd11b70e76c66985b15a968211a2faf92c6d`의 focused 회귀203/203·0failed/skipped가 통과했다. 새 SG12repo/13,347files 독립 replay·bat native3 actual/replay·retained full5제품 join은 통과했다. remaining8 Q/S·native captures/독립 replays/full5제품 joins도 완료됐다. 후속 native metadata4개 타입 결속 수리의 실제 RED4재현/GREEN12passed를 main에 통합했다. current9 신규151tasks/742unjudged pairs가 준비됐지만 actual 판단·final qualification은 남아 있다. mutable main이나 과거 receipt를 새 source 결과로 재표기하지 않는다.
 - 원본 agent-4의 과거 임시 증거15고유경로는 현재 없어 replay 가능한 current proof로 사용하지 않는다. 기존50 Markdown의 상대 링크1,246개·29 ticket 배치는 확인했으며 증거 가용성 경계는 [I0-01](../../plans/oct-4-parallel-closure/tickets/O4-I0-01-ownership-and-contract-freeze.md)에 기록했다.
 
 ## 1. 현재 실행 순서
 
 | 순서 / 웨이브 | 해야 할 일 | 현재 경계 |
 | --- | --- | --- |
-| 1 / W3–W5 | required8의 current native·pair 독립 replay와 full5제품 join | source97 bat full5 join VERIFIED/공통20tasks/diagnostic_unqualified. required8 native v4는 잘못된 historical validator source guard로 호출 전 거절; v5 입력 preflight8/8 완료. Q/S8 producer/독립 replay VERIFIED·native v5 실행 중. 과거 실패 보존 |
+| 1 / W3–W5 | 새 미판정151tasks/742pairs 실제 검수·canonical labels·재채점 | current9 blind pool9/9 PREPARED. source97 Q/S8·native8·독립 replays/full5 joins VERIFIED; bat20 및 required8 각0–5 common eligible는 diagnostic 범위. actual reviewer/adjudicator quota BLOCKED, unknown을0점으로 처리하지 않음 |
 | 2 / W3 | current0e6 admission에 후속 final merged revisions 연결 | canonical issuer exit0/8 terminal·aggregate 및 각16-input hash readback VERIFIED. bat 포함9repo/180tasks/4,262judgments의 admission 범위; 후속 final revisions·나머지3개는 미완료 |
-| 3 / W4–W5 | 준비된 C3 저장소의 실제 Quanta/Semble·SG/OG/cs 캡처, required-cell outcomes·source-bound blind union 발행 | all12 PREPARE 종료:9 PREPARED/3 BLOCKED, aggregate exit2. 후속8개 직렬 큐에서 Q/S8 producer/독립 replay VERIFIED·native v5 실행 중; native v4 preflight 거절은 v5의 current canonical issuance binding으로 복구 준비했다. 새 미검수 후보를 final quality나0점으로 처리하지 않음 |
+| 3 / W4–W5 | 나머지3 C3 저장소와 다른 lane의 required cells, 후속 source/qrel 영향 재검증 | all12 PREPARE9 ready/3 admission BLOCKED; current9의 source97 captures/joins와 blind union 완료. metadata owner 수리의 focused proof는 별도 scope이며 새 source의 fresh native qualification은 아직 미발행 |
 | 4 / W1→W3→W5 | SQLAlchemy/Zellij 실제 조정 완료·suite/pack/admission 발행, Tailscale 미결 정책 적용 후 재검수 | actual Opus 주간 한도로 SQL146·Zellij476pairs `BLOCKED`. SQL334pairs 보존. 서비스 reset 관측10월7일01:00KST. Tailscale rubric 입력도 `BLOCKED` |
 | 5 / W1–W5 | 다른 lane의 fresh required cells와 독립 name/holdout 평가, 최종 합집합 검수·scoreboard·정책 판정 | 아래 에픽별 잔여와 입력 경계 적용. C3 NL·exact/typo/span·ARB·B09 분모를 합산하지 않음 |
 | 6 / W6 | exact producer/source pair·hosted CI·Linux release·실제 운영 gate | authorized host/path/config/state/retention/rollback 입력 `BLOCKED`. local proof를 배포/복구 증거로 승격하지 않음 |
@@ -42,7 +42,7 @@
 
 - [E3-01](../../plans/oct-4-parallel-closure/tickets/O4-E3-01-active-selection-race.md): 별도 OS-child의 같은 retention race 범위를 기존 supported refusal/view 계약에서 판정한다. dispatcher/runtime owner·daemon proof를 그 OS 시나리오로 재명명하지 않는다.
 - [E3-04](../../plans/oct-4-parallel-closure/tickets/O4-E3-04-maintenance-health-metering.md)·[E3-05](../../plans/oct-4-parallel-closure/tickets/O4-E3-05-publish-timeout-replay.md): actual daemon slow-disk3-cadence, 기본30초 별도 OS-process admitted publish timeout→operation inspect→exact replay 범위를 검증한다.
-- [E3-06](../../plans/oct-4-parallel-closure/tickets/O4-E3-06-operator-event-proof.md): 별도 worktree의 Linux 두 UID UDS component fixture·독립 policy 등록·fmt/policy lint는 준비됐다. 실제 Linux build/test는 `NOT_RUN`이다. P11 운영 process-truth는 authorized host/path/config/state/retention/rollback 입력 `BLOCKED`로 별도 유지한다.
+- [E3-06](../../plans/oct-4-parallel-closure/tickets/O4-E3-06-operator-event-proof.md): 별도 worktree의 Linux 두 UID UDS component fixture·독립 policy 등록·fmt/policy lint는 준비됐다. 첫 nextest 실행은 RO workspace store 생성 실패로 test0/FAILED를 보존했다. 고정 Rust1.92·container-only protoc 준비 후 canonical cargow test exact1 Linux build가 실행 중이다. P11 운영 process-truth는 authorized host/path/config/state/retention/rollback 입력 `BLOCKED`로 별도 유지한다.
 - [E3-02](../../plans/oct-4-parallel-closure/tickets/O4-E3-02-admission-pin-transfer.md)는 현 Accepted 계약에서 `NOT_APPLICABLE`; 강화 계약 채택·새 실제 반례가 있을 때만 재개한다. [E3-03](../../plans/oct-4-parallel-closure/tickets/O4-E3-03-atomic-active-query-rpc.md)의 지원7 Active variant single-RPC 구현은 재작성하지 않는다. 후속 효과/운영 qualification만 해당 scope에서 수행한다.
 
 ### E4 — 비용 원인·조건부 변경·성능·scale
