@@ -742,15 +742,23 @@ mod tests {
         }
     }
 
+    fn source_prefix(value: &SourceFileRevision) -> u8 {
+        source_key_digest(value)
+            .expect("key digest")
+            .first()
+            .copied()
+            .expect("digest prefix")
+    }
+
     fn descriptor(sha256: [u8; 32], bytes: u64, entries: u64) -> Partition {
-        let first = source_key_digest(&source()).expect("key digest")[0];
+        let first = source_prefix(&source());
         Partition {
             prefix_bits: 8,
             prefix: std::array::from_fn(|index| if index == 0 { first } else { 0 }),
             sha256,
             bytes,
             entries,
-            terms: if entries == 0 { 0 } else { 1 },
+            terms: u32::from(entries != 0),
         }
     }
 
@@ -799,7 +807,7 @@ mod tests {
         assert!(root().encode(changed_policy).is_err());
 
         let mut absent_pack = root();
-        absent_pack.sources[0].pack_sha256 = [11; 32];
+        absent_pack.sources.first_mut().expect("source").pack_sha256 = [11; 32];
         assert!(absent_pack.encode(policy()).is_err());
 
         let mut missing_content_bucket = root();
@@ -807,15 +815,24 @@ mod tests {
         assert!(missing_content_bucket.encode(policy()).is_err());
 
         let mut forged_count = root();
-        forged_count.sources[0].posting_memberships = 1;
+        forged_count
+            .sources
+            .first_mut()
+            .expect("source")
+            .posting_memberships = 1;
         assert!(forged_count.encode(policy()).is_err());
 
         let mut reused_id = root();
-        reused_id.sources.push(reused_id.sources[0].clone());
+        let duplicate = reused_id.sources.first().expect("source").clone();
+        reused_id.sources.push(duplicate);
         assert!(reused_id.encode(policy()).is_err());
 
         let mut forged_terms = root();
-        forged_terms.content_postings[0].terms = 1;
+        forged_terms
+            .content_postings
+            .first_mut()
+            .expect("content bucket")
+            .terms = 1;
         assert!(forged_terms.encode(policy()).is_err());
 
         let mut tight = policy();
@@ -864,7 +881,7 @@ mod tests {
     #[test]
     fn duplicate_body_in_two_source_key_buckets_is_canonical() {
         let first = source();
-        let first_prefix = source_key_digest(&first).expect("key digest")[0];
+        let first_prefix = source_prefix(&first);
         let second = (0..100)
             .map(|index| SourceFileRevision {
                 file: SourceFileKey {
@@ -874,7 +891,7 @@ mod tests {
                 revision_id: RevisionId::new("rev").expect("revision"),
                 source_sha256: first.source_sha256,
             })
-            .find(|candidate| source_key_digest(candidate).expect("key digest")[0] != first_prefix)
+            .find(|candidate| source_prefix(candidate) != first_prefix)
             .expect("opposite key bucket");
         let language = LanguageCode::new("rust").expect("language");
         let charge = |source: &SourceFileRevision| {
@@ -910,8 +927,8 @@ mod tests {
             .sort_by(|a, b| a.source.file.cmp(&b.source.file));
         root.next_source_id = 3;
         let mut prefixes = [
-            source_key_digest(&root.sources[0].source).expect("key digest")[0],
-            source_key_digest(&root.sources[1].source).expect("key digest")[0],
+            source_prefix(&root.sources.first().expect("first source").source),
+            source_prefix(&root.sources.get(1).expect("second source").source),
         ];
         prefixes.sort_unstable();
         let buckets = prefixes.map(|prefix| Partition {

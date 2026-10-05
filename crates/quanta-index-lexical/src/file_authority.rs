@@ -1645,18 +1645,12 @@ mod tests {
         std::fs::write(&base_object, body).expect("base object");
         std::fs::hard_link(&base_object, &target_object).expect("inherited object");
         assert!(super::replay_object_inherited(
-            &target,
-            &base,
-            digest,
-            body_len
+            &target, &base, digest, body_len
         ));
         std::fs::remove_file(&target_object).expect("unlink inherited");
         std::fs::write(&target_object, body).expect("same bytes, new inode");
         assert!(!super::replay_object_inherited(
-            &target,
-            &base,
-            digest,
-            body_len
+            &target, &base, digest, body_len
         ));
     }
 

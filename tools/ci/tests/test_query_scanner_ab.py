@@ -28,13 +28,13 @@ def _arm(
     phase = copy.deepcopy(phase)
     diagnostic = copy.deepcopy(diagnostic)
     record["span_accounting_version"] = 1
-    if runner is not None:
-        record["runner"]["revision"] = f"sha256:{runner}"
-        phase["runner_binary_sha256"] = runner
+    if runner is None:
+        runner = phase["runner_binary_sha256"]
+    record["runner"]["revision"] = f"sha256:{runner}"
+    phase["runner_binary_sha256"] = runner
     for capture in record["captures"].values():
         capture["searchd_binary"]["binary_digest"] = searchd
-        if runner is not None:
-            capture["runner_binary"]["digest"] = runner
+        capture["runner_binary"]["digest"] = runner
     record_sha = ev.digest(ev.canonical(record))
     phase["record_sha256"] = record_sha
     diagnostic["record_sha256"] = record_sha
@@ -174,6 +174,7 @@ def test_scanner_ab_preserves_parity_and_declared_binary_difference(tmp_path):
 )
 def test_scanner_ab_refuses_independent_semantic_or_custody_delta(tmp_path, mutation):
     baseline, candidate, pack = _pair(tmp_path)
+    assert _compare(baseline, candidate, pack)["status"] == "diagnostic_unqualified"
     record, phase, diagnostic, identity = candidate
     if mutation == "status":
         record["results"][0]["status"] = "timeout"

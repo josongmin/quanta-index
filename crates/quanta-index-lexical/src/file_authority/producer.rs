@@ -1155,9 +1155,10 @@ mod tests {
         text_admitted: bool,
         language_code: &str,
     ) -> Result<super::ProducedAuthority, super::ProducerError> {
-        let no_read = |_, _| -> Result<Vec<u8>, String> { panic!("unchanged base blob was read") };
+        let no_read =
+            |_, _| -> Result<Vec<u8>, String> { Err("unchanged base blob was read".into()) };
         let mut no_write =
-            |_, _: &[u8]| -> Result<(), String> { panic!("unchanged blob was emitted") };
+            |_, _: &[u8]| -> Result<(), String> { Err("unchanged blob was emitted".into()) };
         produce_authority(
             &[SourceDisposition::Inherited {
                 source: source(),
@@ -1177,14 +1178,13 @@ mod tests {
     #[test]
     fn unchanged_source_keeps_id_and_reuses_all_blobs_without_read() {
         let base = fresh(true);
-        assert_eq!(base.root.sources[0].resident_heap_bytes, 1103);
+        let base_row = base.root.sources.first().expect("base source");
+        assert_eq!(base_row.resident_heap_bytes, 1103);
         let next = inherited(&base, true, "rust").expect("unchanged");
-        assert_eq!(
-            next.root.sources[0].source_id,
-            base.root.sources[0].source_id
-        );
+        let next_row = next.root.sources.first().expect("inherited source");
+        assert_eq!(next_row.source_id, base_row.source_id);
         assert_eq!(next.root_bytes, base.root_bytes);
-        assert_eq!(next.root.sources[0].resident_heap_bytes, 1103);
+        assert_eq!(next_row.resident_heap_bytes, 1103);
     }
 
     #[test]
@@ -1307,8 +1307,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            delta.root.sources[0].source_id,
-            base.root.sources[0].source_id
+            delta.root.sources.first().expect("delta source").source_id,
+            base.root.sources.first().expect("base source").source_id
         );
         assert_eq!(delta.root.next_source_id, base.root.next_source_id);
         assert!(!output.is_empty(), "replacement must emit a changed object");
@@ -1317,8 +1317,9 @@ mod tests {
     #[test]
     fn tombstoned_source_id_is_not_reused() {
         let base = fresh(false);
-        let no_read = |_, _| -> Result<Vec<u8>, String> { panic!("tombstone read base") };
-        let mut no_write = |_, _: &[u8]| -> Result<(), String> { panic!("tombstone wrote blob") };
+        let no_read = |_, _| -> Result<Vec<u8>, String> { Err("tombstone read base".into()) };
+        let mut no_write =
+            |_, _: &[u8]| -> Result<(), String> { Err("tombstone wrote blob".into()) };
         let empty = produce_authority(
             &[],
             Some(&CommittedBase {
@@ -1351,6 +1352,6 @@ mod tests {
             &mut sink,
         )
         .unwrap();
-        assert_eq!(next.root.sources[0].source_id, 2);
+        assert_eq!(next.root.sources.first().expect("next source").source_id, 2);
     }
 }

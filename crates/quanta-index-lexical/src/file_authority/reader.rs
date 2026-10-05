@@ -312,7 +312,7 @@ mod tests {
             },
         )
         .expect("absent gram");
-        assert_eq!(absent[&*b"zzz"], Vec::<u64>::new());
+        assert!(absent.get(b"zzz").expect("absent gram listed").is_empty());
         assert_eq!(reads, 0);
         let found = posting_lists(
             &root,
@@ -329,11 +329,19 @@ mod tests {
                 assert_eq!(total, u64::try_from(block.len()).expect("length"));
                 let start = usize::try_from(offset).expect("offset");
                 let end = start + usize::try_from(len).expect("length");
-                Ok(block[start..end].to_vec())
+                Ok(block
+                    .get(start..end)
+                    .ok_or_else(|| {
+                        CoreError::Storage("reader fixture selected range missing".into())
+                    })?
+                    .to_vec())
             },
         )
         .expect("selected gram");
-        assert_eq!(found[&*b"abc"], vec![1, 3]);
+        assert_eq!(
+            found.get(b"abc").expect("selected gram listed").as_slice(),
+            &[1, 3]
+        );
         assert_eq!(reads, 1);
     }
 
@@ -352,8 +360,15 @@ mod tests {
             |_, _, offset, len| {
                 let start = usize::try_from(offset).expect("offset");
                 let end = start + usize::try_from(len).expect("length");
-                let mut bytes = block[start..end].to_vec();
-                bytes[0] ^= 1;
+                let mut bytes = block
+                    .get(start..end)
+                    .ok_or_else(|| {
+                        CoreError::Storage("reader fixture tamper range missing".into())
+                    })?
+                    .to_vec();
+                *bytes.first_mut().ok_or_else(|| {
+                    CoreError::Storage("reader fixture tamper range empty".into())
+                })? ^= 1;
                 Ok(bytes)
             },
         )
@@ -370,7 +385,10 @@ mod tests {
         let read = |_: [u8; 32], _: u64, offset: u64, len: u64| {
             let start = usize::try_from(offset).expect("offset");
             let end = start + usize::try_from(len).expect("length");
-            Ok(block[start..end].to_vec())
+            Ok(block
+                .get(start..end)
+                .ok_or_else(|| CoreError::Storage("reader fixture selected range missing".into()))?
+                .to_vec())
         };
         let _first_stage = posting_lists(
             &root,
@@ -479,7 +497,7 @@ mod tests {
                 },
             )
             .expect("bounded directory probe");
-            assert!(empty[&*b"zzz"].is_empty());
+            assert!(empty.get(b"zzz").expect("absent gram listed").is_empty());
         }
         let failure = posting_lists(
             &root,

@@ -410,7 +410,7 @@ mod tests {
             sha256: Sha256::digest(bytes).into(),
             bytes: u64::try_from(bytes.len()).expect("length"),
             entries,
-            terms: if entries == 0 { 0 } else { 1 },
+            terms: u32::from(entries != 0),
         }
     }
 
@@ -424,7 +424,11 @@ mod tests {
             revision_id: RevisionId::new("rev").expect("revision"),
             source_sha256: Sha256::digest(body).into(),
         };
-        let prefix = source_key_digest(&source).expect("key digest")[0];
+        let prefix = source_key_digest(&source)
+            .expect("key digest")
+            .first()
+            .copied()
+            .expect("digest prefix");
         let ids = [1_u64];
         let source_pack = encode_source_pack(
             &[SourcePackInput {
@@ -504,11 +508,23 @@ mod tests {
                 .ok_or_else(|| "missing blob".to_string())
         })
         .expect("fixed corpus opens");
-        assert_eq!(opened.root.sources[0].posting_memberships, 3);
+        assert_eq!(
+            opened
+                .root
+                .sources
+                .first()
+                .expect("source")
+                .posting_memberships,
+            3
+        );
         assert_eq!(opened.files.len(), 1);
 
         let mut forged_charge = root.clone();
-        forged_charge.sources[0].resident_heap_bytes += 1;
+        forged_charge
+            .sources
+            .first_mut()
+            .expect("source")
+            .resident_heap_bytes += 1;
         let forged_charge_root = forged_charge.encode(policy()).expect("structural root");
         let failure = verify_authority(
             &forged_charge_root,
@@ -525,7 +541,11 @@ mod tests {
         assert!(failure.contains("resident row charge differs"), "{failure}");
 
         let mut forged_terms = root.clone();
-        forged_terms.path_postings[0].terms = 1;
+        forged_terms
+            .path_postings
+            .first_mut()
+            .expect("path bucket")
+            .terms = 1;
         let forged_term_root = forged_terms.encode(policy()).expect("structural root");
         let failure = verify_authority(
             &forged_term_root,
@@ -552,7 +572,16 @@ mod tests {
             &codec_limits(),
         )
         .expect("retired block");
-        forged.content_postings[0] = descriptor(forged.content_postings[0].prefix[0], &retired, 1);
+        let prefix = forged
+            .content_postings
+            .first()
+            .expect("content bucket")
+            .prefix
+            .first()
+            .copied()
+            .expect("prefix");
+        *forged.content_postings.first_mut().expect("content bucket") =
+            descriptor(prefix, &retired, 1);
         let mut forged_blobs = blobs;
         let _prior = forged_blobs.insert(Sha256::digest(&retired).into(), retired);
         let forged_root = forged
