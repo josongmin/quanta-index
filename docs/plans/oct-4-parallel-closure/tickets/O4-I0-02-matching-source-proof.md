@@ -205,3 +205,10 @@
 - 실제 source/dirty ownership, 변경 파일과 계약, 실행한 명령/selector, 관측 결과 및 제외 범위.
 - raw/model/runtime/binary/input identity는 해당 실행 계약이 요구하는 범위에서 기록한다.
 - 완료 조건별 `VERIFIED`/`FAILED`/`BLOCKED`/`NOT_RUN`/`NOT_APPLICABLE`과 후속 티켓에 넘길 입력을 발행한다.
+
+## 2026-10-05 causal source risk-daemon actual
+
+- Source/execution root: clean `08d533787ee91f8e90c9139d09adae03a6394cf7`, `/Users/songmin/.codex/worktrees/oct5-causal-actual/quanta-index`. Main `8cec7e7d` differs only in documents; Rust/Cargo/Justfile/test-authority/vendor diff is empty. The executed revision remains08d.
+- Command: `PATH=/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index/.venv/bin:$PATH CARGO_BUILD_JOBS=1 just rust-profile test-daemon`. Canonical selector:24 catalog rows,4 test binaries,1 Cargo process,4 test threads, `test-daemon-lane`.
+- `VERIFIED`: exit0;214 executed/passed,1 skipped,1 slow; tests226.315s. Cold compilation finished in16m18s before execution. Includes `active_selection_process_v1` and real full-corpus runtime fixture; compilation alone was not counted as test success.
+- `NOT_RUN`: post-causal runtime lib3 selector (the daemon profile does not select these), affected lexical durability/harness owner rails on08d, fresh matching release causal profiles, latest-source full Contract/SDK/hosted CI and provider/Linux/operational qualification. Earlier owner passes retain their own source scopes.
