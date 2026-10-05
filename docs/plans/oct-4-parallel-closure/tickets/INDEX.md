@@ -136,6 +136,12 @@ P1 · W1/W4 · native reader/capture/replay 구현 완료, 전체 서비스 univ
   `58f20a0e32b8f6de24e67ae2f8dca061bf5d08f1dad3c536f3106399d3dfb800`),
   `/private/tmp/qi-og-query-reader-fixture-20261005-v1`(compiler/control/replay).
   Fixed image javac4classes·집중78tests(105.12s)·current closure/authority244tests(47.30s)·Ruff가 통과했다.
+- `VERIFIED`: 같은 고정7파일로 cli20 capture와 별도 프로세스 replay도 exit0였다.
+  `/private/tmp/qi-e2-og-query-reader-ready9-cli20-20261005-v1`의 capture SHA는
+  `c5ba28a1ab7dce1394d8449a2c981a44e77bd4e76f4425a5050855356836dbc9`다.
+  Native 전후12repo/17,615live가 일치했고, 실제20개 cli 요청은
+  segments_4/generation4/readerVersion16/live1,358/max1,359 reader에 결속됐다.
+  Selected-request attested=true, all-project readers=false, diagnostic_unqualified 범위다.
 - 남은 repository/profile의 실제 acquired-reader scope 및 필요한 전수 source-byte/posting 권위를 확정한다.
   `opengrok_query_fixture.py`가 고정 원본→patch→Java→4classes 재현을 제공한다.
   `VERIFIED`: 외부 fresh `/private/tmp/qi-og-query-fixture-repro-20261005-v1`에서
