@@ -142,6 +142,12 @@ P1 · W1/W4 · native reader/capture/replay 구현 완료, 전체 서비스 univ
   Native 전후12repo/17,615live가 일치했고, 실제20개 cli 요청은
   segments_4/generation4/readerVersion16/live1,358/max1,359 reader에 결속됐다.
   Selected-request attested=true, all-project readers=false, diagnostic_unqualified 범위다.
+- `VERIFIED`: django20 capture와 별도 프로세스 replay도 exit0였다.
+  `/private/tmp/qi-e2-og-query-reader-ready9-django20-20261005-v1`의 capture SHA는
+  `412325e818b51fd38474af6f8e56543aca081dbcaad76460f46a02869fa51463`다.
+  Native12repo/17,615live와20개 요청의 segments_4/generation4/readerVersion16/live3,031/max3,032를
+  결속했다. Bat/cli/django는 발행 suite/pack과 일치하는 ready9 중3repo/60requests 범위이며,
+  selected-request attested만true이고 전체 서비스 reader/비교 qualification은 미완료다.
 - 남은 repository/profile의 실제 acquired-reader scope 및 필요한 전수 source-byte/posting 권위를 확정한다.
   `opengrok_query_fixture.py`가 고정 원본→patch→Java→4classes 재현을 제공한다.
   `VERIFIED`: 외부 fresh `/private/tmp/qi-og-query-fixture-repro-20261005-v1`에서
