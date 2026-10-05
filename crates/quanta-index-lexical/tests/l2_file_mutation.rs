@@ -15,16 +15,16 @@ use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqFilter, LqLeaf, LqOptions,
-    LqPatternType, LqQuery, LqSelect, LqSpan, ManifestGeneration, QueryConstraintSetV1, RepoId,
-    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalCursor, LqExpr, LqFilter, LqLeaf,
+    LqOptions, LqPatternType, LqQuery, LqSelect, LqSpan, ManifestGeneration, QueryConstraintSetV1,
+    RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
     SearchCorpusSurfaceMutationConflictV1 as MutationConflict, SearchCorpusTombstoneScope,
     SearchScopeSurface, SourceFileCoverage, SourceFileKey, SourceFileRevision,
     SourcePublicationEvent, SymbolCoverage, SymbolId, source_event_payload_sha256,
     source_file_unit_set_sha256,
 };
 use quanta_index_core::{
-    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec, RequestBudgetV1,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
     SearchCorpusBatchBuildPort, SearchCorpusPreflightPhaseV1,
 };
 use quanta_index_lexical::LexicalAdapter;
@@ -898,14 +898,20 @@ fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
         live_stats.num_docs, 4,
         "two retained files have text and symbol docs"
     );
-    assert_eq!(live_stats.max_doc, 4, "no deleted docs remain after seal");
+    assert!(
+        live_stats.max_doc > live_stats.num_docs,
+        "delta retains base segment bytes"
+    );
     assert_eq!(
-        live_stats.needle_doc_freq, 2,
-        "both retained text docs match"
+        live_stats.needle_doc_freq, 3,
+        "raw index still counts retired term"
     );
     assert_eq!(live_stats.num_docs, rebuilt_stats.num_docs);
-    assert_eq!(live_stats.max_doc, rebuilt_stats.max_doc);
-    assert_eq!(live_stats.needle_doc_freq, rebuilt_stats.needle_doc_freq);
+    assert!(live_stats.max_doc > rebuilt_stats.max_doc);
+    assert_eq!(
+        live_stats.needle_doc_freq,
+        rebuilt_stats.needle_doc_freq + 1
+    );
     assert_eq!(live_rows.len(), 2);
     assert_eq!(
         live_rows
@@ -931,14 +937,675 @@ fn tombstone_scoring_uses_only_live_source_docs() -> TestResult {
             .iter()
             .map(tantivy::SegmentMeta::num_deleted_docs)
             .sum::<u32>(),
-        0,
-        "a sealed lexical generation must not retain deleted documents in BM25 statistics"
+        2,
+        "retired text and symbol documents remain physically present"
     );
     Ok(())
 }
 
+/// Compare live scores with an independent full rebuild of the final documents.
+///
+/// The full rebuild has no tombstone history. Term frequency, field length,
+/// duplicate terms, symbol scoring and cursor order all affect the comparison.
+fn bm25_oracle_scope(
+    path: &str,
+    marker: &str,
+    needle_repeats: usize,
+    padding: usize,
+) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
+    let mut scope = file_scope(path, marker)?;
+    let content = format!(
+        "livebm25symbol {marker} {} {}",
+        std::iter::repeat_n("livebm25needle", needle_repeats)
+            .collect::<Vec<_>>()
+            .join(" "),
+        std::iter::repeat_n("fieldlengthpadding", padding)
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    scope.source_bytes = content.as_bytes().to_vec();
+    scope.coverage.source.source_sha256 = Sha256::digest(content.as_bytes()).into();
+    let chunk = scope
+        .chunks
+        .first_mut()
+        .ok_or("missing BM25 oracle chunk")?;
+    chunk.text = content.into();
+    chunk.end_byte = u32::try_from(chunk.text.len())?;
+    let symbol = scope
+        .symbols
+        .first_mut()
+        .ok_or("missing BM25 oracle symbol")?;
+    symbol.local_name = "livebm25symbol".into();
+    symbol.qualified_name = format!("crate::{marker}::livebm25symbol").into();
+    symbol.definition_span.byte_end = u32::try_from("livebm25symbol".len())?;
+    scope.coverage.unit_set_sha256 = source_file_unit_set_sha256(&scope.chunks, &scope.symbols)?;
+    Ok(scope)
+}
+
+fn bm25_text_pages(
+    view: &dyn LexicalSearcher,
+    generation: ManifestGeneration,
+    request: &LqQuery,
+) -> Result<Vec<(String, u32)>, Box<dyn Error>> {
+    let mut rows = Vec::new();
+    let mut after: Option<LexicalCursor> = None;
+    loop {
+        let page = view.search_constrained(
+            request,
+            &QueryConstraintSetV1::unconstrained(),
+            &LexicalPageSpec { fetch: 2, after },
+            &RequestBudgetV1::unbounded(),
+        )?;
+        let Some(last) = page.candidates.last() else {
+            break;
+        };
+        after = Some(LexicalCursor::at(generation, last.order_key()));
+        for candidate in &page.candidates {
+            rows.push((candidate.candidate_id.clone(), candidate.score.to_bits()));
+        }
+        if rows.len() > 4 {
+            return Err("BM25 text cursor repeated or emitted extra rows".into());
+        }
+    }
+    Ok(rows)
+}
+
+fn bm25_symbol_pages(
+    view: &dyn LexicalSearcher,
+    generation: ManifestGeneration,
+    request: &LqQuery,
+) -> Result<Vec<(String, u32)>, Box<dyn Error>> {
+    let mut rows = Vec::new();
+    let mut after: Option<LexicalCursor> = None;
+    loop {
+        let page = view.search_symbols_constrained(
+            request,
+            &QueryConstraintSetV1::unconstrained(),
+            &LexicalPageSpec { fetch: 2, after },
+            &RequestBudgetV1::unbounded(),
+        )?;
+        let Some(last) = page.candidates.last() else {
+            break;
+        };
+        after = Some(LexicalCursor::at(generation, last.order_key()));
+        for candidate in &page.candidates {
+            rows.push((candidate.candidate_id.clone(), candidate.score.to_bits()));
+        }
+        if rows.len() > 4 {
+            return Err("BM25 symbol cursor repeated or emitted extra rows".into());
+        }
+    }
+    Ok(rows)
+}
+
 #[test]
-fn compactor_admission_failure_leaves_only_discardable_unsealed_delta() -> TestResult {
+fn live_bm25_delete_and_replace_matches_fresh_full_bits_and_pages() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let retired = bm25_oracle_scope("a.rs", "retired", 11, 4096)?;
+    let kept_b = bm25_oracle_scope("b.rs", "keptb", 1, 7)?;
+    let kept_c = bm25_oracle_scope("c.rs", "keptc", 2, 63)?;
+    let old_d = bm25_oracle_scope("d.rs", "oldd", 3, 255)?;
+    let new_d = bm25_oracle_scope("d.rs", "newd", 7, 2047)?;
+    let kept_e = bm25_oracle_scope("e.rs", "keepte", 5, 1023)?;
+    let base = batch(
+        1,
+        None,
+        vec![
+            retired,
+            kept_b.clone(),
+            kept_c.clone(),
+            old_d,
+            kept_e.clone(),
+        ],
+    )?;
+    let _stages = adapter.build_batch(&base)?;
+    let mut delta = batch(2, Some(1), vec![new_d.clone()])?;
+    delta.tombstone_scopes.push(SearchCorpusTombstoneScope {
+        file: SourceFileKey {
+            source_repo_id: RepoId::new("l2-mutation-repo")?,
+            repo_relative_path: RepoRelativePath::new("a.rs"),
+        },
+    });
+    delta.source_event.payload_sha256 = source_event_payload_sha256(&delta)?;
+    let _stages = adapter.build_batch(&delta)?;
+
+    let fresh_dir = tempfile::tempdir()?;
+    let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
+    let rebuilt = batch(2, None, vec![kept_b, kept_c, new_d, kept_e])?;
+    let _stages = fresh.build_batch(&rebuilt)?;
+    let budget = RequestBudgetV1::unbounded();
+    let live = adapter.open(
+        &delta.repo_id,
+        &delta.revision_id,
+        delta.generation,
+        &budget,
+    )?;
+    let expected = fresh.open(
+        &rebuilt.repo_id,
+        &rebuilt.revision_id,
+        rebuilt.generation,
+        &budget,
+    )?;
+    let cold_adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let cold = cold_adapter.open(
+        &delta.repo_id,
+        &delta.revision_id,
+        delta.generation,
+        &budget,
+    )?;
+
+    let native = tantivy::Index::open_in_dir(
+        quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+            &delta.repo_id,
+            &delta.revision_id,
+        )
+        .generation_dir(dir.path(), delta.generation),
+    )?;
+    assert_eq!(
+        native.reader()?.searcher().num_docs(),
+        8,
+        "four text and four symbol docs"
+    );
+    let fresh_native = tantivy::Index::open_in_dir(
+        quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+            &rebuilt.repo_id,
+            &rebuilt.revision_id,
+        )
+        .generation_dir(fresh_dir.path(), rebuilt.generation),
+    )?;
+    let fresh_native_reader = fresh_native.reader()?;
+    let fresh_native_searcher = fresh_native_reader.searcher();
+    assert_eq!(fresh_native_searcher.num_docs(), 8);
+    assert_eq!(
+        fresh_native_searcher
+            .segment_readers()
+            .iter()
+            .map(|segment| u64::from(segment.max_doc()))
+            .sum::<u64>(),
+        8,
+        "independent native full index must contain no deleted documents",
+    );
+    // The fixture's ASCII token census is independent of either BM25
+    // provider: final text docs have 10+67+2056+1030 tokens, and four symbol
+    // snippets contribute one chunk_text token each.
+    let chunk_text = fresh_native.schema().get_field("chunk_text")?;
+    let symbol_name = fresh_native.schema().get_field("symbol_local_name")?;
+    let candidate_id = fresh_native.schema().get_field("candidate_id")?;
+    let fresh_chunk_tokens = fresh_native_searcher
+        .segment_readers()
+        .iter()
+        .map(|segment| {
+            Ok::<_, tantivy::TantivyError>(segment.inverted_index(chunk_text)?.total_num_tokens())
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .sum::<u64>();
+    assert_eq!(
+        fresh_chunk_tokens, 3167,
+        "fixed ASCII chunk_text token census"
+    );
+    // The fixed source census also has four symbol_local_name STRING values,
+    // eight candidate_id STRING values, and four indexed numeric
+    // text_authority_doc_id values. Native Basic-field token headers can be
+    // estimated after a merge; E3's owner-level provider test must compare
+    // those live totals with 4, 8, and 4 directly.
+    for (field, term, expected_df) in [
+        (chunk_text, "livebm25needle", 4),
+        (chunk_text, "livebm25symbol", 8),
+        (chunk_text, "fieldlengthpadding", 4),
+        (chunk_text, "retired", 0),
+        (chunk_text, "oldd", 0),
+        (symbol_name, "livebm25symbol", 4),
+        (candidate_id, "chunk-keptb", 1),
+        (candidate_id, "chunk-retired", 0),
+    ] {
+        assert_eq!(
+            fresh_native_searcher.doc_freq(&tantivy::Term::from_field_text(field, term))?,
+            expected_df,
+            "fixed fresh-native doc frequency for {term}",
+        );
+    }
+
+    let text_query = query("livebm25needle");
+    let symbol_query = query("livebm25symbol");
+    let project_text = |view: &dyn LexicalSearcher| -> Result<Vec<(String, u32)>, Box<dyn Error>> {
+        Ok(view
+            .search(&text_query, 10, &budget)?
+            .into_iter()
+            .map(|row| (row.candidate_id, row.score.to_bits()))
+            .collect())
+    };
+    let project_symbol =
+        |view: &dyn LexicalSearcher| -> Result<Vec<(String, u32)>, Box<dyn Error>> {
+            Ok(view
+                .search_symbols(&symbol_query, 10, &budget)?
+                .into_iter()
+                .map(|row| (row.candidate_id, row.score.to_bits()))
+                .collect())
+        };
+    let live_text = project_text(live.as_ref())?;
+    let fresh_text = project_text(expected.as_ref())?;
+    let live_symbol = project_symbol(live.as_ref())?;
+    let fresh_symbol = project_symbol(expected.as_ref())?;
+    let text_ids: std::collections::BTreeSet<_> =
+        live_text.iter().map(|row| row.0.as_str()).collect();
+    let symbol_ids: std::collections::BTreeSet<_> =
+        live_symbol.iter().map(|row| row.0.as_str()).collect();
+    assert_eq!(
+        text_ids,
+        std::collections::BTreeSet::from([
+            "chunk-keptb",
+            "chunk-keptc",
+            "chunk-newd",
+            "chunk-keepte",
+        ])
+    );
+    assert_eq!(
+        symbol_ids,
+        std::collections::BTreeSet::from([
+            "symbol-keptb",
+            "symbol-keptc",
+            "symbol-newd",
+            "symbol-keepte",
+        ])
+    );
+    assert_eq!(
+        live_text, fresh_text,
+        "live text BM25 score bits/order differ from fresh full"
+    );
+    assert_eq!(
+        live_symbol, fresh_symbol,
+        "live symbol BM25 score bits/order differ from fresh full"
+    );
+    for view in [live.as_ref(), expected.as_ref(), cold.as_ref()] {
+        assert_eq!(project_text(view)?, fresh_text);
+        assert_eq!(project_symbol(view)?, fresh_symbol);
+        assert_eq!(
+            bm25_text_pages(view, delta.generation, &text_query)?,
+            fresh_text
+        );
+        assert_eq!(
+            bm25_symbol_pages(view, delta.generation, &symbol_query)?,
+            fresh_symbol
+        );
+    }
+    let mut duplicate_phrase = text_query.clone();
+    duplicate_phrase.expr = LqExpr::Leaf(LqLeaf::Phrase("livebm25needle livebm25needle".into()));
+    let phrase_expected =
+        bm25_text_pages(expected.as_ref(), rebuilt.generation, &duplicate_phrase)?;
+    assert_eq!(
+        phrase_expected
+            .iter()
+            .map(|row| row.0.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["chunk-keptc", "chunk-newd", "chunk-keepte"]),
+    );
+    for view in [live.as_ref(), cold.as_ref()] {
+        assert_eq!(
+            bm25_text_pages(view, delta.generation, &duplicate_phrase)?,
+            phrase_expected,
+            "repeated-term phrase score bits/order differ from fresh full",
+        );
+    }
+    Ok(())
+}
+
+/// Retain earlier corrections and subtract each newly retired document.
+///
+/// The second delta retains g2's dead-document corrections and subtracts
+/// g3's repeated needle term once from df, while subtracting every accepted
+/// token from the live field length. A fourth no-op delta exercises unchanged
+/// deletion identity; the public delta contract admits an empty mutation.
+#[test]
+fn live_bm25_consecutive_deletes_and_noop_match_fresh_full() -> TestResult {
+    type LiveStatsWire = (
+        u32,
+        [u8; 32],
+        u64,
+        Vec<(
+            (String, u32, u32, Option<u64>),
+            Vec<(u32, u64)>,
+            Vec<(u32, Vec<u8>, u64)>,
+        )>,
+    );
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let retired = bm25_oracle_scope("a.rs", "retired", 11, 4096)?;
+    let old_b = bm25_oracle_scope("b.rs", "oldb", 3, 7)?;
+    let kept_c = bm25_oracle_scope("c.rs", "keptc", 2, 63)?;
+    let old_d = bm25_oracle_scope("d.rs", "oldd", 3, 255)?;
+    let new_d = bm25_oracle_scope("d.rs", "newd", 7, 2047)?;
+    let kept_e = bm25_oracle_scope("e.rs", "keepte", 5, 1023)?;
+    let new_b = bm25_oracle_scope("b.rs", "newb", 9, 127)?;
+    let base = batch(
+        1,
+        None,
+        vec![retired, old_b, kept_c.clone(), old_d, kept_e.clone()],
+    )?;
+    let _stages = adapter.build_batch(&base)?;
+
+    let mut second = batch(2, Some(1), vec![new_d.clone()])?;
+    second.tombstone_scopes.push(SearchCorpusTombstoneScope {
+        file: SourceFileKey {
+            source_repo_id: RepoId::new("l2-mutation-repo")?,
+            repo_relative_path: RepoRelativePath::new("a.rs"),
+        },
+    });
+    second.source_event.payload_sha256 = source_event_payload_sha256(&second)?;
+    let _stages = adapter.build_batch(&second)?;
+
+    let third = batch(3, Some(2), vec![new_b.clone()])?;
+    let _stages = adapter.build_batch(&third)?;
+    let fourth = batch(4, Some(3), Vec::new())?;
+    let _stages = adapter.build_batch(&fourth)?;
+
+    let fresh_dir = tempfile::tempdir()?;
+    let fresh = LexicalAdapter::with_state_root(fresh_dir.path().to_path_buf());
+    let rebuilt = batch(3, None, vec![new_b, kept_c, new_d, kept_e])?;
+    let _stages = fresh.build_batch(&rebuilt)?;
+    let budget = RequestBudgetV1::unbounded();
+    let g3 = adapter.open(
+        &third.repo_id,
+        &third.revision_id,
+        third.generation,
+        &budget,
+    )?;
+    let g4 = adapter.open(
+        &fourth.repo_id,
+        &fourth.revision_id,
+        fourth.generation,
+        &budget,
+    )?;
+    let cold_adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let cold_g3 = cold_adapter.open(
+        &third.repo_id,
+        &third.revision_id,
+        third.generation,
+        &budget,
+    )?;
+    let cold_g4 = cold_adapter.open(
+        &fourth.repo_id,
+        &fourth.revision_id,
+        fourth.generation,
+        &budget,
+    )?;
+    let expected = fresh.open(
+        &rebuilt.repo_id,
+        &rebuilt.revision_id,
+        rebuilt.generation,
+        &budget,
+    )?;
+
+    let g3_native = tantivy::Index::open_in_dir(
+        quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+            &third.repo_id,
+            &third.revision_id,
+        )
+        .generation_dir(dir.path(), third.generation),
+    )?;
+    let g3_segments = g3_native.searchable_segment_metas()?;
+    assert_eq!(g3_native.reader()?.searcher().num_docs(), 8);
+    assert_eq!(
+        g3_segments
+            .iter()
+            .map(tantivy::SegmentMeta::num_deleted_docs)
+            .sum::<u32>(),
+        6,
+        "g2's two retired scopes and g3's replaced scope must remain as three text/symbol delete pairs",
+    );
+
+    let fresh_native = tantivy::Index::open_in_dir(
+        quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+            &rebuilt.repo_id,
+            &rebuilt.revision_id,
+        )
+        .generation_dir(fresh_dir.path(), rebuilt.generation),
+    )?;
+    let fresh_reader = fresh_native.reader()?;
+    let fresh_searcher = fresh_reader.searcher();
+    assert_eq!(fresh_searcher.num_docs(), 8);
+    assert_eq!(
+        fresh_searcher
+            .segment_readers()
+            .iter()
+            .map(|segment| u64::from(segment.max_doc()))
+            .sum::<u64>(),
+        8,
+        "fresh full oracle must have no tombstone history",
+    );
+    let chunk_text = fresh_native.schema().get_field("chunk_text")?;
+    let symbol_name = fresh_native.schema().get_field("symbol_local_name")?;
+    let candidate_id = fresh_native.schema().get_field("candidate_id")?;
+    // Four text scopes contain 138+67+2056+1030 tokens. Four symbol
+    // snippets add one chunk_text token each. This census is fixed from the
+    // source strings, independent of the live statistics provider.
+    assert_eq!(
+        fresh_searcher
+            .segment_readers()
+            .iter()
+            .map(|segment| {
+                Ok::<_, tantivy::TantivyError>(
+                    segment.inverted_index(chunk_text)?.total_num_tokens(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum::<u64>(),
+        3295,
+    );
+    for (field, term, df) in [
+        (chunk_text, "livebm25needle", 4),
+        (chunk_text, "livebm25symbol", 8),
+        (chunk_text, "fieldlengthpadding", 4),
+        (chunk_text, "retired", 0),
+        (chunk_text, "oldd", 0),
+        (chunk_text, "oldb", 0),
+        (chunk_text, "newb", 1),
+        (symbol_name, "livebm25symbol", 4),
+        (candidate_id, "chunk-oldb", 0),
+        (candidate_id, "chunk-newb", 1),
+    ] {
+        assert_eq!(
+            fresh_searcher.doc_freq(&tantivy::Term::from_field_text(field, term))?,
+            df,
+            "fixed fresh-native df for {term}",
+        );
+    }
+    let raw = g3_native.reader()?;
+    let raw_searcher = raw.searcher();
+    assert_eq!(
+        raw_searcher.doc_freq(&tantivy::Term::from_field_text(
+            chunk_text,
+            "livebm25needle"
+        ))?,
+        7,
+        "three retired text documents each had needle, including the g3 doc with three copies",
+    );
+
+    // Inspect the committed F14 statistics independently of query scoring.
+    // The g2 deaths and the g3 duplicate-token death must all survive in
+    // their distinct per-segment correction rows.
+    let g2_dir = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+        &second.repo_id,
+        &second.revision_id,
+    )
+    .generation_dir(dir.path(), second.generation);
+    let g2_encoded = std::fs::read(g2_dir.join("search-corpus-live-bm25.cbor"))?;
+    let (g2_format, _, g2_live_docs, g2_segments): LiveStatsWire =
+        ciborium::from_reader(g2_encoded.as_slice())?;
+    assert_eq!(g2_format, 1);
+    assert_eq!(g2_live_docs, 8);
+    let g3_dir = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+        &third.repo_id,
+        &third.revision_id,
+    )
+    .generation_dir(dir.path(), third.generation);
+    let encoded = std::fs::read(g3_dir.join("search-corpus-live-bm25.cbor"))?;
+    let (format, _, live_docs, stats_segments): LiveStatsWire =
+        ciborium::from_reader(encoded.as_slice())?;
+    assert_eq!(format, 1);
+    assert_eq!(live_docs, 8);
+    let native_schema = g3_native.schema();
+    let fixed_tokens = [
+        (native_schema.get_field("chunk_text")?.field_id(), 3295_u64),
+        (native_schema.get_field("symbol_local_name")?.field_id(), 4),
+        (native_schema.get_field("candidate_id")?.field_id(), 8),
+        (
+            native_schema.get_field("text_authority_doc_id")?.field_id(),
+            4,
+        ),
+    ];
+    for (field, expected_tokens) in fixed_tokens {
+        let actual = stats_segments
+            .iter()
+            .flat_map(|(_, rows, _)| rows)
+            .filter(|(id, _)| *id == field)
+            .map(|(_, tokens)| *tokens)
+            .sum::<u64>();
+        assert_eq!(
+            actual, expected_tokens,
+            "fixed live token census for field {field}"
+        );
+    }
+    let g2_chunk_tokens = g2_segments
+        .iter()
+        .flat_map(|(_, rows, _)| rows)
+        .filter(|(field, _)| *field == chunk_text.field_id())
+        .map(|(_, tokens)| *tokens)
+        .sum::<u64>();
+    assert_eq!(
+        g2_chunk_tokens, 3169,
+        "g2 has oldb with three needle tokens before replacement"
+    );
+    let needle_value = tantivy::Term::from_field_text(chunk_text, "livebm25needle")
+        .serialized_value_bytes()
+        .to_vec();
+    let g2_dead_needle_df = g2_segments
+        .iter()
+        .flat_map(|(_, _, rows)| rows)
+        .filter(|(field, value, _)| {
+            *field == chunk_text.field_id() && value.as_slice() == needle_value.as_slice()
+        })
+        .map(|(_, _, count)| *count)
+        .sum::<u64>();
+    assert_eq!(
+        g2_dead_needle_df, 2,
+        "g2 must retain both first-generation dead needle documents"
+    );
+    let dead_needle_df = stats_segments
+        .iter()
+        .flat_map(|(_, _, rows)| rows)
+        .filter(|(field, value, _)| {
+            *field == chunk_text.field_id() && value.as_slice() == needle_value.as_slice()
+        })
+        .map(|(_, _, count)| *count)
+        .sum::<u64>();
+    assert_eq!(
+        dead_needle_df, 3,
+        "g2 dead docs plus g3 duplicate-token doc each subtract df once"
+    );
+    assert_eq!(
+        raw_searcher.doc_freq(&tantivy::Term::from_field_text(
+            chunk_text,
+            "livebm25needle"
+        ))? - dead_needle_df,
+        4
+    );
+
+    let text_query = query("livebm25needle");
+    let symbol_query = query("livebm25symbol");
+    let text_rows = |view: &dyn LexicalSearcher| -> Result<Vec<(String, u32)>, Box<dyn Error>> {
+        Ok(view
+            .search(&text_query, 10, &budget)?
+            .into_iter()
+            .map(|row| (row.candidate_id, row.score.to_bits()))
+            .collect())
+    };
+    let symbol_rows = |view: &dyn LexicalSearcher| -> Result<Vec<(String, u32)>, Box<dyn Error>> {
+        Ok(view
+            .search_symbols(&symbol_query, 10, &budget)?
+            .into_iter()
+            .map(|row| (row.candidate_id, row.score.to_bits()))
+            .collect())
+    };
+    let expected_text = text_rows(expected.as_ref())?;
+    let expected_symbol = symbol_rows(expected.as_ref())?;
+    assert_eq!(
+        expected_text
+            .iter()
+            .map(|row| row.0.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([
+            "chunk-keptc",
+            "chunk-newd",
+            "chunk-keepte",
+            "chunk-newb"
+        ]),
+    );
+    assert_eq!(
+        expected_symbol
+            .iter()
+            .map(|row| row.0.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([
+            "symbol-keptc",
+            "symbol-newd",
+            "symbol-keepte",
+            "symbol-newb"
+        ]),
+    );
+    for (view, generation) in [
+        (g3.as_ref(), third.generation),
+        (cold_g3.as_ref(), third.generation),
+        (g4.as_ref(), fourth.generation),
+        (cold_g4.as_ref(), fourth.generation),
+        (expected.as_ref(), rebuilt.generation),
+    ] {
+        assert_eq!(
+            text_rows(view)?,
+            expected_text,
+            "g2/g3 deletion corrections changed text score bits/order"
+        );
+        assert_eq!(
+            symbol_rows(view)?,
+            expected_symbol,
+            "g2/g3 deletion corrections changed symbol score bits/order"
+        );
+        assert_eq!(
+            bm25_text_pages(view, generation, &text_query)?,
+            expected_text
+        );
+        assert_eq!(
+            bm25_symbol_pages(view, generation, &symbol_query)?,
+            expected_symbol
+        );
+    }
+    let mut duplicate_phrase = text_query.clone();
+    duplicate_phrase.expr = LqExpr::Leaf(LqLeaf::Phrase("livebm25needle livebm25needle".into()));
+    let expected_phrase =
+        bm25_text_pages(expected.as_ref(), rebuilt.generation, &duplicate_phrase)?;
+    assert_eq!(
+        expected_phrase.len(),
+        4,
+        "all four final text scopes have repeated needle"
+    );
+    for (view, generation) in [
+        (g3.as_ref(), third.generation),
+        (cold_g3.as_ref(), third.generation),
+        (g4.as_ref(), fourth.generation),
+        (cold_g4.as_ref(), fourth.generation),
+    ] {
+        assert_eq!(
+            bm25_text_pages(view, generation, &duplicate_phrase)?,
+            expected_phrase
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn writer_admission_failure_leaves_only_discardable_unsealed_delta() -> TestResult {
     use quanta_index_core::{
         CoreError, GenerationIdentityValidatePort as _, IncompleteGenerationDiscardOutcomeV1,
         IncompleteGenerationDiscardPort as _, SealedGenerationScanPort as _, WriterAdmissionPort,
@@ -946,15 +1613,15 @@ fn compactor_admission_failure_leaves_only_discardable_unsealed_delta() -> TestR
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct RefuseSecondWriterOpen {
+    struct RefuseFirstWriterOpen {
         opens: AtomicUsize,
     }
 
-    impl WriterAdmissionPort for RefuseSecondWriterOpen {
+    impl WriterAdmissionPort for RefuseFirstWriterOpen {
         fn admit_writer_open(&self) -> Result<(), CoreError> {
-            if self.opens.fetch_add(1, Ordering::SeqCst) == 1 {
+            if self.opens.fetch_add(1, Ordering::SeqCst) == 0 {
                 return Err(CoreError::Storage(
-                    "test: pre-merge compactor writer admission refused".into(),
+                    "test: delta writer admission refused".into(),
                 ));
             }
             Ok(())
@@ -991,7 +1658,7 @@ fn compactor_admission_failure_leaves_only_discardable_unsealed_delta() -> TestR
         &deleted.revision_id,
     )
     .generation_dir(&root, deleted.generation);
-    let admission = Arc::new(RefuseSecondWriterOpen {
+    let admission = Arc::new(RefuseFirstWriterOpen {
         opens: AtomicUsize::new(0),
     });
     let gate: Arc<dyn WriterAdmissionPort> = admission.clone();
@@ -999,10 +1666,10 @@ fn compactor_admission_failure_leaves_only_discardable_unsealed_delta() -> TestR
     let failed = failing.build_batch(&deleted);
     assert!(
         matches!(&failed, Err(CoreError::Storage(message))
-            if message.contains("pre-merge compactor writer admission refused")),
-        "the failure must occur after the delta writer open and at compactor admission: {failed:?}"
+            if message.contains("delta writer admission refused")),
+        "the failure must occur at delta writer admission: {failed:?}"
     );
-    assert_eq!(admission.opens.load(Ordering::SeqCst), 2);
+    assert_eq!(admission.opens.load(Ordering::SeqCst), 1);
     assert!(
         target.is_dir(),
         "the failed delta has an incomplete directory"
@@ -1013,7 +1680,7 @@ fn compactor_admission_failure_leaves_only_discardable_unsealed_delta() -> TestR
     ] {
         assert!(
             !target.join(seal_file).exists(),
-            "pre-merge failure cannot publish {seal_file}"
+            "writer admission failure cannot publish {seal_file}"
         );
     }
     drop(failing);

@@ -30,7 +30,17 @@ SYNC_LABELS = frozenset(
         "history_layout_directory",
     }
 )
-KINDS = frozenset({"phase_start", "phase_end", "sync", "exact_live_token_scan"})
+KINDS = frozenset({
+    "phase_start", "phase_end", "sync", "exact_live_token_scan",
+    "bm25_census_build", "bm25_boundary", "bm25_live_build",
+})
+BM25_BOUNDARY_LABELS = frozenset({"base_read", "encode"})
+BM25_BUILD_COUNTERS = frozenset({
+    "elapsed_ns", "reused_segments", "changed_segments", "new_segments",
+    "mask_docs", "new_census_docs", "newly_dead_docs", "logical_census_bytes",
+    "changed_ns", "new_ns", "death_ns", "correction_keys", "segment_fanout",
+    "retained_valid", "retained_estimate_bytes",
+})
 TIER_SHAPE = {
     "small": (1, 16),
     "medium": (4, 64),
@@ -158,10 +168,17 @@ def _check_fields(row: dict[str, str], expected: set[str]) -> None:
         raise ValueError(f"wrong causal marker fields for {row['kind']}")
 
 
+def _add_u64(counter: dict[str, int], key: str, amount: int) -> None:
+    next_value = counter[key] + amount
+    if next_value > (1 << 64) - 1:
+        raise ValueError(f"aggregated {key} exceeds u64 in causal marker")
+    counter[key] = next_value
+
+
 def parse_trace(raw: bytes, expected_phases: set[str]) -> dict:
     text = raw.decode("utf-8")
     phases: dict[str, dict] = {}
-    unattributed = {"sync_calls": 0, "exact_live_token_scans": 0}
+    unattributed = {"sync_calls": 0, "exact_live_token_scans": 0, "bm25_events": 0}
     active: str | None = None
     for line in text.splitlines():
         if not line.startswith(PREFIX):
@@ -184,6 +201,9 @@ def parse_trace(raw: bytes, expected_phases: set[str]) -> dict:
                     "live_postings": 0,
                     "live_tokens": 0,
                 },
+                "bm25_census_build": {"calls": 0, "elapsed_ns": 0, "docs": 0, "encoded_bytes": 0},
+                "bm25_boundary": {},
+                "bm25_live_build": [],
             }
             active = name
         elif kind == "phase_end":
@@ -208,6 +228,70 @@ def parse_trace(raw: bytes, expected_phases: set[str]) -> dict:
             counter["calls"] += 1
             counter["failed_calls"] += row["ok"] == "0"
             counter["elapsed_ns"] += elapsed
+        elif kind == "bm25_census_build":
+            if row.get("ok") == "0":
+                _check_fields(row, {"kind", "ok", "reason"})
+                if row["reason"] != "counter_overflow":
+                    raise ValueError("invalid BM25 census failure reason")
+                raise ValueError("BM25 census observation overflowed")
+            _check_fields(row, {"kind", "ok", "elapsed_ns", "docs", "encoded_bytes"})
+            if row["ok"] != "1":
+                raise ValueError("failed BM25 census build marker")
+            counts = {key: _natural(row, key) for key in ("elapsed_ns", "docs", "encoded_bytes")}
+            if counts["docs"] == 0 and counts["encoded_bytes"] != 0:
+                raise ValueError("BM25 census bytes without documents")
+            if active is None:
+                unattributed["bm25_events"] += 1
+                continue
+            counter = phases[active]["bm25_census_build"]
+            _add_u64(counter, "calls", 1)
+            for key, value in counts.items():
+                _add_u64(counter, key, value)
+        elif kind == "bm25_boundary":
+            if row.get("ok") == "0":
+                _check_fields(row, {"kind", "label", "ok", "reason"})
+                if row["label"] not in BM25_BOUNDARY_LABELS or row["reason"] != "counter_overflow":
+                    raise ValueError("invalid BM25 boundary failure")
+                raise ValueError("BM25 boundary observation overflowed")
+            _check_fields(row, {"kind", "label", "ok", "elapsed_ns", "logical_bytes", "index_files"})
+            if row["ok"] != "1" or row["label"] not in BM25_BOUNDARY_LABELS:
+                raise ValueError("invalid BM25 boundary marker")
+            counts = {key: _natural(row, key) for key in ("elapsed_ns", "logical_bytes", "index_files")}
+            if active is None:
+                unattributed["bm25_events"] += 1
+                continue
+            counter = phases[active]["bm25_boundary"].setdefault(
+                row["label"], {"calls": 0, "elapsed_ns": 0, "logical_bytes": 0, "index_files": 0}
+            )
+            _add_u64(counter, "calls", 1)
+            for key, value in counts.items():
+                _add_u64(counter, key, value)
+        elif kind == "bm25_live_build":
+            if row.get("ok") == "0":
+                _check_fields(row, {"kind", "ok", "reason"})
+                if row["reason"] not in {"counter_overflow", "retained_estimate_failed"}:
+                    raise ValueError("invalid BM25 live build failure reason")
+                raise ValueError("BM25 live build observation overflowed")
+            _check_fields(row, {"kind", "ok"} | BM25_BUILD_COUNTERS)
+            if row["ok"] != "1":
+                raise ValueError("failed BM25 live build marker")
+            counts = {key: _natural(row, key) for key in BM25_BUILD_COUNTERS}
+            if (
+                counts["retained_valid"] != 1
+                or counts["reused_segments"] + counts["changed_segments"] + counts["new_segments"]
+                != counts["segment_fanout"]
+                or counts["newly_dead_docs"] > counts["mask_docs"]
+                or counts["death_ns"] > counts["changed_ns"]
+            ):
+                raise ValueError("inconsistent BM25 live build marker")
+            # These sibling scopes run synchronously and do not overlap. The
+            # death timer is nested within changed_ns and is not added here.
+            if counts["changed_ns"] + counts["new_ns"] > counts["elapsed_ns"]:
+                raise ValueError("BM25 child call clocks exceed parent")
+            if active is None:
+                unattributed["bm25_events"] += 1
+                continue
+            phases[active]["bm25_live_build"].append(counts)
         else:
             _check_fields(
                 row,
@@ -239,6 +323,15 @@ def parse_trace(raw: bytes, expected_phases: set[str]) -> dict:
         raise ValueError("failed scale phase marker")
     if not any(phase["sync"] for phase in phases.values()):
         raise ValueError("scale trace has no lexical durability call markers")
+    seal_phases = {
+        "full_ingest_seal", "full_seal", "delta_ingest_seal", "noop_seal", "delete_seal"
+    }
+    for name, phase in phases.items():
+        if name in seal_phases and (
+            len(phase["bm25_live_build"]) != 1
+            or phase["bm25_boundary"].get("encode", {}).get("calls") != 1
+        ):
+            raise ValueError(f"{name} lacks one complete BM25 seal observation")
     return {"phases": phases, "unattributed": unattributed}
 
 
@@ -353,6 +446,7 @@ def replay(
         "scope": {
             "sync": "all explicit sync_all calls in quanta-index-lexical; dependency and semantic sync excluded",
             "posting": "Tantivy deleted-segment pure-string exact-live-token-count pass only",
+            "bm25": "census build and seal call envelopes; logical bytes count encoded payloads already handled by the caller, not physical read/write bytes; changed/death timers are nested",
             "io": "Linux /proc/self/io process counters; not device-completed bytes, fsync latency or phase-exclusive I/O",
             "wall": "opt-in instrumentation perturbs timing; unprofiled matched source run needed for effect",
             "ratios": "sums of call envelopes divided by phase observation span; concurrent work may overlap, so shares are diagnostic and not additive",

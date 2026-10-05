@@ -1575,7 +1575,8 @@ fn oversized_committed_control_files_are_refused_before_read() -> TestResult {
             };
             meta
         } else {
-            let Some(ciborium::Value::Array(files)) = fields.get_mut(7) else {
+            // Format 14 inserts the mandatory live BM25 commitment at slot 7.
+            let Some(ciborium::Value::Array(files)) = fields.get_mut(8) else {
                 return Err("sealed manifest lacks text authority commitments".into());
             };
             let manifest_name =
@@ -2455,4 +2456,50 @@ fn a_scrub_quarantine_does_not_stop_an_unrelated_generation_build() -> TestResul
         Ok(())
     })?;
     expect_admitted(&knock(&adapter, unrelated), "unrelated generation")
+}
+
+/// Refuse missing or damaged live BM25 statistics at every open door.
+///
+/// F14 requires the statistics even for unscored count or membership queries.
+/// All validation/open doors must refuse
+/// an absent or damaged committed artifact before any searcher is returned.
+#[test]
+fn mandatory_live_bm25_sidecar_refuses_all_open_doors() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    let _stages = adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    expect_admitted(&knock(&adapter, generation), "intact live BM25 sidecar")?;
+
+    let path = generation_dir(&root, generation).join("search-corpus-live-bm25.cbor");
+    let original = std::fs::read(&path)?;
+    if original.is_empty() {
+        return Err("mandatory live BM25 sidecar is empty".into());
+    }
+    std::fs::remove_file(&path)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "live BM25 sidecar missing",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::write(&path, b"")?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "live BM25 sidecar truncated",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    let mut flipped = original.clone();
+    let middle = flipped.len().div_euclid(2);
+    *flipped
+        .get_mut(middle)
+        .ok_or("live BM25 sidecar has no middle byte")? ^= 1;
+    std::fs::write(&path, &flipped)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "live BM25 sidecar same-length corruption",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::write(&path, original)?;
+    expect_admitted(&knock(&adapter, generation), "live BM25 sidecar restored")
 }

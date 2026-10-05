@@ -24,8 +24,11 @@ use quanta_index_core::{
     RequestBudgetV1,
 };
 use tantivy::collector::{Collector, SegmentCollector};
+use tantivy::query::Bm25StatisticsProvider;
 use tantivy::query::{EmptyScorer, EnableScoring, Explanation, Query, Scorer, TermQuery, Weight};
 use tantivy::{DocId, DocSet, Score, Searcher, SegmentReader, TERMINATED};
+
+use crate::sealed_generation::live_bm25::{LiveBm25Provider, LiveBm25Statistics};
 
 /// Documents a scorer advances between two looks at the budget.
 ///
@@ -338,6 +341,7 @@ pub(crate) fn budgeted_search<C: Collector>(
         query,
         collector,
         &BudgetProbe::new(budget),
+        None,
         Ok,
         stage,
     )
@@ -348,6 +352,7 @@ pub(crate) fn budgeted_search<C: Collector>(
 /// A collector's refusal stops scoring and discards every fruit before merge.
 /// Fallible child fruits are checked at the segment boundary, so an integrity
 /// error cannot reach later collection or merge work that might mask its cause.
+#[cfg(test)]
 pub(crate) fn budgeted_collection<C: Collector>(
     searcher: &Searcher,
     query: &dyn Query,
@@ -366,6 +371,39 @@ where
         query,
         collector,
         &probe,
+        None,
+        |fruit| fruit.map(Ok),
+        stage,
+    )
+}
+
+/// The product lexical collect uses the committed live statistics for every
+/// scored native weight. The generic helper above serves isolated collector
+/// tests over native fixtures.
+pub(crate) fn budgeted_collection_with_statistics<C: Collector>(
+    searcher: &Searcher,
+    query: &dyn Query,
+    collector: &C,
+    budget: &RequestBudgetV1,
+    collection: CollectionBudget,
+    statistics: &LiveBm25Statistics,
+    stage: &'static str,
+) -> Result<C::Fruit, CoreError>
+where
+    C::Child: SegmentCollector<Fruit = tantivy::Result<C::Fruit>>,
+{
+    let mut probe = collection.bind_request(budget)?;
+    probe.collection = Some(collection);
+    let provider = LiveBm25Provider {
+        statistics,
+        searcher,
+    };
+    search_with_probe(
+        searcher,
+        query,
+        collector,
+        &probe,
+        Some(&provider),
         |fruit| fruit.map(Ok),
         stage,
     )
@@ -378,6 +416,7 @@ fn search_with_probe<C: Collector>(
     query: &dyn Query,
     collector: &C,
     probe: &BudgetProbe,
+    statistics: Option<&dyn Bm25StatisticsProvider>,
     validate_segment: impl Fn(SegmentFruit<C>) -> tantivy::Result<SegmentFruit<C>>,
     stage: &'static str,
 ) -> Result<C::Fruit, CoreError> {
@@ -411,10 +450,12 @@ fn search_with_probe<C: Collector>(
         }
         None => None,
     };
-    let enable_scoring = if collector.requires_scoring() {
-        EnableScoring::enabled_from_searcher(searcher)
-    } else {
-        EnableScoring::disabled_from_searcher(searcher)
+    let enable_scoring = match (collector.requires_scoring(), statistics) {
+        (true, Some(statistics)) => {
+            EnableScoring::enabled_from_statistics_provider(statistics, searcher)
+        }
+        (true, None) => EnableScoring::enabled_from_searcher(searcher),
+        (false, _) => EnableScoring::disabled_from_searcher(searcher),
     };
     let weight = BudgetedWeight {
         inner: query

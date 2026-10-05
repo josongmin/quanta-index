@@ -62,6 +62,38 @@ Measurements and missing authority remain in the [residual ledger](../plans/oct-
    before registry promotion. Shell exit zero or caller-written success JSON is
    not operational authority. Keep the existing staged refusal.
 
+## Native segment retention and committed live statistics
+
+Sealed manifest format 14 requires `search-corpus-live-bm25.cbor`. Earlier
+generations require a producer rebuild; native statistics are not a fallback
+for absent or invalid live statistics. Every native document producer stores a
+private census of exact indexed terms and token counts using the registered
+analyzer and native term-length rules.
+
+Full builds collect those censuses. Delta builds reuse committed segment
+statistics and subtract newly deleted documents' censuses after checking native
+component identity and deletion-mask consistency. The selected native scorer
+uses live document counts, token totals and corrected document frequencies.
+The writer retains native segments with `NoMergePolicy`; deletion does not force
+compaction of surviving documents solely to recover live BM25 statistics.
+Missing or corrupted mandatory sidecars and inconsistent statistics refuse open
+or seal. The sidecar has a 16 MiB encoded bound and a conservative 64 MiB retained
+decode admission; these are not measured heap or transient-peak guarantees.
+
+Changed retained segments still compare deletion bits across `max_doc`. Native
+byte reuse does not establish a whole-call CPU/read/write bound. Source/authority
+custody walks, metadata publication and long-running segment/correction fanout
+remain separate cost scopes. A future compaction policy requires independent
+score/page parity and measured foreground, maintenance and residency budgets.
+
+Owners: [document census](../../crates/quanta-index-lexical/src/doc_census.rs),
+[live statistics](../../crates/quanta-index-lexical/src/sealed_generation/live_bm25.rs),
+[native writer](../../crates/quanta-index-lexical/src/writer_cache.rs) and
+[selected scorer port](../../crates/quanta-index-lexical/src/searcher/port.rs).
+Retain fixed untouched-file/component and byte gates, independent fresh-rebuild
+score bits and cursor oracles, consecutive delta/delete/no-op/reopen fixtures,
+empty-generation cases and mandatory-sidecar corruption/refusal tests.
+
 ## Coverage decoding and base custody
 
 One adapter-local cache retains at most one decoded coverage root under an 8 MiB

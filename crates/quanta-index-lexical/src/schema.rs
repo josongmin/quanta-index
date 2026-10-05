@@ -79,6 +79,7 @@ impl SchemaFields {
             builder.add_u64_field("symbol_definition_end_byte", STORED);
         let text_authority_doc_id =
             builder.add_u64_field("text_authority_doc_id", STORED | INDEXED | FAST);
+        let live_bm25_doc_census = builder.add_bytes_field("live_bm25_doc_census", STORED);
         let schema = builder.build();
         Self {
             schema,
@@ -114,6 +115,7 @@ impl SchemaFields {
             symbol_definition_start_byte,
             symbol_definition_end_byte,
             text_authority_doc_id,
+            live_bm25_doc_census,
         }
     }
 }

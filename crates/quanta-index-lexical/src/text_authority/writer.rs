@@ -105,7 +105,7 @@ pub(crate) fn rebuild(
         }
         let _prior = outcomes.insert(index, ShardOutcome::Built(builders.finish()?));
     }
-    let shard_build_ns = crate::adapter_ingest::elapsed_stage_ns(shard_started)?;
+    let shard_build_ns = crate::stage_timing::elapsed_stage_ns(shard_started)?;
     let publish_started = Instant::now();
     let (shards_written, shards_inherited) = publish(generation_dir, prior, outcomes, max_doc_id)?;
     Ok(TextAuthorityWriteResult {
@@ -116,7 +116,7 @@ pub(crate) fn rebuild(
             shards_inherited,
         },
         shard_build_ns,
-        publish_ns: crate::adapter_ingest::elapsed_stage_ns(publish_started)?,
+        publish_ns: crate::stage_timing::elapsed_stage_ns(publish_started)?,
     })
 }
 
@@ -191,7 +191,7 @@ pub(crate) fn update(
         }
         let _prior = outcomes.insert(*index, ShardOutcome::Built(builders.finish()?));
     }
-    let shard_build_ns = crate::adapter_ingest::elapsed_stage_ns(shard_started)?;
+    let shard_build_ns = crate::stage_timing::elapsed_stage_ns(shard_started)?;
     let publish_started = Instant::now();
     let (shards_written, shards_inherited) =
         publish(generation_dir, Some(prior), outcomes, max_doc_id)?;
@@ -203,7 +203,7 @@ pub(crate) fn update(
             shards_inherited,
         },
         shard_build_ns,
-        publish_ns: crate::adapter_ingest::elapsed_stage_ns(publish_started)?,
+        publish_ns: crate::stage_timing::elapsed_stage_ns(publish_started)?,
     })
 }
 

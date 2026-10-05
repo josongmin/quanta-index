@@ -610,6 +610,7 @@ mod l4_source_decode_regressions {
         doc.add_u64(fields.chunk_end_byte, u64::try_from(raw.len())?);
         doc.add_bytes(fields.chunk_raw_sha256, [0; 32]);
         doc.add_u64(fields.text_authority_doc_id, 1);
+        crate::doc_census::attach(&index, &fields, &mut doc)?;
         let mut writer = index.writer(50_000_000)?;
         let _opstamp = writer.add_document(doc)?;
         let _commit = writer.commit()?;
@@ -656,6 +657,16 @@ mod l4_source_decode_regressions {
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
         let text_authority = ShardedTextAuthority::from_proved_shards(shards)?;
+        let live_bm25 = Arc::new(
+            crate::sealed_generation::live_bm25::LiveBm25Statistics::build(
+                &index,
+                &fields,
+                [0; 32],
+                state.path(),
+                None,
+                &[],
+            )?,
+        );
 
         let searcher = TantivySearcher {
             source_coverage: None,
@@ -666,6 +677,7 @@ mod l4_source_decode_regressions {
             fields,
             reader,
             ranked_keys,
+            live_bm25,
             repo_metadata: None,
             regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new(
                 RegexMatchCachePolicy::DEFAULT,

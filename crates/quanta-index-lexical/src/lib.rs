@@ -57,6 +57,8 @@ mod budgeted_search;
 
 mod dense_admission;
 
+mod doc_census;
+
 mod file_authority;
 
 pub mod filters;
@@ -102,6 +104,7 @@ mod overlay_codec;
 mod query_admission;
 mod query_errors;
 mod schema;
+mod stage_timing;
 // The searcher facade declares its submodules `pub(crate)` (the crate's
 // other modules name their items; `unreachable_pub = deny` forbids a bare
 // `pub`). The expectation sits here because module discipline keeps a
@@ -238,6 +241,9 @@ struct SchemaFields {
     /// ids restricts a query without naming a single candidate
     /// (`authority_doc_set`).
     text_authority_doc_id: Field,
+    /// Exact indexed-field census captured from this document before Tantivy
+    /// consumes it; used only when a later delta retires this physical doc.
+    live_bm25_doc_census: Field,
 }
 
 /// Per-generation cache key.
@@ -540,6 +546,7 @@ struct TantivySearcher {
     fields: SchemaFields,
     reader: IndexReader,
     ranked_keys: Arc<ranked_keys::RankedKeyTables>,
+    live_bm25: Arc<sealed_generation::live_bm25::LiveBm25Statistics>,
     repo_metadata: Option<LexicalRepoMetadataPayload>,
     regex_match_cache: Arc<Mutex<RegexMatchCache>>,
     /// Deployment-scoped regex policy threaded from the adapter at open time.
@@ -732,9 +739,13 @@ mod adapter_tests {
         let index = open_or_create_index(&fields, &canonical).expect("create current index");
         drop(index);
         let marker = canonical.join("search-corpus-index-format.cbor");
+        assert_eq!(std::fs::read(&marker).expect("read current marker"), [0x02]);
+        let _reopened = open_or_create_index(&fields, &canonical)
+            .expect("current format marker permits reopening");
 
         for (bytes, expected_detail) in [
-            (&[0x02][..], "format 2, expected 1"),
+            (&[0x01][..], "format 1, expected 2"),
+            (&[0x03][..], "format 3, expected 2"),
             (&[0x01, 0x00][..], "invalid format marker"),
             (&[0xff][..], "invalid format marker"),
             (&[0; 10][..], "cannot read format marker"),
@@ -754,7 +765,7 @@ mod adapter_tests {
         }
 
         let target = canonical.join("other-format.cbor");
-        std::fs::write(&target, [0x01]).expect("valid bytes outside marker path");
+        std::fs::write(&target, [0x02]).expect("valid bytes outside marker path");
         std::fs::remove_file(&marker).expect("remove marker before symlink");
         std::os::unix::fs::symlink(&target, &marker).expect("symlinked marker");
         let refused = open_or_create_index(&fields, &canonical)

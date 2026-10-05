@@ -20,7 +20,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::Write as _;
 use std::os::unix::fs::MetadataExt as _;
@@ -30,6 +30,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
+use tantivy::schema::{TantivyDocument, Value};
+use tantivy::{DocAddress, Index};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
@@ -450,6 +452,283 @@ type FreshEntry = (String, u64);
 /// A generation-directory sidecar's `(inode, length, sha256)`.
 type SidecarFacts = (u64, u64, String);
 
+/// Independent native-index diagnostics for QI-BB-006. The byte budget below
+/// still counts the complete generation, including non-Tantivy metadata.
+#[derive(Debug, Eq, PartialEq)]
+struct NativeSegmentInventory {
+    /// Segment ID, max doc, live doc, deleted doc; stable order for failures.
+    segments: Vec<String>,
+    segment_docs: BTreeMap<String, (u32, u32, u32)>,
+    /// Every live candidate ID to its immutable segment and native `DocID`.
+    candidate_addresses: BTreeMap<String, (String, u32)>,
+    /// Only files belonging to searchable Tantivy segments, keyed by path.
+    files: BTreeMap<String, SegmentFileFacts>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct SegmentFileFacts {
+    device: u64,
+    inode: u64,
+    len: u64,
+    sha256: String,
+}
+
+fn native_segment_inventory(root: &Path) -> Result<NativeSegmentInventory, Box<dyn Error>> {
+    let index = Index::open_in_dir(root)?;
+    let mut segments = Vec::new();
+    let mut segment_docs = BTreeMap::new();
+    let mut files = BTreeMap::new();
+    for meta in index.searchable_segment_metas()? {
+        let id = meta.id().uuid_string();
+        if segment_docs
+            .insert(
+                id.clone(),
+                (meta.max_doc(), meta.num_docs(), meta.num_deleted_docs()),
+            )
+            .is_some()
+        {
+            return Err(format!("duplicate native segment ID {id}").into());
+        }
+        segments.push(format!(
+            "{id}:max_doc={},live={},deleted={}",
+            meta.max_doc(),
+            meta.num_docs(),
+            meta.num_deleted_docs(),
+        ));
+        for relative_path in meta.list_files() {
+            let path = root.join(&relative_path);
+            // list_files also names optional Tantivy components not created by
+            // every segment. Only existing files can consume physical bytes.
+            if !path.exists() {
+                continue;
+            }
+            let metadata = std::fs::metadata(&path)?;
+            let digest = Sha256::digest(std::fs::read(&path)?);
+            let mut sha256 = String::with_capacity(digest.len().saturating_mul(2));
+            for byte in digest {
+                write!(&mut sha256, "{byte:02x}")?;
+            }
+            let name = relative_path.to_string_lossy().into_owned();
+            if files
+                .insert(
+                    name.clone(),
+                    SegmentFileFacts {
+                        device: metadata.dev(),
+                        inode: metadata.ino(),
+                        len: metadata.len(),
+                        sha256,
+                    },
+                )
+                .is_some()
+            {
+                return Err(format!("duplicate native segment file {name}").into());
+            }
+        }
+    }
+    segments.sort();
+
+    let candidate_id = index.schema().get_field("candidate_id")?;
+    let reader = index.reader()?;
+    let searcher = reader.searcher();
+    let mut candidate_addresses = BTreeMap::new();
+    for (ordinal, segment) in searcher.segment_readers().iter().enumerate() {
+        let segment_id = segment.segment_id().uuid_string();
+        let segment_ordinal = u32::try_from(ordinal)?;
+        for doc_id in segment.doc_ids_alive() {
+            let doc: TantivyDocument = searcher.doc(DocAddress::new(segment_ordinal, doc_id))?;
+            let Some(value) = doc.get_first(candidate_id) else {
+                continue;
+            };
+            let Some(id) = value.as_str() else {
+                return Err("stored candidate_id is not text".into());
+            };
+            if candidate_addresses
+                .insert(id.to_owned(), (segment_id.clone(), doc_id))
+                .is_some()
+            {
+                return Err(format!("duplicate live candidate ID {id}").into());
+            }
+        }
+    }
+    Ok(NativeSegmentInventory {
+        segments,
+        segment_docs,
+        candidate_addresses,
+        files,
+    })
+}
+
+fn assert_fixture_candidate_ids(inventory: &NativeSegmentInventory) -> TestResult {
+    let mut expected: BTreeSet<String> = (0..COST_FIXTURE_FILLER_SCOPES)
+        .map(|index| format!("chunk-filler-{index:05}"))
+        .collect();
+    let _alpha = expected.insert("chunk-alpha".to_string());
+    let _beta = expected.insert("chunk-beta".to_string());
+    let actual: BTreeSet<String> = inventory.candidate_addresses.keys().cloned().collect();
+    if actual != expected {
+        return Err(format!(
+            "native index candidate IDs differ from fixed 402-doc fixture: missing={:?}, unexpected={:?}",
+            expected.difference(&actual).collect::<Vec<_>>(),
+            actual.difference(&expected).collect::<Vec<_>>(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Tantivy segment components use a case-sensitive `.del` suffix.
+fn is_native_delete_mask(name: &str) -> bool {
+    Path::new(name).extension() == Some(std::ffi::OsStr::new("del"))
+}
+
+fn native_segment_delta(
+    base: &NativeSegmentInventory,
+    delta: &NativeSegmentInventory,
+) -> Result<String, Box<dyn Error>> {
+    if base.segment_docs.is_empty() || base.files.is_empty() {
+        return Err("base has no native segment files; reuse proof is vacuous".into());
+    }
+    let mut old_docs_retired = 0_u32;
+    let mut changed_base_segments = 0_usize;
+    for (id, &(base_max, base_live, base_deleted)) in &base.segment_docs {
+        if base_deleted != 0 {
+            return Err(format!("fixed base segment {id} already has deletions").into());
+        }
+        let &(delta_max, delta_live, delta_deleted) = delta
+            .segment_docs
+            .get(id)
+            .ok_or_else(|| format!("immutable base segment {id} disappeared from delta"))?;
+        if delta_max != base_max || delta_live > base_live || delta_deleted < base_deleted {
+            return Err(format!(
+                "base segment {id} changed native identity: base=({base_max},{base_live},{base_deleted}) delta=({delta_max},{delta_live},{delta_deleted})"
+            )
+            .into());
+        }
+        let newly_retired = base_live
+            .checked_sub(delta_live)
+            .ok_or("retired native doc count underflow")?;
+        old_docs_retired = old_docs_retired
+            .checked_add(newly_retired)
+            .ok_or("retired native doc count overflow")?;
+        if delta_deleted > base_deleted {
+            changed_base_segments = changed_base_segments
+                .checked_add(1)
+                .ok_or("changed base segment count overflow")?;
+        }
+    }
+    if old_docs_retired != 1 || changed_base_segments != 1 {
+        return Err(format!(
+            "one beta replacement must add one delete mask to one retained base segment: retired={old_docs_retired}, changed_segments={changed_base_segments}"
+        )
+        .into());
+    }
+
+    let mut shared_files = 0_usize;
+    let mut missing_files = Vec::new();
+    let mut replaced_files = Vec::new();
+    for (name, facts) in &base.files {
+        match delta.files.get(name) {
+            None => missing_files.push(name.as_str()),
+            Some(next) if next == facts => {
+                shared_files = shared_files
+                    .checked_add(1)
+                    .ok_or("shared segment file count overflow")?;
+            }
+            Some(_) => replaced_files.push(name.as_str()),
+        }
+    }
+    // The base segment components are immutable. Only a new delete-mask file
+    // may be added under an inherited segment ID; its old component files
+    // must remain hard-linked byte-for-byte to the base generation.
+    if !missing_files.is_empty() || !replaced_files.is_empty() {
+        return Err(format!(
+            "base segment files were not inherited exactly: missing={missing_files:?}, replaced={replaced_files:?}"
+        )
+        .into());
+    }
+    let unexpected_base_files: Vec<String> = delta
+        .files
+        .keys()
+        .filter(|name| !base.files.contains_key(*name))
+        .filter(|name| {
+            base.segment_docs.keys().any(|id| {
+                name.strip_prefix(id.as_str())
+                    .is_some_and(|suffix| suffix.starts_with('.'))
+            })
+        })
+        .filter(|name| !is_native_delete_mask(name.as_str()))
+        .cloned()
+        .collect();
+    if !unexpected_base_files.is_empty() {
+        return Err(format!(
+            "new non-delete components appeared under retained base IDs: {unexpected_base_files:?}"
+        )
+        .into());
+    }
+    let new_delete_masks: Vec<&String> = delta
+        .files
+        .keys()
+        .filter(|name| !base.files.contains_key(*name))
+        .filter(|name| {
+            base.segment_docs.keys().any(|id| {
+                name.strip_prefix(id.as_str())
+                    .is_some_and(|suffix| suffix.starts_with('.'))
+            })
+        })
+        .filter(|name| is_native_delete_mask(name.as_str()))
+        .collect();
+    if new_delete_masks.len() != 1 {
+        return Err(format!(
+            "one native delete-mask file was expected under the retained base: {new_delete_masks:?}"
+        )
+        .into());
+    }
+    let moved_fillers: Vec<String> = base
+        .candidate_addresses
+        .iter()
+        .filter(|(id, _)| id.starts_with("chunk-filler-"))
+        .filter_map(|(id, address)| {
+            (delta.candidate_addresses.get(id) != Some(address)).then_some(id.clone())
+        })
+        .collect();
+    if !moved_fillers.is_empty() {
+        return Err(format!(
+            "unchanged filler DocIDs moved from immutable base segments: count={} sample={:?}",
+            moved_fillers.len(),
+            moved_fillers.iter().take(8).collect::<Vec<_>>(),
+        )
+        .into());
+    }
+    let alpha = "chunk-alpha";
+    if base.candidate_addresses.get(alpha) != delta.candidate_addresses.get(alpha) {
+        return Err("unchanged alpha native segment/DocID moved".into());
+    }
+    let beta = "chunk-beta";
+    let old_beta = base
+        .candidate_addresses
+        .get(beta)
+        .ok_or("base beta doc missing")?;
+    let new_beta = delta
+        .candidate_addresses
+        .get(beta)
+        .ok_or("delta beta doc missing")?;
+    if old_beta == new_beta || base.segment_docs.contains_key(&new_beta.0) {
+        return Err(format!(
+            "replacement beta did not move to a new native segment: old={old_beta:?} new={new_beta:?}"
+        )
+        .into());
+    }
+    let added_files = delta.files.len().saturating_sub(shared_files);
+    Ok(format!(
+        "base_segments={:?} delta_segments={:?} base_segment_files={} shared_files={shared_files} added_files={added_files} new_delete_masks={new_delete_masks:?} fixed_filler_addresses={} moved_fillers={}",
+        base.segments,
+        delta.segments,
+        base.files.len(),
+        COST_FIXTURE_FILLER_SCOPES,
+        moved_fillers.len(),
+    ))
+}
+
 /// Bytes under `root` that do not share storage with `shared_inodes`, plus the
 /// per-entry breakdown so a regression names what was rewritten.
 fn bytes_not_shared_with(
@@ -520,10 +799,22 @@ fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
     let _stages = adapter.build_batch(&base_batch_with_filler(g1, COST_FIXTURE_FILLER_SCOPES)?)?;
     let base_dir = generation_dir(dir.path(), g1)?;
     let (base_inodes, base_bytes) = inodes_and_bytes(&base_dir)?;
+    let base_native = native_segment_inventory(&base_dir)?;
+    assert_fixture_candidate_ids(&base_native)?;
 
     let _stages = adapter.build_batch(&delta_batch(g2, g1)?)?;
     let delta_dir = generation_dir(dir.path(), g2)?;
     let (fresh_bytes, fresh_entries) = bytes_not_shared_with(&delta_dir, &base_inodes)?;
+    let base_native_after = native_segment_inventory(&base_dir)?;
+    if base_native_after != base_native {
+        return Err(format!(
+            "delta mutated the base native segment inventory: before={base_native:?} after={base_native_after:?}"
+        )
+        .into());
+    }
+    let delta_native = native_segment_inventory(&delta_dir)?;
+    assert_fixture_candidate_ids(&delta_native)?;
+    let native_delta = native_segment_delta(&base_native, &delta_native)?;
 
     // The base must still be intact and serving.
     assert_hits(
@@ -565,6 +856,7 @@ fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
             fresh_coverage_bytes.to_string(),
         ),
         ("delta_fresh_entries", breakdown.join(",")),
+        ("native_segments", native_delta.clone()),
     ]);
 
     if base_bytes == 0 {
@@ -591,7 +883,7 @@ fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
         return Err(format!(
             "delta generation wrote {index_fresh_bytes} fresh index bytes against a \
              {index_base_bytes}-byte base index (budget {budget}): unchanged base data was \
-             rewritten rather than inherited. fresh entries: {breakdown:?}"
+             rewritten rather than inherited. fresh entries: {breakdown:?}; native segments: {native_delta}"
         )
         .into());
     }

@@ -1224,13 +1224,13 @@ fn as_format_one(current: &[ciborium::Value]) -> Vec<ciborium::Value> {
 /// Number of elements in the current manifest row.
 ///
 /// Includes format, identity, normalizer, index metadata, segment policy,
-/// segments, ranked keys, text authority, file authority, overlays, and
+/// segments, ranked keys, live BM25, text authority, file authority, overlays, and
 /// source-file coverage.
-const MANIFEST_ROW_LEN: usize = 11;
+const MANIFEST_ROW_LEN: usize = 12;
 /// Position of the normalizer stamp in the current manifest row.
 const MANIFEST_NORMALIZER_INDEX: usize = 2;
 /// The manifest format this build seals.
-const CURRENT_FORMAT: u32 = 12;
+const CURRENT_FORMAT: u32 = 14;
 
 /// Generations sealed under earlier manifest formats are refused typed by
 /// both doors.
@@ -1259,7 +1259,7 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
         return Err(format!("unexpected current manifest row shape: {current:?}").into());
     }
 
-    for earlier in [4_u32, 5, 6, 7, 8, 9, 10, 11] {
+    for earlier in [4_u32, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
         let mut downgraded = current.clone();
         if let Some(version) = downgraded.first_mut() {
             *version = ciborium::Value::from(earlier);

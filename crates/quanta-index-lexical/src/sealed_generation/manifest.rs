@@ -4,7 +4,7 @@
 //! Written after every file it lists is durable and before the sealed
 //! identity, so the identity's presence implies the manifest's. It carries
 //! the identity's `manifest_digest` so the two files bind each other, the
-//! text normalizer the generation was built under, and six sections:
+//! text normalizer the generation was built under, and seven sections:
 //!
 //! - **index meta** — the Tantivy commit (`meta.json`), hashed at every
 //!   door: it is the index's identity and names every segment file;
@@ -17,6 +17,7 @@
 //!   QI-BB-017 removes. The section stamps that policy explicitly;
 //! - **ranked keys** — one immutable, digest-proved key table per segment;
 //!   a query ranks by these tables without decoding `SSTable` strings;
+//! - **live BM25** — exact live statistics bound to the index commit;
 //! - **text authority** — `None` for a generation built without one, or the
 //!   `text-authority/` manifest and every shard it lists. A door reads each
 //!   file once, hashing it as it decodes it;
@@ -27,6 +28,7 @@
 //!   universe and producer event, both decoded from the same proved bytes.
 //!   Absence means unavailable capability, not complete coverage.
 //!
+//! Format 14 retains deletions and commits exact live BM25 statistics.
 //! Format 13 requires sealed lexical generations to have no deleted Tantivy
 //! documents and exact live-token totals for frequency-bearing text fields.
 //! Format 12 could retain deleted documents or approximate BM25 token totals
@@ -67,6 +69,7 @@ use crate::file_authority;
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 use crate::overlay_codec::OverlayFamily;
 use crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME;
+use crate::sealed_generation::live_bm25;
 use crate::text_authority::{TEXT_AUTHORITY_DIR_NAME, leading_format_version};
 
 /// File name of the sealed manifest.
@@ -76,7 +79,7 @@ pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-genera
 const MAX_SEALED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 13;
+pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 14;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -121,6 +124,8 @@ pub(crate) struct LexicalSealedManifest {
     pub(crate) index_segments: Vec<SealedArtifactCommitmentV1>,
     /// One immutable ranked-key table per committed index segment.
     pub(crate) ranked_keys: Vec<SealedArtifactCommitmentV1>,
+    /// Exact live BM25 statistics bound to this index commit.
+    pub(crate) live_bm25: SealedArtifactCommitmentV1,
     /// The `text-authority/` tree by `/`-joined path, ascending by name, or
     /// `None` for a generation built without a text authority.
     pub(crate) text_authority: Option<Vec<SealedArtifactCommitmentV1>>,
@@ -146,6 +151,7 @@ type SealedManifestRow = (
     u8,
     Vec<CommitmentRow>,
     Vec<CommitmentRow>,
+    CommitmentRow,
     Option<Vec<CommitmentRow>>,
     Vec<CommitmentRow>,
     Vec<CommitmentRow>,
@@ -223,6 +229,7 @@ impl LexicalSealedManifest {
             self.index_segment_verification.code(),
             self.index_segments.iter().map(to_commitment_row).collect(),
             self.ranked_keys.iter().map(to_commitment_row).collect(),
+            to_commitment_row(&self.live_bm25),
             self.text_authority
                 .as_ref()
                 .map(|files| files.iter().map(to_commitment_row).collect()),
@@ -254,7 +261,7 @@ impl LexicalSealedManifest {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
-                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: exact live BM25 token totals and no retained deleted documents at seal, plus explicit symbol-name source policy, folded-only file posting counts and bounded committed coverage pages); the generation must be rebuilt",
+                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: committed exact live BM25 statistics for retained deletions); the generation must be rebuilt",
                     path.display()
                 ),
             });
@@ -267,6 +274,7 @@ impl LexicalSealedManifest {
             segment_verification,
             index_segments,
             ranked_keys,
+            live_bm25,
             text_authority,
             file_authority,
             overlays,
@@ -299,6 +307,7 @@ impl LexicalSealedManifest {
                 .map(from_commitment_row)
                 .collect(),
             ranked_keys: ranked_keys.into_iter().map(from_commitment_row).collect(),
+            live_bm25: from_commitment_row(live_bm25),
             text_authority: text_authority
                 .map(|files| files.into_iter().map(from_commitment_row).collect()),
             file_authority: file_authority
@@ -337,6 +346,16 @@ impl LexicalSealedManifest {
             &self.ranked_keys,
             crate::ranked_keys::is_file_name,
         )?;
+        let max_live_bm25_bytes = u64::try_from(live_bm25::MAX_BYTES).map_err(|error| {
+            manifest_corrupt(
+                path,
+                &format!("live BM25 control bound exceeds u64: {error}"),
+            )
+        })?;
+        if self.live_bm25.name != live_bm25::FILE_NAME || self.live_bm25.bytes > max_live_bm25_bytes
+        {
+            return Err(manifest_corrupt(path, "invalid live BM25 commitment"));
+        }
         if let Some(files) = &self.text_authority {
             let prefix = format!("{TEXT_AUTHORITY_DIR_NAME}/");
             ensure_names(path, "text authority", files, |name| {
@@ -422,6 +441,7 @@ impl LexicalSealedManifest {
         std::iter::once(&self.index_meta)
             .chain(self.index_segments.iter())
             .chain(self.ranked_keys.iter())
+            .chain(std::iter::once(&self.live_bm25))
             .chain(self.text_authority.iter().flatten())
             .chain(self.file_authority.iter())
             .chain(self.overlays.iter())
@@ -586,6 +606,7 @@ mod tests {
                 IndexSegmentVerificationV1::LengthAtOpenContentAtSealAndScrub,
             index_segments: vec![artifact("aa.idx"), artifact("aa.term")],
             ranked_keys: vec![artifact("ranked-keys-00000000000000000000000000000000.bin")],
+            live_bm25: artifact(crate::sealed_generation::live_bm25::FILE_NAME),
             text_authority: Some(vec![
                 artifact("text-authority/manifest.cbor"),
                 artifact("text-authority/shard-00000000-0000000000000000.cbor"),
@@ -611,7 +632,14 @@ mod tests {
         let bytes = manifest.encode().expect("encode");
         let decoded = LexicalSealedManifest::decode(&bytes, Path::new("/g1/m")).expect("decode");
         assert_eq!(decoded, manifest);
-        assert_eq!(decoded.all_commitments().count(), 9);
+        assert_eq!(decoded.all_commitments().count(), 10);
+        assert_eq!(
+            decoded
+                .all_commitments()
+                .filter(|entry| entry.name == crate::sealed_generation::live_bm25::FILE_NAME)
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -781,6 +809,7 @@ mod tests {
             10,
             11,
             12,
+            13,
             LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1,
         ] {
             let other_format: SealedManifestRow = (
@@ -791,6 +820,11 @@ mod tests {
                 1,
                 Vec::new(),
                 Vec::new(),
+                (
+                    crate::sealed_generation::live_bm25::FILE_NAME.to_string(),
+                    1,
+                    [0; 32],
+                ),
                 None,
                 Vec::new(),
                 Vec::new(),
@@ -812,6 +846,11 @@ mod tests {
             9,
             Vec::new(),
             Vec::new(),
+            (
+                crate::sealed_generation::live_bm25::FILE_NAME.to_string(),
+                1,
+                [0; 32],
+            ),
             None,
             Vec::new(),
             Vec::new(),
@@ -839,9 +878,8 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 10")
-                    && message.contains("serves 13")
-                    && message.contains("explicit symbol-name source policy")
-                    && message.contains("folded-only file posting counts")
+                    && message.contains("serves 14")
+                    && message.contains("committed exact live BM25 statistics")
                     && message.contains("must be rebuilt")
         ));
     }
@@ -859,9 +897,8 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 12")
-                    && message.contains("serves 13")
-                    && message.contains("exact live BM25 token totals")
-                    && message.contains("no retained deleted documents")
+                    && message.contains("serves 14")
+                    && message.contains("committed exact live BM25 statistics")
                     && message.contains("must be rebuilt")
         ));
     }

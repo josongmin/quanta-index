@@ -489,6 +489,11 @@ def check_channel_backend_isolation() -> list[Violation]:
             # transport identifier; keep every other segment_id use checked.
             if scope.name == "quanta-index-lexical" and rust_file.name == "ranked_keys.rs":
                 text = re.sub(r"\breader\.segment_id\s*\(\s*\)", "", text)
+            if scope.name == "quanta-index-lexical":
+                # The qualified native accessor identifies the concrete
+                # storage API without granting transport fields or arbitrary
+                # receiver methods an exemption.
+                text = re.sub(r"\btantivy::SegmentReader::segment_id\s*\(", "", text)
             for token in _TRANSPORT_LEAK_TOKENS:
                 m = token.search(text)
                 if m is not None:

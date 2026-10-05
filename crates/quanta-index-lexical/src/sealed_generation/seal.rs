@@ -45,6 +45,7 @@ use crate::overlay_codec::OverlayFamily;
 use crate::ranked_keys::{self, MAX_RANKED_KEYS_BYTES};
 use crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME;
 use crate::sealed_generation::index_files::referenced_index_files;
+use crate::sealed_generation::live_bm25::{self, BaseSnapshot, LiveBm25Statistics};
 use crate::sealed_generation::manifest::{
     IndexSegmentVerificationV1, LexicalSealedManifest, manifest_path, read_manifest, write_manifest,
 };
@@ -264,6 +265,80 @@ impl Measurer {
     }
 }
 
+/// One marker for a bounded lexical owner call envelope. `logical_bytes`
+/// names explicit payload bytes already read or produced; it is not device I/O.
+#[expect(
+    clippy::print_stderr,
+    reason = "bounded opt-in causal marker is replayed against the scale artifact"
+)]
+fn emit_bm25_boundary(
+    label: &'static str,
+    started: Option<Instant>,
+    logical_bytes: Option<usize>,
+    index_files: usize,
+) {
+    let Some(started) = started else {
+        return;
+    };
+    let counts = logical_bytes.and_then(|bytes| {
+        let (Ok(bytes), Ok(index_files), Ok(elapsed_ns)) = (
+            u64::try_from(bytes),
+            u64::try_from(index_files),
+            u64::try_from(started.elapsed().as_nanos()),
+        ) else {
+            return None;
+        };
+        Some((bytes, index_files, elapsed_ns))
+    });
+    if let Some((logical_bytes, index_files, elapsed_ns)) = counts {
+        eprintln!(
+            "QI_CAUSAL_V1 kind=bm25_boundary label={label} ok=1 elapsed_ns={elapsed_ns} logical_bytes={logical_bytes} index_files={index_files}",
+        );
+    } else {
+        eprintln!("QI_CAUSAL_V1 kind=bm25_boundary label={label} ok=0 reason=counter_overflow");
+    }
+}
+
+/// Read the committed base files needed for exact live-statistics inheritance.
+///
+/// This custody belongs to the seal door; the statistics
+/// builder receives a verified capability and has no index-store dependency.
+fn read_bm25_base(dir: &Path) -> Result<Option<BaseSnapshot>, CoreError> {
+    if !crate::index_store::sealed_identity_entry_present(dir)? {
+        return Ok(None);
+    }
+    let started = crate::causal_profile::enabled().then(Instant::now);
+    let root = super::open_generation_dir_nofollow(dir).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: open BM25 base {}: {error}",
+            dir.display()
+        ))
+    })?;
+    let identity = crate::index_store::read_lexical_sealed_identity_at(dir, &root)?;
+    let manifest = super::manifest::read_bound_manifest_at(dir, &root, &identity.manifest_digest)?;
+    let meta = super::verify::read_committed(&root, dir, &manifest.index_meta, None)?;
+    let meta_len = meta.len();
+    let index = crate::index_store::open_sealed_index_at(dir, &root, meta)?;
+    super::verify::verify_index_segments(&root, dir, &index, &manifest.index_segments)?;
+    let bytes = super::verify::read_committed(&root, dir, &manifest.live_bm25, None)?;
+    let reader = index
+        .reader()
+        .map_err(|error| CoreError::Storage(format!("lexical: read BM25 base index: {error}")))?;
+    let statistics =
+        LiveBm25Statistics::decode(&bytes, dir, manifest.index_meta.sha256, &reader.searcher())?;
+    emit_bm25_boundary(
+        "base_read",
+        started,
+        meta_len.checked_add(bytes.len()),
+        manifest.index_segments.len(),
+    );
+    Ok(Some(BaseSnapshot {
+        statistics,
+        index,
+        index_segments: manifest.index_segments,
+    }))
+}
+
 /// Measure `generation_dir` as sealed and write its manifest.
 ///
 /// `base_dir` is the delta base the generation was carried forward from,
@@ -290,6 +365,29 @@ pub(crate) fn seal_generation(
     for name in referenced_index_files(&index, generation_dir)? {
         index_segments.push(measurer.commit(&name)?);
     }
+    let base_statistics = base_dir.map(read_bm25_base).transpose()?.flatten();
+    let live_statistics = LiveBm25Statistics::build(
+        &index,
+        fields,
+        index_meta.sha256,
+        generation_dir,
+        base_statistics.as_ref(),
+        &index_segments,
+    )?;
+    let encode_started = crate::causal_profile::enabled().then(Instant::now);
+    let live_bytes = live_statistics.encode()?;
+    emit_bm25_boundary(
+        "encode",
+        encode_started,
+        Some(live_bytes.len()),
+        index_segments.len(),
+    );
+    crate::index_store::write_atomic_durable(
+        &generation_dir.join(live_bm25::FILE_NAME),
+        &live_bytes,
+        "live BM25 statistics",
+    )?;
+    let live_bm25 = measurer.hash(live_bm25::FILE_NAME)?;
     let ranked_keys = commit_ranked_keys(&index, &mut measurer)?;
     let text_authority_manifest = finalize_for_seal(generation_dir)?;
     ensure_text_authority_covers_index(
@@ -429,6 +527,7 @@ pub(crate) fn seal_generation(
         index_segment_verification: IndexSegmentVerificationV1::LengthAtOpenContentAtSealAndScrub,
         index_segments,
         ranked_keys,
+        live_bm25,
         text_authority,
         file_authority,
         overlays,
@@ -437,7 +536,7 @@ pub(crate) fn seal_generation(
     let file_admission_started = Instant::now();
     let (files_read, bytes_read) =
         file_authority::validate_index_build_budget(generation_dir, identity, &file_rows)?;
-    let file_admission_ns = crate::adapter_ingest::elapsed_stage_ns(file_admission_started)?;
+    let file_admission_ns = crate::stage_timing::elapsed_stage_ns(file_admission_started)?;
     measurer.stats.file_admission_files_read = files_read;
     measurer.stats.file_admission_bytes_read = bytes_read;
     write_manifest(generation_dir, &manifest)?;

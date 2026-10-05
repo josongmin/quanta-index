@@ -555,6 +555,7 @@ impl LexicalAdapter {
         key: &GenKey,
         op: &LexicalChannelOp,
         allocator: &mut TextDocAllocator,
+        census_observation: &mut crate::doc_census::CensusBuildObservation,
     ) -> Result<bool, CoreError> {
         match op {
             LexicalChannelOp::UpsertChunk(upsert) => {
@@ -582,6 +583,12 @@ impl LexicalAdapter {
                 doc.add_u64(self.fields.end_line, u64::from(chunk.end_line));
                 add_snippet_field(&self.fields, &mut doc, chunk.derived_snippet());
                 add_content_fields(&self.fields, &mut doc, chunk.text.as_ref());
+                crate::doc_census::attach_observed(
+                    writer.index(),
+                    &self.fields,
+                    &mut doc,
+                    Some(census_observation),
+                )?;
                 let _opstamp = writer
                     .add_document(doc)
                     .map_err(|err| CoreError::Storage(format!("lexical: add_document: {err}")))?;
@@ -620,6 +627,12 @@ impl LexicalAdapter {
                 add_snippet_field(&self.fields, &mut doc, &snippet);
                 add_content_fields(&self.fields, &mut doc, &snippet);
                 add_symbol_fields(&self.fields, &mut doc, &symbol);
+                crate::doc_census::attach_observed(
+                    writer.index(),
+                    &self.fields,
+                    &mut doc,
+                    Some(census_observation),
+                )?;
                 let _opstamp = writer
                     .add_document(doc)
                     .map_err(|err| CoreError::Storage(format!("lexical: add_document: {err}")))?;
@@ -657,6 +670,12 @@ impl LexicalAdapter {
                     doc.add_u64(self.fields.end_line, u64::from(chunk.end_line));
                     add_snippet_field(&self.fields, &mut doc, chunk.derived_snippet());
                     add_content_fields(&self.fields, &mut doc, chunk.text.as_ref());
+                    crate::doc_census::attach_observed(
+                        writer.index(),
+                        &self.fields,
+                        &mut doc,
+                        Some(census_observation),
+                    )?;
                     let _opstamp = writer.add_document(doc).map_err(|err| {
                         CoreError::Storage(format!("lexical: add_document: {err}"))
                     })?;
@@ -698,6 +717,12 @@ impl LexicalAdapter {
                     add_snippet_field(&self.fields, &mut doc, &snippet);
                     add_content_fields(&self.fields, &mut doc, &snippet);
                     add_symbol_fields(&self.fields, &mut doc, symbol);
+                    crate::doc_census::attach_observed(
+                        writer.index(),
+                        &self.fields,
+                        &mut doc,
+                        Some(census_observation),
+                    )?;
                     let _opstamp = writer.add_document(doc).map_err(|err| {
                         CoreError::Storage(format!("lexical: add_document: {err}"))
                     })?;

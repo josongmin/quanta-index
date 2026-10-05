@@ -6,7 +6,7 @@
 )]
 
 use crate::TantivySearcher;
-use crate::budgeted_search::{CollectionBudget, budgeted_collection};
+use crate::budgeted_search::{CollectionBudget, budgeted_collection_with_statistics};
 use crate::channel_payloads::count_from_len;
 use crate::normalize::CaseMode;
 use crate::ranked_page::{
@@ -128,12 +128,13 @@ impl TantivySearcher {
         let collector =
             RankedPageCollector::new(Arc::clone(&self.ranked_keys), limit, after, boost, count)
                 .with_resource_budget(collection.clone());
-        budgeted_collection(
+        budgeted_collection_with_statistics(
             searcher,
             compiled,
             &collector,
             budget,
             collection,
+            &self.live_bm25,
             "lexical:collect",
         )
     }
@@ -157,12 +158,13 @@ impl TantivySearcher {
         let collector =
             RankedPageCollector::new(Arc::clone(&self.ranked_keys), examined, None, boost, true)
                 .with_collection_budget(collection.clone());
-        let fruit = budgeted_collection(
+        let fruit = budgeted_collection_with_statistics(
             searcher,
             compiled,
             &collector,
             budget,
             collection,
+            &self.live_bm25,
             "lexical:collect",
         )?;
         if fruit.matched > count_from_len(examined)? {
@@ -196,7 +198,7 @@ impl TantivySearcher {
             self.execution_budget
                 .collection_budget(searcher.segment_readers().len())?,
         );
-        let fruit = budgeted_collection(
+        let fruit = budgeted_collection_with_statistics(
             searcher,
             compiled,
             &GroupedPageCollector::new(
@@ -207,6 +209,7 @@ impl TantivySearcher {
             ),
             budget,
             collection,
+            &self.live_bm25,
             "lexical:collect",
         )?;
         let examined = count_from_len(self.execution_budget.max_examined_candidates())?;

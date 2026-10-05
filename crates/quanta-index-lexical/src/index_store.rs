@@ -25,7 +25,7 @@ const MAX_SEALED_IDENTITY_BYTES: usize = 4096;
 /// This marker is written before creating the first index commit, and the
 /// sealed manifest takes over as the serving authority after publication.
 const LEXICAL_UNSEALED_INDEX_FORMAT_FILE_NAME: &str = "search-corpus-index-format.cbor";
-const LEXICAL_UNSEALED_INDEX_FORMAT_VERSION: u32 = 1;
+const LEXICAL_UNSEALED_INDEX_FORMAT_VERSION: u32 = 2;
 const MAX_UNSEALED_INDEX_FORMAT_BYTES: usize = 9;
 
 fn unsealed_index_format_refusal(generation_dir: &Path, detail: &str) -> CoreError {

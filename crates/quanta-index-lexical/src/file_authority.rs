@@ -373,7 +373,7 @@ pub(crate) fn apply_plan(
             crate::index_store::write_atomic_durable(&path, bytes, "file authority source")?;
         }
     }
-    let source_write_ns = crate::adapter_ingest::elapsed_stage_ns(source_write_started)?;
+    let source_write_ns = crate::stage_timing::elapsed_stage_ns(source_write_started)?;
     crate::index_store::write_atomic_durable(
         &manifest_path(generation_dir),
         &encoded,

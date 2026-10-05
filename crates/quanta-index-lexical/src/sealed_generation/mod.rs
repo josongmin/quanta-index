@@ -7,7 +7,9 @@
 
 pub(crate) mod coverage;
 mod index_directory;
+pub(crate) use index_directory::MAX_INDEX_CONTROL_BYTES;
 mod index_files;
+pub(crate) mod live_bm25;
 mod manifest;
 mod overlay;
 mod path_io;

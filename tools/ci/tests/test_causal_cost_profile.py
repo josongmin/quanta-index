@@ -15,19 +15,50 @@ PHASES = (
     "delta_activate", "noop_seal", "noop_activate", "delete_seal",
     "delete_activate", "same_process_reopen",
 )
-SINGLE_TRACE = (
-    b"QI_CAUSAL_V1 kind=phase_start name=full_seal\n"
-    b"QI_CAUSAL_V1 kind=sync label=atomic_file ok=1 elapsed_ns=400\n"
-    b"QI_CAUSAL_V1 kind=exact_live_token_scan ok=1 elapsed_ns=800 terms=2 postings=4 live_postings=3 live_tokens=7\n"
-    b"QI_CAUSAL_V1 kind=phase_end name=full_seal ok=1\n"
+BM25_FULL = (
+    b"QI_CAUSAL_V1 kind=bm25_live_build ok=1 elapsed_ns=1000 "
+    b"reused_segments=0 changed_segments=0 new_segments=1 mask_docs=0 "
+    b"new_census_docs=2 newly_dead_docs=0 logical_census_bytes=30 "
+    b"changed_ns=0 new_ns=700 death_ns=0 correction_keys=0 "
+    b"segment_fanout=1 retained_valid=1 retained_estimate_bytes=4096\n"
 )
-TRACE = b"".join(
-    SINGLE_TRACE if name == "full_seal" else (
-        f"QI_CAUSAL_V1 kind=phase_start name={name}\n"
-        f"QI_CAUSAL_V1 kind=phase_end name={name} ok=1\n"
-    ).encode()
-    for name in PHASES
+BM25_DELTA = (
+    b"QI_CAUSAL_V1 kind=bm25_live_build ok=1 elapsed_ns=1200 "
+    b"reused_segments=0 changed_segments=1 new_segments=1 mask_docs=2 "
+    b"new_census_docs=1 newly_dead_docs=1 logical_census_bytes=40 "
+    b"changed_ns=500 new_ns=500 death_ns=200 correction_keys=2 "
+    b"segment_fanout=2 retained_valid=1 retained_estimate_bytes=5000\n"
 )
+BM25_REUSE = (
+    b"QI_CAUSAL_V1 kind=bm25_live_build ok=1 elapsed_ns=300 "
+    b"reused_segments=1 changed_segments=0 new_segments=0 mask_docs=0 "
+    b"new_census_docs=0 newly_dead_docs=0 logical_census_bytes=0 "
+    b"changed_ns=0 new_ns=0 death_ns=0 correction_keys=0 "
+    b"segment_fanout=1 retained_valid=1 retained_estimate_bytes=4096\n"
+)
+BM25_ENCODE = b"QI_CAUSAL_V1 kind=bm25_boundary label=encode ok=1 elapsed_ns=70 logical_bytes=128 index_files=1\n"
+BM25_BASE = b"QI_CAUSAL_V1 kind=bm25_boundary label=base_read ok=1 elapsed_ns=90 logical_bytes=256 index_files=1\n"
+BM25_CENSUS = b"QI_CAUSAL_V1 kind=bm25_census_build ok=1 elapsed_ns=80 docs=2 encoded_bytes=32\n"
+SEAL_PHASES = {"full_seal", "delta_ingest_seal", "noop_seal", "delete_seal"}
+
+
+def _trace_phase(name: str) -> bytes:
+    rows = [f"QI_CAUSAL_V1 kind=phase_start name={name}\n".encode()]
+    if name == "full_ingest":
+        rows.append(BM25_CENSUS)
+    if name == "full_seal":
+        rows.extend((b"QI_CAUSAL_V1 kind=sync label=atomic_file ok=1 elapsed_ns=400\n", BM25_FULL))
+        rows.append(b"QI_CAUSAL_V1 kind=exact_live_token_scan ok=1 elapsed_ns=800 terms=2 postings=4 live_postings=3 live_tokens=7\n")
+    elif name in SEAL_PHASES:
+        rows.extend((BM25_BASE, BM25_REUSE if name == "noop_seal" else BM25_DELTA))
+    if name in SEAL_PHASES:
+        rows.append(BM25_ENCODE)
+    rows.append(f"QI_CAUSAL_V1 kind=phase_end name={name} ok=1\n".encode())
+    return b"".join(rows)
+
+
+SINGLE_TRACE = _trace_phase("full_seal")
+TRACE = b"".join(_trace_phase(name) for name in PHASES)
 
 
 def _summary() -> dict:
@@ -109,6 +140,10 @@ def test_profile_binds_full_lifecycle_and_cost_domains() -> None:
     phase = result["phases"]["full_seal"]
     assert phase["sync"]["atomic_file"]["elapsed_ns"] == 400
     assert phase["exact_live_token_scan"]["live_tokens"] == 7
+    assert phase["bm25_live_build"][0]["new_census_docs"] == 2
+    assert phase["bm25_boundary"]["encode"]["logical_bytes"] == 128
+    assert result["phases"]["full_ingest"]["bm25_census_build"]["docs"] == 2
+    assert result["phases"]["delta_ingest_seal"]["bm25_live_build"][0]["newly_dead_docs"] == 1
     assert phase["process_write_io"]["write_bytes"] == 4096
     assert phase["sync_call_wall_ratio"] == 0.00004
 
@@ -169,10 +204,8 @@ def test_profile_refuses_missing_phase_trace_and_manifest_mutants() -> None:
     del summary["detail"]["measured_tiers"][0]["phase_resources"]["delete_seal"]
     with pytest.raises(ValueError):
         _replay(summary)
-    absent = TRACE.replace(
-        b"QI_CAUSAL_V1 kind=phase_start name=delete_seal\nQI_CAUSAL_V1 kind=phase_end name=delete_seal ok=1\n",
-        b"",
-    )
+    absent = TRACE.replace(_trace_phase("delete_seal"), b"")
+    assert absent != TRACE
     with pytest.raises(ValueError):
         _replay(trace=absent)
     for key, value in (("total_files", 4095), ("repo_count", 16.0), ("tier", "medium")):
@@ -180,6 +213,65 @@ def test_profile_refuses_missing_phase_trace_and_manifest_mutants() -> None:
         manifest["tiers"][2][key] = value
         with pytest.raises(ValueError):
             _replay(manifest=manifest)
+
+
+@pytest.mark.parametrize("mutant", [
+    SINGLE_TRACE.replace(BM25_FULL, b""),
+    SINGLE_TRACE.replace(BM25_ENCODE, b""),
+    SINGLE_TRACE.replace(b"segment_fanout=1", b"segment_fanout=2"),
+    SINGLE_TRACE.replace(b"retained_valid=1", b"retained_valid=0"),
+    SINGLE_TRACE.replace(b"new_census_docs=2", b"new_census_docs=True"),
+    SINGLE_TRACE.replace(b"logical_census_bytes=30", b"logical_census_bytes=30.0"),
+    SINGLE_TRACE.replace(b"correction_keys=0", b"correction_keys=-1"),
+    SINGLE_TRACE.replace(b"label=encode", b"label=unknown"),
+    SINGLE_TRACE.replace(b"logical_bytes=128", b"logical_bytes=128 extra=1"),
+    SINGLE_TRACE.replace(BM25_FULL, b"QI_CAUSAL_V1 kind=bm25_live_build ok=0 reason=counter_overflow\n"),
+    SINGLE_TRACE.replace(BM25_FULL, b"QI_CAUSAL_V1 kind=bm25_live_build ok=0 reason=retained_estimate_failed\n"),
+    SINGLE_TRACE.replace(BM25_ENCODE, b"QI_CAUSAL_V1 kind=bm25_boundary label=encode ok=0 reason=counter_overflow\n"),
+    SINGLE_TRACE.replace(b"index_files=1", b"index_files=1.0"),
+    SINGLE_TRACE.replace(BM25_FULL, BM25_FULL + b"QI_CAUSAL_V1 kind=bm25_census_build ok=0 reason=counter_overflow\n"),
+    SINGLE_TRACE.replace(BM25_FULL, BM25_FULL + b"QI_CAUSAL_V1 kind=bm25_census_build ok=0 reason=unknown\n"),
+])
+def test_profile_refuses_missing_or_malformed_bm25_observation(mutant: bytes) -> None:
+    with pytest.raises(ValueError):
+        parse_trace(mutant, {"full_seal"})
+
+
+@pytest.mark.parametrize(
+    ("changed_ns", "new_ns"),
+    [
+        (0, 1001),  # One child alone exceeds the 1000 ns parent.
+        (400, 700),  # Both children fit separately, but their sum does not.
+    ],
+)
+def test_profile_refuses_bm25_disjoint_child_clock_overrun(
+    changed_ns: int, new_ns: int,
+) -> None:
+    parent_ns = 1000
+    assert changed_ns + new_ns > parent_ns
+    if changed_ns and new_ns:
+        assert changed_ns <= parent_ns and new_ns <= parent_ns
+    mutated = BM25_FULL.replace(b"changed_ns=0", f"changed_ns={changed_ns}".encode()).replace(
+        b"new_ns=700", f"new_ns={new_ns}".encode()
+    )
+    assert mutated != BM25_FULL
+    trace = SINGLE_TRACE.replace(BM25_FULL, mutated)
+    assert trace != SINGLE_TRACE
+    with pytest.raises(ValueError, match="BM25 child call clocks exceed parent"):
+        parse_trace(trace, {"full_seal"})
+
+
+def test_profile_refuses_aggregate_bm25_counter_overflow() -> None:
+    maximum = str((1 << 64) - 1).encode()
+    huge = BM25_CENSUS.replace(b"docs=2", b"docs=" + maximum)
+    trace = SINGLE_TRACE.replace(BM25_FULL, huge + BM25_CENSUS + BM25_FULL)
+    with pytest.raises(ValueError):
+        parse_trace(trace, {"full_seal"})
+
+
+def test_profile_refuses_missing_delta_bm25_build() -> None:
+    with pytest.raises(ValueError):
+        _replay(trace=TRACE.replace(BM25_DELTA, b"", 1))
 
 
 def test_profile_refuses_source_and_io_type_alias() -> None:

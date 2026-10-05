@@ -16,6 +16,7 @@ use crate::sealed_generation::coverage::{
     plan_file_coverage, read_staged_coverage, write_staged_coverage,
 };
 use crate::sealed_generation::{DiscardingVisitor, seal_generation, walk_sealed_generation};
+use crate::stage_timing::elapsed_stage_ns;
 use crate::{GenKey, LexicalAdapter, op_mutates_index, op_writes_generation};
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
@@ -26,11 +27,6 @@ use quanta_index_contract::{
 };
 use std::time::Instant;
 
-pub(crate) fn elapsed_stage_ns(started: Instant) -> Result<u64, CoreError> {
-    u64::try_from(started.elapsed().as_nanos()).map_err(|error| {
-        CoreError::Storage(format!("lexical stage nanoseconds exceed u64: {error}"))
-    })
-}
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     LexicalIndexBuildPort, MetricPointV1, MetricSourcePort, RepoCommitRecencyIngestPort,

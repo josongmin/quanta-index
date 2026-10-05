@@ -138,6 +138,11 @@ def test_tantivy_segment_reader_call_does_not_hide_other_transport_leaks(
     searchd.mkdir(parents=True)
     ranked_keys = lexical / "ranked_keys.rs"
     ranked_keys.write_text("fn id(reader: &SegmentReader) { reader.segment_id(); }\n")
+    native = lexical / "live_statistics.rs"
+    native.write_text(
+        "fn id(reader: &tantivy::SegmentReader) { "
+        "tantivy::SegmentReader::segment_id(reader); }\n"
+    )
     other = searchd / "ingest.rs"
     other.write_text("fn ingest() { let segment_id = 1; }\n")
     monkeypatch.setattr(lint, "CRATES", crates)
@@ -152,6 +157,30 @@ def test_tantivy_segment_reader_call_does_not_hide_other_transport_leaks(
     )
     violations = lint.check_channel_backend_isolation()
     assert [v.path for v in violations] == [ranked_keys, other]
+
+    native.write_text(
+        "fn id(reader: &tantivy::SegmentReader) { "
+        "tantivy::SegmentReader::segment_id(reader); "
+        "let segment_id = 1; }\n"
+    )
+    assert {v.path for v in lint.check_channel_backend_isolation()} == {
+        ranked_keys, native, other
+    }
+
+    native.write_text(
+        "fn id(reader: &channel::SegmentReader) { "
+        "channel::SegmentReader::segment_id(reader); }\n"
+    )
+    assert native in {v.path for v in lint.check_channel_backend_isolation()}
+
+    core = crates / "quanta-index-core" / "src"
+    core.mkdir(parents=True)
+    core_source = core / "storage.rs"
+    core_source.write_text(
+        "fn id(reader: &tantivy::SegmentReader) { "
+        "tantivy::SegmentReader::segment_id(reader); }\n"
+    )
+    assert core_source in {v.path for v in lint.check_channel_backend_isolation()}
 
 
 def test_core_vendor_alias_cannot_bypass_dependency_boundary(tmp_path: Path, monkeypatch) -> None:

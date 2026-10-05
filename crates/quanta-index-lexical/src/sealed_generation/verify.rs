@@ -44,6 +44,7 @@ use crate::sealed_generation::coverage::{
 };
 use crate::sealed_generation::index_directory::MAX_INDEX_CONTROL_BYTES;
 use crate::sealed_generation::index_files::referenced_index_files_at;
+use crate::sealed_generation::live_bm25::LiveBm25Statistics;
 use crate::sealed_generation::manifest::{LexicalSealedManifest, read_bound_manifest_at};
 use crate::text_authority::{
     MAX_MANIFEST_BYTES, ShardBody, TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_MANIFEST_FILE_NAME,
@@ -97,6 +98,7 @@ pub(crate) struct VerifiedGeneration {
     /// for serving avoids reopening every segment after the door's proof.
     pub(crate) reader: IndexReader,
     pub(crate) ranked_keys: Arc<RankedKeyTables>,
+    pub(crate) live_bm25: Arc<LiveBm25Statistics>,
     /// Decoded from this generation's committed artifact; None is unavailable.
     pub(crate) coverage: Option<CoverageSnapshot>,
     pub(crate) source_publication: Option<SourcePublicationEvent>,
@@ -160,6 +162,14 @@ pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
     verify_index_segments(root, generation_dir, &index, &manifest.index_segments)?;
     let (ranked_keys, reader) =
         verify_ranked_keys(root, generation_dir, &index, &manifest.ranked_keys, budget)?;
+    checkpoint(budget, "lexical:cold-open:live-bm25")?;
+    let live_bytes = read_committed(root, generation_dir, &manifest.live_bm25, budget)?;
+    let live_bm25 = Arc::new(LiveBm25Statistics::decode(
+        &live_bytes,
+        generation_dir,
+        manifest.index_meta.sha256,
+        &reader.searcher(),
+    )?);
     verify_overlays(root, generation_dir, &manifest, visitor, budget)?;
     verify_text_authority(
         root,
@@ -209,6 +219,7 @@ pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
         manifest,
         reader,
         ranked_keys,
+        live_bm25,
         coverage,
         source_publication,
         coverage_read_stats,
@@ -522,7 +533,7 @@ fn verify_source_coverage_reusing(
 }
 
 /// Read one committed file whole and prove its length and digest.
-fn read_committed(
+pub(crate) fn read_committed(
     root: &File,
     generation_dir: &Path,
     artifact: &SealedArtifactCommitmentV1,
@@ -601,7 +612,7 @@ fn read_committed(
 
 /// The segment files the (already proved) commit references are exactly
 /// the listed ones, each present at its committed length.
-fn verify_index_segments(
+pub(crate) fn verify_index_segments(
     root: &File,
     generation_dir: &Path,
     index: &Index,

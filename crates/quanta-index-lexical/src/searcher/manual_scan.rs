@@ -1154,11 +1154,18 @@ impl TantivySearcher {
     /// ranked collector would: the plan's scorer positioned on the document.
     pub(crate) fn score_one_document(
         searcher: &tantivy::Searcher,
+        statistics: &crate::sealed_generation::live_bm25::LiveBm25Statistics,
         compiled: &dyn Query,
         doc_address: DocAddress,
     ) -> Result<Option<f32>, CoreError> {
+        let provider = crate::sealed_generation::live_bm25::LiveBm25Provider {
+            statistics,
+            searcher,
+        };
         let weight = compiled
-            .weight(EnableScoring::enabled_from_searcher(searcher))
+            .weight(EnableScoring::enabled_from_statistics_provider(
+                &provider, searcher,
+            ))
             .map_err(|err| CoreError::Storage(format!("lexical: explain weight: {err}")))?;
         let reader = searcher.segment_reader(doc_address.segment_ord);
         let mut scorer = weight

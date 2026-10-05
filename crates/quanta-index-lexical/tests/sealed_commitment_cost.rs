@@ -44,6 +44,7 @@ const TEXT_AUTHORITY_DIR: &str = "text-authority";
 const FILE_AUTHORITY_DIR: &str = "file-authority";
 const SOURCE_FILE_COVERAGE: &str = "source-file-coverage.cbor";
 const TANTIVY_META: &str = "meta.json";
+const LIVE_BM25_STATS: &str = "search-corpus-live-bm25.cbor";
 const OVERLAY_FILES: [&str; 7] = [
     "repo-metadata.cbor",
     "repo-commit-recency.cbor",
@@ -191,8 +192,9 @@ struct CommittedFile {
 /// Every file the seal commits to, as an independent walk of the directory
 /// sees it.
 ///
-/// The Tantivy commit, every segment component and ranked-key file, every
-/// file under `text-authority/` or `file-authority/` and every overlay present. Tantivy's managed list and
+/// The Tantivy commit, every segment component, ranked-key file and committed
+/// live BM25 statistics, every file under `text-authority/` or `file-authority/`
+/// and every overlay present. Tantivy's managed list and
 /// lock files, the seal's own manifest and identity and the delta marker
 /// are not query content and are not committed.
 fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn Error>> {
@@ -223,6 +225,7 @@ fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn 
         let is_ranked_keys =
             name.starts_with("ranked-keys-") && extension == Some(std::ffi::OsStr::new("bin"));
         if name == TANTIVY_META
+            || name == LIVE_BM25_STATS
             || name == SOURCE_FILE_COVERAGE
             || (name.starts_with("source-file-coverage-page-")
                 && extension == Some(std::ffi::OsStr::new("cbor")))
@@ -399,6 +402,14 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     let _stages = adapter.build_batch(&base_batch(g1)?)?;
     let base_seal = delta_stats(before_base, adapter.seal_commitment_stats()?);
     let base_files = committed_files(&generation_dir(&root, g1))?;
+    if base_files
+        .iter()
+        .filter(|file| file.name == LIVE_BM25_STATS)
+        .count()
+        != 1
+    {
+        return Err("base seal omitted mandatory live BM25 statistics".into());
+    }
     let base_bytes = total_bytes(base_files.iter());
     if base_seal.seals != 1
         || base_seal.files_inherited != 0
@@ -430,6 +441,14 @@ fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestR
     let (linked, written): (Vec<&CommittedFile>, Vec<&CommittedFile>) = delta_files
         .iter()
         .partition(|file| base_inodes.contains(&file.inode));
+    if written
+        .iter()
+        .filter(|file| file.name == LIVE_BM25_STATS)
+        .count()
+        != 1
+    {
+        return Err("delta seal did not commit newly written live BM25 statistics".into());
+    }
     let linked_bytes = total_bytes(linked.iter().copied());
     let written_bytes = total_bytes(written.iter().copied());
     let linked_coverage_pages: Vec<_> = linked

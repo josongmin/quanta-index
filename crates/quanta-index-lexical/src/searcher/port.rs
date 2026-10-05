@@ -561,7 +561,8 @@ impl LexicalSearcher for TantivySearcher {
             return not_matched("the plan compiles to nothing");
         };
         let compiled = self.with_doc_kind_and_constraints(base, doc_kind, constraints);
-        let Some(engine_score) = Self::score_one_document(&searcher, &*compiled, doc_address)?
+        let Some(engine_score) =
+            Self::score_one_document(&searcher, &self.live_bm25, &*compiled, doc_address)?
         else {
             return not_matched("the plan does not match the document");
         };

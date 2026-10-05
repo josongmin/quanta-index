@@ -256,11 +256,11 @@ id = "lexical-sealed-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Seal commitment binds identity digest, normalizer, Tantivy commit and segment components, text authority, overlays, optional source coverage and ranked keys. Format 9 added bounded coverage pages; format 10 added full-file authority and immutable source bytes with four-surface posting counts; format 11 counts folded content and path postings only; format 12 binds explicit symbol-name source policy; format 13 requires exact live BM25 token totals for frequency-bearing text fields and zero deleted documents at seal. Formats 1-12 are refused typed and require a producer rebuild."
+notes = "Seal commitment binds identity digest, normalizer, Tantivy commit and segment components, text authority, overlays, optional source coverage and ranked keys. Format 9 added bounded coverage pages; format 10 added full-file authority and immutable source bytes with four-surface posting counts; format 11 counts folded content and path postings only; format 12 binds explicit symbol-name source policy; format 13 required exact live BM25 token totals and zero deleted documents at seal; format 14 commits mandatory producer document census and exact live per-segment BM25 statistics while preserving immutable segments with tombstones. Formats 1-13 are refused typed and require a producer rebuild."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
-value = 13
+value = 14
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
@@ -271,10 +271,32 @@ id = "lexical-unsealed-index-format"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-index-format.cbor"
 reproduction = "producer-rebuild"
-notes = "CBOR u32 format 1, bounded to 9 bytes. The lexical producer writes and fsyncs this marker before creating the first Tantivy meta.json commit. It resumes an unsealed materialized index only with this current marker; missing, malformed, oversized, symlinked or wrong-version markers cause typed rebuild refusal. A delta target inherits an index only after its base proves sealed format 13 or current unsealed format. The sealed manifest is the serving authority after publication; this marker does not migrate old indexes."
+notes = "CBOR u32 format 2, bounded to 9 bytes. Format 1 indexes lack the mandatory producer census and require rebuild. The lexical producer writes and fsyncs this marker before creating the first Tantivy meta.json commit. It resumes an unsealed materialized index only with this current marker; missing, malformed, oversized, symlinked or wrong-version markers cause typed rebuild refusal. A delta target inherits an index only after its base proves sealed format 14 or current unsealed format. The sealed manifest is the serving authority after publication; this marker does not migrate old indexes."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/index_store.rs"
 name = "LEXICAL_UNSEALED_INDEX_FORMAT_VERSION"
+value = 2
+
+[[artifact]]
+id = "lexical-live-bm25-statistics"
+owner = "quanta-index-lexical"
+path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-live-bm25.cbor"
+reproduction = "producer-rebuild"
+notes = "Mandatory bounded generation sidecar committed by sealed format 14. It binds the native meta digest and segment/deletion identities, exact live token totals for every indexed field, and per-term dead document-frequency corrections. Every open door refuses missing, corrupt or mismatched statistics; no native-statistics fallback or old-format reader."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/sealed_generation/live_bm25/codec.rs"
+name = "LIVE_BM25_FORMAT_VERSION"
+value = 1
+
+[[artifact]]
+id = "lexical-document-census"
+owner = "quanta-index-lexical"
+path = "(stored live_bm25_doc_census field in native Tantivy segment stores)"
+reproduction = "producer-rebuild"
+notes = "Bounded per-document census generated from actual indexed document values and registered native analyzers before writer insertion. It records exact token totals and canonical unique serialized term values for every indexed field. New deaths subtract this census without scanning unrelated postings. Missing, malformed or wrong-version census is refused; unsealed format 2 and sealed format 14 require it."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/doc_census.rs"
+name = "DOC_CENSUS_FORMAT_VERSION"
 value = 1
 
 [[artifact]]

@@ -8,12 +8,14 @@ use std::io;
 use std::time::Instant;
 
 pub(crate) fn enabled() -> bool {
-    std::env::var("QUANTA_INDEX_CAUSAL_PROFILE_V1")
-        .ok()
-        .as_deref()
-        == Some("1")
+    std::env::var_os("QUANTA_INDEX_CAUSAL_PROFILE_V1")
+        .is_some_and(|value| value == std::ffi::OsStr::new("1"))
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "The opt-in causal capture contract consumes these diagnostic markers from stderr."
+)]
 pub(crate) fn timed_sync(
     label: &'static str,
     operation: impl FnOnce() -> io::Result<()>,

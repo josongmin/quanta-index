@@ -275,7 +275,7 @@ Shipping Linux daemon 및 P11 process-truth는 [I0-03](#o4-i0-03)의 별도 actu
 
 ### O4-E4-01
 
-P1 · W1/W4 · 계측·정확도 구현 있음; 실제 delta 비용 실패 및 구조 수리 미완료.
+P1 · W1/W4 · F14 native 재사용·정확도 owner 회귀 `VERIFIED`; 전체 delta 비용 qualification 미완료.
 
 - Matching release에서 full/delta/delete/no-op/reopen·fresh rebuild parity를 유지하며
   seal streaming/posting scan, fsync/syscalls/physical I/O, token/IPC 비용을 독립 분리한다.
@@ -283,14 +283,23 @@ P1 · W1/W4 · 계측·정확도 구현 있음; 실제 delta 비용 실패 및 �
   child>parent·mixed CPU·sample gap을 peak으로 추정하거나 logical disk를 physical I/O로 바꾸지 않는다.
 - `VERIFIED`: clean08d에서 `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-harness --lib --all-features --locked -E 'test(/^scale::tests::/)' --test-threads 1 --no-tests fail --success-output final`
   의32개 owner tests가 모두 통과했다. release tier actual/qualified speed는 포함하지 않는다.
-- QI-BB-006 byte gate는 [I0-02](#o4-i0-02)의 실패로 남아 있다. base08d에 reusable native-segment
+- Historical F13: QI-BB-006 byte gate는 clean08d에서 실패했다. base08d에 reusable native-segment
   diagnostic test만 적용한 source에서9.482s/exit100: base402docs/1segment → delta401+1docs/2segments,
   base segment6files의 shared0/missing6 및 고정 untouched filler400개 전부의 segment 이동을 관측했다.
   삭제 처리 compaction이 실제 surviving data를 재작성했다. 전체 metadata139,885bytes 발행은 별도 비용이다.
-  exact live BM25 통계·native scorer 및 byte/rebuild parity를 함께 검증하는 구조 수리가 미완료다.
-  변경 segment 전체 postings 재스캔도 큰 단일 segment에서는 O(base) 읽기를 남기므로,
-  canonical 문서 생산 시 exact indexed-field census를 커밋하고 삭제·교체 문서만 차감하는 owner를 준비한다.
-  foreground read/write/elapsed·누적 correction/segment fanout·compaction 비용을 함께 검증해야 한다.
+  이 결과를 후속 F14 source의 현재 결과로 표시하지 않는다.
+- F14 수리: 모든 native 문서 생산 경로에 exact indexed-field census를 저장하고,
+  mandatory committed live-BM25 sidecar가 삭제·교체 문서의 통계를 차감한다. Native scorer는
+  live N/token/DF를 사용하며 surviving segment를 compaction으로 재작성하지 않는다.
+  메인에 반영한34개 경로는 [I0-02](#o4-i0-02)의 actual-tested candidate와 byte 일치한다.
+  lexical394개 회귀에는 고정400개 untouched 파일의 native 위치/6개 component 재사용·byte gate,
+  independent fresh rebuild의 score bits/pages, 연속 delta/delete/no-op 및 sidecar 손상 거절이 포함된다.
+  기능·native byte 범위만 `VERIFIED`다. Marker parser43개 통과는 actual cost 관측이 아니다.
+- 남음: fresh release full/delta/delete/no-op/reopen profile의 foreground read/write/elapsed,
+  metadata 발행·custody 전체 읽기, correction 누적·segment fanout·transient peak를 검증한다.
+  changed retained segment의 delete bitmap 비교에는 O(max_doc) CPU 순회가 남고,
+  `NoMergePolicy`의 장기 segment 누적 비용은 미검증이다. Logical bytes·retained estimate를
+  physical I/O·peak memory로 표시하지 않는다. 전체 QI-BB-006 비용 closure는 미완료다.
 - 완료: 명시적 clock/resource domain과 source-bound 결과로 주요 residual의 실제 원인을 설명한다.
 
 ### O4-E4-02
@@ -376,11 +385,24 @@ P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
   latest full/release는 별도다.
   OpenGrok index-scope/query-witness/fixture3 owner target은 benchmark-control local/PR 및 source closure에 등록했다.
   기존 formal Contract Python788에는 이 테스트들이 없으며,78/251 owner pass를 그 formal proof로 표시하지 않는다.
-- `FAILED`: clean08d lexical lib + `sealed_manifest`, `sealed_commitment_cost`,
+- Historical `FAILED`: clean08d lexical lib + `sealed_manifest`, `sealed_commitment_cost`,
   `generation_delta_base_carryforward`, `text_authority_shards`의 serial nextest에서
   `delta_generation_does_not_rewrite_unchanged_index_bytes`가 실패했고 이후50개는 미실행이다.
   같은 테스트만 exact selector로 재실행해12.090s/exit100, fresh index262,696 > base493,336/2를 확인했다.
   삭제된 segment compaction과 전체 authority metadata 발행을 독립 분리 검증하며 fixture·예산을 완화하지 않는다.
+- F14 owner `VERIFIED`: `08d53378` 기반 private candidate의 검증된34개 경로를 메인에 복사하고
+  전체 postimage byte 일치를 확인했다. Root는 stage/commit/push하지 않았다. Actual command:
+  `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-lexical --lib --test l2_file_mutation --test sealed_manifest --test sealed_commitment_cost --test generation_delta_base_carryforward --test text_authority_shards --test unicode_normalization_goldens --all-features --locked --test-threads 1 --no-tests fail --no-fail-fast --failure-output final --success-output never`
+  →394passed/8skipped·519.233s/exit0.
+  같은 Rust source의 `PATH=/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index/.venv/bin:$PATH CARGO_BUILD_JOBS=1 just rust-profile test-daemon`
+  →214passed/1skipped·206.546s/exit0.
+  `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked -E 'test(/^e2e_ranked_pages::/) or test(/^e2e_lexical_sealed_overlays::/)' --test-threads 4 --no-tests fail --failure-output final --success-output never`
+  →5passed/77skipped·3.647s/exit0. Overlay publish refusal 1건에 nextest `LEAK`가 있어
+  child process/pipe 종료 보장은 별도로 조사한다.
+  lexical `--all-targets --all-features --locked` Clippy `-D warnings`、hexagonal/module-cycle/wire/
+  test-authority/no-allow/cargo-modules/format guards, causal parser43개는 각 실행 범위에서 통과했다.
+  Cargo-modules는 contract/core만 보호하므로 lexical module tree 검증으로 표시하지 않는다.
+  Matching-source release/full Contract/SDK/hosted CI/operational qualification은 `NOT_RUN`이다.
 - 선택 epoch의 포함 코드/driver/scorer/ADR 및 mandatory surfaces를 검증하고 matching fresh
   Contract/SDK/source closure/binaries를 발행·portable replay한다. E3 shipping acceptance와 CI도 실제 scope로 판정한다.
 - 공개SDK/contract 변경: `just rust-public-api`; wire/decode: `just rust-fuzz-smoke`;

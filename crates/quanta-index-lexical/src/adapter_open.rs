@@ -97,14 +97,22 @@ impl LexicalAdapter {
         let mut plan =
             plan_text_authority_delta(&guarded.index, &self.fields, ops, &generation_dir)?;
         let mut needs_commit = false;
+        let mut census_observation = crate::doc_census::CensusBuildObservation::new();
         for op in ops {
-            if self.apply_op(&guarded.writer, key, op, &mut plan.allocator)? {
+            if self.apply_op(
+                &guarded.writer,
+                key,
+                op,
+                &mut plan.allocator,
+                &mut census_observation,
+            )? {
                 needs_commit = true;
             }
         }
+        census_observation.emit();
         if !needs_commit {
             return Ok(LexicalMutationTimings {
-                writer_mutation_ns: crate::adapter_ingest::elapsed_stage_ns(writer_started)?,
+                writer_mutation_ns: crate::stage_timing::elapsed_stage_ns(writer_started)?,
                 ..LexicalMutationTimings::default()
             });
         }
@@ -112,17 +120,17 @@ impl LexicalAdapter {
             .writer
             .commit()
             .map_err(|err| CoreError::Storage(format!("lexical: commit: {err}")))?;
-        let writer_mutation_ns = crate::adapter_ingest::elapsed_stage_ns(writer_started)?;
+        let writer_mutation_ns = crate::stage_timing::elapsed_stage_ns(writer_started)?;
         // The text-authority write happens under the writer lock (it reads
         // the committed index); the accounting is folded in after the lock
         // is released so the stats lock is never nested inside the writer's.
         let text_authority_started = Instant::now();
         let written = self.write_text_authority(&generation_dir, key, &guarded.index, plan)?;
-        let text_authority_ns = crate::adapter_ingest::elapsed_stage_ns(text_authority_started)?;
+        let text_authority_ns = crate::stage_timing::elapsed_stage_ns(text_authority_started)?;
         let file_authority_started = Instant::now();
         let file_authority_source_write_ns =
             crate::file_authority::apply_plan(&generation_dir, file_plan)?;
-        let file_authority_ns = crate::adapter_ingest::elapsed_stage_ns(file_authority_started)?;
+        let file_authority_ns = crate::stage_timing::elapsed_stage_ns(file_authority_started)?;
         drop(guarded);
         if let Some(written) = &written {
             self.record_text_authority_write(written.rebuilt, written.receipt)?;
@@ -156,7 +164,7 @@ impl LexicalAdapter {
                 self.invalidate_regex_match_cache_generation(key)?;
                 let collect_started = Instant::now();
                 let docs = collect_text_authority_docs(index, &self.fields)?;
-                let collect_ns = crate::adapter_ingest::elapsed_stage_ns(collect_started)?;
+                let collect_ns = crate::stage_timing::elapsed_stage_ns(collect_started)?;
                 let result = text_authority::rebuild(
                     generation_dir,
                     key.generation,
@@ -436,6 +444,7 @@ impl LexicalAdapter {
         )?;
         let reader = verified.reader;
         let ranked_keys = verified.ranked_keys;
+        let live_bm25 = verified.live_bm25;
         let overlay_bytes = loaded.overlay_heap_bytes_estimate()?;
         let text_authority = verified
             .manifest
@@ -452,6 +461,7 @@ impl LexicalAdapter {
             verified.coverage.as_ref(),
             verified.source_publication.as_ref(),
         )?;
+        let live_bm25_bytes = live_bm25.heap_bytes_estimate()?;
         let resident_bytes_estimate = resident_bytes_estimate(
             &self.state_root,
             path,
@@ -468,6 +478,7 @@ impl LexicalAdapter {
             )
         })
         .and_then(|bytes| bytes.checked_add(overlay_bytes))
+        .and_then(|bytes| bytes.checked_add(live_bm25_bytes))
         .ok_or_else(|| CoreError::Storage("lexical resident byte estimate overflow".into()))?;
         let artifact_identity = LexicalArtifactIdentityV1 {
             manifest_digest: verified.manifest.manifest_digest.clone(),
@@ -489,6 +500,7 @@ impl LexicalAdapter {
             fields: self.fields.clone(),
             reader,
             ranked_keys,
+            live_bm25,
             repo_metadata: loaded.repo_metadata,
             regex_match_cache: Arc::clone(&self.regex_match_cache),
             regex_policy: self.regex_policy,
@@ -524,6 +536,7 @@ pub(crate) fn resident_bytes_estimate(
             || name == TEXT_AUTHORITY_DIR_NAME
             || name == crate::file_authority::DIR
             || crate::ranked_keys::is_ranked_key_entry(name)
+            || name == crate::sealed_generation::live_bm25::FILE_NAME
             || OverlayFamily::from_file_name(name).is_some()
             || name == crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME
             || crate::sealed_generation::coverage::is_coverage_page(name)
