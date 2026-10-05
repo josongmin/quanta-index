@@ -86,8 +86,9 @@ facts. Transport/worker clocks also differ from completed query response time.
 - Qualified response timing uses the declared
   `request_construction_to_normalized_response` boundary and each capture's own
   monotonic domain. Required decode/normalization completes before timer stop;
-  later golden replay, telemetry and persistence retain their separate boundaries. Complete output/clock/status facts must
-  agree throughout the measured schedule, not just its first response.
+  later golden replay, telemetry and persistence retain their separate boundaries.
+  Complete output/clock/status facts must agree throughout the measured schedule,
+  not just its first response.
 
 Owners: [batch membership](../../tools/benchmark/retrieval/execution_batch.py)
 and [capture/replay](../../tools/benchmark/retrieval/run.py). Retain duplicate or
