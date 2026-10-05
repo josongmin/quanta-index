@@ -100,7 +100,8 @@ changed membership, stale source/cache, missing child and phase-byte mutants.
   [Sourcegraph scope](../../tools/benchmark/retrieval/sourcegraph_index_scope.py),
   [OpenGrok consumer](../../tools/benchmark/retrieval/opengrok_index_scope.py),
   [Java reader](../../tools/benchmark/retrieval/native/FullLiveDocuments.java),
-  [query witness](../../tools/benchmark/retrieval/opengrok_query_witness.py).
+  [query witness](../../tools/benchmark/retrieval/opengrok_query_witness.py),
+  [pinned fixture builder](../../tools/benchmark/retrieval/opengrok_query_fixture.py).
 - [Semble phases](../../tools/benchmark/retrieval/semble.py),
   [required-cell controller](../../tools/benchmark/retrieval/execution_batch.py).
 - Keep impossible Lucene metadata, source/role/UID drift, before/after mutation,
@@ -108,6 +109,7 @@ changed membership, stale source/cache, missing child and phase-byte mutants.
   controls in [native scope tests](../../tools/ci/tests/test_opengrok_index_scope.py),
   [capture tests](../../tools/ci/tests/test_live_lexical_external.py),
   [query witness tests](../../tools/ci/tests/test_opengrok_query_witness.py) and
+  [fixture reproduction tests](../../tools/ci/tests/test_opengrok_query_fixture.py), with
   [clock tests](../../tools/ci/tests/test_completed_response_timing.py).
 
 ## Consequences

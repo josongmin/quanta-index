@@ -137,7 +137,13 @@ P1 · W1/W4 · native reader/capture/replay 구현 완료, 전체 서비스 univ
   `/private/tmp/qi-og-query-reader-fixture-20261005-v1`(compiler/control/replay).
   Fixed image javac4classes·집중78tests(105.12s)·current closure/authority244tests(47.30s)·Ruff가 통과했다.
 - 남은 repository/profile의 실제 acquired-reader scope 및 필요한 전수 source-byte/posting 권위를 확정한다.
-  고정 fixture 소스의 재현 경로도 보존한다. Instrumented timing은 pristine latency로 채점하지 않는다.
+  `opengrok_query_fixture.py`가 고정 원본→patch→Java→4classes 재현을 제공한다.
+  `VERIFIED`: 외부 fresh `/private/tmp/qi-og-query-fixture-repro-20261005-v1`에서
+  `python -m tools.benchmark.retrieval.opengrok_query_fixture --original <fixed-upstream-source> --output <fresh-root> --build-web-inf <sealed-baseline-WEB-INF>`를
+  고정 이미지·`--pull=never --network=none`로 실행해 원본3자료와 기존4classes의 byte/SHA가 모두 일치했다.
+  새 owner7 및 current authority/closure244를 함께 실행해251passed·45.04s/exit0, catalog guard/Ruff도 통과했다.
+  optional build 실패 시 최종 출력은 미공개이며 기존 출력은 거절·보존한다.
+  Instrumented timing은 pristine latency로 채점하지 않는다.
 - source UID/file, directory/settings의 독립 분모·deployed ABI·frozen manifest를 유지한다.
   API GET/PUT403·read-only bind·declared seal 시간만으로 loaded reader를 입증하지 않는다.
 - 완료: 제품×repository×profile의 입증한 source/index scope와 missing/extra/unknown 집합,
@@ -323,8 +329,13 @@ P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
   `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --lib --all-features --locked`
   의 exact selector·`--test-threads 1 --no-tests fail --success-output final`로 실행해3passed·34.701s/exit0였다.
   latest full/release는 별도다.
-  OpenGrok 새2 owner target은 benchmark-control local/PR 및 source closure에 등록했다.
-  기존 formal Contract Python788에는 이 테스트들이 없으며,78/244 owner pass를 그 formal proof로 표시하지 않는다.
+  OpenGrok index-scope/query-witness/fixture3 owner target은 benchmark-control local/PR 및 source closure에 등록했다.
+  기존 formal Contract Python788에는 이 테스트들이 없으며,78/251 owner pass를 그 formal proof로 표시하지 않는다.
+- `FAILED`: clean08d lexical lib + `sealed_manifest`, `sealed_commitment_cost`,
+  `generation_delta_base_carryforward`, `text_authority_shards`의 serial nextest에서
+  `delta_generation_does_not_rewrite_unchanged_index_bytes`가 실패했고 이후50개는 미실행이다.
+  같은 테스트만 exact selector로 재실행해12.090s/exit100, fresh index262,696 > base493,336/2를 확인했다.
+  삭제된 segment compaction과 전체 authority metadata 발행을 독립 분리 검증하며 fixture·예산을 완화하지 않는다.
 - 선택 epoch의 포함 코드/driver/scorer/ADR 및 mandatory surfaces를 검증하고 matching fresh
   Contract/SDK/source closure/binaries를 발행·portable replay한다. E3 shipping acceptance와 CI도 실제 scope로 판정한다.
 - 공개SDK/contract 변경: `just rust-public-api`; wire/decode: `just rust-fuzz-smoke`;
