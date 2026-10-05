@@ -11,7 +11,7 @@ This ledger does not reinstall the superseded SEM-OWN worker/API proposals.
 | Scope / owner | Remaining acceptance |
 | --- | --- |
 | Producer + SDK/search-plane | Typed-source ReplaceGeneration and Delta, explicit no-op/tombstone membership, no legacy vector or implicit chunk-text ingress; actual paired producer/consumer source binding |
-| Producer aggregate publication | Bind authoritative prior semantic state for deltas; verify the resolver's retained state and paired restart path. The root README's earlier audit identified aggregate/V4-outbox prior-state mismatch; revalidate both repositories before repair or closure |
+| Producer aggregate publication | Bind authoritative prior semantic state for deltas; verify resolver/aggregate/outbox retained state and paired restart against both current repositories before repair or closure |
 | Search-plane + semantic adapter | Restart after partial derivation, delete/tombstone/membership replacement, complete sealing, provider/model/dimension refusal and blocked activation, under one fresh source-bound integration rail |
 | Query/embedding owner | Manifest-authoritative query normalization/cache identity and typed provider failures; record the policy for `FooBar`, `foobar`, `foo_bar`, `foo bar` and prove model changes cannot reuse incompatible entries |
 | Provider + operator owner | Observe request latency/failures, pending work/seal lag, query failures, active model/manifest identity, policy drift, blocked reasons and cache hits/misses; compare actual exported fields to this acceptance before adding a second metric path |

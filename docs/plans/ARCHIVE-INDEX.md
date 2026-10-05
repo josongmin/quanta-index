@@ -2,6 +2,29 @@
 
 Status: `HISTORICAL RECOVERY INDEX`
 
+## Oct-05 repository-wide history cleanup
+
+Pre-edit/deletion revision: `158a08bc0d9b396089467b009117e23c168b77f7`; exact bodies were checked against Git.
+Recover with `git show 158a08bc0d9b396089467b009117e23c168b77f7:<repository-relative-path>`. External preimages:
+`/tmp/qi-oct5-whole-doc-cleanup-vdhexoag`, `manifest.json`.
+
+- Retired `sep-27-code-search-remediation/references.md`: dated research survey,
+  not an executable acceptance source. BENCH-01/03/04 retain corpus/gold/holdout,
+  statistical and comparator requirements; current methodology is ADR-owned.
+- Retired `rfcs/CS-ENG-04-match-anchored-snippets.md`: implemented guards and
+  deferred exact-cap decision consolidated in [SEP-27-003](../adr/SEP-27-003-code-search-source-and-preview-contract.md#deferred-regex-allocation-cap-cs-eng-04).
+  Conditional P3/reopen workload/threshold/dependency-slice requirements remain;
+  no cap, dependency fork, worker or new release blocker is accepted.
+- Completed handoff/custody prose moves to SEP-21-004; handoff README retains
+  commands/scope, historical audit stays separate from current qualification.
+- Current semantic prior-state acceptance has no dependency on an old root audit.
+  MISC selects current on-disk format from source instead of a frozen format-9
+  label. Complete C4/C5/hosted/producer acceptance remains open.
+
+The [documentation history index](../ARCHIVE-INDEX.md#oct-05-repository-wide-history-cleanup)
+records the root audit, duplicate OCT-04 summary, runbook/guide custody and risk
+mapping. Active parents stay open; no owner, proof registry or test target changes.
+
 ## Oct-05 residual owner clarification
 
 Pre-edit revision: `3f4877c95183769e82d870f71e296c832c9014ed`. All fifteen edited bodies matched this revision

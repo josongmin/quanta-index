@@ -95,4 +95,3 @@ canonical execution cannot depend on disposable external collectors. Independent
 approvals remain required inputs. [CS-INT-01](CS-INT-01-integration-and-qualification.md#required-controls)
 owns integration; historical probes/observations are recoverable through
 [the history index](../../ARCHIVE-INDEX.md#oct-05-residual-owner-clarification).
-Research references: [S02/S03/S08/S09](../references.md).

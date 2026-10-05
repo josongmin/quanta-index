@@ -79,4 +79,3 @@ hand-computed set/range fixtures, retaining metric-definition identity.
 inputs; [CS-INT-01](CS-INT-01-integration-and-qualification.md#required-controls)
 owns integration. Historical local observations are recoverable through
 [the history index](../../ARCHIVE-INDEX.md#oct-05-residual-owner-clarification).
-Research context: [S07 and R01–R04](../references.md).

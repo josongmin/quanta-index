@@ -42,10 +42,11 @@ Reopen a completed code change only for a current reproduced failure. Resolve
 structural gaps and enrollment before one serial integration boundary; admit
 independent inputs and a supported host before qualified measurements.
 
-[CS-ENG-04](rfcs/CS-ENG-04-match-anchored-snippets.md) is conditional P3 and
+[CS-ENG-04](../../adr/SEP-27-003-code-search-source-and-preview-contract.md#deferred-regex-allocation-cap-cs-eng-04) is ADR-owned conditional P3 and
 deferred: current regex guards remain, but no exact request-wide allocation cap
 or worker containment contract is selected. It is not an active implementation
 or release blocker without a numerical requirement or measured regex-driven breach.
 
-[Research references](references.md) are non-normative inputs to the open
-benchmark design. Accepted product/qualification contracts remain in the ADRs.
+The dated research survey and completed/deferred proposal body are retired to
+[history](../ARCHIVE-INDEX.md#oct-05-repository-wide-history-cleanup).
+The active table above contains remaining work; permanent contracts are ADR-owned.

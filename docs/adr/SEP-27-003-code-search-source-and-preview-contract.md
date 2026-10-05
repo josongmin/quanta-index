@@ -200,8 +200,8 @@ qualification belong in the [active code-search ledger](../plans/sep-27-code-sea
 - Regex capture removal only erases unobserved explicit captures through the
   canonical AST; original HIR/dialect/estimator and truth/ranges remain authoritative.
   Preserve differential tests against the admitted matcher. The base/state policy
-  charge is not aggregate allocator admission; the [deferred regex ticket](../plans/sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md)
-  records that unselected boundary.
+  charge is not aggregate allocator admission; the deferred cap boundary is
+  recorded below.
 - The canonical executor pins a 10 MiB compiled NFA limit and 2 MiB lazy-DFA
   cache limit per engine and maps engine-size refusal to a typed resource error.
   The validated structural state estimate is bounded before literal extraction;
@@ -219,6 +219,8 @@ qualification belong in the [active code-search ledger](../plans/sep-27-code-sea
   set is materialized before that charge. None of these limits admits parser or
   compiler temporaries, cumulative collection work, or aggregate request heap.
 
+### Deferred regex allocation cap (CS-ENG-04)
+
 The exact request-wide `Layout`-byte regex cap is conditional P3 and deferred,
 with no measured overrun or numerical acceptance threshold. Pinned regex and
 FST dependencies have no caller-controlled fallible allocation path across
@@ -227,6 +229,16 @@ reverted because it did not admit those allocations. Process isolation is a
 different whole-worker contract and was not selected. Reopen the cap only for
 an explicit external requirement or a measured supported-host resource breach;
 the current guards are not proof of a physical heap ceiling.
+
+Before reopening implementation, record workload/input bounds, concurrency,
+peak RSS, failure/SLO and a numerical acceptance threshold. If exact `Layout`
+admission is selected, first prove a controlled pinned dependency slice covering
+parse → compile → first search → cache growth → Tantivy FST → drop under a tiny
+shared allowance. Every allocation must refuse before allocation and release on
+failure. Only a passing slice authorizes shared request-budget/caller changes;
+a counter, up-front charge or post-build estimate cannot stand in for admission.
+No dependency fork, worker isolation or exact ceiling is selected by retirement
+of the old proposal ticket.
 
 ### Producer syntax and ownership
 

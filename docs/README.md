@@ -19,6 +19,13 @@ acceptance. Historical tests, counts and status do not qualify current source.
 | Semantic ownership / relevance / scale / tail | [Semantic residuals](plans/may-25-search-owned-semantic-derivation/README.md), [J7Q acceptance](plans/jun-7-search-product-quality/tickets-wave2/INDEX.md) |
 | Test hardening and actual CI provider coverage | [QIT board](plans/jul-15-sota-test-hardening/tickets/00-ticket-status-board.md), [QIT-09](plans/jul-15-sota-test-hardening/tickets/QIT-09-circleci-provider-coverage.md) |
 
+Plans above retain unfinished implementation, input/decision and qualification
+conditions. Completed histories and duplicate handoff summaries are retired.
+Accepted contracts, current usage, generated capabilities and the reusable
+[purpose audit inventory](analysis/quanta-index-purpose-validation-checklist.md)
+are references, not another uncompleted feature queue. Proposed ADRs remain
+conditional designs; their age or presence does not authorize implementation.
+
 ## Usage and references
 
 - [SDK](../crates/quanta-index-sdk/README.md), [CLI](../crates/quanta-index-searchctl/README.md), [build/verification](../README.md#build-and-verification).

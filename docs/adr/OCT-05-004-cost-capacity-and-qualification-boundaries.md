@@ -116,6 +116,19 @@ and [rank study](../../tools/benchmark/retrieval/code_search_rank_study.py).
 Retain independent score/cursor/source/unit mutations, long NFC/NFD/case-expansion
 fixtures, optional-budget versus identity/cancel failures and complete-pool parity.
 
+## Completed response verification
+
+Current cold/warmup/measured observations bind
+`query_timing.output_validation=normalized_row_score_bits_sha256_v1` and each
+`output_sha256`. Hashing/repetition checks run after the completed-response
+clock. Only top-level `timings` is excluded; scores encode fixed-width IEEE-754
+f64 bits before canonical JSON. Every task/route phase agrees with its first
+normalized response, and replay recomputes from retained rows. Same-size/status
+with different candidates/order/scores refuses. Capability probe rejects an
+older producer before indexing. Historical readable artifacts without this
+marker do not satisfy every-response performance acceptance; independent gold,
+host and source/binary qualification remain separate.
+
 ## Owners and retained proof
 
 - [Lexical authority](../../crates/quanta-index-lexical/src/file_authority.rs),

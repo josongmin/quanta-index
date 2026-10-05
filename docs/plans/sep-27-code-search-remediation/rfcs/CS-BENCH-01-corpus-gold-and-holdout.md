@@ -87,4 +87,3 @@ visible; missing legal or human inputs block only their dependent claim.
 [BENCH-03](CS-BENCH-03-tracks-metrics-and-statistics.md) owns units/inference.
 Historical preparation and diagnosis are recoverable through
 [the history index](../../ARCHIVE-INDEX.md#oct-05-residual-owner-clarification).
-Research references: [S07/S08 and R01–R04](../references.md).

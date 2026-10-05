@@ -2,7 +2,7 @@
 
 완료 구현·결정은 [Accepted ADR](../../adr/README.md#oct-05-implemented-contracts),
 미완료 조건·29개 ID의 scope 판정은 [단일 잔여 인덱스](tickets/INDEX.md)가 소유한다.
-[실행 웨이브](WAVES.md) · [요약](../../handoff/oct-4/FINAL-REMAINING-WORK.md) ·
+[실행 웨이브](WAVES.md) ·
 [초기 문서 복구](../ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).
 
 ## 담당

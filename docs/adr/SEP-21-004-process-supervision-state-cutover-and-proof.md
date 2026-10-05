@@ -110,6 +110,19 @@ source identity to the result commit. It requires immutable archive paths, check
 paired-repository state to exact-pair manifests, validates paired push identity, and verifies P02I merge/cherry-pick
 provenance. Handoff prose or schema validity alone is not authority.
 
+Handoff objects follow result commits and are excluded from source dirty digest;
+tracked source cannot self-reference its result SHA. Implementation custody is
+checkpoint → clean result proof/manifest → semantic validation → non-force push
+→ observed remote SHA. P02I reruns integrated P02A/P02B and binds original/applied
+commits plus merge/cherry-pick mode. Paired repositories are ordered Quanta then
+Semantica; top-level base/result/dirty equals Quanta and each PUSHED remote SHA
+equals result. Exported contracts bind result-blob SHA-256. Proof references use
+immutable source-binding/manifest-digest archive leaves and immutable terminal/
+daemon objects; later aliases cannot overwrite historical edges. Strict current
+and historical ancestry/archive checks remain different validator modes.
+Historical full-chain audit detects omission/duplicate/order/fork/join/adjacent
+SHA mismatch; it is not a prerequisite for current-source release qualification.
+
 Verdicts remain separate: `CODE_QUALIFIED`, `DEPLOYED`, `ACTIVATED`, `ROLLBACK_PROVEN`. None implies another.
 
 ## Rejected alternatives

@@ -1,15 +1,25 @@
 # Retrieval benchmark usage
 
-Run from the repository root. Start with the [code-search runbook](../CODE_SEARCH_RUNBOOK.md)
-for live five-product capture or a registered Quanta–Semble pair. The commands
-below operate on external frozen inputs and fresh output roots.
+Run from the repository root with frozen external inputs and fresh output roots.
+[Code-search runbook](../CODE_SEARCH_RUNBOOK.md) owns live matrix commands;
+[pair schema](pair-spec.schema.json), [suite schema](suite.schema.json) and
+[runner schema](runner.schema.json) own input fields.
+
+Permanent scoring, custody and qualification rules live in
+[SEP-26-003](../../../docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md),
+[review/unit contracts](../../../docs/adr/OCT-05-001-review-admission-and-result-identity.md#review-completion-and-diagnostic-units)
+and [response verification](../../../docs/adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-response-verification).
+Open work is in [OCT-04](../../../docs/plans/oct-4-parallel-closure/tickets/INDEX.md),
+[B01–B09](../../../docs/plans/sep-30-code-search-benchmark-trust/tickets/INDEX.md)
+and [MISC](../../../docs/plans/sep-27-misc/tickets/INDEX.md). This guide declares no
+current capture, quality, speed or default-policy result.
 
 ## Native Quanta capture and recorded evaluation
 
-
-Use a clean checkout pinned at the suite's `repository_commit`. Keep the suite,
-query pack, runner record and report **outside** that checkout so they do not
-change its Git status.
+Use a clean corpus checkout pinned at the suite's `repository_commit`. Keep
+suite, query pack, manifest, state and output outside it. Existing output,
+nonempty state, dirty/wrong-HEAD source and changed input are refused. `freeze`
+blinds an authored suite; it does not generate labels.
 
 ```sh
 python3 -m tools.benchmark.retrieval freeze \
@@ -45,119 +55,44 @@ python3 -m tools.benchmark.retrieval evaluate \
   --output /absolute/report.json
 ```
 
-Use `--embedder hash-dev` only for development diagnostics. The default
-`potion-code` uses the historical effective 512-token V1 encoder with verified
-local assets. `potion-code-full-v2` removes that tokenizer cap, admits at most
-16 KiB of UTF-8 per text and 4 MiB per 1,024-text model batch, and requires a
-fresh vector generation; pair captures under it are exploratory with no quality,
-speed, or same-model claim. A dirty/wrong-HEAD
-corpus, stale state root or existing output is refused. `freeze` creates a blind
-pack from an authored suite; it does not generate gold labels.
+| Option | Selection / limit |
+| --- | --- |
+| `--embedder hash-dev` | Development diagnostic only. |
+| `--embedder potion-code` | Pinned local V1 assets, effective 512-token encoder. |
+| `--embedder potion-code-full-v2` | Fresh vector generation; uncapped tokenizer with 16 KiB/text, 4 MiB/1,024-text batch admission. Exploratory, no quality/speed/same-model claim. |
+| `symbol_total_timeout_ms` in spec | Forwards `--symbol-total-timeout-ms`; default 120,000 ms for complete preflight/source validation. Replay binds overrides; per-file and producer refusals remain. |
+| `symbol_coverage_policy` | Default `require-complete`; explicit `allow-incomplete` is diagnostic text coverage. Parse/time/resource failures refuse under either policy. Inspect `symbol-preflight.json`; native `preflight` starts no daemon. |
 
-For a large corpus, set optional `symbol_total_timeout_ms` in the capture spec.
-It forwards the existing Rust `--symbol-total-timeout-ms` option; the default is
-120,000 ms for the entire symbol preflight, including source validation. The
-driver verifies the actual timeout against the source-bound preflight policy.
-Paired protocol locks retain an explicit override and replay rejects mismatched
-budgets. Increasing this finite budget does not waive producer failures or
-per-file timeouts. Keep retries in a fresh output root and retain failed captures.
+Symbol phrase/regex/raw-string refuses with `LEX_PLANNER_UNSUPPORTED_FILTER_COMBO`.
+A literal policy does not turn it into symbol keyword search.
 
-For a **declaration-name** diagnostic, keep bare ASCII names in a separate
-suite with `routes: ["symbol"]` and run with `--routes symbol
---query-input-policy exact_symbol_name`. The runner plans each name as
-`symbol.local_name.exact(name) case:yes`, binds that effective request in the
-record, and refuses DSL text or any other route. This is a different query
-intent from bare lexical content search. Mechanically generated declaration
-labels still need independent review before quality qualification; this
-standalone profile is not a five-product file-rank comparison.
+## Select the query policy and result unit
 
-New exact-symbol records explicitly bind `rank_unit: symbol` and retain distinct
-published IDs and indexed declaration spans even when two declarations share
-one returned context span. Their diagnostic projection uses `symbol-unit-v1`;
-ordinary content captures retain `first-source-span-v1`. Replay validates each
-projection against its bound record. Historical exact-symbol records may omit
-the explicit rank field and continue to use their original span contract, but
-they are ineligible for declaration-rank judgment metrics: policy alone does
-not prove that same-line declarations retained independent ranks.
-Native symbol keyword captures retain the original first-source-span context
-projection; distinct declaration ranking requires the exact-symbol profile.
+Each row is a separate intent/profile; use separate suites/output roots. The
+independent planner binds the effective request and current versioned profile.
+Files, declarations and chunks have separate gold and denominators.
 
-For a **distinct-file lexical** diagnostic, keep the bare source queries in a
-separate suite with `routes: ["lexical"]` and run with `--routes lexical
---query-input-policy literal_file`. The runner emits `select:file` over a
-quoted, escaped content phrase and binds the effective request hash to the
-original query. Its result unit is a distinct repository-relative file, even
-though each file's source evidence remains the representative published chunk.
-A quoted phrase is a match-only (constant-score) content restriction, so the
-files come back in repository-path order, not relevance order: its top 10 is an
-observed, path-ordered prefix of the matching set, and a `capped` result is
-truncated alphabetically. Hit@10 on it is an observed-prefix measure, not a
-scored ranking quality. A bare keyword `select:file name` is a different,
-scored request over content and path tokens and is not this policy.
+| `query_input_policy` | Input / request | Native unit and ordering |
+| --- | --- | --- |
+| `native` | Admitted Native DSL; unit-changing `select:`/`type:path`/`type:repo` refused | Published chunks; quoted `"select:file"` remains content text |
+| `exact_symbol_name` | Bare ASCII names; `--routes symbol`; `symbol.local_name.exact(name) case:yes` | New records: published symbol ID/indexed declaration span, `rank_unit: symbol`, `symbol-unit-v1` |
+| `literal_file` | Quoted/escaped content phrase under `select:file` | Distinct files, `path_order_constant_score`; observed prefix, not relevance order |
+| `keyword_file` | One bare ASCII identifier, <=256 bytes, not AND/OR/NOT; `select:file case:yes` | Scored content/path files, `score_desc_path_tiebreak` |
+| `substring_file` | 3–256 byte fragment, no single quote/control; case-sensitive raw content substring | Distinct files, `path_order_constant_score`; capped prefix is alphabetical |
+| `code_search_file` | 1–32 bare ASCII identifier atoms, <=256 bytes each, public `.code_search(raw)`; other ASCII controls refused | Folded content/path scored files; binds `syntax: code_search`, not Native |
+| `natural_language_file` | Pinned `natural_language` token-OR under Native `select:file` | Scored files with representative published chunk witness; reviewed `semantic_intent`/`natural_language_file_search`, diagnostic |
+| `code_search_typo_file` | One ASCII identifier, 3–64 bytes; public `typo:<identifier>` | Content-identifier folded OSA1 scored files; separate from default bare search |
+| `code_search_components_file` | 2–32 canonical lowercase ASCII components; `components:"word word"` | Adjacent components in one indexed local symbol name; scored files; incomplete coverage refusal remains an execution failure |
 
-Two further file-projection policies measure the other request shapes
-explicitly; each has its own profile, policy-config identity and request
-golden, re-derived independently by `query_plan.py`:
+Use the current profile's exact identity; do not rewrite historical record units,
+ordering, scores or projection. `code_search_exact_content_file` also remains a
+separate diagnostic profile. New scored file records retain finite SDK scores;
+Semble `lexical-file` retains BM25 native first-file order/ties and collection
+counts, while `lexical-only` returns ten chunks. These profiles cannot share a
+score or latency denominator. Historical symbol records without explicit unit
+are ineligible for declaration-rank metrics.
 
-- `keyword_file` (`quanta-keyword-file-v1`): one bare ASCII identifier of at
-  most 256 bytes (not `AND`/`OR`/`NOT`) becomes `select:file case:yes <name>`,
-  a scored, case-sensitive keyword over content **and** path tokens. Files come
-  back by descending score (`ordering: score_desc_path_tiebreak`), so its file NDCG
-  (reported by `evaluate-diagnostic`) is a ranking number. Historical records
-  lacked scores and rely on the policy and pinned runner binary for their order;
-  new records preserve finite SDK scores per file and verify score/path order.
-  A file whose path alone contains the name can
-  match; this is not the content-only phrase contract.
-- `substring_file` (`quanta-substring-file-v1`): one fragment of 3–256 bytes
-  without a single quote or control character becomes
-  `select:file case:yes '<fragment>'`, a case-sensitive raw-substring
-  restriction (trigram candidates, byte verification) over content. It is
-  match-only, so files return in path order (`ordering:
-  path_order_constant_score`), like `literal_file`.
-- `code_search_file` (`quanta-code-search-file-v1`): submit 1–32 bare ASCII
-  identifier atoms of at most 256 bytes each through SDK `.code_search(raw)`
-  on the lexical route. The adapter and independent replay reject other ASCII
-  control separators rather than treating them as whitespace.
-  The product syntax supplies distinct-file projection, folded matching over
-  content and path, and scored ordering. The benchmark profile accepts only
-  this narrow bare-atom subset; unsupported query forms are admissions, not
-  empty retrievals. Its effective-request digest hashes canonical
-  `{"query_text":raw,"syntax":"code_search"}` so a Native execution cannot
-  masquerade as this profile. New rows require finite SDK scores and descending
-  score/path order. Report exact, prefix, infix, components, typo, and no-answer
-  suites separately; a file gold is not a declaration gold.
-- `natural_language_file` (`quanta-natural-language-file-ucd17-v1`): apply the
-  pinned `natural_language` token-OR plan to the public Native `select:file`
-  projection. The lexical route returns scored distinct files before top-k;
-  the request and profile hashes differ from the chunk-ranked policy. Scores
-  can reflect token coverage with path tie breaks rather than semantic
-  relevance. Use `natural_language_file_search` with independently judged
-  `semantic_intent` file labels. This is diagnostic only; it does not qualify
-  a product comparison or relabel an existing frozen suite.
-
-- `code_search_typo_file` (`quanta-code-search-typo-file-v1`): submit one ASCII
-  identifier of 3–64 bytes as `typo:<identifier>` through SDK
-  `.code_search(...)`. This is the product's explicit content-identifier
-  OSA-distance-at-most-one search, with scored distinct files; it does not
-  change the literal meaning of a bare CodeSearch query. The recorded raw
-  query and effective request have separate digests. This profile is a
-  diagnostic intent, and its declaration-derived positive gold is not an
-  exhaustive judgment of every returned file.
-- `code_search_components_file` (`quanta-code-search-components-file-v1`):
-  submit 2–32 canonical lowercase ASCII components as
-  `components:"word word"` through SDK `.code_search(...)`. Ordered adjacent
-  components must occur in one indexed symbol local name. The engine projects
-  matched symbols to scored distinct files. The independent replay derives
-  the effective request and digest from the raw component sequence. This is
-  a separate diagnostic request mode; it is not default content/path search.
-  The product refuses an in-scope file with incomplete symbol coverage unless
-  its producer attests literal ASCII local names and the committed source
-  bytes lack at least one requested component. A source-oracle exclusion in a
-  diagnostic suite does not override this product check. Preserve a typed
-  refusal as an execution failure; do not score it as a retrieval miss.
-
-To reissue the reviewed natural-language tasks of a mixed suite, use a fresh
-external output root and a new suite ID:
+Reissue reviewed natural-language tasks with a new suite identity:
 
 ```sh
 python -m tools.benchmark.retrieval.holdout_review \
@@ -165,58 +100,10 @@ python -m tools.benchmark.retrieval.holdout_review \
   --suite-id new-nl-file-diagnostic --output /absolute/new-external-root
 ```
 
-This validates the complete original suite before selecting `semantic_intent`
-tasks. Every selected query, family, label and review identity stays unchanged;
-only the request contract changes to `natural_language_file_search`. It writes
-`suite.json`, a blinded query pack and source/input lineage. Invalid or oversized
-queries are rejected instead of silently removed. Existing split admission and
-review receipts remain bound to the original suite. AI review identities remain
-AI identities, and the new artifacts are `diagnostic_unqualified`.
-
-Native `select:file` ranks distinct files while retaining a representative
-published chunk as its source witness. `natural_language_file` records that
-chunk identity and exact indexed span; it does not manufacture a `file:` ID or
-replace the witness with a whole-file span. The separate CodeSearch profiles
-return source-bound `file:` identities. The recorder and independent evaluator
-check each identity contract separately from `rank_unit`.
-
-Every file-projection result records `rank_unit: distinct_file` (the unit) and
-`ordering` (how the units are ordered, derived from the policy). The evaluator
-refuses a relabeled ordering, a path-ordered result that is not in path order,
-an ordering on a chunk result, and a missing ordering on the two new policies;
-historical `literal_file` records without the field keep their derived path
-order. `evaluate-diagnostic` reports file `hit_at_10` and `recall_at_10` next
-to `ndcg_at_10`, with `rank_metric_interpretation` `scored_ranking` or
-`observed_path_order_prefix`. A plan refusal (for example a digit-leading
-fragment under `keyword_file`) refuses the whole run, so run such tasks in a
-subset suite and report them as unsupported query forms.
-New `keyword_file` records also carry `score_evidence: native_sdk_score_v1`
-and each candidate's finite SDK score. The recorder and evaluator reject
-ascending scores and out-of-order path ties. Historical v5 records without
-these fields remain replayable, but their diagnostic route reports
-`score_evidence: not_recorded`; their score order is supported by the policy
-and fixture only, not by per-row captured scores. Do not promote those older
-rows to a score-order-qualified claim.
-Semble's separate `lexical-file` profile requests all indexed chunks from
-the pinned BM25 lane, keeps that positive-score native list in `native.json`,
-and records each file at its first source rank until ten distinct files are
-selected. It emits `rank_unit: distinct_file`,
-`ordering: score_desc_native_tiebreak`, per-file BM25 scores and collection
-counts. Upstream ties retain native order; they are not path tie breaks.
-`lexical-only` continues to return ten chunks. The two profiles must not be
-combined in a single score or latency comparison.
-The evaluator requires the recorded `rank_unit: distinct_file` and rejects
-repeated file paths for this policy. Source-reviewed file judgments and their
-metrics are opt-in; the original 300-query native capture stays on its frozen
-policy and report contract.
-
-The benchmark runner refuses native `select:` and `type:path`/`type:repo`
-projections that change the ranked result unit. Use a file-projection policy (`literal_file`, `keyword_file`,
-`substring_file`, or `natural_language_file`) or the public `code_search_file` policy for a distinct-file benchmark. A quoted `"select:file"` remains ordinary content text
-under `native`.
-
-After freezing the reviewed suite and recording its single-route run, score
-independent file or declaration judgments with:
+The reissue validates the entire original suite; selected query/label/review
+identities stay fixed and the changed request gets new source/input lineage.
+AI provenance stays AI, and old split/review receipts keep their old commitment.
+After capture, evaluate one source-bound route:
 
 ```sh
 uv run --frozen --extra dev python tools/benchmark/retrieval/evaluator.py evaluate-diagnostic \
@@ -224,122 +111,51 @@ uv run --frozen --extra dev python tools/benchmark/retrieval/evaluator.py evalua
   --runner /absolute/record.json --output /absolute/diagnostic.json
 ```
 
-This report exposes eligible task IDs, exclusions, coverage, operational and
-conditional means. It is `diagnostic_unqualified`; it does not enter the
-paired `QUALITY_DELTA` gate or alter the original 300-query scores.
+Read eligible/excluded tasks, execution coverage, conditional and operational
+means separately. This report is `diagnostic_unqualified`, outside the paired
+quality gate. `complete_ranked_pool_v1` requires explicit grade 0–3 for every
+ranked top-10 unit; missing judgments exclude, rather than imply irrelevant.
+Set `answerability_min_grade: 2` in both context and task for sufficient-answer
+rubrics. Thresholds, missing-pool behavior and reviewed receipt shapes are
+[ADR-owned](../../../docs/adr/OCT-05-001-review-admission-and-result-identity.md#review-completion-and-diagnostic-units).
 
-The canonical pair driver accepts `code_search_file` with exactly the
-`lexical` Quanta route and Semble `lexical-file` mode. In exploratory scope it
-writes a paired independent file-judgment diagnostic report. Qualified scope
-requires schema-v3 repository-disjoint admission, a complete source-bound
-file-judgment suite, scored native file ordering, and the other qualified
-controls. Its separate `file-judgments-complete-v1` report uses
-`file_ndcg_at_10`; the verdict replays it from the merged record. This code
-path has no qualified native capture yet. `natural_language_file`, `code_search_typo_file`,
-`code_search_components_file`, and `code_search_exact_content_file` remain
-diagnostic. Run the exact-name and
-each identifier-robustness lane in separate fresh output roots; never
-aggregate their scores into one denominator.
-Use `judgment_policy: complete_ranked_pool_v1` for newly reviewed file or
-declaration diagnostics. Each returned top-10 file or published declaration
-must have an explicit source-bound grade, including grade 0 for irrelevant
-results. A missing judgment excludes that task with `unjudged_ranked_file` or
-`unjudged_ranked_declaration`; it is not silently scored as irrelevant. The
-route's all-selected `operational_mean` is also `not_applicable` when a ranked
-judgment is missing, with `operational_unavailable_reason` set to
-`incomplete_ranked_judgments`. Conditional scores still use the eligible cohort;
-observed execution errors and timeouts retain their operational zero penalty.
-The historical `unjudged_zero_v1` policy remains available for exploratory reports
-and retains its original behavior. Neither policy turns a post-result review
-into a pre-result qualified holdout.
+## Review preparation and repository scheduling
 
-For reviewed tasks whose rubric requires a sufficient answer (grade 2 or 3),
-declare `answerability_min_grade: 2` in both the review context and suite task.
-An unanswerable task may then contain grade-1 partial clues, but no judgment
-at or above the declared threshold and no gold blocks. Answerable tasks need
-a sufficient-answer judgment and gold grade. The threshold is frozen with the
-review context and suite commitment, and omitted from the blind query pack.
-It does not change graded NDCG gains or the existing positive-relevance
-Hit/MRR definition (grade > 0). Reports expose each declared answerability
-threshold separately. Omission retains the historical threshold of 1;
-mechanical source-oracle tasks retain their own answerability contract.
+Use existing [review owner](holdout_review.py) functions; none creates actual
+review execution or human provenance:
 
-Use `holdout_review.capture_review_pool(checkout, suite_path, record_path,
-pool_id=...)` to extend a review pool from an actual single-route file capture.
-It runs the existing source/pack/record validation, retains abstentions as empty
-candidate lists, rejects chunk collapse and changed inputs, and exports only
-paths and file hashes. Add this retrieval pool to the existing diverse pools
-and call `holdout_review.prepare`/`write` again; both forms remain unjudged.
+| Function | Required input / result |
+| --- | --- |
+| `capture_review_pool(checkout, suite_path, record_path, pool_id=...)` | Validated single-route file capture; preserves abstentions, paths/hashes and source/pack binding; no chunk collapse |
+| `prepare` / `write` | Frozen diverse pools and context; both outputs remain unjudged |
+| `finalize_file_review_labels` | Two completed forms, slot-1 adjudication with third identity, `natural_language_file_search`; validates full frozen labels/threshold and emits file witnesses, not declaration/context spans |
+| `bind_supplemental_review_tasks(checkout, suite_bytes, tasks)` | Bind before actual request/schema preflight; refuses judged/duplicate pairs, source/threshold drift and supplied decisions; subset cannot issue overall answerability |
 
-After actual completion, `holdout_review.finalize_file_review_labels` accepts
-both original forms, a slot-1 adjudication form with a third distinct identity,
-and each task's declared `natural_language_file_search` contract. It reuses the
-frozen form/source validators, preserves the answerability threshold, and
-requires a sufficiently graded pooled file whenever any final or original
-review claims an answer. Missing judgments, changed text/hashes/thresholds,
-wrong units and other request modes are refused. Adjudicator overrides remain
-marked ambiguous. Its task-label output uses existing file judgments and
-whole-file gold witnesses; those witnesses are not declaration/context spans.
-Merge the labels into a new suite and call `evaluator.validate_suite` to issue
-a new blind-pack commitment. Original captured records retain their original
-commitment. The function does not attest human provenance, reviewer independence,
-pool execution or benchmark qualification; do not reuse a one-off finalizer
-that silently drops `answerability_min_grade`.
-Keep its capture custody in the owner area. Revised labels require a new suite
-commitment and capture; never rebind an old runner record to new qrels.
+Changed labels require a new suite validated by `evaluator.validate_suite`,
+new blind commitment and capture. Never rebind an old record to new qrels.
+Adjudicator overrides retain ambiguity. Keep actual request/result custody with
+the owner; no one-off finalizer may silently drop the answerability threshold.
+`execution_batch.iter_repository_admissions` drains ready/failed cells with
+upstream liveness, poll/deadline and known failures. Consumers validate bindings;
+aggregate failures remain visible and an unresolved earlier repo cannot stall
+later ready ones.
 
-For supplemental returned-file review, call
-`holdout_review.bind_supplemental_review_tasks(checkout, suite_bytes, tasks)`
-before constructing model requests. It validates the original suite, binds each
-query and answerability threshold, and rejects already-judged pairs, duplicate
-pairs, source drift and supplied decisions. A missing request threshold is
-materialized from the frozen suite (including its historical default of 1);
-an explicit conflicting threshold is refused. The returned subset cannot
-establish overall answerability. Preflight must construct the actual reviewer
-request, model input and response schema, without making model calls.
+## Source oracles and identifier robustness
 
-External repository controllers can use
-`execution_batch.iter_repository_admissions` to drain ready and failed cells
-before waiting. Supply upstream liveness, the existing poll/deadline policy,
-and known per-repository review failures. Consumers must still validate the
-admission's source/input bindings and product proofs. Failed or missing cells
-remain unsuccessful, and the final aggregate must report them; later ready
-repositories must not wait behind an earlier unresolved repository.
+Set `query_intent: bare_symbol`, `judgment_policy: source_oracle_complete_v1`
+and exactly the matching judgment kind. `label_review` and qualified annotation
+receipts cannot turn these mechanical labels into reviewed relevance.
 
-For objective lexical checks, a task may instead declare `source_oracle` with
-`contract: go_exact_local_name_v3` and `unit: symbol` or `distinct_file`, or
-`contract: ascii_identifier_word_v1` and `unit: distinct_file`. Set
-`query_intent: bare_symbol`, `judgment_policy: source_oracle_complete_v1`, and
-provide exactly the matching judgment kind. The evaluator reparses every Go
-file or scans ASCII identifier words across the frozen file universe, then
-requires an exact match with all submitted positive grade-3 judgments. An
-absent judgment is therefore an exhaustive source-oracle negative, not a
-human relevance decision. The declaration contract covers the Go symbol
-producer's functions, methods, type specs, type aliases, and interface methods
-declared directly under a named type, by exact case-sensitive local name.
-Anonymous interface methods outside named types are excluded. Symbol judgments
-use the exact indexed declaration byte span; the matched local-name bytes select
-the declaration but do not stand in for its published symbol span. The word contract
-counts identifier words anywhere in file bytes, including comments and tests.
-`label_review` is forbidden on these tasks, and qualified annotation receipts
-reject them. Reports remain `diagnostic_unqualified`.
+| Oracle | Independent source scope |
+| --- | --- |
+| `go_exact_local_name_v3` (`symbol`/`distinct_file`) | Exact case-sensitive Go functions/methods/types/aliases/direct named-interface methods; indexed declaration spans, not local-name token spans; anonymous-interface methods excluded |
+| `ascii_identifier_word_v1` (`distinct_file`) | ASCII identifier words anywhere in frozen bytes, including tests/comments |
+| `<language>_exact_local_name_v1`, `<language>_declaration_name_{prefix,infix,components,osa1}_v1` | Rust/Python/TypeScript/JavaScript declaration census; named items/functions/classes/methods/interfaces/aliases/enums, no variables/fields/namespaces/anonymous expressions |
+| Go prefix/infix | `go_declaration_name_{prefix,infix}_v1`, case-sensitive, >=3 characters |
+| Go typo | `go_declaration_name_osa1_casefold_v1`, ASCII folded OSA distance 1, folded exact-name collisions excluded; historical `osa1_v1` stays case-sensitive |
+| Go components | `go_declaration_name_components_v1`, contiguous lowercase `camel-snake-v1` run; non-ASCII names have no components |
 
-Identifier-robustness variants use four more contracts over the same indexed Go
-declaration set: `go_declaration_name_prefix_v1` and
-`go_declaration_name_infix_v1` (case-sensitive name text, at least three
-characters), `go_declaration_name_osa1_v1` (historical case-sensitive labels),
-`go_declaration_name_osa1_casefold_v1` (ASCII declaration names at folded
-optimal string alignment distance one, excluding folded exact-name collisions),
-and
-`go_declaration_name_components_v1` (space-separated lowercase components
-matched as a contiguous run of `camel-snake-v1` components; non-ASCII names
-have no components). The generated `typo` lane uses the folded contract to
-match the product's folded `typo:` request; historical suites retain their
-case-sensitive contract. Its distinct-file judgment measures whether the
-declaration's file was returned, not whether the returned preview localized
-that declaration. `identifier_robustness_suite.py` builds one suite per
-lane from an unannotated frozen suite and a seed, with a census of strata,
-ambiguity classes, shortfalls and no-answer content presence:
+Build one suite per lane; exposed baseline names produce exposed diagnostics:
 
 ```sh
 python3 tools/benchmark/retrieval/identifier_robustness_suite.py \
@@ -347,138 +163,13 @@ python3 tools/benchmark/retrieval/identifier_robustness_suite.py \
   --output-root /absolute/fresh-output --seed 20260930
 ```
 
-Its base names come from an exposed suite, so its output is a source-exposed
-diagnostic, never an unseen holdout.
-
-New typo census data also records two independent input properties:
-
-- `literal_relation`: whether the folded query is a proper substring of the
-  intended name, the intended name is a proper substring of the query, or neither.
-- `surviving_components`: whether none, some, or all distinct intended-name
-  components of at least three characters remain as whole query components.
-  `no_eligible_components` covers names without such components. The policy
-  uses `camel-snake-v1`, including its inferred acronym boundaries; it does not
-  claim to reproduce any product tokenizer.
-
-The robustness report rederives these properties from the frozen source/query
-and reports eligible task counts and file-hit counts by property. A surviving
-component does not establish why a product retrieved the file. Historical
-census files without the policy retain their previous report shape.
-
-### External human-annotation intake
-
-`codesearchnet_qrels.py` admits the pinned [CodeSearchNet annotation CSV](https://github.com/github/CodeSearchNet/blob/106e827405c968597da938f6b373d30183918869/resources/annotationStore.csv)
-as a review seed. Download that exact revision outside the checkout, then run:
-
-```sh
-uv run --frozen --extra dev python -m tools.benchmark.retrieval.codesearchnet_qrels \
-  --csv /absolute/external/annotationStore.csv \
-  --output /absolute/existing-external-directory/new-review-seed.json
-```
-
-The importer checks the fixed upstream SHA-256, preserves all repeated grades
-and notes, and computes the upstream mean without rounding fractional values.
-It rejects normalization collisions, mutable source URLs, checkout-local
-outputs, and replacement of existing outputs. Unjudged candidates remain
-unknown. This output is not an executable suite or a quality score: source
-snippets, corpus licensing, file hashes and a compatible scoring contract must
-be admitted first. Public annotations are source-exposed rather than an unseen
-holdout. See [S30-B09](../../../docs/plans/sep-30-code-search-benchmark-trust/tickets/S30-B09-external-robustness-adoption.md)
-for adoption decisions and remaining execution boundaries.
-
-### Executable external snippet diagnostics
-
-`codesearchnet_materialize.py` fetches source from the admitted commit-pinned
-URLs into a new external root. It records source bytes, snippet spans and
-digests, HTTP failures, and complete versus incomplete query pools. It never
-replaces unavailable code with generated snippets or silently drops its tasks:
-
-```sh
-uv run --frozen --extra dev python -m tools.benchmark.retrieval.codesearchnet_materialize \
-  --csv /absolute/pinned/annotationStore.csv \
-  --output-root /absolute/new-materialization-root
-```
-
-`clarc_adapter.py` admits the pinned CLARC group1 original and neutral-renamed
-pair. `external_snippet_benchmark.prepare_external_lanes()` creates separate
-synthetic Git corpora and schema-3 runner packs for both variants and each
-CodeSearchNet language. The runner pack contains queries and the source
-universe; the commitment-bound `scorer-input/gold-sidecar.json` retains the
-upstream judgments. Distinct directory names and file modes alone do not prove
-runtime isolation. Attested diagnostics must not claim an enforced access block.
-
-Keep driver and executable provenance separate. The pair harness field
-`provenance.quanta.source_sha` identifies the Python driver's source checkout;
-`binary_digest` identifies the executed runner bytes. Neither field alone
-attests the runner or daemon build source. When those sources differ, retain a
-separate build-source binding with both executable hashes and state both roles
-in the report. A driver commit must not be reported as the engine commit.
-
-The prepared manifest records source commitments, raw and canonical hashes,
-the selected profile, and submitted/source-blocked task counts. Use its bound
-profile without truncating or rewriting queries. The CLARC group1 freeze retains all526 population rows:425 are submitted
-and101 are refused by the explicit64-token profile. These101 remain in the
-admission ledger, without query truncation. CSN retains573 query-language
-population rows, with462 source-complete submissions and111 source-blocked.
-The native CLI accepts
-`--nl-max-tokens N` only for natural-language policies, with `1 <= N <= 64`;
-the default remains 32. Nondefault budgets are exploratory, carry no qualified
-claim, and are preserved in the execution profile and effective-request digest.
-
-If an admitted source exceeds the native1MiB per-file default, explicitly
-set the existing `--max-file-bytes` to the largest admitted file size and record
-that bound. Do not discard a source file or change the frozen universe.
-
-Run `natural_language_file` and Semble `lexical-file` on the frozen packs for
-an explicit lexical baseline. This does not measure semantic or hybrid search.
-One synthetic file represents one upstream snippet, rather than the upstream
-repository's full file. Full native record replay must verify query planning,
-capture identities, source byte spans, result status, ordering and file units
-before `score_capture()` computes metrics; the lightweight scorer alone is
-not that proof. Failed execution, unavailable source and conditional quality
-have separate denominators.
-
-CLARC supplies positive target labels only. Report target Hit/MRR, preserve
-identical neutral-code groups as metadata, and do not turn unjudged snippets
-into negative labels or invent exhaustive NDCG/precision. CodeSearchNet retains
-fractional grades and distinguishes pool-estimated NDCG@10 from its official
-judged-only-rank, full-IDCG diagnostic. Tasks whose judged pool contains no
-positive grade have undefined target-retrieval metrics; they do not establish
-that the source has no answer. Report those counts and source-blocked tasks
-alongside execution coverage. Original project attribution/licensing and the
-missing full upstream corpus remain qualification prerequisites.
-
-The same lanes exist for Rust, Python, TypeScript (`.ts`/`.tsx`) and
-JavaScript as `<language>_exact_local_name_v1` and
-`<language>_declaration_name_{prefix,infix,components,osa1}_v1` over the
-`<language>_declaration_census_v1` kinds in `source_oracle.py` (named items,
-functions, classes, methods, interfaces, aliases and enums; no variables,
-fields, namespaces or anonymous expressions; a name is the declared token as
-written). Pass `--language`; a non-Go language is admitted only when
-`declaration_census_audit.py` finds that an independent parser (CPython `ast`,
-`syn`, the TypeScript compiler or `go/ast`, built from the pinned sources in
-`census_checkers/` into a cache outside the checkout) reports the same
-(name start byte, name bytes) set for every file. Any refusal or disagreement
-keeps the language unsupported instead of producing empty gold:
-
-TypeScript and TSX census and named-definition gold use the same vendored
-grammar sources as the producer (`vendor/tree-sitter-typescript`), including its
-syntax compatibility fixes. On Darwin or Linux, the first use requires `cc` and
-compiles into a source/platform-keyed cache outside the checkout; set
-`QUANTA_CENSUS_PARSER_CACHE` to choose that root. Missing compilers, changed cache
-identities and binary tampering fail explicitly; no unpatched grammar fallback
-is used. Gold capsule producer bindings include the factory and actual C/header
-bytes. Source changes require fresh capsules; frozen capsule identities are
-never rewritten. Other languages retain the pinned language-pack grammar and
-their independent census checks.
-
-Gold and C4 admission check active parser/tokenizer distributions against
-the exact `pyproject.toml` and `uv.lock` pins before full corpus replay.
-Both pin files are part of the gold producer identity. An arbitrary external
-Python environment is not interchangeable with `uv run --frozen --extra dev`:
-a dependency mismatch is an admission failure, and its changed parse/gold
-results must not enter an accepted score cohort. Keep old captures intact
-and generate new source-bound capsules after producer or dependency changes.
+`--language` requires exact independent per-file name/start-byte census parity
+(CPython `ast`, pinned `syn`, TypeScript compiler or `go/ast`). Refusal/disagreement
+means unsupported, never empty gold. TypeScript/TSX use the producer's vendored
+grammar; Darwin/Linux requires `cc` and source/platform-keyed external cache
+(`QUANTA_CENSUS_PARSER_CACHE`). Bind actual C/header/factory bytes plus exact
+`pyproject.toml`/`uv.lock` parser/tokenizer pins. Changed loaded grammar or source
+requires a fresh producer/capsule; immutable old identities are not rewritten.
 
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.declaration_census_audit \
@@ -486,42 +177,17 @@ uv run --frozen --extra dev python -m tools.benchmark.retrieval.declaration_cens
   --output /absolute/new-external-root/census-audit.json
 ```
 
-For a fresh repository-disjoint holdout, `holdout_sampling.py` freezes a
-seeded, label-free per-repository ledger (population, quota, admitted,
-underfill reason and inclusion probability per lane), one schema v2
-single-split `gold_oracle` recipe per holdout repository and the corpus-wide
-split manifest, from a holdout and a development corpus release. Labels then
-come from `corpus_binding.capture_gold(..., split=(manifest bytes, release
-paths))`, which validates both releases, the repository/family assignment and
-cross-split exact or near-duplicate code before deriving labels. Natural
-language lanes stay underfilled until reviewed qrels exist.
-The generated `no-answer-content-v2` suite uses
-`ascii_content_absent_casefold_v1` with `unit: distinct_file`. Replay admission
-checks every frozen source file for the query under the same UTF-8 replacement
-and casefold rule used by the builder. The separate `no-answer` lane continues
-to mean only that no matching declaration exists. Archived NOC suites retain
-their older declaration-only oracle and must be labeled as legacy diagnostics.
+`holdout_sampling.py` freezes label-free quotas/inclusion probabilities/underfill,
+schema-v2 single-split recipes and a corpus-wide manifest. `corpus_binding.capture_gold`
+validates development/holdout releases, assignments and exact/near copies before
+labels. NL lanes stay underfilled until reviewed qrels exist.
 
-The `typo-content-absence` lane reuses admitted one-edit typo queries whose
-bytes are absent from all frozen file contents **and paths** under casefold.
-It scores default content/path search as a hard-negative task, separately
-from the `typo` lane's declaration-recovery task. The report rechecks both
-admitted and excluded source IDs against the frozen files. The explicit
-`typo:` product mode has its own `code_search_typo_file` profile; its results
-must be evaluated as a separate intent, without treating them as default
-content hits. These source-exposed diagnostics are not holdout or product
-ranking claims.
-The `typo-osa1-absence` lane uses the separate
-`ascii_identifier_osa1_absent_casefold_v1` oracle. It rechecks every frozen
-source file for an exact or one-edit ASCII identifier token before labeling
-the query unanswerable for the explicit `typo:` content search. The older
-content-absence and content/path-absence oracles are insufficient for this
-mode. Generate it from a frozen `no-answer-content-v2` suite with
-`identifier_osa1_absence_suite.py`, then bind the resulting suite, blind pack,
-census, and manifest to the capture. The derived suite has only the `lexical`
-route even when its source suite also named external routes, so a direct Quanta
-capture and its diagnostic use the same suite commitment. It does not prove path absence,
-which the content-only `typo:` mode does not require.
+| Negative lane | What absence proves |
+| --- | --- |
+| `no-answer` | Declaration absence only |
+| `no-answer-content-v2` | `ascii_content_absent_casefold_v1`, all frozen content under UTF-8 replacement/casefold; default search additionally needs path absence |
+| `typo-content-absence` | Casefold bytes absent from all content **and paths**; default hard negative, separate from declaration recovery |
+| `typo-osa1-absence` | `ascii_identifier_osa1_absent_casefold_v1`, no exact/one-edit ASCII content identifier for explicit `typo:`; no path-absence claim |
 
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.identifier_osa1_absence_suite \
@@ -529,19 +195,13 @@ uv run --frozen --extra dev python -m tools.benchmark.retrieval.identifier_osa1_
   --output-root /absolute/new-external-root
 ```
 
-The robustness report names the task's `evaluation_intent` and the negative
-`negative_reference_scope`. Its `no_answer.nonempty_results` counts returned
-files without assuming that a declaration-absent query is absent from file
-contents. A default CodeSearch abstention claim also needs path absence;
-the content-only lane requires a separate path audit. The
-declaration-recovery typo lane is a separate intent.
-The paired diagnostic reports the suite's `reference_contracts` and uses the
-same neutral `nonempty_results` key. A declaration-derived file label measures
-retrieval of that declaration's file; it does not independently establish
-whole-file content relevance for every returned file.
-
-For a validated Quanta or Semble distinct-file diagnostic, join the existing
-evaluator report to the frozen robustness census without rescoring candidates:
+The derived OSA1-absence suite has lexical only and binds suite/pack/census/
+manifest. Older declaration-only NOC oracles retain their original diagnostic
+scope. Reports expose `evaluation_intent`, `negative_reference_scope` and neutral
+`no_answer.nonempty_results`; a file-hit label is not whole-file relevance or
+declaration localization. `literal_relation` and `surviving_components` describe
+frozen name/query bytes under the oracle tokenizer, not the engine's cause.
+Join a validated Quanta/Semble file report without rescoring:
 
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.identifier_robustness_report \
@@ -552,18 +212,9 @@ uv run --frozen --extra dev python -m tools.benchmark.retrieval.identifier_robus
   --output /absolute/new-external-root/report.json
 ```
 
-The output records generator admission, unsupported request forms, execution
-status, eligible unique/ambiguous Hit@10 and no-answer abstention separately.
-The generation manifest must bind the exact census and lane suite bytes; its
-SHA-256 is included in the report so a later review can identify the admitted
-population. A supplied manifest is producer provenance, not an independent
-human label or qualification authority.
-It refuses an existing output path and is always `diagnostic_unqualified`.
-Sourcegraph, cs and OpenGrok have a different native capture contract and are
-not admitted through this report command.
-
-Create reproducible, runnable single-route suites from an unannotated frozen
-source suite with a new external output root:
+The exact generation manifest binds census/lane bytes. Report unique/ambiguous
+Hit@10, unsupported forms, status, no-answer and admission populations separately.
+Sourcegraph/cs/OpenGrok use another capture contract. Create single-route suites:
 
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.source_oracle_suite \
@@ -572,24 +223,56 @@ uv run --frozen --extra dev python -m tools.benchmark.retrieval.source_oracle_su
   --output-root /absolute/new-oracle-output
 ```
 
-The generator writes three suites and blind packs: identifier-word/file and
-Go declaration/file use the `lexical` route; Go declaration/symbol uses the
-`symbol` route. Each suite has exactly one route for `evaluate-diagnostic`.
-Each mode recomputes `answerable` and replaces the baseline's authored gold
-with the line containing the first source match by path and byte offset.
-These mechanical gold lines are diagnostic evidence, not human relevance
-labels. A mode without a source match retains the task as unanswerable with
-empty gold. The evaluator still refuses cross-split source-label leakage.
-Source-oracle admission rejects more than 4,096 files, 2,000 queries, or
-512 MiB of source bytes before materializing an over-limit file. This is a
-corpus input limit, not a peak-RSS guarantee.
-The output manifest binds the input suite, source commit, tool file bytes, and
-all outputs; exact tool sources are copied under `tool-sources/`. These are new
-diagnostic inputs; their blind-pack digests differ
-from historical captures, so historical runner records cannot be reused.
-For preserved Sourcegraph, OpenGrok, and cs file rows, rescore the original
-300-query capture against complete source-derived file judgments without
-rewriting its rows or mixing native chunk records from another execution:
+The generator emits identifier-word/file, Go declaration/file and Go symbol
+suites/packs; it recomputes answerability and representative first-match lines.
+Admission caps: 4,096 files, 2,000 queries, 512 MiB source bytes, checked before
+oversized materialization; these are not RSS bounds. Tool snapshots/output
+manifest bind new inputs; old runner commitments cannot score a changed pack.
+
+## External annotation and snippet inputs
+
+Download the exact [CodeSearchNet CSV revision](https://github.com/github/CodeSearchNet/blob/106e827405c968597da938f6b373d30183918869/resources/annotationStore.csv)
+outside the checkout:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.codesearchnet_qrels \
+  --csv /absolute/external/annotationStore.csv \
+  --output /absolute/existing-external-directory/new-review-seed.json
+```
+
+The intake checks the pinned digest and preserves repeated/fractional grades,
+notes and unknowns. It refuses normalization collisions, mutable URLs and
+existing/checkout-local outputs. It is a review seed, not an executable suite.
+Source/licensing/scoring admission remains [B09 work](../../../docs/plans/sep-30-code-search-benchmark-trust/tickets/S30-B09-external-robustness-adoption.md).
+Materialize without dropping unavailable-source tasks or inventing snippets:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.codesearchnet_materialize \
+  --csv /absolute/pinned/annotationStore.csv \
+  --output-root /absolute/new-materialization-root
+```
+
+`clarc_adapter.py` admits pinned CLARC original/neutral pairs;
+`external_snippet_benchmark.prepare_external_lanes()` writes separate synthetic
+corpora/schema-3 packs by variant/language. Scorer gold stays in its bound
+sidecar; distinct paths/modes alone do not prove enforced isolation. Use actual
+manifest populations, submissions, source-blocked and profile-refused counts;
+old diagnostic totals are archived.
+
+Keep Python driver source, runner build source and daemon build source separate
+with both executable hashes. `--nl-max-tokens` is NL-only, 1–64 (default 32);
+nondefault budgets remain exploratory and digest-bound. An admitted source over
+1 MiB needs explicit recorded `--max-file-bytes`, not source exclusion.
+Use `natural_language_file`/Semble `lexical-file` for lexical diagnostics only.
+Synthetic snippet files are not full upstream files. Full native record replay
+precedes scoring. CLARC positive targets support Hit/MRR, not fabricated exhaustive
+NDCG/precision; CSN retains fractional/pool-estimated versus official judged-only
+metrics. Zero-positive pools do not prove no answer. Execution/source/conditional
+quality denominators, licensing and missing upstream universe remain separate.
+
+## Recorded external rescoring and query-pool guard
+
+Use original immutable suite/pack/capture/raw rows; do not rewrite native rank:
 
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.lexical_external_oracle \
@@ -603,17 +286,11 @@ uv run --frozen --extra dev python -m tools.benchmark.retrieval.lexical_external
   --out /absolute/new-output-root/result.json
 ```
 
-This verifies the capture manifest's suite, pack, row, and raw response file
-digests, then revalidates all row queries, paths, statuses, and original hit
-flags. File recall and binary file NDCG use `file_judgments`, which list every
-source match. The suite's `gold` is a representative first source line and
-must not replace those complete file judgments. Both contracts remain
-mechanical diagnostics. Backend indexed-universe equivalence and human
-relevance are still unproved. Digest verification does not replay native
-response parsing at the capture's original source revision. The result is not
-a five-product quality rank.
-When the original paired native capture is retained as `native-tree.zip`,
-rescore all five from the same frozen suite, pack, and corpus:
+The three-product oracle checks capture/row/raw digests, query/path/status/hit
+bindings and complete source-derived file judgments. A representative first
+line cannot replace the full file judgment set. Digests alone do not replay
+native parsing or prove external indexed-universe equivalence.
+For original paired `native-tree.zip`:
 
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.lexical_five_product_oracle \
@@ -629,20 +306,11 @@ uv run --frozen --extra dev python -m tools.benchmark.retrieval.lexical_five_pro
   --out /absolute/new-output-root/result.json
 ```
 
-The evidence binds the original native archive and the suite/pack bytes. The
-pair report, verdict, query identities, result ranks, file hashes, and original
-hit flags are checked before new judgments are scored. Native rows still end
-at 10 **chunks**, so their file NDCG is explicitly an observed-prefix score
-after first-occurrence file deduplication. External rows end at 10 distinct
-files. The two NDCG columns and hit counts remain separate diagnostic units.
-The previous `go_exact_local_name_v1` covered fewer Go declaration kinds.
-`go_exact_local_name_v2` covered the same declaration kinds but used local-name
-token spans as symbol judgments. Published symbols use definition spans, so v2
-symbol scores were invalid. Replay archived v1/v2 suites with their snapshotted
-tool sources; the current validator accepts only v3 for new Go diagnostics.
-
-Before review or search, check a new query proposal pool against every
-previously searched suite and proposal pool:
+The pair report/verdict/archive and original rank/source/hit flags are checked.
+Native ten-chunk first-file collapse and external ten-file units keep separate
+NDCG columns/denominators. Archived Go v1/v2 gold stays with its tool snapshots;
+v2 local-name-token symbol scores were invalid, and new Go oracles require v3.
+Before review/search, compare proposals with every previously exposed pool:
 
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.query_pool_guard \
@@ -653,39 +321,15 @@ uv run --frozen --extra dev python -m tools.benchmark.retrieval.query_pool_guard
   --output /absolute/new-pool-check.json
 ```
 
-The guard validates the reference suite against source, binds input SHA-256s,
-and reports every normalized or shingle near-duplicate at the evaluator's
-threshold (up to 10,000 conflict rows). Repeat `--reference-suite` and
-`--reference-proposals` for additional searched inputs. It exits 2 on a
-conflict or malformed input and never overwrites an existing report. This
-early check does not replace frozen experiment custody or independent gold
-review. Candidate JSONL rows must have `proposal_id`, `query`, `stratum`, and
-`status: "unreviewed_query_proposal"`; the guard refuses candidates explicitly
-marked reviewed or searched. This status is an authored claim, not proof that
-review or search has not already occurred. Preserve a separately controlled
-proposal freeze and reviewer custody record for that ordering claim.
-
-The historical five-product bare-symbol diagnostic records the native top-10 rank unit
-per product: Quanta and Semble return chunks, while Sourcegraph, OpenGrok and
-cs return distinct files. Its common evidence uses separate metric names for
-these two units. The mechanically generated gold and unverified external
-indexed universes keep the result `diagnostic_unqualified`.
-The standalone lexical scorer checks frozen rows and paired report/verdict
-digests; an actual-execution claim additionally requires the paired capture
-replay and the external raw HTTP/process capture replay through the workflow.
-
-Input formats:
-
-- [Suite schema](suite.schema.json)
-- Blind query packs: generated by `freeze` from the suite
-- [Runner-record schema](runner.schema.json)
-- [Pair spec schema](pair-spec.schema.json)
-- [Exploratory pair example](examples/pair-spec.exploratory.json)
+Repeat references as needed. Candidates require `proposal_id`, `query`, `stratum`,
+`status: unreviewed_query_proposal`; conflicts/malformed inputs exit 2, with at
+most 10,000 conflict rows and no overwrite. Authored status does not prove
+unseen custody; retain a separately controlled proposal freeze/review sequence.
 
 ## Paired capture and replay
 
-Replace the example's placeholder paths and digests, pin both binaries and the
-Semble environment, and generate a host profile before running:
+Replace [example](examples/pair-spec.exploratory.json) paths/digests, pin binaries
+and exact Semble environment, generate host profile, then capture sequentially:
 
 ```sh
 python3 -m tools.benchmark.retrieval.semble check --python /absolute/semble-venv/bin/python
@@ -694,14 +338,12 @@ python3 tools/benchmark/retrieval/run.py host-profile \
 python3 tools/benchmark/retrieval/run.py pair --spec /absolute/pair-spec.json
 ```
 
-`pair` runs both systems sequentially. Keep original corpus, native output and
-evidence roots disjoint. Use the registered `retrieval-diagnostic` profile from
-the runbook for immutable common capture, validation and raw replay.
-
-Required pair keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`,
-`output_root`, `runner_binary`, `searchd_binary`, `searchd_expected_sha256`,
-`strategies`, `host_profile`, `semble_python`, `semble_lockfile` and its SHA-256.
-The JSON schema is the complete field authority; frequently used options:
+Keep corpus/native/evidence roots disjoint. Use registered `retrieval-diagnostic`
+for immutable common capture, validation and raw replay. Required keys:
+`repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`, `runner_binary`,
+`searchd_binary`, `searchd_expected_sha256`, `strategies`, `host_profile`,
+`semble_python`, `semble_lockfile`, `semble_lockfile_sha256`.
+The schema owns all fields; common options:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -736,90 +378,29 @@ The JSON schema is the complete field authority; frequently used options:
 | `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL, actual-runner record and Python/Rust/SDK collection inventories; all bytes are frozen and raw evidence is reparsed by the verdict |
 | `timeout_secs` | `1800` | per-capture timeout |
 
-Direct `quanta` capture also honors explicitly supplied `query_warmup_passes`
-and `query_repetitions_per_root` through the same query protocol. Its omitted
-values are zero warmup passes and one measured pass; without either option it
-keeps the single measured traversal. The runner's phase receipt must match the
-requested protocol and pass counts. A direct capture supports one fresh root;
-use `pair` for multiple fresh-root repetitions. Historical direct captures
-whose phase receipts report zero warmups cannot be relabeled as warmed merely
-because their spec requested a warmup.
+Direct `quanta` defaults to zero warmups/one measured traversal. Explicit warmup/
+repetition controls bind actual phase receipts; direct capture has one root,
+while `pair.repetitions` creates fresh roots/indexes. A later invocation rebuilds;
+retained captures are not live indexes. For 100-task descriptive warm timing,
+choose one root, one warmup and ten measured passes before capture; this gives
+1,000 calls, not 1,000 distinct queries.
 
-For `qualified`, the license receipt must be JSON with exactly
-`schema_version: 1`, `reviewer_id`, `decision: approved`, `repository_commit`,
-`corpus_manifest_sha256`, and a nonempty `rationale`. The reviewer and corpus
-identity must match the admission manifest. This verifies the recorded decision
-and scope, not the legal correctness of the review.
-
-Each annotation receipt must be JSON with exactly
-`schema_version: 1`, `reviewer_id`, `suite_sha256`, and `reviews`. `reviews`
-must contain one row per suite task in suite order. Each row has exactly
-`task_id`, `query_sha256`, `labels`, and a nonempty `rationale`. `labels`
-contains `answerable` and `gold`, plus the same optional scoring-label keys
-present on that suite task: `query_intent`, `judgment_policy`, `file_judgments`,
-and `declaration_judgments`. The adjudication receipt has the same shape plus
-`annotation_receipt_sha256`, the ordered hashes of both annotation receipts;
-its labels must equal the final suite labels. Each annotation's proposed labels
-are independently validated against the pinned source. The manifest must name
-three distinct reviewer IDs. Hashes and IDs establish content and claimed
-custody, but cannot establish that three humans actually reviewed independently;
-that remains an external qualification check.
-
-For a repository-disjoint admission (schema v3) whose suite mixes
-`source_oracle` and reviewed tasks, use annotation and adjudication receipts
-with `schema_version: 2`. Their `reviews` contain only the tasks without
-`source_oracle`, in suite order. All mechanical tasks remain bound to the full
-`suite_sha256` and are recomputed against the pinned source by suite validation.
-The two annotation receipts must cover every reviewed task; adjudication must
-match the final suite labels. A schema-v1 receipt for a mixed suite is refused.
-
-Use a short native output path: Unix socket path limits are 103 bytes on macOS
-and 107 on Linux. The composed code-search workflow reserves a short runtime
-path automatically and retains the native tree in its permanent capture.
-Native Windows paired SDK capture is unsupported; WSL uses the Linux path.
-
-### Symbol preflight
-
-`symbol_coverage_policy` defaults to `require-complete`. For diagnostic text
-search over unsupported languages use explicit `allow-incomplete`; inspect
-`symbol-preflight.json` and the resulting incomplete symbol coverage. Fatal
-parse/time/resource failures refuse under either policy. Use the native runner's
-`preflight` subcommand to obtain the census without starting a daemon.
-Symbol phrase/regex/raw-string queries currently return
-`LEX_PLANNER_UNSUPPORTED_FILTER_COMBO`; literal query policy is not a substitute
-for native symbol keyword search.
-
-### Qualified runs
-
-Use `scope: qualified` only with the schema's required admission, experiment,
-independent annotation/adjudication and contract/SDK proof inputs. An attested
-run cannot qualify isolated-blind quality. Linux qualified capture also requires
-an explicitly delegated `linux_cgroup_parent`. Missing controls refuse the
-corresponding claim; inspect verdict fields rather than command exit alone.
-
-`QUALITY_DELTA=pass` validates comparative evidence; it does not select a
-product default. Before qualified capture, put the SHA-256 of a decision policy
-in the admission manifest as `decision_policy_sha256`. The policy JSON declares
-`schema_version: 1`, `repository_scope` (`kind: single_repository`, full
-`repository_commit`), one `comparison` (`strategy`, `baseline_route`,
-`candidate_route`, `primary_metric`), a positive `min_useful_delta`, a
-nonnegative `min_cluster_lower_95`,
-`confidence_method: paired_query_family_cluster_bootstrap_percentile_v1`, a
-nonempty list of `critical_strata` (`axis`, `name`, `min_delta`) including
-`no_answer:all` with observed coverage, and
-`resource_limits` (`max_query_p95_ms`, `max_peak_rss_bytes`,
-`max_index_bytes`). No threshold has a default. After capture and replay, run
-`python -m tools.benchmark.retrieval.decision --repo REPO --suite SUITE
---run-manifest RUN_MANIFEST --policy POLICY --out DECISION_JSON`. Exit 0 admits,
-1 records a threshold refusal, and 2 refuses malformed or missing proof.
-The single-repository policy does not establish a multi-repository default.
-The separate repository-disjoint C5 replay uses policy v2 for context metrics
-or v3 for scored distinct-file `file_ndcg_at_10` in
-`default_file_search` mode. It requires each repository's qualified capture,
-repository-cluster uncertainty and the preregistered track/resource gates;
-replay alone returns `replayed_no_default_decision`.
-
-For a Linux performance host, select the actual CPU thermal zone and limits:
+Qualified scope requires complete admission/experiment/independent labels,
+proof inputs and actual isolation/host controls. Attested quality is not isolated
+quality; Linux also requires explicitly delegated `linux_cgroup_parent`. Use
+[ADR receipt fields](../../../docs/adr/OCT-05-001-review-admission-and-result-identity.md#qualified-review-receipt-shapes).
+`code_search_file` pairs exactly lexical with Semble `lexical-file`; qualified
+file scope needs v3 repository-disjoint admission, complete source-bound reviewed
+file labels and scored order. Other file-intent profiles remain diagnostic.
+A verdict does not select defaults. Freeze `decision_policy_sha256` before capture;
+execute `python -m tools.benchmark.retrieval.decision --repo REPO --suite SUITE
+--run-manifest RUN_MANIFEST --policy POLICY --out DECISION_JSON` afterwards.
+Exit 0 admits, 1 refuses thresholds, 2 refuses malformed/missing proof.
+[Statistics/decision owner](../../../docs/plans/sep-27-code-search-remediation/rfcs/CS-BENCH-03-tracks-metrics-and-statistics.md)
+and `decision.py` own closed policy fields and inference; single-repository
+policy does not establish a multi-repository default. C5 context-policy v2/
+scored-file-policy v3 replay without a decision is `replayed_no_default_decision`.
+For Linux host controls, choose the actual thermal zone/limits:
 
 ```sh
 python3 tools/benchmark/retrieval/run.py host-probe
@@ -829,46 +410,41 @@ python3 tools/benchmark/retrieval/run.py host-profile \
   --out /absolute/host-profile.json
 ```
 
-Speed inputs need one Quanta route, at least 20 tasks and five fresh roots,
-alternating system order, warmup and at least 1,000 warm observations per route.
-Increase `query_repetitions_per_root` and `repetitions` for more observations;
-add distinct tasks to the external suite and re-freeze its pack for more queries.
-Repeating a 20-task suite does not create 1,000 distinct queries.
-Within each fresh root, `query_repetitions_per_root` reuses the loaded Quanta
-and Semble indexes for all measured passes; it does not rebuild an index per
-query. `repetitions` creates new roots and rebuilds both indexes. A later
-invocation also rebuilds them: the current runner refuses a nonempty state
-root, and Semble's index exists only in the worker process. For a descriptive
-warm-query diagnostic on 100 tasks, set `repetitions: 1`,
-`query_warmup_passes: 1` and `query_repetitions_per_root: 10` before capture;
-report the single setup/index cost separately from the 1,000 measured calls.
-See [qualification and scoring policy](../../../docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md)
-for acceptance rules.
+Qualified speed needs one Quanta route, >=20 tasks, >=5 fresh roots, alternating
+order, warmup and >=1,000 warm observations/route plus all admitted host inputs.
+Short socket runtime paths are automatic in the composed workflow (103 bytes
+macOS, 107 Linux); native Windows pairs are unsupported, WSL uses Linux.
 
-## Read outputs
+## Read outputs and diagnostic clocks
 
-`run-manifest.json`, `protocol-lock.json`, native records, phase/resource
-observations and `verdict.json` live under the selected native output root.
-Inspect the verdict's validity, quality, performance and conditional-claim
-fields separately. `file_recall_at_10` measures coverage of all gold files;
-`file_hit_rate_at_10` measures whether any gold file was found. Context/span
-scores use different units. Mechanical labels and descriptive timing are
-recorded diagnostics. Server stage timings may overlap; do not sum them into
-query wall time.
+Inspect `run-manifest.json`, `protocol-lock.json`, native records, phase/resource
+observations and `verdict.json` under the native root. Validity/quality/speed/
+conditional claims are separate. File recall is all-gold-file coverage; file
+hit-rate is any-gold-file recovery. Chunk/span/context metrics keep their units.
+`first-source-span-v1` records every published native unit's scored span/rank;
+replay refuses missing/substituted/reordered proofs, and dedup count is not
+exhaustion. Server stage clocks may overlap; do not sum them into wall time.
+Every timed cold/warmup/measured output binds the
+[completed-response contract](../../../docs/adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#completed-response-verification).
 
-The Quanta window counts native published units. The scored record keeps the
-first hit for each source byte span, so overlapping chunks can reduce its
-candidate count. Diagnostic v6 carries a `first-source-span-v1` projection for
-such responses: every native unit maps to an exact scored span and its rank.
-Replay rejects missing proofs, substituted spans, duplicate unit IDs and
-changes to first-hit order; it does not treat the scored count as exhaustion.
+Use `run.py verdict --help` or common `benchctl replay --family retrieval-pair
+--evidence-root ROOT`. Changed source/input/binary or missing raw requires fresh
+capture. Capture identical enabled/disabled query-stage observations with separate
+roots/protocol and >=2 measured repetitions, then replay:
 
-Use `run.py verdict --help` for replay arguments. Immutable common captures
-support `benchctl replay --family retrieval-pair --evidence-root ROOT`.
-A changed source/input/binary or missing raw requires recapture, not relabeling.
+```sh
+PYTHONPATH=. uv run --frozen --extra dev python -m tools.benchmark.retrieval.query_timing_overhead \
+  --on-record ON_RECORD --off-record OFF_RECORD \
+  --on-phases ON_PHASES --off-phases OFF_PHASES \
+  --on-diagnostic ON_DIAGNOSTIC --off-diagnostic OFF_DIAGNOSTIC \
+  --pack PROJECTED_QUERY_PACK --out NEW_RESULT
+```
+
+This `diagnostic_unqualified` v2 measures plane/response trace observation;
+backend clocks run in both modes. It does not establish total instrumentation
+or IPC cost. Historical v1 retains its scope.
 
 ## Conditional model/incremental proof
-
 
 `PYTHONPATH=. uv run --frozen --extra dev python -m tools.benchmark.retrieval.conditional_proof`
 produces schema 2 bundles in a new external output directory. Common arguments:
@@ -893,46 +469,6 @@ through `./scripts/cargow --lane test-daemon-lane ... --locked`.
 A conditional bundle is required only when the corresponding claim is enabled.
 It does not replace pair admission or holdout qualification.
 
-## Completed response verification
-
-Current captures bind every timed cold, warmup and measured response with
-`query_timing.output_validation=normalized_row_score_bits_sha256_v1` and a
-per-observation `output_sha256`. Hashing and repetition checks run after the
-completed-response clock ends. The digest excludes only top-level `timings`;
-candidate scores use fixed-width IEEE-754 f64 bits before the existing canonical
-JSON encoding, so Rust and Python do not depend on decimal float formatting.
-
-All phases must match the first normalized response for each task and route, and replay
-recomputes each digest from the retained result row. A same-size, same-status
-response with different candidates, order or scores cannot qualify. Historical
-timing artifacts remain readable without this marker; they do not establish the
-new every-response performance gate. The runner capability probe refuses an
-older producer before indexing. This output check does not replace independent
-gold evaluation, host admission or source/binary qualification.
-
-## Query stage clock cost diagnostic
-
-
-Capture identical frozen inputs with `--query-stage-observation enabled` and
-`disabled`, separate fresh state roots, identical query protocols, and at least
-two measured repetitions. Replay with:
-
-```sh
-PYTHONPATH=. uv run --frozen --extra dev python -m tools.benchmark.retrieval.query_timing_overhead \
-  --on-record ON_RECORD --off-record OFF_RECORD \
-  --on-phases ON_PHASES --off-phases OFF_PHASES \
-  --on-diagnostic ON_DIAGNOSTIC --off-diagnostic OFF_DIAGNOSTIC \
-  --pack PROJECTED_QUERY_PACK --out NEW_RESULT
-```
-
-
-The output is `diagnostic_unqualified`; inspect per-route/task deltas and sample
-coverage. Capture the two modes with identical frozen inputs and fresh state roots.
-The v2 report names its scope as plane stage and response trace observation.
-Lexical backend clock reads execute in both modes; this control does not measure
-total instrumentation overhead or attribute IPC cost. Historical v1 output is
-retained as its original diagnostic, not upgraded by replay metadata.
-
 ## Edit-loop checks
 
 ```sh
@@ -941,8 +477,8 @@ just retrieval-contract-proof /absolute/fresh-contract-proof
 just retrieval-sdk-proof /absolute/fresh-sdk-proof
 ```
 
-The local command works during edits. Proof commands require clean source and
-bind exact selected/executed inventories. [Cross-language fixtures](fixtures/README.md)
-provide the evaluator/runner test inputs. Design decisions and historical
-implementation records are indexed in [ADRs](../../../docs/adr/README.md);
-open acceptance work is in the [execution ledger](../../../docs/plans/sep-27-misc/tickets/INDEX.md).
+Local checks work during edits. Formal proof binds clean source and actual
+selected/executed inventories; [cross-language fixtures](fixtures/README.md)
+supply evaluator/runner inputs. Current commands and runtime inputs remain here;
+older implementation/results are recoverable through
+[history](../../../docs/ARCHIVE-INDEX.md#oct-05-repository-wide-history-cleanup).

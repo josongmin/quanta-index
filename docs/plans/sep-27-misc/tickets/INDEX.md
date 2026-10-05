@@ -16,7 +16,7 @@ execution and acceptance ledger. Historical counts are not required inventories.
 | MISC-05 / ENG-02 | Qualify total coverage pipeline work/physical heap/bytes, including remaining preflight/build/open full scans and every sidecar. Same-build seal no longer decodes coverage twice, but re-hashes every effective page. [Coverage ticket](../../sep-27-code-search-remediation/rfcs/CS-ENG-02-capability-publication-and-freshness.md) owns the cost issue; no stale-result defect is implied. |
 | MISC-04 / actual producers and consumers | After owner changes, execute required Python/Rust contracts, actual native/Criterion/SDK/contract production, fresh promoted-path validation and relocated Python/Rust consumers/replay. Preserve process/monitor/capture failure controls and live test identities. Local selected passes do not establish hosted/product qualification. |
 | MISC-03 / IO-5 | Complete adapter-specific large successful/failed output, many-entry metadata/archive and interruption/corruption acceptance through prepare/execute/publish/load/replay. Declare retained-metadata limits separately; use independent bytes/digests and fresh-process RSS for actual resource claims. Generic streaming/probe success is not every adapter's acceptance. |
-| MISC-05 / product/platform | Execute selected functional invariants, combined Rust/daemon, actual installed ingest/restart/crash and supported Linux delegated-cgroup/Landlock scopes. External producer issuance and format-9 rebuild/activation need their own boundary; no unrun platform promotion. |
+| MISC-05 / product/platform | Execute selected functional invariants, combined Rust/daemon, actual installed ingest/restart/crash and supported Linux delegated-cgroup/Landlock scopes. External producer issuance and current-format rebuild/activation need their own boundary; no unrun platform promotion. |
 | MISC-06/07 / measurements | Execute admitted real profile/comparator pilot and independent quality/performance/update/test-cost measurements with declared units, host, inputs and denominators. Exploratory output remains diagnostic; manual labels/license/host prerequisites block only dependent claims. |
 
 The owner implementations for atomic profile publication/GC, sticky capture
@@ -30,7 +30,7 @@ Completed regex/input, coverage, native-row and archive mitigations are owned by
 [SEP-27-003](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md),
 [SEP-27-004](../../../adr/SEP-27-004-benchmark-capture-and-resource-custody.md) and
 [OCT-05 ADRs](../../../adr/README.md#oct-05-implemented-contracts).
-The exact regex allocation cap remains [conditional/deferred P3](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md).
+The exact regex allocation cap remains [conditional/deferred P3](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md#deferred-regex-allocation-cap-cs-eng-04).
 Coverage reuse needs authenticated immutable base ownership; actual producers,
 native scope, resource and supported-host/platform acceptance remain open above.
 Earlier integration receipts are recoverable through
@@ -61,9 +61,8 @@ in [CS-INT-01](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-a
 sets the next execution boundary. Installed, external-producer, hosted and
 platform rows remain separate.
 
-- [x] New external owner modules have live nonempty collection, owner/scope/Just
-  binding and source closure under the existing local rail. C4/C5 inventories,
-  hosted CI and actual producer paths remain under the combined gate.
+- [ ] Revalidate C4/C5 inventories, hosted CI and actual producer paths at the
+  combined gate; existing owner collection/enrollment is implementation authority.
 - [ ] Actual native immutable and command-only execution, Criterion and admitted
   capture adapters preserve terminal/log/cleanup and cooperative monitor facts.
 - [ ] Complete-profile pointer/GC, every admitted failure phase, nested sticky

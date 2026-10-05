@@ -2,6 +2,30 @@
 
 Status: `HISTORICAL RECOVERY INDEX`
 
+## Oct-05 repository-wide history cleanup
+
+Pre-edit/deletion revision: `158a08bc0d9b396089467b009117e23c168b77f7`. All owned bodies matched this revision
+byte-for-byte before editing. Recover with `git show 158a08bc0d9b396089467b009117e23c168b77f7:<repository-relative-path>`.
+External preimages/digests: `/tmp/qi-oct5-whole-doc-cleanup-vdhexoag`, `manifest.json`.
+
+| Retired body / history | Current authority and retained work |
+| --- | --- |
+| `readme-details.md` (Sep-21 static audit at `aeec3e1`) | [ADR registry](adr/README.md), [source map](ssot/engine-status-v1.md), [SEP-21 remaining acceptance](plans/sep-21-search-plane-sota-hardening/tickets/CURRENT-RESIDUAL-2026-09-26.md) |
+| `docs/handoff/oct-4/FINAL-REMAINING-WORK.md` | [Single OCT-04 ledger](plans/oct-4-parallel-closure/tickets/INDEX.md), existing owner/wave map; no duplicate status summary |
+| Sep-28 score tables/workflow counts in `tools/benchmark/CODE_SEARCH_RUNBOOK.md` | Runbook retains all command examples and result interpretation; [B01–B09](plans/sep-30-code-search-benchmark-trust/tickets/INDEX.md) retains native/gold/input/timing acceptance |
+| Duplicated retrieval contracts and external population snapshots in `tools/benchmark/retrieval/README.md` | All 17 command blocks and pair options remain; permanent review/unit/receipt/response contracts in OCT-05-001/004, actual output manifests own populations |
+
+The old audit's RepoMap candidate/compiler, supervision and control-authorization
+creation requests are superseded by current implementation and SEP-21/27 accepted
+identity/read-view/process decisions. Current release P03–P09 counterexamples
+remain open. Egress grants/provider work/cancellation/exporter evidence remain
+in P07/P08–P09, semantic ownership and purpose G9/G10; typed-source omission and
+paired state remain R3/R5. Unsupported structural/distributed/network capabilities
+remain explicit boundaries, not adopted feature requests. Old static findings are
+not fresh defects or passing proof. All QIT/benchmark/quality/R0–R6 IDs and selected
+quantitative acceptance stay with their owners. This cleanup executes no runtime,
+provider, hosted CI, qualified benchmark, deployment or target-state action.
+
 ## Oct-05 residual owner clarification
 
 The [plan history index](plans/ARCHIVE-INDEX.md#oct-05-residual-owner-clarification)
@@ -32,8 +56,8 @@ Completed implementation decisions live in the
 [OCT-05 Accepted set](adr/README.md#oct-05-implemented-contracts).
 All 29 original scope IDs, unmet acceptance and operational/design inputs remain
 in the [active residual ledger](plans/oct-4-parallel-closure/tickets/INDEX.md).
-The [summary](handoff/oct-4/FINAL-REMAINING-WORK.md) is navigation rather than
-a duplicate execution ledger. The active parent remains open.
+The duplicate handoff summary is retired; use the active residual ledger directly.
+The active parent remains open.
 
 The related 41-file plan compaction and exact recovery are recorded in the
 [plan history index](plans/ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).

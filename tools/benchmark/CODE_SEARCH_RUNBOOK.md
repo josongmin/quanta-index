@@ -226,126 +226,15 @@ Native Quanta/Semble file recall uses paths present in ten returned chunks;
 external recall uses up to ten distinct returned files. These observed ranks
 must not be described as a fair product-level file-ranking comparison.
 
-### Current 100-query diagnostic (2026-09-28)
+### Report current captures
 
-Source HEAD: `c64f6af5d5e2817e346336ceee0e57f5fb25d74f` from a clean
-worktree. Ten pinned repositories each supply 100 bare-symbol tasks: the prior
-20 symbols plus 80 deterministic Tree-sitter function declarations. There are
-1,000 task rows and 997 distinct query strings across repositories. The same
-100 task/query/gold projection is used for lexical, semantic and hybrid modes
-within each repository. Every completed lexical row is a fresh five-product
-workflow with validation and replay. Values aggregate one query per repository
-per task; every repository has equal weight. `R` is file recall@10; `N` is
-chunk NDCG@10; the two times are query latency **p50/p95** in milliseconds.
-Ranks in parentheses use `R` within the row. Speed is intentionally unranked.
-
-| Input universe / cohort | Query | Mode | Quanta | Semble | Sourcegraph | cs | OpenGrok | Tasks/product |
-| --- | --- | --- | --- | --- | --- | --- | --- | ---: |
-| `code_only`, all 10 | bare symbol | lexical | R 0.981 (#4); N 0.0159; 4.89/16.73 ms | R 0.976 (#5); N 0.0830; 0.229/1.50 ms | R 0.989 (#2); 179.81/301.20 ms | R 0.990 (#1); 35.21/70.89 ms | R 0.985 (#3); 11.21/30.39 ms | 1000 |
-| `code_only`, common 9 | bare symbol | lexical | R 0.983 (#4); N 0.0153; 4.76/15.99 ms | R 0.978 (#5); N 0.0814; 0.200/1.45 ms | R 0.992 (#1); 178.51/234.79 ms | R 0.991 (#2); 34.38/64.66 ms | R 0.989 (#3); 10.73/30.51 ms | 900 |
-| `code_only`, common 9 | bare symbol | semantic | R 0.748 (#2); N 0.0092; 3.73/5.35 ms | R 0.831 (#1); N 0.0536; 0.095/0.395 ms | `N/A` | `N/A` | `N/A` | 900 |
-| `code_only`, common 9 | bare symbol | hybrid | R 0.980 (#2); N 0.0155; 9.75/33.76 ms | R 0.989 (#1); N 0.0926; 8.75/53.82 ms | `N/A` | `N/A` | `N/A` | 900 |
-| `code_only`, trpc | bare symbol | semantic | `FAILED` | `FAILED` | `N/A` | `N/A` | `N/A` | 100 attempted; 0 scored |
-| `code_only`, trpc | bare symbol | hybrid | `FAILED` | `FAILED` | `N/A` | `N/A` | `N/A` | 100 attempted; 0 scored |
-
-All-ten lexical uses 10/10 validated five-product workflows (1,000 queries
-per product). The common-nine rows exclude trpc so the three modes use the
-same repository cohort. Semantic and hybrid each have 9/10 validated and
-replayed pairs; trpc failed at task S04 with duplicate candidate byte spans at
-4 KiB and also failed on a fresh 16 KiB retry. Both trpc mode cells remain
-`FAILED` rather than zero. External products have no semantic/hybrid route in
-this protocol, so their mode cells are `N/A`.
-
-OpenGrok's original ten projects indexed only 1,492 of 6,477 admitted files.
-The displayed lexical score uses reindexed projects
-whose path inventories match every admitted manifest. A `full` OpenGrok probe
-also checked served bytes for axios, black and fastapi. For tokio and vite,
-the `/file/content` API returned 404 for an indexed/searchable file; for
-eslint it returned 400 for a path containing braces. Those three workflows
-were rerun without the full probe after exact path-inventory checks. The
-remaining four projects have exact path-inventory checks but no full served-byte
-probe. Thus the OpenGrok input byte universe is not fully attested across all
-ten. Sourcegraph indexed-universe attestation is also absent. Gold labels are
-mechanically generated and not independently adjudicated. The snapshot is
-`diagnostic_unqualified` and does not support a qualified product ranking.
-
-Latency boundaries differ: Quanta is runner SDK query-call time; Semble is
-worker search-dispatch time; Sourcegraph and OpenGrok are loopback HTTP request
-wall time; cs includes process spawn and search. The p50/p95 values describe
-those captured calls, with differing setup and protocol overhead. They are
-not a cross-product speed benchmark or speed rank.
-The current 100-query specs used one warmup pass and one measured pass per
-fresh root. Their displayed query timings exclude Quanta/Semble indexing, but
-the full matrix runtime includes fresh index builds for each native mode run.
-
-The following **2026-09-28 20-query diagnostic snapshot** is historical and
-has no captured speed column. Use the current 100-query snapshot above for the
-latest result table.
-Source HEAD: `071c6fee987b41a9aa66a0a0928b0e22476b3177`. Each repository
-has 20 tasks per query family; aggregate values give every repository equal
-weight. Quanta and Semble cells are **chunk NDCG@10 / file recall@10**; the
-three external cells are **file recall@10** only. `common 9` excludes trpc,
-whose `code_only` semantic capture was rejected by the evaluator. The all-ten
-lexical row still includes trpc's five live lexical products.
-
-| Input file universe / cohort | Query | Mode | Quanta | Semble | Sourcegraph | cs | OpenGrok | Tasks per product |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `code_only`, all 10 | bare symbol | lexical | 0.0193 / 0.985 (#4) | 0.0837 / 0.970 (#5) | 0.995 (joint #1) | 0.990 (#3) | 0.995 (joint #1) | 200 |
-| `code_only`, common 9 | bare symbol | lexical | 0.0188 / 0.9889 (joint #3) | 0.0793 / 0.9722 (#5) | 0.9944 (joint #1) | 0.9889 (joint #3) | 0.9944 (joint #1) | 180 |
-| `code_only`, common 9 | bare symbol | semantic | 0.0122 / 0.7222 (#2) | 0.0521 / 0.8056 (#1) | `N/A` | `N/A` | `N/A` | 180 |
-| `code_only`, common 9 | bare symbol | hybrid | 0.0196 / 0.9778 (#2) | 0.0987 / 0.9944 (#1) | `N/A` | `N/A` | `N/A` | 180 |
-| `code_only`, trpc | bare symbol | lexical | 0.0247 / 0.950 (joint #4) | 0.1238 / 0.950 (joint #4) | 1.000 (joint #1) | 1.000 (joint #1) | 1.000 (joint #1) | 20 |
-| `code_only`, trpc | bare symbol | semantic | `FAILED` | `FAILED` | `N/A` | `N/A` | `N/A` | 20 attempted; 0 scored |
-| `code_only`, trpc | bare symbol | hybrid (16 KiB) | 0.0243 / 0.950 (joint #1) | 0.0834 / 0.950 (joint #1) | `N/A` | `N/A` | `N/A` | 20 |
-| candidate root, all 10 | bare symbol | lexical | 0.0421 / 0.985 (joint #1) | 0.0881 / 0.985 (joint #1) | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | 200 |
-| candidate root, all 10 | bare symbol | semantic | 0.0295 / 0.815 (#2) | 0.0636 / 0.870 (#1) | `N/A` | `N/A` | `N/A` | 200 |
-| candidate root, all 10 | bare symbol | hybrid | 0.0455 / 0.990 (#1) | 0.0968 / 0.985 (#2) | `N/A` | `N/A` | `N/A` | 200 |
-| candidate root, all 10 | natural language | lexical | 0.0092 / 0.370 (#2) | 0.0863 / 0.960 (#1) | `N/A` | `N/A` | `N/A` | 200 |
-| candidate root, all 10 | natural language | semantic | 0.0222 / 0.670 (#2) | 0.0536 / 0.755 (#1) | `N/A` | `N/A` | `N/A` | 200 |
-| candidate root, all 10 | natural language | hybrid | 0.0235 / 0.710 (#2) | 0.0721 / 0.975 (#1) | `N/A` | `N/A` | `N/A` | 200 |
-
-**Read the table:** Higher scores are better. File recall@10 is the fraction of
-gold files found in the first ten results; NDCG@10 also rewards ranking of
-gold chunks. Parenthesized ranks use file recall@10 among executed products in
-the **same row**; equal scores share a rank and the next rank skips places.
-Ranks do not use NDCG or compare different cohorts, input universes or modes.
-Compare all five file-recall values only in the `code_only` lexical rows.
-External-product NDCG was not measured. `NOT_RUN` means the three external
-products were not queried on that candidate-root manifest; their `code_only`
-scores cannot fill those cells. `N/A` means the current external protocol has
-no semantic/hybrid route or does not admit natural-language lexical queries.
-
-**Mode input scope:** `code_only` is the broad code-file view used by all five
-live lexical products and the new Quanta--Semble semantic/hybrid pairs.
-Candidate root is a smaller frozen benchmark-file subset used by the earlier
-Quanta--Semble three-mode matrix. Bare-symbol queries use identifier text;
-natural-language queries use prose for the same gold target. Both families
-contain 20 tasks per repository. The two file universes have different
-manifests even at the same repository commits, so their scores are separate
-tracks. Lexical, semantic and hybrid select different retrieval routes; they
-do not change a row's file universe. `code_only` uses 4096-byte strict windows
-except the trpc hybrid retry, which used 16384 bytes after 4096-byte chunks
-projected to duplicate byte spans. trpc semantic still failed because two
-native Semble hits projected to the same line span. Do not treat the trpc
-lexical/hybrid scores as a pure mode ablation or include trpc in a three-mode
-aggregate until that failure is fixed and rerun.
-
-Execution coverage: 10/10 live five-product `code_only` lexical workflows;
-20 Quanta--Semble `code_only` semantic/hybrid cells attempted, 18 passed at
-4096 bytes, one trpc hybrid cell passed on a fresh 16384-byte retry, and trpc
-semantic remains `FAILED` after both settings. The earlier candidate-root
-matrix completed 60/60 pairs. Every passing new pair completed `run`,
-`validate` and `replay` with 40/40 selected/executed/passed verdict cases.
-The snapshot remains diagnostic: gold labels were mechanically generated and
-not independently adjudicated; external indexed-universe attestation and
-qualified cross-product latency are absent. A bare-symbol lexical row is
-complete only when all five products ran on the same manifest, suite and
-query pack.
-
-Include a compact execution summary with expected/completed workflows, paired
-results, live task rows per external product, validation/replay counts, source
-HEAD and the diagnostic/qualification boundary. Keep latency out of cross-product
-rankings unless a separate qualified speed protocol passes.
+Use only the requested current source/input/capture rows. The Sep-28 20/100-query
+score tables and workflow totals are retired to
+[Git history](../../docs/ARCHIVE-INDEX.md#oct-05-repository-wide-history-cleanup).
+Unadjudicated labels, unequal native rank units, missing external indexed scope
+and unlike timing layers remain explicit qualification limits. Current B01–B09
+and OCT-04 owners retain their unresolved conditions; this guide is execution
+and output interpretation, not a frozen benchmark report.
 
 ## Lexical workflow command (repeat for every repository × supported bare-symbol family)
 

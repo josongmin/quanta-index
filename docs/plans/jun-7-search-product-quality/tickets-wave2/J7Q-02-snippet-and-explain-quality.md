@@ -21,7 +21,7 @@ contracts are in [the code-search ADR](../../../adr/SEP-27-003-code-search-sourc
   cannot replace these or combined-source acceptance in
   [CS-INT-01](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md).
   The exact regex allocation cap in
-  [CS-ENG-04](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md)
+  [CS-ENG-04 decision](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md#deferred-regex-allocation-cap-cs-eng-04)
   is deferred and is not a preview-correctness acceptance condition.
 
 Registered producer: `snippet_matrix`; emitted `summary.json` and
