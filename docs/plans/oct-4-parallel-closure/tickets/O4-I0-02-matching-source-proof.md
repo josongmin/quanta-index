@@ -10,6 +10,12 @@
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
+## 2026-10-05 causal/OS-process 통합 뒤 영향 gate
+
+- Clean `08d533787ee91f8e90c9139d09adae03a6394cf7`의 `oct5-causal-actual`에서 `PATH=/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index/.venv/bin:$PATH just rust-hexagonal` — `VERIFIED`,exit0,Hexagonal boundary check passed. 이어 같은 환경의 `just rust-cargo-modules` — `VERIFIED`,exit0,contract/core module tree unchanged. Cargo module guard 범위는 contract/core이며 lexical/search-plane 전체 module-tree snapshot을 검증했다는 뜻이 아니다.
+- `PATH=/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index/.venv/bin:$PATH CARGO_BUILD_JOBS=1 just rust-profile test-daemon` 실행을 시작했다. Canonical selector는24 catalog rows/4 Cargo binaries/1process/4test threads이며 새 `active_selection_process_v1`이 포함된다. Terminal 전 테스트 성공은 `NOT_RUN`이다. Runtime lib의 admitted-timeout/slow-disk tests는 integration-only selector에 포함되지 않으며 별도 owner proof를 요구한다.
+- 이후 main의 문서-only `0893212d`와 위 frozen source 사이 crates/Cargo.toml/Cargo.lock/test-authority diff는 비어 있었다. 이는 해당 Rust gate의 source 일치 범위이며 latest whole-source release/hosted CI/Contract·SDK qualification으로 확대하지 않는다.
+
 ## 2026-10-05 후속 ANN epoch의 현재 검증 경계
 
 - exact source97eedd의 `gh run list --commit 97eedd11b70e76c66985b15a968211a2faf92c6d --limit 20 --json databaseId,headSha,name,status,conclusion,url,createdAt`도 실제 exit0/`[]`였다. 해당 hosted CI는 `NOT_RUN`이며 focused203·기존0e6 formal proof와 구분한다. root는 stage/commit/push 또는 CI trigger를 실행하지 않았다.
