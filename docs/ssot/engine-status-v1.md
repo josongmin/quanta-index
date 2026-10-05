@@ -44,7 +44,10 @@ and current E3 owner rather than the retired unexecuted-counterexample wording.
 [OCT-04](../plans/oct-4-parallel-closure/tickets/INDEX.md) owns conditional
 optimization, missing inputs and remaining execution.
 [SEP-21](../plans/sep-21-search-plane-sota-hardening/tickets/CURRENT-RESIDUAL-2026-09-26.md)
-owns installed/paired/Linux/provider/release acceptance. P11 additionally lacks
+owns installed/paired/Linux/provider/release acceptance. R3 additionally lacks
+the producer-side independent expected semantic partition/omission check before
+dispatch; supplied-scope duplicate/conflict validation is already implemented.
+P11 additionally lacks
 typed deploy/activate/restore-forward producers and recipes under
 [S21-12](../plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md).
 Existing IPC/CAS handlers do not close that operational code/observer contract.

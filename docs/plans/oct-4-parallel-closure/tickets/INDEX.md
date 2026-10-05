@@ -4,17 +4,21 @@
 이 문서가 원본 5개 handoff와 29개 티켓의 **미완료 조건 및 범위 판정의 단일 기준**이다.
 [담당·인계](../README.md) · [실행 웨이브](../WAVES.md) · [원본 복구](../../ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).
 
-코드 대조: 구현 존재/수리23개, 조건부4개, 현 계약 비적용1개, 계약 입력이 필요한 운영 코드1개.
-이는 29개 요청의 전체 qualification 완료율이 아니다. 기존 구현을 다시 만드는 작업은 남기지 않는다.
+29개 scope의 상위 판정: 구현 존재/수리23개, 조건부4개, 현 계약 비적용1개, 미완료 I0-03 1개.
+I0-03에는 producer semantic 누락 검증과 P11 운영 생산자의 두 코드 패키지가 남는다.
+이 scope 수는 전체 qualification 완료율이나 남은 코드 건수가 아니다.
 
 ## 현재 코드 잔여 — 2026-10-05 소스 대조
 
-기준: clean main `c7b0ce88617d8ae0f582ab41cdf223e5962bd8ab`와 아래 명시한 외부 후보.
-각 후보의 main 반영·실행 결과는 해당 항목에서 갱신한다. 29개 scope를 코드 건수로 합산하지 않는다.
+최종 감사 기준: Quanta clean main `dcd3860ec2862dced0bec9398c578fd2ea0a9c2a`,
+Semantica main `34d85f507aa5f907c50d0d7c8dfd23190d585cb7`와 별도 담당의 dirty 작업.
+Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
+아래는 실제 생산 경로·코드와 기존 결과를 대조한 잔여이며 새 full-suite/release qualification이 아니다.
 
 | 분류 | 실제 잔여 | 근거·종료 조건 |
 | --- | --- | --- |
-| 코드 반영 완료·통합 실행 잔여 | R5 cross-repo 완료 증거 전달·caller feature 선택 | 두 main 작업트리에 수리를 반영해 Quanta18/Semantica25 owner tests가 통과했다. Actual caller/kernel pair는 미실행이다. [I0-03](#o4-i0-03) |
+| 코드 반영 완료·통합 실행 잔여 | R5 cross-repo 완료 증거 전달·caller feature 선택 | 최신 대상 파일에서 Quanta18/Semantica25 owner tests를 재실행해 통과했다. Actual caller/kernel pair는 미실행이다. [I0-03](#o4-i0-03) |
+| 미구현·producer 소유 | R3 독립 semantic replace/tombstone/unchanged 기대 범위와 실제 배치의 누락 대조 | Semantica dispatch 전 source plan·shadow policy·prior sealed state·cluster plan에서 독립 기대 범위를 산출·결속한다. 전달된 항목의 중복/충돌 검사만으로 누락을 판정할 수 없다. [I0-03](#o4-i0-03) |
 | 미구현·입력 필요 | P11 배포/활성화/restore-forward typed action producer·recipes·parser/aggregate 연결 | 실제 host/config/state/retention/rollback 및 독립 pre/post 관측 계약 이후 구현. [I0-03](#o4-i0-03) |
 | 실패 후 판정 | Large/XL default 용량 원인 수리 또는 제품 계약 변경 | 이전 source의 timeout/posting-cap 실패는 보존한다. F14 matching 실행 결과로 수리 범위를 결정한다. [E4-05](#o4-e4-05) |
 | 조건부 | Bootstrap 추가 최적화, durable group barrier, persistent token authority, 검색 정책 변경 | [E1-07](#o4-e1-07), [E4-02](#o4-e4-02), [E4-04](#o4-e4-04), [E4-07](#o4-e4-07)의 실제 병목·독립 gold·사전 계약이 선행한다. |
@@ -77,10 +81,11 @@ frozen5796 ready9 재발행 및 나머지3repo·후속 final revisions 미완료
   원본 source107이나 원 review-validator revision을 current product revision으로 재명명하지 않는다.
 - clean5796 Contract791/Rust191/SDK27은 [I0-02](#o4-i0-02)의 완료 proof다.
   외부 Bat 재발행 후보는 원본358-pair review pack으로 typed forms/custody를 재생한 뒤
-  merged409-pair qrels/suite/pack의 고정 byte 일치를 요구한다. v3 actual은5passed/2failed·22.07s:
+  merged409-pair qrels/suite/pack의 고정 byte 일치를 요구한다. Historical v3 actual은5passed/2failed·22.07s:
   409쌍 재생·두 typed alias 거절·잘못된 merged pack 거절은 통과했고,
   label/product source guard2개는 기록된107 checkout 경로 부재로 실패했다.
-  동일107 source checkout 복구·신원 대조 후 새 input으로 실행하며 old raw/packet은 변경하지 않는다.
+  후속 v4에서 동일107 source checkout을 복구·신원 대조하고 새 input으로 실행했다.
+  Old raw/packet은 변경하지 않았다.
   이 외부 후보·other8 준비는 actual admission ISSUE가 아니다.
 - 후속 외부 v4 재생 `VERIFIED`: clean5796 product와 새 clean107 label checkout을 명시해
   `QI_CURRENT_SOURCE_ROOT=/Users/songmin/.codex/worktrees/oct5-f14-qualified-5796/quanta-index QI_LABEL_SOURCE_ROOT=/Users/songmin/.codex/worktrees/oct5-label-source-107/quanta-index uv run --project /Users/songmin/Documents/code-new/quanta-index --frozen --extra dev python -m pytest -q -o addopts='' /private/tmp/qi-e2-ready9-full5-current-prep-v4/test_bat409_reissue.py`
@@ -97,7 +102,8 @@ frozen5796 ready9 재발행 및 나머지3repo·후속 final revisions 미완료
 
 P1 · W1/W4 · name-span 구현 완료, 다른 지원 name/typo cells와 최신 source 영향 미판정.
 
-- Gin exact1,196 symbol/name 실제 capture/scoring(product0e6/driverb55)은 반복하지 않는다.
+- Gin exact1,196 symbol/name capture/scoring(product0e6/driverb55)은 해당 historical scope의 완료다.
+  변경된 source의 최신 qualification에는 영향 capture/scoring을 새로 실행한다.
   다른 지원 unit의 선언 ID/name bytes/span을 independent source oracle와 native selected unit으로 평가한다.
 - same-line 두 선언, same-name receiver, use-only, Unicode/case negative를 유지한다.
 - 완료: unit별 실제 supported/unsupported 분모와 source-attested recovery.
@@ -174,20 +180,20 @@ P1 · W1/W4 · native reader/capture/replay 구현 완료, 전체 서비스 univ
   `/private/tmp/qi-e2-og-query-reader-ready9-django20-20261005-v1`의 capture SHA는
   `412325e818b51fd38474af6f8e56543aca081dbcaad76460f46a02869fa51463`다.
   Native12repo/17,615live와20개 요청의 segments_4/generation4/readerVersion16/live3,031/max3,032를
-  결속했다. Bat/cli/django는 발행 suite/pack과 일치하는 ready9 중3repo/60requests 범위이며,
+  결속했다. 해당 실행 시점의 bat/cli/django는 발행 suite/pack과 일치하는3repo/60requests 범위였으며,
   selected-request attested만true이고 전체 서비스 reader/비교 qualification은 미완료다.
 - `VERIFIED`: lo20 capture와 별도 프로세스 replay도 exit0였다.
   `/private/tmp/qi-e2-og-query-reader-ready9-lo20-20261005-v1`의 capture SHA는
   `6bf35fe3203ef504f68141e5b59297353426f824cd18023e7dc7a671a4a5500e`다.
   Native12repo/17,615live,20개 요청의 segments_4/generation4/readerVersion16/live158/max159가 일치했다.
-  동일 발행 입력의 bat/cli/django/lo4repo/80requests를 capture·독립 replay했으며,
-  나머지 ready5repo와 전체 서비스/비교 qualification은 남아 있다.
+  해당 실행 시점에 동일 발행 입력의 bat/cli/django/lo4repo/80requests를 capture·독립 replay했다.
+  이후 ready9/180 완료는 아래에 기록하며 전체 서비스/비교 qualification은 미완료다.
 - `VERIFIED`: mocha20 capture와 별도 프로세스 replay도 exit0였다.
   `/private/tmp/qi-e2-og-query-reader-ready9-mocha20-20261005-v1`의 capture SHA는
   `1f3fe484dcb9acdbf7a2587b03b5f05a2e22cb80ca2813f2790d94df6289c4e2`다.
   Native12repo/17,615live,20개 요청의 segments_4/generation4/readerVersion16/live561/max562가 일치했다.
-  완료된 ready5repo/100requests의 selected-request attested만true다. 나머지 ready4repo 및
-  전체 서비스 reader/비교 qualification은 남아 있다.
+  해당 실행 시점의 ready5repo/100requests에서 selected-request attested만true였다.
+  이후 ready9/180 완료는 아래에 기록하며 전체 서비스 reader/비교 qualification은 미완료다.
 - `VERIFIED`: Nushell20도 별도 fresh capture 및 새 process native replay가 각각 exit0이다.
   Root `/private/tmp/qi-e2-og-query-reader-ready9-nushell20-20261005-v1`, capture SHA256
   `9bb14a98f9ce2c63c435b96b580656dd4066811f13e901de49c3c32e0bb2cdd1`.
@@ -493,6 +499,8 @@ frozen `5796a63f` Contract·fresh SDK `VERIFIED`, hosted CI `NOT_RUN`.
   후속 source revision과 proof를 대조하며 이 결과의 revision을 변경하지 않는다.
 - 후속 source epoch의 포함 코드/driver/scorer/ADR 및 영향 mandatory surfaces를 검증하고 matching fresh
   Contract/SDK/source closure/binaries를 발행·portable replay한다. E3 shipping acceptance와 CI도 실제 scope로 판정한다.
+  감사 기준 `dcd3860e`에는 frozen5796 이후 Justfile/ADR/R5 변경이 있으므로 해당 최신 epoch의
+  formal Contract/SDK·hosted CI는 `NOT_RUN`이다. Frozen791/191/27 결과의 source를 바꾸지 않는다.
 - 공개SDK/contract 변경: `just rust-public-api`; wire/decode: `just rust-fuzz-smoke`;
   module: `just rust-hexagonal`, `just rust-cargo-modules`; selection/state/ingress: `just rust-profile test-daemon`.
 - runtime `autotests=false`: read-view/ingest는 `runtime_fast_suite`, generation/cursor/restart는
@@ -502,7 +510,8 @@ frozen `5796a63f` Contract·fresh SDK `VERIFIED`, hosted CI `NOT_RUN`.
 
 ### O4-I0-03
 
-P1 · 코드 입력 먼저, W6 실행 · **P11 operational producer/recipes 미구현·설계 입력 `BLOCKED`**.
+P1 · 코드 입력 먼저, W6 실행 · **R3 producer 누락 검증 및 P11 operational producer/recipes 미구현**.
+P11 target·관측 계약 입력은 `BLOCKED`이며 upstream R3 소스 작업과 독립이다.
 
 원본 `agent-1.md`의 Release 범위에서 인계된 Linux 서버 배포·운영 검증이다.
 로컬 엔진 회귀와 검색 평가의 완료 판정은 각 owner scope를 따른다.
@@ -522,6 +531,19 @@ P1 · 코드 입력 먼저, W6 실행 · **P11 operational producer/recipes 미�
   Root는 stage/commit/push하지 않았다. Actual clean-pair QBC caller/kernel 실행·fresh daemon custody는
   `NOT_RUN`; 결과 형식은 `runner-candidate-only`이며 P11 operational staged node를 발행하지 않는다.
   `Justfile`/test-authority와 후속 ADR 변경의 source closure 및 영향 proof는 새 epoch로 검증한다.
+- 최종 감사의 R5 집중 재실행 `VERIFIED`: 위와 같은 Quanta 명령은18passed·1.38s/exit0,
+  Semantica 명령은25passed·0.72s/exit0였다. Quanta owned5와 Semantica 신규 테스트는
+  외부 v4 postimage와 일치한다. Semantica CLI 전체 파일에는 후속 log-GC/proof-guard 변경이 있어
+  7파일 전체 postimage 일치를 주장하지 않는다. 검증한 CLI/4개 test bytes는
+  Semantica `42fa5287`에서`34d85f50`으로 이동한 뒤에도 동일했다. Actual pair는 계속 `NOT_RUN`이다.
+- R3 코드 잔여: Semantica `search_plane_handoff_dispatch/semantic_state.rs`는 lexical emission과
+  prior state에서 semantic plan을 구성하고, `semantic_plan.rs`는 cluster mutations를 추가한다.
+  `aggregate_prepare.rs`의 실제 dispatch 준비에는 별도로 산출한 고정 expected
+  replace/tombstone/unchanged partition과 배치의 누락 대조가 없다. Quanta의
+  `semantic_derive.rs`/`corpus_wire.rs`는 전달된 범위의 중복·충돌을 거절하는 owner다.
+  누락이 실제 발생했다는 실행 증거는 없으며, 이 잔여는 upstream 검증 계약의 미구현이다.
+  Source plan·shadow policy·prior sealed state·cluster plan에 결속한 독립 기대 범위,
+  정상 lexical-only/unchanged-empty와 omission/duplicate negatives를 producer dispatch 전에 검증한다.
 - 배포·활성화·restore-forward 실제 명령, distinct independent pre/post 성공 관측,
   authorized Linux host/path/config/state/retention/rollback window를 확정한다.
   현재 parser/schema는 nextest/pytest authority며 staged action을 발행할 수 없다.

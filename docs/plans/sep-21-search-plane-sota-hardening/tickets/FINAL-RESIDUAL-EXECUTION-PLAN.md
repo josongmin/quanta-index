@@ -65,6 +65,14 @@ backdoor is required. Current source impact is owned by OCT-04 I0/E3.
 
 ## R3 — Independent semantic omission oracle
 
+The selected Semantica production handoff constructs a semantic plan from
+lexical emissions/prior state and adds cluster mutations. Its aggregate prepare
+path does not yet compare the batch against a separately derived expected
+replace/tombstone/unchanged partition. This is missing producer verification
+code, not an observed omission incident. [The OCT-04 audit](../../oct-4-parallel-closure/tickets/INDEX.md#o4-i0-03)
+records the source boundary; authorized Linux inputs are not prerequisites for
+this upstream implementation.
+
 Producer source-plan/shadow policy/prior sealed owner/cluster plan must independently
 enumerate replace/tombstone/unchanged scope before dispatch. Bind that expected
 partition/digest to the existing batch/terminal chain and reject omissions or

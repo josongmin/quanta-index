@@ -8,6 +8,9 @@
 
 - R5 cross-repo completion 전달·caller 필수 feature·typed resolver/locator 수리는 두 main 작업트리에 반영했다.
   Quanta18/Semantica25 owner scope 완료; 실제 clean pair 실행은 [I0-03](tickets/INDEX.md#o4-i0-03)에서 계속한다.
+- 실제 미구현: R3 producer가 dispatch 전에 독립 expected semantic replace/tombstone/unchanged 범위를
+  실제 배치와 대조하는 누락 검증. Semantica source-plan/shadow policy/prior state/cluster plan이 owner다.
+  [I0-03](tickets/INDEX.md#o4-i0-03)에서 P11 운영 입력 대기와 분리해 진행한다.
 - 실제 미구현: [I0-03 P11 typed operational producer/recipes](tickets/INDEX.md#o4-i0-03).
   실제 actions와 독립 pre/post 성공 판정 계약·authorized target 입력이 필요하다.
 - E1-07/E4-02/E4-04/E4-07은 실제 병목·독립 정책 실패 뒤에만 채택하는 조건부 변경이다.
@@ -47,6 +50,8 @@
 - E3-01/03/04/05/06의 완료 owner/process scope는 I0 matching shipping-source/release에서 소비한다.
   E3-02 pin transfer는 현 Accepted 계약에서 비적용이며 dependent code의 대기 조건이 아니다.
 - P11 contract/target 입력 → existing typed authority/recipe 구현·검증 → actual action 실행 → aggregate.
+- R3 independent producer 기대 범위·누락 대조 → owner positives/negatives → exact-pair protocol proof.
+  Linux target 입력은 upstream R3 구현의 전제가 아니다.
 
 ## Runtime 실행 규칙
 
