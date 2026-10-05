@@ -16,7 +16,9 @@ use quanta_index_contract::{
 use quanta_index_sdk::{QuantaIndex, SdkError, SearchCorpusBatch};
 use quanta_index_searchd_harness::{
     fixture_source_scope_v1, private_tempdir,
-    scale::{ScaleTier, ScopedFile, ScopedOracle, generate_scoped_corpus, params_for, repo_query_token},
+    scale::{
+        ScaleTier, ScopedFile, ScopedOracle, generate_scoped_corpus, params_for, repo_query_token,
+    },
 };
 use sha2::{Digest, Sha256};
 
@@ -131,23 +133,22 @@ fn source_truth(files: &[ScopedFile]) -> Result<SourceTruth, Box<dyn Error>> {
     let mut repo2_token_paths = BTreeSet::new();
     for file in files {
         let key = (file.source_repo_id.clone(), file.repo_relative_path.clone());
-        let digest: [u8; 32] =
-            Sha256::digest(format!("{}\n", file.content).as_bytes()).into();
+        let digest: [u8; 32] = Sha256::digest(format!("{}\n", file.content).as_bytes()).into();
         let lines = u32::try_from(file.content.lines().count())?;
         if source.insert(key.clone(), (digest, lines)).is_some() {
             return Err("fixture contains duplicate source identity".into());
         }
         if file.content.contains(RETAINED_TOKEN) {
-            retained.insert(key.clone());
+            let _inserted = retained.insert(key.clone());
         }
         if file.content.contains(DELETED_TOKEN) {
-            deleted.insert(key.clone());
+            let _inserted = deleted.insert(key.clone());
         }
         if file.source_repo_id == "repo2" {
-            repo2_paths.insert(key.clone());
+            let _inserted = repo2_paths.insert(key.clone());
         }
         if file.content.contains(&repo_query_token(2)) {
-            repo2_token_paths.insert(key);
+            let _inserted = repo2_token_paths.insert(key);
         }
     }
     if retained != BTreeSet::from([("repo1".into(), "src/file_0.rs".into())])
@@ -171,12 +172,24 @@ fn wait_ready(client: &QuantaIndex) -> TestResult {
         "real daemon ready with one active repository",
         || client.observability().process_readiness(),
         |report| report.ready && report.active_repositories == 1,
-        |error| matches!(error, SdkError::Remote { code: SearchPlaneErrorCodeV2::NotReady, .. }),
+        |error| {
+            matches!(
+                error,
+                SdkError::Remote {
+                    code: SearchPlaneErrorCodeV2::NotReady,
+                    ..
+                }
+            )
+        },
     )?;
     Ok(())
 }
 
-fn query(client: &QuantaIndex, token: &str, top_k: u32) -> Result<TextQueryResponse, Box<dyn Error>> {
+fn query(
+    client: &QuantaIndex,
+    token: &str,
+    top_k: u32,
+) -> Result<TextQueryResponse, Box<dyn Error>> {
     Ok(client
         .lexical()
         .query()
@@ -195,7 +208,10 @@ fn check_row(row: &LexicalCandidate, truth: &SourceTruth, generation: u64) -> Te
         .source
         .get(&key)
         .ok_or_else(|| format!("foreign source result: {key:?}"))?;
-    let source = row.source.as_ref().ok_or("result has no source commitment")?;
+    let source = row
+        .source
+        .as_ref()
+        .ok_or("result has no source commitment")?;
     if source.file.source_repo_id != row.source_repo_id
         || source.file.repo_relative_path != row.repo_relative_path
         || source.revision_id != revision()?
@@ -219,12 +235,17 @@ fn unique_hit(
     truth: &SourceTruth,
 ) -> Result<LexicalCandidate, Box<dyn Error>> {
     let response = query(client, token, 10)?;
-    if response.generation != GenerationPin::new(repo()?, revision()?, ManifestGeneration::new(generation))
+    if response.generation
+        != GenerationPin::new(repo()?, revision()?, ManifestGeneration::new(generation))
         || response.results.len() != 1
     {
         return Err(format!("unique source query returned wrong page: {token}").into());
     }
-    let row = response.results.into_iter().next().ok_or("missing unique source row")?;
+    let row = response
+        .results
+        .into_iter()
+        .next()
+        .ok_or("missing unique source row")?;
     check_row(&row, truth, generation)?;
     if row.source_repo_id.as_str() != expected.0 || row.repo_relative_path.as_str() != expected.1 {
         return Err(format!("wrong source for unique token {token}").into());
@@ -238,7 +259,10 @@ struct Observed {
     scoped: Vec<LexicalCandidate>,
 }
 
-fn observe_generation_two(client: &QuantaIndex, truth: &SourceTruth) -> Result<Observed, Box<dyn Error>> {
+fn observe_generation_two(
+    client: &QuantaIndex,
+    truth: &SourceTruth,
+) -> Result<Observed, Box<dyn Error>> {
     wait_ready(client)?;
     let retained = unique_hit(client, RETAINED_TOKEN, 2, ("repo1", "src/file_0.rs"), truth)?;
     let deleted = query(client, DELETED_TOKEN, 10)?;
@@ -285,10 +309,18 @@ fn medium_scale_source_survives_real_daemon_process_restart_and_delete() -> Test
     }
     wait_ready(&client)?;
     let _retained_before_delete = unique_hit(
-        &client, RETAINED_TOKEN, 1, ("repo1", "src/file_0.rs"), &truth,
+        &client,
+        RETAINED_TOKEN,
+        1,
+        ("repo1", "src/file_0.rs"),
+        &truth,
     )?;
     let _deleted_before_delete = unique_hit(
-        &client, DELETED_TOKEN, 1, ("repo0", "src/file_0.rs"), &truth,
+        &client,
+        DELETED_TOKEN,
+        1,
+        ("repo0", "src/file_0.rs"),
+        &truth,
     )?;
     let (_delta_receipt, second_head) = client
         .search_corpus()
@@ -303,7 +335,10 @@ fn medium_scale_source_survives_real_daemon_process_restart_and_delete() -> Test
     let reopened_client = reopened.connect()?;
     let after_restart = observe_generation_two(&reopened_client, &truth)?;
     if before_restart != after_restart {
-        return Err("ranked identities, source commitments, or scores changed across process restart".into());
+        return Err(
+            "ranked identities, source commitments, or scores changed across process restart"
+                .into(),
+        );
     }
     drop(reopened_client);
     reopened.stop()?;
