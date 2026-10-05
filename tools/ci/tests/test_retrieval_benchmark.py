@@ -6750,10 +6750,97 @@ def _pair_stage(
     hybrid_floor="100",
     query_observation="enabled",
     sdk_build_profile=None,
+    file_current=False,
+    file_status=None,
 ):
     """Build a complete valid pair stage through the real driver functions."""
     work = tmp_path / "work"
-    repo, suite, run, _sp, _rp, files = fixture_v3(work / "src", answerable_only=True)
+    if file_current:
+        repo, suite, run, _sp, _rp = _file_projection_run(
+            work / "src", "code_search_file", queries=["alphaTwo", "alphaThree"]
+        )
+        files = {name: (repo / name).read_bytes() for name in ("a.txt", "b.txt", "excluded.txt")}
+        source_task, source_row = suite["tasks"][0], run["results"][0]
+        suite["tasks"] = []
+        run["results"] = []
+        queries = (
+            "alpha",
+            "bravo",
+            "charlie",
+            "delta",
+            "echo",
+            "foxtrot",
+            "golf",
+            "hotel",
+            "india",
+            "juliet",
+            "kilo",
+            "lima",
+            "mike",
+            "november",
+            "oscar",
+            "papa",
+            "quebec",
+            "romeo",
+            "sierra",
+            "tango",
+        )
+        for index, query in enumerate(queries):
+            task = copy.deepcopy(source_task)
+            task.update(
+                task_id=f"F{index:02d}",
+                query=query,
+                query_sha256=ev.digest(query.encode()),
+                query_family_id=f"fam-{index}",
+            )
+            row = copy.deepcopy(source_row)
+            row["task_id"] = task["task_id"]
+            row["query_identity"] = qp.derive_query_identity("code_search_file", query)
+            row["score_evidence"] = "native_sdk_score_v1"
+            for rank, candidate in enumerate(row["candidates"]):
+                candidate["score"] = float(len(row["candidates"]) - rank)
+            suite["tasks"].append(task)
+            run["results"].append(row)
+        if file_status == "no_answer":
+            for task in suite["tasks"]:
+                task.update(answerable=False, gold=[], file_judgments=[])
+        if file_status == "capped":
+            run["results"][0]["status"] = "capped"
+        suite["routes"] = ["lexical", "semble-lexical-file"]
+        for task, row in zip(suite["tasks"], list(run["results"]), strict=True):
+            baseline = copy.deepcopy(row)
+            baseline.update(
+                route="semble-lexical-file",
+                ordering="score_desc_native_tiebreak",
+                score_evidence="semble_bm25_score_v1",
+            )
+            baseline["query_identity"] = {
+                "original_query_sha256": task["query_sha256"],
+                "submitted_query_sha256": task["query_sha256"],
+            }
+            baseline["file_collection"] = {
+                "indexed_chunks": 2,
+                "matched_chunks": len(baseline["candidates"]),
+                "matching_files": len(baseline["candidates"]),
+            }
+            for candidate in baseline["candidates"]:
+                candidate.pop("span_accounting", None)
+                candidate["tokens"] = len(
+                    ev.TOKEN_RE.findall((repo / candidate["path"]).read_text())
+                )
+            run["results"].append(baseline)
+        if file_status == "abstained":
+            row = run["results"][len(queries)]
+            row.update(status="abstained", candidates=[])
+            row["file_collection"].update(matched_chunks=0, matching_files=0)
+        baseline_route = "semble-lexical-file"
+        baseline_mode = "lexical-file"
+        quanta_policy = "code_search_file"
+    else:
+        repo, suite, run, _sp, _rp, files = fixture_v3(work / "src", answerable_only=True)
+        baseline_route = "hybrid"
+        baseline_mode = "native-default"
+        quanta_policy = "native"
     if qualified_speed_sample:
         if repetitions != 5:
             raise ValueError("qualified speed fixture requires five fresh roots")
@@ -6872,14 +6959,22 @@ def _pair_stage(
     runner_binary.write_bytes(b"quanta-runner-binary")
 
     lex_pack, _ = pairrun.project_pack_and_suite(pack, suite, ["lexical"])
-    sem_pack, _ = pairrun.project_pack_and_suite(pack, suite, ["hybrid"])
+    sem_pack, _ = pairrun.project_pack_and_suite(pack, suite, [baseline_route])
     lex_sha = ev.digest(ev.canonical(lex_pack))
     sem_sha = ev.digest(ev.canonical(sem_pack))
     lex_rows = [r for r in run["results"] if r["route"] == "lexical"]
-    sem_rows = [r for r in run["results"] if r["route"] == "hybrid"]
+    sem_rows = [r for r in run["results"] if r["route"] == baseline_route]
 
     def record(route_rows, pack_sha, system, capture_id, run_id):
         capture = _v3_capture(system, current=True)
+        if file_current:
+            profile = (
+                qp.execution_profile(quanta_policy)
+                if system == "quanta"
+                else semble_adapter.execution_profile(baseline_mode, None)
+            )
+            capture["execution_profile"] = profile
+            capture["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
         if system == "quanta":
             capture["runner_binary"]["digest"] = binary_digest
             # Match the public producer: lexical execution exercises no model.
@@ -6897,11 +6992,12 @@ def _pair_stage(
                 }
         return {
             "schema_version": 5,
+            **({"span_accounting_version": 1} if file_current and system == "quanta" else {}),
             "query_pack_sha256": pack_sha,
             "comparison_contract": pack["comparison_contract"],
             "runner": {
                 "name": (
-                    "semble-adapter/native-default" if system == "semble" else f"{system}-runner"
+                    f"semble-adapter/{baseline_mode}" if system == "semble" else f"{system}-runner"
                 ),
                 "revision": "r",
                 "run_id": run_id,
@@ -6991,20 +7087,23 @@ def _pair_stage(
                     "call_ordinal": ordinal,
                     "submitted_query_sha256": tasks_by_id[task_id]["query_sha256"],
                     "profile_sha256": ev.digest(
-                        ev.canonical(semble_adapter.execution_profile("native-default", None))
+                        ev.canonical(semble_adapter.execution_profile(baseline_mode, None))
                     ),
-                    "actual_alpha": 0.5,
-                    "actual_rerank": True,
-                    "candidate_depth": 50,
-                    "lane_entry_counts": {"bm25": 1, "semantic": 1},
-                    "lane_candidate_depths": {"bm25": [50], "semantic": [50]},
+                    "actual_alpha": None if file_current else 0.5,
+                    "actual_rerank": not file_current,
+                    "candidate_depth": 2 if file_current else 50,
+                    "lane_entry_counts": {"bm25": 1, "semantic": 0 if file_current else 1},
+                    "lane_candidate_depths": {
+                        "bm25": [2 if file_current else 50],
+                        "semantic": [] if file_current else [50],
+                    },
                 }
             )
         execution_events_sha256 = ev.digest(ev.canonical(execution_events))
         lane_call_counts = {
             "bm25": len(execution_events),
-            "semantic": len(execution_events),
-            "encode": len(execution_events),
+            "semantic": 0 if file_current else len(execution_events),
+            "encode": 0 if file_current else len(execution_events),
         }
         q_warm = {
             "lexical": {
@@ -7013,7 +7112,7 @@ def _pair_stage(
             }
         }
         s_warm = {
-            "hybrid": {
+            baseline_route: {
                 row["task_id"]: [row["timings"]["query_latency_ms"]] * measurements
                 for row in srec["results"]
             }
@@ -7087,9 +7186,9 @@ def _pair_stage(
                 {
                     "schema_version": 2,
                     "system": "semble",
-                    "profile": "native-default",
+                    "profile": baseline_mode,
                     "requested_alpha": None,
-                    "rerank_applied": True,
+                    "rerank_applied": not file_current,
                     "lane_call_counts": lane_call_counts,
                     "execution_events_sha256": execution_events_sha256,
                     "function_identity": function_identity,
@@ -7107,7 +7206,7 @@ def _pair_stage(
                     "measurement_repetitions": measurements,
                     "query_protocol": protocol,
                     "warm_latencies_ms": s_warm,
-                    "cold_latencies_ms": {"hybrid": 1.0},
+                    "cold_latencies_ms": {baseline_route: 1.0},
                     "phases_ms": {
                         "discovery": 1.0,
                         "model_provider_prepare": 1.0,
@@ -7206,16 +7305,18 @@ def _pair_stage(
         (sdir / "native.json").write_text(
             json.dumps(
                 {
-                    "semble_profile": "native-default",
+                    "semble_profile": baseline_mode,
                     "requested_alpha": None,
-                    "actual_alpha_by_task": {
-                        task_id: 0.5 for task_id in protocol["measurement_schedules"][0]
-                    },
+                    "actual_alpha_by_task": (
+                        None
+                        if file_current
+                        else {task_id: 0.5 for task_id in protocol["measurement_schedules"][0]}
+                    ),
                     "execution_events": execution_events,
                     "execution_events_sha256": execution_events_sha256,
                     "function_identity": function_identity,
                     "observed_wrapped_call_ns": 17,
-                    "rerank_applied": True,
+                    "rerank_applied": not file_current,
                     "lane_call_counts": lane_call_counts,
                     "native": [
                         {"task_id": task_id, "results": []}
@@ -7267,12 +7368,14 @@ def _pair_stage(
                     "model_revision": "b" * 40,
                     "model_asset_digest": _fake_sha("model"),
                     "model_cache_manifest_digest": pairrun.sha_file(model_cache_path),
-                    "profile": semble_adapter.execution_profile("native-default", None),
+                    "profile": semble_adapter.execution_profile(baseline_mode, None),
                     "requested_alpha": None,
-                    "actual_alpha_by_task": {
-                        task_id: 0.5 for task_id in protocol["measurement_schedules"][0]
-                    },
-                    "rerank_applied": True,
+                    "actual_alpha_by_task": (
+                        None
+                        if file_current
+                        else {task_id: 0.5 for task_id in protocol["measurement_schedules"][0]}
+                    ),
+                    "rerank_applied": not file_current,
                     "lane_call_counts": lane_call_counts,
                     "execution_events_sha256": execution_events_sha256,
                     "function_identity": function_identity,
@@ -7449,8 +7552,12 @@ def _pair_stage(
         suite_path,
         [Path(rep_layouts[0]["quanta"]["whole_file"]), Path(rep_layouts[0]["semble"])],
     )
-    report = ev.evaluate(_s, _p, combined, "hybrid", "lexical", strict_k=True)
-    report_name = "report-hybrid-vs-lexical-whole_file.json"
+    report = (
+        ev.evaluate_paired_file_diagnostic(_s, _p, combined, baseline_route, "lexical")
+        if file_current
+        else ev.evaluate(_s, _p, combined, baseline_route, "lexical", strict_k=True)
+    )
+    report_name = f"report-{baseline_route}-vs-lexical-whole_file.json"
     (stage / report_name).write_text(json.dumps(report), encoding="utf-8")
     host = {
         "system": "Darwin",
@@ -7539,8 +7646,8 @@ def _pair_stage(
         "suite": str(suite_path),
         "query_pack": str(pack_path),
         "execution_profiles": {
-            "quanta": qp.execution_profile("native"),
-            "semble": semble_adapter.execution_profile("native-default", None),
+            "quanta": qp.execution_profile(quanta_policy),
+            "semble": semble_adapter.execution_profile(baseline_mode, None),
         },
         "runner_binary": str(runner_binary),
         "semble_lockfile": str(semble_lockfile),
@@ -7790,7 +7897,7 @@ def _pair_stage(
                 "top_k": 10,
                 "strategies": ["whole_file"],
                 "quanta_routes": ["lexical"],
-                "semble_route": "hybrid",
+                "semble_route": baseline_route,
                 "searchd_expected_sha256": _fake_sha("searchd"),
                 "semble_lockfile_sha256": ev.digest(b"semble==0.6.0\n"),
                 "host_profile_digest": pairrun.sha_file(host_profile),
