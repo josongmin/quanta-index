@@ -25,6 +25,7 @@ SDK default I/O deadline30s, ingest budget120s, process-wide serial ingest admis
 - 같은 state root를 실제 runtime으로 재조립해 원래 durable receipt와 exact SDK replay의 equality를 검사하고 build0을 요구한다. 동일 source event의 다른 canonical digest는 `BatchDigestConflict`, conflict journal은 `Absent`, 원래 receipt는 불변이며 추가 build0이어야 한다.
 - 준비용 harness와 child production state root를 분리해 초기 `STATE_ROOT_FORMAT_UNSUPPORTED` 실패를 수정했다. accepted gate는 blocking mode와 bounded read를 명시한다. 기본 SDK30초/ingest budget/생산자 계약을 바꾸지 않았다.
 - 검증한 runtime3파일을 main에 통합했다. actual OS process의 test-composed runtime 범위이며 shipping release daemon/Linux 배포는 별도다. 아래 정적 `NOT_RUN` 기록은 이 실행 이전의 상태다.
+- E3-01의 test feature/fixture를 같은 snapshot에 추가한 뒤 runtime lib 전체를 `CARGO_BUILD_JOBS=1 ./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --lib --all-features --locked -- --nocapture --test-threads 1`로 다시 확인했다: exit0,3passed/0failed/0filtered,35.24s. 기존2초 UDS case와 두 OS-child case 모두 통과했다.
 
 ## 2026-10-05 정적 잔여 판정
 

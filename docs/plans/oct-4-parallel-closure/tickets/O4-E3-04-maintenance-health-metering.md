@@ -21,6 +21,7 @@
 - `VERIFIED`: `CARGO_BUILD_JOBS=1 ./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --lib --all-features --locked os_child -- --nocapture --test-threads 1` — exit0,2selected/2passed/0failed/1filtered,32.06s. 이 티켓의 slow-disk child는1.34s에 통과했다. 같은 배치의 timeout/replay는 [E3-05](O4-E3-05-publish-timeout-replay.md)에 기록한다.
 - 초기 실행 실패를 성공으로 계산하지 않았다: fixture shutdown 타입·미사용 반환값 compile 오류, retention 설정 누락, Darwin accepted gate의 nonblocking IO 실패를 수정했다. parent gate에 blocking mode를 명시했고 실제 meter의30초 budget은 바꾸지 않았다. fake harness로 production root를 준비하는 경로도 제거했다.
 - 검증한 runtime3파일을 원래 main bytes와 대조해 통합했다. `lib` test executable의 실제 OS child이며 shipping release daemon/Linux/운영 qualification으로 확대하지 않는다. 아래 정적 `NOT_RUN` 기록은 이 실행 이전의 상태다.
+- E3-01의 test feature/fixture를 같은 snapshot에 추가한 뒤 `CARGO_BUILD_JOBS=1 ./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --lib --all-features --locked -- --nocapture --test-threads 1`도 exit0,3passed/0failed/0filtered,35.24s였다. 기존2초 UDS case와 두 OS-child case 모두 통과했다.
 
 ## 2026-10-04 구현·실패 수리
 
