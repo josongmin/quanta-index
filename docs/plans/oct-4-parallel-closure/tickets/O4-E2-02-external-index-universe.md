@@ -74,6 +74,15 @@ B08 C3는 13,347파일 native stored-content/source-posting reference 증거가 
 - 실제 replay는80 API inventory responses,24 repository-phase sweeps의26,694 served files,4 retained native snapshots 및13,347 path-bearing full-posting rows를 검증했다. 해당 row들의 UID nonnull/global uniqueness 및 stored type/reference가 일치했다. index SHA는 `ae8623d124eeac39af460ce985d4b901ddac2c22e90d3350df354be2d09a9873`다.
 - result는 `qualified:false`, `query_bracketed:false`, `entire_uid_universe_verified:false`, `auxiliary_document_contents_verified:false`를 유지한다. auxiliary4,268의 count만 관측됐으며 물리 index 재읽기·새 query request·native API port bracket은 이 실행 범위가 아니다. 기존 producer summary의 전체 UID 표현을 이 증거 범위로 승격하지 않는다.
 
+## 2026-10-05 코드 우선 통합
+
+- reusable `native/FullLiveDocuments.java`와 `opengrok_index_scope.py`를 추가하고 canonical `live_lexical_external.capture/verify`에 연결했다. OpenGrok spec의 `native_index_reader:{java,classpath}`는 canonical absolute host executable/JARs를 받으며 readonly `backend_snapshot`과 `indexed_view_probe:full`을 함께 요구한다.
+- 모든 release project의 live docs/deletion gaps·source path/UID exact-term digest·directory `d/loc/numl` 및 parent-derived `dirpath`·index-only settings `objuid`/stored `objver/objser`를 검증한다. serialized settings는 deserialize하지 않는다. JVM별 JSON key 순서를 고정해 동일 index의 전후 raw byte 비교를 가능하게 했다.
+- queries 전후 native observation과 readonly backend/runtime/API probe를 결속한다. replay는 성공한 owned execution의 argv/cwd/index path/exit/raw hash를 검사한다. source/java/JAR identity와 누락·중복·unknown auxiliary·부분 terminal을 거절한다. 결과 scope는 `readonly_disk_live_documents_and_uid_postings`이며 service loaded-reader 및 overall universe qualification flag는false다.
+- focused 회귀 중 Sourcegraph native worker의 비차단 stdin `EAGAIN`이 `BlockingIOError`로 노출되는 실제 실패를 재현했다. stdin/stdout/stderr readiness가 사라지면 기존 deadline을 유지하며 재대기하도록 수리했고 강제 read/write EAGAIN 회귀를 추가했다.
+- `VERIFIED`: `PYTHONPATH=. uv run --frozen --extra dev pytest -q tools/ci/tests/test_opengrok_index_scope.py tools/ci/tests/test_live_lexical_external.py -k 'native_live_documents or native_auxiliary_shape or native_reader or v2_single_product'` —35passed/148deselected. independent native mutants·deployed auxiliary golden·execution/raw identity·readonly mock service capture/replay·Sourcegraph advisory readiness 범위다. 실제 Java/Lucene 실행이나 fresh service qualification을 뜻하지 않는다.
+- 현재 작업은 코드와 focused fixture 검증이다. 새 real Java/Lucene capture·loaded service reader 결속·품질/속도 qualification은 후속 범위다.
+
 ## 착수 입력과 추가 qualification
 
 - 2026-10-05 실제 whole live observation `VERIFIED`: clean source107의 `uv run --frozen --extra dev python /private/tmp/qi-og-full-live-docs-prep-20261005/observe.py --input /private/tmp/qi-og-full-live-docs-prep-20261005/input.json --output /private/tmp/qi-og-full-live-docs-actual-20261005-v1 --source-root /Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index --source-head 1071692b2dd4d5a77db54f79ecd0e80a1a20b2a7` — exit0. 모든 live stored field의 typed values 및 indexed field의 term 수/빈도/digest를 관측했고 before/after12repo API path set, native index digest, container/image/pid/restart, published127.0.0.1:18083→8080, named-volume RW, config/74JAR/source/input을 검사했다. owned remote helper cleanup도 성공 조건이다.

@@ -4,6 +4,16 @@
 
 [에픽·소유권 지도](README.md) · [티켓 인덱스](tickets/INDEX.md)
 
+## 현재 우선순위 — 코드 먼저
+
+2026-10-05 사용자 지시: 현재는 코드 구현·보완을 먼저 수행한다.
+
+1. **C1 병렬 구현:** E2 OpenGrok native reader의 canonical capture/verify 연결, E4 별도 scanner A/B 검증 모드. E1/E3는 현재 source의 실제 미구현을 확인한다.
+2. **C2 확인된 결함 수리:** native role/UID·실행/output custody·전후 index 검사, Sourcegraph 비차단 pipe 재대기 등 확인된 correctness 결함과 독립 반례를 반영한다.
+3. **C3 중앙 최소 검증:** root가 변경 owner의 focused 회귀와 정적 점검을 실행한다. 아래 W4–W6 capture/검수/성능/release 작업은 후속 qualification이다.
+
+모델 quota·human rubric·host admission·배포 입력 때문에 코드 작업을 중단하지 않는다. E1 name-span과 E3 selection/maintenance/timeout의 기존 구현을 qualification 부족 때문에 재작성하지 않는다. 성능 원인이 미확인인 barrier/token/storage 재설계는 조건부 상태를 유지한다.
+
 - 아래는 실행 계획이다. 작성 당시의 `PLANNED`/`NOT_RUN`은 과거 기준이며, 이후 구현 반영이나 현재 실행 결과를 뜻하지 않는다. 실제 결과는 원래 owning ticket의 명령·관측·scope로 판정한다.
 - 작성 시작 HEAD: `main@f23af16f436c76ad4a700b75de4dd5b5771f56a6`. 앞선 감사 문서 27개가 dirty였다. 그 변경을 보존하며 실행 시 source/dirty/ownership을 다시 확인한다.
 - 웨이브는 **주된 수행 단계와 인계 순서**다. 모든 repository/티켓을 한꺼번에 기다리는 전역 장벽이 아니다. 준비된 repository·claim별로 다음 단계에 진입한다.
@@ -30,7 +40,7 @@ SQLAlchemy·Zellij는 각20개 자연어 질의를 쓰는 C3 검색 평가용 �
 - native/Gin/phase 진단과 Darwin/hash-dev owner proof를 독립 gold·learned quality·속도·Linux release qualification으로 승격하지 않는다.
 - current 문서 점검 `VERIFIED`:50 Markdown/29 ticket files를 확인했고 INDEX/WAVES에 모두 나타난다. WAVES 기준 배치는 각각1회이며1249 relative links의 대상 누락0이다. `git diff --check`도 exit0이다. 문서 점검을 제품 실행 결과로 합산하지 않는다.
 
-### 현재 남은 실행 순서
+### 후속 qualification의 남은 실행 순서
 
 | 웨이브 / 담당 | 다음 작업 | 현재 실행 또는 입력 경계 |
 | --- | --- | --- |

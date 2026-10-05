@@ -25,7 +25,19 @@ SQLAlchemy·Zellij는 C3 검색 평가의 소스 저장소이며 각각 자연�
 
 신규 보충과 SQLAlchemy/Zellij 조정의 실제 잔여는 최소1,364개 query-file pairs다. 역할별 호출 수는 이 pair 수와 다르며 Tailscale 정책, 독립 holdout, 다른 lane과 성능/운영 검증은 이 분모 밖이다.
 
-## 1. 현재 실행 순서
+## 1. 현재 실행 순서 — 코드 먼저
+
+2026-10-05 사용자 지시에 따라 현재 작업은 구현·회귀 fixture·최소 owner 검증까지다. 모델 검수·대규모 capture·성능·CI·배포 입력은 후속 qualification이며 코드 작업의 대기 조건으로 사용하지 않는다.
+
+| 코드 웨이브 | 담당 / 작업 | 현재 구현 상태 |
+| --- | --- | --- |
+| C1 / 병렬 구현 | E2 native collector/consumer 연결, E4 scanner A/B 비교 경로 | OpenGrok `native_index_reader`를 capture/verify 전후 bracket에 연결. 전수 live docs·source UID·directory/settings 역할·owned execution/raw custody 검사 구현. scanner `--scanner-ab` 구현 및 기존 on/off 회귀 포함21passed |
+| C2 / 근거 있는 수리 | 발견된 collector correctness 결함 | Sourcegraph 비차단 pipe의 `EAGAIN` 재대기 수리. OpenGrok JSON key 순서 고정; deployed ABI의 index-only objuid와 directory parent dirpath 반영 |
+| C3 / 중앙 통합 | 독립 positive/negative fixture 및 좁은 owner rail | E2 native/collector/pipe35passed, E4 scanner/on-off21passed. 명령과 검증 범위는 기존 E2-02/E4-03에 기록. 모델 quota·운영 입력 없이 진행 |
+
+E1 name-span producer/evaluator 및 E3 selection-retirement·maintenance cancellation·publish-timeout 구현은 현재 source에 이미 있다. 증거를 더 수집해야 하는 항목을 새 코드 결함으로 취급하지 않는다. barrier/token/storage 최적화는 채택한 계약이나 확인된 원인이 있을 때만 변경한다.
+
+### 후속 qualification 실행 순서
 
 | 순서 / 웨이브 | 해야 할 일 | 현재 경계 |
 | --- | --- | --- |
@@ -51,7 +63,7 @@ SQLAlchemy·Zellij는 C3 검색 평가의 소스 저장소이며 각각 자연�
 
 ### E2 — native 범위·응답·캡처
 
-- [E2-02](../../plans/oct-4-parallel-closure/tickets/O4-E2-02-external-index-universe.md): fixed-source97eedd SG12/13,347files native replay는 완료됐다. OpenGrok의 전체 live-doc/source UID·auxiliary 관측을 canonical actual query 전후의 immutable index/endpoint/consumer binding으로 연결한다. 현재 whole indexed-universe flag는false다.
+- [E2-02](../../plans/oct-4-parallel-closure/tickets/O4-E2-02-external-index-universe.md): fixed-source97eedd SG12/13,347files native replay는 완료됐다. OpenGrok live-doc/source UID·auxiliary reader 및 canonical query 전후 readonly index/endpoint/consumer 연결 코드는 구현했고 focused35passed다. 실제 새 Java/Lucene capture·service loaded-reader 결속은 후속 qualification이며 whole indexed-universe flag는false다.
 - [E2-03](../../plans/oct-4-parallel-closure/tickets/O4-E2-03-required-cells-and-scheduling.md)·[E2-04](../../plans/oct-4-parallel-closure/tickets/O4-E2-04-fresh-five-product-captures.md): current required cells별 실제 completion/refusal/missing과 blind union을 발행한다. exact1196, prefix/infix/components, default/explicit typo, no-answer, C3 NL240, Gin20, ARB original/adapted, B09 OSA/CLARC/CSN은 각 입력·unit별로 유지한다.
 - [E2-01](../../plans/oct-4-parallel-closure/tickets/O4-E2-01-native-completed-timer.md)·[E2-05](../../plans/oct-4-parallel-closure/tickets/O4-E2-05-semble-process-attribution.md): 정식 반복 실행에서 completed-response boundary와 Semble parent/process 비용 귀속을 검증한다. 기존 timer/phase 구현을 다시 만들지 않는다.
 - [E2-06](../../plans/oct-4-parallel-closure/tickets/O4-E2-06-quality-only-warmup.md): bat 밖에서 warmup0을 채택할 경우에만 자체 protocol/normalized rows/status/f64 parity를 실행한다. 그 전에는1회 유지하며 정식 speed에는0회 정책을 적용하지 않는다.
@@ -67,7 +79,7 @@ SQLAlchemy·Zellij는 C3 검색 평가의 소스 저장소이며 각각 자연�
 
 - [E4-01](../../plans/oct-4-parallel-closure/tickets/O4-E4-01-index-phase-profile.md): seal streaming/posting scan·fsync/physical I/O·token 비용을 독립 계측으로 분리한다. mixed lifecycle/system CPU를 특정 원인의 비용으로 바꾸지 않는다.
 - [E4-02](../../plans/oct-4-parallel-closure/tickets/O4-E4-02-generation-durable-barriers.md)·[E4-04](../../plans/oct-4-parallel-closure/tickets/O4-E4-04-source-token-authority.md): 실제 병목 조건 뒤에만 durable group barrier 또는 token authority를 채택한다. 변경 시 old/new root·fault injection·delta/delete/no-op/reopen·memory/build 비용을 독립 검증한다.
-- [E4-03](../../plans/oct-4-parallel-closure/tickets/O4-E4-03-ascii-scanner-decision.md): current source의 ASCII 전체 호출 A/B로 유지/수정/철회를 판정한다. 원본 root가 없는 과거+8.75% 관측을 새 proof로 소비하지 않는다.
+- [E4-03](../../plans/oct-4-parallel-closure/tickets/O4-E4-03-ascii-scanner-decision.md): 별도 scanner A/B comparator/CLI와 독립 회귀는 구현했고 기존 on/off 포함21passed다. 실제 whole-call 측정 후 유지/수정/철회는 후속 qualification이다. 원본 root가 없는 과거+8.75% 관측을 새 proof로 소비하지 않는다.
 - [E4-05](../../plans/oct-4-parallel-closure/tickets/O4-E4-05-release-scale-load.md): default4096의30초 timeout 및32768의4M-posting capacity refusal을 실패로 유지하고 지원 목표/비용을 판정한다. large300초/256MiB 진단 성공·4096 OS restart 성공을 default capacity 성공으로 덮어쓰지 않는다.
 - [E4-06](../../plans/oct-4-parallel-closure/tickets/O4-E4-06-qualified-performance.md): frequency authority와 지속 quiet-host admission을 확보한 뒤 같은 binaries/input·응답 경계·사전 acceptance의 정식 반복 성능을 실행한다. 현재 Darwin frequency 입력은 `BLOCKED`다.
 - [E4-07](../../plans/oct-4-parallel-closure/tickets/O4-E4-07-policy-and-semantic-residuals.md): default OSA23 잔여·NL/semantic misses를 독립 qrels/name/no-answer/holdout으로 RCA하고 정책을 판정한다. explicit OSA1의 성공을 default 성공으로 전용하지 않는다.

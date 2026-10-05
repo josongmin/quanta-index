@@ -23,8 +23,9 @@ typo_text_is_ascii는16384B 단위 cancellation prepass 후 byte scanner 또는 
 
 ## 2026-10-05 A/B 실행 경로 보완
 
-- `query_timing_overhead.py`는 **동일 binaries/model/input의 observation on/off** 검증기다. `runner_binary_sha256`와 searchd binary digest가 달라지면 `on/off model/daemon/input identity differs`로 거절한다. 서로 다른 scanner 구현의 whole-call A/B를 이 도구의 성공 조건으로 검증할 수 없다. 기존 검증기를 약화하거나 다른 바이너리를 같은 identity로 표시하지 않는다.
-- scanner A/B에는 scanner 차이만 가진 baseline/candidate source와 각각 matching binaries를 먼저 확보하고, 그 두 source/binary identities를 명시적으로 허용하는 별도 비교 경로가 필요하다. query/protocol/corpus/model·selected tasks·status/path/order/cursor/score bits 및 의미 있는 work counters는 독립 대조하고, 차이가 허용되는 clock/counter 항목은 사전에 선언한다. observation on/off 자체는 기존 도구로 별도 검사한다. 이 추가 입력·비교 경로와 실제 whole-call 실행은 `NOT_RUN`이다.
+- `query_timing_overhead.py`의 기존 **동일 binaries/model/input observation on/off** 경로는 유지했다. 별도 `--scanner-ab` / `compare_scanner()`는 baseline/candidate source 선언과 capture에 결속된 runner/searchd SHA를 받는다. source-to-binary build provenance는 `declared_source_revision`으로 표시하며 attested로 승격하지 않는다.
+- 두 arm의 canonical phase/completed-output/diagnostic 검증 후 query/protocol/corpus/model/profile·task coverage·status/path/order/score bits·cursor·ingest/query work counters를 대조한다. 명시적인 clock 경로와 transport request ID만 제외하며 현재 허용한 work counter 차이는 없다. 결과는 `diagnostic_unqualified`다.
+- `VERIFIED`: `PYTHONPATH=. uv run --frozen --extra dev pytest -q tools/ci/tests/test_query_scanner_ab.py tools/ci/tests/test_retrieval_benchmark.py -k 'scanner or query_clock'` —21passed/571deselected. 독립 semantic/custody mutants 및 기존 on/off 회귀 범위다. 실제 scanner binaries의 whole-call 성능 실행·최종 유지/수정/철회는 `NOT_RUN`이다.
 - 사라진 과거 capture/binary 경로를 source tuple로 재구성하지 않는다. 준비된 같은 source scanner pair와 사전 acceptance가 없으므로 현재 functional PASS를 scanner 성능 결정으로 승격하지 않는다.
 
 ## 착수 입력
