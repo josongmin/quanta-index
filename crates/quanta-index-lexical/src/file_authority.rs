@@ -1485,7 +1485,10 @@ pub(crate) fn from_test_files(
         producer::produce_authority(&dispositions, None, policy(), root::PREFIX_BITS, &mut sink)
             .map_err(|error| invalid(&format!("test F15 producer: {}", error.reason)))?;
     for (expected, row) in files.iter().zip(&produced.root.sources) {
-        if expected.source != row.source || expected.expected_postings != row.posting_memberships {
+        if expected.source != row.source {
+            return Err(invalid("test source differs from canonical F15 root"));
+        }
+        if expected.expected_postings != row.posting_memberships {
             return Err(invalid(
                 "test source expected postings differ from canonical F15 root",
             ));
@@ -1594,6 +1597,7 @@ mod tests {
         let object_dir = generation_dir.join(super::DIR).join(super::OBJECTS);
         std::fs::create_dir_all(&object_dir).expect("objects");
         let body = b"canonical object";
+        let body_len = u64::try_from(body.len()).expect("fixture body length fits u64");
         let digest: [u8; 32] = Sha256::digest(body).into();
         let object = object_dir.join(super::file_name(&digest));
         std::fs::write(&object, body).expect("object");
@@ -1605,7 +1609,7 @@ mod tests {
                 prefix_bits: super::root::PREFIX_BITS,
                 prefix: [0; 32],
                 sha256: digest,
-                bytes: body.len() as u64,
+                bytes: body_len,
                 entries: 1,
                 terms: 0,
             }],
@@ -1614,7 +1618,7 @@ mod tests {
         };
         assert_eq!(
             super::audit_replayed_objects(&generation_dir, None, &root).expect("audit"),
-            (1, body.len() as u64)
+            (1, body_len)
         );
         std::fs::write(&object, b"corrupt!! object").expect("in-place corruption");
         assert!(super::audit_replayed_objects(&generation_dir, None, &root).is_err());
@@ -1634,6 +1638,7 @@ mod tests {
                 .expect("objects");
         }
         let body = b"same inode";
+        let body_len = u64::try_from(body.len()).expect("fixture body length fits u64");
         let digest: [u8; 32] = Sha256::digest(body).into();
         let base_object = base.join(super::object_name(&digest));
         let target_object = target.join(super::object_name(&digest));
@@ -1643,7 +1648,7 @@ mod tests {
             &target,
             &base,
             digest,
-            body.len() as u64
+            body_len
         ));
         std::fs::remove_file(&target_object).expect("unlink inherited");
         std::fs::write(&target_object, body).expect("same bytes, new inode");
@@ -1651,7 +1656,7 @@ mod tests {
             &target,
             &base,
             digest,
-            body.len() as u64
+            body_len
         ));
     }
 

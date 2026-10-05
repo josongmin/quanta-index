@@ -9,7 +9,8 @@
 
 ## 현재 코드 잔여 — 2026-10-06 소스 대조
 
-현재 정리 기준: Quanta source base `0b5409a2e2fafd6128d91117a3ae993303f15b78`와 F15 strict 경계 검사/shared-limit/scanner comparator overlay.
+현재 정리 기준: Quanta source `63ac399f27eba896ed9d9ceaef727166ae10d684`와 harness 테스트의 불필요한 clone 제거 overlay.
+F15 strict 경계 검사/shared-limit/scanner comparator 수정은 이 source에 통합됐다.
 Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀·scanner custody·ARB 용어 예산 수리가 추가됐다.
 Main에는 scale/open-loop pair/total retention 정책 결속, invocation-scoped 입장 검증 재사용과
 전체 file-pair verdict를 사용하는 테스트 fixture가 추가됐다. F15 immutable pack/root/posting,
@@ -18,6 +19,9 @@ Seal별 exact product-retention bytes 계측과 canonical fixture는 반영됐�
 Source0b의 lexical 전체 회귀는598passed/8skipped·702.173s였으며, 이후 strict 경계 검사·공유 posting 한도
 수정 overlay의 영향 회귀 및 all-target Clippy는 재검증 중이다. Large/XL 재실행·새 formal proof는 `NOT_RUN`이다.
 병렬 소유 경로와 선행은 [병렬 작업 배정](../WAVES.md#병렬-작업-배정--2026-10-06)에 정리했다.
+Scale·Scanner·Ready9 OG 담당의 독립 작업서를 준비했다. OG9 specs는 별도 clean63ac checkout에서
+원본90 inputs·Python10-role/runtime을 결속해 PREPARE 완료했으며 actual capture는 `NOT_RUN`이다.
+OG 단독과 선택한 clean BASE의 Scanner A/B 진단은 최종 SDK proof를 전역 선행으로 두지 않는다.
 Frozen5796 actual과 아래 current-source owner 회귀를 구분하며 main formal proof로 승격하지 않는다.
 Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
 아래는 실제 생산 경로·코드와 기존 결과를 대조한 잔여이며 새 full-suite/release qualification이 아니다.

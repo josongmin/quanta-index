@@ -35,13 +35,19 @@
 | I0 · F15 통합/검증 | `file_authority/` 경계 수정의 strict Clippy, codec golden·cold census·delta/delete/noop 영향 회귀, runtime restart | Guarded 수정은 통합됐다. 나머지 담당의 main 변경을 I0가 통합하고 최종 source에서 Contract/SDK를 발행한다. 기존598건은 수정 전 컴파일 source 결과 |
 | E4 · Scale 용량 | `scale.rs` 사전 검사·history/timeout profile, Large/XL 단계별 비용 | 공유20M 한도와 fixed17,715,020 허용/20,000,001 거부 회귀는 통합됐다. Full/delta/noop/delete의 실제 retained bytes·latency·메모리로 지원 profile과 typed refusal 경계를 판정. Source 준비·판정 기준은 F15/SDK 대기 없이 진행 |
 | Scanner · 두 빌드 비교 | `query_timing_overhead.py`, scanner source/build custody, 비교 테스트·사양 | 고정338-task Bat typo 입력과 scanner만 다른 두 source를 준비. 각 fresh runner를 자기 SHA에 결속하고 출력 parity·전체 호출 비용 비교. Actual arm build는 선택한 clean source 이후; 최종 SDK 발행 자체는 선행이 아님 |
-| E2 · Ready9 OG/평가 | 원본90 input bindings, OG9 spec·readonly service/index 검증·raw replay, final join 연결 | OG 단독은 Quanta Rust/SDK proof와 독립. Exact63ac clean checkout에서 PREPARE 중. 캡처의 Python10-role SHA·런타임·corpus/suite/pack·서비스 신원을 최종 source에서 재검증해 같은 raw를 명시적으로 join. Admission ISSUE·Quanta/SG pair·전체 join은 각 matching proof 이후 |
+| E2 · Ready9 OG/평가 | 원본90 input bindings, OG9 spec·readonly service/index 검증·raw replay, final join 연결 | OG 단독은 Quanta Rust/SDK proof와 독립. Exact63ac clean checkout에서 OG9 spec PREPARE 완료. 캡처의 Python10-role SHA·런타임·corpus/suite/pack·서비스 신원을 최종 source에서 재검증해 같은 raw를 명시적으로 join. Admission ISSUE·Quanta/SG pair·전체 join은 각 matching proof 이후 |
 
 동시 배정된 에이전트는 `e4_causal_cost`, `process_regression`, `e2_og_universe`다.
 인계 문서는 각각 `/private/tmp/qi-parallel-scale-20261006-v1/`,
 `/private/tmp/qi-parallel-scanner-20261006-v1/`, `/private/tmp/qi-parallel-ready9-20261006-v1/`에 준비한다.
 OG 독립 source는 `/Users/songmin/.codex/worktrees/oct6-og-63ac/quanta-index`의
 `63ac399f27eba896ed9d9ceaef727166ae10d684`이며 최종 Quanta proof source로 재표기하지 않는다.
+
+인계 가능한 작업서는 [Scale](/private/tmp/qi-parallel-scale-20261006-v1/handoff.md),
+[Scanner](/private/tmp/qi-parallel-scanner-20261006-v1/WORK_ORDER.md),
+[Ready9 OG](/private/tmp/qi-parallel-ready9-20261006-v1/WORKORDER.md)다.
+OG9 PREPARE는 원본90 input guards·clean exact source·Python10-role before/after와
+resolved Python runtime을 결속했다. Docker/HTTP 신원·native capture·replay는 `NOT_RUN`이다.
 
 Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 않는 별도 검증 작업이다.
 현재 host에서는 I0가 순서대로 실행한다. AI quota·rubric·holdout 승인·provider/Linux 입력은 해당 scope만 대기한다.
