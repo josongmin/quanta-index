@@ -17,7 +17,7 @@ and [SEP-27-004](../../docs/adr/SEP-27-004-benchmark-capture-and-resource-custod
 | Compare Quanta with Semble | `benchctl run retrieval-diagnostic --pair-spec ...` | Both products search the frozen repo/query pack | Exploratory paired diagnostic; not qualified quality or speed |
 | Run all five lexical products | `benchctl code-search run --spec ...` | External live capture, live SDK pair, five-product score, validation and replay | Fresh five-product diagnostic; no qualified quality or speed |
 | Verify the declared complete matrix | `benchctl code-search matrix-verify --spec ...` | Revalidates the release and every declared pair/workflow capture, then checks all repository × family × mode cells | Complete declared diagnostic matrix; no independent gold, speed or indexed-universe claim |
-| Capture the three external lexical products | `benchctl code-search external --spec ...` | Live Sourcegraph/OpenGrok HTTP requests and cs processes; retains native responses | Fresh external recorded diagnostic; indexed-universe attestation remains absent |
+| Capture the three external lexical products | `benchctl code-search external --spec ...` | Live Sourcegraph/OpenGrok HTTP requests and cs processes; retains native responses | Fresh external recorded diagnostic; inspect the bound disk/file-view/query-reader/index proof scope |
 | Score five lexical products | `benchctl run lexical-diagnostic --lexical-spec ...` | Re-scores **recorded** Quanta, Semble, Sourcegraph, OpenGrok and cs observations | Corpus-bound recorded file-recall diagnostic; **no live product search** |
 
 The `code-search` workflow composes the existing registered pair and lexical
