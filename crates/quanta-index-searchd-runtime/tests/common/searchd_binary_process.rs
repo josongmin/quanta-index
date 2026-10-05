@@ -38,10 +38,18 @@ impl SearchdBinaryProcess {
     /// termination stay in this one owner.
     pub(super) fn start_with_command(
         state_root: &Path,
+        command: Command,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::start_with_command_and_timeout(state_root, command, SOCKET_TIMEOUT)
+    }
+
+    pub(super) fn start_with_command_and_timeout(
+        state_root: &Path,
         mut command: Command,
+        socket_timeout: Duration,
     ) -> Result<Self, Box<dyn Error>> {
         let mut child = command.spawn()?;
-        wait_for_sockets(state_root, &mut child)?;
+        wait_for_sockets_with_timeout(state_root, &mut child, socket_timeout)?;
         Ok(Self {
             state_root: state_root.to_path_buf(),
             child: Some(child),
@@ -75,9 +83,17 @@ impl Drop for SearchdBinaryProcess {
 /// Wait until `child`, a daemon over `state_root`, accepts on all three
 /// sockets; on an exit or a timeout first, clean its sockets up and fail.
 pub(super) fn wait_for_sockets(state_root: &Path, child: &mut Child) -> Result<(), Box<dyn Error>> {
+    wait_for_sockets_with_timeout(state_root, child, SOCKET_TIMEOUT)
+}
+
+fn wait_for_sockets_with_timeout(
+    state_root: &Path,
+    child: &mut Child,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
     let sockets = daemon_socket_paths(state_root);
     let start = Instant::now();
-    while start.elapsed() < SOCKET_TIMEOUT {
+    while start.elapsed() < timeout {
         if sockets
             .iter()
             .all(|socket| socket_accepts_connection(socket))
@@ -100,10 +116,10 @@ pub(super) fn wait_for_sockets(state_root: &Path, child: &mut Child) -> Result<(
     }
     terminate_child(child)?;
     remove_socket_files(state_root)?;
-    Err(format!(
-        "searchd binary did not open query/control/ingest sockets within {SOCKET_TIMEOUT:?}"
+    Err(
+        format!("searchd binary did not open query/control/ingest sockets within {timeout:?}")
+            .into(),
     )
-    .into())
 }
 
 pub(super) fn terminate_child(child: &mut Child) -> Result<(), Box<dyn Error>> {

@@ -1,4 +1,4 @@
-//! Medium-tier source fixture across real daemon OS-process restart.
+//! Declared scale-tier source fixtures across real daemon OS-process restart.
 //!
 //! This is a functional process/custody regression, not a scale timing or
 //! Linux release/physical-I/O qualification. The two daemons publish/open the
@@ -13,11 +13,12 @@ use quanta_index_contract::{
     RepoRelativePath, RevisionId, SearchPlaneErrorCodeV2, SourceFileKey, SourcePublicationEvent,
     TextQueryResponse, lex::LanguageCode,
 };
-use quanta_index_sdk::{QuantaIndex, SdkError, SearchCorpusBatch};
+use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 use quanta_index_searchd_harness::{
     fixture_source_scope_v1, private_tempdir,
     scale::{
-        ScaleTier, ScopedFile, ScopedOracle, generate_scoped_corpus, params_for, repo_query_token,
+        SCALE_HISTORY_MAX_BYTES, SCALE_HISTORY_MAX_TOTAL_BYTES, ScaleTier, ScopedFile,
+        ScopedOracle, generate_scoped_corpus, params_for, repo_query_token,
     },
 };
 use sha2::{Digest, Sha256};
@@ -34,6 +35,7 @@ const EVENT_1: &str = "fixture:scale-process-restart:g1";
 const EVENT_2: &str = "fixture:scale-process-restart:g2";
 const RETAINED_TOKEN: &str = "scalefileneedle001file00000";
 const DELETED_TOKEN: &str = "scalefileneedle000file00000";
+const SUPPORTED_PROFILE_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn repo() -> Result<RepoId, Box<dyn Error>> {
     Ok(RepoId::new(REPO)?)
@@ -52,10 +54,24 @@ fn event(id: &str, prior: Option<&str>) -> SourcePublicationEvent {
     }
 }
 
-fn initial_batch(files: &[ScopedFile]) -> Result<SearchCorpusBatch, Box<dyn Error>> {
-    let params = params_for(ScaleTier::Medium);
-    if files.len() != usize::try_from(params.total_files())? || files.len() != 256 {
-        return Err("source-derived medium tier must contain exactly 256 files".into());
+fn initial_batch(
+    files: Vec<ScopedFile>,
+    tier: ScaleTier,
+) -> Result<SearchCorpusBatch, Box<dyn Error>> {
+    let params = params_for(tier);
+    let fixed_count = match tier {
+        ScaleTier::Medium => 256,
+        ScaleTier::Large => 4_096,
+        ScaleTier::Xlarge => 32_768,
+        ScaleTier::Small => {
+            return Err("process restart fixture requires medium, large or xlarge".into());
+        }
+    };
+    if files.len() != usize::try_from(params.total_files())? || files.len() != fixed_count {
+        return Err(format!(
+            "source-derived {tier:?} tier must contain exactly {fixed_count} files"
+        )
+        .into());
     }
     let owner = repo()?;
     let revision = revision()?;
@@ -66,18 +82,20 @@ fn initial_batch(files: &[ScopedFile]) -> Result<SearchCorpusBatch, Box<dyn Erro
         "manifest:scale-process-restart:g1",
     )
     .source_event(event(EVENT_1, None));
-    for (index, file) in files.iter().enumerate() {
+    for (index, file) in files.into_iter().enumerate() {
         let source_repo = RepoId::new(file.source_repo_id.as_str())?;
         let path = RepoRelativePath::new(file.repo_relative_path.as_str());
+        let end_byte = u32::try_from(file.content.len())?;
+        let end_line = u32::try_from(file.content.lines().count())?;
         let record = ChunkRecord {
             chunk_id: ChunkId::new(format!("scale-process-{index}")),
             repo_relative_path: path.clone(),
             language: LanguageCode::new("rust")?,
             start_byte: 0,
-            end_byte: u32::try_from(file.content.len())?,
+            end_byte,
             start_line: 1,
-            end_line: u32::try_from(file.content.lines().count())?,
-            text: file.content.clone().into_boxed_str(),
+            end_line,
+            text: file.content.into_boxed_str(),
             structural: None,
             parent_chunk_id: None,
             source_repo_id: Some(source_repo.clone()),
@@ -124,8 +142,8 @@ struct SourceTruth {
     repo2_paths: BTreeSet<SourceKey>,
 }
 
-fn source_truth(files: &[ScopedFile]) -> Result<SourceTruth, Box<dyn Error>> {
-    let _oracle = ScopedOracle::from_source(files, ScaleTier::Medium)?;
+fn source_truth(files: &[ScopedFile], tier: ScaleTier) -> Result<SourceTruth, Box<dyn Error>> {
+    let _oracle = ScopedOracle::from_source(files, tier)?;
     let mut source = BTreeMap::new();
     let mut retained = BTreeSet::new();
     let mut deleted = BTreeSet::new();
@@ -153,7 +171,7 @@ fn source_truth(files: &[ScopedFile]) -> Result<SourceTruth, Box<dyn Error>> {
     }
     if retained != BTreeSet::from([("repo1".into(), "src/file_0.rs".into())])
         || deleted != BTreeSet::from([("repo0".into(), "src/file_0.rs".into())])
-        || repo2_paths.len() != 64
+        || repo2_paths.len() != usize::try_from(params_for(tier).files_per_repo)?
         || repo2_token_paths != repo2_paths
     {
         return Err("planted query tokens differ from independent fixture source".into());
@@ -164,10 +182,15 @@ fn source_truth(files: &[ScopedFile]) -> Result<SourceTruth, Box<dyn Error>> {
     })
 }
 
-fn wait_ready(client: &QuantaIndex) -> TestResult {
+fn wait_ready(client: &QuantaIndex, tier: ScaleTier) -> TestResult {
+    let timeout = if tier == ScaleTier::Medium {
+        Duration::from_secs(30)
+    } else {
+        SUPPORTED_PROFILE_TIMEOUT
+    };
     let _ready = wait_for(
         &RealTicker::new(),
-        Duration::from_secs(30),
+        timeout,
         Duration::from_millis(50),
         "real daemon ready with one active repository",
         || client.observability().process_readiness(),
@@ -238,6 +261,7 @@ fn unique_hit(
     if response.generation
         != GenerationPin::new(repo()?, revision()?, ManifestGeneration::new(generation))
         || response.results.len() != 1
+        || response.next_cursor.is_some()
     {
         return Err(format!("unique source query returned wrong page: {token}").into());
     }
@@ -256,21 +280,31 @@ fn unique_hit(
 #[derive(PartialEq)]
 struct Observed {
     retained: LexicalCandidate,
+    retained_score_bits: u32,
     scoped: Vec<LexicalCandidate>,
+    scoped_score_bits: Vec<u32>,
 }
 
 fn observe_generation_two(
     client: &QuantaIndex,
     truth: &SourceTruth,
+    tier: ScaleTier,
 ) -> Result<Observed, Box<dyn Error>> {
-    wait_ready(client)?;
+    wait_ready(client, tier)?;
     let retained = unique_hit(client, RETAINED_TOKEN, 2, ("repo1", "src/file_0.rs"), truth)?;
     let deleted = query(client, DELETED_TOKEN, 10)?;
     let expected_pin = GenerationPin::new(repo()?, revision()?, ManifestGeneration::new(2));
-    if deleted.generation != expected_pin || !deleted.results.is_empty() {
+    if deleted.generation != expected_pin
+        || !deleted.results.is_empty()
+        || deleted.next_cursor.is_some()
+    {
         return Err("tombstoned source reappeared".into());
     }
-    let scoped = query(client, &repo_query_token(2), 64)?;
+    let scoped = query(
+        client,
+        &repo_query_token(2),
+        params_for(tier).files_per_repo,
+    )?;
     let mut observed = BTreeSet::new();
     for row in &scoped.results {
         check_row(row, truth, 2)?;
@@ -289,25 +323,97 @@ fn observe_generation_two(
         return Err("repo2 ranked page differs from source-derived complete set".into());
     }
     Ok(Observed {
+        retained_score_bits: retained.score.to_bits(),
         retained,
+        scoped_score_bits: scoped
+            .results
+            .iter()
+            .map(|row| row.score.to_bits())
+            .collect(),
         scoped: scoped.results,
     })
 }
 
 #[test]
 fn medium_scale_source_survives_real_daemon_process_restart_and_delete() -> TestResult {
-    let files = generate_scoped_corpus(ScaleTier::Medium, SEED)?;
-    let truth = source_truth(&files)?;
+    run_scale_process_restart(ScaleTier::Medium)
+}
+
+#[test]
+#[ignore = "manual costly Large4096 supported-profile real daemon process restart"]
+fn large_scale_source_survives_real_daemon_process_restart_and_delete() -> TestResult {
+    run_scale_process_restart(ScaleTier::Large)
+}
+
+#[test]
+#[ignore = "manual costly XL32768 supported-profile real daemon process restart"]
+fn xlarge_scale_source_survives_real_daemon_process_restart_and_delete() -> TestResult {
+    run_scale_process_restart(ScaleTier::Xlarge)
+}
+
+fn start_process(
+    state: &std::path::Path,
+    tier: ScaleTier,
+) -> Result<SearchdBinaryProcess, Box<dyn Error>> {
+    if tier == ScaleTier::Medium {
+        return SearchdBinaryProcess::start_with_history_max_generations(state, 2);
+    }
+    let mut command = crate::searchd_binary_process::searchd_command(state, 2);
+    let _configured = command
+        .env(
+            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
+            SCALE_HISTORY_MAX_BYTES.to_string(),
+        )
+        .env(
+            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
+            SCALE_HISTORY_MAX_TOTAL_BYTES.to_string(),
+        )
+        .env("QUANTA_INDEX_INGEST_MAX_RECORDS", "100000")
+        .env(
+            "QUANTA_INDEX_INGEST_MAX_TEXT_BYTES",
+            (128_u64 * 1024 * 1024).to_string(),
+        )
+        .env(
+            "QUANTA_INDEX_INGEST_MAX_VECTOR_BYTES",
+            (256_u64 * 1024 * 1024).to_string(),
+        )
+        .env(
+            "QUANTA_INDEX_SOURCE_PUBLICATION_MAX_BYTES",
+            quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES.to_string(),
+        )
+        .env(
+            "QUANTA_INDEX_PROCESS_MEMORY_CEILING_BYTES",
+            (4_u64 * 1024 * 1024 * 1024).to_string(),
+        );
+    SearchdBinaryProcess::start_with_command_and_timeout(state, command, SUPPORTED_PROFILE_TIMEOUT)
+}
+
+fn connect_process(
+    process: &SearchdBinaryProcess,
+    state: &std::path::Path,
+    tier: ScaleTier,
+) -> Result<QuantaIndex, Box<dyn Error>> {
+    if tier == ScaleTier::Medium {
+        return process.connect();
+    }
+    Ok(QuantaIndex::connect(
+        ConnectOptions::from_state_root(state).with_request_io_timeout(SUPPORTED_PROFILE_TIMEOUT),
+    )?)
+}
+
+fn run_scale_process_restart(tier: ScaleTier) -> TestResult {
+    let files = generate_scoped_corpus(tier, SEED)?;
+    let truth = source_truth(&files, tier)?;
     let state = private_tempdir()?;
-    let first = SearchdBinaryProcess::start_with_history_max_generations(state.path(), 2)?;
-    let client = first.connect()?;
+    let first = start_process(state.path(), tier)?;
+    let client = connect_process(&first, state.path(), tier)?;
     let (_full_receipt, first_head) = client
         .search_corpus()
-        .publish_and_activate(&initial_batch(&files)?, None)?;
+        .publish_and_activate(&initial_batch(files, tier)?, None)?;
     if first_head.active.generation.lexical.manifest_generation != ManifestGeneration::new(1) {
         return Err("full source generation did not activate".into());
     }
-    wait_ready(&client)?;
+    wait_ready(&client, tier)?;
     let _retained_before_delete = unique_hit(
         &client,
         RETAINED_TOKEN,
@@ -328,12 +434,12 @@ fn medium_scale_source_survives_real_daemon_process_restart_and_delete() -> Test
     if second_head.active.generation.lexical.manifest_generation != ManifestGeneration::new(2) {
         return Err("deleted source generation did not activate".into());
     }
-    let before_restart = observe_generation_two(&client, &truth)?;
+    let before_restart = observe_generation_two(&client, &truth, tier)?;
     drop(client);
     first.stop()?;
-    let reopened = SearchdBinaryProcess::start_with_history_max_generations(state.path(), 2)?;
-    let reopened_client = reopened.connect()?;
-    let after_restart = observe_generation_two(&reopened_client, &truth)?;
+    let reopened = start_process(state.path(), tier)?;
+    let reopened_client = connect_process(&reopened, state.path(), tier)?;
+    let after_restart = observe_generation_two(&reopened_client, &truth, tier)?;
     if before_restart != after_restart {
         return Err(
             "ranked identities, source commitments, or scores changed across process restart"
