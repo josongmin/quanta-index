@@ -282,7 +282,9 @@ def _spec(path: Path) -> dict:
         if "native_index_reader" in value["opengrok"]:
             config = value["opengrok"]
             if "backend_snapshot" not in config or config.get("indexed_view_probe") != "full":
-                raise ValueError("OpenGrok native reader requires readonly backend and full view probe")
+                raise ValueError(
+                    "OpenGrok native reader requires readonly backend and full view probe"
+                )
             opengrok_index_scope.reader_identity(config["native_index_reader"])
     if "cs" in products and (not isinstance(value["cs"], dict) or set(value["cs"]) != {"binary"}):
         raise ValueError("cs spec requires only binary")
@@ -1983,7 +1985,11 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
                 *products,
                 *(("opengrok-view", "opengrok-view-post") if probe_indexed_view else ()),
                 *(("backend",) if backend_names else ()),
-                *(("opengrok-native-before", "opengrok-native-after") if native_scope is not None else ()),
+                *(
+                    ("opengrok-native-before", "opengrok-native-after")
+                    if native_scope is not None
+                    else ()
+                ),
             )
             for path in sorted((stage / name).iterdir())
         },
@@ -2045,9 +2051,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     }
     if spec["schema_version"] == 2:
         fields.add("products")
-    native_reader = (
-        spec["opengrok"].get("native_index_reader") if "opengrok" in products else None
-    )
+    native_reader = spec["opengrok"].get("native_index_reader") if "opengrok" in products else None
     if native_reader is not None:
         fields.add("opengrok_index_scope")
     if (

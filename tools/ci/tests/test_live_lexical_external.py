@@ -2742,9 +2742,12 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         live.verify(root)
 
 
-@pytest.mark.parametrize("product", live.PRODUCTS)
+@pytest.mark.parametrize(
+    ("product", "native"),
+    [(product, False) for product in live.PRODUCTS] + [("opengrok", True)],
+)
 def test_v2_single_product_capture_replays_only_selected_native_evidence(
-    tmp_path, lexical_release_seed, product
+    tmp_path, lexical_release_seed, product, native, monkeypatch
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
     suite = json.loads(paths["suite"].read_bytes())
@@ -2802,6 +2805,48 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
             "output_root": str(tmp_path / "live"),
         }
         spec_path = tmp_path / "live-spec.json"
+        if native:
+            from tools.ci.tests.test_opengrok_index_scope import fake_execution, reader_config
+
+            index = tmp_path / "index"
+            index.mkdir()
+            (index / "fixture").mkdir()
+            (index / "fixture" / "segment.bin").write_bytes(b"frozen index")
+            configs["opengrok"]["native_index_reader"] = reader_config(tmp_path)
+            configs["opengrok"]["backend_snapshot"] = {
+                "root": str(index),
+                "container_id": "d" * 64,
+                "mount_destination": "/index",
+                "container_port": "8080/tcp",
+            }
+            expected = live.opengrok_index_scope.expected_projects(
+                Path(corpus["release_path"]),
+                live.corpus_release.validate(Path(corpus["release_path"])),
+                corpus["view"],
+            )
+            monkeypatch.setattr(live.opengrok_index_scope, "execute", fake_execution(expected))
+
+            def process(argv, timeout):
+                assert argv[0] == "docker"
+                inspect = {
+                    "Id": "d" * 64,
+                    "Image": "sha256:" + "b" * 64,
+                    "State": {"Running": True, "Pid": 123, "StartedAt": "2026-10-05T00:00:00Z"},
+                    "RestartCount": 0,
+                    "Mounts": [
+                        {"Type": "bind", "Source": str(index), "Destination": "/index", "RW": False}
+                    ],
+                    "NetworkSettings": {
+                        "Ports": {
+                            "8080/tcp": [
+                                {"HostIp": "127.0.0.1", "HostPort": str(server.server_address[1])}
+                            ]
+                        }
+                    },
+                }
+                return 0, json.dumps(inspect).encode(), b"", 1.0
+
+            monkeypatch.setattr(live, "_process", process)
         spec_path.write_text(json.dumps(spec))
         summary = live.capture(spec_path)
     finally:
@@ -2814,6 +2859,20 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
     assert summary["products"] == [product]
     assert set(summary["rows_sha256"]) == {product}
     assert live.verify(root) == summary
+    if native:
+        native_scope = summary["opengrok_index_scope"]
+        assert native_scope["projects"]["fixture"]["source_files"] == 20
+        assert native_scope["service_loaded_reader_attested"] is False
+        assert summary["opengrok_indexed_universe_attested"] is False
+        summary_path = root / "capture.json"
+        for changed in (
+            {**native_scope, "live_documents": float(native_scope["live_documents"])},
+            {**native_scope, "qualified": True},
+        ):
+            summary_path.write_text(json.dumps({**summary, "opengrok_index_scope": changed}))
+            with pytest.raises(ValueError, match="native scope"):
+                live.verify(root)
+        summary_path.write_text(json.dumps(summary))
     retained_spec = root / "spec.json"
     retained_spec_raw = retained_spec.read_bytes()
     other = next(name for name in live.PRODUCTS if name != product)
@@ -2872,6 +2931,22 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
         live.verify(root)
     row.write_bytes(row_raw)
     assert live.verify(root) == summary
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+def test_native_reader_retries_advisory_pipe_readiness(tmp_path, monkeypatch, operation):
+    original = getattr(os, operation)
+    retries = []
+
+    def advisory(fd, *args):
+        if not os.get_blocking(fd) and not retries:
+            retries.append(fd)
+            raise BlockingIOError(35, "advisory readiness")
+        return original(fd, *args)
+
+    monkeypatch.setattr(live.sourcegraph_index_scope.os, operation, advisory)
+    test_native_reader_pump_enforces_deadline_and_stream_bounds(tmp_path, "ok")
+    assert len(retries) == 1
 
 
 @pytest.mark.parametrize(

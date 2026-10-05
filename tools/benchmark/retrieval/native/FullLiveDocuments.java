@@ -27,10 +27,13 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 
 /** Bounded native live-doc/postings observation; Python validates document roles. */
 public final class FullLiveDocuments {
-  private static final ObjectMapper JSON = new ObjectMapper();
+  // Map.of iteration order changes between JVMs; query brackets need identical bytes.
+  private static final ObjectMapper JSON = new ObjectMapper()
+      .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
   private static final long OUTPUT_CAP = 256L * 1024 * 1024;
   private static final int ROW_CAP = 4 * 1024 * 1024;
   private static long outputBytes = 0;

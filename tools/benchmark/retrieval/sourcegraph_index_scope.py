@@ -892,6 +892,9 @@ def _drain_native_worker(
                             written = os.write(
                                 stream.fileno(), payload[input_offset : input_offset + 65536]
                             )
+                        except BlockingIOError:
+                            # Readiness is advisory; retry under the unchanged deadline.
+                            continue
                         except BrokenPipeError as error:
                             raise ValueError("native Zoekt worker closed before input") from error
                         if written <= 0:
@@ -901,7 +904,10 @@ def _drain_native_worker(
                             selector.unregister(stream)
                             stream.close()
                         continue
-                    chunk = os.read(stream.fileno(), 65536)
+                    try:
+                        chunk = os.read(stream.fileno(), 65536)
+                    except BlockingIOError:
+                        continue
                     if not chunk:
                         selector.unregister(stream)
                         continue
