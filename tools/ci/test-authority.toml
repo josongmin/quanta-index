@@ -344,6 +344,7 @@ targets = [
   "benchmark-live-external-python-owner",
   "benchmark-opengrok-index-scope-python-owner",
   "benchmark-opengrok-query-witness-python-owner",
+  "benchmark-opengrok-query-fixture-python-owner",
   "benchmark-cs-fuzzy-report-python-owner",
   "benchmark-code-search-workflow-python-owner",
   "benchmark-code-search-matrix-python-owner",
@@ -406,6 +407,12 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-opengrok-query-witness-python-owner"
 path = "tools/ci/tests/test_opengrok_query_witness.py"
 owner = "tools/benchmark/retrieval/opengrok_query_witness.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-opengrok-query-fixture-python-owner"
+path = "tools/ci/tests/test_opengrok_query_fixture.py"
+owner = "tools/benchmark/retrieval/opengrok_query_fixture.py"
 rail = "pr-benchmark-control-python"
 
 [[python_targets]]

@@ -62,6 +62,26 @@ Measurements and missing authority remain in the [residual ledger](../plans/oct-
    before registry promotion. Shell exit zero or caller-written success JSON is
    not operational authority. Keep the existing staged refusal.
 
+## Coverage decoding and base custody
+
+One adapter-local cache retains at most one decoded coverage root under an 8 MiB
+conservative decode-residency admission. Root-byte identity allows immutable row
+reuse only after current root/page hash/length and directory inventory validation;
+failure discards authority. Larger roots use the uncached rail. Repeated phases
+may decode zero rows while still reading/hashing every page. The estimate is not
+physical heap or RSS, and process-local locking does not prevent external mutation.
+
+Coverage CBOR decoding reserves admitted definite cardinality once and grows
+indefinite rows geometrically within the existing page limits. Delta planning
+borrows replacement/tombstone inputs and discards displaced shared rows without
+cloning unused return values. The candidate owns its new rows. These reductions
+preserve authenticated base walks, source lineage, retry, publication identity,
+old readers and independent open; they do not establish a whole-pipeline bound.
+Owners: [coverage reader/cache](../../crates/quanta-index-lexical/src/sealed_generation/coverage.rs)
+and [delta planning](../../crates/quanta-index-lexical/src/adapter_ingest.rs).
+Retain fixed effective-row, cached corruption/refusal-eviction/retry, uncached
+oversize/cardinality and preflight/build mutation controls.
+
 ## Explicit typo declaration priority
 
 Explicit OSA1 orders edit distance before source-attested declaration preference,

@@ -1,150 +1,82 @@
-# CS-BENCH-03 — Task tracks, metric units and statistical admission
+# CS-BENCH-03 — Track, unit and statistical acceptance
 
-Status: acceptance **OPEN**. Existing metric helpers and separate timing-layer
-labels are present. The qualified verdict now independently resamples whole
-query families within category, requires at least 20 independent families and
-at least two per category, and refuses correlated-task pseudoreplication.
-Independently admitted task-track/holdout execution is **NOT_RUN** for this
-acceptance scope.
-Category: benchmark evaluation. Findings: F04/F09; depends on BENCH-01/02.
+Status: `ACTIVE_RESIDUAL` for admitted track/holdout execution and policy choice.
+Metric/evidence/family-gate decisions are owned by
+[SEP-26-003](../../../adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md)
+and [OCT-05-001](../../../adr/OCT-05-001-review-admission-and-result-identity.md).
+Current qrels/common eligibility/reports are owned by
+[OCT-04 E1](../../oct-4-parallel-closure/tickets/INDEX.md#e1).
 
-Current `lexical_file_comparison` reports hit rate and macro file recall
-separately. That scorer alone cannot attest native agreement, independent gold
-or equivalent work. Close BENCH-02 before qualification scoring; then run
-the declared track units, statistical admission and ablation. Latest boundary:
-[CS-INT-01](CS-INT-01-integration-and-qualification.md#required-controls).
+## Comparison and track contract
 
-## Purpose
+Freeze matched semantics or native workflow before capture. Matched semantics
+uses the same grammar/case/normalization/path/inventory/unit/limit/completion
+contract on the supported intersection. Native workflow retains each product's
+actual user mode/setup/order/exclusions. Bind original/submitted requests;
+gold-informed rewrites and post-result routing cannot enter the comparison.
 
-Expose developer-visible outcomes and engine diagnostics without mixing units
-or turning an observed native order into a relevance ranking. A chunk top-10, ten
-distinct files, a definition and a returned context window are not interchangeable.
-Independent labels, declared units and equivalent work are required before
-comparative quality/statistical admission.
+| Track | Metrics | Required independent authority |
+| --- | --- | --- |
+| Exact lexical conformance | Match precision/recall, exact exhaustion, errors | Complete declared-semantics match set; zero known semantic mismatches on the finite suite |
+| File locator | Hit@1/5/10, Recall@k, ranked-only MRR | Repository/revision/path qrels |
+| Definition locator | Declaration Hit/Recall/MRR, graded-only NDCG | All legitimate declaration/name/span alternatives |
+| Context delivery | Required-span coverage, BCY by budget, clipping/bytes/tokens | Source-returned spans and jointly required blocks |
+| Updates/operations | Visibility lag/stale hits/recovery/amplification | Ordered mutation, activation and query observations |
 
-Keep metric mathematics in the existing
-[retrieval evaluator](../../../../tools/benchmark/retrieval/evaluator.py) and
-[lexical comparator](../../../../tools/benchmark/retrieval/lexical_file_comparison.py).
-The [registry](../../../../tools/benchmark/registry.toml) registers their profiles;
-shared evidence does not become an alternative domain scorer.
+Use existing [evaluator](../../../../tools/benchmark/retrieval/evaluator.py),
+[lexical comparator](../../../../tools/benchmark/retrieval/lexical_file_comparison.py)
+and registry; no alternative scorer. Unranked products get set recall or named
+observed-position diagnostics. Chunk top-ten, distinct files, indexed declarations,
+selected focus and returned context keep separate units; ranks are assigned after
+the declared native transformation and before any gold filtering.
 
-## Two comparison modes
+## Required accounting and fixtures
 
-- **Matched semantics:** same literal/regex/case/normalization/path scope, admitted inventory,
-  output unit, limits and completion contract on the supported intersection.
-- **Native workflow:** each product's documented user-facing mode. Report its
-  semantics, ranking/order, setup and exclusions; do not call hybrid versus lexical
-  a matched lexical comparison or use capability differences as silent failures.
+- Report requested/eligible/attempted/completed/unsupported/incomplete/error/
+  timeout/unjudged populations by product/track/stratum. Give common-eligible
+  quality and full capability/operational coverage; invalid captures block quality
+  rather than entering as empty successes or disappearing from denominators.
+- Keep any-file hit, all-file recall, legitimate alternative declarations and
+  jointly required context distinct. Credit each gold identity once; union source
+  ranges before byte coverage. Duplicate/overlapping chunks cannot multiply gain.
+  Preview expansion cannot improve indexed-hit metrics retroactively.
+- Reviewed grades are required by graded metrics. Declare unjudged-pool policy/
+  sensitivity; missing judgments cannot become irrelevant. Correct abstention
+  needs complete no-answer scope, including the empty-index case.
+- Retain independent tiny fixtures for ranked/unranked output, alternative versus
+  required labels, overlap, legitimate zero results, malformed/incomplete statuses
+  and same-line declarations. An explicit native symbol/name unit is required for
+  declaration credit; rankless legacy rows stay readable and excluded by reason.
+- Emit raw numerators/denominators and query identities. Separate grouping,
+  name/case ranking and presentation ablations. Research context/agent tracks
+  retain their own population and do not become universal lexical prerequisites.
 
-Freeze mode before capture. Query adapters retain original and submitted request
-identities. No gold-informed query rewrite or post-result route selection.
+## Statistical and default-decision acceptance
 
-## Track contracts
+Report paired wins/losses/ties and micro/repository/family macro results on the
+same eligible tasks. Resample units under the frozen sampling design. Existing
+single-repository qualification resamples whole families within category with
+at least twenty independent families and two per category; task-level intervals
+remain descriptive. Cross-repository inference needs admitted repositories and
+repository-level clustering. Copied queries are not independent observations.
 
-| Track | Developer-visible outcome | Core metrics | Required authority |
-| --- | --- | --- | --- |
-| Exact lexical conformance | Actual requested bytes/regex matches are found | Match precision/recall, exact-exhaustion and error rate | Independent complete match set |
-| File locator | Useful file appears early | File Hit@1/5/10, Recall@k; file MRR only for ranked output | Unique repo/revision/path qrels |
-| Definition locator | Correct declaration appears early | Declaration Hit/Recall@k, MRR; NDCG only with admitted grades | Independent declaration alternatives |
-| Context delivery | Returned bounded context covers required evidence | Byte-span coverage, BCY by token budget, bytes/tokens and clipping | Source-bound returned spans and required-block labels |
-| Updates/operations | New source is searchable consistently | Visibility lag, stale-hit rate, recovery and amplification | Ordered mutation and query/activation observations |
+`QUALITY_DELTA=pass` admits matched/blinded/graded evidence and uncertainty.
+Default selection additionally requires [decision.py](../../../../tools/benchmark/retrieval/decision.py)
+with the exact pre-capture policy SHA, qualified report and actual primary effect,
+cluster lower bound, critical-stratum regressions and p95/RSS/index-cost inputs.
+Missing inputs refuse; zero/negative or insufficient useful effect cannot issue
+a win. An evidence-valid manifest lacking the decision policy stays insufficient
+for default admission.
 
-No-answer and unsupported/incomplete scopes are distinct. Require zero known
-semantic mismatches on the finite exact-conformance suite; that is not a proof of
-perfect recall on all future repositories. Speed is a separate qualified dimension.
+Before tuning/holdout access, freeze metric/track, useful effect, regression/resource
+ceilings, confidence procedure and finite ablations from baseline variance/product
+needs. Account for multiple policy comparisons; no favorable-k/subgroup/repetition
+selection. With too few independent clusters, report descriptive limits. Twenty
+queries cannot qualify p99. Compare shared rank math with pinned `trec_eval` and
+hand-computed set/range fixtures, retaining metric-definition identity.
 
-For unranked products, report set recall and explicitly named observed-position
-metrics if useful. Do not include stream order or map iteration in a ranked MRR
-leaderboard without an attested relevance-order contract. Ranks and top-k count
-after the declared native/grouping transformation, never after gold filtering.
-
-## Accounting invariants
-
-- Report query count, eligible count, attempted/completed count, unsupported,
-  incomplete, error and timeout counts by product/track/stratum. No missing row
-  becomes zero hits or drops silently from a denominator.
-- Report both common eligible intersection quality and full requested capability
-  coverage. Failures on supported required tasks count against completion; invalid
-  captures block quality qualification rather than becoming successful empty sets.
-- Single-file hit and multi-file recall are different. Alternative definitions
-  count as legitimate answers; jointly required context blocks are not alternatives.
-- Deduplicate relevance credit per gold identity. Overlapping chunks cannot
-  multiply NDCG gain or coverage; union source byte ranges before counting bytes.
-- Indexed-hit metrics, selected-focus coverage and returned-context coverage are
-  separate. ENG-04 preview expansion cannot improve indexed-hit MRR retroactively.
-- Missing reviewed grades makes NDCG inapplicable. Unjudged pooled results need
-  a declared treatment/sensitivity analysis, not automatic irrelevance.
-- Preserve no-answer behavior even when an index is empty; require complete scope
-  evidence before crediting correct abstention.
-
-## Statistics and default admission
-
-Report micro results and macro aggregates by repository and query family. Use
-paired per-query deltas on identical tasks, plus wins/losses/ties and stratum counts.
-Bootstrap at the repository/query-family clustering level consistent with the
-sampling design; many copied queries are not independent samples. When independent
-clusters are too few, report descriptive intervals/limitations, not significance.
-The current single-repository qualified gate implements the within-repository
-query-family boundary. It does not establish inference across repositories;
-multi-repository macro inference still needs independently admitted repos and a
-repository-level procedure. The task-level interval remains descriptive and
-cannot alone pass `QUALITY_DELTA`.
-
-In `retrieval/run.py`, `QUALITY_DELTA=pass` currently means the matched,
-blinded/graded evidence and uncertainty are admissible. The gate does not test
-whether the candidate delta is positive or meets a minimum useful effect.
-Default admission therefore needs a separate decision against predeclared
-effect, critical-stratum regression and resource limits. Negative or zero
-qualified deltas must not be described as a product win because this gate passes.
-The separate `tools/benchmark/retrieval/decision.py` gate requires the exact
-policy SHA-256 in the pre-capture qualification admission manifest, replays the
-qualified verdict, binds the selected scored report, and compares the primary
-delta, query-family cluster lower bound, declared critical strata, and captured
-candidate p95/RSS/index bytes with the frozen policy. Missing policy identity,
-qualified proof or observed dimension refuses; no numeric defaults are supplied.
-Existing admission manifests without `decision_policy_sha256` remain valid
-evidence but cannot admit a product default.
-
-The within-repository family gate has fixture coverage, but tests do not
-establish independent labels or a qualified benchmark run. Historical local
-test counts are recoverable through the [plan archive](../../ARCHIVE-INDEX.md).
-
-Before tuning or opening holdout, freeze: primary metric/track, minimum useful
-effect, tolerated regressions per critical stratum, latency/memory/index-cost
-budgets, confidence procedure and the finite ablation matrix. Numeric limits are
-chosen from baseline variance and product requirements, recorded as acceptance
-inputs; missing limits block default admission, not unit-test development.
-
-Do not cherry-pick the winning k, subgroup or repetition. Report secondary metrics
-as secondary; account for multiple policy comparisons in the declared selection
-procedure. A failed holdout does not become a new tuning split while retaining
-its name. P99 from twenty queries is not a defensible tail qualification.
-
-Use an independent standard implementation such as pinned `trec_eval` for shared
-rank metrics on small qrel fixtures, and hand-computed sets/ranges for coverage.
-Do not compare incompatible metric definitions under identical column names.
-
-Current-main adversarial check: historical `exact_symbol_name` records may omit
-`rank_unit` and may collapse distinct declarations sharing a returned context
-line. The independent declaration diagnostic now requires an explicit recorded
-`rank_unit: symbol`; a rankless legacy record remains readable but is excluded
-from that metric with `rank_unit_mismatch`. This closes policy-only rank-unit
-promotion, not BENCH-01 independent labels or BENCH-02 native capture authority.
-
-## DoD
-
-- [ ] Each registered profile declares track, semantics, unit, ordering, cutoff,
-  exclusions, completeness and metric eligibility before capture.
-- [ ] Independent tiny fixtures verify ranking, alternative/required gold,
-  overlap, no-answer and malformed/incomplete denominators.
-- [ ] Reports expose raw numerator/denominator and per-stratum query identities;
-  unsupported products/tasks cannot improve an aggregate by disappearing.
-- [ ] Development ablation isolates grouping, name/case ranking and presentation.
-- [ ] Primary metrics, effect/regression limits and resource budgets are frozen
-  before a fresh holdout; source-bound results determine default admission. A
-  qualified negative/zero-effect control refuses a claimed product improvement.
-- [ ] Research context/agent tracks are labeled separately and reuse corpus/control
-  owners without becoming prerequisites for core lexical conformance.
-
-Research [R01–R04](../references.md) informs additional task types, not a universal
-lexical benchmark. Established qrel/metric precedent: [S07](../references.md).
+[BENCH-01/02](CS-BENCH-01-corpus-gold-and-holdout.md) supply independent/native
+inputs; [CS-INT-01](CS-INT-01-integration-and-qualification.md#required-controls)
+owns integration. Historical local observations are recoverable through
+[the history index](../../ARCHIVE-INDEX.md#oct-05-residual-owner-clarification).
+Research context: [S07 and R01–R04](../references.md).

@@ -5,6 +5,9 @@ Completed identity/publication/query/process decisions are in the
 [SEP-21 accepted registry](../../../adr/SEP-21-DECISION-REGISTRY.md).
 Completed repair decisions are in
 [SEP-27-005](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
+Implemented Active/runtime/operator behavior is in
+[OCT-05-003](../../../adr/OCT-05-003-active-query-and-runtime-lifecycle.md);
+P11 missing action producers remain explicit in S21-12.
 Owner execution histories are recoverable through the [plan archive](../../ARCHIVE-INDEX.md).
 No historical count or status is current qualification.
 

@@ -132,6 +132,7 @@ PROFILES = {
             "tools/ci/tests/test_live_lexical_external.py",
             "tools/ci/tests/test_opengrok_index_scope.py",
             "tools/ci/tests/test_opengrok_query_witness.py",
+            "tools/ci/tests/test_opengrok_query_fixture.py",
             "tools/ci/tests/test_code_search_workflow.py",
             "tools/ci/tests/test_code_search_matrix.py",
             "tools/benchmark/retrieval",

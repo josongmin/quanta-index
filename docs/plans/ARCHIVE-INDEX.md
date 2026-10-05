@@ -2,6 +2,27 @@
 
 Status: `HISTORICAL RECOVERY INDEX`
 
+## Oct-05 residual owner clarification
+
+Pre-edit revision: `3f4877c95183769e82d870f71e296c832c9014ed`. All thirteen edited bodies matched this revision
+byte-for-byte before editing. Recover any original with
+`git show 3f4877c95183769e82d870f71e296c832c9014ed:<repository-relative-path>`.
+
+ENG-02, BENCH-01–04, QIT-09 and the SEP-21 execution map retain their independent
+acceptance, quantitative bounds and stable owner IDs. Completed coverage decoding/
+cache/row-copy decisions are consolidated in OCT-05-004. Old cost/CI chronology,
+unchecked implementation worklists and duplicate source/status claims are removed.
+The QIT board retains every QIT-00–09 and all proposed thresholds; current proof
+registry/staging and every R0–R6 release/producer/action oracle remain unchanged.
+
+SEP-21 now points to implemented Active/maintenance/operator/proof-result owners
+instead of requiring them to be recreated. Current final-source/installed/Linux/
+hosted/provider/paired/state evidence and P11 missing typed operational producers,
+independent observers and authorized target inputs remain open. BENCH acceptance
+does not relabel exposed mechanical/AI/native diagnostics as fresh qualification.
+No source implementation, registry or runtime/provider state is changed here.
+Exact external preimages/digests: `/tmp/qi-oct5-residual-owner-cleanup-ftnk49sw`, `manifest.json`.
+
 ## Oct-05 benchmark and quality ledger compaction
 
 Pre-edit revision: `121ad9309303d8de9b0e189a04a4b65bf6d80c40`. All existing edited bodies matched that revision

@@ -2,6 +2,14 @@
 
 Status: `HISTORICAL RECOVERY INDEX`
 
+## Oct-05 residual owner clarification
+
+The [plan history index](plans/ARCHIVE-INDEX.md#oct-05-residual-owner-clarification)
+records exact recovery of ENG-02/BENCH/QIT/SEP-21 pre-edit bodies. Current remaining
+acceptance and proof staging remain live. Completed coverage reductions are in
+OCT-05-004; corrected SEP-21 maps reuse implemented runtime/operator authority.
+Historical cost/provider facts do not establish current measurements or CI state.
+
 ## Oct-05 benchmark and quality ledger compaction
 
 The [plan history index](plans/ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction)

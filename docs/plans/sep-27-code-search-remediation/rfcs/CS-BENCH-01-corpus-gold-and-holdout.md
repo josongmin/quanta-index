@@ -1,139 +1,90 @@
-# CS-BENCH-01 — Shared corpus releases, independent gold and holdout
+# CS-BENCH-01 — Independent corpus, gold and holdout acceptance
 
-Status: acceptance **OPEN**. Independent corrected definition gold, fresh release
-and sealed holdout execution are **NOT_RUN** for this acceptance scope.
-Category: benchmark inputs. Finding: F07; supports F02/F04 and G02.
+Status: `ACTIVE_RESIDUAL`. Owners: existing corpus release/binding, independent
+oracles and review issuer. Completed preparation/parsing/admission contracts are in
+[OCT-05-001](../../../adr/OCT-05-001-review-admission-and-result-identity.md).
+Current inputs/judgments/admissions are owned by
+[OCT-04 E1](../../oct-4-parallel-closure/tickets/INDEX.md#e1);
+[CS-INT-01](CS-INT-01-integration-and-qualification.md#required-controls) owns
+integration. Prepared source, mechanical gold and AI diagnostics retain their
+own scope until the requested independent release is admitted.
 
-Existing release/binding and symbol-coverage helpers remain implemented; this
-status does not claim those owners are missing. The current benchmark overlay is
-not an independently audited gold/holdout release. Remaining input/acceptance
-boundary: [CS-INT-01](CS-INT-01-integration-and-qualification.md#required-controls).
+## Release acceptance
 
-## Purpose and RCA
+- Use existing [corpus release](../../../../tools/benchmark/corpus_release.py),
+  [binding](../../../../tools/benchmark/corpus_binding.py) and
+  [candidate census](../../../../tools/benchmark/retrieval/corpus_set.py) owners.
+  Reusable schemas, pinned acquisition/recipe/oracle adapters, small fixtures,
+  license references and split policy belong in the repository. Materialized
+  corpora/gold/models/indexes/raw releases belong outside it. Canonical execution
+  cannot depend on an unretained temporary recipe or manually synchronized manifest.
+- Bind URL/commit, complete file/hash inventory, language/encoding, view/selection,
+  symlink/submodule/binary/generated/vendor policy, size bounds and provenance.
+  Comparators prove actual indexed content or report exclusions; matching Git
+  revision/file counts alone cannot establish equivalent scope.
+- Source/labels/recipe/oracle/parser/split changes issue new immutable identities.
+  Preserve original evidence bytes and machine-readable change/exclusion reasons.
+  Old scores cannot acquire corrected labels by relabeling a report.
 
-Independent definition gold must distinguish docstring examples from actual
-declarations and include valid alternatives such as Rust `const fn` and
-TypeScript object methods. Text occurrence remains a separate content-search
-oracle. The removed diagnostic bodies are recoverable through the
-[plan archive](../../ARCHIVE-INDEX.md); their old dataset counts are not release
-acceptance. Correct the oracle, then freeze fresh development/holdout inputs.
+## Task and independent gold acceptance
 
-No retrieval engine's output, including Quanta's symbol producer, is sufficient
-by itself to define gold for a comparison involving that engine.
+Every task binds stable ID/release, intent, original query, grammar/regex engine,
+case/normalization, scope, unit and label provenance. Runner packs omit labels
+and answerability. Native NFC/token/case semantics and original-byte semantics
+keep separate cohorts unless a reference proves the chosen common contract;
+original source byte spans remain the location oracle.
 
-Sep-28 code addition: `gold_oracle.py` derives raw UTF-8 literal occurrences
-and a deliberately narrow named-function declaration cohort from release
-source bytes, with independent Python/Rust/TypeScript fixed-span fixtures.
-`corpus_binding.py` publishes/reconstructs an external capsule and label-free
-blind pack with source/oracle/parser identities and `query_family_id`; the
-capsule explicitly marks labels `mechanical_unreviewed_diagnostic` and holdout
-custody `unsealed_external_custody_required`. It does not replace the existing
-evaluator suite/pack format or provide a reviewed fresh release. Human labels,
-valid external corpus and sealed holdout execution remain open.
-
-## Target input release contract
-
-Extend the existing [corpus release](../../../../tools/benchmark/corpus_release.py),
-[binding](../../../../tools/benchmark/corpus_binding.py) and retrieval
-[corpus set](../../../../tools/benchmark/retrieval/corpus_set.py) owners. Put reusable
-recipes/oracle adapters under the existing benchmark tree; retire the external
-one-off recipe as an executable authority after migration and parity review.
-Do not introduce another corpus manager, CLI or manually synchronized manifest.
-
-Repository contents: schemas, pinned acquisition/build recipes, licenses metadata
-or references, oracle adapters, small fixtures and split policies. External
-contents: checkout/materialized corpus, generated gold, model assets, indexes,
-raw captures and immutable releases. Corpus payloads remain outside this repo.
-
-Each release binds repository URL and commit, file inventory and hashes, language,
-encoding, file selection policy, symlink treatment, binary/generated/vendor
-policy, size limits and required provenance. Every comparator attests the same
-admitted universe or reports its measured exclusions. "Same Git repository" or
-equal file counts alone is not equivalent indexed content.
-
-Publish a new immutable release when files, labels, recipes, oracle versions or
-splits change. Historical evidence retains its original release identity; never
-overwrite gold and reuse old scores as corrected evidence.
-
-## Query and relevance contracts
-
-Each task binds stable ID, release, intent, original query, literal/regex/native
-policy, case semantics, scope, result unit and independently established labels.
-The runner receives a blind query pack without labels or answerability bits.
-
-The engine re-audit found a required semantic distinction: native Quanta matches
-NFC text with its versioned token/case/regex rules, not arbitrary original-byte
-identity. Bind normalization and regex-engine semantics in each task/profile.
-Independent scan oracles must implement the declared common semantics, or split
-raw-byte and native-normalized cohorts; original source spans remain the location
-oracle in either case. Do not silently treat differently normalized literals as
-equivalent cross-product requests.
-
-| Task class | Independent oracle | Label shape |
+| Task | Independent truth | Unit |
 | --- | --- | --- |
-| Literal/identifier occurrence | Enumerate frozen source with explicit scan semantics | File plus matching byte spans |
-| Regex | Reference matcher for admitted common semantics; small semantic fixtures | Match set or typed unsupported |
-| Definition | Independent language AST/compiler/declaration census | Kind, qualified/local name, all valid declaration spans |
-| File/path locator | Frozen inventory and explicit path/query semantics | Set of relevant repository/path identities |
-| Context/workflow | Independent task-specific judgments/outcomes | Graded or required-block labels; separate track |
+| Literal/identifier content | Exhaustive frozen-source scan under declared semantics | File and matching byte spans |
+| Regex | Reference matcher and fixed common-semantics fixtures | Complete match set or typed unsupported |
+| Definition | Independent language AST/compiler/declaration census | Kind, qualified/local name and all valid declaration spans |
+| File/path locator | Complete frozen inventory plus explicit query policy | Repository/revision/path identities |
+| Context/workflow | Task-specific review/outcome and required evidence | Graded labels or jointly required blocks |
 
-If independent extraction is unavailable for a syntax form, mark that stratum
-unsupported or unjudged; do not emit an empty definitive gold set. Preserve oracle
-implementation/version, source hashes, extraction rules and adjudication status.
-The product producer can cross-check but cannot be its own sole expected-result
-generator. Small hand-specified fixtures provide a second oracle for adapters.
+Product parsing can cross-check independent expected results. Unsupported syntax,
+failed extraction and incomplete source scope stay explicit; they cannot issue
+empty gold/no-answer. Docstring examples are content. Ambiguous definitions need
+qualified queries or all valid alternatives; jointly required blocks use an
+all-required metric. Product majority cannot issue relevance truth.
 
-Classify docstring examples as content tasks. For ambiguous names, qualify the
-query or label all valid alternatives. Distinguish alternative answers from
-multiple jointly required context blocks; the latter uses an all-required metric,
-not definition MRR. No majority vote among products creates ground truth.
+Keep independent positive/negative raw-span fixtures for Python strings/examples,
+Rust const/async/generic functions, TS object methods, decorators, comments,
+test/generated declarations, malformed source and duplicate/same-line names.
+For each admitted syntax, record actual census coverage and extraction identity;
+existing supported parsers are reused, with changes only for demonstrated gaps.
+Natural no-answer, wrong-repository and absent identifiers bind complete negative
+scope and retain their denominator. Human provenance requires actual assessors.
 
-Include natural no-answer, wrong-repository and intentionally absent identifiers.
-A failed parser or incomplete indexed scope is not evidence of absence. Answerable
-and unanswerable strata keep explicit denominators.
+## Fresh evaluation acceptance
 
-## Development and fresh evaluation
+The local expanded target remains twelve additional repositories and 1,200 fresh
+cases across independently supported Rust/Go/Python/TS-JS and size strata. Keep
+repeated names, definitions versus uses, case/qualified names, long/Unicode files,
+path/regex/negative queries, 1–2-character and long names, punctuation, chunk
+boundaries and near-matching false friends. These are engineering targets, not
+power guarantees. [B08](../../sep-30-code-search-benchmark-trust/tickets/S30-B08-fresh-multirepo-holdout.md)
+owns the source-first roster, provisional quotas, exposure audit and C0–C5 gates.
 
-Keep previously inspected tasks only as a corrected, versioned diagnostic or
-regression set. A reshuffle cannot turn those tasks into a fresh holdout.
+Freeze repository/family splits before variants/tuning; audit shared blobs,
+forks/copied fixtures and near-identical query templates. Seal labels from runner
+and tuning credentials using existing custody controls. Declare unavoidable
+overlap, actual eligible population/underfill and primary cohort sizing from
+baseline variance/useful effect. Once used to choose a policy, holdout becomes
+development; later selection needs a new challenge. Generated/public tasks do
+not establish representative user relevance by themselves.
 
-Proposed first expanded release: at least 12 repositories and 1,200 **fresh** cases
-across Rust, Go, Python, TS/JS and other independently supported languages, with
-small/medium/large repository strata. Include repeated names, definitions versus
-references, exact case, qualified names, long files, Unicode, path filters,
-regex, negative queries and malformed-source text. Include 1–2-character and long
-identifiers, punctuation, chunk-boundary matches, decorators, const functions,
-methods, comments/examples, test declarations and near-matching false friends.
-These sizes are engineering
-targets, not statistical power guarantees or published SOTA requirements.
+## Completion
 
-Split before tuning by repository and query family where possible. Detect shared
-files, forks, copied fixtures and near-identical query templates across splits;
-declare unavoidable overlap. Seal holdout labels from the runner and tuning
-process using existing custody/isolation mechanisms. Predeclare a sufficiently
-sized primary cohort based on variance and minimum detectable effect (BENCH-03).
+Each admitted file/task has one identity. Duplicate/stale/wrong-source/malformed/
+incomplete/leaking inputs refuse. Changed gold has an explicit reason/new identity;
+native comparator inventories and exclusions bind the admitted release. Independent
+oracle identities, reviewed labels where required, split/pack/critical-stratum
+and numerical decision inputs precede policy selection. Unavailable strata stay
+visible; missing legal or human inputs block only their dependent claim.
 
-Once inspected to choose a policy, a holdout becomes development data. A later
-attempt needs a new frozen challenge release. Generated examples and externally
-proposed benchmark tasks are not automatically representative of real users.
-
-## Tests and DoD
-
-- [ ] Python strings/examples, Rust const/async/generic functions and TS object
-  methods have positive/negative oracle fixtures and byte-exact alternatives.
-- [ ] All existing gold is reclassified or repaired; every changed case has a
-  machine-readable reason and a new release ID, not a silently changed score.
-- [ ] Every admitted file/task has exactly one identity; duplicate, stale,
-  wrong-source, malformed, incomplete and split-leaking manifests reject.
-- [ ] Comparator inventories bind to the common release; exclusions remain visible.
-- [ ] External recipes are ported into canonical owners and reproducible without
-  temporary paths; corpus/gold payloads remain external.
-- [ ] Development/holdout partition, independent oracle identities and blind packs
-  are frozen before ENG-03 default selection.
-- [ ] Expanded-case counts and stratum coverage are emitted; unavailable strata
-  are explicit, never default zeros or passing skips.
-
-Manual legal approvals or new human annotation are user-owned inputs, not coding
-subtasks. They only block the dependent optional release/claim; automated exact
-and supported-AST tracks can proceed with already authorized inputs.
-References: [S07/S08 and R01–R04](../references.md).
+[BENCH-02](CS-BENCH-02-native-response-validation.md) owns native evidence;
+[BENCH-03](CS-BENCH-03-tracks-metrics-and-statistics.md) owns units/inference.
+Historical preparation and diagnosis are recoverable through
+[the history index](../../ARCHIVE-INDEX.md#oct-05-residual-owner-clarification).
+Research references: [S07/S08 and R01–R04](../references.md).
