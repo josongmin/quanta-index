@@ -127,8 +127,17 @@ P1 · W1/W4 · native reader/capture/replay 구현 완료, 전체 서비스 univ
 
 - Sourcegraph source97의12repo/13,347files native replay 및 OpenGrok readonly 전후 disk/source/aux/API
   관측은 완료된 scope로 유지한다. 후속 producer/decoder 변경의 affected fresh evidence는 별도로 발행한다.
-- OpenGrok 실제 Java/Lucene capture와 query 전후 index/config/runtime identity를 재검증하고,
-  실제 search acquired reader의 query-bound witness 및 필요한 전수 source-byte/posting 권위를 확정한다.
+- `VERIFIED`: driver base089의 고정7파일로 instrumented bat20 capture와 새 프로세스 독립 replay를 실행했다.
+  Native 전후12repo/17,615live = source13,347 + directory4,256 + settings12가 일치했다.
+  bat20 요청의 acquired reader(commit4/version15/live113/max116)와 nonce를 결속했고,
+  pristine 대비20/20 본문이 같았다. 별도 정상16hit·0hit control2개도 같은 native commit과 일치했다.
+  `opengrok_query_reader_scope.attested=true`는 이20개 instrumented 요청만 포함한다. Global3flags는false다.
+- Actual roots: `/private/tmp/qi-e2-og-query-reader-bat20-20261005-v1`(capture SHA
+  `58f20a0e32b8f6de24e67ae2f8dca061bf5d08f1dad3c536f3106399d3dfb800`),
+  `/private/tmp/qi-og-query-reader-fixture-20261005-v1`(compiler/control/replay).
+  Fixed image javac4classes·집중78tests(105.12s)·current closure/authority244tests(47.30s)·Ruff가 통과했다.
+- 남은 repository/profile의 실제 acquired-reader scope 및 필요한 전수 source-byte/posting 권위를 확정한다.
+  고정 fixture 소스의 재현 경로도 보존한다. Instrumented timing은 pristine latency로 채점하지 않는다.
 - source UID/file, directory/settings의 독립 분모·deployed ABI·frozen manifest를 유지한다.
   API GET/PUT403·read-only bind·declared seal 시간만으로 loaded reader를 입증하지 않는다.
 - 완료: 제품×repository×profile의 입증한 source/index scope와 missing/extra/unknown 집합,
@@ -307,6 +316,10 @@ P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
 - Frozen product `0e6c7e7e9494b63fdb33f4594df059817459d3b1`와 Python native/join
   `97eedd11b70e76c66985b15a968211a2faf92c6d` 결과는 각각의 historical source 범위다.
   후속 수리·문서/source-closure 변경을 그 전체 결과로 승격하지 않는다.
+- `VERIFIED`: clean08d의 `PATH=<borrowed-venv>/bin:$PATH CARGO_BUILD_JOBS=1 just rust-profile test-daemon`
+  은214passed/1skipped·226.315s/exit0였다. runtime lib3 및 latest full/release는 별도다.
+  OpenGrok 새2 owner target은 benchmark-control local/PR 및 source closure에 등록했다.
+  기존 formal Contract Python788에는 이 테스트들이 없으며,78/244 owner pass를 그 formal proof로 표시하지 않는다.
 - 선택 epoch의 포함 코드/driver/scorer/ADR 및 mandatory surfaces를 검증하고 matching fresh
   Contract/SDK/source closure/binaries를 발행·portable replay한다. E3 shipping acceptance와 CI도 실제 scope로 판정한다.
 - 공개SDK/contract 변경: `just rust-public-api`; wire/decode: `just rust-fuzz-smoke`;

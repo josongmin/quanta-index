@@ -139,6 +139,7 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
     )
     raw = RawFile.capture(path)
     _require(raw.size <= MAX_BYTES, "native document stream exceeds bound")
+    commits = {}
     segments = {}
     seen = {name: set() for name in expected}
     sources = {name: set() for name in expected}
@@ -158,6 +159,7 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                 _require(
                     set(row) == {"kind", "repositories", "liveDocs"}
                     and row["repositories"] == sorted(expected)
+                    and set(commits) == set(expected)
                     and closed == set(expected)
                     and _integer(row["liveDocs"])
                     and row["liveDocs"] == total,
@@ -170,9 +172,35 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                 type(name) is str and name in expected and name not in closed,
                 "unknown or already completed native project",
             )
-            if kind == "segment":
+            if kind == "repository_commit":
                 _require(
                     set(row)
+                    == {
+                        "kind", "repository", "segmentsFile", "generation", "readerVersion",
+                        "numDocs", "maxDoc", "fileNamesSha256",
+                    }
+                    and name not in commits
+                    and not any(key[0] == name for key in segments)
+                    and type(row["segmentsFile"]) is str
+                    and re.fullmatch(r"segments_[0-9a-z]+", row["segmentsFile"]) is not None
+                    and all(type(row[key]) is int and 0 <= row[key] < 2**63
+                            for key in ("generation", "readerVersion"))
+                    and int(row["segmentsFile"][len("segments_"):], 36) == row["generation"]
+                    and all(_integer(row[key]) for key in ("numDocs", "maxDoc"))
+                    and row["numDocs"] <= row["maxDoc"]
+                    and type(row["fileNamesSha256"]) is str
+                    and re.fullmatch(r"[0-9a-f]{64}", row["fileNamesSha256"]) is not None,
+                    "native repository commit is absent, repeated or malformed",
+                )
+                commits[name] = {key: row[key] for key in (
+                    "segmentsFile", "generation", "readerVersion", "numDocs", "maxDoc",
+                    "fileNamesSha256",
+                )}
+                continue
+            if kind == "segment":
+                _require(
+                    name in commits
+                    and set(row)
                     == {
                         "kind",
                         "repository",
@@ -250,6 +278,10 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                     sources[name] == expected[name]
                     and settings[name] == 1
                     and row["liveDocs"] == count
+                    and name in commits
+                    and commits[name]["numDocs"] == count
+                    and commits[name]["maxDoc"]
+                    == sum(v["maxDoc"] for key, v in segments.items() if key[0] == name)
                     and row["pathPresent"] == len(sources[name])
                     and row["pathMissing"] == row["pathFieldMissing"] == count - len(sources[name]),
                     "native sources or repository counts differ",
@@ -475,6 +507,7 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
         "scope": "readonly_disk_live_documents_and_uid_postings",
         "raw_sha256": raw.sha256,
         "live_documents": total,
+        "reader_commits": {name: commits[name] for name in sorted(expected)},
         "projects": {
             name: {
                 "source_files": len(sources[name]),

@@ -13,6 +13,7 @@ import java.util.TreeMap;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FieldInfo;
+import org.apache.lucene.index.IndexCommit;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.LeafReader;
@@ -51,6 +52,15 @@ public final class FullLiveDocuments {
 
   private static String hex(byte[] bytes) {
     return java.util.HexFormat.of().formatHex(bytes);
+  }
+
+  private static String commitFileNamesSha256(IndexCommit commit) throws Exception {
+    MessageDigest digest = sha();
+    for (String file : new java.util.TreeSet<>(commit.getFileNames())) {
+      digest.update(file.getBytes(StandardCharsets.UTF_8));
+      digest.update((byte) 0);
+    }
+    return hex(digest.digest());
   }
 
   private static void emit(Map<String, Object> row) throws Exception {
@@ -159,6 +169,11 @@ public final class FullLiveDocuments {
       long pathFieldMissing = 0;
       try (Directory dir = FSDirectory.open(Path.of(args[0], repo));
            DirectoryReader index = DirectoryReader.open(dir)) {
+        IndexCommit commit = index.getIndexCommit();
+        emit(Map.of("kind", "repository_commit", "repository", repo,
+            "segmentsFile", commit.getSegmentsFileName(), "generation", commit.getGeneration(),
+            "readerVersion", index.getVersion(), "numDocs", index.numDocs(),
+            "maxDoc", index.maxDoc(), "fileNamesSha256", commitFileNamesSha256(commit)));
         for (LeafReaderContext leaf : index.leaves()) {
           bounded();
           LeafReader reader = leaf.reader();

@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | E1 | SQL/Zellij 최종 판단·Tailscale rubric, current9 신규742pairs 검수·labels/admissions·재채점 | 최소1,364pairs 잔여; 실제 model quota/rubric 필요. SQL/Zellij는 C3 평가용 source repositories |
 | E1 | 다른 name/typo cells·독립 holdout/gold·license/exposure/acceptance | Gin exact1,196 완료 범위 보존; candidate12repo는 source-only 미승인 |
-| E2 | 나머지3repo/다른 lanes required captures/replays/joins, actual OpenGrok reader/source/index authority | 기존9repo raw는 bound epoch의 diagnostic; readonly disk/API는 loaded-reader/whole universe가 아님 |
+| E2 | 나머지3repo/다른 lanes required captures/replays/joins, 남은 OpenGrok reader/source/index authority | 새 instrumented bat20 acquired-reader capture/독립 replay·pristine 본문20/20 일치 VERIFIED; 전역 flagsfalse 유지. 기존9repo raw는 bound epoch의 diagnostic |
 | E4 | causal/full-caller/scanner A/B·default capacity·정식 반복 성능·정책 RCA | 기본large30s timeout·xlarge4M cap gate FAILED 보존; Darwin frequency admission BLOCKED |
 | I0 | 최신 source Contract/SDK/CI·exact producer pair·real-provider/Linux/state·P11 actions | 과거 owner/OS-child/2UID component proof와 shipping/release/운영 구분 |
 

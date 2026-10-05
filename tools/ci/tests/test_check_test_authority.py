@@ -22,6 +22,8 @@ def test_live_code_search_owners_are_enrolled_in_the_existing_rail() -> None:
     scope = data["python_scopes"]["benchmark-control-capture"]["targets"]
     for name, owner in (
         ("test_live_lexical_external.py", "tools/benchmark/retrieval/live_lexical_external.py"),
+        ("test_opengrok_index_scope.py", "tools/benchmark/retrieval/opengrok_index_scope.py"),
+        ("test_opengrok_query_witness.py", "tools/benchmark/retrieval/opengrok_query_witness.py"),
         ("test_code_search_workflow.py", "tools/benchmark/code_search_workflow.py"),
     ):
         path = f"tools/ci/tests/{name}"

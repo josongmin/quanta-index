@@ -98,6 +98,18 @@ def observation(expected):
         # One deleted document slot is absent from the live stream.
         rows.append(
             {
+                "kind": "repository_commit",
+                "repository": project,
+                "segmentsFile": "segments_1",
+                "generation": 1,
+                "readerVersion": 7,
+                "numDocs": len(documents),
+                "maxDoc": len(documents) + 1,
+                "fileNamesSha256": "1" * 64,
+            }
+        )
+        rows.append(
+            {
                 "kind": "segment",
                 "repository": project,
                 "segmentName": "_0",
@@ -199,12 +211,21 @@ def test_native_live_documents_accept_deletion_gap_and_multiple_projects(tmp_pat
         for name in expected
     }
     assert result["service_loaded_reader_attested"] is False
+    assert result["reader_commits"]["fixture"]["segmentsFile"] == "segments_1"
     assert result["qualified"] is False
 
 
 @pytest.mark.parametrize(
     "mutation",
     [
+        "missing_commit",
+        "duplicate_commit",
+        "commit_count",
+        "commit_digest",
+        "commit_generation_bool",
+        "commit_version_text",
+        "commit_missing_segments",
+        "commit_truncated",
         "missing",
         "duplicate",
         "extra",
@@ -227,40 +248,56 @@ def test_native_live_documents_accept_deletion_gap_and_multiple_projects(tmp_pat
 def test_native_live_documents_refuse_independent_mutants(tmp_path, mutation):
     expected = {"fixture": {"src/a.rs"}}
     rows = observation(expected)
-    if mutation == "missing":
-        del rows[1]
+    if mutation == "missing_commit":
+        del rows[0]
+    elif mutation == "duplicate_commit":
+        rows.insert(1, copy.deepcopy(rows[0]))
+    elif mutation == "commit_count":
+        rows[0]["numDocs"] += 1
+    elif mutation == "commit_digest":
+        rows[0]["fileNamesSha256"] = "invalid"
+    elif mutation == "commit_generation_bool":
+        rows[0]["generation"] = True
+    elif mutation == "commit_version_text":
+        rows[0]["readerVersion"] = "7"
+    elif mutation == "commit_missing_segments":
+        del rows[0]["segmentsFile"]
+    elif mutation == "commit_truncated":
+        rows = rows[:1]
+    elif mutation == "missing":
+        del rows[2]
     elif mutation == "duplicate":
-        rows.insert(2, copy.deepcopy(rows[1]))
+        rows.insert(3, copy.deepcopy(rows[2]))
     elif mutation == "extra":
         rows = observation({"fixture": {"src/a.rs", "extra.rs"}})
     elif mutation == "uid":
-        rows[1]["storedFields"][1]["value"] = "wrong"
+        rows[2]["storedFields"][1]["value"] = "wrong"
     elif mutation == "project":
-        rows[1]["storedFields"][2]["value"] = "/wrong"
+        rows[2]["storedFields"][2]["value"] = "/wrong"
     elif mutation == "postings":
-        rows[1]["indexedFields"][0]["termFrequencySha256"] = "0" * 64
+        rows[2]["indexedFields"][0]["termFrequencySha256"] = "0" * 64
     elif mutation == "unknown_aux":
-        rows[2]["storedFields"][0]["name"] = "unknown"
+        rows[3]["storedFields"][0]["name"] = "unknown"
     elif mutation == "settings_version":
-        rows[3]["storedFields"][0]["valueDecimal"] = "4"
+        rows[4]["storedFields"][0]["valueDecimal"] = "4"
     elif mutation == "settings_uid":
-        rows[3]["indexedFields"][0] = term("objuid", "unexpected")
+        rows[4]["indexedFields"][0] = term("objuid", "unexpected")
     elif mutation == "empty_settings":
-        rows[3]["storedFields"][1]["valueBase64"] = ""
+        rows[4]["storedFields"][1]["valueBase64"] = ""
     elif mutation == "directory":
-        rows[2]["storedFields"][0]["value"] = "/fixture/../escape"
+        rows[3]["storedFields"][0]["value"] = "/fixture/../escape"
     elif mutation == "bool":
-        rows[1]["docGlobal"] = True
+        rows[2]["docGlobal"] = True
     elif mutation == "float":
-        rows[0]["numDocs"] = 3.0
+        rows[1]["numDocs"] = 3.0
     elif mutation == "segment":
-        rows[1]["docLocal"] = 4
+        rows[2]["docLocal"] = 4
     elif mutation == "terminal":
         rows.pop()
     elif mutation == "trailing":
         rows.append(copy.deepcopy(rows[-1]))
     else:
-        rows[1]["selectedStoredFields"]["type"]["present"] = True
+        rows[2]["selectedStoredFields"]["type"]["present"] = True
     path = tmp_path / "native.jsonl"
     write_rows(path, rows)
     with pytest.raises(ValueError):
@@ -271,9 +308,9 @@ def test_native_auxiliary_shape_uses_deployed_directory_parent_and_index_only_ui
     expected = {"bat": {"src/a.rs"}}
     rows = observation(expected)
     directory = "/bat/src/syntax_mapping"
-    rows[2]["storedFields"][0]["value"] = directory
+    rows[3]["storedFields"][0]["value"] = directory
     # Fixed digest observed in deployed OpenGrok 1.14.18, not computed by the verifier.
-    rows[2]["indexedFields"] = [
+    rows[3]["indexedFields"] = [
         term("d", directory),
         {
             "field": "dirpath",
@@ -286,7 +323,7 @@ def test_native_auxiliary_shape_uses_deployed_directory_parent_and_index_only_ui
     path = tmp_path / "native.jsonl"
     write_rows(path, rows)
     assert scope.verify_documents(path, expected)["projects"]["bat"]["directory_documents"] == 1
-    rows[2]["indexedFields"][1]["termFrequencySha256"] = "0" * 64
+    rows[3]["indexedFields"][1]["termFrequencySha256"] = "0" * 64
     write_rows(path, rows)
     with pytest.raises(ValueError, match="exact indexed term"):
         scope.verify_documents(path, expected)
@@ -308,7 +345,7 @@ def test_native_auxiliary_shape_uses_deployed_directory_parent_and_index_only_ui
 def test_native_decoder_refuses_impossible_lucene_field_metadata(tmp_path, mutation):
     expected = {"fixture": {"src/a.rs"}}
     rows = observation(expected)
-    infos = rows[0]["fieldInfo"]
+    infos = rows[1]["fieldInfo"]
     if mutation == "field_info_boolean":
         infos[0]["hasNorms"] = 0
     elif mutation == "field_info_duplicate":
@@ -320,11 +357,11 @@ def test_native_decoder_refuses_impossible_lucene_field_metadata(tmp_path, mutat
     elif mutation == "missing_uid_info":
         infos[:] = [info for info in infos if info["name"] != "u"]
     elif mutation == "stored_type":
-        rows[1]["storedFields"][0]["indexOptions"] = True
+        rows[2]["storedFields"][0]["indexOptions"] = True
     elif mutation == "stored_unknown":
-        rows[1]["storedFields"][0]["unexpected"] = "extra"
+        rows[2]["storedFields"][0]["unexpected"] = "extra"
     else:
-        rows[1]["indexedFields"].append(term("path", "/fixture/src/a.rs"))
+        rows[2]["indexedFields"].append(term("path", "/fixture/src/a.rs"))
     path = tmp_path / "native.jsonl"
     write_rows(path, rows)
     with pytest.raises(ValueError, match="field|posting"):
@@ -335,8 +372,8 @@ def test_native_auxiliary_real_root_directory_and_parent_postings(tmp_path):
     expected = {"bat": {"src/a.rs"}}
     rows = observation(expected)
     # Independent digests observed in the deployed OpenGrok 1.14.18 index.
-    rows[2]["storedFields"][0]["value"] = "/"
-    rows[2]["indexedFields"] = [
+    rows[3]["storedFields"][0]["value"] = "/"
+    rows[3]["indexedFields"] = [
         term("d", "/"),
         {
             "field": "dirpath",
@@ -351,7 +388,7 @@ def test_native_auxiliary_real_root_directory_and_parent_postings(tmp_path):
     path = tmp_path / "native.jsonl"
     write_rows(path, rows)
     assert scope.verify_documents(path, expected)["projects"]["bat"]["directory_documents"] == 1
-    rows[2]["indexedFields"][1]["termFrequencySha256"] = "0" * 64
+    rows[3]["indexedFields"][1]["termFrequencySha256"] = "0" * 64
     write_rows(path, rows)
     with pytest.raises(ValueError, match="exact indexed term"):
         scope.verify_documents(path, expected)

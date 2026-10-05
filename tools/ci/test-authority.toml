@@ -342,6 +342,8 @@ targets = [
 [python_scopes.benchmark-control-capture]
 targets = [
   "benchmark-live-external-python-owner",
+  "benchmark-opengrok-index-scope-python-owner",
+  "benchmark-opengrok-query-witness-python-owner",
   "benchmark-cs-fuzzy-report-python-owner",
   "benchmark-code-search-workflow-python-owner",
   "benchmark-code-search-matrix-python-owner",
@@ -392,6 +394,18 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-live-external-python-owner"
 path = "tools/ci/tests/test_live_lexical_external.py"
 owner = "tools/benchmark/retrieval/live_lexical_external.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-opengrok-index-scope-python-owner"
+path = "tools/ci/tests/test_opengrok_index_scope.py"
+owner = "tools/benchmark/retrieval/opengrok_index_scope.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-opengrok-query-witness-python-owner"
+path = "tools/ci/tests/test_opengrok_query_witness.py"
+owner = "tools/benchmark/retrieval/opengrok_query_witness.py"
 rail = "pr-benchmark-control-python"
 
 [[python_targets]]

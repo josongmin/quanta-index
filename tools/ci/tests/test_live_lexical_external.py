@@ -2063,6 +2063,7 @@ class SearchHandler(BaseHTTPRequestHandler):
     query_seen = False
     inventory_extra_after_query = False
     backend_mutation_path = None
+    reader_commit = None
 
     def do_GET(self):
         parsed = urlsplit(self.path)
@@ -2142,6 +2143,16 @@ class SearchHandler(BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        if parsed.path == "/api/v1/search" and self.reader_commit is not None:
+            nonce = self.headers.get("X-QI-Request-Nonce")
+            if nonce is not None:
+                commit = self.reader_commit
+                self.send_header(
+                    "X-QI-Reader-Witness",
+                    f"v1:{nonce}:fixture,{commit['segmentsFile']},{commit['generation']},"
+                    f"{commit['readerVersion']},{commit['numDocs']},{commit['maxDoc']},"
+                    f"{commit['fileNamesSha256']}",
+                )
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2753,12 +2764,13 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
 
 
 @pytest.mark.parametrize(
-    ("product", "native", "readonly"),
-    [(product, False, False) for product in live.PRODUCTS]
-    + [("opengrok", True, False), ("opengrok", True, True)],
+    ("product", "native", "readonly", "witnessed"),
+    [(product, False, False, False) for product in live.PRODUCTS]
+    + [("opengrok", True, False, False), ("opengrok", True, True, False),
+       ("opengrok", True, True, True)],
 )
 def test_v2_single_product_capture_replays_only_selected_native_evidence(
-    tmp_path, lexical_release_seed, product, native, readonly, monkeypatch
+    tmp_path, lexical_release_seed, product, native, readonly, witnessed, monkeypatch
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
     suite = json.loads(paths["suite"].read_bytes())
@@ -2777,6 +2789,7 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
     SearchHandler.query_seen = False
     SearchHandler.inventory_extra_after_query = False
     SearchHandler.backend_mutation_path = None
+    SearchHandler.reader_commit = None
     binary = tmp_path / "cs"
     binary.write_text(
         f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
@@ -2817,7 +2830,11 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
         }
         spec_path = tmp_path / "live-spec.json"
         if native:
-            from tools.ci.tests.test_opengrok_index_scope import fake_execution, reader_config
+            from tools.ci.tests.test_opengrok_index_scope import (
+                fake_execution,
+                observation,
+                reader_config,
+            )
 
             index = tmp_path / "index"
             index.mkdir()
@@ -2850,6 +2867,40 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
                 war = tmp_path / "source.war"
                 with zipfile.ZipFile(war, "w") as archive:
                     archive.writestr("WEB-INF/web.xml", original_xml)
+                    if witnessed:
+                        for name in live.opengrok_query_witness.CLASS_FILES:
+                            archive.writestr(name, b"original-class")
+                            class_path = webapps / "ROOT" / name
+                            class_path.parent.mkdir(parents=True, exist_ok=True)
+                            class_path.write_bytes(b"instrumented-class")
+                if witnessed:
+                    witness = live.opengrok_query_witness
+                    monkeypatch.setattr(witness, "COMPILER_IMAGE_SHA256", "b" * 64)
+                    monkeypatch.setattr(
+                        witness, "PINNED_CLASS_SHA256",
+                        {name: live._sha(b"instrumented-class") for name in witness.CLASS_FILES},
+                    )
+                    fixture_sources = {}
+                    for name in ("original_source", "patched_source", "source_patch"):
+                        path = tmp_path / name
+                        path.write_text(name)
+                        fixture_sources[name] = str(path)
+                    for name, constant in (
+                        ("original_source", "ORIGINAL_SOURCE_SHA256"),
+                        ("patched_source", "PATCHED_SOURCE_SHA256"),
+                        ("source_patch", "SOURCE_PATCH_SHA256"),
+                    ):
+                        monkeypatch.setattr(witness, constant, live._sha_file(Path(fixture_sources[name])))
+                    instrumented_war = tmp_path / "instrumented.war"
+                    with zipfile.ZipFile(instrumented_war, "w") as archive:
+                        archive.writestr("WEB-INF/web.xml", descriptor.read_bytes())
+                        for name in witness.CLASS_FILES:
+                            archive.writestr(name, b"instrumented-class")
+                    config["query_reader_witness"] = {
+                        "contract": witness.CONTRACT,
+                        **fixture_sources,
+                        "instrumented_war": str(instrumented_war),
+                    }
                 token = tmp_path / "token"
                 token.write_text("fixture-token")
                 config["token_file"] = str(token)
@@ -2876,6 +2927,19 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
                             "configuration_sha256": files["configuration_sha256"],
                             "source_root": str(SearchHandler.view),
                             "source_war_sha256": live._sha_file(war),
+                            **(
+                                {
+                                    "query_witness_contract": live.opengrok_query_witness.CONTRACT,
+                                    **{
+                                        name: files[name]
+                                        for name in (
+                                            "instrumented_war_sha256", "patched_source_sha256",
+                                            "source_patch_sha256", "original_source_sha256",
+                                        )
+                                    },
+                                }
+                                if witnessed else {}
+                            ),
                         }
                     )
                 )
@@ -2884,6 +2948,8 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
                 live.corpus_release.validate(Path(corpus["release_path"])),
                 corpus["view"],
             )
+            if witnessed:
+                SearchHandler.reader_commit = observation(expected)[0]
             monkeypatch.setattr(live.opengrok_index_scope, "execute", fake_execution(expected))
 
             def process(argv, timeout):
@@ -2959,6 +3025,7 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
         server.shutdown()
         server.server_close()
         thread.join()
+        SearchHandler.reader_commit = None
     root = Path(spec["output_root"])
     assert summary["schema_version"] == 2
     assert summary["completed_response_boundary"] == live.COMPLETED_BOUNDARY
@@ -2992,6 +3059,51 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
             summary_path.write_text(json.dumps({**summary, key: True}))
             with pytest.raises(ValueError, match="unsupported capture metadata"):
                 live.verify(root)
+        summary_path.write_text(json.dumps(summary))
+    if witnessed:
+        query_scope = summary["opengrok_query_reader_scope"]
+        assert query_scope["scope"] == "instrumented_search_requests_selected_project_only"
+        assert query_scope["selected_project"] == "fixture"
+        assert query_scope["attested"] is True
+        assert query_scope["all_project_readers_attested"] is False
+        summary_path = root / "capture.json"
+        for changed in (
+            {**query_scope, "attested": 1},
+            {**query_scope, "queries": 1.0},
+            {**query_scope, "all_project_readers_attested": 0},
+            {**query_scope, "reader_commit": {**query_scope["reader_commit"], "generation": 1.0}},
+        ):
+            summary_path.write_text(json.dumps({**summary, "opengrok_query_reader_scope": changed}))
+            with pytest.raises(ValueError, match="query reader scope"):
+                live.verify(root)
+        summary_path.write_text(json.dumps(summary))
+        task_id = pack["tasks"][0]["task_id"]
+        transport_name = f"opengrok/{task_id}.transport.json"
+        transport_path = root / transport_name
+        original_transport = transport_path.read_bytes()
+        transport = json.loads(original_transport)
+        exact_header = transport["reader_witness_headers"][0]
+        fields = exact_header.split(",")
+        fields[3] = str(int(fields[3]) + 1)
+        stale_commit = ",".join(fields)
+        for changed in (
+            {**transport, "request_nonce": "0" * 32},
+            {**transport, "reader_witness_headers": []},
+            {**transport, "reader_witness_headers": [exact_header, exact_header]},
+            {**transport, "reader_witness_headers": [exact_header.replace(":fixture,", ":other,")]},
+            {**transport, "reader_witness_headers": [stale_commit]},
+        ):
+            changed_raw = json.dumps(changed).encode()
+            transport_path.write_bytes(changed_raw)
+            summary_path.write_text(json.dumps({
+                **summary,
+                "raw_capture_sha256": {
+                    **summary["raw_capture_sha256"], transport_name: live._sha(changed_raw),
+                },
+            }))
+            with pytest.raises(ValueError, match="query reader|nonce"):
+                live.verify(root)
+        transport_path.write_bytes(original_transport)
         summary_path.write_text(json.dumps(summary))
     retained_spec = root / "spec.json"
     retained_spec_raw = retained_spec.read_bytes()

@@ -45,6 +45,7 @@ from evidence import RawFile, _read_control_file, canonical_json, file_digest  #
 from tools.benchmark.retrieval import lexical_file_comparison as lexical  # noqa: E402
 from tools.benchmark.retrieval import (  # noqa: E402
     opengrok_index_scope,
+    opengrok_query_witness,
     query_plan,
     sourcegraph,
     sourcegraph_index_scope,
@@ -140,6 +141,7 @@ def _source_hashes() -> dict[str, str]:
         "sourcegraph_index_scope": Path(sourcegraph_index_scope.__file__),
         "opengrok_index_scope": Path(opengrok_index_scope.__file__),
         "opengrok_native_reader": opengrok_index_scope.READER,
+        "opengrok_query_witness": Path(opengrok_query_witness.__file__),
         "lexical_scorer": Path(lexical.__file__),
         "corpus_binding": Path(corpus_binding.__file__),
         "corpus_release": Path(corpus_release.__file__),
@@ -278,7 +280,8 @@ def _spec(path: Path) -> dict:
         value["opengrok"] = _service(
             value["opengrok"],
             {"base_url", "project", "server_image_digest"},
-            {"indexed_view_probe", "backend_snapshot", "native_index_reader", "readonly_service"},
+            {"indexed_view_probe", "backend_snapshot", "native_index_reader", "readonly_service",
+             "query_reader_witness"},
         )
         if value["opengrok"].get("indexed_view_probe") not in (None, "full"):
             raise ValueError("OpenGrok indexed view probe must be full or absent")
@@ -328,6 +331,44 @@ def _spec(path: Path) -> dict:
                 or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", service["network"]) is None
             ):
                 raise ValueError("OpenGrok readonly service network differs")
+        if "query_reader_witness" in value["opengrok"]:
+            config = value["opengrok"]
+            fixture = config["query_reader_witness"]
+            if (
+                "readonly_service" not in config
+                or type(fixture) is not dict
+                or set(fixture)
+                != {"contract", "original_source", "patched_source", "source_patch",
+                    "instrumented_war"}
+                or fixture["contract"] != opengrok_query_witness.CONTRACT
+                or config["server_image_digest"]
+                != opengrok_query_witness.COMPILER_IMAGE_SHA256
+            ):
+                raise ValueError("OpenGrok query reader fixture spec differs")
+            for field, expected_sha in (
+                ("original_source", opengrok_query_witness.ORIGINAL_SOURCE_SHA256),
+                ("patched_source", opengrok_query_witness.PATCHED_SOURCE_SHA256),
+                ("source_patch", opengrok_query_witness.SOURCE_PATCH_SHA256),
+            ):
+                if type(fixture[field]) is not str:
+                    raise ValueError("OpenGrok query reader fixture source differs")
+                path = Path(fixture[field])
+                if (
+                    not path.is_absolute()
+                    or path.resolve(strict=True) != path
+                    or not path.is_file()
+                    or _sha_file(path) != expected_sha
+                ):
+                    raise ValueError("OpenGrok query reader fixture source differs")
+            if type(fixture["instrumented_war"]) is not str:
+                raise ValueError("OpenGrok instrumented WAR differs")
+            war = Path(fixture["instrumented_war"])
+            if (
+                not war.is_absolute()
+                or war.resolve(strict=True) != war
+                or not war.is_file()
+            ):
+                raise ValueError("OpenGrok instrumented WAR differs")
     if "cs" in products and (not isinstance(value["cs"], dict) or set(value["cs"]) != {"binary"}):
         raise ValueError("cs spec requires only binary")
     for key in ("suite", "query_pack", "output_root"):
@@ -454,6 +495,12 @@ def _auth(config: dict, scheme: str) -> dict[str, str]:
     return headers
 
 
+def _service_opener(config: dict):
+    """Reach the inspected read-only container directly, without ambient proxy routing."""
+    handlers = [urllib.request.ProxyHandler({})] if "readonly_service" in config else []
+    return urllib.request.build_opener(*handlers, _NoRedirect)
+
+
 def _http(
     config: dict, endpoint: str, params: dict, accept: str, scheme: str = "Bearer"
 ) -> tuple[int, str, bytes, float]:
@@ -463,7 +510,7 @@ def _http(
     request = urllib.request.Request(url, headers=headers, method="GET")
     start = time.monotonic_ns()
     try:
-        with urllib.request.build_opener(_NoRedirect).open(
+        with _service_opener(config).open(
             request, timeout=HTTP_TIMEOUT
         ) as response:
             status = response.status
@@ -477,6 +524,35 @@ def _http(
     if len(raw) > MAX_HTTP_BYTES:
         raise ValueError("HTTP response exceeds 16 MiB limit")
     return status, content_type, raw, elapsed
+
+
+def _opengrok_witness_http(
+    config: dict, endpoint: str, params: dict, nonce: str
+) -> tuple[int, str, bytes, float, list[str] | None]:
+    """Capture duplicate-aware raw witness headers from this search response."""
+    url = config["base_url"] + endpoint + "?" + urllib.parse.urlencode(params)
+    headers = _auth(config, "Bearer")
+    headers["Accept"] = "application/json"
+    headers[opengrok_query_witness.REQUEST_HEADER] = nonce
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    start = time.monotonic_ns()
+    try:
+        with _service_opener(config).open(
+            request, timeout=HTTP_TIMEOUT
+        ) as response:
+            status = response.status
+            content_type = response.headers.get_content_type()
+            witness = response.headers.get_all(opengrok_query_witness.HEADER)
+            raw = response.read(MAX_HTTP_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        status = error.code
+        content_type = error.headers.get_content_type()
+        witness = error.headers.get_all(opengrok_query_witness.HEADER)
+        raw = error.read(MAX_HTTP_BYTES + 1)
+    elapsed = (time.monotonic_ns() - start) / 1_000_000
+    if len(raw) > MAX_HTTP_BYTES:
+        raise ValueError("HTTP response exceeds 16 MiB limit")
+    return status, content_type, raw, elapsed, witness
 
 
 def _paths(paths: list[str], admitted: dict[str, str], view: Path) -> list[str]:
@@ -718,6 +794,8 @@ def _opengrok(
     target: Path,
     *,
     literal_query: bool = False,
+    native_commit: dict | None = None,
+    output_root: str | None = None,
 ) -> dict:
     start_ns = time.monotonic_ns()
     params = {
@@ -727,7 +805,26 @@ def _opengrok(
         "start": 0,
         "sort": "relevancy",
     }
-    status, content_type, raw, elapsed = _http(config, "/api/v1/search", params, "application/json")
+    query_witness = "query_reader_witness" in config
+    nonce = None
+    witness_headers = None
+    if query_witness:
+        if native_commit is None or output_root is None:
+            raise ValueError("OpenGrok query reader requires native commit and capture root")
+        nonce = opengrok_query_witness.request_nonce(output_root, config, task)
+        status, content_type, raw, elapsed, witness_headers = _opengrok_witness_http(
+            config, "/api/v1/search", params, nonce
+        )
+        opengrok_query_witness.verify_header(
+            witness_headers,
+            nonce=nonce,
+            project=config["project"],
+            native_commits={config["project"]: native_commit},
+        )
+    else:
+        status, content_type, raw, elapsed = _http(
+            config, "/api/v1/search", params, "application/json"
+        )
     paths = _opengrok_native_paths(config, status, content_type, raw)
     completed = _completed_native(paths, start_ns)
     row = _opengrok_response(
@@ -751,6 +848,11 @@ def _opengrok(
                 "status": status,
                 "content_type": content_type,
                 "elapsed_ms": elapsed,
+                **(
+                    {"request_nonce": nonce, "reader_witness_headers": witness_headers}
+                    if query_witness
+                    else {}
+                ),
             },
             sort_keys=True,
         ).encode()
@@ -998,7 +1100,7 @@ def _opengrok_write_denial_probe(config: dict, target: Path, *, capture: bool) -
         )
         started = time.monotonic_ns()
         try:
-            with urllib.request.build_opener(_NoRedirect).open(
+            with _service_opener(config).open(
                 request, timeout=HTTP_TIMEOUT
             ) as response:
                 status = response.status
@@ -1628,6 +1730,16 @@ def _cs_response(
 
 def _opengrok_readonly_files(config: dict) -> dict:
     service = config["readonly_service"]
+    fixture = config.get("query_reader_witness")
+    allowed_classes = opengrok_query_witness.CLASS_FILES if fixture is not None else frozenset()
+    if fixture is not None and (
+        set(opengrok_query_witness.PINNED_CLASS_SHA256) != allowed_classes
+        or any(
+            type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for digest in opengrok_query_witness.PINNED_CLASS_SHA256.values()
+        )
+    ):
+        raise ValueError("OpenGrok instrumented classes lack independent pinned build digests")
     webapps = Path(service["webapps_root"])
     etc = Path(service["etc_root"])
     if {path.name for path in webapps.iterdir()} != {"ROOT"}:
@@ -1679,6 +1791,7 @@ def _opengrok_readonly_files(config: dict) -> dict:
     root.remove(denial)
     with zipfile.ZipFile(service["source_war"]) as archive:
         expected_files = set()
+        base_hashes = {}
         total = 0
         for entry in archive.infolist():
             if entry.is_dir():
@@ -1694,13 +1807,47 @@ def _opengrok_readonly_files(config: dict) -> dict:
             total += entry.file_size
             if len(expected_files) > 4096 or total > MAX_INDEX_BYTES:
                 raise ValueError("OpenGrok source WAR exceeds webapp bound")
-            if name != "WEB-INF/web.xml":
+            base_hashes[name] = _sha(archive.read(entry))
+            if name != "WEB-INF/web.xml" and name not in allowed_classes:
                 target = webapps / "ROOT" / name
-                if not target.is_file() or _sha(archive.read(entry)) != _sha_file(target):
+                if not target.is_file() or base_hashes[name] != _sha_file(target):
                     raise ValueError("OpenGrok readonly webapp differs from image WAR")
         if "WEB-INF/web.xml" not in expected_files:
             raise ValueError("OpenGrok source WAR has no web descriptor")
         original = ET.fromstring(archive.read("WEB-INF/web.xml"))
+    if fixture is not None:
+        if not allowed_classes <= expected_files:
+            raise ValueError("OpenGrok instrumented controller classes are absent from image WAR")
+        with zipfile.ZipFile(fixture["instrumented_war"]) as archive:
+            observed = set()
+            total = 0
+            for entry in archive.infolist():
+                if entry.is_dir():
+                    continue
+                name = entry.filename
+                if (
+                    name in observed
+                    or not lexical._canonical_result_path(name)
+                    or stat.S_ISLNK(entry.external_attr >> 16)
+                ):
+                    raise ValueError("OpenGrok instrumented WAR has unsafe or duplicate member")
+                observed.add(name)
+                total += entry.file_size
+                if total > MAX_INDEX_BYTES or len(observed) > 4096:
+                    raise ValueError("OpenGrok instrumented WAR exceeds webapp bound")
+                changed_sha = _sha(archive.read(entry))
+                target = webapps / "ROOT" / name
+                if not target.is_file() or changed_sha != _sha_file(target):
+                    raise ValueError("OpenGrok instrumented WAR differs from mounted webapp")
+                if name not in allowed_classes | {"WEB-INF/web.xml"} and changed_sha != base_hashes.get(name):
+                    raise ValueError("OpenGrok instrumented WAR changes unrelated class or resource")
+                if name in allowed_classes and (
+                    changed_sha == base_hashes.get(name)
+                    or changed_sha != opengrok_query_witness.PINNED_CLASS_SHA256[name]
+                ):
+                    raise ValueError("OpenGrok instrumented controller class digest differs")
+            if observed != expected_files:
+                raise ValueError("OpenGrok instrumented WAR file inventory differs")
     if original.tag != root.tag:
         raise ValueError("OpenGrok web descriptor differs from image WAR")
     original_configs = [
@@ -1737,6 +1884,35 @@ def _opengrok_readonly_files(config: dict) -> dict:
         "webapps_sha256": webapps_sha,
         "configuration_sha256": _sha(_read_control_file(config_path)),
         "web_xml_sha256": _sha(raw),
+        **(
+            {
+                "instrumented_war_sha256": _sha_file(Path(fixture["instrumented_war"])),
+                "patched_source_sha256": _sha_file(Path(fixture["patched_source"])),
+                "source_patch_sha256": _sha_file(Path(fixture["source_patch"])),
+                "original_source_sha256": _sha_file(Path(fixture["original_source"])),
+            }
+            if fixture is not None
+            else {}
+        ),
+    }
+
+
+def _opengrok_query_reader_scope(config: dict, native_scope: dict, queries: int) -> dict:
+    project = config["project"]
+    commits = native_scope["reader_commits"]
+    if project not in commits or type(queries) is not int or queries <= 0:
+        raise ValueError("OpenGrok selected query project is absent from native commits")
+    return {
+        "scope": "instrumented_search_requests_selected_project_only",
+        "selected_project": project,
+        "queries": queries,
+        "reader_commit": commits[project],
+        "instrumented_war_sha256": _sha_file(
+            Path(config["query_reader_witness"]["instrumented_war"])
+        ),
+        "all_project_readers_attested": False,
+        "timing_scope": "instrumented_service_only",
+        "attested": True,
     }
 
 
@@ -1984,10 +2160,25 @@ def _docker_utc_time(value: object) -> tuple[int, int]:
 def _validate_opengrok_snapshot_seal(config: dict, snapshot: dict) -> None:
     """Check declared seal ordering; the caller's timestamp is not an independent attestation."""
     service = config["readonly_service"]
+    fixture = config.get("query_reader_witness")
     receipt = _json(_read_control_file(Path(service["snapshot_receipt"])))
+    witness_receipt = (
+        {
+            "query_witness_contract": opengrok_query_witness.CONTRACT,
+            **{
+                name: snapshot["runtime"]["readonly_files"][name]
+                for name in (
+                    "instrumented_war_sha256", "patched_source_sha256",
+                    "source_patch_sha256", "original_source_sha256",
+                )
+            },
+        }
+        if fixture is not None
+        else {}
+    )
     if (
         set(receipt)
-        != {
+        != ({
             "schema_version",
             "sealed_at_utc",
             "index_root",
@@ -1998,7 +2189,7 @@ def _validate_opengrok_snapshot_seal(config: dict, snapshot: dict) -> None:
             "configuration_sha256",
             "source_root",
             "source_war_sha256",
-        }
+        } | set(witness_receipt))
         or type(receipt["schema_version"]) is not int
         or receipt["schema_version"] != 1
         or receipt["index_root"] != config["backend_snapshot"]["root"]
@@ -2011,6 +2202,7 @@ def _validate_opengrok_snapshot_seal(config: dict, snapshot: dict) -> None:
         or receipt["source_root"] != service["source_root"]
         or receipt["source_war_sha256"]
         != snapshot["runtime"]["readonly_files"]["source_war_sha256"]
+        or any(receipt[name] != value for name, value in witness_receipt.items())
         or not (
             _docker_utc_time(receipt["sealed_at_utc"])
             < _docker_utc_time(snapshot["runtime"]["created_at"])
@@ -2061,20 +2253,21 @@ def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
         raise ValueError("backend snapshot runtime identity differs")
     if "readonly_service" in config:
         files = runtime["readonly_files"]
+        expected_files = _opengrok_readonly_files(config)
         if (
             type(runtime["created_at"]) is not str
             or not runtime["created_at"]
             or runtime["restart_count"] != 0
             or type(files) is not dict
             or set(files)
-            != {"webapps_sha256", "configuration_sha256", "web_xml_sha256", "source_war_sha256"}
+            != set(expected_files) | {"source_war_sha256"}
             or any(
                 type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None
                 for value in files.values()
             )
             or files
             != {
-                **_opengrok_readonly_files(config),
+                **expected_files,
                 "source_war_sha256": _sha_file(Path(config["readonly_service"]["source_war"])),
             }
         ):
@@ -2321,6 +2514,14 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
             files,
             stage / "opengrok" / f"{task['task_id']}.json",
             literal_query=literal_file_query,
+            **(
+                {
+                    "native_commit": native_scope["reader_commits"][spec["opengrok"]["project"]],
+                    "output_root": str(root),
+                }
+                if "query_reader_witness" in spec["opengrok"]
+                else {}
+            ),
         ),
         "cs": lambda task, gold: _cs(
             binary,
@@ -2417,6 +2618,13 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         "indexed_universe_attested": False,
         "sourcegraph_index_scope": index_scope,
         **({"opengrok_index_scope": native_scope} if native_scope is not None else {}),
+        **(
+            {"opengrok_query_reader_scope": _opengrok_query_reader_scope(
+                spec["opengrok"], native_scope, len(pack["tasks"])
+            )}
+            if "opengrok" in products and "query_reader_witness" in spec["opengrok"]
+            else {}
+        ),
         # Disk, configuration and API probes do not observe the loaded reader.
         "opengrok_indexed_universe_attested": False,
         **(
@@ -2528,8 +2736,11 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         fields.add("products")
     native_reader = spec["opengrok"].get("native_index_reader") if "opengrok" in products else None
     readonly_service = "opengrok" in products and "readonly_service" in spec["opengrok"]
+    query_reader_witness = "opengrok" in products and "query_reader_witness" in spec["opengrok"]
     if native_reader is not None:
         fields.add("opengrok_index_scope")
+    if query_reader_witness:
+        fields.add("opengrok_query_reader_scope")
     if readonly_service:
         fields.update(
             {
@@ -2771,6 +2982,12 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
             for scope in native_scopes
         ):
             raise ValueError("OpenGrok native scope differs across queries or replay")
+        native_scope = native_scopes[0]
+    if query_reader_witness and not opengrok_query_witness.canonical_typed_equal(
+        summary["opengrok_query_reader_scope"],
+        _opengrok_query_reader_scope(spec["opengrok"], native_scope, len(pack["tasks"])),
+    ):
+        raise ValueError("OpenGrok query reader scope differs from native replay")
     if readonly_service:
         service_scopes = [
             _opengrok_service_config_probe(
@@ -2885,11 +3102,30 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
                 )
             else:
                 terminal = _json(_read_control_file(root / name / f"{task_id}.transport.json"))
+                required_transport = {"status", "content_type", "elapsed_ms"}
+                if name == "opengrok" and query_reader_witness:
+                    required_transport |= {"request_nonce", "reader_witness_headers"}
                 if (
-                    set(terminal) != {"status", "content_type", "elapsed_ms"}
+                    set(terminal) != required_transport
                     or type(terminal["status"]) is not int
                 ):
                     raise ValueError("HTTP terminal metadata differs")
+                if name == "opengrok" and query_reader_witness:
+                    nonce = opengrok_query_witness.request_nonce(
+                        spec["output_root"], spec["opengrok"], task
+                    )
+                    if terminal["request_nonce"] != nonce:
+                        raise ValueError("OpenGrok query reader request nonce differs")
+                    opengrok_query_witness.verify_header(
+                        terminal["reader_witness_headers"],
+                        nonce=nonce,
+                        project=spec["opengrok"]["project"],
+                        native_commits={
+                            spec["opengrok"]["project"]: native_scope["reader_commits"][
+                                spec["opengrok"]["project"]
+                            ]
+                        },
+                    )
                 raw = _read_control_file(
                     root / name / f"{task_id}.{'stream' if name == 'sourcegraph' else 'json'}"
                 )

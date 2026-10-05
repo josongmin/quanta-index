@@ -45,6 +45,16 @@ facts. Transport/worker clocks also differ from completed query response time.
    universe exclusion. A declared snapshot timestamp proves ordering only; it
    is not an independent seal authority. A stronger claim needs its own actual
    query-bound reader/source witness and consumer proof.
+   The optional query-reader fixture pins the original/patched Java source,
+   patch, compiler image and four compiled controller class digests. It reads
+   the searcher's acquired subreader before release, then binds its commit
+   generation/version/counts/file-name digest to native before/after observations
+   and the request's capture-root/container/project/task/query nonce. Duplicate,
+   malformed, stale or type-aliased witnesses refuse. Only selected instrumented
+   requests acquire `opengrok_query_reader_scope.attested`; global flags stay
+   false. Preserve pristine response-body equivalence and keep instrumented
+   timing separate. Read-only service probes connect directly without ambient
+   proxy routing.
 6. Completed response time includes request construction, transport, complete
    decoding and required normalization/validation, excluding later persistence.
    Bind clock domain/boundary/duration and completed output size/hash. Retain
@@ -65,13 +75,15 @@ facts. Transport/worker clocks also differ from completed query response time.
 - [External capture/verify](../../tools/benchmark/retrieval/live_lexical_external.py),
   [Sourcegraph scope](../../tools/benchmark/retrieval/sourcegraph_index_scope.py),
   [OpenGrok consumer](../../tools/benchmark/retrieval/opengrok_index_scope.py),
-  [Java reader](../../tools/benchmark/retrieval/native/FullLiveDocuments.java).
+  [Java reader](../../tools/benchmark/retrieval/native/FullLiveDocuments.java),
+  [query witness](../../tools/benchmark/retrieval/opengrok_query_witness.py).
 - [Semble phases](../../tools/benchmark/retrieval/semble.py),
   [required-cell controller](../../tools/benchmark/retrieval/execution_batch.py).
 - Keep impossible Lucene metadata, source/role/UID drift, before/after mutation,
   unsupported true-attestation flags and actual HTTP capture/offline replay
   controls in [native scope tests](../../tools/ci/tests/test_opengrok_index_scope.py),
-  [capture tests](../../tools/ci/tests/test_live_lexical_external.py) and
+  [capture tests](../../tools/ci/tests/test_live_lexical_external.py),
+  [query witness tests](../../tools/ci/tests/test_opengrok_query_witness.py) and
   [clock tests](../../tools/ci/tests/test_completed_response_timing.py).
 
 ## Consequences
