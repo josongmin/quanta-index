@@ -9,7 +9,7 @@
 
 ## 현재 코드 잔여 — 2026-10-06 소스 대조
 
-현재 정리 기준: Quanta source `63ac399f27eba896ed9d9ceaef727166ae10d684`와 harness 테스트의 불필요한 clone 제거 overlay.
+현재 정리 기준: Quanta source `326ee3ba93bfc5456c2e946a59146fa5d5ced4b4`와 F15 cfg(test)/Scanner fixture 보완 overlay.
 F15 strict 경계 검사/shared-limit/scanner comparator 수정은 이 source에 통합됐다.
 Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀·scanner custody·ARB 용어 예산 수리가 추가됐다.
 Main에는 scale/open-loop pair/total retention 정책 결속, invocation-scoped 입장 검증 재사용과
@@ -18,6 +18,9 @@ bounded query reader와 기존 비용/format 테스트 전환·제품 회귀도 
 Seal별 exact product-retention bytes 계측과 canonical fixture는 반영됐다.
 Source0b의 lexical 전체 회귀는598passed/8skipped·702.173s였으며, 이후 strict 경계 검사·공유 posting 한도
 수정 overlay의 영향 회귀 및 all-target Clippy는 재검증 중이다. Large/XL 재실행·새 formal proof는 `NOT_RUN`이다.
+Clippy v6 lexical lib-test36건을 세 에이전트와 I0가 경로별 수정해 통합했고 v7 실행 중이다.
+Scanner comparator17cases는10.91s/exit0로 통과했다. 각 negative가 유효한 baseline/candidate를
+먼저 비교한 뒤 자기 mutant를 거부하도록 보완했다. Actual two-arm A/B는 `NOT_RUN`이다.
 병렬 소유 경로와 선행은 [병렬 작업 배정](../WAVES.md#병렬-작업-배정--2026-10-06)에 정리했다.
 Scale·Scanner·Ready9 OG 담당의 독립 작업서를 준비했다. OG9 specs는 별도 clean63ac checkout에서
 원본90 inputs·Python10-role/runtime을 결속해 PREPARE 완료했으며 actual capture는 `NOT_RUN`이다.

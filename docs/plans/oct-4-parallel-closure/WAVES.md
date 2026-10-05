@@ -72,7 +72,11 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 - F15와 기존 format/cost fixture 전환 후 lexical 전체는598passed/8skipped·702.173s/exit0였다.
   이 실행은 `0b5409a2`의 컴파일 결과다. 이후 strict 경계 검사·공유 posting 한도 수정 overlay의
   영향 회귀는 별도로 재검증한다. Strict Clippy 최초176건을 수정·통합했고 다음 실행의 이름 충돌4건도
-  수정했다. Lexical+harness all-target/all-feature Clippy 재실행 중이며 통과로 표시하지 않는다.
+  수정했다. 이후 v6는 lexical lib-test의36건에서 `FAILED`였다. Producer8/reader10/root·verify13/facade5를
+  병렬 수정해 통합했으며 v7 재실행 중이다. All-target/all-feature gate를 통과로 표시하지 않는다.
+- Scanner comparator의 각 runner SHA 결속 fixture와 negative-test 전제 검사를 보완했다.
+  `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_query_scanner_ab.py`는17passed·10.91s/exit0로
+  `VERIFIED`다. 실제 두 fresh 빌드·A/B 캡처는 `NOT_RUN`이다.
 - 이후 source/ADR/Justfile 변경의 proof는 새 epoch로 발행한다. 위 frozen 결과의 SHA는 변경하지 않는다.
 
 ## W0–W6
