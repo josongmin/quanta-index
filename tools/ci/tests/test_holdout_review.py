@@ -457,6 +457,28 @@ def test_completed_forms_validate_without_claiming_adjudication(tmp_path):
         assert form["status"] == "unjudged_preparation"
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement", "message"),
+    [
+        ("form_slot", True, "review form source binding changed: form_slot"),
+        ("schema_version", 1.0, "review form source binding changed: schema_version"),
+        ("answerability_min_grade", True, "review query/context changed: answerability_min_grade"),
+    ],
+)
+def test_completed_forms_refuse_typed_aliases_in_frozen_fields(
+    tmp_path, field, replacement, message
+):
+    checkout, pack, contexts, pools = _fixture(tmp_path)
+    forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
+    completed = _completed_forms(forms)
+    if field == "answerability_min_grade":
+        completed[0]["reviews"][0][field] = replacement
+    else:
+        completed[0][field] = replacement
+    with pytest.raises(evaluator.EvidenceError, match=message):
+        holdout_review.validate_completed_forms(checkout, pack, contexts, pools, completed, seed=42)
+
+
 def test_completed_forms_report_disagreements_without_resolving_them(tmp_path):
     checkout, pack, contexts, pools = _fixture(tmp_path)
     forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)

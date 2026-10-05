@@ -209,6 +209,11 @@ def _digest(value: object) -> str:
     return evaluator.digest(evaluator.canonical(value))
 
 
+def _same_json_value(left: object, right: object) -> bool:
+    """Compare frozen JSON fields without Python's bool/int/float aliases."""
+    return evaluator.canonical(left) == evaluator.canonical(right)
+
+
 def capture_review_pool(
     checkout: Path, suite_path: Path, record_path: Path, *, pool_id: str
 ) -> tuple[dict, dict, dict]:
@@ -494,7 +499,10 @@ def validate_completed_forms(
         require(set(form) == set(template), "review form fields changed")
         reviewer_ids.append(evaluator.string(form["reviewer_id"], "reviewer identity"))
         for key in set(template) - {"reviewer_id", "reviews"}:
-            require(form[key] == template[key], "review form source binding changed: " + key)
+            require(
+                _same_json_value(form[key], template[key]),
+                "review form source binding changed: " + key,
+            )
         require(
             isinstance(form["reviews"], list) and len(form["reviews"]) == len(template["reviews"]),
             "review task coverage changed",
@@ -502,7 +510,10 @@ def validate_completed_forms(
         for row, frozen in zip(form["reviews"], template["reviews"], strict=True):
             require(isinstance(row, dict) and set(row) == set(frozen), "review task fields changed")
             for key in set(frozen) - {"answerable", "rationale", "files"}:
-                require(row[key] == frozen[key], "review query/context changed: " + key)
+                require(
+                    _same_json_value(row[key], frozen[key]),
+                    "review query/context changed: " + key,
+                )
             require(type(row["answerable"]) is bool, "review answerability missing")
             evaluator.string(row["rationale"], "review task rationale")
             require(
@@ -518,7 +529,8 @@ def validate_completed_forms(
                 )
                 for key in set(source_row) - {"grade", "rationale"}:
                     require(
-                        file_row[key] == source_row[key], "review source/candidate changed: " + key
+                        _same_json_value(file_row[key], source_row[key]),
+                        "review source/candidate changed: " + key,
                     )
                 grade = file_row["grade"]
                 require(type(grade) is int and 0 <= grade <= 3, "review grade must be 0..3")

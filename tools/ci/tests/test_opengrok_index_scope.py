@@ -78,6 +78,9 @@ def observation(expected):
                 [term("objuid", settings_uid)],
             )
         )
+        names = sorted({field["name"] for fields, _ in documents for field in fields} | {field["field"] for _, postings in documents for field in postings})
+        indexed = {field["field"] for _, postings in documents for field in postings}
+        field_info = [{"name": name, "indexOptions": "DOCS" if name in indexed else "NONE", "docValuesType": "NONE", "hasVectors": False, "hasNorms": False} for name in names]
         # One deleted document slot is absent from the live stream.
         rows.append(
             {
@@ -88,7 +91,7 @@ def observation(expected):
                 "docBase": 0,
                 "maxDoc": len(documents) + 1,
                 "numDocs": len(documents),
-                "fieldInfo": [],
+                "fieldInfo": field_info,
             }
         )
         for local, (fields, postings) in enumerate(documents, 1):
@@ -272,6 +275,33 @@ def test_native_auxiliary_shape_uses_deployed_directory_parent_and_index_only_ui
     rows[2]["indexedFields"][1]["termFrequencySha256"] = "0" * 64
     write_rows(path, rows)
     with pytest.raises(ValueError, match="exact indexed term"):
+        scope.verify_documents(path, expected)
+
+
+@pytest.mark.parametrize("mutation", ["field_info_boolean", "field_info_duplicate", "field_info_index", "field_info_docvalues", "missing_uid_info", "stored_type", "stored_unknown", "unindexed_postings"])
+def test_native_decoder_refuses_impossible_lucene_field_metadata(tmp_path, mutation):
+    expected = {"fixture": {"src/a.rs"}}
+    rows = observation(expected)
+    infos = rows[0]["fieldInfo"]
+    if mutation == "field_info_boolean":
+        infos[0]["hasNorms"] = 0
+    elif mutation == "field_info_duplicate":
+        infos.append(copy.deepcopy(infos[0]))
+    elif mutation == "field_info_index":
+        infos[0]["indexOptions"] = True
+    elif mutation == "field_info_docvalues":
+        infos[0]["docValuesType"] = "unknown"
+    elif mutation == "missing_uid_info":
+        infos[:] = [info for info in infos if info["name"] != "u"]
+    elif mutation == "stored_type":
+        rows[1]["storedFields"][0]["indexOptions"] = True
+    elif mutation == "stored_unknown":
+        rows[1]["storedFields"][0]["unexpected"] = "extra"
+    else:
+        rows[1]["indexedFields"].append(term("path", "/fixture/src/a.rs"))
+    path = tmp_path / "native.jsonl"
+    write_rows(path, rows)
+    with pytest.raises(ValueError, match="field|posting"):
         scope.verify_documents(path, expected)
 
 
