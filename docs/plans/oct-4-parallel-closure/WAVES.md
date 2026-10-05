@@ -39,8 +39,8 @@
 - Frozen5796 Gin declaration1,196 fresh single-route oracle/capture/scoring 진단은 완료했다.
   1,192success/4capped 및 declaration MRR@10=1.0은 그 분모의 diagnostic이며 독립 holdout/비교/PERF가 아니다.
 - Current history/admission Python owner58cases는 통과했다. Broad Python은 current file-pair
-  fixture의 불완전한 manifest에서 실패했다. Canonical stage fixture 전환 뒤 owner 재실행은
-  20-task warm samples가 phase window를 초과한 fixture 오류로 실패했고 보완 중이다.
+  fixture의 불완전한 manifest에서 실패했다. Canonical stage·clock/binary/capped fixture 보완 뒤
+  current-file 전체와 기존 verdict4개 경로는24passed·31.97s로 `VERIFIED`다. Broad 재실행은 `NOT_RUN`이다.
   Hosted Rust 계측 Clippy6건 수리 뒤 local harness Clippy는 marker enum의 값 전달1건으로
   실패했다. Copy enum과 marker I/O 실패 회귀를 반영했으며 재실행은 아직 `NOT_RUN`이다.
 - 이후 source/ADR/Justfile 변경의 proof는 새 epoch로 발행한다. 위 frozen 결과의 SHA는 변경하지 않는다.

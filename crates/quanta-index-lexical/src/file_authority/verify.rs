@@ -552,7 +552,7 @@ mod tests {
         .expect("retired block");
         forged.content_postings[0] = descriptor(forged.content_postings[0].prefix[0], &retired, 1);
         let mut forged_blobs = blobs;
-        forged_blobs.insert(Sha256::digest(&retired).into(), retired);
+        let _prior = forged_blobs.insert(Sha256::digest(&retired).into(), retired);
         let forged_root = forged
             .encode(policy())
             .expect("self-consistent root metadata");

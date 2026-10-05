@@ -9,11 +9,12 @@
 
 ## 현재 코드 잔여 — 2026-10-06 소스 대조
 
-현재 정리 기준: Quanta main `52a45e58aba9fb9887c73c594e1abcf24caa7bcd`와 F15 엔진/회귀 수정 overlay.
+현재 정리 기준: Quanta source base `343b6f619a0c83f8abe69fa16eaae98e006dd594`와 F15 테스트/scale 계측 overlay.
 Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀·scanner custody·ARB 용어 예산 수리가 추가됐다.
 Main에는 scale/open-loop pair/total retention 정책 결속, invocation-scoped 입장 검증 재사용과
-전체 file-pair verdict를 사용하는 테스트 fixture가 추가됐다. 현재 overlay에는 F15 immutable
-pack/root/posting과 bounded query reader, 기존 비용/format 테스트 전환 및 제품 회귀가 통합됐다.
+전체 file-pair verdict를 사용하는 테스트 fixture가 추가됐다. F15 immutable pack/root/posting,
+bounded query reader와 기존 비용/format 테스트 전환·제품 회귀도 main에 통합됐다.
+현재 overlay는 테스트 컴파일 보완과 seal별 exact product-retention bytes 계측이다.
 F15 actual 컴파일·회귀는 진행 중이며 Large/XL 재실행·새 formal proof는 아직 `NOT_RUN`이다.
 Frozen5796 actual과 아래 current-source owner 회귀를 구분하며 main formal proof로 승격하지 않는다.
 Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
@@ -25,7 +26,7 @@ Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중�
 | --- | --- | --- |
 | P0 · 검증 | 선택한 최신 source의 Contract/SDK·영향 runtime/public API/wire gates·hosted CI 실행 | Matching source/binary와 actual selected 결과. Frozen5796의791/191/27을 새 HEAD 결과로 바꾸지 않는다. [I0-02](#o4-i0-02) |
 | P1 · 수리→검증 | Large4,096 default30s timeout 및 XL32,768 posting admission 거절 수리; open-loop·OS restart 실행 | Frozen5796에서도 두 default gate가 실패했다. Full source durable publication과 bounded file authority를 함께 수리하고 matching source에서 재실행한다. [E4-05](#o4-e4-05) |
-| P1 · 계측→필요 시 수리 | Full/delta/delete/no-op/reopen 전체 읽기·CPU·metadata·IO·memory/segment 누적 비용 분해 | Unchanged source 전수 읽기, cold-open 전역 인덱스, retained delete bitmap 및 NoMerge fanout 비용을 actual profile로 판정. Native segment 재사용 구현은 완료다. [E4-01](#o4-e4-01) |
+| P1 · 계측→필요 시 수리 | Full/delta/delete/no-op/reopen 전체 읽기·CPU·metadata·IO·memory/segment 누적 비용 분해 | F15 변경 bucket 생산·cold 전수 검증·selected posting read, retained delete bitmap 및 NoMerge fanout 비용을 actual profile로 판정. Native segment 재사용 구현은 완료다. [E4-01](#o4-e4-01) |
 | P1 · 성능 판정 | Scanner on/off whole-call A/B·Semble phase 비용·1,196-row bootstrap full caller·정식 반복 성능 | 각 arm source/binary·출력 parity, 지속 host 관측과 사전 acceptance. Qualified speed는 최소5 fresh roots/route1,000 warm observations. [E4-03](#o4-e4-03), [E4-06](#o4-e4-06), [E2-05](#o4-e2-05), [E1-07](#o4-e1-07) |
 | P1 · 평가 실행 | SQL146/Zellij476·신규742pairs 판단, Tailscale rubric, admissions·required cells·5제품 capture/replay/join·최종 scores | AI quota/rubric 입력은 해당 범위만 `BLOCKED`. Ready cells는 별도로 실행한다. Exact/prefix/infix/components/default·explicit typo/no-answer/NL/ARB/B09 분모와 외부 index scope를 유지한다. [E1](#e1), [E2](#e2) |
 | P1 · 독립 평가 | 독립 holdout/license/exposure/gold 발행과 지원 declaration-name/span·typo 평가 | 실제 미사용 source/query family 및 source-attested gold, critical strata/underfill·supported unit 판정. File hit를 선언 회수로 세지 않는다. [E1-04](#o4-e1-04), [E1-05](#o4-e1-05) |
@@ -379,10 +380,13 @@ P1 · W1/W4 · F14 native 재사용·정확도 owner 회귀 `VERIFIED`; 전체 d
   `NoMergePolicy`의 장기 segment 누적 비용은 미검증이다. Logical bytes·retained estimate를
   physical I/O·peak memory로 표시하지 않는다. 전체 QI-BB-006 비용 closure는 미완료다.
 - F14 frozen5796은 unchanged source까지 seal에서 읽고 hash/fold하며 cold에서 두 전역
-  `TrigramIndex`를 구성한다. 현재 F15 overlay는 변경 bucket만 재작성하고 immutable base
+  `TrigramIndex`를 구성한다. 현재 F15는 변경 bucket만 재작성하고 immutable base
   commitment를 계승한다. Cold open은 독립 전수 검증 후 bounded term/offset/hash directory를
   적재하고 query에서 필요한 posting 범위만 읽는다. Cold 전수 검증 비용은 그대로 측정 대상이며
   producer admission/replay 계수는 물리 I/O 계수가 아니다. 실제 성능·RSS는 아직 `NOT_RUN`이다.
+- Seal별 product-retention gauge를 full/delta/no-op/delete에 결속하는 계측을 통합했다.
+  Serving pair1개의 고유 inode regular-file `st_size`이며 pair=total이다. `st_blocks` 점유량과
+  다른 관측이고 재시작 뒤 gauge0을 복구된 exact bytes로 세지 않는다. 실제 tier 실행은 `NOT_RUN`이다.
 - Frozen5796 Large 명시적 진단 `VERIFIED_DIAGNOSTIC`: 아래 E4-05 root에서 total127.612s,
   full seal68.733s와 explicit sync49.778s(약72.4%)를 관측했다. Atomic file4,367회/25.108s,
   atomic parent4,367회/24.646s다. Source4,096개 각각의 file/parent barrier가 생산 경로에 있다.

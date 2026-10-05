@@ -2708,7 +2708,7 @@ mod tests {
     use quanta_index_core::{CoreError, RequestBudgetV1};
     use quanta_index_lq_regex::RegexExecutor;
     use quanta_index_lq_trigram::{DocId, TrigramIndexBuilder, TrigramIntersectionError};
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
     use std::ops::Range;
 
     use crate::file_authority::{SourceFile, from_test_files};

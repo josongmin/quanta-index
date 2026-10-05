@@ -362,7 +362,7 @@ mod tests {
             let end = start + usize::try_from(len).expect("length");
             Ok(block[start..end].to_vec())
         };
-        posting_lists(
+        let _first_stage = posting_lists(
             &root,
             &directory,
             policy(1),
