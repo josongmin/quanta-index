@@ -17,6 +17,7 @@ use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{RepoRelativePath, SymbolId};
+use serde::{Serialize, Serializer, ser::SerializeStruct};
 use tree_sitter::{Language, Node, Parser, QueryCursor, StreamingIterator};
 
 use crate::sha256_hex;
@@ -63,11 +64,24 @@ pub const SYMBOL_PRODUCER_IDENTITY: &str = "source-bound-symbols-v2";
 
 /// Parser-captured local-name bytes, retained for benchmark proof without
 /// changing the product `SymbolRecord` wire contract.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SymbolNameSpan {
     pub start_byte: usize,
     pub end_byte: usize,
     pub name: String,
+}
+
+impl Serialize for SymbolNameSpan {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SymbolNameSpan", 3)?;
+        state.serialize_field("start_byte", &self.start_byte)?;
+        state.serialize_field("end_byte", &self.end_byte)?;
+        state.serialize_field("name", &self.name)?;
+        state.end()
+    }
 }
 
 #[derive(Default)]

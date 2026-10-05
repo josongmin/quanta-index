@@ -6,7 +6,7 @@ use quanta_index_contract::{
     ProcessRequestEventPlaneV1, ProcessRequestEventStageV1, ProcessRequestEventsV1,
 };
 use quanta_index_sdk::{ClientLexicalQueryObservationV1, ClientQueryRpcKindV1};
-use serde::Serialize;
+use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use quanta_index_retrieval_bench::{BenchError, BenchResult};
 
@@ -21,9 +21,20 @@ const SUCCESS_STAGES: [ProcessRequestEventStageV1; 8] = [
     ProcessRequestEventStageV1::ResponseWritten,
 ];
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RequestPair {
     pub text_request_id: u64,
+}
+
+impl Serialize for RequestPair {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RequestPair", 1)?;
+        state.serialize_field("text_request_id", &self.text_request_id)?;
+        state.end()
+    }
 }
 
 /// Join the one Active query RPC to its lossless server request ID.
