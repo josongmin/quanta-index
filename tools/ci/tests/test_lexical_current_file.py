@@ -132,7 +132,9 @@ def test_current_file_verdict_refuses_typed_alias_and_source_closure_tamper(curr
     changed = json.loads(closure.read_bytes())
     assert changed["files"][0]["sha256"] != "0" * 64
     changed["files"][0]["sha256"] = "0" * 64
-    core = {key: changed[key] for key in ("schema_version", "profile", "revision", "roots", "files")}
+    core = {
+        key: changed[key] for key in ("schema_version", "profile", "revision", "roots", "files")
+    }
     changed["digest"] = ev.digest(ev.canonical(core))
     assert changed["digest"] != manifest["provenance"]["quanta"]["source_closure_digest"]
     write(closure, changed)

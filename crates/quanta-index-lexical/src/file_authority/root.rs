@@ -12,10 +12,24 @@ use sha2::{Digest as _, Sha256};
 use crate::channel_payloads::{decode_cbor_exact, encode_cbor};
 
 pub(super) const FORMAT: u32 = 15;
+pub(crate) const DIR_NAME: &str = "file-authority";
+pub(crate) const ROOT_FILE_NAME: &str = "root.cbor";
+pub(crate) const OBJECTS_NAME: &str = "objects";
 pub(super) const PREFIX_BITS: u16 = 8;
 pub(super) const TERM_DIRECTORY_ROW_CHARGE: u64 = 64;
 pub(super) const TERM_DIRECTORY_BLOCK_CHARGE: u64 = 128;
 pub(super) const RESIDENT_FILE_ROW_CHARGE: u64 = 1024;
+
+/// Canonical object basename accepted by the sealed manifest and inventory.
+pub(crate) fn is_object_file_name(name: &str) -> bool {
+    let Some(hex) = name.strip_suffix(".bin") else {
+        return false;
+    };
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
 
 /// Numeric policy is explicit and stamped in the root. The product owner
 /// chooses these ceilings after a full fixture count; a shard-local ceiling

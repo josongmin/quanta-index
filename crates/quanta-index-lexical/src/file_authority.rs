@@ -42,10 +42,10 @@ pub(crate) struct ObjectIdentity {
     len: u64,
 }
 
-pub(crate) const DIR: &str = "file-authority";
+pub(crate) const DIR: &str = root::DIR_NAME;
 pub(crate) const MANIFEST: &str = "staging/manifest.cbor";
-pub(crate) const ROOT: &str = "root.cbor";
-pub(crate) const OBJECTS: &str = "objects";
+pub(crate) const ROOT: &str = root::ROOT_FILE_NAME;
+pub(crate) const OBJECTS: &str = root::OBJECTS_NAME;
 // The replace-scope transport is a single bounded frame; leave room for
 // coverage, chunks, symbols and encoding overhead in its 16 MiB frame.
 pub(crate) const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
@@ -396,16 +396,6 @@ pub(crate) fn codec_limits() -> codec::CodecLimits {
         max_terms: 1 << 24,
         max_memberships: policy.max_total_memberships,
     }
-}
-
-pub(crate) fn is_object_file_name(name: &str) -> bool {
-    let Some(hex) = name.strip_suffix(".bin") else {
-        return false;
-    };
-    hex.len() == 64
-        && hex
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 pub(crate) fn object_name(digest: &[u8; 32]) -> String {
@@ -818,7 +808,9 @@ pub(crate) fn build_for_seal(
                 bytes_read = bytes_read
                     .checked_add(bytes.len() as u64)
                     .ok_or_else(|| invalid("source read byte count overflow"))?;
-                let _ = changed.insert(key.clone(), bytes);
+                if changed.insert(key.clone(), bytes).is_some() {
+                    return Err(invalid("staged source key appears twice in coverage"));
+                }
             }
             let mut dispositions = Vec::with_capacity(coverage.len());
             for (key, covered) in coverage.iter() {

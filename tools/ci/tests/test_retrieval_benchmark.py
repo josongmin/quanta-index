@@ -6804,8 +6804,6 @@ def _pair_stage(
         if file_status == "no_answer":
             for task in suite["tasks"]:
                 task.update(answerable=False, gold=[], file_judgments=[])
-        if file_status == "capped":
-            run["results"][0]["status"] = "capped"
         suite["routes"] = ["lexical", "semble-lexical-file"]
         for task, row in zip(suite["tasks"], list(run["results"]), strict=True):
             baseline = copy.deepcopy(row)
@@ -6829,6 +6827,11 @@ def _pair_stage(
                     ev.TOKEN_RE.findall((repo / candidate["path"]).read_text())
                 )
             run["results"].append(baseline)
+        if file_status == "capped":
+            # The Quanta cap is one visible file; Semble independently returns both.
+            first = run["results"][0]
+            assert len(first["candidates"]) == 2
+            first.update(status="capped", candidates=first["candidates"][:1])
         if file_status == "abstained":
             row = run["results"][len(queries)]
             row.update(status="abstained", candidates=[])
@@ -7462,6 +7465,14 @@ def _pair_stage(
                     },
                 }
             )
+        if file_current and file_status == "capped":
+            capped = diagnostic_rows[0]
+            window = capped["response"]["window"]
+            assert window["returned"] == 1
+            window["candidate_count"] = {"kind": "at_least", "value": 1}
+            window["outcome"] = {"kind": "capped_unknown", "cap": 1}
+            window["coverage"].pop("exhaustion_proof")
+            capped["response"]["explanation"]["early_stop_reason"] = "candidate_cap"
         diagnostic_path = qdir / "retrieval-diagnostic.json"
         if diagnostic_version in (5, 6, 7, 8, 9) and query_observation == "disabled":
             for row in diagnostic_rows:

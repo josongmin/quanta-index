@@ -65,7 +65,10 @@ use ciborium::Value as CborValue;
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 
-use crate::file_authority;
+use crate::file_authority::root::{
+    DIR_NAME as FILE_AUTHORITY_DIR_NAME, OBJECTS_NAME as FILE_AUTHORITY_OBJECTS_NAME,
+    ROOT_FILE_NAME as FILE_AUTHORITY_ROOT_FILE_NAME, is_object_file_name,
+};
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 use crate::overlay_codec::OverlayFamily;
 use crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME;
@@ -372,13 +375,13 @@ impl LexicalSealedManifest {
                 ));
             }
         }
-        let root_name = format!("{}/{}", file_authority::DIR, file_authority::ROOT);
-        let object_prefix = format!("{}/objects/", file_authority::DIR);
+        let root_name = format!("{FILE_AUTHORITY_DIR_NAME}/{FILE_AUTHORITY_ROOT_FILE_NAME}");
+        let object_prefix = format!("{FILE_AUTHORITY_DIR_NAME}/{FILE_AUTHORITY_OBJECTS_NAME}/");
         ensure_names(path, "file authority", &self.file_authority, |name| {
             name == root_name
                 || name
                     .strip_prefix(object_prefix.as_str())
-                    .is_some_and(file_authority::is_object_file_name)
+                    .is_some_and(is_object_file_name)
         })?;
         if !self
             .file_authority
