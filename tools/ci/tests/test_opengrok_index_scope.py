@@ -4,10 +4,12 @@ import copy
 import hashlib
 import json
 import struct
+import zipfile
 
 import pytest
 
 from tools.benchmark.evidence import RawFile
+from tools.benchmark.retrieval import live_lexical_external as live
 from tools.benchmark.retrieval import opengrok_index_scope as scope
 
 
@@ -48,7 +50,10 @@ def observation(expected):
         for path in sorted(paths):
             native = f"/{project}/{path}"
             uid = native.replace("/", "\0") + "\0" + "20261003170210646"
-            documents.append(([stored("path", native), stored("u", uid)], [term("u", uid)]))
+            documents.append((
+                [stored("path", native), stored("u", uid), stored("project", f"/{project}")],
+                [term("u", uid)],
+            ))
         documents.append(
             (
                 [
@@ -187,6 +192,7 @@ def test_native_live_documents_accept_deletion_gap_and_multiple_projects(tmp_pat
         "duplicate",
         "extra",
         "uid",
+        "project",
         "postings",
         "unknown_aux",
         "settings_version",
@@ -212,6 +218,8 @@ def test_native_live_documents_refuse_independent_mutants(tmp_path, mutation):
         rows = observation({"fixture": {"src/a.rs", "extra.rs"}})
     elif mutation == "uid":
         rows[1]["storedFields"][1]["value"] = "wrong"
+    elif mutation == "project":
+        rows[1]["storedFields"][2]["value"] = "/wrong"
     elif mutation == "postings":
         rows[1]["indexedFields"][0]["termFrequencySha256"] = "0" * 64
     elif mutation == "unknown_aux":
@@ -265,6 +273,244 @@ def test_native_auxiliary_shape_uses_deployed_directory_parent_and_index_only_ui
     write_rows(path, rows)
     with pytest.raises(ValueError, match="exact indexed term"):
         scope.verify_documents(path, expected)
+
+
+def test_native_auxiliary_real_root_directory_and_parent_postings(tmp_path):
+    expected = {"bat": {"src/a.rs"}}
+    rows = observation(expected)
+    # Independent digests observed in the deployed OpenGrok 1.14.18 index.
+    rows[2]["storedFields"][0]["value"] = "/"
+    rows[2]["indexedFields"] = [
+        term("d", "/"),
+        {
+            "field": "dirpath",
+            "distinctTerms": 1,
+            "occurrences": 1,
+            "frequenciesAvailable": False,
+            "termFrequencySha256": (
+                "992a0d7d116d60d629c8544701068f04e7566929f57ab106cc04bfe6548082e9"
+            ),
+        },
+    ]
+    path = tmp_path / "native.jsonl"
+    write_rows(path, rows)
+    assert scope.verify_documents(path, expected)["projects"]["bat"]["directory_documents"] == 1
+    rows[2]["indexedFields"][1]["termFrequencySha256"] = "0" * 64
+    write_rows(path, rows)
+    with pytest.raises(ValueError, match="exact indexed term"):
+        scope.verify_documents(path, expected)
+
+
+def test_readonly_service_descriptor_denies_all_non_get_api_methods(tmp_path):
+    webapps = tmp_path / "webapps"
+    descriptor = webapps / "ROOT" / "WEB-INF" / "web.xml"
+    descriptor.parent.mkdir(parents=True)
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    (etc / "configuration.xml").write_text("<configuration />")
+    source_war = tmp_path / "source.war"
+    original_war = """<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee">
+      <context-param><param-name>CONFIGURATION</param-name>
+        <param-value>/var/opengrok/etc/configuration.xml</param-value></context-param>
+    </web-app>"""
+    with zipfile.ZipFile(source_war, "w") as archive:
+        archive.writestr("WEB-INF/web.xml", original_war)
+    config = {
+        "readonly_service": {
+            "webapps_root": str(webapps),
+            "etc_root": str(etc),
+            "source_war": str(source_war),
+        }
+    }
+    original = """<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee">
+      <context-param><param-name>CONFIGURATION</param-name>
+        <param-value>/opengrok/etc/configuration.xml</param-value></context-param>
+      <security-constraint><web-resource-collection>
+        <web-resource-name>deny API writes</web-resource-name>
+        <url-pattern>/api/*</url-pattern><http-method-omission>GET</http-method-omission>
+      </web-resource-collection><auth-constraint/></security-constraint>
+    </web-app>"""
+    descriptor.write_text(original)
+    assert live._opengrok_readonly_files(config)["web_xml_sha256"] == hashlib.sha256(
+        original.encode()
+    ).hexdigest()
+    descriptor.write_text(original.replace("<auth-constraint/>", ""))
+    with pytest.raises(ValueError, match="not denied"):
+        live._opengrok_readonly_files(config)
+    descriptor.write_text(original.replace("http-method-omission>GET", "http-method-omission>PUT"))
+    with pytest.raises(ValueError, match="not denied"):
+        live._opengrok_readonly_files(config)
+
+
+def test_readonly_service_config_and_write_denial_replay_are_independent(tmp_path, monkeypatch):
+    config = {
+        "base_url": "http://127.0.0.1:18083",
+        "backend_snapshot": {"mount_destination": "/opengrok/data/index"},
+    }
+    replies = {
+        "/api/v1/configuration/dataRoot": b"/opengrok/data",
+        "/api/v1/projects/indexed": b'["bat","cli"]',
+    }
+    monkeypatch.setattr(
+        live, "_http",
+        lambda _config, endpoint, _params, _accept: (
+            200, "application/json", replies[endpoint], 1.0
+        ),
+    )
+    target = tmp_path / "config"
+    expected = {"bat", "cli"}
+    got = live._opengrok_service_config_probe(config, expected, target, capture=True)
+    assert got == live._opengrok_service_config_probe(config, expected, target, capture=False)
+    replies["/api/v1/configuration/dataRoot"] = b'"/opengrok/data"'
+    with pytest.raises(ValueError, match="dataRoot"):
+        live._opengrok_service_config_probe(config, expected, tmp_path / "quoted", capture=True)
+    replies["/api/v1/configuration/dataRoot"] = b"/elsewhere"
+    with pytest.raises(ValueError, match="dataRoot"):
+        live._opengrok_service_config_probe(config, expected, tmp_path / "wrong-root", capture=True)
+    denial = tmp_path / "denial"
+    denial.mkdir()
+    (denial / "write-denial.body").write_bytes(b"denied")
+    (denial / "write-denial.transport.json").write_text(
+        json.dumps({
+            "endpoint": "/api/v1/configuration/dataRoot",
+            "method": "PUT",
+            "request_body_sha256": hashlib.sha256(b"/opengrok/data").hexdigest(),
+            "status": 403,
+            "elapsed_ms": 1.0,
+        })
+    )
+    live._opengrok_write_denial_probe(config, denial, capture=False)
+    transport = json.loads((denial / "write-denial.transport.json").read_text())
+    transport["status"] = 204
+    (denial / "write-denial.transport.json").write_text(json.dumps(transport))
+    with pytest.raises(ValueError, match="not denied"):
+        live._opengrok_write_denial_probe(config, denial, capture=False)
+
+
+def test_readonly_service_runtime_refuses_default_writer_and_overlapping_mount(
+    tmp_path, monkeypatch
+):
+    roots = {name: tmp_path / name for name in ("index", "webapps", "etc", "src")}
+    for path in roots.values():
+        path.mkdir()
+    war = tmp_path / "source.war"
+    war.write_bytes(b"image WAR")
+    container_id = "a" * 64
+    image_sha = "b" * 64
+    mounts = [
+        {
+            "Type": "bind", "Source": str(path), "Destination": destination, "RW": False,
+        }
+        for destination, path in (
+            ("/opengrok/data/index", roots["index"]),
+            ("/usr/local/tomcat/webapps", roots["webapps"]),
+            ("/opengrok/etc", roots["etc"]),
+            ("/opengrok/src", roots["src"]),
+        )
+    ]
+    inspected = {
+        "Id": container_id,
+        "Image": "sha256:" + image_sha,
+        "Created": "2026-10-04T23:59:59Z",
+        "State": {"Running": True, "Pid": 123, "StartedAt": "2026-10-05T00:00:00Z"},
+        "RestartCount": 0,
+        "Mounts": mounts,
+        "HostConfig": {"NetworkMode": "og_ro_test", "Privileged": False, "CapAdd": None},
+        "Config": {
+            "Entrypoint": ["/usr/local/tomcat/bin/catalina.sh"],
+            "Cmd": ["run"], "User": "1111:1111",
+        },
+        "Path": "/usr/local/tomcat/bin/catalina.sh",
+        "Args": ["run"],
+        "NetworkSettings": {
+            "Networks": {"og_ro_test": {}},
+            "Ports": {"8080/tcp": [{"HostPort": "18183", "HostIp": "127.0.0.1"}]},
+        },
+    }
+    config = {
+        "base_url": "http://127.0.0.1:18183",
+        "server_image_digest": image_sha,
+        "backend_snapshot": {
+            "root": str(roots["index"]), "container_id": container_id,
+            "mount_destination": "/opengrok/data/index", "container_port": "8080/tcp",
+        },
+        "readonly_service": {
+            "webapps_root": str(roots["webapps"]), "etc_root": str(roots["etc"]),
+            "source_root": str(roots["src"]), "source_war": str(war),
+            "network": "og_ro_test",
+        },
+    }
+    monkeypatch.setattr(live, "_opengrok_readonly_files", lambda _config: {
+        "webapps_sha256": "c" * 64,
+        "configuration_sha256": "d" * 64,
+        "web_xml_sha256": "e" * 64,
+    })
+
+    def fake_process(argv, _timeout):
+        if argv[1] == "inspect":
+            return 0, json.dumps(inspected).encode(), b"", 0.0
+        return 0, (
+            hashlib.sha256(war.read_bytes()).hexdigest()
+            + "  /opengrok/lib/source.war\n"
+        ).encode(), b"", 0.0
+
+    monkeypatch.setattr(live, "_process", fake_process)
+    assert live._backend_runtime(config)["readonly_files"]["source_war_sha256"] == hashlib.sha256(
+        war.read_bytes()
+    ).hexdigest()
+    inspected["Config"]["Entrypoint"] = ["/scripts/entrypoint.sh"]
+    with pytest.raises(ValueError, match="only Tomcat"):
+        live._backend_runtime(config)
+    inspected["Config"]["Entrypoint"] = ["/usr/local/tomcat/bin/catalina.sh"]
+    inspected["Mounts"].append({
+        "Type": "bind", "Source": str(tmp_path / "extra"),
+        "Destination": "/opengrok/data/index/bat", "RW": True,
+    })
+    with pytest.raises(ValueError, match="extra or overlapping mount"):
+        live._backend_runtime(config)
+
+
+def test_readonly_snapshot_must_be_sealed_before_container_creation(tmp_path):
+    receipt_path = tmp_path / "seal.json"
+    config = {
+        "backend_snapshot": {"root": str(tmp_path / "index")},
+        "readonly_service": {
+            "webapps_root": str(tmp_path / "webapps"),
+            "etc_root": str(tmp_path / "etc"),
+            "source_root": str(tmp_path / "src"),
+            "snapshot_receipt": str(receipt_path),
+        },
+    }
+    snapshot = {
+        "tree_sha256": "a" * 64,
+        "runtime": {
+            "created_at": "2026-10-05T00:00:01.000000000Z",
+            "started_at": "2026-10-05T00:00:02.000000000Z",
+            "readonly_files": {
+                "webapps_sha256": "b" * 64,
+                "configuration_sha256": "c" * 64,
+                "source_war_sha256": "d" * 64,
+            },
+        },
+    }
+    receipt = {
+        "schema_version": 1,
+        "sealed_at_utc": "2026-10-05T00:00:00.000000000Z",
+        "index_root": config["backend_snapshot"]["root"],
+        "index_tree_sha256": snapshot["tree_sha256"],
+        "webapps_root": config["readonly_service"]["webapps_root"],
+        "webapps_sha256": "b" * 64,
+        "etc_root": config["readonly_service"]["etc_root"],
+        "configuration_sha256": "c" * 64,
+        "source_root": config["readonly_service"]["source_root"],
+        "source_war_sha256": "d" * 64,
+    }
+    receipt_path.write_text(json.dumps(receipt))
+    live._validate_opengrok_snapshot_seal(config, snapshot)
+    receipt["sealed_at_utc"] = "2026-10-05T00:00:01.000000000Z"
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="not sealed before"):
+        live._validate_opengrok_snapshot_seal(config, snapshot)
 
 
 def test_native_reader_collect_replay_rejects_failed_command_and_output_drift(

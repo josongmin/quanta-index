@@ -24,8 +24,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
+import zipfile
 from contextlib import ExitStack
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
@@ -275,7 +278,7 @@ def _spec(path: Path) -> dict:
         value["opengrok"] = _service(
             value["opengrok"],
             {"base_url", "project", "server_image_digest"},
-            {"indexed_view_probe", "backend_snapshot", "native_index_reader"},
+            {"indexed_view_probe", "backend_snapshot", "native_index_reader", "readonly_service"},
         )
         if value["opengrok"].get("indexed_view_probe") not in (None, "full"):
             raise ValueError("OpenGrok indexed view probe must be full or absent")
@@ -286,6 +289,42 @@ def _spec(path: Path) -> dict:
                     "OpenGrok native reader requires readonly backend and full view probe"
                 )
             opengrok_index_scope.reader_identity(config["native_index_reader"])
+        if "readonly_service" in value["opengrok"]:
+            config = value["opengrok"]
+            if "native_index_reader" not in config or "token_file" not in config:
+                raise ValueError("OpenGrok readonly service requires native reader and API token")
+            service = config["readonly_service"]
+            if type(service) is not dict or set(service) != {
+                "webapps_root", "etc_root", "source_root", "source_war",
+                "network", "snapshot_receipt",
+            }:
+                raise ValueError("OpenGrok readonly service spec keys differ")
+            for name in ("webapps_root", "etc_root", "source_root"):
+                if type(service[name]) is not str:
+                    raise ValueError("OpenGrok readonly service host mount differs")
+                path = Path(service[name])
+                if (
+                    not path.is_absolute()
+                    or path.resolve(strict=True) != path
+                    or not path.is_dir()
+                ):
+                    raise ValueError("OpenGrok readonly service host mount differs")
+            if type(service["source_war"]) is not str:
+                raise ValueError("OpenGrok readonly service source WAR path differs")
+            war = Path(service["source_war"])
+            if not war.is_absolute() or war.resolve(strict=True) != war or not war.is_file():
+                raise ValueError("OpenGrok readonly service source WAR differs")
+            if type(service["snapshot_receipt"]) is not str:
+                raise ValueError("OpenGrok readonly snapshot receipt path differs")
+            receipt = Path(service["snapshot_receipt"])
+            if not receipt.is_absolute() or receipt.resolve(strict=True) != receipt or not receipt.is_file():
+                raise ValueError("OpenGrok readonly snapshot receipt differs")
+            if (
+                type(service["network"]) is not str
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", service["network"])
+                is None
+            ):
+                raise ValueError("OpenGrok readonly service network differs")
     if "cs" in products and (not isinstance(value["cs"], dict) or set(value["cs"]) != {"binary"}):
         raise ValueError("cs spec requires only binary")
     for key in ("suite", "query_pack", "output_root"):
@@ -418,7 +457,7 @@ def _http(
     url = config["base_url"] + endpoint + "?" + urllib.parse.urlencode(params)
     headers = _auth(config, scheme)
     headers["Accept"] = accept
-    request = urllib.request.Request(url, headers=headers)
+    request = urllib.request.Request(url, headers=headers, method="GET")
     start = time.monotonic_ns()
     try:
         with urllib.request.build_opener(_NoRedirect).open(
@@ -877,6 +916,120 @@ def _opengrok_indexed_inventory(
         + b"\n",
     )
     _opengrok_indexed_inventory_response(config, manifest, status, content_type, raw)
+
+
+def _opengrok_service_config_probe(
+    config: dict, projects: set[str], target: Path, *, capture: bool
+) -> dict:
+    """Bind the HTTP configuration to the only read-only index mount.
+
+    This observes configuration, not an in-process SearcherManager generation.
+    """
+    mount = Path(config["backend_snapshot"]["mount_destination"])
+    if mount.name != "index" or not mount.is_absolute():
+        raise ValueError("OpenGrok service index mount must end in /index")
+    result = {}
+    for name, endpoint in (
+        ("data-root", "/api/v1/configuration/dataRoot"),
+        ("indexed-projects", "/api/v1/projects/indexed"),
+    ):
+        if capture:
+            status, content_type, raw, elapsed = _http(config, endpoint, {}, "application/json")
+            transport = {
+                "endpoint": endpoint,
+                "status": status,
+                "content_type": content_type,
+                "elapsed_ms": elapsed,
+            }
+            _write(target / f"{name}.json", raw)
+            _write(
+                target / f"{name}.transport.json",
+                canonical_json(transport).encode() + b"\n",
+            )
+        else:
+            raw = _read_control_file(target / f"{name}.json")
+            transport = _json(_read_control_file(target / f"{name}.transport.json"))
+        if (
+            set(transport) != {"endpoint", "status", "content_type", "elapsed_ms"}
+            or transport["endpoint"] != endpoint
+            or type(transport["status"]) is not int
+            or transport["status"] != 200
+            or transport["content_type"] != "application/json"
+            or type(transport["elapsed_ms"]) not in (int, float)
+            or not math.isfinite(transport["elapsed_ms"])
+            or transport["elapsed_ms"] < 0
+        ):
+            raise ValueError("OpenGrok HTTP service configuration transport differs")
+        if name == "data-root":
+            # Jersey writes String configuration fields as raw text even with JSON media type.
+            native = raw.decode("utf-8", "strict")
+            if native != str(mount.parent):
+                raise ValueError("OpenGrok service dataRoot differs from readonly index mount")
+        else:
+            native = json.loads(
+                raw.decode("utf-8"), object_pairs_hook=_object, parse_constant=_reject_constant
+            )
+            if (
+                type(native) is not list
+                or any(type(project) is not str for project in native)
+                or len(native) != len(set(native))
+                or set(native) != projects
+            ):
+                raise ValueError("OpenGrok HTTP indexed projects differ from native index")
+        result[name] = native
+    return result
+
+
+def _opengrok_write_denial_probe(config: dict, target: Path, *, capture: bool) -> None:
+    """Demand an authenticated 403 for a harmless same-value config PUT."""
+    endpoint = "/api/v1/configuration/dataRoot"
+    body = str(Path(config["backend_snapshot"]["mount_destination"]).parent).encode()
+    if capture:
+        headers = _auth(config, "Bearer")
+        headers["Content-Type"] = "text/plain"
+        request = urllib.request.Request(
+            config["base_url"] + endpoint,
+            data=body,
+            headers=headers,
+            method="PUT",
+        )
+        started = time.monotonic_ns()
+        try:
+            with urllib.request.build_opener(_NoRedirect).open(
+                request, timeout=HTTP_TIMEOUT
+            ) as response:
+                status = response.status
+                raw = response.read(MAX_HTTP_BYTES + 1)
+        except urllib.error.HTTPError as error:
+            status = error.code
+            raw = error.read(MAX_HTTP_BYTES + 1)
+        if len(raw) > MAX_HTTP_BYTES:
+            raise ValueError("OpenGrok write denial response exceeds bound")
+        transport = {
+            "endpoint": endpoint,
+            "method": "PUT",
+            "request_body_sha256": _sha(body),
+            "status": status,
+            "elapsed_ms": (time.monotonic_ns() - started) / 1_000_000,
+        }
+        _write(target / "write-denial.body", raw)
+        _write(target / "write-denial.transport.json", canonical_json(transport).encode() + b"\n")
+    else:
+        raw = _read_control_file(target / "write-denial.body")
+        transport = _json(_read_control_file(target / "write-denial.transport.json"))
+    if (
+        set(transport) != {"endpoint", "method", "request_body_sha256", "status", "elapsed_ms"}
+        or transport["endpoint"] != endpoint
+        or transport["method"] != "PUT"
+        or transport["request_body_sha256"] != _sha(body)
+        or type(transport["status"]) is not int
+        or transport["status"] != 403
+        or type(transport["elapsed_ms"]) not in (int, float)
+        or not math.isfinite(transport["elapsed_ms"])
+        or transport["elapsed_ms"] < 0
+        or len(raw) > MAX_HTTP_BYTES
+    ):
+        raise ValueError("OpenGrok authenticated configuration write was not denied")
 
 
 def _opengrok_index_batches(manifest: dict, view: Path) -> list[tuple[int, int]]:
@@ -1470,6 +1623,119 @@ def _cs_response(
     )
 
 
+def _opengrok_readonly_files(config: dict) -> dict:
+    service = config["readonly_service"]
+    webapps = Path(service["webapps_root"])
+    etc = Path(service["etc_root"])
+    if {path.name for path in webapps.iterdir()} != {"ROOT"}:
+        raise ValueError("OpenGrok readonly webapps must contain only exploded ROOT")
+    xml_path = webapps / "ROOT" / "WEB-INF" / "web.xml"
+    config_path = etc / "configuration.xml"
+    for path in (xml_path, config_path):
+        if path.is_symlink() or not path.is_file() or path.resolve(strict=True) != path:
+            raise ValueError("OpenGrok readonly web or configuration file differs")
+    raw = _read_control_file(xml_path)
+    if b"<!DOCTYPE" in raw or b"<!ENTITY" in raw:
+        raise ValueError("OpenGrok readonly web descriptor has external markup")
+    root = ET.fromstring(raw)
+    namespace = "{https://jakarta.ee/xml/ns/jakartaee}"
+    if root.tag != namespace + "web-app":
+        raise ValueError("OpenGrok readonly web descriptor namespace differs")
+    contexts = root.findall(namespace + "context-param")
+    configs = [
+        item.findtext(namespace + "param-value")
+        for item in contexts
+        if item.findtext(namespace + "param-name") == "CONFIGURATION"
+    ]
+    if configs != ["/opengrok/etc/configuration.xml"]:
+        raise ValueError("OpenGrok readonly web configuration path differs")
+    denies = []
+    for item in root.findall(namespace + "security-constraint"):
+        collections = item.findall(namespace + "web-resource-collection")
+        if any(
+            collection.findtext(namespace + "url-pattern") == "/api/*"
+            and [node.text for node in collection.findall(namespace + "http-method-omission")]
+            == ["GET"]
+            and not collection.findall(namespace + "http-method")
+            for collection in collections
+        ):
+            constraint = item.find(namespace + "auth-constraint")
+            denies.append(constraint is not None and len(constraint) == 0)
+    if denies != [True]:
+        raise ValueError("OpenGrok non-GET API methods are not denied by web.xml")
+    denial = next(
+        item for item in root.findall(namespace + "security-constraint")
+        if any(
+            collection.findtext(namespace + "url-pattern") == "/api/*"
+            and [node.text for node in collection.findall(namespace + "http-method-omission")]
+            == ["GET"]
+            for collection in item.findall(namespace + "web-resource-collection")
+        )
+    )
+    root.remove(denial)
+    with zipfile.ZipFile(service["source_war"]) as archive:
+        expected_files = set()
+        total = 0
+        for entry in archive.infolist():
+            if entry.is_dir():
+                continue
+            name = entry.filename
+            if (
+                name in expected_files
+                or not lexical._canonical_result_path(name)
+                or stat.S_ISLNK(entry.external_attr >> 16)
+            ):
+                raise ValueError("OpenGrok source WAR has unsafe or duplicate member")
+            expected_files.add(name)
+            total += entry.file_size
+            if len(expected_files) > 4096 or total > MAX_INDEX_BYTES:
+                raise ValueError("OpenGrok source WAR exceeds webapp bound")
+            if name != "WEB-INF/web.xml":
+                target = webapps / "ROOT" / name
+                if not target.is_file() or _sha(archive.read(entry)) != _sha_file(target):
+                    raise ValueError("OpenGrok readonly webapp differs from image WAR")
+        if "WEB-INF/web.xml" not in expected_files:
+            raise ValueError("OpenGrok source WAR has no web descriptor")
+        original = ET.fromstring(archive.read("WEB-INF/web.xml"))
+    if original.tag != root.tag:
+        raise ValueError("OpenGrok web descriptor differs from image WAR")
+    original_configs = [
+        item.find(namespace + "param-value")
+        for item in original.findall(namespace + "context-param")
+        if item.findtext(namespace + "param-name") == "CONFIGURATION"
+    ]
+    if (
+        len(original_configs) != 1
+        or original_configs[0].text != "/var/opengrok/etc/configuration.xml"
+    ):
+        raise ValueError("OpenGrok source WAR configuration default differs")
+    original_configs[0].text = "/opengrok/etc/configuration.xml"
+
+    def shape(element):
+        return (
+            element.tag,
+            tuple(sorted(element.attrib.items())),
+            (element.text or "").strip(),
+            tuple(shape(child) for child in element),
+        )
+
+    if shape(original) != shape(root):
+        raise ValueError("OpenGrok readonly web descriptor changes unrelated behavior")
+    actual_files = {
+        path.relative_to(webapps / "ROOT").as_posix()
+        for path in (webapps / "ROOT").rglob("*")
+        if path.is_file()
+    }
+    if actual_files != expected_files:
+        raise ValueError("OpenGrok readonly webapp file inventory differs from source WAR")
+    _, webapps_sha = _backend_tree(webapps)
+    return {
+        "webapps_sha256": webapps_sha,
+        "configuration_sha256": _sha(_read_control_file(config_path)),
+        "web_xml_sha256": _sha(raw),
+    }
+
+
 def _backend_runtime(config: dict) -> dict:
     """Bind a loopback endpoint to one running container and its read-only index mount."""
     backend = config["backend_snapshot"]
@@ -1521,6 +1787,77 @@ def _backend_runtime(config: dict) -> dict:
         or selected_mounts[0].get("RW") is not False
     ):
         raise ValueError("backend index mount differs or is writable")
+    readonly_files = None
+    if "readonly_service" in config:
+        service = config["readonly_service"]
+        host = native.get("HostConfig")
+        container = native.get("Config")
+        attached = network.get("Networks")
+        required_mounts = {
+            "/usr/local/tomcat/webapps": service["webapps_root"],
+            "/opengrok/etc": service["etc_root"],
+            "/opengrok/src": service["source_root"],
+        }
+        protected = set(required_mounts) | {backend["mount_destination"]}
+        if (
+            not isinstance(host, dict)
+            or not isinstance(container, dict)
+            or not isinstance(attached, dict)
+            or host.get("NetworkMode") != service["network"]
+            or host.get("Privileged") is not False
+            or host.get("CapAdd") not in (None, [])
+            or set(attached) != {service["network"]}
+            or native.get("Path") != "/usr/local/tomcat/bin/catalina.sh"
+            or native.get("Args") != ["run"]
+            or container.get("Entrypoint") != ["/usr/local/tomcat/bin/catalina.sh"]
+            or container.get("Cmd") != ["run"]
+            or container.get("User") != "1111:1111"
+            or native.get("RestartCount") != 0
+            or not isinstance(native.get("Created"), str)
+            or not native["Created"]
+        ):
+            raise ValueError("OpenGrok readonly service must start only Tomcat")
+        for destination, source in required_mounts.items():
+            selected = [
+                mount for mount in mounts
+                if isinstance(mount, dict) and mount.get("Destination") == destination
+            ]
+            if (
+                len(selected) != 1
+                or selected[0].get("Type") != "bind"
+                or selected[0].get("Source") != source
+                or selected[0].get("RW") is not False
+            ):
+                raise ValueError("OpenGrok readonly service mount differs")
+        temporary = {
+            "/tmp", "/usr/local/tomcat/temp", "/usr/local/tomcat/work",
+            "/usr/local/tomcat/logs",
+        }
+        for mount in mounts:
+            destination = mount.get("Destination") if isinstance(mount, dict) else None
+            if not isinstance(destination, str):
+                raise ValueError("OpenGrok readonly service has malformed mount")
+            if destination in protected:
+                continue
+            if destination in temporary and mount.get("Type") == "tmpfs":
+                continue
+            raise ValueError("OpenGrok readonly service has extra or overlapping mount")
+        if set(network["Ports"]) != {backend["container_port"]}:
+            raise ValueError("OpenGrok readonly service exposes another container port")
+        readonly_files = _opengrok_readonly_files(config)
+        code, stdout, stderr, _ = _process(
+            ["docker", "exec", backend["container_id"], "sha256sum", "/opengrok/lib/source.war"],
+            30,
+        )
+        expected_war_sha = _sha_file(Path(service["source_war"]))
+        if (
+            code != 0
+            or stderr
+            or stdout.decode("ascii", "strict").strip()
+            != expected_war_sha + "  /opengrok/lib/source.war"
+        ):
+            raise ValueError("OpenGrok readonly webapp source WAR differs from running image")
+        readonly_files["source_war_sha256"] = expected_war_sha
     parsed = urllib.parse.urlsplit(config["base_url"])
     service_port = parsed.port or (443 if parsed.scheme == "https" else 80)
     bindings = network["Ports"].get(backend["container_port"])
@@ -1536,6 +1873,11 @@ def _backend_runtime(config: dict) -> dict:
         for binding in bindings
     ):
         raise ValueError("backend container port does not bind the service URL")
+    if "readonly_service" in config and (
+        len(bindings) != 1
+        or bindings[0].get("HostIp") not in {"127.0.0.1", "::1"}
+    ):
+        raise ValueError("OpenGrok readonly service port must bind only loopback")
     return {
         "container_id": backend["container_id"],
         "image_sha256": config["server_image_digest"],
@@ -1546,6 +1888,10 @@ def _backend_runtime(config: dict) -> dict:
         "mount_destination": backend["mount_destination"],
         "container_port": backend["container_port"],
         "service_port": service_port,
+        **(
+            {"readonly_files": readonly_files, "created_at": native["Created"]}
+            if readonly_files is not None else {}
+        ),
     }
 
 
@@ -1618,6 +1964,47 @@ def _backend_snapshot(config: dict) -> dict:
     return {"runtime": first, "files": rows, "tree_sha256": digest}
 
 
+def _docker_utc_time(value: object) -> tuple[int, int]:
+    if type(value) is not str:
+        raise ValueError("OpenGrok snapshot time is not UTC text")
+    match = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z", value)
+    if match is None:
+        raise ValueError("OpenGrok snapshot time differs from Docker UTC format")
+    base = datetime.strptime(match[1], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    return int(base.timestamp()), int((match[2] or "").ljust(9, "0"))
+
+
+def _validate_opengrok_snapshot_seal(config: dict, snapshot: dict) -> None:
+    service = config["readonly_service"]
+    receipt = _json(_read_control_file(Path(service["snapshot_receipt"])))
+    if (
+        set(receipt)
+        != {
+            "schema_version", "sealed_at_utc", "index_root", "index_tree_sha256",
+            "webapps_root", "webapps_sha256", "etc_root", "configuration_sha256",
+            "source_root", "source_war_sha256",
+        }
+        or type(receipt["schema_version"]) is not int
+        or receipt["schema_version"] != 1
+        or receipt["index_root"] != config["backend_snapshot"]["root"]
+        or receipt["index_tree_sha256"] != snapshot["tree_sha256"]
+        or receipt["webapps_root"] != service["webapps_root"]
+        or receipt["webapps_sha256"] != snapshot["runtime"]["readonly_files"]["webapps_sha256"]
+        or receipt["etc_root"] != service["etc_root"]
+        or receipt["configuration_sha256"]
+        != snapshot["runtime"]["readonly_files"]["configuration_sha256"]
+        or receipt["source_root"] != service["source_root"]
+        or receipt["source_war_sha256"]
+        != snapshot["runtime"]["readonly_files"]["source_war_sha256"]
+        or not (
+            _docker_utc_time(receipt["sealed_at_utc"])
+            < _docker_utc_time(snapshot["runtime"]["created_at"])
+            <= _docker_utc_time(snapshot["runtime"]["started_at"])
+        )
+    ):
+        raise ValueError("OpenGrok readonly snapshot was not sealed before server creation")
+
+
 def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
     backend = config["backend_snapshot"]
     if not isinstance(snapshot, dict) or set(snapshot) != {"runtime", "files", "tree_sha256"}:
@@ -1636,7 +2023,7 @@ def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
             "mount_destination",
             "container_port",
             "service_port",
-        }
+        } | ({"readonly_files", "created_at"} if "readonly_service" in config else set())
         or runtime["container_id"] != backend["container_id"]
         or runtime["image_sha256"] != config["server_image_digest"]
         or runtime["mount_source"] != backend["root"]
@@ -1656,6 +2043,25 @@ def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
         )
     ):
         raise ValueError("backend snapshot runtime identity differs")
+    if "readonly_service" in config:
+        files = runtime["readonly_files"]
+        if (
+            type(runtime["created_at"]) is not str
+            or not runtime["created_at"]
+            or runtime["restart_count"] != 0
+            or type(files) is not dict
+            or set(files)
+            != {"webapps_sha256", "configuration_sha256", "web_xml_sha256", "source_war_sha256"}
+            or any(
+                type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                for value in files.values()
+            )
+            or files != {
+                **_opengrok_readonly_files(config),
+                "source_war_sha256": _sha_file(Path(config["readonly_service"]["source_war"])),
+            }
+        ):
+            raise ValueError("OpenGrok readonly web/config files changed")
     rows = snapshot["files"]
     if not isinstance(rows, list) or not 0 < len(rows) <= MAX_BACKEND_INDEX_FILES:
         raise ValueError("backend snapshot file inventory differs")
@@ -1678,6 +2084,8 @@ def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
         total += row["bytes"]
     if total > MAX_INDEX_BYTES or snapshot["tree_sha256"] != _sha(canonical_json(rows).encode()):
         raise ValueError("backend snapshot tree digest differs")
+    if "readonly_service" in config:
+        _validate_opengrok_snapshot_seal(config, snapshot)
 
 
 def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> dict:
@@ -1710,9 +2118,27 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
             if name in ("sourcegraph", "opengrok")
             if "backend_snapshot" in spec[name]
         ),
+        *(
+            tuple(
+                Path(spec["opengrok"]["readonly_service"][name])
+                for name in (
+                    "webapps_root", "etc_root", "source_root", "source_war", "snapshot_receipt"
+                )
+            )
+            if "opengrok" in products and "readonly_service" in spec["opengrok"]
+            else ()
+        ),
     )
     if any(path.resolve().is_relative_to(checkout) for path in input_paths):
         raise ValueError("live capture inputs and output must stay outside the source checkout")
+    if "opengrok" in products and "readonly_service" in spec["opengrok"]:
+        service = spec["opengrok"]["readonly_service"]
+        for name in (
+            "webapps_root", "etc_root", "source_root", "source_war", "snapshot_receipt"
+        ):
+            path = Path(service[name]).resolve(strict=True)
+            if root.resolve().is_relative_to(path) or path.is_relative_to(root.resolve()):
+                raise ValueError("OpenGrok readonly service inputs must be disjoint from output")
     for name in products:
         if name == "cs":
             continue
@@ -1832,6 +2258,17 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
             native_projects,
             stage / "opengrok-native-before",
         )
+    readonly_service = (
+        "opengrok" in products and "readonly_service" in spec["opengrok"]
+    )
+    service_config_before = None
+    if readonly_service:
+        service_config_before = _opengrok_service_config_probe(
+            spec["opengrok"], set(native_projects), stage / "opengrok-service-before", capture=True
+        )
+        _opengrok_write_denial_probe(
+            spec["opengrok"], stage / "opengrok-service-before", capture=True
+        )
     index_scope = None
     if "sourcegraph" in products and "indexed_scope_receipt" in spec["sourcegraph"]:
         index_scope = sourcegraph_index_scope.verify(
@@ -1901,6 +2338,12 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         )
         if canonical_json(native_scope) != canonical_json(native_after):
             raise ValueError("OpenGrok native index or reader changed during queries")
+    if readonly_service:
+        service_config_after = _opengrok_service_config_probe(
+            spec["opengrok"], set(native_projects), stage / "opengrok-service-after", capture=True
+        )
+        if canonical_json(service_config_before) != canonical_json(service_config_after):
+            raise ValueError("OpenGrok service configuration changed during queries")
     for name in backend_names:
         snapshot = _backend_snapshot(spec[name])
         _validate_backend_snapshot(spec[name], snapshot)
@@ -1954,12 +2397,22 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         "release_digest": document["digest"],
         "binding": binding,
         "tasks": len(tasks),
-        "indexed_universe_attested": False,
+        "indexed_universe_attested": bool(readonly_service and products == ("opengrok",)),
         "sourcegraph_index_scope": index_scope,
         **({"opengrok_index_scope": native_scope} if native_scope is not None else {}),
         # The API inventory and served bytes do not attest Lucene postings.
         # Backend artifact/process binding is required for that stronger claim.
-        "opengrok_indexed_universe_attested": False,
+        "opengrok_indexed_universe_attested": bool(readonly_service),
+        **(
+            {
+                "opengrok_service_configuration": service_config_before,
+                "opengrok_service_loaded_reader_attested": True,
+                "opengrok_snapshot_receipt_sha256": _sha_file(
+                    Path(spec["opengrok"]["readonly_service"]["snapshot_receipt"])
+                ),
+            }
+            if readonly_service else {}
+        ),
         "opengrok_indexed_view_probe": (
             "exact_indexed_inventory_and_served_bytes_bracketing_queries"
             if probe_indexed_view
@@ -1990,14 +2443,18 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
                     if native_scope is not None
                     else ()
                 ),
+                *(
+                    ("opengrok-service-before", "opengrok-service-after")
+                    if readonly_service else ()
+                ),
             )
             for path in sorted((stage / name).iterdir())
         },
-        "exclusions": [
-            "backend_indexed_universe_attestation",
-            "independent_gold",
-            "qualified_speed",
-        ],
+        "exclusions": (
+            ["independent_gold", "qualified_speed"]
+            if readonly_service and products == ("opengrok",)
+            else ["backend_indexed_universe_attestation", "independent_gold", "qualified_speed"]
+        ),
     }
     _write(stage / "capture.json", json.dumps(summary, sort_keys=True, indent=2).encode() + b"\n")
     if root.exists():
@@ -2052,8 +2509,14 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     if spec["schema_version"] == 2:
         fields.add("products")
     native_reader = spec["opengrok"].get("native_index_reader") if "opengrok" in products else None
+    readonly_service = "opengrok" in products and "readonly_service" in spec["opengrok"]
     if native_reader is not None:
         fields.add("opengrok_index_scope")
+    if readonly_service:
+        fields.update({
+            "opengrok_service_configuration", "opengrok_service_loaded_reader_attested",
+            "opengrok_snapshot_receipt_sha256",
+        })
     if (
         set(summary) != fields
         or type(summary.get("schema_version")) is not int
@@ -2061,8 +2524,15 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         or (spec["schema_version"] == 2 and summary.get("products") != list(products))
         or summary.get("status") != "diagnostic_unqualified"
         or summary.get("completed_response_boundary") != COMPLETED_BOUNDARY
-        or summary.get("indexed_universe_attested") is not False
-        or summary.get("opengrok_indexed_universe_attested") is not False
+        or summary.get("indexed_universe_attested")
+        is not bool(readonly_service and products == ("opengrok",))
+        or summary.get("opengrok_indexed_universe_attested") is not bool(readonly_service)
+        or (readonly_service and summary.get("opengrok_service_loaded_reader_attested") is not True)
+        or (
+            readonly_service
+            and summary.get("opengrok_snapshot_receipt_sha256")
+            != _sha_file(Path(spec["opengrok"]["readonly_service"]["snapshot_receipt"]))
+        )
         or not isinstance(summary.get("backend_snapshot_sha256"), dict)
         or set(summary["backend_snapshot_sha256"])
         != {name for name in products if name != "cs" and "backend_snapshot" in spec[name]}
@@ -2086,7 +2556,11 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         or not isinstance(summary.get("rows_sha256"), dict)
         or set(summary["rows_sha256"]) != set(products)
         or summary.get("exclusions")
-        != ["backend_indexed_universe_attestation", "independent_gold", "qualified_speed"]
+        != (
+            ["independent_gold", "qualified_speed"]
+            if readonly_service and products == ("opengrok",)
+            else ["backend_indexed_universe_attestation", "independent_gold", "qualified_speed"]
+        )
     ):
         raise ValueError("unsupported capture metadata, claim or runtime identity")
     if "cs" in products:
@@ -2159,6 +2633,19 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     ] != (len(manifest["files"]) if probe_indexed_view else 0):
         raise ValueError("external indexed view probe count differs")
     expected_raw = set()
+    if readonly_service:
+        expected_raw.update(
+            f"{directory}/{name}"
+            for directory in ("opengrok-service-before", "opengrok-service-after")
+            for name in (
+                "data-root.json", "data-root.transport.json",
+                "indexed-projects.json", "indexed-projects.transport.json",
+            )
+        )
+        expected_raw.update({
+            "opengrok-service-before/write-denial.body",
+            "opengrok-service-before/write-denial.transport.json",
+        })
     if native_reader is not None:
         expected_raw.update(
             f"{directory}/{name}"
@@ -2262,6 +2749,21 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
             for scope in native_scopes
         ):
             raise ValueError("OpenGrok native scope differs across queries or replay")
+    if readonly_service:
+        service_scopes = [
+            _opengrok_service_config_probe(
+                spec["opengrok"], set(native_projects), root / directory, capture=False
+            )
+            for directory in ("opengrok-service-before", "opengrok-service-after")
+        ]
+        if any(
+            canonical_json(scope) != canonical_json(summary["opengrok_service_configuration"])
+            for scope in service_scopes
+        ):
+            raise ValueError("OpenGrok readonly service config differs across queries or replay")
+        _opengrok_write_denial_probe(
+            spec["opengrok"], root / "opengrok-service-before", capture=False
+        )
     if probe_indexed_view:
         endpoint = (
             "/api/v1/projects/"

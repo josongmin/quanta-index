@@ -340,6 +340,10 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                 native_path, uid = _text(fields, "path"), _text(fields, "u")
                 prefix = "/" + name + "/"
                 _require(native_path.startswith(prefix), "native source project differs")
+                _require(
+                    _text(fields, "project") == "/" + name,
+                    "native stored source project differs",
+                )
                 source = native_path[len(prefix) :]
                 _require(
                     source in expected[name] and source not in sources[name],
@@ -357,14 +361,21 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
             elif set(fields) == {"d", "loc", "numl"}:
                 directory = _text(fields, "d")
                 _require(
-                    directory.startswith("/" + name)
-                    and (directory == "/" + name or directory.startswith("/" + name + "/"))
+                    (
+                        directory == "/"
+                        or directory == "/" + name
+                        or directory.startswith("/" + name + "/")
+                    )
                     and directory not in directories[name]
                     and set(indexed) == {"d", "dirpath"},
                     "native directory role differs",
                 )
                 _require(
-                    all(piece and piece not in {".", ".."} for piece in directory.split("/")[1:]),
+                    directory == "/"
+                    or all(
+                        piece and piece not in {".", ".."}
+                        for piece in directory.split("/")[1:]
+                    ),
                     "native directory path is noncanonical",
                 )
                 _require(
@@ -376,9 +387,10 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                 )
                 _one_term(indexed, "d", directory)
                 # NumLinesLOCAccessor indexes the parent, normalized by QueryBuilder.
-                parent = directory.rsplit("/", 1)[0] or "/"
+                parent = directory.rsplit("/", 1)[0]
+                normalized_path = "" if directory == "/" else parent.rstrip("/") + "/"
                 digest = hashlib.sha1(
-                    (parent.rstrip("/") + "/").encode("utf-8"), usedforsecurity=False
+                    normalized_path.encode("utf-8"), usedforsecurity=False
                 ).digest()
                 normalized = "".join(
                     chr(103 + (byte >> 4)) + chr(103 + (byte & 15)) for byte in digest
