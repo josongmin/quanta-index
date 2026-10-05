@@ -169,7 +169,12 @@ P1 · W1/W4 · native reader/capture/replay 구현 완료, 전체 서비스 univ
   Root `/private/tmp/qi-e2-og-query-reader-ready9-typeorm20-20261005-v1`, capture SHA256
   `816494c33d7d99d60b6365dbab19b28f506b6eb45c003df77d0327b94587e799`.
   Native12repo/17,615live와20개 요청의 segments_4/generation4/readerVersion16/live5,588/max5,589가 일치했다.
-  현재 ready7repo/140requests의 selected-request attested만true다. Uvicorn/Zustand2repo 및
+  해당 실행 시점의 ready7repo/140requests에서 selected-request attested만true였다.
+- `VERIFIED`: Uvicorn20 fresh capture와 별도 process native replay가 각각 exit0이다.
+  Root `/private/tmp/qi-e2-og-query-reader-ready9-uvicorn20-20261005-v1`, capture SHA256
+  `a60e8c47445bed4e8ecba6ac7111e82bea7676999d7753988d265ef7405df2cd`.
+  Native12repo/17,615live와20개 요청의 segments_4/generation4/readerVersion16/live89/max90가 일치했다.
+  현재 ready8repo/160requests의 selected-request attested만true다. Zustand1repo 및
   전체 서비스 reader/비교 qualification은 남아 있다.
 - 남은 repository/profile의 실제 acquired-reader scope 및 필요한 전수 source-byte/posting 권위를 확정한다.
   `opengrok_query_fixture.py`가 고정 원본→patch→Java→4classes 재현을 제공한다.
@@ -390,15 +395,19 @@ P0 · W3 및 source 변경 시 재수행 · proof issuer/verifier 구현 완료;
   `delta_generation_does_not_rewrite_unchanged_index_bytes`가 실패했고 이후50개는 미실행이다.
   같은 테스트만 exact selector로 재실행해12.090s/exit100, fresh index262,696 > base493,336/2를 확인했다.
   삭제된 segment compaction과 전체 authority metadata 발행을 독립 분리 검증하며 fixture·예산을 완화하지 않는다.
-- F14 owner `VERIFIED`: `08d53378` 기반 private candidate의 검증된34개 경로를 메인에 복사하고
-  전체 postimage byte 일치를 확인했다. Root는 stage/commit/push하지 않았다. Actual command:
+- F14 owner `VERIFIED`: `08d53378` 기반 private candidate의 검증된34개 경로는
+  clean main `22ed5b0113f1209e208e9b7faba456cffcdebcc6`에서 전체 postimage byte 일치를 확인했다.
+  Root는 stage/commit/push하지 않았다. Actual command:
   `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-lexical --lib --test l2_file_mutation --test sealed_manifest --test sealed_commitment_cost --test generation_delta_base_carryforward --test text_authority_shards --test unicode_normalization_goldens --all-features --locked --test-threads 1 --no-tests fail --no-fail-fast --failure-output final --success-output never`
   →394passed/8skipped·519.233s/exit0.
   같은 Rust source의 `PATH=/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index/.venv/bin:$PATH CARGO_BUILD_JOBS=1 just rust-profile test-daemon`
   →214passed/1skipped·206.546s/exit0.
   `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked -E 'test(/^e2e_ranked_pages::/) or test(/^e2e_lexical_sealed_overlays::/)' --test-threads 4 --no-tests fail --failure-output final --success-output never`
   →5passed/77skipped·3.647s/exit0. Overlay publish refusal 1건에 nextest `LEAK`가 있어
-  child process/pipe 종료 보장은 별도로 조사한다.
+  별도 조사했다. Test/runtime harness source는08d와 동일하며 driver shutdown+join 경로가 있다.
+  같은 command의 `-E 'test(=e2e_lexical_sealed_overlays::an_overlay_publish_into_a_sealed_generation_is_refused_typed)'`
+  ·`--test-threads 1 --success-output final` 단독 재실행은1passed/81skipped·1.306s/exit0, `LEAK` 없이 통과했다.
+  최초 병렬 실행의 표시 원인은 미확정이며 child process/pipe 종료 qualification으로 표시하지 않는다.
   lexical `--all-targets --all-features --locked` Clippy `-D warnings`、hexagonal/module-cycle/wire/
   test-authority/no-allow/cargo-modules/format guards, causal parser43개는 각 실행 범위에서 통과했다.
   Cargo-modules는 contract/core만 보호하므로 lexical module tree 검증으로 표시하지 않는다.
