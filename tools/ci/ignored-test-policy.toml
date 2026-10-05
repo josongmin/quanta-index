@@ -248,3 +248,19 @@ reason = "manual full-daemon cost probe; run one case per fresh process"
 owner = "quanta-index-searchd-runtime"
 cadence = "quarterly"
 review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/e2e_socket_access.rs"
+test = "linux_two_real_uids_enforce_operator_events_and_serve_listed_query"
+reason = "requires an explicit Linux root container with setpriv and SETUID/SETGID"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/e2e_socket_access.rs"
+test = "linux_real_uid_client_helper"
+reason = "only the explicit Linux real-UID parent may launch this helper"
+owner = "quanta-index-searchd-runtime"
+cadence = "release"
+review_by = "2026-12-31"

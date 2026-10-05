@@ -10,7 +10,8 @@
 //! What a single-uid test cannot prove is a real stranger being refused at
 //! `connect` (kernel, `0660`) or at `accept` (peer credentials); the accept
 //! path is proven in the IPC crate through a scripted credential source,
-//! and this rail proves the daemon binds, serves and reports as configured.
+//! and the default rail proves the daemon binds, serves and reports as
+//! configured. An explicit ignored Linux rail below also uses real client UIDs.
 
 #![forbid(unsafe_code)]
 
@@ -18,7 +19,13 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::os::unix::fs::MetadataExt as _;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::TextQuerySyntax;
 use quanta_index_ipc::{
@@ -297,6 +304,281 @@ fn a_group_the_daemon_is_not_in_refuses_boot_before_any_socket_is_bound() -> Tes
     }
     if rt.boot_inventory().is_some() || rt.socket_paths().is_some() {
         return Err("a refused boot leaves no running driver".into());
+    }
+    Ok(())
+}
+
+/// Explicit Linux root-runner component proof. The helper below runs as a
+/// different kernel UID; this is not a release-daemon or P11 host proof.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires an explicit Linux root container with setpriv and SETUID/SETGID"]
+fn linux_two_real_uids_enforce_operator_events_and_serve_listed_query() -> TestResult {
+    use quanta_index_contract::{ProcessRequestEventPlaneV1, ProcessRequestEventStageV1};
+
+    use crate::fail_closed_wait::{RealTicker, WaitError, wait_for};
+
+    if rustix::process::geteuid().as_raw() != 0 {
+        return Err("Linux real-UID proof requires a root runner; never skip it".into());
+    }
+    let other_uid = 65_534_u32;
+    let listed = SocketAccessPolicy::Shared(SharedSocketAccess::new(
+        None,
+        [other_uid].into_iter().collect(),
+    ));
+    let policies = SocketAccessPolicies::new(listed.clone(), listed, SocketAccessPolicy::Private);
+    let mut rt = E2eRuntime::boot_with_socket_access(policies)?;
+    let outcome = (|| -> TestResult {
+        rt.ingest_text("repo-real-uid", "src/linux_uid.rs", "needle real uid")?;
+        let _generation = rt.seal()?;
+        rt.activate_last_sealed_generation()?;
+        let (query, control, _ingest) = rt.socket_paths().ok_or("missing live sockets")?;
+        let query = query.to_path_buf();
+        let control = control.to_path_buf();
+        expect_eq("listed query socket mode", &mode_of(&query)?, &0o666)?;
+        expect_eq("listed control socket mode", &mode_of(&control)?, &0o666)?;
+        let directory = rt
+            .socket_directory()
+            .ok_or("shared socket directory absent")?;
+        expect_eq("listed socket directory mode", &mode_of(directory)?, &0o711)?;
+        let root = rt.state_root().to_path_buf();
+        // An owner can read the bounded ring. The outsider's Admin request
+        // must return only a typed refusal, leaving this query window intact.
+        let before = rt.process_request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+        run_real_uid_probe(other_uid, "deny-events", &query, &control, &root)?;
+        let after_denial = rt.process_request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+        expect_eq(
+            "process instance",
+            &after_denial.process_instance,
+            &before.process_instance,
+        )?;
+        expect_eq(
+            "denied read did not advance query ring",
+            &after_denial.next_sequence,
+            &before.next_sequence,
+        )?;
+        expect_eq(
+            "denied Admin request did not disclose or change query ring",
+            &after_denial,
+            &before,
+        )?;
+        run_real_uid_probe(other_uid, "query", &query, &control, &root)?;
+        // A client may receive its response before the server records the
+        // terminal event. Await that observable completion, not a fixed delay.
+        let after_query = wait_for(
+            &RealTicker::new(),
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            "listed UID query terminal event",
+            || rt.process_request_events(ProcessRequestEventPlaneV1::Query, 1024),
+            |window| {
+                window.events.iter().any(|event| {
+                    event.request_id.get() == 0xe306_u64
+                        && event.stage == ProcessRequestEventStageV1::ResponseWritten
+                })
+            },
+            |_| false,
+        )
+        .map_err(|error| -> Box<dyn std::error::Error> {
+            match error {
+                WaitError::Timeout(timeout) => timeout.into(),
+                WaitError::Terminal(error) => error.into(),
+            }
+        })?;
+        expect_eq(
+            "listed UID query process instance",
+            &after_query.process_instance,
+            &before.process_instance,
+        )?;
+        Ok(())
+    })();
+    let stopped = rt.stop();
+    match (outcome, stopped) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error.into()),
+        (Err(probe), Err(cleanup)) => {
+            Err(format!("real-UID probe failed: {probe}; daemon cleanup failed: {cleanup}").into())
+        }
+    }
+}
+
+/// The same test binary is copied outside any 0700 Cargo checkout so a
+/// deprivileged OS process can execute the real SDK/IPC client code.
+#[cfg(target_os = "linux")]
+fn run_real_uid_probe(
+    uid: u32,
+    mode: &str,
+    query: &Path,
+    control: &Path,
+    root: &Path,
+) -> TestResult {
+    let executable = std::env::current_exe()?;
+    let directory = tempfile::tempdir_in("/tmp")?;
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))?;
+    let copy = directory.path().join("uid-probe-test-binary");
+    let _copied = std::fs::copy(executable, &copy)?;
+    std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o755))?;
+    let stdout_path = directory.path().join("stdout");
+    let stderr_path = directory.path().join("stderr");
+    let stdout = std::fs::File::create(&stdout_path)?;
+    let stderr = std::fs::File::create(&stderr_path)?;
+    let mut child = Command::new("setpriv")
+        .arg(format!("--reuid={uid}"))
+        .arg(format!("--regid={uid}"))
+        .arg("--clear-groups")
+        .arg("--")
+        .arg(copy)
+        .arg("--ignored")
+        .arg("--exact")
+        .arg("e2e_socket_access::linux_real_uid_client_helper")
+        .arg("--nocapture")
+        .env("QI_E3_REAL_UID_MODE", mode)
+        .env("QI_E3_REAL_UID_EXPECTED", uid.to_string())
+        .env("QI_E3_REAL_UID_QUERY_SOCKET", query)
+        .env("QI_E3_REAL_UID_CONTROL_SOCKET", control)
+        .env("QI_E3_REAL_UID_STATE_ROOT", root)
+        .current_dir("/")
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()?;
+    let start = Instant::now();
+    let deadline = Duration::from_secs(45);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                let _killed = child.kill();
+                let reaped = child.wait();
+                return Err(format!(
+                    "real-UID {mode} child wait failed: {error}; reap: {reaped:?}"
+                )
+                .into());
+            }
+        }
+        if start.elapsed() >= deadline {
+            let _killed = child.kill();
+            let reaped = child.wait();
+            let stderr = std::fs::read_to_string(&stderr_path)?;
+            return Err(format!(
+                "real-UID {mode} child timed out; reap: {reaped:?}; stderr: {stderr}"
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = std::fs::read_to_string(&stdout_path)?;
+    let stderr = std::fs::read_to_string(&stderr_path)?;
+    if !status.success() {
+        return Err(format!(
+            "real-UID {mode} child failed: {status}; stdout: {stdout}; stderr: {stderr}"
+        )
+        .into());
+    }
+    if !stdout.contains("running 1 test") || !stdout.contains("1 passed") {
+        return Err(format!("real-UID {mode} child did not run exactly one test: {stdout}").into());
+    }
+    Ok(())
+}
+
+/// Invoked only through the explicit parent fixture under setpriv. Missing
+/// custody or an unchanged UID is an error, never a default-CI false pass.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "only the explicit Linux real-UID parent may launch this helper"]
+fn linux_real_uid_client_helper() -> TestResult {
+    use quanta_index_contract::{
+        GenerationSelector, ProcessRequestEventPlaneV1, ProcessRequestEventsRequestV1,
+        QueryConstraintSetV1, RepoId, RevisionId, SearchPlaneControlIpcRequest,
+        SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
+        SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2, SearchPlaneQueryIpcRequest,
+        SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+        SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest,
+    };
+    use quanta_index_ipc::{ClientIoPolicy, send_request};
+
+    let expected: u32 = std::env::var("QI_E3_REAL_UID_EXPECTED")?.parse()?;
+    expect_eq(
+        "real child effective UID",
+        &rustix::process::geteuid().as_raw(),
+        &expected,
+    )?;
+    expect_eq(
+        "real child effective GID",
+        &rustix::process::getegid().as_raw(),
+        &expected,
+    )?;
+    if expected == 0 {
+        return Err("real-UID helper was left as the daemon owner".into());
+    }
+    let state_root = std::env::var("QI_E3_REAL_UID_STATE_ROOT")?;
+    match std::fs::read_dir(state_root) {
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+        Err(error) => return Err(format!("private daemon root refusal differed: {error}").into()),
+        Ok(_entries) => return Err("different UID traversed the private daemon state root".into()),
+    }
+    let query = std::env::var("QI_E3_REAL_UID_QUERY_SOCKET")?;
+    let control = std::env::var("QI_E3_REAL_UID_CONTROL_SOCKET")?;
+    match std::env::var("QI_E3_REAL_UID_MODE")?.as_str() {
+        "deny-events" => {
+            let response: SearchPlaneControlIpcResponseEnvelope = send_request(
+                Path::new(&control),
+                &SearchPlaneControlIpcRequestEnvelope {
+                    request_id: 0xe305,
+                    payload: SearchPlaneControlIpcRequest::ProcessRequestEventsV1(
+                        ProcessRequestEventsRequestV1 {
+                            plane: ProcessRequestEventPlaneV1::Query,
+                            limit: 1024,
+                        },
+                    ),
+                },
+                ClientIoPolicy::default(),
+            )?;
+            expect_eq(
+                "denied operator response request ID",
+                &response.request_id,
+                &0xe305,
+            )?;
+            if !matches!(&response.payload, SearchPlaneControlIpcResponse::Error(error)
+                if error.code == SearchPlaneErrorCodeV2::ControlAuthorizationDenied)
+            {
+                return Err(format!("other UID received operator events: {response:?}").into());
+            }
+        }
+        "query" => {
+            let response: SearchPlaneQueryIpcResponseEnvelope = send_request(
+                Path::new(&query),
+                &SearchPlaneQueryIpcRequestEnvelope {
+                    request_id: 0xe306,
+                    payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                        syntax: TextQuerySyntax::Native,
+                        query_text: "needle".to_owned(),
+                        constraints: QueryConstraintSetV1::unconstrained(),
+                        generation: None,
+                        generation_selector: Some(GenerationSelector::Active {
+                            repo_id: RepoId::new("repo-e2e")?,
+                            revision_id: RevisionId::new("rev-e2e")?,
+                        }),
+                        top_k: 5,
+                        cursor: None,
+                    }),
+                },
+                ClientIoPolicy::default(),
+            )?;
+            expect_eq(
+                "listed UID query response request ID",
+                &response.request_id,
+                &0xe306,
+            )?;
+            let SearchPlaneQueryIpcResponse::Text(page) = &response.payload else {
+                return Err(format!("listed UID query was refused: {response:?}").into());
+            };
+            if page.results.len() != 1 || page.selected_active_head.is_none() {
+                return Err(format!("listed UID query lacks the selected result: {page:?}").into());
+            }
+        }
+        other => return Err(format!("unexpected real-UID helper mode: {other}").into()),
     }
     Ok(())
 }

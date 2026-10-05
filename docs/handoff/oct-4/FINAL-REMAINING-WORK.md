@@ -7,6 +7,22 @@
 - 제품 proof/binaries/admissions는 frozen `0e6c7e7e9494b63fdb33f4594df059817459d3b1` 기준이다. 완료된 scope 수리/SG/native3는 clean `ae8f96bae1a0db1fc0378861b228cd5359080fa1` 범위다. derived provenance·frozen-context 경로 수리는 clean `628541e150192b4aaf0ff4ba54566ae28c6ca25f`에 고정했고 retained bat canonical raw replay가 통과했다. 후속 report/verdict JSON 타입 결속을 수리한 clean `97eedd11b70e76c66985b15a968211a2faf92c6d`의 focused 회귀203/203·0failed/skipped가 통과했다. 새 SG12repo/13,347files 독립 replay·bat native3 actual/replay·retained full5제품 join은 통과했다. remaining8 Q/S·native captures/독립 replays/full5제품 joins도 완료됐다. 후속 native metadata4개 타입 결속 수리의 실제 RED4재현/GREEN12passed를 main에 통합했다. current9 신규151tasks/742unjudged pairs가 준비됐지만 actual 판단·final qualification은 남아 있다. mutable main이나 과거 receipt를 새 source 결과로 재표기하지 않는다.
 - 원본 agent-4의 과거 임시 증거15고유경로는 현재 없어 replay 가능한 current proof로 사용하지 않는다. 기존50 Markdown의 상대 링크1,246개·29 ticket 배치는 확인했으며 증거 가용성 경계는 [I0-01](../../plans/oct-4-parallel-closure/tickets/O4-I0-01-ownership-and-contract-freeze.md)에 기록했다.
 
+## 현재 진행률 — 범위별 실제 분모
+
+전체29티켓의 공수 가중치는 산정하지 않았다. 아래 비율은 전체 제품 완료율로 합산하지 않는다.
+
+| 범위 | 현재 | 비율 | 남은 작업 |
+| --- | --- | --- | --- |
+| 원본5개 통합·29티켓 웨이브 배치 | 29/29·중복0·링크 누락0 | 100% | 후속 결과를 기존 티켓에 반영 |
+| C3 NL 기존 라벨의 기본 admission 및5제품 캡처/독립 replay/join | 9/12repo·180/240tasks | 75% | SQLAlchemy·Zellij·Tailscale3repo와 후속 final revisions |
+| current9 신규 보충 검수 | 0/742query-file pairs·151tasks 입력 준비 | 0% | 실제 두 reviewer+adjudicator→canonical merge/admission→재채점 |
+| SQLAlchemy 대체 adjudication | 334/480pairs | 69.6% | 146pairs·quota 대기 |
+| Zellij 대체 adjudication | 0/476pairs | 0% | 476pairs·quota 대기; 기존 두 reviewer 보존 |
+| Linux 실제 두 UID component | 1/1 test | 100% | shipping daemon/Linux release·운영 범위는 별도 |
+| 실제 deploy/activate/restore/rollback | 이번 요청의 운영 실행 미착수 | 0% | authorized host/config/state/retention/rollback 입력 |
+
+신규 보충과 SQLAlchemy/Zellij 조정의 실제 잔여는 최소1,364개 query-file pairs다. 역할별 호출 수는 이 pair 수와 다르며 Tailscale 정책, 독립 holdout, 다른 lane과 성능/운영 검증은 이 분모 밖이다.
+
 ## 1. 현재 실행 순서
 
 | 순서 / 웨이브 | 해야 할 일 | 현재 경계 |
@@ -42,7 +58,7 @@
 
 - [E3-01](../../plans/oct-4-parallel-closure/tickets/O4-E3-01-active-selection-race.md): 별도 OS-child의 같은 retention race 범위를 기존 supported refusal/view 계약에서 판정한다. dispatcher/runtime owner·daemon proof를 그 OS 시나리오로 재명명하지 않는다.
 - [E3-04](../../plans/oct-4-parallel-closure/tickets/O4-E3-04-maintenance-health-metering.md)·[E3-05](../../plans/oct-4-parallel-closure/tickets/O4-E3-05-publish-timeout-replay.md): actual daemon slow-disk3-cadence, 기본30초 별도 OS-process admitted publish timeout→operation inspect→exact replay 범위를 검증한다.
-- [E3-06](../../plans/oct-4-parallel-closure/tickets/O4-E3-06-operator-event-proof.md): 별도 worktree의 Linux 두 UID UDS component fixture·독립 policy 등록·fmt/policy lint는 준비됐다. nextest RO store/test0 및 v2 protobuf header 부재 compile `FAILED`를 보존했다. v3 Linux-only fixture의 오류 변환 compile 실패도 보존했다. typed 변환을 수리한 v4가 고정 Rust1.92·container-only headers·descriptor preflight 후 canonical cargow test exact1 Linux 실행 중이다. P11 운영 process-truth는 authorized host/path/config/state/retention/rollback 입력 `BLOCKED`로 별도 유지한다.
+- [E3-06](../../plans/oct-4-parallel-closure/tickets/O4-E3-06-operator-event-proof.md): Linux 실제2UID UDS component v4는1/1passed·2.59s/exit0이며 source/overlay 전후·owned cleanup도 `VERIFIED`다. 검증한 fixture/policy2파일을 main에 통합했고 v1–v3 실제 실패는 보존했다. shipping Linux daemon/release는 미실행이다. P11 운영 process-truth는 authorized host/path/config/state/retention/rollback 입력 `BLOCKED`로 별도 유지한다.
 - [E3-02](../../plans/oct-4-parallel-closure/tickets/O4-E3-02-admission-pin-transfer.md)는 현 Accepted 계약에서 `NOT_APPLICABLE`; 강화 계약 채택·새 실제 반례가 있을 때만 재개한다. [E3-03](../../plans/oct-4-parallel-closure/tickets/O4-E3-03-atomic-active-query-rpc.md)의 지원7 Active variant single-RPC 구현은 재작성하지 않는다. 후속 효과/운영 qualification만 해당 scope에서 수행한다.
 
 ### E4 — 비용 원인·조건부 변경·성능·scale
