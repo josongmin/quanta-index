@@ -23,7 +23,10 @@ def test_one_preparation_preserves_original_selection_and_reuses_both_commands(
     native = [argv for argv, _ in calls if argv[3:5] in (["nextest", "list"], ["nextest", "run"])]
     selector = ["-p", "quanta-index-retrieval-bench"]
     selector += (
-        ["--lib", "--test", "chunking_contract", "--test", "l5_parser_regressions"]
+        [
+            "--lib", "--bin", "quanta-index-retrieval-bench",
+            "--test", "chunking_contract", "--test", "l5_parser_regressions",
+        ]
         if rail == "contract"
         else ["--test", "sdk_roundtrip"]
     )

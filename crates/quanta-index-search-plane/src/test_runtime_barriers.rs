@@ -38,6 +38,7 @@ pub fn install_lexical_active_before_view(
         ));
     }
     *installed = Some(Arc::new(gate));
+    drop(installed);
     Ok(LexicalActiveBeforeViewGuard)
 }
 
