@@ -9,8 +9,8 @@
 
 ## 현재 코드 잔여 — 2026-10-05 소스 대조
 
-현재 정리 기준: Quanta main `fb62e133925dc1daa72bc815b9c77cb884716a10`와 문서 수정 overlay.
-Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling 변경이 있고 retrieval 제품 소스는 동일하다.
+현재 정리 기준: Quanta main `7a16771afec15602edb6f04130d66e64fe471989`와 문서 수정 overlay.
+Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling·OS-process 회귀 추가가 있고 retrieval 엔진 소스는 동일하다.
 아래 신규 actual은 clean5796과 그 matching binary의 결과이며 main formal proof로 승격하지 않는다.
 Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
 아래는 실제 생산 경로·코드와 기존 결과를 대조한 잔여이며 새 full-suite/release qualification이 아니다.
@@ -105,7 +105,14 @@ frozen5796 ready9 재발행 및 나머지3repo·후속 final revisions 미완료
   →8passed·10.87s/exit0였다. 원본 packet의107 revision·원래 경로·5개 helper SHA와
   새 checkout의 clean HEAD·실제5개 bytes를 검증했다. Label 원본 경로와 검증용 경로를
   새 lineage에 각각 기록하며 원본 packet/raw는 수정하지 않는다. 409쌍 재AI 호출은 없다.
-  새 ready9 admissions ISSUE와 제품 실행은 `NOT_RUN`이다.
+  후속 actual other8 ISSUE 중 CLI는 `VERIFIED`:20tasks/519pairs, wrong-source refusal1,
+  source5796·qualified:false·human_provenance_attested:false다. 명령은
+  `uv run --project /Users/songmin/Documents/code-new/quanta-index --frozen --extra dev python /private/tmp/qi-e2-ready9-full5-current-prep-v4/reissue-other-eight.py --input /private/tmp/qi-e2-ready9-full5-5796-specs-20261005-v1/admission-other-eight-packet.json --output-parent /private/tmp/qi-e1-other8-5796-20261005-v1 --selection other-eight`.
+  CLI cell934.437s의 결과는 같은 parent의 `cli/cli/result.json`에 있다.
+  Batch는 Django의 release reconstruction 단계에서 root가 우선순위를 바꾸며 SIGINT/exit130으로
+  중단했다. 전체 summary는 없고 Django partial은 완료로 세지 않는다. 원본 root는 보존한다.
+  외부 v5의 명시적 remaining7 selector는 준비됐으며 fresh source/input/proof 결속 후 새 root로
+  실행한다. Bat ISSUE·남은7·ready9 제품 실행은 미완료다. AI 재판단 결과가 아니다.
 - B08이 계속 요구하는 C5 stale4 suites는 manifest/query/source를 재확인해 reissue 또는 명시적
   exclusion을 발행한다. B09 global12와 합치거나 NL-only diagnostic을 mixed-track decision으로 승격하지 않는다.
 - 완료: 각 ready repository의 정확한 admission inputs/result 및 변경 labels의 새 revision.
@@ -436,6 +443,19 @@ Matching release actual 및 별도 override 진단은 아래 범위로 판정한
   Full/delta/delete/noop와 같은 OS-process 내부 daemon 재시작을 포함하는 `VERIFIED_DIAGNOSTIC`다.
   실제 OS-child restart proof는 포함하지 않는다. 실행 명령:
   `uv run --project /Users/songmin/Documents/code-new/quanta-index --frozen --extra dev python -m tools.benchmark.retrieval.causal_cost_capture --cwd /Users/songmin/.codex/worktrees/oct5-f14-qualified-5796/quanta-index --binary /private/tmp/qi-retrieval-sdk-f14-5796a63f-20261005-v1/target/release/scale_matrix --source-revision 5796a63f7a813ae3ac3529ea7d281abd64b9db8f --binary-sha256 d28c7b480ebb25c68333aad37fcdb6e4e048da00e8cdee3a90bf86a408558e41 --tier large --seed 5864059738136528177 --max-seconds 600 --out-root /private/tmp/qi-scale-f14-5796-20261005-v2-large-diagnostic --client-timeout-ms 300000 --history-max-bytes 268435456`.
+- Full XL source demand `VERIFIED`(제품 capacity 아님): frozen5796의 exact Rust fixture generator를
+  외부 std-only probe로 추출해 Medium actual corpus digest7c9b19c9와 먼저 일치시킨 뒤 계산했다.
+  `/private/tmp/qi-xl-source-count-probe-5796-20261005-v1/result.json`:
+  files32,768, published source113,056,314bytes, largest file3,737bytes,
+  exact aggregate distinct path+content trigram memberships17,715,020,
+  corpus digest `sha256:dbc4b0d39b458aa4fd838a28e01caf95c0146601b1fae50bfc5d3b197dd59821`.
+  Source128MiB ceiling 안이지만 기존4M posting ceiling 밖이다. U64 posting IDs만141,720,160bytes이며
+  dictionary/header와 source bytes는 별도다. Harness의 default history16MiB/total256MiB도 별도 gate다.
+  Aggregate/resident/disk/query 및 retention 계약을 함께 정하고 shard별 cap으로 global cap을 대신하지 않는다.
+- 실제 OS-process Medium 회귀 producer/test registration은 `7a16771a`에 반영했다.
+  `runtime_extended_suite::e2e_scale_process_restart`가256source digest/line bounds,
+  G1 positive→G2 tombstone, repo2의64개 전체 결과와 ranked/source rows의 실제 child stop/reap/restart
+  보존을 검사한다. 아직 actual owner 결과를 기다리며 Large/XL 또는 Linux proof로 표시하지 않는다.
 - large300s/256MiB diagnostic 성공을 default 성공으로 바꾸지 않는다.
   지원 목표/latency/resource 계약을 결정한 뒤 원인 수리 또는 명시적 제품 계약 변경을 수행한다.
 - 완료: 각 tier/profile의 독립 source/result/count/oracle와 terminal, offered/served/errors/timeouts/drops
