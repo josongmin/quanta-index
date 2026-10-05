@@ -33,6 +33,14 @@
 
 해당 manifest의 모든 source file이 실제 service index에 있고 요청 전후 동일한 index identity였는지 입증한다.
 
+## 2026-10-05 fresh read-only Tomcat 실제 캡처
+
+- 기존 C3 container/image와 named volumes는 보존했다. 첫 snapshot 준비는 과거 index SHA와 달라 `FAILED`로 거절했다. 현재 old container의 start time은 `2026-10-05T08:01:34.765332797Z`이고, 독립 remote snapshot과 두 host 복사본은136files/136,609,156bytes 및 native index SHA `01d2981e9706e4a52d74d5d6d29e27d3d31babe9140e15d1fee82dfde847c47e`로 일치했다. 과거132-file commit observation을 새 결과로 재표기하지 않고 `/private/tmp/qi-og-ro-clone-20261005-v1/identity-packet-current.json`에 새 관측을 결속했다.
+- snapshot preparation은74JAR/config/source13347 및 independent index copies를 대조한 뒤 fresh token·GET-only API descriptor와 pre-create seal을 생성했다. New container `75640242ae4a999ee1e687c09eca1e691cda90811a30893e12ee94ead1148085`는 pinned image `1b79b770...7e7`, UID1111, read-only root/index/webapps/config/source,4 tmpfs, dedicated network,127.0.0.1:18084,`catalina.sh run`만 사용한다. 기본 indexer/reindex entrypoint를 실행하지 않았고 ping200을 관측했다.
+- `VERIFIED`: clean source `a1c1cd6f203e6add64926c088b3fa237a063a312`의 `oct5-og-readonly-query`에서 `PYTHONPATH=tools/benchmark:. /Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index/.venv/bin/python -m tools.benchmark.retrieval.live_lexical_external --spec /private/tmp/qi-og-ro-clone-20261005-v1/live-spec.json` — exit0,original source0e6 bat20 query capture. Output `/private/tmp/qi-e2-og-ro-query-bat20-20261005-v1`,capture SHA `2bacf6254c7e8d96d175e6b98ae40e037b07b4a314b19c98fd915d8d1e6dfeeb`; native17,615 live = source13,347 + directory4,256 + settings12. Full native before/after,bat79 indexed paths/served bytes before/after,readonly service/config/index identity 및 authenticated same-value PUT403을 관측했다.
+- `VERIFIED`: 같은 clean source/Python에서 별도 프로세스로 `live_lexical_external.verify(Path('/private/tmp/qi-e2-og-ro-query-bat20-20261005-v1'))`를 실제 실행해 exit0을 확인했다. Native12project의 위17,615/13,347/4,256/12 분모와20tasks,rows SHA `beaec75bd5dc0158f3e4c050fb87f93c41cd8c3b78410fed00f52289885a998c`를 재검증했다. Raw GET data-root 응답은 JSON media type이지만 raw 문자열이라는 계약을 유지하며, before/after write-denial transport는 각각 PUT403이다.
+- Capture/replay의 `indexed_universe_attested`, `opengrok_indexed_universe_attested`, `opengrok_service_loaded_reader_attested`는 모두false를 유지한다. Pinned1.14.18의 project-files API는 disk reader를 새로 열고 실제 search는 cached SearcherManager를 acquire하므로, API/native disk stream만으로 같은 검색 요청의 loaded reader를 입증하지 않는다. Query-bound reader witness와 별도 instrumented WAR identity/equivalence는 추가 작업이며 pristine service의 과거 요청에 소급하지 않는다.
+
 ## 2026-10-04 producer와 실제 실행
 
 - existing v1 receipt/verifier에 full V3 path inventory와 bounded native stored-byte reader를 연결했다. 전후 index/runtime/projection/source/control identity를 검사하며 payload hash를 manifest와 대조한다. posting/analyzer equivalence나 성능 qualification을 발행하지 않는다.
