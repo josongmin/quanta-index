@@ -1441,6 +1441,10 @@ pub(crate) fn from_test_files(
     generation_dir: &Path,
 ) -> Result<FileAuthority, CoreError> {
     files.sort_by(|left, right| left.source.file.cmp(&right.source.file));
+    let canonical_generation_dir = std::fs::canonicalize(generation_dir).map_err(|error| {
+        CoreError::Storage(format!("lexical: canonicalize test generation: {error}"))
+    })?;
+    let generation_dir = canonical_generation_dir.as_path();
     ensure_local_dir(&generation_dir.join(DIR))?;
     let object_dir = generation_dir.join(DIR).join(OBJECTS);
     ensure_local_dir(&object_dir)?;
@@ -1562,7 +1566,11 @@ mod tests {
     #[test]
     fn replay_audit_counts_only_read_objects_and_refuses_corrupt_bytes() {
         let generation = tempfile::tempdir().expect("tempdir");
-        let object_dir = generation.path().join(super::DIR).join(super::OBJECTS);
+        let generation_dir = generation
+            .path()
+            .canonicalize()
+            .expect("canonical generation");
+        let object_dir = generation_dir.join(super::DIR).join(super::OBJECTS);
         std::fs::create_dir_all(&object_dir).expect("objects");
         let body = b"canonical object";
         let digest: [u8; 32] = Sha256::digest(body).into();
@@ -1584,21 +1592,22 @@ mod tests {
             content_postings: vec![],
         };
         assert_eq!(
-            super::audit_replayed_objects(generation.path(), None, &root).expect("audit"),
+            super::audit_replayed_objects(&generation_dir, None, &root).expect("audit"),
             (1, body.len() as u64)
         );
         std::fs::write(&object, b"corrupt!! object").expect("in-place corruption");
-        assert!(super::audit_replayed_objects(generation.path(), None, &root).is_err());
+        assert!(super::audit_replayed_objects(&generation_dir, None, &root).is_err());
         std::fs::remove_file(&object).expect("replace");
         std::fs::write(&object, b"replaced! object").expect("replacement");
-        assert!(super::audit_replayed_objects(generation.path(), None, &root).is_err());
+        assert!(super::audit_replayed_objects(&generation_dir, None, &root).is_err());
     }
 
     #[test]
     fn replay_inheritance_requires_same_inode_and_length() {
         let family = tempfile::tempdir().expect("family");
-        let base = family.path().join("base");
-        let target = family.path().join("target");
+        let family_dir = family.path().canonicalize().expect("canonical family");
+        let base = family_dir.join("base");
+        let target = family_dir.join("target");
         for generation in [&base, &target] {
             std::fs::create_dir_all(generation.join(super::DIR).join(super::OBJECTS))
                 .expect("objects");
@@ -1634,13 +1643,17 @@ mod tests {
     #[test]
     fn legacy_unsealed_manifest_requires_rebuild() {
         let generation = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir(generation.path().join(super::DIR)).expect("authority dir");
+        let generation_dir = generation
+            .path()
+            .canonicalize()
+            .expect("canonical generation");
+        std::fs::create_dir(generation_dir.join(super::DIR)).expect("authority dir");
         std::fs::write(
-            generation.path().join(super::DIR).join("manifest.cbor"),
+            generation_dir.join(super::DIR).join("manifest.cbor"),
             b"old",
         )
         .expect("legacy file");
-        let result = super::read_manifest(generation.path());
+        let result = super::read_manifest(&generation_dir);
         assert!(matches!(
             result,
             Err(quanta_index_core::CoreError::Typed {
