@@ -469,9 +469,12 @@ def test_completed_forms_refuse_typed_aliases_in_frozen_fields(
     tmp_path, field, replacement, message
 ):
     checkout, pack, contexts, pools = _fixture(tmp_path)
+    if field == "answerability_min_grade":
+        contexts["toy.001"]["answerability_min_grade"] = 1
     forms, _ = holdout_review.prepare(checkout, pack, contexts, pools, seed=42)
     completed = _completed_forms(forms)
     if field == "answerability_min_grade":
+        assert type(completed[0]["reviews"][0][field]) is int
         completed[0]["reviews"][0][field] = replacement
     else:
         completed[0][field] = replacement

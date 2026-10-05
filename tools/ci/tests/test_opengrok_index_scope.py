@@ -50,10 +50,12 @@ def observation(expected):
         for path in sorted(paths):
             native = f"/{project}/{path}"
             uid = native.replace("/", "\0") + "\0" + "20261003170210646"
-            documents.append((
-                [stored("path", native), stored("u", uid), stored("project", f"/{project}")],
-                [term("u", uid)],
-            ))
+            documents.append(
+                (
+                    [stored("path", native), stored("u", uid), stored("project", f"/{project}")],
+                    [term("u", uid)],
+                )
+            )
         documents.append(
             (
                 [
@@ -78,9 +80,21 @@ def observation(expected):
                 [term("objuid", settings_uid)],
             )
         )
-        names = sorted({field["name"] for fields, _ in documents for field in fields} | {field["field"] for _, postings in documents for field in postings})
+        names = sorted(
+            {field["name"] for fields, _ in documents for field in fields}
+            | {field["field"] for _, postings in documents for field in postings}
+        )
         indexed = {field["field"] for _, postings in documents for field in postings}
-        field_info = [{"name": name, "indexOptions": "DOCS" if name in indexed else "NONE", "docValuesType": "NONE", "hasVectors": False, "hasNorms": False} for name in names]
+        field_info = [
+            {
+                "name": name,
+                "indexOptions": "DOCS" if name in indexed else "NONE",
+                "docValuesType": "NONE",
+                "hasVectors": False,
+                "hasNorms": False,
+            }
+            for name in names
+        ]
         # One deleted document slot is absent from the live stream.
         rows.append(
             {
@@ -278,7 +292,19 @@ def test_native_auxiliary_shape_uses_deployed_directory_parent_and_index_only_ui
         scope.verify_documents(path, expected)
 
 
-@pytest.mark.parametrize("mutation", ["field_info_boolean", "field_info_duplicate", "field_info_index", "field_info_docvalues", "missing_uid_info", "stored_type", "stored_unknown", "unindexed_postings"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "field_info_boolean",
+        "field_info_duplicate",
+        "field_info_index",
+        "field_info_docvalues",
+        "missing_uid_info",
+        "stored_type",
+        "stored_unknown",
+        "unindexed_postings",
+    ],
+)
 def test_native_decoder_refuses_impossible_lucene_field_metadata(tmp_path, mutation):
     expected = {"fixture": {"src/a.rs"}}
     rows = observation(expected)
@@ -361,9 +387,10 @@ def test_readonly_service_descriptor_denies_all_non_get_api_methods(tmp_path):
       </web-resource-collection><auth-constraint/></security-constraint>
     </web-app>"""
     descriptor.write_text(original)
-    assert live._opengrok_readonly_files(config)["web_xml_sha256"] == hashlib.sha256(
-        original.encode()
-    ).hexdigest()
+    assert (
+        live._opengrok_readonly_files(config)["web_xml_sha256"]
+        == hashlib.sha256(original.encode()).hexdigest()
+    )
     descriptor.write_text(original.replace("<auth-constraint/>", ""))
     with pytest.raises(ValueError, match="not denied"):
         live._opengrok_readonly_files(config)
@@ -382,9 +409,13 @@ def test_readonly_service_config_and_write_denial_replay_are_independent(tmp_pat
         "/api/v1/projects/indexed": b'["bat","cli"]',
     }
     monkeypatch.setattr(
-        live, "_http",
+        live,
+        "_http",
         lambda _config, endpoint, _params, _accept: (
-            200, "application/json", replies[endpoint], 1.0
+            200,
+            "application/json",
+            replies[endpoint],
+            1.0,
         ),
     )
     target = tmp_path / "config"
@@ -401,13 +432,15 @@ def test_readonly_service_config_and_write_denial_replay_are_independent(tmp_pat
     denial.mkdir()
     (denial / "write-denial.body").write_bytes(b"denied")
     (denial / "write-denial.transport.json").write_text(
-        json.dumps({
-            "endpoint": "/api/v1/configuration/dataRoot",
-            "method": "PUT",
-            "request_body_sha256": hashlib.sha256(b"/opengrok/data").hexdigest(),
-            "status": 403,
-            "elapsed_ms": 1.0,
-        })
+        json.dumps(
+            {
+                "endpoint": "/api/v1/configuration/dataRoot",
+                "method": "PUT",
+                "request_body_sha256": hashlib.sha256(b"/opengrok/data").hexdigest(),
+                "status": 403,
+                "elapsed_ms": 1.0,
+            }
+        )
     )
     live._opengrok_write_denial_probe(config, denial, capture=False)
     transport = json.loads((denial / "write-denial.transport.json").read_text())
@@ -429,7 +462,10 @@ def test_readonly_service_runtime_refuses_default_writer_and_overlapping_mount(
     image_sha = "b" * 64
     mounts = [
         {
-            "Type": "bind", "Source": str(path), "Destination": destination, "RW": False,
+            "Type": "bind",
+            "Source": str(path),
+            "Destination": destination,
+            "RW": False,
         }
         for destination, path in (
             ("/opengrok/data/index", roots["index"]),
@@ -448,7 +484,8 @@ def test_readonly_service_runtime_refuses_default_writer_and_overlapping_mount(
         "HostConfig": {"NetworkMode": "og_ro_test", "Privileged": False, "CapAdd": None},
         "Config": {
             "Entrypoint": ["/usr/local/tomcat/bin/catalina.sh"],
-            "Cmd": ["run"], "User": "1111:1111",
+            "Cmd": ["run"],
+            "User": "1111:1111",
         },
         "Path": "/usr/local/tomcat/bin/catalina.sh",
         "Args": ["run"],
@@ -461,41 +498,58 @@ def test_readonly_service_runtime_refuses_default_writer_and_overlapping_mount(
         "base_url": "http://127.0.0.1:18183",
         "server_image_digest": image_sha,
         "backend_snapshot": {
-            "root": str(roots["index"]), "container_id": container_id,
-            "mount_destination": "/opengrok/data/index", "container_port": "8080/tcp",
+            "root": str(roots["index"]),
+            "container_id": container_id,
+            "mount_destination": "/opengrok/data/index",
+            "container_port": "8080/tcp",
         },
         "readonly_service": {
-            "webapps_root": str(roots["webapps"]), "etc_root": str(roots["etc"]),
-            "source_root": str(roots["src"]), "source_war": str(war),
+            "webapps_root": str(roots["webapps"]),
+            "etc_root": str(roots["etc"]),
+            "source_root": str(roots["src"]),
+            "source_war": str(war),
             "network": "og_ro_test",
         },
     }
-    monkeypatch.setattr(live, "_opengrok_readonly_files", lambda _config: {
-        "webapps_sha256": "c" * 64,
-        "configuration_sha256": "d" * 64,
-        "web_xml_sha256": "e" * 64,
-    })
+    monkeypatch.setattr(
+        live,
+        "_opengrok_readonly_files",
+        lambda _config: {
+            "webapps_sha256": "c" * 64,
+            "configuration_sha256": "d" * 64,
+            "web_xml_sha256": "e" * 64,
+        },
+    )
 
     def fake_process(argv, _timeout):
         if argv[1] == "inspect":
             return 0, json.dumps(inspected).encode(), b"", 0.0
-        return 0, (
-            hashlib.sha256(war.read_bytes()).hexdigest()
-            + "  /opengrok/lib/source.war\n"
-        ).encode(), b"", 0.0
+        return (
+            0,
+            (
+                hashlib.sha256(war.read_bytes()).hexdigest() + "  /opengrok/lib/source.war\n"
+            ).encode(),
+            b"",
+            0.0,
+        )
 
     monkeypatch.setattr(live, "_process", fake_process)
-    assert live._backend_runtime(config)["readonly_files"]["source_war_sha256"] == hashlib.sha256(
-        war.read_bytes()
-    ).hexdigest()
+    assert (
+        live._backend_runtime(config)["readonly_files"]["source_war_sha256"]
+        == hashlib.sha256(war.read_bytes()).hexdigest()
+    )
     inspected["Config"]["Entrypoint"] = ["/scripts/entrypoint.sh"]
     with pytest.raises(ValueError, match="only Tomcat"):
         live._backend_runtime(config)
     inspected["Config"]["Entrypoint"] = ["/usr/local/tomcat/bin/catalina.sh"]
-    inspected["Mounts"].append({
-        "Type": "bind", "Source": str(tmp_path / "extra"),
-        "Destination": "/opengrok/data/index/bat", "RW": True,
-    })
+    inspected["Mounts"].append(
+        {
+            "Type": "bind",
+            "Source": str(tmp_path / "extra"),
+            "Destination": "/opengrok/data/index/bat",
+            "RW": True,
+        }
+    )
     with pytest.raises(ValueError, match="extra or overlapping mount"):
         live._backend_runtime(config)
 

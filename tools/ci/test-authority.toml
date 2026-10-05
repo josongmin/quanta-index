@@ -305,6 +305,7 @@ targets = [
   "searchd-runtime-e2e-boot-quarantine",
   "searchd-runtime-predicate-authority-lifecycle",
   "searchd-runtime-generation-activation-concurrency",
+  "searchd-runtime-active-selection-process-v1",
   "searchd-runtime-dsl-scenarios",
   "searchd-runtime-restart-replay-determinism",
   "searchd-runtime-perf-chaos",
@@ -1572,6 +1573,13 @@ id = "searchd-runtime-sdk-frontdoor"
 path = "crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs"
 owner = "quanta-index-searchd-runtime"
 target = "runtime_fast_suite"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-active-selection-process-v1"
+path = "crates/quanta-index-searchd-runtime/tests/active_selection_process_v1.rs"
+owner = "quanta-index-searchd-runtime"
+target = "active_selection_process_v1"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

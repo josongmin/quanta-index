@@ -24,6 +24,14 @@ MAX_LINE = 4 * 1024 * 1024
 MAX_DOCUMENTS = 4 * 1024 * 1024
 SETTINGS_UID = "uthuslvotkgltggqqjmurqojpjpjjkutkujktnkk"
 SELECTED = {"path", "u", "type", "t", "project", "date"}
+INDEX_OPTIONS = {
+    "NONE",
+    "DOCS",
+    "DOCS_AND_FREQS",
+    "DOCS_AND_FREQS_AND_POSITIONS",
+    "DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS",
+}
+DOC_VALUES = {"NONE", "NUMERIC", "BINARY", "SORTED", "SORTED_NUMERIC", "SORTED_SET"}
 
 
 def _require(ok: bool, reason: str) -> None:
@@ -196,7 +204,29 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                     and type(row["fieldInfo"]) is list,
                     "native segment identity overlaps or repeats",
                 )
-                segments[key] = {**row, "seen": set()}
+                info_by_name = {}
+                for info in row["fieldInfo"]:
+                    _require(
+                        type(info) is dict
+                        and set(info)
+                        == {"name", "indexOptions", "docValuesType", "hasVectors", "hasNorms"}
+                        and type(info["name"]) is str
+                        and bool(info["name"])
+                        and info["name"] not in info_by_name
+                        and type(info["indexOptions"]) is str
+                        and info["indexOptions"] in INDEX_OPTIONS
+                        and type(info["docValuesType"]) is str
+                        and info["docValuesType"] in DOC_VALUES
+                        and type(info["hasVectors"]) is bool
+                        and type(info["hasNorms"]) is bool,
+                        "native segment field metadata differs",
+                    )
+                    info_by_name[info["name"]] = info
+                _require(
+                    list(info_by_name) == sorted(info_by_name),
+                    "native segment fields are unordered",
+                )
+                segments[key] = {**row, "seen": set(), "fields": info_by_name}
                 continue
             if kind == "repository_summary":
                 _require(
@@ -279,11 +309,27 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                     and {"name", "stored", "indexOptions", "docValuesType", "valueKind"}
                     <= set(field)
                     and type(field["name"]) is str
+                    and field["name"] in segment["fields"]
                     and field["stored"] is True,
                     "native stored field differs",
                 )
                 kind = field["valueKind"]
                 _require(kind in ("string", "number", "binary"), "unknown native stored value type")
+                value_keys = {
+                    "string": {"value"},
+                    "number": {"valueDecimal", "numberClass"},
+                    "binary": {"valueBase64"},
+                }
+                _require(
+                    set(field)
+                    == {"name", "stored", "indexOptions", "docValuesType", "valueKind"}
+                    | value_keys[kind]
+                    and type(field["indexOptions"]) is str
+                    and field["indexOptions"] in INDEX_OPTIONS
+                    and type(field["docValuesType"]) is str
+                    and field["docValuesType"] in DOC_VALUES,
+                    "native stored field schema differs",
+                )
                 if kind == "string":
                     _require(type(field.get("value")) is str, "native string is malformed")
                 elif kind == "number":
@@ -323,12 +369,20 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                     }
                     and type(field["field"]) is str
                     and field["field"] not in indexed
+                    and field["field"] in segment["fields"]
                     and _integer(field["distinctTerms"])
+                    and field["distinctTerms"] > 0
                     and _integer(field["occurrences"])
+                    and field["occurrences"] >= field["distinctTerms"]
                     and type(field["frequenciesAvailable"]) is bool
                     and type(field["termFrequencySha256"]) is str
                     and re.fullmatch(r"[0-9a-f]{64}", field["termFrequencySha256"]) is not None,
                     "native posting summary differs",
+                )
+                options = segment["fields"][field["field"]]["indexOptions"]
+                _require(
+                    options != "NONE" and field["frequenciesAvailable"] is (options != "DOCS"),
+                    "native posting frequency metadata differs",
                 )
                 indexed[field["field"]] = field
             _require(
@@ -373,8 +427,7 @@ def verify_documents(path: Path, expected: dict[str, set[str]]) -> dict:
                 _require(
                     directory == "/"
                     or all(
-                        piece and piece not in {".", ".."}
-                        for piece in directory.split("/")[1:]
+                        piece and piece not in {".", ".."} for piece in directory.split("/")[1:]
                     ),
                     "native directory path is noncanonical",
                 )

@@ -2131,6 +2131,12 @@ class SearchHandler(BaseHTTPRequestHandler):
                 paths.append("/fixture/extra.go")
             body = json.dumps(paths).encode()
             content_type = "application/json"
+        elif parsed.path == "/api/v1/configuration/dataRoot":
+            body = b"/opengrok/data"
+            content_type = "application/json"
+        elif parsed.path == "/api/v1/projects/indexed":
+            body = b'["fixture"]'
+            content_type = "application/json"
         else:
             self.send_error(404)
             return
@@ -2139,6 +2145,10 @@ class SearchHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_PUT(self):
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        self.send_error(403)
 
     def log_message(self, *args):
         pass
@@ -2743,11 +2753,12 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
 
 
 @pytest.mark.parametrize(
-    ("product", "native"),
-    [(product, False) for product in live.PRODUCTS] + [("opengrok", True)],
+    ("product", "native", "readonly"),
+    [(product, False, False) for product in live.PRODUCTS]
+    + [("opengrok", True, False), ("opengrok", True, True)],
 )
 def test_v2_single_product_capture_replays_only_selected_native_evidence(
-    tmp_path, lexical_release_seed, product, native, monkeypatch
+    tmp_path, lexical_release_seed, product, native, readonly, monkeypatch
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
     suite = json.loads(paths["suite"].read_bytes())
@@ -2819,6 +2830,55 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
                 "mount_destination": "/index",
                 "container_port": "8080/tcp",
             }
+            if readonly:
+                import zipfile
+
+                config = configs["opengrok"]
+                config["backend_snapshot"]["mount_destination"] = "/opengrok/data/index"
+                webapps, etc = tmp_path / "webapps", tmp_path / "etc"
+                descriptor = webapps / "ROOT" / "WEB-INF" / "web.xml"
+                descriptor.parent.mkdir(parents=True)
+                etc.mkdir()
+                (etc / "configuration.xml").write_text("<configuration />")
+                original_xml = '<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee"><context-param><param-name>CONFIGURATION</param-name><param-value>/var/opengrok/etc/configuration.xml</param-value></context-param></web-app>'
+                denial = "<security-constraint><web-resource-collection><web-resource-name>deny writes</web-resource-name><url-pattern>/api/*</url-pattern><http-method-omission>GET</http-method-omission></web-resource-collection><auth-constraint/></security-constraint>"
+                descriptor.write_text(
+                    original_xml.replace("/var/opengrok", "/opengrok").replace(
+                        "</web-app>", denial + "</web-app>"
+                    )
+                )
+                war = tmp_path / "source.war"
+                with zipfile.ZipFile(war, "w") as archive:
+                    archive.writestr("WEB-INF/web.xml", original_xml)
+                token = tmp_path / "token"
+                token.write_text("fixture-token")
+                config["token_file"] = str(token)
+                receipt = tmp_path / "snapshot.json"
+                config["readonly_service"] = {
+                    "webapps_root": str(webapps),
+                    "etc_root": str(etc),
+                    "source_root": str(SearchHandler.view),
+                    "source_war": str(war),
+                    "network": "fixture_ro",
+                    "snapshot_receipt": str(receipt),
+                }
+                files = live._opengrok_readonly_files(config)
+                receipt.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "sealed_at_utc": "2026-10-04T23:58:00Z",
+                            "index_root": str(index),
+                            "index_tree_sha256": live._backend_tree(index)[1],
+                            "webapps_root": str(webapps),
+                            "webapps_sha256": files["webapps_sha256"],
+                            "etc_root": str(etc),
+                            "configuration_sha256": files["configuration_sha256"],
+                            "source_root": str(SearchHandler.view),
+                            "source_war_sha256": live._sha_file(war),
+                        }
+                    )
+                )
             expected = live.opengrok_index_scope.expected_projects(
                 Path(corpus["release_path"]),
                 live.corpus_release.validate(Path(corpus["release_path"])),
@@ -2828,13 +2888,27 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
 
             def process(argv, timeout):
                 assert argv[0] == "docker"
+                if argv[1] == "exec":
+                    return (
+                        0,
+                        (live._sha_file(war) + "  /opengrok/lib/source.war\n").encode(),
+                        b"",
+                        1.0,
+                    )
                 inspect = {
                     "Id": "d" * 64,
                     "Image": "sha256:" + "b" * 64,
                     "State": {"Running": True, "Pid": 123, "StartedAt": "2026-10-05T00:00:00Z"},
                     "RestartCount": 0,
                     "Mounts": [
-                        {"Type": "bind", "Source": str(index), "Destination": "/index", "RW": False}
+                        {
+                            "Type": "bind",
+                            "Source": str(index),
+                            "Destination": configs["opengrok"]["backend_snapshot"][
+                                "mount_destination"
+                            ],
+                            "RW": False,
+                        }
                     ],
                     "NetworkSettings": {
                         "Ports": {
@@ -2844,6 +2918,38 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
                         }
                     },
                 }
+                if readonly:
+                    inspect.update(
+                        {
+                            "Created": "2026-10-04T23:59:00Z",
+                            "HostConfig": {
+                                "NetworkMode": "fixture_ro",
+                                "Privileged": False,
+                                "CapAdd": None,
+                            },
+                            "Config": {
+                                "Entrypoint": ["/usr/local/tomcat/bin/catalina.sh"],
+                                "Cmd": ["run"],
+                                "User": "1111:1111",
+                            },
+                            "Path": "/usr/local/tomcat/bin/catalina.sh",
+                            "Args": ["run"],
+                        }
+                    )
+                    inspect["NetworkSettings"]["Networks"] = {"fixture_ro": {}}
+                    inspect["Mounts"].extend(
+                        {
+                            "Type": "bind",
+                            "Source": str(path),
+                            "Destination": destination,
+                            "RW": False,
+                        }
+                        for destination, path in (
+                            ("/usr/local/tomcat/webapps", webapps),
+                            ("/opengrok/etc", etc),
+                            ("/opengrok/src", SearchHandler.view),
+                        )
+                    )
                 return 0, json.dumps(inspect).encode(), b"", 1.0
 
             monkeypatch.setattr(live, "_process", process)
@@ -2871,6 +2977,20 @@ def test_v2_single_product_capture_replays_only_selected_native_evidence(
         ):
             summary_path.write_text(json.dumps({**summary, "opengrok_index_scope": changed}))
             with pytest.raises(ValueError, match="native scope"):
+                live.verify(root)
+        summary_path.write_text(json.dumps(summary))
+    if readonly:
+        assert summary["indexed_universe_attested"] is False
+        assert summary["opengrok_service_loaded_reader_attested"] is False
+        assert "backend_indexed_universe_attestation" in summary["exclusions"]
+        summary_path = root / "capture.json"
+        for key in (
+            "indexed_universe_attested",
+            "opengrok_indexed_universe_attested",
+            "opengrok_service_loaded_reader_attested",
+        ):
+            summary_path.write_text(json.dumps({**summary, key: True}))
+            with pytest.raises(ValueError, match="unsupported capture metadata"):
                 live.verify(root)
         summary_path.write_text(json.dumps(summary))
     retained_spec = root / "spec.json"

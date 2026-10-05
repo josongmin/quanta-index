@@ -295,19 +295,19 @@ def _spec(path: Path) -> dict:
                 raise ValueError("OpenGrok readonly service requires native reader and API token")
             service = config["readonly_service"]
             if type(service) is not dict or set(service) != {
-                "webapps_root", "etc_root", "source_root", "source_war",
-                "network", "snapshot_receipt",
+                "webapps_root",
+                "etc_root",
+                "source_root",
+                "source_war",
+                "network",
+                "snapshot_receipt",
             }:
                 raise ValueError("OpenGrok readonly service spec keys differ")
             for name in ("webapps_root", "etc_root", "source_root"):
                 if type(service[name]) is not str:
                     raise ValueError("OpenGrok readonly service host mount differs")
                 path = Path(service[name])
-                if (
-                    not path.is_absolute()
-                    or path.resolve(strict=True) != path
-                    or not path.is_dir()
-                ):
+                if not path.is_absolute() or path.resolve(strict=True) != path or not path.is_dir():
                     raise ValueError("OpenGrok readonly service host mount differs")
             if type(service["source_war"]) is not str:
                 raise ValueError("OpenGrok readonly service source WAR path differs")
@@ -317,12 +317,15 @@ def _spec(path: Path) -> dict:
             if type(service["snapshot_receipt"]) is not str:
                 raise ValueError("OpenGrok readonly snapshot receipt path differs")
             receipt = Path(service["snapshot_receipt"])
-            if not receipt.is_absolute() or receipt.resolve(strict=True) != receipt or not receipt.is_file():
+            if (
+                not receipt.is_absolute()
+                or receipt.resolve(strict=True) != receipt
+                or not receipt.is_file()
+            ):
                 raise ValueError("OpenGrok readonly snapshot receipt differs")
             if (
                 type(service["network"]) is not str
-                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", service["network"])
-                is None
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", service["network"]) is None
             ):
                 raise ValueError("OpenGrok readonly service network differs")
     if "cs" in products and (not isinstance(value["cs"], dict) or set(value["cs"]) != {"binary"}):
@@ -1664,7 +1667,8 @@ def _opengrok_readonly_files(config: dict) -> dict:
     if denies != [True]:
         raise ValueError("OpenGrok non-GET API methods are not denied by web.xml")
     denial = next(
-        item for item in root.findall(namespace + "security-constraint")
+        item
+        for item in root.findall(namespace + "security-constraint")
         if any(
             collection.findtext(namespace + "url-pattern") == "/api/*"
             and [node.text for node in collection.findall(namespace + "http-method-omission")]
@@ -1819,7 +1823,8 @@ def _backend_runtime(config: dict) -> dict:
             raise ValueError("OpenGrok readonly service must start only Tomcat")
         for destination, source in required_mounts.items():
             selected = [
-                mount for mount in mounts
+                mount
+                for mount in mounts
                 if isinstance(mount, dict) and mount.get("Destination") == destination
             ]
             if (
@@ -1830,7 +1835,9 @@ def _backend_runtime(config: dict) -> dict:
             ):
                 raise ValueError("OpenGrok readonly service mount differs")
         temporary = {
-            "/tmp", "/usr/local/tomcat/temp", "/usr/local/tomcat/work",
+            "/tmp",
+            "/usr/local/tomcat/temp",
+            "/usr/local/tomcat/work",
             "/usr/local/tomcat/logs",
         }
         for mount in mounts:
@@ -1874,8 +1881,7 @@ def _backend_runtime(config: dict) -> dict:
     ):
         raise ValueError("backend container port does not bind the service URL")
     if "readonly_service" in config and (
-        len(bindings) != 1
-        or bindings[0].get("HostIp") not in {"127.0.0.1", "::1"}
+        len(bindings) != 1 or bindings[0].get("HostIp") not in {"127.0.0.1", "::1"}
     ):
         raise ValueError("OpenGrok readonly service port must bind only loopback")
     return {
@@ -1890,7 +1896,8 @@ def _backend_runtime(config: dict) -> dict:
         "service_port": service_port,
         **(
             {"readonly_files": readonly_files, "created_at": native["Created"]}
-            if readonly_files is not None else {}
+            if readonly_files is not None
+            else {}
         ),
     }
 
@@ -1980,9 +1987,16 @@ def _validate_opengrok_snapshot_seal(config: dict, snapshot: dict) -> None:
     if (
         set(receipt)
         != {
-            "schema_version", "sealed_at_utc", "index_root", "index_tree_sha256",
-            "webapps_root", "webapps_sha256", "etc_root", "configuration_sha256",
-            "source_root", "source_war_sha256",
+            "schema_version",
+            "sealed_at_utc",
+            "index_root",
+            "index_tree_sha256",
+            "webapps_root",
+            "webapps_sha256",
+            "etc_root",
+            "configuration_sha256",
+            "source_root",
+            "source_war_sha256",
         }
         or type(receipt["schema_version"]) is not int
         or receipt["schema_version"] != 1
@@ -2023,7 +2037,8 @@ def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
             "mount_destination",
             "container_port",
             "service_port",
-        } | ({"readonly_files", "created_at"} if "readonly_service" in config else set())
+        }
+        | ({"readonly_files", "created_at"} if "readonly_service" in config else set())
         or runtime["container_id"] != backend["container_id"]
         or runtime["image_sha256"] != config["server_image_digest"]
         or runtime["mount_source"] != backend["root"]
@@ -2056,7 +2071,8 @@ def _validate_backend_snapshot(config: dict, snapshot: dict) -> None:
                 type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None
                 for value in files.values()
             )
-            or files != {
+            or files
+            != {
                 **_opengrok_readonly_files(config),
                 "source_war_sha256": _sha_file(Path(config["readonly_service"]["source_war"])),
             }
@@ -2122,7 +2138,11 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
             tuple(
                 Path(spec["opengrok"]["readonly_service"][name])
                 for name in (
-                    "webapps_root", "etc_root", "source_root", "source_war", "snapshot_receipt"
+                    "webapps_root",
+                    "etc_root",
+                    "source_root",
+                    "source_war",
+                    "snapshot_receipt",
                 )
             )
             if "opengrok" in products and "readonly_service" in spec["opengrok"]
@@ -2133,9 +2153,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         raise ValueError("live capture inputs and output must stay outside the source checkout")
     if "opengrok" in products and "readonly_service" in spec["opengrok"]:
         service = spec["opengrok"]["readonly_service"]
-        for name in (
-            "webapps_root", "etc_root", "source_root", "source_war", "snapshot_receipt"
-        ):
+        for name in ("webapps_root", "etc_root", "source_root", "source_war", "snapshot_receipt"):
             path = Path(service[name]).resolve(strict=True)
             if root.resolve().is_relative_to(path) or path.is_relative_to(root.resolve()):
                 raise ValueError("OpenGrok readonly service inputs must be disjoint from output")
@@ -2258,9 +2276,7 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
             native_projects,
             stage / "opengrok-native-before",
         )
-    readonly_service = (
-        "opengrok" in products and "readonly_service" in spec["opengrok"]
-    )
+    readonly_service = "opengrok" in products and "readonly_service" in spec["opengrok"]
     service_config_before = None
     if readonly_service:
         service_config_before = _opengrok_service_config_probe(
@@ -2397,21 +2413,21 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
         "release_digest": document["digest"],
         "binding": binding,
         "tasks": len(tasks),
-        "indexed_universe_attested": bool(readonly_service and products == ("opengrok",)),
+        "indexed_universe_attested": False,
         "sourcegraph_index_scope": index_scope,
         **({"opengrok_index_scope": native_scope} if native_scope is not None else {}),
-        # The API inventory and served bytes do not attest Lucene postings.
-        # Backend artifact/process binding is required for that stronger claim.
-        "opengrok_indexed_universe_attested": bool(readonly_service),
+        # Disk, configuration and API probes do not observe the loaded reader.
+        "opengrok_indexed_universe_attested": False,
         **(
             {
                 "opengrok_service_configuration": service_config_before,
-                "opengrok_service_loaded_reader_attested": True,
+                "opengrok_service_loaded_reader_attested": False,
                 "opengrok_snapshot_receipt_sha256": _sha_file(
                     Path(spec["opengrok"]["readonly_service"]["snapshot_receipt"])
                 ),
             }
-            if readonly_service else {}
+            if readonly_service
+            else {}
         ),
         "opengrok_indexed_view_probe": (
             "exact_indexed_inventory_and_served_bytes_bracketing_queries"
@@ -2445,16 +2461,17 @@ def capture(spec_path: Path, *, bound_release: BoundRelease | None = None) -> di
                 ),
                 *(
                     ("opengrok-service-before", "opengrok-service-after")
-                    if readonly_service else ()
+                    if readonly_service
+                    else ()
                 ),
             )
             for path in sorted((stage / name).iterdir())
         },
-        "exclusions": (
-            ["independent_gold", "qualified_speed"]
-            if readonly_service and products == ("opengrok",)
-            else ["backend_indexed_universe_attestation", "independent_gold", "qualified_speed"]
-        ),
+        "exclusions": [
+            "backend_indexed_universe_attestation",
+            "independent_gold",
+            "qualified_speed",
+        ],
     }
     _write(stage / "capture.json", json.dumps(summary, sort_keys=True, indent=2).encode() + b"\n")
     if root.exists():
@@ -2513,10 +2530,13 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
     if native_reader is not None:
         fields.add("opengrok_index_scope")
     if readonly_service:
-        fields.update({
-            "opengrok_service_configuration", "opengrok_service_loaded_reader_attested",
-            "opengrok_snapshot_receipt_sha256",
-        })
+        fields.update(
+            {
+                "opengrok_service_configuration",
+                "opengrok_service_loaded_reader_attested",
+                "opengrok_snapshot_receipt_sha256",
+            }
+        )
     if (
         set(summary) != fields
         or type(summary.get("schema_version")) is not int
@@ -2524,10 +2544,11 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         or (spec["schema_version"] == 2 and summary.get("products") != list(products))
         or summary.get("status") != "diagnostic_unqualified"
         or summary.get("completed_response_boundary") != COMPLETED_BOUNDARY
-        or summary.get("indexed_universe_attested")
-        is not bool(readonly_service and products == ("opengrok",))
-        or summary.get("opengrok_indexed_universe_attested") is not bool(readonly_service)
-        or (readonly_service and summary.get("opengrok_service_loaded_reader_attested") is not True)
+        or summary.get("indexed_universe_attested") is not False
+        or summary.get("opengrok_indexed_universe_attested") is not False
+        or (
+            readonly_service and summary.get("opengrok_service_loaded_reader_attested") is not False
+        )
         or (
             readonly_service
             and summary.get("opengrok_snapshot_receipt_sha256")
@@ -2556,11 +2577,7 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
         or not isinstance(summary.get("rows_sha256"), dict)
         or set(summary["rows_sha256"]) != set(products)
         or summary.get("exclusions")
-        != (
-            ["independent_gold", "qualified_speed"]
-            if readonly_service and products == ("opengrok",)
-            else ["backend_indexed_universe_attestation", "independent_gold", "qualified_speed"]
-        )
+        != ["backend_indexed_universe_attestation", "independent_gold", "qualified_speed"]
     ):
         raise ValueError("unsupported capture metadata, claim or runtime identity")
     if "cs" in products:
@@ -2638,14 +2655,18 @@ def verify(root: Path, *, bound_release: BoundRelease | None = None) -> dict:
             f"{directory}/{name}"
             for directory in ("opengrok-service-before", "opengrok-service-after")
             for name in (
-                "data-root.json", "data-root.transport.json",
-                "indexed-projects.json", "indexed-projects.transport.json",
+                "data-root.json",
+                "data-root.transport.json",
+                "indexed-projects.json",
+                "indexed-projects.transport.json",
             )
         )
-        expected_raw.update({
-            "opengrok-service-before/write-denial.body",
-            "opengrok-service-before/write-denial.transport.json",
-        })
+        expected_raw.update(
+            {
+                "opengrok-service-before/write-denial.body",
+                "opengrok-service-before/write-denial.transport.json",
+            }
+        )
     if native_reader is not None:
         expected_raw.update(
             f"{directory}/{name}"
