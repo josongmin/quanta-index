@@ -28,6 +28,13 @@ typo_text_is_ascii는16384B 단위 cancellation prepass 후 byte scanner 또는 
 - `VERIFIED`: `PYTHONPATH=. uv run --frozen --extra dev pytest -q tools/ci/tests/test_query_scanner_ab.py tools/ci/tests/test_retrieval_benchmark.py -k 'scanner or query_clock'` —21passed/571deselected. 독립 semantic/custody mutants 및 기존 on/off 회귀 범위다. 실제 scanner binaries의 whole-call 성능 실행·최종 유지/수정/철회는 `NOT_RUN`이다.
 - 사라진 과거 capture/binary 경로를 source tuple로 재구성하지 않는다. 준비된 같은 source scanner pair와 사전 acceptance가 없으므로 현재 functional PASS를 scanner 성능 결정으로 승격하지 않는다.
 
+### 후속 comparator 누락 수리
+
+- 정적 감사에서 `stage_timings` 전체를 제외해 `calls`와 `returned_candidates`까지 비교하지 않는 누락을 확인했다. stage 순서와 작업량은 비교하고 `elapsed_ns`만 제외하도록 수리했다. `comparison_contract`와 runner 설정도 직접 대조하며 transport `request_id`와 실행별 `run_id`만 제외한다. 각 누락을 독립적으로 바꾸는 음성 fixture 3개를 추가했다.
+- `VERIFIED`: frozen `b55f4c6d` E4 작업트리에 current main scanner 소스와 수리 hunk를 결속해 `/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index/.venv/bin/python -m pytest tools/ci/tests/test_query_scanner_ab.py tools/ci/tests/test_causal_cost_profile.py -q --tb=short` — exit0,24passed,12.91s. scanner parity 및 별도 causal parser의 synthetic 회귀 범위다.
+- `VERIFIED`: 같은 Python으로 `-m pytest tools/ci/tests/test_retrieval_benchmark.py::test_query_clock_overhead_replay_requires_identical_answers_and_coverage tools/ci/tests/test_retrieval_benchmark.py::test_query_clock_overhead_v7_preserves_current_diagnostic_and_hybrid_policy -q --tb=short` — exit0,2passed,1.43s. 기존 동일 바이너리 observation on/off 경로를 검증했다.
+- 검증한 scanner2파일을 현재 main의 원본 SHA와 대조한 뒤 통합했다. 일회성 실행의 존재하지 않는 테스트 파일 선택은 exit4/0tests였으며 성공으로 계산하지 않았다. 실제 binaries의 whole-call A/B·최종 scanner 결정은 계속 `NOT_RUN`이다.
+
 ## 착수 입력
 
 - candidate/baseline scanner만 다른 exact source/binary tuple

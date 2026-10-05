@@ -148,7 +148,10 @@ def test_scanner_ab_preserves_parity_and_declared_binary_difference(tmp_path):
         "binary",
         "source",
         "work_counter",
+        "stage_work_counter",
         "ingest_counter",
+        "comparison_contract",
+        "runner_protocol",
         "output_digest",
         "type_alias",
     ],
@@ -178,8 +181,27 @@ def test_scanner_ab_refuses_independent_semantic_or_custody_delta(tmp_path, muta
         diagnostic["results"][0]["response"]["explanation"]["planner_trace"].append(
             {"stage": "merge", "detail": "code_search.execution.posting_probes=999"}
         )
+    elif mutation == "stage_work_counter":
+        row = next(
+            row
+            for row in diagnostic["results"]
+            if any(
+                stage["stage"] == "lexical.search"
+                for stage in row["response"]["explanation"]["stage_timings"]
+            )
+        )
+        stage = next(
+            stage
+            for stage in row["response"]["explanation"]["stage_timings"]
+            if stage["stage"] == "lexical.search"
+        )
+        stage["returned_candidates"] += 1
     elif mutation == "ingest_counter":
         diagnostic["ingest"]["receipt"]["accepted_replace_scopes"] += 1
+    elif mutation == "comparison_contract":
+        record["comparison_contract"]["span_unit"] = "changed-span-unit"
+    elif mutation == "runner_protocol":
+        record["runner"]["tokenizer_budget_version"] = "different-budget"
     elif mutation == "output_digest":
         phase["query_timing"]["observations"][0]["output_sha256"] = "f" * 64
     elif mutation == "type_alias":

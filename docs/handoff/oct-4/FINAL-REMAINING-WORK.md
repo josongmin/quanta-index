@@ -24,7 +24,7 @@ SQLAlchemy·Zellij는 C3 검색 평가의 소스 저장소이며 각각 자연�
 | 권한 검증 보완 — Linux 실제 두 UID 테스트 | 1/1 test | 100% | shipping daemon/Linux release·운영 범위는 별도 |
 | 실제 deploy/activate/restore/rollback | 이번 요청의 운영 실행 미착수 | 0% | authorized host/config/state/retention/rollback 입력 |
 
-신규 보충과 SQLAlchemy/Zellij 조정의 실제 잔여는 최소1,364개 query-file pairs다. 역할별 호출 수는 이 pair 수와 다르며 Tailscale 정책, 독립 holdout, 다른 lane과 성능/운영 검증은 이 분모 밖이다.
+신규 보충 검수와 SQLAlchemy/Zellij 검색 정답 검수의 최종 판정 잔여는 최소1,364개 query-file pairs다. 역할별 호출 수는 이 pair 수와 다르며 Tailscale 정책, 독립 holdout, 다른 lane과 성능/운영 검증은 이 분모 밖이다.
 
 ## 1. 현재 실행 순서 — 코드 먼저
 
@@ -55,7 +55,7 @@ E1 name-span producer/evaluator 및 E3 selection-retirement·maintenance cancell
 
 ### E1 — 라벨·admission·독립 평가
 
-- [E1-01](../../plans/oct-4-parallel-closure/tickets/O4-E1-01-original-review-resume.md): SQLAlchemy/Zellij의 실제 조정 잔여를 완료한다. 한도 실패·유효 partial raw를 보존하며 final receipt를 합성하지 않는다. Tailscale의 필터 패키지 밖 UDP 상태 테스트에 대한 grade1/3 경계를 확정해야 한다.
+- [E1-01](../../plans/oct-4-parallel-closure/tickets/O4-E1-01-original-review-resume.md): SQLAlchemy/Zellij 검색 정답 검수의 최종 판정을 완료한다. 한도 실패·유효 partial raw를 보존하며 final receipt를 합성하지 않는다. Tailscale의 필터 패키지 밖 UDP 상태 테스트에 대한 grade1/3 경계를 확정해야 한다.
 - [E1-02](../../plans/oct-4-parallel-closure/tickets/O4-E1-02-supplemental-labels.md)·[E1-06](../../plans/oct-4-parallel-closure/tickets/O4-E1-06-final-pool-and-scoreboards.md): 새 actual 응답의 미판단 합집합만 실제 두 reviewer+adjudicator로 검수하고 재채점한다. bat 원본358+supplemental51의409판단은 재수행하지 않는다. AI 판단을 human review로 표시하지 않는다.
 - [E1-03](../../plans/oct-4-parallel-closure/tickets/O4-E1-03-admission-and-split.md): 나머지 current admissions와 후속 merged revisions를 canonical suite/pack/license/split/proof에 연결한다. 원본 source107 admissions는 과거 scope다.
 - [E1-04](../../plans/oct-4-parallel-closure/tickets/O4-E1-04-precise-name-span.md): product0e6/driverb55의 Gin 전체 exact1,196 symbol/name 실제 캡처·독립 채점은 완료했다(MRR@10=1, 평균 Recall@10=0.9985493335876968;4 capped). 남은 지원 가능한 다른 name/typo cells와 최신 source 영향을 판정하며 file-only/미지원 unit은 회수 성공으로 계산하지 않는다.

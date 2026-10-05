@@ -354,14 +354,28 @@ def _scanner_response_rows(record: dict, diagnostic: dict, *, allow_clocks: bool
             trace = explanation.get("planner_trace")
             if isinstance(trace, list):
                 trace = _without_code_search_work_clocks(trace, allow_clocks=allow_clocks)
+            stage_timings = explanation.get("stage_timings")
+            if isinstance(stage_timings, list):
+                stage_timings = [
+                    {key: value for key, value in timing.items() if key != "elapsed_ns"}
+                    for timing in stage_timings
+                ]
             response = {
                 **response,
                 "explanation": {
-                    key: trace if key == "planner_trace" else value
+                    key: (
+                        trace
+                        if key == "planner_trace"
+                        else stage_timings
+                        if key == "stage_timings"
+                        else value
+                    )
                     for key, value in explanation.items()
                     # The canonical diagnostic validator checks these transport-local
                     # IDs and clocks within each capture before this projection.
-                    if key not in ("request_id", "stage_timings")
+                    # Stage order, calls and returned candidate counts are work,
+                    # not timing, and must remain equal across scanner arms.
+                    if key != "request_id"
                 },
             }
         projected.append({**row, "response": response})
@@ -454,6 +468,16 @@ def compare_scanner(
         raise ValueError("scanner A/B requires distinct declared source and searchd binary")
     if not _same_json(baseline_captures, candidate_captures):
         raise ValueError("scanner A/B captured corpus/model/profile configuration differs")
+    if not _same_json(baseline.get("comparison_contract"), candidate.get("comparison_contract")):
+        raise ValueError("scanner A/B output comparison contract differs")
+    for record in (baseline, candidate):
+        if not isinstance(record.get("runner"), dict) or not record["runner"].get("run_id"):
+            raise ValueError("scanner A/B runner protocol is missing")
+    if not _same_json(
+        {key: value for key, value in baseline["runner"].items() if key != "run_id"},
+        {key: value for key, value in candidate["runner"].items() if key != "run_id"},
+    ):
+        raise ValueError("scanner A/B runner protocol differs")
     if baseline.get("query_pack_sha256") != candidate.get("query_pack_sha256") or not baseline.get(
         "query_pack_sha256"
     ):

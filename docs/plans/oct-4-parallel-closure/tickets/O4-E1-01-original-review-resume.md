@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P0 / `EXECUTION` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | Django20/509·TypeORM20/572 실제3-role 및 SQLAlchemy/Zellij 두 reviewer 완료. Opus 대체 actual weekly limit로 `FAILED`; SQL334/480 유효 조정 보존, SQL/Zellij final 발행 `BLOCKED`. Tailscale unresolved rubric 입력 `BLOCKED` |
+| 실행 상태 | Django20/509·TypeORM20/572 실제3-role 및 SQLAlchemy/Zellij 두 reviewer 완료. 교체한 최종 AI 판정자의 actual weekly limit로 `FAILED`; SQL334/480 유효 최종 판정 보존, SQL/Zellij final 발행 `BLOCKED`. Tailscale unresolved rubric 입력 `BLOCKED` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -51,7 +51,7 @@ C3 240개 질의의 실제 판단을 완료하고 재사용 가능한 모델 cac
 - Tailscale의 이번 실패 이유는 과거429 failure.json과 달랐다. immutable save가 기존 failure overwrite를 거절하면서 driver가 종료했다. 새 raw/invalid.json과 이전 failure를 모두 유지하며 후속 실행의 terminal/finalization은 새 output root로 분리한다. rubric/source를 조사해 근거를 보완하거나 explicit exclusion을 판정하기 전 unresolved를 resolved로 바꾸지 않는다.
 - reviewer-only v1 preflight도 모델 호출 전에 exit1이었다(`/private/tmp/qi-c3-tailscale-reviewers-20261005-v1/failure.json`). old input/model-input/schema와 prepared objects는 동일했지만 checker가 원본 `plan.canonical`의 끝 LF를 포함하지 않는 `ev.canonical`로 bytes equality를 요구했다. raw와 실패를 보존하고 원본 writer serializer로 exact 비교하는 v2를 별도 준비한다. JSON-only equality로 계약을 완화하지 않는다.
 - `VERIFIED`: `uv run --frozen --extra dev python /private/tmp/qi-c3-tailscale-reviewers-prepare-v2/resume.py --source-root /Users/songmin/.codex/worktrees/oct4-qualified-source/quanta-index --output-root /private/tmp/qi-c3-tailscale-reviewers-20261005-v2 tailscale` preflight — exit0. 원본 `plan.canonical`의 exact input/model-input/schema 비교를 유지했고 두 reviewer 각각342 valid pairs를 재생했다. 남은 각각202pairs/10batches는 `NOT_RUN`;20개 complete tasks도 아직0이다. adjudicator는 호출하지 않았으며 label 발행 결과가 아니다.
-- 후속 실제 `--execute tailscale`은 exit1/`FAILED`였다. `reviewer-1/011.retry-2`가 다시 `unresolved pair cannot be issued`로 거절됐다. 새 terminal은 `/private/tmp/qi-c3-tailscale-reviewers-20261005-v2/tailscale/failure.json`에 보존했다. 동일 입력의 맹목적 재시도는 중단하고 frozen task/rubric/source의 근거 보완 또는 명시적 제외가 필요하다. batch의 resolved subset을 발행하지 않았으며 adjudicator도 호출하지 않았다. SQLAlchemy/Zellij의 완료 reviewer와 후속 조정은 이 실패와 별도 scope다.
+- 후속 실제 `--execute tailscale`은 exit1/`FAILED`였다. `reviewer-1/011.retry-2`가 다시 `unresolved pair cannot be issued`로 거절됐다. 새 terminal은 `/private/tmp/qi-c3-tailscale-reviewers-20261005-v2/tailscale/failure.json`에 보존했다. 동일 입력의 맹목적 재시도는 중단하고 frozen task/rubric/source의 근거 보완 또는 명시적 제외가 필요하다. batch의 resolved subset을 발행하지 않았으며 adjudicator도 호출하지 않았다. SQLAlchemy/Zellij의 완료 reviewer와 검색 정답 검수의 후속 최종 판정은 이 실패와 별도 scope다.
 - 정적 raw/source 재검토에서 retry-2는 exit0/API completed이며 같은23쌍 중 같은 `tailscale.nl.20`/`net/tstun/wrap_test.go`만 unresolved였다. candidate source1–1377행·SHA가 일치하고 UDP state 테스트331/475/519–529행도 포함돼 source 누락은 아니다. 원 rubric의 'UDP state tests' 3등급과 'other tests that construct filters' 1등급은 필터 패키지 밖의 직접 동작 테스트에서 겹친다. 해당 정책 결정을 사용자에게 요청했으며 답변 전 Tailscale 발행은 `BLOCKED`다. 이전 actual grade를 수정하거나 부분 receipt로 승격하지 않는다.
 
 ## 어떤 파일을 어떻게 수정할지
