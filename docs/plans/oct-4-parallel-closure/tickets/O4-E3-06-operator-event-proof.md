@@ -5,7 +5,7 @@
 | 에픽 / 담당 | [E3 — Active 선택·read-view lifetime·운영 계약](../epics/E3-selection-and-operational-safety.md) / E3 담당 |
 | 우선순위 / 종류 | P1 / `PROOF_ONLY` |
 | 기준 웨이브 | [W1 — 근거·정답·producer 병렬 준비](../waves/W1-evidence-and-producers.md) |
-| 실행 상태 | current process_readiness_owner_v1 실제26 passed(14 OS-child scenario·12 helper). Linux 실제2UID fixture 준비·pinned image 도구 확인 완료; 첫 nextest test0 실패 보존·canonical cargow test exact1 build 실행 중. Linux release/P11 proof `NOT_RUN` |
+| 실행 상태 | current process_readiness_owner_v1 실제26 passed(14 OS-child scenario·12 helper). Linux 실제2UID fixture 준비·pinned image 도구 확인 완료; nextest test0 및 v2 protobuf header 부재 compile 실패 보존; v3 canonical cargow test exact1 Linux build 실행 중. Linux release/P11 proof `NOT_RUN` |
 | 선행 결과 | 없음. 현재 source 확인과 fixture 준비부터 시작 가능 |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
@@ -42,7 +42,7 @@
 - cached image의 `bash -c` inventory는 root/aarch64, `/tmp`1777·exec 가능 및 실제 UID/GID65534·groups=[]를 확인했다. image default stable Rust1.98과 protoc 부재로 prerequisite 결과는 `BLOCKED`였다. Rust1.92 toolchain은 이미 설치돼 있었다. `/private/tmp/qi-linux-uid-inventory-actual-20261005-v1/stdout.json` SHA `bffc047cc075250740e4f50e7402786d002471440305ccb0ca9c0f3c32962825`를 보존했다.
 - owned disposable container에서 `RUSTUP_TOOLCHAIN=1.92.0`을 고정하고 `apt-get update`→`apt-get install -y --no-install-recommends protobuf-compiler`를 실행했다. pinned Rust/cargo·cc·setpriv·protoc·pkg-config inventory는 `PREPARED`다. host 설치나 image pull은 없으며 container network를 분리한 뒤 locked/offline Rust rail을 시작했다.
 - v1 actual nextest는 exit96으로 `/work/target/nextest/default` store를 읽기 전용 source mount에 생성하지 못해 실패했다. fixture test0이며 제품 compilation/test 성공을 주장하지 않는다. root `/private/tmp/qi-linux-uid-component-actual-20261005-v1` 및 summary의 `FAILED`, owned container cleanup `VERIFIED`를 보존했다.
-- v2는 새 owned container/root `/private/tmp/qi-linux-uid-component-actual-20261005-v2`에서 준비된 canonical fallback을 실행 중이다: `./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked -- --ignored --exact e2e_socket_access::linux_two_real_uids_enforce_operator_events_and_serve_listed_query --nocapture`. RO `/work`, SSD RW `/qi-cache`, neutral Cargo source cache, `CARGO_BUILD_JOBS=1`,4GiB container memory, sccache/GC/build-logging0이다. 실제1selected/1passed와 source/2owned SHA 전후·owned cleanup을 확인하기 전 결과는 미확정이다. 이 config는 성능 qualification이 아니다.
+- v2 actual canonical fallback은328.791s/exit101로 `lance-encoding v7.0.0` build script에서 `google/protobuf/empty.proto` 부재를 거절했다. fixture test0이며 raw와 owned cleanup `VERIFIED`를 보존했다. `protobuf-compiler`만으로 well-known headers가 제공되지 않았고 product fixture defect는 관측하지 않았다. v3는 새 owned container/root `/private/tmp/qi-linux-uid-component-actual-20261005-v3`에서 container-only `protobuf-compiler`와 `libprotobuf-dev` 설치,8개 header SHA 및 실제 Empty descriptor 컴파일 preflight를 통과한 뒤 실행 중이다. inventory v2 SHA `9a31c58f58531eefad7ea95b5689006d358e47f986a694d7559e6fd730ec78d9`, controller v3 SHA `58acf22889c3e5ff9eba4417df860cbfcf004a8ee114f148491325375c63009b`다. 명령: `./scripts/cargow --lane test-daemon-lane test -p quanta-index-searchd-runtime --test runtime_extended_suite --all-features --locked -- --ignored --exact e2e_socket_access::linux_two_real_uids_enforce_operator_events_and_serve_listed_query --nocapture`. RO `/work`, SSD RW `/qi-cache`, neutral Cargo source cache, `CARGO_BUILD_JOBS=1`,4GiB container memory, sccache/GC/build-logging0이다. 실제1selected/1passed와 source/2owned SHA 전후·owned cleanup을 확인하기 전 결과는 미확정이다. 이 config는 성능 qualification이 아니다.
 
 ## 배경과 현재 상태
 

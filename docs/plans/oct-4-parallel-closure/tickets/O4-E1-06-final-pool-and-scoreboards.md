@@ -5,10 +5,16 @@
 | 에픽 / 담당 | [E1 — 정답·검수·admission과 독립 평가](../epics/E1-labels-admission-and-gold.md) / E1 담당 |
 | 우선순위 / 종류 | P1 / `EXECUTION_AND_REPORT` |
 | 기준 웨이브 | [W5 — 최종 검수·재채점·정책 판정](../waves/W5-final-scoring-and-policy.md) |
-| 실행 상태 | source0e6 bat409 fresh pair40rows·독립 verdict·native3 actual60요청/raw replay `VERIFIED`;5제품 join consumer scope 수리/focused67 및 clean628541 canonical owner 수리 후 retained bat raw replay `VERIFIED`. 후속97eedd focused203 VERIFIED; 새 SG/native capture/join, 전체 cohort·unseen/human·속도 qualification 미완료 |
+| 실행 상태 | source0e6 bat409 fresh pair40rows·독립 verdict·native3 actual60요청/raw replay `VERIFIED`;5제품 join consumer scope 수리/focused67 및 clean628541 canonical owner 수리 후 retained bat raw replay `VERIFIED`. 후속97eedd focused203·SG12/13,347files·bat+required8 native/replay/full5 joins `VERIFIED`; current9 blind union151tasks/742unjudged pairs `PREPARED`. 실제 신규 검수·final labels·재채점과 전체 cohort·unseen/human·속도 qualification 미완료 |
 | 선행 결과 | [O4-E1-03](O4-E1-03-admission-and-split.md), [O4-E2-04](O4-E2-04-fresh-five-product-captures.md) |
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
+
+## 2026-10-05 current9 합집합의 최종 잔여
+
+- [E2-04](O4-E2-04-fresh-five-product-captures.md)의 frozen97 required8 캡처·독립 재생·full5제품 joins가 완료됐다. bat까지9repo이며 source0e6 product proof/binaries와 source97 consumer/native epoch를 구분한다.
+- [E1-02](O4-E1-02-supplemental-labels.md)의 current9 blind review input은9/9 `PREPARED`다. 관측 returned union2,543pairs 중 이미 판단한1,801pairs를 제외한 **151tasks/742pairs**가 실제 검수 대상이다. grade/unresolved는 미기입이며 quota 부재를0점으로 대체하지 않는다.
+- 현재 common eligible은 bat20, lo5, uvicorn1, zustand2, typeorm1이며 cli/mocha/django/nushell은0이다. 이 진단 분모로 전체 품질·독립 gold·holdout 또는 human qualification을 주장하지 않는다. 신규 검수와 canonical merge/admission 이후 같은 raw의 final scoreboard를 다시 계산한다.
 
 ## 2026-10-05 source0e6 bat complete file report
 
