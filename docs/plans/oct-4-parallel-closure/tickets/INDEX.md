@@ -246,6 +246,13 @@ P1 · W1/W4 · lifecycle/BM25/phase/resource 코드 구현 완료, 실제 causal
   seal streaming/posting scan, fsync/syscalls/physical I/O, token/IPC 비용을 독립 분리한다.
 - Opt-in causal 계측은 구현돼 있다. fresh-build actual profile과 canonical risk-daemon 결과를 확인한다.
   child>parent·mixed CPU·sample gap을 peak으로 추정하거나 logical disk를 physical I/O로 바꾸지 않는다.
+- `VERIFIED`: clean08d에서 `./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-harness --lib --all-features --locked -E 'test(/^scale::tests::/)' --test-threads 1 --no-tests fail --success-output final`
+  의32개 owner tests가 모두 통과했다. release tier actual/qualified speed는 포함하지 않는다.
+- QI-BB-006 byte gate는 [I0-02](#o4-i0-02)의 실패로 남아 있다. base08d에 reusable native-segment
+  diagnostic test만 적용한 source에서9.482s/exit100: base402docs/1segment → delta401+1docs/2segments,
+  base segment6files의 shared0/missing6 및 고정 untouched filler400개 전부의 segment 이동을 관측했다.
+  삭제 처리 compaction이 실제 surviving data를 재작성했다. 전체 metadata139,885bytes 발행은 별도 비용이다.
+  exact live BM25 통계·native scorer 및 byte/rebuild parity를 함께 검증하는 구조 수리가 미완료다.
 - 완료: 명시적 clock/resource domain과 source-bound 결과로 주요 residual의 실제 원인을 설명한다.
 
 ### O4-E4-02
