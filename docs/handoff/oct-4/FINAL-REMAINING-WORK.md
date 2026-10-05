@@ -11,7 +11,9 @@
 
 전체29티켓의 공수 가중치는 산정하지 않았다. 아래 비율은 전체 제품 완료율로 합산하지 않는다.
 
-SQLAlchemy·Zellij는 C3 검색 평가의 소스 저장소이며 각각 자연어 질의20개를 제공한다. 아래 최종 판정은 두 reviewer의 파일 관련성 판단을 adjudicator가 검수해 검색 정답을 확정하는 작업이다. 기존 모델의 한도 소진으로 새 모델에서 판정을 재개했으며, 해당 제품의 구현이나 교체 작업이 아니다. Linux release·배포 검증은 원본 [agent-1의 Release 잔여](agent-1.md#3-remaining-work-and-decision-order)에 포함됐다. 실제 두 UID 테스트는 기존 권한 검증의 누락을 보완한 component 증거이며 release·배포 완료를 뜻하지 않는다.
+- **SQLAlchemy·Zellij:** [agent-2](agent-2.md)의 C3 검색 평가용 소스 저장소다. 각각 자연어 질의20개를 사용해 검색 결과 파일의 관련성을 평가한다. Quanta Index에 해당 제품을 도입하거나 교체하는 작업이 아니다.
+- **검색 정답 검수의 최종 판정:** 두 reviewer의 판단을 adjudicator가 검수해 검색 정답을 확정한다. 기존 모델의 한도 소진으로 최종 AI 판정자를 교체했다. 이전의 `대체 조정` 표현은 이 작업을 뜻했다.
+- **Linux:** 원본 [agent-1의 Release 잔여](agent-1.md#3-remaining-work-and-decision-order)에 포함된 daemon 릴리스·운영 검증이다. 실제 두 UID 소켓 접근 테스트는 그 권한 검증의 누락을 추가로 보완한 component 증거다. 이 테스트의 통과는 Linux 릴리스·배포 완료를 뜻하지 않는다.
 
 | 범위 | 현재 | 비율 | 남은 작업 |
 | --- | --- | --- | --- |
