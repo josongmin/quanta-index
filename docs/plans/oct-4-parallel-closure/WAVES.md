@@ -32,10 +32,16 @@
 
 | 담당 | 독립 작업과 소유 범위 | 종료 조건 / 선행 |
 | --- | --- | --- |
-| F15 엔진 | `file_authority/` codec·producer/root·reader/verify 경계 검사 | 세 소유 범위의 guarded 수정은 통합됐다. I0가 strict Clippy와 영향 회귀를 실행한다. Full wire golden·cold census·delta/delete/noop oracle 보존 |
-| Scale | lexical public posting 한도와 harness `scale.rs` 사전 검사 | 오래된4M과 F15의20M 한도를 제품 선언 하나로 통일했다. Fixed17,715,020 허용/20,000,001 거부 회귀와 실제 Large/XL 측정 필요. History/timeout 변경은 측정 뒤 판정 |
-| Scanner | `query_timing_overhead.py`와 scanner A/B 테스트·사양 | 서로 다른 fresh runner를 각각 자기 SHA에 결속하는 비교기 수정은 통합됐다. 고정338-task Bat typo 입력으로 두 arm build/capture/parity·전체 호출 비용 실행. 최종 source 필요 |
-| E1/E2 | 원본 ready9 inputs, admission·SG/OG·full5 사양 | Final-source 외부 v5 준비 완료. 서비스 신원/readonly index 범위 확인을 병렬 준비할 수 있다. Actual ISSUE와 capture는 최종 Contract/SDK 이후. 기존 OG180을 새 source 증거로 재명명하지 않는다 |
+| I0 · F15 통합/검증 | `file_authority/` 경계 수정의 strict Clippy, codec golden·cold census·delta/delete/noop 영향 회귀, runtime restart | Guarded 수정은 통합됐다. 나머지 담당의 main 변경을 I0가 통합하고 최종 source에서 Contract/SDK를 발행한다. 기존598건은 수정 전 컴파일 source 결과 |
+| E4 · Scale 용량 | `scale.rs` 사전 검사·history/timeout profile, Large/XL 단계별 비용 | 공유20M 한도와 fixed17,715,020 허용/20,000,001 거부 회귀는 통합됐다. Full/delta/noop/delete의 실제 retained bytes·latency·메모리로 지원 profile과 typed refusal 경계를 판정. Source 준비·판정 기준은 F15/SDK 대기 없이 진행 |
+| Scanner · 두 빌드 비교 | `query_timing_overhead.py`, scanner source/build custody, 비교 테스트·사양 | 고정338-task Bat typo 입력과 scanner만 다른 두 source를 준비. 각 fresh runner를 자기 SHA에 결속하고 출력 parity·전체 호출 비용 비교. Actual arm build는 선택한 clean source 이후; 최종 SDK 발행 자체는 선행이 아님 |
+| E2 · Ready9 OG/평가 | 원본90 input bindings, OG9 spec·readonly service/index 검증·raw replay, final join 연결 | OG 단독은 Quanta Rust/SDK proof와 독립. Exact63ac clean checkout에서 PREPARE 중. 캡처의 Python10-role SHA·런타임·corpus/suite/pack·서비스 신원을 최종 source에서 재검증해 같은 raw를 명시적으로 join. Admission ISSUE·Quanta/SG pair·전체 join은 각 matching proof 이후 |
+
+동시 배정된 에이전트는 `e4_causal_cost`, `process_regression`, `e2_og_universe`다.
+인계 문서는 각각 `/private/tmp/qi-parallel-scale-20261006-v1/`,
+`/private/tmp/qi-parallel-scanner-20261006-v1/`, `/private/tmp/qi-parallel-ready9-20261006-v1/`에 준비한다.
+OG 독립 source는 `/Users/songmin/.codex/worktrees/oct6-og-63ac/quanta-index`의
+`63ac399f27eba896ed9d9ceaef727166ae10d684`이며 최종 Quanta proof source로 재표기하지 않는다.
 
 Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 않는 별도 검증 작업이다.
 현재 host에서는 I0가 순서대로 실행한다. AI quota·rubric·holdout 승인·provider/Linux 입력은 해당 scope만 대기한다.
@@ -78,7 +84,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 ## 현재 dependency
 
 - E1-01 valid judgments → E1-02 supplemental merge → E1-03 admissions.
-- I0-02 current-source proof → 해당 E1-03 ISSUE/E2-04/E4-05·06 실행.
+- I0-02 current-source proof → 해당 E1-03 ISSUE, proof를 소비하는 E2-04 pair/join 및 E4-06 qualification.
+- OG 단독 capture/replay는 Quanta Rust/SDK proof와 독립이다. Final source에서 Python10-role/runtime/input/service binding을 재검증한 raw만 E2-04 join에 연결한다.
+- Scanner 두 arm과 E4-05 capacity 진단은 각 clean source/binary/input 결속을 먼저 충족한다. Final Contract/SDK 발행을 모든 준비·진단의 전역 선행으로 두지 않는다.
 - E2-02 scope 및 E2-03 required inventory → ready E2-04 native capture/replay/join → E1-06 final pool.
 - E2-06 parity를 갖춘 scope만 quality warmup0; 나머지는1. Qualified speed는 warmup≥1.
 - E4-01 isolated cost → E4-02 barrier; E4-01/03 after-scanner cost → E4-04 token authority.

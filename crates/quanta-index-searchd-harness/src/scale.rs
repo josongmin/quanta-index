@@ -5338,7 +5338,7 @@ mod tests {
             value["provenance"]["config_digest"],
             changed["provenance"]["config_digest"]
         );
-        let mut forged_policy = larger_total.clone();
+        let mut forged_policy = larger_total;
         forged_policy.history_max_total_bytes = HARNESS_HISTORY_MAX_TOTAL_BYTES;
         assert!(artifact(&forged_policy, head.clone(), host.clone()).is_err());
         let mut missing_cpu = sample_measurement();
