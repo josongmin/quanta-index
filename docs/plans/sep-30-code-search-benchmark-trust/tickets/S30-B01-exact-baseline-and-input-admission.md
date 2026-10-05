@@ -11,7 +11,7 @@ Start with gin `d3ffc9985281dcf4d3bef604cce4e662b1a327a6`, its 99-file
 `code_only` manifest and the 1,196-task suite SHA-256
 `bb49c90ecd3706d153c16f01ff336a44b42a2e23d160126107554dcf0e281ef3`.
 Resolve the exact source universe and suite from the retained input manifest;
-historical paths are in [historical bodies](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
+historical paths are in [the history index](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
 This is an exposed, source-oracle exact-name regression set. Its all-positive,
 single-repository distribution must stay visible: 1,118/1,196 tasks have one
 gold file. Do not present this as representative of typo, no-answer, semantic

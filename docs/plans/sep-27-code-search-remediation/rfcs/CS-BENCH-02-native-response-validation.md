@@ -23,7 +23,7 @@ native validation for each qualified path. Complete the negative matrix below,
 audit Semble/Quanta under their existing native owners and execute real captures
 before qualification. Local decoder/process fixtures and raw retention do not
 attest a backend indexed universe; [BENCH-04](CS-BENCH-04-comparators-performance-and-incremental.md)
-owns readiness. [CS-INT-01](CS-INT-01-integration-and-qualification.md#serial-acceptance-boundary)
+owns readiness. [CS-INT-01](CS-INT-01-integration-and-qualification.md#required-controls)
 owns combined-source acceptance.
 
 Owner: [lexical file comparison](../../../../tools/benchmark/retrieval/lexical_file_comparison.py),

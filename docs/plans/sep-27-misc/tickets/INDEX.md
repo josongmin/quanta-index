@@ -26,44 +26,20 @@ consumer, resource and product acceptance is owned above. Reopen implementation
 only for a demonstrated regression. Old proof-navigation work is closed after
 historical proof cleanup; do not recreate per-run repository evidence files.
 
-Sep-28 integration update: [CS-INT-01](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#sep-28-integrated-code-audit)
-records the merged regex input gate, measured triple coverage walk and tamper
-tests, source-derived mechanical gold capsule, fail-closed declared matrix
-verifier, streaming external-row/file hashing and archive alias refusal. These
-are implemented local mitigations, not terminal closure of the open rows above.
-The exact regex allocation cap is [conditional P3 and deferred](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md)
-pending a numerical requirement or measured breach. Coverage scan reuse
-requires authenticated immutable base ownership across the port; independent
-labels, real native products, installed producer/daemon and
-supported hosted/Linux measurement still require execution on frozen inputs.
-
-Sep-29 current-source correction: the live searchd and pure-negative structural
-paths now precompile all repo/file filters before early empty results and reuse
-the common bounded regex executor; ENG-04's aggregate physical allocation
-boundary remains unimplemented and deferred. The declared code-search matrix
-binds Quanta's native query policy, and the five-product lexical scorer
-distinguishes answerable recall from judged no-answer empty-result rate. Raw
-archive extraction rejects noncanonical ZIP metadata before writing output.
-These changes close the
-identified local code paths, not the independent gold, actual native captures,
-installed producer/daemon, IO-5 resource or hosted qualification rows above.
-
-Sep-29 follow-up on `a9a43529` plus scoped local edits: the external JSONL
-capture verifier no longer treats a valid result file larger than 16 MiB as a
-control document; it replays bounded lines and validates complete bytes. A
-Sourcegraph native match span past its supplied line now refuses. Focused adapter
-tests passed. The regex executor's repeated AST parses and coverage decoder's
-per-row exact reserve were removed; their owner tests passed. The aggregate
-regex allocation boundary remains unimplemented but is now deferred; three
-authenticated coverage base scans remain active.
-A clean-owner local daemon/public-SDK crash matrix passed four cases on the
-shared overlay. This is not installed-release, actual external issuer/product,
-full-source or platform qualification; MISC-03/05 and BENCH-02 remain active.
+Completed regex/input, coverage, native-row and archive mitigations are owned by
+[SEP-27-003](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md),
+[SEP-27-004](../../../adr/SEP-27-004-benchmark-capture-and-resource-custody.md) and
+[OCT-05 ADRs](../../../adr/README.md#oct-05-implemented-contracts).
+The exact regex allocation cap remains [conditional/deferred P3](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md).
+Coverage reuse needs authenticated immutable base ownership; actual producers,
+native scope, resource and supported-host/platform acceptance remain open above.
+Earlier integration receipts are recoverable through
+[the plan archive](../../ARCHIVE-INDEX.md#oct-05-benchmark-and-quality-ledger-compaction).
 
 ## Execution order and shared boundary
 
-Use the source-first [CS-INT-01 execution plan](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-source-audit-and-decision-order)
-and its [disjoint parallel lanes](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#parallel-execution-lanes):
+Use the source-first [CS-INT-01 execution plan](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#integration-order)
+with the declared coverage, gold and capture owners:
 measured coverage cost → one serial
 combined-source integration with IO-5/actual-producer acceptance → admitted
 MISC-06/07 measurements. Independent benchmark inputs can be prepared in

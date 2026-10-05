@@ -62,6 +62,14 @@ Measurements and missing authority remain in the [residual ledger](../plans/oct-
    before registry promotion. Shell exit zero or caller-written success JSON is
    not operational authority. Keep the existing staged refusal.
 
+## Explicit typo declaration priority
+
+Explicit OSA1 orders edit distance before source-attested declaration preference,
+then occurrence evidence and stable file ties. A declaration boost cannot cross
+an edit-distance tier. Unknown symbol coverage retains content matches; default
+literal-first eligibility stays independent. Versioned scoring/cursor identity
+binds this policy. File recovery does not establish declaration-position recovery.
+
 ## Selected score and optional ranking diagnostics
 
 - File Explain resolves immutable file authority and shares the selected scorer

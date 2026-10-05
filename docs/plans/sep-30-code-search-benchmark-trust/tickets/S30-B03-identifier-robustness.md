@@ -9,8 +9,8 @@ and [CS-BENCH-03](../../sep-27-code-search-remediation/rfcs/CS-BENCH-03-tracks-m
 
 Use the 1,196 exact local names as a **known-source development population**.
 Preregister a deterministic 300-family random sample with its seed and the
-complete multi-file stress stratum declared by that frozen suite; report overlap and the observed
-population proportions. Keep test/generated, short/long and camel/snake
+complete multi-file stress stratum declared by that frozen suite. Report overlap
+and observed population proportions. Keep test/generated, short/long and camel/snake
 sub-strata visible. This engineering sample size is not a statistical power
 guarantee. Do not replace a low-scoring or ineligible family after seeing
 product results. Any unavailable stratum is reported as a shortfall.

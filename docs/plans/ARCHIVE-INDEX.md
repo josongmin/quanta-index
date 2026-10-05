@@ -16,6 +16,9 @@ and optional ranking/Explain decisions are consolidated in OCT-05-001/002/004.
 The OCT-04 ledger owns current execution state; unmet review/holdout/native scope,
 host/capacity/resource/platform/release and operational contracts remain open.
 
+MISC retains all current acceptance and quantitative contracts while removing
+duplicate Sep-28/29 receipts; BENCH-01–04 links target the current integration
+controls. These five additional preimages also match the revision above.
 The source-map/SSOT/root navigation and SEP-21 residual wording were corrected;
 `docs/README.md` is the documentation entrypoint. P11 missing typed operational
 producers/recipes remain code work, with required action/observer/target inputs.
