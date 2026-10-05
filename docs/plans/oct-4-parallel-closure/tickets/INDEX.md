@@ -4,25 +4,36 @@
 이 문서가 원본 5개 handoff와 29개 티켓의 **미완료 조건 및 범위 판정의 단일 기준**이다.
 [담당·인계](../README.md) · [실행 웨이브](../WAVES.md) · [원본 복구](../../ARCHIVE-INDEX.md#oct-05-handoff-and-ticket-compaction).
 
-29개 scope의 상위 판정: 구현 존재/수리23개, 조건부4개, 현 계약 비적용1개, 미완료 I0-03 1개.
-I0-03에는 producer semantic 누락 검증과 P11 운영 생산자의 두 코드 패키지가 남는다.
-이 scope 수는 전체 qualification 완료율이나 남은 코드 건수가 아니다.
+현재 요청의 실행 목록은 아래 **Quanta 자체 작업**이다. 원본29개 scope의 owner 판정과
+외부 producer 연동 기록은 상세 항목에 보존하며 Quanta 작업 건수·진행률에 합산하지 않는다.
 
 ## 현재 코드 잔여 — 2026-10-05 소스 대조
 
-최종 감사 기준: Quanta clean main `dcd3860ec2862dced0bec9398c578fd2ea0a9c2a`,
-Semantica main `34d85f507aa5f907c50d0d7c8dfd23190d585cb7`와 별도 담당의 dirty 작업.
+현재 정리 기준: Quanta main `e32e81a8afb20f7d76c166fa2d5090904ade856c`와 문서 수정 overlay.
+직전 소스 감사 기준 `dcd3860e` 이후 HEAD 차이는 문서7개이며 Rust/Python 실행 코드는 동일하다.
 Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
 아래는 실제 생산 경로·코드와 기존 결과를 대조한 잔여이며 새 full-suite/release qualification이 아니다.
 
-| 분류 | 실제 잔여 | 근거·종료 조건 |
+### Quanta에서 할 작업
+
+| 우선·종류 | 할 작업 | 종료 조건·owner |
 | --- | --- | --- |
-| 코드 반영 완료·통합 실행 잔여 | R5 cross-repo 완료 증거 전달·caller feature 선택 | 최신 대상 파일에서 Quanta18/Semantica25 owner tests를 재실행해 통과했다. Actual caller/kernel pair는 미실행이다. [I0-03](#o4-i0-03) |
-| 미구현·producer 소유 | R3 독립 semantic replace/tombstone/unchanged 기대 범위와 실제 배치의 누락 대조 | Semantica dispatch 전 source plan·shadow policy·prior sealed state·cluster plan에서 독립 기대 범위를 산출·결속한다. 전달된 항목의 중복/충돌 검사만으로 누락을 판정할 수 없다. [I0-03](#o4-i0-03) |
-| 미구현·입력 필요 | P11 배포/활성화/restore-forward typed action producer·recipes·parser/aggregate 연결 | 실제 host/config/state/retention/rollback 및 독립 pre/post 관측 계약 이후 구현. [I0-03](#o4-i0-03) |
-| 실패 후 판정 | Large/XL default 용량 원인 수리 또는 제품 계약 변경 | 이전 source의 timeout/posting-cap 실패는 보존한다. F14 matching 실행 결과로 수리 범위를 결정한다. [E4-05](#o4-e4-05) |
-| 조건부 | Bootstrap 추가 최적화, durable group barrier, persistent token authority, 검색 정책 변경 | [E1-07](#o4-e1-07), [E4-02](#o4-e4-02), [E4-04](#o4-e4-04), [E4-07](#o4-e4-07)의 실제 병목·독립 gold·사전 계약이 선행한다. |
-| 구현 있음·실행 잔여 | Review/admission, collectors/scorer, SDK/runtime lifecycle, scale/scanner/proof | 코드 부재로 재분류하지 않는다. AI/holdout inputs, matching admissions/captures, A/B, CI와 release를 각각 실행한다. |
+| P0 · 검증 | 선택한 최신 source의 Contract/SDK·영향 runtime/public API/wire gates·hosted CI 실행 | Matching source/binary와 actual selected 결과. Frozen5796의791/191/27을 새 HEAD 결과로 바꾸지 않는다. [I0-02](#o4-i0-02) |
+| P1 · 실행→필요 시 수리 | F14 Large4,096/XL32,768 default capacity·open-loop·OS restart 실행 | 실제 timeout/posting-cap/resource 원인을 확인해 수리 또는 명시적 지원 계약 결정. Small16/Medium256 진단은 완료다. [E4-05](#o4-e4-05) |
+| P1 · 계측→필요 시 수리 | Full/delta/delete/no-op/reopen 전체 읽기·CPU·metadata·IO·memory/segment 누적 비용 분해 | Unchanged source 전수 읽기, cold-open 전역 인덱스, retained delete bitmap 및 NoMerge fanout 비용을 actual profile로 판정. Native segment 재사용 구현은 완료다. [E4-01](#o4-e4-01) |
+| P1 · 성능 판정 | Scanner on/off whole-call A/B·Semble phase 비용·1,196-row bootstrap full caller·정식 반복 성능 | 각 arm source/binary·출력 parity, 지속 host 관측과 사전 acceptance. Qualified speed는 최소5 fresh roots/route1,000 warm observations. [E4-03](#o4-e4-03), [E4-06](#o4-e4-06), [E2-05](#o4-e2-05), [E1-07](#o4-e1-07) |
+| P1 · 평가 실행 | SQL146/Zellij476·신규742pairs 판단, Tailscale rubric, admissions·required cells·5제품 capture/replay/join·최종 scores | AI quota/rubric 입력은 해당 범위만 `BLOCKED`. Ready cells는 별도로 실행한다. Exact/prefix/infix/components/default·explicit typo/no-answer/NL/ARB/B09 분모와 외부 index scope를 유지한다. [E1](#e1), [E2](#e2) |
+| P1 · 독립 평가 | 독립 holdout/license/exposure/gold 발행과 지원 declaration-name/span·typo 평가 | 실제 미사용 source/query family 및 source-attested gold, critical strata/underfill·supported unit 판정. File hit를 선언 회수로 세지 않는다. [E1-04](#o4-e1-04), [E1-05](#o4-e1-05) |
+| P2 · 운영 코드·릴리스 | Quanta typed deploy/activate/restore-forward producer·recipes·parser/checker/aggregate 연결; 실제 provider 및 installed Linux daemon/state/운영 실행 | 독립 pre/post 관측·actual host/config/state/retention/rollback 입력 뒤 구현·실행. 현재 운영 생산자는 미구현이고 대상 입력은 `BLOCKED`다. 기존 staged pair는 별도 연동 owner가 소비한다. [I0-03](#o4-i0-03) |
+
+확정된 Quanta 미구현은 운영 결과 생산자1묶음이다. 엔진 추가 수리는 capacity/cost actual 결과로 결정한다.
+Bootstrap 추가 최적화, durable group barrier, persistent token authority, 검색 정책 변경은
+병목·독립 gold·사전 계약이 성립할 때만 채택하는 조건부4건이다.
+E3의 selection·7-route SDK binding·slow disk·timeout replay·operator 구현을 다시 만드는 작업은 없다.
+
+Quanta 실행 순서: source 영향 확인/검증 → matching capacity·cost·A/B → 확인된 원인 수리 및 영향 회귀
+→ ready admissions/captures·독립 채점 → holdout/정식 성능·릴리스의 각 입력별 qualification.
+실제 실행은 host별 직렬이며 AI/holdout/Linux 입력 대기가 준비된 다른 작업을 막지 않는다.
 
 ## 공통 실행 조건
 
@@ -510,8 +521,8 @@ frozen `5796a63f` Contract·fresh SDK `VERIFIED`, hosted CI `NOT_RUN`.
 
 ### O4-I0-03
 
-P1 · 코드 입력 먼저, W6 실행 · **R3 producer 누락 검증 및 P11 operational producer/recipes 미구현**.
-P11 target·관측 계약 입력은 `BLOCKED`이며 upstream R3 소스 작업과 독립이다.
+P1 · 코드 입력 먼저, W6 실행 · **P11 operational producer/recipes 미구현**.
+P11 target·관측 계약 입력은 `BLOCKED`이다. R3는 별도 Semantica producer 연동 잔여다.
 
 원본 `agent-1.md`의 Release 범위에서 인계된 Linux 서버 배포·운영 검증이다.
 로컬 엔진 회귀와 검색 평가의 완료 판정은 각 owner scope를 따른다.
@@ -536,12 +547,13 @@ P11 target·관측 계약 입력은 `BLOCKED`이며 upstream R3 소스 작업과
   외부 v4 postimage와 일치한다. Semantica CLI 전체 파일에는 후속 log-GC/proof-guard 변경이 있어
   7파일 전체 postimage 일치를 주장하지 않는다. 검증한 CLI/4개 test bytes는
   Semantica `42fa5287`에서`34d85f50`으로 이동한 뒤에도 동일했다. Actual pair는 계속 `NOT_RUN`이다.
-- R3 코드 잔여: Semantica `search_plane_handoff_dispatch/semantic_state.rs`는 lexical emission과
+- 별도 producer 연동 잔여 R3: Semantica `search_plane_handoff_dispatch/semantic_state.rs`는 lexical emission과
   prior state에서 semantic plan을 구성하고, `semantic_plan.rs`는 cluster mutations를 추가한다.
   `aggregate_prepare.rs`의 실제 dispatch 준비에는 별도로 산출한 고정 expected
   replace/tombstone/unchanged partition과 배치의 누락 대조가 없다. Quanta의
   `semantic_derive.rs`/`corpus_wire.rs`는 전달된 범위의 중복·충돌을 거절하는 owner다.
   누락이 실제 발생했다는 실행 증거는 없으며, 이 잔여는 upstream 검증 계약의 미구현이다.
+  Quanta 자체 lexical/semantic 엔진 결함이나 필수 코드 개발 건수로 세지 않는다.
   Source plan·shadow policy·prior sealed state·cluster plan에 결속한 독립 기대 범위,
   정상 lexical-only/unchanged-empty와 omission/duplicate negatives를 producer dispatch 전에 검증한다.
 - 배포·활성화·restore-forward 실제 명령, distinct independent pre/post 성공 관측,

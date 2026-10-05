@@ -7,6 +7,10 @@
 
 ## 작업 목적과 범위
 
+현재 요청의 실행 범위는 Quanta의 엔진·SDK·benchmark·proof/운영 tooling이다.
+[Quanta 자체 작업표](tickets/INDEX.md#quanta에서-할-작업)와 [현재 웨이브](WAVES.md)가 실행 목록을 소유한다.
+외부 producer의 소스 변경·전체 pair는 별도 연동 범위에 보존한다.
+
 원본 5개 handoff의 합집합은 아래 세 범위를 포함한다. 진행률과 완료 판정도 범위별로 구분한다.
 
 | 범위 | 목적 | 담당·단계 |
@@ -20,9 +24,14 @@ SQLAlchemy와 Zellij는 **검색 평가용 코드 저장소**다. 해당 잔여�
 Linux는 원본 `agent-1.md`의 Release 항목에서 인계된 서버 검증 대상이며, 실행에는 실제
 host/config/state/retention/rollback 입력이 필요하다. 현재 로컬 검증 환경은 macOS다.
 
+Semantica는 분석 산출물을 Quanta SDK/ingest에 전달하는 외부 producer다. 원본 agent-1의
+Release 항목이 SEP-21 paired producer 수용을 참조해 연동 범위를 보존했다.
+R3 producer 누락 검증은 Semantica 소유이며 Quanta 자체 코드 잔여에 합산하지 않는다.
+Quanta 단독 엔진·벤치와 producer 연동 수용의 완료 조건을 구별한다.
+
 현재 코드 잔여와 source/candidate 구분은 [최신 코드 대조](tickets/INDEX.md#현재-코드-잔여--2026-10-05-소스-대조),
-실행 순서는 [웨이브](WAVES.md)가 소유한다. R5 증거 전달 수리, upstream R3 semantic 누락 검증, P11 운영 producer,
-capacity 실패 원인 판정과 조건부 최적화를 구분하며 review/capture 미실행을 새 구현으로 세지 않는다.
+실행 순서는 [웨이브](WAVES.md)가 소유한다. Quanta 운영 producer 구현,
+capacity/cost 원인 판정·조건부 최적화·review/capture 실행을 구분한다.
 
 ## 담당
 
@@ -32,7 +41,7 @@ capacity 실패 원인 판정과 조건부 최적화를 구분하며 review/capt
 | E2 | native external collector/scope·Semble parent phases·required cells | [OCT-05-002](../../adr/OCT-05-002-native-capture-clock-and-index-scope.md) | [E2](tickets/INDEX.md#e2): 남은 cells와 실제 service reader/index authority |
 | E3 | SDK response binding·selection/view/retention·maintenance/publish/operator | [OCT-05-003](../../adr/OCT-05-003-active-query-and-runtime-lifecycle.md) | 구현/요청 owner scopes 완료; shipping/source/release는 I0 |
 | E4 | lexical lifecycle/query cost·scanner/scale/load 및 policy RCA | [OCT-05-004](../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md) | [E4](tickets/INDEX.md#e4): causal/A-B/performance/capacity·조건부 변경 |
-| I0 | shared contracts/DTOs/registry/CI/dependency·source impact/release | [OCT-05-004](../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md) | [I0](tickets/INDEX.md#i0): 최신 source/CI/paired/Linux/P11 authority |
+| I0 | shared contracts/DTOs/registry/CI/dependency·source impact/release | [OCT-05-004](../../adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md) | [I0](tickets/INDEX.md#i0): Quanta 최신 source/CI/운영 tooling·provider/Linux release |
 
 ## 통합과 자원
 

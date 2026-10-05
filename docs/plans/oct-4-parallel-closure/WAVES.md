@@ -2,21 +2,24 @@
 
 [단일 잔여 인덱스](tickets/INDEX.md) · [담당·인계](README.md).
 완료 C1–C3 구현·회귀 단계는 [Accepted ADR](../../adr/README.md#oct-05-implemented-contracts)에 압축했다.
-아래는 **남은 실행 순서**이며 초기 PLANNED 상태나 과거 terminal 진행표를 복사하지 않는다.
+아래는 **Quanta에서 남은 실행 순서**다. [작업표](tickets/INDEX.md#quanta에서-할-작업)가
+현재 범위를 소유하며 외부 producer 연동은 아래 별도 기록에 보존한다.
 
 ## 코드 우선
 
-- R5 cross-repo completion 전달·caller 필수 feature·typed resolver/locator 수리는 두 main 작업트리에 반영했다.
-  Quanta18/Semantica25 owner scope 완료; 실제 clean pair 실행은 [I0-03](tickets/INDEX.md#o4-i0-03)에서 계속한다.
-- 실제 미구현: R3 producer가 dispatch 전에 독립 expected semantic replace/tombstone/unchanged 범위를
-  실제 배치와 대조하는 누락 검증. Semantica source-plan/shadow policy/prior state/cluster plan이 owner다.
-  [I0-03](tickets/INDEX.md#o4-i0-03)에서 P11 운영 입력 대기와 분리해 진행한다.
 - 실제 미구현: [I0-03 P11 typed operational producer/recipes](tickets/INDEX.md#o4-i0-03).
   실제 actions와 독립 pre/post 성공 판정 계약·authorized target 입력이 필요하다.
 - E1-07/E4-02/E4-04/E4-07은 실제 병목·독립 정책 실패 뒤에만 채택하는 조건부 변경이다.
 - E1/E2/E3 및 scale/scanner/proof의 기존 구현은 실행 증거가 부족하다는 이유로 재작성하지 않는다.
 - Large/XL의 이전 default 실패는 새 F14 tier 결과로 수리 또는 제품 계약 변경을 판정한다.
   Bat 재발행은 외부 issuer의 original review pack/merged product pack 신원 재생이며 새 relevance 판정이 아니다.
+
+## 별도 producer 연동
+
+- R3의 dispatch 전 독립 expected semantic replace/tombstone/unchanged 범위·누락 대조는
+  Semantica source-plan/shadow policy/prior state/cluster plan owner 작업이다.
+  [I0-03](tickets/INDEX.md#o4-i0-03)에 연동 수용 잔여로 보존하며 Quanta 자체 코드 건수에 합산하지 않는다.
+- R5 clean pair는 producer 연동 수용 범위다. Quanta 단독 엔진·벤치의 완료 조건과 구별한다.
 
 ## 확인된 실행 체크포인트
 
@@ -37,7 +40,7 @@
 | W3 | I0-02: selected source Contract/SDK/CI. E1-03: final revisions 및 남은3repo admission ISSUE | PREPARE→VALIDATE→ISSUE. Frozen old proof를 최신 전체 source로 재표기 금지 |
 | W4 | E2: ready required cells actual capture/independent replay/join·scope별 warmup parity. E4: A/B·capacity·qualified performance | Matching binaries/input/index/clock, 실제 host/schedule. Failed sibling은 ready cells를 막지 않음 |
 | W5 | E1: 마지막 unjudged union→labels/admission→independent scores/CI. E4: holdout 기반 정책 RCA | Qrel-only reuse 허용 여부 확인. Name/NL/no-answer/ARB/B09 분모·human/unseen 범위 별도 |
-| W6 | I0-03: exact pair·real provider·Linux release/state·P11 actions·aggregate | 실제 registry prerequisites와 authorized inputs/results. 상태 정리만으로 qualification 종료 불가 |
+| W6 | I0-03: Quanta 운영 producer/recipes·real provider·Linux release/state·P11 actions·aggregate | 실제 target/독립 관측 계약·authorized inputs/results. Registry의 외부 pair는 별도 연동 수용 범위 |
 
 ## 현재 dependency
 
@@ -50,8 +53,6 @@
 - E3-01/03/04/05/06의 완료 owner/process scope는 I0 matching shipping-source/release에서 소비한다.
   E3-02 pin transfer는 현 Accepted 계약에서 비적용이며 dependent code의 대기 조건이 아니다.
 - P11 contract/target 입력 → existing typed authority/recipe 구현·검증 → actual action 실행 → aggregate.
-- R3 independent producer 기대 범위·누락 대조 → owner positives/negatives → exact-pair protocol proof.
-  Linux target 입력은 upstream R3 구현의 전제가 아니다.
 
 ## Runtime 실행 규칙
 
