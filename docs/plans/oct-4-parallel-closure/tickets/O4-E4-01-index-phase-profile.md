@@ -10,6 +10,14 @@
 
 [전체 지도](../README.md) · [티켓 인덱스](INDEX.md)
 
+## 2026-10-05 opt-in causal 계측 수리와 owner 검증
+
+- `QUANTA_INDEX_CAUSAL_PROFILE_V1=1`일 때 lexical의 명시적 `sync_all` 호출과 Tantivy의 deleted-segment exact live-token scan을 별도 marker로 기록한다. Scale phase에는 선택적 Linux `/proc/self/io` process counters 또는 unavailable reason을 기록한다. 장치 완료 byte, crash consistency, phase-exclusive I/O 또는 정식 속도 비교의 증거가 아니다.
+- `FAILED`: 최초 harness 빌드는 `Drop`을 구현한 `PhaseSampler`의 `Result` 필드 이동으로 E0509를 반환했다. 참조 매칭으로 수리했다. 테스트 실행 전 compile 실패였으며 passing tests로 계산하지 않는다.
+- `VERIFIED`: base `b55f4c6d`의 `oct5-causal-cost` worktree에서 `QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR=1 CARGO_TARGET_DIR=/Users/songmin/Library/Caches/quanta-index/target/83f2382a427f32d7/test-daemon-lane CARGO_BUILD_JOBS=1 ./scripts/cargow --lane test-daemon-lane nextest run -p quanta-index-searchd-harness --lib --all-features --locked -E 'test(/^scale::tests::/)' --test-threads 1 --success-output final` — exit0,32 passed/116 outside selector,7.226s. 앞선 exact I/O/phase rejection2도2 passed/0.046s였다. Scale source SHA는 `9215b4d1d3f051d5bddaac04c26b02a72e7368fb95fcefa4b4fb93db29981367`이다.
+- `VERIFIED`: 같은 worktree에서 `/Users/songmin/.codex/worktrees/oct4-semantic-repair/quanta-index/.venv/bin/python -m pytest tools/ci/tests/test_causal_cost_profile.py tools/ci/tests/test_query_scanner_ab.py -q --tb=short` — exit0,40 passed/18.48s. Tier manifest·declared tier/seed/file/repo count·requested/effective timeout/history·고정 lifecycle phase 집합·typed schema를 결속하고 missing/drift/type-alias 변조를 거절한다. Python3파일 Ruff와 `git diff --check`도 exit0이다.
+- 검증한 E4 소유15파일을 main의 원래 baseline bytes와 대조해 통합했다. Scanner2파일은 이미 main과 후보가 동일했다. Root는 stage/commit/push하지 않았다. 최신 main의 영향 owner/daemon·boundary gate 및 fresh-build profile은 후속 실행 범위다. 기존 source0e6 default-large 실패와 diagnostic-large 결과를 새 계측 source 결과로 재표기하지 않는다.
+
 ## 2026-10-04 Gin99 matching release full-ingest 관측
 
 - E1-04 actual capture의 `/private/tmp/qi-name4-v3/capture/strategy-00-fw_strict/retrieval-diagnostic.json`을 manifest의 diagnostic SHA와 대조했다. source107 SDK fresh matching binaries에서 accepted99 file scopes, semantic windows0인 full ingest였다. 각 child clock과 직접 parent의 포함 관계/잔여 시간을 실제 값으로 검사해 모두 통과했다.

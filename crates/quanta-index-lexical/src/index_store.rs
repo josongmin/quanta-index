@@ -282,7 +282,7 @@ pub(crate) fn write_atomic_durable(
             temporary.display()
         ))
     })?;
-    file.sync_all().map_err(|error| {
+    crate::causal_profile::timed_sync("atomic_file", || file.sync_all()).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: fsync {label} temporary {}: {error}",
             temporary.display()
@@ -297,7 +297,9 @@ pub(crate) fn write_atomic_durable(
         ))
     })?;
     File::open(parent)
-        .and_then(|directory| directory.sync_all())
+        .and_then(|directory| {
+            crate::causal_profile::timed_sync("atomic_parent", || directory.sync_all())
+        })
         .map_err(|error| {
             CoreError::Storage(format!(
                 "lexical: fsync {label} parent {}: {error}",
@@ -353,7 +355,7 @@ pub(crate) fn write_atomic_durable_at(
             generation_dir.display()
         ))
     })?;
-    file.sync_all().map_err(|error| {
+    crate::causal_profile::timed_sync("atomic_at_file", || file.sync_all()).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: fsync {label} temporary in {}: {error}",
             generation_dir.display()
@@ -366,7 +368,7 @@ pub(crate) fn write_atomic_durable_at(
             generation_dir.display()
         ))
     })?;
-    root.sync_all().map_err(|error| {
+    crate::causal_profile::timed_sync("atomic_at_parent", || root.sync_all()).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: fsync {label} generation {}: {error}",
             generation_dir.display()

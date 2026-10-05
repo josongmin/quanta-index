@@ -930,6 +930,10 @@ const PHASE_RSS_INTERIOR_REQUIRED_AFTER: Duration = Duration::from_millis(200);
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhaseResourceV1 {
     pub cpu: CpuUsageV1,
+    /// Linux /proc/self/io deltas for the whole process. These are kernel
+    /// accounting counters, not device-completed bytes or phase-exclusive I/O.
+    pub process_write_io: Option<ProcessWriteIoV1>,
+    pub process_write_io_unavailable_reason: Option<String>,
     pub rss_start_bytes: u64,
     pub rss_end_bytes: u64,
     pub rss_start_before_phase_ms: f64,
@@ -948,6 +952,91 @@ pub struct PhaseResourceV1 {
     /// Root allocation and filesystem availability are sampled independently
     /// of logical directory bytes. Neither is physical write I/O.
     pub disk: Option<PhaseDiskV1>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessWriteIoV1 {
+    pub write_bytes: u64,
+    /// Linux can report this counter as negative after cancellation of another
+    /// process's dirty pages; a signed delta is preserved without clamping.
+    pub cancelled_write_bytes: i64,
+    pub syscw: u64,
+    pub wchar: u64,
+}
+
+impl ProcessWriteIoV1 {
+    fn elapsed_since(self, before: Self) -> AnyResult<Self> {
+        Ok(Self {
+            write_bytes: self
+                .write_bytes
+                .checked_sub(before.write_bytes)
+                .ok_or_else(|| anyhow::anyhow!("scale: process write_bytes decreased"))?,
+            cancelled_write_bytes: self
+                .cancelled_write_bytes
+                .checked_sub(before.cancelled_write_bytes)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("scale: process cancelled_write_bytes delta overflow")
+                })?,
+            syscw: self
+                .syscw
+                .checked_sub(before.syscw)
+                .ok_or_else(|| anyhow::anyhow!("scale: process syscw decreased"))?,
+            wchar: self
+                .wchar
+                .checked_sub(before.wchar)
+                .ok_or_else(|| anyhow::anyhow!("scale: process wchar decreased"))?,
+        })
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_process_write_io(source: &str) -> AnyResult<ProcessWriteIoV1> {
+    fn field<'a>(source: &'a str, name: &str) -> AnyResult<&'a str> {
+        let mut values = source.lines().filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            (key == name).then_some(value.trim())
+        });
+        let value = values
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("scale: missing {name} in /proc/self/io"))?;
+        if values.next().is_some() {
+            anyhow::bail!("scale: duplicate {name} in /proc/self/io");
+        }
+        Ok(value)
+    }
+    fn unsigned(source: &str, name: &str) -> AnyResult<u64> {
+        field(source, name)?
+            .parse::<u64>()
+            .map_err(|error| anyhow::anyhow!("scale: invalid {name} in /proc/self/io: {error}"))
+    }
+    Ok(ProcessWriteIoV1 {
+        write_bytes: unsigned(source, "write_bytes")?,
+        cancelled_write_bytes: field(source, "cancelled_write_bytes")?
+            .parse::<i64>()
+            .map_err(|error| {
+                anyhow::anyhow!("scale: invalid cancelled_write_bytes in /proc/self/io: {error}")
+            })?,
+        syscw: unsigned(source, "syscw")?,
+        wchar: unsigned(source, "wchar")?,
+    })
+}
+
+fn process_write_io_snapshot() -> AnyResult<ProcessWriteIoV1> {
+    #[cfg(target_os = "linux")]
+    {
+        parse_process_write_io(&std::fs::read_to_string("/proc/self/io")?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        anyhow::bail!("scale: /proc/self/io is Linux-only")
+    }
+}
+
+fn causal_profile_enabled() -> bool {
+    std::env::var("QUANTA_INDEX_CAUSAL_PROFILE_V1")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1151,6 +1240,7 @@ fn sampler_panic(kind: &str, panic: &(dyn std::any::Any + Send)) -> anyhow::Erro
 struct PhaseSampler {
     started: Instant,
     cpu_started: CpuSnapshot,
+    process_write_io_started: AnyResult<ProcessWriteIoV1>,
     rss_start: RssPoint,
     disk_root: Option<PathBuf>,
     disk_start: Option<DiskPoint>,
@@ -1223,11 +1313,17 @@ impl PhaseSampler {
         } else {
             None
         };
+        let process_write_io_started = if causal_profile_enabled() {
+            process_write_io_snapshot()
+        } else {
+            Err(anyhow::anyhow!("opt-in causal profile disabled"))
+        };
         let started = Instant::now();
         let setup_ms = setup_started.elapsed().as_secs_f64() * 1_000.0;
         Ok(Self {
             started,
             cpu_started,
+            process_write_io_started,
             rss_start,
             disk_root,
             disk_start,
@@ -1240,6 +1336,11 @@ impl PhaseSampler {
 
     fn stop(mut self) -> AnyResult<PhaseResourceV1> {
         let ended = Instant::now();
+        let process_write_io_ended = if causal_profile_enabled() {
+            process_write_io_snapshot()
+        } else {
+            Err(anyhow::anyhow!("opt-in causal profile disabled"))
+        };
         let cpu_ended = CpuSnapshot::observe();
         let teardown_started = Instant::now();
         self.stopped.store(true, Ordering::Release);
@@ -1281,6 +1382,23 @@ impl PhaseSampler {
                 periodic_probe_wall: observer_periodic_probe_wall_ms,
             },
         )?;
+        match (&self.process_write_io_started, &process_write_io_ended) {
+            (Ok(start), Ok(end)) => {
+                resources.process_write_io = Some(end.elapsed_since(*start)?);
+            }
+            (start, end) => {
+                resources.process_write_io_unavailable_reason = Some(format!(
+                    "start={} end={}",
+                    start
+                        .as_ref()
+                        .err()
+                        .map_or_else(|| "observed".to_owned(), |error| error.to_string()),
+                    end.as_ref()
+                        .err()
+                        .map_or_else(|| "observed".to_owned(), |error| error.to_string()),
+                ));
+            }
+        }
         if let (Some(_root), Some(start), Some(end)) =
             (self.disk_root.as_deref(), disk_start, disk_end)
         {
@@ -1392,6 +1510,8 @@ fn summarize_phase_resources(
     }
     Ok(PhaseResourceV1 {
         cpu,
+        process_write_io: None,
+        process_write_io_unavailable_reason: None,
         rss_start_bytes: rss_start.bytes,
         rss_end_bytes: rss_end.bytes,
         rss_start_before_phase_ms: started.duration_since(rss_start.at).as_secs_f64() * 1_000.0,
@@ -1411,16 +1531,27 @@ fn summarize_phase_resources(
 
 #[cfg(test)]
 fn observe_phase<T>(work: impl FnOnce() -> AnyResult<T>) -> AnyResult<(T, PhaseResourceV1)> {
-    observe_phase_at_root(None, work)
+    observe_phase_at_root("test", None, work)
 }
 
 fn observe_phase_at_root<T>(
+    name: &'static str,
     root: Option<&Path>,
     work: impl FnOnce() -> AnyResult<T>,
 ) -> AnyResult<(T, PhaseResourceV1)> {
     let sampler = PhaseSampler::start(root)
         .map_err(|error| stage_or_preserve("resource_observation", error))?;
+    let causal_profile = causal_profile_enabled();
+    if causal_profile {
+        eprintln!("QI_CAUSAL_V1 kind=phase_start name={name}");
+    }
     let measurement = work();
+    if causal_profile {
+        eprintln!(
+            "QI_CAUSAL_V1 kind=phase_end name={name} ok={}",
+            u8::from(measurement.is_ok())
+        );
+    }
     let observation = sampler
         .stop()
         .map_err(|error| stage_or_preserve("resource_observation", error));
@@ -1867,17 +1998,18 @@ fn measure_scoped_delete_reopen(
     let retained_before = rt.query_text(TextQuerySyntax::Native, &retained_token, SCALE_TOP_K);
     require_single_source_file(&retained_before, "repo1", &file.repo_relative_path)?;
 
-    let (delete_seal_ms, delete_resource) = observe_phase_at_root(Some(&disk_root), || {
-        let delete_started = Instant::now();
-        rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)
-            .map_err(|error| ScaleStageError::operation("delete", &error))?;
-        let _generation = rt
-            .seal()
-            .map_err(|error| ScaleStageError::operation("delete_seal", &error))?;
-        Ok(elapsed_ms(delete_started))
-    })?;
+    let (delete_seal_ms, delete_resource) =
+        observe_phase_at_root("delete_seal", Some(&disk_root), || {
+            let delete_started = Instant::now();
+            rt.delete_chunk_for_source_file("repo0", &file.repo_relative_path)
+                .map_err(|error| ScaleStageError::operation("delete", &error))?;
+            let _generation = rt
+                .seal()
+                .map_err(|error| ScaleStageError::operation("delete_seal", &error))?;
+            Ok(elapsed_ms(delete_started))
+        })?;
     let (delete_activation_ms, activation_resource) =
-        observe_phase_at_root(Some(&disk_root), || {
+        observe_phase_at_root("delete_activate", Some(&disk_root), || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
                 .map_err(|error| ScaleStageError::operation("delete_activate", &error))?;
@@ -1894,7 +2026,7 @@ fn measure_scoped_delete_reopen(
     verify_scoped_repositories(rt, &successor)?;
 
     let (same_process_reopen_ms, reopen_resource) =
-        observe_phase_at_root(Some(&disk_root), || {
+        observe_phase_at_root("same_process_reopen", Some(&disk_root), || {
             let reopen_started = Instant::now();
             rt.try_reopen_in_place()
                 .map_err(|error| ScaleStageError::operation("reopen_stop", &error))?;
@@ -1994,17 +2126,18 @@ fn measure_delta(
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let serving_owner = rt.repo();
-    let (update_ms, update_resource) = observe_phase_at_root(Some(&disk_root), || {
-        let update_started = Instant::now();
-        rt.ingest_text(serving_owner.as_str(), path, &changed)?;
-        let _generation = rt
-            .seal()
-            .map_err(|error| ScaleStageError::operation("delta_seal", &error))?;
-        Ok(elapsed_ms(update_started))
-    })?;
+    let (update_ms, update_resource) =
+        observe_phase_at_root("delta_ingest_seal", Some(&disk_root), || {
+            let update_started = Instant::now();
+            rt.ingest_text(serving_owner.as_str(), path, &changed)?;
+            let _generation = rt
+                .seal()
+                .map_err(|error| ScaleStageError::operation("delta_seal", &error))?;
+            Ok(elapsed_ms(update_started))
+        })?;
     let after_build = directory_bytes(rt.state_root())?;
     let (activation_with_reclaim_ms, activation_resource) =
-        observe_phase_at_root(Some(&disk_root), || {
+        observe_phase_at_root("delta_activate", Some(&disk_root), || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
                 .map_err(|error| ScaleStageError::operation("delta_activate", &error))?;
@@ -2031,7 +2164,7 @@ fn measure_noop(
 ) -> AnyResult<(NoOpMeasurementV1, BTreeMap<&'static str, PhaseResourceV1>)> {
     let disk_root = rt.state_root().to_path_buf();
     let expected_generation = rt.current_generation();
-    let (seal_ms, seal_resource) = observe_phase_at_root(Some(&disk_root), || {
+    let (seal_ms, seal_resource) = observe_phase_at_root("noop_seal", Some(&disk_root), || {
         let started = Instant::now();
         let sealed = rt
             .seal()
@@ -2041,12 +2174,13 @@ fn measure_noop(
         }
         Ok(elapsed_ms(started))
     })?;
-    let (activation_ms, activation_resource) = observe_phase_at_root(Some(&disk_root), || {
-        let started = Instant::now();
-        rt.activate_last_sealed_generation()
-            .map_err(|error| ScaleStageError::operation("noop_activate", &error))?;
-        Ok(elapsed_ms(started))
-    })?;
+    let (activation_ms, activation_resource) =
+        observe_phase_at_root("noop_activate", Some(&disk_root), || {
+            let started = Instant::now();
+            rt.activate_last_sealed_generation()
+                .map_err(|error| ScaleStageError::operation("noop_activate", &error))?;
+            Ok(elapsed_ms(started))
+        })?;
     let mut phases = BTreeMap::new();
     record_phase(&mut phases, "noop_seal", seal_resource)?;
     record_phase(&mut phases, "noop_activate", activation_resource)?;
@@ -2125,27 +2259,29 @@ fn measure_small_tier_with_config(
         let before_build = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?;
         let serving_owner = rt.repo();
-        let (build_ms, build_resource) = observe_phase_at_root(Some(&disk_root), || {
-            let build_started = Instant::now();
-            for (path, content) in &corpus {
-                rt.ingest_text(serving_owner.as_str(), path, content)
-                    .map_err(|error| stage_or_preserve("build_ingest", error))?;
-            }
-            let _generation = rt
-                .seal()
-                .map_err(|error| ScaleStageError::operation("build_seal", &error))?;
-            Ok(elapsed_ms(build_started))
-        })?;
+        let (build_ms, build_resource) =
+            observe_phase_at_root("full_ingest_seal", Some(&disk_root), || {
+                let build_started = Instant::now();
+                for (path, content) in &corpus {
+                    rt.ingest_text(serving_owner.as_str(), path, content)
+                        .map_err(|error| stage_or_preserve("build_ingest", error))?;
+                }
+                let _generation = rt
+                    .seal()
+                    .map_err(|error| ScaleStageError::operation("build_seal", &error))?;
+                Ok(elapsed_ms(build_started))
+            })?;
         let build_bytes_written = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?
             .saturating_sub(before_build);
 
-        let (activation_ms, activation_resource) = observe_phase_at_root(Some(&disk_root), || {
-            let activation_started = Instant::now();
-            rt.activate_last_sealed_generation()
-                .map_err(|error| ScaleStageError::operation("build_activate", &error))?;
-            Ok(elapsed_ms(activation_started))
-        })?;
+        let (activation_ms, activation_resource) =
+            observe_phase_at_root("full_activate", Some(&disk_root), || {
+                let activation_started = Instant::now();
+                rt.activate_last_sealed_generation()
+                    .map_err(|error| ScaleStageError::operation("build_activate", &error))?;
+                Ok(elapsed_ms(activation_started))
+            })?;
 
         let scrape_before_first = rt
             .metrics_snapshot()
@@ -2269,26 +2405,27 @@ fn measure_scoped_delta(
     let changed_bytes = u64::try_from(changed.len())?;
     let before_build = directory_bytes(rt.state_root())?;
     let serving_owner = rt.repo();
-    let (update_ms, update_resource) = observe_phase_at_root(Some(&disk_root), || {
-        let update_started = Instant::now();
-        let _ids = rt.ingest_text_chunks(
-            serving_owner.as_str(),
-            &file.repo_relative_path,
-            &[E2eTextChunkSpec {
-                content: &changed,
-                start_line: 1,
-                end_line: 2,
-                source_repo_id: Some(&file.source_repo_id),
-            }],
-        )?;
-        let _generation = rt
-            .seal()
-            .map_err(|error| ScaleStageError::operation("delta_seal", &error))?;
-        Ok(elapsed_ms(update_started))
-    })?;
+    let (update_ms, update_resource) =
+        observe_phase_at_root("delta_ingest_seal", Some(&disk_root), || {
+            let update_started = Instant::now();
+            let _ids = rt.ingest_text_chunks(
+                serving_owner.as_str(),
+                &file.repo_relative_path,
+                &[E2eTextChunkSpec {
+                    content: &changed,
+                    start_line: 1,
+                    end_line: 2,
+                    source_repo_id: Some(&file.source_repo_id),
+                }],
+            )?;
+            let _generation = rt
+                .seal()
+                .map_err(|error| ScaleStageError::operation("delta_seal", &error))?;
+            Ok(elapsed_ms(update_started))
+        })?;
     let after_build = directory_bytes(rt.state_root())?;
     let (activation_with_reclaim_ms, activation_resource) =
-        observe_phase_at_root(Some(&disk_root), || {
+        observe_phase_at_root("delta_activate", Some(&disk_root), || {
             let activation_started = Instant::now();
             rt.activate_last_sealed_generation()
                 .map_err(|error| ScaleStageError::operation("delta_activate", &error))?;
@@ -2385,33 +2522,36 @@ pub fn measure_tier_with_runtime_config(
             .zip(&chunks)
             .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
             .collect::<Vec<_>>();
-        let (ingest_ms, ingest_resource) = observe_phase_at_root(Some(&disk_root), || {
-            let ingest_started = Instant::now();
-            let _ids = rt
-                .ingest_text_files_one_batch(&batch_files)
-                .map_err(|error| stage_or_preserve("build_ingest", error))?;
-            Ok(elapsed_ms(ingest_started))
-        })?;
+        let (ingest_ms, ingest_resource) =
+            observe_phase_at_root("full_ingest", Some(&disk_root), || {
+                let ingest_started = Instant::now();
+                let _ids = rt
+                    .ingest_text_files_one_batch(&batch_files)
+                    .map_err(|error| stage_or_preserve("build_ingest", error))?;
+                Ok(elapsed_ms(ingest_started))
+            })?;
         let (ingest_decoded_bytes, ingest_wire_bytes) = rt
             .preview_pending_search_corpus_wire_bytes()
             .map_err(|error| ScaleStageError::wire_admission(&error))?;
-        let (seal_ms, seal_resource) = observe_phase_at_root(Some(&disk_root), || {
-            let seal_started = Instant::now();
-            let _generation = rt
-                .seal()
-                .map_err(|error| ScaleStageError::operation("build_seal", &error))?;
-            Ok(elapsed_ms(seal_started))
-        })?;
+        let (seal_ms, seal_resource) =
+            observe_phase_at_root("full_seal", Some(&disk_root), || {
+                let seal_started = Instant::now();
+                let _generation = rt
+                    .seal()
+                    .map_err(|error| ScaleStageError::operation("build_seal", &error))?;
+                Ok(elapsed_ms(seal_started))
+            })?;
         let build_ms = ingest_ms + seal_ms;
         let build_bytes_written = directory_bytes(rt.state_root())
             .map_err(|error| stage_or_preserve("build_io", error))?
             .saturating_sub(before_build);
-        let (activation_ms, activation_resource) = observe_phase_at_root(Some(&disk_root), || {
-            let activation_started = Instant::now();
-            rt.activate_last_sealed_generation()
-                .map_err(|error| ScaleStageError::operation("build_activate", &error))?;
-            Ok(elapsed_ms(activation_started))
-        })?;
+        let (activation_ms, activation_resource) =
+            observe_phase_at_root("full_activate", Some(&disk_root), || {
+                let activation_started = Instant::now();
+                rt.activate_last_sealed_generation()
+                    .map_err(|error| ScaleStageError::operation("build_activate", &error))?;
+                Ok(elapsed_ms(activation_started))
+            })?;
 
         let scrape_before_first = rt
             .metrics_snapshot()
@@ -2794,6 +2934,14 @@ fn measurement_json(measurement: &TierMeasurement) -> Value {
             (*phase, json!({
                 "cpu_process_user_ms": observation.cpu.user_ms,
                 "cpu_process_system_ms": observation.cpu.system_ms,
+                "process_write_io": observation.process_write_io.map(|io| json!({
+                    "write_bytes": io.write_bytes,
+                    "cancelled_write_bytes": io.cancelled_write_bytes,
+                    "syscw": io.syscw,
+                    "wchar": io.wchar,
+                })),
+                "process_write_io_unavailable_reason": observation.process_write_io_unavailable_reason,
+                "process_write_io_scope": "Linux /proc/self/io whole-process deltas across the timed phase; includes harness, in-process daemon, concurrent sampler threads, and unrelated process writes; write_bytes is kernel storage write accounting, not device-completed physical bytes or fsync latency; wchar/syscw include attempted write calls",
                 "rss_start_bytes": observation.rss_start_bytes,
                 "rss_end_bytes": observation.rss_end_bytes,
                 "rss_start_before_phase_ms": observation.rss_start_before_phase_ms,
@@ -3009,6 +3157,15 @@ pub fn artifact(
         anyhow::bail!("scale: measured tier is missing a required phase resource observation");
     }
     for (phase, observation) in &measurement.phase_resources {
+        if observation.process_write_io.is_some()
+            == observation.process_write_io_unavailable_reason.is_some()
+            || observation
+                .process_write_io_unavailable_reason
+                .as_ref()
+                .is_some_and(|reason| reason.is_empty())
+        {
+            anyhow::bail!("scale: phase {phase} has invalid process write I/O observation");
+        }
         let mut previous_offset_ms = 0.0_f64;
         let mut derived_max_gap_ms = 0.0_f64;
         let mut derived_sampled_max_rss =
@@ -3806,6 +3963,45 @@ mod tests {
     }
 
     #[test]
+    fn process_write_io_refuses_missing_duplicate_malformed_and_decreasing_counters()
+    -> AnyResult<()> {
+        let before = parse_process_write_io(
+            "rchar: 900\nwchar: 100\nsyscr: 8\nsyscw: 2\nread_bytes: 0\nwrite_bytes: 4096\ncancelled_write_bytes: 0\n",
+        )?;
+        let after = parse_process_write_io(
+            "wchar: 160\nsyscw: 3\nwrite_bytes: 8192\ncancelled_write_bytes: 0\n",
+        )?;
+        ensure_equal!(
+            after.elapsed_since(before)?,
+            ProcessWriteIoV1 {
+                write_bytes: 4096,
+                cancelled_write_bytes: 0,
+                syscw: 1,
+                wchar: 60,
+            }
+        );
+        ensure_predicate!(before.elapsed_since(after).is_err());
+        let cancelled = parse_process_write_io(
+            "wchar: 160\nsyscw: 3\nwrite_bytes: 8192\ncancelled_write_bytes: -32\n",
+        )?;
+        ensure_equal!(cancelled.elapsed_since(before)?.cancelled_write_bytes, -32);
+        ensure_predicate!(parse_process_write_io("wchar: 1\nsyscw: 1\nwrite_bytes: 1\n").is_err());
+        ensure_predicate!(
+            parse_process_write_io(
+                "wchar: 1\nsyscw: 1\nwrite_bytes: 1\nwrite_bytes: 2\ncancelled_write_bytes: 0\n"
+            )
+            .is_err()
+        );
+        ensure_predicate!(
+            parse_process_write_io(
+                "wchar: -1\nsyscw: 1\nwrite_bytes: 1\ncancelled_write_bytes: 0\n"
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn phase_rss_oracle_requires_interior_coverage_and_preserves_decreases() -> AnyResult<()> {
         let origin = Instant::now();
         let point = |ms: u64, bytes| RssPoint {
@@ -4409,6 +4605,8 @@ mod tests {
                 user_ms: 1.0,
                 system_ms: 0.25,
             },
+            process_write_io: None,
+            process_write_io_unavailable_reason: Some("fixture unavailable".to_owned()),
             rss_start_bytes: 1_024,
             rss_end_bytes: 2_048,
             rss_start_before_phase_ms: 1.0,
@@ -4521,6 +4719,35 @@ mod tests {
             .cpu
             .user_ms = f64::NAN;
         ensure_predicate!(artifact(&nonfinite, head.clone(), host.clone()).is_err());
+
+        let mut missing_io_state = sample_measurement();
+        missing_io_state
+            .phase_resources
+            .get_mut("full_activate")
+            .unwrap()
+            .process_write_io_unavailable_reason = None;
+        ensure_predicate!(artifact(&missing_io_state, head.clone(), host.clone()).is_err());
+
+        let mut conflicting_io_state = sample_measurement();
+        let conflicting_phase = conflicting_io_state
+            .phase_resources
+            .get_mut("full_activate")
+            .unwrap();
+        conflicting_phase.process_write_io = Some(ProcessWriteIoV1 {
+            write_bytes: 0,
+            cancelled_write_bytes: 0,
+            syscw: 0,
+            wchar: 0,
+        });
+        ensure_predicate!(artifact(&conflicting_io_state, head.clone(), host.clone()).is_err());
+
+        let mut empty_io_reason = sample_measurement();
+        empty_io_reason
+            .phase_resources
+            .get_mut("full_activate")
+            .unwrap()
+            .process_write_io_unavailable_reason = Some(String::new());
+        ensure_predicate!(artifact(&empty_io_reason, head.clone(), host.clone()).is_err());
 
         let mut no_interior = sample_measurement();
         no_interior

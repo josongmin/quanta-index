@@ -788,7 +788,11 @@ pub(crate) fn write_coverage_pages(
     }
     if removed_orphan {
         File::open(directory)
-            .and_then(|directory| directory.sync_all())
+            .and_then(|directory| {
+                crate::causal_profile::timed_sync("coverage_orphan_directory", || {
+                    directory.sync_all()
+                })
+            })
             .map_err(|error| {
                 CoreError::Storage(format!(
                     "fsync coverage orphan cleanup {}: {error}",

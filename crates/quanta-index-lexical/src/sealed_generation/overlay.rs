@@ -56,7 +56,9 @@ pub(crate) fn remove_overlay(
         }
     }
     File::open(generation_dir)
-        .and_then(|directory| directory.sync_all())
+        .and_then(|directory| {
+            crate::causal_profile::timed_sync("overlay_directory", || directory.sync_all())
+        })
         .map_err(|err| {
             CoreError::Storage(format!(
                 "lexical: fsync {} after removing {}: {err}",

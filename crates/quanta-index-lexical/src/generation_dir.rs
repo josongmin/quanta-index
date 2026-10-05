@@ -266,7 +266,9 @@ pub(crate) fn ensure_unsealed(
 /// Make the generation directory's entries durable before a door admits it.
 pub(crate) fn sync_generation_directory(generation_dir: &Path) -> Result<(), CoreError> {
     sealed_generation::open_generation_dir_nofollow(generation_dir)
-        .and_then(|directory| directory.sync_all())
+        .and_then(|directory| {
+            crate::causal_profile::timed_sync("generation_directory", || directory.sync_all())
+        })
         .map_err(|error| {
             CoreError::Storage(format!(
                 "lexical: revalidate generation-directory durability {}: {error}",

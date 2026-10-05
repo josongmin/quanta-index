@@ -124,12 +124,13 @@ impl HistoryTextManifest {
                     temporary.display()
                 ))
             })?;
-            file.sync_all().map_err(|err| {
-                CoreError::Storage(format!(
-                    "history text index: fsync manifest {}: {err}",
-                    temporary.display()
-                ))
-            })?;
+            crate::causal_profile::timed_sync("history_manifest_file", || file.sync_all())
+                .map_err(|err| {
+                    CoreError::Storage(format!(
+                        "history text index: fsync manifest {}: {err}",
+                        temporary.display()
+                    ))
+                })?;
         }
         std::fs::rename(&temporary, &path).map_err(|err| {
             CoreError::Storage(format!(

@@ -215,12 +215,14 @@ pub(super) fn fsync_parent(path: &Path) -> Result<(), CoreError> {
             parent.display()
         ))
     })?;
-    dir.sync_all().map_err(|err| {
-        CoreError::Storage(format!(
-            "history text index: fsync directory {}: {err}",
-            parent.display()
-        ))
-    })
+    crate::causal_profile::timed_sync("history_layout_directory", || dir.sync_all()).map_err(
+        |err| {
+            CoreError::Storage(format!(
+                "history text index: fsync directory {}: {err}",
+                parent.display()
+            ))
+        },
+    )
 }
 
 #[cfg(test)]

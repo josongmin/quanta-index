@@ -396,7 +396,9 @@ fn remove_unowned_entries(
 
 fn fsync_directory(dir: &Path) -> Result<(), CoreError> {
     File::open(dir)
-        .and_then(|directory| directory.sync_all())
+        .and_then(|directory| {
+            crate::causal_profile::timed_sync("text_authority_directory", || directory.sync_all())
+        })
         .map_err(|error| {
             CoreError::Storage(format!(
                 "lexical: fsync directory {}: {error}",

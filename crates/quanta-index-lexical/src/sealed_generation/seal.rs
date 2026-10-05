@@ -638,7 +638,11 @@ fn remove_publish_leftovers(generation_dir: &Path) -> Result<(), CoreError> {
     }
     if removed_any {
         File::open(generation_dir)
-            .and_then(|directory| directory.sync_all())
+            .and_then(|directory| {
+                crate::causal_profile::timed_sync("sealed_leftover_directory", || {
+                    directory.sync_all()
+                })
+            })
             .map_err(|error| {
                 CoreError::Storage(format!(
                     "lexical: fsync {} after removing publish leftovers: {error}",

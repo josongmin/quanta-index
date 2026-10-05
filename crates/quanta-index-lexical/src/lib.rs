@@ -91,6 +91,7 @@ mod adapter;
 mod adapter_ingest;
 mod adapter_lifecycle;
 mod adapter_open;
+mod causal_profile;
 mod channel_payloads;
 mod documents;
 mod generation_dir;

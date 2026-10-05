@@ -14,10 +14,10 @@ use crate::error::DataCorruption;
 use crate::fastfield::{AliveBitSet, FastFieldNotAvailableError};
 use crate::fieldnorm::{FieldNormReader, FieldNormReaders, FieldNormsSerializer, FieldNormsWriter};
 use crate::index::{Segment, SegmentReader};
-use crate::indexer::doc_id_mapping::{MappingType, SegmentDocIdMapping};
 use crate::indexer::SegmentSerializer;
+use crate::indexer::doc_id_mapping::{MappingType, SegmentDocIdMapping};
 use crate::postings::{InvertedIndexSerializer, Postings, SegmentPostings};
-use crate::schema::{value_type_to_column_type, Field, FieldType, IndexRecordOption, Schema};
+use crate::schema::{Field, FieldType, IndexRecordOption, Schema, value_type_to_column_type};
 use crate::store::StoreWriter;
 use crate::termdict::{TermMerger, TermOrdinal};
 use crate::{
@@ -37,15 +37,32 @@ fn exact_live_token_count_from_postings(
     reader: &SegmentReader,
     field: Field,
 ) -> crate::Result<u64> {
+    let profile_started = (std::env::var("QUANTA_INDEX_CAUSAL_PROFILE_V1")
+        .ok()
+        .as_deref()
+        == Some("1"))
+    .then(std::time::Instant::now);
+    let mut term_count = 0u64;
+    let mut posting_count = 0u64;
+    let mut live_posting_count = 0u64;
     let inverted_index = reader.inverted_index(field)?;
     let alive = reader.alive_bitset();
     let mut terms = inverted_index.terms().stream()?;
     let mut total = 0u64;
     while terms.advance() {
+        if profile_started.is_some() {
+            term_count += 1;
+        }
         let mut postings = inverted_index
             .read_postings_from_terminfo(terms.value(), IndexRecordOption::WithFreqs)?;
         while postings.doc() != TERMINATED {
+            if profile_started.is_some() {
+                posting_count += 1;
+            }
             if alive.map_or(true, |bitset| bitset.is_alive(postings.doc())) {
+                if profile_started.is_some() {
+                    live_posting_count += 1;
+                }
                 total = total
                     .checked_add(u64::from(postings.term_freq()))
                     .ok_or_else(|| {
@@ -56,6 +73,16 @@ fn exact_live_token_count_from_postings(
             }
             postings.advance();
         }
+    }
+    if let Some(started) = profile_started {
+        eprintln!(
+            "QI_CAUSAL_V1 kind=exact_live_token_scan ok=1 elapsed_ns={} terms={} postings={} live_postings={} live_tokens={}",
+            started.elapsed().as_nanos(),
+            term_count,
+            posting_count,
+            live_posting_count,
+            total
+        );
     }
     Ok(total)
 }
@@ -851,13 +878,13 @@ mod tests {
     use crate::query::{AllQuery, BooleanQuery, EnableScoring, Scorer, TermQuery};
     use crate::schema::document::Value;
     use crate::schema::{
-        Facet, FacetOptions, IndexRecordOption, NumericOptions, TantivyDocument, Term,
-        TextFieldIndexing, INDEXED, STRING, TEXT,
+        Facet, FacetOptions, INDEXED, IndexRecordOption, NumericOptions, STRING, TEXT,
+        TantivyDocument, Term, TextFieldIndexing,
     };
     use crate::time::OffsetDateTime;
     use crate::{
-        assert_nearly_equals, schema, DateTime, DocAddress, DocId, DocSet, IndexSettings,
-        IndexSortByField, IndexWriter, Order, Searcher, SegmentId,
+        DateTime, DocAddress, DocId, DocSet, IndexSettings, IndexSortByField, IndexWriter, Order,
+        Searcher, SegmentId, assert_nearly_equals, schema,
     };
 
     #[test]
@@ -1515,8 +1542,8 @@ mod tests {
                 index_doc(&mut index_writer, &["/top/e"], &mut 10);
                 index_writer.commit().expect("committed");
                 index_doc(&mut index_writer, &["/top/a"], &mut 5); // 5 is between 0 - 10 so the
-                                                                   // segments don' have disjunct
-                                                                   // ranges
+            // segments don' have disjunct
+            // ranges
             } else {
                 index_doc(&mut index_writer, &["/top/d"], &mut int_val);
                 index_doc(&mut index_writer, &["/top/e"], &mut int_val);
