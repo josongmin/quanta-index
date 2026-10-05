@@ -9,9 +9,13 @@
 
 - 실제 미구현: [I0-03 P11 typed operational producer/recipes](tickets/INDEX.md#o4-i0-03).
   실제 actions와 독립 pre/post 성공 판정 계약·authorized target 입력이 필요하다.
-- E1-07/E4-02/E4-04/E4-07은 실제 병목·독립 정책 실패 뒤에만 채택하는 조건부 변경이다.
+- Frozen5796 Large default timeout과 XL posting admission 거절이 재현됐다.
+  E4-02 source durable publication과 bounded authority 수리는 W2의 확정 작업이다.
+  E1-07/E4-04/E4-07은 실제 병목·독립 정책 실패 뒤에만 채택한다.
 - E1/E2/E3 및 scale/scanner/proof의 기존 구현은 실행 증거가 부족하다는 이유로 재작성하지 않는다.
-- Large/XL의 이전 default 실패는 새 F14 tier 결과로 수리 또는 제품 계약 변경을 판정한다.
+- Large full seal68.733s 중 explicit sync49.778s를 관측했다. Parent sync 묶기만으로
+  default30s 여유를 확보하지 못하므로 immutable pack/root와 reader/query budget을 함께 수리한다.
+  Delta/noop residual의 exclusive owner 비용은 추가 계측 후 판정한다.
   Bat 재발행은 외부 issuer의 original review pack/merged product pack 신원 재생이며 새 relevance 판정이 아니다.
 
 ## 별도 producer 연동
@@ -25,7 +29,9 @@
 
 - Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
 - 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.
-  나머지 tier/open-loop/restart·quiet-host 성능은 각 actual 결과를 기다린다.
+  Large default30s timeout과 XL preflight4M posting 거절은 `FAILED`다.
+  Large300s/256MiB는127.612s에 완료한 별도 진단이며 default closure가 아니다.
+  Open-loop/OS-child restart·quiet-host 성능은 actual 결과를 기다린다.
 - ready9 OpenGrok selected-request180은 완료; 전체 service/index 권위는 미완료다.
   Frozen5796 ready9 admissions·pair·SG/CS·full5 join은 완료 증거가 없다.
 - 이후 source/ADR/Justfile 변경의 proof는 새 epoch로 발행한다. 위 frozen 결과의 SHA는 변경하지 않는다.
@@ -36,7 +42,7 @@
 | --- | --- | --- |
 | W0 | I0: 후속 source/dirty/hunk owner와 claim/input 범위 확인 | Shared 단일 owner, 실제 source 영향·fresh namespaces. 상시 통합 규칙 |
 | W1 | E1: SQL/Zellij 최종 판단·Tailscale rubric·새742pairs·holdout 준비. E2: actual reader/index scope. E4: causal/full-caller profile | 각 input/quota/host 범위만 BLOCKED. 완료 raw 보존, 독립 strata/oracle·조건 판정 |
-| W2 | 확인된 defect 수리 또는 E1-07/E4-02/04의 조건부 최적화 | 실제 반례/비용 실패·accepted contract 뒤에만 code. Owner regression→I0 영향 검증 |
+| W2 | E4: 확인된 Large sync/XL bounded authority 수리. E1-07/E4-04 조건부 최적화 | Source pack/root·reader/query 한 번의 cutover, global cap/단계별 work·crash custody 및 independent oracle. Owner regression→I0 영향 검증 |
 | W3 | I0-02: selected source Contract/SDK/CI. E1-03: final revisions 및 남은3repo admission ISSUE | PREPARE→VALIDATE→ISSUE. Frozen old proof를 최신 전체 source로 재표기 금지 |
 | W4 | E2: ready required cells actual capture/independent replay/join·scope별 warmup parity. E4: A/B·capacity·qualified performance | Matching binaries/input/index/clock, 실제 host/schedule. Failed sibling은 ready cells를 막지 않음 |
 | W5 | E1: 마지막 unjudged union→labels/admission→independent scores/CI. E4: holdout 기반 정책 RCA | Qrel-only reuse 허용 여부 확인. Name/NL/no-answer/ARB/B09 분모·human/unseen 범위 별도 |

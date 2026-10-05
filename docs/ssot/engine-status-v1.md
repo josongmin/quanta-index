@@ -43,6 +43,13 @@ and current E3 owner rather than the retired unexecuted-counterexample wording.
 
 [OCT-04](../plans/oct-4-parallel-closure/tickets/INDEX.md) owns conditional
 optimization, missing inputs and remaining execution.
+Frozen5796 matching release diagnostics confirmed large default build/seal
+timeout and XL posting admission refusal before daemon startup. Full source
+publication still performs file/parent durable barriers per source; cold open
+globally verifies source and builds resident trigram authority. These are active
+capacity/cost repair boundaries under
+[E4-01/02/05](../plans/oct-4-parallel-closure/tickets/INDEX.md#o4-e4-05).
+Explicit timeout/retention diagnostic success does not close default capacity.
 [SEP-21](../plans/sep-21-search-plane-sota-hardening/tickets/CURRENT-RESIDUAL-2026-09-26.md)
 owns installed/paired/Linux/provider/release acceptance. Its R3 gap belongs to
 the external Semantica producer's independent expected semantic partition/omission

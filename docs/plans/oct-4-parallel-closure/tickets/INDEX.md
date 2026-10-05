@@ -9,8 +9,9 @@
 
 ## 현재 코드 잔여 — 2026-10-05 소스 대조
 
-현재 정리 기준: Quanta main `e32e81a8afb20f7d76c166fa2d5090904ade856c`와 문서 수정 overlay.
-직전 소스 감사 기준 `dcd3860e` 이후 HEAD 차이는 문서7개이며 Rust/Python 실행 코드는 동일하다.
+현재 정리 기준: Quanta main `fb62e133925dc1daa72bc815b9c77cb884716a10`와 문서 수정 overlay.
+Frozen5796 이후 main에는 문서·Justfile/CI/R5 tooling 변경이 있고 retrieval 제품 소스는 동일하다.
+아래 신규 actual은 clean5796과 그 matching binary의 결과이며 main formal proof로 승격하지 않는다.
 Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중복 없이 일치한다.
 아래는 실제 생산 경로·코드와 기존 결과를 대조한 잔여이며 새 full-suite/release qualification이 아니다.
 
@@ -19,16 +20,17 @@ Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중�
 | 우선·종류 | 할 작업 | 종료 조건·owner |
 | --- | --- | --- |
 | P0 · 검증 | 선택한 최신 source의 Contract/SDK·영향 runtime/public API/wire gates·hosted CI 실행 | Matching source/binary와 actual selected 결과. Frozen5796의791/191/27을 새 HEAD 결과로 바꾸지 않는다. [I0-02](#o4-i0-02) |
-| P1 · 실행→필요 시 수리 | F14 Large4,096/XL32,768 default capacity·open-loop·OS restart 실행 | 실제 timeout/posting-cap/resource 원인을 확인해 수리 또는 명시적 지원 계약 결정. Small16/Medium256 진단은 완료다. [E4-05](#o4-e4-05) |
+| P1 · 수리→검증 | Large4,096 default30s timeout 및 XL32,768 posting admission 거절 수리; open-loop·OS restart 실행 | Frozen5796에서도 두 default gate가 실패했다. Full source durable publication과 bounded file authority를 함께 수리하고 matching source에서 재실행한다. [E4-05](#o4-e4-05) |
 | P1 · 계측→필요 시 수리 | Full/delta/delete/no-op/reopen 전체 읽기·CPU·metadata·IO·memory/segment 누적 비용 분해 | Unchanged source 전수 읽기, cold-open 전역 인덱스, retained delete bitmap 및 NoMerge fanout 비용을 actual profile로 판정. Native segment 재사용 구현은 완료다. [E4-01](#o4-e4-01) |
 | P1 · 성능 판정 | Scanner on/off whole-call A/B·Semble phase 비용·1,196-row bootstrap full caller·정식 반복 성능 | 각 arm source/binary·출력 parity, 지속 host 관측과 사전 acceptance. Qualified speed는 최소5 fresh roots/route1,000 warm observations. [E4-03](#o4-e4-03), [E4-06](#o4-e4-06), [E2-05](#o4-e2-05), [E1-07](#o4-e1-07) |
 | P1 · 평가 실행 | SQL146/Zellij476·신규742pairs 판단, Tailscale rubric, admissions·required cells·5제품 capture/replay/join·최종 scores | AI quota/rubric 입력은 해당 범위만 `BLOCKED`. Ready cells는 별도로 실행한다. Exact/prefix/infix/components/default·explicit typo/no-answer/NL/ARB/B09 분모와 외부 index scope를 유지한다. [E1](#e1), [E2](#e2) |
 | P1 · 독립 평가 | 독립 holdout/license/exposure/gold 발행과 지원 declaration-name/span·typo 평가 | 실제 미사용 source/query family 및 source-attested gold, critical strata/underfill·supported unit 판정. File hit를 선언 회수로 세지 않는다. [E1-04](#o4-e1-04), [E1-05](#o4-e1-05) |
 | P2 · 운영 코드·릴리스 | Quanta typed deploy/activate/restore-forward producer·recipes·parser/checker/aggregate 연결; 실제 provider 및 installed Linux daemon/state/운영 실행 | 독립 pre/post 관측·actual host/config/state/retention/rollback 입력 뒤 구현·실행. 현재 운영 생산자는 미구현이고 대상 입력은 `BLOCKED`다. 기존 staged pair는 별도 연동 owner가 소비한다. [I0-03](#o4-i0-03) |
 
-확정된 Quanta 미구현은 운영 결과 생산자1묶음이다. 엔진 추가 수리는 capacity/cost actual 결과로 결정한다.
-Bootstrap 추가 최적화, durable group barrier, persistent token authority, 검색 정책 변경은
-병목·독립 gold·사전 계약이 성립할 때만 채택하는 조건부4건이다.
+확정된 Quanta 작업은 실패한 capacity/durable source authority 수리와 운영 결과 생산자다.
+Full sync 병목은 아래 actual로 확인했으며 delta/noop의 exclusive residual 원인은 추가 owner 계측이 필요하다.
+Bootstrap 추가 최적화, persistent token authority, 검색 정책 변경은
+병목·독립 gold·사전 계약이 성립할 때만 채택한다. Durable barrier 수리는 pack/root crash custody와 함께 검증한다.
 E3의 selection·7-route SDK binding·slow disk·timeout replay·operator 구현을 다시 만드는 작업은 없다.
 
 Quanta 실행 순서: source 영향 확인/검증 → matching capacity·cost·A/B → 확인된 원인 수리 및 영향 회귀
@@ -363,13 +365,23 @@ P1 · W1/W4 · F14 native 재사용·정확도 owner 회귀 `VERIFIED`; 전체 d
   Cold open도 committed source 전수를 검증·적재하고 두 전역 `TrigramIndex`를 구성한다
   (`file_authority.rs`, `sealed_generation/verify.rs`). F14 native 재사용은 이 전체 읽기/CPU와
   file-authority residency를 delta 비례 비용으로 바꾸지 않는다.
+- Frozen5796 Large 명시적 진단 `VERIFIED_DIAGNOSTIC`: 아래 E4-05 root에서 total127.612s,
+  full seal68.733s와 explicit sync49.778s(약72.4%)를 관측했다. Atomic file4,367회/25.108s,
+  atomic parent4,367회/24.646s다. Source4,096개 각각의 file/parent barrier가 생산 경로에 있다.
+  Delta seal12.711s/sync0.265s, noop14.733s/0.153s, delete14.393s/0.205s로
+  full sync와 다른 residual이다. 전수 읽기·hash/metadata 비용은 source에서 확인했으나
+  stage별 exclusive 시간은 아직 `NOT_RUN`이며 잔여 시간을 해당 원인으로 단정하지 않는다.
+  Delta logical growth83.252MB/changed source2,160bytes, sampled RSS538,050,560bytes 및
+  logical/source11.98배는 physical I/O·true peak·전체 비용 qualification이 아니다.
 - 완료: 명시적 clock/resource domain과 source-bound 결과로 주요 residual의 실제 원인을 설명한다.
 
 ### O4-E4-02
 
-P1 · 조건부W2 · group durable barrier 미채택; isolated sync 병목 조건 `NOT_RUN`.
+P1 · W2 · full sync 병목 actual 확인; source pack/root publication 수리·crash controls `NOT_RUN`.
 
-E4-01 실제 syscall cost가 지배할 때만 설계한다. File sync/rename/hardlink/directory/root publish/
+E4-01에서 source별 file/parent barrier의 full sync 비용을 확인했다. Parent sync만 묶으면
+file sync25.108s와 다른 work가 남으므로 immutable bounded source packs 및 manifest-last 발행을 함께 설계한다.
+File sync/rename/hardlink/directory/root publish/
 cleanup cut별 fault와 crash/reopen에서 old 또는 완전한 new root·참조 file/digest를 검증한다.
 Barrier 실패 후 seal/activate를 거절하고 inherited page custody를 유지한다.
 Power-loss 범위는 별도 실제 storage proof가 없으면 `NOT_RUN`이다.
@@ -397,8 +409,8 @@ cold-open/build/residency/cap/cancel 계약을 독립 검증한다. 비용·memo
 
 ### O4-E4-05
 
-P2 · W4 · typed scale/load/preflight/ANN 구현 완료; 이전 source default capacity gate `FAILED`.
-F14 matching release 바이너리 빌드 완료, 후속 tier actual은 아래 범위로 판정한다.
+P1 · W2/W4 · typed scale/load/preflight/ANN 구현 완료; frozen5796 default capacity gates `FAILED`.
+Matching release actual 및 별도 override 진단은 아래 범위로 판정한다.
 
 - 256/4,096/32,768 tiers의 matching release/profile/lifecycle/open-loop·OS restart를 판정한다.
   이전 source의 default large30s timeout과 xlarge4,000,461 memberships 대4,000,000 cap 거절을 보존한다.
@@ -410,8 +422,21 @@ F14 matching release 바이너리 빌드 완료, 후속 tier actual은 아래 �
   ·small16 actual은 `/private/tmp/qi-scale-f14-5796-20261005-v1-small`에서 exit0·4.861s,
   `VERIFIED_DIAGNOSTIC`이다. 같은 명령의 medium256 actual도
   `/private/tmp/qi-scale-f14-5796-20261005-v1-medium`에서 exit0·16.768s이며 clean/source/binary 전후 일치다.
-  Large/XL/open-loop/restart 및 qualified performance는 별도다.
-- large300s/256MiB diagnostic 성공 및4,096 OS restart 성공을 default 성공으로 바꾸지 않는다.
+  Open-loop/실제 OS-process restart 및 qualified performance는 별도다.
+- 동일 capture owner와 binary·seed에서 Large default `FAILED`:
+  `/private/tmp/qi-scale-f14-5796-20261005-v2-large-default`, producer exit1/capture exit2,
+  elapsed70.395s, `build_seal: ipc Read timed out after 30000 ms`. Client timeout 후 daemon work를
+  completed-request latency에 넣지 않는다. XL default도 `FAILED`:
+  `/private/tmp/qi-scale-f14-5796-20261005-v2-xlarge-default`, producer exit1/capture exit2,
+  elapsed1.852s, `source_preflight`에서 posting4,000,461 >4,000,000 거절이다.
+  이 값은 first exceeded count이며 전체 XL 수요가 아니다. Daemon은 시작하지 않았다.
+- 별도 Large `--client-timeout-ms 300000 --history-max-bytes 268435456` 진단은
+  `/private/tmp/qi-scale-f14-5796-20261005-v2-large-diagnostic`에서 producer/capture exit0,
+  elapsed127.612s·build68,742.902ms, warm32/errors0/timeouts0이며 source/binary 전후 일치다.
+  Full/delta/delete/noop와 같은 OS-process 내부 daemon 재시작을 포함하는 `VERIFIED_DIAGNOSTIC`다.
+  실제 OS-child restart proof는 포함하지 않는다. 실행 명령:
+  `uv run --project /Users/songmin/Documents/code-new/quanta-index --frozen --extra dev python -m tools.benchmark.retrieval.causal_cost_capture --cwd /Users/songmin/.codex/worktrees/oct5-f14-qualified-5796/quanta-index --binary /private/tmp/qi-retrieval-sdk-f14-5796a63f-20261005-v1/target/release/scale_matrix --source-revision 5796a63f7a813ae3ac3529ea7d281abd64b9db8f --binary-sha256 d28c7b480ebb25c68333aad37fcdb6e4e048da00e8cdee3a90bf86a408558e41 --tier large --seed 5864059738136528177 --max-seconds 600 --out-root /private/tmp/qi-scale-f14-5796-20261005-v2-large-diagnostic --client-timeout-ms 300000 --history-max-bytes 268435456`.
+- large300s/256MiB diagnostic 성공을 default 성공으로 바꾸지 않는다.
   지원 목표/latency/resource 계약을 결정한 뒤 원인 수리 또는 명시적 제품 계약 변경을 수행한다.
 - 완료: 각 tier/profile의 독립 source/result/count/oracle와 terminal, offered/served/errors/timeouts/drops
   reconciliation. Fixture 축소·cap 미세 상향만으로 요청 capacity를 통과시키지 않는다.

@@ -39,6 +39,8 @@ mod e2e_process_envelope;
 mod e2e_process_readiness;
 #[path = "e2e_ranked_pages.rs"]
 mod e2e_ranked_pages;
+#[path = "e2e_scale_process_restart.rs"]
+mod e2e_scale_process_restart;
 #[path = "e2e_semantic_budget_interruption.rs"]
 mod e2e_semantic_budget_interruption;
 #[path = "e2e_socket_access.rs"]

@@ -1464,6 +1464,13 @@ target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "searchd-runtime-e2e-scale-process-restart"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_scale_process_restart.rs"
+owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "searchd-runtime-e2e-history-order"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_history_order.rs"
 owner = "quanta-index-searchd-runtime"
