@@ -1982,6 +1982,7 @@ def _docker_utc_time(value: object) -> tuple[int, int]:
 
 
 def _validate_opengrok_snapshot_seal(config: dict, snapshot: dict) -> None:
+    """Check declared seal ordering; the caller's timestamp is not an independent attestation."""
     service = config["readonly_service"]
     receipt = _json(_read_control_file(Path(service["snapshot_receipt"])))
     if (

@@ -41,6 +41,46 @@
 
 E1 name-span producer/evaluator 및 E3 selection-retirement·maintenance cancellation·publish-timeout 구현은 현재 source에 이미 있다. 증거를 더 수집해야 하는 항목을 새 코드 결함으로 취급하지 않는다. barrier/token/storage 최적화는 채택한 계약이나 확인된 원인이 있을 때만 변경한다.
 
+### 추가 코드 감사 — 29개 티켓 대조
+
+현재 source/caller와 기존 독립 fixture를 기준으로 감사했다. 아래 `구현 있음`은 코드 존재·계약 검토 결과이며 모든 티켓의 실행·release qualification을 뜻하지 않는다. 이번에 확인한 추가 코드 결함은 모두 수리했다.
+
+| 티켓 | 코드 판정 | 실제 코드 잔여 또는 확인된 수리 |
+| --- | --- | --- |
+| E1-01 | 구현 있음·수리 | `holdout_review.validate_completed_forms`의 frozen 숫자/boolean 타입 혼동 거절 |
+| E1-02 | 구현 있음·수리 | 같은 검증기의 form/task/file typed equality 적용 |
+| E1-03 | 구현 있음 | suite/split/admission 검증·발행 경로 존재 |
+| E1-04 | 구현 있음 | name-span producer/native projection/evaluator 존재 |
+| E1-05 | 구현 있음 | holdout/split/leakage/source oracle 존재; corpus/라벨/license는 후속 입력 |
+| E1-06 | 구현 있음·수리 | final review pool의 동일 frozen binding 결함 수리 |
+| E1-07 | 조건부 | bounded numeric kernel/cache 존재; 추가 최적화는 full-caller 병목 조건 필요 |
+| E2-01 | 구현 있음 | completed clock/output replay 검증 존재 |
+| E2-02 | 구현 있음·수리 | Lucene FieldInfo/stored-field/posting metadata 거절 보완; readonly disk 관측의 loaded-reader/전체 universe flag 과장 수리 |
+| E2-03 | 구현 있음 | required-cell/admission scheduler와 sibling failure 분리 존재 |
+| E2-04 | 구현 있음 | native collector/consumer 및 five-product join 경로 존재 |
+| E2-05 | 구현 있음 | Semble parent phases와 worker/process 비용 귀속 존재 |
+| E2-06 | 구현 있음 | quality warmup0/protocol·qualified-speed refusal 존재 |
+| E3-01 | 구현 있음 | selected G1의 physical retirement 후 view refusal OS-child fixture 존재 |
+| E3-02 | NOT_APPLICABLE | 현 Accepted 계약은 retire-first typed refusal; pin transfer 미채택 |
+| E3-03 | 구현 있음 | seven-route one-RPC Active query·SDK selected-head binding 존재 |
+| E3-04 | 구현 있음 | owned meter/cancellation·slow-disk OS-child fixture 존재 |
+| E3-05 | 구현 있음 | 기본30초 SDK timeout child·Committed/restart/exact replay fixture 존재 |
+| E3-06 | 구현 있음 | auth-before-ring·wraparound·Linux 실제2UID fixture 존재 |
+| E4-01 | 구현 있음 | phases/resource 계측·BM25/format 수리 존재 |
+| E4-02 | 조건부 | group durable barrier는 sync 비용 지배 조건 미확인 |
+| E4-03 | 구현 있음 | scanner comparator·strict clocks/work/response parity 경로 존재 |
+| E4-04 | 조건부 | persistent token authority는 반복 scan 병목 조건 미확인 |
+| E4-05 | 구현 있음 | scale/preflight/open-loop typed refusal 존재; timeout/cap 상향은 별도 계약 변경 |
+| E4-06 | 구현 있음 | host admission/paired performance 검증 경로 존재 |
+| E4-07 | 조건부 | independent holdout/qrels 이후 정책 실패가 확인될 때 변경 |
+| I0-01 | 구현 있음 | source/ownership/registry control plane 존재 |
+| I0-02 | 구현 있음 | source-bound proof/SDK/admission issuer·portable verifier 존재 |
+| I0-03 | 계약 입력 필요 | P11 typed operational producer/recipes 미구현. 배포·활성화·restore-forward의 실제 명령과 독립 pre/post 성공 판정 계약이 미정 |
+
+구현 존재·이번 수리23개, 조건부4개, 현 계약 비적용1개, 설계 입력이 필요한 운영 코드1개다. P11은 기존 [S21-12](../../plans/sep-21-search-plane-sota-hardening/tickets/S21-12-cross-repo-terminal-receipt-cutover.md)가 독립 typed action authority를 요구한다. 이미 요청한 운영 계약을 임의로 채우거나 registry의 staged 명령을 실행 가능하다고 바꾸지 않는다.
+
+이번 focused 실행은 E1 `test_holdout_review.py`114passed, E2 `test_opengrok_index_scope.py`34passed 및 `test_live_lexical_external.py -k v2_single_product`5passed다. native metadata mutants8개는 수리 전 실제8failed를 확인했다. exact 명령·범위는 E1-01/E2-02 owning ticket에 기록했다. E3/Rust/모델/대규모 capture/성능/배포는 이번 추가 감사에서 `NOT_RUN`이다.
+
 ### 후속 qualification 실행 순서
 
 | 순서 / 웨이브 | 해야 할 일 | 현재 경계 |

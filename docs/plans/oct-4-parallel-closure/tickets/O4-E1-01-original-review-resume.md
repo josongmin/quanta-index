@@ -34,6 +34,13 @@ C3 240개 질의의 실제 판단을 완료하고 재사용 가능한 모델 cac
 
 ## 착수 입력
 
+### 2026-10-05 코드 우선 후속 수리
+
+- `validate_completed_forms`의 frozen form/task/file 필드 비교를 canonical typed JSON equality로 바꿨다. Python `True == 1`이나 `1.0 == 1`로 source binding·form slot·판정 threshold 변경이 통과하는 경로를 거절한다. E1-02/E1-06도 같은 canonical owner를 소비한다.
+- independent mutants는 form_slot bool, schema_version float, 실제 frozen int1 threshold의 bool 치환이다. threshold 기준 양식에 해당 값이 존재하는 positive fixture를 사용하며 필드 추가 거절을 typed-binding 검사로 오인하지 않는다.
+- `VERIFIED`: `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_holdout_review.py -q` —114passed/18.72s. 최초113passed/1failed는 신규 threshold fixture가 해당 필드를 기준 양식에 넣지 않아 다른 거절 경로를 만난 test expectation 실패였고 fixture를 바로잡은 뒤 전체 owner file을 재실행했다.
+- 이 결과는 양식·custody·라벨 발행/merge의 owner 회귀 범위이며 새 모델 판단이나 실제 final-label 발행은 아니다.
+
 - 외부 BASE: /Users/songmin/Documents/code-new/qi-b08-closeout-20261004-2i72kj91
 - 원본 c3-review-resume-quota-qcshswey/<repo>/actual-review.log, actual-review-launch.json, actual-review-terminal.json 및 유효 raw cache
 - frozen corpus checkout, original suite/query pack, review rubric/model identity. 서비스 사용 입력이 없으면 해당 모델 실행만 BLOCKED

@@ -27,6 +27,12 @@ SEP21 R0–R6는 proof-result authority, P03–P08, P09, semantic omission sourc
 
 ## 착수 입력
 
+### 코드 우선 재감사
+
+- P11의 세 operational recipe/typed result producer는 실제 미구현으로 남는다. existing source의 결과 parser/schema는 nextest/pytest test authority이며, registry는 이 staged action을 발행 가능한 proof로 승인하지 않는다.
+- 단순 host 미준비와 별개로 deploy/activate/restore-forward의 명령·독립 pre/post 관측·정확한 성공 판정 계약이 아직 없다. generic shell exit0이나 caller-written success JSON을 operational authority로 채택하지 않는다. 현재 issuer의 staged refusal은 유지한다.
+- 코드-only 감사에서 나머지 owner/registry control 경로의 확정 결함은 발견하지 못했다. 이 판단은 P11 구현 완료나 운영 qualification을 뜻하지 않는다.
+
 - current SEP21 residual ledger/proof authority와 실제 P03–P12 target inventory
 - exact Semantica/Quanta source pair·resolved dependency graph·real provider policy
 - authorized Linux host/path/config/state/retention/rollback window; 입력이 없으면 해당 operational stage BLOCKED
