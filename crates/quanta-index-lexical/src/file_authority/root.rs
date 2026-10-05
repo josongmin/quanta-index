@@ -12,7 +12,6 @@ use sha2::{Digest as _, Sha256};
 use crate::channel_payloads::{decode_cbor_exact, encode_cbor};
 
 pub(super) const FORMAT: u32 = 15;
-pub(super) const FILE_NAME: &str = "root.cbor";
 pub(super) const PREFIX_BITS: u16 = 8;
 pub(super) const TERM_DIRECTORY_ROW_CHARGE: u64 = 64;
 pub(super) const TERM_DIRECTORY_BLOCK_CHARGE: u64 = 128;
@@ -43,7 +42,7 @@ pub(crate) struct AuthorityPolicy {
 }
 
 impl AuthorityPolicy {
-    pub fn digest(self) -> [u8; 32] {
+    pub(super) fn digest(self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"quanta-file-authority-policy-v15\0");
         for value in [
@@ -453,7 +452,7 @@ impl AuthorityRoot {
         Ok(charge)
     }
 
-    pub fn encode(&self, policy: AuthorityPolicy) -> Result<Vec<u8>, String> {
+    pub(super) fn encode(&self, policy: AuthorityPolicy) -> Result<Vec<u8>, String> {
         self.validate(policy)?;
         let bytes = encode_cbor(&wire(self), "file authority v15 root")
             .map_err(|error| invalid(&error.to_string()))?;
@@ -465,7 +464,7 @@ impl AuthorityRoot {
         Ok(bytes)
     }
 
-    pub fn decode(bytes: &[u8], policy: AuthorityPolicy) -> Result<Self, String> {
+    pub(super) fn decode(bytes: &[u8], policy: AuthorityPolicy) -> Result<Self, String> {
         if u64::try_from(bytes.len()).map_err(|_| invalid("root byte count overflow"))?
             > policy.max_root_bytes
         {
@@ -528,7 +527,7 @@ impl AuthorityRoot {
         Ok(root)
     }
 
-    pub fn validate(&self, policy: AuthorityPolicy) -> Result<(), String> {
+    pub(super) fn validate(&self, policy: AuthorityPolicy) -> Result<(), String> {
         if self.policy_sha256 != policy.digest() {
             return Err(invalid("policy identity differs; rebuild required"));
         }
@@ -557,7 +556,7 @@ impl AuthorityRoot {
         {
             return Err(invalid("partition term count differs from surface"));
         }
-        self.term_directory_charge(policy)?;
+        let _directory_charge = self.term_directory_charge(policy)?;
         if self
             .packs
             .iter()
@@ -631,12 +630,15 @@ impl AuthorityRoot {
             if row.pack_sha256 != pack.sha256 {
                 return Err(invalid("source pack binding differs"));
             }
-            used_pack_prefixes.insert((pack.prefix_bits, pack.prefix));
-            digest_per_pack.insert((pack.prefix_bits, pack.prefix, row.source.source_sha256));
+            // Many source rows can share one pack and one packed body.
+            let _new_pack = used_pack_prefixes.insert((pack.prefix_bits, pack.prefix));
+            let _new_body =
+                digest_per_pack.insert((pack.prefix_bits, pack.prefix, row.source.source_sha256));
             let path = matching_partition(&key_digest, &self.path_postings)?;
             let content = matching_partition(&key_digest, &self.content_postings)?;
-            used_path_prefixes.insert((path.prefix_bits, path.prefix));
-            used_content_prefixes.insert((content.prefix_bits, content.prefix));
+            // Many source rows can share one posting bucket.
+            let _new_path = used_path_prefixes.insert((path.prefix_bits, path.prefix));
+            let _new_content = used_content_prefixes.insert((content.prefix_bits, content.prefix));
         }
         if source_memberships != memberships {
             return Err(invalid("source and posting membership totals differ"));

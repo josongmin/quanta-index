@@ -126,8 +126,17 @@ def test_current_file_verdict_refuses_typed_alias_and_source_closure_tamper(curr
             _replay_file_pair_verdict(repo, paths["suite"], paths["pair_manifest"], mutant)
     manifest = json.loads(paths["pair_manifest"].read_bytes())
     closure = paths["pair_manifest"].parent / manifest["artifacts"]["driver_source_closure"]
+    # Closure custody is canonical JSON: formatting alone is not a source mutation.
     closure.write_bytes(closure.read_bytes() + b" ")
-    with pytest.raises((ValueError, run.RunError)):
+    _replay_file_pair_verdict(repo, paths["suite"], paths["pair_manifest"], original)
+    changed = json.loads(closure.read_bytes())
+    assert changed["files"][0]["sha256"] != "0" * 64
+    changed["files"][0]["sha256"] = "0" * 64
+    core = {key: changed[key] for key in ("schema_version", "profile", "revision", "roots", "files")}
+    changed["digest"] = ev.digest(ev.canonical(core))
+    assert changed["digest"] != manifest["provenance"]["quanta"]["source_closure_digest"]
+    write(closure, changed)
+    with pytest.raises(ValueError, match="verdict differs from canonical replay"):
         _replay_file_pair_verdict(repo, paths["suite"], paths["pair_manifest"], original)
 
 

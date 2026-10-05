@@ -88,10 +88,6 @@ pub(super) struct CommittedBase<'a> {
 pub(super) struct ProducedAuthority {
     pub root: AuthorityRoot,
     pub root_bytes: Vec<u8>,
-    /// Digests and lengths offered to the sink; no blob bytes are retained.
-    pub emitted_blobs: BTreeMap<[u8; 32], u64>,
-    /// Base blob references retained without rereading their bytes.
-    pub reused_blobs: BTreeSet<[u8; 32]>,
 }
 
 struct UpdatedInput<'a> {
@@ -170,7 +166,14 @@ fn emit_blob(
     // Always call the sink, including duplicates such as empty content blocks.
     // Its read-after-write equality check handles same-length SHA collisions.
     sink(sha256, &bytes).map_err(ProducerError::corrupt)?;
-    emitted.insert(sha256, length);
+    if emitted
+        .insert(sha256, length)
+        .is_some_and(|prior| prior != length)
+    {
+        return Err(ProducerError::corrupt(
+            "content-address collision length changed after sink",
+        ));
+    }
     Ok(sha256)
 }
 
@@ -318,16 +321,23 @@ fn source_rows<'a>(
                         ));
                     }
                 }
-                touched_ids.insert(source_id);
-                updates.insert(
-                    source_id,
-                    UpdatedInput {
+                if !touched_ids.insert(source_id) {
+                    return Err(ProducerError::invalid("updated source ID is duplicated"));
+                }
+                if updates
+                    .insert(
                         source_id,
-                        row_index,
-                        bytes: *bytes,
-                        text_admitted: *text_admitted,
-                    },
-                );
+                        UpdatedInput {
+                            source_id,
+                            row_index,
+                            bytes: *bytes,
+                            text_admitted: *text_admitted,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(ProducerError::invalid("updated source ID is duplicated"));
+                }
                 SourceRow {
                     source: source.clone(),
                     text_admitted: *text_admitted,
@@ -358,7 +368,9 @@ fn source_rows<'a>(
     let current_ids: BTreeSet<u64> = rows.iter().map(|row| row.source_id).collect();
     for old in base_by_key.values() {
         if !current_ids.contains(&old.source_id) {
-            touched_ids.insert(old.source_id);
+            if !touched_ids.insert(old.source_id) {
+                return Err(ProducerError::corrupt("retired source ID is duplicated"));
+            }
         }
     }
     Ok((rows, changed_bytes, updates, touched_ids, next_id))
@@ -373,19 +385,19 @@ fn produce_packs(
     limits: &CodecLimits,
     emitted: &mut BTreeMap<[u8; 32], u64>,
     sink: &mut dyn FnMut([u8; 32], &[u8]) -> Result<(), String>,
-    reused: &mut BTreeSet<[u8; 32]>,
 ) -> Result<Vec<Partition>, ProducerError> {
     let mut groups: BTreeMap<[u8; 32], (BTreeSet<[u8; 32]>, Vec<usize>)> = BTreeMap::new();
     for (index, row) in rows.iter().enumerate() {
         let key = source_key_digest(&row.source).map_err(ProducerError::invalid)?;
         let group = groups.entry(prefix(&key, bits)).or_default();
-        group.0.insert(row.source.source_sha256);
+        // Identical source bytes under distinct source keys share one pack body.
+        let _new_body = group.0.insert(row.source.source_sha256);
         group.1.push(index);
     }
     let mut base_groups: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> = BTreeMap::new();
     for old in base.into_iter().flat_map(|base| base.root.sources.iter()) {
         let key = source_key_digest(&old.source).map_err(ProducerError::corrupt)?;
-        base_groups
+        let _new_body = base_groups
             .entry(prefix(&key, bits))
             .or_default()
             .insert(old.source.source_sha256);
@@ -401,8 +413,9 @@ fn produce_packs(
         let old_partition = base_partitions.get(&bucket).copied();
         let old_digests = base_groups.get(&bucket);
         let descriptor = if old_partition.is_some() && old_digests == Some(&digests) {
-            let prior = (*old_partition.expect("checked above")).clone();
-            reused.insert(prior.sha256);
+            let prior = (*old_partition
+                .ok_or_else(|| ProducerError::corrupt("unchanged pack descriptor is missing"))?)
+            .clone();
             prior
         } else {
             let mut source_bytes: BTreeMap<[u8; 32], Vec<u8>> = BTreeMap::new();
@@ -424,7 +437,11 @@ fn produce_packs(
                 let bytes = base_blob(base, prior)?;
                 let view = decode_source_pack(&bytes, limits).map_err(codec_base)?;
                 for (digest, body) in view.entries() {
-                    source_bytes.insert(digest, body.to_vec());
+                    if source_bytes.insert(digest, body.to_vec()).is_some() {
+                        return Err(ProducerError::corrupt(
+                            "base pack body digest is duplicated",
+                        ));
+                    }
                 }
                 drop(view);
                 drop(bytes);
@@ -446,13 +463,16 @@ fn produce_packs(
                     let bytes: &[u8] = changed_bytes
                         .get(digest)
                         .copied()
-                        .unwrap_or_else(|| source_bytes.get(digest).expect("checked above"));
-                    SourcePackInput {
+                        .or_else(|| source_bytes.get(digest).map(Vec::as_slice))
+                        .ok_or_else(|| {
+                            ProducerError::corrupt("pack body is missing after inventory check")
+                        })?;
+                    Ok(SourcePackInput {
                         digest: *digest,
                         bytes,
-                    }
+                    })
                 })
-                .collect();
+                .collect::<Result<_, ProducerError>>()?;
             let cloned_body_bytes = source_bytes.values().try_fold(0_u64, |sum, body| {
                 sum.checked_add(
                     u64::try_from(body.len())
@@ -602,7 +622,11 @@ fn load_old_postings(
         for (gram, _, ids) in view.iter_terms() {
             for id in ids {
                 if !touched_ids.contains(&id) {
-                    insert_membership(&mut postings, gram, id, scratch, max_scratch)?;
+                    if !insert_membership(&mut postings, gram, id, scratch, max_scratch)? {
+                        return Err(ProducerError::corrupt(
+                            "base posting repeats a source membership",
+                        ));
+                    }
                 }
             }
         }
@@ -685,7 +709,6 @@ fn produce_posting_buckets(
     max_bucket_scratch_bytes: usize,
     emitted: &mut BTreeMap<[u8; 32], u64>,
     sink: &mut dyn FnMut([u8; 32], &[u8]) -> Result<(), String>,
-    reused: &mut BTreeSet<[u8; 32]>,
 ) -> Result<(Vec<Partition>, Vec<Partition>), ProducerError> {
     if max_bucket_scratch_bytes <= SCRATCH_BITMAP_BYTES {
         return Err(ProducerError::limit(
@@ -703,10 +726,13 @@ fn produce_posting_buckets(
     if let Some(base) = base {
         for row in &base.root.sources {
             let key = source_key_digest(&row.source).map_err(ProducerError::corrupt)?;
-            old_groups
+            if !old_groups
                 .entry(prefix(&key, bits))
                 .or_default()
-                .insert(row.source_id);
+                .insert(row.source_id)
+            {
+                return Err(ProducerError::corrupt("base source ID is duplicated"));
+            }
         }
         base_path.extend(base.root.path_postings.iter().map(|row| (row.prefix, row)));
         base_content.extend(
@@ -736,8 +762,14 @@ fn produce_posting_buckets(
             && old_content.is_some()
             && old_ids.is_some_and(|ids| ids == &current_ids && ids.is_disjoint(touched_ids));
         let (path, content) = if unchanged {
-            let path = (*old_path.expect("checked above")).clone();
-            let content = (*old_content.expect("checked above")).clone();
+            let path = (*old_path.ok_or_else(|| {
+                ProducerError::corrupt("unchanged path posting descriptor is missing")
+            })?)
+            .clone();
+            let content = (*old_content.ok_or_else(|| {
+                ProducerError::corrupt("unchanged content posting descriptor is missing")
+            })?)
+            .clone();
             charge_term_directory(
                 &mut term_directory_charge,
                 u64::from(path.terms),
@@ -750,8 +782,6 @@ fn produce_posting_buckets(
             {
                 return Err(ProducerError::limit("resident heap exceeds policy"));
             }
-            reused.insert(path.sha256);
-            reused.insert(content.sha256);
             (path, content)
         } else {
             let mut scratch = SCRATCH_BITMAP_BYTES;
@@ -940,7 +970,6 @@ pub(super) fn produce_authority(
     let (mut rows, changed_bytes, updates, touched_ids, next_source_id) =
         source_rows(current, base.as_ref(), policy)?;
     let mut emitted_blobs = BTreeMap::new();
-    let mut reused_blobs = BTreeSet::new();
     let packs = produce_packs(
         &mut rows,
         &changed_bytes,
@@ -950,7 +979,6 @@ pub(super) fn produce_authority(
         &limits,
         &mut emitted_blobs,
         sink,
-        &mut reused_blobs,
     )?;
     let (path_postings, content_postings) = produce_posting_buckets(
         &mut rows,
@@ -963,7 +991,6 @@ pub(super) fn produce_authority(
         max_bucket_scratch_bytes,
         &mut emitted_blobs,
         sink,
-        &mut reused_blobs,
     )?;
     let root = AuthorityRoot {
         policy_sha256: policy.digest(),
@@ -974,12 +1001,7 @@ pub(super) fn produce_authority(
         content_postings,
     };
     let root_bytes = root.encode(policy).map_err(ProducerError::invalid)?;
-    Ok(ProducedAuthority {
-        root,
-        root_bytes,
-        emitted_blobs,
-        reused_blobs,
-    })
+    Ok(ProducedAuthority { root, root_bytes })
 }
 
 #[cfg(test)]
@@ -1039,8 +1061,8 @@ mod tests {
                 if previous != bytes {
                     return Err("content collision".into());
                 }
-            } else {
-                written.insert(sha, bytes.to_vec());
+            } else if written.insert(sha, bytes.to_vec()).is_some() {
+                return Err("content digest unexpectedly replaced".into());
             }
             Ok(())
         };
@@ -1094,8 +1116,6 @@ mod tests {
         );
         assert_eq!(next.root_bytes, base.root_bytes);
         assert_eq!(next.root.sources[0].resident_heap_bytes, 1103);
-        assert!(next.emitted_blobs.is_empty());
-        assert!(!next.reused_blobs.is_empty());
     }
 
     #[test]
@@ -1162,8 +1182,8 @@ mod tests {
                 if previous != bytes {
                     return Err("content collision".into());
                 }
-            } else {
-                base_blobs.insert(sha, bytes.to_vec());
+            } else if base_blobs.insert(sha, bytes.to_vec()).is_some() {
+                return Err("base digest unexpectedly replaced".into());
             }
             Ok(())
         };
@@ -1196,8 +1216,8 @@ mod tests {
                 if previous != bytes {
                     return Err("content collision".into());
                 }
-            } else {
-                output.insert(sha, bytes.to_vec());
+            } else if output.insert(sha, bytes.to_vec()).is_some() {
+                return Err("output digest unexpectedly replaced".into());
             }
             Ok(())
         };
@@ -1222,7 +1242,7 @@ mod tests {
             base.root.sources[0].source_id
         );
         assert_eq!(delta.root.next_source_id, base.root.next_source_id);
-        assert!(!delta.emitted_blobs.is_empty());
+        assert!(!output.is_empty(), "replacement must emit a changed object");
     }
 
     #[test]
