@@ -61,6 +61,12 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+- 후속 통합 source7fb46415에서 benchmark manual Serialize2곳과 전체 derive gate를 정리했다.
+  Module cycle·test authority·prompt lint·Ruff도 `VERIFIED`다. 현재 F15 actual은 host lock 대기 중이다.
+  Scale 최종 SDK caller/binding과 공개 API rendering, matching Contract/fresh SDK는 아직 종료하지 않았다.
+- Ready9 final static 원본90/admission73/Bat105/OG39,669파일과 runtime 감사 및 guard9/9가 통과했다.
+  Source107 helper3개의 relocated lookup 수리는 외부 guarded 후보다. 새 proof와 host slot 전달 이후
+  actual admission/pair/SG-CS/replay/full5를 진행한다. 정적 준비를 actual 결과로 세지 않는다.
 - Sidebar 회수: Ready9 OG9/9 capture·independent replay는source63ac에서 `VERIFIED`다.
   Scanner fixed338/79files/2,030completed response parity는sourcef2dfe089의 explicit allow-incomplete
   diagnostic에서 `VERIFIED`; strict symbol coverage·qualified speed는 그 결과에 포함되지 않는다.

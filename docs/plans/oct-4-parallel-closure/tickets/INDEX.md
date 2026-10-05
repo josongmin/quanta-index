@@ -11,6 +11,16 @@
 
 ### Sidebar 실행 결과 회수
 
+- 후속 통합 기준은 `7fb46415ae5a74601f714d09ab8b24d82418ade6`이다. Benchmark 직렬화2곳의
+  manual Serialize 수리는 main에 반영됐고 전체 derive allowlist·owned rustfmt·diff 검사가 `VERIFIED`다.
+  Module cycle·test authority·prompt lint·Ruff check/format도 통과했다. F15 actual 회귀는 shared host lock
+  대기 중이며 실행 완료로 세지 않는다. Scale의 최종 SDK caller/binding 수리는 아직 관리 worktree에 있다.
+- Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
+  Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
+  삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
+  Actual admission/pair/full5는 새 selected-source proof·runtime·host slot 전달 전 `NOT_RUN`이다.
+- Public API 담당은 새 contract 업로드 API baseline 후보를 준비했다. 실제 nightly rendering/consumer
+  판정은 Scale 최종 bytes를 포함한 source에서 수행해야 하며 현재 완료 증거가 없다.
 - 확인 시 main은 clean `bc18e67e63ebd5914bb679d2aeb25ae498c4d2f9`였다. 새 bounded source-upload
   코드가 추가됐으며 이전 Clippy/598 lexical/Frozen5796 proof를 그 source의 최종 증거로 승격하지 않는다.
 - Ready9 OG는 source63ac에서9/9 capture·독립 `live_lexical_external.py --verify`가 `VERIFIED`다.
@@ -61,7 +71,7 @@ Git `52980f58`의 29개 ticket ID와 현재29개 고유 heading은 누락·중�
 | P0 · 검증 | 선택한 최신 source의 Contract/SDK·영향 runtime/public API/wire gates·hosted CI 실행 | Matching source/binary와 actual selected 결과. Frozen5796의791/191/27을 새 HEAD 결과로 바꾸지 않는다. [I0-02](#o4-i0-02) |
 | P1 · 수리→검증 | Large4,096 default30s timeout 및 XL32,768 posting admission 거절 수리; open-loop·OS restart 실행 | Frozen5796에서도 두 default gate가 실패했다. Full source durable publication과 bounded file authority를 함께 수리하고 matching source에서 재실행한다. [E4-05](#o4-e4-05) |
 | P1 · 계측→필요 시 수리 | Full/delta/delete/no-op/reopen 전체 읽기·CPU·metadata·IO·memory/segment 누적 비용 분해 | F15 변경 bucket 생산·cold 전수 검증·selected posting read, retained delete bitmap 및 NoMerge fanout 비용을 actual profile로 판정. Native segment 재사용 구현은 완료다. [E4-01](#o4-e4-01) |
-| P1 · 성능 판정 | Scanner on/off whole-call A/B·Semble phase 비용·1,196-row bootstrap full caller·정식 반복 성능 | 각 arm source/binary·출력 parity, 지속 host 관측과 사전 acceptance. Qualified speed는 최소5 fresh roots/route1,000 warm observations. [E4-03](#o4-e4-03), [E4-06](#o4-e4-06), [E2-05](#o4-e2-05), [E1-07](#o4-e1-07) |
+| P1 · 성능 판정 | 완료한 Scanner diagnostic A/B의 범위 판정·Semble phase 비용·1,196-row bootstrap full caller·정식 반복 성능 | Scanner fixed338 diagnostic parity는 완료다. 유지/철회와 qualified speed는 사전 acceptance·지속 host 관측 및 최소5 fresh roots/route1,000 warm observations로 별도 판정. [E4-03](#o4-e4-03), [E4-06](#o4-e4-06), [E2-05](#o4-e2-05), [E1-07](#o4-e1-07) |
 | P1 · 평가 실행 | SQL146/Zellij476·신규742pairs 판단, Tailscale rubric, admissions·required cells·5제품 capture/replay/join·최종 scores | AI quota/rubric 입력은 해당 범위만 `BLOCKED`. Ready cells는 별도로 실행한다. Exact/prefix/infix/components/default·explicit typo/no-answer/NL/ARB/B09 분모와 외부 index scope를 유지한다. [E1](#e1), [E2](#e2) |
 | P1 · 독립 평가 | 독립 holdout/license/exposure/gold 발행과 지원 declaration-name/span·typo 평가 | 실제 미사용 source/query family 및 source-attested gold, critical strata/underfill·supported unit 판정. File hit를 선언 회수로 세지 않는다. [E1-04](#o4-e1-04), [E1-05](#o4-e1-05) |
 | P2 · 운영 코드·릴리스 | Quanta typed deploy/activate/restore-forward producer·recipes·parser/checker/aggregate 연결; 실제 provider 및 installed Linux daemon/state/운영 실행 | 독립 pre/post 관측·actual host/config/state/retention/rollback 입력 뒤 구현·실행. 현재 운영 생산자는 미구현이고 대상 입력은 `BLOCKED`다. 기존 staged pair는 별도 연동 owner가 소비한다. [I0-03](#o4-i0-03) |
@@ -448,7 +458,15 @@ Power-loss 범위는 별도 실제 storage proof가 없으면 `NOT_RUN`이다.
 
 ### O4-E4-03
 
-P1 · W1/W4 · scanner A/B comparator/CLI·independent 회귀 구현 완료, whole-call 결정 미완료.
+P1 · W1/W4 · scanner A/B source-bound diagnostic 완료, qualified 유지/철회 판정 미완료.
+
+- Sourcef2dfe089의 fixed338queries/79files 두 fresh release arms에서 capture/custody와
+  canonical·independent whole-call parity가 `VERIFIED`다. 총2,030responses(arm별 cold1/warmup338/measured676).
+  Explicit allow-incomplete lexical-file profile이며 ParseFailed6facts를 숨기지 않았다.
+  Unicode control median32.3997085ms, ASCII candidate37.1435625ms, paired relative median+12.58468%였다.
+  Shared host·순차2repetitions의 diagnostic이며 일반 speed/adoption 판정으로 승격하지 않는다.
+  `/private/tmp/qis.utp62qk5/owner-result.md`; source/resource/span guarded3path는 main에 통합했다.
+  Focused55cases/29.26s는 이 owner snapshot 결과다.
 
 - 각 arm의 source→searchd/runner binary 관계를 별도 build 증거로 먼저 결속한다.
   Scanner만 다른 source/input/observation clocks와 독립 tokenizer/full-DP
@@ -457,7 +475,8 @@ P1 · W1/W4 · scanner A/B comparator/CLI·independent 회귀 구현 완료, who
 - Canonical clean/one-overlay source identity와 fresh build/capture producer를 반영했다.
   Whole-file SHA 고정 대신 `code-search-typo-unicode-control-v1`의 고정 변환을 독립 재계산한다.
   `uv run --frozen --extra dev python -m pytest -q tools/benchmark/retrieval/test_scanner_source_identity.py tools/benchmark/retrieval/test_scanner_build_custody.py tools/ci/tests/test_query_scanner_ab.py`
-  →49passed·28.60s, `VERIFIED` owner scope. 실제 두 arm build/capture/whole-call 판정은 `NOT_RUN`이다.
+  →49passed·28.60s는 historical owner scope다. 후속 두 arm build/capture/whole-call diagnostic은
+  위 결과로 완료됐으며 qualified host/acceptance·독립 tokenizer/full-DP 판정은 `NOT_RUN`이다.
 - bytes/span/case/order/status/cursor/work/config parity를 유지하고 mixed Unicode, short names,
   token cap/cancellation/cache identity를 검증한다. child 개선이 whole-call 악화를 덮지 않는다.
 - 실행 진입점: `uv run --frozen --extra dev python tools/benchmark/retrieval/query_timing_overhead.py --help`.
