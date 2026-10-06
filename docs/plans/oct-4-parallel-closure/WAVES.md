@@ -5,20 +5,26 @@
 아래는 **Quanta에서 남은 실행 순서**다. [작업표](tickets/INDEX.md#quanta에서-할-작업)가
 현재 범위를 소유하며 외부 producer 연동은 아래 별도 기록에 보존한다.
 
-## 최신 검증 순서 — 2026-10-06 정적 감사 후속
+## 최신 검증 순서 — 2026-10-06 최종 통합
 
 | 웨이브 | 작업 | 현재 판정 |
 | --- | --- | --- |
-| S0 정적 수리 | EOF interruption, checked memory envelope, 동일 dispatch deadline, F15 할당 전 admission, causal capture/portable validator executable custody |6범주 구조적 수정·정적 검토 완료. 코드 checkpoint86fb23f0; Python 제어 fixture148passed·5.92s |
-| S1 변경 소스 집중 검증 | 고정 Unicode 출력·scratch 초과 거절, posting 경계·독립 census, EOF 취소·기존 만료 deadline, u64 overflow·거대 dispatch duration 회귀 | Python capture19/portable129 fixture 및 최신main focused84+native corpus decode1 actual Rust 회귀와 config memory6개 `VERIFIED`; runtime/SDK 영향 범위 확인 중 |
-| S2 실제 제품 회귀 | 동일 소스 daemon SDK 경로, 게시·delta/delete·재시작, 취소 뒤 복구 | 별도 frozen492 XL+query600000ms exit0·287.843s, main4a SDK27/27·20.287s 및 portable replay exit0. S0 후속 Rust 수정의 결과가 아님 |
-| S3 전체 판정 | whole Rust/strict/API/hosted CI, native capacity, Ready9 actual capture/replay/join 및 독립 성능 판정 | 별도 main4a unit2790+runtime3 통과; 최신main module/API actual gate와 bench registry14개 통과. Strict/hosted 전체 판정 진행 중. 기능 회귀를 RSS/latency qualification으로 승격하지 않음 |
+| S0 구조적 수리·통합 | EOF cancellation, checked memory envelope, 동일 dispatch deadline, F15 할당 전 admission, capture/validator executable custody 및 CI strict 수리 | 완료. 엔진2·SDK14 branch commits 모두 patch-equivalent; 추가 cherry-pick 없음. 최종 제품 소스e37123eb |
+| S1 영향 owner 검증 | Unicode·native scratch/refusal·posting/cold census·EOF·overflow·dispatch 및 policy artifact | Focused84·native decode 및 fixture 후속 회귀, 제어148, open-loop20 `VERIFIED` |
+| S2 실제 제품 회귀·proof | 동일 소스 daemon SDK, generation restart/rollback·owner lease·Unicode/envelope 및 canonical Contract | e371 SDK27, Contract Python793/Rust191, runtime15 actual `VERIFIED`. 별도 portable replay 및 동결7role 재배치 validator exit0 |
+| S3 전체 CI 종료 회수 | Whole Rust/strict/API 및 Python/의존성 정책 | Source998/e371 whole strict·API `VERIFIED`. Unicode exact feature set 정책 수리c7ca71b2의 `just rust-deny` exit0. e371 whole nextest 실행 중, 새 whole CI 최종 판정 미발행 |
+| S4 Ready capture/replay | CS9repos/180tasks actual capture와9개 독립 replay | Capture source09103820·기존4/9 및268raw files 보존; 현재6/9 완료, 남은3+독립9 replay 실행 중. SG/OG 실제 서비스는 `BLOCKED` |
+| S5 입력별 qualification | Matching Large/XL cost/capacity·timing/RSS, 독립 labels/holdout·5제품 join·운영 target | Selected correctness와 별도. 필수 service/rubric/target/독립 관측 입력이 없는 해당 scope는 `BLOCKED`; 미실행 qualification은 `NOT_RUN` |
 
-S0 요청은 정적 감사→구조적 수정→정적 검증이었다. 후속 사용자 요청으로 완료 변경을 main에
-통합하고 S1/S2/S3 검증을 실행한다. 기존 debug 캐시를 사용하며 새 release build는 등록하지 않았다. 기존 Scale 채팅 실행은 자기 고정 소스의 별도 검증이며 최신 main의
-후속 수정에 소급하지 않는다. 상세 결함/수정/명령 결과는 [잔여 인덱스](tickets/INDEX.md#최신-정적-감사-및-수정)에 둔다.
+Rust·제품 실행은 debug cache를 사용했고 새 release build는 등록하지 않았다.
+후속c7ca는 `deny.toml`만 변경하며 Rust/Cargo/feature graph는 e371과 동일하다.
+영속 증빙·명령·과거492 XL/4a whole-unit 결과의 경계는
+[최신 실행 검증](tickets/INDEX.md#최신-통합-소스의-실행-검증)이 소유한다.
+P11 공통 typed producer/recipes/parser/checker/aggregate는 통합 완료이며 실제 target adapter 입력은 `BLOCKED`다.
 
 ## 앞선 코드 우선 체크포인트
+
+아래는 과거 source별 당시 판정이다. 현재 완료·잔여는 위S0–S5와 단일 잔여 인덱스가 소유한다.
 
 - Manifest allocation bound·staged upload cancellation 및 open-loop artifact/CLI의 stale Scale gold를
   main에 반영했다. Manifest3paths는 patch6c039748의 guards로 통합했으며 collection count·행별 node
@@ -67,7 +73,7 @@ S0 요청은 정적 감사→구조적 수정→정적 검증이었다. 후속 �
 Ready9 `01a10d0b-b1dd-72e1-9744-cab043867364`,
 Scale `01a10d0b-bc57-7662-a2d3-315c1a07fdb5`,
 Scanner `01a10d0b-c4c2-7be1-9a67-2a0482724e4b`이며 I0는 원래 통합 채팅에 남는다.
-조사·수정·준비는 병렬, 현재 host actual pipeline은 Ready9→Scale→Scanner 순서로 예약한다.
+조사·수정·준비는 병렬이며 actual은 shared admission으로 직렬 실행한다. Root 최종 runtime/SDK/Contract와 Scale open-loop는 종료했고 현재 Ready9 CS capture/replay가 해당 실행을 소유한다.
 별도 채팅 담당은 각자 actual 실행까지 소유하며 이전 subagent-only 실행 제한을 적용하지 않는다.
 Host slot·terminal outcome/cleanup 조정은 `/private/tmp/qi-sidebar-dispatch-20261006-v1/`에 둔다.
 인계 문서는 각각 `/private/tmp/qi-parallel-scale-20261006-v1/`,
@@ -91,10 +97,10 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 - Main4a5b59ef 이후 추가로 확인한6범주의 결함과 수리는 위S0 및 잔여 인덱스가 소유한다.
   Frozen492 configured XL·main4a SDK27/portable proof 복구는 `VERIFIED`이며 최신 Rust 수정의
-  행동 회귀·전체 Rust/CI·Ready9 실제 집계는 실행 잔여다. Ready9 final-v6 runtime 분리는
+  행동 회귀·전체 Rust/CI·Ready9 실제 집계는 당시의 실행 잔여였다. Ready9 final-v6 runtime 분리는
   담당43control PASS·55bindings 유지 기록이 있으나 임시 수정본 부재로 복구·새 delta 검토·인계가
-  남는다. Scale 공유 profile 집중 Rust의 담당 `VERIFIED`/exit0 기록도 회수했다. 운영 P11 실행기·
-  독립 관측·parser/checker/aggregate/recipes는 별도 조건부 코드 잔여이며 대상 입력은 `BLOCKED`다.
+  당시에 남았다. 현재 CS 복구와 최신 proof는 위S2–S4를 따른다. Scale 공유 profile 집중 Rust의 담당 `VERIFIED`/exit0 기록도 회수했다. 운영 P11 공통 실행기·
+  parser/checker/aggregate/recipes는 이후 통합 완료됐으며 실제 target 입력은 `BLOCKED`다.
 - 복구 전 확인 시 main4a5b59ef는 clean이었다. Root 세션67824/82122는 존재하지 않으며
   Contract/SDK/configured XL/Ready9 제어의 기존 `/private/tmp` 출력과 Scale 선택565 작업트리도
   현재 없다. 담당 채팅에는 whole-unit의 dep-info/작업트리 경로 없음 실패 및 SDK27passed 결과가

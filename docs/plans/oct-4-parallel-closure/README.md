@@ -30,8 +30,9 @@ R3 producer 누락 검증은 Semantica 소유이며 Quanta 자체 코드 잔여�
 Quanta 단독 엔진·벤치와 producer 연동 수용의 완료 조건을 구별한다.
 
 현재 코드 잔여와 source/candidate 구분은 [최신 코드 대조](tickets/INDEX.md#현재-코드-잔여),
-실행 순서는 [웨이브](WAVES.md)가 소유한다. Quanta 운영 producer 구현,
-capacity/cost 원인 판정·조건부 최적화·review/capture 실행을 구분한다.
+실행 순서는 [웨이브](WAVES.md)가 소유한다. 엔진 구조적 수리와 운영 producer 공통 코드는
+main에 통합됐고 최종e371 Contract793/191·SDK27·runtime15·open-loop20 actual이 통과했다.
+Whole CI 종료·capacity/cost 및 품질 qualification·ready capture/replay·실제 운영 target 입력은 각각 별도 판정한다.
 
 ## 담당
 
