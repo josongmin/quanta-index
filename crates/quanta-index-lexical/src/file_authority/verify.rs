@@ -84,6 +84,10 @@ impl Scratch {
 
 type Expected = BTreeMap<[u8; 3], BTreeSet<u64>>;
 
+#[expect(
+    clippy::set_contains_or_insert,
+    reason = "Distinct trigram scratch must be admitted before the set retains a new key."
+)]
 fn add_source(
     bytes: &[u8],
     id: u64,

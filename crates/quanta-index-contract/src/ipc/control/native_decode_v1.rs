@@ -1,5 +1,8 @@
 //! Explicit native policy for the existing active-head visitor family.
-use super::*;
+use super::{
+    Deserialize, Deserializer, ManifestGeneration, RepoId, RevisionId,
+    SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1, Visitor, de, fmt,
+};
 use core::marker::PhantomData;
 use serde::de::DeserializeSeed;
 
@@ -66,7 +69,7 @@ impl<'a> CorpusDecodeModeV1<'a> {
     pub(super) fn work_v1<E: de::Error>(self, units: u64) -> Result<(), E> {
         match self {
             Self::Ordinary(_) => {
-                let _ = units;
+                let _: u64 = units;
                 Ok(())
             }
             #[cfg(feature = "quanta-native-identity-v1")]
@@ -76,13 +79,13 @@ impl<'a> CorpusDecodeModeV1<'a> {
     pub(super) fn bytes_v1<E: de::Error>(self, bytes: usize) -> Result<(), E> {
         match self {
             Self::Ordinary(_) => {
-                let _ = bytes;
+                let _: usize = bytes;
                 Ok(())
             }
             #[cfg(feature = "quanta-native-identity-v1")]
             Self::Native(owner) => {
                 let units = u64::try_from(bytes)
-                    .map_err(|_| E::custom(owner.refuse_corpus_work_arithmetic_v1()))?;
+                    .map_err(|_error| E::custom(owner.refuse_corpus_work_arithmetic_v1()))?;
                 owner.consume_corpus_work_v1(units).map_err(E::custom)
             }
         }
@@ -196,7 +199,7 @@ impl<'de> DeserializeSeed<'de> for CorpusKeySeedV1<'_> {
     }
 }
 
-impl<'de> Visitor<'de> for CorpusKeySeedV1<'_> {
+impl Visitor<'_> for CorpusKeySeedV1<'_> {
     type Value = CorpusKeyV1;
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("a canonical corpus field")
@@ -228,9 +231,9 @@ impl SearchCorpusActiveHeadV1 {
     /// escaped field/value backing before allocation. This seed does not
     /// control allocations performed inside a generic Serde deserializer.
     #[cfg(feature = "quanta-native-identity-v1")]
-    pub fn native_decode_seed_v1<'a, 'de>(
-        admission: &'a dyn NativeCorpusDecodeAdmissionV1,
-    ) -> impl DeserializeSeed<'de, Value = Self> + 'a {
+    pub fn native_decode_seed_v1<'de>(
+        admission: &dyn NativeCorpusDecodeAdmissionV1,
+    ) -> impl DeserializeSeed<'de, Value = Self> + '_ {
         CorpusDecodeModeV1::Native(admission).seed_v1::<Self>()
     }
 }

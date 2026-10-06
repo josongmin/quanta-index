@@ -47,7 +47,7 @@ impl Serialize for SearchPlaneTrackKind {
 
 struct SearchPlaneTrackKindVisitor<'a>(CorpusDecodeModeV1<'a>);
 
-impl<'de> Visitor<'de> for SearchPlaneTrackKindVisitor<'_> {
+impl Visitor<'_> for SearchPlaneTrackKindVisitor<'_> {
     type Value = SearchPlaneTrackKind;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

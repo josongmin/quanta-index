@@ -229,8 +229,13 @@ fn normalized_updated(
         scratch_max,
     )
     .map_err(|error| ProducerError::limit(format!("normalization plan: {error}")))?;
-    let (indexed_path_bytes, folded_path_bytes, indexed_text_bytes, folded_text_bytes) =
-        plan.lengths();
+    let lengths: [usize; 4] = plan.lengths().into();
+    let [
+        indexed_path_bytes,
+        folded_path_bytes,
+        indexed_text_bytes,
+        folded_text_bytes,
+    ] = lengths;
     let resident_charge = resident_file_charge(
         source,
         language,
@@ -247,15 +252,10 @@ fn normalized_updated(
     {
         return Err(ProducerError::limit("resident heap exceeds policy"));
     }
-    let temporary = [
-        indexed_path_bytes,
-        folded_path_bytes,
-        indexed_text_bytes,
-        folded_text_bytes,
-    ]
-    .into_iter()
-    .try_fold(0_usize, |sum, len| sum.checked_add(len))
-    .ok_or_else(|| ProducerError::limit("normalized source bytes overflow"))?;
+    let temporary = lengths
+        .into_iter()
+        .try_fold(0_usize, usize::checked_add)
+        .ok_or_else(|| ProducerError::limit("normalized source bytes overflow"))?;
     let _peak = admit_peak(scratch_current, temporary, scratch_max)?;
     let (_indexed_path, folded_path, _indexed_text, folded_content) = plan
         .build_with_budget(scratch_current, scratch_max)
@@ -733,21 +733,21 @@ fn encode_postings(
     })?;
     let encoded_len =
         posting_block_encoded_len(terms, entries, context.limits).map_err(codec_input)?;
+    let entry_count = usize::try_from(entries)
+        .map_err(|error| ProducerError::limit(format!("posting membership width: {error}")))?;
     let map_charge = terms
         .checked_mul(SCRATCH_TERM_BYTES)
         .and_then(|bytes| {
-            usize::try_from(entries)
-                .ok()
-                .and_then(|count| count.checked_mul(SCRATCH_MEMBERSHIP_BYTES))
+            entry_count
+                .checked_mul(SCRATCH_MEMBERSHIP_BYTES)
                 .and_then(|memberships| bytes.checked_add(memberships))
         })
         .ok_or_else(|| ProducerError::limit("posting map charge overflow"))?;
     let owned_rows_bytes = terms
         .checked_mul(std::mem::size_of::<([u8; 3], Vec<u64>)>())
         .ok_or_else(|| ProducerError::limit("posting row vector charge overflow"))?;
-    let owned_ids_bytes = usize::try_from(entries)
-        .ok()
-        .and_then(|count| count.checked_mul(std::mem::size_of::<u64>()))
+    let owned_ids_bytes = entry_count
+        .checked_mul(std::mem::size_of::<u64>())
         .ok_or_else(|| ProducerError::limit("posting ID vector charge overflow"))?;
     let input_bytes = terms
         .checked_mul(std::mem::size_of::<PostingInput<'_>>())

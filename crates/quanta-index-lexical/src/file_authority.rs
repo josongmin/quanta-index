@@ -1416,8 +1416,12 @@ impl<'a> NormalizedSurfacesPlan<'a> {
         (
             self.path.nfc_bytes(),
             self.path.folded_bytes(),
-            self.content.as_ref().map_or(0, |plan| plan.nfc_bytes()),
-            self.content.as_ref().map_or(0, |plan| plan.folded_bytes()),
+            self.content
+                .as_ref()
+                .map_or(0, crate::normalize::NfcFoldPlan::nfc_bytes),
+            self.content
+                .as_ref()
+                .map_or(0, crate::normalize::NfcFoldPlan::folded_bytes),
         )
     }
 
@@ -1436,7 +1440,7 @@ impl<'a> NormalizedSurfacesPlan<'a> {
             folded_text_bytes,
         ]
         .into_iter()
-        .try_fold(0_usize, |sum, bytes| sum.checked_add(bytes))
+        .try_fold(0_usize, usize::checked_add)
         .ok_or(crate::normalize::NfcFoldBuildError::LengthOverflow)?;
         let admitted = scratch_current
             .checked_add(total)
