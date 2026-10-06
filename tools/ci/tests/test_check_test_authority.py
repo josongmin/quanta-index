@@ -619,6 +619,86 @@ def test_fuzz_manifest_target_must_be_cataloged_and_bound_to_fuzz_rail(tmp_path:
     assert any("orphan fuzz" in violation.message for violation in violations)
 
 
+def test_fuzz_binding_requires_portable_checkout_files(tmp_path: Path):
+    module = _load_module()
+    fuzz = tmp_path / "crates/demo/fuzz"
+    targets = fuzz / "fuzz_targets"
+    targets.mkdir(parents=True)
+    source = targets / "decode.rs"
+    source.write_text("", encoding="utf-8")
+    (targets / "nested").mkdir()
+    (fuzz / "blocker").write_text("", encoding="utf-8")
+    manifest = fuzz / "Cargo.toml"
+
+    def write_manifest(path: str) -> None:
+        manifest.write_text(
+            '[package]\nname = "demo-fuzz"\nversion = "0.0.0"\n'
+            f'[[bin]]\nname = "decode"\npath = "{path}"\n',
+            encoding="utf-8",
+        )
+
+    catalog = _write_catalog(
+        tmp_path,
+        """
+        format_version = 1
+        [rails.correctness-fuzz]
+        tier = "correctness"
+        command = "just rust-fuzz-smoke"
+        target_kind = "fuzz"
+        [[fuzz_targets]]
+        id = "demo-decode"
+        path = "crates/demo/fuzz/fuzz_targets/decode.rs"
+        manifest = "crates/demo/fuzz/Cargo.toml"
+        target = "decode"
+        owner = "demo"
+        rail = "correctness-fuzz"
+        """,
+    )
+    for path in (
+        "fuzz_targets/decode.rs",
+        "./fuzz_targets/decode.rs",
+        "fuzz_targets/nested/../decode.rs",
+    ):
+        write_manifest(path)
+        assert module.audit_catalog(tmp_path, catalog) == []
+
+    for path in (
+        source.as_posix(),
+        "missing/../fuzz_targets/decode.rs",
+        "blocker/../fuzz_targets/decode.rs",
+    ):
+        write_manifest(path)
+        assert module.audit_catalog(tmp_path, catalog), path
+
+    write_manifest("fuzz_targets/decode.rs")
+    original_catalog = catalog.read_text(encoding="utf-8")
+    alternate = fuzz / "alternate.toml"
+    alternate.write_bytes(manifest.read_bytes())
+    catalog.write_text(original_catalog.replace("fuzz/Cargo.toml", "fuzz/alternate.toml"))
+    assert module.audit_catalog(tmp_path, catalog), "manifest must match the executed package"
+    catalog.write_text(original_catalog, encoding="utf-8")
+
+    for path in ("fuzz_targets/decode.rs", source.as_posix()):
+        write_manifest("fuzz_targets/decode.rs")
+        with manifest.open("a", encoding="utf-8") as handle:
+            handle.write(f'[[bin]]\nname = "decode"\npath = "{path}"\n')
+        assert module.audit_catalog(tmp_path, catalog), "duplicate target declaration"
+
+    write_manifest("fuzz_targets/decode.rs")
+    external = tmp_path.parent / f"{tmp_path.name}-fuzz-Cargo.toml"
+    external.write_bytes(manifest.read_bytes())
+    try:
+        manifest.unlink()
+        manifest.symlink_to(external)
+        assert any(
+            "fuzz manifest escapes repository" in violation.message
+            for violation in module.audit_catalog(tmp_path, catalog)
+        )
+    finally:
+        manifest.unlink()
+        external.unlink()
+
+
 def test_valid_catalog_is_green(tmp_path: Path):
     module = _load_module()
     tests = tmp_path / "crates" / "demo" / "tests"

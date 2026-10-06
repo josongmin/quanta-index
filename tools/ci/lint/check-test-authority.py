@@ -1512,35 +1512,72 @@ def _validate_fuzz_manifest_bindings(
         )
         if manifest_path is None or target_name is None:
             continue
-        manifest = root / manifest_path
-        if not manifest.is_file():
+        expected_path = targets[target_id]["path"]
+        expected_manifest = Path(expected_path).parent.parent / "Cargo.toml"
+        if Path(manifest_path) != expected_manifest:
             violations.append(
                 _violation(
-                    catalog, f"fuzz target {target_id} manifest does not exist: {manifest_path}"
+                    catalog,
+                    f"fuzz target {target_id} manifest must be {expected_manifest.as_posix()}",
                 )
             )
             continue
+        manifest = root / manifest_path
+        resolved_manifest = _resolve_test_source(
+            root=root,
+            path=manifest,
+            origin=catalog,
+            label="fuzz manifest",
+            violations=violations,
+        )
+        if resolved_manifest is None:
+            continue
         try:
-            manifest_data = tomllib.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError) as error:
+            manifest_data = tomllib.loads(resolved_manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
             violations.append(_violation(manifest, f"cannot parse fuzz manifest: {error}"))
             continue
         raw_bins = manifest_data.get("bin", [])
         if not isinstance(raw_bins, list):
             violations.append(_violation(manifest, "[[bin]] entries must be an array"))
             continue
-        expected_path = targets[target_id]["path"]
-        matched = False
-        for raw_bin in raw_bins:
-            if not isinstance(raw_bin, dict):
-                continue
-            if raw_bin.get("name") != target_name or not isinstance(raw_bin.get("path"), str):
-                continue
-            resolved = (manifest.parent / raw_bin["path"]).resolve()
-            if resolved == (root / expected_path).resolve():
-                matched = True
-                break
-        if not matched:
+        matching_bins = [
+            raw_bin
+            for raw_bin in raw_bins
+            if isinstance(raw_bin, dict) and raw_bin.get("name") == target_name
+        ]
+        if len(matching_bins) != 1:
+            violations.append(
+                _violation(manifest, f"fuzz target {target_name!r} must have exactly one [[bin]]")
+            )
+            continue
+        expected_source = _resolve_test_source(
+            root=root,
+            path=root / expected_path,
+            origin=catalog,
+            label="fuzz source",
+            violations=violations,
+        )
+        if expected_source is None:
+            continue
+        raw_path = matching_bins[0].get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            violations.append(_violation(manifest, f"fuzz bin {target_name!r} must have a path"))
+            continue
+        bin_path = Path(raw_path)
+        if bin_path.is_absolute():
+            violations.append(
+                _violation(manifest, f"fuzz bin {target_name!r} path must be relative")
+            )
+            continue
+        resolved = _resolve_test_source(
+            root=root,
+            path=manifest.parent / bin_path,
+            origin=manifest,
+            label="fuzz bin source",
+            violations=violations,
+        )
+        if resolved is not None and resolved != expected_source:
             violations.append(
                 _violation(
                     catalog,
