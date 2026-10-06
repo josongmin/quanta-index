@@ -107,8 +107,17 @@ crate quanta_index_contract
 │   │   ├── struct SemanticContentRootsV1Visitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct TrackReadinessRecord: pub
-│   │   └── struct TrackReadinessRecordVisitor: pub(self)
-│   │       └── type Value: pub(self)
+│   │   ├── struct TrackReadinessRecordVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   └── mod native_decode_v1: pub(self)
+│   │       ├── enum CorpusDecodeModeV1: pub(super)
+│   │       ├── struct CorpusDecodeSeedV1: pub(super)
+│   │       │   └── type Value: pub(self)
+│   │       ├── trait CorpusDecodeValueV1: pub(super)
+│   │       ├── struct CorpusKeySeedV1: pub(super)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       └── struct CorpusKeyV1: pub(super)
 │   ├── mod diagnostic_events: pub(self)
 │   │   ├── enum ProcessRequestEventPlaneV1: pub
 │   │   ├── enum ProcessRequestEventStageV1: pub

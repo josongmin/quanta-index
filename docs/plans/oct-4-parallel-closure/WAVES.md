@@ -74,6 +74,13 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+- Source492 OS3 release 원본3개는 실제2PASS/1FAIL·524.761s, nextest exit100·lease release다.
+  Medium256·14.566s와 Large4096·84.191s는 `VERIFIED`, XL32768·425.966s는 `FAILED`다.
+  XL error는 `RequestDeadlineExceeded`(+13ms), checkpoint `lexical:cold-open:file-index`다.
+  SDK IO/socket/readiness600s와 서버 query dispatch 기본20s의 불일치를 확인했다.
+  Query owner cold-open 비용 및 supported profile 설정을 함께 수리한다. 원본 corpus/seed/caps와
+  실패 raw는 보존한다. 이는 데이터 보존 회귀이며 indexing latency/timing/RSS qualification이 아니다.
+  Debug interruption1개는 정상 admission 대기 중이며 Ready9 stage/final slot은 미발행이다.
 - 최신 main38eda80a에는 normalization vendor/native scratch feature/control 수리42paths가
   반영됐다. Canonical `cargow metadata --locked --offline --all-features --no-deps`는 실제
   exit0/28workspace로 dependency 해석 `VERIFIED`다. 새 Rust·module/API·whole CI는 별도 actual이
@@ -83,14 +90,15 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   proof의 실제 결과는 아직 남는다.
 - Source565 Contract Python793개는 실제 `VERIFIED`(289.98s)다. Rust191 inventory의 build는
   2m19s/exit0이며 행동 검증·최종 context/portable verify는 미완료다. SDK fresh release는
-  정상 admission 후 실제 build 중이다. Compiler/collection 성공을 테스트 통과로 승격하지 않는다.
+  build는 위 checkpoint대로 완료됐다. Compiler/collection 성공을 테스트 통과로 승격하지 않는다.
 - Source565 OS3 actual은 release compile `FAILED`(E0432/exit101·5227.025s), tests0개다.
   Debug 전용 semantic test_support를 쓰는 회귀 모듈에 producer와 같은 `cfg(debug_assertions)`를
   붙인1줄 수리를 main 및 clean492에 적용했다. 제품·회귀 본문 불변·owned fmt/diff는 `VERIFIED`다.
   Source492에서 원본 release OS3 256/4096/32768과 debug interruption1개를 정상 admission으로
   재등록했다. Cold dependency cache는 정상 Cargo 검증 아래 재사용하고 실패 raw는 보존한다.
   이미 admitted인565 fresh SDK·Contract/Ready9 principal source 및55epoch은 유지한다.
-  새 actual 결과는 미발행이며565 release suite 성공이나 whole main 통과를 뜻하지 않는다.
+  새 actual OS3는 위2PASS/1FAIL이며 debug1개는 대기 중이다. 565 release suite 성공이나
+  whole main 통과를 뜻하지 않는다.
 - Main16f37의 exact-source CI는 `FAILED`: Python1120 locked dependency fetch가 exit101·0.809s로
   unicode-normalization0.1.25에 없는 `quanta-native-scratch-v1` feature를 보고했고,
   Rust1119 guarded module snapshot 검사는 exit1·4.185s였다. 해당 변경 owner의 dependency 연동

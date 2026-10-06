@@ -27,7 +27,7 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 | --- | --- | --- |
 | Manifest 복호화 메모리 경계 | I0 / E4 | 전체 generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. 최신 Source565의 IPC/CBOR/manifest owner46개가 actual PASS·1.126s이며 whole/strict/integration 소비 검증이 남는다 |
 | Workspace 검사·단위 테스트 | Scale / hosted CI | Source886 owner46/46·3.600s와 open-loop bin20/20·13.758s가 실제 exit0다. 테스트 모듈 위치만 바꾼565에서 whole unit `--no-fail-fast`/1thread·strict·runtime/integration을 이어간다. Main2c Python1107과 d192 Python1109 전체는 `VERIFIED`; whole Rust는 아직 실패 상태다 |
-| Medium/Large/XL 실제 프로세스 재시작 | I0 | Source565 actual은 release compile E0432·exit101·5227.025s로 `FAILED`, tests0개다. Debug-only semantic hook의 모듈 등록 조건1줄을 수정한492에서 원본256/4096/32768·same seed/caps·release/no-fail-fast3개를 재등록했다. 수정 모듈의 debug 회귀1개도 별도로 실제 등록했으며 두 결과는 미발행이다 |
+| Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Source492 release 원본3개는 실제 Medium14.566s·Large84.191s PASS, XL425.966s `FAILED`다. XL은 `lexical:cold-open:file-index`에서 typed `RequestDeadlineExceeded`(+13ms)로 종료했다. Large/XL의 SDK IO600s와 서버 query dispatch 기본20s가 불일치한다. Cold-open 비용 및 지원 profile 수리가 남으며 debug interruption1개는 대기 중이다. Corpus/seed/caps는 불변 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
 | Final Contract/SDK | I0 | 선택565의 canonical Contract Python793개가 actual PASS·289.98s다. Rust191 inventory/build 완료 후 행동 검증이 대기 중이며 fresh SDK daemon release build는29m04s/exit0다. SDK27개·최종 context/portable verify가 남는다. 두 source closure1500files digest는 일치하며 canceled731 v6 partial은 재사용하지 않는다 |
@@ -38,6 +38,14 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 
 ### Sidebar 실행 결과 회수
 
+- Source492 OS3 release 실제3개는2passed/1failed·524.761s, nextest exit100·lease release다.
+  Medium256은14.566s, Large4096은84.191s로 `VERIFIED`; XL32768은425.966s로 `FAILED`다.
+  Error는 `RequestDeadlineExceeded`, checkpoint `lexical:cold-open:file-index`, deadline 초과13ms다.
+  Test의 SDK IO/socket/readiness600s는 서버 query dispatch 기본20s를 바꾸지 않는다.
+  Query owner cold-open 비용과 지원 profile의 서버 설정 누락을 조사한다. `SLOW` 표시는 실패 원인이
+  아니며 이 결과는 인덱싱 속도 측정이나 timing/RSS qualification이 아니다. 원본 실패는
+  `/private/tmp/qi-scale-os3-release-492d2fdc-20261006-v9/result.json` 및 `run.log`에 보존했다.
+  수정 모듈의 debug interruption1개는 정상 admission 대기 중이며 Ready9 slot은 발행하지 않았다.
 - 최신 main `38eda80a5688c6b8de6ccd0faef886179c9ddb0f`에는 normalization vendor와
   native scratch admission feature 및 별도 control-plane 수리가 반영됐다(42paths).
   `./scripts/cargow --lane metadata-native-feature-lane metadata --locked --offline --all-features
@@ -48,13 +56,13 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
   SDK27개/portable proof 성공으로 승격하지 않는다.
 - Source565 Contract Python은793passed·289.98s로 실제 `VERIFIED`다. Rust inventory191의
   실제 build는2m19s/exit0이며 행동 검증과 최종 context/portable verify는 아직 남는다.
-  SDK fresh release는 정상 admission 후 실제 build 중이다. Collection·컴파일을 Rust/SDK 테스트
+  SDK fresh release build는 위 checkpoint대로 완료됐다. Collection·컴파일을 Rust/SDK 테스트
   통과로 승격하지 않는다.
 - Source565의 OS3는 release 컴파일 `FAILED`(E0432/exit101·5227.025s)이며 실제 tests0개다.
   `e2e_semantic_budget_interruption`이 debug 전용 `semantic::test_support`를 release에서도
   import한 등록 오류다. 해당 mod에 `cfg(debug_assertions)`를 붙여 producer 경계와 일치시켰고
   main 및 clean492에 적용했다. 제품·회귀 본문 불변, owned fmt/diff는 `VERIFIED`다.
-  Source492 원본 release OS3와 debug interruption1개를 정상 admission으로 재등록했으며
+  Source492 원본 release OS3의 실제 결과는 위2PASS/1FAIL이고 debug interruption1개는 대기 중이다.
   실행 중인565 fresh SDK를 유지한다. Failed565 raw/target은 보존하고 release dependency cache만
   정상 Cargo 검증 아래 재사용한다. 565 release suite 성공이나 전체 main 통과로 소급 표기하지 않는다.
 - Main `16f37d43f7a1c3d136d7843442089bdc04561770`의 exact-source hosted CI는 `FAILED`다.
