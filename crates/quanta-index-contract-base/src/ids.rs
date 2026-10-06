@@ -754,10 +754,9 @@ mod native_raw_identity_tests_v1 {
             Ok(success)
         }
         fn release_scratch_v1(&mut self, _owner: NativeNormalizationScratchOwnerV1) {
-            self.releases = self
-                .releases
-                .checked_add(1)
-                .expect("release count fits usize");
+            let (releases, overflow) = self.releases.overflowing_add(1);
+            assert!(!overflow, "fixture release count exceeds usize");
+            self.releases = releases;
         }
     }
 
