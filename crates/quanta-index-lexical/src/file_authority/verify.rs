@@ -265,16 +265,27 @@ where
             } else {
                 None
             };
-            let (indexed_path, folded_path, indexed_text, folded_text) =
-                super::normalized_surfaces(row.source.file.repo_relative_path.as_str(), raw);
+            let scratch_current = usize::try_from(scratch.bytes)
+                .map_err(|_width_error| corrupt("normalization scratch width overflow"))?;
+            let scratch_ceiling = usize::try_from(scratch.ceiling)
+                .map_err(|_width_error| corrupt("normalization scratch ceiling width overflow"))?;
+            let plan = super::NormalizedSurfacesPlan::new_with_budget(
+                row.source.file.repo_relative_path.as_str(),
+                raw,
+                scratch_current,
+                scratch_ceiling,
+            )
+            .map_err(|error| corrupt(&format!("normalization plan: {error:?}")))?;
+            let (indexed_path_bytes, folded_path_bytes, indexed_text_bytes, folded_text_bytes) =
+                plan.lengths();
             let file_charge = resident_file_charge(
                 &row.source,
                 &row.language,
                 source.len(),
-                indexed_path.len(),
-                folded_path.len(),
-                indexed_text.as_ref().map_or(0, String::len),
-                folded_text.as_ref().map_or(0, String::len),
+                indexed_path_bytes,
+                folded_path_bytes,
+                indexed_text_bytes,
+                folded_text_bytes,
             )?;
             if file_charge != row.resident_heap_bytes {
                 return Err(corrupt("resident row charge differs from source bytes"));
@@ -285,6 +296,9 @@ where
             if resident_charge > policy.resident_file_heap_bytes {
                 return Err(corrupt("resident heap exceeds policy"));
             }
+            let (indexed_path, folded_path, indexed_text, folded_text) = plan
+                .build_with_budget(scratch_current, scratch_ceiling)
+                .map_err(|error| corrupt(&format!("normalization build: {error:?}")))?;
             let path_count = add_source(
                 folded_path.as_bytes(),
                 row.source_id,

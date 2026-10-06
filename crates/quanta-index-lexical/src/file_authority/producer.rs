@@ -222,8 +222,13 @@ fn normalized_updated(
     } else {
         None
     };
-    let plan = super::NormalizedSurfacesPlan::new(source.file.repo_relative_path.as_str(), raw)
-        .map_err(|error| ProducerError::limit(format!("normalization plan: {error:?}")))?;
+    let plan = super::NormalizedSurfacesPlan::new_with_budget(
+        source.file.repo_relative_path.as_str(),
+        raw,
+        scratch_current,
+        scratch_max,
+    )
+    .map_err(|error| ProducerError::limit(format!("normalization plan: {error:?}")))?;
     let (indexed_path_bytes, folded_path_bytes, indexed_text_bytes, folded_text_bytes) =
         plan.lengths();
     let resident_charge = resident_file_charge(
@@ -253,7 +258,7 @@ fn normalized_updated(
     .ok_or_else(|| ProducerError::limit("normalized source bytes overflow"))?;
     let _peak = admit_peak(scratch_current, temporary, scratch_max)?;
     let (_indexed_path, folded_path, _indexed_text, folded_content) = plan
-        .build()
+        .build_with_budget(scratch_current, scratch_max)
         .map_err(|error| ProducerError::limit(format!("normalization build: {error:?}")))?;
     Ok((folded_path, folded_content, resident_charge))
 }

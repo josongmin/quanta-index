@@ -783,6 +783,40 @@ def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_p
         "grouped source is not a file" in violation.message
         for violation in module.audit_catalog(tmp_path, catalog)
     )
+    for alias in ("absent/../case.rs", "case.rs/../case.rs"):
+        launcher_path.write_text(
+            "#[cfg(debug_assertions)]\n" + f'#[path = "{alias}"]\nmod case;\n',
+            encoding="utf-8",
+        )
+        assert any(
+            "grouped source is not a file" in violation.message
+            for violation in module.audit_catalog(tmp_path, catalog)
+        )
+    external = tmp_path.parent / f"{tmp_path.name}-external.rs"
+    external.write_text("#[test]\nfn external_case() {}\n", encoding="utf-8")
+    (tests / "external.rs").symlink_to(external)
+    for outside_path, reason in (
+        (external.as_posix(), "grouped source must be relative"),
+        ("external.rs", "grouped source escapes repository"),
+        ((tests / "case.rs").as_posix(), "grouped source must be relative"),
+    ):
+        launcher_path.write_text(
+            debug_launcher + f'#[path = "{outside_path}"]\nmod external;\n', encoding="utf-8"
+        )
+        assert any(
+            reason in violation.message for violation in module.audit_catalog(tmp_path, catalog)
+        )
+    (tests / "external.rs").unlink()
+    (tests / "case.rs").unlink()
+    (tests / "case.rs").symlink_to(external)
+    launcher_path.write_text(debug_launcher, encoding="utf-8")
+    assert any(
+        "grouped source escapes repository" in violation.message
+        for violation in module.audit_catalog(tmp_path, catalog)
+    )
+    (tests / "case.rs").unlink()
+    (tests / "case.rs").write_text("#[test]\nfn case() {}\n", encoding="utf-8")
+    external.unlink()
     catalog.write_text(original_catalog, encoding="utf-8")
     launcher_path.write_text(ordinary_launcher, encoding="utf-8")
 

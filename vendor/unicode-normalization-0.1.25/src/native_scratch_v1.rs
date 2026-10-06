@@ -7,6 +7,10 @@ use core::{
     mem::size_of,
 };
 use tinyvec::{Array, TinyVec};
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 /// Actual scratch owner within one synchronous normalization call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.benchmark.retrieval.causal_cost_capture import _history_inputs, _scale_command, capture
 from tools.benchmark.retrieval import causal_cost_capture
+from tools.benchmark.retrieval.causal_cost_capture import _history_inputs, _scale_command, capture
 
 
 @pytest.fixture
@@ -47,7 +47,9 @@ def capture_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNa
         kwargs["stderr"].write(b"fixed trace\n")
         return SimpleNamespace(returncode=0)
 
-    def replay(summary: bytes, trace: bytes, executable: bytes, manifest: bytes, **_: object) -> dict:
+    def replay(
+        summary: bytes, trace: bytes, executable: bytes, manifest: bytes, **_: object
+    ) -> dict:
         state["replays"] += 1
         assert summary == b'{"fixture":"summary"}\n'
         assert trace == b"fixed trace\n"
@@ -70,7 +72,9 @@ def capture_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNa
     return SimpleNamespace(args=args, state=state, replay=replay)
 
 
-def test_capture_accepts_one_unchanged_executable_and_input_epoch(capture_fixture: SimpleNamespace):
+def test_capture_accepts_one_unchanged_executable_and_input_epoch(
+    capture_fixture: SimpleNamespace,
+) -> None:
     result = capture(capture_fixture.args)
     assert result["status"] == "VERIFIED_DIAGNOSTIC"
     assert result["binary_sha256"] == result["binary_sha256_after"]
@@ -100,7 +104,8 @@ def test_capture_refuses_binary_mutation_after_post_execution_epoch(
 
 
 @pytest.mark.parametrize(
-    "mutation", ["binary", "same-bytes-replacement", "summary", "manifest", "trace", "head", "dirty"]
+    "mutation",
+    ["binary", "same-bytes-replacement", "summary", "manifest", "trace", "head", "dirty"],
 )
 def test_capture_refuses_input_drift_during_replay(
     mutation: str, capture_fixture: SimpleNamespace, monkeypatch: pytest.MonkeyPatch

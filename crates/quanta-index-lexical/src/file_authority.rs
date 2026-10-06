@@ -1389,9 +1389,30 @@ struct NormalizedSurfacesPlan<'a> {
 
 impl<'a> NormalizedSurfacesPlan<'a> {
     fn new(path: &'a str, raw: Option<&'a str>) -> Result<Self, crate::normalize::NfcFoldBuildError> {
+        Self::new_with_budget(path, raw, 0, usize::MAX)
+    }
+
+    fn new_with_budget(
+        path: &'a str,
+        raw: Option<&'a str>,
+        scratch_current: usize,
+        scratch_ceiling: usize,
+    ) -> Result<Self, crate::normalize::NfcFoldBuildError> {
         Ok(Self {
-            path: crate::normalize::NfcFoldPlan::new(path)?,
-            content: raw.map(crate::normalize::NfcFoldPlan::new).transpose()?,
+            path: crate::normalize::NfcFoldPlan::new_with_budget(
+                path,
+                scratch_current,
+                scratch_ceiling,
+            )?,
+            content: raw
+                .map(|raw| {
+                    crate::normalize::NfcFoldPlan::new_with_budget(
+                        raw,
+                        scratch_current,
+                        scratch_ceiling,
+                    )
+                })
+                .transpose()?,
         })
     }
 
@@ -1408,10 +1429,48 @@ impl<'a> NormalizedSurfacesPlan<'a> {
         self,
     ) -> Result<(String, String, Option<String>, Option<String>), crate::normalize::NfcFoldBuildError>
     {
-        let (path, folded_path) = self.path.build()?;
+        self.build_with_budget(0, usize::MAX)
+    }
+
+    fn build_with_budget(
+        self,
+        scratch_current: usize,
+        scratch_ceiling: usize,
+    ) -> Result<(String, String, Option<String>, Option<String>), crate::normalize::NfcFoldBuildError>
+    {
+        let (indexed_path_bytes, folded_path_bytes, indexed_text_bytes, folded_text_bytes) =
+            self.lengths();
+        let total = [
+            indexed_path_bytes,
+            folded_path_bytes,
+            indexed_text_bytes,
+            folded_text_bytes,
+        ]
+        .into_iter()
+        .try_fold(0_usize, |sum, bytes| sum.checked_add(bytes))
+        .ok_or(crate::normalize::NfcFoldBuildError::LengthOverflow)?;
+        let admitted = scratch_current
+            .checked_add(total)
+            .ok_or(crate::normalize::NfcFoldBuildError::LengthOverflow)?;
+        if admitted > scratch_ceiling {
+            return Err(crate::normalize::NfcFoldBuildError::ScratchExceeded);
+        }
+        let path_output = indexed_path_bytes
+            .checked_add(folded_path_bytes)
+            .ok_or(crate::normalize::NfcFoldBuildError::LengthOverflow)?;
+        let (path, folded_path) = self.path.build_with_budget(
+            admitted - path_output,
+            scratch_ceiling,
+        )?;
         let (content, folded_content) = match self.content {
             Some(plan) => {
-                let (content, folded_content) = plan.build()?;
+                let content_output = indexed_text_bytes
+                    .checked_add(folded_text_bytes)
+                    .ok_or(crate::normalize::NfcFoldBuildError::LengthOverflow)?;
+                let (content, folded_content) = plan.build_with_budget(
+                    admitted - content_output,
+                    scratch_ceiling,
+                )?;
                 (Some(content), Some(folded_content))
             }
             None => (None, None),
@@ -1609,7 +1668,7 @@ mod tests {
         source.revision_id = RevisionId::new("rev").expect("revision");
         let language = LanguageCode::new("go").expect("language");
         let (indexed_path, folded_path, indexed_text, folded_text) =
-            normalized_surfaces("src/İ.go", Some("İ"));
+            normalized_surfaces("src/İ.go", Some("İ")).expect("normalized surfaces");
         assert_eq!(indexed_path.len(), 9);
         assert_eq!(folded_path.len(), 10);
         assert_eq!(indexed_text.as_ref().map(String::len), Some(2));

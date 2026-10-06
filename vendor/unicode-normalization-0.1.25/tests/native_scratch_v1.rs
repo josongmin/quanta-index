@@ -1,7 +1,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use unicode_normalization::{
-    try_is_nfc_with_native_admission_v1, NativeNormalizationAdmissionV1,
+    try_for_each_nfc_with_native_admission_v1, try_is_nfc_with_native_admission_v1, NativeNormalizationAdmissionV1,
     NativeNormalizationErrorV1 as Error, NativeNormalizationScratchDemandV1 as Demand,
     NativeNormalizationScratchOwnerV1 as Owner, UnicodeNormalization,
 };
@@ -76,7 +76,7 @@ impl<'a> Policy<'a> {
             retained: [0; 3],
             peak: 0,
             demands: Vec::with_capacity(32),
-            releases: Vec::with_capacity(2),
+            releases: Vec::with_capacity(3),
             native_calls: 0,
             malformed: 0,
             fail_native: false,

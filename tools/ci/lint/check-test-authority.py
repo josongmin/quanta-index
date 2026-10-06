@@ -1162,6 +1162,24 @@ def _validate_targets(
     return targets
 
 
+def _resolve_grouped_test_source(
+    *, root: Path, path: Path, origin: Path, violations: list[Violation]
+) -> Path | None:
+    """Match the file Rust can open and keep its source inside the checkout."""
+    try:
+        if not path.is_file():
+            violations.append(_violation(origin, f"grouped source is not a file: {path}"))
+            return None
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(root.resolve(strict=True)):
+            violations.append(_violation(origin, f"grouped source escapes repository: {path}"))
+            return None
+        return resolved
+    except (OSError, RuntimeError) as error:
+        violations.append(_violation(origin, f"cannot resolve grouped source {path}: {error}"))
+        return None
+
+
 def _validate_grouped_integration_targets(
     *,
     root: Path,
@@ -1225,20 +1243,21 @@ def _validate_grouped_integration_targets(
             )
             if path_match and re.fullmatch(r"mod\s+[A-Za-z_]\w*;", next_line):
                 relative_source = path_match.group(1)
-                try:
-                    resolved_source = (launcher.parent / relative_source).resolve()
-                except (OSError, RuntimeError) as error:
+                if Path(relative_source).is_absolute():
                     violations.append(
-                        _violation(
-                            launcher, f"cannot resolve grouped source {relative_source}: {error}"
-                        )
+                        _violation(launcher, f"grouped source must be relative: {relative_source}")
                     )
                     line_index = path_index + 2
                     continue
-                if not resolved_source.is_file():
-                    violations.append(
-                        _violation(launcher, f"grouped source is not a file: {relative_source}")
-                    )
+                resolved_source = _resolve_grouped_test_source(
+                    root=root,
+                    path=launcher.parent / relative_source,
+                    origin=launcher,
+                    violations=violations,
+                )
+                if resolved_source is None:
+                    line_index = path_index + 2
+                    continue
                 if resolved_source in declared_modules:
                     violations.append(
                         _violation(
@@ -1268,12 +1287,10 @@ def _validate_grouped_integration_targets(
                     )
                 )
                 continue
-            try:
-                resolved_member = (root / member_path).resolve()
-            except (OSError, RuntimeError) as error:
-                violations.append(
-                    _violation(catalog, f"cannot resolve grouped source {relative_member}: {error}")
-                )
+            resolved_member = _resolve_grouped_test_source(
+                root=root, path=root / member_path, origin=catalog, violations=violations
+            )
+            if resolved_member is None:
                 continue
             if resolved_member not in declared_modules:
                 violations.append(

@@ -1131,6 +1131,75 @@ def test_relocated_custody_preserves_commands_and_paths(fake_execution, rail, mo
             portable_proof.validate(relocated, execution_root=out, binary_files=frozen_bins)
 
 
+@pytest.mark.parametrize(
+    ("rail", "role", "mutation"),
+    [
+        ("contract", "compiled", "rewrite"),
+        ("contract", "compiled", "replace"),
+        ("sdk", "compiled", "rewrite"),
+        ("sdk", "runner", "replace"),
+        ("sdk", "searchd", "alias"),
+    ],
+)
+def test_validation_rechecks_each_binary_epoch(
+    fake_execution, monkeypatch, rail, role, mutation
+):
+    out, _, _ = fake_execution
+    receipt = portable_proof.produce(rail, out)
+    binaries = json.loads(receipt.read_text())["binaries"]
+    name = next(name for name in binaries if name not in {"runner", "searchd"}) if role == "compiled" else role
+    binary = Path(binaries[name]["path"])
+    proof = portable_proof.contract_proof if rail == "contract" else portable_proof.sdk_proof
+    method = "nextest_summary" if rail == "contract" else "build_summary_from_evidence"
+    original = getattr(proof, method)
+
+    def mutate_during_validation(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if mutation == "rewrite":
+            binary.write_bytes(binary.read_bytes() + b"-changed")
+        else:
+            replacement = binary.with_name(binary.name + "-replacement")
+            replacement.write_bytes(binary.read_bytes())
+            if mutation == "alias":
+                binary.unlink()
+                binary.symlink_to(replacement)
+            else:
+                replacement.replace(binary)
+        return result
+
+    monkeypatch.setattr(proof, method, mutate_during_validation)
+    with pytest.raises(ValueError, match=f"proof binary changed during validation: {name}"):
+        portable_proof.validate(receipt)
+
+
+def test_relocated_validation_rechecks_frozen_binary_epoch(fake_execution, monkeypatch):
+    out, _, _ = fake_execution
+    receipt = portable_proof.produce("sdk", out)
+    copied = out.with_name(out.name + "-immutable-copy")
+    shutil.copytree(out, copied)
+    context = json.loads(receipt.read_text())
+    frozen_bins = {}
+    for name, binary in context["binaries"].items():
+        target = copied / ("frozen-" + name)
+        shutil.copyfile(binary["path"], target)
+        frozen_bins[name] = target
+    frozen_runner = frozen_bins["runner"]
+    original = portable_proof.sdk_proof.build_summary_from_evidence
+
+    def replace_frozen_runner(*args, **kwargs):
+        result = original(*args, **kwargs)
+        replacement = frozen_runner.with_name("replacement-runner")
+        replacement.write_bytes(frozen_runner.read_bytes())
+        replacement.replace(frozen_runner)
+        return result
+
+    monkeypatch.setattr(portable_proof.sdk_proof, "build_summary_from_evidence", replace_frozen_runner)
+    with pytest.raises(ValueError, match="proof binary changed during validation: runner"):
+        portable_proof.validate(
+            copied / receipt.name, execution_root=out, binary_files=frozen_bins
+        )
+
+
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
 def test_producer_and_validator_bind_execution_and_inputs(fake_execution, rail: str) -> None:
     out, runner, calls = fake_execution

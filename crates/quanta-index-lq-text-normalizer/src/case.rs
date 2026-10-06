@@ -2,7 +2,83 @@
 
 use std::borrow::Cow;
 
-use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
+use unicode_normalization::{
+    IsNormalized, NativeNormalizationAdmissionV1, NativeNormalizationErrorV1,
+    NativeNormalizationScratchDemandV1, NativeNormalizationScratchOwnerV1, UnicodeNormalization,
+    is_nfc_quick, try_for_each_nfc_with_native_admission_v1,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NfcAdmissionError {
+    ArithmeticOverflow,
+    ScratchExceeded,
+    InvalidScratchState,
+}
+
+struct NfcScratchAdmission {
+    base: usize,
+    ceiling: usize,
+    retained: [usize; 3],
+}
+
+impl NfcScratchAdmission {
+    fn new(base: usize, ceiling: usize) -> Result<Self, NfcFoldBuildError> {
+        if base > ceiling {
+            return Err(NfcFoldBuildError::ScratchExceeded);
+        }
+        Ok(Self {
+            base,
+            ceiling,
+            retained: [0; 3],
+        })
+    }
+
+    fn slot(owner: NativeNormalizationScratchOwnerV1) -> usize {
+        match owner {
+            NativeNormalizationScratchOwnerV1::Decomposition => 0,
+            NativeNormalizationScratchOwnerV1::Recomposition => 1,
+            NativeNormalizationScratchOwnerV1::Sort => 2,
+        }
+    }
+}
+
+impl NativeNormalizationAdmissionV1 for NfcScratchAdmission {
+    type Error = NfcAdmissionError;
+
+    fn checkpoint_work_v1(&mut self, _units_v1: u64) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn native_birth_v1(
+        &mut self,
+        demand_v1: NativeNormalizationScratchDemandV1,
+        birth_v1: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, Self::Error> {
+        let slot = Self::slot(demand_v1.owner_v1);
+        if self.retained[slot] != demand_v1.current_bytes_v1 {
+            return Err(NfcAdmissionError::InvalidScratchState);
+        }
+        let active = self.retained.iter().try_fold(self.base, |sum, bytes| {
+            sum.checked_add(*bytes)
+                .ok_or(NfcAdmissionError::ArithmeticOverflow)
+        })?;
+        let peak = active
+            .checked_add(demand_v1.new_bytes_v1)
+            .ok_or(NfcAdmissionError::ArithmeticOverflow)?;
+        if peak > self.ceiling {
+            return Err(NfcAdmissionError::ScratchExceeded);
+        }
+        let success = birth_v1();
+        if success {
+            self.retained[slot] = demand_v1.new_bytes_v1;
+        }
+        Ok(success)
+    }
+
+    fn release_scratch_v1(&mut self, owner_v1: NativeNormalizationScratchOwnerV1) {
+        self.retained[Self::slot(owner_v1)] = 0;
+    }
+}
 
 /// Exact output lengths for the canonical NFC and per-character lowercase
 /// surfaces. The source is borrowed so the plan cannot be applied to other text.
@@ -12,27 +88,40 @@ pub struct NfcFoldPlan<'a> {
     folded_bytes: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum NfcFoldBuildError {
     LengthOverflow,
     Allocation,
     LengthChanged,
+    ScratchExceeded,
+    Native(NativeNormalizationErrorV1<NfcAdmissionError>),
 }
 
 impl<'a> NfcFoldPlan<'a> {
     pub fn new(source: &'a str) -> Result<Self, NfcFoldBuildError> {
+        Self::new_with_budget(source, 0, usize::MAX)
+    }
+
+    pub fn new_with_budget(
+        source: &'a str,
+        base: usize,
+        ceiling: usize,
+    ) -> Result<Self, NfcFoldBuildError> {
+        let mut admission = NfcScratchAdmission::new(base, ceiling)?;
         let mut nfc_bytes = 0_usize;
         let mut folded_bytes = 0_usize;
-        for scalar in source.nfc() {
+        try_for_each_nfc_with_native_admission_v1(source, &mut admission, |scalar| {
             nfc_bytes = nfc_bytes
                 .checked_add(scalar.len_utf8())
-                .ok_or(NfcFoldBuildError::LengthOverflow)?;
+                .ok_or(NfcAdmissionError::ArithmeticOverflow)?;
             for lower in scalar.to_lowercase() {
                 folded_bytes = folded_bytes
                     .checked_add(lower.len_utf8())
-                    .ok_or(NfcFoldBuildError::LengthOverflow)?;
+                    .ok_or(NfcAdmissionError::ArithmeticOverflow)?;
             }
-        }
+            Ok(())
+        })
+        .map_err(NfcFoldBuildError::Native)?;
         Ok(Self {
             source,
             nfc_bytes,
@@ -53,6 +142,22 @@ impl<'a> NfcFoldPlan<'a> {
     /// Call only after the owner admits both exact lengths. Allocation is
     /// fallible, and either output is discarded on any failure.
     pub fn build(self) -> Result<(String, String), NfcFoldBuildError> {
+        self.build_with_budget(0, usize::MAX)
+    }
+
+    pub fn build_with_budget(
+        self,
+        base: usize,
+        ceiling: usize,
+    ) -> Result<(String, String), NfcFoldBuildError> {
+        let output_bytes = self
+            .nfc_bytes
+            .checked_add(self.folded_bytes)
+            .ok_or(NfcFoldBuildError::LengthOverflow)?;
+        let admitted_base = base
+            .checked_add(output_bytes)
+            .ok_or(NfcFoldBuildError::LengthOverflow)?;
+        let mut admission = NfcScratchAdmission::new(admitted_base, ceiling)?;
         let mut indexed = String::new();
         indexed
             .try_reserve_exact(self.nfc_bytes)
@@ -61,10 +166,12 @@ impl<'a> NfcFoldPlan<'a> {
         folded
             .try_reserve_exact(self.folded_bytes)
             .map_err(|_| NfcFoldBuildError::Allocation)?;
-        for scalar in self.source.nfc() {
+        try_for_each_nfc_with_native_admission_v1(self.source, &mut admission, |scalar| {
             indexed.push(scalar);
             folded.extend(scalar.to_lowercase());
-        }
+            Ok(())
+        })
+        .map_err(NfcFoldBuildError::Native)?;
         if indexed.len() != self.nfc_bytes || folded.len() != self.folded_bytes {
             return Err(NfcFoldBuildError::LengthChanged);
         }
@@ -141,7 +248,7 @@ pub fn apply_case(text: &str, case: CaseMode) -> Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CaseMode, fold, nfc};
+    use super::{CaseMode, NfcFoldBuildError, NfcFoldPlan, fold, nfc};
 
     #[test]
     fn fold_is_unicode_lowercase_per_char() {
@@ -167,5 +274,27 @@ mod tests {
         assert_eq!(CaseMode::from_case_sensitive(false), CaseMode::Folded);
         assert_eq!(CaseMode::from_case_sensitive(true), CaseMode::Sensitive);
         assert_eq!(CaseMode::Folded.as_str(), "folded");
+    }
+
+    #[test]
+    fn planned_nfc_and_fold_preserve_fixed_unicode_outputs() {
+        let source = format!("a{}\u{300}", "\u{315}".repeat(513));
+        let expected = format!("à{}", "\u{315}".repeat(513));
+        let plan = NfcFoldPlan::new_with_budget(&source, 0, 1 << 20).expect("admitted census");
+        assert_eq!(plan.nfc_bytes(), expected.len());
+        assert_eq!(plan.folded_bytes(), expected.len());
+        let (indexed, folded) = plan.build_with_budget(0, 1 << 20).expect("admitted build");
+        assert_eq!(indexed, expected);
+        assert_eq!(folded, expected);
+    }
+
+    #[test]
+    fn planned_normalization_refuses_scratch_before_output_birth() {
+        let source = format!("a{}", "\u{315}".repeat(513));
+        assert!(NfcFoldPlan::new_with_budget(&source, 0, 1).is_err());
+        let plan = NfcFoldPlan::new("İ").expect("census");
+        assert_eq!(plan.nfc_bytes(), 2);
+        assert_eq!(plan.folded_bytes(), 3);
+        assert_eq!(plan.build_with_budget(0, 4), Err(NfcFoldBuildError::ScratchExceeded));
     }
 }
