@@ -6,9 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import sys
 from pathlib import Path
 
-from tools.ci.proof_host import circleci_host_environment
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.ci.proof_host import circleci_host_environment  # noqa: E402
 
 
 def main() -> None:

@@ -156,6 +156,10 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   Main2fb hosted1080 strict도 exit0/407.888s다. 수정 fixture actual 및 whole unit은 별도 검증한다.
   OS3 release254a는 미입장143/624.7525s/0Cargo·tests로 취소해 oldraw/cache를 보존했다.
   Clean6385033f의 원본3counts/seed/caps release/no-fail-fast를 새 cache에 등록했으며 terminal은 남는다.
+  Source2fb Python1079는4181passed/30skipped·869.96s 및 모든 Python/Rust policy/Semgrep를 통과했다.
+  P00 registry25/300tests·35.23s 뒤 writer direct import에서 `ModuleNotFoundError: tools`로 job `FAILED`였다.
+  Direct-script import 초기화를 수리하고 payload 본문은 유지했다. Main host/CLI 회귀28은28passed/0.68s,
+  Ruff/diff도 통과했다. Actual CircleCI P00 manifest 발행·whole job은 새 source에서 확인한다.
 - Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
   admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며
   exact793collection·각 누락 거절을 확인했다. Rust/SDK 목록과 Frozen5796 결과는 그대로 유지한다.

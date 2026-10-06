@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from tools.ci.proof_host import circleci_host_environment, github_host_environment
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+P00_WRITER = REPO_ROOT / "tools/ci/write-circleci-p00-terminal.py"
 
 ENV = {
     "GITHUB_ACTIONS": "true",
@@ -37,6 +44,66 @@ def circle_observed():
         system=lambda: "Linux",
         hostname=lambda: "circle-node",
     )
+
+
+def test_circleci_p00_writer_direct_script_bootstraps_own_package(tmp_path):
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    result = subprocess.run(
+        [sys.executable, "-I", str(P00_WRITER), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--started-at" in result.stdout
+    assert "--ended-at" in result.stdout
+    assert "--out" in result.stdout
+
+
+def test_circleci_p00_writer_module_invocation_preserved():
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    result = subprocess.run(
+        [sys.executable, "-m", "tools.ci.write-circleci-p00-terminal", "--help"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--started-at" in result.stdout
+
+
+def test_circleci_p00_writer_direct_args_reach_observed_host_guard(tmp_path):
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "PYTHONPATH" and not key.startswith("CIRCLE")
+    }
+    output = tmp_path / "p00-terminal-input.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(P00_WRITER),
+            "--started-at",
+            "2026-10-06T00:00:00Z",
+            "--ended-at",
+            "2026-10-06T00:00:01Z",
+            "--out",
+            str(output),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "proof host requires an observed CircleCI job" in result.stderr
+    assert not output.exists()
 
 
 def test_circleci_machine_identity_is_source_bound():

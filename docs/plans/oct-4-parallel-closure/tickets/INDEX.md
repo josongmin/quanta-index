@@ -138,6 +138,13 @@
   Main2fb hosted1080 strict Clippy도 exit0/407.888s이며 이후 cfg(test) 수리의 whole actual을 뜻하지 않는다.
   OS3 release254a 요청은 owner 수리 적용을 위해 미입장 취소했다:143/624.7525s/0Cargo/tests·`NOT_RUN`.
   Clean6385033f의 same3 fixture release/no-fail-fast를 새 cache namespace로 다시 등록했으며 actual 종료 전이다.
+  Source2fb의 verify-python1079는 Python4181passed/30skipped/2warnings·869.96s와
+  PM5/Ruff442/rust-policy/semantic/fallback/benchmark/Semgrep를 통과했다(step924.701s/exit0).
+  후속 P00 단계의 registry25 및300tests·35.23s도 통과했지만 terminal writer 직접 호출의
+  `ModuleNotFoundError: tools`로 job 전체는 exit1/`FAILED`였다. Direct-script 모드에만 resolved repository
+  root를 import 경로에 먼저 등록하도록 수리했으며 payload 생성 본문은 동일하다.
+  Isolated direct CLI·module CLI·실제 args의 observed-host 거절을 포함한 `test_proof_host.py`28개는
+  main actual28passed/0.68s, Ruff check/format 및 diff 통과다. 실제 CircleCI host의 manifest 발행은 남는다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
