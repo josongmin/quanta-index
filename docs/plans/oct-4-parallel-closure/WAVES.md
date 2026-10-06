@@ -10,7 +10,8 @@
 - Manifest allocation bound·staged upload cancellation 및 open-loop artifact/CLI의 stale Scale gold를
   main에 반영했다. Manifest3paths는 patch6c039748의 guards로 통합했으며 collection count·행별 node
   상한과 기존 body tag·array-only digest·BIGPOS version·indefinite EOF를 보존한다. 지원 corpus/encoded
-  한도는 유지하고16byte초과 leading-zero bignum만 할당 전 거절한다. 이 source에서 focused 회귀를 먼저 실행한다.
+  한도는 유지한다. Leading BIGPOS version과 BIGPOS/BIGNEG body는16byte를 넘는 payload를
+  할당 전 거절하며 canonical writer는 이 비정규형을 발행하지 않는다. Focused 회귀를 먼저 실행한다.
 - 최종 선택 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`다.
   `886673cd`의 admitted IPC/manifest·open-loop 회귀를 보존하고 테스트 모듈 위치만 수정한565에서
   whole unit/strict/runtime/integration/fuzz4/native와 Root OS3/Contract/fresh SDK를 연결한다.

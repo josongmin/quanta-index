@@ -207,8 +207,9 @@ Main에 병렬 추가된 NativeIdentityCopy public API3경로는 이 선택 소�
   사용하며 개별 scalar/행만 이전 Value 변환으로 처리한다. Exact outer visitor는 indefinite 종료 break와
   EOF/extra field를 검사한다. Body tag·array-only digest·BIGPOS version 의미를 유지하며 sealed16MiB와
   text2,097,152shards/268,435,520encoded bytes의 기존 지원 한도 및 writer format은 유지한다.
-  의도적인 새 거절은 body BIGPOS/BIGNEG의16byte초과 leading-zero 비정규형이다. Canonical writer는
-  이를 발행하지 않는다. Compact giant count·nested fanout·tagged positive/negative·indefinite 회귀를 추가했고
+  BIGPOS/BIGNEG body와 leading BIGPOS version의 payload는16byte까지 허용한다. 그보다 긴
+  leading-zero 비정규형은 할당 전 거절하며 canonical writer는 이를 발행하지 않는다.
+  Compact giant count·nested fanout·tagged positive/negative·indefinite 회귀를 추가했고
   실제 Rust compile/test/Clippy는 아직 `NOT_RUN`이다.
   이 Rust delta를 포함한 source를 한 번 고정하기 위해 root OS3release638와 Contract/SDKv6의 자기
   waiting-only leaf3개를 source/argv/parent/no-child/stopped-state guards 뒤 취소했다. OS3는
