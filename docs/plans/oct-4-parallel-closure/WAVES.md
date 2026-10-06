@@ -98,6 +98,11 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   고정64MiB/256MiB 한도는 유지하고 malformed 최대 페이지 예약을 포함한다. Owner coverage/upload39는
   39passed/989skipped·35.965s, Python causal76은0.18s/exit0다. 새 contract public helper의 API 영향과
   실제XL/OS3·전체Clippy·final proof는 별도로 실행한다.
+  후속5da25296의 structural bound 변환3곳도 explicit branch로 수리·통합했다. 최신 main774594d7의
+  hosted verify1767은 새 malformed-reservation test의 panic_in_result_fn1건에서 실패했다.
+  세 조건을 explicit Err로 그대로 유지한 test-only 수리를 통합했으며 owned rustfmt/diff가 통과했다.
+  OS3v3는 이 후속 수리 적용을 위해 미입장 상태에서 안전 취소해0actual tests/`NOT_RUN`이다.
+  API contract 입력과 제품 body는 이 test-only delta의 영향을 받지 않는다.
   Request-decode fuzz970,826runs/61s는 통과했고 남은 fuzz3은 미입장 취소 후 `NOT_RUN`이다.
   Source2ea release scale_matrix build18m16s/exit0는 `VERIFIED`; 전체 Clippy/unit 재검사와 native Large/XL은 남는다.
   Hosted source31828561의 verify1741도 동일3건, verify-python1742는 module baseline에서 실패했다.

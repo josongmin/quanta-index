@@ -47,6 +47,11 @@
   target mutation 전 거절을 포함한다. Python causal profile/capture76은0.18s/exit0였다.
   새 public structural_heap_bytes_bound 때문에 affected API/module 입력과 실제 baseline을 재검증한다.
   이 source의 actual XL/OS3·전체 Clippy·final Contract/SDK는 아직 종료되지 않았다.
+  후속5da25296의 structural bound 변환3곳도 explicit branch로 수리·통합했다. 최신 main774594d7의
+  hosted verify1767은 새 malformed-reservation test의 panic_in_result_fn1건에서 실패했다.
+  세 조건을 explicit Err로 그대로 유지한 test-only 수리를 통합했으며 owned rustfmt/diff가 통과했다.
+  OS3v3는 이 후속 수리 적용을 위해 미입장 상태에서 안전 취소해0actual tests/`NOT_RUN`이다.
+  API contract 입력과 제품 body는 이 test-only delta의 영향을 받지 않는다.
   전체 workspace unit은 앞선 컴파일 실패 뒤 재실행 전 `NOT_RUN`, 전체 Clippy도 마지막 실패 뒤 재실행 전이다.
   Controlled ipc_request_decode는970,826runs/61s/exit0로 `VERIFIED`; 남은 fuzz3은 미입장 취소 뒤 `NOT_RUN`이다.
   Source2ea1408d release scale_matrix build는18m16s/exit0로 `VERIFIED`, native Large/XL 실제 실행은 남는다.

@@ -835,16 +835,21 @@ mod tests {
         let structural = super::CoverageSnapshot::structural_heap_bytes_bound(1)
             .ok_or("structural bound overflow")?;
         let charge = super::decode_heap_charge(1, 6)?;
-        assert_eq!(
-            charge,
-            structural + maximum_page_bytes + super::MAX_COVERAGE_ROOT_BYTES_U64 * 8 + 6 * 8
-        );
+        let expected =
+            structural + maximum_page_bytes + super::MAX_COVERAGE_ROOT_BYTES_U64 * 8 + 6 * 8;
+        if charge != expected {
+            return Err(format!("decode heap charge {charge} differs from {expected}").into());
+        }
         // Three-field page tuple: format 2, slot 0, declared array length 4096,
         // no row bodies. It reserves the maximum before detecting EOF even
         // though a root could commit only one row. That allocation is charged.
         let malformed = [0x83, 0x02, 0x00, 0x99, 0x10, 0x00];
-        assert!(ciborium::from_reader::<super::DecodedPage, _>(&malformed[..]).is_err());
-        assert!(charge <= super::MAX_COVERAGE_DECODE_HEAP);
+        if ciborium::from_reader::<super::DecodedPage, _>(&malformed[..]).is_ok() {
+            return Err("a maximum row hint with missing row bodies was accepted".into());
+        }
+        if charge > super::MAX_COVERAGE_DECODE_HEAP {
+            return Err("a single-row root exceeds the supported decode heap".into());
+        }
         Ok(())
     }
 
