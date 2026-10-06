@@ -29,7 +29,7 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 | Medium/Large/XL 실제 프로세스 재시작 | I0 | Source565 actual은 release compile E0432·exit101·5227.025s로 `FAILED`, tests0개다. Debug-only semantic hook의 모듈 등록 조건1줄을 수정한492에서 원본256/4096/32768·same seed/caps·release/no-fail-fast3개를 재등록했다. 수정 모듈의 debug 회귀1개도 별도로 실제 등록했으며 두 결과는 미발행이다 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
-| Final Contract/SDK | I0 | 선택565의 canonical Contract·fresh SDK를 실제 등록했다. 두 source closure1500files의 digest가 일치하고 Contract Python793 collection·새 SDK target 준비를 마쳤다. Behavioral 결과/최종 context/portable verify는 미완료이며 canceled731 v6 partial은 재사용하지 않는다 |
+| Final Contract/SDK | I0 | 선택565의 canonical Contract Python793개가 actual PASS·289.98s다. Rust191 inventory/build 완료 후 행동 검증이 대기 중이며 fresh SDK release는 실제 admitted build 중이다. 두 source closure1500files digest는 일치한다. 최종 context/portable verify는 미완료이며 canceled731 v6 partial은 재사용하지 않는다 |
 | Main의 병렬 NativeIdentity feature 연동 | 해당 변경 owner / hosted CI | Main16f37의 Rust1119·Python1120이 실제 실패했다. Locked unicode-normalization0.1.25에 없는 quanta-native-scratch-v1 feature 참조를 해결한 후 dependency fetch·module/API·whole CI를 재검증해야 한다. 선택565의 엔진 검증과 별도 범위다 |
 
 위 목록은 Quanta 소유 실행 범위다. P11 실제 운영 producer는 I0-03의 target/독립 관측 계약이
@@ -37,6 +37,10 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 
 ### Sidebar 실행 결과 회수
 
+- Source565 Contract Python은793passed·289.98s로 실제 `VERIFIED`다. Rust inventory191의
+  실제 build는2m19s/exit0이며 행동 검증과 최종 context/portable verify는 아직 남는다.
+  SDK fresh release는 정상 admission 후 실제 build 중이다. Collection·컴파일을 Rust/SDK 테스트
+  통과로 승격하지 않는다.
 - Source565의 OS3는 release 컴파일 `FAILED`(E0432/exit101·5227.025s)이며 실제 tests0개다.
   `e2e_semantic_budget_interruption`이 debug 전용 `semantic::test_support`를 release에서도
   import한 등록 오류다. 해당 mod에 `cfg(debug_assertions)`를 붙여 producer 경계와 일치시켰고
@@ -56,7 +60,8 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
   Contract/fresh SDK를 신규 output에 등록했으며 두 closure1500files/digest58d62e6c가 일치한다.
   `/private/tmp/qi-scale-os3-release-5658b953-20261006-v8`,
   `/private/tmp/qi-f15-contract-5658b953-20261006-v8`, `/private/tmp/qi-f15-sdk-5658b953-20261006-v8`.
-  Contract Python793은 collection일 뿐 behavioral PASS가 아니며 context/portable result는 아직 없다.
+  이 등록 시점의 Contract Python793 collection 뒤 실제793PASS를 회수했다(위 checkpoint).
+  최종 context/portable result는 아직 없다.
   Ready9 final consumer는 PREP-v3의55-binding epoch을 실제 검사해 통과했다. PREP-v2의54-binding
   파일은 audit-only이며 final 입력으로 쓰지 않는다. 기존75controls/3manifests 및 raw는 불변이다.
 - Main98의 Rust1111 strict는372.012s/exit101로 동시 추가된 NativeIdentityCopy 테스트의

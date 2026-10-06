@@ -74,6 +74,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+- Source565 Contract Python793개는 실제 `VERIFIED`(289.98s)다. Rust191 inventory의 build는
+  2m19s/exit0이며 행동 검증·최종 context/portable verify는 미완료다. SDK fresh release는
+  정상 admission 후 실제 build 중이다. Compiler/collection 성공을 테스트 통과로 승격하지 않는다.
 - Source565 OS3 actual은 release compile `FAILED`(E0432/exit101·5227.025s), tests0개다.
   Debug 전용 semantic test_support를 쓰는 회귀 모듈에 producer와 같은 `cfg(debug_assertions)`를
   붙인1줄 수리를 main 및 clean492에 적용했다. 제품·회귀 본문 불변·owned fmt/diff는 `VERIFIED`다.
@@ -90,7 +93,7 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   `VERIFIED`다. Old controller를 두 leaf 뒤143으로 정리하고 raw를 보존했다. Body 불변인565에
   Scale broad unit/strict/runtime/integration/fuzz4/native 및 Root OS3 원본3/Contract/fresh SDK를 연결한다.
   Root3 rail은 실제 등록됐고565 OS3 compile 실패와492 수리는 위에 분리했다. Contract/SDK closure는
-  1500files/digest58d62e6c로 일치하며 Python793 collection·새 SDK target 준비를 마쳤다.
+  1500files/digest58d62e6c로 일치하며 Python793 actual PASS·SDK admitted fresh build는 위에 회수했다.
   Context/portable result는 미발행이다. Ready9 final consumer는 PREP-v3의55-binding epoch 검사를
   통과했고 PREP-v2의54-binding은 audit-only로 유지한다. 실제 stage/final slot은 아직 미발행이다.
 - Main98 Rust1111은372.012s/exit101로 동시 추가된 API 테스트 `redundant_clone`1건에서 `FAILED`다.
