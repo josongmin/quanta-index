@@ -32,7 +32,7 @@ patterns; this lint rewrite changes `src/tables.rs` source text.
 - The controlled streaming rail orders more than512 pending pairs by canonical combining class using256 stack positions and a fallible exact temporary Vec. Equal-class order remains stable. Its Sort grant includes live decomposition/recomposition backing and is released after the sort buffer drops, including failure; iterator grants release after both iterator buffers drop.
 - tinyvec rustc_1_57 feature supplies fallible native reserve; vendored minimum Rust is1.92 for the qualified native sort rail. Ordinary policy keeps original TinyVec push/sort behavior.
 - Explicit native_scratch_v1 test target instruments allocations; test TLS is diagnostic only. No production TLS/global quota/allocator replacement.
-- Workspace feature activation is source state, not behavior qualification. The long-text extension and its fixed-output/refusal regression sources have static checks only; Rust build/tests and runtime qualification are `NOT_RUN` in this audit.
+- The original audit established static source state only. Follow-up native-scratch verification on `236759b36b182dbb48e5e73e15308bce7079769b` executed the vendor library 14 tests and controlled native-scratch 4 tests successfully, plus vendor all-targets strict Clippy. The current normalizer and F15 owner rails have separate source-bound results; focused owner success does not establish whole-main, real-daemon, latency or RSS qualification.
 
 ## Original archive files
 
