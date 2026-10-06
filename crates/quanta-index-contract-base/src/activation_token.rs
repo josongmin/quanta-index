@@ -8,9 +8,9 @@ use core::fmt;
 use core::num::NonZeroU64;
 
 use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
     ser::SerializeStruct,
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 pub const ACTIVATION_ROOT_INCARNATION_BYTES_V1: usize = 16;
@@ -184,32 +184,33 @@ struct TokenKeySeedV1<P>(P);
 impl<'de, P: TokenDecodePolicyV1> serde::de::DeserializeSeed<'de> for TokenKeySeedV1<P> {
     type Value = TokenKeyV1;
     fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
-        impl<'de, P: TokenDecodePolicyV1> Visitor<'de> for TokenKeySeedV1<P> {
-            type Value = TokenKeyV1;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("an activation token field")
-            }
-            fn visit_str<E: de::Error>(self, key: &str) -> Result<TokenKeyV1, E> {
-                let mut known = None;
-                for field in ACTIVATION_TOKEN_FIELDS_V1 {
-                    self.0.work_v1(1)?;
-                    if key == *field {
-                        known = Some(*field);
-                        break;
-                    }
-                }
-                let ordinary_unknown = if known.is_none() && self.0.ordinary_v1() {
-                    Some(key.to_owned())
-                } else {
-                    None
-                };
-                Ok(TokenKeyV1 {
-                    known,
-                    ordinary_unknown,
-                })
+        d.deserialize_identifier(self)
+    }
+}
+
+impl<'de, P: TokenDecodePolicyV1> Visitor<'de> for TokenKeySeedV1<P> {
+    type Value = TokenKeyV1;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an activation token field")
+    }
+    fn visit_str<E: de::Error>(self, key: &str) -> Result<TokenKeyV1, E> {
+        let mut known = None;
+        for field in ACTIVATION_TOKEN_FIELDS_V1 {
+            self.0.work_v1(1)?;
+            if key == *field {
+                known = Some(*field);
+                break;
             }
         }
-        d.deserialize_identifier(self)
+        let ordinary_unknown = if known.is_none() && self.0.ordinary_v1() {
+            Some(key.to_owned())
+        } else {
+            None
+        };
+        Ok(TokenKeyV1 {
+            known,
+            ordinary_unknown,
+        })
     }
 }
 
