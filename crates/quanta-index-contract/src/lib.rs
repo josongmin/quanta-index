@@ -77,4 +77,4 @@ pub use results::*;
 pub mod lex;
 
 #[cfg(feature = "quanta-native-identity-v1")]
-pub use quanta_index_contract_base::NativeIdentityConstructionErrorV1;
+pub use quanta_index_contract_base::{NativeIdentityConstructionErrorV1, NativeIdentityDecodeAdmissionV1};
