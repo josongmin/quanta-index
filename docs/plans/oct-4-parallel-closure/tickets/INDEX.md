@@ -49,7 +49,9 @@
   main에 통합해 기존 조건을 명시적 Err로 유지했다. 후속080568c7 verify1754는
   active_selection_process_v1의 arithmetic1·panic map_err2에서 exit101이었다. Test-only1path를
   checked predecessor 및 원본 payload 보존형 ThreadPanic으로 수리·통합했고 포맷/guards는 통과했다.
-  실제 strict Clippy·전체 테스트 재검사는 남는다. Python1753은 확인 시 실행 중이었다.
+  후속07c5fed9 verify1759는 socket UID 테스트의 singleton iterator1건에서 exit101이었다.
+  같은1UID 집합을 std::iter::once로 수리했고 guards/포맷은 통과했다.
+  실제 strict Clippy·전체 테스트 재검사는 남는다. Python1753/1760은 확인 시 실행 중이었다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.

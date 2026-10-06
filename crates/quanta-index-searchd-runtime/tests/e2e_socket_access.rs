@@ -324,7 +324,7 @@ fn linux_two_real_uids_enforce_operator_events_and_serve_listed_query() -> TestR
     let other_uid = 65_534_u32;
     let listed = SocketAccessPolicy::Shared(SharedSocketAccess::new(
         None,
-        [other_uid].into_iter().collect(),
+        std::iter::once(other_uid).collect(),
     ));
     let policies = SocketAccessPolicies::new(listed.clone(), listed, SocketAccessPolicy::Private);
     let mut rt = E2eRuntime::boot_with_socket_access(policies)?;
