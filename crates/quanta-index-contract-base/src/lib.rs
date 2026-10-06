@@ -57,3 +57,8 @@ pub use results::{
 
 #[cfg(feature = "quanta-native-identity-v1")]
 pub use ids::{NativeIdentityConstructionErrorV1, NativeIdentityDecodeAdmissionV1};
+
+#[cfg(feature = "quanta-native-identity-v1")]
+pub use activation_token::{
+    NativeActivationTokenDataFailureV1, NativeActivationTokenDecodeAdmissionV1,
+};

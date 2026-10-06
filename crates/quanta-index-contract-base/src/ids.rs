@@ -218,7 +218,6 @@ fn validate_native_identity_v1<P: unicode_normalization::NativeNormalizationAdmi
     }
 }
 
-
 /// Boundary adapter for the SAME identity visitors. The runtime supplies its
 /// original NFC producer and retained String group; no authority is stored.
 #[cfg(feature = "quanta-native-identity-v1")]
@@ -241,7 +240,9 @@ struct NativeIdentityConstructionV1<'a, P: ?Sized>(&'a P);
 
 trait IdentityDecodeValueV1: Sized {
     fn decode_with_policy_v1<'de, D, P>(deserializer: D, policy: P) -> Result<Self, D::Error>
-    where D: Deserializer<'de>, P: IdentityConstructionPolicyV1<Self>;
+    where
+        D: Deserializer<'de>,
+        P: IdentityConstructionPolicyV1<Self>;
 }
 
 #[cfg(feature = "quanta-native-identity-v1")]
@@ -439,7 +440,11 @@ macro_rules! validated_identity {
 }
 
 validated_identity!(RepoId, repo_id_from_owned_v1, repo_id_from_borrowed_v1);
-validated_identity!(RevisionId, revision_id_from_owned_v1, revision_id_from_borrowed_v1);
+validated_identity!(
+    RevisionId,
+    revision_id_from_owned_v1,
+    revision_id_from_borrowed_v1
+);
 
 /// The validated logical repository/revision tuple.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

@@ -75,9 +75,147 @@ impl Serialize for SearchCorpusActivationTokenV1 {
     }
 }
 
-struct SearchCorpusActivationTokenV1Visitor;
+/// Finite schema cause at the existing activation-token visitor.
+#[cfg(feature = "quanta-native-identity-v1")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeActivationTokenDataFailureV1 {
+    UnknownField,
+    DuplicateField,
+    MissingField,
+    Semantic,
+}
 
-impl<'de> Visitor<'de> for SearchCorpusActivationTokenV1Visitor {
+/// The caller retains its original work refusal; no token authority is issued.
+#[cfg(feature = "quanta-native-identity-v1")]
+pub trait NativeActivationTokenDecodeAdmissionV1 {
+    type Error: fmt::Display;
+    fn consume_token_work_v1(&self, units: u64) -> Result<(), Self::Error>;
+    fn token_invalid_data_v1(
+        &self,
+        cause: NativeActivationTokenDataFailureV1,
+        field: Option<&'static str>,
+    ) -> Self::Error;
+}
+
+#[derive(Clone, Copy)]
+enum TokenDataFailureV1 {
+    UnknownField,
+    DuplicateField,
+    MissingField,
+    Semantic,
+}
+trait TokenDecodePolicyV1: Copy {
+    fn work_v1<E: de::Error>(self, units: u64) -> Result<(), E>;
+    fn invalid_v1<E: de::Error>(
+        self,
+        cause: TokenDataFailureV1,
+        field: Option<&'static str>,
+        ordinary: impl FnOnce() -> E,
+    ) -> E;
+    fn ordinary_v1(self) -> bool;
+}
+#[derive(Clone, Copy)]
+struct OrdinaryTokenDecodeV1;
+impl TokenDecodePolicyV1 for OrdinaryTokenDecodeV1 {
+    fn work_v1<E: de::Error>(self, _: u64) -> Result<(), E> {
+        Ok(())
+    }
+    fn invalid_v1<E: de::Error>(
+        self,
+        _: TokenDataFailureV1,
+        _: Option<&'static str>,
+        ordinary: impl FnOnce() -> E,
+    ) -> E {
+        ordinary()
+    }
+    fn ordinary_v1(self) -> bool {
+        true
+    }
+}
+#[cfg(feature = "quanta-native-identity-v1")]
+struct NativeTokenDecodeV1<'a, P: ?Sized>(&'a P);
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<P: ?Sized> Copy for NativeTokenDecodeV1<'_, P> {}
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<P: ?Sized> Clone for NativeTokenDecodeV1<'_, P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<P: NativeActivationTokenDecodeAdmissionV1 + ?Sized> TokenDecodePolicyV1
+    for NativeTokenDecodeV1<'_, P>
+{
+    fn work_v1<E: de::Error>(self, units: u64) -> Result<(), E> {
+        self.0.consume_token_work_v1(units).map_err(E::custom)
+    }
+    fn invalid_v1<E: de::Error>(
+        self,
+        cause: TokenDataFailureV1,
+        field: Option<&'static str>,
+        _: impl FnOnce() -> E,
+    ) -> E {
+        let cause = match cause {
+            TokenDataFailureV1::UnknownField => NativeActivationTokenDataFailureV1::UnknownField,
+            TokenDataFailureV1::DuplicateField => {
+                NativeActivationTokenDataFailureV1::DuplicateField
+            }
+            TokenDataFailureV1::MissingField => NativeActivationTokenDataFailureV1::MissingField,
+            TokenDataFailureV1::Semantic => NativeActivationTokenDataFailureV1::Semantic,
+        };
+        E::custom(self.0.token_invalid_data_v1(cause, field))
+    }
+    fn ordinary_v1(self) -> bool {
+        false
+    }
+}
+struct TokenKeyV1 {
+    known: Option<&'static str>,
+    ordinary_unknown: Option<String>,
+}
+impl TokenKeyV1 {
+    fn as_str(&self) -> &str {
+        self.known
+            .or(self.ordinary_unknown.as_deref())
+            .unwrap_or("")
+    }
+}
+struct TokenKeySeedV1<P>(P);
+impl<'de, P: TokenDecodePolicyV1> serde::de::DeserializeSeed<'de> for TokenKeySeedV1<P> {
+    type Value = TokenKeyV1;
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        impl<'de, P: TokenDecodePolicyV1> Visitor<'de> for TokenKeySeedV1<P> {
+            type Value = TokenKeyV1;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an activation token field")
+            }
+            fn visit_str<E: de::Error>(self, key: &str) -> Result<TokenKeyV1, E> {
+                let mut known = None;
+                for field in ACTIVATION_TOKEN_FIELDS_V1 {
+                    self.0.work_v1(1)?;
+                    if key == *field {
+                        known = Some(*field);
+                        break;
+                    }
+                }
+                let ordinary_unknown = if known.is_none() && self.0.ordinary_v1() {
+                    Some(key.to_owned())
+                } else {
+                    None
+                };
+                Ok(TokenKeyV1 {
+                    known,
+                    ordinary_unknown,
+                })
+            }
+        }
+        d.deserialize_identifier(self)
+    }
+}
+
+struct SearchCorpusActivationTokenV1Visitor<P>(P);
+
+impl<'de, P: TokenDecodePolicyV1> Visitor<'de> for SearchCorpusActivationTokenV1Visitor<P> {
     type Value = SearchCorpusActivationTokenV1;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -88,43 +226,99 @@ impl<'de> Visitor<'de> for SearchCorpusActivationTokenV1Visitor {
     where
         A: MapAccess<'de>,
     {
+        self.0.work_v1(1)?;
         let mut root_incarnation = None;
         let mut activation_sequence = None;
-        while let Some(key) = map.next_key::<String>()? {
+        while let Some(key) = map.next_key_seed(TokenKeySeedV1(self.0))? {
             match key.as_str() {
                 "root_incarnation" => {
                     if root_incarnation.is_some() {
-                        return Err(de::Error::duplicate_field("root_incarnation"));
+                        return Err(self.0.invalid_v1(
+                            TokenDataFailureV1::DuplicateField,
+                            Some("root_incarnation"),
+                            || de::Error::duplicate_field("root_incarnation"),
+                        ));
                     }
+                    self.0.work_v1(17)?;
                     root_incarnation = Some(map.next_value()?);
                 }
                 "activation_sequence" => {
                     if activation_sequence.is_some() {
-                        return Err(de::Error::duplicate_field("activation_sequence"));
+                        return Err(self.0.invalid_v1(
+                            TokenDataFailureV1::DuplicateField,
+                            Some("activation_sequence"),
+                            || de::Error::duplicate_field("activation_sequence"),
+                        ));
                     }
+                    self.0.work_v1(1)?;
                     activation_sequence = Some(map.next_value()?);
                 }
-                other => return Err(de::Error::unknown_field(other, ACTIVATION_TOKEN_FIELDS_V1)),
+                other => {
+                    return Err(self
+                        .0
+                        .invalid_v1(TokenDataFailureV1::UnknownField, None, || {
+                            de::Error::unknown_field(other, ACTIVATION_TOKEN_FIELDS_V1)
+                        }));
+                }
             }
         }
+        self.0.work_v1(16)?;
         SearchCorpusActivationTokenV1::new(
-            root_incarnation.ok_or_else(|| de::Error::missing_field("root_incarnation"))?,
-            activation_sequence.ok_or_else(|| de::Error::missing_field("activation_sequence"))?,
+            root_incarnation.ok_or_else(|| {
+                self.0.invalid_v1(
+                    TokenDataFailureV1::MissingField,
+                    Some("root_incarnation"),
+                    || de::Error::missing_field("root_incarnation"),
+                )
+            })?,
+            activation_sequence.ok_or_else(|| {
+                self.0.invalid_v1(
+                    TokenDataFailureV1::MissingField,
+                    Some("activation_sequence"),
+                    || de::Error::missing_field("activation_sequence"),
+                )
+            })?,
         )
-        .map_err(de::Error::custom)
+        .map_err(|cause| {
+            self.0.invalid_v1(
+                TokenDataFailureV1::Semantic,
+                Some("root_incarnation"),
+                || de::Error::custom(cause),
+            )
+        })
     }
 }
 
-impl<'de> Deserialize<'de> for SearchCorpusActivationTokenV1 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+impl SearchCorpusActivationTokenV1 {
+    fn decode_with_policy_v1<'de, D: Deserializer<'de>, P: TokenDecodePolicyV1>(
+        deserializer: D,
+        policy: P,
+    ) -> Result<Self, D::Error> {
         deserializer.deserialize_struct(
             "SearchCorpusActivationTokenV1",
             ACTIVATION_TOKEN_FIELDS_V1,
-            SearchCorpusActivationTokenV1Visitor,
+            SearchCorpusActivationTokenV1Visitor(policy),
         )
+    }
+    #[cfg(feature = "quanta-native-identity-v1")]
+    pub fn native_decode_seed_v1<'a, 'de, P: NativeActivationTokenDecodeAdmissionV1 + ?Sized>(
+        admission: &'a P,
+    ) -> impl serde::de::DeserializeSeed<'de, Value = Self> + 'a {
+        TokenDecodeSeedV1(NativeTokenDecodeV1(admission))
+    }
+}
+#[cfg(feature = "quanta-native-identity-v1")]
+struct TokenDecodeSeedV1<P>(P);
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<'de, P: TokenDecodePolicyV1> serde::de::DeserializeSeed<'de> for TokenDecodeSeedV1<P> {
+    type Value = SearchCorpusActivationTokenV1;
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        Self::Value::decode_with_policy_v1(d, self.0)
+    }
+}
+impl<'de> Deserialize<'de> for SearchCorpusActivationTokenV1 {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::decode_with_policy_v1(deserializer, OrdinaryTokenDecodeV1)
     }
 }
 
