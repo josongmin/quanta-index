@@ -139,9 +139,7 @@ def test_reopen_surfaces_driver_join_failure_without_discard_v1() -> None:
     try_reopen_start = source.find("pub fn try_reopen_in_place(")
     assert "AnyResult<()>" in source[try_reopen_start : try_reopen_start + 120]
     assert re.fullmatch(r"\{\s*self\.stop_driver\(\)\s*\}", try_reopen)
-    assert stop_driver.index("outcome?;") < stop_driver.index(
-        "self.remove_socket_directory()"
-    )
+    assert stop_driver.index("outcome?;") < stop_driver.index("self.remove_socket_directory()")
 
 
 def test_activation_expectation_is_reloaded_from_daemon_control_authority_v1() -> None:

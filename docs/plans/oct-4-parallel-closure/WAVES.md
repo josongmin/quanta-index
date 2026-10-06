@@ -103,6 +103,11 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   세 조건을 explicit Err로 그대로 유지한 test-only 수리를 통합했으며 owned rustfmt/diff가 통과했다.
   OS3v3는 이 후속 수리 적용을 위해 미입장 상태에서 안전 취소해0actual tests/`NOT_RUN`이다.
   API contract 입력과 제품 body는 이 test-only delta의 영향을 받지 않는다.
+  Source5da 전체 strict Clippy는2687.131s/exit101로 위 lint1건에서 실패했고 cleanac70은 재실행 중이다.
+  Main47e의 hosted verify1775는 SDK test transport의 Result assertion1·Mutex scope2로 실패했다.
+  조건을 유지한 explicit Err/checked arithmetic·짧은 lock/Copy snapshot1path 수리를 main에 통합했다.
+  Guarded apply/rustfmt/diff는 통과했으며 실제 Clippy/fixture는 별도로 재검증한다.
+  OS3v4는 SDK 후속 수리 때문에 미입장 취소해 exit143/0actual tests/`NOT_RUN`이다.
   Request-decode fuzz970,826runs/61s는 통과했고 남은 fuzz3은 미입장 취소 후 `NOT_RUN`이다.
   Source2ea release scale_matrix build18m16s/exit0는 `VERIFIED`; 전체 Clippy/unit 재검사와 native Large/XL은 남는다.
   Hosted source31828561의 verify1741도 동일3건, verify-python1742는 module baseline에서 실패했다.
@@ -115,9 +120,15 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   아래 +2 manifest 수정으로 원인을 수리했으며 새 소스의 hosted 결과로 재검증한다.
   후속 Python1760은3870passed/30skipped 뒤 stale reopen fence에서 실패했다. 실제 위임·오류 전달을
   검사하도록 해당 guard를 수리했고6passed/0.43s다. Broad Python과 실제 OS restart는 별도 검증한다.
+  Main47e Python1776은4181passed/30skipped/2warnings·858.00s 뒤 Ruff format2곳에서 실패했다.
+  해당2파일 포맷 수리 뒤 Ruff check/format 및 focused73tests가 통과했다(0.51s).
+  전체 pytest 실행 통과는 hosted job 전체 통과가 아니다.
 - Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
   admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며
   exact793collection·각 누락 거절을 확인했다. Rust/SDK 목록과 Frozen5796 결과는 그대로 유지한다.
+  후속 clean47e Contract는 source closure·793collection authority PASS 뒤 SDK test 후속 수리로
+  Rust leaf를 미입장 취소했다(producer143/controller1). Partial을 보존하며 whole rail은 `NOT_RUN`;
+  Python793 behavioral pass/Rust191/fresh SDK27 actual 결과는 아직 없다.
   새 source와 fresh output에서 canonical Contract/fresh SDK·portable replay를 다시 실행한다.
 - Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
 - 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.
@@ -127,7 +138,8 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   Large/XL OS-child restart·open-loop·quiet-host 성능은 `NOT_RUN`이다.
 - ready9 OpenGrok selected-request180은 완료; 전체 service/index 권위는 미완료다.
   Frozen5796 CLI admission20tasks/519pairs만 actual exit0이다. Django admission은 중단했고
-  나머지 admissions·pair·SG/CS·full5 join은 완료 증거가 없다.
+  나머지 admissions·pair·full5 join은 완료 증거가 없다. SG/CS 독립 scope는 clean47e checkout에서
+  9capture+9replay batch 실행 중이며 완료 및 final5 join으로 표시하지 않는다.
 - Frozen5796 Gin declaration1,196 fresh single-route oracle/capture/scoring 진단은 완료했다.
   1,192success/4capped 및 declaration MRR@10=1.0은 그 분모의 diagnostic이며 독립 holdout/비교/PERF가 아니다.
 - Current history/admission Python owner58cases와 후속 retention/batch67cases는 각각 통과했다. Broad Python은 current file-pair

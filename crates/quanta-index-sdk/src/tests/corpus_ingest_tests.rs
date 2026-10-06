@@ -1111,31 +1111,69 @@ impl IngestTransport for MultipartCorpusTransport {
         &self,
         request: SearchPlaneIngestIpcRequestEnvelope,
     ) -> Result<SearchPlaneIngestIpcResponseEnvelope, crate::SdkError> {
-        let mut progress = self
-            .progress
-            .lock()
-            .map_err(|error| crate::SdkError::Protocol(error.to_string()))?;
         let payload = match request.payload {
             SearchPlaneIngestIpcRequest::StageSourcePublication(part) => {
-                assert_eq!(part.identity, self.identity);
-                assert_eq!(part.offset, u64::try_from(progress.0).expect("offset"));
-                assert!(part.bytes.len() <= 1_048_576);
-                let end = progress.0.checked_add(part.bytes.len()).expect("part end");
-                assert_eq!(self.body.get(progress.0..end), Some(part.bytes.as_slice()));
-                progress.0 = end;
-                progress.1 = progress.1.checked_add(1).expect("part count");
+                let next_offset = {
+                    let mut progress = self
+                        .progress
+                        .lock()
+                        .map_err(|error| crate::SdkError::Protocol(error.to_string()))?;
+                    let offset = u64::try_from(progress.0)
+                        .map_err(|error| crate::SdkError::Protocol(error.to_string()))?;
+                    if part.identity != self.identity || part.offset != offset {
+                        return Err(crate::SdkError::Protocol(
+                            "multipart fixture received a different identity or offset".into(),
+                        ));
+                    }
+                    if part.bytes.len() > 1_048_576 {
+                        return Err(crate::SdkError::Protocol(
+                            "multipart fixture received an oversized part".into(),
+                        ));
+                    }
+                    let end = progress.0.checked_add(part.bytes.len()).ok_or_else(|| {
+                        crate::SdkError::Protocol("multipart fixture part end overflowed".into())
+                    })?;
+                    if self.body.get(progress.0..end) != Some(part.bytes.as_slice()) {
+                        return Err(crate::SdkError::Protocol(
+                            "multipart fixture received different body bytes".into(),
+                        ));
+                    }
+                    let part_count = progress.1.checked_add(1).ok_or_else(|| {
+                        crate::SdkError::Protocol("multipart fixture part count overflowed".into())
+                    })?;
+                    let next_offset = u64::try_from(end)
+                        .map_err(|error| crate::SdkError::Protocol(error.to_string()))?;
+                    progress.0 = end;
+                    progress.1 = part_count;
+                    next_offset
+                };
                 SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(
                     quanta_index_contract::SourcePublicationUploadAck {
                         identity: self.identity,
-                        next_offset: u64::try_from(end).expect("end"),
+                        next_offset,
                     },
                 )
             }
             SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) => {
-                assert_eq!(progress.0, self.body.len());
-                assert_eq!(commit.identity, self.identity);
-                assert_eq!(commit.publication, self.publication);
-                progress.2 = progress.2.checked_add(1).expect("commit count");
+                {
+                    let mut progress = self
+                        .progress
+                        .lock()
+                        .map_err(|error| crate::SdkError::Protocol(error.to_string()))?;
+                    if progress.0 != self.body.len()
+                        || commit.identity != self.identity
+                        || commit.publication != self.publication
+                    {
+                        return Err(crate::SdkError::Protocol(
+                            "multipart fixture received an incomplete or different commit".into(),
+                        ));
+                    }
+                    progress.2 = progress.2.checked_add(1).ok_or_else(|| {
+                        crate::SdkError::Protocol(
+                            "multipart fixture commit count overflowed".into(),
+                        )
+                    })?;
+                }
                 SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                     quanta_index_contract::SearchCorpusPublishOutcome {
                         publication: self.publication.clone(),
@@ -1215,7 +1253,7 @@ fn large_sdk_publication_streams_exact_original_body_then_commits_once() {
         ok_or_fail!(client.search_corpus().publish(&batch)),
         transport.receipt
     );
-    let progress = transport.progress.lock().expect("progress");
+    let progress = *transport.progress.lock().expect("progress");
     assert_eq!(progress.0, transport.body.len());
     assert!(progress.1 > 64);
     assert_eq!(progress.2, 1);

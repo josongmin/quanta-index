@@ -52,7 +52,9 @@
   세 조건을 explicit Err로 그대로 유지한 test-only 수리를 통합했으며 owned rustfmt/diff가 통과했다.
   OS3v3는 이 후속 수리 적용을 위해 미입장 상태에서 안전 취소해0actual tests/`NOT_RUN`이다.
   API contract 입력과 제품 body는 이 test-only delta의 영향을 받지 않는다.
-  전체 workspace unit은 앞선 컴파일 실패 뒤 재실행 전 `NOT_RUN`, 전체 Clippy도 마지막 실패 뒤 재실행 전이다.
+  Source5da25296의 전체 strict Clippy는2687.131s/exit101로 위 test-only lint1건에서 `FAILED`였다.
+  Clean ownerac70ad56는 해당 수리를 반영해 전체 strict Clippy 실행 중이다.
+  전체 workspace unit은 앞선 컴파일 실패 뒤 재실행 전 `NOT_RUN`이다.
   Controlled ipc_request_decode는970,826runs/61s/exit0로 `VERIFIED`; 남은 fuzz3은 미입장 취소 뒤 `NOT_RUN`이다.
   Source2ea1408d release scale_matrix build는18m16s/exit0로 `VERIFIED`, native Large/XL 실제 실행은 남는다.
   Main source31828561의 CircleCI verify1741도 동일3건, verify-python1742는 미통합 module baseline에서
@@ -69,16 +71,30 @@
   reopen 직접 호출을 전제한 stale source fence로 `FAILED`였다. 실제 reopen→try_reopen_in_place→stop_driver
   위임은 오류를 그대로 전파한다. 정적 검사가 두 경계와 cleanup 전 오류 전파를 계속 확인하도록 수리했다.
   해당6tests는6passed/0.43s로 `VERIFIED`; broad Python/실제 daemon restart로 승격하지 않는다.
+- Main47e938d6의 hosted verify1775는 SDK `LargePublicationTransport::send`의
+  panic_in_result_fn1·significant_drop_tightening2에서 exit101/`FAILED`였다. SDK cfg(test)1path를
+  explicit Protocol Err·checked arithmetic·arm별 짧은 lock·Copy progress snapshot으로 수리했다.
+  Identity/offset/1MiB cap/exact body/complete commit/publication binding 조건을 모두 유지한다.
+  Guarded apply·owned rustfmt/diff는 `VERIFIED`; 수정본의 실제 Clippy/SDK fixture 실행은 남는다.
+  같은 source의 verify-python1776은4181passed/30skipped/2warnings·858.00s 뒤 Ruff format2곳에서
+  exit1/`FAILED`였다. 두 파일만 포맷한 뒤 Ruff check/format 및 causal-profile·reopen-fence73tests가
+  73passed/0.51s다. 전체 pytest 실행 통과와 hosted job 실패를 구분한다.
+  OS3v4 ownerac70ad56는 이 SDK 후속 수리를 위해 미입장 취소했다: exit143/0actual tests/`NOT_RUN`.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
   Actual admission/pair/full5는 새 selected-source proof·runtime·host slot 전달 전 `NOT_RUN`이다.
+  SG/CS는 Quanta proof를 요구하지 않는 독립 scope로 clean47e938d6 checkout에서
+  9capture+9independent replay batch를 실행 중이다. Batch 완료 및 final5 join은 아직 `NOT_RUN`이다.
 - Public API 담당의 actual contract/SDK API rendering과 contract/core module gates4개는 reviewed 후보와 byte-exact로
   `VERIFIED`다. SDK public API는 기존 baseline과 동일하다. 독립 external consumer5tests는5passed,
   접근 차단4compile은 기대한 E0004/E0603 거절로 모두 `VERIFIED`다. API255/module194 input guards와
   actual output SHA·baseline pre/post SHA를 대조해 baseline3paths를 main에 통합했다.
   `/private/tmp/qi-api-vkq0qc7t/owner-result.md`가 actual command/selector를 소유한다. Standalone consumer serde1.0.229와
   producer1.0.228의 lock 차이를 보존하며, daemon/UDS·full SDK·workspace·release proof로 승격하지 않는다.
+  Coverage structural bound의 추가 public helper는 별도 contractAPI actual exit0로 reviewed 후보와 일치했다.
+  Affected contract module·consumer2는 아직 종료 전이며 final1baseline은 통합 전이다. SDK cfg(test)
+  후속 수리의 input drift는 production API와 실제 test 입력을 구분해 재사용 여부를 판정한다.
 - Hosted CircleCI source7fb46415는 `FAILED`다. Verify1730은 upload 코드의 rustfmt drift에서 exit1,
   verify-python1729는 contract/core guarded module tree의 새 upload DTO/port 및 sibling byte wrapper
   visibility baseline 누락에서 exit1이었다. 포맷은 Scale, 두 module baseline과 공개 API는 API 담당이 소유한다.
@@ -102,6 +118,10 @@
   달랐으며 기존 필수 검사는 누락되지 않았다. 최근 admission split batch의 drift/boundary 회귀2ID를
   필수 manifest에 명시 추가했고 Rust/SDK 목록은 바꾸지 않았다. Exact793 수집과 새 회귀 각각 누락 거절을
   확인했다. `/private/tmp/qi-f15-contract-080568c7-20261006-v1`는 실패로 보존하며 Rust tests는 미실행이다.
+  후속 clean47e938d6의 canonical Contract는 source closure와793개 collection authority 확인을 통과했다.
+  SDK cfg(test) 후속 수리로 Rust build leaf를 미입장 취소해 producer exit143/controller exit1이다.
+  `/private/tmp/qi-f15-contract-47e938d6-20261006-v2`는 partial로 보존하며 whole rail은 `NOT_RUN`이다.
+  Collection은 Python793 behavioral pass가 아니며 Rust191과 fresh SDK27도 이 source에서 미실행이다.
   새 source의 Contract/fresh SDK 실제 발행·독립 portable verify가 남는다.
 - 남은 통합 종료 조건: 새 upload/Scale 및 scanner owner 변경을 포함한 영향 Rust/runtime 회귀,
   최종 selected-source Contract/fresh SDK·portable replay, Ready9 final pair/full5 join과 각 별도 qualification.

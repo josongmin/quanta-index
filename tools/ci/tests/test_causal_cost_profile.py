@@ -212,10 +212,14 @@ def test_profile_counts_file_authority_sync_barriers_exactly() -> None:
     )
     phase = _replay(trace=trace)["phases"]["full_seal"]
     assert phase["sync"]["file_authority_object"] == {
-        "calls": 1, "failed_calls": 0, "elapsed_ns": 11,
+        "calls": 1,
+        "failed_calls": 0,
+        "elapsed_ns": 11,
     }
     assert phase["sync"]["file_authority_directory"] == {
-        "calls": 2, "failed_calls": 0, "elapsed_ns": 30,
+        "calls": 2,
+        "failed_calls": 0,
+        "elapsed_ns": 30,
     }
     assert phase["sync_call_elapsed_ns_sum"] == 441
 
