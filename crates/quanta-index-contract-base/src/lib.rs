@@ -54,3 +54,6 @@ pub use results::{
     PreviewKind, PreviewMetadata, PreviewUnavailableReason, QueryResultWindowV1,
     QueryResultWindowV2, StructuralBinding, StructuralCandidate,
 };
+
+#[cfg(feature = "quanta-native-identity-v1")]
+pub use ids::NativeIdentityConstructionErrorV1;

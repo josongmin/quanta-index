@@ -75,3 +75,6 @@ pub use results::*;
 // surface (`ExplanationRow`, `SearchExplanation`, ...) plus the LQ-family
 // records that live only under `lex` (`CommitRecord`, `SymbolRecord`, ...).
 pub mod lex;
+
+#[cfg(feature = "quanta-native-identity-v1")]
+pub use quanta_index_contract_base::NativeIdentityConstructionErrorV1;

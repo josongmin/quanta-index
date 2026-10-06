@@ -105,23 +105,117 @@ pub fn try_copy_string_with_native_birth_v1<E>(
     Ok(value)
 }
 
-fn validate_identity(value: &str) -> Result<(), IdentityValidationErrorV1> {
+// One predicate owner keeps the ordinary and admitted error order identical.
+trait IdentityValidationPolicyV1 {
+    type Error;
+    fn character_step_v1(&mut self) -> Result<(), Self::Error>;
+    fn is_nfc_v1(&mut self, value: &str) -> Result<bool, Self::Error>;
+}
+
+enum IdentityValidationFailureV1<E> {
+    Validation(IdentityValidationErrorV1),
+    Operation(E),
+}
+
+fn validate_identity_with_policy_v1<P: IdentityValidationPolicyV1>(
+    value: &str,
+    policy: &mut P,
+) -> Result<(), IdentityValidationFailureV1<P::Error>> {
+    use IdentityValidationFailureV1::{Operation, Validation};
     if value.is_empty() {
-        return Err(IdentityValidationErrorV1::Empty);
+        return Err(Validation(IdentityValidationErrorV1::Empty));
     }
     if value.len() > IDENTITY_MAX_UTF8_BYTES {
-        return Err(IdentityValidationErrorV1::TooLong);
+        return Err(Validation(IdentityValidationErrorV1::TooLong));
     }
-    if value
-        .chars()
-        .any(|ch| matches!(u32::from(ch), 0x00..=0x1f | 0x7f..=0x9f))
-    {
-        return Err(IdentityValidationErrorV1::ControlCharacter);
+    let mut characters = value.chars();
+    loop {
+        // Includes the final iterator step. Admission precedes decoding and
+        // the canonical control-character predicate, with no owned ID copy.
+        policy.character_step_v1().map_err(Operation)?;
+        let Some(ch) = characters.next() else {
+            break;
+        };
+        if matches!(u32::from(ch), 0x00..=0x1f | 0x7f..=0x9f) {
+            return Err(Validation(IdentityValidationErrorV1::ControlCharacter));
+        }
     }
-    if !value.nfc().eq(value.chars()) {
-        return Err(IdentityValidationErrorV1::NonCanonical);
+    if !policy.is_nfc_v1(value).map_err(Operation)? {
+        return Err(Validation(IdentityValidationErrorV1::NonCanonical));
     }
     Ok(())
+}
+
+struct OrdinaryIdentityValidationV1;
+impl IdentityValidationPolicyV1 for OrdinaryIdentityValidationV1 {
+    type Error = core::convert::Infallible;
+    fn character_step_v1(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn is_nfc_v1(&mut self, value: &str) -> Result<bool, Self::Error> {
+        Ok(value.nfc().eq(value.chars()))
+    }
+}
+fn validate_identity(value: &str) -> Result<(), IdentityValidationErrorV1> {
+    match validate_identity_with_policy_v1(value, &mut OrdinaryIdentityValidationV1) {
+        Ok(()) => Ok(()),
+        Err(IdentityValidationFailureV1::Validation(cause)) => Err(cause),
+        Err(IdentityValidationFailureV1::Operation(cause)) => match cause {},
+    }
+}
+
+/// Failure at the mandatory canonical borrowed validation or one owned copy.
+/// No caller-supplied boolean can bypass the identity's private NFC seal.
+#[cfg(feature = "quanta-native-identity-v1")]
+#[derive(Debug)]
+pub enum NativeIdentityConstructionErrorV1<E> {
+    Validation(IdentityValidationErrorV1),
+    Normalization(unicode_normalization::NativeNormalizationErrorV1<E>),
+    Copy(NativeIdentityCopyErrorV1<E>),
+}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<E: fmt::Display> fmt::Display for NativeIdentityConstructionErrorV1<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Validation(cause) => fmt::Display::fmt(cause, formatter),
+            Self::Normalization(cause) => fmt::Display::fmt(cause, formatter),
+            Self::Copy(cause) => fmt::Display::fmt(cause, formatter),
+        }
+    }
+}
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<E: std::error::Error + 'static> std::error::Error for NativeIdentityConstructionErrorV1<E> {}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+struct NativeIdentityValidationV1<'a, P>(&'a mut P);
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<P: unicode_normalization::NativeNormalizationAdmissionV1> IdentityValidationPolicyV1
+    for NativeIdentityValidationV1<'_, P>
+{
+    type Error = unicode_normalization::NativeNormalizationErrorV1<P::Error>;
+    fn character_step_v1(&mut self) -> Result<(), Self::Error> {
+        self.0.checkpoint_work_v1(1).map_err(Self::Error::Admission)
+    }
+    fn is_nfc_v1(&mut self, value: &str) -> Result<bool, Self::Error> {
+        unicode_normalization::try_is_nfc_with_native_admission_v1(value, self.0)
+    }
+}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+fn validate_native_identity_v1<P: unicode_normalization::NativeNormalizationAdmissionV1>(
+    value: &str,
+    admission: &mut P,
+) -> Result<(), NativeIdentityConstructionErrorV1<P::Error>> {
+    match validate_identity_with_policy_v1(value, &mut NativeIdentityValidationV1(admission)) {
+        Ok(()) => Ok(()),
+        Err(IdentityValidationFailureV1::Validation(cause)) => {
+            Err(NativeIdentityConstructionErrorV1::Validation(cause))
+        }
+        Err(IdentityValidationFailureV1::Operation(cause)) => {
+            Err(NativeIdentityConstructionErrorV1::Normalization(cause))
+        }
+    }
 }
 
 macro_rules! validated_identity {
@@ -134,6 +228,52 @@ macro_rules! validated_identity {
             pub fn new(value: impl Into<String>) -> Result<Self, IdentityValidationErrorV1> {
                 let value = value.into();
                 validate_identity(value.as_str())?;
+                Ok(Self(value))
+            }
+
+            /// Validate borrowed input at the same predicate/NFC producers,
+            /// then perform exactly one admitted owned copy. The normalization
+            /// policy owns temporary scratch grants; the copy admission retains
+            /// the resulting String backing with the caller's original group.
+            #[cfg(feature = "quanta-native-identity-v1")]
+            pub fn try_from_str_with_native_admission_v1<P>(
+                value: &str,
+                normalization_admission: &mut P,
+                copy_admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, P::Error>,
+            ) -> Result<Self, NativeIdentityConstructionErrorV1<P::Error>>
+            where
+                P: unicode_normalization::NativeNormalizationAdmissionV1,
+            {
+                validate_native_identity_v1(value, normalization_admission)?;
+                let copy_work = u64::try_from(value.len()).map_err(|_| {
+                    NativeIdentityConstructionErrorV1::Normalization(
+                        unicode_normalization::NativeNormalizationErrorV1::ArithmeticOverflow,
+                    )
+                })?;
+                normalization_admission.checkpoint_work_v1(copy_work)
+                    .map_err(|cause| NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(cause)))?;
+                let value = try_copy_string_with_native_birth_v1(value, copy_admission)
+                    .map_err(NativeIdentityConstructionErrorV1::Copy)?;
+                normalization_admission.checkpoint_work_v1(0)
+                    .map_err(|cause| NativeIdentityConstructionErrorV1::Copy(NativeIdentityCopyErrorV1::Admission(cause)))?;
+                Ok(Self(value))
+            }
+
+            /// Validate an already-owned, caller-admitted String without a
+            /// second copy. Input NFC is rejected, never normalized.
+            #[cfg(feature = "quanta-native-identity-v1")]
+            pub fn try_from_owned_with_native_admission_v1<P>(
+                value: String,
+                normalization_admission: &mut P,
+            ) -> Result<Self, NativeIdentityConstructionErrorV1<P::Error>>
+            where
+                P: unicode_normalization::NativeNormalizationAdmissionV1,
+            {
+                validate_native_identity_v1(&value, normalization_admission)?;
+                normalization_admission.checkpoint_work_v1(0)
+                    .map_err(|cause| NativeIdentityConstructionErrorV1::Normalization(
+                        unicode_normalization::NativeNormalizationErrorV1::Admission(cause)
+                    ))?;
                 Ok(Self(value))
             }
 
@@ -370,7 +510,7 @@ mod tests {
         let revision = RevisionId::new("révision/%").expect("canonical revision");
         assert_eq!(
             revision.try_clone_with_native_birth_v1(|_, birth| Ok::<_, u8>(birth())),
-            Ok(revision.clone())
+            Ok(revision)
         );
     }
 
@@ -467,5 +607,157 @@ mod tests {
             LogicalGenerationIdentityV1::new(left, 7).digest(),
             LogicalGenerationIdentityV1::new(right, 7).digest()
         );
+    }
+}
+
+#[cfg(all(test, feature = "quanta-native-identity-v1"))]
+mod native_raw_identity_tests_v1 {
+    use super::*;
+    use unicode_normalization::{
+        NativeNormalizationAdmissionV1, NativeNormalizationErrorV1,
+        NativeNormalizationScratchDemandV1, NativeNormalizationScratchOwnerV1,
+    };
+
+    #[derive(Default)]
+    struct Admission {
+        work: u64,
+        births: usize,
+        releases: usize,
+        fail_work: Option<u8>,
+        fail_birth: Option<u8>,
+        fail_after_birth: Option<u8>,
+    }
+    impl NativeNormalizationAdmissionV1 for Admission {
+        type Error = u8;
+        fn checkpoint_work_v1(&mut self, units: u64) -> Result<(), u8> {
+            if let Some(cause) = self.fail_work {
+                return Err(cause);
+            }
+            self.work = self.work.checked_add(units).expect("fixture work fits");
+            Ok(())
+        }
+        fn native_birth_v1(
+            &mut self,
+            demand: NativeNormalizationScratchDemandV1,
+            birth: &mut dyn FnMut() -> bool,
+        ) -> Result<bool, u8> {
+            if let Some(cause) = self.fail_birth {
+                return Err(cause);
+            }
+            assert!(demand.new_bytes_v1 > demand.current_bytes_v1);
+            self.births += 1;
+            let success = birth();
+            if success && let Some(cause) = self.fail_after_birth {
+                return Err(cause);
+            }
+            Ok(success)
+        }
+        fn release_scratch_v1(&mut self, _owner: NativeNormalizationScratchOwnerV1) {
+            self.releases += 1;
+        }
+    }
+
+    #[test]
+    fn raw_ids_reuse_unicode_validation_and_copy_once_v1() {
+        // Equal combining classes are NFC-canonical here, and the run exceeds
+        // both canonical iterators' inline scratch. No ASCII-only shortcut.
+        let source = format!("q{}", "\u{301}".repeat(20));
+        let expected = RepoId::new(source.as_str()).unwrap();
+        let mut admission = Admission::default();
+        let mut copies = 0;
+        let copied = RepoId::try_from_str_with_native_admission_v1(
+            &source,
+            &mut admission,
+            |bytes, birth| {
+                assert_eq!(bytes, source.len());
+                copies += 1;
+                Ok(birth())
+            },
+        )
+        .unwrap();
+        assert_eq!(copied, expected);
+        assert_ne!(copied.as_str().as_ptr(), source.as_ptr());
+        assert_eq!(copies, 1);
+        assert!(admission.births >= 2);
+        assert_eq!(admission.releases, 2);
+    }
+
+    #[test]
+    fn owned_raw_id_moves_original_string_after_same_validation_v1() {
+        let source = String::from("révision");
+        let pointer = source.as_ptr();
+        let mut admission = Admission::default();
+        let value =
+            RevisionId::try_from_owned_with_native_admission_v1(source, &mut admission).unwrap();
+        assert_eq!(value.as_str(), "révision");
+        assert_eq!(value.as_str().as_ptr(), pointer);
+    }
+
+    #[test]
+    fn same_raw_predicate_error_order_precedes_any_owned_copy_v1() {
+        let too_long_control = format!("\n{}", "x".repeat(512));
+        for (source, expected) in [
+            ("", IdentityValidationErrorV1::Empty),
+            (
+                too_long_control.as_str(),
+                IdentityValidationErrorV1::TooLong,
+            ),
+            ("\n", IdentityValidationErrorV1::ControlCharacter),
+            ("e\u{301}", IdentityValidationErrorV1::NonCanonical),
+        ] {
+            assert_eq!(RepoId::new(source), Err(expected));
+            let mut admission = Admission::default();
+            let error = RepoId::try_from_str_with_native_admission_v1(
+                source,
+                &mut admission,
+                |_, _| -> Result<bool, u8> { panic!("invalid ID was copied") },
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, NativeIdentityConstructionErrorV1::Validation(cause) if cause == expected)
+            );
+        }
+    }
+
+    #[test]
+    fn raw_validation_retains_exact_source_cause_before_and_after_scratch_birth_v1() {
+        let mut admission = Admission {
+            fail_work: Some(7),
+            ..Admission::default()
+        };
+        let error = RepoId::try_from_str_with_native_admission_v1(
+            "repository",
+            &mut admission,
+            |_, _| -> Result<bool, u8> { panic!("refused ID copied") },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            NativeIdentityConstructionErrorV1::Normalization(
+                NativeNormalizationErrorV1::Admission(7)
+            )
+        ));
+        assert_eq!(admission.births, 0);
+        let source = format!("q{}", "\u{301}".repeat(20));
+        for (before, after, expected_births, cause) in
+            [(Some(8), None, 0, 8), (None, Some(9), 1, 9)]
+        {
+            let mut admission = Admission {
+                fail_birth: before,
+                fail_after_birth: after,
+                ..Admission::default()
+            };
+            let error = RevisionId::try_from_str_with_native_admission_v1(
+                &source,
+                &mut admission,
+                |_, _| -> Result<bool, u8> { panic!("refused ID copied") },
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, NativeIdentityConstructionErrorV1::Normalization(NativeNormalizationErrorV1::Admission(actual)) if actual == cause)
+            );
+            assert_eq!(admission.births, expected_births);
+            assert_eq!(admission.releases, 2);
+        }
     }
 }
