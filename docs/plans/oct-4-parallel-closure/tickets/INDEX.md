@@ -106,14 +106,16 @@ Main4a의 unit2790+runtime3 및 SDK27/27·20.287s/portable replay도 그 고정 
 - 요청한6범주 구조적 수정·CI/strict repair·branch 통합 및 최신 Contract/SDK/runtime/open-loop
   selected 회귀는 완료했다. 현재 소스에서 추가로 확정된 엔진 결함은 없다.
 - Whole hosted CI는 새 정책 수리 이후 최종 job 결과를 회수한다. 실제 실패가 있으면 owner에서 수리한다.
-- Ready9는 actual capture source `09103820`을 유지해 CS9repos/180tasks를 실행 중이다.
+- Ready9의 CS9repos/180tasks capture와 별도 프로세스 canonical replay9/9는 actual source `09103820`에서 `VERIFIED`/exit0다.
   기존4repos/80tasks와268raw files를 보존하고 guarded resume8개를 통과했다.
   CS9/9개·180개 요청 capture를 완료했다. 실제9개 capture SHA/ordered ledger가 일치하며
-  별도 프로세스의 canonical replay는 bat/cli/django3개가 통과했고 나머지는 실행 중이다.
+  별도 프로세스의 canonical replay9/9와 최종 input/ledger/source/실행 exit 결속을 확인했고 shared lease를 반환했다.
   영속 실행 root는 `/Users/songmin/.codex/task-evidence/ready9-native-recovery-20261006-01a10d0b-v3`다.
   중지된 SG/OG 컨테이너를 확인했다. SG 원본 Zoekt index/관측 자료와 OG 원본 볼륨은 남아 있다.
-  SG index13files는 원본 관측 hash와 일치한다. OG 원본 index는 readonly로 추출했고,
-  사라진 clone mount를 인덱서 없는 Tomcat 시작 경로로 복구 준비 중이다.
+  SG index13files는 원본 관측 hash와 일치하며9개 committed projection의 전체 path/blob도 canonical 검사와 일치한다.
+  같은 이미지·readonly index overlay로 SG 복구를 준비했다. OG의 과거 segments2/3 snapshot은
+  원본 commit 파일이 없어 historical replay가 `BLOCKED`다. 현재 retained segments4는 별도 fresh diagnostic
+  입력으로만 동결하며, 인덱서 없는 Tomcat·native/query witness 전체 계약 검증 뒤 새 capture/replay를 실행한다.
   아직 실제 service capture/replay 성공으로 세지 않는다.
   Historical55-binding/old raw를 최신 SDK나 새 collector epoch로 재결속하지 않는다.
 - P11 공통 코드·Python436개/통합 영향222개는 완료했다. 실제 deploy/activate/restore-forward
@@ -130,7 +132,7 @@ Main4a의 unit2790+runtime3 및 SDK27/27·20.287s/portable replay도 그 고정 
 | Workspace/strict/API/CI | Scale / hosted CI | Whole Rust strict·macOS owner strict·API `VERIFIED`; Unicode exact feature 정책 actual `VERIFIED`. 새 whole CI 종료 회수 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Frozen492의 Medium/Large 및 configured XL `VERIFIED`. 최신e371 runtime15개는 별도 범위이며 current Large/XL qualification로 승격하지 않음 |
 | Current native Scale·capacity/cost | Scale | e371 open-loop20개 `VERIFIED`. Matching Large/XL lifecycle/cost·capacity negative·timing/RSS qualification은 `NOT_RUN` |
-| Ready9 native·SG/CS·최종5제품 join | Ready9 | CS9/9·180요청 capture 완료, 독립 replay3/9 통과·나머지 실행 중. SG 원본 index13hash 일치·OG readonly 복구 준비; 최종 matching admission/pair/full5는 `NOT_RUN` |
+| Ready9 native·SG/CS·최종5제품 join | Ready9 | source091의 CS9/9 capture·독립 replay9/9·180요청 `VERIFIED`/exit0. SG 원본13index/projection9 검증 후 readonly 복구 중. OG historical segments2/3 snapshot 재생 `BLOCKED`; retained segments4의 별도 fresh diagnostic 준비. 최종 matching admission/pair/full5는 `NOT_RUN` |
 | Final Contract/SDK | I0 | e371 Python793·Rust191·SDK27 actual 및 별도 replay/frozen7role 재배치 검증 모두 `VERIFIED`. 영속 context·raw·binaries 보존 |
 | NativeIdentity feature 연동 | Native owner / hosted CI | 실제 native/Unicode owner·최종 Contract/runtime 및 module/API/whole strict `VERIFIED`; whole CI 최종 종료는 별도 |
 
@@ -756,6 +758,13 @@ P0 · W1/W4 · scheduler/admission consumer 구현 완료, 전체 required inven
 
 P1 · W4→W5 · collectors/joins 구현 완료; 나머지3repo·다른 lanes·최종 qualification 미완료.
 
+- Current durable receipt (2026-10-06): source `09103820f80a1b874e25c4d775cce7dcc8f254ee`의
+  existing-suite CS9repos/180tasks capture와 새 프로세스 canonical replay9/9가 `VERIFIED`/exit0다.
+  `/Users/songmin/.codex/task-evidence/ready9-native-recovery-20261006-01a10d0b-v3/result.json`에
+  원본4개 capture root, 입력/ordered ledger/독립 실행 SHA를 결속했다. 원본268files는 변경하지 않았다.
+  SG13index와 projection9는 동일성을 검증했고 readonly 복구를 진행한다. OG의 historical snapshot commit
+  파일은 부재하여 `BLOCKED`; 현재 segments4는 별도 fresh diagnostic 입력이다. 이 결과는
+  accepted55/PREP·full5 join·relevance·qualified speed 또는 최신 main qualification을 발행하지 않는다.
 - source97의 bat+required8 captures/replays/full5 joins는 완료 scope로 유지한다.
   현재 prepared9 밖 SQLAlchemy/Tailscale/Zellij는 admission 이후 실제 capture/replay/join한다.
 - frozen5796 ready9의 Quanta/Semble pair·Sourcegraph/CS capture·새 full5 join은 `NOT_RUN`이다.
