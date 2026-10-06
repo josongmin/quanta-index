@@ -88,7 +88,13 @@ impl Config {
 
     pub(crate) fn runtime_policy_json(&self) -> AnyResult<Value> {
         let mut policy = self.history_config().execution_json()?;
-        policy["history_max_generations"] = json!(DEFAULT_HISTORY_MAX_GENERATIONS);
+        let object = policy
+            .as_object_mut()
+            .context("open-loop runtime policy must be a JSON object")?;
+        let _previous = object.insert(
+            "history_max_generations".to_string(),
+            json!(DEFAULT_HISTORY_MAX_GENERATIONS),
+        );
         Ok(policy)
     }
 
