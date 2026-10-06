@@ -15,12 +15,12 @@
 
 | 범위 | 담당 | 실제 잔여 |
 | --- | --- | --- |
-| Manifest 복호화 메모리 경계 | I0 / E4 | Sealed/text manifest가 구조 검사 전에 generic CBOR Value를 materialize한다. Fixed-row·bounded collection의 할당 전 거절 후보를 수리 중이며 실제 회귀가 필요하다 |
-| Workspace 검사·단위 테스트 | Scale / hosted CI | Strict Clippy는 source731a39cf의 Linux hosted1094에서 exit0/367.310s다. Open-loop의 stale256MiB oracle를 fixed2GiB/512MiB 경계로 수리했다. 수정 fixture actual 및 whole unit `--no-fail-fast`/1thread가 남는다 |
-| Medium/Large/XL 실제 프로세스 재시작 | I0 | Clean Scale6385033f의 원본256/4096/32768·same seed/caps release/no-fail-fast를 등록했다. Actual3개 종료는 남는다 |
+| Manifest 복호화 메모리 경계 | I0 / E4 | Sealed/text manifest의 전체 generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. Fixed count·행별 node 한도·기존 tag·indefinite framing 회귀의 실제 Rust 실행이 남는다 |
+| Workspace 검사·단위 테스트 | Scale / hosted CI | Source593 hosted1089는3571pass/1fail/602미실행이다. Artifact·CLI의 stale default oracle2paths와 업로드 취소 처리·Clippy2건을 수리했다. 통합 소스의 focused actual 및 whole unit `--no-fail-fast`/1thread가 남는다 |
+| Medium/Large/XL 실제 프로세스 재시작 | I0 | Clean6385033f 대기는 최신 Rust 수리를 포함하도록 미입장 안전 취소했다(143/0Cargo·tests). 최종 통합 소스로 원본256/4096/32768·same seed/caps release/no-fail-fast3개를 재등록한다 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime, 남은 fuzz3이 필요하다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Old47e v4 batch는 live source를 유지한다. Fresh native9/SG-CS9capture+9replay 종료 뒤 reuse와 final admission/pair/full5를 판정한다 |
-| Final Contract/SDK | I0 | Native scope·P00 수리를 포함한 immutable731a39cf에서 Contract793/191·fresh SDK27·portable verify를 등록했다. Actual 종료·새 receipt 발행은 남는다. 취소한2fb partial은 재사용 proof가 아니다 |
+| Final Contract/SDK | I0 | Immutable731a39cf v6 요청은 최신 Rust 수리를 포함하도록 미입장 안전 취소했다(각 producer143/controller1/0Cargo·behavior/receipt0). 최종 통합 소스의 Contract·fresh SDK·portable verify가 남으며 원본 partial을 proof로 재사용하지 않는다 |
 
 위 목록은 Quanta 소유 실행 범위다. P11 실제 운영 producer는 I0-03의 target/독립 관측 계약이
 선행 입력이며, 외부 provider·승인·Linux 운영·Semantica 연동은 아래 조건부 범위와 구분한다.
@@ -155,7 +155,34 @@
   Source731 Python1093은4190passed/30skipped/2warnings·851.53s 및 policy step903.306s/exit0,
   P00 300passed/33.50s와 실제 manifest 발행·source binding 검사까지 통과했다(step39.491s/exit0).
   전체 job은 이후 pre-commit에서 README의 날짜 포함 anchor1건과 vendored JSON2개 EOF 수정으로
-  exit1/`FAILED`였다. Anchor를 날짜와 독립적인 현재 코드 절로 고정하고 EOF만 정규화한다.
+  exit1/`FAILED`였다. Anchor를 날짜와 독립적인 현재 코드 절로 고정하고 JSON payload 변경 없이 EOF만
+  정규화했다. EOF hook 재검사·doc-path/anchor lint·PM5·diff는 actual exit0다. 새 whole CI는 별도 판정한다.
+- 후속 코드 감사·수리: source593 Rust1089는 strict367.437s/deps845.448s를 통과했지만 nextest는
+  3571passed/1failed/29skipped·381.070s,602미실행으로 `FAILED`였다. Sole observed failure는
+  `open_loop_artifact_binds_requested_and_effective_history`의 오래된16MiB default gold다.
+  Mainf3ae4711의 cfg(test)2paths에서 artifact·CLI default를 independent fixed1GiB/2GiB 및
+  `scale-supported-v1`로 수리하고 explicit-pair/default-total 조합도 fixed2GiB로 대조했다.
+  두 production prefix는 byte 동일하다. 정적 caller/artifact/causal-profile 감사에서는 추가 history 불일치를
+  찾지 못했다. Owned fmt/diff는 `VERIFIED`; 이 fixture의 실제 Rust 실행은 아직 `NOT_RUN`이다.
+  Mainba06fc12에는 staged upload의 preflight·DTO decode가 실제 request cancellation을 8KiB 단위로
+  확인하고 CBOR I/O 오류 포장 뒤에도 원래 typed cancellation/deadline을 유지하는 수리를 통합했다.
+  Small/large body·buffer-bypass·pre-open expired-budget 회귀를 추가했다. 해당 source의 hosted1104는
+  새 doc 첫 문단 길이와 Option match2건에서 strict exit101/87.747s로 `FAILED`였다.
+  Main451908e5에서 짧은 첫 문단·`map_or(otherwise, identity)`로 원래 오류 선택을 유지해 수리했다.
+  Owned fmt/diff 및 `just rust-fallbacks`19tests/577files/179parsed는 actual exit0다.
+  Manifest3paths는 최종 patch6c039748의 모든 pre/post SHA·apply guards 뒤 main에 통합했다.
+  전체 generic Value 대신 할당 없는 collection-count/행별10,280node preflight와 bounded streaming을
+  사용하며 개별 scalar/행만 이전 Value 변환으로 처리한다. Exact outer visitor는 indefinite 종료 break와
+  EOF/extra field를 검사한다. Body tag·array-only digest·BIGPOS version 의미를 유지하며 sealed16MiB와
+  text2,097,152shards/268,435,520encoded bytes의 기존 지원 한도 및 writer format은 유지한다.
+  의도적인 새 거절은 body BIGPOS/BIGNEG의16byte초과 leading-zero 비정규형이다. Canonical writer는
+  이를 발행하지 않는다. Compact giant count·nested fanout·tagged positive/negative·indefinite 회귀를 추가했고
+  실제 Rust compile/test/Clippy는 아직 `NOT_RUN`이다.
+  이 Rust delta를 포함한 source를 한 번 고정하기 위해 root OS3release638와 Contract/SDKv6의 자기
+  waiting-only leaf3개를 source/argv/parent/no-child/stopped-state guards 뒤 취소했다. OS3는
+  actual143/3184.926s/0Cargo·tests이며 Contract/SDK도 producer143/controller1/0behavior·receipt0다.
+  V6 source closure/793 Python collection·빈 fresh target 및 모든 원본 로그를 보존했다.
+  Native47e batch는 계속 실행하며 실제 receipt7/9, SG/CS capture0이다. 전체 batch/final join 완료로 세지 않는다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.

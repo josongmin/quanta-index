@@ -61,10 +61,13 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use ciborium::Value as CborValue;
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 
+use crate::channel_payloads::{
+    BoundedCborRows, ExactManifestRow, ValueCompatible, leading_cbor_array_version,
+    preflight_manifest_shape,
+};
 use crate::file_authority::root::{
     DIR_NAME as FILE_AUTHORITY_DIR_NAME, OBJECTS_NAME as FILE_AUTHORITY_OBJECTS_NAME,
     ROOT_FILE_NAME as FILE_AUTHORITY_ROOT_FILE_NAME, is_object_file_name,
@@ -73,13 +76,17 @@ use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 use crate::overlay_codec::OverlayFamily;
 use crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME;
 use crate::sealed_generation::live_bm25;
-use crate::text_authority::{TEXT_AUTHORITY_DIR_NAME, leading_format_version};
+use crate::text_authority::TEXT_AUTHORITY_DIR_NAME;
 
 /// File name of the sealed manifest.
 pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
 /// Format-9 admission for the encoded artifact inventory. Publishers and
 /// readers enforce the same limit, so a sealed generation stays readable.
 const MAX_SEALED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
+// A commitment row needs at least a three-item array header, a text header,
+// one integer, and a 32-byte digest (encoded in at least 34 bytes). Dividing
+// by 37 cannot exclude any row that fits the existing encoded-byte ceiling.
+const MAX_COMMITMENT_ROWS: usize = MAX_SEALED_MANIFEST_BYTES.div_euclid(37);
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
 pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 15;
@@ -161,6 +168,23 @@ type SealedManifestRow = (
     Option<CommitmentRow>,
 );
 
+// Only the reader uses bounded collections. The writer keeps the exact
+// format-15 tuple above; both tuple layouts serialize identically.
+type DecodedSealedManifestRow = (
+    u32,
+    ValueCompatible<String>,
+    ValueCompatible<(u16, u16)>,
+    ValueCompatible<CommitmentRow>,
+    ValueCompatible<u8>,
+    BoundedCborRows<ValueCompatible<CommitmentRow>, MAX_COMMITMENT_ROWS>,
+    BoundedCborRows<ValueCompatible<CommitmentRow>, MAX_COMMITMENT_ROWS>,
+    ValueCompatible<CommitmentRow>,
+    Option<BoundedCborRows<ValueCompatible<CommitmentRow>, MAX_COMMITMENT_ROWS>>,
+    BoundedCborRows<ValueCompatible<CommitmentRow>, MAX_COMMITMENT_ROWS>,
+    BoundedCborRows<ValueCompatible<CommitmentRow>, MAX_COMMITMENT_ROWS>,
+    Option<ValueCompatible<CommitmentRow>>,
+);
+
 fn to_commitment_row(artifact: &SealedArtifactCommitmentV1) -> CommitmentRow {
     (artifact.name.clone(), artifact.bytes, artifact.sha256)
 }
@@ -171,6 +195,10 @@ fn from_commitment_row((name, bytes, sha256): CommitmentRow) -> SealedArtifactCo
         bytes,
         sha256,
     }
+}
+
+fn from_compatible_commitment(row: ValueCompatible<CommitmentRow>) -> SealedArtifactCommitmentV1 {
+    from_commitment_row(row.0)
 }
 
 pub(crate) fn manifest_path(generation_dir: &Path) -> PathBuf {
@@ -224,6 +252,22 @@ fn ensure_names(
 impl LexicalSealedManifest {
     /// Encode as the fixed-order row this build's decoder accepts.
     pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
+        for (section, count) in [
+            ("index segments", self.index_segments.len()),
+            ("ranked keys", self.ranked_keys.len()),
+            (
+                "text authority",
+                self.text_authority.as_ref().map_or(0, Vec::len),
+            ),
+            ("file authority", self.file_authority.len()),
+            ("overlays", self.overlays.len()),
+        ] {
+            if count > MAX_COMMITMENT_ROWS {
+                return Err(CoreError::InvalidContract(format!(
+                    "lexical: sealed manifest {section} exceeds the encoded-byte-derived row ceiling"
+                )));
+            }
+        }
         let row: SealedManifestRow = (
             LEXICAL_SEALED_MANIFEST_FORMAT_VERSION,
             self.manifest_digest.clone(),
@@ -247,10 +291,8 @@ impl LexicalSealedManifest {
     /// format or normalizer this build does not serve and any structural
     /// violation of the sections.
     pub(crate) fn decode(bytes: &[u8], path: &Path) -> Result<Self, CoreError> {
-        let value: CborValue = crate::channel_payloads::decode_cbor_exact(bytes)
-            .map_err(|error| manifest_corrupt(path, &format!("decode CBOR: {error}")))?;
         let format_version =
-            leading_format_version(&value).map_err(|detail| manifest_corrupt(path, detail))?;
+            leading_cbor_array_version(bytes).map_err(|detail| manifest_corrupt(path, detail))?;
         if format_version == LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported,
@@ -269,10 +311,12 @@ impl LexicalSealedManifest {
                 ),
             });
         }
+        preflight_manifest_shape(bytes, 12, &[5, 6, 8, 9, 10], MAX_COMMITMENT_ROWS, true)
+            .map_err(|detail| manifest_corrupt(path, detail))?;
         let (
             _format,
             manifest_digest,
-            (major, minor),
+            normalizer_version,
             index_meta,
             segment_verification,
             index_segments,
@@ -282,43 +326,62 @@ impl LexicalSealedManifest {
             file_authority,
             overlays,
             source_coverage,
-        ): SealedManifestRow = value
-            .deserialized()
-            .map_err(|error| manifest_corrupt(path, &format!("decode row: {error}")))?;
+        ) = crate::channel_payloads::decode_cbor_exact::<
+            ExactManifestRow<DecodedSealedManifestRow>,
+        >(bytes)
+        .map_err(|error| manifest_corrupt(path, &format!("decode row: {error}")))?
+        .0;
+        let (major, minor) = normalizer_version.0;
         let normalizer = TextNormalizerVersion { major, minor };
         if normalizer != TEXT_NORMALIZER_VERSION {
             return Err(crate::index_store::normalizer_unsupported(path, normalizer));
         }
         let Some(index_segment_verification) =
-            IndexSegmentVerificationV1::from_code(segment_verification)
+            IndexSegmentVerificationV1::from_code(segment_verification.0)
         else {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
-                    "lexical: sealed generation manifest {} stamps index-segment verification policy {segment_verification}, which this build does not know",
-                    path.display()
+                    "lexical: sealed generation manifest {} stamps index-segment verification policy {}, which this build does not know",
+                    path.display(),
+                    segment_verification.0
                 ),
             });
         };
         let manifest = Self {
-            manifest_digest,
+            manifest_digest: manifest_digest.0,
             normalizer,
-            index_meta: from_commitment_row(index_meta),
+            index_meta: from_commitment_row(index_meta.0),
             index_segment_verification,
             index_segments: index_segments
+                .0
                 .into_iter()
-                .map(from_commitment_row)
+                .map(from_compatible_commitment)
                 .collect(),
-            ranked_keys: ranked_keys.into_iter().map(from_commitment_row).collect(),
-            live_bm25: from_commitment_row(live_bm25),
-            text_authority: text_authority
-                .map(|files| files.into_iter().map(from_commitment_row).collect()),
+            ranked_keys: ranked_keys
+                .0
+                .into_iter()
+                .map(from_compatible_commitment)
+                .collect(),
+            live_bm25: from_commitment_row(live_bm25.0),
+            text_authority: text_authority.map(|files| {
+                files
+                    .0
+                    .into_iter()
+                    .map(from_compatible_commitment)
+                    .collect()
+            }),
             file_authority: file_authority
+                .0
                 .into_iter()
-                .map(from_commitment_row)
+                .map(from_compatible_commitment)
                 .collect(),
-            overlays: overlays.into_iter().map(from_commitment_row).collect(),
-            source_coverage: source_coverage.map(from_commitment_row),
+            overlays: overlays
+                .0
+                .into_iter()
+                .map(from_compatible_commitment)
+                .collect(),
+            source_coverage: source_coverage.map(from_compatible_commitment),
         };
         manifest.validate_shape(path)?;
         Ok(manifest)
@@ -647,6 +710,152 @@ mod tests {
                 .filter(|entry| entry.name == crate::sealed_generation::live_bm25::FILE_NAME)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn valid_indefinite_outer_row_round_trips() {
+        let expected = manifest();
+        let mut bytes = expected.encode().expect("encode manifest");
+        assert_eq!(bytes.first(), Some(&0x8c));
+        *bytes.first_mut().expect("outer array header") = 0x9f;
+        bytes.push(0xff);
+        assert_eq!(
+            LexicalSealedManifest::decode(&bytes, Path::new("/g1/m")).expect("decode row"),
+            expected
+        );
+    }
+
+    #[test]
+    fn small_bigpos_tagged_leading_version_keeps_prior_classification() {
+        let expected = manifest();
+        let bytes = expected.encode().expect("encode manifest");
+        assert_eq!(bytes.get(..2), Some([0x8c, 0x0f].as_slice()));
+        let mut tagged = vec![0x8c, 0xc2, 0x41, 0x0f];
+        tagged.extend_from_slice(bytes.get(2..).expect("manifest body"));
+        assert_eq!(
+            LexicalSealedManifest::decode(&tagged, Path::new("/g1/m")).expect("tagged version"),
+            expected
+        );
+        let old = LexicalSealedManifest::decode(&[0x81, 0xc2, 0x41, 2], Path::new("/g1/m"));
+        assert_eq!(
+            typed_code(&old),
+            Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported)
+        );
+    }
+
+    #[test]
+    fn compact_forged_commitment_count_refuses_before_materialization() {
+        // Fixed format-15 prefix followed by a million one-byte scalar rows.
+        // The old generic Value path materialized these rows before typed
+        // shape validation; the new reader refuses at the count header.
+        let mut bytes = vec![0x8c, 0x0f];
+        ciborium::into_writer(&"digest", &mut bytes).expect("digest field");
+        ciborium::into_writer(
+            &(
+                super::TEXT_NORMALIZER_VERSION.major,
+                super::TEXT_NORMALIZER_VERSION.minor,
+            ),
+            &mut bytes,
+        )
+        .expect("normalizer field");
+        ciborium::into_writer(&(String::new(), 0_u64, [0_u8; 32]), &mut bytes)
+            .expect("index meta field");
+        bytes.push(1); // IndexSegmentVerificationV1::LengthAtOpenContentAtSealAndScrub
+        bytes.extend_from_slice(&[0x9a, 0x00, 0x0f, 0x42, 0x40]); // array(1_000_000)
+        let length = bytes.len().checked_add(1_000_000).expect("fixture length");
+        bytes.resize(length, 0);
+        let result = LexicalSealedManifest::decode(&bytes, Path::new("/g1/m"));
+        assert_eq!(
+            typed_code(&result),
+            Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt)
+        );
+        assert!(
+            format!("{result:?}").contains("manifest array count exceeds its field ceiling"),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn tagged_body_rows_and_bignum_keep_prior_value_semantics() {
+        use ciborium::Value;
+        let expected = manifest();
+        let bytes = expected.encode().expect("encode manifest");
+        let mut value: Value =
+            crate::channel_payloads::decode_cbor_exact(&bytes).expect("decode test fixture value");
+        let fields = value.as_array_mut().expect("outer row");
+        let meta = fields
+            .get_mut(3)
+            .expect("index meta")
+            .as_array_mut()
+            .expect("meta row");
+        for position in [0, 2] {
+            let slot = meta.get_mut(position).expect("meta member");
+            let old = std::mem::replace(slot, Value::Null);
+            *slot = Value::Tag(0, Box::new(old));
+        }
+        *meta.get_mut(1).expect("meta byte count") = Value::Tag(2, Box::new(Value::Bytes(vec![3])));
+        let slot = fields.get_mut(5).expect("segment collection");
+        let old = std::mem::replace(slot, Value::Null);
+        *slot = Value::Tag(0, Box::new(old));
+        let tagged = crate::channel_payloads::encode_cbor(&value, "tagged manifest fixture")
+            .expect("encode tagged fixture");
+        assert_eq!(
+            LexicalSealedManifest::decode(&tagged, Path::new("/g1/m")).expect("tagged body"),
+            expected
+        );
+    }
+
+    #[test]
+    fn byte_string_digest_and_collection_remain_typed_corruption() {
+        use ciborium::Value;
+        let bytes = manifest().encode().expect("encode manifest");
+        for binary_digest in [true, false] {
+            let mut value: Value = crate::channel_payloads::decode_cbor_exact(&bytes)
+                .expect("decode test fixture value");
+            let fields = value.as_array_mut().expect("outer row");
+            if binary_digest {
+                let meta = fields
+                    .get_mut(3)
+                    .expect("index meta")
+                    .as_array_mut()
+                    .expect("meta row");
+                *meta.get_mut(2).expect("digest") = Value::Bytes(vec![7; 32]);
+            } else {
+                *fields.get_mut(5).expect("segment collection") = Value::Bytes(Vec::new());
+            }
+            let encoded = crate::channel_payloads::encode_cbor(&value, "binary manifest fixture")
+                .expect("encode binary fixture");
+            let result = LexicalSealedManifest::decode(&encoded, Path::new("/g1/m"));
+            assert_eq!(
+                typed_code(&result),
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt)
+            );
+            assert!(format!("{result:?}").contains("manifest byte string is not an array"));
+        }
+    }
+
+    #[test]
+    fn arbitrary_tagged_numeric_field_remains_typed_corruption() {
+        use ciborium::Value;
+        let bytes = manifest().encode().expect("encode manifest");
+        let mut value: Value =
+            crate::channel_payloads::decode_cbor_exact(&bytes).expect("decode test fixture value");
+        let fields = value.as_array_mut().expect("outer row");
+        let meta = fields
+            .get_mut(3)
+            .expect("index meta")
+            .as_array_mut()
+            .expect("meta row");
+        let slot = meta.get_mut(1).expect("meta byte count");
+        let old = std::mem::replace(slot, Value::Null);
+        *slot = Value::Tag(0, Box::new(old));
+        let encoded = crate::channel_payloads::encode_cbor(&value, "numeric tag fixture")
+            .expect("encode numeric tag fixture");
+        let result = LexicalSealedManifest::decode(&encoded, Path::new("/g1/m"));
+        assert_eq!(
+            typed_code(&result),
+            Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt)
         );
     }
 

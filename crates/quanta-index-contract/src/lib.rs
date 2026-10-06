@@ -60,10 +60,11 @@ pub use quanta_index_contract_base::{
     ExhaustionProofV1, FileId, GenerationId, GenerationPin, INTERNAL_FETCH_CEILING,
     INTERNAL_FETCH_OUT_OF_RANGE_CODE, IdentityValidationErrorV1, InternalFetchOutOfRangeV1,
     InterruptedReasonV2, LaneTraceV1, LogicalGenerationIdentityV1, ManifestDigest,
-    ManifestGeneration, PUBLIC_TOP_K_MAX, PUBLIC_TOP_K_MIN, QueryResultWindowV1,
-    QueryResultWindowV2, RepoId, RepoRelativePath, RepositoryRevisionIdentityV1, RevisionId,
-    SearchCorpusActivationTokenV1, TOP_K_OUT_OF_RANGE_CODE, TopKOutOfRangeV1,
-    continuation_fetch_size, validate_internal_fetch_size, validate_public_top_k,
+    ManifestGeneration, NativeIdentityCopyErrorV1, PUBLIC_TOP_K_MAX, PUBLIC_TOP_K_MIN,
+    QueryResultWindowV1, QueryResultWindowV2, RepoId, RepoRelativePath,
+    RepositoryRevisionIdentityV1, RevisionId, SearchCorpusActivationTokenV1,
+    TOP_K_OUT_OF_RANGE_CODE, TopKOutOfRangeV1, continuation_fetch_size,
+    try_copy_string_with_native_birth_v1, validate_internal_fetch_size, validate_public_top_k,
 };
 pub use query::*;
 pub use repomap::*;

@@ -7,6 +7,10 @@
 
 ## 코드 우선
 
+- Manifest allocation bound·staged upload cancellation 및 open-loop artifact/CLI의 stale Scale gold를
+  main에 반영했다. Manifest3paths는 patch6c039748의 guards로 통합했으며 collection count·행별 node
+  상한과 기존 body tag·array-only digest·BIGPOS version·indefinite EOF를 보존한다. 지원 corpus/encoded
+  한도는 유지하고16byte초과 leading-zero bignum만 할당 전 거절한다. 이 source에서 focused 회귀를 먼저 실행한다.
 - 실제 미구현: [I0-03 P11 typed operational producer/recipes](tickets/INDEX.md#o4-i0-03).
   실제 actions와 독립 pre/post 성공 판정 계약·authorized target 입력이 필요하다.
 - Frozen5796 Large default timeout과 XL posting admission 거절이 재현됐다.
@@ -165,12 +169,28 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   exit0/367.310s이며1093 Python·1094 Rust whole job의 terminal은 아직 남는다.
   Source731 Python1093은4190passed/30skipped·851.53s 및 policy903.306s/exit0, P00 300passed/33.50s와
   actual manifest 발행/source binding까지 통과했다. Whole job은 이후 pre-commit의 README anchor1건 및
-  vendor JSON2개 EOF 수정으로 `FAILED`였다. 날짜 독립 anchor와 EOF 정규화 후 재검사한다.
+  vendor JSON2개 EOF 수정으로 `FAILED`였다. 날짜 독립 anchor와 payload 불변 EOF 정규화 뒤
+  EOF hook/doc-path/PM5/diff 재검사는 exit0다. 새 whole CI의 성공을 뜻하지 않는다.
   Native scope는 callee의 소비 전·native 뒤/receipt 전·verify 후 세 경계를 유지하는 수리를 통합했다.
   Batch spec/control guard를 유지하고 중복 outer2검사만 제거해 scope당4→3full scans다.
   Main 관련171tests는171passed/1004.84s 및 exactpostSHA/Ruff/diff가 통과했다. 실제 latency 향상은 미측정이다.
   Clean731a39cf를 immutable `oct6-f15-final-v6/quanta-index`에 고정해 Contract793/191·fresh SDK27 및
-  성공 뒤 portable verify를 새 v6 output에 등록했다. Correctwait7200/jobs1/sccache0/gc0, actual terminal은 남는다.
+  성공 뒤 portable verify를 새 v6 output에 등록했다. 후속 Rust 수리를 포함하도록 이2요청과 OS3release638의
+  자기 미입장 leaf만 안전 취소했다. 각 producer143/0Cargo·behavior, v6 receipt0·793collection·빈 target을
+  보존한다. 최종 통합 source 한 번 고정 뒤 focused IPC/manifest/open-loop bin → whole unit
+  `--no-fail-fast`/1thread·strict `--keep-going` → runtime/fuzz3/native를 Scale owner가 재등록한다.
+  Root는 matching OS3 release원본3 및 Contract/fresh SDK/portable verify를 맡는다. Correctwait7200/
+  jobs1/sccache0/gc0을 유지하며 새 source의 actual terminal·receipt 발행은 남는다.
+- Source593 Rust1089는3571passed/1failed/29skipped·381.070s,602미실행으로 종료했다. 실패한 artifact
+  default16MiB gold와 CLI의 같은 default·explicit-pair/default-total gold를 cfg(test)2paths에서
+  fixed1GiB/2GiB·`scale-supported-v1`로 수리했다. Production prefix는 동일하며 추가 static history
+  caller/artifact 불일치는 찾지 못했다. Fixture actual은 `NOT_RUN`이다.
+  Staged-upload 취소 처리는 mainba06fc12에 통합됐고 이 source의 hosted1104 strict는 doc 길이·Option
+  match2건에서 exit101/87.747s로 실패했다. Main451908e5에서 의미 동일한 doc/map_or로 고친 뒤
+  fmt/diff 및 fallback19/577/179parsed는 exit0다. 실제 owner Rust/Clippy와 whole CI는 남는다.
+  Native47e는 receipt7/9까지 발행됐고 SG/CS capture0이다. Admitted native leaf는 유지하며 종료/lease
+  release 뒤 다음 capture/replay를 일반 admission으로 등록한다. 최종 join은 matching source proof와
+  명시적 slot handoff 뒤 판정한다.
 - Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
   admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며
   exact793collection·각 누락 거절을 확인했다. Rust/SDK 목록과 Frozen5796 결과는 그대로 유지한다.

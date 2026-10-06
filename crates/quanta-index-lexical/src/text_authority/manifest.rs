@@ -29,6 +29,10 @@ use std::path::{Path, PathBuf};
 use ciborium::Value as CborValue;
 use quanta_index_core::CoreError;
 
+use crate::channel_payloads::{
+    BoundedCborRows, ExactManifestRow, ValueCompatible, leading_cbor_array_version,
+    preflight_manifest_shape,
+};
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 
 /// Directory inside the generation directory that holds the text authority.
@@ -51,6 +55,10 @@ pub(crate) const SHARD_DOCS: u64 = 2048;
 /// (`u32::MAX`; the first doc of a posting list is written as an absolute
 /// `u32` gap).
 pub(crate) const MAX_DOC_ID: u64 = 0xFFFF_FFFF;
+// At most one nonempty shard for each fixed doc-ID range. This is exactly the
+// existing MAX_DOC_ID policy, not a new corpus-size limit.
+const MAX_SHARD_ROWS: usize = 2_097_152;
+const _: () = assert!(MAX_DOC_ID.div_euclid(SHARD_DOCS) + 1 == 2_097_152);
 // Each fixed CBOR shard row has five u64 fields (at most 45 bytes), a
 // 32-element u8 digest (at most 66 bytes), and an array header. The doc-id
 // range admits at most this many rows. Leave room for the outer row headers.
@@ -111,6 +119,13 @@ type ManifestRow = (
     (u16, u16),
     u64,
     Vec<(u64, u64, u64, u64, u64, [u8; 32])>,
+);
+type DecodedManifestRow = (
+    u32,
+    ValueCompatible<u64>,
+    ValueCompatible<(u16, u16)>,
+    ValueCompatible<u64>,
+    BoundedCborRows<ValueCompatible<(u64, u64, u64, u64, u64, [u8; 32])>, MAX_SHARD_ROWS>,
 );
 
 pub(crate) fn text_authority_dir(generation_dir: &Path) -> PathBuf {
@@ -190,6 +205,11 @@ fn manifest_corrupt(generation_dir: &Path, reason: &str) -> CoreError {
 impl TextAuthorityManifest {
     /// Encode as the fixed-order row this build's decoder accepts.
     pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
+        if self.shards.len() > MAX_SHARD_ROWS {
+            return Err(CoreError::InvalidContract(
+                "lexical: text authority shard count exceeds the doc-ID range".into(),
+            ));
+        }
         let row: ManifestRow = (
             TEXT_AUTHORITY_FORMAT_VERSION,
             SHARD_DOCS,
@@ -209,7 +229,13 @@ impl TextAuthorityManifest {
                 })
                 .collect(),
         );
-        crate::channel_payloads::encode_cbor(&row, "text authority manifest")
+        let bytes = crate::channel_payloads::encode_cbor(&row, "text authority manifest")?;
+        if bytes.len() > MAX_MANIFEST_BYTES {
+            return Err(CoreError::InvalidContract(
+                "lexical: text authority manifest exceeds its encoded-byte ceiling".into(),
+            ));
+        }
+        Ok(bytes)
     }
 
     /// Decode and validate a manifest read from `generation_dir`.
@@ -222,9 +248,7 @@ impl TextAuthorityManifest {
     /// (`GENERATION_SIDECAR_CORRUPT`).
     pub(crate) fn decode(bytes: &[u8], generation_dir: &Path) -> Result<Self, CoreError> {
         let path = manifest_path(generation_dir);
-        let value: CborValue = crate::channel_payloads::decode_cbor_exact(bytes)
-            .map_err(|error| manifest_corrupt(generation_dir, &format!("decode CBOR: {error}")))?;
-        let format_version = leading_format_version(&value)
+        let format_version = leading_cbor_array_version(bytes)
             .map_err(|detail| manifest_corrupt(generation_dir, detail))?;
         if format_version != TEXT_AUTHORITY_FORMAT_VERSION {
             return Err(format_unsupported(
@@ -232,9 +256,17 @@ impl TextAuthorityManifest {
                 &format!("was written under text-authority format {format_version}"),
             ));
         }
-        let (_format, shard_docs, (major, minor), max_doc_id, shards): ManifestRow = value
-            .deserialized()
-            .map_err(|error| manifest_corrupt(generation_dir, &format!("decode row: {error}")))?;
+        preflight_manifest_shape(bytes, 5, &[4], MAX_SHARD_ROWS, false)
+            .map_err(|detail| manifest_corrupt(generation_dir, detail))?;
+        let (_format, shard_docs, normalizer_version, max_doc_id, shards) =
+            crate::channel_payloads::decode_cbor_exact::<ExactManifestRow<DecodedManifestRow>>(
+                bytes,
+            )
+            .map_err(|error| manifest_corrupt(generation_dir, &format!("decode row: {error}")))?
+            .0;
+        let shard_docs = shard_docs.0;
+        let max_doc_id = max_doc_id.0;
+        let (major, minor) = normalizer_version.0;
         if shard_docs != SHARD_DOCS {
             return Err(format_unsupported(
                 &path,
@@ -253,8 +285,9 @@ impl TextAuthorityManifest {
                 &format!("watermark {max_doc_id} exceeds the encodable doc-id range"),
             ));
         }
-        let mut entries: Vec<ShardEntry> = Vec::with_capacity(shards.len());
-        for (index, rows, min_doc_id, shard_max_doc_id, bytes, sha256) in shards {
+        let mut entries: Vec<ShardEntry> = Vec::new();
+        for row in shards.0 {
+            let (index, rows, min_doc_id, shard_max_doc_id, bytes, sha256) = row.0;
             let entry = ShardEntry {
                 index,
                 rows,
@@ -275,6 +308,9 @@ impl TextAuthorityManifest {
                     ),
                 ));
             }
+            entries.try_reserve(1).map_err(|error| {
+                manifest_corrupt(generation_dir, &format!("allocate shard rows: {error}"))
+            })?;
             entries.push(entry);
         }
         Ok(Self {
@@ -429,6 +465,150 @@ mod tests {
                 Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt),
             );
         }
+    }
+
+    #[test]
+    fn compact_forged_shard_count_refuses_before_materialization() {
+        let mut bytes = vec![0x85, 0x01]; // five-field row, current format
+        ciborium::into_writer(&SHARD_DOCS, &mut bytes).expect("shard-size field");
+        ciborium::into_writer(
+            &(
+                super::TEXT_NORMALIZER_VERSION.major,
+                super::TEXT_NORMALIZER_VERSION.minor,
+            ),
+            &mut bytes,
+        )
+        .expect("normalizer field");
+        bytes.push(0); // max_doc_id
+        bytes.extend_from_slice(&[0x9a, 0x00, 0x20, 0x00, 0x01]); // array(2_097_153)
+        let length = bytes.len().checked_add(2_097_153).expect("fixture length");
+        bytes.resize(length, 0);
+        let result = TextAuthorityManifest::decode(&bytes, Path::new("/g1"));
+        assert!(matches!(
+            &result,
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ));
+        assert!(
+            format!("{result:?}").contains("manifest array count exceeds its field ceiling"),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn tagged_body_shard_row_and_bignum_keep_prior_value_semantics() {
+        use ciborium::Value;
+        let expected = TextAuthorityManifest {
+            max_doc_id: 0,
+            shards: vec![entry(0, 0, 0)],
+        };
+        let bytes = expected.encode().expect("encode manifest");
+        let mut value: Value =
+            crate::channel_payloads::decode_cbor_exact(&bytes).expect("decode test fixture value");
+        let fields = value.as_array_mut().expect("outer row");
+        let shards = fields
+            .get_mut(4)
+            .expect("shards")
+            .as_array_mut()
+            .expect("shard collection");
+        let row = shards
+            .first_mut()
+            .expect("first shard")
+            .as_array_mut()
+            .expect("shard row");
+        *row.first_mut().expect("shard index") = Value::Tag(2, Box::new(Value::Bytes(vec![0])));
+        let slot = row.get_mut(5).expect("shard digest");
+        let old = std::mem::replace(slot, Value::Null);
+        *slot = Value::Tag(0, Box::new(old));
+        let slot = shards.first_mut().expect("first shard");
+        let old = std::mem::replace(slot, Value::Null);
+        *slot = Value::Tag(0, Box::new(old));
+        let slot = fields.get_mut(4).expect("shards");
+        let old = std::mem::replace(slot, Value::Null);
+        *slot = Value::Tag(0, Box::new(old));
+        let tagged = crate::channel_payloads::encode_cbor(&value, "tagged text manifest fixture")
+            .expect("encode tagged fixture");
+        assert_eq!(
+            TextAuthorityManifest::decode(&tagged, Path::new("/g1")).expect("tagged body"),
+            expected
+        );
+    }
+
+    #[test]
+    fn byte_string_shard_digest_and_collection_remain_typed_corruption() {
+        use ciborium::Value;
+        let expected = TextAuthorityManifest {
+            max_doc_id: 0,
+            shards: vec![entry(0, 0, 0)],
+        };
+        let bytes = expected.encode().expect("encode manifest");
+        for binary_digest in [true, false] {
+            let mut value: Value = crate::channel_payloads::decode_cbor_exact(&bytes)
+                .expect("decode test fixture value");
+            let fields = value.as_array_mut().expect("outer row");
+            if binary_digest {
+                let shards = fields
+                    .get_mut(4)
+                    .expect("shards")
+                    .as_array_mut()
+                    .expect("shard collection");
+                let row = shards
+                    .first_mut()
+                    .expect("first shard")
+                    .as_array_mut()
+                    .expect("shard row");
+                *row.get_mut(5).expect("digest") = Value::Bytes(vec![0; 32]);
+            } else {
+                *fields.get_mut(4).expect("shards") = Value::Bytes(Vec::new());
+            }
+            let encoded = crate::channel_payloads::encode_cbor(&value, "binary text fixture")
+                .expect("encode binary fixture");
+            let result = TextAuthorityManifest::decode(&encoded, Path::new("/g1"));
+            assert_eq!(
+                typed_code(&result),
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt)
+            );
+            assert!(format!("{result:?}").contains("manifest byte string is not an array"));
+        }
+    }
+
+    #[test]
+    fn valid_indefinite_outer_row_round_trips() {
+        let expected = TextAuthorityManifest {
+            max_doc_id: 0,
+            shards: Vec::new(),
+        };
+        let mut bytes = expected.encode().expect("encode manifest");
+        assert_eq!(bytes.first(), Some(&0x85));
+        *bytes.first_mut().expect("outer array header") = 0x9f;
+        bytes.push(0xff);
+        assert_eq!(
+            TextAuthorityManifest::decode(&bytes, Path::new("/g1")).expect("decode row"),
+            expected
+        );
+    }
+
+    #[test]
+    fn small_bigpos_tagged_leading_version_keeps_prior_classification() {
+        let expected = TextAuthorityManifest {
+            max_doc_id: 0,
+            shards: Vec::new(),
+        };
+        let bytes = expected.encode().expect("encode manifest");
+        assert_eq!(bytes.get(..2), Some([0x85, 0x01].as_slice()));
+        let mut tagged = vec![0x85, 0xc2, 0x41, 0x01];
+        tagged.extend_from_slice(bytes.get(2..).expect("manifest body"));
+        assert_eq!(
+            TextAuthorityManifest::decode(&tagged, Path::new("/g1")).expect("tagged version"),
+            expected
+        );
+        let old = TextAuthorityManifest::decode(&[0x81, 0xc2, 0x41, 2], Path::new("/g1"));
+        assert_eq!(
+            typed_code(&old),
+            Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported)
+        );
     }
 
     #[test]

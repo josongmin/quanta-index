@@ -29,7 +29,8 @@ pub use activation_token::{
 };
 pub use ids::{
     FileId, GenerationId, IdentityValidationErrorV1, LogicalGenerationIdentityV1, ManifestDigest,
-    ManifestGeneration, RepoId, RepoRelativePath, RepositoryRevisionIdentityV1, RevisionId,
+    ManifestGeneration, NativeIdentityCopyErrorV1, RepoId, RepoRelativePath,
+    RepositoryRevisionIdentityV1, RevisionId, try_copy_string_with_native_birth_v1,
 };
 pub use query::{
     CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE,

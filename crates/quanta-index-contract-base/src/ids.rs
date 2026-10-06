@@ -39,6 +39,69 @@ impl fmt::Display for IdentityValidationErrorV1 {
 
 impl std::error::Error for IdentityValidationErrorV1 {}
 
+/// Native copy failure at the already-validated identity producer. Admission
+/// retains its caller's exact error; allocator and callback protocol failures
+/// never stand in for an original resource/lifecycle refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeIdentityCopyErrorV1<E> {
+    Admission(E),
+    NativeAllocationFailed,
+    InvalidNativeProducer,
+    InvalidNativeCapacity,
+}
+impl<E: fmt::Display> fmt::Display for NativeIdentityCopyErrorV1<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Admission(cause) => write!(formatter, "identity copy admission: {cause}"),
+            Self::NativeAllocationFailed => {
+                formatter.write_str("identity copy native allocation failed")
+            }
+            Self::InvalidNativeProducer => {
+                formatter.write_str("identity copy native producer is invalid")
+            }
+            Self::InvalidNativeCapacity => {
+                formatter.write_str("identity copy native capacity is invalid")
+            }
+        }
+    }
+}
+impl<E: std::error::Error + 'static> std::error::Error for NativeIdentityCopyErrorV1<E> {}
+
+/// Copy only the supplied borrowed bytes. Typed owners preserve their private
+/// validation seal by wrapping this result without re-validating the input.
+/// The caller admits copy work and retains its native backing grant.
+pub fn try_copy_string_with_native_birth_v1<E>(
+    source: &str,
+    admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
+) -> Result<String, NativeIdentityCopyErrorV1<E>> {
+    let bytes = source.len();
+    let mut value = String::new();
+    let mut invoked = false;
+    let mut repeated = false;
+    let mut native_success = false;
+    let admitted = admission(bytes, &mut || {
+        if invoked {
+            repeated = true;
+            return false;
+        }
+        invoked = true;
+        native_success = value.try_reserve_exact(bytes).is_ok();
+        native_success
+    })
+    .map_err(NativeIdentityCopyErrorV1::Admission)?;
+    if !invoked || repeated || admitted != native_success {
+        return Err(NativeIdentityCopyErrorV1::InvalidNativeProducer);
+    }
+    if !admitted {
+        return Err(NativeIdentityCopyErrorV1::NativeAllocationFailed);
+    }
+    if value.capacity() != bytes {
+        return Err(NativeIdentityCopyErrorV1::InvalidNativeCapacity);
+    }
+    value.push_str(source);
+    Ok(value)
+}
+
 fn validate_identity(value: &str) -> Result<(), IdentityValidationErrorV1> {
     if value.is_empty() {
         return Err(IdentityValidationErrorV1::Empty);
@@ -69,6 +132,17 @@ macro_rules! validated_identity {
                 let value = value.into();
                 validate_identity(value.as_str())?;
                 Ok(Self(value))
+            }
+
+            /// Copy these exact private canonical bytes without re-running NFC
+            /// or constructing a second identity authority. The caller admits
+            /// copy work before this call, admits actual backing before the
+            /// supplied native callback, and retains its grant with the result.
+            pub fn try_clone_with_native_birth_v1<E>(
+                &self,
+                admission: impl FnOnce(usize, &mut dyn FnMut() -> bool) -> Result<bool, E>,
+            ) -> Result<Self, NativeIdentityCopyErrorV1<E>> {
+                try_copy_string_with_native_birth_v1(self.0.as_str(), admission).map(Self)
             }
 
             #[must_use]
@@ -269,10 +343,76 @@ string_newtype!(RepoRelativePath);
 
 #[cfg(test)]
 mod tests {
+    use super::NativeIdentityCopyErrorV1 as NativeCopy;
     use super::{
         IdentityValidationErrorV1, LogicalGenerationIdentityV1, RepoId,
         RepositoryRevisionIdentityV1, RevisionId,
     };
+
+    #[test]
+    fn native_identity_copy_preserves_sealed_bytes_and_uses_one_actual_birth() {
+        let original = RepoId::new("répo/../%").expect("canonical fixture");
+        let mut calls = 0;
+        let copy = original
+            .try_clone_with_native_birth_v1(|bytes, birth| {
+                assert_eq!(bytes, "répo/../%".len());
+                calls += 1;
+                Ok::<_, u8>(birth())
+            })
+            .expect("native copy");
+        assert_eq!(calls, 1);
+        assert_eq!(copy, original);
+        assert_ne!(copy.0.as_ptr(), original.0.as_ptr());
+        assert_eq!(copy.0.capacity(), original.as_str().len());
+        let revision = RevisionId::new("révision/%").expect("canonical revision");
+        assert_eq!(
+            revision.try_clone_with_native_birth_v1(|_, birth| Ok::<_, u8>(birth())),
+            Ok(revision.clone())
+        );
+    }
+
+    #[test]
+    fn native_identity_copy_refuses_missing_repeated_or_misreported_birth() {
+        let original = RepoId::new("repo/test").expect("canonical fixture");
+        for report in [false, true] {
+            assert_eq!(
+                original.try_clone_with_native_birth_v1(|_, _| Ok::<_, u8>(report)),
+                Err(NativeCopy::InvalidNativeProducer)
+            );
+        }
+        assert_eq!(
+            original.try_clone_with_native_birth_v1(|_, birth| {
+                assert!(birth());
+                assert!(!birth());
+                Ok::<_, u8>(true)
+            }),
+            Err(NativeCopy::InvalidNativeProducer)
+        );
+        assert_eq!(
+            original.try_clone_with_native_birth_v1(|_, birth| {
+                assert!(birth());
+                Ok::<_, u8>(false)
+            }),
+            Err(NativeCopy::InvalidNativeProducer)
+        );
+        assert_eq!(original.as_str(), "repo/test");
+    }
+
+    #[test]
+    fn native_identity_copy_preserves_original_admission_before_and_after_birth() {
+        let original = RepoId::new("repo/test").expect("canonical fixture");
+        assert_eq!(
+            original.try_clone_with_native_birth_v1(|_, _| Err::<bool, _>(7_u8)),
+            Err(NativeCopy::Admission(7))
+        );
+        assert_eq!(
+            original.try_clone_with_native_birth_v1(|_, birth| {
+                assert!(birth());
+                Err::<bool, _>(8_u8)
+            }),
+            Err(NativeCopy::Admission(8))
+        );
+    }
 
     #[test]
     fn identity_policy_is_exact_and_does_not_normalize() {
