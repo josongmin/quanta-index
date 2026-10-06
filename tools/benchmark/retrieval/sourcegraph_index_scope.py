@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import math
 import os
 import re
@@ -683,7 +684,7 @@ def _start_owned_web(
             raise ValueError("native Zoekt translator process identity differs")
         _image_guest_binary(container_id, image_id, binary_path)
         return process, {**identity, "listener": listener, "guest": guest, "image_id": image_id}
-    except BaseException as error:
+    except BaseException:
         cleanup_identity = (
             identity
             if isinstance(identity, dict)
@@ -708,10 +709,8 @@ def _start_owned_web(
                 port,
                 cleanup_identity,
             )
-        except BaseException as cleanup_error:
-            error.add_note(
-                f"Owned Zoekt service cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}"
-            )
+        except BaseException:
+            logging.getLogger(__name__).error("Owned Zoekt service cleanup failed", exc_info=True)
         raise
 
 
@@ -1171,7 +1170,7 @@ def _native_stored_content(
             control_sha256=control_sha256,
             owned_service=owned,
         )
-    except BaseException as error:
+    except BaseException:
         try:
             _stop_owned_web(
                 container_id,
@@ -1182,10 +1181,8 @@ def _native_stored_content(
                 native_port,
                 owned,
             )
-        except BaseException as cleanup_error:
-            error.add_note(
-                f"Owned Zoekt service cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}"
-            )
+        except BaseException:
+            logging.getLogger(__name__).error("Owned Zoekt service cleanup failed", exc_info=True)
         raise
     stopped = _stop_owned_web(
         container_id,

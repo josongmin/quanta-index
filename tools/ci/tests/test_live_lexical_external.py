@@ -621,7 +621,7 @@ def test_owned_web_refuses_image_mount_shadow_before_start(monkeypatch):
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
 def test_owned_web_refuses_malformed_supervisor_identity_before_listener(
-    monkeypatch, cleanup_fails
+    monkeypatch, cleanup_fails, caplog
 ):
     scope = live.sourcegraph_index_scope
     original_popen = subprocess.Popen
@@ -660,15 +660,18 @@ def test_owned_web_refuses_malformed_supervisor_identity_before_listener(
             "c" * 64, "sha256:" + "a" * 64, "/usr/local/bin/zoekt-webserver", "/index", 6071
         )
     if cleanup_fails:
-        assert caught.value.__notes__ == [
-            "Owned Zoekt service cleanup failed: ValueError: Docker daemon unavailable"
-        ]
+        assert caplog.records[-1].message == "Owned Zoekt service cleanup failed"
+        assert str(caplog.records[-1].exc_info[1]) == "Docker daemon unavailable"
 
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
-def test_native_body_failure_survives_owned_service_cleanup(monkeypatch, tmp_path, cleanup_fails):
+def test_native_body_failure_survives_owned_service_cleanup(
+    monkeypatch, tmp_path, cleanup_fails, caplog
+):
     scope = live.sourcegraph_index_scope
     primary = ValueError("native body differs from independent corpus")
+    cause = OSError("native source lost")
+    primary.__cause__ = cause
     process = object()
     owned = {"invocation_id": "e" * 32}
     stopped = []
@@ -705,12 +708,12 @@ def test_native_body_failure_survives_owned_service_cleanup(monkeypatch, tmp_pat
             control_sha256={},
         )
     assert caught.value is primary
+    assert primary.__cause__ is cause
     assert len(stopped) == 1
     assert stopped[0][1] is process
     if cleanup_fails:
-        assert primary.__notes__ == [
-            "Owned Zoekt service cleanup failed: ValueError: Docker daemon unavailable"
-        ]
+        assert caplog.records[-1].message == "Owned Zoekt service cleanup failed"
+        assert str(caplog.records[-1].exc_info[1]) == "Docker daemon unavailable"
 
 
 @pytest.mark.parametrize(
