@@ -2667,10 +2667,17 @@ mod tests {
             "{huge_snapshot}"
         );
 
-        let mut tuning = OpenAiEmbedderTuning::default();
-        tuning.cache_retention =
-            EmbeddingCacheRetentionPolicy::new(u64::MAX, 1, 1, Duration::from_secs(1), 1)
-                .expect("positive cache policy");
+        let tuning = OpenAiEmbedderTuning {
+            cache_retention: EmbeddingCacheRetentionPolicy::new(
+                u64::MAX,
+                1,
+                1,
+                Duration::from_secs(1),
+                1,
+            )
+            .expect("positive cache policy"),
+            ..OpenAiEmbedderTuning::default()
+        };
         let huge_ledger = config
             .with_semantic_embedder_profile(SemanticEmbedderProfile::OpenAi {
                 model: "m".to_string(),
