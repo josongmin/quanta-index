@@ -236,8 +236,8 @@ pub trait NativeIdentityDecodeAdmissionV1 {
 
 trait IdentityConstructionPolicyV1<T> {
     type Error: fmt::Display;
-    fn from_owned_v1(&self, value: String) -> Result<T, Self::Error>;
-    fn from_borrowed_v1(&self, value: &str) -> Result<T, Self::Error>;
+    fn build_owned_v1(&self, value: String) -> Result<T, Self::Error>;
+    fn build_borrowed_v1(&self, value: &str) -> Result<T, Self::Error>;
 }
 struct OrdinaryIdentityConstructionV1;
 #[cfg(feature = "quanta-native-identity-v1")]
@@ -329,9 +329,9 @@ macro_rules! validated_identity {
             /// The caller's deserializer must admit owned and escaped string
             /// backing before allocation, as required by the admission trait.
             #[cfg(feature = "quanta-native-identity-v1")]
-            pub fn native_decode_seed_v1<'a, 'de, P: NativeIdentityDecodeAdmissionV1 + ?Sized>(
-                admission: &'a P,
-            ) -> impl de::DeserializeSeed<'de, Value = Self> + 'a {
+            pub fn native_decode_seed_v1<'de, P: NativeIdentityDecodeAdmissionV1 + ?Sized>(
+                admission: &P,
+            ) -> impl de::DeserializeSeed<'de, Value = Self> + '_ {
                 IdentityDecodeSeedV1::<Self, _> {
                     policy: NativeIdentityConstructionV1(admission),
                     value: core::marker::PhantomData,
@@ -408,16 +408,16 @@ macro_rules! validated_identity {
 
         impl IdentityConstructionPolicyV1<$name> for OrdinaryIdentityConstructionV1 {
             type Error = IdentityValidationErrorV1;
-            fn from_owned_v1(&self, value: String) -> Result<$name, Self::Error> { $name::new(value) }
-            fn from_borrowed_v1(&self, value: &str) -> Result<$name, Self::Error> { $name::new(value) }
+            fn build_owned_v1(&self, value: String) -> Result<$name, Self::Error> { $name::new(value) }
+            fn build_borrowed_v1(&self, value: &str) -> Result<$name, Self::Error> { $name::new(value) }
         }
         #[cfg(feature = "quanta-native-identity-v1")]
         impl<P: NativeIdentityDecodeAdmissionV1 + ?Sized> IdentityConstructionPolicyV1<$name>
             for NativeIdentityConstructionV1<'_, P>
         {
             type Error = P::Error;
-            fn from_owned_v1(&self, value: String) -> Result<$name, Self::Error> { self.0.$owned_v1(value) }
-            fn from_borrowed_v1(&self, value: &str) -> Result<$name, Self::Error> { self.0.$borrowed_v1(value) }
+            fn build_owned_v1(&self, value: String) -> Result<$name, Self::Error> { self.0.$owned_v1(value) }
+            fn build_borrowed_v1(&self, value: &str) -> Result<$name, Self::Error> { self.0.$borrowed_v1(value) }
         }
 
         impl IdentityDecodeValueV1 for $name {
@@ -437,14 +437,14 @@ macro_rules! validated_identity {
                     where
                         E: de::Error,
                     {
-                        self.0.from_borrowed_v1(value).map_err(E::custom)
+                        self.0.build_borrowed_v1(value).map_err(E::custom)
                     }
 
                     fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
                     where
                         E: de::Error,
                     {
-                        self.0.from_owned_v1(value).map_err(E::custom)
+                        self.0.build_owned_v1(value).map_err(E::custom)
                     }
                 }
 
@@ -746,7 +746,7 @@ mod native_raw_identity_tests_v1 {
             if demand.new_bytes_v1 <= demand.current_bytes_v1 {
                 return Err(u8::MAX);
             }
-            self.births += 1;
+            self.births = self.births.checked_add(1).ok_or(u8::MAX)?;
             let success = birth();
             if success && let Some(cause) = self.fail_after_birth {
                 return Err(cause);
@@ -754,7 +754,10 @@ mod native_raw_identity_tests_v1 {
             Ok(success)
         }
         fn release_scratch_v1(&mut self, _owner: NativeNormalizationScratchOwnerV1) {
-            self.releases += 1;
+            self.releases = self
+                .releases
+                .checked_add(1)
+                .expect("release count fits usize");
         }
     }
 
@@ -765,20 +768,22 @@ mod native_raw_identity_tests_v1 {
         let source = format!("q{}", "\u{301}".repeat(20));
         let expected = RepoId::new(source.as_str()).unwrap();
         let mut admission = Admission::default();
-        let mut copies = 0;
-        let copied = RepoId::try_from_str_with_native_admission_v1(
+        let mut copy_calls = 0_usize;
+        let constructed = RepoId::try_from_str_with_native_admission_v1(
             &source,
             &mut admission,
             |bytes, birth| {
                 assert_eq!(bytes, source.len());
-                copies += 1;
+                copy_calls = copy_calls
+                    .checked_add(1)
+                    .expect("copy call count fits usize");
                 Ok(birth())
             },
         )
         .unwrap();
-        assert_eq!(copied, expected);
-        assert_ne!(copied.as_str().as_ptr(), source.as_ptr());
-        assert_eq!(copies, 1);
+        assert_eq!(constructed, expected);
+        assert_ne!(constructed.as_str().as_ptr(), source.as_ptr());
+        assert_eq!(copy_calls, 1);
         assert!(admission.births >= 2);
         assert_eq!(admission.releases, 2);
     }

@@ -1,6 +1,7 @@
 //! The normalization form and the case fold (see the crate doc).
 
 use std::borrow::Cow;
+use std::collections::TryReserveError;
 use std::fmt;
 
 use unicode_normalization::{
@@ -31,7 +32,41 @@ impl std::error::Error for NfcAdmissionError {}
 struct NfcScratchAdmission {
     base: usize,
     ceiling: usize,
-    retained: [usize; 3],
+    retained: NfcRetainedScratch,
+}
+
+#[derive(Default)]
+struct NfcRetainedScratch {
+    decomposition: usize,
+    recomposition: usize,
+    sort: usize,
+}
+
+impl NfcRetainedScratch {
+    fn get(&self, owner: NativeNormalizationScratchOwnerV1) -> usize {
+        match owner {
+            NativeNormalizationScratchOwnerV1::Decomposition => self.decomposition,
+            NativeNormalizationScratchOwnerV1::Recomposition => self.recomposition,
+            NativeNormalizationScratchOwnerV1::Sort => self.sort,
+        }
+    }
+
+    fn get_mut(&mut self, owner: NativeNormalizationScratchOwnerV1) -> &mut usize {
+        match owner {
+            NativeNormalizationScratchOwnerV1::Decomposition => &mut self.decomposition,
+            NativeNormalizationScratchOwnerV1::Recomposition => &mut self.recomposition,
+            NativeNormalizationScratchOwnerV1::Sort => &mut self.sort,
+        }
+    }
+
+    fn checked_total(&self, base: usize) -> Result<usize, NfcAdmissionError> {
+        [self.decomposition, self.recomposition, self.sort]
+            .into_iter()
+            .try_fold(base, |sum, bytes| {
+                sum.checked_add(bytes)
+                    .ok_or(NfcAdmissionError::ArithmeticOverflow)
+            })
+    }
 }
 
 impl NfcScratchAdmission {
@@ -42,16 +77,8 @@ impl NfcScratchAdmission {
         Ok(Self {
             base,
             ceiling,
-            retained: [0; 3],
+            retained: NfcRetainedScratch::default(),
         })
-    }
-
-    fn slot(owner: NativeNormalizationScratchOwnerV1) -> usize {
-        match owner {
-            NativeNormalizationScratchOwnerV1::Decomposition => 0,
-            NativeNormalizationScratchOwnerV1::Recomposition => 1,
-            NativeNormalizationScratchOwnerV1::Sort => 2,
-        }
     }
 }
 
@@ -67,14 +94,10 @@ impl NativeNormalizationAdmissionV1 for NfcScratchAdmission {
         demand_v1: NativeNormalizationScratchDemandV1,
         birth_v1: &mut dyn FnMut() -> bool,
     ) -> Result<bool, Self::Error> {
-        let slot = Self::slot(demand_v1.owner_v1);
-        if self.retained[slot] != demand_v1.current_bytes_v1 {
+        if self.retained.get(demand_v1.owner_v1) != demand_v1.current_bytes_v1 {
             return Err(NfcAdmissionError::InvalidScratchState);
         }
-        let active = self.retained.iter().try_fold(self.base, |sum, bytes| {
-            sum.checked_add(*bytes)
-                .ok_or(NfcAdmissionError::ArithmeticOverflow)
-        })?;
+        let active = self.retained.checked_total(self.base)?;
         let peak = active
             .checked_add(demand_v1.new_bytes_v1)
             .ok_or(NfcAdmissionError::ArithmeticOverflow)?;
@@ -83,13 +106,13 @@ impl NativeNormalizationAdmissionV1 for NfcScratchAdmission {
         }
         let success = birth_v1();
         if success {
-            self.retained[slot] = demand_v1.new_bytes_v1;
+            *self.retained.get_mut(demand_v1.owner_v1) = demand_v1.new_bytes_v1;
         }
         Ok(success)
     }
 
     fn release_scratch_v1(&mut self, owner_v1: NativeNormalizationScratchOwnerV1) {
-        self.retained[Self::slot(owner_v1)] = 0;
+        *self.retained.get_mut(owner_v1) = 0;
     }
 }
 
@@ -101,10 +124,13 @@ pub struct NfcFoldPlan<'a> {
     folded_bytes: usize,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum NfcFoldBuildError {
     LengthOverflow,
-    Allocation,
+    Allocation {
+        surface: &'static str,
+        source: TryReserveError,
+    },
     LengthChanged,
     ScratchExceeded,
     Native(NativeNormalizationErrorV1<NfcAdmissionError>),
@@ -114,7 +140,12 @@ impl fmt::Display for NfcFoldBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LengthOverflow => formatter.write_str("normalization output length overflow"),
-            Self::Allocation => formatter.write_str("normalization output allocation refused"),
+            Self::Allocation { surface, source } => {
+                write!(
+                    formatter,
+                    "normalization {surface} allocation refused: {source}"
+                )
+            }
             Self::LengthChanged => formatter.write_str("normalization output length changed"),
             Self::ScratchExceeded => {
                 formatter.write_str("normalization output exceeds scratch policy")
@@ -127,8 +158,9 @@ impl fmt::Display for NfcFoldBuildError {
 impl std::error::Error for NfcFoldBuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Allocation { source, .. } => Some(source),
             Self::Native(error) => Some(error),
-            _ => None,
+            Self::LengthOverflow | Self::LengthChanged | Self::ScratchExceeded => None,
         }
     }
 }
@@ -197,11 +229,17 @@ impl<'a> NfcFoldPlan<'a> {
         let mut indexed = String::new();
         indexed
             .try_reserve_exact(self.nfc_bytes)
-            .map_err(|_| NfcFoldBuildError::Allocation)?;
+            .map_err(|source| NfcFoldBuildError::Allocation {
+                surface: "NFC",
+                source,
+            })?;
         let mut folded = String::new();
         folded
             .try_reserve_exact(self.folded_bytes)
-            .map_err(|_| NfcFoldBuildError::Allocation)?;
+            .map_err(|source| NfcFoldBuildError::Allocation {
+                surface: "folded",
+                source,
+            })?;
         try_for_each_nfc_with_native_admission_v1(self.source, &mut admission, |scalar| {
             indexed.push(scalar);
             folded.extend(scalar.to_lowercase());
@@ -331,9 +369,9 @@ mod tests {
         let plan = NfcFoldPlan::new("İ").expect("census");
         assert_eq!(plan.nfc_bytes(), 2);
         assert_eq!(plan.folded_bytes(), 3);
-        assert_eq!(
+        assert!(matches!(
             plan.build_with_budget(0, 4),
             Err(NfcFoldBuildError::ScratchExceeded)
-        );
+        ));
     }
 }

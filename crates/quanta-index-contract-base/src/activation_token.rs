@@ -188,7 +188,7 @@ impl<'de, P: TokenDecodePolicyV1> serde::de::DeserializeSeed<'de> for TokenKeySe
     }
 }
 
-impl<'de, P: TokenDecodePolicyV1> Visitor<'de> for TokenKeySeedV1<P> {
+impl<P: TokenDecodePolicyV1> Visitor<'_> for TokenKeySeedV1<P> {
     type Value = TokenKeyV1;
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("an activation token field")
@@ -312,9 +312,9 @@ impl SearchCorpusActivationTokenV1 {
         )
     }
     #[cfg(feature = "quanta-native-identity-v1")]
-    pub fn native_decode_seed_v1<'a, 'de, P: NativeActivationTokenDecodeAdmissionV1 + ?Sized>(
-        admission: &'a P,
-    ) -> impl serde::de::DeserializeSeed<'de, Value = Self> + 'a {
+    pub fn native_decode_seed_v1<'de, P: NativeActivationTokenDecodeAdmissionV1 + ?Sized>(
+        admission: &P,
+    ) -> impl serde::de::DeserializeSeed<'de, Value = Self> + '_ {
         TokenDecodeSeedV1(NativeTokenDecodeV1(admission))
     }
 }
