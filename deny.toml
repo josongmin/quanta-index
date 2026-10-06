@@ -35,6 +35,13 @@ wildcards = "deny"
 highlight = "all"
 workspace-default-features = "deny"
 external-default-features = "allow"
+# The pinned Unicode fork is a workspace member so its controlled scratch tests
+# remain in workspace verification. Lance/Lindera also enable its upstream
+# default (= std). Preserve that unified graph while requiring this exact,
+# reviewed feature set; newly added or unexpectedly disabled features fail.
+features = [
+  { name = "unicode-normalization", version = "=0.1.25", allow = ["default", "std", "quanta-native-scratch-v1"], exact = true },
+]
 deny = [
   { crate = "openssl", use-instead = "rustls", reason = "Prefer Rust-native TLS unless a crate-specific exception is approved." },
   { crate = "openssl-sys", use-instead = "rustls", reason = "Prefer Rust-native TLS unless a crate-specific exception is approved." },
