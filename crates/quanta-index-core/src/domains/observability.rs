@@ -141,15 +141,25 @@ impl ProcessMemoryEnvelopeV1 {
     /// declare.
     pub const DEFAULT_CEILING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-    /// The components' sum, saturating.
-    #[must_use]
-    pub const fn declared_bytes(&self) -> u64 {
-        self.lexical_writer_bytes
-            .saturating_add(self.snapshot_registry_bytes)
-            .saturating_add(self.regex_match_cache_bytes)
-            .saturating_add(self.embedding_cache_ledger_bytes)
-            .saturating_add(self.semantic_stream_window_bytes)
-            .saturating_add(self.ingest_batch_bytes)
+    /// The components' exact sum. An unrepresentable sum cannot fit a `u64`
+    /// ceiling, including `u64::MAX`.
+    pub fn declared_bytes(&self) -> Result<u64, CoreError> {
+        [
+            self.lexical_writer_bytes,
+            self.snapshot_registry_bytes,
+            self.regex_match_cache_bytes,
+            self.embedding_cache_ledger_bytes,
+            self.semantic_stream_window_bytes,
+            self.ingest_batch_bytes,
+        ]
+        .into_iter()
+        .try_fold(0_u64, |sum, bytes| {
+            sum.checked_add(bytes).ok_or_else(|| CoreError::Typed {
+                code: PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE,
+                message: "process memory envelope: declared policies exceed u64::MAX bytes"
+                    .to_string(),
+            })
+        })
     }
 
     /// Refuse, typed, an envelope whose components do not fit under its
@@ -161,7 +171,7 @@ impl ProcessMemoryEnvelopeV1 {
                 "process memory envelope: the ceiling must be at least one byte".to_string(),
             ));
         }
-        let declared = self.declared_bytes();
+        let declared = self.declared_bytes()?;
         if declared > self.ceiling {
             return Err(CoreError::Typed {
                 code: PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE,
@@ -343,7 +353,10 @@ mod tests {
 
     #[test]
     fn the_envelope_sums_every_component_and_refuses_a_sum_over_the_ceiling() {
-        assert_eq!(envelope(2_100).declared_bytes(), 2_100);
+        assert_eq!(
+            envelope(2_100).declared_bytes().expect("representable"),
+            2_100
+        );
         assert!(envelope(2_100).validate().is_ok());
         let over = envelope(2_099).validate();
         assert!(
@@ -357,6 +370,19 @@ mod tests {
         assert!(narrow_rss.validate().is_err());
         narrow_rss.rss_ceiling = Some(2_100);
         assert!(narrow_rss.validate().is_ok());
+    }
+
+    #[test]
+    fn an_unrepresentable_component_sum_refuses_even_the_largest_ceiling() {
+        let mut oversized = envelope(u64::MAX);
+        oversized.ingest_batch_bytes = u64::MAX;
+        let refused = oversized.validate();
+        assert!(
+            matches!(&refused, Err(CoreError::Typed { code, message })
+                if *code == PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE
+                    && message.contains("exceed u64::MAX")),
+            "{refused:?}"
+        );
     }
 
     struct ScriptedProbe(AtomicU64);

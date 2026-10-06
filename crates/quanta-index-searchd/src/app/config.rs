@@ -5,8 +5,8 @@ use anyhow::Result;
 use quanta_index_core::{
     EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY, IngestResourcePolicy, IntegrityScrubPolicyV1,
     LexicalExecutionBudgetV1, LexicalWriterPolicy, MAX_EMBEDDING_DIMENSION,
-    ProcessMemoryEnvelopeV1, ProviderWorkBudgetV1, RegexMatchCachePolicy, SemanticEgressGrantV1,
-    SemanticStreamWindowPolicy,
+    PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE, ProcessMemoryEnvelopeV1, ProviderWorkBudgetV1,
+    RegexMatchCachePolicy, SemanticEgressGrantV1, SemanticStreamWindowPolicy,
 };
 use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
@@ -1013,11 +1013,16 @@ impl SearchdConfig {
     /// The sum must fit the configured ceiling, typed
     /// `PROCESS_MEMORY_ENVELOPE_EXCEEDED` when it does not.
     pub fn process_memory_envelope(&self) -> Result<ProcessMemoryEnvelopeV1> {
+        let overflow = |component| quanta_index_core::CoreError::Typed {
+            code: PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE,
+            message: format!("process memory envelope: {component} exceeds u64::MAX bytes"),
+        };
         let embedding_cache_ledger_bytes = match &self.semantic_embedder_profile {
             SemanticEmbedderProfile::OpenAi { tuning, .. } if tuning.cache_enabled => tuning
                 .cache_retention
                 .max_entries()
-                .saturating_mul(EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY),
+                .checked_mul(EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY)
+                .ok_or_else(|| overflow("embedding cache ledger"))?,
             SemanticEmbedderProfile::OpenAi { .. }
             | SemanticEmbedderProfile::PotionCode { .. }
             | SemanticEmbedderProfile::Hash { .. }
@@ -1041,10 +1046,16 @@ impl SearchdConfig {
             ingest_batch_bytes: self
                 .ingest_resource_policy
                 .max_text_bytes()
-                .saturating_add(self.ingest_resource_policy.max_vector_bytes())
+                .checked_add(self.ingest_resource_policy.max_vector_bytes())
+                .ok_or_else(|| overflow("ingest text and vector residency"))?
                 // One staged commit at a time: decoded body plus guarded
                 // collection storage, admitted before runtime construction.
-                .saturating_add(self.source_publication_max_bytes.saturating_mul(2)),
+                .checked_add(
+                    self.source_publication_max_bytes
+                        .checked_mul(2)
+                        .ok_or_else(|| overflow("source publication residency"))?,
+                )
+                .ok_or_else(|| overflow("ingest and source publication residency"))?,
             ceiling: self.process_memory_ceilings.ceiling_bytes(),
             rss_ceiling: self.process_memory_ceilings.rss_ceiling_bytes(),
         };
@@ -2556,7 +2567,10 @@ mod tests {
                 + IngestResourcePolicy::DEFAULT.max_vector_bytes()
                 + 2 * quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_DEFAULT_BYTES
         );
-        assert!(envelope.declared_bytes() <= ProcessMemoryEnvelopeV1::DEFAULT_CEILING_BYTES);
+        assert!(
+            envelope.declared_bytes().expect("representable")
+                <= ProcessMemoryEnvelopeV1::DEFAULT_CEILING_BYTES
+        );
         assert_eq!(envelope.rss_ceiling, None);
 
         let oversized_tracks = config
@@ -2575,7 +2589,11 @@ mod tests {
 
         let too_low = config
             .with_process_memory_ceilings(
-                ProcessMemoryCeilings::new(envelope.declared_bytes() - 1, None).expect("ceiling"),
+                ProcessMemoryCeilings::new(
+                    envelope.declared_bytes().expect("representable") - 1,
+                    None,
+                )
+                .expect("ceiling"),
             )
             .process_memory_envelope()
             .expect_err("a ceiling below the declared sum is refused");
@@ -2616,6 +2634,48 @@ mod tests {
             cached.embedding_cache_ledger_bytes,
             EmbeddingCacheRetentionPolicy::DEFAULT.max_entries()
                 * EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY
+        );
+    }
+
+    #[test]
+    fn an_unrepresentable_memory_component_refuses_even_the_largest_ceiling() {
+        let config = SearchdConfig::from_test_state_root(PathBuf::from("/tmp/envelope-overflow"))
+            .with_process_memory_ceilings(
+                ProcessMemoryCeilings::new(u64::MAX, None).expect("positive ceiling"),
+            );
+        let huge_ingest = config
+            .clone()
+            .with_ingest_resource_policy(
+                IngestResourcePolicy::new(1, u64::MAX, 1).expect("positive policy"),
+            )
+            .process_memory_envelope()
+            .expect_err("text plus vector residency overflows");
+        assert!(
+            huge_ingest
+                .to_string()
+                .contains(PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE.as_wire_str()),
+            "{huge_ingest}"
+        );
+
+        let mut tuning = OpenAiEmbedderTuning::default();
+        tuning.cache_retention =
+            EmbeddingCacheRetentionPolicy::new(u64::MAX, 1, 1, Duration::from_secs(1), 1)
+                .expect("positive cache policy");
+        let huge_ledger = config
+            .with_semantic_embedder_profile(SemanticEmbedderProfile::OpenAi {
+                model: "m".to_string(),
+                model_revision: "r".to_string(),
+                dimension: 8,
+                api_key: "sk".to_string(),
+                tuning,
+            })
+            .process_memory_envelope()
+            .expect_err("cache ledger multiplication overflows");
+        assert!(
+            huge_ledger
+                .to_string()
+                .contains(PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE.as_wire_str()),
+            "{huge_ledger}"
         );
     }
 

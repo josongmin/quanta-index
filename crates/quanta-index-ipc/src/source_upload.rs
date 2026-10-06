@@ -401,6 +401,7 @@ impl SourcePublicationUploadStore {
         {
             return Err(invalid("source upload contains trailing bytes"));
         }
+        budget.checkpoint("source_upload.decode")?;
         Ok(batch)
     }
 }
@@ -620,6 +621,101 @@ mod tests {
             }
             self.bytes.seek(position)
         }
+    }
+
+    struct CancelOnEof {
+        bytes: io::Cursor<Vec<u8>>,
+        cancellation: quanta_index_core::CancelHandleV1,
+        eof_reads: usize,
+    }
+
+    impl Read for CancelOnEof {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            let count = self.bytes.read(bytes)?;
+            if count == 0 {
+                self.eof_reads += 1;
+                self.cancellation.cancel();
+            }
+            Ok(count)
+        }
+    }
+
+    impl Seek for CancelOnEof {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.bytes.seek(position)
+        }
+    }
+
+    struct DeadlineOnEof {
+        bytes: io::Cursor<Vec<u8>>,
+        eof_reads: usize,
+    }
+
+    impl Read for DeadlineOnEof {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            let count = self.bytes.read(bytes)?;
+            if count == 0 {
+                self.eof_reads += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(count)
+        }
+    }
+
+    impl Seek for DeadlineOnEof {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.bytes.seek(position)
+        }
+    }
+
+    #[test]
+    fn staged_publication_decode_refuses_cancellation_during_final_eof_read() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let store = SourcePublicationUploadStore::open(
+            root.path().join("uploads"),
+            SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+        )
+        .expect("open");
+        let bytes = crate::encode_cbor_payload(&batch()).expect("valid body");
+        let budget = RequestBudgetV1::unbounded();
+        let mut source = CancelOnEof {
+            bytes: io::Cursor::new(bytes.clone()),
+            cancellation: budget.cancel_handle(),
+            eof_reads: 0,
+        };
+        let error = store
+            .decode_body(&mut source, bytes.len(), &budget)
+            .expect_err("cancellation at final EOF must not return a batch");
+        let (code, message) = error.into_search_plane_wire();
+        assert_eq!(code, SearchPlaneErrorCodeV2::RequestCancelled);
+        assert!(message.contains("source_upload.decode"));
+        assert_eq!(source.eof_reads, 1);
+    }
+
+    #[test]
+    fn staged_publication_decode_refuses_deadline_during_final_eof_read() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let store = SourcePublicationUploadStore::open(
+            root.path().join("uploads"),
+            SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+        )
+        .expect("open");
+        let bytes = crate::encode_cbor_payload(&batch()).expect("valid body");
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(5))
+            .expect("fixture deadline must be representable");
+        let budget = RequestBudgetV1::until(deadline);
+        let mut source = DeadlineOnEof {
+            bytes: io::Cursor::new(bytes.clone()),
+            eof_reads: 0,
+        };
+        let error = store
+            .decode_body(&mut source, bytes.len(), &budget)
+            .expect_err("deadline at final EOF must not return a batch");
+        let (code, message) = error.into_search_plane_wire();
+        assert_eq!(code, SearchPlaneErrorCodeV2::RequestDeadlineExceeded);
+        assert!(message.contains("source_upload.decode"));
+        assert_eq!(source.eof_reads, 1);
     }
 
     #[test]

@@ -355,7 +355,7 @@ fn an_envelope_over_its_ceiling_refuses_boot_typed_before_any_socket() -> TestRe
         std::env::temp_dir().join("quanta-index-envelope-probe"),
     )
     .process_memory_envelope()?
-    .declared_bytes();
+    .declared_bytes()?;
     let mut rt = E2eRuntime::boot_with_memory_probe(
         Arc::new(ScriptedProbe(AtomicU64::new(0))),
         ProcessMemoryCeilings::new(declared - 1, None)?,
