@@ -263,22 +263,21 @@ impl<'de, P: TokenDecodePolicyV1> Visitor<'de> for SearchCorpusActivationTokenV1
             }
         }
         let root_incarnation = root_incarnation.ok_or_else(|| {
-                self.0.invalid_v1(
-                    TokenDataFailureV1::MissingField,
-                    Some("root_incarnation"),
-                    || de::Error::missing_field("root_incarnation"),
-                )
-            })?;
+            self.0.invalid_v1(
+                TokenDataFailureV1::MissingField,
+                Some("root_incarnation"),
+                || de::Error::missing_field("root_incarnation"),
+            )
+        })?;
         let activation_sequence = activation_sequence.ok_or_else(|| {
-                self.0.invalid_v1(
-                    TokenDataFailureV1::MissingField,
-                    Some("activation_sequence"),
-                    || de::Error::missing_field("activation_sequence"),
-                )
-            })?;
+            self.0.invalid_v1(
+                TokenDataFailureV1::MissingField,
+                Some("activation_sequence"),
+                || de::Error::missing_field("activation_sequence"),
+            )
+        })?;
         self.0.work_v1(16)?;
-        SearchCorpusActivationTokenV1::new(root_incarnation, activation_sequence)
-        .map_err(|cause| {
+        SearchCorpusActivationTokenV1::new(root_incarnation, activation_sequence).map_err(|cause| {
             self.0.invalid_v1(
                 TokenDataFailureV1::Semantic,
                 Some("root_incarnation"),
