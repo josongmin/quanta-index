@@ -10,9 +10,9 @@
 | 웨이브 | 작업 | 현재 판정 |
 | --- | --- | --- |
 | S0 정적 수리 | EOF interruption, checked memory envelope, 동일 dispatch deadline, F15 할당 전 admission, causal capture/portable validator executable custody |6범주 구조적 수정·정적 검토 완료. 코드 checkpoint86fb23f0; Python 제어 fixture148passed·5.92s |
-| S1 변경 소스 집중 검증 | 고정 Unicode 출력·scratch 초과 거절, posting 경계·독립 census, EOF 취소·기존 만료 deadline, u64 overflow·거대 dispatch duration 회귀 | Python capture19/portable129 fixture 및 최신main owner37+F15 32개 actual Rust 회귀 `VERIFIED`; config/runtime/SDK 영향 범위 확인 중 |
+| S1 변경 소스 집중 검증 | 고정 Unicode 출력·scratch 초과 거절, posting 경계·독립 census, EOF 취소·기존 만료 deadline, u64 overflow·거대 dispatch duration 회귀 | Python capture19/portable129 fixture 및 최신main focused84+native corpus decode1 actual Rust 회귀와 config memory6개 `VERIFIED`; runtime/SDK 영향 범위 확인 중 |
 | S2 실제 제품 회귀 | 동일 소스 daemon SDK 경로, 게시·delta/delete·재시작, 취소 뒤 복구 | 별도 frozen492 XL+query600000ms exit0·287.843s, main4a SDK27/27·20.287s 및 portable replay exit0. S0 후속 Rust 수정의 결과가 아님 |
-| S3 전체 판정 | whole Rust/strict/API/hosted CI, native capacity, Ready9 actual capture/replay/join 및 독립 성능 판정 | 별도 main4a unit2790+runtime3 통과; 최신main strict/API/hosted CI 판정 진행 중. 기능 회귀를 RSS/latency qualification으로 승격하지 않음 |
+| S3 전체 판정 | whole Rust/strict/API/hosted CI, native capacity, Ready9 actual capture/replay/join 및 독립 성능 판정 | 별도 main4a unit2790+runtime3 통과; 최신main module/API actual gate와 bench registry14개 통과. Strict/hosted 전체 판정 진행 중. 기능 회귀를 RSS/latency qualification으로 승격하지 않음 |
 
 S0 요청은 정적 감사→구조적 수정→정적 검증이었다. 후속 사용자 요청으로 완료 변경을 main에
 통합하고 S1/S2/S3 검증을 실행한다. 기존 debug 캐시를 사용하며 새 release build는 등록하지 않았다. 기존 Scale 채팅 실행은 자기 고정 소스의 별도 검증이며 최신 main의

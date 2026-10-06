@@ -18,6 +18,8 @@
 HEAD가 이동하므로 아래의565·492·4a는 각 실행의 고정 소스이며 최신 main 전체 결과가 아니다.
 앞선 감사는 정적 범위였다. 후속 사용자 요청으로 통합 및 최신 소스의 Rust 행동 검증을 진행한다.
 P11 공통 구현은 `8bd3bad5`와 상태·대상 검증 수리 `6ff327ac`로 main에 통합됐다.
+후속 main3a59efb8에 native/normalizer lint 수리f43b6dde, vendor 수리7ae93b46+cac3f37d,
+contract/lexical lint 수리3a59efb8이 통합됐고 원격 main과 일치했다.
 엔진2개·SDK14개 분기 커밋은 `git cherry`에서 모두 patch-equivalent이며, 이전 manifest3paths도
 현재 main과 동일해 추가 cherry-pick은 필요 없다.
 
@@ -59,7 +61,17 @@ P11 공통 구현은 `8bd3bad5`와 상태·대상 검증 수리 `6ff327ac`로 ma
   맞춰 수정했다. Hosted1897 Python은 실제 공개 API gate의 contract deserialize 표기8lines drift로
   `FAILED`; SDK는 unchanged다. Generated API/source를 대조해 baseline8lines만 수정·재검증한다.
   이 실패를 hosted CI 성공으로 바꾸지 않으며 새 source의 실제 job 결과를 확인한다.
-- Config overflow·동일 소스 실제 daemon/runtime/SDK 및 최신 strict/API 종료 결과는 확인 중이다.
+- Config/process memory6개 actual 회귀는 `VERIFIED`다. Native/normalizer lint 수리 후
+  core/contract-base/normalizer/IPC/lexical/searchd 같은 selector의 focused84/84·1.976s가
+  `VERIFIED`(컴파일17.32s)이며 contract native corpus decode1/1·0.009s도 통과했다.
+  후속 contract/lexical5paths의 소유자는 별도 커밋 채팅이며3a59efb8에 통합됐다.
+- 실제 API 생성 gate는 `check-public-api.py --packages quanta-index-contract quanta-index-sdk`
+  재실행에서 모두 unchanged/exit0였다. Hosted1196의 module/API snapshot 단계도 `VERIFIED`다.
+  전체 job은 vendor nightly bench의 registry 불일치로513passed/7skipped 뒤 `FAILED`였다.
+  최신 manifest에서 해당 unsupported target을 제외한 뒤
+  `uv run --frozen --extra dev python -m pytest -q -o addopts='' tools/ci/tests/test_benchmark_policy.py`
+  는14passed·1.38s로 `VERIFIED`다. 후속 hosted 전체 job 결과는 별도 확인한다.
+- 동일 소스 실제 daemon/runtime/SDK 및 최신 strict 종료 결과는 확인 중이다.
   새 release build는 등록하지 않았다. 논리적 admission 회귀를 실제 RSS/latency qualification으로 세지 않는다.
 
 ### 별도 고정 소스의 실행 복구
@@ -117,10 +129,10 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 | 범위 | 담당 | 실제 잔여 |
 | --- | --- | --- |
 | Manifest 복호화 메모리 경계 | I0 / E4 | Generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. Source565 owner46개는 actual PASS·1.126s다. 후속 EOF 취소 회귀는 최신main에서 `VERIFIED`; whole/strict/integration 소비 범위는 별도 확인 |
-| Workspace 검사·단위 테스트 | Scale / hosted CI | Source565 owner46/46·1.126s와 open-loop20/20·5.208s는 실제 exit0다. main4a 고정 복구 소스의 unit2790+runtime3은 `VERIFIED`. 최신6범주 소스의 focused69개가 통과했으며 strict/API/hosted CI는 확인 중이다. 옛 전체 unit 결과를 최신 소스 전체 판정으로 승격하지 않는다 |
+| Workspace 검사·단위 테스트 | Scale / hosted CI | Source565 owner46/46·1.126s와 open-loop20/20·5.208s는 실제 exit0다. main4a 고정 복구 소스의 unit2790+runtime3은 `VERIFIED`. 최신6범주 소스의 focused84개와 native corpus decode1개가 통과했으며 strict/API/hosted CI는 확인 중이다. 옛 전체 unit 결과를 최신 소스 전체 판정으로 승격하지 않는다 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Source492 Medium14.566s·Large84.191s PASS 및 기본20s XL425.966s typed deadline `FAILED`는 원본 기록이다. 동일492 binary에 query600000ms를 명시한 XL exact1은 exit0·287.843s로 게시·삭제·재시작 `VERIFIED`다. 전후 source/binary 동일·추가 build0·corpus/seed/caps 불변이다. 최신6범주 수리 및 latency/RSS qualification의 결과가 아니다 |
 | Current native Scale·runtime | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime을 검증한다. Fuzz는 현재 권고 정책의 조건 충족 때 별도 선택한다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
-| Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. 후속 final-v5 proof custody32회귀 및 SGCS-v7 actual capture hash12회귀·독립 검토는 PASS다. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
+| Ready9 native·SG/CS·최종5제품 join | Ready9 | CS 단독9repos/180tasks 입력·guard 검증 뒤 영속 복구 root에서 actual capture/replay를 실행 중이다. SG/OG recorded endpoint는 연결 거절로 해당 actual은 `BLOCKED`다. 이전 Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. 후속 final-v5 proof custody32회귀 및 SGCS-v7 actual capture hash12회귀·독립 검토는 PASS다. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
 | Final Contract/SDK | I0 | Source565 Contract Python793·289.98s/Rust191·0.528s 및 당시 context/portable verify는 실제 `VERIFIED`지만 삭제된565 raw 재생은 `BLOCKED`다. 별도 main4a 복구 SDK는 canonical debug27/27·20.287s와 context/portable replay exit0로 `VERIFIED`다. 영속 경로는 위 복구 절에 있다. 두 소스 결과를 최신 Rust 수리나 Ready9의 기존55-binding epoch로 재표기하지 않는다 |
 | Main의 병렬 NativeIdentity feature 연동 | 해당 변경 owner / hosted CI | Main16f37의 feature 누락 실패 뒤 최신38eda80a에 normalization vendor/control42paths가 반영됐다. Locked/offline/all-features metadata는 실제 exit0/28workspace다. Actual native identity/Unicode focused Rust 회귀는 최신main에서 통과했다. Module/API·whole CI는 확인 중이며 선택565의 엔진 검증과 별도 범위다 |
 
