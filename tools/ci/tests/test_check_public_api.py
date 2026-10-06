@@ -25,6 +25,29 @@ def test_public_api_runner_uses_the_baseline_nightly(monkeypatch, tmp_path: Path
     assert env["CARGO_TARGET_DIR"].startswith(str(tmp_path / "target"))
 
 
+def test_public_api_runner_selects_a_guarded_package_and_simplified_surface(monkeypatch) -> None:
+    import subprocess
+
+    calls = []
+
+    def rendered(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "pub mod quanta_index_contract\n", "")
+
+    monkeypatch.setattr(MODULE.subprocess, "run", rendered)
+    assert MODULE.render_public_api("quanta-index-contract") == "pub mod quanta_index_contract\n"
+    command, kwargs = calls[0]
+    assert command == [
+        "cargo",
+        "public-api",
+        "--package",
+        "quanta-index-contract",
+        "--simplified",
+    ]
+    assert kwargs["cwd"] == MODULE.ROOT
+    assert kwargs["env"]["RUSTUP_TOOLCHAIN"] == MODULE.PUBLIC_API_TOOLCHAIN
+
+
 def test_empty_package_selection_is_refused(monkeypatch) -> None:
     import pytest
 

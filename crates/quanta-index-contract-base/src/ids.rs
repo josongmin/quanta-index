@@ -220,6 +220,11 @@ fn validate_native_identity_v1<P: unicode_normalization::NativeNormalizationAdmi
 
 /// Boundary adapter for the SAME identity visitors. The runtime supplies its
 /// original NFC producer and retained String group; no authority is stored.
+///
+/// The caller must use a deserializer that admits owned `String` and escaped
+/// string backing before allocation. Generic Serde deserializers may allocate
+/// that backing before these identity visitor callbacks run; this admission
+/// policy alone cannot account for those allocations.
 #[cfg(feature = "quanta-native-identity-v1")]
 pub trait NativeIdentityDecodeAdmissionV1 {
     type Error: fmt::Display;
@@ -321,6 +326,8 @@ macro_rules! validated_identity {
 
             /// SAME identity visitor with an explicitly borrowed native owner.
             /// Owned JSON Strings move to the canonical constructor unchanged.
+            /// The caller's deserializer must admit owned and escaped string
+            /// backing before allocation, as required by the admission trait.
             #[cfg(feature = "quanta-native-identity-v1")]
             pub fn native_decode_seed_v1<'a, 'de, P: NativeIdentityDecodeAdmissionV1 + ?Sized>(
                 admission: &'a P,

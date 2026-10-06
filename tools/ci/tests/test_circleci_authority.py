@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import runpy
 from pathlib import Path
 
 import yaml
@@ -167,6 +168,48 @@ def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
     assert "Python policy and tooling tests" in python_names
     assert "Produce and validate P00 authority manifest" in python_names
     assert "Python policy and tooling tests" not in rust_names
+
+
+def test_regular_ci_runs_the_pinned_public_api_ratchet():
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    regular_jobs = config["workflows"]["regular"]["jobs"]
+    assert "verify-python" in regular_jobs
+    steps = config["jobs"]["verify-python"]["steps"]
+    gate_index = next(
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and step.get("run", {}).get("name") == "Verify guarded public API snapshots"
+    )
+    gate = steps[gate_index]["run"]
+    assert gate_index > next(
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and step.get("run", {}).get("name") == "Install locked Python dependencies"
+    )
+    assert gate_index < next(
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and step.get("run", {}).get("name") == "Python policy and tooling tests"
+    )
+    assert gate.get("when", "always") == "always"
+    command = gate["command"]
+    assert command.startswith("set -euo pipefail\nunset BASH_ENV ENV\n")
+    assert "--update-baseline" not in command
+    public_api = runpy.run_path(str(ROOT / "tools/ci/lint/check-public-api.py"))
+    assert public_api["GUARDED_CRATES"] == ["quanta-index-contract", "quanta-index-sdk"]
+    toolchain = public_api["PUBLIC_API_TOOLCHAIN"]
+    assert f"rustup toolchain install {toolchain} --profile minimal" in command
+    assert "cargo install cargo-public-api --version 0.51.0 --locked" in command
+    assert '[[ "$(cargo public-api --version)" == "cargo-public-api 0.51.0" ]]' in command
+    assert (
+        "uv run --frozen --extra dev python tools/ci/lint/check-public-api.py"
+        in command.splitlines()
+    )
+    cache = steps[gate_index - 1]["restore_cache"]["keys"][0]
+    assert "cargo-public-api0.51.0" in cache
 
 
 def test_pr_coverage_uses_exact_base_and_fails_closed():
