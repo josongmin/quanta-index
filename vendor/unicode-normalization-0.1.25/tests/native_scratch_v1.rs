@@ -1,10 +1,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use unicode_normalization::{
+    try_for_each_nfc_with_native_admission_v1, try_is_nfc_with_native_admission_v1,
     NativeNormalizationAdmissionV1, NativeNormalizationErrorV1 as Error,
     NativeNormalizationScratchDemandV1 as Demand, NativeNormalizationScratchOwnerV1 as Owner,
-    UnicodeNormalization, try_for_each_nfc_with_native_admission_v1,
-    try_is_nfc_with_native_admission_v1,
+    UnicodeNormalization,
 };
 
 thread_local! {

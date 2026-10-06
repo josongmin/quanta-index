@@ -2167,7 +2167,7 @@ impl core::marker::StructuralPartialEq for quanta_index_contract::GenerationSnap
 impl serde_core::ser::Serialize for quanta_index_contract::GenerationSnapshot
 pub fn quanta_index_contract::GenerationSnapshot::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GenerationSnapshot
-pub fn quanta_index_contract::GenerationSnapshot::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GenerationSnapshot::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GenerationSnapshot
 impl core::marker::Send for quanta_index_contract::GenerationSnapshot
 impl core::marker::Sync for quanta_index_contract::GenerationSnapshot
@@ -3285,7 +3285,7 @@ impl core::marker::StructuralPartialEq for quanta_index_contract::SearchCorpusAc
 impl serde_core::ser::Serialize for quanta_index_contract::SearchCorpusActiveHeadV1
 pub fn quanta_index_contract::SearchCorpusActiveHeadV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchCorpusActiveHeadV1
-pub fn quanta_index_contract::SearchCorpusActiveHeadV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::SearchCorpusActiveHeadV1
 impl core::marker::Send for quanta_index_contract::SearchCorpusActiveHeadV1
 impl core::marker::Sync for quanta_index_contract::SearchCorpusActiveHeadV1
@@ -3310,7 +3310,7 @@ impl core::marker::StructuralPartialEq for quanta_index_contract::SearchCorpusGe
 impl serde_core::ser::Serialize for quanta_index_contract::SearchCorpusGenerationIdentityV1
 pub fn quanta_index_contract::SearchCorpusGenerationIdentityV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchCorpusGenerationIdentityV1
-pub fn quanta_index_contract::SearchCorpusGenerationIdentityV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::SearchCorpusGenerationIdentityV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::SearchCorpusGenerationIdentityV1
 impl core::marker::Send for quanta_index_contract::SearchCorpusGenerationIdentityV1
 impl core::marker::Sync for quanta_index_contract::SearchCorpusGenerationIdentityV1
@@ -3746,7 +3746,7 @@ impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticConten
 impl serde_core::ser::Serialize for quanta_index_contract::SemanticContentRootsV1
 pub fn quanta_index_contract::SemanticContentRootsV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SemanticContentRootsV1
-pub fn quanta_index_contract::SemanticContentRootsV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::SemanticContentRootsV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::SemanticContentRootsV1
 impl core::marker::Send for quanta_index_contract::SemanticContentRootsV1
 impl core::marker::Sync for quanta_index_contract::SemanticContentRootsV1
@@ -12241,7 +12241,7 @@ impl core::marker::StructuralPartialEq for quanta_index_contract::GenerationSnap
 impl serde_core::ser::Serialize for quanta_index_contract::GenerationSnapshot
 pub fn quanta_index_contract::GenerationSnapshot::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GenerationSnapshot
-pub fn quanta_index_contract::GenerationSnapshot::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GenerationSnapshot::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GenerationSnapshot
 impl core::marker::Send for quanta_index_contract::GenerationSnapshot
 impl core::marker::Sync for quanta_index_contract::GenerationSnapshot
@@ -14643,7 +14643,7 @@ impl core::marker::StructuralPartialEq for quanta_index_contract::SearchCorpusAc
 impl serde_core::ser::Serialize for quanta_index_contract::SearchCorpusActiveHeadV1
 pub fn quanta_index_contract::SearchCorpusActiveHeadV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchCorpusActiveHeadV1
-pub fn quanta_index_contract::SearchCorpusActiveHeadV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::SearchCorpusActiveHeadV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::SearchCorpusActiveHeadV1
 impl core::marker::Send for quanta_index_contract::SearchCorpusActiveHeadV1
 impl core::marker::Sync for quanta_index_contract::SearchCorpusActiveHeadV1
@@ -14668,7 +14668,7 @@ impl core::marker::StructuralPartialEq for quanta_index_contract::SearchCorpusGe
 impl serde_core::ser::Serialize for quanta_index_contract::SearchCorpusGenerationIdentityV1
 pub fn quanta_index_contract::SearchCorpusGenerationIdentityV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SearchCorpusGenerationIdentityV1
-pub fn quanta_index_contract::SearchCorpusGenerationIdentityV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::SearchCorpusGenerationIdentityV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::SearchCorpusGenerationIdentityV1
 impl core::marker::Send for quanta_index_contract::SearchCorpusGenerationIdentityV1
 impl core::marker::Sync for quanta_index_contract::SearchCorpusGenerationIdentityV1
@@ -15374,7 +15374,7 @@ impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticConten
 impl serde_core::ser::Serialize for quanta_index_contract::SemanticContentRootsV1
 pub fn quanta_index_contract::SemanticContentRootsV1::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SemanticContentRootsV1
-pub fn quanta_index_contract::SemanticContentRootsV1::deserialize<D>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::SemanticContentRootsV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::SemanticContentRootsV1
 impl core::marker::Send for quanta_index_contract::SemanticContentRootsV1
 impl core::marker::Sync for quanta_index_contract::SemanticContentRootsV1

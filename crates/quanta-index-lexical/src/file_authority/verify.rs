@@ -405,8 +405,12 @@ mod tests {
             bytes: 0,
             ceiling: 255,
         };
-        add_source(b"abc", 1, &mut expected, &mut scratch)
+        let refusal = add_source(b"abc", 1, &mut expected, &mut scratch)
             .expect_err("distinct gram plus term and ID require 256 bytes");
+        assert_eq!(
+            refusal,
+            "file authority v15 cold open: bucket scratch exceeds policy"
+        );
         assert!(expected.is_empty());
         assert_eq!(scratch.bytes, 64);
 
@@ -425,8 +429,12 @@ mod tests {
             bytes: 0,
             ceiling: 127,
         };
-        add_source(b"abc", 2, &mut expected, &mut scratch)
+        let refusal = add_source(b"abc", 2, &mut expected, &mut scratch)
             .expect_err("distinct gram plus a second ID require 128 bytes");
+        assert_eq!(
+            refusal,
+            "file authority v15 cold open: bucket scratch exceeds policy"
+        );
         assert_eq!(expected[&*b"abc"], std::collections::BTreeSet::from([1]));
         assert_eq!(scratch.bytes, 64);
     }
