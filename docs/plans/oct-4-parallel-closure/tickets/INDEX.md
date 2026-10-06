@@ -144,7 +144,7 @@ Main4a의 unit2790+runtime3 및 SDK27/27·20.287s/portable replay도 그 고정 
 | Workspace/strict/API/CI | Scale / hosted CI | e371 whole strict·MSRV·nextest4231/4231 및 API `VERIFIED`. Receipt 생성 lock/EOF 정책은 f6ff0064로 수리; 새 whole CI 종료 회수 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Frozen492의 Medium/Large 및 configured XL `VERIFIED`. 최신e371 runtime15개는 별도 범위이며 current Large/XL qualification로 승격하지 않음 |
 | Current native Scale·capacity/cost | Scale | e371 open-loop20개 `VERIFIED`. Matching Large/XL lifecycle/cost·capacity negative·timing/RSS qualification은 `NOT_RUN` |
-| Ready9 native·SG/CS·최종5제품 join | Ready9 | source091의 CS9/9 capture·독립 replay9/9·180요청 `VERIFIED`/exit0. SG 원본13index/projection9 및 SG/OG readonly runtime·HTTP/dataRoot 검증 완료; fresh-v4 native9 capture/replay 실행 중, 완료0/9. OG historical segments2/3 재생 `BLOCKED`; retained segments4는 별도 diagnostic. 최종 matching admission/pair/full5는 `NOT_RUN` |
+| Ready9 native·SG/CS·최종5제품 join | Ready9 | source091의 CS9/9 capture·독립 replay9/9·180요청 `VERIFIED`/exit0. SG 원본13index/projection9 및 SG/OG readonly runtime·HTTP/dataRoot 검증 완료; fresh-v4 SG/OG capture1/9·40응답 발행, 독립 replay9는 `NOT_RUN`. OG historical segments2/3 재생 `BLOCKED`; retained segments4는 별도 diagnostic. 최종 matching admission/pair/full5는 `NOT_RUN` |
 | Final Contract/SDK | I0 | e371 Python793·Rust191·SDK27 actual 및 별도 replay/frozen7role 재배치 검증 모두 `VERIFIED`. 영속 context·raw·binaries 보존 |
 | NativeIdentity feature 연동 | Native owner / hosted CI | 실제 native/Unicode owner·최종 Contract/runtime 및 module/API/whole strict `VERIFIED`; whole CI 최종 종료는 별도 |
 
