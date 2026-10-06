@@ -1268,7 +1268,7 @@ def test_index_scope_batch_reuses_one_release_and_rechecks_each_cell(
     assert receipts == [Path(cell["output_root"]) / "native-audit/receipt.json" for cell in cells]
 
 
-@pytest.mark.parametrize("fault", ["release_bytes", "next_spec", "batch_spec"])
+@pytest.mark.parametrize("fault", ["next_spec", "batch_spec"])
 def test_index_scope_batch_refuses_mutation_before_next_cell(
     tmp_path, lexical_release_seed, monkeypatch, fault
 ):
@@ -1278,7 +1278,6 @@ def test_index_scope_batch_refuses_mutation_before_next_cell(
 
     def capture(_path, output, **_kwargs):
         target = {
-            "release_bytes": release / "release.json",
             "next_spec": Path(cells[1]["scope_spec"]),
             "batch_spec": batch_path,
         }[fault]
@@ -1290,6 +1289,165 @@ def test_index_scope_batch_refuses_mutation_before_next_cell(
         scope.capture_scope_batch(
             batch_path, native_port=6071, native_binary_path="/usr/local/bin/zoekt-webserver"
         )
+
+
+def _actual_index_scope_capture_fixture(tmp_path, lexical_release_seed, monkeypatch):
+    """Exercise the real scope producer with only external services replaced."""
+    scope = live.sourcegraph_index_scope
+    release = tmp_path / "release"
+    shutil.copytree(lexical_release_seed, release)
+    document = json.loads((release / "release.json").read_bytes())
+    repository = document["repositories"][0]
+    manifest_path = release / repository["views"]["code_only"]["manifest"]
+    manifest = json.loads(manifest_path.read_bytes())
+    spec_path = tmp_path / "scope.json"
+    spec_path.write_text("{}")
+    token = tmp_path / "token"
+    token.write_text("fixture-token")
+    backend = tmp_path / "backend"
+    projection_root = tmp_path / "projection"
+    backend.mkdir()
+    projection_root.mkdir()
+    config = {
+        "repository": "benchmark/fixture",
+        "token_file": str(token),
+        "backend_snapshot": {"root": str(backend)},
+        "projection_git_root": str(projection_root),
+        "server_image_digest": "sha256:" + "a" * 64,
+    }
+    spec = {
+        "corpus": {
+            "release_path": str(release),
+            "release_digest": document["digest"],
+            "repository": "fixture",
+            "view": "code_only",
+        },
+        "sourcegraph": config,
+    }
+    snapshot = {"runtime": {}, "files": [], "tree_sha256": "b" * 64}
+    projection = {
+        "source_revision": manifest["repository_commit"],
+        "projection_revision": manifest["repository_commit"],
+    }
+    monkeypatch.setattr(scope, "_capture_spec", lambda _path, **_kwargs: spec)
+    monkeypatch.setattr(live, "_projection_binding", lambda *_args: projection)
+    monkeypatch.setattr(live, "_backend_snapshot", lambda _config: snapshot)
+    monkeypatch.setattr(live, "_validate_backend_snapshot", lambda *_args: None)
+    monkeypatch.setattr(
+        scope, "_bounded_path_request", lambda *_args: (200, "text/event-stream", b"fixture")
+    )
+    monkeypatch.setattr(
+        scope, "_path_stream_inventory", lambda _stream, **_kwargs: len(manifest["files"])
+    )
+
+    def native(native_root, **_kwargs):
+        scope._write_json(native_root / "native-index-before.json", snapshot)
+        return "c" * 64, "d" * 64, {}
+
+    monkeypatch.setattr(scope, "_native_stored_content", native)
+    return scope, spec_path, tmp_path / "scope-out", release, manifest_path, token
+
+
+@pytest.mark.parametrize(
+    ("stage", "target"),
+    [
+        ("verify", "selected"),
+        ("verify", "unselected"),
+        ("native", "selected"),
+        ("none", "none"),
+    ],
+)
+def test_index_scope_real_capture_release_guards(
+    tmp_path, lexical_release_seed, monkeypatch, stage, target
+):
+    scope, spec_path, output, release, manifest_path, _ = _actual_index_scope_capture_fixture(
+        tmp_path, lexical_release_seed, monkeypatch
+    )
+    # recipe.json belongs to the release tree but is not the selected view manifest.
+    mutation_path = manifest_path if target == "selected" else release / "recipe.json"
+    verified = []
+
+    def mutate():
+        mutation_path.write_bytes(mutation_path.read_bytes() + b" ")
+
+    def native(native_root, **_kwargs):
+        scope._write_json(
+            native_root / "native-index-before.json",
+            {"runtime": {}, "files": [], "tree_sha256": "b" * 64},
+        )
+        if stage == "native":
+            mutate()
+        return "c" * 64, "d" * 64, {}
+
+    def verify(*_args, **_kwargs):
+        verified.append(True)
+        if stage == "verify":
+            mutate()
+
+    monkeypatch.setattr(scope, "_native_stored_content", native)
+    monkeypatch.setattr(scope, "verify", verify)
+
+    def capture():
+        return scope.capture_from_live_spec(
+            spec_path,
+            output,
+            native_port=6071,
+            native_binary_path="/usr/local/bin/zoekt-webserver",
+            scope_spec=True,
+        )
+
+    if stage == "none":
+        assert capture() == output / "native-audit/receipt.json"
+        assert verified == [True]
+    else:
+        with pytest.raises(ValueError, match="changed"):
+            capture()
+        assert verified == ([True] if stage == "verify" else [])
+
+
+@pytest.mark.parametrize("control", ["none", "batch_spec", "token"])
+def test_index_scope_real_batch_keeps_controls_and_three_release_checks(
+    tmp_path, lexical_release_seed, monkeypatch, control
+):
+    scope, spec_path, output, release, _, token = _actual_index_scope_capture_fixture(
+        tmp_path, lexical_release_seed, monkeypatch
+    )
+    batch_spec = tmp_path / "batch.json"
+    batch_spec.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cells": [{"scope_spec": str(spec_path), "output_root": str(output)}],
+            }
+        )
+    )
+    scans = []
+    original_recheck = live.BoundRelease.recheck
+
+    def counted(bound, root):
+        scans.append(root)
+        return original_recheck(bound, root)
+
+    def verify(*_args, **_kwargs):
+        if control == "batch_spec":
+            batch_spec.write_bytes(batch_spec.read_bytes() + b" ")
+        elif control == "token":
+            token.write_bytes(token.read_bytes() + b" ")
+
+    monkeypatch.setattr(live.BoundRelease, "recheck", counted)
+    monkeypatch.setattr(scope, "verify", verify)
+
+    def capture():
+        return scope.capture_scope_batch(
+            batch_spec, native_port=6071, native_binary_path="/usr/local/bin/zoekt-webserver"
+        )
+
+    if control == "none":
+        assert capture() == [output / "native-audit/receipt.json"]
+    else:
+        with pytest.raises(ValueError, match="changed"):
+            capture()
+    assert scans == [release] * 3
 
 
 def test_index_scope_batch_refuses_different_release_root_and_preflight_drift(

@@ -1860,6 +1860,8 @@ def capture_from_live_spec(
         snapshot=before,
         require_owned_service=True,
     )
+    if bound.recheck(release) != document:
+        raise ValueError("index scope release changed during evidence replay")
     return receipt
 
 
@@ -1974,8 +1976,7 @@ def capture_scope_batch(
     bound = live.BoundRelease.begin(release_root)
     recheck_inputs()
     receipts = []
-    for path, output, release, early in cells:
-        bound.recheck(release)
+    for path, output, _release, early in cells:
         recheck_inputs()
         receipts.append(
             capture_from_live_spec(
@@ -1988,7 +1989,6 @@ def capture_scope_batch(
                 preflight_controls=early,
             )
         )
-        bound.recheck(release)
         recheck_inputs()
     return receipts
 
