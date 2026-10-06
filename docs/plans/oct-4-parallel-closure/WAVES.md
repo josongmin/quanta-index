@@ -12,7 +12,7 @@
 | S0 구조적 수리·통합 | EOF cancellation, checked memory envelope, 동일 dispatch deadline, F15 할당 전 admission, capture/validator executable custody 및 CI strict 수리 | 완료. 엔진2·SDK14 branch commits 모두 patch-equivalent; 추가 cherry-pick 없음. 최종 제품 소스e37123eb |
 | S1 영향 owner 검증 | Unicode·native scratch/refusal·posting/cold census·EOF·overflow·dispatch 및 policy artifact | Focused84·native decode 및 fixture 후속 회귀, 제어148, open-loop20 `VERIFIED` |
 | S2 실제 제품 회귀·proof | 동일 소스 daemon SDK, generation restart/rollback·owner lease·Unicode/envelope 및 canonical Contract | e371 SDK27, Contract Python793/Rust191, runtime15 actual `VERIFIED`. 별도 portable replay 및 동결7role 재배치 validator exit0 |
-| S3 전체 CI 종료 회수 | Whole Rust/strict/API 및 Python/의존성 정책 | Source998/e371 whole strict·API `VERIFIED`. Unicode exact feature set 정책 수리c7ca71b2의 `just rust-deny` exit0. e371 whole nextest 실행 중, 새 whole CI 최종 판정 미발행 |
+| S3 전체 CI 종료 회수 | Whole Rust/strict/API 및 Python/의존성 정책 | e371 whole strict·MSRV·nextest4231/4231 `VERIFIED`; job은 생성 vendor lock receipt 거절로 `FAILED`. c7 Python policy/P00 통과 뒤 EOF 실패. f6ff0064의 exact ignore/EOF 예외 수리 후 Rust1223/Python1224 whole 종료 회수 |
 | S4 Ready capture/replay | CS9repos/180tasks actual capture와9개 독립 replay | source09103820·CS9/9 capture·독립 replay9/9·180요청 `VERIFIED`/exit0; input/ordered ledger/독립 실행 SHA 대조 및 lease 반환 완료. 기존4/9·268raw 보존. SG13index/projection9 검증 후 readonly 복구 중; OG historical snapshot `BLOCKED`, retained segments4의 별도 fresh diagnostic 준비 |
 | S5 입력별 qualification | Matching Large/XL cost/capacity·timing/RSS, 독립 labels/holdout·5제품 join·운영 target | Selected correctness와 별도. 필수 service/rubric/target/독립 관측 입력이 없는 해당 scope는 `BLOCKED`; 미실행 qualification은 `NOT_RUN` |
 

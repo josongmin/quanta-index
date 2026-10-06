@@ -83,13 +83,21 @@ Canonical freeze로 역할 binary SDK3·Contract4개와 raw/log/context를
 - CircleCI1211(source998f9eb7)의 workspace/all-targets/all-features/locked Clippy `-D warnings`는
   exit0·6m17s다. Source998→e371의 Rust bytes는 동일하다. macOS contract/base all-target strict도
   통과했으며 과거 전체 macOS strict 실패를 성공으로 재표기하지 않는다.
-- CircleCI1214(sourcee371)의 whole strict와 dependency/MSRV 단계는 통과했고 whole nextest는
-  실행 중이다. Python1213은 `rust-deny`의 Unicode default feature 정책에서 `FAILED`였으며
-  `c7ca71b2` 수리 후 `just rust-deny`는 advisories/bans/licenses/sources 모두 exit0다.
-  Checkout 밖 config에서 native-scratch를 exact allowlist에서 제외한 음성 검증도 예상 exit2/
-  `exact-features-mismatch`로 거절했다(검증 wrapper exit0).
-  Python1200의4279passed/30skipped 뒤 P11 format 실패도 e371에서 수리했다. 실패한 옛 job과
-  focused 성공을 최종 whole CI 성공으로 바꾸지 않는다.
+- [CircleCI1214](https://circleci.com/gh/josongmin/quanta-index/1214), sourcee371의 whole strict·
+  dependency/MSRV 및 workspace nextest4231/4231·1163.464s,29skipped는 `VERIFIED`다.
+  원본 nextest/inventory도 canonical parser로4231개 일치를 확인했다. Job 자체는 standalone
+  vendor grammar lock4개가 생성돼 receipt dirty-source guard에서 `FAILED`였다.
+  Source998의1211도4231/4231·1177.503s 뒤 같은 발행 실패이며 docs/bench 단계는 실행되지 않았다.
+- Python1213의 Unicode default-feature 정책 실패는 `c7ca71b2`의 exact feature 허용으로 수리했다.
+  `just rust-deny`는 advisories/bans/licenses/sources exit0이며 native-scratch 허용 제거 음성 검증은
+  예상 exit2/`exact-features-mismatch`다. Python1216(sourcec7)은 policy/tooling·P00을 통과한 뒤
+  pre-commit EOF hook이 upstream `.cargo_vcs_info.json`을 변경하여 `FAILED`였다.
+- `f6ff0064`는 생성 lock4개의 exact ignore와 upstream JSON의 exact EOF 예외만 변경한다.
+  Root lock·기존 tracked vendor lock·manifest 변경은 실제 receipt CLI에서 여전히 exit1/
+  receipt 미발행으로 거절했다. EOF all-files·YAML hook·기존 receipt 회귀2개는 `VERIFIED`다.
+  제품 proof의1527개 파일은 전부 e371과 동일하며 원래 context/revision을 보존한다.
+  수리 후 hosted Rust1223/Python1224의 whole 종료를 회수한다. 옛 실패·focused 성공을
+  whole CI 성공으로 바꾸지 않으며 새 로컬 전체 Rust·release build를 등록하지 않는다.
 
 ### 별도 고정 소스의 실행 복구
 
@@ -129,7 +137,7 @@ Main4a의 unit2790+runtime3 및 SDK27/27·20.287s/portable replay도 그 고정 
 | 범위 | 담당 | 현재 판정 및 실제 잔여 |
 | --- | --- | --- |
 | Manifest·EOF·메모리·deadline·F15 | I0 / E4 | 구조적 수리·focused84·최종 Contract/SDK/runtime `VERIFIED`. 지속 RSS 상한은 별도 |
-| Workspace/strict/API/CI | Scale / hosted CI | Whole Rust strict·macOS owner strict·API `VERIFIED`; Unicode exact feature 정책 actual `VERIFIED`. 새 whole CI 종료 회수 |
+| Workspace/strict/API/CI | Scale / hosted CI | e371 whole strict·MSRV·nextest4231/4231 및 API `VERIFIED`. Receipt 생성 lock/EOF 정책은 f6ff0064로 수리; 새 whole CI 종료 회수 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Frozen492의 Medium/Large 및 configured XL `VERIFIED`. 최신e371 runtime15개는 별도 범위이며 current Large/XL qualification로 승격하지 않음 |
 | Current native Scale·capacity/cost | Scale | e371 open-loop20개 `VERIFIED`. Matching Large/XL lifecycle/cost·capacity negative·timing/RSS qualification은 `NOT_RUN` |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | source091의 CS9/9 capture·독립 replay9/9·180요청 `VERIFIED`/exit0. SG 원본13index/projection9 검증 후 readonly 복구 중. OG historical segments2/3 snapshot 재생 `BLOCKED`; retained segments4의 별도 fresh diagnostic 준비. 최종 matching admission/pair/full5는 `NOT_RUN` |
