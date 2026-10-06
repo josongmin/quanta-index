@@ -98,6 +98,10 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   후속 e6b1b7e9의 hosted verify1751은 staged-upload test-only lint6건, verify-python1752는 baseline에서 실패했다.
   Test-only1path를 기존 invariant를 유지해 수리·통합했다. API/consumer actual은 종료했으며
   새 source의 실제 CI·OS3·formal proof를 확인한 뒤 Ready9 final 실행을 연결한다.
+- Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
+  admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며
+  exact793collection·각 누락 거절을 확인했다. Rust/SDK 목록과 Frozen5796 결과는 그대로 유지한다.
+  새 source와 fresh output에서 canonical Contract/fresh SDK·portable replay를 다시 실행한다.
 - Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
 - 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.
   Large default30s timeout과 XL preflight4M posting 거절은 `FAILED`다.

@@ -194,6 +194,8 @@
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_wrong_revision_refused_in_result_and_manifest",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_zero_width_match_refused",
     "tools.ci.tests.test_retrieval_benchmark.test_adapter_rejects_forged_or_mismatched_profile_reports",
+    "tools.ci.tests.test_retrieval_benchmark.test_admission_split_batch_refuses_live_input_and_owner_drift",
+    "tools.ci.tests.test_retrieval_benchmark.test_admission_split_batch_replays_at_both_boundaries_and_refuses_drift",
     "tools.ci.tests.test_retrieval_benchmark.test_benchmark_prep_does_not_repeat_retrieval_contracts",
     "tools.ci.tests.test_retrieval_benchmark.test_bootstrap_is_order_independent_and_rejects_invalid_pairs",
     "tools.ci.tests.test_retrieval_benchmark.test_bounded_natural_language_budget_binds_request_profile_and_replay",

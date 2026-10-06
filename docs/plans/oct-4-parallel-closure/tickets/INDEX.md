@@ -73,6 +73,11 @@
   XL decoded request385,260,565B가 cap134,217,728B를 초과했다. 별도 Large explicit diagnostic lifecycle/replay는
   `VERIFIED`; native XL lifecycle은 wire 거부 이후 `NOT_RUN`이다. `/private/tmp/qi-scale-f15-20261006-v1/result.json`.
   Scale 채팅은 그 후 새 source-upload 경로의 SDK/daemon 회귀와 XL actual을 진행 중이며 아직 완료로 표시하지 않는다.
+- 최종 Contract 첫 실행source080568c7은 Python collection 단계에서 `FAILED`였다. 실제793개와 필수791개가
+  달랐으며 기존 필수 검사는 누락되지 않았다. 최근 admission split batch의 drift/boundary 회귀2ID를
+  필수 manifest에 명시 추가했고 Rust/SDK 목록은 바꾸지 않았다. Exact793 수집과 새 회귀 각각 누락 거절을
+  확인했다. `/private/tmp/qi-f15-contract-080568c7-20261006-v1`는 실패로 보존하며 Rust tests는 미실행이다.
+  새 source의 Contract/fresh SDK 실제 발행·독립 portable verify가 남는다.
 - 남은 통합 종료 조건: 새 upload/Scale 및 scanner owner 변경을 포함한 영향 Rust/runtime 회귀,
   최종 selected-source Contract/fresh SDK·portable replay, Ready9 final pair/full5 join과 각 별도 qualification.
 
