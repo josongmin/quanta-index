@@ -138,10 +138,15 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 ### Verification escalation by change surface
 
 - public contract / SDK shape changes: run `just rust-public-api`
-- IPC decoder, wire DTO, or error-envelope changes: run `just rust-fuzz-smoke`
 - crate/module/facade boundary changes: run `just rust-hexagonal` and `just rust-cargo-modules`
 - activation, generation resolution, query pin, state-root, or shared-ingress changes: run `just rust-profile test-daemon` and prove the owning `U/E/C/H-SP` scenario slice
 - generated agent-doc source changes: run `python3 tools/prompt-manager/pm.py sync`, `python3 tools/prompt-manager/pm.py lint`, and `python3 -m pytest tools/prompt-manager/tests/test_pm.py -q`
+
+### Fuzz cadence (advisory)
+
+- Fuzz is not required for every IPC decoder, wire DTO, or error-envelope change. Missing fuzz alone does not block routine code closeout.
+- Recommend `just rust-fuzz-smoke` after substantial changes to decoders/parsers, wire formats, ingestion, or normalization, or when roughly two weeks have elapsed since the last completed fuzz run. These are guidance triggers, not mandatory gates.
+- For small changes, use focused owner regression tests. Explicitly requested fuzz runs and selected proof/CI recipes retain their declared execution scope.
 
 ### Documentation
 

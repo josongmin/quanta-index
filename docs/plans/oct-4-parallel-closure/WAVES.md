@@ -74,6 +74,17 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+- 현재 main4a5b59ef의 엔진 수리는 통합돼 있다. 추가로 확정한 검색 엔진 미구현 건은 없으며
+  전체 Rust/CI·XL·SDK 최종 증명·Ready9 실제 집계는 실행 잔여다. Ready9 final-v6 runtime 분리는
+  담당43control PASS·55bindings 유지 기록이 있으나 임시 수정본 부재로 복구·새 delta 검토·인계가
+  남는다. Scale 공유 profile 집중 Rust의 담당 `VERIFIED`/exit0 기록도 회수했다. 운영 P11 실행기·
+  독립 관측·parser/checker/aggregate/recipes는 별도 조건부 코드 잔여이며 대상 입력은 `BLOCKED`다.
+- 후속 확인 시 main4a5b59ef는 clean이다. Root 세션67824/82122는 존재하지 않으며
+  Contract/SDK/configured XL/Ready9 제어의 기존 `/private/tmp` 출력과 Scale 선택565 작업트리도
+  현재 없다. 담당 채팅에는 whole-unit의 dep-info/작업트리 경로 없음 실패 및 SDK27passed 결과가
+  남아 있다. 이전 결과는 보존하되 최신 terminal 결과·증빙 재생은 입력 부재로 `BLOCKED`다.
+  아래 과거 admission 대기 checkpoint를 현재 진행 상태로 해석하지 않는다. 삭제 원인은 미확인이며
+  configured XL·SDK portable verify·Ready9 actual 최종 성공을 추정하지 않는다.
 - Root492 original release inventory 재사용은 실제 `VERIFIED`: 추가 Compiling 메시지0개와
   test/daemon SHA 전후 동일을 확인했다. Explicit query dispatch600s의 XL exact1은 기존 binary로
   정상 admission에 등록했고 실행 결과는 아직 없다. Corpus/seed/caps/oracle은 불변이다.

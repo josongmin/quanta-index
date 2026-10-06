@@ -11,11 +11,38 @@
 
 소스 대조 기준일: 2026-10-06. 이 절의 anchor는 날짜 변경에도 유지한다.
 
+후속 상태 확인 시 main `4a5b59ef`는 clean이지만 기존 Root 실행 세션67824/82122는
+`Unknown process id`이며, 선택565 Contract/SDK·configured XL·Ready9 제어의 `/private/tmp`
+출력이 현재 존재하지 않는다. Scale의 `source-publication-scale/quanta-index` 작업트리도 없다.
+담당 채팅에는 whole-unit의 dep-info/작업트리 경로 없음 실패와 SDK27passed 결과가 남아 있다.
+이전 실행에서 회수한 통과·실패 기록은 유지한다. 최신 종료 결과 및 증빙 재생은 입력 부재로
+`BLOCKED`이며 이전 admission 대기 표기는 현재 실행 상태를 뜻하지 않는다. 삭제 원인은 미확인이다.
+Configured XL·최종 SDK portable verify·Ready9 실제 집계 완료를 추정하지 않는다.
+후속 Scale 담당은 main4a5b59ef를 별도 작업트리에 고정하고 삭제 보호를 설정해 검증 복구를
+진행 중이다. 복구 기록은 `/Users/songmin/.codex/task-evidence/quanta-scale-recovery-20261006-01a10d0b`
+에 둔다. 발견한 SDK cache binary는 이전 소스라 최신 SDK 증명에 재사용하지 않는다.
+복구 등록을 XL·SDK·전체 회귀 성공으로 승격하지 않는다.
+
+### 코드 잔여와 실행 잔여
+
+- 현재 main4a5b59ef에는 bounded manifest/source-upload·Large/XL admission·공유 scale/open-loop
+  profile·release 회귀 등록 수리가 반영됐다. 이번 대조에서 추가로 확정한 검색 엔진 미구현 건은 없다.
+  전체 Rust/CI 성공 또는 제품 qualification을 뜻하지 않는다.
+- Ready9 Python3.13/3.12 interpreter 분리 final-v6는 담당 채팅의43control PASS·55bindings 유지
+  기록이 있다. 수정본은 기존 임시 경로에만 있었고 현재 부재하므로 복구·새 delta 검토·인계가 남는다.
+  이전 final-v5 검토를 v6의 독립 검토로 재표기하지 않는다.
+- 조건부 운영 코드 P11의 typed 배포·활성화·restore-forward 실행기, 독립 전후 관측,
+  parser/checker/aggregate·recipes 연결은 아직 미구현이다. Registry는 staged이며 실제 대상·명령·
+  관측 계약 입력은 `BLOCKED`다. 검색 엔진의 XL/SDK 기능 검증과 별도 운영 배포 범위다.
+- SDK 최종 증명·XL/전체 Rust/CI·native capacity/fuzz·Ready9 capture/replay/join은 실행 잔여다.
+  Scale 공유 profile의 집중 Rust 검증은 담당 채팅에 `VERIFIED`/exit0로 회수됐으나 기존 raw가
+  현재 없으며 전체 native lifecycle 또는 전체 main 검증으로 승격하지 않는다.
+
 Contract/SDK·Ready9의 최종 Quanta 검증 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`
 (`oct6-quanta-final-order/quanta-index`)다. `886673cd`에 대한 변경은 manifest의 `cfg(test)`
 모듈을 파일 끝으로 옮긴1경로이며 제품 함수·테스트 본문은 byte 동일하다.
 Main에 병렬 추가된 NativeIdentityCopy/Admission API·feature manifest·normalization vendor/control 변경은
-이 선택 소스에서 제외했다. 최신 main38eda80a의 병렬 변경42paths도 별도 검증 범위다.
+이 선택 소스에서 제외했다. Metadata를 대조한 main38eda80a의 병렬 변경42paths도 별도 검증 범위다.
 선택 소스의 검증을 전체 main/API qualification으로 승격하지 않는다.
 OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da19db7833ecbf032ea`에서
 검증한다. Delta는 debug 전용 semantic 회귀 모듈에 producer와 같은 cfg 조건을 붙인1줄이며
@@ -26,11 +53,11 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 | 범위 | 담당 | 실제 잔여 |
 | --- | --- | --- |
 | Manifest 복호화 메모리 경계 | I0 / E4 | 전체 generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. 최신 Source565의 IPC/CBOR/manifest owner46개가 actual PASS·1.126s이며 whole/strict/integration 소비 검증이 남는다 |
-| Workspace 검사·단위 테스트 | Scale / hosted CI | Source565 owner46/46·1.126s와 open-loop bin20/20·5.208s가 실제 exit0다. 같은565에서 whole unit `--no-fail-fast`/1thread·strict·runtime/integration을 이어간다. Main2c Python1107과 d192 Python1109 전체는 `VERIFIED`; whole Rust는 아직 실패 상태다 |
+| Workspace 검사·단위 테스트 | Scale / hosted CI | Source565 owner46/46·1.126s와 open-loop bin20/20·5.208s가 실제 exit0다. 후속 whole-unit은 dep-info/작업트리 경로 없음으로 실패한 기록이 있다. 해당 작업트리가 현재 없으며 strict·runtime/integration·whole Rust 종료를 확인하지 못했다. Main2c Python1107과 d192 Python1109 전체는 이전 source의 `VERIFIED` 결과다 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Source492 release 원본3개는 실제 Medium14.566s·Large84.191s PASS, XL425.966s `FAILED`다. XL은 `lexical:cold-open:file-index`에서 typed `RequestDeadlineExceeded`(+13ms)로 종료했다. Large/XL의 SDK IO600s와 서버 query dispatch 기본20s가 불일치한다. 지원 profile에 서버600s 설정을 추가했고 owned fmt/diff는 PASS다. 설정을 명시한 기존492 binary의 XL exact1 재검증이 남는다. Debug interruption1개는 실제 PASS·2.772s다. Corpus/seed/caps는 불변 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. 후속 final-v5 proof custody32회귀 및 SGCS-v7 actual capture hash12회귀·독립 검토는 PASS다. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
-| Final Contract/SDK | I0 | 선택565의 canonical Contract Python793·289.98s/Rust191·0.528s와 최종 context/portable verify가 실제 `VERIFIED`다. Fresh SDK daemon release29m04s와 SDK test binary17m26s는 build exit0이며 SDK27개·최종 context/portable verify가 남는다. 두 source closure1500files digest는 일치하며 canceled731 v6 partial은 재사용하지 않는다 |
+| Final Contract/SDK | I0 | 선택565의 canonical Contract Python793·289.98s/Rust191·0.528s와 당시 context/portable verify는 실제 `VERIFIED`다. Fresh SDK build exit0와 후속 SDK27passed 결과가 담당 채팅에 남아 있으나 최종 SDK context/portable verify 통과는 확인되지 않았다. 현재 임시 출력이 없어 증빙 재생은 `BLOCKED`다. 기존 source closure1500files digest 기록을 보존하며 canceled731 v6 partial은 재사용하지 않는다 |
 | Main의 병렬 NativeIdentity feature 연동 | 해당 변경 owner / hosted CI | Main16f37의 feature 누락 실패 뒤 최신38eda80a에 normalization vendor/control42paths가 반영됐다. Locked/offline/all-features metadata는 실제 exit0/28workspace다. Actual Rust·module/API·whole CI가 남으며 선택565의 엔진 검증과 별도 범위다 |
 
 위 목록은 Quanta 소유 실행 범위다. P11 실제 운영 producer는 I0-03의 target/독립 관측 계약이

@@ -74,10 +74,15 @@ it is not clean performance evidence.
 ## Mandatory Escalation By Change Surface
 
 - `quanta-index-contract` / `quanta-index-sdk` public surface: `just rust-public-api`
-- IPC decode, wire DTO, or error envelope: `just rust-fuzz-smoke`
 - crate/module boundary or facade/export surface: `just rust-hexagonal` + `just rust-cargo-modules`
 - activation, generation resolution, query pin, state root, or shared ingress: `just rust-profile test-daemon` plus the owning `U/E/C/H-SP` scenario proof
 - prompt-manager source: `python3 tools/prompt-manager/pm.py sync`, `python3 tools/prompt-manager/pm.py lint`, `python3 -m pytest tools/prompt-manager/tests/test_pm.py -q`
+
+## Fuzz Cadence (Advisory)
+
+- Fuzz is not required for every IPC decoder, wire DTO, or error-envelope change. Missing fuzz alone does not block routine code closeout.
+- Recommend `just rust-fuzz-smoke` after substantial changes to decoders/parsers, wire formats, ingestion, or normalization, or when roughly two weeks have elapsed since the last completed fuzz run. These are guidance triggers, not mandatory gates.
+- For small changes, use focused owner regression tests. Explicitly requested fuzz runs and selected proof/CI recipes retain their declared execution scope.
 
 
 ---
