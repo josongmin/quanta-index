@@ -126,6 +126,7 @@ def test_control_response_and_composite_activation_ack_are_request_bound_v1() ->
 def test_reopen_surfaces_driver_join_failure_without_discard_v1() -> None:
     source = read_harness()
     reopen = rust_item_body(source, "pub fn reopen(")
+    try_reopen = rust_item_body(source, "pub fn try_reopen_in_place(")
     stop_driver = rust_item_body(source, "fn stop_driver(")
 
     assert "drop(join.join())" not in source
@@ -133,8 +134,14 @@ def test_reopen_surfaces_driver_join_failure_without_discard_v1() -> None:
     assert "AnyResult<()>" in source[stop_start : stop_start + 120]
     for outcome in ("Ok(Ok(()))", "Ok(Err(error))", "Err(panic)"):
         assert outcome in stop_driver, outcome
-    assert "self.stop_driver()" in reopen
+    assert "if let Err(error) = self.try_reopen_in_place()" in reopen
     assert "panic!" in reopen
+    try_reopen_start = source.find("pub fn try_reopen_in_place(")
+    assert "AnyResult<()>" in source[try_reopen_start : try_reopen_start + 120]
+    assert re.fullmatch(r"\{\s*self\.stop_driver\(\)\s*\}", try_reopen)
+    assert stop_driver.index("outcome?;") < stop_driver.index(
+        "self.remove_socket_directory()"
+    )
 
 
 def test_activation_expectation_is_reloaded_from_daemon_control_authority_v1() -> None:
