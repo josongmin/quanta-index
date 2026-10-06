@@ -109,6 +109,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   조건을 유지한 explicit Err/checked arithmetic·짧은 lock/Copy snapshot1path 수리를 main에 통합했다.
   Guarded apply/rustfmt/diff는 통과했으며 실제 Clippy/fixture는 별도로 재검증한다.
   후속 owner24860 Clippy는 SDK를 지나 IPC test helper 시간 계산2·clone3에서 실패했다.
+  IPC cfg(test)1path 수리를 main에 통합했고 production prefix byte 동일/guards/rustfmt가 통과했다.
+  Coverage helper API/module actual이 모두exit0라 reviewed1linebaseline을 main에 반영했다.
+  기존255입력 전부 동일이라고 세지 않으며 consumer2actual은 아직 남는다.
   영향 테스트만 수리하고 다음 전체 strict에서는 독립 target 오류도 끝까지 수집한다.
   OS3v4는 SDK 후속 수리 때문에 미입장 취소해 exit143/0actual tests/`NOT_RUN`이다.
   Request-decode fuzz970,826runs/61s는 통과했고 남은 fuzz3은 미입장 취소 후 `NOT_RUN`이다.
@@ -145,7 +148,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 - ready9 OpenGrok selected-request180은 완료; 전체 service/index 권위는 미완료다.
   Frozen5796 CLI admission20tasks/519pairs만 actual exit0이다. Django admission은 중단했고
   나머지 admissions·pair·full5 join은 완료 증거가 없다. SG/CS 독립 scope는 clean47e checkout에서
-  9capture+9replay batch 실행 중이며 완료 및 final5 join으로 표시하지 않는다.
+  9capture+9replay batch의 BatSG가 stale native runtime receipt(PID1068/Oct4→actual1262/Oct5)로
+  거절됐다. Old receipt를 편집하지 않고 현재 runtime native scope를 실제 producer로 새 발행한다.
+  Batch 완료 및 final5 join으로 표시하지 않는다.
 - Frozen5796 Gin declaration1,196 fresh single-route oracle/capture/scoring 진단은 완료했다.
   1,192success/4capped 및 declaration MRR@10=1.0은 그 분모의 diagnostic이며 독립 holdout/비교/PERF가 아니다.
 - Current history/admission Python owner58cases와 후속 retention/batch67cases는 각각 통과했다. Broad Python은 current file-pair

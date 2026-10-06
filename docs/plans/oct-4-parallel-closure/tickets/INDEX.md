@@ -79,7 +79,9 @@
   unchecked 시간 계산2·불필요한 clone3에서 실패했다. 제품 body 변경 여부를 대조하고 해당 테스트만 수리한다.
   Static AST 감사(변경 Rust68paths/Result 함수275개)는 추가 확정 assertion/panic 위반을 찾지 못했으며
   전체 Clippy 통과로 표시하지 않는다.
-  Guarded apply·owned rustfmt/diff는 `VERIFIED`; 수정본의 실제 Clippy/SDK fixture 실행은 남는다.
+  SDK 후속 actual strict는 해당 SDK lint를 통과했으며 위 IPC5건에서 실패했다.
+  IPC cfg(test)1path는 checked deadline·Copy 필드 FRU로 수리·통합했다. Production prefix는 byte 동일하며
+  guards/rustfmt/diff가 통과했다. 전체 strict/수정 fixture의 actual 검증은 아직 남는다.
   같은 source의 verify-python1776은4181passed/30skipped/2warnings·858.00s 뒤 Ruff format2곳에서
   exit1/`FAILED`였다. 두 파일만 포맷한 뒤 Ruff check/format 및 causal-profile·reopen-fence73tests가
   73passed/0.51s다. 전체 pytest 실행 통과와 hosted job 실패를 구분한다.
@@ -89,7 +91,9 @@
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
   Actual admission/pair/full5는 새 selected-source proof·runtime·host slot 전달 전 `NOT_RUN`이다.
   SG/CS는 Quanta proof를 요구하지 않는 독립 scope로 clean47e938d6 checkout에서
-  9capture+9independent replay batch를 실행 중이다. Batch 완료 및 final5 join은 아직 `NOT_RUN`이다.
+  9capture+9independent replay batch의 Bat SG는 stale native runtime binding에서 `FAILED`였다.
+  Old receipt PID1068/Oct4와 실제 PID1262/Oct5가 달라 현재 runtime의 native scope를 실제 producer로
+  새 발행·독립 검증한다. 기존 receipt/raw는 유지하며 전체 batch 완료 및 final5 join은 아직 `NOT_RUN`이다.
 - Public API 담당의 actual contract/SDK API rendering과 contract/core module gates4개는 reviewed 후보와 byte-exact로
   `VERIFIED`다. SDK public API는 기존 baseline과 동일하다. 독립 external consumer5tests는5passed,
   접근 차단4compile은 기대한 E0004/E0603 거절로 모두 `VERIFIED`다. API255/module194 input guards와
@@ -97,7 +101,9 @@
   `/private/tmp/qi-api-vkq0qc7t/owner-result.md`가 actual command/selector를 소유한다. Standalone consumer serde1.0.229와
   producer1.0.228의 lock 차이를 보존하며, daemon/UDS·full SDK·workspace·release proof로 승격하지 않는다.
   Coverage structural bound의 추가 public helper는 별도 contractAPI actual exit0로 reviewed 후보와 일치했다.
-  Affected contract module·consumer2는 아직 종료 전이며 final1baseline은 통합 전이다. SDK cfg(test)
+  Affected contract module도 actual exit0/기존 baseline byte 동일이다. Reviewed1helper baseline을
+  현재 input254/255+SDKcfgtest예외1 및 module194/194/output SHA로 대조해 main에 통합했다.
+  새 external consumer2는 아직 종료 전이다. SDK cfg(test) 및 IPC cfg(test) 후속 수리의
   후속 수리의 input drift는 production API와 실제 test 입력을 구분해 재사용 여부를 판정한다.
 - Hosted CircleCI source7fb46415는 `FAILED`다. Verify1730은 upload 코드의 rustfmt drift에서 exit1,
   verify-python1729는 contract/core guarded module tree의 새 upload DTO/port 및 sibling byte wrapper
