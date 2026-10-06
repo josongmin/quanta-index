@@ -104,7 +104,7 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   세 조건을 explicit Err로 그대로 유지한 test-only 수리를 통합했으며 owned rustfmt/diff가 통과했다.
   OS3v3는 이 후속 수리 적용을 위해 미입장 상태에서 안전 취소해0actual tests/`NOT_RUN`이다.
   API contract 입력과 제품 body는 이 test-only delta의 영향을 받지 않는다.
-  Source5da 전체 strict Clippy는2687.131s/exit101로 위 lint1건에서 실패했고 cleanac70은 재실행 중이다.
+  Source5da 전체 strict Clippy는2687.131s/exit101로 위 lint1건에서 실패했고 후속 owner24860 결과는 아래와 같다.
   Main47e의 hosted verify1775는 SDK test transport의 Result assertion1·Mutex scope2로 실패했다.
   조건을 유지한 explicit Err/checked arithmetic·짧은 lock/Copy snapshot1path 수리를 main에 통합했다.
   Guarded apply/rustfmt/diff는 통과했으며 실제 Clippy/fixture는 별도로 재검증한다.
@@ -129,15 +129,24 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   Main47e Python1776은4181passed/30skipped/2warnings·858.00s 뒤 Ruff format2곳에서 실패했다.
   해당2파일 포맷 수리 뒤 Ruff check/format 및 focused73tests가 통과했다(0.51s).
   전체 pytest 실행 통과는 hosted job 전체 통과가 아니다.
+- 최신7ebaf9d3 Rust1073은 Tantivy 미사용 선언2개로 machete `FAILED`였다. 실제 사용처0을 확인해
+  live manifest2선언+lock direct edge1행만 제거했고 `metadata --offline --locked`/machete exit0다.
+  `.orig`와 fs2의 winapi transitive는 유지한다. Python1074는4181passed/30skipped·854.52s 및 Ruff442파일
+  뒤 cargo-deny의 search-plane default feature에서 실패했다. 의존성5간선의 explicit default-features=false와
+  소유 empty default 제거 후 metadata/deny exit0다. Explicit test-runtime-barriers와 deny 규칙은 유지한다.
+  기존 model2vec license-field warning은 남으며 새 전체 CI/strict/Rust behavior는 별도 검증한다.
 - Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
   admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며
   exact793collection·각 누락 거절을 확인했다. Rust/SDK 목록과 Frozen5796 결과는 그대로 유지한다.
   후속 clean47e Contract는 source closure·793collection authority PASS 뒤 SDK test 후속 수리로
   Rust leaf를 미입장 취소했다(producer143/controller1). Partial을 보존하며 whole rail은 `NOT_RUN`;
   Python793 behavioral pass/Rust191/fresh SDK27 actual 결과는 아직 없다.
-  후속 clean02bb의 Contractv3는 독립 frozen checkout에서 실행 중이다. 이후 IPC test 수리와
-  exact source/선택 입력을 구분한다. OS3v5는 Python-only HEAD drift sourceguard에서65/`BLOCKED`,
-  Cargo/tests0이었으며 원본3fixture v6는clean24860으로 재등록했다.
+  Frozen02bb Contractv3는 Rust build exit0/191collection과 Python793passed·1157.86s를 마쳤다.
+  Rust behavior leaf의 resource admission300s timeout/producer124·controller1로 whole `FAILED`이며
+  191behavior는 `NOT_RUN`이다. Root 실행의 잘못된 wait env 이름을 확인했다. 다음 실제 변수는
+  `QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200`이다. Partial/source를 유지하며 이후 IPC/manifest/lock과 구분한다.
+  OS3v5는 Python-only HEAD drift sourceguard에서65/`BLOCKED`, Cargo/tests0이었다.
+  V6는clean24860 원본3fixture/build12m exit0 뒤 Large actual을 실행 중이다.
   새 source와 fresh output에서 canonical Contract/fresh SDK·portable replay를 다시 실행한다.
 - Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
 - 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.

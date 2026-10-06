@@ -55,7 +55,7 @@ quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
 quanta-index-repomap = { version = "0.1.0", path = "../quanta-index-repomap" }
-quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane" }
+quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", default-features = false }
 quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd" }
 quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
 
@@ -70,7 +70,7 @@ quanta-index-corpus-smoke = { version = "0.1.0", path = "../quanta-index-corpus-
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
 quanta-index-searchd-harness = { version = "0.1.0", path = "../quanta-index-searchd-harness" }
-quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", features = ["test-runtime-barriers"] }
+quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", default-features = false, features = ["test-runtime-barriers"] }
 rusqlite = { workspace = true }
 rustix = { workspace = true, features = ["process"] }
 serde = { workspace = true }

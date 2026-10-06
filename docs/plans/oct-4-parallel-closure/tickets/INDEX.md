@@ -53,7 +53,7 @@
   OS3v3는 이 후속 수리 적용을 위해 미입장 상태에서 안전 취소해0actual tests/`NOT_RUN`이다.
   API contract 입력과 제품 body는 이 test-only delta의 영향을 받지 않는다.
   Source5da25296의 전체 strict Clippy는2687.131s/exit101로 위 test-only lint1건에서 `FAILED`였다.
-  Clean ownerac70ad56는 해당 수리를 반영해 전체 strict Clippy 실행 중이다.
+  후속 owner24860 actual은 아래 SDK 수리를 통과하고 IPC test-only5건에서 실패했다.
   전체 workspace unit은 앞선 컴파일 실패 뒤 재실행 전 `NOT_RUN`이다.
   Controlled ipc_request_decode는970,826runs/61s/exit0로 `VERIFIED`; 남은 fuzz3은 미입장 취소 뒤 `NOT_RUN`이다.
   Source2ea1408d release scale_matrix build는18m16s/exit0로 `VERIFIED`, native Large/XL 실제 실행은 남는다.
@@ -86,6 +86,16 @@
   exit1/`FAILED`였다. 두 파일만 포맷한 뒤 Ruff check/format 및 causal-profile·reopen-fence73tests가
   73passed/0.51s다. 전체 pytest 실행 통과와 hosted job 실패를 구분한다.
   OS3v4 ownerac70ad56는 이 SDK 후속 수리를 위해 미입장 취소했다: exit143/0actual tests/`NOT_RUN`.
+- 최신 main7ebaf9d3 hosted verify1073은 Tantivy live manifest의 미사용 `test-log`·`winapi` 선언2개로
+  machete 단계 exit1/`FAILED`였다. Vendored Rust 사용처0건을 확인하고 두 선언과 lock의 Tantivy→winapi
+  direct edge만 제거했다. Upstream `.orig`와 fs2→winapi transitive는 유지한다.
+  `metadata --offline --locked` 및 `just rust-machete` actual exit0로 `VERIFIED`다.
+  같은 source verify-python1074는4181passed/30skipped/2warnings·854.52s 및 Ruff442파일을 통과한 뒤
+  `cargo-deny`의 search-plane default feature 규칙에서 exit2/`FAILED`였다. 의존성5간선에
+  `default-features=false`를 명시하고 소유 manifest의 빈 `default=[]`만 제거했다.
+  Runtime dev의 `test-runtime-barriers`는 유지한다. 호출부 수리만으로는 실패했으며 소유 feature 수리 후
+  `metadata --offline --locked` 및 `just rust-deny` actual exit0(advisories/bans/licenses/sources)다.
+  기존 model2vec-rs license-field warning은 남으며 이 결과를 전체 CI/Rust tests 통과로 표시하지 않는다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
@@ -103,8 +113,8 @@
   Coverage structural bound의 추가 public helper는 별도 contractAPI actual exit0로 reviewed 후보와 일치했다.
   Affected contract module도 actual exit0/기존 baseline byte 동일이다. Reviewed1helper baseline을
   현재 input254/255+SDKcfgtest예외1 및 module194/194/output SHA로 대조해 main에 통합했다.
-  새 external consumer2는 아직 종료 전이다. SDK cfg(test) 및 IPC cfg(test) 후속 수리의
-  후속 수리의 input drift는 production API와 실제 test 입력을 구분해 재사용 여부를 판정한다.
+  새 external consumer2는 아직 종료 전이다. SDK/IPC cfg(test) 및 dependency manifest/lock의
+  input drift는 production API와 실제 consumer dependency graph를 구분해 재사용 여부를 판정한다.
 - Hosted CircleCI source7fb46415는 `FAILED`다. Verify1730은 upload 코드의 rustfmt drift에서 exit1,
   verify-python1729는 contract/core guarded module tree의 새 upload DTO/port 및 sibling byte wrapper
   visibility baseline 누락에서 exit1이었다. 포맷은 Scale, 두 module baseline과 공개 API는 API 담당이 소유한다.
@@ -132,10 +142,13 @@
   SDK cfg(test) 후속 수리로 Rust build leaf를 미입장 취소해 producer exit143/controller exit1이다.
   `/private/tmp/qi-f15-contract-47e938d6-20261006-v2`는 partial로 보존하며 whole rail은 `NOT_RUN`이다.
   Collection은 Python793 behavioral pass가 아니며 Rust191과 fresh SDK27도 이 source에서 미실행이다.
-  SDK 수리 후 clean02bb8472를 새 frozen managed checkout에 결속한 Contractv3는 실행 중이다.
-  해당 source의 actual과 이후 IPC test-only 수리의 영향/최종 source scope를 구분한다.
+  SDK 수리 후 frozen02bb8472 Contractv3는 Rust build exit0·191개 collection과 Python793passed/1157.86s를
+  마쳤다. Rust behavior leaf는 resource admission300s 만료/producer124·controller1로 미실행이며
+  whole rail은 `FAILED`(실행 입장 timeout)다. Root가 wait env 이름을 잘못 지정한 실행 설정 오류를
+  확인했으며 다음 실행은 실제 `QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200`을 사용한다.
+  Partial output/원본 source를 유지하고 이후 IPC/manifest/lock 수리와 최종 source scope를 구분한다.
   OS3v5는446→24860의 Python-only HEAD 이동을 sourceguard가 감지해 exit65/`BLOCKED`였다.
-  Cargo/tests0이며 그 결과를 보존한다. V6는clean24860으로 원본3fixture를 다시 등록했다.
+  Cargo/tests0이며 그 결과를 보존한다. V6는clean24860으로 원본3fixture를 실행 중이며 build12m/exit0 뒤 actual Large 테스트에 입장했다.
   새 source의 Contract/fresh SDK 실제 발행·독립 portable verify가 남는다.
 - 남은 통합 종료 조건: 새 upload/Scale 및 scanner owner 변경을 포함한 영향 Rust/runtime 회귀,
   최종 selected-source Contract/fresh SDK·portable replay, Ready9 final pair/full5 join과 각 별도 qualification.

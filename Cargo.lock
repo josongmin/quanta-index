@@ -5913,7 +5913,6 @@ dependencies = [
  "thiserror 1.0.69",
  "time",
  "uuid",
- "winapi",
 ]
 
 [[package]]

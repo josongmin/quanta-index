@@ -6,7 +6,6 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = []
 # Only runtime process fixtures install this barrier. Normal runtime builds
 # never enable it through their regular search-plane dependency.
 test-runtime-barriers = []

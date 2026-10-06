@@ -25,7 +25,7 @@ quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 # The scale rail opens the daemon's sealed lexical generation in-process to
 # time the adapter-only open and execute phases beside the daemon's.
 quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
-quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane" }
+quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", default-features = false }
 quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd" }
 quanta-index-searchd-runtime = { version = "0.1.0", path = "../quanta-index-searchd-runtime" }
 # The ANN rail seals and queries a semantic generation through the adapter
