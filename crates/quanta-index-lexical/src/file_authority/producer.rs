@@ -12,7 +12,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::codec::{
     CodecError, CodecLimits, PostingInput, PostingSurface, SourcePackInput, decode_posting_block,
-    decode_source_pack, encode_posting_block, encode_source_pack,
+    decode_source_pack, encode_posting_block, encode_source_pack, posting_block_encoded_len,
 };
 use super::root::{
     AuthorityPolicy, AuthorityRoot, Partition, SourceRow, resident_file_charge, source_key_digest,
@@ -567,15 +567,22 @@ const SCRATCH_TERM_BYTES: usize = 256;
 const SCRATCH_MEMBERSHIP_BYTES: usize = 128;
 
 fn charge(scratch: &mut usize, additional: usize, maximum: usize) -> Result<(), ProducerError> {
-    *scratch = scratch
+    let next = scratch
         .checked_add(additional)
         .ok_or_else(|| ProducerError::limit("posting bucket scratch overflow"))?;
-    if *scratch > maximum {
+    if next > maximum {
         return Err(ProducerError::limit(
             "posting bucket scratch ceiling exceeded",
         ));
     }
+    *scratch = next;
     Ok(())
+}
+
+fn admit_peak(current: usize, additional: usize, maximum: usize) -> Result<usize, ProducerError> {
+    let mut peak = current;
+    charge(&mut peak, additional, maximum)?;
+    Ok(peak)
 }
 
 fn insert_membership(
@@ -585,14 +592,16 @@ fn insert_membership(
     scratch: &mut usize,
     max_scratch: usize,
 ) -> Result<bool, ProducerError> {
-    let new_term = !postings.contains_key(&gram);
-    let inserted = postings.entry(gram).or_default().insert(id);
-    if inserted {
-        charge(scratch, SCRATCH_MEMBERSHIP_BYTES, max_scratch)?;
-        if new_term {
-            charge(scratch, SCRATCH_TERM_BYTES, max_scratch)?;
-        }
+    let existing = postings.get(&gram);
+    if existing.is_some_and(|ids| ids.contains(&id)) {
+        return Ok(false);
     }
+    let additional = SCRATCH_MEMBERSHIP_BYTES
+        .checked_add(if existing.is_none() { SCRATCH_TERM_BYTES } else { 0 })
+        .ok_or_else(|| ProducerError::limit("posting membership charge overflow"))?;
+    charge(scratch, additional, max_scratch)?;
+    let inserted = postings.entry(gram).or_default().insert(id);
+    debug_assert!(inserted, "a prechecked membership must be new");
     Ok(inserted)
 }
 
@@ -680,31 +689,84 @@ fn encode_postings(
     emitted: &mut BTreeMap<[u8; 32], u64>,
     sink: &mut BlobSink<'_>,
 ) -> Result<Partition, ProducerError> {
-    let owned: Vec<([u8; 3], Vec<u64>)> = postings
-        .into_iter()
-        .map(|(gram, ids)| (gram, ids.into_iter().collect()))
-        .collect();
-    let input: Vec<PostingInput<'_>> = owned
-        .iter()
-        .map(|(gram, ids)| PostingInput {
-            gram: *gram,
-            source_ids: ids,
-        })
-        .collect();
-    let entries = owned.iter().try_fold(0_u64, |total, (_, ids)| {
+    let terms = postings.len();
+    let entries = postings.values().try_fold(0_u64, |total, ids| {
         total
             .checked_add(u64::try_from(ids.len()).map_err(|error| {
                 ProducerError::limit(format!("posting membership conversion: {error}"))
             })?)
             .ok_or_else(|| ProducerError::limit("posting membership sum"))
     })?;
+    let encoded_len = posting_block_encoded_len(terms, entries, context.limits)
+        .map_err(codec_input)?;
+    let map_charge = terms
+        .checked_mul(SCRATCH_TERM_BYTES)
+        .and_then(|bytes| {
+            usize::try_from(entries)
+                .ok()
+                .and_then(|count| count.checked_mul(SCRATCH_MEMBERSHIP_BYTES))
+                .and_then(|memberships| bytes.checked_add(memberships))
+        })
+        .ok_or_else(|| ProducerError::limit("posting map charge overflow"))?;
+    let owned_bytes = terms
+        .checked_mul(std::mem::size_of::<([u8; 3], Vec<u64>)>())
+        .and_then(|bytes| {
+            usize::try_from(entries)
+                .ok()
+                .and_then(|count| count.checked_mul(std::mem::size_of::<u64>()))
+                .and_then(|memberships| bytes.checked_add(memberships))
+        })
+        .ok_or_else(|| ProducerError::limit("posting ID vector charge overflow"))?;
+    let input_bytes = terms
+        .checked_mul(std::mem::size_of::<PostingInput<'_>>())
+        .ok_or_else(|| ProducerError::limit("posting input vector charge overflow"))?;
+    let temporary_bytes = owned_bytes
+        .checked_add(input_bytes)
+        .ok_or_else(|| ProducerError::limit("posting temporary charge overflow"))?;
+    let _materialization_peak = admit_peak(
+        *context.scratch,
+        temporary_bytes,
+        context.max_scratch,
+    )?;
+    let after_map_release = context
+        .scratch
+        .checked_sub(map_charge)
+        .ok_or_else(|| ProducerError::limit("posting map charge missing"))?;
+    let after_conversion = admit_peak(after_map_release, temporary_bytes, context.max_scratch)?;
+    let _encoding_peak = admit_peak(after_conversion, encoded_len, context.max_scratch)?;
+
+    let mut owned = Vec::new();
+    owned.try_reserve_exact(terms).map_err(|error| {
+        ProducerError::limit(format!("posting rows allocation: {error}"))
+    })?;
+    for (gram, ids) in postings {
+        let mut values = Vec::new();
+        values.try_reserve_exact(ids.len()).map_err(|error| {
+            ProducerError::limit(format!("posting ID allocation: {error}"))
+        })?;
+        values.extend(ids);
+        owned.push((gram, values));
+    }
+    let mut input = Vec::new();
+    input.try_reserve_exact(terms).map_err(|error| {
+        ProducerError::limit(format!("posting input allocation: {error}"))
+    })?;
+    input.extend(owned.iter().map(|(gram, ids)| PostingInput {
+        gram: *gram,
+        source_ids: ids,
+    }));
     let encoded = encode_posting_block(surface, &input, context.limits).map_err(codec_input)?;
-    charge(context.scratch, encoded.len(), context.max_scratch)?;
+    if encoded.len() != encoded_len {
+        return Err(ProducerError::corrupt(
+            "posting encoded length differs from projection",
+        ));
+    }
     let len = encoded.len();
     let sha256 = emit_blob(emitted, sink, &encoded)?;
     let terms = u32::try_from(owned.len()).map_err(|error| {
         ProducerError::limit(format!("posting term count exceeds u32: {error}"))
     })?;
+    *context.scratch = admit_peak(after_map_release, encoded_len, context.max_scratch)?;
     checked_descriptor(context.bits, bucket, sha256, len, entries, terms)
 }
 

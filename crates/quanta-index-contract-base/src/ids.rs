@@ -325,7 +325,7 @@ macro_rules! validated_identity {
             }
 
             /// SAME identity visitor with an explicitly borrowed native owner.
-            /// Owned JSON Strings move to the canonical constructor unchanged.
+            /// Owned wire Strings move to the canonical constructor unchanged.
             /// The caller's deserializer must admit owned and escaped string
             /// backing before allocation, as required by the admission trait.
             #[cfg(feature = "quanta-native-identity-v1")]

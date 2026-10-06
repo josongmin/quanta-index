@@ -1032,11 +1032,7 @@ impl SearchdConfig {
             .snapshot_registry_policy
             .max_resident_bytes()
             .checked_mul(2)
-            .ok_or_else(|| {
-                quanta_index_core::CoreError::InvalidContract(
-                    "process memory envelope: two snapshot registry budgets overflow u64".into(),
-                )
-            })?;
+            .ok_or_else(|| overflow("two snapshot registry budgets"))?;
         let envelope = ProcessMemoryEnvelopeV1 {
             lexical_writer_bytes: self.lexical_writer_policy.envelope_bytes(),
             snapshot_registry_bytes,
@@ -2655,6 +2651,20 @@ mod tests {
                 .to_string()
                 .contains(PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE.as_wire_str()),
             "{huge_ingest}"
+        );
+
+        let huge_snapshot = config
+            .clone()
+            .with_snapshot_registry_policy(
+                SnapshotRegistryPolicy::new(1, u64::MAX).expect("positive policy"),
+            )
+            .process_memory_envelope()
+            .expect_err("two snapshot registry budgets overflow");
+        assert!(
+            huge_snapshot
+                .to_string()
+                .contains(PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE.as_wire_str()),
+            "{huge_snapshot}"
         );
 
         let mut tuning = OpenAiEmbedderTuning::default();

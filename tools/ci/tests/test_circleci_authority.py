@@ -182,12 +182,19 @@ def test_regular_ci_runs_the_pinned_public_api_ratchet():
         and step.get("run", {}).get("name") == "Verify guarded public API snapshots"
     )
     gate = steps[gate_index]["run"]
-    assert gate_index > next(
+    python_install_index = next(
         index
         for index, step in enumerate(steps)
         if isinstance(step, dict)
         and step.get("run", {}).get("name") == "Install locked Python dependencies"
     )
+    tool_install_index = next(
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and step.get("run", {}).get("name") == "Install pinned public API tooling"
+    )
+    assert python_install_index < tool_install_index < gate_index
     assert gate_index < next(
         index
         for index, step in enumerate(steps)
@@ -201,15 +208,19 @@ def test_regular_ci_runs_the_pinned_public_api_ratchet():
     public_api = runpy.run_path(str(ROOT / "tools/ci/lint/check-public-api.py"))
     assert public_api["GUARDED_CRATES"] == ["quanta-index-contract", "quanta-index-sdk"]
     toolchain = public_api["PUBLIC_API_TOOLCHAIN"]
-    assert f"rustup toolchain install {toolchain} --profile minimal" in command
-    assert "cargo install cargo-public-api --version 0.51.0 --locked" in command
-    assert '[[ "$(cargo public-api --version)" == "cargo-public-api 0.51.0" ]]' in command
+    install = steps[tool_install_index]["run"]["command"]
+    assert install.startswith("set -euo pipefail\nunset BASH_ENV ENV\n")
+    assert f"rustup toolchain install {toolchain} --profile minimal" in install
+    assert "cargo install cargo-public-api --version 0.51.0 --locked" in install
+    assert '[[ "$(cargo public-api --version)" == "cargo-public-api 0.51.0" ]]' in install
     assert (
         "uv run --frozen --extra dev python tools/ci/lint/check-public-api.py"
         in command.splitlines()
     )
-    cache = steps[gate_index - 1]["restore_cache"]["keys"][0]
+    assert steps[tool_install_index - 1].get("restore_cache")
+    cache = steps[tool_install_index - 1]["restore_cache"]["keys"][0]
     assert "cargo-public-api0.51.0" in cache
+    assert steps[gate_index - 1]["save_cache"]["paths"] == ["~/.cargo/bin/cargo-public-api"]
 
 
 def test_pr_coverage_uses_exact_base_and_fails_closed():

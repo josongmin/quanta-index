@@ -203,7 +203,7 @@ jobs:
             - quanta-index-v2-linux-amd64-cargo-public-api0.51.0-{{ checksum "Cargo.lock" }}
             - quanta-index-v2-linux-amd64-cargo-public-api0.51.0-
       - run:
-          name: Verify guarded public API snapshots
+          name: Install pinned public API tooling
           no_output_timeout: 20m
           command: |
             set -euo pipefail
@@ -213,11 +213,17 @@ jobs:
               cargo install cargo-public-api --version 0.51.0 --locked
             fi
             [[ "$(cargo public-api --version)" == "cargo-public-api 0.51.0" ]]
-            uv run --frozen --extra dev python tools/ci/lint/check-public-api.py
       - save_cache:
           key: quanta-index-v2-linux-amd64-cargo-public-api0.51.0-{{ checksum "Cargo.lock" }}
           paths:
             - ~/.cargo/bin/cargo-public-api
+      - run:
+          name: Verify guarded public API snapshots
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            uv run --frozen --extra dev python tools/ci/lint/check-public-api.py
       - run:
           name: Python policy and tooling tests
           no_output_timeout: 20m

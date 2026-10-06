@@ -1956,7 +1956,7 @@ pub quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::semantic
 pub quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::snapshot_registry_bytes: u64
 impl quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1
 pub const quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::DEFAULT_CEILING_BYTES: u64
-pub const fn quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::declared_bytes(&self) -> u64
+pub fn quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::declared_bytes(&self) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::validate(&self) -> core::result::Result<(), quanta_index_core::error::CoreError>
 impl core::clone::Clone for quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1
 pub fn quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::clone(&self) -> quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1
@@ -6340,7 +6340,7 @@ pub quanta_index_core::ProcessMemoryEnvelopeV1::semantic_stream_window_bytes: u6
 pub quanta_index_core::ProcessMemoryEnvelopeV1::snapshot_registry_bytes: u64
 impl quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1
 pub const quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::DEFAULT_CEILING_BYTES: u64
-pub const fn quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::declared_bytes(&self) -> u64
+pub fn quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::declared_bytes(&self) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::validate(&self) -> core::result::Result<(), quanta_index_core::error::CoreError>
 impl core::clone::Clone for quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1
 pub fn quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1::clone(&self) -> quanta_index_core::domains::observability::ProcessMemoryEnvelopeV1

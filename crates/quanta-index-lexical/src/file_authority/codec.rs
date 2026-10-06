@@ -101,6 +101,33 @@ pub(crate) struct PostingInput<'a> {
     pub(crate) source_ids: &'a [u64],
 }
 
+/// Exact wire length shared by the producer's pre-allocation admission and
+/// the encoder. The caller still validates gram and ID ordering.
+pub(crate) fn posting_block_encoded_len(
+    terms: usize,
+    memberships: u64,
+    limits: &CodecLimits,
+) -> Result<usize, CodecError> {
+    limits.validate()?;
+    if terms > limits.terms || u32::try_from(terms).is_err() {
+        return Err(CodecError::Limit("posting term count"));
+    }
+    if memberships > limits.memberships {
+        return Err(CodecError::Limit("posting memberships"));
+    }
+    let table_bytes = mul(terms, POSTING_ROW, "posting table overflow")?;
+    let payload_bytes = mul(usize_from_u64(memberships)?, 8, "posting payload overflow")?;
+    let total = add(
+        add(POSTING_HEADER, table_bytes, "posting header overflow")?,
+        payload_bytes,
+        "posting size overflow",
+    )?;
+    if total > limits.posting_block_encoded_bytes {
+        return Err(CodecError::Limit("posting block encoded bytes"));
+    }
+    Ok(total)
+}
+
 #[derive(Clone, Copy, Debug)]
 struct PostingRow<'a> {
     gram: [u8; 3],
@@ -384,8 +411,6 @@ pub(crate) fn encode_posting_block(
     }
     let posting_count =
         u32::try_from(postings.len()).map_err(|_error| CodecError::Limit("posting term count"))?;
-    let table_bytes = mul(postings.len(), POSTING_ROW, "posting table overflow")?;
-    let mut total = add(POSTING_HEADER, table_bytes, "posting header overflow")?;
     let mut memberships = 0_u64;
     let mut prior_gram = None;
     for posting in postings {
@@ -414,15 +439,11 @@ pub(crate) fn encode_posting_block(
         if memberships > limits.memberships {
             return Err(CodecError::Limit("posting memberships"));
         }
-        total = add(
-            total,
-            mul(posting.source_ids.len(), 8, "posting bytes overflow")?,
-            "posting size overflow",
-        )?;
-        if total > limits.posting_block_encoded_bytes {
-            return Err(CodecError::Limit("posting block encoded bytes"));
-        }
+        // Preserve the original prefix-by-prefix limit check, using the same
+        // exact length calculation that producer admission uses.
+        let _prefix_len = posting_block_encoded_len(postings.len(), memberships, limits)?;
     }
+    let total = posting_block_encoded_len(postings.len(), memberships, limits)?;
     let payload_bytes = mul(usize_from_u64(memberships)?, 8, "posting payload overflow")?;
     let mut out = Vec::new();
     out.try_reserve_exact(total)

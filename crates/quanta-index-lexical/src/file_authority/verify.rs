@@ -70,13 +70,14 @@ struct Scratch {
 
 impl Scratch {
     fn charge(&mut self, bytes: u64) -> Result<(), String> {
-        self.bytes = self
+        let charged = self
             .bytes
             .checked_add(bytes)
             .ok_or_else(|| corrupt("scratch charge overflow"))?;
-        if self.bytes > self.ceiling {
+        if charged > self.ceiling {
             return Err(corrupt("bucket scratch exceeds policy"));
         }
+        self.bytes = charged;
         Ok(())
     }
 }
@@ -91,22 +92,22 @@ fn add_source(
 ) -> Result<u32, String> {
     let mut distinct = BTreeSet::new();
     for gram in trigrams_of(bytes) {
-        if distinct.insert(gram) {
+        if !distinct.contains(&gram) {
             scratch.charge(64)?;
+            let _inserted = distinct.insert(gram);
         }
     }
     let count = u32::try_from(distinct.len())
         .map_err(|_count_width_error| corrupt("one source term count overflow"))?;
     for gram in distinct {
-        let new_term = !expected.contains_key(&gram);
-        if new_term {
-            scratch.charge(128)?;
-        }
-        let ids = expected.entry(gram).or_default();
-        if !ids.insert(id) {
+        let prior_ids = expected.get(&gram);
+        if prior_ids.is_some_and(|ids| ids.contains(&id)) {
             return Err(corrupt("duplicate source ID in term"));
         }
-        scratch.charge(64)?;
+        // Admit both allocations together before a vacant term can acquire
+        // its map node or the live-ID set can acquire a membership node.
+        scratch.charge(if prior_ids.is_none() { 128 + 64 } else { 64 })?;
+        let _inserted = expected.entry(gram).or_default().insert(id);
     }
     Ok(count)
 }
@@ -369,7 +370,52 @@ mod tests {
     use super::super::root::{
         AuthorityPolicy, AuthorityRoot, Partition, SourceRow, source_key_digest,
     };
-    use super::verify_authority;
+    use super::{Expected, Scratch, add_source, verify_authority};
+
+    #[test]
+    fn a_refused_scratch_reservation_does_not_consume_the_budget() {
+        let mut scratch = Scratch {
+            bytes: 63,
+            ceiling: 64,
+        };
+        assert!(scratch.charge(2).is_err());
+        assert_eq!(scratch.bytes, 63);
+        scratch.charge(1).expect("exact boundary is admitted");
+        assert_eq!(scratch.bytes, 64);
+    }
+
+    #[test]
+    fn scratch_refusal_does_not_partially_insert_a_posting_membership() {
+        let mut expected = Expected::new();
+        let mut scratch = Scratch {
+            bytes: 0,
+            ceiling: 255,
+        };
+        add_source(b"abc", 1, &mut expected, &mut scratch)
+            .expect_err("distinct gram plus term and ID require 256 bytes");
+        assert!(expected.is_empty());
+        assert_eq!(scratch.bytes, 64);
+
+        let mut scratch = Scratch {
+            bytes: 0,
+            ceiling: 256,
+        };
+        assert_eq!(
+            add_source(b"abc", 1, &mut expected, &mut scratch).expect("exact boundary"),
+            1
+        );
+        assert_eq!(scratch.bytes, 256);
+        assert_eq!(expected[&*b"abc"], std::collections::BTreeSet::from([1]));
+
+        let mut scratch = Scratch {
+            bytes: 0,
+            ceiling: 127,
+        };
+        add_source(b"abc", 2, &mut expected, &mut scratch)
+            .expect_err("distinct gram plus a second ID require 128 bytes");
+        assert_eq!(expected[&*b"abc"], std::collections::BTreeSet::from([1]));
+        assert_eq!(scratch.bytes, 64);
+    }
 
     fn policy() -> AuthorityPolicy {
         AuthorityPolicy {
