@@ -56,6 +56,7 @@ use quanta_index_contract::{
 #[cfg(target_os = "linux")]
 use quanta_index_core::ProcessMemoryProbePort as _;
 use quanta_index_core::{LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1};
+use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_search_plane::lower_lexical_text_query;
 #[cfg(target_os = "linux")]
@@ -83,6 +84,19 @@ const SCALE_INGEST_MAX_RECORDS: usize = 100_000;
 const SCALE_PROCESS_MEMORY_CEILING_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const SCALE_INGEST_VECTOR_BYTES: u64 = 256 * 1024 * 1024;
 const SCALE_CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(600);
+const SCALE_QUERY_DISPATCH_BUDGET: Duration = Duration::from_secs(600);
+
+fn scale_query_admission_policy() -> AnyResult<ServerAdmissionPolicy> {
+    let default = ServerAdmissionPolicy::DEFAULT;
+    Ok(ServerAdmissionPolicy::new(
+        default.max_connections(),
+        default.dispatch_slots(),
+        default.max_in_flight_per_repo(),
+        default.queue_wait(),
+        SCALE_QUERY_DISPATCH_BUDGET,
+        default.io_timeout(),
+    )?)
+}
 
 /// Explicit runtime policy for a scale measurement. Requested values remain
 /// separate from the effective defaults in both success and refusal records.
@@ -151,6 +165,14 @@ fn with_capacity_profile(mut value: Value) -> AnyResult<Value> {
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("scale: capacity profile requires a JSON object"))?;
     for (name, field) in [
+        (
+            "query_dispatch_budget_ms",
+            json!(u64::try_from(
+                scale_query_admission_policy()?
+                    .dispatch_budget()
+                    .as_millis()
+            )?),
+        ),
         ("ingest_max_records", json!(SCALE_INGEST_MAX_RECORDS)),
         ("ingest_max_text_bytes", json!(SCALE_INGEST_TEXT_BYTES)),
         ("ingest_max_vector_bytes", json!(SCALE_INGEST_VECTOR_BYTES)),
@@ -1823,6 +1845,7 @@ fn scale_runtime(config: ScaleRuntimeConfig) -> AnyResult<E2eRuntime> {
     let runtime = E2eRuntime::boot_with_client_request_timeout(
         config.client_timeout.unwrap_or(SCALE_CLIENT_IO_TIMEOUT),
     )?
+    .with_query_admission_policy(scale_query_admission_policy()?)
     .with_history_max_generations(2);
     let policy = quanta_index_core::IngestResourcePolicy::new(
         SCALE_INGEST_MAX_RECORDS,
@@ -3584,6 +3607,10 @@ pub fn artifact(
                         format!("{:?}", measurement.requested_history_max_bytes),
                     ),
                     (
+                        "query_dispatch_budget_ms",
+                        SCALE_QUERY_DISPATCH_BUDGET.as_millis().to_string(),
+                    ),
+                    (
                         "client_request_timeout_ms",
                         measurement.client_request_timeout_ms.to_string(),
                     ),
@@ -3726,6 +3753,7 @@ mod tests {
     fn runtime_config_records_requested_and_effective_policy() -> AnyResult<()> {
         let default = ScaleRuntimeConfig::default().execution_json()?;
         ensure_equal!(default["client_request_timeout_ms"], 600_000);
+        ensure_equal!(default["query_dispatch_budget_ms"], 600_000);
         ensure_predicate!(default["requested_client_request_timeout_ms"].is_null());
         ensure_equal!(default["history_max_bytes"], 1_073_741_824);
         ensure_predicate!(default["requested_history_max_bytes"].is_null());
@@ -3742,6 +3770,7 @@ mod tests {
         };
         let execution = explicit.execution_json()?;
         ensure_equal!(execution["client_request_timeout_ms"], 300_000);
+        ensure_equal!(execution["query_dispatch_budget_ms"], 600_000);
         ensure_equal!(execution["requested_client_request_timeout_ms"], 300_000);
         ensure_equal!(execution["history_max_bytes"], 268_435_456);
         ensure_equal!(execution["requested_history_max_bytes"], 268_435_456);
@@ -5302,6 +5331,7 @@ mod tests {
         assert_eq!(tier["noop"]["seal_ms"], 0.2);
         assert_eq!(tier["noop"]["activation_ms"], 0.1);
         assert_eq!(tier["client_request_timeout_ms"], 600_000);
+        assert_eq!(tier["query_dispatch_budget_ms"], 600_000);
         assert!(tier["requested_client_request_timeout_ms"].is_null());
         assert_eq!(tier["history_max_bytes"], SCALE_HISTORY_MAX_BYTES);
         assert_eq!(tier["history_policy_id"], "scale-supported-v1");

@@ -182,6 +182,7 @@ def _declared_inputs(
     _exact_int(tier.get("file_count"), repos * files_per_repo, "measured file count")
     _exact_int(tier.get("source_repo_count"), repos, "measured source repo count")
     policy = {
+        "query_dispatch_budget_ms": 600_000,
         "requested_client_request_timeout_ms": requested_client_timeout_ms,
         "client_request_timeout_ms": requested_client_timeout_ms or DEFAULT_TIMEOUT_MS,
         "requested_history_max_bytes": requested_history_max_bytes,

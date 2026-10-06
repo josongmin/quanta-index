@@ -100,6 +100,7 @@ def _summary() -> dict:
                     "file_count": 4096,
                     "source_repo_count": 16,
                     "client_request_timeout_ms": 600_000,
+                    "query_dispatch_budget_ms": 600_000,
                     "requested_client_request_timeout_ms": None,
                     "history_max_generations": 2,
                     "history_max_bytes": 1024 * 1024 * 1024,
@@ -272,6 +273,10 @@ def test_profile_rejects_unpaired_unknown_or_inconsistent_trace(mutant: bytes) -
         ("source_repo_count", 15),
         ("client_request_timeout_ms", 300_000),
         ("client_request_timeout_ms", 600_000.0),
+        ("query_dispatch_budget_ms", 20_000),
+        ("query_dispatch_budget_ms", 600_000.0),
+        ("query_dispatch_budget_ms", None),
+        ("query_dispatch_budget_ms", True),
         ("requested_client_request_timeout_ms", 600_000),
         ("requested_history_max_bytes", 16 * 1024 * 1024),
         ("requested_history_max_total_bytes", 256 * 1024 * 1024),
@@ -292,6 +297,13 @@ def test_profile_refuses_wrong_measured_input_or_policy(key: str, value: object)
     summary = _summary()
     summary["detail"]["measured_tiers"][0][key] = value
     with pytest.raises(ValueError):
+        _replay(summary)
+
+
+def test_profile_refuses_unrecorded_query_dispatch_budget() -> None:
+    summary = _summary()
+    del summary["detail"]["measured_tiers"][0]["query_dispatch_budget_ms"]
+    with pytest.raises(ValueError, match="query_dispatch_budget_ms"):
         _replay(summary)
 
 

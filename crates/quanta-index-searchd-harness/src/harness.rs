@@ -255,9 +255,9 @@ pub struct E2eRuntime {
     /// fixture whose seal outlasts it in a debug build.
     client_io: ClientIoPolicy,
     /// The query socket's admission limits (QI-BB-002). The production
-    /// default's twenty-second dispatch budget never expires on a fixture;
-    /// budget tests shorten it through
-    /// [`Self::boot_with_query_admission_policy`].
+    /// default has a twenty-second dispatch budget; tests may change it
+    /// through [`Self::boot_with_query_admission_policy`] or
+    /// [`Self::with_query_admission_policy`].
     query_admission_policy: ServerAdmissionPolicy,
     /// The lexical writer envelope (QI-BB-016); the production default,
     /// narrowed by envelope tests through
@@ -562,6 +562,14 @@ impl E2eRuntime {
         self
     }
 
+    /// Set query admission before the daemon starts. Client I/O timeout
+    /// and server dispatch budget remain separate policies.
+    #[must_use]
+    pub const fn with_query_admission_policy(mut self, policy: ServerAdmissionPolicy) -> Self {
+        self.query_admission_policy = policy;
+        self
+    }
+
     /// Like [`Self::boot`] but binds each socket under its policy in
     /// `access` (QI-BB-014).
     ///
@@ -650,9 +658,7 @@ impl E2eRuntime {
     /// dispatch budget short enough to expire inside a test can be set
     /// without touching process-global env.
     pub fn boot_with_query_admission_policy(policy: ServerAdmissionPolicy) -> AnyResult<Self> {
-        let mut runtime = Self::boot()?;
-        runtime.query_admission_policy = policy;
-        Ok(runtime)
+        Ok(Self::boot()?.with_query_admission_policy(policy))
     }
 
     /// A runtime whose lexical writer envelope is `policy` (QI-BB-016).
