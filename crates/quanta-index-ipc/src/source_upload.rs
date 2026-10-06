@@ -656,7 +656,7 @@ mod tests {
             let count = self.bytes.read(bytes)?;
             if count == 0 {
                 self.eof_reads += 1;
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep(Duration::from_millis(150));
             }
             Ok(count)
         }
@@ -700,9 +700,11 @@ mod tests {
             SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
         )
         .expect("open");
-        let bytes = crate::encode_cbor_payload(&batch()).expect("valid body");
+        let mut small_batch = batch();
+        small_batch.bundle_payload = None;
+        let bytes = crate::encode_cbor_payload(&small_batch).expect("valid body");
         let deadline = Instant::now()
-            .checked_add(Duration::from_millis(5))
+            .checked_add(Duration::from_millis(100))
             .expect("fixture deadline must be representable");
         let budget = RequestBudgetV1::until(deadline);
         let mut source = DeadlineOnEof {

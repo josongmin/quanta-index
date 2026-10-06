@@ -1465,9 +1465,7 @@ where
             principal: Some(principal),
             owner_uid,
             connection_id,
-            deadline: std::time::Instant::now()
-                .checked_add(policy.dispatch_budget())
-                .unwrap_or_else(std::time::Instant::now),
+            deadline: budget.deadline(),
             cancellation: budget.cancel_handle(),
             events: event_sink,
             request_started: event_scope.started,

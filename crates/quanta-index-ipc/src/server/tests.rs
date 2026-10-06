@@ -729,6 +729,78 @@ impl IpcDispatcher<u64, u64> for TestDispatcher {
     }
 }
 
+struct DeadlineConsistencyDispatcher;
+
+impl IpcDispatcher<u64, u64> for DeadlineConsistencyDispatcher {
+    fn dispatch(
+        &self,
+        context: &super::DispatchContextV1,
+        _request: u64,
+        budget: &RequestBudgetV1,
+    ) -> u64 {
+        u64::from(context.deadline == budget.deadline() && context.deadline > Instant::now())
+    }
+}
+
+#[test]
+fn dispatch_context_uses_the_admitted_budget_deadline() -> TestRes {
+    let dir = private_tempdir()?;
+    let socket_path = dir.path().join("deadline-consistency.sock");
+    let listener = UnixListener::bind(&socket_path).map_err(|error| error.to_string())?;
+    let default = ServerAdmissionPolicy::DEFAULT;
+    let policy = ServerAdmissionPolicy::new(
+        default.max_connections(),
+        default.dispatch_slots(),
+        default.max_in_flight_per_repo(),
+        default.queue_wait(),
+        Duration::from_secs(u64::MAX),
+        default.io_timeout(),
+    )
+    .map_err(|error| error.to_string())?;
+    let server = thread::spawn(move || -> TestRes {
+        let (stream, _address) = listener.accept().map_err(|error| error.to_string())?;
+        let reason = handle_connection::<
+            TestRequestEnvelope,
+            u64,
+            TestResponseEnvelope,
+            u64,
+            DeadlineConsistencyDispatcher,
+        >(
+            stream,
+            &DeadlineConsistencyDispatcher,
+            &DispatchSlots::for_policy(policy),
+            policy,
+            IpcPlane::Query,
+            PeerCredentials {
+                uid: 1000,
+                gid: 1000,
+                pid: None,
+            },
+            1000,
+            1,
+            &AtomicBool::new(false),
+            &test_counters(),
+        );
+        if !matches!(reason, ConnectionCloseReason::PeerClosed) {
+            return Err(format!("unexpected close reason: {reason:?}"));
+        }
+        Ok(())
+    });
+    let response: TestResponseEnvelope = send_request(
+        &socket_path,
+        &test_request(23, 4),
+        ClientIoPolicy::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    server
+        .join()
+        .map_err(|_panic_payload| "server panicked".to_string())??;
+    if response.payload != 1 {
+        return Err(format!("dispatch deadlines disagreed: {response:?}"));
+    }
+    Ok(())
+}
+
 struct ProviderStageDispatcher;
 
 impl IpcDispatcher<u64, u64> for ProviderStageDispatcher {
