@@ -1031,7 +1031,6 @@ pub(crate) fn artifact(
 )]
 mod tests {
     use super::*;
-    use quanta_index_searchd_harness::HARNESS_HISTORY_MAX_TOTAL_BYTES;
 
     fn required_json<'a>(value: &'a Value, pointer: &str) -> AnyResult<&'a Value> {
         value
@@ -1549,11 +1548,31 @@ mod tests {
                 .contains("SEARCH_CORPUS_HISTORY_RETENTION_EXHAUSTED")
         );
 
-        let mut invalid = config;
-        invalid.history_max_bytes = Some(0);
-        assert!(invalid.validate().is_err());
-        invalid.history_max_bytes = Some(HARNESS_HISTORY_MAX_TOTAL_BYTES + 1);
-        assert!(invalid.validate().is_err());
+        let mut boundary = config;
+        boundary.history_max_bytes = Some(0);
+        assert!(boundary.validate().is_err(), "zero pair budget must refuse");
+
+        // Scale's supported default total is 2 GiB, independently of the
+        // generic harness default. Equality is admissible; one byte more is not.
+        boundary.history_max_bytes = Some(2_147_483_648);
+        assert_eq!(boundary.effective_history_max_bytes()?, 2_147_483_648);
+        boundary.validate()?;
+        boundary.history_max_bytes = Some(2_147_483_649);
+        assert!(
+            boundary.validate().is_err(),
+            "pair above default total must refuse"
+        );
+
+        // An explicit total selects its own bound and still constrains the pair.
+        boundary.history_max_total_bytes = Some(536_870_912);
+        boundary.history_max_bytes = Some(536_870_912);
+        assert_eq!(boundary.effective_history_max_bytes()?, 536_870_912);
+        boundary.validate()?;
+        boundary.history_max_bytes = Some(536_870_913);
+        assert!(
+            boundary.validate().is_err(),
+            "pair above explicit total must refuse"
+        );
         Ok(())
     }
 
