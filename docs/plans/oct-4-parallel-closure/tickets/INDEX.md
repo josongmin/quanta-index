@@ -7,12 +7,15 @@
 현재 요청의 실행 목록은 아래 **Quanta 자체 작업**이다. 원본29개 scope의 owner 판정과
 외부 producer 연동 기록은 상세 항목에 보존하며 Quanta 작업 건수·진행률에 합산하지 않는다.
 
-## 현재 코드 잔여 — 2026-10-06 소스 대조
+## 현재 코드 잔여
+
+소스 대조 기준일: 2026-10-06. 이 절의 anchor는 날짜 변경에도 유지한다.
 
 ### 현재 실행 목록
 
 | 범위 | 담당 | 실제 잔여 |
 | --- | --- | --- |
+| Manifest 복호화 메모리 경계 | I0 / E4 | Sealed/text manifest가 구조 검사 전에 generic CBOR Value를 materialize한다. Fixed-row·bounded collection의 할당 전 거절 후보를 수리 중이며 실제 회귀가 필요하다 |
 | Workspace 검사·단위 테스트 | Scale / hosted CI | Strict Clippy는 source731a39cf의 Linux hosted1094에서 exit0/367.310s다. Open-loop의 stale256MiB oracle를 fixed2GiB/512MiB 경계로 수리했다. 수정 fixture actual 및 whole unit `--no-fail-fast`/1thread가 남는다 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 | Clean Scale6385033f의 원본256/4096/32768·same seed/caps release/no-fail-fast를 등록했다. Actual3개 종료는 남는다 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime, 남은 fuzz3이 필요하다. Timing/RSS qualification은 독립 판정 |
@@ -149,6 +152,10 @@
   P00 300passed/34.62s 뒤 같은 미수리 direct import에서 job exit1이었다. 새 source731의
   hosted1094 strict Clippy는367.310s/exit0다. Hosted1093 Python·1094 Rust 전체 job은 진행 중이며
   이 부분 결과를 전체 CI 종료로 승격하지 않는다.
+  Source731 Python1093은4190passed/30skipped/2warnings·851.53s 및 policy step903.306s/exit0,
+  P00 300passed/33.50s와 실제 manifest 발행·source binding 검사까지 통과했다(step39.491s/exit0).
+  전체 job은 이후 pre-commit에서 README의 날짜 포함 anchor1건과 vendored JSON2개 EOF 수정으로
+  exit1/`FAILED`였다. Anchor를 날짜와 독립적인 현재 코드 절로 고정하고 EOF만 정규화한다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.

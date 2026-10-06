@@ -29,7 +29,7 @@ Release 항목이 SEP-21 paired producer 수용을 참조해 연동 범위를 �
 R3 producer 누락 검증은 Semantica 소유이며 Quanta 자체 코드 잔여에 합산하지 않는다.
 Quanta 단독 엔진·벤치와 producer 연동 수용의 완료 조건을 구별한다.
 
-현재 코드 잔여와 source/candidate 구분은 [최신 코드 대조](tickets/INDEX.md#현재-코드-잔여--2026-10-05-소스-대조),
+현재 코드 잔여와 source/candidate 구분은 [최신 코드 대조](tickets/INDEX.md#현재-코드-잔여),
 실행 순서는 [웨이브](WAVES.md)가 소유한다. Quanta 운영 producer 구현,
 capacity/cost 원인 판정·조건부 최적화·review/capture 실행을 구분한다.
 

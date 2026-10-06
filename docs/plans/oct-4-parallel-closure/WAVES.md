@@ -163,6 +163,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   후속 source593 Python1090도4187passed/30skipped·880.73s 및 policy step935.449s/exit0,
   P00 300passed/34.62s 뒤 동일 direct import로 job `FAILED`였다. Source731 hosted1094 strict는
   exit0/367.310s이며1093 Python·1094 Rust whole job의 terminal은 아직 남는다.
+  Source731 Python1093은4190passed/30skipped·851.53s 및 policy903.306s/exit0, P00 300passed/33.50s와
+  actual manifest 발행/source binding까지 통과했다. Whole job은 이후 pre-commit의 README anchor1건 및
+  vendor JSON2개 EOF 수정으로 `FAILED`였다. 날짜 독립 anchor와 EOF 정규화 후 재검사한다.
   Native scope는 callee의 소비 전·native 뒤/receipt 전·verify 후 세 경계를 유지하는 수리를 통합했다.
   Batch spec/control guard를 유지하고 중복 outer2검사만 제거해 scope당4→3full scans다.
   Main 관련171tests는171passed/1004.84s 및 exactpostSHA/Ruff/diff가 통과했다. 실제 latency 향상은 미측정이다.
