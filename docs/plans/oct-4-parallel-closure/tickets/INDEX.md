@@ -30,6 +30,10 @@
   각각 `FAILED`였다. Source23a52737/38e44040의4-path 수정은 patch SHA와 모든 pre/post SHA
   대조 뒤 main에 통합했으며 owned rustfmt가 `VERIFIED`다. JSON profile은 객체/중복 필드를 검사하고
   Result를 caller까지 전파한다. 새 negative1건의 actual 실행은 workspace unit 범위에 남는다.
+  재검사38e44040은 upload/harness를 지나 기존 runtime test2paths의 lint5건에서 `FAILED`였다.
+  Source2ea1408d의 test-only 수정도 exact guards로 main에 통합했다. 해당 clean owner/cache에서
+  원본 Medium256/Large4096/XL32768 OS3 selectors를 등록했으며 admission 대기다.
+  `/private/tmp/qi-scale-os3-2ea1408d-20261006-v1.log`; test actual terminal은 아직 `NOT_RUN`이다.
   전체 Clippy 재검사와 controlled fuzz·workspace unit·release·Large/XL actual은 진행 중이다.
   Main source31828561의 CircleCI verify1741도 동일3건, verify-python1742는 미통합 module baseline에서
   `FAILED`였다. 새 source의 hosted CI 결과와 앞 단계 뒤의 테스트 성공은 아직 확인되지 않았다.
