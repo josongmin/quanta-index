@@ -156,7 +156,7 @@ log_cargo_event() {
   fi
 
   if ! python3 "${SCRIPT_DIR}/../tools/ci/timing/rust_profile_history.py" \
-      append-cargo \
+      append-cargo -- \
       "$lane" \
       "$lane_source" \
       "$exit_code" \

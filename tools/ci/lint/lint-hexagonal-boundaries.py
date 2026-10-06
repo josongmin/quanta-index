@@ -33,6 +33,48 @@ LEGACY_CORE_MODULES = (
 
 FORBIDDEN_VENDOR_DEPS = frozenset({"rusqlite", "tantivy", "lancedb", "lance"})
 
+# Borrowed construction protocols belong with the DTO visitor they govern:
+# moving this callback contract to core would create a contract -> core cycle.
+# This admits no storage, transport or service port, even in the same file.
+NATIVE_CORPUS_DECODE_ADMISSION_V1 = """
+pub trait NativeCorpusDecodeAdmissionV1:
+    quanta_index_contract_base::NativeIdentityDecodeAdmissionV1<Error = NativeCorpusDecodeRefusalV1>
+    + quanta_index_contract_base::NativeActivationTokenDecodeAdmissionV1<
+        Error = NativeCorpusDecodeRefusalV1,
+    >
+{
+    fn consume_corpus_work_v1(&self, units: u64) -> Result<(), NativeCorpusDecodeRefusalV1>;
+    fn refuse_corpus_work_arithmetic_v1(&self) -> NativeCorpusDecodeRefusalV1;
+    fn corpus_invalid_data_v1(
+        &self,
+        cause: NativeCorpusDataFailureV1,
+        field: Option<&'static str>,
+    ) -> NativeCorpusDecodeRefusalV1;
+}
+"""
+CONTRACT_CONSTRUCTION_TRAITS = {
+    Path("ipc/control/native_decode_v1.rs"): {
+        "NativeCorpusDecodeAdmissionV1": NATIVE_CORPUS_DECODE_ADMISSION_V1
+    },
+}
+
+
+def approved_construction_trait(source: str, start: int, expected: str) -> bool:
+    opening = source.find("{", start)
+    if opening < 0:
+        return False
+    depth = 0
+    for offset in range(opening, len(source)):
+        if source[offset] == "{":
+            depth += 1
+        elif source[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                actual = source[start : offset + 1]
+                return re.sub(r"\s+", "", actual) == re.sub(r"\s+", "", expected)
+    return False
+
+
 _ADAPTER_CRATE_DEPS = frozenset({"quanta-index-contract", "quanta-index-core"})
 
 # Crates a `[dev-dependencies]` table may name on top of the crate's own
@@ -426,10 +468,19 @@ def check_contract_is_dto_only() -> list[Violation]:
         return violations
     for rust_file in sorted(contract_src.rglob("*.rs")):
         text = rust_file.read_text(encoding="utf-8")
-        if re.search(r"\bpub\s+trait\b", text):
+        allowed = CONTRACT_CONSTRUCTION_TRAITS.get(rust_file.relative_to(contract_src), {})
+        forbidden = {
+            match.group("name")
+            for match in re.finditer(r"\bpub\s+trait\s+(?P<name>\w+)", text)
+            if match.group("name") not in allowed
+            or not approved_construction_trait(text, match.start(), allowed[match.group("name")])
+        }
+        if forbidden:
             violations.append(
                 Violation(
-                    rust_file, "contract crate must not define port traits (use quanta-index-core)"
+                    rust_file,
+                    "contract crate must not define port traits (use quanta-index-core): "
+                    + ", ".join(sorted(forbidden)),
                 )
             )
     return violations

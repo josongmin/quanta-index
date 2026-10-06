@@ -30,8 +30,13 @@ impl fmt::Display for NativeCorpusDecodeRefusalV1 {
     }
 }
 
-/// The same original runtime adapter supplies NFC, String backing and work.
-/// Native schema/identity causes are finite; the adapter retains exact SourceE.
+/// Admission policy for the native active-head visitor.
+///
+/// The caller must supply a deserializer that admits owned `String` and
+/// escaped field/value backing before allocation. Generic Serde deserializers
+/// can materialize that backing before these visitor work callbacks run; this
+/// policy alone does not prove backing admission. Native schema/identity
+/// causes are finite, and the runtime adapter retains its original refusal.
 #[cfg(feature = "quanta-native-identity-v1")]
 pub trait NativeCorpusDecodeAdmissionV1:
     quanta_index_contract_base::NativeIdentityDecodeAdmissionV1<Error = NativeCorpusDecodeRefusalV1>
@@ -187,35 +192,41 @@ pub(super) struct CorpusKeySeedV1<'a>(pub CorpusDecodeModeV1<'a>, pub &'static [
 impl<'de> DeserializeSeed<'de> for CorpusKeySeedV1<'_> {
     type Value = CorpusKeyV1;
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<CorpusKeyV1, D::Error> {
-        impl<'de> Visitor<'de> for CorpusKeySeedV1<'_> {
-            type Value = CorpusKeyV1;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a canonical corpus field")
-            }
-            fn visit_str<E: de::Error>(self, key: &str) -> Result<CorpusKeyV1, E> {
-                let mut known = None;
-                for field in self.1 {
-                    self.0.work_v1(1)?;
-                    if key == *field {
-                        known = Some(*field);
-                        break;
-                    }
-                }
-                let ordinary_unknown = match (known, self.0) {
-                    (None, CorpusDecodeModeV1::Ordinary(_)) => Some(key.to_owned()),
-                    _ => None,
-                };
-                Ok(CorpusKeyV1 {
-                    known,
-                    ordinary_unknown,
-                })
-            }
-        }
         deserializer.deserialize_identifier(self)
     }
 }
 
+impl<'de> Visitor<'de> for CorpusKeySeedV1<'_> {
+    type Value = CorpusKeyV1;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a canonical corpus field")
+    }
+    fn visit_str<E: de::Error>(self, key: &str) -> Result<CorpusKeyV1, E> {
+        let mut known = None;
+        for field in self.1 {
+            self.0.work_v1(1)?;
+            if key == *field {
+                known = Some(*field);
+                break;
+            }
+        }
+        let ordinary_unknown = match (known, self.0) {
+            (None, CorpusDecodeModeV1::Ordinary(_)) => Some(key.to_owned()),
+            _ => None,
+        };
+        Ok(CorpusKeyV1 {
+            known,
+            ordinary_unknown,
+        })
+    }
+}
+
 impl SearchCorpusActiveHeadV1 {
+    /// Decode through the native identity, token, and corpus work policies.
+    ///
+    /// The caller must provide a deserializer that admits owned `String` and
+    /// escaped field/value backing before allocation. This seed does not
+    /// control allocations performed inside a generic Serde deserializer.
     #[cfg(feature = "quanta-native-identity-v1")]
     pub fn native_decode_seed_v1<'a, 'de>(
         admission: &'a dyn NativeCorpusDecodeAdmissionV1,

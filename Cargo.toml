@@ -181,7 +181,9 @@ tree-sitter-javascript = { version = "=0.25.0", path = "vendor/tree-sitter-javas
 tree-sitter-python = { version = "=0.25.0", path = "vendor/tree-sitter-python" }
 tree-sitter-rust = { version = "=0.24.2", path = "vendor/tree-sitter-rust" }
 tree-sitter-typescript = { version = "=0.23.2", path = "vendor/tree-sitter-typescript" }
-unicode-normalization = "0.1"
+# Path custody also applies when another workspace consumes the contract crate;
+# Cargo does not inherit this workspace's [patch.crates-io] entries there.
+unicode-normalization = { version = "=0.1.25", path = "vendor/unicode-normalization-0.1.25" }
 
 [profile.dev]
 # Keep backtraces useful while avoiding full DWARF rebuild churn on every edit.
@@ -225,3 +227,5 @@ codegen-units = 16
 # The pinned 0.22.1 merger counts surviving posting frequencies exactly after
 # deletes; upstream approximates token totals from quantized fieldnorms.
 tantivy = { path = "vendor/tantivy-0.22.1" }
+# Native identity admission shares the pinned canonical NFC producer.
+unicode-normalization = { path = "vendor/unicode-normalization-0.1.25" }

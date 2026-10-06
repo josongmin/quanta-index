@@ -85,6 +85,20 @@ def workspace_member_names() -> set[str]:
     return {Path(m).name for m in members}
 
 
+def validate_workspace_dependencies() -> None:
+    # cargo-modules can emit a partial tree when Cargo cannot resolve the
+    # workspace. Reject that state before comparing or writing any baseline.
+    result = subprocess.run(
+        [str(ROOT / "scripts" / "cargow"), "metadata", "--locked", "--format-version", "1"],
+        cwd=ROOT,
+        env=cargo_env("cargo-modules-lane"),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"workspace dependency resolution failed: {result.stderr}")
+
+
 def render_module_tree(package: str) -> str:
     cmd = ["cargo", "modules", "structure", "--lib", "--package", package, "--no-fns"]
     # The snapshot is compared byte-for-byte against a plain-text baseline, so
@@ -137,6 +151,8 @@ def main() -> int:
         )
 
     bad = bool(missing)
+    if packages:
+        validate_workspace_dependencies()
     for pkg in packages:
         current = render_module_tree(pkg)
         path = baseline_path(pkg)

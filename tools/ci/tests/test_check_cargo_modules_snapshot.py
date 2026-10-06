@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "lint/check-cargo-modules-snapshot.py"
 
 
@@ -100,3 +102,75 @@ def test_explicit_library_selection_still_propagates_producer_failure(monkeypatc
     monkeypatch.setattr(module.subprocess, "run", failed_library_producer)
     with pytest.raises(RuntimeError, match="library analysis failed"):
         module.render_module_tree("mixed")
+
+
+@pytest.mark.parametrize("update", [False, True])
+def test_unresolved_dependencies_cannot_compare_or_overwrite_baselines(
+    tmp_path, monkeypatch, update
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("modules_unresolved", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    baseline = tmp_path / "quanta-index-contract.txt"
+    baseline.write_text("crate quanta_index_contract\nexisting module\n")
+    monkeypatch.setattr(module, "BASELINE_DIR", tmp_path)
+    monkeypatch.setattr(module, "workspace_member_names", lambda: {"quanta-index-contract"})
+    arguments = [str(SCRIPT), "--packages", "quanta-index-contract"]
+    if update:
+        arguments.append("--update-baseline")
+    monkeypatch.setattr(sys, "argv", arguments)
+    commands = []
+
+    def unresolved(command, **kwargs):
+        commands.append(command)
+        assert command == [
+            str(module.ROOT / "scripts" / "cargow"),
+            "metadata",
+            "--locked",
+            "--format-version",
+            "1",
+        ]
+        return subprocess.CompletedProcess(command, 101, "", "missing dependency feature")
+
+    monkeypatch.setattr(module.subprocess, "run", unresolved)
+    with pytest.raises(RuntimeError, match="missing dependency feature"):
+        module.main()
+    assert len(commands) == 1
+    assert baseline.read_text() == "crate quanta_index_contract\nexisting module\n"
+
+
+def test_resolved_dependencies_reach_the_module_comparison(tmp_path, monkeypatch) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("modules_resolved", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    body = "crate quanta_index_contract\nexisting module\n"
+    (tmp_path / "quanta-index-contract.txt").write_text(body)
+    monkeypatch.setattr(module, "BASELINE_DIR", tmp_path)
+    monkeypatch.setattr(module, "workspace_member_names", lambda: {"quanta-index-contract"})
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--packages", "quanta-index-contract"])
+    commands = []
+
+    def resolved(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command, 0, "{}" if command[1] == "metadata" else body, ""
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", resolved)
+    assert module.main() == 0
+    assert commands[0][1:] == ["metadata", "--locked", "--format-version", "1"]
+    assert commands[1] == [
+        "cargo",
+        "modules",
+        "structure",
+        "--lib",
+        "--package",
+        "quanta-index-contract",
+        "--no-fns",
+    ]

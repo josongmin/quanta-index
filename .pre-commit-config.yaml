@@ -28,7 +28,7 @@ repos:
       - id: check-toml
       - id: check-merge-conflict
       - id: check-added-large-files
-        exclude: ^vendor/tree-sitter-javascript/src/parser\.c$
+        exclude: ^vendor/(tree-sitter-javascript/src/parser\.c|unicode-normalization-0\.1\.25/src/tables\.rs)$
       - id: debug-statements
 
   - repo: local

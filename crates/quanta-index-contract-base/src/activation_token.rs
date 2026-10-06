@@ -8,9 +8,9 @@ use core::fmt;
 use core::num::NonZeroU64;
 
 use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
     ser::SerializeStruct,
-    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 pub const ACTIVATION_ROOT_INCARNATION_BYTES_V1: usize = 16;

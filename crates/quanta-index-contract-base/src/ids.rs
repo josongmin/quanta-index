@@ -722,7 +722,10 @@ mod native_raw_identity_tests_v1 {
             if let Some(cause) = self.fail_work {
                 return Err(cause);
             }
-            self.work = self.work.checked_add(units).expect("fixture work fits");
+            let Some(work) = self.work.checked_add(units) else {
+                return Err(u8::MAX);
+            };
+            self.work = work;
             Ok(())
         }
         fn native_birth_v1(
@@ -733,7 +736,9 @@ mod native_raw_identity_tests_v1 {
             if let Some(cause) = self.fail_birth {
                 return Err(cause);
             }
-            assert!(demand.new_bytes_v1 > demand.current_bytes_v1);
+            if demand.new_bytes_v1 <= demand.current_bytes_v1 {
+                return Err(u8::MAX);
+            }
             self.births += 1;
             let success = birth();
             if success && let Some(cause) = self.fail_after_birth {

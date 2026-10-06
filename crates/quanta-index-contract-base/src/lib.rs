@@ -62,3 +62,11 @@ pub use ids::{NativeIdentityConstructionErrorV1, NativeIdentityDecodeAdmissionV1
 pub use activation_token::{
     NativeActivationTokenDataFailureV1, NativeActivationTokenDecodeAdmissionV1,
 };
+
+// Consumers implement admission against this exact producer dependency;
+// they must not select a second package instance to name its policy types.
+#[cfg(feature = "quanta-native-identity-v1")]
+pub use unicode_normalization::{
+    NativeNormalizationAdmissionV1, NativeNormalizationErrorV1, NativeNormalizationScratchDemandV1,
+    NativeNormalizationScratchOwnerV1, try_is_nfc_with_native_admission_v1,
+};

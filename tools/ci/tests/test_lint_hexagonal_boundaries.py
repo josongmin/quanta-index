@@ -31,6 +31,50 @@ def _load_lint():
     return module
 
 
+def test_native_dto_construction_protocol_does_not_admit_service_ports(
+    tmp_path: Path, monkeypatch
+) -> None:
+    lint = _load_lint()
+    crates = tmp_path / "crates"
+    contract = crates / "quanta-index-contract" / "src"
+    native = contract / "ipc" / "control" / "native_decode_v1.rs"
+    native.parent.mkdir(parents=True)
+    native.write_text(
+        (ROOT / "crates/quanta-index-contract/src/ipc/control/native_decode_v1.rs").read_text()
+    )
+    monkeypatch.setattr(lint, "CRATES", crates)
+    assert lint.check_contract_is_dto_only() == []
+
+    native.write_text(native.read_text() + "\npub trait StoragePort {}\n")
+    violations = lint.check_contract_is_dto_only()
+    assert len(violations) == 1
+    assert violations[0].path == native
+    assert "StoragePort" in violations[0].message
+
+    native.write_text(
+        native.read_text()
+        .replace("\npub trait StoragePort {}\n", "")
+        .replace(
+            "    fn consume_corpus_work_v1(&self, units: u64) -> Result<(), NativeCorpusDecodeRefusalV1>;",
+            "    fn consume_corpus_work_v1(&self, units: u64) -> Result<(), NativeCorpusDecodeRefusalV1>;\n"
+            "    fn storage_port(&self);",
+            1,
+        )
+    )
+    violations = lint.check_contract_is_dto_only()
+    assert len(violations) == 1
+    assert violations[0].path == native
+    assert "NativeCorpusDecodeAdmissionV1" in violations[0].message
+
+    other = contract / "storage.rs"
+    other.write_text("pub trait NativeCorpusDecodeAdmissionV1 {}\n")
+    violations = lint.check_contract_is_dto_only()
+    assert {violation.path for violation in violations} == {native, other}
+    assert "NativeCorpusDecodeAdmissionV1" in next(
+        violation.message for violation in violations if violation.path == other
+    )
+
+
 def test_path_dependencies_are_named_as_cargo_names_them(tmp_path: Path) -> None:
     """The table key (or `package`) is the name, never the path's basename.
 

@@ -17,6 +17,43 @@ SCRIPT = REPO_ROOT / "scripts" / "cargow"
 ENV_SCRIPT = REPO_ROOT / "scripts" / "quanta-index-env.sh"
 
 
+def test_version_option_is_logged_as_cargo_data(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    cargo = fake_bin / "cargo"
+    cargo.write_text('#!/bin/bash\nprintf "cargo fixture\\n"\n')
+    cargo.chmod(0o755)
+    state = tmp_path / "state"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "QUANTA_INDEX_CACHE_ROOT": str(tmp_path / "cache"),
+            "QUANTA_INDEX_STATE_ROOT": str(state),
+            "QUANTA_INDEX_SCCACHE": "0",
+            "QUANTA_INDEX_TARGET_GC": "0",
+            "QUANTA_INDEX_BUILD_LOGGING": "1",
+        }
+    )
+    result = subprocess.run(
+        [str(SCRIPT), "--version"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "cargo fixture\n"
+    assert "log append failed" not in result.stderr
+    rows = [
+        json.loads(line)
+        for line in (state / "build-profile/history.jsonl").read_text().splitlines()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["cmd"] == "--version"
+    assert rows[0]["rc"] == 0
+
+
 def _run_metadata(*args: str, env: dict[str, str]) -> dict[str, object]:
     result = subprocess.run(
         [str(SCRIPT), *args, "metadata", "--format-version", "1", "--no-deps"],

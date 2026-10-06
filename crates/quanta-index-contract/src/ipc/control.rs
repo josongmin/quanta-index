@@ -2579,7 +2579,11 @@ mod qi_act_01_tests {
         }
     }
 
-    fn corpus_head(generation: u64, digest: &str, sequence: u64) -> SearchCorpusActiveHeadV1 {
+    pub(super) fn corpus_head(
+        generation: u64,
+        digest: &str,
+        sequence: u64,
+    ) -> SearchCorpusActiveHeadV1 {
         SearchCorpusActiveHeadV1 {
             generation: corpus_identity(generation, digest),
             activation_token: SearchCorpusActivationTokenV1::new(
@@ -3037,5 +3041,129 @@ mod qi_act_01_tests {
             return;
         };
         assert!(err.to_string().contains("missing field `track`"));
+    }
+}
+
+#[cfg(all(test, feature = "quanta-native-identity-v1"))]
+mod native_corpus_decode_tests_v1 {
+    use super::*;
+    use core::cell::Cell;
+    use serde::de::DeserializeSeed as _;
+
+    #[derive(Default)]
+    struct Admission {
+        borrowed_ids: Cell<u32>,
+        owned_ids: Cell<u32>,
+        work: Cell<u64>,
+    }
+
+    impl quanta_index_contract_base::NativeIdentityDecodeAdmissionV1 for Admission {
+        type Error = NativeCorpusDecodeRefusalV1;
+
+        fn repo_id_from_owned_v1(&self, value: String) -> Result<RepoId, Self::Error> {
+            self.owned_ids.set(self.owned_ids.get() + 1);
+            RepoId::new(value).map_err(Self::Error::Identity)
+        }
+
+        fn repo_id_from_borrowed_v1(&self, value: &str) -> Result<RepoId, Self::Error> {
+            self.borrowed_ids.set(self.borrowed_ids.get() + 1);
+            RepoId::new(value).map_err(Self::Error::Identity)
+        }
+
+        fn revision_id_from_owned_v1(&self, value: String) -> Result<RevisionId, Self::Error> {
+            self.owned_ids.set(self.owned_ids.get() + 1);
+            RevisionId::new(value).map_err(Self::Error::Identity)
+        }
+
+        fn revision_id_from_borrowed_v1(&self, value: &str) -> Result<RevisionId, Self::Error> {
+            self.borrowed_ids.set(self.borrowed_ids.get() + 1);
+            RevisionId::new(value).map_err(Self::Error::Identity)
+        }
+    }
+
+    impl quanta_index_contract_base::NativeActivationTokenDecodeAdmissionV1 for Admission {
+        type Error = NativeCorpusDecodeRefusalV1;
+
+        fn consume_token_work_v1(&self, units: u64) -> Result<(), Self::Error> {
+            self.consume_corpus_work_v1(units)
+        }
+
+        fn token_invalid_data_v1(
+            &self,
+            cause: quanta_index_contract_base::NativeActivationTokenDataFailureV1,
+            field: Option<&'static str>,
+        ) -> Self::Error {
+            let cause = match cause {
+                quanta_index_contract_base::NativeActivationTokenDataFailureV1::UnknownField => {
+                    NativeCorpusDataFailureV1::UnknownField
+                }
+                quanta_index_contract_base::NativeActivationTokenDataFailureV1::DuplicateField => {
+                    NativeCorpusDataFailureV1::DuplicateField
+                }
+                quanta_index_contract_base::NativeActivationTokenDataFailureV1::MissingField => {
+                    NativeCorpusDataFailureV1::MissingField
+                }
+                quanta_index_contract_base::NativeActivationTokenDataFailureV1::Semantic => {
+                    NativeCorpusDataFailureV1::Semantic
+                }
+            };
+            Self::Error::InvalidData(cause, field)
+        }
+    }
+
+    impl NativeCorpusDecodeAdmissionV1 for Admission {
+        fn consume_corpus_work_v1(&self, units: u64) -> Result<(), NativeCorpusDecodeRefusalV1> {
+            let work = self
+                .work
+                .get()
+                .checked_add(units)
+                .ok_or(NativeCorpusDecodeRefusalV1::Admission)?;
+            self.work.set(work);
+            Ok(())
+        }
+
+        fn refuse_corpus_work_arithmetic_v1(&self) -> NativeCorpusDecodeRefusalV1 {
+            NativeCorpusDecodeRefusalV1::Admission
+        }
+
+        fn corpus_invalid_data_v1(
+            &self,
+            cause: NativeCorpusDataFailureV1,
+            field: Option<&'static str>,
+        ) -> NativeCorpusDecodeRefusalV1 {
+            NativeCorpusDecodeRefusalV1::InvalidData(cause, field)
+        }
+    }
+
+    fn decode_native(
+        source: &str,
+        admission: &Admission,
+    ) -> Result<SearchCorpusActiveHeadV1, serde_json::Error> {
+        let mut deserializer = serde_json::Deserializer::from_str(source);
+        let head = SearchCorpusActiveHeadV1::native_decode_seed_v1(admission)
+            .deserialize(&mut deserializer)?;
+        deserializer.end()?;
+        Ok(head)
+    }
+
+    #[test]
+    fn native_corpus_seed_uses_borrowed_identity_policy_and_rejects_invalid_wire() {
+        let head = super::qi_act_01_tests::corpus_head(3, "digest-3", 1);
+        let wire = serde_json::to_string(&head).expect("encode fixture");
+        let admission = Admission::default();
+        assert_eq!(
+            decode_native(&wire, &admission).expect("decode native head"),
+            head
+        );
+        assert_eq!(admission.borrowed_ids.get(), 4);
+        assert_eq!(admission.owned_ids.get(), 0);
+        assert!(admission.work.get() > 0);
+
+        let invalid_identity = wire.replacen("\"repo\"", "\"e\\u0301\"", 1);
+        let error = decode_native(&invalid_identity, &Admission::default()).unwrap_err();
+        assert!(error.to_string().contains("Identity(NonCanonical)"));
+
+        let error = decode_native("{\"unknown\": 1}", &Admission::default()).unwrap_err();
+        assert!(error.to_string().contains("UnknownField"));
     }
 }
