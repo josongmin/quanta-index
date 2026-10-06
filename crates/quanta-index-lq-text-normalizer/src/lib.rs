@@ -87,7 +87,7 @@ pub use provenance::{MappedText, MappingError};
 mod tokens;
 mod version;
 
-pub use case::{CaseMode, apply_case, fold, nfc};
+pub use case::{CaseMode, NfcFoldBuildError, NfcFoldPlan, apply_case, fold, nfc};
 pub use tokens::{
     MAX_TOKEN_BYTES, TextQueryError, Token, Tokenized, contains_phrase, contains_substring,
     is_token_char, phrase_ranges, query_tokens, tokenize,

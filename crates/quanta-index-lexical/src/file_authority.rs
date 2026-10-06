@@ -1382,15 +1382,51 @@ pub(crate) fn from_v15_verified(
     Ok(authority)
 }
 
+struct NormalizedSurfacesPlan<'a> {
+    path: crate::normalize::NfcFoldPlan<'a>,
+    content: Option<crate::normalize::NfcFoldPlan<'a>>,
+}
+
+impl<'a> NormalizedSurfacesPlan<'a> {
+    fn new(path: &'a str, raw: Option<&'a str>) -> Result<Self, crate::normalize::NfcFoldBuildError> {
+        Ok(Self {
+            path: crate::normalize::NfcFoldPlan::new(path)?,
+            content: raw.map(crate::normalize::NfcFoldPlan::new).transpose()?,
+        })
+    }
+
+    fn lengths(&self) -> (usize, usize, usize, usize) {
+        (
+            self.path.nfc_bytes(),
+            self.path.folded_bytes(),
+            self.content.as_ref().map_or(0, |plan| plan.nfc_bytes()),
+            self.content.as_ref().map_or(0, |plan| plan.folded_bytes()),
+        )
+    }
+
+    fn build(
+        self,
+    ) -> Result<(String, String, Option<String>, Option<String>), crate::normalize::NfcFoldBuildError>
+    {
+        let (path, folded_path) = self.path.build()?;
+        let (content, folded_content) = match self.content {
+            Some(plan) => {
+                let (content, folded_content) = plan.build()?;
+                (Some(content), Some(folded_content))
+            }
+            None => (None, None),
+        };
+        Ok((path, folded_path, content, folded_content))
+    }
+}
+
 fn normalized_surfaces(
     path: &str,
     raw: Option<&str>,
-) -> (String, String, Option<String>, Option<String>) {
-    let path = crate::normalize::nfc(path).into_owned();
-    let folded_path = crate::normalize::fold(&path);
-    let content = raw.map(|raw| crate::normalize::nfc(raw).into_owned());
-    let folded_content = content.as_deref().map(crate::normalize::fold);
-    (path, folded_path, content, folded_content)
+) -> Result<(String, String, Option<String>, Option<String>), CoreError> {
+    NormalizedSurfacesPlan::new(path, raw)
+        .and_then(NormalizedSurfacesPlan::build)
+        .map_err(|error| invalid(&format!("normalization: {error:?}")))
 }
 
 fn source_posting_memberships(
@@ -1408,7 +1444,7 @@ fn source_posting_memberships(
         None
     };
     let (_, folded_path, _, folded_content) =
-        normalized_surfaces(source.file.repo_relative_path.as_str(), raw);
+        normalized_surfaces(source.file.repo_relative_path.as_str(), raw)?;
     let mut total = 0_usize;
     for surface in [
         Some(folded_path.as_bytes()),

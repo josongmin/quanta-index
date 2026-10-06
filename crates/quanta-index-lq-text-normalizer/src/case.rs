@@ -4,6 +4,74 @@ use std::borrow::Cow;
 
 use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
 
+/// Exact output lengths for the canonical NFC and per-character lowercase
+/// surfaces. The source is borrowed so the plan cannot be applied to other text.
+pub struct NfcFoldPlan<'a> {
+    source: &'a str,
+    nfc_bytes: usize,
+    folded_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NfcFoldBuildError {
+    LengthOverflow,
+    Allocation,
+    LengthChanged,
+}
+
+impl<'a> NfcFoldPlan<'a> {
+    pub fn new(source: &'a str) -> Result<Self, NfcFoldBuildError> {
+        let mut nfc_bytes = 0_usize;
+        let mut folded_bytes = 0_usize;
+        for scalar in source.nfc() {
+            nfc_bytes = nfc_bytes
+                .checked_add(scalar.len_utf8())
+                .ok_or(NfcFoldBuildError::LengthOverflow)?;
+            for lower in scalar.to_lowercase() {
+                folded_bytes = folded_bytes
+                    .checked_add(lower.len_utf8())
+                    .ok_or(NfcFoldBuildError::LengthOverflow)?;
+            }
+        }
+        Ok(Self {
+            source,
+            nfc_bytes,
+            folded_bytes,
+        })
+    }
+
+    #[must_use]
+    pub fn nfc_bytes(&self) -> usize {
+        self.nfc_bytes
+    }
+
+    #[must_use]
+    pub fn folded_bytes(&self) -> usize {
+        self.folded_bytes
+    }
+
+    /// Call only after the owner admits both exact lengths. Allocation is
+    /// fallible, and either output is discarded on any failure.
+    pub fn build(self) -> Result<(String, String), NfcFoldBuildError> {
+        let mut indexed = String::new();
+        indexed
+            .try_reserve_exact(self.nfc_bytes)
+            .map_err(|_| NfcFoldBuildError::Allocation)?;
+        let mut folded = String::new();
+        folded
+            .try_reserve_exact(self.folded_bytes)
+            .map_err(|_| NfcFoldBuildError::Allocation)?;
+        for scalar in self.source.nfc() {
+            indexed.push(scalar);
+            folded.extend(scalar.to_lowercase());
+        }
+        if indexed.len() != self.nfc_bytes || folded.len() != self.folded_bytes {
+            return Err(NfcFoldBuildError::LengthChanged);
+        }
+        Ok((indexed, folded))
+    }
+}
+
 /// Whether a surface compares text after the case fold.
 ///
 /// The DSL's `case:` option selects it: `case:yes` is [`CaseMode::Sensitive`],

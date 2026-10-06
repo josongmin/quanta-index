@@ -1112,6 +1112,19 @@ def _validate_targets(
         )
         if target_id is None or path is None or owner is None or rail is None:
             continue
+        cfg = entry.get("cfg")
+        if "cfg" in entry and (
+            cfg != "debug_assertions"
+            or expected_kind != "integration"
+            or cargo_target is None
+            or Path(path).stem == cargo_target
+        ):
+            violations.append(
+                _violation(
+                    catalog,
+                    f"{prefix}.cfg only supports debug_assertions on grouped integration sources",
+                )
+            )
         if target_id in targets:
             violations.append(_violation(catalog, f"duplicate target id: {target_id}"))
             continue
@@ -1139,6 +1152,8 @@ def _validate_targets(
             "kind": expected_kind,
             "target": cargo_target or Path(path).stem,
         }
+        if cfg == "debug_assertions":
+            targets[target_id]["cfg"] = cfg
 
     for path in sorted(discovered - paths):
         violations.append(
@@ -1181,7 +1196,7 @@ def _validate_grouped_integration_targets(
         except OSError as error:
             violations.append(_violation(launcher, f"cannot read grouped test launcher: {error}"))
             continue
-        declared_modules: set[str] = set()
+        declared_modules: dict[Path, str] = {}
         launcher_lines = launcher_text.splitlines()
         line_index = 0
         while line_index < len(launcher_lines):
@@ -1194,15 +1209,43 @@ def _validate_grouped_integration_targets(
             ):
                 line_index += 1
                 continue
-            path_match = re.fullmatch(r'#\[\s*path\s*=\s*"([A-Za-z0-9_./-]+)"\s*\]', line)
+            cfg = ""
+            path_index = line_index
+            if re.fullmatch(r"#\[\s*cfg\s*\(\s*debug_assertions\s*\)\s*\]", line):
+                cfg = "debug_assertions"
+                path_index += 1
+            path_line = (
+                launcher_lines[path_index].strip() if path_index < len(launcher_lines) else ""
+            )
+            path_match = re.fullmatch(r'#\[\s*path\s*=\s*"([A-Za-z0-9_./-]+)"\s*\]', path_line)
             next_line = (
-                launcher_lines[line_index + 1].strip()
-                if line_index + 1 < len(launcher_lines)
+                launcher_lines[path_index + 1].strip()
+                if path_index + 1 < len(launcher_lines)
                 else ""
             )
             if path_match and re.fullmatch(r"mod\s+[A-Za-z_]\w*;", next_line):
-                declared_modules.add(path_match.group(1))
-                line_index += 2
+                relative_source = path_match.group(1)
+                try:
+                    resolved_source = (launcher.parent / relative_source).resolve()
+                except (OSError, RuntimeError) as error:
+                    violations.append(
+                        _violation(launcher, f"cannot resolve grouped source {relative_source}: {error}")
+                    )
+                    line_index = path_index + 2
+                    continue
+                if not resolved_source.is_file():
+                    violations.append(
+                        _violation(launcher, f"grouped source is not a file: {relative_source}")
+                    )
+                if resolved_source in declared_modules:
+                    violations.append(
+                        _violation(
+                            launcher,
+                            f"grouped test {owner}:{cargo_target} duplicates source {relative_source}",
+                        )
+                    )
+                declared_modules[resolved_source] = cfg
+                line_index = path_index + 2
                 continue
             violations.append(
                 _violation(
@@ -1223,11 +1266,19 @@ def _validate_grouped_integration_targets(
                     )
                 )
                 continue
-            if relative_member not in declared_modules:
+            resolved_member = (root / member_path).resolve()
+            if resolved_member not in declared_modules:
                 violations.append(
                     _violation(
                         launcher,
                         f"grouped test {owner}:{cargo_target} omits cataloged source {relative_member}",
+                    )
+                )
+            elif declared_modules[resolved_member] != member.get("cfg", ""):
+                violations.append(
+                    _violation(
+                        launcher,
+                        f"grouped test {owner}:{cargo_target} cfg for {relative_member} differs from catalog",
                     )
                 )
 

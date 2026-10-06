@@ -717,6 +717,77 @@ def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_p
     assert module.audit_catalog(tmp_path, catalog) == []
 
     workflow = tmp_path / ".github" / "workflows" / "grouped.yml"
+    original_catalog = catalog.read_text(encoding="utf-8")
+    debug_catalog = original_catalog.replace(
+        'id = "demo-case"', 'id = "demo-case"\ncfg = "debug_assertions"'
+    )
+    ordinary_launcher = '#[path = "case.rs"]\nmod case;\n'
+    debug_launcher = "#[cfg(debug_assertions)]\n" + ordinary_launcher
+    launcher_path = tests / "fast_suite.rs"
+
+    # Conditional inclusion must be declared by both the source and its owner.
+    launcher_path.write_text(debug_launcher, encoding="utf-8")
+    assert any(
+        "cfg for case.rs differs from catalog" in violation.message
+        for violation in module.audit_catalog(tmp_path, catalog)
+    )
+    catalog.write_text(debug_catalog, encoding="utf-8")
+    assert module.audit_catalog(tmp_path, catalog) == []
+    launcher_path.write_text(ordinary_launcher, encoding="utf-8")
+    assert any(
+        "cfg for case.rs differs from catalog" in violation.message
+        for violation in module.audit_catalog(tmp_path, catalog)
+    )
+
+    launcher_path.write_text(debug_launcher, encoding="utf-8")
+    for invalid_cfg in ('"never"', '""', "false", "[]"):
+        catalog.write_text(
+            debug_catalog.replace('cfg = "debug_assertions"', f"cfg = {invalid_cfg}"),
+            encoding="utf-8",
+        )
+        assert any(
+            ".cfg only supports debug_assertions on grouped integration sources"
+            in violation.message
+            for violation in module.audit_catalog(tmp_path, catalog)
+        )
+    catalog.write_text(
+        original_catalog.replace(
+            'id = "demo-fast-suite"', 'id = "demo-fast-suite"\ncfg = "debug_assertions"'
+        ),
+        encoding="utf-8",
+    )
+    assert any(
+        ".cfg only supports debug_assertions on grouped integration sources" in violation.message
+        for violation in module.audit_catalog(tmp_path, catalog)
+    )
+    catalog.write_text(debug_catalog, encoding="utf-8")
+    launcher_path.write_text(debug_launcher + ordinary_launcher, encoding="utf-8")
+    assert any(
+        "duplicates source case.rs" in violation.message
+        for violation in module.audit_catalog(tmp_path, catalog)
+    )
+    (tests / "nested").mkdir()
+    for alias in ("./case.rs", "nested/../case.rs"):
+        alias_module = f'#[path = "{alias}"]\nmod case_alias;\n'
+        launcher_path.write_text(debug_launcher + alias_module, encoding="utf-8")
+        assert any(
+            "duplicates source" in violation.message
+            for violation in module.audit_catalog(tmp_path, catalog)
+        )
+        launcher_path.write_text(
+            "#[cfg(debug_assertions)]\n" + alias_module, encoding="utf-8"
+        )
+        assert module.audit_catalog(tmp_path, catalog) == []
+    launcher_path.write_text(
+        debug_launcher + '#[path = "missing.rs"]\nmod missing;\n', encoding="utf-8"
+    )
+    assert any(
+        "grouped source is not a file" in violation.message
+        for violation in module.audit_catalog(tmp_path, catalog)
+    )
+    catalog.write_text(original_catalog, encoding="utf-8")
+    launcher_path.write_text(ordinary_launcher, encoding="utf-8")
+
     for selector in ("--test case", "--test=case"):
         workflow.write_text(
             "jobs:\n  grouped:\n    steps:\n      - name: run\n"

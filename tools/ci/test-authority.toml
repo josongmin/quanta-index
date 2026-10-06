@@ -1566,6 +1566,7 @@ path = "crates/quanta-index-searchd-runtime/tests/e2e_semantic_budget_interrupti
 owner = "quanta-index-searchd-runtime"
 target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
+cfg = "debug_assertions"
 
 [[integration_targets]]
 id = "searchd-runtime-e2e-semantic-stream-window"
