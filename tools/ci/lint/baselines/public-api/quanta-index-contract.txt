@@ -1568,6 +1568,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneErrorCodeV2
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneErrorCodeV2
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneErrorCodeV2
 pub enum quanta_index_contract::ipc::SearchPlaneIngestIpcRequest
+pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(quanta_index_contract::SourcePublicationUploadIdentity)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishDirtyBatch(quanta_index_contract::DirtyIngestBatch)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishFileContributorBatch(quanta_index_contract::FileContributorIngestBatch)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(quanta_index_contract::FileOwnershipIngestBatch)
@@ -1579,7 +1580,9 @@ pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishRepoMetaBatc
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(quanta_index_contract::RepoTopicIngestBatch)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(quanta_index_contract::RuntimeCatalogIngestBatch)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(quanta_index_contract::SearchCorpusIngestBatch)
+pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(quanta_index_contract::SourcePublicationUploadCommit)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::PublishStructuralBatch(quanta_index_contract::StructuralIngestBatch)
+pub quanta_index_contract::ipc::SearchPlaneIngestIpcRequest::StageSourcePublication(quanta_index_contract::SourcePublicationUploadPart)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcRequest
 pub fn quanta_index_contract::SearchPlaneIngestIpcRequest::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcRequest
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneIngestIpcRequest
@@ -1611,6 +1614,7 @@ pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::RepoMetaReceipt(qu
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::RepoTopicReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::SearchCorpusReceipt(quanta_index_contract::SearchCorpusPublishOutcome)
+pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(quanta_index_contract::SourcePublicationUploadAck)
 pub quanta_index_contract::ipc::SearchPlaneIngestIpcResponse::StructuralReceipt(quanta_index_contract::BatchPublishReceipt)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcResponse
 pub fn quanta_index_contract::SearchPlaneIngestIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcResponse
@@ -3982,6 +3986,97 @@ impl core::marker::Unpin for quanta_index_contract::SourcePublicationBinding
 impl core::marker::UnsafeUnpin for quanta_index_contract::SourcePublicationBinding
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourcePublicationBinding
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourcePublicationBinding
+pub struct quanta_index_contract::ipc::SourcePublicationUploadAck
+pub quanta_index_contract::ipc::SourcePublicationUploadAck::identity: quanta_index_contract::SourcePublicationUploadIdentity
+pub quanta_index_contract::ipc::SourcePublicationUploadAck::next_offset: u64
+impl core::clone::Clone for quanta_index_contract::SourcePublicationUploadAck
+pub fn quanta_index_contract::SourcePublicationUploadAck::clone(&self) -> quanta_index_contract::SourcePublicationUploadAck
+impl core::cmp::Eq for quanta_index_contract::SourcePublicationUploadAck
+impl core::cmp::PartialEq for quanta_index_contract::SourcePublicationUploadAck
+pub fn quanta_index_contract::SourcePublicationUploadAck::eq(&self, other: &quanta_index_contract::SourcePublicationUploadAck) -> bool
+impl core::fmt::Debug for quanta_index_contract::SourcePublicationUploadAck
+pub fn quanta_index_contract::SourcePublicationUploadAck::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::SourcePublicationUploadAck
+impl core::marker::StructuralPartialEq for quanta_index_contract::SourcePublicationUploadAck
+impl serde_core::ser::Serialize for quanta_index_contract::SourcePublicationUploadAck
+pub fn quanta_index_contract::SourcePublicationUploadAck::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SourcePublicationUploadAck
+pub fn quanta_index_contract::SourcePublicationUploadAck::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SourcePublicationUploadAck
+impl core::marker::Send for quanta_index_contract::SourcePublicationUploadAck
+impl core::marker::Sync for quanta_index_contract::SourcePublicationUploadAck
+impl core::marker::Unpin for quanta_index_contract::SourcePublicationUploadAck
+impl core::marker::UnsafeUnpin for quanta_index_contract::SourcePublicationUploadAck
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourcePublicationUploadAck
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourcePublicationUploadAck
+pub struct quanta_index_contract::ipc::SourcePublicationUploadCommit
+pub quanta_index_contract::ipc::SourcePublicationUploadCommit::identity: quanta_index_contract::SourcePublicationUploadIdentity
+pub quanta_index_contract::ipc::SourcePublicationUploadCommit::publication: quanta_index_contract::SourcePublicationBinding
+impl core::clone::Clone for quanta_index_contract::SourcePublicationUploadCommit
+pub fn quanta_index_contract::SourcePublicationUploadCommit::clone(&self) -> quanta_index_contract::SourcePublicationUploadCommit
+impl core::cmp::Eq for quanta_index_contract::SourcePublicationUploadCommit
+impl core::cmp::PartialEq for quanta_index_contract::SourcePublicationUploadCommit
+pub fn quanta_index_contract::SourcePublicationUploadCommit::eq(&self, other: &quanta_index_contract::SourcePublicationUploadCommit) -> bool
+impl core::fmt::Debug for quanta_index_contract::SourcePublicationUploadCommit
+pub fn quanta_index_contract::SourcePublicationUploadCommit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SourcePublicationUploadCommit
+impl serde_core::ser::Serialize for quanta_index_contract::SourcePublicationUploadCommit
+pub fn quanta_index_contract::SourcePublicationUploadCommit::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SourcePublicationUploadCommit
+pub fn quanta_index_contract::SourcePublicationUploadCommit::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SourcePublicationUploadCommit
+impl core::marker::Send for quanta_index_contract::SourcePublicationUploadCommit
+impl core::marker::Sync for quanta_index_contract::SourcePublicationUploadCommit
+impl core::marker::Unpin for quanta_index_contract::SourcePublicationUploadCommit
+impl core::marker::UnsafeUnpin for quanta_index_contract::SourcePublicationUploadCommit
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourcePublicationUploadCommit
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourcePublicationUploadCommit
+pub struct quanta_index_contract::ipc::SourcePublicationUploadIdentity
+pub quanta_index_contract::ipc::SourcePublicationUploadIdentity::body_bytes: u64
+pub quanta_index_contract::ipc::SourcePublicationUploadIdentity::body_sha256: [u8; 32]
+impl core::clone::Clone for quanta_index_contract::SourcePublicationUploadIdentity
+pub fn quanta_index_contract::SourcePublicationUploadIdentity::clone(&self) -> quanta_index_contract::SourcePublicationUploadIdentity
+impl core::cmp::Eq for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::cmp::PartialEq for quanta_index_contract::SourcePublicationUploadIdentity
+pub fn quanta_index_contract::SourcePublicationUploadIdentity::eq(&self, other: &quanta_index_contract::SourcePublicationUploadIdentity) -> bool
+impl core::fmt::Debug for quanta_index_contract::SourcePublicationUploadIdentity
+pub fn quanta_index_contract::SourcePublicationUploadIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::marker::StructuralPartialEq for quanta_index_contract::SourcePublicationUploadIdentity
+impl serde_core::ser::Serialize for quanta_index_contract::SourcePublicationUploadIdentity
+pub fn quanta_index_contract::SourcePublicationUploadIdentity::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SourcePublicationUploadIdentity
+pub fn quanta_index_contract::SourcePublicationUploadIdentity::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::marker::Send for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::marker::Sync for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::marker::Unpin for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::marker::UnsafeUnpin for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourcePublicationUploadIdentity
+pub struct quanta_index_contract::ipc::SourcePublicationUploadPart
+pub quanta_index_contract::ipc::SourcePublicationUploadPart::bytes: alloc::vec::Vec<u8>
+pub quanta_index_contract::ipc::SourcePublicationUploadPart::identity: quanta_index_contract::SourcePublicationUploadIdentity
+pub quanta_index_contract::ipc::SourcePublicationUploadPart::offset: u64
+impl core::clone::Clone for quanta_index_contract::SourcePublicationUploadPart
+pub fn quanta_index_contract::SourcePublicationUploadPart::clone(&self) -> quanta_index_contract::SourcePublicationUploadPart
+impl core::cmp::Eq for quanta_index_contract::SourcePublicationUploadPart
+impl core::cmp::PartialEq for quanta_index_contract::SourcePublicationUploadPart
+pub fn quanta_index_contract::SourcePublicationUploadPart::eq(&self, other: &quanta_index_contract::SourcePublicationUploadPart) -> bool
+impl core::fmt::Debug for quanta_index_contract::SourcePublicationUploadPart
+pub fn quanta_index_contract::SourcePublicationUploadPart::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SourcePublicationUploadPart
+impl serde_core::ser::Serialize for quanta_index_contract::SourcePublicationUploadPart
+pub fn quanta_index_contract::SourcePublicationUploadPart::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SourcePublicationUploadPart
+pub fn quanta_index_contract::SourcePublicationUploadPart::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SourcePublicationUploadPart
+impl core::marker::Send for quanta_index_contract::SourcePublicationUploadPart
+impl core::marker::Sync for quanta_index_contract::SourcePublicationUploadPart
+impl core::marker::Unpin for quanta_index_contract::SourcePublicationUploadPart
+impl core::marker::UnsafeUnpin for quanta_index_contract::SourcePublicationUploadPart
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourcePublicationUploadPart
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourcePublicationUploadPart
 pub struct quanta_index_contract::ipc::StructuralIngestBatch
 pub quanta_index_contract::ipc::StructuralIngestBatch::base_generation: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>
 pub quanta_index_contract::ipc::StructuralIngestBatch::batch_digest: alloc::string::String
@@ -4111,6 +4206,9 @@ pub const quanta_index_contract::ipc::MAX_IPC_FRAME_BODY_BYTES_V1: usize
 pub const quanta_index_contract::ipc::MAX_PROCESS_REQUEST_EVENTS_V1: u16
 pub const quanta_index_contract::ipc::MAX_PROCESS_REQUEST_EVENTS_WIRE_BYTES_V1: usize
 pub const quanta_index_contract::ipc::SEMANTIC_WORK_OPERATIONAL_CAP_V1: u64
+pub const quanta_index_contract::ipc::SOURCE_PUBLICATION_UPLOAD_DEFAULT_BYTES: u64
+pub const quanta_index_contract::ipc::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES: u64
+pub const quanta_index_contract::ipc::SOURCE_PUBLICATION_UPLOAD_PART_BYTES: usize
 pub fn quanta_index_contract::ipc::batch_digest_token_v1(digest: &[u8; 32]) -> alloc::string::String
 pub fn quanta_index_contract::ipc::cluster_membership_content_digest_v1(members: &[quanta_index_contract::SymbolId]) -> alloc::string::String
 pub fn quanta_index_contract::ipc::is_canonical_batch_digest_token_v1(value: &str) -> bool
@@ -10652,6 +10750,7 @@ impl core::marker::UnsafeUnpin for quanta_index_contract::SearchPlaneErrorCodeV2
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SearchPlaneErrorCodeV2
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SearchPlaneErrorCodeV2
 pub enum quanta_index_contract::SearchPlaneIngestIpcRequest
+pub quanta_index_contract::SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(quanta_index_contract::SourcePublicationUploadIdentity)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishDirtyBatch(quanta_index_contract::DirtyIngestBatch)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishFileContributorBatch(quanta_index_contract::FileContributorIngestBatch)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(quanta_index_contract::FileOwnershipIngestBatch)
@@ -10663,7 +10762,9 @@ pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(qua
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(quanta_index_contract::RepoTopicIngestBatch)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(quanta_index_contract::RuntimeCatalogIngestBatch)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(quanta_index_contract::SearchCorpusIngestBatch)
+pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(quanta_index_contract::SourcePublicationUploadCommit)
 pub quanta_index_contract::SearchPlaneIngestIpcRequest::PublishStructuralBatch(quanta_index_contract::StructuralIngestBatch)
+pub quanta_index_contract::SearchPlaneIngestIpcRequest::StageSourcePublication(quanta_index_contract::SourcePublicationUploadPart)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcRequest
 pub fn quanta_index_contract::SearchPlaneIngestIpcRequest::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcRequest
 impl core::cmp::PartialEq for quanta_index_contract::SearchPlaneIngestIpcRequest
@@ -10695,6 +10796,7 @@ pub quanta_index_contract::SearchPlaneIngestIpcResponse::RepoMetaReceipt(quanta_
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::RepoTopicReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(quanta_index_contract::BatchPublishReceipt)
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::SearchCorpusReceipt(quanta_index_contract::SearchCorpusPublishOutcome)
+pub quanta_index_contract::SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(quanta_index_contract::SourcePublicationUploadAck)
 pub quanta_index_contract::SearchPlaneIngestIpcResponse::StructuralReceipt(quanta_index_contract::BatchPublishReceipt)
 impl core::clone::Clone for quanta_index_contract::SearchPlaneIngestIpcResponse
 pub fn quanta_index_contract::SearchPlaneIngestIpcResponse::clone(&self) -> quanta_index_contract::SearchPlaneIngestIpcResponse
@@ -15638,6 +15740,97 @@ impl core::marker::Unpin for quanta_index_contract::SourcePublicationEvent
 impl core::marker::UnsafeUnpin for quanta_index_contract::SourcePublicationEvent
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourcePublicationEvent
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourcePublicationEvent
+pub struct quanta_index_contract::SourcePublicationUploadAck
+pub quanta_index_contract::SourcePublicationUploadAck::identity: quanta_index_contract::SourcePublicationUploadIdentity
+pub quanta_index_contract::SourcePublicationUploadAck::next_offset: u64
+impl core::clone::Clone for quanta_index_contract::SourcePublicationUploadAck
+pub fn quanta_index_contract::SourcePublicationUploadAck::clone(&self) -> quanta_index_contract::SourcePublicationUploadAck
+impl core::cmp::Eq for quanta_index_contract::SourcePublicationUploadAck
+impl core::cmp::PartialEq for quanta_index_contract::SourcePublicationUploadAck
+pub fn quanta_index_contract::SourcePublicationUploadAck::eq(&self, other: &quanta_index_contract::SourcePublicationUploadAck) -> bool
+impl core::fmt::Debug for quanta_index_contract::SourcePublicationUploadAck
+pub fn quanta_index_contract::SourcePublicationUploadAck::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::SourcePublicationUploadAck
+impl core::marker::StructuralPartialEq for quanta_index_contract::SourcePublicationUploadAck
+impl serde_core::ser::Serialize for quanta_index_contract::SourcePublicationUploadAck
+pub fn quanta_index_contract::SourcePublicationUploadAck::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SourcePublicationUploadAck
+pub fn quanta_index_contract::SourcePublicationUploadAck::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SourcePublicationUploadAck
+impl core::marker::Send for quanta_index_contract::SourcePublicationUploadAck
+impl core::marker::Sync for quanta_index_contract::SourcePublicationUploadAck
+impl core::marker::Unpin for quanta_index_contract::SourcePublicationUploadAck
+impl core::marker::UnsafeUnpin for quanta_index_contract::SourcePublicationUploadAck
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourcePublicationUploadAck
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourcePublicationUploadAck
+pub struct quanta_index_contract::SourcePublicationUploadCommit
+pub quanta_index_contract::SourcePublicationUploadCommit::identity: quanta_index_contract::SourcePublicationUploadIdentity
+pub quanta_index_contract::SourcePublicationUploadCommit::publication: quanta_index_contract::SourcePublicationBinding
+impl core::clone::Clone for quanta_index_contract::SourcePublicationUploadCommit
+pub fn quanta_index_contract::SourcePublicationUploadCommit::clone(&self) -> quanta_index_contract::SourcePublicationUploadCommit
+impl core::cmp::Eq for quanta_index_contract::SourcePublicationUploadCommit
+impl core::cmp::PartialEq for quanta_index_contract::SourcePublicationUploadCommit
+pub fn quanta_index_contract::SourcePublicationUploadCommit::eq(&self, other: &quanta_index_contract::SourcePublicationUploadCommit) -> bool
+impl core::fmt::Debug for quanta_index_contract::SourcePublicationUploadCommit
+pub fn quanta_index_contract::SourcePublicationUploadCommit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SourcePublicationUploadCommit
+impl serde_core::ser::Serialize for quanta_index_contract::SourcePublicationUploadCommit
+pub fn quanta_index_contract::SourcePublicationUploadCommit::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SourcePublicationUploadCommit
+pub fn quanta_index_contract::SourcePublicationUploadCommit::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SourcePublicationUploadCommit
+impl core::marker::Send for quanta_index_contract::SourcePublicationUploadCommit
+impl core::marker::Sync for quanta_index_contract::SourcePublicationUploadCommit
+impl core::marker::Unpin for quanta_index_contract::SourcePublicationUploadCommit
+impl core::marker::UnsafeUnpin for quanta_index_contract::SourcePublicationUploadCommit
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourcePublicationUploadCommit
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourcePublicationUploadCommit
+pub struct quanta_index_contract::SourcePublicationUploadIdentity
+pub quanta_index_contract::SourcePublicationUploadIdentity::body_bytes: u64
+pub quanta_index_contract::SourcePublicationUploadIdentity::body_sha256: [u8; 32]
+impl core::clone::Clone for quanta_index_contract::SourcePublicationUploadIdentity
+pub fn quanta_index_contract::SourcePublicationUploadIdentity::clone(&self) -> quanta_index_contract::SourcePublicationUploadIdentity
+impl core::cmp::Eq for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::cmp::PartialEq for quanta_index_contract::SourcePublicationUploadIdentity
+pub fn quanta_index_contract::SourcePublicationUploadIdentity::eq(&self, other: &quanta_index_contract::SourcePublicationUploadIdentity) -> bool
+impl core::fmt::Debug for quanta_index_contract::SourcePublicationUploadIdentity
+pub fn quanta_index_contract::SourcePublicationUploadIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::marker::StructuralPartialEq for quanta_index_contract::SourcePublicationUploadIdentity
+impl serde_core::ser::Serialize for quanta_index_contract::SourcePublicationUploadIdentity
+pub fn quanta_index_contract::SourcePublicationUploadIdentity::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SourcePublicationUploadIdentity
+pub fn quanta_index_contract::SourcePublicationUploadIdentity::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::marker::Send for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::marker::Sync for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::marker::Unpin for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::marker::UnsafeUnpin for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourcePublicationUploadIdentity
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourcePublicationUploadIdentity
+pub struct quanta_index_contract::SourcePublicationUploadPart
+pub quanta_index_contract::SourcePublicationUploadPart::bytes: alloc::vec::Vec<u8>
+pub quanta_index_contract::SourcePublicationUploadPart::identity: quanta_index_contract::SourcePublicationUploadIdentity
+pub quanta_index_contract::SourcePublicationUploadPart::offset: u64
+impl core::clone::Clone for quanta_index_contract::SourcePublicationUploadPart
+pub fn quanta_index_contract::SourcePublicationUploadPart::clone(&self) -> quanta_index_contract::SourcePublicationUploadPart
+impl core::cmp::Eq for quanta_index_contract::SourcePublicationUploadPart
+impl core::cmp::PartialEq for quanta_index_contract::SourcePublicationUploadPart
+pub fn quanta_index_contract::SourcePublicationUploadPart::eq(&self, other: &quanta_index_contract::SourcePublicationUploadPart) -> bool
+impl core::fmt::Debug for quanta_index_contract::SourcePublicationUploadPart
+pub fn quanta_index_contract::SourcePublicationUploadPart::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SourcePublicationUploadPart
+impl serde_core::ser::Serialize for quanta_index_contract::SourcePublicationUploadPart
+pub fn quanta_index_contract::SourcePublicationUploadPart::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SourcePublicationUploadPart
+pub fn quanta_index_contract::SourcePublicationUploadPart::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SourcePublicationUploadPart
+impl core::marker::Send for quanta_index_contract::SourcePublicationUploadPart
+impl core::marker::Sync for quanta_index_contract::SourcePublicationUploadPart
+impl core::marker::Unpin for quanta_index_contract::SourcePublicationUploadPart
+impl core::marker::UnsafeUnpin for quanta_index_contract::SourcePublicationUploadPart
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SourcePublicationUploadPart
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SourcePublicationUploadPart
 pub struct quanta_index_contract::StateRootUuidCommitmentV1(_)
 impl quanta_index_contract::StateRootUuidCommitmentV1
 pub const fn quanta_index_contract::StateRootUuidCommitmentV1::as_bytes(&self) -> &[u8; 32]
@@ -16141,6 +16334,9 @@ pub const quanta_index_contract::MAX_PROCESS_REQUEST_EVENTS_WIRE_BYTES_V1: usize
 pub const quanta_index_contract::MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1: usize
 pub const quanta_index_contract::REPOMAP_TERMINAL_RECEIPT_FORMAT_VERSION: u32
 pub const quanta_index_contract::SEMANTIC_WORK_OPERATIONAL_CAP_V1: u64
+pub const quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_DEFAULT_BYTES: u64
+pub const quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES: u64
+pub const quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_PART_BYTES: usize
 pub fn quanta_index_contract::batch_digest_token_v1(digest: &[u8; 32]) -> alloc::string::String
 pub fn quanta_index_contract::canonical_repo_map_source_bundle_digest_v2(bundle: &quanta_index_contract::RepoMapSourceBundle) -> core::result::Result<alloc::string::String, quanta_index_contract::RepoMapSourceBundleDigestErrorV2>
 pub fn quanta_index_contract::cluster_membership_content_digest_v1(members: &[quanta_index_contract::SymbolId]) -> alloc::string::String

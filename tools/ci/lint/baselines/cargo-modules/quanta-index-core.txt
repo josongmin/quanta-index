@@ -281,4 +281,6 @@ crate quanta_index_core
 │   ├── enum RequestProviderStageV1: pub
 │   ├── trait RequestStageDiagnosticPortV1: pub
 │   └── struct SemanticWorkLedgerV1: pub(self)
+├── mod source_upload: pub(crate)
+│   └── trait SourcePublicationUploadPort: pub
 └── mod timeref: pub

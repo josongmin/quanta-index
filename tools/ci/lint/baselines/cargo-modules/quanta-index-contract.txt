@@ -145,10 +145,10 @@ crate quanta_index_contract
 │   │   │   ├── enum SearchScopeSurface: pub
 │   │   │   ├── struct SearchScopeSurfaceVisitor: pub(self)
 │   │   │   │   └── type Value: pub(self)
-│   │   │   ├── struct SourceBytesBuf: pub(self)
+│   │   │   ├── struct SourceBytesBuf: pub(super)
 │   │   │   ├── struct SourceBytesVisitor: pub(self)
 │   │   │   │   └── type Value: pub(self)
-│   │   │   └── struct SourceBytesWire: pub(self)
+│   │   │   └── struct SourceBytesWire: pub(super)
 │   │   ├── mod envelope: pub(self)
 │   │   │   ├── enum SearchPlaneIngestIpcRequest: pub
 │   │   │   ├── struct SearchPlaneIngestIpcRequestEnvelope: pub
@@ -277,6 +277,11 @@ crate quanta_index_contract
 │   │   │   ├── struct SemanticTombstoneScope: pub
 │   │   │   └── struct SemanticTombstoneScopeVisitor: pub(self)
 │   │   │       └── type Value: pub(self)
+│   │   ├── mod source_upload: pub(self)
+│   │   │   ├── struct SourcePublicationUploadAck: pub
+│   │   │   ├── struct SourcePublicationUploadCommit: pub
+│   │   │   ├── struct SourcePublicationUploadIdentity: pub
+│   │   │   └── struct SourcePublicationUploadPart: pub
 │   │   └── mod validation: pub(self)
 │   │       └── enum SearchCorpusBatchShapeErrorV1: pub
 │   ├── mod ingest_observation: pub(self)

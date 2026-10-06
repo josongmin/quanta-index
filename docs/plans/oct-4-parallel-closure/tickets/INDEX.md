@@ -19,7 +19,7 @@
 - 후속 code checkpoint는 `4cc8f5b94f1a3cca57890d1b4f29687b38cb96cb`다. Digest-fallibility의
   정책 hash 설명 누락을 문서3줄로 수리했으며 함수 body bytes는 동일하다. Gate는19sites/0violations다.
   Large/XL 실제 OS-child restart 회귀2개와 exact ignored 등록을 추가했고 Medium 기본 profile은 유지했다.
-  Test-authority·ignored-policy·owned rustfmt가 `VERIFIED`; 새 OS3 selectors actual은 `NOT_RUN`이다.
+  Test-authority·ignored-policy·owned rustfmt가 `VERIFIED`다. 아래 OS3 실제 실패와 후속 재실행을 구분한다.
 - Actual 영향 회귀: Scale source74bdc9b4의 `just rust-test-e2e`는214passed/1skipped·301.789s다.
   Fast/risk/DSL/active-selection4binaries 범위이며 전체 runtime suite가 아니다.
   Main 영향 F15 owner nextest는79passed/527skipped·203.351s다. `file_authority::` unit 및
@@ -31,25 +31,34 @@
   대조 뒤 main에 통합했으며 owned rustfmt가 `VERIFIED`다. JSON profile은 객체/중복 필드를 검사하고
   Result를 caller까지 전파한다. 새 negative1건의 actual 실행은 workspace unit 범위에 남는다.
   재검사38e44040은 upload/harness를 지나 기존 runtime test2paths의 lint5건에서 `FAILED`였다.
-  Source2ea1408d의 test-only 수정도 exact guards로 main에 통합했다. 해당 clean owner/cache에서
-  원본 Medium256/Large4096/XL32768 OS3 selectors를 등록했으며 admission 대기다.
-  `/private/tmp/qi-scale-os3-2ea1408d-20261006-v1.log`; test actual terminal은 아직 `NOT_RUN`이다.
-  전체 Clippy 재검사와 controlled fuzz·workspace unit·release·Large/XL actual은 진행 중이다.
+  Source2ea1408d의 test-only 수정도 exact guards로 main에 통합했다. 해당 source의 OS3 실제 실행은
+  `FAILED`: runtime_extended_suite 컴파일에서 새 SourcePublicationUploadAck match3곳이 누락돼 exit101이었다.
+  `/private/tmp/qi-scale-os3-2ea1408d-20261006-v1.log`; 테스트는 실행되지 않았다. 두 helper의 closed match를
+  exact guards로 보완하고 unit test의 미선언 anyhow 사용1줄도 기존 Box<dyn Error> 변환으로 수리했다.
+  후속 clean owner05bdaeb9/cache에서 원본 Medium256/Large4096/XL32768 exact3 selector가 실제 컴파일 중이다.
+  Dispatch log `/private/tmp/qi-scale-os3-e56fcad7-20261006-v2.log`의 파일명은 예상 source이며 actual은05bdaeb9다.
+  전체 workspace unit은 앞선 컴파일 실패 뒤 재실행 전 `NOT_RUN`, 전체 Clippy도 마지막 실패 뒤 재실행 전이다.
+  Controlled ipc_request_decode는970,826runs/61s/exit0로 `VERIFIED`; 남은 fuzz3은 미입장 취소 뒤 `NOT_RUN`이다.
+  Source2ea1408d release scale_matrix build는18m16s/exit0로 `VERIFIED`, native Large/XL 실제 실행은 남는다.
   Main source31828561의 CircleCI verify1741도 동일3건, verify-python1742는 미통합 module baseline에서
-  `FAILED`였다. 새 source의 hosted CI 결과와 앞 단계 뒤의 테스트 성공은 아직 확인되지 않았다.
+  `FAILED`였다. 후속 main e6b1b7e9의 verify1751은 staged-upload test3함수의 strict lint6건에서 exit101,
+  verify-python1752는 같은 미통합 module baseline에서 exit1이었다. Test-only 후보를 exact SHA guards로
+  main에 통합해 기존 조건을 명시적 Err로 유지했다. 새 hosted CI·전체 테스트 성공은 아직 확인되지 않았다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
   Actual admission/pair/full5는 새 selected-source proof·runtime·host slot 전달 전 `NOT_RUN`이다.
 - Public API 담당의 actual contract/SDK API rendering과 contract/core module gates4개는 reviewed 후보와 byte-exact로
-  `VERIFIED`다. SDK public API는 기존 baseline과 동일하다. 독립 external consumer5tests·접근 차단4compile
-  검사는 대기 중이다. API/module baseline3paths는
-  source overlay에서 제외했으며 해당 actual gate와 source guards를 확인한 뒤 통합한다.
+  `VERIFIED`다. SDK public API는 기존 baseline과 동일하다. 독립 external consumer5tests는5passed,
+  접근 차단4compile은 기대한 E0004/E0603 거절로 모두 `VERIFIED`다. API255/module194 input guards와
+  actual output SHA·baseline pre/post SHA를 대조해 baseline3paths를 main에 통합했다.
+  `/private/tmp/qi-api-vkq0qc7t/owner-result.md`가 actual command/selector를 소유한다. Standalone consumer serde1.0.229와
+  producer1.0.228의 lock 차이를 보존하며, daemon/UDS·full SDK·workspace·release proof로 승격하지 않는다.
 - Hosted CircleCI source7fb46415는 `FAILED`다. Verify1730은 upload 코드의 rustfmt drift에서 exit1,
   verify-python1729는 contract/core guarded module tree의 새 upload DTO/port 및 sibling byte wrapper
   visibility baseline 누락에서 exit1이었다. 포맷은 Scale, 두 module baseline과 공개 API는 API 담당이 소유한다.
-  이 source의 Clippy·뒤쪽 Python gates는 앞 단계 실패로 실행되지 않았다.
-- 확인 시 main은 clean `bc18e67e63ebd5914bb679d2aeb25ae498c4d2f9`였다. 새 bounded source-upload
+  이 source의 Clippy·뒤쪽 Python gates는 앞 단계 실패로 실행되지 않았다. 이후 수리와 baseline 통합 뒤 새 hosted CI를 확인한다.
+- 이번 통합 직전 main은 clean `e6b1b7e9703fbace81c03a8b59b3168cf3715673`였다. 새 bounded source-upload
   코드가 추가됐으며 이전 Clippy/598 lexical/Frozen5796 proof를 그 source의 최종 증거로 승격하지 않는다.
 - Ready9 OG는 source63ac에서9/9 capture·독립 `live_lexical_external.py --verify`가 `VERIFIED`다.
   각20tasks/총180tasks,18개 실행 exit0. 결과는 `/private/tmp/qi-parallel-ready9-20261006-v1/actual-run-v1/result.json`.

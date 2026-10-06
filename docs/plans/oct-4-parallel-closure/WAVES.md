@@ -63,9 +63,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 - sourcea84f237c에 clean74bdc9b4의39 owned paths를 exact pre/post SHA로 통합했다.
   SDK caller/binding·staged publication·streaming digest·bounded CBOR scratch·명시적 scale profile을 포함한다.
-  Owned Rust30paths rustfmt·diff 검사는 `VERIFIED`다. API/module baseline3paths는 제외했다.
-  Actual contract/SDK API·contract/core module4gates는 reviewed 후보와 byte-exact로 통과했고,
-  SDK public API는 기존과 동일하다. External consumer5tests·접근 차단4compile과 Clippy/LargeXL은 진행 중이다.
+  Owned Rust30paths rustfmt·diff 검사는 `VERIFIED`다. API/module actual4gates·external consumer5tests·
+  접근 차단4compile은 모두 `VERIFIED`다. API255/module194 input bytes 및 actual output/pre/post SHA를 확인하고
+  baseline3paths를 main에 통합했다. SDK public API는 기존과 동일하다. Clippy/LargeXL 실제 종료는 남는다.
   F15 selected actual은 아래79passed 결과이며 matching Contract/fresh SDK는 아직 종료하지 않았다.
   이전 source7fb46415의 CircleCI verify1730/verify-python1729는 각각 upload rustfmt drift와 contract/core
   cargo-modules baseline 누락으로 `FAILED`다. 해당 owned 수리 뒤 새 exact-source CI를 확인한다.
@@ -82,18 +82,22 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   이후 main bc18e67e에 bounded source-upload 코드가 추가돼 Scale 채팅이 SDK/daemon/XL actual을 진행 중이다.
   Latest Rust/runtime 영향 회귀·final Contract/SDK·Ready9 full5 join은 아직 남는다.
 - 후속 source4cc8f5b9의 digest 설명과 Large/XL realOS-child owner 회귀를 통합했다.
-  Test-authority·ignored-policy·포맷 검사는 통과했으며 Medium default을 유지한다. OS3 actual은 `NOT_RUN`이다.
+  Test-authority·ignored-policy·포맷 검사는 통과했으며 Medium default을 유지한다. OS3 실행 결과는 아래 후속 실패/수리와 구분한다.
   Source74bdc9b4 `just rust-test-e2e`는214passed/1skipped·301.789s, main F15 selected79는
   79passed/527skipped·203.351s로 `VERIFIED`다. 영향 회귀 범위이며 전체 workspace·최종 proof가 아니다.
 - Sourcec93aa614의 workspace strict Clippy는 must-use1·같은 match arm2, 재검사23a52737은
   harness의 같은 arm2·JSON indexing6에서 각각 `FAILED`였다. Source23a52737/38e44040의4-path
   수정은 exact guards로 main에 통합했고 포맷 검사는 통과했다. JSON 객체/중복 필드 거절과 Result 전파를 추가했다.
   이후38e44040은 runtime test2paths의 lint5건에서 실패했다. Source2ea1408d의 test-only delta도
-  exact guards로 main에 통합했다. Clean2ea owner/cache에서 Medium256/Large4096/XL32768
-  OS3 exact selector를 등록했으며 admission 대기·actual terminal `NOT_RUN`이다.
-  전체 Clippy 재검사·controlled fuzz·workspace unit·release·Large/XL은 진행 중이다.
+  exact guards로 main에 통합했다. Source2ea의 OS3 실제 실행은 compile exit101로 `FAILED`, 테스트는 실행되지 않았다.
+  SourcePublicationUploadAck 누락3곳을 closed match로 수리했고 unit의 미선언 anyhow1줄도 기존 오류 변환으로 고쳤다.
+  Clean05bdaeb9/cache에서 Medium256/Large4096/XL32768 exact3 selector의 실제 컴파일이 진행 중이다.
+  Request-decode fuzz970,826runs/61s는 통과했고 남은 fuzz3은 미입장 취소 후 `NOT_RUN`이다.
+  Source2ea release scale_matrix build18m16s/exit0는 `VERIFIED`; 전체 Clippy/unit 재검사와 native Large/XL은 남는다.
   Hosted source31828561의 verify1741도 동일3건, verify-python1742는 module baseline에서 실패했다.
-  새 source의 실제 CI·API/consumer·OS3·formal proof를 확인한 뒤 Ready9 final 실행을 연결한다.
+  후속 e6b1b7e9의 hosted verify1751은 staged-upload test-only lint6건, verify-python1752는 baseline에서 실패했다.
+  Test-only1path를 기존 invariant를 유지해 수리·통합했다. API/consumer actual은 종료했으며
+  새 source의 실제 CI·OS3·formal proof를 확인한 뒤 Ready9 final 실행을 연결한다.
 - Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
 - 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.
   Large default30s timeout과 XL preflight4M posting 거절은 `FAILED`다.

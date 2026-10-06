@@ -429,13 +429,21 @@ fn staged_over_limit_publication_is_refused_typed_without_disk_or_event_mutation
         }),
         &RequestBudgetV1::unbounded(),
     );
-    assert_eq!(
-        typed_code_of(&response),
-        Some(quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest)
-    );
-    assert_eq!(std::fs::read_dir(path)?.count(), 0);
-    assert_eq!(catalog.records(), 0);
-    assert_eq!(runtime.applies.load(Ordering::SeqCst), 0);
+    if typed_code_of(&response)
+        != Some(quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest)
+    {
+        return Err(
+            format!("over-limit upload did not return InvalidRequest: {response:?}").into(),
+        );
+    }
+    let staged_files = std::fs::read_dir(path)?.count();
+    let recorded_events = catalog.records();
+    let applied_batches = runtime.applies.load(Ordering::SeqCst);
+    if staged_files != 0 || recorded_events != 0 || applied_batches != 0 {
+        return Err(format!(
+            "over-limit upload mutated state: files={staged_files}, events={recorded_events}, applies={applied_batches}"
+        ).into());
+    }
     Ok(())
 }
 
@@ -448,30 +456,33 @@ fn staged_unsealed_publication_is_refused_before_source_reservation() -> TestRes
     use quanta_index_ipc::{SourcePublicationUploadStore, source_publication_upload_identity};
     let catalog = memory_catalog();
     let (materializer, _fakes) = search_corpus_materializer(catalog.clone(), true, false);
-    let port = Arc::new(CountingSearchCorpus::new(materializer));
+    let materializer_port = Arc::new(CountingSearchCorpus::new(materializer));
     let root = tempfile::tempdir()?;
-    let dispatcher = search_corpus_dispatcher_with_port(port.clone(), catalog.clone())
+    let dispatcher = search_corpus_dispatcher_with_port(materializer_port.clone(), catalog.clone())
         .with_source_upload(Arc::new(SourcePublicationUploadStore::open(
             root.path().join("uploads"),
             quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
         )?));
     let mut batch = fixture_search_corpus_batch()?;
     batch.seal = false;
-    let _digest = stamp_batch_digest_v1(&mut batch)?;
+    stamp_batch_digest_v1(&mut batch)?;
     let identity = source_publication_upload_identity(&batch)?;
     let bytes = quanta_index_ipc::encode_cbor_payload(&batch)?;
     let budget = RequestBudgetV1::unbounded();
-    assert!(matches!(
-        dispatcher.dispatch(
-            SearchPlaneIngestIpcRequest::StageSourcePublication(SourcePublicationUploadPart {
-                identity,
-                offset: 0,
-                bytes,
-            }),
-            &budget
-        ),
+    let staged = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::StageSourcePublication(SourcePublicationUploadPart {
+            identity,
+            offset: 0,
+            bytes,
+        }),
+        &budget,
+    );
+    if !matches!(
+        staged,
         SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
-    ));
+    ) {
+        return Err(format!("unsealed upload staging did not return an ACK: {staged:?}").into());
+    }
     let response = dispatcher.dispatch(
         SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(
             SourcePublicationUploadCommit {
@@ -484,19 +495,23 @@ fn staged_unsealed_publication_is_refused_before_source_reservation() -> TestRes
     let SearchPlaneIngestIpcResponse::Error(error) = response else {
         return Err("unsealed staged publication was accepted".into());
     };
-    assert!(
-        error.message.contains("requires a sealed batch"),
-        "{}",
-        error.message
-    );
-    assert_eq!(port.preflights(), 0);
-    assert_eq!(port.applies(), 0);
-    assert!(
-        catalog
-            .source_publication
-            .inspect_source_event(&batch.repo_id, &batch.source_event)?
-            .is_none()
-    );
+    if !error.message.contains("requires a sealed batch") {
+        return Err(format!(
+            "unsealed refusal did not identify seal policy: {}",
+            error.message
+        )
+        .into());
+    }
+    if materializer_port.preflights() != 0 || materializer_port.applies() != 0 {
+        return Err("unsealed publication reached materializer preflight or apply".into());
+    }
+    if catalog
+        .source_publication
+        .inspect_source_event(&batch.repo_id, &batch.source_event)?
+        .is_some()
+    {
+        return Err("unsealed publication reserved a source event".into());
+    }
     Ok(())
 }
 
@@ -510,9 +525,9 @@ fn staged_source_publication_is_inert_until_commit_and_replays_one_original_even
 
     let catalog = memory_catalog();
     let (materializer, _fakes) = search_corpus_materializer(catalog.clone(), true, false);
-    let port = Arc::new(CountingSearchCorpus::new(materializer));
+    let materializer_port = Arc::new(CountingSearchCorpus::new(materializer));
     let root = tempfile::tempdir()?;
-    let dispatcher = search_corpus_dispatcher_with_port(port.clone(), catalog.clone())
+    let dispatcher = search_corpus_dispatcher_with_port(materializer_port.clone(), catalog.clone())
         .with_source_upload(Arc::new(SourcePublicationUploadStore::open(
             root.path().join("uploads"),
             quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
@@ -520,11 +535,15 @@ fn staged_source_publication_is_inert_until_commit_and_replays_one_original_even
     let batch = fixture_search_corpus_batch()?;
     let identity = source_publication_upload_identity(&batch)?;
     let bytes = quanta_index_ipc::encode_cbor_payload(&batch)?;
-    let split = bytes.len() / 2;
-    let part = |offset: usize, bytes: &[u8]| {
+    // One byte is a nonempty durable prefix; the remaining bytes complete the batch.
+    let (prefix, suffix) = bytes.split_at_checked(1).ok_or("fixture body is empty")?;
+    if suffix.is_empty() {
+        return Err("fixture body must retain bytes after its first-byte prefix".into());
+    }
+    let upload_request = |offset: u64, bytes: &[u8]| {
         SearchPlaneIngestIpcRequest::StageSourcePublication(SourcePublicationUploadPart {
             identity,
-            offset: u64::try_from(offset).expect("fixture offset"),
+            offset,
             bytes: bytes.to_vec(),
         })
     };
@@ -533,81 +552,102 @@ fn staged_source_publication_is_inert_until_commit_and_replays_one_original_even
         identity,
         publication: SourcePublicationBinding::for_batch(&batch),
     };
-    assert!(matches!(
-        dispatcher.dispatch(part(0, bytes.get(..split).expect("first half")), &budget),
+    let prefix_ack = dispatcher.dispatch(upload_request(0, prefix), &budget);
+    if !matches!(
+        prefix_ack,
         SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
-    ));
-    assert!(matches!(
-        dispatcher.dispatch(
-            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit.clone()),
-            &budget
-        ),
-        SearchPlaneIngestIpcResponse::Error(_)
-    ));
-    assert_eq!(port.preflights(), 0);
-    assert_eq!(port.applies(), 0);
-    assert!(
-        catalog
-            .source_publication
-            .inspect_source_event(&batch.repo_id, &batch.source_event)?
-            .is_none()
+    ) {
+        return Err(format!("prefix staging did not return an ACK: {prefix_ack:?}").into());
+    }
+    let incomplete = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit.clone()),
+        &budget,
     );
+    if !matches!(incomplete, SearchPlaneIngestIpcResponse::Error(_)) {
+        return Err(format!("incomplete commit was accepted: {incomplete:?}").into());
+    }
+    if materializer_port.preflights() != 0 || materializer_port.applies() != 0 {
+        return Err("incomplete upload reached materializer preflight or apply".into());
+    }
+    if catalog
+        .source_publication
+        .inspect_source_event(&batch.repo_id, &batch.source_event)?
+        .is_some()
+    {
+        return Err("incomplete upload reserved a source event".into());
+    }
 
-    assert!(matches!(
-        dispatcher.dispatch(
-            part(split, bytes.get(split..).expect("second half")),
-            &budget
-        ),
+    let suffix_ack = dispatcher.dispatch(upload_request(1, suffix), &budget);
+    if !matches!(
+        suffix_ack,
         SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
-    ));
+    ) {
+        return Err(format!("suffix staging did not return an ACK: {suffix_ack:?}").into());
+    }
     let mut swapped = commit.clone();
     swapped.publication.event.event_id = "foreign-event".into();
-    assert!(matches!(
-        dispatcher.dispatch(
-            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(swapped),
-            &budget
-        ),
-        SearchPlaneIngestIpcResponse::Error(_)
-    ));
-    assert_eq!(port.applies(), 0);
-    assert!(
-        catalog
-            .source_publication
-            .inspect_source_event(&batch.repo_id, &batch.source_event)?
-            .is_none()
+    let foreign = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(swapped),
+        &budget,
     );
+    if !matches!(foreign, SearchPlaneIngestIpcResponse::Error(_)) {
+        return Err(format!("foreign publication binding was accepted: {foreign:?}").into());
+    }
+    if materializer_port.applies() != 0 {
+        return Err("foreign binding reached materializer apply".into());
+    }
+    if catalog
+        .source_publication
+        .inspect_source_event(&batch.repo_id, &batch.source_event)?
+        .is_some()
+    {
+        return Err("foreign binding reserved the original source event".into());
+    }
 
     let original = receipt_of(dispatcher.dispatch(
         SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit.clone()),
         &budget,
     ))?;
-    assert_eq!(original.generation, batch.generation);
-    assert_eq!(original.batch_digest, batch.batch_digest);
-    assert_eq!(port.applies(), 1);
+    if original.generation != batch.generation || original.batch_digest != batch.batch_digest {
+        return Err(
+            format!("committed receipt changed the original batch identity: {original:?}").into(),
+        );
+    }
+    if materializer_port.applies() != 1 {
+        return Err("complete upload did not apply exactly once".into());
+    }
     let source = catalog
         .source_publication
         .inspect_source_event(&batch.repo_id, &batch.source_event)?
         .ok_or("original event missing")?;
-    assert_eq!(source.binding.event, commit.publication.event);
-    assert_eq!(source.binding.target, commit.publication.target);
-    assert_eq!(
-        source.binding.journal_key.batch_digest,
-        commit.publication.batch_digest
-    );
-    assert_eq!(source.phase, quanta_index_core::SourceEventPhaseV1::Staged);
+    if source.binding.event != commit.publication.event
+        || source.binding.target != commit.publication.target
+        || source.binding.journal_key.batch_digest != commit.publication.batch_digest
+        || source.phase != quanta_index_core::SourceEventPhaseV1::Staged
+    {
+        return Err(format!("committed source binding or phase drifted: {source:?}").into());
+    }
 
     // A lost commit response can be retried after the staging file was removed.
-    assert!(matches!(
-        dispatcher.dispatch(part(0, &bytes), &budget),
+    let retry_ack = dispatcher.dispatch(upload_request(0, &bytes), &budget);
+    if !matches!(
+        retry_ack,
         SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
-    ));
+    ) {
+        return Err(format!("lost-response reupload did not return an ACK: {retry_ack:?}").into());
+    }
     let replay = receipt_of(dispatcher.dispatch(
         SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit),
         &budget,
     ))?;
-    assert!(!replay.applied);
-    assert_eq!(replay.durable_sequence, original.durable_sequence);
-    assert_eq!(port.applies(), 1);
+    if replay.applied
+        || replay.durable_sequence != original.durable_sequence
+        || materializer_port.applies() != 1
+    {
+        return Err(
+            format!("lost-response retry did not replay the original apply: {replay:?}").into(),
+        );
+    }
     Ok(())
 }
 

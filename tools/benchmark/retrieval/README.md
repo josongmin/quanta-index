@@ -103,7 +103,9 @@ The ordinary 128 MiB IPC decoded-request limit remains in force. Commit reads
 the bounded complete batch DTO from disk; this transport does not provide a
 constant-memory decoder for arbitrarily large individual publications.
 Searchd's ordinary ingest text default remains 64 MiB. A standalone daemon
-using this scale capacity must set `QUANTA_INDEX_INGEST_MAX_TEXT_BYTES=134217728`,
+using this scale capacity must set `QUANTA_INDEX_INGEST_MAX_RECORDS=100000`,
+`QUANTA_INDEX_INGEST_MAX_TEXT_BYTES=134217728`,
+`QUANTA_INDEX_INGEST_MAX_VECTOR_BYTES=268435456`,
 `QUANTA_INDEX_SOURCE_PUBLICATION_MAX_BYTES=536870912` and
 `QUANTA_INDEX_PROCESS_MEMORY_CEILING_BYTES=4294967296`,
 configure the matching history bounds and use an explicit client timeout.
