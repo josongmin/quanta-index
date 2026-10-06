@@ -3074,7 +3074,7 @@ mod native_corpus_decode_tests_v1 {
                 self.owned_ids
                     .get()
                     .checked_add(1)
-                    .expect("fixture identity count fits u32"),
+                    .ok_or(Self::Error::Admission)?,
             );
             RepoId::new(value).map_err(Self::Error::Identity)
         }
@@ -3084,7 +3084,7 @@ mod native_corpus_decode_tests_v1 {
                 self.borrowed_ids
                     .get()
                     .checked_add(1)
-                    .expect("fixture identity count fits u32"),
+                    .ok_or(Self::Error::Admission)?,
             );
             RepoId::new(value).map_err(Self::Error::Identity)
         }
@@ -3094,7 +3094,7 @@ mod native_corpus_decode_tests_v1 {
                 self.owned_ids
                     .get()
                     .checked_add(1)
-                    .expect("fixture identity count fits u32"),
+                    .ok_or(Self::Error::Admission)?,
             );
             RevisionId::new(value).map_err(Self::Error::Identity)
         }
@@ -3104,7 +3104,7 @@ mod native_corpus_decode_tests_v1 {
                 self.borrowed_ids
                     .get()
                     .checked_add(1)
-                    .expect("fixture identity count fits u32"),
+                    .ok_or(Self::Error::Admission)?,
             );
             RevisionId::new(value).map_err(Self::Error::Identity)
         }
