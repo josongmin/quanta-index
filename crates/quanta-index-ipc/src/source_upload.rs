@@ -209,8 +209,9 @@ fn busy(message: &str) -> CoreError {
     }
 }
 
-/// Check cancellation at each bounded buffer refill, before reading or
-/// materializing more staged bytes. Keep the typed interruption across CBOR's
+/// Check cancellation before each bounded buffer refill.
+///
+/// Keep the typed interruption across CBOR's
 /// I/O error wrapper instead of reporting a cancelled request as invalid input.
 struct BudgetReader<'a, R> {
     inner: R,
@@ -230,10 +231,9 @@ impl<'a, R> BudgetReader<'a, R> {
     }
 
     fn preserve_interruption(&mut self, otherwise: CoreError) -> CoreError {
-        match self.interruption.take() {
-            Some(interruption) => interruption,
-            None => otherwise,
-        }
+        self.interruption
+            .take()
+            .map_or(otherwise, std::convert::identity)
     }
 }
 
