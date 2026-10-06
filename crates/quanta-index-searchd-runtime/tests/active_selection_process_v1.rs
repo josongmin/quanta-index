@@ -34,6 +34,41 @@ use quanta_index_searchd_harness::{fixture_source_scope_v1, private_tempdir};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+// Keep the original thread panic payload in the test error. String payloads
+// remain readable; other payloads retain their concrete type for inspection.
+struct ThreadPanic {
+    worker: &'static str,
+    payload: Box<dyn std::any::Any + Send + 'static>,
+}
+
+impl std::fmt::Display for ThreadPanic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(message) = self
+            .payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| self.payload.downcast_ref::<&str>().copied())
+        {
+            write!(f, "{} panicked: {message}", self.worker)
+        } else {
+            write!(
+                f,
+                "{} panicked with non-string payload of type {:?}",
+                self.worker,
+                self.payload.as_ref().type_id()
+            )
+        }
+    }
+}
+
+impl std::fmt::Debug for ThreadPanic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl Error for ThreadPanic {}
+
 const REPO: &str = "repo-active-process-race";
 const REVISION: &str = "revision-active-process-race";
 const WAIT: Duration = Duration::from_secs(10);
@@ -86,8 +121,10 @@ fn corpus_batch(number: u64) -> Result<SearchCorpusBatch, Box<dyn Error>> {
     .source_event(SourcePublicationEvent {
         stream_id: "fixture:active-process-race".to_string(),
         event_id: format!("fixture:active-process-race:g{number}"),
-        expected_base_event_id: (number > 1)
-            .then(|| format!("fixture:active-process-race:g{}", number - 1)),
+        expected_base_event_id: number
+            .checked_sub(1)
+            .filter(|previous| *previous != 0)
+            .map(|previous| format!("fixture:active-process-race:g{previous}")),
         payload_sha256: [0; 32],
     })
     .replace_scope(
@@ -253,9 +290,10 @@ fn run_child() -> TestResult {
     });
     let result = quanta_index_searchd::drive(runtime, &shutdown);
     shutdown.store(true, Ordering::Release);
-    monitor
-        .join()
-        .map_err(|_| "active child inspector monitor panicked")??;
+    monitor.join().map_err(|payload| ThreadPanic {
+        worker: "active child inspector monitor",
+        payload,
+    })??;
     result?;
     Ok(())
 }
@@ -385,9 +423,10 @@ fn os_child_active_selection_retired_before_view_refuses_without_opening_g1() ->
     let opens_before = acquire_attempts(&inspect_path)?;
     gate.write_all(&[1])
         .map_err(|error| format!("active parent gate release write: {error}"))?;
-    let stale = stalled
-        .join()
-        .map_err(|_| "stalled query thread panicked")??;
+    let stale = stalled.join().map_err(|payload| ThreadPanic {
+        worker: "stalled query thread",
+        payload,
+    })??;
     if !matches!(
         &stale,
         SearchPlaneQueryIpcResponse::Error(error)
