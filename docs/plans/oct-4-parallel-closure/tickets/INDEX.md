@@ -46,7 +46,10 @@
   Main source31828561의 CircleCI verify1741도 동일3건, verify-python1742는 미통합 module baseline에서
   `FAILED`였다. 후속 main e6b1b7e9의 verify1751은 staged-upload test3함수의 strict lint6건에서 exit101,
   verify-python1752는 같은 미통합 module baseline에서 exit1이었다. Test-only 후보를 exact SHA guards로
-  main에 통합해 기존 조건을 명시적 Err로 유지했다. 새 hosted CI·전체 테스트 성공은 아직 확인되지 않았다.
+  main에 통합해 기존 조건을 명시적 Err로 유지했다. 후속080568c7 verify1754는
+  active_selection_process_v1의 arithmetic1·panic map_err2에서 exit101이었다. Test-only1path를
+  checked predecessor 및 원본 payload 보존형 ThreadPanic으로 수리·통합했고 포맷/guards는 통과했다.
+  실제 strict Clippy·전체 테스트 재검사는 남는다. Python1753은 확인 시 실행 중이었다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.

@@ -99,7 +99,8 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   Hosted source31828561의 verify1741도 동일3건, verify-python1742는 module baseline에서 실패했다.
   후속 e6b1b7e9의 hosted verify1751은 staged-upload test-only lint6건, verify-python1752는 baseline에서 실패했다.
   Test-only1path를 기존 invariant를 유지해 수리·통합했다. API/consumer actual은 종료했으며
-  새 source의 실제 CI·OS3·formal proof를 확인한 뒤 Ready9 final 실행을 연결한다.
+  후속080568c7 verify1754의 Active-process test-only lint3건도 checked predecessor/panic payload 보존으로
+  수리·통합했다. 실제 strict Clippy·전체 테스트는 재검증하며, XL coverage 및 final proof 뒤 Ready9 실행을 연결한다.
 - Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
   admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며
   exact793collection·각 누락 거절을 확인했다. Rust/SDK 목록과 Frozen5796 결과는 그대로 유지한다.
