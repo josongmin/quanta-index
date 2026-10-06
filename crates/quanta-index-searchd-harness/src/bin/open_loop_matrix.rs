@@ -291,7 +291,12 @@ mod tests {
         expect_json_eq(
             &value,
             "/history_policy/history_max_bytes",
-            &serde_json::json!(16_777_216),
+            &serde_json::json!(1_073_741_824),
+        )?;
+        expect_json_eq(
+            &value,
+            "/history_policy/history_max_total_bytes",
+            &serde_json::json!(2_147_483_648_u64),
         )?;
         expect_json_eq(
             &value,
@@ -306,7 +311,7 @@ mod tests {
         expect_json_eq(
             &value,
             "/history_policy/history_policy_id",
-            &serde_json::json!("harness-default-v1"),
+            &serde_json::json!("scale-supported-v1"),
         )?;
         expect_json_eq(
             &value,
@@ -342,17 +347,17 @@ mod tests {
         expect_json_eq(
             &value,
             "/history_policy/history_max_bytes",
-            &serde_json::json!(bytes),
+            &serde_json::json!(268_435_456),
         )?;
         expect_json_eq(
             &value,
             "/history_policy/requested_history_max_bytes",
-            &serde_json::json!(bytes),
+            &serde_json::json!(268_435_456),
         )?;
         expect_json_eq(
             &value,
             "/history_policy/history_max_total_bytes",
-            &serde_json::json!(bytes),
+            &serde_json::json!(2_147_483_648_u64),
         )?;
         expect_json_eq(
             &value,

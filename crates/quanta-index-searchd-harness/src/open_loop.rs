@@ -1619,8 +1619,18 @@ mod tests {
         let default = artifact(&report, head.clone(), host.clone())?.to_json()?;
         ensure!(
             required_json(&default, "/detail/history_policy/history_max_bytes")?
-                == &json!(16_777_216),
+                == &json!(1_073_741_824),
             "default history max bytes changed"
+        );
+        ensure!(
+            required_json(&default, "/detail/history_policy/history_max_total_bytes")?
+                == &json!(2_147_483_648_u64),
+            "default total history max bytes changed"
+        );
+        ensure!(
+            required_json(&default, "/detail/history_policy/history_policy_id")?
+                == &json!("scale-supported-v1"),
+            "default history policy changed"
         );
         ensure!(
             required_json(&default, "/detail/history_policy/history_max_generations")? == &json!(8),
@@ -1632,6 +1642,13 @@ mod tests {
                 "/detail/history_policy/requested_history_max_bytes"
             )? == &Value::Null,
             "default history request must be null"
+        );
+        ensure!(
+            required_json(
+                &default,
+                "/detail/history_policy/requested_history_max_total_bytes"
+            )? == &Value::Null,
+            "default total history request must be null"
         );
         report.config.history_max_bytes = Some(268_435_456);
         let explicit = artifact(&report, head.clone(), host.clone())?.to_json()?;
