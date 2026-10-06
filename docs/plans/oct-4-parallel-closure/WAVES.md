@@ -80,7 +80,10 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   SDK IO/socket/readiness600s와 서버 query dispatch 기본20s의 불일치를 확인했다.
   Large/XL supported profile의 서버 query dispatch도600s로 결속하는 test env4줄을 추가했다.
   Medium·제품 기본 정책·독립 oracle은 불변이며 owned fmt/diff는 `VERIFIED`, 실제 재검증은
-  `NOT_RUN`이다. Query owner cold-open 비용 RCA를 진행한다. 원본 corpus/seed/caps와
+  `NOT_RUN`이다. Root/Scale/독립 감사는 설정 누락을 확인했고 기본20s typed 거절과 별도 제품
+  correctness 결함을 구분했다. 실패 조회의 재시작 전후는 로그로 특정할 수 없다.
+  기존492 release binary와 query600s 환경을 재사용하는 XL exact1을 준비했으며 새 cold build는
+  등록하지 않았다. 결과는 frozen492+명시적 환경 범위다. 원본 corpus/seed/caps와
   실패 raw는 보존한다. 이는 데이터 보존 회귀이며 indexing latency/timing/RSS qualification이 아니다.
   Debug interruption1개는 정상 admission 대기 중이며 Ready9 stage/final slot은 미발행이다.
 - 최신 main38eda80a에는 normalization vendor/native scratch feature/control 수리42paths가
@@ -88,6 +91,7 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   exit0/28workspace로 dependency 해석 `VERIFIED`다. 새 Rust·module/API·whole CI는 별도 actual이
   필요하며 진행 중인 선택565 proof를 이 main의 결과로 재표기하지 않는다.
 - 최신 Source565의 affected owner46개는 실제46/46·1.126s/exit0로 `VERIFIED`다.
+  같은 소스의 open-loop full20개도 실제20/20·5.208s/exit0·lease release로 `VERIFIED`다.
   SDK565 daemon fresh release build도29m04s/exit0다. Whole workspace 및 SDK27개/portable
   proof의 실제 결과는 아직 남는다.
 - Source565 Contract Python793개는 실제 `VERIFIED`(289.98s)다. Rust191 inventory의 build는

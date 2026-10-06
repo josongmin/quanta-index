@@ -26,7 +26,7 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 | 범위 | 담당 | 실제 잔여 |
 | --- | --- | --- |
 | Manifest 복호화 메모리 경계 | I0 / E4 | 전체 generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. 최신 Source565의 IPC/CBOR/manifest owner46개가 actual PASS·1.126s이며 whole/strict/integration 소비 검증이 남는다 |
-| Workspace 검사·단위 테스트 | Scale / hosted CI | Source886 owner46/46·3.600s와 open-loop bin20/20·13.758s가 실제 exit0다. 테스트 모듈 위치만 바꾼565에서 whole unit `--no-fail-fast`/1thread·strict·runtime/integration을 이어간다. Main2c Python1107과 d192 Python1109 전체는 `VERIFIED`; whole Rust는 아직 실패 상태다 |
+| Workspace 검사·단위 테스트 | Scale / hosted CI | Source565 owner46/46·1.126s와 open-loop bin20/20·5.208s가 실제 exit0다. 같은565에서 whole unit `--no-fail-fast`/1thread·strict·runtime/integration을 이어간다. Main2c Python1107과 d192 Python1109 전체는 `VERIFIED`; whole Rust는 아직 실패 상태다 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Source492 release 원본3개는 실제 Medium14.566s·Large84.191s PASS, XL425.966s `FAILED`다. XL은 `lexical:cold-open:file-index`에서 typed `RequestDeadlineExceeded`(+13ms)로 종료했다. Large/XL의 SDK IO600s와 서버 query dispatch 기본20s가 불일치한다. 지원 profile에 서버600s 설정을 추가했고 owned fmt/diff는 PASS다. Cold-open 비용 RCA·실제 XL 재검증과 debug interruption1개가 남는다. Corpus/seed/caps는 불변 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
@@ -44,7 +44,13 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
   Test의 SDK IO/socket/readiness600s는 서버 query dispatch 기본20s를 바꾸지 않는다.
   지원 profile의 Large/XL start_process에 서버 query dispatch600s 설정4줄을 추가했다.
   Medium 및 제품 기본 정책·corpus/seed/caps·독립 결과 oracle은 불변이다. Owned fmt/diff는
-  `VERIFIED`이며 실제 재검증은 `NOT_RUN`이다. Cold-open product 비용 RCA를 별도로 진행한다.
+  `VERIFIED`이며 실제 재검증은 `NOT_RUN`이다. Root/Scale 및 독립 read-only 감사에서 설정 누락을
+  확인했다. 서버의 typed deadline 거절은 기본20s 계약과 일치하며 별도 제품 correctness 결함은
+  아직 확인되지 않았다. Cold-open은113,056,314bytes/17,715,020memberships의 전체 generation을
+  독립 census·비교·identity index로 검증한다. 해당 integrity 검사를 생략하지 않는다.
+  로그로는 실패 조회가 재시작 전인지 후인지 특정할 수 없다. 기존492 release binary와 explicit
+  query600s 환경을 재사용하는 XL exact1을 준비했고 새 cold build는 등록하지 않았다. 그 결과는
+  frozen492+명시적 환경에만 결속하며 현재 test source 컴파일·기본20s latency와 구분한다.
   `SLOW` 표시는 실패 원인이
   아니며 이 결과는 인덱싱 속도 측정이나 timing/RSS qualification이 아니다. 원본 실패는
   `/private/tmp/qi-scale-os3-release-492d2fdc-20261006-v9/result.json` 및 `run.log`에 보존했다.
@@ -55,6 +61,7 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
   --format-version 1 --no-deps`는 실제 exit0/28workspace로 `VERIFIED`다. 이는 dependency 해석
   범위이며 새 Rust 테스트·module/API·whole CI 성공을 뜻하지 않는다. 선택565는 불변이다.
 - 최신 Source565 owner46개는 실제46/46·1.126s/exit0·lease release로 `VERIFIED`다.
+  같은 Source565 open-loop full20개도 실제20/20·5.208s/exit0·lease release로 `VERIFIED`다.
   SDK565 daemon의 fresh release build도29m04s/exit0다. 두 결과를 전체 workspace 검사나
   SDK27개/portable proof 성공으로 승격하지 않는다.
 - Source565 Contract Python은793passed·289.98s로 실제 `VERIFIED`다. Rust inventory191의
