@@ -443,8 +443,11 @@ def build_manifest(
         contract = validate_contract(root, proof, contract_bytes)
         protected_sources = {contract_path, *contract["actors"].values()}
         # Archived executable source is still source, never a dirty-state exclusion.
-        source_exclusions = [path for path in source_exclusions
-                             if path.relative_to(root).as_posix() not in protected_sources]
+        source_exclusions = [
+            path
+            for path in source_exclusions
+            if path.relative_to(root).as_posix() not in protected_sources
+        ]
     if resolved_binary is not None:
         source_exclusions.append(root / resolved_binary["source_path"])
     if paired_checkout is not None:

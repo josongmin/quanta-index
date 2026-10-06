@@ -342,12 +342,16 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             from tools.ci.proof_operational_result import ACTIONS, validate_contract
 
             if proof_id not in ACTIONS:
-                findings.append(Finding(path, f"{where} operational-action is reserved for P11 actions"))
+                findings.append(
+                    Finding(path, f"{where} operational-action is reserved for P11 actions")
+                )
             if authority_state == "executable":
                 try:
                     contract_path = proof.get("operational_contract")
                     if not isinstance(contract_path, str):
-                        raise ValueError("executable operational action lacks its registry-owned contract")
+                        raise ValueError(
+                            "executable operational action lacks its registry-owned contract"
+                        )
                     raw = HANDOFF_VALIDATION._read_repo_regular_bytes(
                         root, contract_path, label="operational contract"
                     )
@@ -355,9 +359,13 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
                 except (OSError, ValueError, TypeError, KeyError) as error:
                     findings.append(Finding(path, f"{where} operational contract: {error}"))
             if proof.get("test_authority_targets"):
-                findings.append(Finding(path, f"{where} operational action cannot name test targets"))
+                findings.append(
+                    Finding(path, f"{where} operational action cannot name test targets")
+                )
         elif "operational_contract" in proof:
-            findings.append(Finding(path, f"{where} operational contract requires operational-action mode"))
+            findings.append(
+                Finding(path, f"{where} operational contract requires operational-action mode")
+            )
         staged_reason = proof.get("staged_reason")
         if authority_state == "staged":
             if not isinstance(staged_reason, str) or not staged_reason.strip():
@@ -1740,16 +1748,25 @@ def _check_manifest_local(
             )
 
             derived_counts = derive_operational_result(
-                root, proof, execution_result, payload["artifacts"], manifest_binding(payload),
+                root,
+                proof,
+                execution_result,
+                payload["artifacts"],
+                manifest_binding(payload),
                 window=(payload["started_at"], payload["ended_at"]),
             )
             if derived_counts != counts:
                 raise ValueError("manifest counts differ from the observed operational action")
         except (OSError, ValueError, TypeError, KeyError) as error:
-            findings.append(Finding(manifest_path, f"operational result is not authoritative: {error}"))
+            findings.append(
+                Finding(manifest_path, f"operational result is not authoritative: {error}")
+            )
     elif execution_result is not None:
         findings.append(
-            Finding(manifest_path, "execution result is only valid for passed test or operational proofs")
+            Finding(
+                manifest_path,
+                "execution result is only valid for passed test or operational proofs",
+            )
         )
     dependencies = payload["dependency_receipts"]
     archive_stack = (_archive_stack or frozenset()) | {payload["proof_id"]}
@@ -2133,7 +2150,9 @@ def check_aggregate(
         and isinstance(payload["execution_result"].get("target"), dict)
     }
     if len(operational_targets) > 1:
-        findings.append(Finding(path, "aggregate operational actions do not share one target and configuration"))
+        findings.append(
+            Finding(path, "aggregate operational actions do not share one target and configuration")
+        )
     state_root_formats = {
         payload["state_root_format"]
         for proof_id, payload in payload_by_id.items()
