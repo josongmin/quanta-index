@@ -99,6 +99,12 @@
   후속 clean242의 `just rust-policy`15recipes는 actual exit0다. Hosted verify1076의 fmt 및
   `clippy --workspace --all-targets --all-features --locked -- -D warnings`도 actual exit0/373.173s다.
   이는 Linux strict 검사이며 전체 hosted CI·macOS unit/runtime·release/native 종료와 구분한다.
+  같은 source242의 verify-python1075는4181passed/30skipped/2warnings·853.25s 및 Ruff442파일,
+  rust-policy15recipes·semantic-outcomes3families를 통과한 뒤 maintenance의 `join().is_err()` 분기로
+  fallback 규칙 검사에서 exit1/`FAILED`였다. Join 결과를 explicit match로 수리해 취소→sender close→
+  handle take→join 순서와 panic/fatal 판정을 유지했다. `just rust-fallbacks`는19checker tests 및
+  577scoped files/179parsed candidates에서 actual exit0다. 해당 파일 rustfmt/diff도 통과했다.
+  수정된 source의 전체 CI·maintenance actual regression은 별도 검증한다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
@@ -156,8 +162,11 @@
   Cargo/tests0이며 그 결과를 보존한다. V6 clean24860은 build12m exit0 뒤 actual2/3run:
   Large4096 cold restart/delete/rank-bit 비교는 `VERIFIED`, Medium256은47.687s에 기본30s Read timeout으로
   `FAILED`, XL32768은 fail-fast로 `NOT_RUN`이다. Tests1383.037s/producer100·controller1 원본을 보존한다.
-  Host swap35GiB 관측만으로 timeout 원인을 단정하지 않는다. 새 clean82b6af83에서 원본3counts/seed/caps를
-  유지한 release/no-fail-fast 실행을 새 cache namespace로 등록했다. 아직 실제 종료 전이며 timeout 상향은 하지 않았다.
+  Host swap35GiB 관측만으로 timeout 원인을 단정하지 않는다. Clean82b6af83의 원본3counts/seed/caps
+  release/no-fail-fast 요청은 maintenance 후속 수리를 위해 미입장 상태에서 안전 취소했다.
+  Actual exit143/812.1525s·0Cargo/tests·`NOT_RUN`; 새 release target은 생성·컴파일되지 않았다.
+  `/private/tmp/qi-scale-os3-release-82b6af83-20261006-v1/`에 결과를 보존한다.
+  수정된 clean owner source에서 원본 fixture와 cap을 유지해 새 release 실행을 등록한다.
   새 source의 Contract/fresh SDK 실제 발행·독립 portable verify가 남는다.
 - 남은 통합 종료 조건: 새 upload/Scale 및 scanner owner 변경을 포함한 영향 Rust/runtime 회귀,
   최종 selected-source Contract/fresh SDK·portable replay, Ready9 final pair/full5 join과 각 별도 qualification.

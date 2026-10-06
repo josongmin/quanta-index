@@ -140,6 +140,10 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   기존 model2vec license-field warning은 남는다. Main242 `just rust-policy`15recipes는 actual exit0이며
   hosted1076 fmt+workspace/all-targets/all-features/locked strict Clippy도 exit0/373.173s다.
   Linux strict 결과이며 wholeCI/macOS actual unit/runtime/release는 별도 검증한다.
+  같은242 verify-python1075는4181passed/30skipped·853.25s와 Ruff442/rust-policy15/semantic3를
+  통과한 뒤 maintenance의 `join().is_err()` fallback 규칙 위반에서 `FAILED`였다.
+  Explicit match로 기존 취소·sender close·join·fatal 판정을 유지했고 `just rust-fallbacks`는
+  19checker tests/577scoped files에서 exit0다. 파일 rustfmt/diff도 통과했으며 새 whole CI는 남는다.
 - Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
   admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며
   exact793collection·각 누락 거절을 확인했다. Rust/SDK 목록과 Frozen5796 결과는 그대로 유지한다.
@@ -154,7 +158,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   V6 clean24860 원본fixture는 build12m exit0 뒤 tests1383.037s에2/3run1pass1fail/82skip로 종료했다.
   Large4096 cold restart/delete/rank-bit은 통과했고 Medium256은47.687s/default30s Read timeout으로 실패했다.
   XL은 fail-fast로 `NOT_RUN`이다. Host swap35GiB는 관측 사실이며 timeout RCA로 단정하지 않는다.
-  새 clean82b6af83에서 same3counts/seed/caps의 release/no-fail-fast를 fresh cache로 등록했으며 actual 종료는 남는다.
+  Clean82b6af83의 same3counts/seed/caps release/no-fail-fast 요청은 maintenance 후속 수리를 위해
+  미입장 안전 취소했다: actual143/812.1525s/0Cargo/tests·`NOT_RUN`, fresh target 생성·컴파일0.
+  수정된 clean owner source에서 원본 fixture/caps의 새 release 실행을 등록한다.
   새 source와 fresh output에서 canonical Contract/fresh SDK·portable replay를 다시 실행한다.
 - Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
 - 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.
