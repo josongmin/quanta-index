@@ -35,8 +35,11 @@
   `FAILED`: runtime_extended_suite 컴파일에서 새 SourcePublicationUploadAck match3곳이 누락돼 exit101이었다.
   `/private/tmp/qi-scale-os3-2ea1408d-20261006-v1.log`; 테스트는 실행되지 않았다. 두 helper의 closed match를
   exact guards로 보완하고 unit test의 미선언 anyhow 사용1줄도 기존 Box<dyn Error> 변환으로 수리했다.
-  후속 clean owner05bdaeb9/cache에서 원본 Medium256/Large4096/XL32768 exact3 selector가 실제 컴파일 중이다.
-  Dispatch log `/private/tmp/qi-scale-os3-e56fcad7-20261006-v2.log`의 파일명은 예상 source이며 actual은05bdaeb9다.
+  후속 clean owner05bdaeb9/cache의 원본 exact3 실제 실행은 `FAILED`: Medium256(21.737s)·Large4096(315.266s)
+  통과, XL32768은102.939s에 IngestResourceBudgetExceeded로 거절됐다. 총439.947s/2passed/1failed/82skipped다.
+  `/private/tmp/qi-scale-os3-05bdaeb9-20261006-v2.log`; coverage_pages decode_root의 encoded64MiB/heap256MiB
+  envelope가 원인이다. Supported profile·writer preflight·cold decode/reopen·runtime charge의 canonical 계약을 수리한다.
+  원본 dispatch 예상 source e56 로그와 실제05 source binding을 보존했으며 fixture/seed를 줄이지 않는다.
   전체 workspace unit은 앞선 컴파일 실패 뒤 재실행 전 `NOT_RUN`, 전체 Clippy도 마지막 실패 뒤 재실행 전이다.
   Controlled ipc_request_decode는970,826runs/61s/exit0로 `VERIFIED`; 남은 fuzz3은 미입장 취소 뒤 `NOT_RUN`이다.
   Source2ea1408d release scale_matrix build는18m16s/exit0로 `VERIFIED`, native Large/XL 실제 실행은 남는다.

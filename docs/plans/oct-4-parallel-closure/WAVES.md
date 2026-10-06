@@ -91,7 +91,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   이후38e44040은 runtime test2paths의 lint5건에서 실패했다. Source2ea1408d의 test-only delta도
   exact guards로 main에 통합했다. Source2ea의 OS3 실제 실행은 compile exit101로 `FAILED`, 테스트는 실행되지 않았다.
   SourcePublicationUploadAck 누락3곳을 closed match로 수리했고 unit의 미선언 anyhow1줄도 기존 오류 변환으로 고쳤다.
-  Clean05bdaeb9/cache에서 Medium256/Large4096/XL32768 exact3 selector의 실제 컴파일이 진행 중이다.
+  Clean05bdaeb9/cache exact3 실제 실행은2passed/1failed/82skipped·439.947s로 `FAILED`다.
+  Medium256·Large4096은 통과했고 XL32768은 coverage decode residency envelope에서 typed 거절됐다.
+  Canonical envelope/profile·writer preflight·cold decode/reopen/runtime charge 정합 수리 뒤 원본XL을 재실행한다.
   Request-decode fuzz970,826runs/61s는 통과했고 남은 fuzz3은 미입장 취소 후 `NOT_RUN`이다.
   Source2ea release scale_matrix build18m16s/exit0는 `VERIFIED`; 전체 Clippy/unit 재검사와 native Large/XL은 남는다.
   Hosted source31828561의 verify1741도 동일3건, verify-python1742는 module baseline에서 실패했다.
