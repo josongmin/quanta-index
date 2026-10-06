@@ -85,8 +85,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   Test-authority·ignored-policy·포맷 검사는 통과했으며 Medium default을 유지한다. OS3 actual은 `NOT_RUN`이다.
   Source74bdc9b4 `just rust-test-e2e`는214passed/1skipped·301.789s, main F15 selected79는
   79passed/527skipped·203.351s로 `VERIFIED`다. 영향 회귀 범위이며 전체 workspace·최종 proof가 아니다.
-- Sourcec93aa614의 workspace strict Clippy는 must-use1·같은 match arm2에서 `FAILED`였다.
-  Source23a52737의 동작 동일2-path 수정은 exact guards로 main에 통합했고 포맷 검사는 통과했다.
+- Sourcec93aa614의 workspace strict Clippy는 must-use1·같은 match arm2, 재검사23a52737은
+  harness의 같은 arm2·JSON indexing6에서 각각 `FAILED`였다. Source23a52737/38e44040의4-path
+  수정은 exact guards로 main에 통합했고 포맷 검사는 통과했다. JSON 객체/중복 필드 거절과 Result 전파를 추가했다.
   전체 Clippy 재검사·controlled fuzz·workspace unit·release·Large/XL은 진행 중이다.
   Hosted source31828561의 verify1741도 동일3건, verify-python1742는 module baseline에서 실패했다.
   새 source의 실제 CI·API/consumer·OS3·formal proof를 확인한 뒤 Ready9 final 실행을 연결한다.

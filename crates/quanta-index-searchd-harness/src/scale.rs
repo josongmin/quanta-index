@@ -132,7 +132,7 @@ impl ScaleRuntimeConfig {
     }
 
     pub fn execution_json(self) -> AnyResult<Value> {
-        Ok(with_capacity_profile(json!({
+        with_capacity_profile(json!({
             "client_request_timeout_ms": self.effective_timeout_ms()?,
             "requested_client_request_timeout_ms": self.client_timeout.map(|_| self.effective_timeout_ms()).transpose()?,
             "history_max_generations": 2,
@@ -142,20 +142,36 @@ impl ScaleRuntimeConfig {
             "history_max_revision_pairs": HARNESS_HISTORY_MAX_REVISION_PAIRS,
             "history_max_total_bytes": self.effective_history_max_total_bytes()?,
             "requested_history_max_total_bytes": self.history_max_total_bytes,
-        })))
+        }))
     }
 }
 
-fn with_capacity_profile(mut value: Value) -> Value {
-    value["ingest_max_records"] = json!(SCALE_INGEST_MAX_RECORDS);
-    value["ingest_max_text_bytes"] = json!(SCALE_INGEST_TEXT_BYTES);
-    value["ingest_max_vector_bytes"] = json!(SCALE_INGEST_VECTOR_BYTES);
-    value["source_publication_part_bytes"] =
-        json!(quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_PART_BYTES);
-    value["source_publication_max_bytes"] =
-        json!(quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES);
-    value["process_memory_ceiling_bytes"] = json!(SCALE_PROCESS_MEMORY_CEILING_BYTES);
-    value
+fn with_capacity_profile(mut value: Value) -> AnyResult<Value> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("scale: capacity profile requires a JSON object"))?;
+    for (name, field) in [
+        ("ingest_max_records", json!(SCALE_INGEST_MAX_RECORDS)),
+        ("ingest_max_text_bytes", json!(SCALE_INGEST_TEXT_BYTES)),
+        ("ingest_max_vector_bytes", json!(SCALE_INGEST_VECTOR_BYTES)),
+        (
+            "source_publication_part_bytes",
+            json!(quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_PART_BYTES),
+        ),
+        (
+            "source_publication_max_bytes",
+            json!(quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES),
+        ),
+        (
+            "process_memory_ceiling_bytes",
+            json!(SCALE_PROCESS_MEMORY_CEILING_BYTES),
+        ),
+    ] {
+        if object.insert(name.into(), field).is_some() {
+            anyhow::bail!("scale: capacity profile field {name} is already present");
+        }
+    }
+    Ok(value)
 }
 
 /// The deterministic query the small-tier measurement issues.
@@ -3112,7 +3128,7 @@ pub fn tier_manifest_json() -> Value {
 
 /// The measured tier as the artifact's detail: every phase on its own,
 /// named for what measured it.
-fn measurement_json(measurement: &TierMeasurement) -> Value {
+fn measurement_json(measurement: &TierMeasurement) -> AnyResult<Value> {
     fn disk_snapshot_json(snapshot: &DiskSnapshotV1) -> Value {
         json!({
             "status": if snapshot.unavailable_reason.is_some() { "unavailable" } else { "observed" },
@@ -3270,23 +3286,22 @@ fn declared_advisory_json(params: &TierParams) -> Value {
 
 /// The scale artifact's detail: the one measured tier plus the advisory
 /// declared tiers.
-#[must_use]
-pub fn detail_json(measurement: &TierMeasurement) -> Value {
+pub fn detail_json(measurement: &TierMeasurement) -> AnyResult<Value> {
     let advisory: Vec<Value> = TIER_MANIFEST
         .iter()
         .filter(|p| p.tier != measurement.tier)
         .map(declared_advisory_json)
         .collect();
-    json!({
+    Ok(json!({
         // Rail pass condition: the measured small-tier query retrieved the planted
         // token (an empty ordering is a rail error upstream, never written here).
         // Surfaced as a top-level flag so the J7Q-08 integration summary can treat
         // scale as a live dimension without re-deriving the verdict.
         "passed": measurement.result_count > 0,
-        "measured_tiers": [measurement_json(measurement)],
+        "measured_tiers": [measurement_json(measurement)?],
         "declared_advisory_tiers": advisory,
         "blocking_note": "this artifact covers one selected tier; performance qualification requires a canonical quiet-host run",
-    })
+    }))
 }
 
 /// The one artifact row: the warm scale query across the socket.
@@ -3578,7 +3593,7 @@ pub fn artifact(
             changed_bytes: measurement.corpus_bytes,
         }),
         rows: vec![warm_query_row(measurement)],
-        detail: detail_json(measurement),
+        detail: detail_json(measurement)?,
     })
 }
 
@@ -4399,7 +4414,7 @@ mod tests {
                 .insert("full_ingest_seal", boundary_dominates)
                 .is_some()
         );
-        let labeled = measurement_json(&measured);
+        let labeled = measurement_json(&measured).expect("fixed measurement object");
         ensure_equal!(
             labeled["phase_resources"]["full_ingest_seal"]["sampled_max_rss_bytes"],
             8_192
@@ -5243,8 +5258,16 @@ mod tests {
     }
 
     #[test]
+    fn capacity_profile_refuses_non_object_and_conflicting_fields() {
+        assert!(super::with_capacity_profile(serde_json::Value::Null).is_err());
+        assert!(
+            super::with_capacity_profile(serde_json::json!({"ingest_max_records": 1})).is_err()
+        );
+    }
+
+    #[test]
     fn detail_json_records_every_phase_and_the_advisory_split() {
-        let value = detail_json(&sample_measurement());
+        let value = detail_json(&sample_measurement()).expect("fixed measurement object");
         assert_eq!(
             value["passed"], true,
             "a measured run with retrieved hits must record passed=true"

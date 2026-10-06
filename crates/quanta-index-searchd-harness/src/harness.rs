@@ -3362,13 +3362,13 @@ impl E2eRuntime {
             SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) => {
                 Some((commit.publication.clone(), true))
             }
-            SearchPlaneIngestIpcRequest::StageSourcePublication(_)
-            | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_) => None,
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => Some((
                 quanta_index_contract::SourcePublicationBinding::for_batch(batch),
                 batch.seal,
             )),
-            SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
+            SearchPlaneIngestIpcRequest::StageSourcePublication(_)
+            | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)
+            | SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
             | SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
             | SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
             | SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(_)
@@ -4037,7 +4037,8 @@ pub fn stamped_ingest_request(
     Ok(match payload {
         request @ (SearchPlaneIngestIpcRequest::StageSourcePublication(_)
         | SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_)
-        | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)) => request,
+        | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)
+        | SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_)) => request,
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
             // A producer event is immutable. Transport stamping must not repair
             // a stale/tampered source commitment or create new source authority.
@@ -4073,7 +4074,6 @@ pub fn stamped_ingest_request(
         SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => {
             SearchPlaneIngestIpcRequest::PublishStructuralBatch(stamped(batch)?)
         }
-        request @ SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_) => request,
     })
 }
 

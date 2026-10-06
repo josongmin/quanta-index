@@ -26,8 +26,10 @@
   `f15_file_authority`·`sealed_commitment_cost`·`sealed_manifest`·`unicode_normalization_goldens`를 선택했다.
   Log `/private/tmp/qi-f15-final-owner-nextest-20261006-v1.log`; 전체 lexical/runtime·formal proof로 승격하지 않는다.
 - Scale sourcec93aa614의 전체 workspace/all-target/all-feature strict Clippy는 새 코드의
-  must-use1건·동일 match arm2건에서 `FAILED`였다. Source23a52737의 동작 동일2-path 수정은
-  patch SHA와 모든 pre/post SHA 대조 뒤 main에 통합했으며 owned rustfmt가 `VERIFIED`다.
+  must-use1건·동일 match arm2건, 재검사source23a52737은 harness의 동일 arm2건·JSON indexing6건에서
+  각각 `FAILED`였다. Source23a52737/38e44040의4-path 수정은 patch SHA와 모든 pre/post SHA
+  대조 뒤 main에 통합했으며 owned rustfmt가 `VERIFIED`다. JSON profile은 객체/중복 필드를 검사하고
+  Result를 caller까지 전파한다. 새 negative1건의 actual 실행은 workspace unit 범위에 남는다.
   전체 Clippy 재검사와 controlled fuzz·workspace unit·release·Large/XL actual은 진행 중이다.
   Main source31828561의 CircleCI verify1741도 동일3건, verify-python1742는 미통합 module baseline에서
   `FAILED`였다. 새 source의 hosted CI 결과와 앞 단계 뒤의 테스트 성공은 아직 확인되지 않았다.
@@ -35,8 +37,8 @@
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
   Actual admission/pair/full5는 새 selected-source proof·runtime·host slot 전달 전 `NOT_RUN`이다.
-- Public API 담당의 actual contract API rendering과 contract module gate는 reviewed 후보와 byte-exact로
-  `VERIFIED`다. SDK API·core module·독립 external consumer는 대기 중이다. API/module baseline3paths는
+- Public API 담당의 actual contract API rendering과 contract/core module gates는 reviewed 후보와 byte-exact로
+  `VERIFIED`다. SDK API·독립 external consumer는 대기 중이다. API/module baseline3paths는
   source overlay에서 제외했으며 해당 actual gate와 source guards를 확인한 뒤 통합한다.
 - Hosted CircleCI source7fb46415는 `FAILED`다. Verify1730은 upload 코드의 rustfmt drift에서 exit1,
   verify-python1729는 contract/core guarded module tree의 새 upload DTO/port 및 sibling byte wrapper
