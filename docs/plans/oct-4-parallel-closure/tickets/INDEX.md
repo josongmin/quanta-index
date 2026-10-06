@@ -105,6 +105,11 @@
   handle take→join 순서와 panic/fatal 판정을 유지했다. `just rust-fallbacks`는19checker tests 및
   577scoped files/179parsed candidates에서 actual exit0다. 해당 파일 rustfmt/diff도 통과했다.
   수정된 source의 전체 CI·maintenance actual regression은 별도 검증한다.
+  수정 코드 main2fb8e0fe와 clean Scale254a69fe의 crates/bench/Cargo.toml/Cargo.lock/vendor/.config는 동일하다.
+  OS3 release 원본3counts/seed/caps와 canonical Contract793/191·fresh SDK27을 새 출력 경로에 등록했다.
+  Contract/SDK source는 immutable `oct6-f15-final-v4/quanta-index`의2fb8e0fe이며 각 성공 뒤 portable verify를 실행한다.
+  Correct resource wait7200s/jobs1/sccache0/gc0을 사용하며 orchestration 전체에 중첩 lock을 잡지 않는다.
+  이 등록은 실제 빌드·테스트 종료와 receipt 발행을 뜻하지 않는다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.

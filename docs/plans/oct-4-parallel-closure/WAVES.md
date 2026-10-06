@@ -144,6 +144,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   통과한 뒤 maintenance의 `join().is_err()` fallback 규칙 위반에서 `FAILED`였다.
   Explicit match로 기존 취소·sender close·join·fatal 판정을 유지했고 `just rust-fallbacks`는
   19checker tests/577scoped files에서 exit0다. 파일 rustfmt/diff도 통과했으며 새 whole CI는 남는다.
+  Main2fb8e0fe와 clean Scale254a69fe의 Rust 빌드 입력은 동일하다. OS3 release 원본3개와
+  immutable main2fb의 canonical Contract793/191·fresh SDK27/성공 뒤 portable verify를 실제 등록했다.
+  Correct wait7200s/jobs1/sccache0/gc0이며 actual terminal/새 receipt 발행은 아직 남는다.
 - Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
   admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며
   exact793collection·각 누락 거절을 확인했다. Rust/SDK 목록과 Frozen5796 결과는 그대로 유지한다.
