@@ -427,7 +427,10 @@ mod tests {
             1
         );
         assert_eq!(scratch.bytes, 256);
-        assert_eq!(expected[&*b"abc"], std::collections::BTreeSet::from([1]));
+        assert_eq!(
+            expected.get(b"abc"),
+            Some(&std::collections::BTreeSet::from([1]))
+        );
 
         let mut scratch = Scratch {
             bytes: 0,
@@ -439,7 +442,10 @@ mod tests {
             refusal,
             "file authority v15 cold open: bucket scratch exceeds policy"
         );
-        assert_eq!(expected[&*b"abc"], std::collections::BTreeSet::from([1]));
+        assert_eq!(
+            expected.get(b"abc"),
+            Some(&std::collections::BTreeSet::from([1]))
+        );
         assert_eq!(scratch.bytes, 64);
     }
 
