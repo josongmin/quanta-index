@@ -150,6 +150,12 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   후속 단일 native scope의 verify-time release 변경 감지 누락 수리를 포함하기 위해 Contract/SDK2요청만
   미입장 안전 취소했다: producer143/controller1/0Cargo·behavior/`NOT_RUN`, v4partial 보존·receipt0.
   현재 Ready9 batch는 outer 후행 검사로 해당 경계를 보호한다. Rust OS3 release254a 요청은 유지한다.
+  후속1076 nextest는3567passed/1failed/29skipped·380.582s,606미실행 fail-fast로 `FAILED`다.
+  Stale harness256MiB oracle만 fixed Scale2GiB/explicit512MiB equality/+1·zero refusal로 수리했고
+  real one-byte seal typed거절을 유지했다. Production prefix 동일·포맷·fallback19/577는 통과했다.
+  Main2fb hosted1080 strict도 exit0/407.888s다. 수정 fixture actual 및 whole unit은 별도 검증한다.
+  OS3 release254a는 미입장143/624.7525s/0Cargo·tests로 취소해 oldraw/cache를 보존했다.
+  Clean6385033f의 원본3counts/seed/caps release/no-fail-fast를 새 cache에 등록했으며 terminal은 남는다.
 - Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
   admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며
   exact793collection·각 누락 거절을 확인했다. Rust/SDK 목록과 Frozen5796 결과는 그대로 유지한다.

@@ -9,6 +9,19 @@
 
 ## 현재 코드 잔여 — 2026-10-06 소스 대조
 
+### 현재 실행 목록
+
+| 범위 | 담당 | 실제 잔여 |
+| --- | --- | --- |
+| Workspace 검사·단위 테스트 | Scale / hosted CI | Strict Clippy는 main2fb Linux에서 exit0다. Open-loop의 stale256MiB oracle를 fixed2GiB/512MiB 경계로 수리했다. 수정 fixture actual 및 whole unit `--no-fail-fast`/1thread가 남는다 |
+| Medium/Large/XL 실제 프로세스 재시작 | I0 | Clean Scale6385033f의 원본256/4096/32768·same seed/caps release/no-fail-fast를 등록했다. Actual3개 종료는 남는다 |
+| Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime, 남은 fuzz3이 필요하다. Timing/RSS qualification은 독립 판정 |
+| Ready9 native·SG/CS·최종5제품 join | Ready9 | Old47e v4 batch는 live source를 유지한다. Fresh native9/SG-CS9capture+9replay 종료 뒤 reuse와 final admission/pair/full5를 판정한다 |
+| Final Contract/SDK | I0 | Native scope verify-time release custody 수리를 포함한 새 immutable source에서 Contract793/191·fresh SDK27·portable verify를 발행한다. 취소한2fb partial은 재사용 proof가 아니다 |
+
+위 목록은 Quanta 소유 실행 범위다. P11 실제 운영 producer는 I0-03의 target/독립 관측 계약이
+선행 입력이며, 외부 provider·승인·Linux 운영·Semantica 연동은 아래 조건부 범위와 구분한다.
+
 ### Sidebar 실행 결과 회수
 
 - 후속 통합 기준은 `a84f237ca8d4f3a2a5d0bc24f5f4574e73ae8b1c`와 Scale source
@@ -116,6 +129,15 @@
   Producer143/controller1·0Cargo/behavior·`NOT_RUN`; v4 source closure/793collection 및 빈 fresh target을 보존했다.
   `/private/tmp/qi-f15-contract-2fb8e0fe-20261006-v4/`와 SDK sibling은 receipt가 발행되지 않았다.
   Rust 입력이 동일한 OS3 release254a 요청은 유지하며 native producer 수리·회귀 뒤 새 proof를 등록한다.
+  후속 hosted1076은 nextest exit100/`FAILED`:3568/4174actual 중3567passed/1failed/29skipped,
+  fail-fast로606개는 `NOT_RUN`이다. Test380.582s/action1400.687s이며 sole observed failure는
+  `open_loop::tests::history_budget_uses_scale_policy_bounds_and_reaches_real_seal`의 오래된 기대값이다.
+  Generic harness256MiB와 canonical Scale2GiB를 혼동한 cfg(test)만 수리했다. Fixed2,147,483,648 및
+  explicit536,870,912에서 equality 허용/+1거절, zero거절 및 real one-byte seal typed거절을 유지한다.
+  Production prefix byte 동일·rustfmt·fallback19/577·diff는 `VERIFIED`; 수정 fixture actual은 남는다.
+  Main2fb hosted1080 strict Clippy도 exit0/407.888s이며 이후 cfg(test) 수리의 whole actual을 뜻하지 않는다.
+  OS3 release254a 요청은 owner 수리 적용을 위해 미입장 취소했다:143/624.7525s/0Cargo/tests·`NOT_RUN`.
+  Clean6385033f의 same3 fixture release/no-fail-fast를 새 cache namespace로 다시 등록했으며 actual 종료 전이다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
