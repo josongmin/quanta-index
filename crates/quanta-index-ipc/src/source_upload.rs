@@ -25,6 +25,7 @@ pub const SOURCE_PUBLICATION_INLINE_BYTES: u64 = 64 * 1024 * 1024;
 const STAGING_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 const STAGING_SLOTS: usize = 8;
 const STAGING_IDLE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const DECODE_READ_BYTES: usize = 8192;
 
 struct BodyHashWriter {
     digest: Sha256,
@@ -208,6 +209,50 @@ fn busy(message: &str) -> CoreError {
     }
 }
 
+/// Check cancellation at each bounded buffer refill, before reading or
+/// materializing more staged bytes. Keep the typed interruption across CBOR's
+/// I/O error wrapper instead of reporting a cancelled request as invalid input.
+struct BudgetReader<'a, R> {
+    inner: R,
+    budget: &'a RequestBudgetV1,
+    checkpoint: &'static str,
+    interruption: Option<CoreError>,
+}
+
+impl<'a, R> BudgetReader<'a, R> {
+    fn new(inner: R, budget: &'a RequestBudgetV1, checkpoint: &'static str) -> Self {
+        Self {
+            inner,
+            budget,
+            checkpoint,
+            interruption: None,
+        }
+    }
+
+    fn preserve_interruption(&mut self, otherwise: CoreError) -> CoreError {
+        match self.interruption.take() {
+            Some(interruption) => interruption,
+            None => otherwise,
+        }
+    }
+}
+
+impl<R: Read> Read for BudgetReader<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if let Err(interruption) = self.budget.checkpoint(self.checkpoint) {
+            self.interruption = Some(interruption);
+            return Err(io::Error::other("source upload interrupted"));
+        }
+        // BufReader may bypass its buffer for large read requests.
+        let take = bytes.len().min(DECODE_READ_BYTES);
+        self.inner.read(
+            bytes
+                .get_mut(..take)
+                .ok_or_else(|| io::Error::other("source upload read exceeds input"))?,
+        )
+    }
+}
+
 impl SourcePublicationUploadStore {
     pub fn open(root: impl Into<PathBuf>, max_body_bytes: u64) -> Result<Self, CoreError> {
         if max_body_bytes == 0 || max_body_bytes > SOURCE_PUBLICATION_UPLOAD_MAX_BYTES {
@@ -308,6 +353,56 @@ impl SourcePublicationUploadStore {
         }
         Ok((count, bytes))
     }
+
+    fn decode_body<R: Read + Seek>(
+        &self,
+        file: &mut R,
+        input_len: usize,
+        budget: &RequestBudgetV1,
+    ) -> Result<SearchCorpusIngestBatch, CoreError> {
+        // The guard sits below buffering: work can consume at most one
+        // bounded refill before it observes cancellation again.
+        let text_storage = {
+            let mut reader = BufReader::with_capacity(
+                DECODE_READ_BYTES,
+                BudgetReader::new(&mut *file, budget, "source_upload.preflight"),
+            );
+            crate::cbor_preflight::retained_text_budget_reader(&mut reader, input_len).map_err(
+                |error| {
+                    reader
+                        .get_mut()
+                        .preserve_interruption(invalid(error.to_string()))
+                },
+            )?
+        };
+        budget.checkpoint("source_upload.preflight")?;
+        if text_storage > usize::try_from(self.max_body_bytes).map_err(storage)? {
+            return Err(invalid(
+                "source upload decoded collection storage exceeds its bound",
+            ));
+        }
+        budget.checkpoint("source_upload.decode")?;
+        file.rewind().map_err(storage)?;
+        let mut reader = BufReader::with_capacity(
+            DECODE_READ_BYTES,
+            BudgetReader::new(file, budget, "source_upload.decode"),
+        );
+        let batch = ciborium::from_reader(&mut reader).map_err(|error| {
+            reader
+                .get_mut()
+                .preserve_interruption(invalid(error.to_string()))
+        })?;
+        budget.checkpoint("source_upload.decode")?;
+        let mut trailing = [0_u8; 1];
+        if reader
+            .read(&mut trailing)
+            .map_err(|error| reader.get_mut().preserve_interruption(storage(error)))?
+            != 0
+        {
+            return Err(invalid("source upload contains trailing bytes"));
+        }
+        Ok(batch)
+    }
 }
 
 impl SourcePublicationUploadPort for SourcePublicationUploadStore {
@@ -401,6 +496,7 @@ impl SourcePublicationUploadPort for SourcePublicationUploadStore {
         identity: SourcePublicationUploadIdentity,
         budget: &RequestBudgetV1,
     ) -> Result<SearchCorpusIngestBatch, CoreError> {
+        budget.checkpoint("source_upload.load")?;
         let _operation = self
             .operations
             .try_lock()
@@ -431,24 +527,7 @@ impl SourcePublicationUploadPort for SourcePublicationUploadStore {
         // Walk before materialization: the same nesting/collection checks as
         // socket decode apply to untrusted staged bytes, without a body Vec.
         let input_len = usize::try_from(identity.body_bytes).map_err(storage)?;
-        let text_storage =
-            crate::cbor_preflight::retained_text_budget_reader(BufReader::new(&file), input_len)
-                .map_err(|error| invalid(error.to_string()))?;
-        if text_storage > usize::try_from(self.max_body_bytes).map_err(storage)? {
-            return Err(invalid(
-                "source upload decoded collection storage exceeds its bound",
-            ));
-        }
-        budget.checkpoint("source_upload.decode")?;
-        file.rewind().map_err(storage)?;
-        let mut reader = BufReader::new(file);
-        let batch =
-            ciborium::from_reader(&mut reader).map_err(|error| invalid(error.to_string()))?;
-        let mut trailing = [0_u8; 1];
-        if reader.read(&mut trailing).map_err(storage)? != 0 {
-            return Err(invalid("source upload contains trailing bytes"));
-        }
-        Ok(batch)
+        self.decode_body(&mut file, input_len, budget)
     }
 
     fn discard(&self, identity: SourcePublicationUploadIdentity) -> Result<(), CoreError> {
@@ -505,6 +584,150 @@ mod tests {
             semantic_tombstone_scopes: Vec::new(),
             seal: true,
         }
+    }
+
+    struct CancelOnRead {
+        bytes: io::Cursor<Vec<u8>>,
+        cancellation: quanta_index_core::CancelHandleV1,
+        cancel_during_decode: bool,
+        decoding: bool,
+        selected_reads: usize,
+        selected_bytes: usize,
+    }
+
+    impl Read for CancelOnRead {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            let count = self.bytes.read(bytes)?;
+            if self.decoding == self.cancel_during_decode {
+                self.selected_reads = self
+                    .selected_reads
+                    .checked_add(1)
+                    .ok_or_else(|| io::Error::other("fixture read count overflow"))?;
+                self.selected_bytes = self
+                    .selected_bytes
+                    .checked_add(count)
+                    .ok_or_else(|| io::Error::other("fixture byte count overflow"))?;
+                self.cancellation.cancel();
+            }
+            Ok(count)
+        }
+    }
+
+    impl Seek for CancelOnRead {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            if position == SeekFrom::Start(0) {
+                self.decoding = true;
+            }
+            self.bytes.seek(position)
+        }
+    }
+
+    #[test]
+    fn staged_publication_budget_reader_bounds_reads_that_bypass_buffering() {
+        let budget = RequestBudgetV1::unbounded();
+        let source = CancelOnRead {
+            bytes: io::Cursor::new(vec![1; 64 * 1024]),
+            cancellation: budget.cancel_handle(),
+            cancel_during_decode: false,
+            decoding: false,
+            selected_reads: 0,
+            selected_bytes: 0,
+        };
+        let mut reader = BufReader::with_capacity(
+            8192,
+            BudgetReader::new(source, &budget, "source_upload.decode"),
+        );
+        let mut output = vec![0; 64 * 1024];
+        assert_eq!(reader.read(&mut output).expect("first bounded read"), 8192);
+        assert!(reader.read(&mut output).is_err());
+        let guarded = reader.get_mut();
+        let (code, message) = guarded
+            .preserve_interruption(invalid("expected cancellation"))
+            .into_search_plane_wire();
+        assert_eq!(code, SearchPlaneErrorCodeV2::RequestCancelled);
+        assert!(message.contains("source_upload.decode"));
+        assert_eq!(guarded.inner.selected_reads, 1);
+        assert_eq!(guarded.inner.selected_bytes, 8192);
+    }
+
+    #[test]
+    fn staged_publication_decode_observes_cancellation_between_reads_and_before_return() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let store = SourcePublicationUploadStore::open(
+            root.path().join("uploads"),
+            SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+        )
+        .expect("open");
+        for large in [false, true] {
+            let mut batch = batch();
+            if !large {
+                batch.bundle_payload = None;
+            }
+            let bytes = crate::encode_cbor_payload(&batch).expect("valid body");
+            let input_len = bytes.len();
+            assert_eq!(
+                store
+                    .decode_body(
+                        &mut io::Cursor::new(&bytes),
+                        input_len,
+                        &RequestBudgetV1::unbounded(),
+                    )
+                    .expect("uncancelled body remains valid"),
+                batch,
+            );
+            for cancel_during_decode in [false, true] {
+                let budget = RequestBudgetV1::unbounded();
+                let mut reader = CancelOnRead {
+                    bytes: io::Cursor::new(bytes.clone()),
+                    cancellation: budget.cancel_handle(),
+                    cancel_during_decode,
+                    decoding: false,
+                    selected_reads: 0,
+                    selected_bytes: 0,
+                };
+                let error = store
+                    .decode_body(&mut reader, input_len, &budget)
+                    .expect_err("cancelled decode must not return a batch");
+                let (code, message) = error.into_search_plane_wire();
+                assert_eq!(code, SearchPlaneErrorCodeV2::RequestCancelled);
+                let checkpoint = if cancel_during_decode {
+                    "source_upload.decode"
+                } else {
+                    "source_upload.preflight"
+                };
+                assert!(message.contains(checkpoint));
+                assert_eq!(reader.selected_reads, 1, "no read after cancellation");
+                assert!(reader.selected_bytes <= 8192, "bounded read quantum");
+            }
+        }
+    }
+
+    #[test]
+    fn staged_publication_load_refuses_expired_budget_before_opening_a_body() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let store = SourcePublicationUploadStore::open(
+            root.path().join("uploads"),
+            SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+        )
+        .expect("open");
+        let identity = SourcePublicationUploadIdentity {
+            body_sha256: [1; 32],
+            body_bytes: 1,
+        };
+        let expired = RequestBudgetV1::until(
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("fixture expired deadline must be representable"),
+        );
+        let error = store.load(identity, &expired).expect_err("expired request");
+        assert!(matches!(
+            error,
+            CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::RequestDeadlineExceeded,
+                ..
+            }
+        ));
+        assert_eq!(store.inventory().expect("inventory"), (0, 0));
     }
 
     #[test]
