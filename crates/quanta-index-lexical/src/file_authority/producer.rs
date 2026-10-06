@@ -1176,15 +1176,19 @@ pub(super) fn produce_authority(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
         RepoId, RepoRelativePath, RevisionId, SourceFileKey, SourceFileRevision,
     };
     use sha2::{Digest as _, Sha256};
 
+    use super::super::codec::PostingSurface;
     use super::super::root::AuthorityPolicy;
     use super::{
-        CommittedBase, ProducerErrorKind, SourceDisposition, emit_blob, produce_authority,
+        CommittedBase, PostingEncodeContext, ProducerErrorKind, SourceDisposition, codec_limits,
+        emit_blob, encode_postings, insert_membership, produce_authority,
     };
 
     fn policy() -> AuthorityPolicy {
@@ -1308,6 +1312,54 @@ mod tests {
         .err()
         .expect("resident cap must refuse");
         assert_eq!(error.kind, ProducerErrorKind::Limit);
+    }
+
+    #[test]
+    fn refused_posting_membership_keeps_map_and_scratch_unchanged() {
+        let mut postings = BTreeMap::new();
+        let mut scratch = 0;
+        assert!(insert_membership(&mut postings, *b"abc", 7, &mut scratch, 383).is_err());
+        assert!(postings.is_empty());
+        assert_eq!(scratch, 0);
+        assert!(insert_membership(&mut postings, *b"abc", 7, &mut scratch, 384).unwrap());
+        assert_eq!(scratch, 384);
+        assert!(!insert_membership(&mut postings, *b"abc", 7, &mut scratch, 384).unwrap());
+        assert_eq!(scratch, 384);
+    }
+
+    #[test]
+    fn posting_id_vector_refusal_does_not_emit_a_block() {
+        let postings = BTreeMap::from([(*b"abc", BTreeSet::from([7_u64]))]);
+        let mut scratch = 384;
+        let maximum =
+            scratch + std::mem::size_of::<([u8; 3], Vec<u64>)>() + std::mem::size_of::<u64>() - 1;
+        let limits = codec_limits(policy()).expect("codec limits");
+        let mut context = PostingEncodeContext {
+            bits: 8,
+            limits: &limits,
+            scratch: &mut scratch,
+            max_scratch: maximum,
+        };
+        let mut emitted = BTreeMap::new();
+        let mut calls = 0;
+        let mut sink = |_, _: &[u8]| -> Result<(), String> {
+            calls += 1;
+            Ok(())
+        };
+        assert!(
+            encode_postings(
+                postings,
+                PostingSurface::Path,
+                [0; 32],
+                &mut context,
+                &mut emitted,
+                &mut sink,
+            )
+            .is_err()
+        );
+        assert_eq!(scratch, 384);
+        assert_eq!(calls, 0);
+        assert!(emitted.is_empty());
     }
 
     #[test]

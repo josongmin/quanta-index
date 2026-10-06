@@ -133,7 +133,7 @@ impl<'a> NativeNormalizationAdmissionV1 for Policy<'a> {
     }
     fn release_scratch_v1(&mut self, owner: Owner) {
         // Real deallocation precedes admission release, including error paths.
-        if owner == Owner::Recomposition {
+        if owner != Owner::Sort {
             LIVE_BYTES.with(|bytes| assert_eq!(bytes.get(), 0));
         }
         self.retained[slot(owner)] = 0;
