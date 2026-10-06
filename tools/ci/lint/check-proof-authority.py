@@ -56,7 +56,7 @@ FAMILIES = frozenset("SUADPFQX")
 CHECKPOINTS = ("M0", "M1", "M2", "M3", "M4", "M5")
 GATES = frozenset(("pr", "merge", "correctness", "release"))
 AUTHORITY_STATES = frozenset(("executable", "staged"))
-EXECUTION_MODES = frozenset(("test-authority", "non-test-assertion"))
+EXECUTION_MODES = frozenset(("test-authority", "non-test-assertion", "operational-action"))
 VERDICTS = frozenset(("CODE_QUALIFIED", "DEPLOYED", "ACTIVATED", "ROLLBACK_PROVEN"))
 PROOF_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]+$")
 TICKET_RE = re.compile(r"^S21-(?:0[0-9]|1[0-3])$")
@@ -131,6 +131,7 @@ EXPECTED_P12A_TEST_TARGETS = [
     "proof-authority-python-owner",
     "proof-manifest-python-owner",
     "proof-execution-result-python-owner",
+    "proof-operational-result-python-owner",
     "proof-paired-cargo-resolution-python-owner",
     "proof-local-scope-runner-python-owner",
 ]
@@ -335,6 +336,28 @@ def check_registry(data: dict[str, Any], *, root: Path, path: Path) -> list[Find
             findings.append(Finding(path, f"{where}.authority_state is not registered"))
         if execution_mode not in EXECUTION_MODES:
             findings.append(Finding(path, f"{where}.execution_mode is not registered"))
+        if proof_id in OPERATIONAL_HOST_PROOFS and execution_mode != "operational-action":
+            findings.append(Finding(path, f"{where} P11 actions require operational-action mode"))
+        if execution_mode == "operational-action":
+            from tools.ci.proof_operational_result import ACTIONS, validate_contract
+
+            if proof_id not in ACTIONS:
+                findings.append(Finding(path, f"{where} operational-action is reserved for P11 actions"))
+            if authority_state == "executable":
+                try:
+                    contract_path = proof.get("operational_contract")
+                    if not isinstance(contract_path, str):
+                        raise ValueError("executable operational action lacks its registry-owned contract")
+                    raw = HANDOFF_VALIDATION._read_repo_regular_bytes(
+                        root, contract_path, label="operational contract"
+                    )
+                    validate_contract(root, proof, raw)
+                except (OSError, ValueError, TypeError, KeyError) as error:
+                    findings.append(Finding(path, f"{where} operational contract: {error}"))
+            if proof.get("test_authority_targets"):
+                findings.append(Finding(path, f"{where} operational action cannot name test targets"))
+        elif "operational_contract" in proof:
+            findings.append(Finding(path, f"{where} operational contract requires operational-action mode"))
         staged_reason = proof.get("staged_reason")
         if authority_state == "staged":
             if not isinstance(staged_reason, str) or not staged_reason.strip():
@@ -1709,9 +1732,24 @@ def _check_manifest_local(
                 findings.append(
                     Finding(manifest_path, f"execution result is not authoritative: {error}")
                 )
+    elif proof.get("execution_mode") == "operational-action" and payload["status"] == "passed":
+        try:
+            from tools.ci.proof_operational_result import (
+                derive_operational_result,
+                manifest_binding,
+            )
+
+            derived_counts = derive_operational_result(
+                root, proof, execution_result, payload["artifacts"], manifest_binding(payload),
+                window=(payload["started_at"], payload["ended_at"]),
+            )
+            if derived_counts != counts:
+                raise ValueError("manifest counts differ from the observed operational action")
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            findings.append(Finding(manifest_path, f"operational result is not authoritative: {error}"))
     elif execution_result is not None:
         findings.append(
-            Finding(manifest_path, "execution result is only valid for passed test proofs")
+            Finding(manifest_path, "execution result is only valid for passed test or operational proofs")
         )
     dependencies = payload["dependency_receipts"]
     archive_stack = (_archive_stack or frozenset()) | {payload["proof_id"]}
@@ -2079,6 +2117,16 @@ def check_aggregate(
         findings.append(
             Finding(path, "aggregate operational proofs do not share one host identity")
         )
+    operational_targets = {
+        json.dumps(payload["execution_result"]["target"], sort_keys=True, separators=(",", ":"))
+        for proof_id, payload in payload_by_id.items()
+        if proof_id in OPERATIONAL_HOST_PROOFS
+        and isinstance(payload.get("execution_result"), dict)
+        and payload["execution_result"].get("kind") == "operational"
+        and isinstance(payload["execution_result"].get("target"), dict)
+    }
+    if len(operational_targets) > 1:
+        findings.append(Finding(path, "aggregate operational actions do not share one target and configuration"))
     state_root_formats = {
         payload["state_root_format"]
         for proof_id, payload in payload_by_id.items()

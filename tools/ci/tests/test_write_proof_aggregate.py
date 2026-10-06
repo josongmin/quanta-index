@@ -122,9 +122,9 @@ def _digest(path: Path) -> str:
 
 def _make_all_proofs_executable(text: str) -> str:
     text = re.sub(
-        r'authority_state = "staged"\nexecution_mode = "test-authority"\n'
+        r'authority_state = "staged"\nexecution_mode = "(test-authority|operational-action)"\n'
         r'staged_reason = "[^"]*"',
-        'authority_state = "executable"\nexecution_mode = "test-authority"',
+        r'authority_state = "executable"\nexecution_mode = "\1"',
         text,
     )
     sections = text.split("[[proofs]]")
@@ -155,6 +155,10 @@ def _make_all_proofs_executable(text: str) -> str:
                     'test_authority_scopes = ["fixture-all"]\ntest_authority_targets = ',
                     1,
                 )
+        elif 'execution_mode = "operational-action"' in sections[index]:
+            proof_id = re.search(r'^\nid = "([^"]+)"', sections[index])
+            assert proof_id is not None
+            sections[index] += f'\noperational_contract = "tools/ci/fixtures/{proof_id.group(1)}.json"\n'
     return "[[proofs]]".join(sections)
 
 
@@ -243,6 +247,13 @@ def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict
     binary = root / "bin/searchd"
     binary.parent.mkdir()
     binary.write_bytes(b"release-daemon")
+    if executable:
+        from tools.ci.tests.test_proof_operational_result import install_contract
+
+        for proof in registry["proofs"]:
+            if proof["execution_mode"] == "operational-action":
+                install_contract(root, proof["id"], RELEASE_HOST_DIGEST)
+
     (root / ".gitignore").write_text("/artifacts/\n__pycache__/\n*.py[cod]\n", encoding="utf-8")
     _run(root, "git", "init", "-q")
     _run(root, "git", "config", "user.name", "Aggregate Fixture")
@@ -507,6 +518,13 @@ def _write_dependency_manifests(
             ]
             + result_artifacts,
         }
+        if proof["execution_mode"] == "operational-action":
+            from tools.ci.proof_operational_result import manifest_binding
+            from tools.ci.tests.test_proof_operational_result import fixture_evidence
+
+            execution_result, operational_artifacts = fixture_evidence(root, proof, manifest_binding(payload))
+            payload["artifacts"].extend(operational_artifacts)
+            payload["ended_at"] = "2026-09-21T00:00:06Z"
         if execution_result is not None:
             payload["execution_result"] = execution_result
         manifest_path.parent.mkdir(parents=True, exist_ok=True)

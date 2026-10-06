@@ -71,10 +71,20 @@ rechecks affected proof; frozen5796 SDK bytes do not imply current-pair binary p
 
 Run the registered cross-repo command through the
 [execution entrypoint](prompts/README.md) only after required inputs are frozen.
-The three operational recipe names are staged registry entries, not working
-commands. They require independent typed action producers and manifests before
-promotion. [S21-13](S21-13-release-evidence-and-sota-qualification.md) owns the
-final graph and four separate verdicts.
+The three operational recipes now use `tools/ci/operational_proof.py` and the
+typed `operational-action` result path. The producer, manifest schema/checker
+and aggregate bind pre/action/post execution, independent actor sources,
+source pair, immutable prerequisites, daemon, host and target/config identity.
+Source archives cannot hide dirty actor or contract code. Owner fixtures do
+not qualify a Linux action.
+
+The registry entries remain staged. Concrete deployment/activation/
+restore-forward adapters, independent observer contracts and authorized Linux
+target/state/retention/rollback inputs are still missing. Recipes refuse before
+mutation or output when staged; a shell exit zero or caller-written success
+JSON cannot promote them. See the [operational contract](../../../operator/p11-operational-proof.md).
+[S21-13](S21-13-release-evidence-and-sota-qualification.md) owns the final graph
+and four separate verdicts.
 
 ## Stop conditions
 

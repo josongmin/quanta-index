@@ -433,6 +433,18 @@ def build_manifest(
         root, terminal["artifacts"], output_path=output_path, checker=checker
     )
     source_exclusions = [root / item["source_path"] for item in resolved_artifacts]
+    if proof.get("execution_mode") == "operational-action":
+        from tools.ci.proof_operational_result import validate_contract
+
+        contract_path = proof.get("operational_contract")
+        _, contract_bytes = _repo_bytes(
+            root, contract_path, label="operational contract", checker=checker
+        )
+        contract = validate_contract(root, proof, contract_bytes)
+        protected_sources = {contract_path, *contract["actors"].values()}
+        # Archived executable source is still source, never a dirty-state exclusion.
+        source_exclusions = [path for path in source_exclusions
+                             if path.relative_to(root).as_posix() not in protected_sources]
     if resolved_binary is not None:
         source_exclusions.append(root / resolved_binary["source_path"])
     if paired_checkout is not None:
