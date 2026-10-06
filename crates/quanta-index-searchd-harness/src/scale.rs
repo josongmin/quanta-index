@@ -112,6 +112,13 @@ impl ScaleRuntimeConfig {
         timeout_ms(self.client_timeout)
     }
 
+    /// Boot a fixture under the bounded scale capacity profile.
+    /// Load generators may separately bound each timed client request.
+    pub fn boot_runtime(self) -> AnyResult<E2eRuntime> {
+        let _validated_timeout = self.effective_timeout_ms()?;
+        scale_runtime(self)
+    }
+
     pub fn history_policy_id(self) -> AnyResult<&'static str> {
         match (self.history_max_bytes, self.history_max_total_bytes) {
             (None, None) => Ok("scale-supported-v1"),

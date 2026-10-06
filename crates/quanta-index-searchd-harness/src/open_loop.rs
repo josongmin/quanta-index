@@ -28,8 +28,7 @@ use quanta_index_searchd_harness::scale::{
     scoped_corpus_digest,
 };
 use quanta_index_searchd_harness::{
-    DEFAULT_HISTORY_MAX_GENERATIONS, E2eRuntime, E2eTextChunkSpec,
-    HARNESS_HISTORY_MAX_REVISION_PAIRS,
+    DEFAULT_HISTORY_MAX_GENERATIONS, E2eTextChunkSpec, HARNESS_HISTORY_MAX_REVISION_PAIRS,
 };
 use serde_json::{Value, json};
 
@@ -84,6 +83,12 @@ impl Config {
 
     fn effective_history_max_bytes(&self) -> AnyResult<u64> {
         self.history_config().effective_history_max_bytes()
+    }
+
+    pub(crate) fn runtime_policy_json(&self) -> AnyResult<Value> {
+        let mut policy = self.history_config().execution_json()?;
+        policy["history_max_generations"] = json!(DEFAULT_HISTORY_MAX_GENERATIONS);
+        Ok(policy)
     }
 
     pub(crate) fn history_policy_json(&self) -> AnyResult<Value> {
@@ -753,14 +758,11 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
         anyhow::bail!("open-loop has no prepared source fixture");
     };
 
-    let mut runtime = E2eRuntime::boot()
+    let mut runtime = config
+        .history_config()
+        .boot_runtime()
         .map_err(|error| ScaleStageError::operation("runtime_boot", &error))?
-        .with_history_max_bytes(config.effective_history_max_bytes()?)
-        .with_history_max_total_bytes(
-            config
-                .history_config()
-                .effective_history_max_total_bytes()?,
-        );
+        .with_history_max_generations(DEFAULT_HISTORY_MAX_GENERATIONS);
     let model_revision = model_revision_of(runtime.embedder_profile());
     if let Some(corpus) = &legacy {
         let serving_owner = runtime.repo();
@@ -994,6 +996,7 @@ pub(crate) fn artifact(
                         "history_max_revision_pairs",
                         HARNESS_HISTORY_MAX_REVISION_PAIRS.to_string(),
                     ),
+                    ("runtime_policy", config.runtime_policy_json()?.to_string()),
                     ("query", QUERY.to_string()),
                     ("top_k", TOP_K.to_string()),
                 ],
@@ -1016,6 +1019,7 @@ pub(crate) fn artifact(
             "workers": config.workers,
             "tier": config.tier.as_str(),
             "history_policy": history_policy,
+            "runtime_policy": config.runtime_policy_json()?,
             "serving_owner_count": 1,
             "source_repo_count": quanta_index_searchd_harness::scale::params_for(config.tier).repo_count,
             "saturation_onset_qps": report.saturation_onset_qps(),
@@ -1617,6 +1621,19 @@ mod tests {
             hostname_hash: "sha256:host".to_string(),
         };
         let default = artifact(&report, head.clone(), host.clone())?.to_json()?;
+        for (name, expected) in [
+            ("query_dispatch_budget_ms", json!(600_000)),
+            ("client_request_timeout_ms", json!(600_000)),
+            ("ingest_max_text_bytes", json!(134_217_728)),
+            ("source_publication_max_bytes", json!(536_870_912)),
+            ("process_memory_ceiling_bytes", json!(4_294_967_296_u64)),
+            ("history_max_generations", json!(8)),
+        ] {
+            ensure!(
+                required_json(&default, &format!("/detail/runtime_policy/{name}"))? == &expected,
+                "open-loop runtime policy {name} differs from supported capacity"
+            );
+        }
         ensure!(
             required_json(&default, "/detail/history_policy/history_max_bytes")?
                 == &json!(1_073_741_824),

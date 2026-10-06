@@ -22,6 +22,8 @@ const USAGE: &str = "Usage: open_loop_matrix [--tier small|medium|large|xlarge]
     [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
     Default tier: small (16 files). medium=256, large=4096, xlarge=32768.
     Default history profile is separate from explicit diagnostic overrides.
+    Fixture preparation uses the bounded scale capacity profile.
+    --request-timeout-ms bounds each timed load request independently.
     A total-history override requires an explicit pair-history override.
     --help, -h  Print this usage without running the rail.";
 
@@ -34,6 +36,7 @@ fn execution_context(config: &open_loop::Config) -> AnyResult<Value> {
         "queue_capacity": config.queue_capacity,
         "request_timeout_ms": config.request_timeout.as_millis(),
         "history_policy": config.history_policy_json()?,
+        "runtime_policy": config.runtime_policy_json()?,
     }))
 }
 

@@ -4095,6 +4095,42 @@ mod teardown_fault_tests {
     };
 
     #[test]
+    fn scale_capacity_profile_reaches_daemon_config() -> AnyResult<()> {
+        let default = E2eRuntime::boot()?;
+        anyhow::ensure!(
+            build_config(&default.driver_spec())?
+                .query_admission_policy()
+                .dispatch_budget()
+                == std::time::Duration::from_secs(20),
+            "generic harness query budget must retain the production default"
+        );
+        default.stop()?;
+
+        let runtime = crate::scale::ScaleRuntimeConfig::default().boot_runtime()?;
+        let config = build_config(&runtime.driver_spec())?;
+        let admission = config.query_admission_policy();
+        anyhow::ensure!(
+            admission.dispatch_budget() == std::time::Duration::from_secs(600),
+            "scale query budget must reach the daemon config"
+        );
+        anyhow::ensure!(
+            admission.max_connections() == 64
+                && admission.dispatch_slots() == 4
+                && admission.max_in_flight_per_repo() == 3
+                && admission.queue_wait() == std::time::Duration::from_secs(2)
+                && admission.io_timeout() == std::time::Duration::from_secs(30),
+            "scale must preserve query concurrency and socket admission bounds"
+        );
+        anyhow::ensure!(
+            config.ingest_resource_policy().max_text_bytes() == 134_217_728
+                && config.source_publication_max_bytes() == 536_870_912,
+            "XL text and staged-body capacity must reach the daemon config"
+        );
+        runtime.stop()?;
+        Ok(())
+    }
+
+    #[test]
     fn history_builder_applies_pair_and_total_budgets() -> AnyResult<()> {
         let default = E2eRuntime::boot_with_history_max_generations(2)?;
         let default_policy =
