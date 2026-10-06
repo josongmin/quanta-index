@@ -111,7 +111,10 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   후속 owner24860 Clippy는 SDK를 지나 IPC test helper 시간 계산2·clone3에서 실패했다.
   IPC cfg(test)1path 수리를 main에 통합했고 production prefix byte 동일/guards/rustfmt가 통과했다.
   Coverage helper API/module actual이 모두exit0라 reviewed1linebaseline을 main에 반영했다.
-  기존255입력 전부 동일이라고 세지 않으며 consumer2actual은 아직 남는다.
+  Coverage consumer2도 nightly2026-08-01/locked/offline actual2passed·exit0로 완료됐다.
+  Main242는 API252/255/module193/194이며 cfg(test)2개와 unreachable Tantivy lock edge를 분류했다.
+  Producer114패키지 projection 동일/consumer42에 Tantivy와 변경 상위 manifest5개가 없음을 확인했다.
+  기존 SDK/consumer5/negative4의 source-bound 결과는 그대로 두며 새 one-helper scope와 구분한다.
   영향 테스트만 수리하고 다음 전체 strict에서는 독립 target 오류도 끝까지 수집한다.
   OS3v4는 SDK 후속 수리 때문에 미입장 취소해 exit143/0actual tests/`NOT_RUN`이다.
   Request-decode fuzz970,826runs/61s는 통과했고 남은 fuzz3은 미입장 취소 후 `NOT_RUN`이다.
@@ -134,7 +137,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   `.orig`와 fs2의 winapi transitive는 유지한다. Python1074는4181passed/30skipped·854.52s 및 Ruff442파일
   뒤 cargo-deny의 search-plane default feature에서 실패했다. 의존성5간선의 explicit default-features=false와
   소유 empty default 제거 후 metadata/deny exit0다. Explicit test-runtime-barriers와 deny 규칙은 유지한다.
-  기존 model2vec license-field warning은 남으며 새 전체 CI/strict/Rust behavior는 별도 검증한다.
+  기존 model2vec license-field warning은 남는다. Main242 `just rust-policy`15recipes는 actual exit0이며
+  hosted1076 fmt+workspace/all-targets/all-features/locked strict Clippy도 exit0/373.173s다.
+  Linux strict 결과이며 wholeCI/macOS actual unit/runtime/release는 별도 검증한다.
 - Final Contract source080568c7 첫 실행은 collection `FAILED`: 기존791 필수 검사는 모두 남았고
   admission split batch 회귀2개가 미등록돼 actual793과 달랐다. 필수 manifest에 해당2ID만 추가했으며
   exact793collection·각 누락 거절을 확인했다. Rust/SDK 목록과 Frozen5796 결과는 그대로 유지한다.
@@ -146,7 +151,10 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   191behavior는 `NOT_RUN`이다. Root 실행의 잘못된 wait env 이름을 확인했다. 다음 실제 변수는
   `QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200`이다. Partial/source를 유지하며 이후 IPC/manifest/lock과 구분한다.
   OS3v5는 Python-only HEAD drift sourceguard에서65/`BLOCKED`, Cargo/tests0이었다.
-  V6는clean24860 원본3fixture/build12m exit0 뒤 Large actual을 실행 중이다.
+  V6 clean24860 원본fixture는 build12m exit0 뒤 tests1383.037s에2/3run1pass1fail/82skip로 종료했다.
+  Large4096 cold restart/delete/rank-bit은 통과했고 Medium256은47.687s/default30s Read timeout으로 실패했다.
+  XL은 fail-fast로 `NOT_RUN`이다. Host swap35GiB는 관측 사실이며 timeout RCA로 단정하지 않는다.
+  새 clean82b6af83에서 same3counts/seed/caps의 release/no-fail-fast를 fresh cache로 등록했으며 actual 종료는 남는다.
   새 source와 fresh output에서 canonical Contract/fresh SDK·portable replay를 다시 실행한다.
 - Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
 - 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.

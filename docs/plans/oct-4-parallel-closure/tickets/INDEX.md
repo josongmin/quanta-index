@@ -96,6 +96,9 @@
   Runtime dev의 `test-runtime-barriers`는 유지한다. 호출부 수리만으로는 실패했으며 소유 feature 수리 후
   `metadata --offline --locked` 및 `just rust-deny` actual exit0(advisories/bans/licenses/sources)다.
   기존 model2vec-rs license-field warning은 남으며 이 결과를 전체 CI/Rust tests 통과로 표시하지 않는다.
+  후속 clean242의 `just rust-policy`15recipes는 actual exit0다. Hosted verify1076의 fmt 및
+  `clippy --workspace --all-targets --all-features --locked -- -D warnings`도 actual exit0/373.173s다.
+  이는 Linux strict 검사이며 전체 hosted CI·macOS unit/runtime·release/native 종료와 구분한다.
 - Ready9 final 준비의 원본90 inputs·admission73·Bat extended105·OG raw39,669파일과
   Python10-role/Java/JAR 결속 감사 및 guard9/9가 `VERIFIED`다. Relocated source107 helper3개의
   삭제된 old path 참조를 외부 guarded 후보에서 고쳤다. `/private/tmp/qi-ready9-final-static-20261006-v1/RESULT.md`.
@@ -113,8 +116,10 @@
   Coverage structural bound의 추가 public helper는 별도 contractAPI actual exit0로 reviewed 후보와 일치했다.
   Affected contract module도 actual exit0/기존 baseline byte 동일이다. Reviewed1helper baseline을
   현재 input254/255+SDKcfgtest예외1 및 module194/194/output SHA로 대조해 main에 통합했다.
-  새 external consumer2는 아직 종료 전이다. SDK/IPC cfg(test) 및 dependency manifest/lock의
-  input drift는 production API와 실제 consumer dependency graph를 구분해 재사용 여부를 판정한다.
+  새 external consumer2는 nightly-2026-08-01의 `--locked --offline` actual2passed/exit0로 완료됐다.
+  Main242 기준 API252/255/module193/194이며 SDK/IPC cfg(test)2개와 root lock을 별도로 판정했다.
+  Producer의 보수적114패키지 projection은 동일하고 consumer42패키지에는 Tantivy 및 변경 상위 manifest5개가 없다.
+  One-helper API·module·consumer2 범위는 `VERIFIED`; 기존 SDK API/consumer5/negative4를 새 source로 재실행한 것으로 세지 않는다.
 - Hosted CircleCI source7fb46415는 `FAILED`다. Verify1730은 upload 코드의 rustfmt drift에서 exit1,
   verify-python1729는 contract/core guarded module tree의 새 upload DTO/port 및 sibling byte wrapper
   visibility baseline 누락에서 exit1이었다. 포맷은 Scale, 두 module baseline과 공개 API는 API 담당이 소유한다.
@@ -148,7 +153,11 @@
   확인했으며 다음 실행은 실제 `QUANTA_INDEX_RESOURCE_WAIT_SECONDS=7200`을 사용한다.
   Partial output/원본 source를 유지하고 이후 IPC/manifest/lock 수리와 최종 source scope를 구분한다.
   OS3v5는446→24860의 Python-only HEAD 이동을 sourceguard가 감지해 exit65/`BLOCKED`였다.
-  Cargo/tests0이며 그 결과를 보존한다. V6는clean24860으로 원본3fixture를 실행 중이며 build12m/exit0 뒤 actual Large 테스트에 입장했다.
+  Cargo/tests0이며 그 결과를 보존한다. V6 clean24860은 build12m exit0 뒤 actual2/3run:
+  Large4096 cold restart/delete/rank-bit 비교는 `VERIFIED`, Medium256은47.687s에 기본30s Read timeout으로
+  `FAILED`, XL32768은 fail-fast로 `NOT_RUN`이다. Tests1383.037s/producer100·controller1 원본을 보존한다.
+  Host swap35GiB 관측만으로 timeout 원인을 단정하지 않는다. 새 clean82b6af83에서 원본3counts/seed/caps를
+  유지한 release/no-fail-fast 실행을 새 cache namespace로 등록했다. 아직 실제 종료 전이며 timeout 상향은 하지 않았다.
   새 source의 Contract/fresh SDK 실제 발행·독립 portable verify가 남는다.
 - 남은 통합 종료 조건: 새 upload/Scale 및 scanner owner 변경을 포함한 영향 Rust/runtime 회귀,
   최종 selected-source Contract/fresh SDK·portable replay, Ready9 final pair/full5 join과 각 별도 qualification.
