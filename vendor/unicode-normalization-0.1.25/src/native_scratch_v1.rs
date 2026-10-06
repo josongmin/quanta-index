@@ -44,8 +44,9 @@ pub trait NativeNormalizationAdmissionV1 {
     type Error;
 
     /// Consume before an iterator step, decomposition, emitted scalar, buffer
-    /// move or comparison. Ordering consumes one unit per pending scalar
-    /// before the original stable sort (not per implementation comparison).
+    /// move or comparison. Ordering prepays aggregate work for pending scalars;
+    /// large streaming runs also prepay their counting-sort passes. These are
+    /// work units, not one callback per implementation comparison.
     fn checkpoint_work_v1(&mut self, units_v1: u64) -> Result<(), Self::Error>;
 
     /// Admit the actual growth before invoking `birth` exactly once. Return
@@ -56,8 +57,10 @@ pub trait NativeNormalizationAdmissionV1 {
         birth_v1: &mut dyn FnMut() -> bool,
     ) -> Result<bool, Self::Error>;
 
-    /// Release custody after both actual iterator buffers have been dropped.
-    /// Called on success and every failure, even for an inline-only buffer.
+    /// Release custody after the backing for this owner has been dropped.
+    /// Decomposition and recomposition release at call end, including failure
+    /// and inline-only buffers. Sort releases after its temporary backing drops,
+    /// while the iterator buffers may still be live.
     fn release_scratch_v1(&mut self, owner_v1: NativeNormalizationScratchOwnerV1);
 }
 

@@ -87,6 +87,8 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+소스별 누적 기록이다. 최신 판정은 위S0–S3 및 잔여 인덱스의 실행 복구 절이 소유한다.
+
 - Main4a5b59ef 이후 추가로 확인한6범주의 결함과 수리는 위S0 및 잔여 인덱스가 소유한다.
   Frozen492 configured XL·main4a SDK27/portable proof 복구는 `VERIFIED`이며 최신 Rust 수정의
   행동 회귀·전체 Rust/CI·Ready9 실제 집계는 실행 잔여다. Ready9 final-v6 runtime 분리는
@@ -96,12 +98,12 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 - 복구 전 확인 시 main4a5b59ef는 clean이었다. Root 세션67824/82122는 존재하지 않으며
   Contract/SDK/configured XL/Ready9 제어의 기존 `/private/tmp` 출력과 Scale 선택565 작업트리도
   현재 없다. 담당 채팅에는 whole-unit의 dep-info/작업트리 경로 없음 실패 및 SDK27passed 결과가
-  남아 있다. 이전 결과는 보존하되 최신 terminal 결과·증빙 재생은 입력 부재로 `BLOCKED`다.
+  남아 있다. 당시 terminal 결과·증빙 재생은 입력 부재로 `BLOCKED`였다.
   아래 과거 admission 대기 checkpoint를 현재 진행 상태로 해석하지 않는다. 삭제 원인은 미확인이며
-  configured XL·SDK portable verify·Ready9 actual 최종 성공을 추정하지 않는다.
+  후속 configured XL·SDK portable verify는 위 별도 증빙으로 확인했다. Ready9 actual 최종 성공은 미확인이다.
 - Root492 original release inventory 재사용은 실제 `VERIFIED`: 추가 Compiling 메시지0개와
   test/daemon SHA 전후 동일을 확인했다. Explicit query dispatch600s의 XL exact1은 기존 binary로
-  정상 admission에 등록했고 실행 결과는 아직 없다. Corpus/seed/caps/oracle은 불변이다.
+  정상 admission에 등록했다. 이후 복구 결과는 exit0·287.843s이며 Corpus/seed/caps/oracle은 불변이다.
 - Ready9 final-v5의 초기 proof custody/atomic epoch rebind 수리는 Root32control PASS·2.184s와
   독립 static 검토, SGCS-v7의 ordered9/actual capture SHA 결속은 Root12control PASS·0.630s 및
   독립 read-only 검토로 `VERIFIED`다. 기존75controls/3manifests와 accepted55 epoch은 불변이며

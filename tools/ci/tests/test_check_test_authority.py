@@ -677,6 +677,69 @@ def test_valid_catalog_is_green(tmp_path: Path):
     assert module.audit_catalog(tmp_path, catalog) == []
 
 
+def test_direct_targets_bind_checkout_source_and_package_owner(tmp_path: Path):
+    module = _load_module()
+    tests = tmp_path / "crates/demo/tests"
+    tests.mkdir(parents=True)
+    source = tests / "case.rs"
+    source.write_text("#[test]\nfn case() {}\n", encoding="utf-8")
+    catalog = _write_catalog(
+        tmp_path,
+        """
+        format_version = 1
+        [rails.pr-workspace]
+        tier = "pr"
+        command = "./scripts/cargow nextest run --workspace --all-features --locked"
+        target_kind = "integration"
+        [[integration_targets]]
+        id = "demo-case"
+        path = "crates/demo/tests/case.rs"
+        owner = "demo"
+        rail = "pr-workspace"
+        """,
+    )
+    assert module.audit_catalog(tmp_path, catalog) == []
+    original_catalog = catalog.read_text(encoding="utf-8")
+    catalog.write_text(original_catalog.replace('owner = "demo"', 'owner = "other"'))
+    assert any(
+        "differs from package.name 'demo'" in violation.message
+        for violation in module.audit_catalog(tmp_path, catalog)
+    )
+    catalog.write_text(original_catalog, encoding="utf-8")
+
+    internal = tests / "common/real.rs"
+    internal.parent.mkdir()
+    internal.write_bytes(source.read_bytes())
+    source.unlink()
+    source.symlink_to(internal)
+    assert module.audit_catalog(tmp_path, catalog) == []
+
+    external = tmp_path.parent / f"{tmp_path.name}-external.rs"
+    external.write_bytes(internal.read_bytes())
+    source.unlink()
+    source.symlink_to(external)
+    assert any(
+        "test source escapes repository" in violation.message
+        for violation in module.audit_catalog(tmp_path, catalog)
+    )
+    source.unlink()
+    source.write_bytes(internal.read_bytes())
+    external.unlink()
+
+    manifest = tests.parent / "Cargo.toml"
+    external_manifest = tmp_path.parent / f"{tmp_path.name}-Cargo.toml"
+    external_manifest.write_bytes(manifest.read_bytes())
+    manifest.unlink()
+    manifest.symlink_to(external_manifest)
+    assert any(
+        "test package manifest escapes repository" in violation.message
+        for violation in module.audit_catalog(tmp_path, catalog)
+    )
+    manifest.unlink()
+    manifest.write_bytes(external_manifest.read_bytes())
+    external_manifest.unlink()
+
+
 def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_path: Path):
     module = _load_module()
     crate = tmp_path / "crates" / "demo"
@@ -727,6 +790,12 @@ def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_p
 
     workflow = tmp_path / ".github" / "workflows" / "grouped.yml"
     original_catalog = catalog.read_text(encoding="utf-8")
+    catalog.write_text(original_catalog.replace('owner = "demo"', 'owner = "other"'))
+    assert any(
+        "differs from package.name 'demo'" in violation.message
+        for violation in module.audit_catalog(tmp_path, catalog)
+    )
+    catalog.write_text(original_catalog, encoding="utf-8")
     debug_catalog = original_catalog.replace(
         'id = "demo-case"', 'id = "demo-case"\ncfg = "debug_assertions"'
     )
@@ -803,6 +872,15 @@ def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_p
         )
     external = tmp_path.parent / f"{tmp_path.name}-external.rs"
     external.write_text("#[test]\nfn external_case() {}\n", encoding="utf-8")
+    launcher_bytes = launcher_path.read_bytes()
+    launcher_path.unlink()
+    launcher_path.symlink_to(external)
+    assert any(
+        "test source escapes repository" in violation.message
+        for violation in module.audit_catalog(tmp_path, catalog)
+    )
+    launcher_path.unlink()
+    launcher_path.write_bytes(launcher_bytes)
     (tests / "external.rs").symlink_to(external)
     for outside_path, reason in (
         (external.as_posix(), "grouped source must be relative"),
@@ -820,7 +898,7 @@ def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_p
     (tests / "case.rs").symlink_to(external)
     launcher_path.write_text(debug_launcher, encoding="utf-8")
     assert any(
-        "grouped source escapes repository" in violation.message
+        "source escapes repository" in violation.message
         for violation in module.audit_catalog(tmp_path, catalog)
     )
     (tests / "case.rs").unlink()

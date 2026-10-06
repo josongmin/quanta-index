@@ -1154,29 +1154,9 @@ def _validate_targets(
         if expected_kind == "integration" and path in discovered:
             manifest = (root / path).parent.parent / "Cargo.toml"
             if manifest not in package_owners:
-                resolved_manifest = _resolve_test_source(
-                    root=root,
-                    path=manifest,
-                    origin=catalog,
-                    label="test package manifest",
-                    violations=violations,
+                package_owners[manifest] = _test_package_owner(
+                    root=root, manifest=manifest, catalog=catalog, violations=violations
                 )
-                package_owners[manifest] = None
-                if resolved_manifest is not None:
-                    try:
-                        manifest_data = tomllib.loads(resolved_manifest.read_text(encoding="utf-8"))
-                        package = manifest_data.get("package")
-                        package_name = package.get("name") if isinstance(package, dict) else None
-                        if not isinstance(package_name, str) or not package_name:
-                            violations.append(
-                                _violation(manifest, "test package has no package.name")
-                            )
-                        else:
-                            package_owners[manifest] = package_name
-                    except (OSError, tomllib.TOMLDecodeError) as error:
-                        violations.append(
-                            _violation(manifest, f"cannot parse test package: {error}")
-                        )
             package_owner = package_owners[manifest]
             if package_owner is not None and owner != package_owner:
                 violations.append(
@@ -1200,6 +1180,31 @@ def _validate_targets(
             _violation(root / path, f"orphan {expected_kind} test target: no catalog entry")
         )
     return targets
+
+
+def _test_package_owner(
+    *, root: Path, manifest: Path, catalog: Path, violations: list[Violation]
+) -> str | None:
+    resolved = _resolve_test_source(
+        root=root,
+        path=manifest,
+        origin=catalog,
+        label="test package manifest",
+        violations=violations,
+    )
+    if resolved is None:
+        return None
+    try:
+        data = tomllib.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+        violations.append(_violation(manifest, f"cannot parse test package: {error}"))
+        return None
+    package = data.get("package")
+    name = package.get("name") if isinstance(package, dict) else None
+    if not isinstance(name, str) or not name:
+        violations.append(_violation(manifest, "test package has no package.name"))
+        return None
+    return name
 
 
 def _resolve_test_source(
