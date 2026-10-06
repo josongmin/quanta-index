@@ -29,7 +29,7 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 | Workspace 검사·단위 테스트 | Scale / hosted CI | Source565 owner46/46·1.126s와 open-loop bin20/20·5.208s가 실제 exit0다. 같은565에서 whole unit `--no-fail-fast`/1thread·strict·runtime/integration을 이어간다. Main2c Python1107과 d192 Python1109 전체는 `VERIFIED`; whole Rust는 아직 실패 상태다 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Source492 release 원본3개는 실제 Medium14.566s·Large84.191s PASS, XL425.966s `FAILED`다. XL은 `lexical:cold-open:file-index`에서 typed `RequestDeadlineExceeded`(+13ms)로 종료했다. Large/XL의 SDK IO600s와 서버 query dispatch 기본20s가 불일치한다. 지원 profile에 서버600s 설정을 추가했고 owned fmt/diff는 PASS다. Cold-open 비용 RCA·실제 XL 재검증과 debug interruption1개가 남는다. Corpus/seed/caps는 불변 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
-| Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
+| Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. 후속 final-v5 proof custody32회귀 및 SGCS-v7 actual capture hash12회귀·독립 검토는 PASS다. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
 | Final Contract/SDK | I0 | 선택565의 canonical Contract Python793개가 actual PASS·289.98s다. Rust191 inventory/build 완료 후 행동 검증이 대기 중이며 fresh SDK daemon release build는29m04s/exit0다. SDK27개·최종 context/portable verify가 남는다. 두 source closure1500files digest는 일치하며 canceled731 v6 partial은 재사용하지 않는다 |
 | Main의 병렬 NativeIdentity feature 연동 | 해당 변경 owner / hosted CI | Main16f37의 feature 누락 실패 뒤 최신38eda80a에 normalization vendor/control42paths가 반영됐다. Locked/offline/all-features metadata는 실제 exit0/28workspace다. Actual Rust·module/API·whole CI가 남으며 선택565의 엔진 검증과 별도 범위다 |
 
@@ -38,6 +38,19 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 
 ### Sidebar 실행 결과 회수
 
+- 기존492 release test/daemon inventory는 실제 `VERIFIED`: Cargo `Compiling` 메시지0개,
+  재사용 전후 두 binary SHA 동일, selector의 runtime suite1개다. Query dispatch600s를 명시한
+  XL exact1을 `/private/tmp/qi-os3-configured-xl-reuse-492d2fdc-20261006-v1`에 등록했다.
+  새 compile stage 없이 정상 admission 대기 중이며 actual 결과는 아직 없다.
+- Ready9 final-v5는 증명 검증 전 context/raw/binary/source closure/receipt3개와 입력 manifest를
+  고정하고, 기존 digest의 재결속을 원자적으로 거절한다. Root 자체32control회귀 PASS·2.184s와
+  독립 static 검토가 `VERIFIED`다. SGCS-v7은 ordered9 summary와 실제 physical `capture.json`
+  SHA를 replay worker/최종 집계 모두에서 대조한다. Root 자체12control PASS·0.630s와 독립
+  read-only 검토가 `VERIFIED`다. 동일한 가짜64hex를 양쪽 summary에 넣는 mutant도 거절한다.
+  기존 v4/v5/v6·Root75controls/3manifests와 accepted55 epoch은 보존했다. Final-v5 consumer의
+  55bindings 검사는 immutable OG Python3.12.12에서 실제 PASS다. System3.9/선택proof3.13.9로
+  호출한 guard는 runtime 신원 불일치로 `FAILED`했고 receipt를 발행하지 않았다. Product/benchmark
+  actual이나 human review 성공으로 승격하지 않는다. 새 stage/final slot은 아직 미발행이다.
 - Source492 OS3 release 실제3개는2passed/1failed·524.761s, nextest exit100·lease release다.
   Medium256은14.566s, Large4096은84.191s로 `VERIFIED`; XL32768은425.966s로 `FAILED`다.
   Error는 `RequestDeadlineExceeded`, checkpoint `lexical:cold-open:file-index`, deadline 초과13ms다.

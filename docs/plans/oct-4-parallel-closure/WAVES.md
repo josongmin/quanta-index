@@ -74,6 +74,15 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+- Root492 original release inventory 재사용은 실제 `VERIFIED`: 추가 Compiling 메시지0개와
+  test/daemon SHA 전후 동일을 확인했다. Explicit query dispatch600s의 XL exact1은 기존 binary로
+  정상 admission에 등록했고 실행 결과는 아직 없다. Corpus/seed/caps/oracle은 불변이다.
+- Ready9 final-v5의 초기 proof custody/atomic epoch rebind 수리는 Root32control PASS·2.184s와
+  독립 static 검토, SGCS-v7의 ordered9/actual capture SHA 결속은 Root12control PASS·0.630s 및
+  독립 read-only 검토로 `VERIFIED`다. 기존75controls/3manifests와 accepted55 epoch은 불변이며
+  final-v5 consumer는 immutable OG Python3.12.12에서55bindings를 실제 검증했다. 다른 Python
+  runtime 호출2건은 정상 거절·receipt없음으로 보존한다. 새 stage/final actual은 `NOT_RUN`이며
+  명시적 slot 미발행 상태다. 제어 fixture 통과를 product·benchmark actual로 승격하지 않는다.
 - Source492 OS3 release 원본3개는 실제2PASS/1FAIL·524.761s, nextest exit100·lease release다.
   Medium256·14.566s와 Large4096·84.191s는 `VERIFIED`, XL32768·425.966s는 `FAILED`다.
   XL error는 `RequestDeadlineExceeded`(+13ms), checkpoint `lexical:cold-open:file-index`다.
