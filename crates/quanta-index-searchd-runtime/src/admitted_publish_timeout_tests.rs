@@ -352,7 +352,7 @@ fn sdk_batch_for_wire(
     }
     .source_event(batch.source_event.clone());
     for surface in &batch.clear_surfaces {
-        sdk = sdk.clear_surface(surface.clone());
+        sdk = sdk.clear_surface(*surface);
     }
     for scope in &batch.replace_scopes {
         sdk = sdk.replace_scope(
@@ -450,6 +450,7 @@ fn remove_dead_child_sockets(root: &Path) -> TestResult {
 
 /// The same admission and durable replay contract across an actual OS
 /// process boundary, using the SDK's unchanged 30-second client deadline.
+///
 /// The child owns the real catalog and disk adapters; its test-only build
 /// wrapper supplies only the deterministic admitted-work barrier.
 #[test]
@@ -478,7 +479,7 @@ fn default_sdk_timeout_in_os_child_still_commits_and_replays_without_rebuild() -
         .env(OS_CHILD_GATE_ENV, &gate_path)
         .spawn()?;
     let mut child = OwnedTestChild(Some(child));
-    let _control = wait_for_control(&state_root)?;
+    let initial_control = wait_for_control(&state_root)?;
     let catalog = SqliteCatalog::open(&state_root, Duration::from_secs(2))?;
     let caller_root = state_root.clone();
     let caller = thread::spawn(move || -> Result<_, SdkError> {
@@ -514,7 +515,7 @@ fn default_sdk_timeout_in_os_child_still_commits_and_replays_without_rebuild() -
         return Err(format!("timed-out OS child publish did not apply: {original:?}").into());
     }
     drop(control);
-    drop(_control);
+    drop(initial_control);
     drop(catalog);
     child.stop()?;
     remove_dead_child_sockets(&state_root)?;

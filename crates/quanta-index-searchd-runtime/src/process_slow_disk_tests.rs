@@ -282,13 +282,15 @@ fn run_child() -> TestResult {
     shutdown.store(true, Ordering::Release);
     monitor
         .join()
-        .map_err(|_| "slow disk stop monitor panicked")??;
+        .map_err(|panic| format!("slow disk stop monitor panicked: {panic:?}"))??;
     result?;
     Ok(())
 }
 
 /// The meter is held for at least five 100ms health ticks in a separate OS
-/// process. Control UDS must keep answering that the active physical backend
+/// process.
+///
+/// Control UDS must keep answering that the active physical backend
 /// and maintenance heartbeat are ready; the meter must record skipped work.
 #[test]
 fn os_child_slow_disk_port_does_not_stale_active_readiness() -> TestResult {
