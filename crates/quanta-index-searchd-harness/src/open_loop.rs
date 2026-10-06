@@ -66,9 +66,10 @@ pub(crate) struct Config {
     pub workers: usize,
     pub queue_capacity: usize,
     pub request_timeout: Duration,
-    /// Explicit per-pair history budget; `None` retains the harness default.
+    /// Explicit per-pair history budget; `None` uses the scale-supported 1 GiB bound.
     pub history_max_bytes: Option<u64>,
-    /// Explicit total retained-history budget; requires a pair override.
+    /// Explicit total retained-history budget; `None` uses the scale-supported 2 GiB bound.
+    /// An explicit total requires a pair override.
     pub history_max_total_bytes: Option<u64>,
 }
 
