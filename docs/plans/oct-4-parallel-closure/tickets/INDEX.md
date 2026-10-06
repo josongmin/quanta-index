@@ -121,10 +121,14 @@ Main4a의 unit2790+runtime3 및 SDK27/27·20.287s/portable replay도 그 고정 
   영속 실행 root는 `/Users/songmin/.codex/task-evidence/ready9-native-recovery-20261006-01a10d0b-v3`다.
   중지된 SG/OG 컨테이너를 확인했다. SG 원본 Zoekt index/관측 자료와 OG 원본 볼륨은 남아 있다.
   SG index13files는 원본 관측 hash와 일치하며9개 committed projection의 전체 path/blob도 canonical 검사와 일치한다.
-  같은 이미지·readonly index overlay로 SG 복구를 준비했다. OG의 과거 segments2/3 snapshot은
-  원본 commit 파일이 없어 historical replay가 `BLOCKED`다. 현재 retained segments4는 별도 fresh diagnostic
-  입력으로만 동결하며, 인덱서 없는 Tomcat·native/query witness 전체 계약 검증 뒤 새 capture/replay를 실행한다.
-  아직 실제 service capture/replay 성공으로 세지 않는다.
+  SG는 동일 이미지의 실제 Zoekt reader를 readonly index로 기동하고 `INDEXED_SEARCH_SERVERS`를
+  명시해 indexserver를 제외했다. OG는 default namespace descriptor와 전용 bridge/loopback 바인딩으로
+  복구했다. 두 실제 HTTP 응답·readonly runtime/seal 및 OG dataRoot는 검사와 일치한다.
+  Fresh 실행 root는 `/Users/songmin/.codex/task-evidence/ready9-sgog-recovery-20261006-01a10d0b-v4`다.
+  과거 service-start 실패3개와 입력은 보존했다. OG의 과거 segments2/3 snapshot은 원본 commit 파일이
+  없어 historical replay가 `BLOCKED`다. 현재 retained segments4는 별도 fresh diagnostic 입력이며,
+  9repo native documents/query-reader 전체 계약과 capture/replay는 실제 실행 결과를 기다린다.
+  Service readiness를 실제 query capture/replay 성공으로 세지 않는다.
   Historical55-binding/old raw를 최신 SDK나 새 collector epoch로 재결속하지 않는다.
 - P11 공통 코드·Python436개/통합 영향222개는 완료했다. 실제 deploy/activate/restore-forward
   target adapter는 대상·명령·독립 pre/post 성공 계약 입력 부재로 `BLOCKED`다.
@@ -140,7 +144,7 @@ Main4a의 unit2790+runtime3 및 SDK27/27·20.287s/portable replay도 그 고정 
 | Workspace/strict/API/CI | Scale / hosted CI | e371 whole strict·MSRV·nextest4231/4231 및 API `VERIFIED`. Receipt 생성 lock/EOF 정책은 f6ff0064로 수리; 새 whole CI 종료 회수 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Frozen492의 Medium/Large 및 configured XL `VERIFIED`. 최신e371 runtime15개는 별도 범위이며 current Large/XL qualification로 승격하지 않음 |
 | Current native Scale·capacity/cost | Scale | e371 open-loop20개 `VERIFIED`. Matching Large/XL lifecycle/cost·capacity negative·timing/RSS qualification은 `NOT_RUN` |
-| Ready9 native·SG/CS·최종5제품 join | Ready9 | source091의 CS9/9 capture·독립 replay9/9·180요청 `VERIFIED`/exit0. SG 원본13index/projection9 검증 후 readonly 복구 중. OG historical segments2/3 snapshot 재생 `BLOCKED`; retained segments4의 별도 fresh diagnostic 준비. 최종 matching admission/pair/full5는 `NOT_RUN` |
+| Ready9 native·SG/CS·최종5제품 join | Ready9 | source091의 CS9/9 capture·독립 replay9/9·180요청 `VERIFIED`/exit0. SG 원본13index/projection9 및 SG/OG readonly runtime·HTTP/dataRoot 검증 완료; fresh-v4 native9 capture/replay 실행 중, 완료0/9. OG historical segments2/3 재생 `BLOCKED`; retained segments4는 별도 diagnostic. 최종 matching admission/pair/full5는 `NOT_RUN` |
 | Final Contract/SDK | I0 | e371 Python793·Rust191·SDK27 actual 및 별도 replay/frozen7role 재배치 검증 모두 `VERIFIED`. 영속 context·raw·binaries 보존 |
 | NativeIdentity feature 연동 | Native owner / hosted CI | 실제 native/Unicode owner·최종 Contract/runtime 및 module/API/whole strict `VERIFIED`; whole CI 최종 종료는 별도 |
 
