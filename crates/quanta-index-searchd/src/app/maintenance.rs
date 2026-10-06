@@ -138,16 +138,19 @@ impl DiskMeterJoinGuard {
         let meter = take_disk_meter(&self.owner, &self.tallies);
         self.joined = true;
         match meter {
-            Some(meter) => {
-                if meter.join().is_err() {
+            Some(meter) => match meter.join() {
+                Err(_panic) => {
                     self.tallies.disk_meter_fatal.store(true, Ordering::Release);
                     ChildExitKind::Panicked
-                } else if self.tallies.disk_meter_fatal.load(Ordering::Acquire) {
-                    ChildExitKind::Failed
-                } else {
-                    ChildExitKind::Completed
                 }
-            }
+                Ok(()) => {
+                    if self.tallies.disk_meter_fatal.load(Ordering::Acquire) {
+                        ChildExitKind::Failed
+                    } else {
+                        ChildExitKind::Completed
+                    }
+                }
+            },
             None => ChildExitKind::Failed,
         }
     }
