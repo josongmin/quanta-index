@@ -27,10 +27,10 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
 | --- | --- | --- |
 | Manifest 복호화 메모리 경계 | I0 / E4 | 전체 generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. 최신 Source565의 IPC/CBOR/manifest owner46개가 actual PASS·1.126s이며 whole/strict/integration 소비 검증이 남는다 |
 | Workspace 검사·단위 테스트 | Scale / hosted CI | Source565 owner46/46·1.126s와 open-loop bin20/20·5.208s가 실제 exit0다. 같은565에서 whole unit `--no-fail-fast`/1thread·strict·runtime/integration을 이어간다. Main2c Python1107과 d192 Python1109 전체는 `VERIFIED`; whole Rust는 아직 실패 상태다 |
-| Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Source492 release 원본3개는 실제 Medium14.566s·Large84.191s PASS, XL425.966s `FAILED`다. XL은 `lexical:cold-open:file-index`에서 typed `RequestDeadlineExceeded`(+13ms)로 종료했다. Large/XL의 SDK IO600s와 서버 query dispatch 기본20s가 불일치한다. 지원 profile에 서버600s 설정을 추가했고 owned fmt/diff는 PASS다. Cold-open 비용 RCA·실제 XL 재검증과 debug interruption1개가 남는다. Corpus/seed/caps는 불변 |
+| Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Source492 release 원본3개는 실제 Medium14.566s·Large84.191s PASS, XL425.966s `FAILED`다. XL은 `lexical:cold-open:file-index`에서 typed `RequestDeadlineExceeded`(+13ms)로 종료했다. Large/XL의 SDK IO600s와 서버 query dispatch 기본20s가 불일치한다. 지원 profile에 서버600s 설정을 추가했고 owned fmt/diff는 PASS다. 설정을 명시한 기존492 binary의 XL exact1 재검증이 남는다. Debug interruption1개는 실제 PASS·2.772s다. Corpus/seed/caps는 불변 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. 후속 final-v5 proof custody32회귀 및 SGCS-v7 actual capture hash12회귀·독립 검토는 PASS다. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
-| Final Contract/SDK | I0 | 선택565의 canonical Contract Python793개가 actual PASS·289.98s다. Rust191 inventory/build 완료 후 행동 검증이 대기 중이며 fresh SDK daemon release build는29m04s/exit0다. SDK27개·최종 context/portable verify가 남는다. 두 source closure1500files digest는 일치하며 canceled731 v6 partial은 재사용하지 않는다 |
+| Final Contract/SDK | I0 | 선택565의 canonical Contract Python793·289.98s/Rust191·0.528s와 최종 context/portable verify가 실제 `VERIFIED`다. Fresh SDK daemon release29m04s와 SDK test binary17m26s는 build exit0이며 SDK27개·최종 context/portable verify가 남는다. 두 source closure1500files digest는 일치하며 canceled731 v6 partial은 재사용하지 않는다 |
 | Main의 병렬 NativeIdentity feature 연동 | 해당 변경 owner / hosted CI | Main16f37의 feature 누락 실패 뒤 최신38eda80a에 normalization vendor/control42paths가 반영됐다. Locked/offline/all-features metadata는 실제 exit0/28workspace다. Actual Rust·module/API·whole CI가 남으며 선택565의 엔진 검증과 별도 범위다 |
 
 위 목록은 Quanta 소유 실행 범위다. P11 실제 운영 producer는 I0-03의 target/독립 관측 계약이
@@ -67,7 +67,9 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
   `SLOW` 표시는 실패 원인이
   아니며 이 결과는 인덱싱 속도 측정이나 timing/RSS qualification이 아니다. 원본 실패는
   `/private/tmp/qi-scale-os3-release-492d2fdc-20261006-v9/result.json` 및 `run.log`에 보존했다.
-  수정 모듈의 debug interruption1개는 정상 admission 대기 중이며 Ready9 slot은 발행하지 않았다.
+  Source492의 debug interruption exact1은 실제 PASS·2.772s/exit0·lease release로 `VERIFIED`다.
+  Typed dense-lane deadline·checkpoint/counters·동일 daemon 후속 복구를 검증했으며 전체 suite
+  성공으로 승격하지 않는다. Ready9 slot은 발행하지 않았다.
 - 최신 main `38eda80a5688c6b8de6ccd0faef886179c9ddb0f`에는 normalization vendor와
   native scratch admission feature 및 별도 control-plane 수리가 반영됐다(42paths).
   `./scripts/cargow --lane metadata-native-feature-lane metadata --locked --offline --all-features
@@ -77,15 +79,18 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
   같은 Source565 open-loop full20개도 실제20/20·5.208s/exit0·lease release로 `VERIFIED`다.
   SDK565 daemon의 fresh release build도29m04s/exit0다. 두 결과를 전체 workspace 검사나
   SDK27개/portable proof 성공으로 승격하지 않는다.
-- Source565 Contract Python은793passed·289.98s로 실제 `VERIFIED`다. Rust inventory191의
-  실제 build는2m19s/exit0이며 행동 검증과 최종 context/portable verify는 아직 남는다.
-  SDK fresh release build는 위 checkpoint대로 완료됐다. Collection·컴파일을 Rust/SDK 테스트
-  통과로 승격하지 않는다.
+- Source565 Contract Python793passed·289.98s와 Rust191passed·0.528s는 실제 `VERIFIED`다.
+  `just retrieval-contract-proof` 및 뒤이은 `portable_proof.py verify --receipt`는 모두 exit0다.
+  최종 context는 `/private/tmp/qi-f15-contract-5658b953-20261006-v8/execution-context.json`이며
+  실행 명령7개 exit0·matching source closure1500files를 결속한다. Fresh SDK daemon29m04s와
+  SDK test binary17m26s의 build는 exit0이나 SDK27 행동 검증/context는 아직 미발행이다.
+  Contract 증명의 Python3.13.9와 역사적 OG replay의3.12.12는 서로 다른 runtime binding이다.
+  Ready9 제어의 interpreter 분리 수리를 검토한 뒤 final 실행에 연결한다.
 - Source565의 OS3는 release 컴파일 `FAILED`(E0432/exit101·5227.025s)이며 실제 tests0개다.
   `e2e_semantic_budget_interruption`이 debug 전용 `semantic::test_support`를 release에서도
   import한 등록 오류다. 해당 mod에 `cfg(debug_assertions)`를 붙여 producer 경계와 일치시켰고
   main 및 clean492에 적용했다. 제품·회귀 본문 불변, owned fmt/diff는 `VERIFIED`다.
-  Source492 원본 release OS3의 실제 결과는 위2PASS/1FAIL이고 debug interruption1개는 대기 중이다.
+  Source492 원본 release OS3의 실제 결과는 위2PASS/1FAIL이고 debug interruption1개는 PASS·2.772s다.
   실행 중인565 fresh SDK를 유지한다. Failed565 raw/target은 보존하고 release dependency cache만
   정상 Cargo 검증 아래 재사용한다. 565 release suite 성공이나 전체 main 통과로 소급 표기하지 않는다.
 - Main `16f37d43f7a1c3d136d7843442089bdc04561770`의 exact-source hosted CI는 `FAILED`다.
@@ -101,7 +106,7 @@ OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da1
   `/private/tmp/qi-scale-os3-release-5658b953-20261006-v8`,
   `/private/tmp/qi-f15-contract-5658b953-20261006-v8`, `/private/tmp/qi-f15-sdk-5658b953-20261006-v8`.
   이 등록 시점의 Contract Python793 collection 뒤 실제793PASS를 회수했다(위 checkpoint).
-  최종 context/portable result는 아직 없다.
+  Contract 최종 context/portable verify는 `VERIFIED`이며 SDK context/portable result는 아직 없다.
   Ready9 final consumer는 PREP-v3의55-binding epoch을 실제 검사해 통과했다. PREP-v2의54-binding
   파일은 audit-only이며 final 입력으로 쓰지 않는다. 기존75controls/3manifests 및 raw는 불변이다.
 - Main98의 Rust1111 strict는372.012s/exit101로 동시 추가된 NativeIdentityCopy 테스트의

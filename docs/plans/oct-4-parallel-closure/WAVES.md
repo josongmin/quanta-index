@@ -94,7 +94,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   기존492 release binary와 query600s 환경을 재사용하는 XL exact1을 준비했으며 새 cold build는
   등록하지 않았다. 결과는 frozen492+명시적 환경 범위다. 원본 corpus/seed/caps와
   실패 raw는 보존한다. 이는 데이터 보존 회귀이며 indexing latency/timing/RSS qualification이 아니다.
-  Debug interruption1개는 정상 admission 대기 중이며 Ready9 stage/final slot은 미발행이다.
+  Source492 debug interruption exact1은 실제 PASS·2.772s/exit0·lease release로 `VERIFIED`다.
+  Typed dense-lane deadline·checkpoint/counters·동일 daemon 복구 범위이며 전체 suite 검증은 아니다.
+  Ready9 stage/final slot은 미발행이다.
 - 최신 main38eda80a에는 normalization vendor/native scratch feature/control 수리42paths가
   반영됐다. Canonical `cargow metadata --locked --offline --all-features --no-deps`는 실제
   exit0/28workspace로 dependency 해석 `VERIFIED`다. 새 Rust·module/API·whole CI는 별도 actual이
@@ -103,16 +105,19 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   같은 소스의 open-loop full20개도 실제20/20·5.208s/exit0·lease release로 `VERIFIED`다.
   SDK565 daemon fresh release build도29m04s/exit0다. Whole workspace 및 SDK27개/portable
   proof의 실제 결과는 아직 남는다.
-- Source565 Contract Python793개는 실제 `VERIFIED`(289.98s)다. Rust191 inventory의 build는
-  2m19s/exit0이며 행동 검증·최종 context/portable verify는 미완료다. SDK fresh release는
-  build는 위 checkpoint대로 완료됐다. Compiler/collection 성공을 테스트 통과로 승격하지 않는다.
+- Source565 Contract Python793·289.98s/Rust191·0.528s와 최종 context/portable verify는 실제
+  `VERIFIED`다. Canonical `just retrieval-contract-proof`와 후속 `portable_proof.py verify --receipt`
+  모두 exit0이며 context의 실행 명령7개는 matching source closure1500files에 결속된다.
+  SDK daemon29m04s·test binary17m26s는 build exit0이며 SDK27 행동 검증/context는 미발행이다.
+  Contract Python3.13.9와 역사적 OG replay3.12.12의 runtime binding은 각각 보존한다.
+  Ready9 제어의 interpreter 분리 수리를 검토한 뒤 final 실행에 연결한다.
 - Source565 OS3 actual은 release compile `FAILED`(E0432/exit101·5227.025s), tests0개다.
   Debug 전용 semantic test_support를 쓰는 회귀 모듈에 producer와 같은 `cfg(debug_assertions)`를
   붙인1줄 수리를 main 및 clean492에 적용했다. 제품·회귀 본문 불변·owned fmt/diff는 `VERIFIED`다.
   Source492에서 원본 release OS3 256/4096/32768과 debug interruption1개를 정상 admission으로
   재등록했다. Cold dependency cache는 정상 Cargo 검증 아래 재사용하고 실패 raw는 보존한다.
   이미 admitted인565 fresh SDK·Contract/Ready9 principal source 및55epoch은 유지한다.
-  새 actual OS3는 위2PASS/1FAIL이며 debug1개는 대기 중이다. 565 release suite 성공이나
+  새 actual OS3는 위2PASS/1FAIL이며 debug1개는 PASS·2.772s다. 565 release suite 성공이나
   whole main 통과를 뜻하지 않는다.
 - Main16f37의 exact-source CI는 `FAILED`: Python1120 locked dependency fetch가 exit101·0.809s로
   unicode-normalization0.1.25에 없는 `quanta-native-scratch-v1` feature를 보고했고,
@@ -124,7 +129,8 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   Scale broad unit/strict/runtime/integration/fuzz4/native 및 Root OS3 원본3/Contract/fresh SDK를 연결한다.
   Root3 rail은 실제 등록됐고565 OS3 compile 실패와492 수리는 위에 분리했다. Contract/SDK closure는
   1500files/digest58d62e6c로 일치하며 Python793 actual PASS·SDK admitted fresh build는 위에 회수했다.
-  Context/portable result는 미발행이다. Ready9 final consumer는 PREP-v3의55-binding epoch 검사를
+  Contract context/portable verify는 `VERIFIED`, SDK context/portable result는 미발행이다.
+  Ready9 final consumer는 PREP-v3의55-binding epoch 검사를
   통과했고 PREP-v2의54-binding은 audit-only로 유지한다. 실제 stage/final slot은 아직 미발행이다.
 - Main98 Rust1111은372.012s/exit101로 동시 추가된 API 테스트 `redundant_clone`1건에서 `FAILED`다.
   비교값의 불필요한 clone만 제거했고 제품/API 본문·선택565는 불변이다. 새 whole CI actual은 남는다.
