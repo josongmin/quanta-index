@@ -75,6 +75,10 @@
   panic_in_result_fn1·significant_drop_tightening2에서 exit101/`FAILED`였다. SDK cfg(test)1path를
   explicit Protocol Err·checked arithmetic·arm별 짧은 lock·Copy progress snapshot으로 수리했다.
   Identity/offset/1MiB cap/exact body/complete commit/publication binding 조건을 모두 유지한다.
+  후속 owner24860의 전체 strict Clippy는 SDK 수리를 지나 IPC integration-test helper의
+  unchecked 시간 계산2·불필요한 clone3에서 실패했다. 제품 body 변경 여부를 대조하고 해당 테스트만 수리한다.
+  Static AST 감사(변경 Rust68paths/Result 함수275개)는 추가 확정 assertion/panic 위반을 찾지 못했으며
+  전체 Clippy 통과로 표시하지 않는다.
   Guarded apply·owned rustfmt/diff는 `VERIFIED`; 수정본의 실제 Clippy/SDK fixture 실행은 남는다.
   같은 source의 verify-python1776은4181passed/30skipped/2warnings·858.00s 뒤 Ruff format2곳에서
   exit1/`FAILED`였다. 두 파일만 포맷한 뒤 Ruff check/format 및 causal-profile·reopen-fence73tests가
@@ -122,6 +126,10 @@
   SDK cfg(test) 후속 수리로 Rust build leaf를 미입장 취소해 producer exit143/controller exit1이다.
   `/private/tmp/qi-f15-contract-47e938d6-20261006-v2`는 partial로 보존하며 whole rail은 `NOT_RUN`이다.
   Collection은 Python793 behavioral pass가 아니며 Rust191과 fresh SDK27도 이 source에서 미실행이다.
+  SDK 수리 후 clean02bb8472를 새 frozen managed checkout에 결속한 Contractv3는 실행 중이다.
+  해당 source의 actual과 이후 IPC test-only 수리의 영향/최종 source scope를 구분한다.
+  OS3v5는446→24860의 Python-only HEAD 이동을 sourceguard가 감지해 exit65/`BLOCKED`였다.
+  Cargo/tests0이며 그 결과를 보존한다. V6는clean24860으로 원본3fixture를 다시 등록했다.
   새 source의 Contract/fresh SDK 실제 발행·독립 portable verify가 남는다.
 - 남은 통합 종료 조건: 새 upload/Scale 및 scanner owner 변경을 포함한 영향 Rust/runtime 회귀,
   최종 selected-source Contract/fresh SDK·portable replay, Ready9 final pair/full5 join과 각 별도 qualification.

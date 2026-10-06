@@ -475,7 +475,11 @@ mod tests {
     use std::time::Instant;
 
     fn budget() -> RequestBudgetV1 {
-        RequestBudgetV1::until(Instant::now() + Duration::from_secs(60))
+        RequestBudgetV1::until(
+            Instant::now()
+                .checked_add(Duration::from_secs(60))
+                .expect("fixture deadline must be representable"),
+        )
     }
 
     fn batch() -> SearchCorpusIngestBatch {
@@ -588,7 +592,7 @@ mod tests {
                     &SourcePublicationUploadPart {
                         offset: 3,
                         bytes: b"def".to_vec(),
-                        ..first.clone()
+                        ..first
                     },
                     &budget()
                 )
@@ -608,7 +612,7 @@ mod tests {
                 .stage(
                     &SourcePublicationUploadPart {
                         bytes: b"xyz".to_vec(),
-                        ..first.clone()
+                        ..first
                     },
                     &budget()
                 )
@@ -620,7 +624,7 @@ mod tests {
                     &SourcePublicationUploadPart {
                         offset: 4,
                         bytes: b"ef".to_vec(),
-                        ..first.clone()
+                        ..first
                     },
                     &budget()
                 )
@@ -814,7 +818,11 @@ mod tests {
             offset: 0,
             bytes: vec![0],
         };
-        let expired = RequestBudgetV1::until(Instant::now() - Duration::from_secs(1));
+        let expired = RequestBudgetV1::until(
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("fixture expired deadline must be representable"),
+        );
         assert!(store.stage(&part, &expired).is_err());
         assert!(store.inventory().expect("inventory").0 == 0);
         let outside = root.path().join("outside");

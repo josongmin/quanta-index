@@ -108,6 +108,8 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   Main47e의 hosted verify1775는 SDK test transport의 Result assertion1·Mutex scope2로 실패했다.
   조건을 유지한 explicit Err/checked arithmetic·짧은 lock/Copy snapshot1path 수리를 main에 통합했다.
   Guarded apply/rustfmt/diff는 통과했으며 실제 Clippy/fixture는 별도로 재검증한다.
+  후속 owner24860 Clippy는 SDK를 지나 IPC test helper 시간 계산2·clone3에서 실패했다.
+  영향 테스트만 수리하고 다음 전체 strict에서는 독립 target 오류도 끝까지 수집한다.
   OS3v4는 SDK 후속 수리 때문에 미입장 취소해 exit143/0actual tests/`NOT_RUN`이다.
   Request-decode fuzz970,826runs/61s는 통과했고 남은 fuzz3은 미입장 취소 후 `NOT_RUN`이다.
   Source2ea release scale_matrix build18m16s/exit0는 `VERIFIED`; 전체 Clippy/unit 재검사와 native Large/XL은 남는다.
@@ -130,6 +132,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
   후속 clean47e Contract는 source closure·793collection authority PASS 뒤 SDK test 후속 수리로
   Rust leaf를 미입장 취소했다(producer143/controller1). Partial을 보존하며 whole rail은 `NOT_RUN`;
   Python793 behavioral pass/Rust191/fresh SDK27 actual 결과는 아직 없다.
+  후속 clean02bb의 Contractv3는 독립 frozen checkout에서 실행 중이다. 이후 IPC test 수리와
+  exact source/선택 입력을 구분한다. OS3v5는 Python-only HEAD drift sourceguard에서65/`BLOCKED`,
+  Cargo/tests0이었으며 원본3fixture v6는clean24860으로 재등록했다.
   새 source와 fresh output에서 canonical Contract/fresh SDK·portable replay를 다시 실행한다.
 - Frozen5796 Contract Python791/Rust191와 fresh release SDK27은 actual 및 독립 portable replay `VERIFIED`.
 - 같은 source의 별도 release `scale_matrix` build와 small16/medium256 causal run은 `VERIFIED_DIAGNOSTIC`.
