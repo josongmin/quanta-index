@@ -3070,22 +3070,42 @@ mod native_corpus_decode_tests_v1 {
         type Error = NativeCorpusDecodeRefusalV1;
 
         fn repo_id_from_owned_v1(&self, value: String) -> Result<RepoId, Self::Error> {
-            self.owned_ids.set(self.owned_ids.get() + 1);
+            self.owned_ids.set(
+                self.owned_ids
+                    .get()
+                    .checked_add(1)
+                    .expect("fixture identity count fits u32"),
+            );
             RepoId::new(value).map_err(Self::Error::Identity)
         }
 
         fn repo_id_from_borrowed_v1(&self, value: &str) -> Result<RepoId, Self::Error> {
-            self.borrowed_ids.set(self.borrowed_ids.get() + 1);
+            self.borrowed_ids.set(
+                self.borrowed_ids
+                    .get()
+                    .checked_add(1)
+                    .expect("fixture identity count fits u32"),
+            );
             RepoId::new(value).map_err(Self::Error::Identity)
         }
 
         fn revision_id_from_owned_v1(&self, value: String) -> Result<RevisionId, Self::Error> {
-            self.owned_ids.set(self.owned_ids.get() + 1);
+            self.owned_ids.set(
+                self.owned_ids
+                    .get()
+                    .checked_add(1)
+                    .expect("fixture identity count fits u32"),
+            );
             RevisionId::new(value).map_err(Self::Error::Identity)
         }
 
         fn revision_id_from_borrowed_v1(&self, value: &str) -> Result<RevisionId, Self::Error> {
-            self.borrowed_ids.set(self.borrowed_ids.get() + 1);
+            self.borrowed_ids.set(
+                self.borrowed_ids
+                    .get()
+                    .checked_add(1)
+                    .expect("fixture identity count fits u32"),
+            );
             RevisionId::new(value).map_err(Self::Error::Identity)
         }
     }
