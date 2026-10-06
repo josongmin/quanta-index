@@ -218,8 +218,49 @@ fn validate_native_identity_v1<P: unicode_normalization::NativeNormalizationAdmi
     }
 }
 
+
+/// Boundary adapter for the SAME identity visitors. The runtime supplies its
+/// original NFC producer and retained String group; no authority is stored.
+#[cfg(feature = "quanta-native-identity-v1")]
+pub trait NativeIdentityDecodeAdmissionV1 {
+    type Error: fmt::Display;
+    fn repo_id_from_owned_v1(&self, value: String) -> Result<RepoId, Self::Error>;
+    fn repo_id_from_borrowed_v1(&self, value: &str) -> Result<RepoId, Self::Error>;
+    fn revision_id_from_owned_v1(&self, value: String) -> Result<RevisionId, Self::Error>;
+    fn revision_id_from_borrowed_v1(&self, value: &str) -> Result<RevisionId, Self::Error>;
+}
+
+trait IdentityConstructionPolicyV1<T> {
+    type Error: fmt::Display;
+    fn from_owned_v1(&self, value: String) -> Result<T, Self::Error>;
+    fn from_borrowed_v1(&self, value: &str) -> Result<T, Self::Error>;
+}
+struct OrdinaryIdentityConstructionV1;
+#[cfg(feature = "quanta-native-identity-v1")]
+struct NativeIdentityConstructionV1<'a, P: ?Sized>(&'a P);
+
+trait IdentityDecodeValueV1: Sized {
+    fn decode_with_policy_v1<'de, D, P>(deserializer: D, policy: P) -> Result<Self, D::Error>
+    where D: Deserializer<'de>, P: IdentityConstructionPolicyV1<Self>;
+}
+
+#[cfg(feature = "quanta-native-identity-v1")]
+struct IdentityDecodeSeedV1<T, P> {
+    policy: P,
+    value: core::marker::PhantomData<T>,
+}
+#[cfg(feature = "quanta-native-identity-v1")]
+impl<'de, T: IdentityDecodeValueV1, P: IdentityConstructionPolicyV1<T>> de::DeserializeSeed<'de>
+    for IdentityDecodeSeedV1<T, P>
+{
+    type Value = T;
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<T, D::Error> {
+        T::decode_with_policy_v1(deserializer, self.policy)
+    }
+}
+
 macro_rules! validated_identity {
-    ($name:ident) => {
+    ($name:ident, $owned_v1:ident, $borrowed_v1:ident) => {
         #[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
         pub struct $name(String);
 
@@ -277,6 +318,18 @@ macro_rules! validated_identity {
                 Ok(Self(value))
             }
 
+            /// SAME identity visitor with an explicitly borrowed native owner.
+            /// Owned JSON Strings move to the canonical constructor unchanged.
+            #[cfg(feature = "quanta-native-identity-v1")]
+            pub fn native_decode_seed_v1<'a, 'de, P: NativeIdentityDecodeAdmissionV1 + ?Sized>(
+                admission: &'a P,
+            ) -> impl de::DeserializeSeed<'de, Value = Self> + 'a {
+                IdentityDecodeSeedV1::<Self, _> {
+                    policy: NativeIdentityConstructionV1(admission),
+                    value: core::marker::PhantomData,
+                }
+            }
+
             /// Copy these exact private canonical bytes without re-running NFC
             /// or constructing a second identity authority. The caller admits
             /// copy work before this call, admits actual backing before the
@@ -332,14 +385,27 @@ macro_rules! validated_identity {
             }
         }
 
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                struct IdentityVisitor;
+        impl IdentityConstructionPolicyV1<$name> for OrdinaryIdentityConstructionV1 {
+            type Error = IdentityValidationErrorV1;
+            fn from_owned_v1(&self, value: String) -> Result<$name, Self::Error> { $name::new(value) }
+            fn from_borrowed_v1(&self, value: &str) -> Result<$name, Self::Error> { $name::new(value) }
+        }
+        #[cfg(feature = "quanta-native-identity-v1")]
+        impl<P: NativeIdentityDecodeAdmissionV1 + ?Sized> IdentityConstructionPolicyV1<$name>
+            for NativeIdentityConstructionV1<'_, P>
+        {
+            type Error = P::Error;
+            fn from_owned_v1(&self, value: String) -> Result<$name, Self::Error> { self.0.$owned_v1(value) }
+            fn from_borrowed_v1(&self, value: &str) -> Result<$name, Self::Error> { self.0.$borrowed_v1(value) }
+        }
 
-                impl<'de> de::Visitor<'de> for IdentityVisitor {
+        impl IdentityDecodeValueV1 for $name {
+            fn decode_with_policy_v1<'de, D, P>(deserializer: D, policy: P) -> Result<Self, D::Error>
+            where D: Deserializer<'de>, P: IdentityConstructionPolicyV1<Self>,
+            {
+                struct IdentityVisitor<P>(P);
+
+                impl<'de, P: IdentityConstructionPolicyV1<$name>> de::Visitor<'de> for IdentityVisitor<P> {
                     type Value = $name;
 
                     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -350,25 +416,30 @@ macro_rules! validated_identity {
                     where
                         E: de::Error,
                     {
-                        $name::new(value).map_err(E::custom)
+                        self.0.from_borrowed_v1(value).map_err(E::custom)
                     }
 
                     fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
                     where
                         E: de::Error,
                     {
-                        $name::new(value).map_err(E::custom)
+                        self.0.from_owned_v1(value).map_err(E::custom)
                     }
                 }
 
-                deserializer.deserialize_string(IdentityVisitor)
+                deserializer.deserialize_string(IdentityVisitor(policy))
+            }
+        }
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                Self::decode_with_policy_v1(deserializer, OrdinaryIdentityConstructionV1)
             }
         }
     };
 }
 
-validated_identity!(RepoId);
-validated_identity!(RevisionId);
+validated_identity!(RepoId, repo_id_from_owned_v1, repo_id_from_borrowed_v1);
+validated_identity!(RevisionId, revision_id_from_owned_v1, revision_id_from_borrowed_v1);
 
 /// The validated logical repository/revision tuple.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

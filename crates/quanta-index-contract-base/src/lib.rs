@@ -56,4 +56,4 @@ pub use results::{
 };
 
 #[cfg(feature = "quanta-native-identity-v1")]
-pub use ids::NativeIdentityConstructionErrorV1;
+pub use ids::{NativeIdentityConstructionErrorV1, NativeIdentityDecodeAdmissionV1};
