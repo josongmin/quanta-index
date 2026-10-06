@@ -12,7 +12,11 @@
 소스 대조 기준일: 2026-10-06. 이 절의 anchor는 날짜 변경에도 유지한다.
 최종 제품 실행 소스는 clean `e37123ebd01c814a2681a2f2b4807eacfff45b35`다.
 후속 `c7ca71b2`는 `deny.toml` 정책만 변경하며 Rust·Cargo manifests·lock·실제 feature graph는 동일하다.
-정책 및 아래 문서 갱신 후 제품 proof에 묶인 소스1,527개를 현재 파일 hash와 대조해 불일치0개를 확인했다.
+정책·문서 갱신 당시 제품 proof의 소스1,527개는 불일치0개였다. 후속 `86e3a2e3` 및
+Python3.10 호환 수리는 native collector/cleanup와 해당 Python tests3개를 변경했다.
+기존 SDK/Contract source closure에는 이3개가 포함되므로 current main과 exact 동일하다고
+주장하지 않는다. 기존 actual/portable 증빙은 원래 `e37123eb`에 결속한 결과로 보존한다.
+이번 native 오류 처리의 영향 검증은 아래 Ready9 owner 결과로 따로 기록한다.
 아래 최신 판정과 과거 고정 소스의 기록을 구분한다.
 
 ### 최신 정적 감사 및 수정
@@ -124,8 +128,22 @@ Main4a의 unit2790+runtime3 및 SDK27/27·20.287s/portable replay도 그 고정 
   SG는 동일 이미지의 실제 Zoekt reader를 readonly index로 기동하고 `INDEXED_SEARCH_SERVERS`를
   명시해 indexserver를 제외했다. OG는 default namespace descriptor와 전용 bridge/loopback 바인딩으로
   복구했다. 두 실제 HTTP 응답·readonly runtime/seal 및 OG dataRoot는 검사와 일치한다.
-  Fresh 실행 root는 `/Users/songmin/.codex/task-evidence/ready9-sgog-recovery-20261006-01a10d0b-v4`다.
-  과거 service-start 실패3개와 입력은 보존했다. OG의 과거 segments2/3 snapshot은 원본 commit 파일이
+  Fresh-v4에서 Bat·CLI native scope 및 SG/OG80응답 capture2/9를 발행했다. SG 본문은
+  Bat79/79·CLI1,014/1,014가 일치했다. Django path2,368개 관측 후 Docker Desktop 엔진 장애로
+  native listener 및 cleanup이 실패했으며, lease는 반환했다. 완료2개와 partial/입력은 보존한다.
+  Docker 엔진 재시작 후 실제 daemon28.5.1 응답과 소유 컨테이너2개의 exited 상태를 확인했다.
+  `/Users/songmin/.codex/task-evidence/ready9-sgog-recovery-20261006-01a10d0b-v5`는 같은 source091에서
+  기존2개 raw/native 전체 hash 및 canonical replay를 검증하고 남은7개만 fresh 실행한다.
+  V4 실패와 과거 service-start 실패3개는 성공으로 재표기하지 않는다.
+  Cleanup 오류가 최초 오류를 가리는2개 경로는 main에서 수리했다. 공통 process 오류의
+  잘못된 cs 이름도 제거했다. Source86e3의 전체 영향 Python174/174·900.72s는 `VERIFIED`다.
+  이후 최소Python3.10 호환 방식은 error log에 cleanup traceback을 남기고 최초 예외·원래 cause를
+  그대로 전파한다. 집중5개는 Python3.13 4.04s 및 실제3.10 3.83s/exit0, Ruff lint/format도 통과했다.
+  명령은 `uv run --frozen --extra dev python -m pytest -q tools/ci/tests/test_live_lexical_external.py`와
+  동일 모듈의 `-k 'malformed_supervisor_identity or body_failure_survives or process_refuses_excessive_output'`다.
+  3.10은 main venv를 변경하지 않는 `uv run --no-project --python /Users/songmin/.local/bin/python3.10
+  --with pytest==9.1.1 --with regex==2025.10.23 --with unicodedata2==17.0.0 --no-build python -m pytest ...`다.
+  이 main 수리를 frozen091 raw에 재결속하지 않으며, 마지막 전체174 결과와 후속 집중5개를 구분한다. OG의 과거 segments2/3 snapshot은 원본 commit 파일이
   없어 historical replay가 `BLOCKED`다. 현재 retained segments4는 별도 fresh diagnostic 입력이며,
   9repo native documents/query-reader 전체 계약과 capture/replay는 실제 실행 결과를 기다린다.
   Service readiness를 실제 query capture/replay 성공으로 세지 않는다.
@@ -144,7 +162,7 @@ Main4a의 unit2790+runtime3 및 SDK27/27·20.287s/portable replay도 그 고정 
 | Workspace/strict/API/CI | Scale / hosted CI | e371 whole strict·MSRV·nextest4231/4231 및 API `VERIFIED`. Receipt 생성 lock/EOF 정책은 f6ff0064로 수리; 새 whole CI 종료 회수 |
 | Medium/Large/XL 실제 프로세스 재시작 | I0 / Scale | Frozen492의 Medium/Large 및 configured XL `VERIFIED`. 최신e371 runtime15개는 별도 범위이며 current Large/XL qualification로 승격하지 않음 |
 | Current native Scale·capacity/cost | Scale | e371 open-loop20개 `VERIFIED`. Matching Large/XL lifecycle/cost·capacity negative·timing/RSS qualification은 `NOT_RUN` |
-| Ready9 native·SG/CS·최종5제품 join | Ready9 | source091의 CS9/9 capture·독립 replay9/9·180요청 `VERIFIED`/exit0. SG 원본13index/projection9 및 SG/OG readonly runtime·HTTP/dataRoot 검증 완료; fresh-v4 SG/OG capture1/9·40응답 발행, 독립 replay9는 `NOT_RUN`. OG historical segments2/3 재생 `BLOCKED`; retained segments4는 별도 diagnostic. 최종 matching admission/pair/full5는 `NOT_RUN` |
+| Ready9 native·SG/CS·최종5제품 join | Ready9 | source091의 CS9/9 capture·독립 replay9/9·180요청 `VERIFIED`/exit0. SG 원본13index/projection9 및 SG/OG readonly runtime·HTTP/dataRoot 검증 완료; source091 fresh-v4 capture2/9·80응답 발행 뒤 Docker 장애로 `FAILED`; 엔진 복구·소유 서비스 중지 확인, raw2 보존·v5에서 남은7개 재개. 독립 replay9는 `NOT_RUN`. OG historical segments2/3 재생 `BLOCKED`; retained segments4는 별도 diagnostic. 최종 matching admission/pair/full5는 `NOT_RUN` |
 | Final Contract/SDK | I0 | e371 Python793·Rust191·SDK27 actual 및 별도 replay/frozen7role 재배치 검증 모두 `VERIFIED`. 영속 context·raw·binaries 보존 |
 | NativeIdentity feature 연동 | Native owner / hosted CI | 실제 native/Unicode owner·최종 Contract/runtime 및 module/API/whole strict `VERIFIED`; whole CI 최종 종료는 별도 |
 
@@ -774,7 +792,11 @@ P1 · W4→W5 · collectors/joins 구현 완료; 나머지3repo·다른 lanes·�
   existing-suite CS9repos/180tasks capture와 새 프로세스 canonical replay9/9가 `VERIFIED`/exit0다.
   `/Users/songmin/.codex/task-evidence/ready9-native-recovery-20261006-01a10d0b-v3/result.json`에
   원본4개 capture root, 입력/ordered ledger/독립 실행 SHA를 결속했다. 원본268files는 변경하지 않았다.
-  SG13index와 projection9는 동일성을 검증했고 readonly 복구를 진행한다. OG의 historical snapshot commit
+  SG/OG v4의 Bat·CLI capture2/9·80응답과 SG 본문79/79·1,014/1,014를 발행한 후 Docker engine
+  장애로 v4는 `FAILED`였다. Source091 v5는 기존2개 raw/native hash·canonical replay 확인 후
+  남은7개를 재개하며 final9 independent replay는 `NOT_RUN`이다. 영속 root는
+  `/Users/songmin/.codex/task-evidence/ready9-sgog-recovery-20261006-01a10d0b-v5`다.
+  SG13index와 projection9는 동일성을 검증했다. OG의 historical snapshot commit
   파일은 부재하여 `BLOCKED`; 현재 segments4는 별도 fresh diagnostic 입력이다. 이 결과는
   accepted55/PREP·full5 join·relevance·qualified speed 또는 최신 main qualification을 발행하지 않는다.
 - source97의 bat+required8 captures/replays/full5 joins는 완료 scope로 유지한다.
