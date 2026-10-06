@@ -74,6 +74,9 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+- 최신 Source565의 affected owner46개는 실제46/46·1.126s/exit0로 `VERIFIED`다.
+  SDK565 daemon fresh release build도29m04s/exit0다. Whole workspace 및 SDK27개/portable
+  proof의 실제 결과는 아직 남는다.
 - Source565 Contract Python793개는 실제 `VERIFIED`(289.98s)다. Rust191 inventory의 build는
   2m19s/exit0이며 행동 검증·최종 context/portable verify는 미완료다. SDK fresh release는
   정상 admission 후 실제 build 중이다. Compiler/collection 성공을 테스트 통과로 승격하지 않는다.
