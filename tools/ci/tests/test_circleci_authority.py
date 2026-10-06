@@ -127,17 +127,28 @@ def test_all_job_commands_propagate_failures():
 
 def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
-    assert config["workflows"]["regular"]["jobs"] == [
-        "verify",
-        "verify-python",
-        {
-            "verify-pr-coverage": {
-                "requires": ["verify"],
-                "filters": 'pipeline.event.name == "pull_request"',
-            }
-        },
-    ]
-    rust_steps = config["jobs"]["verify"]["steps"]
+    workers = ["verify-rust-static", "verify-rust-tests", "verify-rust-docs", "verify-rust-bench"]
+    entries = config["workflows"]["regular"]["jobs"]
+    assert entries[:2] == [{"verify": {"requires": workers}}, "verify-python"]
+    assert entries[2:-1] == workers
+    assert entries[-1] == {
+        "verify-pr-coverage": {
+            "requires": ["verify"],
+            "filters": 'pipeline.event.name == "pull_request"',
+        }
+    }
+    gate_steps = config["jobs"]["verify"]["steps"]
+    assert gate_steps[0] == "checkout"
+    assert 'test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"' in gate_steps[1]["run"]["command"]
+    for name in workers:
+        steps = config["jobs"][name]["steps"]
+        assert steps[:3] == config["jobs"]["verify-python"]["steps"][:3]
+        source_guard = steps[-1]["run"]["command"]
+        assert 'test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"' in source_guard
+        assert "git diff --exit-code" in source_guard
+        assert "git status --porcelain=v1 --untracked-files=all" in source_guard
+        assert "exit 1" in source_guard
+    rust_steps = config["jobs"]["verify-rust-tests"]["steps"]
     python_steps = config["jobs"]["verify-python"]["steps"]
     assert rust_steps[0] == python_steps[0] == "checkout"
     assert rust_steps[1:3] == python_steps[1:3]
@@ -249,10 +260,18 @@ def test_pr_coverage_uses_exact_base_and_fails_closed():
 
 def test_regular_workflow_keeps_standard_rust_and_precommit_gates():
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
-    rust_steps = config["jobs"]["verify"]["steps"]
+    rust_workers = (
+        "verify-rust-static",
+        "verify-rust-tests",
+        "verify-rust-docs",
+        "verify-rust-bench",
+    )
     python_steps = config["jobs"]["verify-python"]["steps"]
     rust_runs = {
-        step["run"]["name"]: step["run"]["command"] for step in rust_steps if "run" in step
+        step["run"]["name"]: step["run"]["command"]
+        for name in rust_workers
+        for step in config["jobs"][name]["steps"]
+        if isinstance(step, dict) and "run" in step
     }
     python_runs = {
         step["run"]["name"]: step["run"]["command"] for step in python_steps if "run" in step
@@ -262,7 +281,8 @@ def test_regular_workflow_keeps_standard_rust_and_precommit_gates():
             "just rust-machete",
             "just rust-msrv",
         ),
-        "Rust docs and benchmark compilation": ("just rust-doc", "just rust-bench-build"),
+        "Rust documentation": ("just rust-doc",),
+        "Rust benchmark compilation": ("just rust-bench-build",),
     }.items():
         script = rust_runs[name]
         assert script.startswith("set -euo pipefail\n")

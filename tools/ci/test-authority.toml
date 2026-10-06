@@ -13,7 +13,7 @@ tier = "pr"
 command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
 target_kind = "integration"
 workflow = ".circleci/config.yml"
-job = "verify"
+job = "verify-rust-tests"
 step = "rust nextest"
 
 [rails.main-workspace-nextest]
@@ -21,7 +21,7 @@ tier = "main"
 command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
 target_kind = "integration"
 workflow = ".circleci/config.yml"
-job = "verify"
+job = "verify-rust-tests"
 step = "rust nextest"
 
 [rails.manual-heavy-workspace-nextest]

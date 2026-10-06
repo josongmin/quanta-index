@@ -21,15 +21,15 @@ def test_github_actions_has_no_automatic_trigger_and_circleci_is_default() -> No
     config = yaml.safe_load(CIRCLECI.read_text(encoding="utf-8"))
     assert config["parameters"]["run_heavy"]["default"] is False
     regular_jobs = config["workflows"]["regular"]["jobs"]
-    assert regular_jobs[:2] == ["verify", "verify-python"]
-    assert regular_jobs[2:] == [
-        {
-            "verify-pr-coverage": {
-                "requires": ["verify"],
-                "filters": 'pipeline.event.name == "pull_request"',
-            }
+    workers = ["verify-rust-static", "verify-rust-tests", "verify-rust-docs", "verify-rust-bench"]
+    assert regular_jobs[:2] == [{"verify": {"requires": workers}}, "verify-python"]
+    assert regular_jobs[2:-1] == workers
+    assert regular_jobs[-1] == {
+        "verify-pr-coverage": {
+            "requires": ["verify"],
+            "filters": 'pipeline.event.name == "pull_request"',
         }
-    ]
+    }
     assert config["workflows"]["manual-heavy"]["jobs"] == ["heavy-correctness"]
 
 

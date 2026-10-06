@@ -15,6 +15,19 @@ jobs:
     machine:
       image: ubuntu-2404:2026.05.1
     resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Verify completed Rust worker source
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"
+
+  verify-rust-static:
+    machine:
+      image: ubuntu-2404:2026.05.1
+    resource_class: medium
     environment:
       CARGO_BUILD_JOBS: "2"
       CARGO_TERM_COLOR: always
@@ -64,7 +77,7 @@ jobs:
           keys:
             - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-{{ checksum "Cargo.lock" }}
             - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-
-      - run:
+      - run: &fetch_locked_cargo_dependencies
           name: Fetch locked Cargo dependencies
           command: |
             set -euo pipefail
@@ -110,6 +123,42 @@ jobs:
             unset BASH_ENV ENV
             just rust-machete
             just rust-msrv
+      - run: &verify_unchanged_worker_source
+          name: Verify unchanged worker source
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"
+            git diff --exit-code
+            dirty_source="$(git status --porcelain=v1 --untracked-files=all)"
+            if [[ -n "$dirty_source" ]]; then
+              printf '%s\n' "$dirty_source" >&2
+              exit 1
+            fi
+
+  verify-rust-tests:
+    machine:
+      image: ubuntu-2404:2026.05.1
+    resource_class: medium
+    environment:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TERM_COLOR: always
+      UV_PYTHON: "3.12.12"
+      CI_EVENT_NAME: << pipeline.event.name >>
+    steps:
+      - checkout
+      - run: *install_verification_tools
+      - run: *verify_tool_versions
+      - restore_cache:
+          keys:
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-{{ checksum "Cargo.lock" }}
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-
+      - run: *fetch_locked_cargo_dependencies
+      - save_cache:
+          key: quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
       - run:
           name: rust nextest
           no_output_timeout: 30m
@@ -139,17 +188,74 @@ jobs:
               --evidence artifacts/test-authority/nextest.jsonl \
               --inventory artifacts/test-authority/inventory.json \
               --out artifacts/test-authority/receipt.json
+      - store_artifacts:
+          path: artifacts/test-authority
+          destination: test-authority
+      - run: *verify_unchanged_worker_source
+
+  verify-rust-docs:
+    machine:
+      image: ubuntu-2404:2026.05.1
+    resource_class: medium
+    environment:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TERM_COLOR: always
+      UV_PYTHON: "3.12.12"
+      CI_EVENT_NAME: << pipeline.event.name >>
+    steps:
+      - checkout
+      - run: *install_verification_tools
+      - run: *verify_tool_versions
+      - restore_cache:
+          keys:
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-{{ checksum "Cargo.lock" }}
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-
+      - run: *fetch_locked_cargo_dependencies
+      - save_cache:
+          key: quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
       - run:
-          name: Rust docs and benchmark compilation
+          name: Rust documentation
           no_output_timeout: 30m
           command: |
             set -euo pipefail
             unset BASH_ENV ENV
             just rust-doc
+      - run: *verify_unchanged_worker_source
+
+  verify-rust-bench:
+    machine:
+      image: ubuntu-2404:2026.05.1
+    resource_class: medium
+    environment:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TERM_COLOR: always
+      UV_PYTHON: "3.12.12"
+      CI_EVENT_NAME: << pipeline.event.name >>
+    steps:
+      - checkout
+      - run: *install_verification_tools
+      - run: *verify_tool_versions
+      - restore_cache:
+          keys:
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-{{ checksum "Cargo.lock" }}
+            - quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-
+      - run: *fetch_locked_cargo_dependencies
+      - save_cache:
+          key: quanta-index-v2-linux-amd64-rust1.92.0-cargo-deps-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+      - run:
+          name: Rust benchmark compilation
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
             just rust-bench-build
-      - store_artifacts:
-          path: artifacts/test-authority
-          destination: test-authority
+      - run: *verify_unchanged_worker_source
 
   verify-python:
     machine:
@@ -483,8 +589,17 @@ workflows:
   regular:
     unless: << pipeline.parameters.run_heavy >>
     jobs:
-      - verify
+      - verify:
+          requires:
+            - verify-rust-static
+            - verify-rust-tests
+            - verify-rust-docs
+            - verify-rust-bench
       - verify-python
+      - verify-rust-static
+      - verify-rust-tests
+      - verify-rust-docs
+      - verify-rust-bench
       - verify-pr-coverage:
           requires:
             - verify
