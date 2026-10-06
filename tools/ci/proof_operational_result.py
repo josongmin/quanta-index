@@ -196,9 +196,31 @@ def _observed(raw: bytes, contract: dict[str, Any], run_id: str, phase: str) -> 
     return observed
 
 
+def validate_precondition(contract: dict[str, Any], pre: dict[str, Any]) -> None:
+    """Refuse an inadmissible live state before invoking the mutating actor."""
+    action = ACTIONS[contract["proof_id"]]
+    expected = contract["expected"]
+    if action == "deployment":
+        _require(
+            any(pre[key] != expected[key] for key in BASE_STATE),
+            "deployment has no independently observed state transition",
+        )
+        return
+    _require(
+        all(pre[key] == expected[key] for key in BASE_STATE),
+        "operational pre-state differs from the attested deployment",
+    )
+    if action == "activation":
+        _require(
+            pre["generation"] != expected["generation"],
+            "activation pre-state already selects the expected generation",
+        )
+
+
 def validate_transition(
     contract: dict[str, Any], pre: dict[str, Any], post: dict[str, Any]
 ) -> None:
+    validate_precondition(contract, pre)
     action = ACTIONS[contract["proof_id"]]
     expected = contract["expected"]
     _require(
@@ -431,6 +453,19 @@ def target_identity(contract: dict[str, Any]) -> dict[str, str]:
     return dict(contract["target"], config_sha256=contract["expected"]["config_sha256"])
 
 
+def validate_prerequisite_target(target: dict[str, str], payload: dict[str, Any]) -> None:
+    """Operational edges must refer to the same target before any new action."""
+    if payload["proof_id"] not in ACTIONS:
+        return
+    result = payload.get("execution_result")
+    _require(
+        isinstance(result, dict)
+        and result.get("kind") == "operational"
+        and result.get("target") == target,
+        "operational prerequisite belongs to a different target or configuration",
+    )
+
+
 @lru_cache(maxsize=1)
 def _checker():
     path = Path(__file__).with_name("lint") / "check-proof-authority.py"
@@ -607,6 +642,7 @@ def run_action(
                     "operational prerequisite custody changed: "
                     + "; ".join(item.render() for item in findings),
                 )
+                validate_prerequisite_target(target_identity(contract), payload)
         for name, raw in frozen.items():
             _require(
                 _read_repo_regular_bytes(root, name, label="operational input") == raw,
@@ -660,6 +696,8 @@ def run_action(
         _require(type(code) is int and code == 0, f"{phase} actor failed: {code}")
         stdout, stderr = root / completed.stdout.path, root / completed.stderr.path
         observations[phase] = _observed(stdout.read_bytes(), contract, run_id, phase)
+        if phase == "pre":
+            validate_precondition(contract, observations[phase])
         relative_stdout, relative_stderr = (
             str(item.relative_to(root)) for item in (stdout, stderr)
         )

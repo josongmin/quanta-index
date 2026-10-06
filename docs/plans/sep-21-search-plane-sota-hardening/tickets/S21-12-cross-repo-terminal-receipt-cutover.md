@@ -77,6 +77,9 @@ and aggregate bind pre/action/post execution, independent actor sources,
 source pair, immutable prerequisites, daemon, host and target/config identity.
 Source archives cannot hide dirty actor or contract code. Owner fixtures do
 not qualify a Linux action.
+The runner rejects inadmissible pre-state before invoking the action and checks
+operational prerequisite target/config continuity before any actor. The manifest
+checker also enforces that continuity across immutable dependency edges.
 
 The registry entries remain staged. Concrete deployment/activation/
 restore-forward adapters, independent observer contracts and authorized Linux

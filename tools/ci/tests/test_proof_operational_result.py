@@ -407,6 +407,139 @@ def test_real_process_orchestration_checks_independent_state(evidence, monkeypat
         )
 
 
+@pytest.mark.parametrize(
+    "proof_id,change",
+    [
+        ("p11-deployment", "already-achieved"),
+        ("p11-activation", "already-achieved"),
+        *[
+            (proof_id, key)
+            for proof_id in ("p11-activation", "p11-rollback")
+            for key in sorted(module.BASE_STATE)
+        ],
+    ],
+)
+def test_inadmissible_pre_state_never_invokes_action(tmp_path, monkeypatch, proof_id, change):
+    path = install_contract(tmp_path, proof_id)
+    contract = json.loads((tmp_path / path).read_text())
+    binding = fixture_binding(contract)
+    proof = {
+        "id": proof_id,
+        "execution_mode": "operational-action",
+        "authority_state": "executable",
+        "operational_contract": path,
+    }
+    pre, post = fixture_states(contract)
+    if change == "already-achieved":
+        pre = post
+    else:
+        pre[change] = "0" * 64 if change.endswith("sha256") else "wrong-format"
+    state = tmp_path / "live-state.json"
+    state.write_text(json.dumps(pre))
+    marker = tmp_path / "action-executed"
+    observer = (
+        "import json,sys,pathlib\n"
+        "request=json.loads(pathlib.Path(sys.argv[2]).read_text())\n"
+        f"request['observed']=json.loads(pathlib.Path({str(state)!r}).read_text())\n"
+        "print(json.dumps(request))\n"
+    )
+    for phase in ("pre", "post"):
+        (tmp_path / contract["actors"][phase]).write_text(observer)
+    (tmp_path / contract["actors"]["action"]).write_text(
+        f"import pathlib\npathlib.Path({str(marker)!r}).touch()\n"
+    )
+    monkeypatch.setattr(module, "observed_host_identity", lambda: binding["host_identity_digest"])
+    monkeypatch.setattr(module, "_check_source_binding", lambda *a: None)
+    output = tmp_path / "raw-inadmissible-pre"
+    with pytest.raises(ValueError, match="transition|pre-state"):
+        module.run_action(tmp_path, proof, binding, output, paired_checkout=tmp_path / "pair")
+    assert not marker.exists()
+    assert not (output / "action").exists()
+    assert not (output / "events.json").exists()
+
+
+@pytest.mark.parametrize("field", ("state_root", "binary_path", "config_path", "config_sha256"))
+def test_frontdoor_refuses_prerequisite_target_drift_before_any_actor(
+    tmp_path, monkeypatch, capsys, field
+):
+    path = install_contract(tmp_path, "p11-activation")
+    contract = json.loads((tmp_path / path).read_text())
+    proof = {
+        "id": "p11-activation",
+        "authority_state": "executable",
+        "artifact": "artifacts/activation.json",
+        "artifact_schema": "schema.json",
+        "paired_repository": "pair",
+        "paired_dependency_lock": "Cargo.lock",
+        "operational_contract": path,
+    }
+    predecessor = {"id": "p11-deployment"}
+    target = module.target_identity(contract)
+    target[field] = "different-target"
+    payload = {
+        "proof_id": predecessor["id"],
+        "daemon_binary": {"path": "binary", "sha256": "1" * 64},
+        "environment": {
+            "toolchain": "fixture",
+            "features": [],
+            "host": {"identity_digest": contract["target"]["host_identity_digest"]},
+        },
+        "execution_result": {"kind": "operational", "target": target},
+    }
+    (tmp_path / "schema.json").write_text("{}")
+    checker, writer = module._checker(), module._writer()
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    monkeypatch.setattr(checker, "_read_toml", lambda *a: {"proofs": [proof, predecessor]})
+    monkeypatch.setattr(checker, "check_registry", lambda *a, **k: [])
+    monkeypatch.setattr(checker, "proof_source_snapshot", lambda *a, **k: {})
+    monkeypatch.setattr(checker, "paired_source_snapshot", lambda *a, **k: {})
+    monkeypatch.setattr(checker, "_payload_json", lambda *a, **k: payload)
+    monkeypatch.setattr(checker, "check_manifest", lambda *a, **k: [])
+    monkeypatch.setattr(module, "observed_host_environment", lambda: {})
+    monkeypatch.setattr(writer, "_host_environment", lambda _: payload["environment"])
+    monkeypatch.setattr(
+        writer,
+        "_resolve_dependencies",
+        lambda *a: [{"proof_id": predecessor["id"], "path": "prior.json"}],
+    )
+    monkeypatch.setattr(module, "run_action", lambda *a, **k: pytest.fail("action invoked"))
+    output = tmp_path / "never"
+    assert (
+        cli.main(
+            [proof["id"], "--output", str(output), "--paired-checkout", str(tmp_path / "pair")]
+        )
+        == 2
+    )
+    assert "different target or configuration" in capsys.readouterr().err
+    assert not output.exists()
+
+
+def test_runner_rechecks_prerequisite_target_before_output(evidence, monkeypatch):
+    root, proof, binding, result, _ = evidence
+    proof.update(artifact_schema="schema.json", paired_repository="pair")
+    target = copy.deepcopy(result["target"])
+    target["state_root"] = "/different/live/state"
+    payload = {
+        "proof_id": "p11-activation",
+        "execution_result": {"kind": "operational", "target": target},
+    }
+    (root / "prerequisite.json").write_text(json.dumps(payload))
+    receipt = archive(root, "prerequisite.json")
+    receipt["proof_id"] = payload["proof_id"]
+    binding["dependency_receipts"] = [receipt]
+    checker = module._checker()
+    monkeypatch.setattr(checker, "_read_toml", lambda *a: {"proofs": [{"id": payload["proof_id"]}]})
+    monkeypatch.setattr(checker, "_payload_json", lambda *a, **k: {})
+    monkeypatch.setattr(checker, "check_manifest", lambda *a, **k: [])
+    monkeypatch.setattr(module, "observed_host_identity", lambda: binding["host_identity_digest"])
+    monkeypatch.setattr(module, "_check_source_binding", lambda *a: None)
+    monkeypatch.setattr(module, "execute", lambda *a, **k: pytest.fail("actor invoked"))
+    output = root / "never"
+    with pytest.raises(ValueError, match="different target or configuration"):
+        module.run_action(root, proof, binding, output, paired_checkout=root / "pair")
+    assert not output.exists()
+
+
 def test_manifest_window_must_cover_every_observation(evidence):
     root, proof, binding, result, artifacts = evidence
     with pytest.raises(ValueError, match="execution window"):

@@ -62,6 +62,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         schema_path = ROOT / proof["artifact_schema"]
         schema = parse_proof_json(schema_path.read_bytes())
+        raw_contract = checker.HANDOFF_VALIDATION._read_repo_regular_bytes(
+            ROOT, proof["operational_contract"], label="operational contract"
+        )
+        contract = operation.validate_contract(ROOT, proof, raw_contract)
         daemon = None
         dependency_receipts = writer._resolve_dependencies(ROOT, proof, proof_by_id, checker)
         # Refuse a missing/stale prerequisite before any target mutation.
@@ -80,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
                 paired_checkouts={proof["paired_repository"]: pair},
             )
             operation._require(not findings, "; ".join(item.render() for item in findings))
+            operation.validate_prerequisite_target(operation.target_identity(contract), payload)
             binary = payload["daemon_binary"]
             operation._require(
                 isinstance(binary, dict)
@@ -101,10 +106,6 @@ def main(argv: list[str] | None = None) -> int:
         operation._require(
             daemon is not None, "operational action lacks an attested release daemon"
         )
-        raw_contract = checker.HANDOFF_VALIDATION._read_repo_regular_bytes(
-            ROOT, proof["operational_contract"], label="operational contract"
-        )
-        contract = operation.validate_contract(ROOT, proof, raw_contract)
         binding = {
             "source": source,
             "source_pair": source_pair,

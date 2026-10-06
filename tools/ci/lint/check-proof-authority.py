@@ -1814,6 +1814,13 @@ def _check_manifest_local(
                     Finding(manifest_path, "dependency receipt proof_id does not match its edge")
                 )
                 continue
+            if proof.get("execution_mode") == "operational-action":
+                from tools.ci.proof_operational_result import validate_prerequisite_target
+
+                try:
+                    validate_prerequisite_target(execution_result["target"], dependency_payload)
+                except (KeyError, TypeError, ValueError) as error:
+                    findings.append(Finding(manifest_path, f"operational dependency: {error}"))
             try:
                 expected_archive = proof_archive_relative_path(
                     dependency_payload,

@@ -158,7 +158,9 @@ def _make_all_proofs_executable(text: str) -> str:
         elif 'execution_mode = "operational-action"' in sections[index]:
             proof_id = re.search(r'^\nid = "([^"]+)"', sections[index])
             assert proof_id is not None
-            sections[index] += f'\noperational_contract = "tools/ci/fixtures/{proof_id.group(1)}.json"\n'
+            sections[index] += (
+                f'\noperational_contract = "tools/ci/fixtures/{proof_id.group(1)}.json"\n'
+            )
     return "[[proofs]]".join(sections)
 
 
@@ -522,7 +524,9 @@ def _write_dependency_manifests(
             from tools.ci.proof_operational_result import manifest_binding
             from tools.ci.tests.test_proof_operational_result import fixture_evidence
 
-            execution_result, operational_artifacts = fixture_evidence(root, proof, manifest_binding(payload))
+            execution_result, operational_artifacts = fixture_evidence(
+                root, proof, manifest_binding(payload)
+            )
             payload["artifacts"].extend(operational_artifacts)
             payload["ended_at"] = "2026-09-21T00:00:06Z"
         if execution_result is not None:
@@ -562,6 +566,34 @@ def test_full_dependency_graph_qualifies_without_historical_handoffs(
     assert "product_handoffs" not in payload
     assert "product_chain_status" not in payload
     assert "infrastructure_handoff" not in payload
+
+
+@pytest.mark.parametrize("proof_id", ("p11-activation", "p11-rollback"))
+def test_operational_manifest_refuses_a_different_prerequisite_target(
+    tmp_path: Path, aggregate_templates: AggregateTemplates, proof_id: str
+) -> None:
+    root, registry = _fixture_root(tmp_path, executable=True, templates=aggregate_templates)
+    paired = _paired_checkout(tmp_path, aggregate_templates)
+    proof_by_id = {proof["id"]: proof for proof in registry["proofs"]}
+    proof = proof_by_id[proof_id]
+    contract_path = root / proof["operational_contract"]
+    contract = json.loads(contract_path.read_text())
+    contract["target"]["state_root"] = "/different/live/state"
+    contract_path.write_text(json.dumps(contract))
+    _run(root, "git", "add", proof["operational_contract"])
+    _run(root, "git", "commit", "-qm", "fixture with different operational target")
+    _write_dependency_manifests(root, registry, paired)
+    path = root / proof["artifact"]
+    findings = CHECKER.check_manifest(
+        json.loads(path.read_text()),
+        proof=proof,
+        root=root,
+        manifest_path=path,
+        bind_source=False,
+        schema=json.loads((root / "tools/ci/proof-manifest.schema.json").read_text()),
+        proof_by_id=proof_by_id,
+    )
+    assert any("different target or configuration" in item.message for item in findings)
 
 
 def test_writer_publishes_truthful_not_ready_diagnostic_for_staged_graph(

@@ -46,6 +46,11 @@ pair, contract/actor bytes, actual host and bound immutable prerequisite bytes
 before/after each phase. The existing process owner bounds output/timeout,
 retains command/raw custody and kills its pinned group before returning.
 Failed/partial execution does not publish a completed action record.
+The pre-observer must establish an admissible live state before the action can
+run. Activation and restore require the attested deployment; deployment and
+activation also refuse an already achieved transition. Operational prerequisite
+edges must use the same target paths and configuration before any actor runs,
+and the manifest checker enforces this continuity on archived dependencies.
 
 When enabled, provide a fresh repository-relative `QUANTA_PROOF_RAW_DIR` and
 `SEMANTICA_CHECKOUT`. Equivalent CLI options are `--output` and
