@@ -482,7 +482,7 @@ fn staged_unsealed_publication_is_refused_before_source_reservation() -> TestRes
         &budget,
     );
     let SearchPlaneIngestIpcResponse::Error(error) = response else {
-        return Err(anyhow::anyhow!("unsealed staged publication was accepted"));
+        return Err("unsealed staged publication was accepted".into());
     };
     assert!(
         error.message.contains("requires a sealed batch"),
