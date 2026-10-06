@@ -633,7 +633,10 @@ mod tests {
         fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
             let count = self.bytes.read(bytes)?;
             if count == 0 {
-                self.eof_reads += 1;
+                self.eof_reads = self
+                    .eof_reads
+                    .checked_add(1)
+                    .expect("fixture EOF read count fits usize");
                 self.cancellation.cancel();
             }
             Ok(count)
