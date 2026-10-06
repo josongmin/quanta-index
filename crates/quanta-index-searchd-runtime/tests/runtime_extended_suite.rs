@@ -41,6 +41,7 @@ mod e2e_process_readiness;
 mod e2e_ranked_pages;
 #[path = "e2e_scale_process_restart.rs"]
 mod e2e_scale_process_restart;
+#[cfg(debug_assertions)]
 #[path = "e2e_semantic_budget_interruption.rs"]
 mod e2e_semantic_budget_interruption;
 #[path = "e2e_socket_access.rs"]
