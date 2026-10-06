@@ -39,8 +39,9 @@ impl fmt::Display for IdentityValidationErrorV1 {
 
 impl std::error::Error for IdentityValidationErrorV1 {}
 
-/// Native copy failure at the already-validated identity producer. Admission
-/// retains its caller's exact error; allocator and callback protocol failures
+/// Native copy failure at the already-validated identity producer.
+///
+/// Admission retains its caller's exact error; allocator and callback protocol failures
 /// never stand in for an original resource/lifecycle refusal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeIdentityCopyErrorV1<E> {
@@ -67,8 +68,10 @@ impl<E: fmt::Display> fmt::Display for NativeIdentityCopyErrorV1<E> {
 }
 impl<E: std::error::Error + 'static> std::error::Error for NativeIdentityCopyErrorV1<E> {}
 
-/// Copy only the supplied borrowed bytes. Typed owners preserve their private
-/// validation seal by wrapping this result without re-validating the input.
+/// Copy only the supplied borrowed bytes.
+///
+/// Typed owners preserve their private validation seal by wrapping this result
+/// without re-validating the input.
 /// The caller admits copy work and retains its native backing grant.
 pub fn try_copy_string_with_native_birth_v1<E>(
     source: &str,
