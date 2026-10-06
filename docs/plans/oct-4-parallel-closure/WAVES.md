@@ -12,11 +12,13 @@
   상한과 기존 body tag·array-only digest·BIGPOS version·indefinite EOF를 보존한다. 지원 corpus/encoded
   한도는 유지한다. Leading BIGPOS version과 BIGPOS/BIGNEG body는16byte를 넘는 payload를
   할당 전 거절하며 canonical writer는 이 비정규형을 발행하지 않는다. Focused 회귀를 먼저 실행한다.
-- 최종 선택 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`다.
+- Contract/SDK·Ready9 선택 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`다.
   `886673cd`의 admitted IPC/manifest·open-loop 회귀를 보존하고 테스트 모듈 위치만 수정한565에서
   whole unit/strict/runtime/integration/fuzz4/native와 Root OS3/Contract/fresh SDK를 연결한다.
   병렬 NativeIdentityCopy/Admission API3경로와 feature manifest2경로는 선택 소스에서 제외해
   whole main/API 검증과 구분한다.
+  OS3 release 등록 수리는 별도 clean492에서 검증한다. Debug 전용 semantic 회귀의 mod cfg1줄만
+  변경했고 제품·테스트 본문은 동일하다. 기존565 proof/context를492의 결과로 재표기하지 않는다.
 - 실제 미구현: [I0-03 P11 typed operational producer/recipes](tickets/INDEX.md#o4-i0-03).
   실제 actions와 독립 pre/post 성공 판정 계약·authorized target 입력이 필요하다.
 - Frozen5796 Large default timeout과 XL posting admission 거절이 재현됐다.
@@ -72,6 +74,13 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 
 ## 확인된 실행 체크포인트
 
+- Source565 OS3 actual은 release compile `FAILED`(E0432/exit101·5227.025s), tests0개다.
+  Debug 전용 semantic test_support를 쓰는 회귀 모듈에 producer와 같은 `cfg(debug_assertions)`를
+  붙인1줄 수리를 main 및 clean492에 적용했다. 제품·회귀 본문 불변·owned fmt/diff는 `VERIFIED`다.
+  Source492에서 원본 release OS3 256/4096/32768과 debug interruption1개를 정상 admission으로
+  재등록했다. Cold dependency cache는 정상 Cargo 검증 아래 재사용하고 실패 raw는 보존한다.
+  이미 admitted인565 fresh SDK·Contract/Ready9 principal source 및55epoch은 유지한다.
+  새 actual 결과는 미발행이며565 release suite 성공이나 whole main 통과를 뜻하지 않는다.
 - Main16f37의 exact-source CI는 `FAILED`: Python1120 locked dependency fetch가 exit101·0.809s로
   unicode-normalization0.1.25에 없는 `quanta-native-scratch-v1` feature를 보고했고,
   Rust1119 guarded module snapshot 검사는 exit1·4.185s였다. 해당 변경 owner의 dependency 연동
@@ -80,7 +89,7 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 - Source886 focused owner46/46·3.600s와 open-loop full20/20·13.758s가 실제 exit0/lease release로
   `VERIFIED`다. Old controller를 두 leaf 뒤143으로 정리하고 raw를 보존했다. Body 불변인565에
   Scale broad unit/strict/runtime/integration/fuzz4/native 및 Root OS3 원본3/Contract/fresh SDK를 연결한다.
-  Root3 rail은 실제 등록됐고 OS3는 admission 후 release 컴파일 중이다. Contract/SDK closure는
+  Root3 rail은 실제 등록됐고565 OS3 compile 실패와492 수리는 위에 분리했다. Contract/SDK closure는
   1500files/digest58d62e6c로 일치하며 Python793 collection·새 SDK target 준비를 마쳤다.
   Context/portable result는 미발행이다. Ready9 final consumer는 PREP-v3의55-binding epoch 검사를
   통과했고 PREP-v2의54-binding은 audit-only로 유지한다. 실제 stage/final slot은 아직 미발행이다.

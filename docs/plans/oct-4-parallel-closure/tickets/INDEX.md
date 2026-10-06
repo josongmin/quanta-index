@@ -11,11 +11,14 @@
 
 소스 대조 기준일: 2026-10-06. 이 절의 anchor는 날짜 변경에도 유지한다.
 
-최종 Quanta 검증 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`
+Contract/SDK·Ready9의 최종 Quanta 검증 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`
 (`oct6-quanta-final-order/quanta-index`)다. `886673cd`에 대한 변경은 manifest의 `cfg(test)`
 모듈을 파일 끝으로 옮긴1경로이며 제품 함수·테스트 본문은 byte 동일하다.
 Main에 병렬 추가된 NativeIdentityCopy/Admission API3경로와 feature manifest2경로는 이 선택 소스에서 제외했다.
 선택 소스의 검증을 전체 main/API qualification으로 승격하지 않는다.
+OS3의 release 테스트 등록 수리는 별도 clean `492d2fdccc0fc42ec42e4da19db7833ecbf032ea`에서
+검증한다. Delta는 debug 전용 semantic 회귀 모듈에 producer와 같은 cfg 조건을 붙인1줄이며
+제품·테스트 본문은 동일하다. 기존565 proof/context를 새 SHA의 결과로 재표기하지 않는다.
 
 ### 현재 실행 목록
 
@@ -23,7 +26,7 @@ Main에 병렬 추가된 NativeIdentityCopy/Admission API3경로와 feature mani
 | --- | --- | --- |
 | Manifest 복호화 메모리 경계 | I0 / E4 | 전체 generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. Source886의 IPC/CBOR/manifest owner46개가 actual PASS이며565의 whole/strict/integration 소비 검증이 남는다 |
 | Workspace 검사·단위 테스트 | Scale / hosted CI | Source886 owner46/46·3.600s와 open-loop bin20/20·13.758s가 실제 exit0다. 테스트 모듈 위치만 바꾼565에서 whole unit `--no-fail-fast`/1thread·strict·runtime/integration을 이어간다. Main2c Python1107과 d192 Python1109 전체는 `VERIFIED`; whole Rust는 아직 실패 상태다 |
-| Medium/Large/XL 실제 프로세스 재시작 | I0 | 원본256/4096/32768·same seed/caps release/no-fail-fast3개를 선택565에서 실제 등록했다. Admission/source guard를 통과해 release 컴파일 중이며 tests/result는 아직 미발행이다 |
+| Medium/Large/XL 실제 프로세스 재시작 | I0 | Source565 actual은 release compile E0432·exit101·5227.025s로 `FAILED`, tests0개다. Debug-only semantic hook의 모듈 등록 조건1줄을 수정한492에서 원본256/4096/32768·same seed/caps·release/no-fail-fast3개를 재등록했다. 수정 모듈의 debug 회귀1개도 별도로 실제 등록했으며 두 결과는 미발행이다 |
 | Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
 | Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
 | Final Contract/SDK | I0 | 선택565의 canonical Contract·fresh SDK를 실제 등록했다. 두 source closure1500files의 digest가 일치하고 Contract Python793 collection·새 SDK target 준비를 마쳤다. Behavioral 결과/최종 context/portable verify는 미완료이며 canceled731 v6 partial은 재사용하지 않는다 |
@@ -34,6 +37,13 @@ Main에 병렬 추가된 NativeIdentityCopy/Admission API3경로와 feature mani
 
 ### Sidebar 실행 결과 회수
 
+- Source565의 OS3는 release 컴파일 `FAILED`(E0432/exit101·5227.025s)이며 실제 tests0개다.
+  `e2e_semantic_budget_interruption`이 debug 전용 `semantic::test_support`를 release에서도
+  import한 등록 오류다. 해당 mod에 `cfg(debug_assertions)`를 붙여 producer 경계와 일치시켰고
+  main 및 clean492에 적용했다. 제품·회귀 본문 불변, owned fmt/diff는 `VERIFIED`다.
+  Source492 원본 release OS3와 debug interruption1개를 정상 admission으로 재등록했으며
+  실행 중인565 fresh SDK를 유지한다. Failed565 raw/target은 보존하고 release dependency cache만
+  정상 Cargo 검증 아래 재사용한다. 565 release suite 성공이나 전체 main 통과로 소급 표기하지 않는다.
 - Main `16f37d43f7a1c3d136d7843442089bdc04561770`의 exact-source hosted CI는 `FAILED`다.
   Python1120은 locked dependency fetch에서 exit101·0.809s로 존재하지 않는
   `unicode-normalization/quanta-native-scratch-v1` feature를 보고했다. Rust1119는 guarded module
@@ -42,7 +52,7 @@ Main에 병렬 추가된 NativeIdentityCopy/Admission API3경로와 feature mani
 - Source886의 owner46/46·3.600s와 `open_loop_matrix` full20/20·13.758s는 실제 exit0/lease release로
   `VERIFIED`다. 후자는 실제 runtime smoke·history seal·artifact/CLI 고정 oracle을 포함한다.
   Old controller는 두 leaf 종료 뒤143으로 정리해 broad 자동 실행을 막고 원본 결과를 보존했다.
-  Source565는 제품/테스트 본문 불변인 위치 수리만 포함한다. 그 소스의 OS3 release 원본3 및
+  Source565는 제품/테스트 본문 불변인 위치 수리만 포함한다. 그 소스의 OS3 release 원본3(위 compile 실패) 및
   Contract/fresh SDK를 신규 output에 등록했으며 두 closure1500files/digest58d62e6c가 일치한다.
   `/private/tmp/qi-scale-os3-release-5658b953-20261006-v8`,
   `/private/tmp/qi-f15-contract-5658b953-20261006-v8`, `/private/tmp/qi-f15-sdk-5658b953-20261006-v8`.
