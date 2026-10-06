@@ -11,21 +11,38 @@
 
 소스 대조 기준일: 2026-10-06. 이 절의 anchor는 날짜 변경에도 유지한다.
 
+최종 Quanta 검증 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`
+(`oct6-quanta-final-order/quanta-index`)다. `886673cd`에 대한 변경은 manifest의 `cfg(test)`
+모듈을 파일 끝으로 옮긴1경로이며 제품 함수·테스트 본문은 byte 동일하다.
+Main에 병렬 추가된 NativeIdentityCopy public API3경로는 이 선택 소스에서 제외했다.
+선택 소스의 검증을 전체 main/API qualification으로 승격하지 않는다.
+
 ### 현재 실행 목록
 
 | 범위 | 담당 | 실제 잔여 |
 | --- | --- | --- |
 | Manifest 복호화 메모리 경계 | I0 / E4 | Sealed/text manifest의 전체 generic CBOR Value를 할당 없는 preflight·bounded collection·개별 행 변환으로 대체했다. Fixed count·행별 node 한도·기존 tag·indefinite framing 회귀의 실제 Rust 실행이 남는다 |
-| Workspace 검사·단위 테스트 | Scale / hosted CI | Source593 hosted1089는3571pass/1fail/602미실행이다. Artifact·CLI의 stale default oracle2paths와 업로드 취소 처리·Clippy2건을 수리했다. 통합 소스의 focused actual 및 whole unit `--no-fail-fast`/1thread가 남는다 |
-| Medium/Large/XL 실제 프로세스 재시작 | I0 | Clean6385033f 대기는 최신 Rust 수리를 포함하도록 미입장 안전 취소했다(143/0Cargo·tests). 최종 통합 소스로 원본256/4096/32768·same seed/caps release/no-fail-fast3개를 재등록한다 |
-| Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime, 남은 fuzz3이 필요하다. Timing/RSS qualification은 독립 판정 |
-| Ready9 native·SG/CS·최종5제품 join | Ready9 | Old47e v4 batch는 live source를 유지한다. Fresh native9/SG-CS9capture+9replay 종료 뒤 reuse와 final admission/pair/full5를 판정한다 |
-| Final Contract/SDK | I0 | Immutable731a39cf v6 요청은 최신 Rust 수리를 포함하도록 미입장 안전 취소했다(각 producer143/controller1/0Cargo·behavior/receipt0). 최종 통합 소스의 Contract·fresh SDK·portable verify가 남으며 원본 partial을 proof로 재사용하지 않는다 |
+| Workspace 검사·단위 테스트 | Scale / hosted CI | Source886의 IPC/manifest owner 회귀는 admission 후 컴파일 중이다. Open-loop bin 회귀 뒤565로 연결해 whole unit `--no-fail-fast`/1thread·strict·runtime/integration을 검증한다. Main2c Python1107 전체는 `VERIFIED`; main d192 Rust1110 strict의 테스트 모듈 순서1건을 수리했다 |
+| Medium/Large/XL 실제 프로세스 재시작 | I0 | 원본256/4096/32768·same seed/caps release/no-fail-fast3개를 선택565에서 실행한다. Dispatcher 준비 완료, focused 회귀 뒤 등록 전 `NOT_RUN` |
+| Current native Scale·runtime·fuzz | Scale | Matching release Large/XL lifecycle·cost·독립 replay·capacity negative, current runtime 및 선택565의 fuzz4이 필요하다. 다른 소스의 request fuzz 성공을 새 소스에 재표기하지 않는다. Timing/RSS qualification은 독립 판정 |
+| Ready9 native·SG/CS·최종5제품 join | Ready9 | Source47e의 fresh native9 scope 실제 leaf는 exit0·9/9 receipts·byte 검증·lease/child cleanup으로 `VERIFIED`. SG/CS9capture+9replay·OG9 replay·final admission/pair/full5는 `NOT_RUN`; matching proof와 명시적 slot handoff 뒤 실행한다 |
+| Final Contract/SDK | I0 | 선택565의 canonical Contract·fresh SDK·portable verify가 남는다. Focused 회귀 뒤 등록 전 `NOT_RUN`; canceled731 v6 partial·receipt0을 proof로 재사용하지 않는다 |
 
 위 목록은 Quanta 소유 실행 범위다. P11 실제 운영 producer는 I0-03의 target/독립 관측 계약이
 선행 입력이며, 외부 provider·승인·Linux 운영·Semantica 연동은 아래 조건부 범위와 구분한다.
 
 ### Sidebar 실행 결과 회수
+
+- Main2c의 hosted Python1107은 전체 job `VERIFIED`:4190passed/30skipped·869.04s,
+  P00 positive300passed·34.97s 및 source-bound manifest/pre-commit이 실제 exit0다.
+  Main d192 Rust1110은 strict `FAILED`(exit101·350.112s):manifest 테스트 모듈 뒤 제품 item1건이다.
+  `bounded_manifest_tests`를 EOF로 이동해 제품·테스트 본문 불변 및 owned fmt/diff exit0를 확인했다.
+  이 결과로 현재 소스 Rust 전체 성공을 주장하지 않는다.
+- Source47e native leaf는 canonical execution `completed`/exit0·wall9,567.513s이고 native receipt9/9다.
+  Resource release·자식 종료·최종 바이트 검사 후 boundary와 원래 controller retirement가 `VERIFIED`다.
+  Old whole controller는 native 뒤 중단됐으며 SG/CS capture를 수행하지 않았다.
+  새 SG/CS stage controller와 boundary controls의 독립 guard4+4는 actual PASS다.
+  Capture/replay와 final5 join은 여전히 `NOT_RUN`이며565 source epoch/75control 재결속은 정적 `VERIFIED`다.
 
 - 후속 통합 기준은 `a84f237ca8d4f3a2a5d0bc24f5f4574e73ae8b1c`와 Scale source
   `74bdc9b493d08da8a708ccfda673f669a1e546ea`의39-path overlay다. 각 pre/post SHA와 patch SHA,

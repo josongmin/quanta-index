@@ -407,71 +407,6 @@ impl<'de, T: Deserialize<'de>, const MAX: usize> Deserialize<'de> for BoundedCbo
     }
 }
 
-#[cfg(test)]
-mod bounded_manifest_tests {
-    use super::{BoundedCborRows, decode_cbor_exact, leading_cbor_array_version};
-
-    #[test]
-    fn definite_count_refuses_before_reading_an_element() {
-        // Array(3) announces more rows than the bound but contains no body.
-        // An EOF error would mean the decoder attempted to read or reserve it.
-        let error = decode_cbor_exact::<BoundedCborRows<u8, 2>>(&[0x83])
-            .expect_err("over-limit array must refuse before its first element");
-        assert!(
-            error.contains("manifest row count exceeds its ceiling"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn indefinite_array_is_bounded_and_exact() {
-        let rows = decode_cbor_exact::<BoundedCborRows<u8, 2>>(&[0x9f, 1, 2, 0xff])
-            .expect("two rows fit the bound");
-        assert_eq!(rows.0, vec![1, 2]);
-        let error = decode_cbor_exact::<BoundedCborRows<u8, 2>>(&[0x9f, 1, 2, 3, 0xff])
-            .expect_err("third indefinite row exceeds the bound");
-        assert!(
-            error.contains("manifest row count exceeds its ceiling"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn version_probe_accepts_legacy_shape_without_decoding_its_body() {
-        assert_eq!(leading_cbor_array_version(&[0x81, 15]), Ok(15));
-        assert_eq!(leading_cbor_array_version(&[0x9f, 2]), Ok(2));
-        assert_eq!(leading_cbor_array_version(&[0x81, 0xc2, 0x41, 15]), Ok(15));
-        assert_eq!(leading_cbor_array_version(&[0x81, 0xc2, 0x41, 2]), Ok(2));
-        assert!(leading_cbor_array_version(&[0x81, 0xc0, 15]).is_err());
-        assert!(leading_cbor_array_version(&[0x80]).is_err());
-        assert!(leading_cbor_array_version(&[0x81, 0x20]).is_err());
-    }
-
-    #[test]
-    fn oversized_byte_string_is_refused_before_seq_materialization() {
-        // ciborium can present a byte string as SeqAccess after allocating
-        // its contents. Manifest binary values are only 32-byte digests.
-        let error = super::preflight_manifest_shape(&[0x81, 0x58, 33], 1, &[], 2, true)
-            .expect_err("binary value is not a manifest array");
-        assert_eq!(error, "manifest byte string is not an array");
-    }
-
-    #[test]
-    fn malformed_nested_tree_refuses_before_value_materialization() {
-        let mut bytes = vec![0x81, 0x98, 32]; // one field containing array(32)
-        for _ in 0..32 {
-            bytes.extend_from_slice(&[0x98, 32]);
-            for _ in 0..32 {
-                bytes.extend_from_slice(&[0x98, 32]);
-                bytes.extend_from_slice(&[0; 32]);
-            }
-        }
-        let error = super::preflight_manifest_shape(&bytes, 1, &[], 2, true)
-            .expect_err("nested Value tree exceeds one member's node ceiling");
-        assert_eq!(error, "manifest member exceeds its decoded node ceiling");
-    }
-}
-
 pub(crate) fn decode_chunk_payload(bytes: &[u8]) -> Result<ChunkRecord, CoreError> {
     decode_cbor_exact::<ChunkRecord>(bytes)
         .map_err(|err| CoreError::InvalidContract(format!("lexical: chunk payload decode: {err}")))
@@ -537,4 +472,69 @@ pub(crate) fn decode_tombstone_scope_payload(
     .map_err(|err| {
         CoreError::InvalidContract(format!("lexical: tombstone scope payload decode: {err}"))
     })
+}
+
+#[cfg(test)]
+mod bounded_manifest_tests {
+    use super::{BoundedCborRows, decode_cbor_exact, leading_cbor_array_version};
+
+    #[test]
+    fn definite_count_refuses_before_reading_an_element() {
+        // Array(3) announces more rows than the bound but contains no body.
+        // An EOF error would mean the decoder attempted to read or reserve it.
+        let error = decode_cbor_exact::<BoundedCborRows<u8, 2>>(&[0x83])
+            .expect_err("over-limit array must refuse before its first element");
+        assert!(
+            error.contains("manifest row count exceeds its ceiling"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn indefinite_array_is_bounded_and_exact() {
+        let rows = decode_cbor_exact::<BoundedCborRows<u8, 2>>(&[0x9f, 1, 2, 0xff])
+            .expect("two rows fit the bound");
+        assert_eq!(rows.0, vec![1, 2]);
+        let error = decode_cbor_exact::<BoundedCborRows<u8, 2>>(&[0x9f, 1, 2, 3, 0xff])
+            .expect_err("third indefinite row exceeds the bound");
+        assert!(
+            error.contains("manifest row count exceeds its ceiling"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn version_probe_accepts_legacy_shape_without_decoding_its_body() {
+        assert_eq!(leading_cbor_array_version(&[0x81, 15]), Ok(15));
+        assert_eq!(leading_cbor_array_version(&[0x9f, 2]), Ok(2));
+        assert_eq!(leading_cbor_array_version(&[0x81, 0xc2, 0x41, 15]), Ok(15));
+        assert_eq!(leading_cbor_array_version(&[0x81, 0xc2, 0x41, 2]), Ok(2));
+        assert!(leading_cbor_array_version(&[0x81, 0xc0, 15]).is_err());
+        assert!(leading_cbor_array_version(&[0x80]).is_err());
+        assert!(leading_cbor_array_version(&[0x81, 0x20]).is_err());
+    }
+
+    #[test]
+    fn oversized_byte_string_is_refused_before_seq_materialization() {
+        // ciborium can present a byte string as SeqAccess after allocating
+        // its contents. Manifest binary values are only 32-byte digests.
+        let error = super::preflight_manifest_shape(&[0x81, 0x58, 33], 1, &[], 2, true)
+            .expect_err("binary value is not a manifest array");
+        assert_eq!(error, "manifest byte string is not an array");
+    }
+
+    #[test]
+    fn malformed_nested_tree_refuses_before_value_materialization() {
+        let mut bytes = vec![0x81, 0x98, 32]; // one field containing array(32)
+        for _ in 0..32 {
+            bytes.extend_from_slice(&[0x98, 32]);
+            for _ in 0..32 {
+                bytes.extend_from_slice(&[0x98, 32]);
+                bytes.extend_from_slice(&[0; 32]);
+            }
+        }
+        let error = super::preflight_manifest_shape(&bytes, 1, &[], 2, true)
+            .expect_err("nested Value tree exceeds one member's node ceiling");
+        assert_eq!(error, "manifest member exceeds its decoded node ceiling");
+    }
 }

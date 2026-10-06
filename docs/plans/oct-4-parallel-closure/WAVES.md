@@ -11,6 +11,10 @@
   main에 반영했다. Manifest3paths는 patch6c039748의 guards로 통합했으며 collection count·행별 node
   상한과 기존 body tag·array-only digest·BIGPOS version·indefinite EOF를 보존한다. 지원 corpus/encoded
   한도는 유지하고16byte초과 leading-zero bignum만 할당 전 거절한다. 이 source에서 focused 회귀를 먼저 실행한다.
+- 최종 선택 소스는 clean `5658b953690896525b1ae7bde2950adc00adf6b3`다.
+  `886673cd`의 admitted IPC/manifest·open-loop 회귀를 보존하고 테스트 모듈 위치만 수정한565에서
+  whole unit/strict/runtime/integration/fuzz4/native와 Root OS3/Contract/fresh SDK를 연결한다.
+  병렬 NativeIdentityCopy API3경로는 선택 소스에서 제외해 whole main/API 검증과 구분한다.
 - 실제 미구현: [I0-03 P11 typed operational producer/recipes](tickets/INDEX.md#o4-i0-03).
   실제 actions와 독립 pre/post 성공 판정 계약·authorized target 입력이 필요하다.
 - Frozen5796 Large default timeout과 XL posting admission 거절이 재현됐다.
@@ -65,6 +69,15 @@ Python 전체 CI와 Rust runtime/API/wire 검증은 소유 경로가 겹치지 �
 현재 host에서는 I0가 순서대로 실행한다. AI quota·rubric·holdout 승인·provider/Linux 입력은 해당 scope만 대기한다.
 
 ## 확인된 실행 체크포인트
+
+- Main2c Python1107 전체 job은 `VERIFIED`:4190passed/30skipped·869.04s,
+  P00300passed·34.97s와 source-bound manifest/pre-commit actual exit0다.
+  Main d192 Rust1110 strict는 `FAILED`(350.112s):manifest `cfg(test)` 모듈 뒤 제품 item1건.
+  EOF 이동 수리의 제품/테스트 본문은 동일하며 owned fmt/diff exit0다. 새 strict actual은 남는다.
+- Source47e native9 leaf는 canonical completed/exit0 및9/9 receipts로 `VERIFIED`다.
+  최종 byte 검사·shared lease release·owned child 종료 후 old controller를 native 경계에서 정리했다.
+  SG/CS stage/boundary guard4+4는 PASS이며9capture/9replay 및 final5 actual은 `NOT_RUN`이다.
+  Root565 source epoch·75control 재결속은 정적 확인이고 실제 slot handoff가 아니다.
 
 - sourcea84f237c에 clean74bdc9b4의39 owned paths를 exact pre/post SHA로 통합했다.
   SDK caller/binding·staged publication·streaming digest·bounded CBOR scratch·명시적 scale profile을 포함한다.
